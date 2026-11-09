@@ -6414,7 +6414,7 @@ static int exp_skip_fs(NvProg *pr) {
 // Warm-up entry: built in the background, waiting to be taken by the submit thread. vs / fs are strong references (in pso they are only raw pointers, and the background dictionary is released when the task ends)
 // A border pipeline (B row) also brings its variant functions and their cache keys (vpatch / bpatch): warm_claim files them
 // with the shaders the game uses, whose own lookups then return these functions and so find the pipeline.
-@interface WarmItem : NSObject { @public int kind; NSString *key, *vs_key, *fs_key; NvShader *shader, *vs, *fs; pso_key pso; id<MTLFunction> fsfn; id object;
+@interface WarmItem : NSObject { @public int kind; uint64_t mesh_variant; NSString *key, *vs_key, *fs_key; NvShader *shader, *vs, *fs; pso_key pso; id<MTLFunction> fsfn; id object;
     id<MTLFunction> vfn, bfn; NSString *vpatch_key, *bpatch_key; } @end
 @implementation WarmItem @end
 static NSMutableDictionary<NSString *, NvShader *> *g_shcache;
@@ -6488,7 +6488,9 @@ static _Atomic int g_warm_running;   // 后台预热还没跑完（进局读取�
 static _Atomic int g_warm_priority_done;
 static _Atomic uint64_t g_warm_library_ns,g_warm_library_count,g_warm_pipeline_ns,g_warm_pipeline_count;
 static uint64_t g_warm_rps, g_warm_cps, g_warm_skip_fz;
-static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps;
+static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps, g_warm_claim_mesh;
+static _Atomic uint64_t g_warm_mesh, g_warm_mesh_failed;   // mesh pipelines (M rows) built on the warm-up threads / not built
+static void mtk_warm_row(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict);   // nvn_mesh_tasks.inc
 static id<MTLFunction> bf_fn(NvShader *fs, const int *fx, uint8_t fbmask, const uint8_t *lmap);
 static int rt_range_bindings_ro(NSDictionary *j);
 static FILE *g_pso_record; static int g_pso_record_checked;
@@ -9920,6 +9922,13 @@ static void warm_load_rows(NSArray<NSString *> *rows, NSMutableDictionary<NSStri
             if (vkey.length) { [keys addObject:vkey]; [stages addObject:@(sk.vs_stage)]; }
             if (fkey.length) { [keys addObject:fkey]; [stages addObject:@(sk.fs_stage)]; }
         } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && c[1].length) { [keys addObject:c[1]]; [stages addObject:@5]; }
+        else if ([c[0] isEqualToString:@"M"] && c.count >= 3) {   // the mesh shader sits in the key's vertex place; the task shader beside it
+            pso_skey sk; if (pso_skey_parse(c[2].UTF8String, &sk)) continue;
+            NSString *mkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
+            if (mkey.length) { [keys addObject:mkey]; [stages addObject:@(sk.vs_stage)]; }
+            if (fkey.length) { [keys addObject:fkey]; [stages addObject:@(sk.fs_stage)]; }
+            if (![c[1] isEqualToString:@"-"]) { [keys addObject:c[1]]; [stages addObject:@3]; }
+        }
     }
     warm_load_keys(keys, stages, dict);
 }
@@ -10042,6 +10051,12 @@ static void warm_plan(NSArray<NSString *> *paths, NSArray<NSString *> *files, NS
                 int av = warm_available(vs), af = warm_available(fs);
                 if (!av || !af) continue;
                 if (vs.length) [keys addObject:vs]; if (fs.length) [keys addObject:fs]; ++*pipelines;
+            } else if ([c[0] isEqualToString:@"M"] && c.count >= 3) {
+                pso_skey sk; if (pso_skey_parse(c[2].UTF8String, &sk)) continue;
+                NSString *ms = warm_key(sk.vs, sizeof sk.vs), *fs = warm_key(sk.fs, sizeof sk.fs), *ts = [c[1] isEqualToString:@"-"] ? @"" : c[1];
+                int am = warm_available(ms), af = warm_available(fs), at = warm_available(ts);   // all three, so the missing-shader count stays right
+                if (!am || !af || !at) continue;
+                if (ms.length) [keys addObject:ms]; if (fs.length) [keys addObject:fs]; if (ts.length) [keys addObject:ts]; ++*pipelines;
             } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
                 if (!warm_available(c[1])) continue;
                 [keys addObject:c[1]]; ++*pipelines;
@@ -10154,6 +10169,8 @@ static void warm_build_row(NSString *line, NSMutableDictionary<NSString *, NvSha
         if (!warm_border(c, dict, 1)) MLOG("【红】预热：边框色管线没建成（%s / %s）", c[2].UTF8String, c[3].UTF8String);
     } else if ([c[0] isEqualToString:@"T"] && c.count >= 3) {
         if (!warm_tileread(c, dict, 1)) { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 8) MLOG("【红】预热：读 tile 的管线没建成（%s）", c[2].UTF8String); }
+    } else if ([c[0] isEqualToString:@"M"] && c.count >= 3) {
+        mtk_warm_row(c, dict);
     } else if ([c[0] isEqualToString:@"C"] && c.count >= 2) {
         NSString *key = c[1]; if (!key.length) return;
         NvShader *cs = warm_shader(dict, key, 5);
@@ -10170,7 +10187,7 @@ static void warm_build_row(NSString *line, NSMutableDictionary<NSString *, NvSha
 static void warm_build_rows(NSArray<NSString *> *rows, NSMutableDictionary<NSString *, NvShader *> *dict) {
     NSMutableArray<NSString *> *todo = [NSMutableArray array];
     for (NSString *line in rows) { unichar t = line.length > 1 && [line characterAtIndex:1] == '\t' ? [line characterAtIndex:0] : 0;
-        if (t == 'R' || t == 'B' || t == 'T' || t == 'C') [todo addObject:line]; }
+        if (t == 'R' || t == 'B' || t == 'T' || t == 'C' || t == 'M') [todo addObject:line]; }
     size_t n = todo.count, workers = (size_t)warm_threads_now();
     if (!n) return;
     if (workers > n) workers = n;
@@ -10279,6 +10296,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         MLOG("管线预热完成：着色器 %llu 个 / 渲染管线 %llu 个（跳过特化片元 %llu）/ 计算管线 %llu 个，后台用时 %.1f ms（着色器库 %d 个线程%s）",
              (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, warm_threads(),
              atomic_load(&g_warm_in_play) && warm_threads() > 2 ? "，进世界后 2 个" : "");
+        if (atomic_load(&g_warm_mesh) || atomic_load(&g_warm_mesh_failed)) MLOG("[mesh] warm-up: %llu mesh pipelines built, %llu not built", (unsigned long long)atomic_load(&g_warm_mesh), (unsigned long long)atomic_load(&g_warm_mesh_failed));
         MLOG("预热分段：着色器库 %llu 次 / %.1f ms（各线程用时相加），Metal 管线 %llu 次 / %.1f ms（%d 个线程；其中写进管线存档：加入 %.1f ms，写文件 %llu 个 %.1f ms）",
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6, warm_threads(),
@@ -16924,6 +16942,15 @@ static void warm_claim(void) {
                 item->pso.fsfn = (__bridge void *)bf;
             }
             if (!hm_get_id(&g_pso, &item->pso)) { hm_put_id(&g_pso, &item->pso, item->object); g_pso_gen++; g_warm_claim_rps++; }
+        } else if (item->kind == 3) {   // a mesh pipeline (mtk_warm_row), filed as mtk_pso looks it up: under the live shader objects
+            if (!g_shcache) g_shcache = [NSMutableDictionary dictionary];
+            NvShader *ms = g_shcache[item->vs_key], *fs = item->fs_key.length ? g_shcache[item->fs_key] : nil, *ts = item->key ? g_shcache[item->key] : nil;
+            if (!ms) { ms = item->vs; g_shcache[item->vs_key] = ms; }
+            if (item->fs_key.length && !fs) { fs = item->fs; g_shcache[item->fs_key] = fs; }
+            if (item->key && !ts) { ts = item->shader; g_shcache[item->key] = ts; }
+            mtk_pso_key key; memset(&key, 0, sizeof key); key.p = item->pso; key.p.vs = (__bridge void *)ms; key.p.fs = (__bridge void *)fs;
+            key.task = (__bridge void *)(ts ? ts->fn : nil); key.variant = item->mesh_variant;
+            if (!hm_get_id(&g_mtk_cache, &key)) { hm_put_id(&g_mtk_cache, &key, item->object); g_warm_claim_mesh++; }
         } else {
             NvShader *cs = g_shcache[item->key];
             if (!cs) { cs = item->shader; if (!g_shcache) g_shcache = [NSMutableDictionary dictionary]; g_shcache[item->key] = cs; }

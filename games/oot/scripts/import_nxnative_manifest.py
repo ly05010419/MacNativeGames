@@ -8,9 +8,10 @@ end of its pso_key: atest, logic and attr_hi. Verified on the 2026-11-09 manifes
 converted rows are byte for byte rows of our own pso_user.tsv.
 
 A row is left out, with a reason, when it needs state this runtime's key cannot hold, or when the seed has no default
-variant of its shaders. Its names become the default variant, the only one nxnative's names can stand for. Only R rows
-are converted: every compute variant is already planned from the seed (prepare_compute_pipelines.py), and the libraries
-of a warm pipeline load with it. M rows (mesh pipelines) have no warm path in this runtime.
+variant of its shaders. Its names become the default variant, the only one nxnative's names can stand for; on a first
+start the game asks for those (fs1, 2026-11-09: 64 of 66 mesh shaders of the mesh pipelines). R and M rows are converted:
+every compute variant is already planned from the seed (prepare_compute_pipelines.py), and warming a pipeline loads its
+shaders (fill_row, warm_build_row), so C and S rows add nothing.
 
     gh api repos/seedds/nxnative/contents/dm/games/0400486024DEC000/pso_manifest.tsv -H 'Accept: application/vnd.github.raw' > pso_manifest.tsv
     import_nxnative_manifest.py pso_manifest.tsv <shader-seed dir> rows.tsv
@@ -82,14 +83,25 @@ def convert_key(hexkey, names):
     return key.hex()
 
 
+def task_name(field, names):
+    """An M row's task shader as our default-variant name; '-' stays."""
+    if field == '-':
+        return field
+    if not NAME.match(field) or field[:16] not in names:
+        raise Skip('shader not in the seed')
+    return f'{names[field[:16]]}-{DEFAULT_SUFFIX}_b'
+
+
 def convert(manifest, names):
-    """(rows, reasons left out) for every R row of a manifest."""
+    """(rows, reasons left out) for every R and M row of a manifest, as rows of the shared list."""
     rows, skipped = [], collections.Counter()
     for line in Path(manifest).read_text().splitlines():
-        if not line.startswith('R\t'):
-            continue
+        fields = line.split('\t')
         try:
-            rows.append(convert_key(line.split('\t')[1], names))
+            if fields[0] == 'R':
+                rows.append(f'R\t{convert_key(fields[1], names)}')
+            elif fields[0] == 'M':
+                rows.append(f'M\t{task_name(fields[1], names)}\t{convert_key(fields[2], names)}')
         except Skip as why:
             skipped[str(why)] += 1
     return rows, skipped
@@ -101,9 +113,10 @@ def main(argv):
         return 2
     names = seed_names(argv[1])
     rows, skipped = convert(argv[0], names)
-    Path(argv[2]).write_text('# render pipelines from seedds/nxnative pso_manifest.tsv (MIT), converted by import_nxnative_manifest.py\n'
-                             + ''.join(f'R\t{row}\n' for row in rows))
-    print(f'{len(rows)} R rows from {len(names)} seed shaders; left out: {dict(skipped)}')
+    Path(argv[2]).write_text('# pipelines from seedds/nxnative pso_manifest.tsv (MIT), converted by import_nxnative_manifest.py\n'
+                             + ''.join(row + '\n' for row in rows))
+    counts = collections.Counter(row[0] for row in rows)
+    print(f'{counts["R"]} R and {counts["M"]} M rows from {len(names)} seed shaders; left out: {dict(skipped)}')
     return 0
 
 

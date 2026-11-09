@@ -60,6 +60,28 @@ class ConvertTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), 'key length')
 
 
+class MeshRowTests(unittest.TestCase):
+    names = {VS: VS_FULL, FS: FS_FULL}
+
+    def test_task_shader_and_no_task_shader(self):
+        self.assertEqual(imp.task_name('-', self.names), '-')
+        self.assertEqual(imp.task_name(FS + '_b', self.names), f'{FS_FULL}-{DEFAULT_SUFFIX}_b')
+
+    def test_unknown_or_malformed_task_shader(self):
+        for bad in ('ffffffffffffffff_b', 'nonsense'):
+            with self.assertRaises(imp.Skip):
+                imp.task_name(bad, self.names)
+
+    def test_a_manifest_gives_render_and_mesh_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = Path(d) / 'pso_manifest.tsv'
+            manifest.write_text(f'# comment\nS\tx_b\t1\nR\t{nx_key()}\nM\t-\t{nx_key()}\nM\t{FS}_b\t{nx_key()}\nM\t{"f" * 16}_b\t{nx_key()}\n')
+            rows, skipped = imp.convert(manifest, self.names)
+        key = imp.convert_key(nx_key(), self.names)
+        self.assertEqual(rows, [f'R\t{key}', f'M\t-\t{key}', f'M\t{FS_FULL}-{DEFAULT_SUFFIX}_b\t{key}'])
+        self.assertEqual(skipped, {'shader not in the seed': 1})
+
+
 class SeedTests(unittest.TestCase):
     def test_seed_names_need_a_default_variant(self):
         with tempfile.TemporaryDirectory() as d:

@@ -27,6 +27,10 @@ It holds no game data, only identifiers; the build turns them into shaders from 
                                 the same pipeline with the border colours its samplers had (nvn_mtl.m border_parse): per
                                 stage "<argument id>:<axes>:<r>,<g>,<b>,<a>;" for each sampler, colours as C %a floats,
                                 or - for none; the warm-up builds the shader variants that emulate them and that pipeline.
+  M <task variant or -> <pipeline key> <flags>
+                                a mesh pipeline the warm-up builds (nvn_mesh_tasks.inc mtk_warm_row): the mesh shader sits in the
+                                key's vertex place, the task shader, if any, beside it. Built at their first draw before
+                                (OOT 2026-11-09: 49-50 a run on the submit thread, seconds each on a cold Metal cache).
   T <pipeline key> <tile> <flags>
                                 the same pipeline with the fragment variant that reads the draw's own colour attachments
                                 from the tile (nvn_mtl.m att_fb_take / warm_tileread): "<argument id>:<attachment>;" per
@@ -180,16 +184,20 @@ def pack_key(key):
 
 def warm_row(fields):
     """A warm row without flags ('S', variant, stage) / ('C', variant) / ('R', key) / ('B', key, vertex, fragment) /
-    ('T', key, tile), or None when it is not one. Pipeline keys come back as hex, packed ones unpacked."""
+    ('T', key, tile) / ('M', task variant or '-', key), or None when it is not one. Pipeline keys come back as hex, packed ones unpacked."""
     kind = fields[0] if fields else ''
     if kind in ('R', 'B', 'T') and len(fields) >= 2:
         fields = [kind, unpack_key(fields[1]), *fields[2:]]
+    if kind == 'M' and len(fields) >= 3:
+        fields = ['M', fields[1], unpack_key(fields[2]), *fields[3:]]
     if kind == 'S' and len(fields) >= 3 and VARIANT.match(fields[1]) and fields[2] in ('0', '1', '5'):
         return tuple(fields[:3])
     if kind == 'C' and len(fields) >= 2 and VARIANT.match(fields[1]):
         return tuple(fields[:2])
     if kind == 'R' and len(fields) >= 2 and PIPELINE.match(fields[1]):
         return ('R', pipeline_key(fields[1]))
+    if kind == 'M' and len(fields) >= 3 and (fields[1] == '-' or VARIANT.match(fields[1])) and PIPELINE.match(fields[2]):
+        return ('M', fields[1], pipeline_key(fields[2]))
     if (kind == 'B' and len(fields) >= 4 and PIPELINE.match(fields[1]) and BORDER.match(fields[2]) and BORDER.match(fields[3])
             and fields[2:4] != ['-', '-']):
         return ('B', pipeline_key(fields[1]), fields[2], fields[3])
@@ -272,8 +280,11 @@ class ShaderList:
             lines += [f'A\t{suffix}\t{answers}' for suffix, answers in sorted(self.answers.items()) if suffix in named]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
         packed = list_game(path) in OUR_RUNTIME   # other games' own tools read their lists as hex
-        lines += ['\t'.join((row[0], pack_key(row[1]), *row[2:]) if packed and row[0] in ('R', 'B', 'T') else row) + '\t' + flags
-                  for row, flags in self.warm.items()]
+        def kept(row):
+            if packed and row[0] in ('R', 'B', 'T'):
+                return (row[0], pack_key(row[1]), *row[2:])
+            return ('M', row[1], pack_key(row[2])) if packed and row[0] == 'M' else row
+        lines += ['\t'.join(kept(row)) + '\t' + flags for row, flags in self.warm.items()]
         Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
 
     def add_variant(self, key, deps):
@@ -337,7 +348,7 @@ class ShaderList:
                 if where:
                     self.locators.add(where)
         for fields in lines:
-            row = warm_row(fields) if fields[0] in 'SCRBT' else None
+            row = warm_row(fields) if fields[0] in 'SCRBTM' else None
             if not row:
                 continue
             if not self.knows(row):
@@ -412,11 +423,11 @@ class ShaderList:
         return out, counts
 
     def counts(self):
-        kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRBT'}
+        kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRBTM'}
         title = sum(1 for flags in self.warm.values() if 't' in flags)
         return (f'{len(self.variants)} variants over {len({k for k, _ in self.variants})} shaders, '
                 f'{len(self.answers)} bind states, {len(self.locators)} located; warm rows: '
-                f'{kinds["S"]} S, {kinds["C"]} C, {kinds["R"]} R, {kinds["B"]} B, {kinds["T"]} T ({title} for the title screen)')
+                f'{kinds["S"]} S, {kinds["C"]} C, {kinds["R"]} R, {kinds["B"]} B, {kinds["T"]} T, {kinds["M"]} M ({title} for the title screen)')
 
 
 NAME = 80   # nvn_pso_skey.h pso_skey: char vs[80], fs[80] lead the pipeline key, each a NUL-padded "<variant>_b"
@@ -426,14 +437,17 @@ def row_variants(row):
     """The variant names ("<key>-<suffix>_b") a warm row names: S / C its variant, R / B / T the two in the key."""
     if row[0] in ('S', 'C'):
         return [row[1]]
-    key = bytes.fromhex(row[1])
-    return [n for n in (key[at:at+NAME].split(b'\0')[0].decode('ascii', 'replace') for at in (0, NAME)) if n]
+    key = bytes.fromhex(row[2] if row[0] == 'M' else row[1])
+    names = [n for n in (key[at:at+NAME].split(b'\0')[0].decode('ascii', 'replace') for at in (0, NAME)) if n]
+    return names + [row[1]] if row[0] == 'M' and row[1] != '-' else names
 
 
 def rename_warm(row, names):
     """A warm row with the variants it names replaced (names: "<variant>_b" -> "<variant>_b")."""
     if row[0] in ('S', 'C'):
         return (row[0], names.get(row[1], row[1]), *row[2:])
+    if row[0] == 'M':
+        return ('M', names.get(row[1], row[1]), rename_warm(('R', row[2]), names)[1])
     key = bytearray.fromhex(row[1])
     for at in (0, NAME):
         old = bytes(key[at:at+NAME]).split(b'\0')[0].decode('ascii', 'replace')
