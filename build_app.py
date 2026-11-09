@@ -47,7 +47,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, glob, hashlib, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, glob, hashlib, itertools, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -1207,6 +1207,25 @@ def metal_compiler():
 
 # The options of totk_precise_opts() in nvn_mtl.m: the translated shaders need exactly rounded float arithmetic.
 METAL_FLAGS = ['-fmetal-math-mode=safe']
+# Adapted from stan69b/nxnative oot-clean 56b73f21 (seedds, MIT); see THIRD_PARTY_NOTICES.md.
+METAL_BRACKET_LIMIT = 256
+_BRACKETS = bytes.maketrans(b'([{)]}', b'((()))')
+_NOT_BRACKETS = bytes(c for c in range(256) if c not in b'([{)]}')
+
+
+def bracket_depth(msl):
+    """Count the combined nesting of all three bracket kinds in generated MSL."""
+    # shortcut: comments/literals count too; use a lexer if this accepts arbitrary handwritten MSL.
+    marks = Path(msl).read_bytes().translate(_BRACKETS, _NOT_BRACKETS)
+    return max(itertools.accumulate(1 if c == 0x28 else -1 for c in marks), default=0)
+
+
+def metal_flags(msl):
+    """Raise the parser limit only for deeply nested generated sources (unrolled early-exit loops)."""
+    # A higher parser limit changes no code generation: keep it out of METAL_FLAGS and the shared cache stamp.
+    if bracket_depth(msl) > METAL_BRACKET_LIMIT:
+        return [*METAL_FLAGS, '-fbracket-depth=1024']
+    return METAL_FLAGS
 
 
 def variant_folder(game):
@@ -1258,7 +1277,8 @@ def step_shader_libs(tree, logs, *, version='v0'):
     def compile_one(item):
         digest, src = item
         partial = libs/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=metal_env)
+        flags = metal_flags(src) if ns2_game(version) else METAL_FLAGS
+        r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=metal_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
             return f'{src.name}\n{r.stdout}{r.stderr}'
