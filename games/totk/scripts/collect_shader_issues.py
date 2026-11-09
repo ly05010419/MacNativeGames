@@ -54,7 +54,8 @@ SEEDED = tuple(GAMES)   # the games whose prepared seeds name every shader key (
 OTHER = {'odyssey': ('Super Mario Odyssey', '超级马力欧 奥德赛', ('SMO', 'Odyssey')),
          'ssbu': ('Super Smash Bros. Ultimate', '任天堂明星大乱斗 特别版', ('SSBU',)),
          'wonder': ('Super Mario Bros. Wonder', '超级马力欧兄弟 惊奇', ('Wonder',)),
-         'mvdk': ('Mario vs. Donkey Kong', '马力欧 vs. 大金刚', ('MvDK',))}
+         'mvdk': ('Mario vs. Donkey Kong', '马力欧 vs. 大金刚', ('MvDK',)),
+         'dkb': ('Donkey Kong Bananza', '大金刚 Bananza', ('Bananza', 'DKB'))}
 OTHER_LABEL = 'shader-list-other'   # .github/ISSUE_TEMPLATE/shader-list-other.yml
 for _game, (_name, _zh, _) in OTHER.items():
     GAMES[_game] = (TOTK.parent / _game / 'assets/shader_list.tsv', OTHER_LABEL, f'Shader list ({_name}')
@@ -252,6 +253,15 @@ def titled_game(issue):
     return 'totk'
 
 
+def named_game(issue):
+    """The seeded game an issue's title names (its label or prefix, or the game in the title), or None for a title that
+    names none. A row not in that game's list is new to it, whether or not a seed still at hand knows its shader."""
+    title = issue['title']
+    if titled_game(issue) == 'botw' or re.search(r'\b(?:BotW|Breath of the Wild)\b', title, re.I):
+        return 'botw'
+    return 'totk' if re.search(r'\b(?:TOTK|Tears of the Kingdom)\b', title, re.I) else None
+
+
 def merge_issue(issue, lists, keys, seeds, token, drop_unknown):
     """Merge one issue's files into lists: (report line, {game: (rows, new rows)} or None when it stays open)."""
     urls = issue_urls(issue)
@@ -272,9 +282,11 @@ def merge_issue(issue, lists, keys, seeds, token, drop_unknown):
     titled = titled_game(issue)
     # No seed of the other games: in an issue titled for one, what is no seeded game's is its own; in one titled plainly
     # "Shader list:" whose known rows name exactly one other game (a file comes from one game's install, and the
-    # seeds name every Tears of the Kingdom and Breath of the Wild shader), the rest is that game's too.
+    # seeds name every Tears of the Kingdom and Breath of the Wild shader), the rest is that game's too. An issue whose
+    # title names Tears of the Kingdom or Breath of the Wild owns its unrouted rows in the same way (the seeds at hand do
+    # not cover every version); only a title naming no game leaves them unknown.
     others = [g for g in games if g in OTHER]
-    owner = titled if titled in OTHER else others[0] if len(others) == 1 else None
+    owner = titled if titled in OTHER else named_game(issue) or (others[0] if len(others) == 1 else None)
     if owner and (unknown_rows or unknown_pipes):
         own = games.setdefault(owner, (set(), []))
         own[0].update(unknown_rows); own[1].extend(unknown_pipes)
