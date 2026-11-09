@@ -32,5 +32,6 @@ void movie_host_set_guest(const MovieGuest *api);    /* probe only: use these st
 void *movie_host_entry(int which);                   /* the host implementation of entry `which` (MOVIE_*) */
 void *runtime_movie_override(const char *name);
 void movie_host_tick(void);                          /* every present: hand over decoded frames that are due */
+int movie_host_playing(void);                        /* active VP9 movie: timing experiments retain 30 FPS */
 void movie_host_set_clock(uint64_t (*clock)(void));  /* probe only: a fake clock (ns) for the pacing */
 #endif

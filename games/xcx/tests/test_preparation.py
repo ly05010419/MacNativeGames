@@ -3,8 +3,8 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import tempfile
-import unittest
 from unittest.mock import patch
+import unittest
 
 HERE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("xcx_prepare", HERE / "scripts/prepare_runtime.py")
@@ -22,11 +22,23 @@ class RewriteMetadataTest(unittest.TestCase):
             table = folder / "sdk.gates.tsv"
             table.write_bytes(original)
             expected = {"rewrite_metadata_sha256": {table.name: hashlib.sha256(original).hexdigest()}}
-            with patch.object(prepare, "EXPECTED", expected):
-                prepare.verify_rewrite_metadata(work)
-                table.write_bytes(original.replace(b"svc 1", b"svc 2"))
-                with self.assertRaisesRegex(ValueError, "SHA256 differs"):
-                    prepare.verify_rewrite_metadata(work)
+            prepare.verify_rewrite_metadata(work, "v100", expected)
+            table.write_bytes(original.replace(b"svc 1", b"svc 2"))
+            with self.assertRaisesRegex(ValueError, "SHA256 differs"):
+                prepare.verify_rewrite_metadata(work, "v100", expected)
+
+    def test_versions_keep_independent_input_pins(self):
+        old_dir, old = prepare.version_inputs("1.0.0")
+        new_dir, new = prepare.version_inputs("2.0.0")
+        self.assertEqual((old_dir, new_dir), ("v100", "v200"))
+        self.assertNotEqual(old["exefs_sha256"]["main"], new["exefs_sha256"]["main"])
+        with self.assertRaisesRegex(ValueError, "Unsupported XCX version"):
+            prepare.version_inputs("1.0.2")
+
+    def test_mislabeled_version_manifest_stops(self):
+        with patch.object(prepare.json, "loads", return_value={"display_version": "1.0.0", "title_id": "0100453019AA8000"}):
+            with self.assertRaisesRegex(ValueError, "manifest identity differs"):
+                prepare.version_inputs("2.0.0")
 
 
 if __name__ == "__main__":

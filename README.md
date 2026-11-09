@@ -117,6 +117,8 @@ The [shared shader list](docs/shader-list.md) now holds **15,070 shader variants
 
 ## What's new
 
+- **2026-11-09: experimental Xenoblade Chronicles X 2.0.0 Mac diagnostic.** Separate integrity pins, cumulative update merge and version-aware packaging; original 30 FPS by default, opt-in checked 60/120 timing experiment awaiting broader acceptance ([details](games/xcx/README.md#update-200-mac-diagnostic)).
+
 - **2026-11-03: optional SMAA and FXAA Quality for Tears of the Kingdom 1.4.3 on Mac.** Choose the method and its quality separately on the Effects page; the game's original FXAA remains the default ([controls](docs/controls.md)).
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
   Pokémon Pokopia plays its opening into the first area (scripted test). Pokopia 2.0.1 packages as a Mac app from your

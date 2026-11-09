@@ -39,6 +39,7 @@ void *runtime_movie_override(const char *name) {
     return NULL;
 }
 void movie_host_tick(void) {}
+int movie_host_playing(void) { return 0; }
 #else
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
@@ -75,6 +76,17 @@ void movie_host_set_clock(uint64_t (*clock)(void)) { g_clock = clock ? clock : n
 static int pace_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_MOVIE_PACE"); v = !(e && !strcmp(e, "0")); } return v; }
 static Movie *g_movies[MAX_MOVIES];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int movie_host_playing(void) {
+    int active = 0;
+    pthread_mutex_lock(&g_lock);
+    for (int i = 0; i < MAX_MOVIES; i++) {
+        Movie *m = g_movies[i]; if (!m) continue;
+        pthread_mutex_lock(&m->mu); active |= m->started; pthread_mutex_unlock(&m->mu);
+    }
+    pthread_mutex_unlock(&g_lock);
+    return active;
+}
 
 static const char *const NAMES[MOVIE_ENTRIES] = {
     "_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", "_ZN5movie7DecoderD2Ev",

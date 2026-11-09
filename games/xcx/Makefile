@@ -10,6 +10,8 @@ WORK ?= $(error Set WORK to an absolute directory outside the source checkout)
 OUT := $(WORK)/build
 PY ?= python3
 NATIVE_OPT ?= -O2
+VERSION ?= 1.0.0
+GAME_DIR := v$(subst .,,$(VERSION))
 MACOS_MIN := -mmacosx-version-min=26.0
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
@@ -19,11 +21,11 @@ GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -f
 
 RUNTIME_SRC := $(filter-out runtime/frontend_ios.m,$(wildcard runtime/*.c runtime/*.m runtime/*.S))
 RUNTIME_HEADERS := $(wildcard runtime/*.h)
-GENERATED := $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_config.h
+GENERATED := $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_config.h $(OUT)/xcx_version_config.h
 
 .PHONY: prepare runtime boot clean
 prepare: check-paths
-	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)"
+	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)" --version "$(VERSION)"
 
 $(GENERATED):
 	@echo "missing $@: run make prepare" && false
@@ -66,7 +68,7 @@ $(OUT)/spirv-cross/spirv-cross: | check-paths
 XCX_LOG ?= $(WORK)/logs/boot.log
 boot: runtime
 	@mkdir -p "$(dir $(XCX_LOG))"
-	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/xcx-native rewritten/v100 boot 2> "$(abspath $(XCX_LOG))"; status=$$?; echo "exit $$status; log: $(XCX_LOG)"; exit $$status
+	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/xcx-native rewritten/$(GAME_DIR) boot 2> "$(abspath $(XCX_LOG))"; status=$$?; echo "exit $$status; log: $(XCX_LOG)"; exit $$status
 
 
 # Diagnostic bundle; game data stays at WORK, and this is not a redistributable game package.
