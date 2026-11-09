@@ -831,7 +831,9 @@ static void refresh_gamepads(void) {
         previous->buttons = promptPhysical;
         memcpy(previous->axes, axes, sizeof axes);
         if (meaningful) {
-            int type = gamepad_type_detect(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+            /* The player's pick (key 6) decides how the face buttons map, so it decides the labels too. */
+            int type = atomic_load(&controllerType);
+            if (type == GAMEPAD_TYPE_AUTO) type = gamepad_type_detect(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
             runtime_prompt_note_input(type == GAMEPAD_TYPE_PLAYSTATION ? PROMPT_PLAYSTATION :
                                       type == GAMEPAD_TYPE_XBOX ? PROMPT_XBOX : PROMPT_SWITCH);
         }

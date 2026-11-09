@@ -7,7 +7,8 @@
 
 typedef enum {
     PROMPT_AUTO, PROMPT_KEYBOARD, PROMPT_XBOX, PROMPT_PLAYSTATION, PROMPT_SWITCH,
-    PROMPT_DEVICE_COUNT
+    PROMPT_DEVICE_COUNT,
+    PROMPT_STYLE_OFF = PROMPT_DEVICE_COUNT   /* a panel choice, not a device: the game's own icons stay */
 } PromptDevice;
 typedef struct {
     PromptDevice device;

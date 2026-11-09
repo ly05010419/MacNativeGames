@@ -1,7 +1,8 @@
 # Live button prompts (Tears of the Kingdom 1.4.3, macOS)
 
 Settings (key **1**) → **Input** → **Button prompts** chooses Auto,
-Keyboard / mouse, Xbox, PlayStation, or Switch. Auto follows fresh keyboard,
+Keyboard / mouse, Xbox, PlayStation, Switch, or Off (the game's own icons, no redrawing). With a controller type picked
+on key **6**, Auto labels that controller by the type picked. Auto follows fresh keyboard,
 mouse, or controller input. A held controller button and small stick drift do
 not continually switch it back. The choice is saved in `prompt-icons.txt`
 beside `controls.txt`.

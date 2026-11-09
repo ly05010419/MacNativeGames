@@ -11,6 +11,7 @@
 
 extern uint64_t runtime_prompt_generation(void) __attribute__((weak_import));
 extern uint64_t runtime_prompt_snapshot(PromptBindings *) __attribute__((weak_import));
+extern int runtime_prompt_off(void) __attribute__((weak_import));
 extern int runtime_prompt_draw(const PromptBindings *, unsigned, uint8_t *, unsigned, unsigned, size_t) __attribute__((weak_import));
 
 enum { MAX_ATLASES = 8, MAX_REGIONS = 512, MAX_TEXTURES = 64 };
@@ -21,6 +22,7 @@ typedef struct {
     TotkPromptRegion regions[MAX_REGIONS];
 } PromptAtlas;
 static PromptAtlas atlases[MAX_ATLASES];
+static _Atomic uintptr_t atlas_memory[MAX_ATLASES];   /* read without the lock: most R8 textures are not an atlas */
 static pthread_mutex_t atlas_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t atlas_revision;
 static _Atomic int enabled;
@@ -36,6 +38,7 @@ void totk_prompt_set_atlas(const uint8_t *memory, unsigned width, unsigned heigh
             a->count != count || memcmp(a->regions, regions, count * sizeof *regions)) {
             a->memory = memory; a->width = width; a->height = height; a->stride = stride; a->count = count;
             memcpy(a->regions, regions, count * sizeof *regions);
+            atomic_store(&atlas_memory[i], (uintptr_t)memory);
             atomic_fetch_add(&atlas_revision, 1);
         }
         atomic_store(&enabled, 1);
@@ -49,7 +52,7 @@ void totk_prompt_remove_pool(const void *memory, size_t size) {
     for (unsigned i = 0; i < MAX_ATLASES; i++) {
         uintptr_t address = (uintptr_t)atlases[i].memory;
         if (address >= begin && address - begin < size) {
-            memset(&atlases[i], 0, sizeof atlases[i]); atomic_fetch_add(&atlas_revision, 1);
+            memset(&atlases[i], 0, sizeof atlases[i]); atomic_store(&atlas_memory[i], 0); atomic_fetch_add(&atlas_revision, 1);
         }
     }
     pthread_mutex_unlock(&atlas_lock);
@@ -102,7 +105,10 @@ static unsigned identify_hud(const tex_t *t, const uint8_t *pixels) {
 id<MTLTexture> totk_prompt_texture(const tex_t *t, id<MTLTexture> original,
                                   void (*resident)(id<MTLResource>), void (*retire)(id)) {
     if (!atomic_load(&enabled) || !original || !t->mem || t->d.format != NVN_FORMAT_R8 || t->d.levels != 1 ||
-        !runtime_prompt_snapshot || !runtime_prompt_draw) return original;
+        !runtime_prompt_snapshot || !runtime_prompt_draw || !runtime_prompt_off || runtime_prompt_off()) return original;
+    int known = t->d.width == t->d.height && (t->d.width == 72 || t->d.width == 108);   /* a HUD mask's sizes */
+    for (unsigned i = 0; i < MAX_ATLASES && !known; i++) known = atomic_load_explicit(&atlas_memory[i], memory_order_relaxed) == (uintptr_t)t->mem;
+    if (!known) return original;
     static dispatch_once_t once; dispatch_once(&once, ^{ load_hud_masks(); });
     PromptAtlas atlas = {0};
     pthread_mutex_lock(&atlas_lock);

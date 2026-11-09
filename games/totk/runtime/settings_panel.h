@@ -906,8 +906,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
 #if defined(TOTK_GAME_V143)
  [rows addObject:settings_row(settings_text("按键提示图标","Button prompts"),
-  @[settings_text("自动","Auto"),settings_text("键盘和鼠标","Keyboard / mouse"),@"Xbox",@"PlayStation",@"Switch"],
-  @[@(PROMPT_AUTO),@(PROMPT_KEYBOARD),@(PROMPT_XBOX),@(PROMPT_PLAYSTATION),@(PROMPT_SWITCH)],
+  @[settings_text("自动","Auto"),settings_text("键盘和鼠标","Keyboard / mouse"),@"Xbox",@"PlayStation",@"Switch",settings_text("关闭（游戏原图标）","Off (the game's icons)")],
+  @[@(PROMPT_AUTO),@(PROMPT_KEYBOARD),@(PROMPT_XBOX),@(PROMPT_PLAYSTATION),@(PROMPT_SWITCH),@(PROMPT_STYLE_OFF)],
   ^int{return runtime_prompt_style();},^(int v){runtime_prompt_style_set(v);})];
 #endif
  [rows addObject:settings_row(settings_text("后台手柄输入","Controller input in background"),nil,nil,

@@ -43,5 +43,7 @@ int main(void) {
                 assert(icon.input[i] >= -1 && icon.input[i] < KEYMAP_INPUTS);
         }
     }
+    b.device = PROMPT_STYLE_OFF;   /* the panel's Off: every glyph stays the game's */
+    for (unsigned cp = 0xe040; cp <= 0xe068; cp++) assert(!prompt_resolve(&b, cp, &icon));
     puts("prompt binding cases passed");
 }

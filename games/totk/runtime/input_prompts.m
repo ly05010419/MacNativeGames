@@ -14,8 +14,9 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static PromptBindings bindings;
 static PromptDevice active = PROMPT_KEYBOARD;
 static int style;
+static _Atomic int off;
 static _Atomic uint64_t generation = 1;
-static const char *const style_names[] = {"auto", "keyboard", "xbox", "playstation", "switch"};
+static const char *const style_names[PROMPT_STYLE_OFF + 1] = {"auto", "keyboard", "xbox", "playstation", "switch", "off"};
 
 static void initialize(void) {
     keymap_default(&bindings.keyboard);
@@ -24,8 +25,8 @@ static void initialize(void) {
     char word[32];
     if (runtime_setting_word("prompt-icons.txt", word, sizeof word)) {
         word[strcspn(word, "\r\n")] = 0;
-        for (int i = 0; i < PROMPT_DEVICE_COUNT; i++)
-            if (!strcmp(word, style_names[i])) { style = i; break; }
+        for (int i = 0; i <= PROMPT_STYLE_OFF; i++)
+            if (!strcmp(word, style_names[i])) { style = i; atomic_store(&off, i == PROMPT_STYLE_OFF); break; }
     }
 }
 
@@ -62,14 +63,15 @@ int runtime_prompt_style(void) {
     return value;
 }
 int runtime_prompt_style_set(int value) {
-    if (value < 0 || value >= PROMPT_DEVICE_COUNT) return runtime_prompt_style();
+    if (value < 0 || value > PROMPT_STYLE_OFF) return runtime_prompt_style();
     pthread_once(&once, initialize);
     pthread_mutex_lock(&lock);
-    if (style != value) { style = value; generation++; }
+    if (style != value) { style = value; atomic_store(&off, value == PROMPT_STYLE_OFF); generation++; }
     pthread_mutex_unlock(&lock);
     runtime_setting_save("prompt-icons.txt", style_names[value], "prompt icons");
     return value;
 }
+int runtime_prompt_off(void) { pthread_once(&once, initialize); return atomic_load_explicit(&off, memory_order_relaxed); }
 uint64_t runtime_prompt_snapshot(PromptBindings *out) {
     pthread_once(&once, initialize);
     pthread_mutex_lock(&lock);
