@@ -373,11 +373,10 @@ static void patch_pokopia_display(Module *m) {
    main+0x805bd0 tbz w8, #0, 0x80640c becomes a branch to that path, which returns scale 1.0 (main+0x806420 mov w9, #1.0, then
    a branch back). 2/3 needs two instructions, so main+0x806420 branches to a veneer after the time-step veneers.
    OOT_FIXED_RES=0: the game's dynamic resolution. OOT_FIXED_RES=<scale>, 0 < scale <= 1, overrides the scale. */
-/* Settings panel "Internal resolution" (height; 0 = the default fixed size), applied when the game next reads the scale:
-   at start, not during play (the game does not re-read it, claude/oot-gpu-ts sd1 / sd2). Scales measured: handheld is
-   linear; docked moves in steps, so 720/900/1080 are the nearest sizes reached (1275x717, 1586x892, 1906x1072). */
-enum { OOT_SCALE_CELL = 48 };
-static _Atomic uint32_t *oot_scale_cell; static float oot_scale_base; static int oot_internal_h;
+/* Settings panel "Resolution" (height; 0 = the default fixed size), in force at once: patch_oot_scale_live. Scales measured:
+   handheld is linear; docked moves in steps, so 720/900/1080 are the nearest sizes reached (1275x717, 1586x892, 1906x1072). */
+enum { OOT_SCALE_CELL = 48, OOT_SCALE_APPLY_CELL = 52 };
+static _Atomic uint32_t *oot_scale_cell, *oot_scale_apply_cell; static float oot_scale_base; static int oot_internal_h;
 static float oot_internal_scale(int h) {
     int hh = runtime_handheld_mode();
     switch (h) {
@@ -393,7 +392,39 @@ void runtime_oot_internal_res_set(int h) {
     oot_internal_h = h;
     if (!oot_scale_cell) return;
     float s = oot_internal_scale(h); uint32_t bits; memcpy(&bits, &s, sizeof bits); atomic_store(oot_scale_cell, bits);
+    if (oot_scale_apply_cell) atomic_store(oot_scale_apply_cell, 1);   /* the game's frame code applies it (patch_oot_scale_live) */
     fprintf(stderr, "[oot] internal resolution setting %d: scale %g\n", h, s);
+}
+/* Changing the resolution while the game runs (2026-11-09). With its dynamic resolution off the game takes the scale only when
+   the controller reports a change: main+0x31d3ee0 calls the controller (0x805aa0) and, on the report, writes the scale to the
+   render view's field +0xe5c, which is read every frame (found with mscan watch; writing it moved the main pass from 1536x864
+   to 1275x717 and 1906x1072 at once, claude/oot-depth-unify g15). So the instruction after that call branches here: when the
+   settings panel asks (the apply cell), the veneer stores the cell's scale there the way the game does, scale * +0xe58 / +0xe50. */
+static void patch_oot_scale_live(Module *m, uint64_t page) {
+    const uint64_t site = 0x31d3ee4; uint32_t have; memcpy(&have, m->base + site, 4);
+    if (have != 0xd3609c08) runtime_fail("OOT resolution apply site differs from verified update 131072");   /* ubfx x8, x0, #32, #8 */
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8 + 16 + 24, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    int64_t pages = ((int64_t)page - (int64_t)(stub & ~4095ULL)) / 4096;
+    uint32_t off = (uint32_t)(page & 4095), scale = (OOT_SCALE_CELL + off) / 4, apply = (OOT_SCALE_APPLY_CELL + off) / 4;
+    uint32_t code[12] = {
+        0x90000010 | (((uint32_t)pages & 3) << 29) | ((((uint32_t)pages >> 2) & 0x7ffff) << 5),    /* adrp x16, page */
+        0xb9400211 | apply << 10,   /* ldr w17, [x16, #apply] */
+        0x34000111,                 /* cbz w17, the original instruction */
+        0xb900021f | apply << 10,   /* str wzr, [x16, #apply] */
+        0xbd400200 | scale << 10,   /* ldr s0, [x16, #scale] */
+        0xbd4e5a81,                 /* ldr s1, [x20, #0xe58] */
+        0x1e210800,                 /* fmul s0, s0, s1 */
+        0xbd4e5281,                 /* ldr s1, [x20, #0xe50] */
+        0x1e211800,                 /* fdiv s0, s0, s1 */
+        0xbd0e5e80,                 /* str s0, [x20, #0xe5c] */
+        have,
+        oot_step_branch(stub + 44, site + 4) };
+    if (stub + sizeof code > rx_end || page + OOT_SCALE_APPLY_CELL + 4 > m->size) runtime_fail("OOT live resolution: no room left");
+    for (uint64_t k = stub; k < stub + sizeof code; k++) if (m->base[k]) runtime_fail("OOT live resolution: text padding already in use");
+    for (uint64_t k = page + OOT_SCALE_APPLY_CELL; k < page + OOT_SCALE_APPLY_CELL + 4; k++) if (m->base[k]) runtime_fail("OOT live resolution: data page already in use");
+    oot_scale_apply_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_SCALE_APPLY_CELL);
+    memcpy(m->base + stub, code, sizeof code);
+    uint32_t b = oot_step_branch(site, stub); memcpy(m->base + site, &b, 4);
 }
 static void patch_oot_fixed_res(Module *m) {
     if (getenv("TOTK_EXPORT_IOS")) return;
@@ -420,6 +451,7 @@ static void patch_oot_fixed_res(Module *m) {
     uint32_t b = oot_step_branch(site, disabled), to_veneer = oot_step_branch(scale_site, stub);
     memcpy(m->base + stub, veneer, sizeof veneer); memcpy(m->base + site, &b, 4); memcpy(m->base + scale_site, &to_veneer, 4);
     fprintf(stderr, "[oot] fixed render scale %g (%s; OOT_FIXED_RES=0: the game's dynamic resolution)\n", s, runtime_handheld_mode() ? "handheld" : "docked");
+    patch_oot_scale_live(m, page);
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE

@@ -311,6 +311,9 @@ static void *input_file(void *arg) {
             char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
             extern void dm_gfx_set_flag(const char *name, int v);
             if (!strcmp(name,"input_trace")) input_trace_set(v);
+#if defined(GAME_OOT) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+            else if (!strcmp(name,"oot_internal_res")) { extern void runtime_oot_internal_res_set(int); runtime_oot_internal_res_set(v); }   /* what the settings panel's resolution row does */
+#endif
             else if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
         } else if (!strncmp(line, "texdump ", 8)) {
             extern void dm_gfx_texdump_next(const char *path);

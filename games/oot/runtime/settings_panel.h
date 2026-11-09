@@ -686,14 +686,14 @@ static TOTKSettingRow *settings_oot_upscaler_row(void) {
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
-/* Internal resolution (next start) and the MetalFX output stage to 2K (live). */
+/* Internal resolution and the MetalFX output stage to 2K, both in force at once. */
 extern int runtime_oot_internal_res(void); extern void runtime_oot_internal_res_set(int);
 static void settings_oot_output2k_apply(int on) {
  settingsOotOutput2k=on;dm_gfx_set_flag("mfx_upscale",on);dm_gfx_set_flag("mfx_output",on);
  dispatch_async(dispatch_get_main_queue(),^{settings_window_for(on?OUTPUT_MODE_METALFX:OUTPUT_MODE_OFF);});
 }
 static TOTKSettingRow *settings_oot_internal_row(void) {
- return settings_row(settings_text("内部分辨率（下次启动生效）","Internal resolution (next start)"),
+ return settings_row(settings_text("分辨率","Resolution"),
   @[settings_text("默认（底座 1536×864 / 掌机 1280×720）","Default (docked 1536×864 / handheld 1280×720)"),settings_text("约 720p","About 720p"),settings_text("约 900p","About 900p"),settings_text("约 1080p","About 1080p"),settings_text("最高（底座 2048×1152）","Highest (docked 2048×1152)")],@[@0,@720,@900,@1080,@1152],
   ^int{return runtime_oot_internal_res();},^(int v){runtime_oot_internal_res_set(v);settings_save_int("graphics-internal-res.txt",v,"internal resolution");});
 }
@@ -706,9 +706,6 @@ static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versio
  NSString *none=settings_text("这个版本没有","Not in this version");
  NSArray<TOTKSettingRow *> *rows=@[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
           settings_fixed(settings_text("效果开关","Effect switches"),none)];
-#if defined(GAME_OOT) && !TARGET_OS_IPHONE
- rows=[@[settings_oot_internal_row(),settings_oot_output_row(),settings_oot_upscaler_row()] arrayByAddingObjectsFromArray:rows];
-#endif
  return rows;
 }
 #endif
@@ -726,10 +723,6 @@ static TOTKSettingRow *settings_aniso_row(void) {
    a row the environment decides stays. */
 static void settings_effects_reset(void) {
  if(!getenv("TOTK_TAA")){taa_set(0);runtime_setting_remove("graphics-taa.txt");}
-#if defined(GAME_OOT) && !TARGET_OS_IPHONE
- if(!getenv("OOT_NET_BYPASS")){extern void netbp_set_flag(int);netbp_set_flag(1);runtime_setting_remove("graphics-net-bypass.txt");}   /* MetalFX is the default since 2026-11-08 (oot_net_bypass.inc) */
- {extern void runtime_oot_internal_res_set(int);runtime_oot_internal_res_set(0);runtime_setting_remove("graphics-internal-res.txt");settings_oot_output2k_apply(0);runtime_setting_remove("graphics-output-2k.txt");}
-#endif
 #ifdef SETTINGS_SSAO
  if(!dm_gfx_ssao_locked()&&dm_gfx_ssao_live()){settingsSsao=0;dm_gfx_ssao_set(0);runtime_setting_remove("ssao.txt");}
 #endif
@@ -870,6 +863,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
  (void)resolution;
  [rows addObject:settings_ns2_resolution_row()];
+#elif defined(GAME_OOT) && !TARGET_OS_IPHONE
+ (void)resolution;   /* every resolution setting of this game is on this page (user 2026-11-09) */
+ [rows addObject:settings_oot_internal_row()];[rows addObject:settings_oot_output_row()];[rows addObject:settings_oot_upscaler_row()];
 #else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,
