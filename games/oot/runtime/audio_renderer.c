@@ -502,6 +502,9 @@ void runtime_audio_probe(void) {
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
     int checked = probe_rev15();
+#ifdef GAME_NS2
+    { int runtime_ns2_input_stream_probe(void); checked += runtime_ns2_input_stream_probe(); }
+#endif
 #ifdef GAME_BOTW
     checked += probe_ramp();
     for (int kind = EDGE_RELEASE; kind <= EDGE_REUSE_TWICE; kind++) checked += probe_ramp_edge(kind);
