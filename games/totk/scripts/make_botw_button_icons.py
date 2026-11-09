@@ -17,8 +17,8 @@ Which icon each input gets comes from the builder's model (tools/builder/icons_p
 controls.txt as tools/builder/controls_file reads it): the face letters of an Xbox controller by position, LB RB LT RT
 as L R ZL ZR, Menu and View as + and -, the stick presses and the d-pad arms as their own icons, a cross for an input no
 button drives. A combined d-pad icon whose inputs are not all on the d-pad keeps its icon (nothing to draw it with).
-PlayStation symbols are not in the font: with --style playstation (the default when controller-type.txt says playstation,
-or says auto and controller-detected.txt playstation) botw_playstation_icons.py draws them over the glyphs the Xbox letters
+PlayStation symbols are not in the font: with --style playstation (the default when controller-type.txt says playstation)
+botw_playstation_icons.py draws them over the glyphs the Xbox letters
 use (Cross, Circle, Square, Triangle, L1 R1 L2 R2, Options and Create), in the sheet's own cells, so each archive still keeps
 its size, and the action guide's key textures with them (its faint letters are left blank). A Nintendo controller (by
 label, controller-type.txt 'switch') is refused, as the builder's icons for Tears of the Kingdom refuse it.
@@ -301,13 +301,8 @@ def layout_plan(controls):
 
 
 def default_style(kind):
-    """playstation when controller-type.txt (kind) says so, or says auto (or is missing) and controller-detected.txt beside
-    it says playstation; else xbox."""
-    read = lambda p: p.read_text().strip() if p.is_file() else ''  # noqa: E731
-    word = read(kind)
-    if word not in ('xbox', 'playstation', 'switch'):   # auto, or a word the game reads as auto
-        word = read(kind.with_name('controller-detected.txt'))
-    return 'playstation' if word == 'playstation' else 'xbox'
+    """playstation when controller-type.txt (kind) says so; else xbox."""
+    return 'playstation' if kind.is_file() and kind.read_text().strip() == 'playstation' else 'xbox'
 
 
 def main():
@@ -322,8 +317,8 @@ def main():
     parser.add_argument('--plan', type=Path, help='JSON {"glyphs": [[code point, code point shown], ...], "diamond": '
                         '{switch letter: bottom|right|left|top}} (the builder\'s plan; replaces --controls)')
     parser.add_argument('--style', choices=STYLES, help='the button icons: xbox (the font\'s letters) or playstation '
-                        '(drawn); default: playstation when controller-type.txt says so (or auto, and '
-                        'controller-detected.txt playstation), else xbox; with --plan, xbox')
+                        '(drawn); default: playstation when controller-type.txt says so, else xbox; with '
+                        '--plan, xbox')
     parser.add_argument('--write-all', action='store_true', help='write every archive, also one whose icons the layout '
                         'leaves as they are (the builder: its icons mod must replace something to be valid)')
     args = parser.parse_args()

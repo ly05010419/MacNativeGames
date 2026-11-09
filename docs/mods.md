@@ -351,8 +351,7 @@ button (LB RB LT RT show as L R ZL ZR, Menu and View as + and -). The action gui
 the Xbox diamond, A at the bottom, B right, X left, Y top, with the button that does the action lit in its place (an
 action of A, B, X or Y moved to a button outside the diamond, such as LB, keeps the Switch's diamond there; its prompt in
 the text still names LB).
-A PlayStation controller (`controller-type.txt` saying `playstation`, or `auto` with a PlayStation controller found
-last) gets PlayStation icons, drawn over the font's own button glyphs in their cells (`--style playstation`,
+With `controller-type.txt` saying `playstation` (key 6), the player gets PlayStation icons, drawn over the font's own button glyphs in their cells (`--style playstation`,
 games/totk/scripts/botw_playstation_icons.py): Cross, Circle, Square and Triangle, L1 R1 L2 R2, Options and Create, and
 the guide's key textures with them (its faint letters are left blank); `--style xbox` keeps the letters. A Nintendo
 controller (`controller-type.txt` saying `switch`) keeps the
@@ -745,7 +744,7 @@ python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application 
 
 Xbox 手柄时它不画任何东西：图标字体里已经有每个按钮，所以只是把每个输入的码位指向对应按钮的图标（LB RB LT RT 显示为 L R ZL ZR，Menu
 和 View 显示为 + 和 -）。物体旁的操作提示（“A 打开”）变成 Xbox 的菱形：A 在下、B 在右、X 在左、Y 在上，执行该操作的按钮在
-它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。PlayStation 手柄（`controller-type.txt` 为 `playstation`，或为 `auto` 且上次检测到 PlayStation 手柄）得到 PlayStation 图标：在字体自己的按钮字形格子里画上叉、圆、方、三角，L1 R1 L2 R2，Options 和 Create，操作提示的按键贴图也一样（浅色字母留空）（`--style playstation`，games/totk/scripts/botw_playstation_icons.py；`--style xbox` 保留字母）；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
+它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。`controller-type.txt` 为 `playstation`（按键 6）时得到 PlayStation 图标：在字体自己的按钮字形格子里画上叉、圆、方、三角，L1 R1 L2 R2，Options 和 Create，操作提示的按键贴图也一样（浅色字母留空）（`--style playstation`，games/totk/scripts/botw_playstation_icons.py；`--style xbox` 保留字母）；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
 就对应手柄上的按钮。mod 替换七个 `Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
 布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
 

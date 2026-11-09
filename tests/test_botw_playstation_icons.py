@@ -160,19 +160,13 @@ class Guide(unittest.TestCase):
 
 
 class Style(unittest.TestCase):
-    def test_the_default_follows_the_controller_type_then_the_detected_one(self):
+    def test_the_default_follows_the_controller_type(self):
         with tempfile.TemporaryDirectory() as tmp:
-            kind, seen = Path(tmp)/'controller-type.txt', Path(tmp)/'controller-detected.txt'
-            self.assertEqual(icons.default_style(kind), 'xbox')
-            seen.write_text('playstation\n')
-            self.assertEqual(icons.default_style(kind), 'playstation')         # no type file: auto
-            kind.write_text('xbox\n')
-            self.assertEqual(icons.default_style(kind), 'xbox')
-            kind.write_text('auto\n')
-            self.assertEqual(icons.default_style(kind), 'playstation')
-            kind.write_text('playstation')
-            seen.write_text('xbox')
-            self.assertEqual(icons.default_style(kind), 'playstation')
+            kind = Path(tmp)/'controller-type.txt'
+            self.assertEqual(icons.default_style(kind), 'xbox')                # no type file: auto
+            for word, style in (('xbox\n', 'xbox'), ('auto\n', 'xbox'), ('playstation', 'playstation')):
+                kind.write_text(word)
+                self.assertEqual(icons.default_style(kind), style)
 
 
 if __name__ == '__main__':

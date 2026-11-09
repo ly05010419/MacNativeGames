@@ -51,16 +51,9 @@ def icons_info(game_dir, store, repo, spec, app, data_dir, builder_dir):
                      icons_plan.shared(state.inputs))
 
 
-def icon_style(game_dir, state):
-    """The Breath of the Wild icons for the controller: playstation when controller-type.txt says so, or says auto and
-    the game found a PlayStation controller last (controller-detected.txt); else xbox."""
-    word = state.type_word
-    if word == 'auto':
-        try:
-            word = controls_file.read_type((Path(game_dir) / 'controller-detected.txt').read_bytes())
-        except OSError:
-            word = 'auto'
-    return 'playstation' if word == 'playstation' else 'xbox'
+def icon_style(state):
+    """The Breath of the Wild icons for the controller: playstation when controller-type.txt says so; else xbox."""
+    return 'playstation' if state.type_word == 'playstation' else 'xbox'
 
 
 def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_env, cancel):
@@ -77,7 +70,7 @@ def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_
             return IconsBuilt(False, 'changed')
         library = _library(repo, spec, LATEST[spec.id], data_dir)
         work, table = icons_mod.build(repo, app, LATEST[spec.id], library, state.inputs, builder_dir, cancel,
-                                      icon_style(game_dir, state))
+                                      icon_style(state))
     except (icons_env.EnvError, icons_mod.BuildError) as e:
         return IconsBuilt(False, e.reason, e.detail)
     return IconsBuilt(True, work=str(work), made_from=icons_mod.record(state.raw, state.type_raw, state.answer, table))
