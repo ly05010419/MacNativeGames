@@ -20859,7 +20859,7 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
     /* Offline translation does not run the game's device setup. The build passes the mode observed in that setup;
        NVN's default alone is insufficient for games that explicitly select near=0 (Pokopia). */
     offline_depth_mode(getenv("TOTK_SEED_DEPTH_MODE"));
-    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    __attribute__((objc_precise_lifetime)) NSData *d = [NSData dataWithContentsOfFile:@(path)];   // the listed jobs below keep pointers into it
     if (!d || d.length < 12 || memcmp(d.bytes, "NS2SHC01", 8)) MDIE("seed-shaders: %s is not a shader corpus (scripts/ns2_shader_corpus.py)", path);
     const uint8_t *p = (const uint8_t *)d.bytes + 12, *end = (const uint8_t *)d.bytes + d.length;
     uint32_t n; memcpy(&n, (const uint8_t *)d.bytes + 8, 4);
@@ -20895,13 +20895,28 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
         char key[65]; shader_key_of(ctl, code, kn, key);
         totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
         [keys addObject:@(key)];
-        for (NSDictionary *a in listed[@(key)]) { totk_rt_variant(@(key), stage, ctl, code, a, rt_local(ctl, stage), 1); [listed_jobs addObject:@[@(key), a]]; listed_n++; }
+        for (NSDictionary *a in listed[@(key)]) { [listed_jobs addObject:@[@(key), a, @(stage), [NSValue valueWithPointer:ctl], [NSValue valueWithPointer:code]]]; listed_n++; }
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);
-    for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
-        usleep(500000);
-        if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
+    void (^drain)(void) = ^{
+        for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
+            usleep(500000);
+            if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
+        }
+    };
+    drain();
+    /* The background queue holds one job per shader: a request for a shader that already has one waiting is dropped. So the
+       listed states go in rounds, each after the last has drained, all shaders in parallel, until every state is translated
+       or a round adds none (the ones left are translation failures, counted below). */
+    for (long was = -1, now; ; was = now) {
+        now = 0; for (NSArray *j in listed_jobs) if (totk_rt_variant_cached(j[0], j[1])) now++;
+        if (now == (long)listed_jobs.count || now <= was) break;
+        for (NSArray *j in listed_jobs) if (!totk_rt_variant_cached(j[0], j[1])) {
+            const uint8_t *ctl = [j[3] pointerValue], *code = [j[4] pointerValue];
+            totk_rt_variant(j[0], [j[2] intValue], ctl, code, j[1], rt_local(ctl, [j[2] intValue]), 1);
+        }
+        drain();
     }
     unsigned ok = 0; NSMutableArray *missing = [NSMutableArray array];
     for (NSString *k in keys) { if (totk_rt_variant_cached(k, answers)) ok++; else if (missing.count < 8) [missing addObject:k]; }
