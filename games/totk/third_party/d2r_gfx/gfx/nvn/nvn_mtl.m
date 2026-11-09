@@ -268,7 +268,8 @@ static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, aliv
 static char g_alloc_track_key;
 static NSMapTable *g_res_site_of;   // resource (weak key) -> NSNumber source line
 static uint64_t g_res_live_bytes;
-static void res_add_at(id<MTLResource> r, int site) {
+static void res_add_at(id<MTLResource> r, int site) { @autoreleasepool {
+    // Weak-table growth autoreleases retained keys; guest threads may not drain an outer pool.
     if (!r) return;
     if (site < 0 || site >= RES_SITES) site = 0;
     pthread_mutex_lock(&g_res_mu);
@@ -285,7 +286,7 @@ static void res_add_at(id<MTLResource> r, int site) {
     }
     g_res_dirty = 1;
     pthread_mutex_unlock(&g_res_mu);
-}
+} }
 #define res_add(r) res_add_at((r), __LINE__)
 static void res_remove_body(id<MTLResource> r) {
     if (!r) return;
