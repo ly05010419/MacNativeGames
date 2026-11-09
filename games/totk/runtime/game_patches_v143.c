@@ -14,6 +14,7 @@
 #include <stdatomic.h>
 #include <math.h>
 #include <TargetConditionals.h>
+#include "prompt_cache_v143.h"
 #if !TARGET_OS_IPHONE
 #include <mach/mach.h>
 #include <mach/mach_vm.h>   /* the VR camera search (Mac diagnostic) */
@@ -1914,6 +1915,7 @@ static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 static void patch_fixed_res(Module *m);
 void runtime_game_patches(Module *m) {
+    prompt_cache_install(m);
     runtime_survey_init(m);
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
     patch_realtime(m);

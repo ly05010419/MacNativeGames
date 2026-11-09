@@ -2639,7 +2639,20 @@ static id<MTLTexture> stor_recreate(const stor_key *k, MTLTextureUsage usage);
    table (directly or through its NvPkg), whose entries are dropped only through the deferred-release queue (also
    pkg_evict_sweep, reup_retire). As an id return each call was a retain + autorelease in here and a claim in the caller. */
 static void *tex_mtl_p(const tex_t *ct);
+#include "totk_prompt_icons.h"
+#if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE   /* only TotK 1.4.3 on the Mac has the prompt hook; nothing else pays for this lookup */
+#define TOTK_PROMPT_ICONS_ON 1
+static void prompt_resident(id<MTLResource> resource) { res_add(resource); }
+static void *prompt_texture(const tex_t *t) {
+    __unsafe_unretained id<MTLTexture> original = (__bridge id<MTLTexture>)tex_mtl_p(t);
+    if (!t || t->d.format != NVN_FORMAT_R8) return (__bridge void *)original;
+    return (__bridge void *)totk_prompt_texture(t, original, prompt_resident, defer_obj_release);
+}
+#define tex_mtl(t) ((__bridge id<MTLTexture>)prompt_texture(t))
+#else
+#define TOTK_PROMPT_ICONS_ON 0
 #define tex_mtl(t) ((__bridge id<MTLTexture>)tex_mtl_p(t))
+#endif
 static int rp_active(void);
 /* TOTK: plain pointers for the replay hot paths. The functions above return id, and the __unsafe_unretained on their
    return types is ignored by ARC, so every lookup was a retain / autorelease pair. Table entries are only freed through
@@ -6489,7 +6502,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 // and no live texture was found at its storage yet, so every serial-table step re-checks it (see tex_by_id).
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty;
     uint64_t indexed_serial, used; int view_prev, view_next; uint8_t view_pkg, dead_pending;
-    uint8_t view_tt, image_ready; void *view_parent, *image_view; } treg_t;   // used (TOTK): last submission that resolved this id
+    uint8_t view_tt, image_ready; void *view_parent, *image_view; uint64_t prompt_revision; } treg_t;   // used (TOTK): last submission that resolved this id
 /* TOTK: view_tt / view_parent: textureType and parentTexture of view, read once when it is stored (a Metal texture never
    changes either). view_parent is only compared, never messaged; the view retains its parent while it is stored. */
 static treg_t *g_treg; static int g_ntreg;
@@ -6813,6 +6826,13 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     { int pn = bound_tex_pool_n(); if (pn && tid >= pn) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（绑定的池容量 %d）按空槽处理：读出 0", tid, pn); return NULL; } }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return NULL; }
     treg_t *rp = &g_treg[tid];
+    if (TOTK_PROMPT_ICONS_ON && rp->t.d.format == NVN_FORMAT_R8) {
+        uint64_t revision = totk_prompt_revision();
+        if (rp->prompt_revision != revision) {
+            treg_clear_view_locked(tid);
+            rp->prompt_revision = revision;
+        }
+    }
     rp->used = g_sub_serial;   // TOTK: the fast path below never reaches tex_mtl; pkg_evict_sweep reads this
     if (totk_life_on() && totk_life_match(&rp->t)) life_use(tid, &rp->t, "registered");
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // 先取代号再查：期间若有变更，下次必走慢路 | Take the generations first and then look up: if a change happens in between, the next time must take the slow path
@@ -16274,6 +16294,11 @@ static int frz_op(unsigned op, const void *a) {   // 返回 1 = 这条操作不�
 }
 
 void mtl_exec(const uint8_t *p) {
+    /* Binding changes also invalidate argument buffers that already hold the
+       previous prompt texture; the ordinary descriptor cache then rebuilds it. */
+    static uint64_t prompt_revision;
+    uint64_t revision = TOTK_PROMPT_ICONS_ON ? totk_prompt_revision() : 0;
+    if (revision != prompt_revision) { prompt_revision = revision; g_reg_gen++; }
     static int inited; if (!inited) { inited = 1; state_reset(); }
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     { static long st_frame = -2, st_ms; if (st_frame == -2) { const char *e = getenv("DM_NVN_STALL"); st_frame = e ? atol(e) : -1; st_ms = e && strchr(e, ':') ? atol(strchr(e, ':') + 1) : 1000; }   // TOTK diagnostic: DM_NVN_STALL=frame:ms sleeps the replay thread once at the start of that frame's replay

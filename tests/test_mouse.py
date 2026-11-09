@@ -28,7 +28,9 @@ class MouseTests(unittest.TestCase):
                          str(TOTK / 'tests/mouse_look/probe.c')])
 
     def test_mouse_mode(self):
-        run_probe(self, ['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', str(TOTK / 'tests/mouse/probe.m'),
+        run_probe(self, ['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
+                         str(TOTK / 'tests/mouse/probe.m'), str(TOTK / 'runtime/input_prompts.m'),
+                         '-framework', 'CoreText', '-framework', 'CoreGraphics',
                          '-framework', 'Foundation', '-framework', 'GameController', '-framework', 'IOKit'], '<data>')
 
 

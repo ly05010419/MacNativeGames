@@ -623,7 +623,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 2*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -920,6 +920,18 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Controller type", @"Switch"); assert(fakePadType == GAMEPAD_TYPE_SWITCH);
     pick(@"Controller type", @"Auto (PlayStation)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
     fakePadDetected = -1; shows(@"Controller type", @"Auto (no controller)");
+#if TOTK_V143
+    /* Style changes publish immediately and leave controller routing alone. */
+    shows(@"Button prompts", @"Auto");
+    pick(@"Button prompts", @"PlayStation");
+    PromptBindings prompt;
+    runtime_prompt_snapshot(&prompt); assert(prompt.device == PROMPT_PLAYSTATION);
+    assert(fakePadType == GAMEPAD_TYPE_AUTO);
+    pick(@"Button prompts", @"Keyboard / mouse");
+    runtime_prompt_snapshot(&prompt); assert(prompt.device == PROMPT_KEYBOARD);
+    pick(@"Button prompts", @"Auto");
+#endif
+
 
     assert(!switched(@"Controller input in background"));
     flip(@"Controller input in background", YES); assert(fakePadBackground && switched(@"Controller input in background"));
@@ -1056,7 +1068,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(contribute.hidden && starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 9 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
+    assert(settingsPanel.rows.count == 9 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 

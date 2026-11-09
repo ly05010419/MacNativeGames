@@ -17,6 +17,7 @@
 #include "runtime.h"
 #include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
 #include "controller_map.h"   // the player's button layout (controls.txt)
+#include "input_prompts.h"
 #include "switch_left_fallback.h"
 #include "mouse_look.h"       // mouse mode: movement as the right stick and the gyro
 
@@ -91,7 +92,7 @@ static void load_controller_map(void) {
     controller_map_default(controllerMap, controllerModes);
     const char *path = getenv("TOTK_CONTROLS");
     FILE *f = path && *path ? fopen(path, "rb") : NULL;
-    if (!f) { fprintf(stderr, "[totk-input] controller layout: default\n"); return; }
+    if (!f) { fprintf(stderr, "[totk-input] controller layout: default\n"); runtime_prompt_controller(controllerMap); return; }
     char text[16384]; size_t n = fread(text, 1, sizeof text - 1, f); int whole = feof(f); fclose(f);
     if (!whole) runtime_fail("controller layout file too large");
     text[n] = 0;
@@ -100,6 +101,7 @@ static void load_controller_map(void) {
     uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS]; controller_map_default(defaults, defaultModes);
     int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
     fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
+    runtime_prompt_controller(controllerMap);
 }
 
 static int32_t stick_axis(float value) {
@@ -250,6 +252,7 @@ void runtime_controller_map_get(uint16_t *map, uint8_t *modes) {
     memcpy(map, controllerMap, sizeof controllerMap); memcpy(modes, controllerModes, sizeof controllerModes);
 }
 static void controller_map_changed(void) {
+    runtime_prompt_controller(controllerMap);
     physicalPrev = 0;
     memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn); memset(toggleMoved, 0, sizeof toggleMoved);
     gamepad_gestures_changed();
@@ -719,6 +722,7 @@ int runtime_mouse_set(int on) {
     on = !!on;
     if (on == atomic_load(&mouseMode)) return on;
     atomic_store(&mouseMode, on);
+    runtime_prompt_mouse_mode(on);
     setting_write("mouse.txt", on ? "on" : "off", "mouse mode");
     if (!on) dispatch_async(dispatch_get_main_queue(), ^{ runtime_mouse_release(); });
     mouse_apply(on);
@@ -727,6 +731,7 @@ int runtime_mouse_set(int on) {
 
 void runtime_mouse_move(double dx, double dy) {   /* the window, while it holds the pointer */
     if (!atomic_load(&mouseMode)) return;
+    if (fabs(dx) + fabs(dy) >= 1) runtime_prompt_note_input(PROMPT_KEYBOARD);
     pthread_mutex_lock(&gamepadLock);
     mouse_look_move(&mouseLook, dx, dy, &mouseSettings);
     pthread_mutex_unlock(&gamepadLock);
@@ -805,9 +810,33 @@ static void refresh_gamepads(void) {
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
     uint64_t rawAt = 0, rawRightAt = 0;
     int capture = captureDown;
+    /* Keep activity per controller: a second pad's resting stick must not
+       continually look like a fresh movement relative to the first pad. */
+    typedef struct { uint64_t buttons; float axes[4]; } PromptActivity;
+    static NSMapTable<GCController *, NSMutableData *> *promptActivity;
+    if (!promptActivity) promptActivity = [NSMapTable weakToStrongObjectsMapTable];
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
+        uint64_t promptPhysical = gamepad_buttons(pad, face_by_position(controller));
+        float axes[] = {pad.leftThumbstick.xAxis.value, pad.leftThumbstick.yAxis.value,
+                        pad.rightThumbstick.xAxis.value, pad.rightThumbstick.yAxis.value};
+        NSMutableData *history = [promptActivity objectForKey:controller];
+        if (!history) {
+            history = [NSMutableData dataWithLength:sizeof(PromptActivity)];
+            [promptActivity setObject:history forKey:controller];
+        }
+        PromptActivity *previous = history.mutableBytes;
+        int meaningful = prompt_activity_changed(previous->buttons, promptPhysical, previous->axes, axes);
+        previous->buttons = promptPhysical;
+        memcpy(previous->axes, axes, sizeof axes);
+        if (meaningful) {
+            /* The player's pick (key 6) decides how the face buttons map, so it decides the labels too. */
+            int type = atomic_load(&controllerType);
+            if (type == GAMEPAD_TYPE_AUTO) type = gamepad_type_detect(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+            runtime_prompt_note_input(type == GAMEPAD_TYPE_PLAYSTATION ? PROMPT_PLAYSTATION :
+                                      type == GAMEPAD_TYPE_XBOX ? PROMPT_XBOX : PROMPT_SWITCH);
+        }
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
         if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
@@ -837,6 +866,12 @@ static void refresh_gamepads(void) {
         next.ry = stronger_axis(next.ry, stick_axis(ry));
     }
     if (hidPad.present) {
+        static PromptActivity previous;
+        float axes[] = {hidPad.lx / 32767.f, hidPad.ly / 32767.f, hidPad.rx / 32767.f, hidPad.ry / 32767.f};
+        if (prompt_activity_changed(previous.buttons, hidPad.buttons, previous.axes, axes))
+            runtime_prompt_note_input(PROMPT_SWITCH);
+        previous.buttons = hidPad.buttons;
+        memcpy(previous.axes, axes, sizeof axes);
         next.connected = 1;
         physical |= hidPad.buttons;
         next.lx = stronger_axis(next.lx, hidPad.lx);
@@ -1063,6 +1098,7 @@ void runtime_gamepad_start(void) {
     load_controller_type();
     load_settings_button();
     load_mouse_mode();
+    runtime_prompt_mouse_mode(runtime_mouse_enabled());
 #if TARGET_OS_OSX
     load_gamepad_background();
 #endif
