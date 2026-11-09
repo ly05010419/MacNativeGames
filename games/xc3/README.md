@@ -1,4 +1,4 @@
-# Xenoblade Chronicles 3 (work in progress)
+# Xenoblade Chronicles 3
 
 Xenoblade Chronicles 3 running natively on Apple silicon Macs, the way `games/totk` runs Tears of the Kingdom:
 - the game's own ARM64 code is rewritten ahead of time and runs directly on the Mac's CPU,
@@ -9,9 +9,9 @@ This folder started as a copy of `games/ot0` (Octopath Traveler 0), itself a cop
 
 You must own the game: use your own NSP and the `prod.keys` and system fonts dumped from your own Switch. Nothing from the game is in this repository. `XC3_build/` (the work folder) and `mods/` are ignored by git.
 
-## Status (3 November 2026)
+## Status (8 November 2026)
 
-Playable on the Mac with known shader coverage gaps: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
+Playable on the Mac: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
 
 Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1. The port targets the Mac only; iPhone and iPad are not a goal.
 
