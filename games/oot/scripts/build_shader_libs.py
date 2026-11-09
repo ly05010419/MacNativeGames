@@ -39,6 +39,7 @@ def main():
                    help='translation cache; repeat to include recorded binding variants')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--jobs', type=int, default=4)
+    p.add_argument('--only', type=Path, help='compile only these shaders (one 64-hex key per line); the rest are compiled by the game at first use')
     a = p.parse_args()
     if not 1 <= a.jobs <= 32:
         p.error('--jobs must be between 1 and 32')
@@ -53,6 +54,9 @@ def main():
             if previous and digest(previous) != digest(src):
                 sys.exit('conflicting translation caches for ' + src.name)
             source_files[src.name] = src
+    if a.only:
+        wanted = {line.strip() for line in a.only.read_text().splitlines() if line.strip()}
+        source_files = {n: s for n, s in source_files.items() if n.split('-')[0].split('_')[0] in wanted}
     sources = list(source_files.values())
     if not sources:
         sys.exit(f'[RED] {a.cache}: no translated shaders (*_b.metal)')
@@ -127,7 +131,7 @@ def main():
         library = a.out/name
         if library.is_file() and digest(library) == expected:
             files[name] = expected
-    report = dict(schema=1, compiler=identity, complete=not failed, sources=source_hashes, files=files,
+    report = dict(schema=1, compiler=identity, complete=not failed, subset=bool(a.only), sources=source_hashes, files=files,
                   parser_depths={k: v for k, v in parser_depths.items() if k in files},
                   preparation_sha256=digest(Path(__file__).resolve()))
     partial = manifest.with_suffix('.partial')

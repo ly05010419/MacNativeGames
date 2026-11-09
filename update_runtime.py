@@ -44,6 +44,22 @@ import build_app
 from build_app import APPS, VERSIONS, BuildError, clone, run, say, sha256
 
 
+def ocarina_app(app):
+    try:
+        return plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleExecutable') == 'OcarinaOfTime'
+    except (OSError, ValueError):
+        return False
+
+
+def update_ocarina(app, work):
+    """Ocarina of Time carries its own build, like build_app.build_oot."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('oot_build', build_app.REPO / 'games/oot/build.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.update_runtime(app, work)
+
+
 def app_identity(app):
     """(game, version) of an app build_app.py made: the game by its executable, the version by its one set of modules."""
     if (app / 'Info.plist').is_file():
@@ -398,6 +414,10 @@ def main(argv):
                          'when the matching verified build cache is available. Saved resolution is not changed')
     args = ap.parse_args(argv)
     app = args.app.expanduser().resolve()
+    if ocarina_app(app):
+        if args.seed or args.native_5k:
+            raise BuildError('Ocarina of Time: --seed and --native-5k are not supported; run build_app.py for new shaders')
+        return update_ocarina(app, args.work)
     game, version = app_identity(app)
     if args.native_5k and version not in ('v143', 'botw160', 'botw190'):
         raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 or Breath of the Wild 1.6.0 / 1.9.0 on Mac')

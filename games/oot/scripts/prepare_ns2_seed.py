@@ -43,14 +43,30 @@ def sha256(path):
     return h.hexdigest()
 
 
-def translation_context(binary, translator, depth_mode):
-    """A cache belongs to the executable making requests and the translator answering them.
+def request_sources():
+    """SHA-256 of the runtime code that builds a translation request: totk_shader_rt.m (variant_request), nvn_ctl.h (the control
+    section's layout) and the two functions of nvn_mtl.m that fill it in. The rest of the runtime does not reach a translation."""
+    nvn = Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn'
+    text = (nvn / 'nvn_mtl.m').read_text(errors='replace')
+    parts = [(nvn / name).read_bytes() for name in ('totk_shader_rt.m', 'nvn_ctl.h')]
+    for head in ('static NSDictionary *rt_answers(int st) {', 'static NSArray *rt_local(const uint8_t *control, int st) {'):
+        start = text.find(head)
+        end = text.find('\n}\n', start)
+        if start < 0 or end < 0:
+            raise ValueError('nvn_mtl.m no longer holds ' + head)
+        parts.append(text[start:end].encode())
+    return hashlib.sha256(b'\0'.join(parts)).hexdigest()
+
+
+def translation_context(translator, depth_mode):
+    """A cache belongs to what decides a translation: the chain, the device depth mode, the translator and the code that builds
+    its requests. Not to the whole runtime binary, or every runtime change translates 42,000 shaders again (248 s).
 
     The shader/bind-state key alone does not describe device depth mode. The old unversioned seed cache kept vertex
     shaders made with near=0 after the runtime was corrected to NVN's near=-w default.
     """
-    inputs = dict(schema=1, chain=CHAIN, depth_mode=depth_mode,
-                  runtime_sha256=sha256(binary), translator_sha256=sha256(translator))
+    inputs = dict(schema=2, chain=CHAIN, depth_mode=depth_mode,
+                  request_sources_sha256=request_sources(), translator_sha256=sha256(translator))
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -169,7 +185,7 @@ def main():
         stamp.write_text(json.dumps(want))
 
     prebuilt = Path('prebuilt/macos-arm64/totk_xlate')
-    context = translation_context(a.binary, prebuilt, a.depth_mode)
+    context = translation_context(prebuilt, a.depth_mode)
     cache = cache / context
     cache.mkdir(parents=True, exist_ok=True)
     # A concurrent App package may replace the shared build/shader-service binary.

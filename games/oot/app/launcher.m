@@ -356,7 +356,16 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
             const char *v = getenv(name); return v && *v ? @(v) : fallback; };
         NSString *profile = env_or("TOTK_PROFILE_DIR", [data stringByAppendingPathComponent:@"profile"]);
         NSString *slot = env_or("TOTK_GAME_SLOT_DIR", [home stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/TOTK/game-slot"]);
-        NSString *cache = env_or("TOTK_SHADER_CACHE", [data stringByAppendingPathComponent:[NSString stringWithFormat:@"shader-cache/rt-%s", DMSH_CHAIN]]);
+        /* One cache per prepared seed, as totk_shader_rt.m totk_rt_dir names it: a cache's own variants come before the seed's
+           (variants_of), so variants left by an earlier build of the same chain would hide the seed's and miss its pipeline archive. */
+        NSString *cacheChain = @DMSH_CHAIN;
+        NSData *seedManifest = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"build/shader-seed/seed-manifest.json"]];
+        NSDictionary *seedMetadata = seedManifest ? [NSJSONSerialization JSONObjectWithData:seedManifest options:0 error:nil] : nil;
+        NSString *seedContext = [seedMetadata isKindOfClass:NSDictionary.class] ? seedMetadata[@"translation_context_sha256"] : nil;
+        if ([seedContext isKindOfClass:NSString.class] && seedContext.length == 64 &&
+            [seedContext rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound)
+            cacheChain = [cacheChain stringByAppendingFormat:@"-%@", seedContext];
+        NSString *cache = env_or("TOTK_SHADER_CACHE", [data stringByAppendingPathComponent:[NSString stringWithFormat:@"shader-cache/rt-%@", cacheChain]]);
         if (!make_dir(profile) || !make_dir(slot) || !make_dir(cache) || !make_dir(logs)) {
             show_error([NSString stringWithFormat:@"Cannot create %@.", data]);
             return 1;
