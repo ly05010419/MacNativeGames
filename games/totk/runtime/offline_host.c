@@ -2,6 +2,10 @@
    console. Network requests are never accepted, so a game keeps its offline paths (no sockets, friends or local wireless
    follow). From games/wonder (Super Mario Bros. Wonder imports them); here for the Switch 2 games (GAME_NS2: Donkey Kong
    Bananza initializes nifm at boot). TOTK and BotW import none of them and do not build this file. */
+/* Only the Switch 2 games build this: services.c calls runtime_offline_override under GAME_NS2, and the iOS project compiles
+   every file in runtime/, where TOTK and BotW have no GAME_TITLE_ID. */
+#include "game_version.h"
+#ifdef GAME_NS2
 #include "runtime.h"
 void hle_signal_system_event(void *event);
 #include "game_version.h"
@@ -216,3 +220,4 @@ void *runtime_offline_override(const char *name) {
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;
 }
+#endif   /* GAME_NS2 */
