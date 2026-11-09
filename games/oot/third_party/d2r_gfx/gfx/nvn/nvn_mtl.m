@@ -1237,6 +1237,8 @@ static id<MTL4ComputeCommandEncoder> g_blit;
 static int g_blit_alias; // shared encoder may have accessed aliased buffer storage
 static int g_copy_probe_no_alias; // probe-gpu-copy-alias negative control only: copies without alias visibility
 static NSMutableArray<dispatch_block_t> *g_commit_blocks;
+static int race_on(void); static void race_note(uint64_t addr, uint64_t size, const char *key, char kind); static void race_commit_mark(void);   // OOT_RACE_CHECK (below)
+static int rdf_on(void); static void gpu_read_input(uint64_t addr, uint64_t size, const char *key, char kind); static void rdf_drain_log(void); static void noread_drain_log(void);   // OOT_GPU_READ_FENCE / OOT_NOREAD_PROBE (below)
 static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc_grown;
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);
 static void up_flush(void);
@@ -1381,6 +1383,7 @@ void mtl_sub_begin(void) {
     [g_alloc4[alloc_i] reset];
     [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
     g_commit_blocks = [NSMutableArray array];
+    if (rdf_on()) nvn_dirty_read_wait_exempt(1);   // OOT_GPU_READ_FENCE: this thread commits the fence the marks refer to
     chunk_cfg(); g_sub_chunks = 0; g_chunk_mark = g_stat_draw;
     if (g_nupd) MDIE("renamed uniform updates left over from the previous submission");
     g_nshadow = 0;
@@ -2173,6 +2176,7 @@ void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     g_copy_n++; g_copy_split += g_enc != nil;
     upd_guard(src, src + n); upd_guard(dst, dst + n);
     pend_note(dst, n, (const void *)(uintptr_t)src, 1); pd_xfer("copy", src, dst, n);
+    gpu_read_input(src, n, "copy-src", 'c');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the GPU reads the source at execution
     usnap_drop(dst, n);   // TOTK: later readers see the copied bytes (memory, on the GPU timeline)
     anom_note_xfer('Y', src, dst, n, NULL);   // TOTK_ANOMALY
     void *sb, *db; uint64_t so, dof;
@@ -2863,12 +2867,16 @@ uint64_t mtl_sub_commit(void) {
         memcpy(copy, g_anom_vis, (size_t)cnt * sizeof *copy); g_anom_nvis = 0;
         [g_commit_blocks addObject:^{ anom_vis_done(copy, cnt); free(copy); }];
     }
+    race_commit_mark();   // OOT_RACE_CHECK: this submission's commit time
+    rdf_drain_log();   // OOT_GPU_READ_FENCE: attribute the waits since the previous submission
+    noread_drain_log();   // OOT_NOREAD_PROBE
     NSArray<dispatch_block_t> *commit_blocks = [g_commit_blocks copy];
     TotkCommitOptions *o = [TotkCommitOptions new];
-    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; for (dispatch_block_t block in commit_blocks) block(); }];
+    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; nvn_dirty_read_wait_exempt(1); for (dispatch_block_t block in commit_blocks) block(); }];   // OOT_GPU_READ_FENCE: a completion thread never waits for a GPU reader (its guest writes are the GPU timeline's)
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
+        nvn_dirty_read_wait_exempt(1);   // OOT_GPU_READ_FENCE: the semaphore / counter results below are GPU-timeline writes; g_done for this fence moves only after them (rdf1: the wait here stalled every completion 3 s -> GPU watchdog)
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { gpu_hang_guard(cb.error); atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
@@ -2952,6 +2960,7 @@ uint64_t mtl_sub_commit(void) {
     pkg_orphan_report();
     g_alloc_fence[g_alloc_cur] = fence;
     g_cb = nil;
+    if (rdf_on()) nvn_dirty_read_wait_exempt(0);
     g_commit_blocks = nil;
     objc_autoreleasePoolPop(g_sub_pool); g_sub_pool = NULL;
     return fence;
@@ -4771,7 +4780,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         nvn_dirty_gpu_write_end(token);
         if(!source)MDIE("texture upload source wrapper failed: %p+%llu",t->mem,(unsigned long long)t->L.size);
         res_add(source);[g_up_keep addObject:source];mb=(__bridge void *)source;mo=(uintptr_t)t->mem-a;
-        if (race_on()) { static char lbl[64][48]; static unsigned li; char *l = lbl[li++ & 63]; snprintf(l, 48, "upload ser=%llu %ux%u fmt=%#x", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); race_note((uint64_t)(uintptr_t)t->mem, t->L.size, l, 't'); }
+        if (race_on() || rdf_on()) { static char lbl[64][48]; static unsigned li; char *l = lbl[li++ & 63]; snprintf(l, 48, "upload ser=%llu %ux%u fmt=%#x", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); gpu_read_input((uint64_t)(uintptr_t)t->mem, t->L.size, l, 't'); }
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits, nd0 = g_nup_decs, nt0 = g_nup_tcas, nx0 = g_nup_tcxs;
         for (unsigned l = drop; enc_ok && l < d.mipmapLevelCount + drop; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -10839,63 +10848,182 @@ static const uint8_t *bound_uniform_bytes(uint64_t gpu, size_t size, id<MTLBuffe
    saw: a copy in the submission's arena. A range with GPU writes not yet complete (this or an earlier submission) is
    read live, so GPU-produced data is never replaced by a CPU copy. OOT_SBUF_SNAPSHOT=0 reads memory as before. */
 static uint64_t pool_range_write_fence(const p_bind_buf *u);
-static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e && atoi(e); } return on; }   // off by default (OOT_SBUF_SNAPSHOT=1): no visible effect; the white frames came from the uniform capture at a parked queue's stop
-typedef struct { uint64_t addr, size, sub, epoch, gpu; } sbuf_snap_ent;
+static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e ? atoi(e) : 0; } return on; }   // off by default; =1: ranges up to 256 KB; =<n> (n > 1): up to n KB (2026-11-09: 1024 covers the main scene's 720 KB block)
+static size_t sbuf_snap_limit(void) { int v = sbuf_snap_on(); return v > 1 ? (size_t)v << 10 : 262144; }
+typedef struct { uint64_t addr, size, sub, gpu; int npend; } sbuf_snap_ent;   // npend: pend entries at the copy; later entries of the same submission are checked for overlap (the table only grows within a submission)
 static sbuf_snap_ent g_sbuf_snap[256]; static uint64_t g_sbuf_snap_copies, g_sbuf_snap_hits, g_sbuf_snap_live, g_sbuf_snap_bytes;
 static uint64_t sbuf_snap_get(const p_bind_buf *u) {
-    if (u->size > 262144 || !mtl_addr_known(u->addr, u->size)) return 0;
+    if (u->size > sbuf_snap_limit() || !mtl_addr_known(u->addr, u->size)) return 0;
     if (pool_range_write_fence(u)) { g_sbuf_snap_live++; return 0; }   // GPU writes pending on these bytes: the GPU's own data
     unsigned h = (unsigned)(((u->addr >> 4) ^ u->size) * 2654435761u) & 255;
     sbuf_snap_ent *e = &g_sbuf_snap[h];
-    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && e->epoch == g_pool_write_epoch) { g_sbuf_snap_hits++; return e->gpu; }
+    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && !pend_over()) {   // same submission: still the bytes the GPU should read unless a write landed on the range since the copy
+        int clean = 1; for (int i = e->npend; i < g_npend; i++) if (u->addr < g_pend_hi[i] && u->addr + u->size > g_pend_lo[i]) { clean = 0; break; }
+        if (clean) { e->npend = g_npend; g_sbuf_snap_hits++; return e->gpu; } }
     __unsafe_unretained id<MTLBuffer> buf = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
     arena_alloc_u((size_t)u->size, &buf, &cpu, &gpu);
     memcpy(cpu, (const void *)(uintptr_t)u->addr, (size_t)u->size);
-    *e = (sbuf_snap_ent){u->addr, u->size, g_sub_serial, g_pool_write_epoch, gpu};
+    *e = (sbuf_snap_ent){u->addr, u->size, g_sub_serial, gpu, g_npend};
     g_sbuf_snap_copies++; g_sbuf_snap_bytes += u->size;
     static uint64_t last; uint64_t f = atomic_load(&g_cur_frame);
     if (f >= last + 600) { last = f; MLOG("[sbuf-snapshot] F%llu copies=%llu hits=%llu live=%llu bytes=%.1f MB", (unsigned long long)f, (unsigned long long)g_sbuf_snap_copies,
         (unsigned long long)g_sbuf_snap_hits, (unsigned long long)g_sbuf_snap_live, g_sbuf_snap_bytes / 1048576.0); }
     return gpu;
 }
-/* OOT_RACE_CHECK=1 (diagnostic, off by default, 2026-11-08 white frames): guest memory a draw or dispatch reads directly
-   (read-only storage buffers, uniform blocks read from live memory) is write-protected when encoded; once the submission
-   has completed on the GPU, a CPU write in between is reported once per address: the CPU changed bytes the GPU had not
-   finished reading. */
-static int race_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_RACE_CHECK"); on = e && atoi(e); } return on; }
+/* OOT_RACE_CHECK=1 (diagnostic, off by default, 2026-11-08 white frames; 2026-11-09 extended into the CPU/GPU frame
+   overlap inventory): guest memory a draw, dispatch or copy reads directly on the GPU (vertex / index buffers 'v' 'i',
+   read-only / writable storage buffers 's' 'w', uniform blocks read from live memory 'u', texture upload sources 't',
+   buffer copy sources 'c', indirect dispatch arguments 'a', mesh indirect count sources 'm') is write-protected when
+   encoded; once the submission has completed on the GPU, a CPU write in between is reported once per address: the CPU
+   changed bytes the GPU had not finished reading. With the dirty-page record ring (nvn_dirty_recent_snapshot) each
+   report names the writer (pc), when the write happened relative to the submission's commit, and how long before the
+   GPU completed the submission (the stall a write-time wait for that GPU work would have cost). Totals per kind and
+   histograms every 600 frames ([race-sum]). */
+static int race_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_RACE_CHECK"); on = e && atoi(e); if (on) nvn_dirty_recent_enable(); } return on; }
 typedef struct { uint64_t addr, size, stamp, hash; uint8_t *copy; const char *key; char kind; } race_ent;
-typedef struct { uint64_t serial, frame; int n; race_ent e[4096]; } race_list;
+typedef struct { uint64_t serial, frame, t_enc0, t_commit; _Atomic int done; int n; race_ent e[4096]; } race_list;
 static race_list *g_rl;
+static void race_commit_mark(void) { if (g_rl && g_rl->serial == g_sub_serial) g_rl->t_commit = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // writes before it happened during the encode
+#define RACE_KINDS 9
+static const char g_race_kind_ch[RACE_KINDS + 1] = "usivtcamw";
+static int race_kind_i(char k) { const char *p = strchr(g_race_kind_ch, k); return p ? (int)(p - g_race_kind_ch) : RACE_KINDS - 1; }
+static uint64_t g_race_noted_n[RACE_KINDS], g_race_noted_bytes[RACE_KINDS], g_race_hit_n[RACE_KINDS], g_race_hit_bytes[RACE_KINDS];
+static uint64_t g_race_lists, g_race_lists_hit, g_race_slack_h[7], g_race_maxslack_h[7], g_race_after_h[5], g_race_unknown_writer;
+typedef struct { uint64_t pc, off, n; const char *mod; char kind; } race_writer;
+static race_writer g_race_w[64]; static int g_race_nw;
+static int race_bucket(double ms) { return ms < 0.5 ? 0 : ms < 1 ? 1 : ms < 2 ? 2 : ms < 4 ? 3 : ms < 8 ? 4 : ms < 16 ? 5 : 6; }
+static int race_rec_cmp(const void *a, const void *b) { const nvn_dirty_rec *x = a, *y = b; return x->page < y->page ? -1 : x->page > y->page; }
 static uint64_t race_hash(const uint8_t *p, uint64_t n) { uint64_t h = 1469598103934665603ull; uint64_t w; size_t i = 0;
     for (; i + 8 <= n; i += 8) { memcpy(&w, p + i, 8); h = (h ^ w) * 1099511628211ull; } for (; i < n; i++) h = (h ^ p[i]) * 1099511628211ull; return h; }
 static void race_check(race_list *rl) {
-    static uint64_t logged[512]; static int nl; static uint64_t total;
+    static uint64_t logged[512]; static int nl; static uint64_t total, last_sum;
+    extern int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    static nvn_dirty_rec *recs; if (!recs) recs = malloc(sizeof *recs * 65536);
+    int nrecs = recs ? nvn_dirty_recent_snapshot(recs, 65536) : 0; if (nrecs > 1) qsort(recs, (size_t)nrecs, sizeof *recs, race_rec_cmp);
+    double maxslack = -1; int hits = 0;
     for (int i = 0; i < rl->n; i++) {
         const race_ent *e = &rl->e[i];
         int dirty = nvn_dirty_tracked((const void *)(uintptr_t)e->addr, (size_t)e->size) && nvn_dirty_since((const void *)(uintptr_t)e->addr, (size_t)e->size, e->stamp);
         int changed = dirty && (e->copy ? memcmp(e->copy, (const void *)(uintptr_t)e->addr, (size_t)e->size) != 0 : race_hash((const uint8_t *)(uintptr_t)e->addr, e->size) != e->hash);
         free(e->copy);
         if (!changed) continue;   // the page was written, these bytes were not
-        total++; int seen = 0; for (int k = 0; k < nl; k++) if (logged[k] == e->addr) { seen = 1; break; }
+        total++; hits++; int ki = race_kind_i(e->kind); g_race_hit_n[ki]++; g_race_hit_bytes[ki] += e->size;
+        uintptr_t lo = (uintptr_t)e->addr & ~(uintptr_t)16383, hi = (uintptr_t)(e->addr + e->size);   // the earliest recorded write to the entry's pages since the encode began
+        int a = 0, b = nrecs; while (a < b) { int m = (a + b) / 2; if (recs[m].page < lo) a = m + 1; else b = m; }
+        const nvn_dirty_rec *w = NULL; for (int k = a; k < nrecs && recs[k].page < hi; k++) if (recs[k].t >= rl->t_enc0 && (!w || recs[k].t < w->t)) w = &recs[k];
+        double after = w ? ((double)w->t - (double)rl->t_commit) / 1e6 : 0, slack = w ? ((double)now - (double)w->t) / 1e6 : 0;
+        const char *mn = "?"; uint64_t mo = 0;
+        if (w) { runtime_module_offset(w->pc, &mn, &mo); g_race_slack_h[race_bucket(slack)]++; g_race_after_h[after < 0 ? 0 : after < 1 ? 1 : after < 4 ? 2 : after < 8 ? 3 : 4]++; if (slack > maxslack) maxslack = slack;
+            int f = 0; for (int k = 0; k < g_race_nw; k++) if (g_race_w[k].pc == w->pc && g_race_w[k].kind == e->kind) { g_race_w[k].n++; f = 1; break; }
+            if (!f && g_race_nw < 64) g_race_w[g_race_nw++] = (race_writer){w->pc, mo, 1, mn, e->kind}; }
+        else g_race_unknown_writer++;
+        int seen = 0; for (int k = 0; k < nl; k++) if (logged[k] == e->addr) { seen = 1; break; }
         if (!seen && nl < 512) { logged[nl++] = e->addr;
-            MLOG("[race] F%llu sub=%llu %c addr=%#llx size=%llu shader=%.20s: the CPU wrote it before the GPU finished this submission (%llu so far)",
-                 (unsigned long long)rl->frame, (unsigned long long)rl->serial, e->kind, (unsigned long long)e->addr, (unsigned long long)e->size, e->key ? e->key : "-", (unsigned long long)total); }
+            MLOG("[race] F%llu sub=%llu %c addr=%#llx size=%llu shader=%.20s: the CPU wrote it before the GPU finished this submission (%llu so far); %s%s+%#llx%s, %+.2f ms after the commit, %.2f ms before the GPU was done",
+                 (unsigned long long)rl->frame, (unsigned long long)rl->serial, e->kind, (unsigned long long)e->addr, (unsigned long long)e->size, e->key ? e->key : "-", (unsigned long long)total,
+                 w ? "writer " : "writer unknown ", mn, (unsigned long long)mo, w && w->src ? " (host write)" : "", after, slack); }
     }
-    free(rl);
+    g_race_lists++; if (hits) { g_race_lists_hit++; if (maxslack >= 0) g_race_maxslack_h[race_bucket(maxslack)]++; }
+    if (rl->frame >= last_sum + 600) { last_sum = rl->frame;
+        char kinds[512]; int n = 0;
+        for (int k = 0; k < RACE_KINDS; k++) n += snprintf(kinds + n, sizeof kinds - (size_t)n, " %c=%llu/%llu(%.2f/%.2fMB)", g_race_kind_ch[k], (unsigned long long)g_race_hit_n[k], (unsigned long long)g_race_noted_n[k], g_race_hit_bytes[k] / 1048576.0, g_race_noted_bytes[k] / 1048576.0);
+        MLOG("[race-sum] F%llu races=%llu submissions-with-races=%llu/%llu unknown-writer=%llu | raced/noted per kind (count, MB):%s", (unsigned long long)rl->frame, (unsigned long long)total,
+             (unsigned long long)g_race_lists_hit, (unsigned long long)g_race_lists, (unsigned long long)g_race_unknown_writer, kinds);
+        const uint64_t *s = g_race_slack_h, *x = g_race_maxslack_h, *f = g_race_after_h;
+        MLOG("[race-sum] ms before the GPU was done (per race): <0.5 %llu <1 %llu <2 %llu <4 %llu <8 %llu <16 %llu >=16 %llu | per submission (max): <0.5 %llu <1 %llu <2 %llu <4 %llu <8 %llu <16 %llu >=16 %llu | written: during the encode %llu, after the commit <1 ms %llu <4 %llu <8 %llu >=8 %llu",
+             (unsigned long long)s[0], (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)s[3], (unsigned long long)s[4], (unsigned long long)s[5], (unsigned long long)s[6],
+             (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2], (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6],
+             (unsigned long long)f[0], (unsigned long long)f[1], (unsigned long long)f[2], (unsigned long long)f[3], (unsigned long long)f[4]);
+        for (int r = 0; r < 12; r++) { int best = -1; for (int k = 0; k < g_race_nw; k++) if (g_race_w[k].n && (best < 0 || g_race_w[k].n > g_race_w[best].n)) best = k; if (best < 0) break;
+            MLOG("[race-sum] writer %s+%#llx kind %c: %llu races since the last summary", g_race_w[best].mod, (unsigned long long)g_race_w[best].off, g_race_w[best].kind, (unsigned long long)g_race_w[best].n); g_race_w[best].n = 0; }
+    }
+    atomic_store(&rl->done, 1);   // race_note frees a finished list when the next submission starts one
 }
 static void race_note(uint64_t addr, uint64_t size, const char *key, char kind) {
     if (!race_on() || !addr || !size || size > (64u << 20) || !nvn_dirty_tracked((const void *)(uintptr_t)addr, (size_t)size)) return;
-    if (!g_rl || g_rl->serial != g_sub_serial) {
-        g_rl = calloc(1, sizeof *g_rl); if (!g_rl) MDIE("race list"); g_rl->serial = g_sub_serial; g_rl->frame = atomic_load(&g_cur_frame);
-        race_list *rl = g_rl; if (g_commit_blocks) [g_commit_blocks addObject:^{ race_check(rl); }];
+    if (g_rl && g_rl->serial != g_sub_serial) { if (atomic_load(&g_rl->done)) free(g_rl); g_rl = NULL; }   // an unfinished list stays with its completion block (a bounded leak); before, it was freed there while still referenced here
+    if (!g_rl) {
+        g_rl = calloc(1, sizeof *g_rl); if (!g_rl) MDIE("race list"); g_rl->serial = g_sub_serial; g_rl->frame = atomic_load(&g_cur_frame); g_rl->t_enc0 = g_rl->t_commit = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        race_list *rl = g_rl; if (g_commit_blocks) [g_commit_blocks addObject:^{ race_check(rl); }]; else atomic_store(&rl->done, 1);
     }
     for (int i = g_rl->n - 1; i >= 0 && i >= g_rl->n - 64; i--) if (g_rl->e[i].addr == addr && g_rl->e[i].size == size) return;
     if (g_rl->n >= 4096) return;
+    { int ki = race_kind_i(kind); g_race_noted_n[ki]++; g_race_noted_bytes[ki] += size; }
     uint64_t st = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size);
     race_ent e = {addr, size, st, 0, NULL, key, kind};
     if (size <= 65536) { e.copy = malloc((size_t)size); if (e.copy) memcpy(e.copy, (const void *)(uintptr_t)addr, (size_t)size); }
     else e.hash = race_hash((const uint8_t *)(uintptr_t)addr, size);
     g_rl->e[g_rl->n++] = e;
+}
+/* OOT_GPU_READ_FENCE=1 (2026-11-09, default off until measured): every guest range a submission reads on the GPU is
+   marked per page with the submission's fence and set read-only (nvn_dirty_read_mark); a CPU write to such a page waits in
+   the page-fault handler until that submission has completed. With TOTK_SYNC_LAG=2 (the game's frame-start wait relaxed
+   by a frame) this keeps the CPU from overwriting what the GPU still reads: the wait moves from "the whole previous
+   frame, at frame start" to "this page's last reader, at the write". The encoding thread is exempt while it encodes. */
+static int rdf_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_GPU_READ_FENCE"); on = e && atoi(e);
+    if (on) { nvn_dirty_read_fence_setup(&g_done, &g_fence); MLOG("[gpu-read-fence] on: a CPU write to a page a pending submission reads waits for that submission"); } } return on; }
+static const char *g_rdm_key[1024]; static char g_rdm_kind[1024];   // marker ids for the wait log: (shader key / label pointer, kind) -> 1..1024
+/* OOT_NOREAD_PROBE=1 (diagnostic, 2026-11-09): the storage buffers bound writable by this frame's shaders are made inaccessible at
+   the present; the first CPU access to each page (read or write) in the next frame is recorded with its pc (nvn_dirty_noread_mark).
+   Answers whether the game reads GPU results back and where, i.e. whether those buffers could get per-frame GPU copies. */
+static int noread_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_NOREAD_PROBE"); on = e && atoi(e); } return on; }
+typedef struct { uint64_t addr, size; const char *key; } wr_range; static wr_range g_wr_tab[256], g_wr_last[256]; static int g_wr_n, g_wr_last_n;
+static void noread_add(uint64_t addr, uint64_t size, const char *key) {
+    for (int i = 0; i < g_wr_n; i++) if (g_wr_tab[i].addr == addr) { if (size > g_wr_tab[i].size) g_wr_tab[i].size = size; return; }
+    if (g_wr_n < 256) g_wr_tab[g_wr_n++] = (wr_range){addr, size, key};
+}
+void mtl_noread_mark_frame(void) {
+    if (!noread_on()) return;
+    memcpy(g_wr_last, g_wr_tab, sizeof g_wr_tab); g_wr_last_n = g_wr_n; g_wr_n = 0;
+    for (int i = 0; i < g_wr_last_n; i++) nvn_dirty_noread_mark((const void *)(uintptr_t)g_wr_last[i].addr, (size_t)g_wr_last[i].size);
+}
+static void noread_drain_log(void) {
+    if (!noread_on()) return;
+    static nvn_nr_event ev[256]; static int lines; static uint64_t reads, writes, last_sum; extern int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
+    uint64_t f = atomic_load(&g_cur_frame); int n;
+    while ((n = nvn_dirty_noread_events(ev, 256)) > 0) {
+        for (int i = 0; i < n; i++) { if (ev[i].write) writes++; else reads++;
+            if (f < 1000 || lines >= 600) continue; lines++;
+            const wr_range *w = NULL; for (int k = 0; k < g_wr_last_n; k++) if (ev[i].addr >= (g_wr_last[k].addr & ~(uint64_t)16383) && ev[i].addr < g_wr_last[k].addr + g_wr_last[k].size) { w = &g_wr_last[k]; break; }
+            const char *mn = "?"; uint64_t mo = 0; runtime_module_offset(ev[i].pc, &mn, &mo);
+            MLOG("[noread] F%llu %s addr=%#lx range=%#llx+%llu off=%lld shader=%.12s pc=%s+%#llx", (unsigned long long)f, ev[i].write ? "WRITE" : "read", (unsigned long)ev[i].addr,
+                 w ? (unsigned long long)w->addr : 0ull, w ? (unsigned long long)w->size : 0ull, w ? (long long)(ev[i].addr - w->addr) : -1ll, w && w->key ? w->key : "-", mn, (unsigned long long)mo); }
+    }
+    if (f >= last_sum + 600) { last_sum = f; MLOG("[noread] F%llu first accesses to GPU-written pages so far: reads=%llu writes=%llu (ranges marked last frame: %d)", (unsigned long long)f, (unsigned long long)reads, (unsigned long long)writes, g_wr_last_n); }
+}
+static uint64_t g_mb_srccpu;   // OOT_MESH_SRC_CPU: mesh counts taken from memory at the encode (nvn_mesh_batch.inc / nvn_mesh_indirect.inc)
+/* OOT_MESH_SRC_CPU (default: on with OOT_GPU_READ_FENCE): a mesh draw's 8-byte count source with no GPU write pending is read
+   on the CPU at the encode, like the game's own value at submit time, instead of by the batch kernel / a blit at GPU time.
+   The GPU then reads no live memory for it, and the CPU's rewrite of the count in the next frame races nothing. */
+static int mesh_src_cpu_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_MESH_SRC_CPU"); on = e ? atoi(e) : -2; } return on == -2 ? rdf_on() : on; }
+static void rdf_drain_log(void) {   // the CPU writes that waited since the last call, attributed (in-world frames, at most 800 lines)
+    if (!rdf_on()) return;
+    static nvn_rd_event ev[256]; static int lines; extern int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
+    int n; while ((n = nvn_dirty_read_wait_events(ev, 256)) > 0) {
+        uint64_t f = atomic_load(&g_cur_frame); if (f < 1000 || lines >= 800) continue;
+        for (int i = 0; i < n && lines < 800; i++) { const char *mn = "?"; uint64_t mo = 0; runtime_module_offset(ev[i].pc, &mn, &mo); lines++;
+            const char *lab = ev[i].marker ? g_rdm_key[ev[i].marker - 1] : NULL;
+            MLOG("[rd-wait] F%llu fence=%llu now-fence=%llu done=%llu page=%#lx kind=%c shader=%.16s writer=%s+%#llx%s ms=%.2f", (unsigned long long)f, (unsigned long long)ev[i].fence,
+                 (unsigned long long)g_fence, (unsigned long long)__atomic_load_n(&g_done, __ATOMIC_ACQUIRE), (unsigned long)ev[i].page, ev[i].kind ? ev[i].kind : '?', lab ? lab : "-",
+                 mn, (unsigned long long)mo, ev[i].host ? " (host)" : "", ev[i].ns / 1e6); }
+    }
+}
+static void gpu_read_input(uint64_t addr, uint64_t size, const char *key, char kind) {
+    if (rdf_on() && g_commit_blocks && addr && size && size <= (256u << 20)) {   // inside a submission only: the mark is the in-progress fence
+        if (!key) key = "-";
+        unsigned h = (unsigned)((((uintptr_t)key >> 3) * 2654435761u) >> 22) & 1023, tries = 0;
+        while (tries++ < 1024 && g_rdm_key[h] && (g_rdm_key[h] != key || g_rdm_kind[h] != kind)) h = (h + 1) & 1023;
+        if (!g_rdm_key[h]) { g_rdm_key[h] = key; g_rdm_kind[h] = kind; }
+        nvn_dirty_read_mark((const void *)(uintptr_t)addr, (size_t)size, g_fence + 1, (uint16_t)(h + 1), (uint8_t)kind);
+        static uint64_t last; uint64_t f = atomic_load(&g_cur_frame);
+        if (f >= last + 600) { last = f; uint64_t marks, pages, waits, ns, mx, to; nvn_dirty_read_wait_stats(&marks, &pages, &waits, &ns, &mx, &to);
+            MLOG("[gpu-read-fence] F%llu marks=%llu pages=%llu | CPU writes that waited=%llu total %.1f ms max %.2f ms timeouts=%llu | mesh-src-cpu=%llu sbuf-snapshot copies=%llu hits=%llu live=%llu %.1f MB", (unsigned long long)f,
+                 (unsigned long long)marks, (unsigned long long)pages, (unsigned long long)waits, ns / 1e6, mx / 1e6, (unsigned long long)to, (unsigned long long)g_mb_srccpu,
+                 (unsigned long long)g_sbuf_snap_copies, (unsigned long long)g_sbuf_snap_hits, (unsigned long long)g_sbuf_snap_live, g_sbuf_snap_bytes / 1048576.0); }
+    }
+    if (noread_on() && kind == 'w' && addr && size && size <= (16u << 20)) noread_add(addr, size, key);
+    if (race_on()) race_note(addr, size, key, kind);
 }
 /* OOT_SNAPTRACE=<key prefix> (diagnostic, 2026-11-08): for graphics uniform bindings of shaders with this key prefix that
    use a snapshot: compare snapshot vs memory at encode, then memory at GPU completion vs both, with CPU dirty tracking
@@ -12208,7 +12336,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && ui_mat_on()) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             else { const usnap_t *sc = usnap_skipped(u->size, 0) || usnap_key_skipped(sh ? sh->key : NULL, reg) ? NULL : usnap_find(u->addr, u->size ? u->size : 1); if (sc) { gpu = sc->gpu + (u->addr - sc->lo); snaptrace(sh ? sh->key : NULL, reg, u->addr, u->size, sc->cpu + (u->addr - sc->lo)); } }   // TOTK: contents as of the submit call
-            if (race_on() && !ren && !usnap_find(u->addr, u->size ? u->size : 1)) race_note(u->addr, u->size, sh ? sh->key : NULL, 'u');
+            if ((race_on() || rdf_on()) && !ren && !usnap_find(u->addr, u->size ? u->size : 1)) gpu_read_input(u->addr, u->size, sh ? sh->key : NULL, 'u');
             if (watch_fs_prefix()) watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, gpu, (__bridge id<MTLBuffer>)mb, ren ? "renamed" : usnap_find(u->addr, u->size ? u->size : 1) ? "snapshot" : "live");
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
@@ -12335,11 +12463,12 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 else if (upd_overlap_seq(u->addr, u->addr + (u->size ? u->size : 1))) { g_ren_late++; RED_ONCE(59, "存储缓冲 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)u->addr); }
             }
             if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) usnap_drop(u->addr, u->size ? u->size : 1);   // TOTK: the shader may write it: no stale uniform copy from here on
-            if (b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && race_on()) race_note(u->addr, u->size, sh ? sh->key : NULL, 's');
+            uint64_t sgpu = !ren && b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && u->size && sbuf_snap_on() ? sbuf_snap_get(u) : 0;   // OOT: a small read-only storage buffer as of the encode: the GPU reads no live memory, so no read-fence mark either
+            if (b->kind == NVN_RB_SBUFP && u && u->addr && !sgpu) gpu_read_input(u->addr, u->size, sh ? sh->key : NULL, b->rw ? 'w' : 's');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE (GPU writes do not fault and are not counted)
             const usnap_t *usc = !ren && b->kind == NVN_RB_UBOP && u && u->addr && !usnap_skipped(u->size, 1) ? usnap_find(u->addr, u->size ? u->size : 1) : NULL;   // TOTK: compute uniforms as of the submit call
             if (ren) { slots[aid] = ren; USE(dummy_buf(), MTLResourceUsageRead); }
             else if (usc) { slots[aid] = usc->gpu + (u->addr - usc->lo); USE(dummy_buf(), MTLResourceUsageRead); }
-            else if (b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && u->size && sbuf_snap_on() && (gpu = sbuf_snap_get(u))) { slots[aid] = gpu; USE(dummy_buf(), MTLResourceUsageRead); }
+            else if (sgpu) { slots[aid] = sgpu; USE(dummy_buf(), MTLResourceUsageRead); }
             else if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) { /* TOTK: first 16 bytes and the count of non-zero 32-bit words (CPU view of the pool: what earlier GPU work left there) */
@@ -16878,6 +17007,7 @@ static void dispatch(const p_dispatch *dp) {
         if (!mtl_gpu_addr(dp->indirect, 12, &indirect_buffer, &indirect_offset, &indirect_gpu))
             MDIE("indirect dispatch argument range is not mapped: %#llx", (unsigned long long)dp->indirect);
         use_rec("buf", dp->indirect, 12, 0, NULL);
+        gpu_read_input(dp->indirect, 12, "dispatch-indirect", 'a');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the GPU reads the arguments at execution
     }
     const prog_t *cp = S.cprog ? S.cprog : S.prog;   // the compute program (S.cprog); a probe that sets S.prog only, as before
     if (!cp) { RED_ONCE(27, "派发前没有绑定程序"); return; }
@@ -17250,6 +17380,7 @@ static void copy_b2t(const p_copy_b2t *c) {
         defer_obj_release(tb);   // 本次提交跑完再放（并撤驻留） | Release after this submit has finished running (and remove from residency)
         return;
     }
+    gpu_read_input(c->src, img * (uint64_t)nz, "copy-b2t-src", 'c');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the GPU reads the source at execution
     id<MTL4ComputeCommandEncoder> b = blit();
     if (is3d)
         enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo, row, img, MTLSizeMake(c->r.width, c->r.height, nz), t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset));
@@ -17643,11 +17774,11 @@ static void race_draw(uint32_t op, const void *a) {
     uint32_t count = 0, isz = 0; uint64_t ibuf = 0; uint32_t instances = 1;
     if (op == OP_DRAW) { const p_draw *d = a; count = (uint32_t)(d->first + d->count); instances = d->instances > 0 ? (uint32_t)d->instances : 1; }
     else { const p_draw_idx *d = a; ibuf = d->ibuf; isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4; count = (uint32_t)d->count; instances = d->instances > 0 ? (uint32_t)d->instances : 1;
-        if (ibuf && count) race_note(ibuf, (uint64_t)count * isz, "index", 'i'); }
+        if (ibuf && count) gpu_read_input(ibuf, (uint64_t)count * isz, "index", 'i'); }
     uint32_t seen = 0;
     for (int i = 0; i < S.nattr && i < 16; i++) { int st = S.attr[i].stream; if (st < 0 || st >= 16 || (seen >> st & 1) || !S.vbuf[st].address) continue; seen |= 1u << st;
         uint64_t n = S.vbuf[st].size; if (!n && op == OP_DRAW) n = (uint64_t)S.stream[st].stride * (S.stream[st].divisor ? instances : count);
-        if (n) race_note(S.vbuf[st].address, n, "vertex", 'v'); }
+        if (n) gpu_read_input(S.vbuf[st].address, n, "vertex", 'v'); }
 }
 void mtl_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
@@ -17675,7 +17806,7 @@ void mtl_exec(const uint8_t *p) {
         if (g_cg_pending && !cg_op_safe(h.op)) { g_cg.reason[1]++; cg_flush(); }   // TOTK: cube-face-set groups pend only across state / binding ops (nvn_cube_group.h)
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
-        if ((h.op == OP_DRAW || h.op == OP_DRAW_IDX) && race_on()) race_draw(h.op, a);
+        if ((h.op == OP_DRAW || h.op == OP_DRAW_IDX) && (race_on() || rdf_on())) race_draw(h.op, a);
         mesh_indirect_op(h.op,a);
         mesh_batch_op(h.op,a);
         switch (h.op) {

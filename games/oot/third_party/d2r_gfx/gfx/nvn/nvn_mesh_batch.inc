@@ -181,6 +181,8 @@ static void mesh_batch_prepare(uint64_t current) {
     for(unsigned k=0;k<n;k++){
         uint64_t address=sources[k],stamp=nvn_dirty_now();nvn_dirty_protect((void *)(uintptr_t)address,8);
         unsigned slot=g_mb_n;for(unsigned j=0;j<g_mb_n;j++)if(g_mb[j].source==address){slot=j;break;}
+        if(!fill[k].cpu&&mesh_src_cpu_on()){upd_guard(address,address+8);p_bind_buf pb={0};pb.addr=address;pb.size=8;   // OOT_MESH_SRC_CPU: the count as of the encode when no GPU write is pending on it
+            if(!pool_range_write_fence(&pb)){uint32_t w[2];memcpy(w,(const void *)(uintptr_t)address,8);fill[k]=(mb_fill){NULL,w[0],w[1],1,0};g_mb_srccpu++;}}
         if(fill[k].cpu){   // the value is the update's bytes: written here, the kernel skips the job (source 0)
             outs[k*4]=fill[k].cnt;outs[k*4+1]=1;outs[k*4+2]=1;outs[k*4+3]=fill[k].first;jobs[k]=(job){0,out+(uint64_t)k*16};g_mb_cpu++;issued++;
             if(fill[k].next&&slot<g_mb_n){mesh_batch_entry *e=&g_mb[slot];e->next_grid=out+(uint64_t)k*16;e->next_cnt=fill[k].cnt;e->next_first=fill[k].first;e->next_applied=fill[k].a;continue;}
@@ -188,6 +190,7 @@ static void mesh_batch_prepare(uint64_t current) {
         }
         upd_guard(address,address+8);
         void *source;uint64_t offset,gpu;if(!mtl_gpu_addr(address,8,&source,&offset,&gpu))continue;
+        gpu_read_input(address,8,"mesh-batch-src",'m');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the batch kernel reads the source on the GPU
         jobs[k]=(job){gpu,out+(uint64_t)k*16};
         if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=jobs[k].output,.stamp=stamp,.hostwrite=hostwrite};issued++;gpu_jobs++;
     }

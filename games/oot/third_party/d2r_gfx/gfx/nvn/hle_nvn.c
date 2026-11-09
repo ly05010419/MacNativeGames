@@ -3680,6 +3680,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         trow(f, "@faults", (double)(fa_ - pfa)); trow(f, "@reuploads", (double)(re_ - pre_)); pfa = fa_; pre_ = re_;
         static uint64_t pmc, pmp, pmn; uint64_t mc_, mpg_, mn_; nvn_dirty_mp_stats(&mc_, &mpg_, &mn_);
         trow(f, "@mprotect_calls", (double)(mc_ - pmc)); trow(f, "@mprotect_pages", (double)(mpg_ - pmp)); trow(f, "@mprotect_ms", (mn_ - pmn) / 1e6); pmc = mc_; pmp = mpg_; pmn = mn_;
+        { static uint64_t prw, prn; uint64_t rm_, rp_, rw_, rn_, rx_, rt_; nvn_dirty_read_wait_stats(&rm_, &rp_, &rw_, &rn_, &rx_, &rt_);   // OOT_GPU_READ_FENCE: CPU writes that waited for a GPU reader
+          trow(f, "@rd_waits", (double)(rw_ - prw)); trow(f, "@rd_wait_ms", (rn_ - prn) / 1e6); prw = rw_; prn = rn_; }
         double up_ms = mtl_upload_ns_take() / 1e6; trow(f, "@upload_ms", up_ms);
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）
@@ -3735,7 +3737,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
     prev_in = t0; prev_pass = ps; prev_draw = dr;
     dump_frame();
-    if (sync_lag_frame_on()) { int tk; uint64_t fz = fence_now(&tk); if (!tk && fz) g_pf_fence[g_pf_n++ & 15] = fz; }   // the fence that ends this frame (TOTK_SYNC_LAG=2)
+    mtl_noread_mark_frame();   // OOT_NOREAD_PROBE (no-op unless set)
+    if (sync_lag_frame_on()) { int tk; uint64_t fz = fence_now(&tk); if (!tk && fz) { g_pf_fence[g_pf_n++ & 15] = fz;   // the fence that ends this frame (TOTK_SYNC_LAG=2)
+        if (synclog_env() && g_frame >= 1000) LOG("[rd-frame] F%llu present-fence=%llu", (unsigned long long)g_frame, (unsigned long long)fz); } }   // with TOTK_SYNC_LOG: the frame's last fence, for the [rd-wait] attribution
     if (g_frame % TWIN == 0) tsummary(g_frame);
     if (call_stats_on() && g_frame % 300 == 0) {
         static uint64_t pd; uint64_t ps2, dr2; mtl_stats(&ps2, &dr2); uint64_t all = dr2 - pd; pd = dr2;
