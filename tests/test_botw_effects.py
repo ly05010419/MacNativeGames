@@ -36,13 +36,23 @@ class AoSwitch(unittest.TestCase):
         self.assertLess(body.index(switch), body.index('if (all(p == float4(0.0))) return stock;'))
         self.assertIn('if (fmod(p.w, 2.0) >= 0.5)', helper('k_ssao_helper_totk'))   # TOTK's own, unchanged
 
-    def test_available_on_190_only_and_only_ao(self):
+    def test_available_on_190_only_ao_and_grass(self):
         avail = branch(FX, 'int dm_gfx_fx_available(int i) {', '\n}\n')
         botw190 = branch(avail, '#if defined(GAME_BOTW190)', '#elif')
-        self.assertIn('return i == FX_AO && ssao_on();', botw190)
+        self.assertIn('return (i == FX_AO && ssao_on()) || i == FX_GRASS;', botw190)
         self.assertIn('(void)i; return 0;', branch(avail, '#elif defined(GAME_BOTW)', '#else'))
         self.assertIn('{"ao", ', FX)
         self.assertIn('if (i == FX_AO) ssao_set_off(!on);', FX)              # the switch writes the helper's w
+
+    def test_grass_is_its_own_fragment_vertex_pair_on_190(self):
+        table = branch(FX, 'static const fx_effect k_fx[] = {', '\n};\n')
+        botw190 = branch(table, '#if defined(GAME_BOTW190)', '#else')
+        self.assertIn('{"grass", "草", "Grass", {"d0cead9357ae8c7b/9a3f53268b7c3433"}, {0}},', botw190)   # P8: the pair seen
+        self.assertIn('{"grass", "草", "Grass", {"33099f8c133950f5"}, {0}},', branch(table, '#else', '#endif'))   # TOTK's unchanged
+        self.assertEqual(table.count('{"grass", '), 2)
+        self.assertIn('FX_GRASS = 2', FX)
+        ids = re.findall(r'\{"(\w+)", "', table)
+        self.assertEqual(ids[:3], ['ao', 'shadow', 'grass'])   # FX_GRASS = 2 names it, on both sides of the #if
 
 
 class Page(unittest.TestCase):
