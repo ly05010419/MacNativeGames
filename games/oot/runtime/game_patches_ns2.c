@@ -376,7 +376,7 @@ static void patch_pokopia_display(Module *m) {
 /* Settings panel "Resolution" (height; 0 = the default fixed size), in force at once: patch_oot_scale_live. Scales measured:
    handheld is linear; docked moves in steps, so 720/900/1080 are the nearest sizes reached (1275x717, 1586x892, 1906x1072). */
 enum { OOT_SCALE_CELL = 48, OOT_SCALE_APPLY_CELL = 52 };
-static _Atomic uint32_t *oot_scale_cell, *oot_scale_apply_cell; static float oot_scale_base; static int oot_internal_h;
+static _Atomic uint32_t *oot_scale_cell, *oot_scale_apply_cell; static float oot_scale_base, oot_scale_listed; static int oot_internal_h;
 static float oot_internal_scale(int h) {
     int hh = runtime_handheld_mode();
     switch (h) {
@@ -388,18 +388,89 @@ static float oot_internal_scale(int h) {
     return oot_scale_base;
 }
 int runtime_oot_internal_res(void) { return oot_internal_h; }
-void runtime_oot_internal_res_set(int h) {
-    oot_internal_h = h;
-    if (!oot_scale_cell) return;
-    float s = oot_internal_scale(h); uint32_t bits; memcpy(&bits, &s, sizeof bits); atomic_store(oot_scale_cell, bits);
+/* Any render scale, applied at once (also "flag oot_scale <scale * 10000>", to measure which scale gives which size). */
+static void oot_scale_write(float s) {
+    uint32_t bits; memcpy(&bits, &s, sizeof bits); atomic_store(oot_scale_cell, bits);
     if (oot_scale_apply_cell) atomic_store(oot_scale_apply_cell, 1);   /* the game's frame code applies it (patch_oot_scale_live) */
-    fprintf(stderr, "[oot] internal resolution setting %d: scale %g\n", h, s);
+    fprintf(stderr, "[oot] render scale %g\n", s);
+}
+void runtime_oot_scale_set(float s) {   /* before the patch: the scale it starts with */
+    if (!(s > 0 && s <= 1)) return;
+    oot_scale_listed = s;
+    if (oot_scale_cell) oot_scale_write(s);
+}
+void runtime_oot_internal_res_set(int h) {
+    oot_internal_h = h; oot_scale_listed = 0;
+    if (!oot_scale_cell) return;
+    fprintf(stderr, "[oot] internal resolution setting %d\n", h);
+    oot_scale_write(oot_internal_scale(h));
 }
 /* Changing the resolution while the game runs (2026-11-09). With its dynamic resolution off the game takes the scale only when
    the controller reports a change: main+0x31d3ee0 calls the controller (0x805aa0) and, on the report, writes the scale to the
    render view's field +0xe5c, which is read every frame (found with mscan watch; writing it moved the main pass from 1536x864
    to 1275x717 and 1906x1072 at once, claude/oot-depth-unify g15). So the instruction after that call branches here: when the
    settings panel asks (the apply cell), the veneer stores the cell's scale there the way the game does, scale * +0xe58 / +0xe50. */
+/* The output canvas (2026-11-09). When the game lays out its display (an operation mode change: docking) it computes the canvas
+   size and stores it at main+0x6505fc, then 0x1087f40 keeps it; the window crop and the render targets read that. The veneer
+   puts the size of the data-page cell there instead, while the cell is not zero. */
+static _Atomic uint64_t *oot_output_cell;
+void runtime_oot_output_size_set(unsigned w, unsigned h) {
+    if (!oot_output_cell) return;
+    atomic_store(oot_output_cell, (uint64_t)h << 32 | w);
+    fprintf(stderr, "[oot] output canvas requested: %ux%u\n", w, h);
+}
+/* The resolution list of the settings panel: the canvas, and MetalFX to the window for the "+ MetalFX" entries (index 0: the
+   game's own canvas). A change takes effect when the game lays out its display again, which it does when the operation mode
+   changes: the mode is reported as the other one for a moment and then back (the notification alone is not enough, g28). */
+static uint64_t oot_output_pending; static _Atomic int oot_flip_busy, oot_flip_again;
+extern void runtime_operation_mode_report(int docked);
+static void *oot_canvas_flip(void *arg) {
+    (void)arg; int docked = !runtime_handheld_mode();
+    do { atomic_store(&oot_flip_again, 0); runtime_operation_mode_report(!docked); usleep(400000); runtime_operation_mode_report(docked); usleep(100000); } while (atomic_exchange(&oot_flip_again, 0));
+    atomic_store(&oot_flip_busy, 0); return NULL;
+}
+/* The resolution row (user 2026-11-09): the canvas is the picture, the 3D sits inside it at the listed scale, and the one
+   upscale between them is the game's network or MetalFX, as the "Upscaler" row says. Docked scales move in steps; these were
+   measured (claude/oot-depth-unify g34, g36): 0.6667 gives 854x480 in 1280x720 and 1280x720 in 1920x1080, 0.75 gives 1920x1080
+   in 2560x1440. 6 and 7 need a 4K canvas, which crashes at scale 1 (issues_lessons 2026-11-09): not in the list.
+   0, the default (user 2026-11-09), is 854x480 in 1280x720; 8 is the same (saved by an earlier list); 9 is the game's own
+   picture (docked 1536x864 in 2048x1152). */
+void runtime_oot_canvas_set(int index, int live) {
+    static const struct { unsigned w, h; float scale; } list[] = {{1280,720,0.6667f},{1280,720,1},{1920,1080,0.6667f},{1920,1080,1},{2560,1440,0.75f},{2560,1440,1},{3840,2160,0.6667f},{3840,2160,1},{1280,720,0.6667f},{0,0,0}};
+    if (index < 0 || index >= (int)(sizeof list / sizeof *list)) return;
+    extern void dm_gfx_set_flag(const char *name, int value);
+    uint64_t size = (uint64_t)list[index].h << 32 | list[index].w;
+    if (oot_output_cell) atomic_store(oot_output_cell, size); else oot_output_pending = size;
+    if (list[index].scale > 0) runtime_oot_scale_set(list[index].scale); else runtime_oot_internal_res_set(0);   /* 9: the game's fixed scale */
+    dm_gfx_set_flag("mfx_upscale", 0); dm_gfx_set_flag("mfx_output", 0);   /* no second upscale after the canvas */
+    fprintf(stderr, "[oot] resolution %d: canvas %ux%u, 3D scale %g\n", index, list[index].w, list[index].h, (double)list[index].scale);
+    if (!live || !oot_output_cell) return;
+    if (atomic_exchange(&oot_flip_busy, 1)) { atomic_store(&oot_flip_again, 1); return; }
+    pthread_t t; if (pthread_create(&t, NULL, oot_canvas_flip, NULL)) atomic_store(&oot_flip_busy, 0); else pthread_detach(t);
+}
+enum { OOT_OUTPUT_CELL = 64 };
+static void patch_oot_output_size(Module *m, uint64_t page) {
+    const uint64_t site = 0x6505fc; uint32_t have; memcpy(&have, m->base + site, 4);
+    if (have != 0x290227e8) runtime_fail("OOT output size site differs from verified update 131072");
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8 + 16 + 24 + 48, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    int64_t pages = ((int64_t)page - (int64_t)(stub & ~4095ULL)) / 4096;
+    uint32_t cell = (OOT_OUTPUT_CELL + (uint32_t)(page & 4095)) / 8;
+    uint32_t code[7] = {
+        0x90000010 | (((uint32_t)pages & 3) << 29) | ((((uint32_t)pages >> 2) & 0x7ffff) << 5),    /* adrp x16, page */
+        0xf9400211 | cell << 10,    /* ldr x17, [x16, #cell] */
+        0xb4000071,                 /* cbz x17, the original instruction */
+        0x2a1103e8,                 /* mov w8, w17 */
+        0xd360fe29,                 /* lsr x9, x17, #32 */
+        have,
+        oot_step_branch(stub + 24, site + 4) };
+    if (stub + sizeof code > rx_end || page + OOT_OUTPUT_CELL + 8 > m->size) runtime_fail("OOT output size: no room left");
+    for (uint64_t k = stub; k < stub + sizeof code; k++) if (m->base[k]) runtime_fail("OOT output size: text padding already in use");
+    for (uint64_t k = page + OOT_OUTPUT_CELL; k < page + OOT_OUTPUT_CELL + 8; k++) if (m->base[k]) runtime_fail("OOT output size: data page already in use");
+    oot_output_cell = (_Atomic uint64_t *)(void *)(m->base + page + OOT_OUTPUT_CELL);
+    if (oot_output_pending) atomic_store(oot_output_cell, oot_output_pending);
+    memcpy(m->base + stub, code, sizeof code);
+    uint32_t b = oot_step_branch(site, stub); memcpy(m->base + site, &b, 4);
+}
 static void patch_oot_scale_live(Module *m, uint64_t page) {
     const uint64_t site = 0x31d3ee4; uint32_t have; memcpy(&have, m->base + site, 4);
     if (have != 0xd3609c08) runtime_fail("OOT resolution apply site differs from verified update 131072");   /* ubfx x8, x0, #32, #8 */
@@ -446,12 +517,14 @@ static void patch_oot_fixed_res(Module *m) {
     for (uint64_t k = stub; k < stub + sizeof veneer; k++) if (m->base[k]) runtime_fail("OOT fixed resolution: text padding already in use");
     for (uint64_t k = page + OOT_SCALE_CELL; k < page + OOT_SCALE_CELL + 4; k++) if (m->base[k]) runtime_fail("OOT fixed resolution: data page already in use");
     oot_scale_base = s; oot_scale_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_SCALE_CELL);
-    if (oot_internal_h) { float c = oot_internal_scale(oot_internal_h); memcpy(&bits, &c, sizeof bits); }
+    if (oot_scale_listed > 0) memcpy(&bits, &oot_scale_listed, sizeof bits);
+    else if (oot_internal_h) { float c = oot_internal_scale(oot_internal_h); memcpy(&bits, &c, sizeof bits); }
     atomic_store(oot_scale_cell, bits);
     uint32_t b = oot_step_branch(site, disabled), to_veneer = oot_step_branch(scale_site, stub);
     memcpy(m->base + stub, veneer, sizeof veneer); memcpy(m->base + site, &b, 4); memcpy(m->base + scale_site, &to_veneer, 4);
     fprintf(stderr, "[oot] fixed render scale %g (%s; OOT_FIXED_RES=0: the game's dynamic resolution)\n", s, runtime_handheld_mode() ? "handheld" : "docked");
     patch_oot_scale_live(m, page);
+    patch_oot_output_size(m, page);
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE

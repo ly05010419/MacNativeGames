@@ -178,7 +178,15 @@ static void settings_window_for(int mode) {
    patches become available later, so restore those on the main thread when the guest has installed them. */
 static int settingsPendingOutput = -1;
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
-static int settingsOotOutput2k;   /* the output-upscaling row */
+static int settingsOotCanvas;   /* the resolution row: index in settings_oot_canvases */
+static const struct { unsigned w, h; } settings_oot_canvases[] = {{1280,720},{1280,720},{1920,1080},{1920,1080},{2560,1440},{2560,1440},{3840,2160},{3840,2160},{1280,720},{0,0}};   /* the canvas of each runtime_oot_canvas_set index */
+extern void runtime_oot_canvas_set(int index, int live);
+/* The window is the size of the picture (user 2026-11-09): the canvas. */
+static void settings_oot_window_sync(void) {
+ unsigned w=settings_oot_canvases[settingsOotCanvas].w;
+ if(!w)w=runtime_handheld_mode()?1920:2048;
+ settings_window_size(w,w*9/16,runtime_aspect_ratio()>0?runtime_aspect_ratio():16.0/9);
+}
 #endif
 static float settingsPendingAspect;
 static NSTimer *settingsRestoreTimer;
@@ -270,8 +278,8 @@ static void settings_restore_begin(void) {
  }
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
- {extern void runtime_oot_internal_res_set(int);char h[16];if(runtime_setting_word("graphics-internal-res.txt",h,sizeof h)){int n=atoi(h);if(n==720||n==900||n==1080||n==1152)runtime_oot_internal_res_set(n);}}
- if(settings_read_int("graphics-output-2k.txt",&v)&&v==1){settingsOotOutput2k=1;dm_gfx_set_flag("mfx_upscale",1);dm_gfx_set_flag("mfx_output",1);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_window_for(OUTPUT_MODE_METALFX);});}
+ {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8||v==9)?v==8?0:v:0;   /* 6, 7: a 4K canvas, not offered until the game has the memory for it */
+ settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
  settings_ssao_restore();
@@ -686,20 +694,12 @@ static TOTKSettingRow *settings_oot_upscaler_row(void) {
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
-/* Internal resolution and the MetalFX output stage to 2K, both in force at once. */
-extern int runtime_oot_internal_res(void); extern void runtime_oot_internal_res_set(int);
-static void settings_oot_output2k_apply(int on) {
- settingsOotOutput2k=on;dm_gfx_set_flag("mfx_upscale",on);dm_gfx_set_flag("mfx_output",on);
- dispatch_async(dispatch_get_main_queue(),^{settings_window_for(on?OUTPUT_MODE_METALFX:OUTPUT_MODE_OFF);});
-}
-static TOTKSettingRow *settings_oot_internal_row(void) {
- return settings_row(settings_text("分辨率","Resolution"),
-  @[settings_text("默认（底座 1536×864 / 掌机 1280×720）","Default (docked 1536×864 / handheld 1280×720)"),settings_text("约 720p","About 720p"),settings_text("约 900p","About 900p"),settings_text("约 1080p","About 1080p"),settings_text("最高（底座 2048×1152）","Highest (docked 2048×1152)")],@[@0,@720,@900,@1080,@1152],
-  ^int{return runtime_oot_internal_res();},^(int v){runtime_oot_internal_res_set(v);settings_save_int("graphics-internal-res.txt",v,"internal resolution");});
-}
+/* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
- return settings_row(settings_text("输出放大","Output upscaling"),@[settings_on_off(0),settings_text("MetalFX 到 2K","MetalFX to 2K")],@[@0,@1],
-  ^int{return settingsOotOutput2k;},^(int v){settings_oot_output2k_apply(v);settings_save_int("graphics-output-2k.txt",v,"output upscaling");});
+ return settings_row(settings_text("分辨率","Resolution"),
+  @[settings_text("720p（480p 放大，默认）","720p (from 480p, default)"),settings_text("720p（原生）","720p (native)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)"),settings_text("游戏原样（底座 2048×1152，1536×864 放大；掌机 1080p，720p 放大）","The game's own (docked 2048×1152, from 1536×864; handheld 1080p, from 720p)")],
+  @[@0,@1,@2,@3,@4,@5,@9],^int{return settingsOotCanvas;},^(int v){
+   settingsOotCanvas=v;runtime_oot_canvas_set(v,1);settings_save_int("graphics-canvas.txt",v,"resolution");dispatch_async(dispatch_get_main_queue(),^{settings_oot_window_sync();});});
 }
 #endif
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versions: the page says so */
@@ -865,7 +865,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_ns2_resolution_row()];
 #elif defined(GAME_OOT) && !TARGET_OS_IPHONE
  (void)resolution;   /* every resolution setting of this game is on this page (user 2026-11-09) */
- [rows addObject:settings_oot_internal_row()];[rows addObject:settings_oot_output_row()];[rows addObject:settings_oot_upscaler_row()];
+ [rows addObject:settings_oot_output_row()];[rows addObject:settings_oot_upscaler_row()];
 #else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,

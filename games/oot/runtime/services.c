@@ -348,8 +348,12 @@ static void cpu_boost(int mode) { if(mode<0||mode>2)runtime_fail("unknown CPU bo
 static int handheld_mode(void) {static int v=-1;if(v<0){const char *e=getenv("TOTK_OPERATION_MODE");int h;if(!e||!strcmp(e,"docked"))h=0;else if(!strcmp(e,"handheld"))h=1;else runtime_fail("TOTK_OPERATION_MODE must be docked or handheld");
  fprintf(stderr,"[totk] operation mode reported to the game: %s\n",h?"handheld (performance normal)":"docked (performance boost)");v=h;}return v;}
 int runtime_handheld_mode(void){return handheld_mode();}   /* runtime/input.c: the pad is the handheld controller then */
-static int operation_mode(void) {return handheld_mode()?0:1;}
-static int performance_mode(void) {return handheld_mode()?0:1;}
+/* Diagnostic "flag oot_opmode <0|1>": what the game is told from then on (0 handheld, 1 docked), with the "operation mode
+   changed" notification a Switch sends when it is docked or undocked. -1: the mode of the start. */
+static _Atomic int reported_mode_override=-1;
+void runtime_operation_mode_report(int docked){atomic_store(&reported_mode_override,docked?1:0);runtime_oe_push_message(30);fprintf(stderr,"[oot] operation mode reported as %s (notification sent)\n",docked?"docked":"handheld");}
+static int operation_mode(void) {int o=atomic_load(&reported_mode_override);return o>=0?o:handheld_mode()?0:1;}
+static int performance_mode(void) {int o=atomic_load(&reported_mode_override);return o>=0?o:handheld_mode()?0:1;}
 /* nn::oe::GetDisplayVersion: control.nacp's DisplayVersion (char[16]) through IApplicationFunctions, which the host does not
    serve, so the SDK read a null proxy (Donkey Kong Bananza at its start; from games/xc3's copy of this file). The build's
    version (game_version.h); a dump folder has no control data to read the real one from. */

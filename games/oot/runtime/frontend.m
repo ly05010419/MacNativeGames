@@ -893,6 +893,9 @@ void runtime_front_run(void(*callback)(void)){
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
   {uint64_t size=runtime_output_size_current();unsigned w=(unsigned)size,h=(unsigned)(size>>32);if(w&&h){ww=w;wh=h;}}
 #endif
+#ifdef GAME_OOT
+  ww=1280;wh=720;   /* the default resolution's canvas; settings_oot_window_sync sizes it for another choice */
+#endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];

@@ -313,6 +313,10 @@ static void *input_file(void *arg) {
             if (!strcmp(name,"input_trace")) input_trace_set(v);
 #if defined(GAME_OOT) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
             else if (!strcmp(name,"oot_internal_res")) { extern void runtime_oot_internal_res_set(int); runtime_oot_internal_res_set(v); }   /* what the settings panel's resolution row does */
+            else if (!strcmp(name,"oot_scale")) { extern void runtime_oot_scale_set(float); runtime_oot_scale_set((float)v / 10000.0f); }   /* render scale * 10000, at once */
+            else if (!strcmp(name,"oot_canvas")) { extern void runtime_oot_canvas_set(int,int); runtime_oot_canvas_set(v,1); }   /* what the settings panel's resolution row does */
+            else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
+            else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
 #endif
             else if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
         } else if (!strncmp(line, "texdump ", 8)) {
