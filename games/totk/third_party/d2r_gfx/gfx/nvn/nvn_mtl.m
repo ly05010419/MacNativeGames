@@ -8567,7 +8567,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         int l = merged ? k->lmap[i] : i;
         uint32_t m = l == 0xff ? 0 : (k->chmask >> (4 * l)) & 0xf;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
-        if (l != 0xff && k->blend_en >> l & 1 && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {   /* TOTK diagnostic: highlighted draws can be drawn without blending */
+        /* Metal aborts the process on blending over an integer format, so such an output is written as it comes (probe-gpu-fout). TOTK diagnostic: highlighted draws can be drawn without blending */
+        if (l != 0xff && k->blend_en >> l & 1 && pfmt_class((MTLPixelFormat)k->cfmt[i]) == 'f' && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {
             c.blendingEnabled = YES;
             c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
             c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
@@ -19571,6 +19572,7 @@ int mtl_probe_layer_merge(void) {
     return checked + 5 * 4;
 }
 
+#include "nvn_integer_blend_probe.h"
 /* probe-gpu-fout: a colour output reaches its render target as the bits the code wrote, whatever type the MSL declares
    it with (fn_retype_outputs): a float output writing the bits of (7, 200, 3, 1) into RGBA8_UI gives those integers, a
    uint output writing the bits of (1, 0.5, 0.25, 1) into RGBA8_UNORM gives (255, 128, 64, 255). TOTK_PROBE_NEGATIVE=17
@@ -19620,7 +19622,7 @@ int mtl_probe_fragment_output_types(void) {
         }
         res_remove(texture);
     }
-    return checked;
+    return checked + integer_blend_probe(vs);
 }
 /* probe-gpu-vin: a vertex input reads the bits NVN's vertex fetch gives for the bound format, whatever type the MSL
    declares it with (vs_vin). Three inputs of a translated-style shader: declared float with RGBA8_UI bound (integer
