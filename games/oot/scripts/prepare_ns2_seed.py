@@ -133,8 +133,8 @@ def require_complete(inventory, keys, done, listed=None):
     if missing or not done or int(done.group(1)) != len(inventory) or int(done.group(2)) != len(inventory):
         raise ValueError(f'incomplete shader seed: {len(inventory) - len(missing)}/{len(inventory)} keys; '
                          f'{len(missing)} missing (including skipped stages)')
-    if listed and listed.group(1) != listed.group(2):
-        raise ValueError('incomplete listed shader variants')
+    if listed and listed.group(1) != listed.group(2):   # a listed variant only warms up: one that fails is translated at its draw, and fails the same way there
+        print(f'[RED] the shader list: {listed.group(1)} of {listed.group(2)} bind states translated; the rest are left out of the warm-up', flush=True)
 
 
 def main():

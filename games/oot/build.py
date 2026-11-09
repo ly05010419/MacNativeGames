@@ -131,13 +131,15 @@ def compute_pipeline_archive(work, tree):
     render_rows=sum(1 for p in lists for l in p.read_text().splitlines() if l.startswith(('R\t','B\t','T\t')))
     print(f'Preparing {len(rows)} compute pipelines and {render_rows} listed render pipelines before packaging',flush=True)
     with GameSlot(owner='build',purpose='OOT offline pipelines',expect_seconds=3600),log.open('w') as f:
-        subprocess.run([work/'build/oot-native',tree/'rewritten/oot','pipeline-archive',plan,*lists],
-                       cwd=tree,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+        tool=subprocess.run([work/'build/oot-native',tree/'rewritten/oot','pipeline-archive',plan,*lists],
+                       cwd=tree,env=env,stdout=f,stderr=subprocess.STDOUT)   # exit 1 when any row failed: judged from its report below
     reports=[json.loads(line) for line in log.read_text().splitlines() if line.startswith('{"render":')]
-    if not reports:raise ValueError('compute archive produced no completion report')
+    if not reports:raise ValueError(f'pipeline archive exit {tool.returncode} without a completion report; see {log}')
     report=reports[-1]
-    if report['failed'] or report['write_failed'] or report['compute']+report['kept']<len(rows):
-        raise ValueError('incomplete pipeline archive: '+str(report))   # kept counts the listed render pipelines too
+    # A listed render row that cannot be built only misses the warm-up (it is built at its draw); every compute pipeline must be there (the index check below).
+    if report['write_failed'] or report['compute']+report['kept']<len(rows) or (report['failed'] and not lists):
+        raise ValueError('incomplete pipeline archive: '+str(report))
+    if report['failed']:print(f"[RED] {report['failed']} listed pipelines were not built; see {log}",flush=True)
     target=tree/'build/pipelines'
     count=build_helpers().mac_pipeline_files(cache/'pipelines',target,report['arch'],chain)
     expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
