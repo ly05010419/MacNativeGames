@@ -8145,7 +8145,11 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         /* Integer targets ignore blending on NVN; Metal refuses a pipeline that enables it (MKW: R8Uint with blending on). */
         static const uint16_t int_pf[] = {13, 14, 23, 24, 33, 34, 53, 54, 63, 64, 73, 74, 91, 103, 104, 113, 114, 123, 124};
         int int_target = 0; for (size_t q = 0; q < sizeof int_pf / sizeof *int_pf; q++) if (k->cfmt[i] == int_pf[q]) int_target = 1;
-        if (l != 0xff && k->blend_en >> l & 1 && !int_target && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {   /* TOTK diagnostic: highlighted draws can be drawn without blending */
+        /* MKW: the colour-grading LUT pass (8 targets into a 3D texture) enables SRC_ALPHA blending on targets 1..7 only (blend_en 0xfe);
+           blended here those slices kept only green and the whole picture turned green. Written unblended it matches the hardware.
+           MKW_KEEP_BLEND_FE=1 restores the blending, for comparison. */
+        static int keep_fe = -1; if (keep_fe < 0) keep_fe = getenv("MKW_KEEP_BLEND_FE") != NULL;
+        if (l != 0xff && k->blend_en >> l & 1 && !int_target && (keep_fe || k->blend_en != 0xfe) && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {   /* TOTK diagnostic: highlighted draws can be drawn without blending */
             c.blendingEnabled = YES;
             c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
             c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
