@@ -29,6 +29,7 @@ _Static_assert(sizeof(NpadState) == 0x28, "NpadState");
 // Front-end publishing: the keyboard / touch path (dm_input_set) and player 1's physical controller path (dm_pad_set) are ORed; each further player has a controller path of its own
 // (dm_pad_set_player). Press edges are latched until the game's next read so short presses are not lost
 static _Atomic uint64_t g_btn, g_axes, g_latch, g_pad_btn[DM_PLAYERS], g_pad_axes[DM_PLAYERS], g_pad_latch[DM_PLAYERS];
+static _Atomic uint64_t g_step_mask, g_released;   // a scripted step's buttons (stick directions included); player 1 samples the game got without them
 static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
@@ -63,6 +64,19 @@ uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 //   An f before the time means a presented frame number ("f7600:A", and the repeat interval counts frames too): when the machine is busy seconds drift from the game's progress, frame numbers do not (used for the Zelda BotW opening route)
 typedef struct { double at, hold; uint64_t btn; int32_t lx, ly, rx, ry; int frame, tap; float tx, ty; } key_step;   // tap: a touch at (tx, ty), normalized
 #define KEY_STEPS 1024
+// One scripted step (DM_KEYS, DM_CTL): held for its time and let go, then the game must be handed a player 1 sample without its buttons before the next step
+// (a release shorter than a frame merged two presses into one). The wait adds a gap and can delay steps due at a time; 0 after 1 s without such a sample (logged)
+static int script_press(const key_step *st) {
+    if (st->tap) { dm_touch t = {0, st->tx, st->ty}; dm_touch_set(&t, 1); }
+    atomic_store(&g_step_mask, (st->btn & 0xffffull) | (st->lx || st->ly ? 0xf0000ull : 0) | (st->rx || st->ry ? 0xf00000ull : 0));
+    dm_pad_set(st->btn, st->lx, st->ly, st->rx, st->ry); usleep((useconds_t)(st->hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
+    uint64_t seen = atomic_load(&g_released); int tries = 0;
+    while (atomic_load(&g_step_mask) && atomic_load(&g_released) == seen && tries++ < 200) usleep(5000);
+    int ok = !atomic_load(&g_step_mask) || atomic_load(&g_released) != seen;
+    if (!ok) LOG("[RED] scripted input: no sample without %#llx reached the game within 1 s; the next press may merge with this one", (unsigned long long)atomic_load(&g_step_mask));
+    if (st->tap) dm_touch_set(NULL, 0);
+    return ok;
+}
 static key_step g_steps[KEY_STEPS]; static int g_nsteps;
 static void *keys_main(void *arg) {
     (void)arg; struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -70,9 +84,7 @@ static void *keys_main(void *arg) {
         for (;;) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); double el = (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9;
                    if (g_steps[i].frame ? (double)dm_guest_frame() >= g_steps[i].at : el >= g_steps[i].at) break; usleep(5000); }
         LOG("DM_KEYS: %s%.2f press %#llx (hold %.2f s)", g_steps[i].frame ? "frame " : "", g_steps[i].at, (unsigned long long)g_steps[i].btn, g_steps[i].hold);
-        if (g_steps[i].tap) { dm_touch t = {0, g_steps[i].tx, g_steps[i].ty}; dm_touch_set(&t, 1); }
-        dm_pad_set(g_steps[i].btn, g_steps[i].lx, g_steps[i].ly, g_steps[i].rx, g_steps[i].ry); usleep((useconds_t)(g_steps[i].hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
-        if (g_steps[i].tap) dm_touch_set(NULL, 0);
+        script_press(&g_steps[i]);
     }
     return NULL;
 }
@@ -166,9 +178,7 @@ static void *ctl_main(void *arg) {
                 key_step st = {0, 0.15, 0}; char *h = strchr(line, '~'); if (h) { *h = 0; st.hold = atof(h + 1); }
                 parse_keys(line, &st);
                 LOG("DM_CTL: press %#llx (hold %.2f s)", (unsigned long long)st.btn, st.hold);
-                if (st.tap) { dm_touch t = {0, st.tx, st.ty}; dm_touch_set(&t, 1); }
-                dm_pad_set(st.btn, st.lx, st.ly, st.rx, st.ry); usleep((useconds_t)(st.hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
-                if (st.tap) dm_touch_set(NULL, 0);
+                script_press(&st);
             }
         }
         if (f) fclose(f);
@@ -228,6 +238,7 @@ void dm_pad_players(uint32_t mask) {
     note_merged();
 }
 
+static int g_hist_n;   // entries the game asked of GetNpadStates for this read (0: the single GetNpadState), for DM_HID_LOG=2
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     memset(s, 0, sizeof *s);
     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
@@ -251,8 +262,10 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (s->rx > STICK_THRESH) b |= 1u << 22;
     if (s->ry < -STICK_THRESH) b |= 1u << 23;
     s->buttons = b;
-    { static int log_on = -1; static uint64_t last; if (log_on < 0) log_on = getenv("DM_HID_LOG") != NULL;
-      if (log_on && b != last) LOG("hid state npad %#x style %#x buttons %#llx sticks %d,%d,%d,%d", id, style, (unsigned long long)b, a[0], a[1], a[2], a[3]);
+    if (!pl && !(b & atomic_load(&g_step_mask))) atomic_fetch_add(&g_released, 1);   // decided on the sample the game gets: a pending press or a sample taken while held never counts
+    { static int log_on = -1; static uint64_t last; if (log_on < 0) log_on = getenv("DM_HID_LOG") ? (atoi(getenv("DM_HID_LOG")) > 1 ? 2 : 1) : 0;   // 2: every read while a button is down or was just let go
+      if (log_on && (b != last || (log_on == 2 && (b | last)))) LOG("hid state npad %#x style %#x buttons %#llx sticks %d,%d,%d,%d t %.4f sampling %lld history %d frame %llu", id, style, (unsigned long long)b, a[0], a[1], a[2], a[3],
+                                                           now_ns() / 1e9, (long long)s->sampling, g_hist_n, (unsigned long long)dm_guest_frame());
       last = b; }
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
 }
@@ -262,7 +275,7 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
 // and menus (the stick's direction bits) worked; with every entry written the camera turns
 static int states(NpadState *out, int n, uint32_t id, uint32_t style) {
     if (n <= 0) return 0;
-    fill(out, id, style);
+    g_hist_n = n; fill(out, id, style); g_hist_n = 0;
     for (int i = 1; i < n; i++) { out[i] = out[0]; out[i].sampling = out[0].sampling - i; }
     return n;
 }
