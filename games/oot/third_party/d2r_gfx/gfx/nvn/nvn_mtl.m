@@ -22440,7 +22440,7 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
     /* Offline translation does not run the game's device setup. The build passes the mode observed in that setup;
        NVN's default alone is insufficient for games that explicitly select near=0 (Pokopia). */
     offline_depth_mode(getenv("TOTK_SEED_DEPTH_MODE"));
-    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    __attribute__((objc_precise_lifetime)) NSData *d = [NSData dataWithContentsOfFile:@(path)];   // the shaders below point into it
     if (!d || d.length < 12 || memcmp(d.bytes, "NS2SHC01", 8)) MDIE("seed-shaders: %s is not a shader corpus (scripts/ns2_shader_corpus.py)", path);
     const uint8_t *p = (const uint8_t *)d.bytes + 12, *end = (const uint8_t *)d.bytes + d.length;
     uint32_t n; memcpy(&n, (const uint8_t *)d.bytes + 8, 4);
@@ -22460,11 +22460,16 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
             [listed[f[1]] addObject:a];
         }
     }
-    unsigned listed_n = 0;
-    NSMutableArray<NSArray *> *listed_jobs = [NSMutableArray array];   // (key, answers) to check once the queue is empty
+    NSMutableArray<NSArray *> *listed_shaders = [NSMutableArray array];   // (key, stage, control, code) of the corpus's shaders the list names
     totk_rt_fail_soft();   // a shader the translator cannot do yet is counted below, not the end of the seed
     NSMutableArray<NSString *> *keys = [NSMutableArray array];
     unsigned other_stage = 0, bad = 0; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    void (^drain)(void) = ^{   // every job asked for so far has finished
+        for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
+            usleep(500000);
+            if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
+        }
+    };
     for (uint32_t i = 0; i < n; i++) {
         if (end - p < 14) MDIE("seed-shaders: %s ends inside shader %u of %u", path, i, n);
         uint32_t st, cn, kn; uint16_t ln; memcpy(&st, p, 4); memcpy(&cn, p + 4, 4); memcpy(&kn, p + 8, 4); memcpy(&ln, p + 12, 2); p += 14;
@@ -22478,19 +22483,34 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
         char key[65]; shader_key_of(ctl, code, kn, key);
         totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
         [keys addObject:@(key)];
-        for (NSDictionary *a in listed[@(key)]) { totk_rt_variant(@(key), stage, ctl, code, a, rt_local(ctl, stage), 1); [listed_jobs addObject:@[@(key), a]]; listed_n++; }
+        if (listed[@(key)]) [listed_shaders addObject:@[@(key), @(stage), [NSValue valueWithPointer:ctl], [NSValue valueWithPointer:code]]];
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);
-    for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
-        usleep(500000);
-        if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
-    }
+    drain();
     unsigned ok = 0; NSMutableArray *missing = [NSMutableArray array];
     for (NSString *k in keys) { if (totk_rt_variant_cached(k, answers)) ok++; else if (missing.count < 8) [missing addObject:k]; }
     MLOG("[seed] done in %.0f s: %u of %lu shaders have a translation for the default bind state in %s%s%s", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9,
          ok, (unsigned long)keys.count, totk_rt_dir().UTF8String, missing.count ? "; without one (translation failed, see above): " : "", [missing componentsJoinedByString:@" "].UTF8String);
     if (ok != keys.count) MLOG("[seed] [RED] %lu shaders could not be translated: their draws translate them again in the game (and fail the same way)", (unsigned long)(keys.count - ok));
-    if (list) { unsigned lok = 0; for (NSArray *j in listed_jobs) if (totk_rt_variant_cached(j[0], j[1])) lok++;
-        MLOG("[seed] the shader list's bind states: %u of %u translated (%lu shaders of the list are in the corpus)", lok, listed_n, (unsigned long)listed.count); }
+    if (list) {
+        /* A shader has one translation job at a time: while one is in line totk_rt_variant answers nil and queues nothing.
+           So each round asks for the next bind state of every shader that still has one and waits for them all. */
+        unsigned asked = 0, lok = 0, shown = 0; NSMutableArray<NSArray *> *jobs = [NSMutableArray array];   // (key, answers, round), checked after the last round
+        for (NSUInteger round = 0, more = 1; more; round++) {
+            more = 0;
+            for (NSArray *s in listed_shaders) {
+                NSArray<NSDictionary *> *states = listed[s[0]]; if (round >= states.count) continue;
+                const uint8_t *ctl = [s[2] pointerValue]; int stage = [s[1] intValue];
+                totk_rt_variant(s[0], stage, ctl, [s[3] pointerValue], states[round], rt_local(ctl, stage), 1);
+                [jobs addObject:@[s[0], states[round], @(round)]]; asked++; more = 1;
+            }
+            drain();
+        }
+        for (NSArray *j in jobs) {
+            if (totk_rt_variant_cached(j[0], j[1])) lok++;
+            else if (shown++ < 8) MLOG("[seed] [RED] shader %s: its listed bind state %lu was not translated (see above)", ((NSString *)j[0]).UTF8String, [j[2] unsignedLongValue]);
+        }
+        MLOG("[seed] the shader list's bind states: %u of %u translated (%lu shaders of the list are in the corpus)", lok, asked, (unsigned long)listed_shaders.count);
+    }
 }}
