@@ -43,18 +43,42 @@ def sha256(path):
     return h.hexdigest()
 
 
-def request_sources():
-    """SHA-256 of the runtime code that builds a translation request: totk_shader_rt.m (variant_request), nvn_ctl.h (the control
-    section's layout) and the two functions of nvn_mtl.m that fill it in. The rest of the runtime does not reach a translation."""
-    nvn = Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn'
-    text = (nvn / 'nvn_mtl.m').read_text(errors='replace')
-    parts = [(nvn / name).read_bytes() for name in ('totk_shader_rt.m', 'nvn_ctl.h')]
-    for head in ('static NSDictionary *rt_answers(int st) {', 'static NSArray *rt_local(const uint8_t *control, int st) {'):
-        start = text.find(head)
-        end = text.find('\n}\n', start)
-        if start < 0 or end < 0:
-            raise ValueError('nvn_mtl.m no longer holds ' + head)
-        parts.append(text[start:end].encode())
+# The code that decides what the translator is asked (user 2026-11-10, "最好的办法": a runtime change elsewhere in these files
+# keeps the translations; before, the whole totk_shader_rt.m counted, and porting a memory release in its cache-folder setup
+# (main 0d4e68ec) made every one of 42,000 shaders translate again). Per file, the start of each function taken: its body runs
+# to the next line that is a lone "}", or it is the one line when its braces close there.
+REQUEST_FUNCTIONS = {
+    'totk_shader_rt.m': ('static NSMutableDictionary *variant_request(',   # the request: code range, c1, stage, answers, NVN2 fields
+                         'static NSString *stage_name(int stage) {', 'static NSString *hex(const uint8_t *p, size_t n) {',
+                         'static NSString *json_string(id obj) {',     # how it is written down
+                         'static void service_start(rt_svc *svc) {'),  # how the translator is started: its arguments
+    'nvn_mtl.m': ('static NSDictionary *rt_answers(int st) {', 'static NSArray *rt_local(const uint8_t *control, int st) {'),
+}
+
+
+def function_text(text, head, name):
+    """The source of the function that starts with head in text (name: the file, for the error)."""
+    start = text.find(head)
+    if start < 0:
+        raise ValueError(f'{name} no longer holds {head}')
+    line = text[start:text.find('\n', start)]
+    if '{' in line and line.count('{') == line.count('}'):
+        return line
+    end = text.find('\n}\n', start)
+    if end < 0:
+        raise ValueError(f'{name}: no end for {head}')
+    return text[start:end]
+
+
+def request_sources(nvn=None):
+    """SHA-256 of the runtime code that builds a translation request: nvn_ctl.h (the control section's layout) and the
+    functions of totk_shader_rt.m and nvn_mtl.m that make a request and start the translator (REQUEST_FUNCTIONS). The rest of
+    the runtime does not reach a translation."""
+    nvn = Path(nvn) if nvn else Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn'
+    parts = [(nvn / 'nvn_ctl.h').read_bytes()]
+    for name, heads in REQUEST_FUNCTIONS.items():
+        text = (nvn / name).read_text(errors='replace')
+        parts += [function_text(text, head, name).encode() for head in heads]
     return hashlib.sha256(b'\0'.join(parts)).hexdigest()
 
 
