@@ -433,15 +433,16 @@ static void *oot_canvas_flip(void *arg) {
    upscale between them is the game's network or MetalFX, as the "Upscaler" row says. Docked scales move in steps; these were
    measured (claude/oot-depth-unify g34, g36): 0.6667 gives 854x480 in 1280x720 and 1280x720 in 1920x1080, 0.75 gives 1920x1080
    in 2560x1440. 6 and 7 need a 4K canvas, which crashes at scale 1 (issues_lessons 2026-11-09): not in the list.
-   0, the default (user 2026-11-09), is 854x480 in 1280x720; 8 is the same (saved by an earlier list); 9 is the game's own
-   picture (docked 1536x864 in 2048x1152). */
+   0, the default (user 2026-11-09), is 854x480 in 1280x720; 8 is the same (saved by an earlier list). 9 keeps the canvas the
+   game computes (docked 2048x1152) with patch_oot_fixed_res's scale (1536x864): not the game's own picture, which is dynamic
+   resolution; not listed (user 2026-11-09), "flag oot_canvas 9" only. */
 void runtime_oot_canvas_set(int index, int live) {
     static const struct { unsigned w, h; float scale; } list[] = {{1280,720,0.6667f},{1280,720,1},{1920,1080,0.6667f},{1920,1080,1},{2560,1440,0.75f},{2560,1440,1},{3840,2160,0.6667f},{3840,2160,1},{1280,720,0.6667f},{0,0,0}};
     if (index < 0 || index >= (int)(sizeof list / sizeof *list)) return;
     extern void dm_gfx_set_flag(const char *name, int value);
     uint64_t size = (uint64_t)list[index].h << 32 | list[index].w;
     if (oot_output_cell) atomic_store(oot_output_cell, size); else oot_output_pending = size;
-    if (list[index].scale > 0) runtime_oot_scale_set(list[index].scale); else runtime_oot_internal_res_set(0);   /* 9: the game's fixed scale */
+    if (list[index].scale > 0) runtime_oot_scale_set(list[index].scale); else runtime_oot_internal_res_set(0);   /* 9: patch_oot_fixed_res's scale */
     dm_gfx_set_flag("mfx_upscale", 0); dm_gfx_set_flag("mfx_output", 0);   /* no second upscale after the canvas */
     fprintf(stderr, "[oot] resolution %d: canvas %ux%u, 3D scale %g\n", index, list[index].w, list[index].h, (double)list[index].scale);
     if (!live || !oot_output_cell) return;

@@ -278,7 +278,7 @@ static void settings_restore_begin(void) {
  }
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
- {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8||v==9)?v==8?0:v:0;   /* 6, 7: a 4K canvas, not offered until the game has the memory for it */
+ {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:0;   /* 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
  settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
@@ -697,8 +697,8 @@ static TOTKSettingRow *settings_oot_upscaler_row(void) {
 /* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
  return settings_row(settings_text("分辨率","Resolution"),
-  @[settings_text("720p（480p 放大，默认）","720p (from 480p, default)"),settings_text("720p（原生）","720p (native)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)"),settings_text("游戏原样（底座 2048×1152，1536×864 放大；掌机 1080p，720p 放大）","The game's own (docked 2048×1152, from 1536×864; handheld 1080p, from 720p)")],
-  @[@0,@1,@2,@3,@4,@5,@9],^int{return settingsOotCanvas;},^(int v){
+  @[settings_text("720p（480p 放大，默认）","720p (from 480p, default)"),settings_text("720p（原生）","720p (native)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)")],
+  @[@0,@1,@2,@3,@4,@5],^int{return settingsOotCanvas;},^(int v){
    settingsOotCanvas=v;runtime_oot_canvas_set(v,1);settings_save_int("graphics-canvas.txt",v,"resolution");dispatch_async(dispatch_get_main_queue(),^{settings_oot_window_sync();});});
 }
 #endif

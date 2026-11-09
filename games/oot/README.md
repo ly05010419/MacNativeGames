@@ -65,7 +65,7 @@ A subsequent old/new/new/old comparison used byte-identical v12 MSL with legacy 
 
 - The default picture is 854×480 inside a 1280×720 canvas. The settings panel's Resolution row (first page) changes the canvas
   and the 3D inside it while the game runs: 720p (from 480p, the default), 720p, 1080p (from 720p), 1080p, 2K (from 1080p),
-  2K, and the game's own picture (docked 1536×864 in 2048×1152). The one upscale between them is the game's network or
+  2K. The one upscale between them is the game's network or
   MetalFX, as the Upscaler row says. A 4K canvas is not offered yet (it crashes at scale 1).
 - `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` runs the game in handheld mode;
   `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` returns to docked. The environment variable of the same name wins.
