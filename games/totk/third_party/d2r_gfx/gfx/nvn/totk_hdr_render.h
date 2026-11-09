@@ -44,7 +44,7 @@ static void hdr_prepare_draw(NvProg *pr) {
         const nvn_rbind *b=&fs->rf.b[i];
         if(b->kind!=NVN_RB_TEX || b->reg>=128)continue;
         int tid=(int)(S.tex[1][b->reg]&0xfffff);
-        void *raw=tid>0?tex_fast_lk(tid):NULL;
+        void *raw=tid>0?tex_raw_lk(tid):NULL;
         if(hdr_shadow_find((__bridge id<MTLTexture>)raw)){linked=YES;break;}
     }
     if(!origin && !linked)return;

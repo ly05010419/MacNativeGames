@@ -6905,6 +6905,8 @@ static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void
    the lock, the old block could be freed under the reader (2026-11-06, SIGSEGV in hdr_capture at the title's warm-up,
    when many textures are registered). g_rmu is reentrant per thread, so a caller that holds it already is fine. */
 static inline void *tex_fast_lk(int tid) { registry_lock(); void *p = tex_fast(tid); registry_unlock(); return p; }
+/* The registered view itself, before tex_fast swaps in the HDR shadow: hdr_prepare_draw asks whether this very texture has one. */
+static inline void *tex_raw_lk(int tid) { registry_lock(); void *p = tex_view_valid(tid) ? g_treg[tid].view : tex_by_id_p(tid); registry_unlock(); return p; }
 static inline uint64_t tex_fast_rid_lk(int tid, void **out) { registry_lock(); uint64_t r = tex_fast_rid(tid, out); registry_unlock(); return r; }
 /* A texture bound to a slot its shader reads by integer texel coordinates (refl_mark_fetches) whose Metal copy left out
    the top mip level (mip_drop_of, the iPhone): kept at full size from now on (NvPkg keep_full) and uploaded again at once
