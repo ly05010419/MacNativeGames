@@ -57,15 +57,22 @@ SUFFIX = suffix(ANSWERS)
 
 
 def deps_match(deps, answers):
-    """Whether a variant translated with deps serves these answers: totk_shader_rt.m deps_match, which the runtime picks
-    variants with. "*" / "*_depth": any texture kind, without / with a depth format. Vertex input and colour output types
-    are not compared: the pipeline redeclares them with their bound formats' types (nvn_mtl.m vs_vin, fn_retype_outputs)."""
+    """Whether a variant translated with deps serves these answers: totk_shader_contrib.h totk_deps_match, which the runtime
+    picks variants with. "*": any texture kind. "*2d": a queried slot the translator proved gives the same MSL for a 2D
+    texture and a 2D array. A depth format never changes the MSL (a list row may still say so: "..._depth"). Vertex input and
+    colour output types are not compared: the pipeline redeclares them with their bound formats' types (nvn_mtl.m vs_vin,
+    fn_retype_outputs)."""
     for kind, default in DEFAULTS.items():
         have = answers.get(kind, {})
         for slot, want in deps.get(kind, {}).items():
             got = have.get(slot, default)
+            if kind == 'tex' and isinstance(got, str):
+                got = got.removesuffix('_depth')
             if want in ('*', '*_depth'):
-                if not isinstance(got, str) or got.endswith('_depth') != (want == '*_depth'):
+                if not isinstance(got, str):
+                    return False
+            elif want == '*2d':
+                if got not in ('2d', '2darray'):
                     return False
             elif got != want:
                 return False
@@ -75,7 +82,7 @@ def deps_match(deps, answers):
 def answers_for(deps):
     """The bind state to translate a listed row with: its deps, a "*" slot answered as the plain 2D texture it stands for."""
     answers = {**ANSWERS, **deps}
-    answers['tex'] = {slot: {'*': '2d', '*_depth': '2d_depth'}.get(kind, kind) for slot, kind in answers['tex'].items()}
+    answers['tex'] = {slot: {'*': '2d', '*2d': '2d', '*_depth': '2d_depth'}.get(kind, kind) for slot, kind in answers['tex'].items()}
     return answers
 
 

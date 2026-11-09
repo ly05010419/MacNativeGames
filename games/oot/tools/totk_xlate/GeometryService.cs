@@ -48,9 +48,8 @@ static partial class ShaderService
         if (Long(res["geometry_invocations"]) != (int)layout["invocations"] || Long(res["geometry_max_output_vertices"]) != (int)layout["vertices"])
             throw new RuntimeError($"geometry bounds: SPH {layout.ToJsonString()}, translator {res["geometry_invocations"]} invocations / {res["geometry_max_output_vertices"]} vertices");
         JsonObject tex = GetObj(rq, "tex"), img = GetObj(rq, "img");
-        HashSet<long> depthSlots = DepthSlots(tex);
         var compareSlots = CompareSlots(src);
-        string plain = ShaderGeometry.TopologyPointer(PostProcess(src, depthSlots));
+        string plain = ShaderGeometry.TopologyPointer(PostProcess(src));
         src = ShaderGeometry.CaptureInput(plain);
         File.WriteAllText(msl, src);
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");
@@ -70,7 +69,7 @@ static partial class ShaderService
             ["entry"] = entry.Groups[2].Value, ["msl_entry_kind"] = "kernel",
             ["threadgroup_size"] = localSize, ["c1"] = GetStr(rq, "c1", ""), ["notes"] = res["notes"].DeepClone(),
             ["drv_reads"] = dr, ["drv_unfillable"] = Unfillable(dr, "gs"), ["bindings"] = Reflect("gs", src, res),
-            ["vertex_inputs"] = new JsonArray(), ["raster"] = new JsonObject(), ["deps"] = TextureDeps(src, res, tex, img, depthSlots),
+            ["vertex_inputs"] = new JsonArray(), ["raster"] = new JsonObject(), ["deps"] = TextureDeps(src, res, tex, img),
             ["softfloat64"] = softfloat64, ["compare_slots"] = new JsonArray(compareSlots.Select(s => (JsonNode)s).ToArray()),
             ["geometry"] = layout,
         };
@@ -140,7 +139,7 @@ static partial class ShaderService
             try
             {
                 SpirvCross(spv, plainMsl, "spirv-cross (geometry capture): ");
-                captureSrc = PostProcess(File.ReadAllText(plainMsl), DepthSlots(GetObj(rq, "tex")));
+                captureSrc = PostProcess(File.ReadAllText(plainMsl));
             }
             finally { foreach (string f in new[] { spv, plainMsl, Path.Combine(outDir, key + ".res.json") }) File.Delete(f); }
             if (!SameDeclarations(src, captureSrc))

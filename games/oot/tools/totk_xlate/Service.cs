@@ -47,14 +47,6 @@ static partial class ShaderService
     const long GsSsboBase = 0x410;
     static readonly (long lo, long hi)[] DrvFillC2 = { (0x20, 0x120), (0x168, 0x568), (0x568, 0x968) };
     static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp", ["ts"] = "cp", ["ms"] = "cp" };
-    // Depth-format textures sampled through plain texture slots: Metal returns nothing for a depth texture read as texture2d,
-    // so the declaration becomes depth2d / depth2d_array / depthcube (same for _ms) and every .sample / .read on it is wrapped
-    // so the scalar depth becomes (d, 0, 0, 1) like a depth texture fetch on NVN. .gather already returns float4 on depth.
-    static readonly Dictionary<string, string> DepthTypes = new()
-    {
-        ["texture2d"] = "depth2d", ["texture2d_array"] = "depth2d_array", ["texturecube"] = "depthcube",
-        ["texturecube_array"] = "depthcube_array", ["texture2d_ms"] = "depth2d_ms", ["texture2d_ms_array"] = "depth2d_ms_array",
-    };
     static readonly Regex Fp64 = new(@"\bdouble\b|unsupported_GLSLstd450(?:Pack|Unpack)Double2x32");
 
     static string spirvCross, outDir, chain;
@@ -64,11 +56,6 @@ static partial class ShaderService
     static long ParseInt(string s) => long.Parse(s, NumberStyles.None, CultureInfo.InvariantCulture);
     static long ParseHex(string s) => long.Parse(s, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture);
     static long FloorDiv(long a, long b) => a / b - ((a % b != 0) && ((a < 0) != (b < 0)) ? 1 : 0);   // Python //
-    static string Slice(string s, int start, int stop)   // Python s[start:stop] for 0 <= start
-    {
-        stop = Math.Min(stop, s.Length); start = Math.Min(start, s.Length);
-        return stop <= start ? "" : s.Substring(start, stop - start);
-    }
     static string Cut(string s, int n) => s.Length > n ? s.Substring(0, n) : s;
     static bool Truthy(JsonNode n) => n switch
     {
@@ -122,8 +109,8 @@ static partial class ShaderService
     static readonly Regex TexDecl = new(@"\b(?:texture\w+|depth\w+)<float>\s+(\w+)\s*\[\[id\(\d+\)\]\]");
 
     /// NVN texture slots of the textures the MSL samples with a depth compare (sample_compare / gather_compare): shadow
-    /// maps. The game binds depth textures to all of a shader's compare slots or to none of them (1,248 and 126 of the
-    /// variants it translated on the Mac by 2026-10-22, never some), so the seed prepares both (prepare_shader_seed.py).
+    /// maps. The runtime keeps the game's sampler on them; a depth texture on any other slot is read through a point
+    /// sampler (nvn_mtl.m samp_depth_read).
     static SortedSet<long> CompareSlots(string src)
     {
         var slots = new SortedSet<long>();
@@ -184,87 +171,22 @@ static partial class ShaderService
         return result;
     }
 
-    static int CloseParen(string src, int i)   // index just past the ')' closing a call whose '(' ends at i (or src.Length)
-    {
-        int depth = 1;
-        while (i < src.Length && depth != 0) { depth += src[i] == '(' ? 1 : src[i] == ')' ? -1 : 0; i++; }
-        return depth == 0 ? i : -i - 1;
-    }
-
-    static string RewriteDepthTextures(string src, HashSet<long> depthSlots)
-    {
-        var names = new List<(string ty, string name)>();
-        foreach (Match m in Regex.Matches(src, @"\b(texture\w+)<float>\s+(\w+)\s*\[\[id\((\d+)\)\]\]"))
-        {
-            string ty = m.Groups[1].Value, name = m.Groups[2].Value;
-            if (!depthSlots.Contains(TexSlotOfName(name))) continue;
-            if (!DepthTypes.ContainsKey(ty)) throw new RuntimeError($"depth texture {name} declared as {ty}: no depth equivalent");
-            names.Add((ty, name));
-        }
-        foreach (var (ty, name) in names)
-        {
-            string decl = DepthTypes[ty] + "<float> " + name;
-            src = new Regex(@"\b" + ty + @"<float>\s+" + name + @"\b").Replace(src, _ => decl, 1);
-            // compare sampling: spirv-cross casts the texture2d to depth2d itself; the declaration is now depth2d, drop the cast
-            src = Regex.Replace(src, @"spvDepthCast\(((?:\w+\.)*" + name + @")\)", m => m.Groups[1].Value);
-            // depth2d.gather takes no component argument (only the depth component exists)
-            var gpat = new Regex(@"((?:\w+\.)*" + name + @")\.gather\(");
-            int pos = 0;
-            while (pos <= src.Length)
-            {
-                Match m = gpat.Match(src, pos);
-                if (!m.Success) break;
-                int end = m.Index + m.Length, c = CloseParen(src, end), i = c >= 0 ? c : -c - 1;
-                string call = Slice(src, end, i - 1);
-                if (Regex.IsMatch(call, @"component::[yzw]")) throw new RuntimeError($"gather of a non-x component on depth texture {name}");
-                string call2 = Regex.Replace(call, @",\s*component::x", "");
-                src = src.Substring(0, end) + call2 + src.Substring(i - 1);
-                pos = end + call2.Length + 1;
-            }
-            var pat = new Regex(@"((?:\w+\.)*" + name + @")\.(sample|read)\(");
-            pos = 0;
-            while (pos <= src.Length)
-            {
-                Match m = pat.Match(src, pos);
-                if (!m.Success) break;
-                int start = m.Groups[1].Index, c = CloseParen(src, m.Index + m.Length);
-                if (c < 0) throw new RuntimeError($"unbalanced call on depth texture {name}");
-                src = src.Substring(0, start) + "totk_depth_fetch(" + src.Substring(start, c - start) + ")" + src.Substring(c);
-                pos = c + "totk_depth_fetch()".Length;
-            }
-        }
-        if (names.Count > 0)
-        {
-            const string ns = "using namespace metal;";
-            int at = src.IndexOf(ns, StringComparison.Ordinal);
-            if (at >= 0) src = src.Substring(0, at) + ns + "\nstatic inline float4 totk_depth_fetch(float d) { return float4(d, 0.0, 0.0, 1.0); }" + src.Substring(at + ns.Length);
-        }
-        return src;
-    }
-
-    // Two depth sampling differences between Maxwell and Metal (PR #104, issue #89: dark patches on ground and walls, a dark
-    // halo around Link on the wall behind him).
-    //  - Shadow compares on texture arrays (the game's cascaded shadow maps, Depth16Unorm): Maxwell rounds the reference to
-    //    the texture's precision before comparing, Metal compares the full float, so a lit surface fails its own compare by
-    //    a fraction of a 16-bit step. The reference is rounded to 1/65535 like the depth write. The 2D depth copies are D32F
-    //    and never compare-sampled.
-    //  - Non-compare reads of a depth texture (totk_depth_fetch above): the game binds a trilinear sampler, and on the Switch
-    //    the read lands on one texel; Metal blends neighbouring depths, which puts reconstructed positions in mid-air at
-    //    object edges. These reads are point-sampled.
+    // Shadow compares on texture arrays (the game's cascaded shadow maps, Depth16Unorm): Maxwell rounds the reference to the
+    // texture's precision before comparing, Metal compares the full float, so a lit surface fails its own compare by a
+    // fraction of a 16-bit step (PR #104, issue #89: dark patches on ground and walls, a dark halo around Link on the wall
+    // behind him). The reference is rounded to 1/65535 like the depth write. The 2D depth copies are D32F and never
+    // compare-sampled.
     static readonly Regex D16Compare = new(@"(\.sample_compare\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, [^,]+\.xy, uint\(rint\([^)]+\)\), )([^,]+)(, level)");
-    static readonly Regex DepthFetchSample = new(@"totk_depth_fetch\((spvDescriptorSet0\.[A-Za-z0-9_]+)\.sample\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, ");
 
     static string MatchSwitchDepthSampling(string src)
     {
         string s = D16Compare.Replace(src, "${1}totk_d16ref(${2})${3}");
-        s = DepthFetchSample.Replace(s, "totk_depth_fetch(${1}.sample(totk_nearest, ");
         if (s == src) return src;
         const string ns = "using namespace metal;";
         int at = s.IndexOf(ns, StringComparison.Ordinal);
         if (at < 0) throw new RuntimeError("depth sampling rewrite: no 'using namespace metal;'");
         return s.Substring(0, at) + ns +
-            "\nstatic inline float totk_d16ref(float r) { return floor(fast::clamp(r, 0.0f, 1.0f) * 65535.0f + 0.5f) * (1.0f / 65535.0f); }" +
-            "\nconstexpr sampler totk_nearest(filter::nearest, mip_filter::none, address::clamp_to_edge);" + s.Substring(at + ns.Length);
+            "\nstatic inline float totk_d16ref(float r) { return floor(fast::clamp(r, 0.0f, 1.0f) * 65535.0f + 0.5f) * (1.0f / 65535.0f); }" + s.Substring(at + ns.Length);
     }
 
     // min / max / clamp with Maxwell's result for a NaN operand. SPIRV-Cross writes the translator's FMin / FMax / FClamp as
@@ -520,12 +442,12 @@ static partial class ShaderService
             src = File.ReadAllText(msl);
             if (Fp64.IsMatch(src)) throw new RuntimeError("Ryujinx FP64 fallback still emitted Metal-unsupported double");
         }
-        HashSet<long> depthSlots = DepthSlots(tex);
-        var compareSlots = CompareSlots(src);   // before the depth rewrite: it drops spvDepthCast, not the compare
+        bool kindFree = TextureKindFree(job, variant, res, tex, msl);
+        var compareSlots = CompareSlots(src);
         if (stage == "vs") src = VertexBaseInstance(src);
         src = TensorMsl.Rewrite(src);
-        src = PostProcess(src, depthSlots);
-        if (depthSlots.Count > 0 || src != File.ReadAllText(msl))
+        src = PostProcess(src);
+        if (src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
         // the capture entry point after main0 (it reuses main0's structs and helpers); the reflection below reads main0 only
         JsonObject captureInfo = capture ? AppendCapture(rq, job, variant, src, msl) : null;
@@ -537,10 +459,9 @@ static partial class ShaderService
         Match outStruct = Regex.Match(src, @"struct main0_out\s*\{(.*?)\};", RegexOptions.Singleline);
         var colors = new SortedSet<long>(Regex.Matches(outStruct.Success ? outStruct.Groups[1].Value : "", @"\[\[color\((\d+)\)\]\]").Select(m => ParseInt(m.Groups[1].Value)));
         // Answers this translation depends on: queried texture / image slots, consumed vertex inputs, written colour outputs.
-        // A texture slot the MSL binds without having queried its kind takes that kind from the sampling instruction, so
-        // only whether a depth-format texture sits there changes the MSL: "*" (any colour texture) or "*_depth"
-        // (docs/shader-variants.md).
-        JsonObject deps = TextureDeps(src, res, tex, img, depthSlots);
+        // A texture slot the MSL binds without having queried its kind takes that kind from the sampling instruction: "*".
+        // A queried one is "*2d" when the translation came out the same for a 2D texture and a 2D array, else its kind.
+        JsonObject deps = TextureDeps(src, res, tex, img, kindFree);
         if (stage == "vs")   // the answered type, or the one inferred from the code (job["attr"] holds both)
             foreach (JsonNode v in vertexInputs) { string loc = Long(v["location"]).ToString(CultureInfo.InvariantCulture); deps["attr"][loc] = GetOr(job["attr"].AsObject(), loc, "float"); }
         if (stage == "ps")
@@ -576,22 +497,45 @@ static partial class ShaderService
         File.Move(tmp, Path.Combine(outDir, name + ".json"), true);
     }
 
-    // texture slots the request says hold a depth-format texture ("<type>_depth")
-    static HashSet<long> DepthSlots(JsonObject tex) =>
-        new(tex.Where(kv => kv.Value is JsonValue v && v.GetValueKind() == JsonValueKind.String && v.GetValue<string>().EndsWith("_depth", StringComparison.Ordinal))
-               .Select(kv => ParseInt(kv.Key)));
-
     // the MSL steps after SPIRV-Cross that every stage takes
-    static string PostProcess(string src, HashSet<long> depthSlots)
+    static string PostProcess(string src) => PoolArrays(PreciseMinMax(MatchSwitchDepthSampling(src)));   // after the compare rewrite: its totk_d16ref clamp is written as precise:: too
+
+    // A texture slot's answered kind, without the depth suffix of a list row made before 2026-11-09.
+    static string TexKind(JsonObject tex, string slot)
     {
-        if (depthSlots.Count > 0)
-            src = RewriteDepthTextures(src, depthSlots);
-        src = MatchSwitchDepthSampling(src);
-        return PoolArrays(PreciseMinMax(src));   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
+        string kind = GetStr(tex, slot, "2d");
+        return kind.EndsWith("_depth", StringComparison.Ordinal) ? kind.Substring(0, kind.Length - 6) : kind;
+    }
+
+    // Whether a queried slot's answer between 2D and 2D array leaves the translation unchanged: the decoder asks about a slot
+    // whose sampling instructions already fix its declaration (Ocarina of Time: 80 of 80 shaders gave the same MSL). Translated
+    // again with the other answers, so this is measured for each shader rather than assumed from which instruction asked.
+    static bool TextureKindFree(JsonObject job, string variant, JsonObject res, JsonObject tex, string msl)
+    {
+        long[] queried = res.TryGetPropertyValue("tex_queried", out JsonNode a) && a is JsonArray arr ? arr.Select(Long).ToArray() : Array.Empty<long>();
+        if (queried.Length == 0) return false;
+        JsonObject other = job.DeepClone().AsObject();
+        JsonObject answers = other["tex"].AsObject();
+        foreach (long s in queried)
+        {
+            string slot = s.ToString(CultureInfo.InvariantCulture), kind = TexKind(tex, slot);
+            if (kind != "2d" && kind != "2darray") return false;
+            answers[slot] = kind == "2d" ? "2darray" : "2d";
+        }
+        string name = variant + ".kind";
+        other["key"] = name;
+        string spv = Path.Combine(outDir, name + ".spv"), otherMsl = Path.Combine(outDir, name + "_b.metal");
+        try
+        {
+            Translate(other);
+            SpirvCross(spv, otherMsl, "spirv-cross (texture kind check): ");
+            return File.ReadAllText(otherMsl) == File.ReadAllText(msl);
+        }
+        finally { foreach (string f in new[] { spv, otherMsl, Path.Combine(outDir, name + ".res.json") }) File.Delete(f); }
     }
 
     // The texture / image answers a translation depends on (deps "tex" and "img"; "attr" / "fout" are left to the caller)
-    static JsonObject TextureDeps(string src, JsonObject res, JsonObject tex, JsonObject img, HashSet<long> depthSlots)
+    static JsonObject TextureDeps(string src, JsonObject res, JsonObject tex, JsonObject img, bool kindFree = false)
     {
         var usedSlots = new HashSet<long>(Regex.Matches(src, @"\b(texture\w+|depth\w+)<float>\s+(\w+)\s*\[\[id\(\d+\)\]\]").Select(m => TexSlotOfName(m.Groups[2].Value)));
         usedSlots.Remove(-1);
@@ -601,7 +545,7 @@ static partial class ShaderService
         foreach (long s in new SortedSet<long>(queried.Concat(usedSlots)))
         {
             string slot = s.ToString(CultureInfo.InvariantCulture);
-            deps["tex"][slot] = queried.Contains(s) ? GetOr(tex, slot, "2d") : depthSlots.Contains(s) ? "*_depth" : "*";
+            deps["tex"][slot] = !queried.Contains(s) ? "*" : kindFree ? "*2d" : TexKind(tex, slot);
         }
         foreach (long s in Ints("img_queried"))
             deps["img"][s.ToString(CultureInfo.InvariantCulture)] = GetOr(img, s.ToString(CultureInfo.InvariantCulture), new JsonObject());

@@ -31,6 +31,7 @@ typedef struct {
     int nb, abi, nv;         // 绑定数、参数缓冲槽、顶点输入数 | Binding count, argument buffer slot, vertex input count
     nvn_rbind b[NVN_REFL_MAXB];
     struct { uint8_t loc, ct, nvn; } v[NVN_REFL_MAXV];   // loc：Metal 顶点属性槽（DXBC 输入寄存器）；nvn：NVN 顶点属性号（HLSL 语义 ATTRn 的 n） | loc: Metal vertex attribute slot (DXBC input register); nvn: NVN vertex attribute number (the n of HLSL semantic ATTRn)
+    uint64_t compare[2];     // 比较采样的贴图槽位图（reflection compare_slots） | Bitmap of the texture slots the shader compare-samples
     uint16_t tg[3];          // 计算线程组大小（无 = 0） | Compute thread group size (none = 0)
     uint8_t route_b, has_c1; // B 路线；有 c1 常数段 | Route B; has a c1 constant segment
     uint8_t drv_read[3];     // B：运行时读驱动段 c0 / c2（下标 0、2；出包时由 MSL 静态统计，tools/dmsh_build.py drv_reads） | B: reads driver segments c0 / c2 at runtime (indices 0, 2; gathered statically from the MSL at packaging time, tools/dmsh_build.py drv_reads)

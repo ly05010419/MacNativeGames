@@ -89,7 +89,7 @@ static class SwshXlate
             if (slot >= 0) TexQueried.Add(slot);
             string t = slot >= 0 ? Get("tex", slot) ?? Get("img", slot) : null;
             if (t == null) { Notes.Add($"贴图句柄 {handle:X}（常量段 {cbufSlot}，槽 {slot}）无 PC 类型，按 2D"); return SamplerType.Texture2D; }
-            if (t.EndsWith("_depth")) t = t.Substring(0, t.Length - 6);   // depth-format texture: same sampler type here; the MSL declaration is rewritten to depth2d by shader_service.py
+            if (t.EndsWith("_depth")) t = t.Substring(0, t.Length - 6);   // a shared-list row made when depth textures had their own variants
             return t switch
             {
                 "1d" => SamplerType.Texture1D, "1darray" => SamplerType.Texture1D | SamplerType.Array,
