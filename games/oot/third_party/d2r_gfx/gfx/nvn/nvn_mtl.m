@@ -4216,6 +4216,21 @@ static void stor_sweep(uint64_t fence) {
    cannot distinguish live guest storage from the no-holder retention window.
    Keep the actual storage/layout and serial identities for offline overlap
    analysis. Diagnostic file I/O occurs only at the existing low-rate report. */
+/* OOT_MEM_CLASSES (runtime/services.c mc_report): Metal's allocated size, and the bytes and count of the storage textures
+   (the host copies of guest textures, attached or detached), from any thread. */
+void mtl_mem_classes(uint64_t *allocated, uint64_t *storage, uint64_t *storage_n) {
+    *allocated = g_dev ? (uint64_t)g_dev.currentAllocatedSize : 0; *storage = 0; *storage_n = 0;
+    pthread_mutex_lock(&g_smu);
+    for (int detached = 0; detached < 2; detached++) {
+        uint32_t n = detached ? (uint32_t)g_stor_ndet : g_by_storage.cap;
+        for (uint32_t i = 0; i < n; i++) {
+            stor_ent *e = detached ? g_stor_det[i] : g_by_storage.vals[i];
+            if (!e || !e->tex) continue;
+            *storage += (uint64_t)((__bridge id<MTLTexture>)e->tex).allocatedSize; (*storage_n)++;
+        }
+    }
+    pthread_mutex_unlock(&g_smu);
+}
 static void stor_memory_report(uint64_t frame) {
     stor_alias_report();
     totk_texture_lifetime_flush();

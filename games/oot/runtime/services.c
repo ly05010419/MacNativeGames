@@ -161,6 +161,68 @@ static uint8_t *reserve_in_gap(uint64_t size,int log){
    for the pages being wired. Both uninterruptible: kill -9 and shutdown hung until
    a forced restart (spindump OcarinaOfTime_2026-11-06-214913.hang, pid 92339,
    about 51 s after launch). Frame rate was equal with and without it. */
+/* OOT_MEM_CLASSES=<seconds> (diagnostic, off by default; user 2026-11-10: why the phone needs this much memory with the
+   shaders on disk). One bounded line every <seconds> s, and one more each time the remaining allowance falls under another
+   100 MB step below 600 MB, so the last line before a memory kill is in the log. It splits what the limit counts: the
+   footprint and its graphics ledger (Metal's memory, mapped or not), the guest regions' dirty + compressed bytes (alias = the
+   physical memory the game maps, heap, stack), the five largest VM tags of the process, malloc in use, and Metal's
+   allocated size with the part the storage textures hold (host copies of guest textures, mtl_mem_classes). The numbers
+   overlap (Metal buffers over guest memory count in Metal's size and in the guest regions; the ledger and the tags too):
+   they are not to be added up. */
+#include <malloc/malloc.h>
+#include <pthread.h>
+void mtl_mem_classes(uint64_t *allocated, uint64_t *storage, uint64_t *storage_n);
+typedef struct { uint64_t dirty, compressed, resident; } mc_bytes;
+static void mc_walk(uint64_t lo, uint64_t hi, mc_bytes *range, mc_bytes *tags) {
+ mach_vm_address_t addr=lo;natural_t depth=0;uint64_t page=vm_page_size;
+ while(addr<hi){
+  mach_vm_address_t at=addr;mach_vm_size_t size=0;vm_region_submap_info_data_64_t info;mach_msg_type_number_t n=VM_REGION_SUBMAP_INFO_COUNT_64;
+  if(mach_vm_region_recurse(mach_task_self(),&at,&size,&depth,(vm_region_recurse_info_t)&info,&n)!=KERN_SUCCESS||at>=hi)break;
+  if(info.is_submap){depth++;continue;}
+  mc_bytes b={(uint64_t)info.pages_dirtied*page,(uint64_t)info.pages_swapped_out*page,(uint64_t)info.pages_resident*page};
+  if(range){range->dirty+=b.dirty;range->compressed+=b.compressed;range->resident+=b.resident;}
+  if(tags){mc_bytes *t=&tags[info.user_tag&255];t->dirty+=b.dirty;t->compressed+=b.compressed;t->resident+=b.resident;}
+  addr=at+size;
+ }
+}
+#define MC_MB(x) ((unsigned long long)(x)>>20)
+static void mc_report(const char *why, long long left) {
+ task_vm_info_data_t vm;memset(&vm,0,sizeof vm);mach_msg_type_number_t n=TASK_VM_INFO_COUNT;
+ task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&vm,&n);
+ mc_bytes alias={0},hp={0},stack={0},tags[256];memset(tags,0,sizeof tags);
+ mc_walk(ALIAS_START,ALIAS_START+ALIAS_SIZE,&alias,NULL);
+ mc_walk((uintptr_t)heap,(uintptr_t)heap+HEAP_CAP,&hp,NULL);
+ mc_walk(STACK_START,STACK_START+STACK_SIZE,&stack,NULL);
+ mc_walk(0,~0ULL,NULL,tags);
+ int top[5]={-1,-1,-1,-1,-1};
+ for(int t=0;t<256;t++){uint64_t v=tags[t].dirty+tags[t].compressed;if(!v)continue;
+  for(int k=0;k<5;k++)if(top[k]<0||v>tags[top[k]].dirty+tags[top[k]].compressed){memmove(&top[k+1],&top[k],(size_t)(4-k)*sizeof top[0]);top[k]=t;break;}}
+ char tagtxt[160];int o=0;tagtxt[0]=0;
+ for(int k=0;k<5&&top[k]>=0&&o<(int)sizeof tagtxt;k++)o+=snprintf(tagtxt+o,sizeof tagtxt-(size_t)o,"%s%d:%llu",k?" ":"",top[k],MC_MB(tags[top[k]].dirty+tags[top[k]].compressed));
+ malloc_statistics_t ms;memset(&ms,0,sizeof ms);malloc_zone_statistics(NULL,&ms);
+ uint64_t metal=0,storage=0,storage_n=0;mtl_mem_classes(&metal,&storage,&storage_n);
+ fprintf(stderr,"[mem-classes] %s: footprint %llu MB (peak %llu), left %lld MB | graphics ledger %llu MB (+%llu compressed) | guest dirty+compressed MB: alias %llu, heap %llu, stack %llu (resident %llu / %llu / %llu) | VM tags dirty+compressed MB %s | malloc in use %llu MB | Metal allocated %llu MB, storage textures %llu MB in %llu | internal %llu, compressed %llu MB\n",
+  why,MC_MB(vm.phys_footprint),MC_MB(vm.ledger_phys_footprint_peak),left<0?-1LL:(long long)(left>>20),MC_MB(vm.ledger_tag_graphics_footprint),MC_MB(vm.ledger_tag_graphics_footprint_compressed),
+  MC_MB(alias.dirty+alias.compressed),MC_MB(hp.dirty+hp.compressed),MC_MB(stack.dirty+stack.compressed),MC_MB(alias.resident),MC_MB(hp.resident),MC_MB(stack.resident),
+  tagtxt,MC_MB(ms.size_in_use),MC_MB(metal),MC_MB(storage),(unsigned long long)storage_n,MC_MB(vm.internal),MC_MB(vm.compressed));
+}
+static void *mc_thread(void *arg) {
+ unsigned every=(unsigned)(uintptr_t)arg;long long last_step=1LL<<40;time_t last=0;int lines=0;
+ for(;;){
+  sleep(1);
+  task_vm_info_data_t vm;memset(&vm,0,sizeof vm);mach_msg_type_number_t n=TASK_VM_INFO_COUNT;
+  long long left=task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&vm,&n)==KERN_SUCCESS&&vm.limit_bytes_remaining?(long long)vm.limit_bytes_remaining:-1;
+  long long step=left>=0&&left<(600LL<<20)?left/(100LL<<20):1LL<<40;time_t now=time(NULL);
+  int low=step<last_step;
+  if(low||now-last>=(time_t)every){mc_report(low?"low":"every",left);last=now;if(low)last_step=step;if(++lines>=400)return NULL;}
+ }
+}
+static void mem_classes_start(void) {
+ const char *e=getenv("OOT_MEM_CLASSES");if(!e||!*e||!strcmp(e,"0"))return;
+ unsigned every=(unsigned)atoi(e);if(every<1)every=5;
+ pthread_t t;if(!pthread_create(&t,NULL,mc_thread,(void *)(uintptr_t)every))pthread_detach(t);
+ fprintf(stderr,"[mem-classes] on: a line every %u s and at each 100 MB step under 600 MB left (OOT_MEM_CLASSES)\n",every);
+}
 static void heap_file_backing(void) {
  const char *e=getenv("TOTK_FILE_HEAP");
 #if TARGET_OS_IPHONE && defined(GAME_DKB)
@@ -230,6 +292,7 @@ static void memory_init(void) {
 #endif
  heap=low_space+HEAP_OFF;heap_file_backing();
  fprintf(stderr,"[totk] guest layout: alias %#llx+%#llx stack %#llx+%#llx heap %#llx (cap %#llx)\n",(unsigned long long)ALIAS_START,ALIAS_SIZE,(unsigned long long)STACK_START,STACK_SIZE,(unsigned long long)(uintptr_t)heap,HEAP_CAP);
+ mem_classes_start();
 }
 /* Scoped stack moves: independent host backing, copy back on unmap.
  * Logical accounting is 4 KiB; Darwin protections are rounded to 16 KiB.
