@@ -6,7 +6,7 @@ This page only covers turning **your own** dump of The Legend of Zelda: Ocarina 
 
 Ground rules: use only your own console and your own game. Nothing is downloaded for you, and nothing from the game is in this repository. Never edit `games/oot/assets/expected-v131072.json` or the scripts to get past a check: the error message says what is wrong. The app you build contains the game: it is for you only.
 
-Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [First start](#first-start) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are)
+Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [First start](#first-start) · [Mods and save editing](#mods-and-save-editing) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are)
 
 ## What you need
 
@@ -83,6 +83,16 @@ Optional: `--mac-game-data library` keeps the 26 GB game image out of the app, i
 ## First start
 
 Open the app from Finder. The game starts with its title movie and opening, as on the console. Key **1** opens the settings panel (resolution, upscaler, frame lock, frame interpolation; see the [README](../README.md#settings)). A place you visit for the first time can stutter briefly while pipelines no player has recorded yet are built.
+
+## Mods and save editing
+
+The Switch 2 OoT port can load RomFS replacements for title ID `0400486024DEC000` on update `v131072`. Mods for the N64 and 3DS releases use different formats. Switch 2 ExeFS patches, such as community first-person and ultrawide mods, need a native port.
+
+[MacNative Mods' OoT support branch](https://github.com/christianfurr/macnative-mods/tree/feat/ocarina-support) can import Switch 2 `romfs/` packs and prepare the native overlay. Select the installed OoT app and a compatible OoT tools checkout, import the mod, then enable it and choose **Apply & Launch** with the game closed. It supports builds with bundled game data or an external game-data library. If the image is on a separate drive, open OoT once and locate its data before importing.
+
+[PlayStation, Xbox, and Steam Deck button prompts](https://github.com/exgde/oot-switch2-button-prompts/releases/tag/v1.2) are available as RomFS packs. Use one at a time because they replace the same UI files. The PlayStation pack was verified on the native port in the **System → Basic Controls** screen, where the DualSense diagram and button labels appeared.
+
+[OoT Editor 0.3.0](https://github.com/christianfurr/oot-editor/releases/tag/v0.3.0) edits saves offline. Open **Edit Player Save Copy** and load the copy in Save Workshop. With OoT closed, **Apply to Profile** checks that the destination still matches and backs it up before replacing the edited files. **Quick Start** uses a separate test profile.
 
 ## Update the app
 
