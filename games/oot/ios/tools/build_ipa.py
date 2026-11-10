@@ -132,12 +132,19 @@ def project_for_platform(project, platform):
     return project
 
 def listed_names(lists, shader_list, seed_src):
-    """The shaders the pipeline lists use, as "<key>-<suffix>_b": every name in the resolved lists, and the listed variants
-    of the shared list (its S rows) the seed carries."""
+    """The shaders the pipeline lists use, as "<key>-<suffix>_b": the variants every resolved row names, and the listed
+    variants of the shared list (its S rows) the seed carries. R / B / T / M rows carry their two stage names inside the
+    hex pipeline key, so they are decoded with shader_list.py row_variants, the one definition games/oot/build.py uses too
+    (2026-11-09: a text match found 1,865 names, the rows name 3,425, and 1,094 pipelines failed without the rest)."""
     import re
+    sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts'))
+    from shader_list import row_variants
     name=re.compile(r'[0-9a-f]{64}-[0-9a-f]{12}_b')
     found=set()
-    for path in (lists/'pso_list.tsv',lists/'pso_title.tsv'): found.update(name.findall(path.read_text(errors='replace')))
+    for path in (lists/'pso_list.tsv',lists/'pso_title.tsv'):
+        for line in path.read_text(errors='replace').splitlines():
+            found.update(name.findall(line))
+            if line and not line.startswith('#'): found.update(n for n in row_variants(line.split('\t')) if n)
     for line in shader_list.read_text(errors='replace').splitlines():
         if line.startswith('S\t'): found.update(n for n in name.findall(line) if (seed_src/(n+'.metal')).is_file())
     return found

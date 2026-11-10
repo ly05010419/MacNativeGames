@@ -21,6 +21,18 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+class ListedNames(unittest.TestCase):
+    def test_reads_the_stage_names_inside_pipeline_keys(self):
+        """An R row names its two shaders only inside the hex pipeline key (shader_list.py row_variants)."""
+        key = KEPT.encode().ljust(80, b'\0') + OTHER.encode().ljust(80, b'\0') + b'\x01\x02'
+        with tempfile.TemporaryDirectory() as tmp:
+            lists, seed, shared = Path(tmp) / 'lists', Path(tmp) / 'seed', Path(tmp) / 'shader_list.tsv'
+            lists.mkdir(); seed.mkdir(); shared.write_text('')
+            (lists / 'pso_list.tsv').write_text('# generated\nR\t' + key.hex() + '\n')
+            (lists / 'pso_title.tsv').write_text('# generated\n')
+            self.assertEqual(build_ipa.listed_names(lists, shared, seed), {KEPT, OTHER})
+
+
 class SeedPrune(unittest.TestCase):
     def make_seed(self, root):
         seed = Path(root)
