@@ -894,7 +894,7 @@ void runtime_front_run(void(*callback)(void)){
   {uint64_t size=runtime_output_size_current();unsigned w=(unsigned)size,h=(unsigned)(size>>32);if(w&&h){ww=w;wh=h;}}
 #endif
 #ifdef GAME_OOT
-  ww=1920;wh=1080;   /* the default resolution's canvas (1080p from 720p); settings_oot_window_sync sizes it for another choice */
+  {int c=settings_oot_canvas_saved();ww=settings_oot_canvases[c].w;wh=settings_oot_canvases[c].h;}   /* the saved resolution's canvas (default 720p): the window opens at the size settings_oot_window_sync keeps */
 #endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);

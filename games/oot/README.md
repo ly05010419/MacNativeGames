@@ -30,7 +30,7 @@ Key **1** opens the settings panel. The first page:
 - **Upscaler**: MetalFX (the default) or the game's own network, for that one upscale.
 - **End-of-frame network at native resolution**: skipped (the default) or running. At a native resolution the game still runs its upscaling network 1:1, about 2 ms a frame; skipped, the picture is copied to the canvas instead and has no anti-aliasing from the network.
 - **Quality profile**, changed while the game runs: handheld (the default) or docked. The game's own handheld profile draws less vegetation; the resolution stays the one chosen above.
-- **Frame lock**: off (the default), 30, 40, 60, 72, 90, 120.
+- **Frame lock**: 30 (the default), off, 40, 60, 72, 90, 120.
 - **Frame interpolation (MetalFX)**: 30+30, 40+40, 50+50, 60+60 or uncapped. On a 100 Hz display, 50+50 adds one frame between every two game frames. Choosing it turns the frame lock off.
 
 `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` starts the game in handheld mode with the handheld controller, whatever the quality profile row saved; `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` removes it. The environment variable of the same name wins.

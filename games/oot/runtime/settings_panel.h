@@ -198,6 +198,12 @@ static int settings_read_int(const char *name, int *value) {
  long n=strtol(word,&end,10);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
  if(end==word||*end||n<0||n>1000)return 0;*value=(int)n;return 1;
 }
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* The saved resolution choice (graphics-canvas.txt), or the default. Also the size the window opens at (frontend.m): it
+   used to open at 1920x1080 and take the choice's size 1.5 s later, larger first and then smaller once 720p became the
+   default (user 2026-11-10: "窗口 为什么 先变大 后变小？"). */
+static int settings_oot_canvas_saved(void){int v;return settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:1;}
+#endif
 static void settings_save_frame(void) {
  char word[32];int fps=nvn_fps_lock(),mfx=mfx_requested();
  if(fps)snprintf(word,sizeof word,"lock-%d",fps);
@@ -277,10 +283,13 @@ static void settings_restore_begin(void) {
   else if(!strcmp(word,"off")||!strcmp(word,"off\n")){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",MFX_OFF);}
  }
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ else if(!getenv("TOTK_MFX"))nvn_fps_lock_set(30);   /* no frame mode saved: locked at 30 (user 2026-11-10: "游戏 默认 锁30 启动"); the panel's "off" is saved as a choice and stays off */
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
  {extern void runtime_operation_mode_choose(int,int);if(!getenv("TOTK_OPERATION_MODE")&&!(settings_read_int("graphics-profile.txt",&v)&&v==0))runtime_operation_mode_choose(0,0);}   /* no choice saved: the handheld quality profile (user 2026-11-10, after comparing in the panel) */   /* the handheld quality profile, before the guest starts */
  {extern void netbp_copy_set_flag(int);if(!getenv("OOT_NET_COPY")&&settings_read_int("graphics-net-copy.txt",&v)&&(v==0||v==1))netbp_copy_set_flag(v);}
- {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:1;   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
+ {int c=settings_oot_canvas_saved();   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
  settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
