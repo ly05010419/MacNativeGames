@@ -189,20 +189,25 @@ def list_keys(shared):
     return {key for key, _ in shared.variants} | {s for row in shared.warm if row[0] in 'RBT' for s in pipeline_shaders(row)}
 
 
-def route(rows, pipes, keys):
-    """({game: (variant rows, pipeline rows)}, (unknown variant rows, unknown pipeline rows)): each row goes to the game
-    whose keys hold its shaders; a pipeline whose shaders are not all one game's is unknown."""
-    def game_of(shaders):
-        found = {g for s in shaders for g, k in keys.items() if s in k}
-        return found.pop() if len(found) == 1 and all(any(s in k for k in keys.values()) for s in shaders) else None
-    games, unknown = {}, (set(), [])
+def route(rows, pipes, keys, shared=None):
+    """({game: (variant rows, pipeline rows)}, (unknown variant rows, unknown pipeline rows)): each row goes to the one game
+    whose keys hold every shader it names; a row no game holds all of is unknown. A row more than one game holds all of
+    goes to shared ((variant rows, pipeline rows)) when given, else to unknown: Tears of the Kingdom and Breath of the Wild
+    share shaders, and such a row is theirs, never a row of the game a file's unknown rows are given to (2026-11-10:
+    1,880 Breath of the Wild pipelines whose shaders both lists hold had gone to Ocarina of Time)."""
+    held = unknown = (set(), [])
+    if shared is not None:
+        held = shared
+    def holders(shaders):
+        return [g for g, k in keys.items() if all(s in k for s in shaders)]
+    games = {}
     for row in rows:
-        g = game_of([row[0]])
-        (games.setdefault(g, (set(), []))[0] if g else unknown[0]).add(row)
+        h = holders([row[0]])
+        (games.setdefault(h[0], (set(), []))[0] if len(h) == 1 else held[0] if h else unknown[0]).add(row)
     for row in pipes:
         shaders = pipeline_shaders(row)
-        g = game_of(shaders) if shaders else None
-        (games.setdefault(g, (set(), []))[1] if g else unknown[1]).append(row)
+        h = holders(shaders) if shaders else []
+        (games.setdefault(h[0], (set(), []))[1] if len(h) == 1 else held[1] if h else unknown[1]).append(row)
     return games, unknown
 
 
@@ -350,7 +355,8 @@ def merge_texts(label, texts, problems, titled, named, lists, keys, seeds, drop_
         got, bad = contribution_rows(text)
         rows |= got; dropped += bad
         pipes += [row for row in contribution_pipelines(text) if row not in pipes]
-    games, (unknown_rows, unknown_pipes) = route(rows, pipes, keys)
+    shared_rows = (set(), [])   # rows two games hold all the shaders of: left out, never given to another game below
+    games, (unknown_rows, unknown_pipes) = route(rows, pipes, keys, shared_rows)
     # No seed of the other games: in an issue titled for one, what is no seeded game's is its own; in one titled plainly
     # "Shader list:" whose known rows name exactly one other game (a file comes from one game's install, and the
     # seeds name every Tears of the Kingdom and Breath of the Wild shader), the rest is that game's too. An issue whose
@@ -366,6 +372,24 @@ def merge_texts(label, texts, problems, titled, named, lists, keys, seeds, drop_
         own[0].update(unknown_rows); own[1].extend(unknown_pipes)
         unknown_rows, unknown_pipes = set(), []
     per_game, parts = {}, []
+    # A game with its own merge (OWN_SCRIPT) takes its lines of these texts through that merge, as an issue titled for it
+    # does: Ocarina of Time keeps the bind state (A row) of every warm row and refuses one no file gives. Its rows reach
+    # here from a plainly titled file: until ca3c4ad6 Ocarina of Time wrote the contribution file Tears of the Kingdom and
+    # Breath of the Wild share, so one player's file holds rows of each (2026-11-10: #2000, #2005, #2007).
+    for game in [g for g in games if g in OWN_SCRIPT]:
+        g_rows, g_pipes = games.pop(game)
+        variant_keys, pipe_rows = {key for key, _ in g_rows}, set(g_pipes)
+        own_texts = []
+        for text in texts:
+            lines = [line for line in text.splitlines()
+                     if (line.startswith('V\t') and line.split('\t')[1] in variant_keys)
+                     or (line[:2] in ('R\t', 'B\t', 'T\t') and warm_row(line.split('\t')) in pipe_rows)]
+            if lines:
+                own_texts.append('\n'.join(lines) + '\n')
+        own_line, own = merge_own_texts('', own_texts, [], game, lists[game])
+        per_game.update(own or {})
+        keys[game] |= list_keys(lists[game])
+        parts.append(own_line.lstrip('; '))
     for game, (g_rows, g_pipes) in games.items():
         shared = lists[game]
         builtin = {r for r in g_rows if any(builtin_serves(s, *r) for s in seeds.get(game, []))}
@@ -391,6 +415,7 @@ def merge_texts(label, texts, problems, titled, named, lists, keys, seeds, drop_
     unknown = len(unknown_rows) + len(unknown_pipes)
     line = (label + '; ' + ('; '.join(parts) or 'nothing')
             + (f'; {dropped} lines dropped' if dropped else '')
+            + (f'; {len(shared_rows[0]) + len(shared_rows[1])} rows two games share (left out)' if shared_rows[0] or shared_rows[1] else '')
             + (f'; {unknown} rows of shaders neither game has' + (' (left out)' if drop_unknown else ' (issue stays open)')
                if unknown else '') + ''.join(f'\n  {p}' for p in problems))
     closable = (rows or pipes) and not problems and (drop_unknown or not unknown)
