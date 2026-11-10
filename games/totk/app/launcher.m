@@ -28,6 +28,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"
 #include "../runtime/contrib_submit.h"
+#include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"
 #include "auto_update.h"
 
 static void show_error(NSString *detail) {
@@ -124,6 +125,35 @@ static NSString *cloud_folder_offer(NSUserDefaults *sync) {
     if ([panel runModal] != NSModalResponseOK || !panel.URL) return nil;   // cancelled: asked again at the next start
     [sync setObject:panel.URL.path forKey:@"TOTK_CLOUD_SAVE_FOLDER"];
     return panel.URL.path;
+}
+
+/* With the shader inbox (totk_contrib_upload.h): the first time the file is due, ask once whether the game should send it
+   over HTTPS from now on. "Upload automatically": no reminder again, the rows go in the background while playing.
+   "Send with GitHub": the GitHub reminder below, as before (and every time after). "Don't remind me again": never asked.
+   YES when the reminder below is not wanted. */
+static BOOL inbox_reminder(NSString *path) {
+    if (!path || !totk_inbox_configured()) return NO;
+    NSString *chosen = totk_inbox_choice(path);
+    if (chosen) return [chosen isEqualToString:@"auto"];
+    NSUInteger rows = totk_contrib_due(path);
+    if (!rows) return YES;   // asked when there is something to send
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @(TOTK_UI("期待你的贡献", "We would love your contribution"));
+    alert.informativeText = [NSString stringWithFormat:@(TOTK_UI("你有 %lu 条着色器和渲染管线可以贡献：玩的时候遇到的、公共着色器清单里还没有的。加进公共清单后，以后大家打包的 App 都会带上它们，玩到那里不再卡顿。\n\n"
+                                                                 "“自动上传”：以后游戏在后台把它们发到项目的服务器（HTTPS），不用 GitHub 账号，也不再提醒。发送的只有着色器和管线的标识、游戏和 App 版本、设备型号（如 Mac16,1）和系统版本，以及一个随机编号，不含游戏内容、存档或个人信息。",
+                                                                 "You have %lu shaders and render pipelines to contribute: ones your game met that the shared shader list does not have yet. Added to the shared list, they come with everyone's next build, and nobody stutters there again.\n\n"
+                                                                 "\"Upload automatically\": from now on the game sends them in the background to the project's server (HTTPS), with no GitHub account and no more reminders. Only shader and pipeline identifiers, the game and app versions, the device model (such as Mac16,1) and system version, and a random id are sent: no game data, saves or personal information.")),
+                             (unsigned long)rows];
+    [alert addButtonWithTitle:@(TOTK_UI("自动上传", "Upload automatically"))];
+    [alert addButtonWithTitle:@(TOTK_UI("用 GitHub 发送", "Send with GitHub"))];
+    [alert addButtonWithTitle:@(TOTK_UI("不要提醒了", "Don't remind me again"))];
+    NSModalResponse choice = [alert runModal];
+    totk_inbox_choose(path, choice == NSAlertFirstButtonReturn);
+    if (choice == NSAlertSecondButtonReturn) return NO;
+    totk_contrib_reminded(path, rows);
+    if (choice == NSAlertThirdButtonReturn) totk_contrib_never(path);
+    return YES;
 }
 
 /* Every TOTK_CONTRIB_STEP shaders and render pipelines the shared list does not have yet (totk_shader_contrib.h), before the game starts: ask
@@ -461,7 +491,8 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
           NSString *build = [root stringByAppendingPathComponent:@"build"];
           totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
-        contrib_reminder(contrib);
+        if (!inbox_reminder(contrib)) contrib_reminder(contrib);
+        totk_inbox_start(contrib, @"mac");   // the player chose "Upload automatically": sent while playing
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
         { NSString *cmds = env_or("TOTK_INPUT_FILE", [data stringByAppendingPathComponent:@"input.txt"]);

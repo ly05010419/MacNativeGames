@@ -1,10 +1,13 @@
 """The player's contribution file (totk_shader_contrib.h): written by the runtime, merged by scripts/shader_list.py."""
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
+from unittest import mock
 from pathlib import Path
 
 TOTK = Path(__file__).resolve().parents[1] / 'games/totk'
@@ -336,6 +339,106 @@ class OcarinaOfTimeTests(unittest.TestCase):
             self.assertEqual(sum(1 for line in text.splitlines() if line.startswith('M\t')), meshes)
             self.assertIn(f'V\t{key}\t{{}}', text)
 
+
+class ShaderInboxTests(unittest.TestCase):
+    """Rows the apps sent over HTTPS (the shader inbox) merge as an issue titled for the game they name."""
+    KEY_A, KEY_W = 'a' * 64, 'c' * 64
+
+    @staticmethod
+    def pending(rows):
+        return [{'id': str(i + 1), 'kind': r[0], 'body': r, 'players': 1, 'versions': ['1.0.0'], 'platforms': ['mac']}
+                for i, r in enumerate(rows)]
+
+    def merge(self, by_game, keys=None):
+        keys = keys or {g: set() for g in collect_shader_issues.GAMES}
+        lists = {g: ShaderList() for g in collect_shader_issues.GAMES}
+        with mock.patch.object(collect_shader_issues, 'inbox_pending', lambda base, token, game: by_game.get(game, [])):
+            done = collect_shader_issues.merge_inbox('https://inbox.test', 't', lists, keys, {}, False)
+        return lists, keys, {game: (line, ids) for line, game, ids in done}
+
+    def test_rows_go_to_the_game_the_app_named(self):
+        lists, keys, done = self.merge({'wonder': self.pending([f'V\t{self.KEY_W}\t{{}}'])})
+        self.assertEqual(lists['wonder'].variants, {(self.KEY_W, '{}')})
+        self.assertEqual(done['wonder'][1], ['1'])
+        self.assertIn(self.KEY_W, keys['wonder'], 'teaches plain-titled issues the game\'s keys')
+
+    def test_a_seeded_game_takes_rows_no_seed_names(self):
+        lists, _, done = self.merge({'botw': self.pending([f'V\t{self.KEY_W}\t{{}}', f'V\t{self.KEY_A}\t{{}}'])})
+        self.assertEqual(lists['botw'].variants, {(self.KEY_W, '{}'), (self.KEY_A, '{}')})
+        self.assertEqual(lists['totk'].variants, set())
+        self.assertEqual(done['botw'][1], ['1', '2'])
+
+    def test_a_failed_export_takes_nothing(self):
+        def broken(base, token, game):
+            raise ValueError('/v1/export: HTTP 401 unauthorized')
+        lists = {g: ShaderList() for g in collect_shader_issues.GAMES}
+        with mock.patch.object(collect_shader_issues, 'inbox_pending', broken):
+            done = collect_shader_issues.merge_inbox('https://inbox.test', 't', lists, {g: set() for g in lists}, {}, False)
+        self.assertTrue(done and all(ids == [] and 'HTTP 401' in line for line, _, ids in done))
+
+    def test_pending_follows_the_pages(self):
+        pages = {0: {'rows': [{'id': '1'}, {'id': '2'}], 'next': '2'}, 2: {'rows': [{'id': '3'}], 'next': None}}
+        asked = []
+        def call(base, token, path, payload=None):
+            asked.append(path)
+            return pages[int(path.split('after=')[1].split('&')[0])]
+        with mock.patch.object(collect_shader_issues, 'inbox_call', call):
+            rows = collect_shader_issues.inbox_pending('https://inbox.test', 't', 'totk')
+        self.assertEqual([r['id'] for r in rows], ['1', '2', '3'])
+        self.assertEqual(len(asked), 2)
+        self.assertTrue(all(p.startswith('/v1/export?game=totk&') for p in asked))
+
+
+# The inbox is a project of its own (not in this repository): $SHADER_INBOX_DIR, else MacNativeGamesWeb/shader-inbox beside it.
+INBOX = Path(os.environ.get('SHADER_INBOX_DIR') or TOTK.parents[2] / 'MacNativeGamesWeb/shader-inbox')
+
+
+@unittest.skipUnless(shutil.which('xcrun') and shutil.which('node') and (INBOX / 'node_modules/@electric-sql/pglite').is_dir(),
+                     'needs the Xcode command line tools, node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+class ShaderInboxUploadTests(unittest.TestCase):
+    """The app's upload (totk_contrib_upload.h) against the inbox's own handlers on 127.0.0.1 (test/local-server.js)."""
+
+    def build(self, tmp, url):
+        probe = tmp / f'probe-{len(list(tmp.iterdir()))}'
+        build = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', f'-DTOTK_CONTRIB_INBOX="{url}"',
+                                f'-I{TOTK}/third_party/d2r_gfx/gfx/nvn', str(TOTK / 'tests/shader_contrib/inbox_probe.m'),
+                                '-framework', 'Foundation', '-o', str(probe)], capture_output=True, text=True)
+        self.assertEqual(build.returncode, 0, build.stderr[-600:])
+        return probe
+
+    def test_rows_go_to_the_inbox_once_and_leave_the_file(self):
+        server = subprocess.Popen(['node', str(INBOX / 'test/local-server.js')], cwd=INBOX, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            port = int(server.stdout.readline().split()[1])
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                probe = self.build(tmp, f'http://127.0.0.1:{port}/v1/contrib')
+                run = subprocess.run([str(probe), str(tmp / 'shader-list-contribution.txt'), 'up'], capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)
+                self.assertEqual(result['status'], 'pass')
+                with urllib.request.urlopen(f'http://127.0.0.1:{port}/admin/rows?game=totk', timeout=30) as reply:
+                    rows = json.loads(reply.read())['data']['rows']
+                self.assertEqual(sorted(r['kind'] for r in rows), ['B', 'R', 'V'])
+                self.assertTrue(all(r['players'] == 1 and r['versions'] == ['1.4.3'] and r['platforms'] == ['mac'] for r in rows))
+                with urllib.request.urlopen(f'http://127.0.0.1:{port}/admin/uploads?game=totk', timeout=30) as reply:
+                    uploads = json.loads(reply.read())['data']
+                model = subprocess.run(['sysctl', '-n', 'hw.model'], capture_output=True, text=True).stdout.strip()
+                self.assertEqual([(u['install'], u['platform'], u['device'], u['game_version'], u['shaders_sent'], u['pipelines_sent'])
+                                  for u in uploads], [(result['install'], 'mac', model, '1.4.3', 1, 2)],
+                                 'one upload: this Mac\'s model, the rows by kind')
+                self.assertRegex(uploads[0]['os'], r'^macOS \d+\.\d+\.\d+$')
+        finally:
+            server.stdin.close(); server.wait(timeout=30); server.stdout.close()
+
+    def test_without_an_answer_the_rows_stay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            probe = self.build(tmp, 'http://127.0.0.1:9/v1/contrib')   # the discard port: nothing listens
+            run = subprocess.run([str(probe), str(tmp / 'shader-list-contribution.txt'), 'down'], capture_output=True, text=True, timeout=120)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(json.loads(run.stdout)['status'], 'pass')
 
 sys.path.insert(0, str(TOTK / 'ios/tools'))
 import shader_contrib_watch as watch  # noqa: E402

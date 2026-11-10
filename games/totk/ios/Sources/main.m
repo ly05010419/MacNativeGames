@@ -16,6 +16,7 @@
 #include "settings_map.h"
 #include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
+#include "totk_contrib_upload.h"   // the shader inbox: asked once, sent while playing
 #import "touch_pad.h"
 #import "start_screen.h"
 
@@ -164,7 +165,28 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         [self offerCloudFolder];
         return;
     }
+    if ([self offerShaderUpload]) return;
     [self prepareAndStart];
+}
+/* The shaders the shared list lacks (Documents/shader-list-contribution.txt), sent over HTTPS to the shader inbox
+   (totk_contrib_upload.h): asked once, when the file has rows to send, as the Mac asks (app/launcher.m inbox_reminder).
+   Either answer is kept; the game starts after it. NO when there is nothing to ask. */
+- (BOOL)offerShaderUpload {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
+    if (!totk_inbox_configured() || totk_inbox_choice(contrib) || !totk_contrib_read(contrib).count) return NO;
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:(zh ? @"期待你的贡献" : @"We would love your contribution")
+        message:(zh ? @"游戏记下了公共着色器清单里还没有的着色器和渲染管线。加进清单后，以后大家打包的 App 都会带上它们，玩到那里不再卡顿。\n\n“自动上传”：游戏在后台把它们发到项目的服务器（HTTPS）。发送的只有着色器和管线的标识、游戏和 App 版本、设备型号（如 Mac16,1）和系统版本，以及一个随机编号，不含游戏内容、存档或个人信息。"
+                    : @"The game noted shaders and render pipelines the shared shader list does not have yet. Added to the list, they come with everyone's next build, and nobody stutters there again.\n\n\"Upload automatically\": the game sends them in the background to the project's server (HTTPS). Only shader and pipeline identifiers, the game and app versions, the device model (such as Mac16,1) and system version, and a random id are sent: no game data, saves or personal information.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak TOTKGameController *weakSelf = self;
+    [a addAction:[UIAlertAction actionWithTitle:(zh ? @"自动上传" : @"Upload Automatically") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        (void)x; totk_inbox_choose(contrib, YES); [weakSelf prepareAndStart]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:(zh ? @"不用了" : @"No Thanks") style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) {
+        (void)x; totk_inbox_choose(contrib, NO); [weakSelf prepareAndStart]; }]];
+    [self presentViewController:a animated:YES completion:nil];
+    return YES;
 }
 /* No sync folder yet: offer one before the game reads its save, so it syncs from this start. "Not now" asks again at the
    next start (as does cancelling the picker); "Don't ask again" never (Settings › Choose folder still works). */
@@ -653,6 +675,7 @@ static void apply_settings(void) {
     NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
     totk_contrib_prune(contrib, seedDir, seedDir);
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
+    totk_inbox_start(contrib, @"ios");   // the player chose "Upload automatically" (offerShaderUpload): sent while playing
     // ... with the game and version it came from, so the Mac that sends it names them in the issue (shader_contrib_watch.py)
     setenv("TOTK_CONTRIB_GAME",GAME_FOLDER " " TOTK_GAME_VERSION,1);
     setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);

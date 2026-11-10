@@ -14,6 +14,7 @@
 #define GAME_NAME "Breath of the Wild"
 #define GAME_FOLDER "BotW"   /* ~/Library/Application Support/MacNativeGames/<GAME_FOLDER> (app/launcher.m) */
 #define GAME_LOG "botw"      /* ~/Library/Logs/MacNativeGames/<GAME_LOG>.log */
+#define GAME_INBOX_ID "botw"   /* the shader inbox's id for this game (totk_contrib_upload.h) */
 #define GAME_CONTRIB_TEMPLATE "shader-list-botw.yml"   /* the issue form for this game's shared shader list (totk_shader_contrib.h) */
 #define GAME_CONTRIB_TITLE "Shader list (Breath of the Wild):"   /* the title prefix of an automatically submitted contribution */
 #define TOTK_GAME_DIR "botw160"
@@ -30,6 +31,7 @@
 #define GAME_NAME "Breath of the Wild"
 #define GAME_FOLDER "BotW"
 #define GAME_LOG "botw"
+#define GAME_INBOX_ID "botw"   /* the shader inbox's id for this game (totk_contrib_upload.h) */
 #define GAME_CONTRIB_TEMPLATE "shader-list-botw.yml"
 #define GAME_CONTRIB_TITLE "Shader list (Breath of the Wild):"
 #define TOTK_GAME_DIR "botw190"
@@ -49,6 +51,7 @@
 #define GAME_NAME "Donkey Kong Bananza"
 #define GAME_FOLDER "Bananza"   /* ~/Library/Application Support/MacNativeGames/<GAME_FOLDER> */
 #define GAME_LOG "bananza"      /* ~/Library/Logs/MacNativeGames/<GAME_LOG>.log */
+#define GAME_INBOX_ID "dkb"   /* the shader inbox's id for this game (totk_contrib_upload.h) */
 #define TOTK_GAME_DIR "dkb"
 #define GAME_ADDR_0xe995c4 0xffffffffu
 #define GAME_ADDR_0x2aa4fa0 0xffffffffu
@@ -64,6 +67,7 @@
 #define GAME_NAME "Pokemon Pokopia"
 #define GAME_FOLDER "Pokopia"
 #define GAME_LOG "pokopia"
+#define GAME_INBOX_ID "pokopia"   /* the shader inbox's id for this game (totk_contrib_upload.h) */
 #define TOTK_GAME_DIR "pkp"
 #define GAME_ADDR_0xe995c4 0xffffffffu
 #define GAME_ADDR_0x2aa4fa0 0xffffffffu
