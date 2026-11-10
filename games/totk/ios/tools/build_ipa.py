@@ -44,13 +44,20 @@ def botw_pane(root):
     specs=root['PreferenceSpecifiers']
     at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
     specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
-                               'iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · '
+                               'iPad 預設開啟。關閉：手持 1280×720，內部尺寸見手持畫面一行（預設 960×540，較低尺寸更柔和），iPhone 預設。重新啟動遊戲後生效 · '
                                'on: the game\'s docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch '
-                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 (960×540 inside), '
+                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 with the internal size in Handheld scene (default 960×540; lower sizes are softer), '
                                'the iPhone\'s default. Takes effect after relaunching the game')
     specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
                        'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
                        'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_BOTW_SCENE')
+    specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_HANDHELD_SCENE','TOTKPhone':True,
+                       'Title':'手持畫面 · Handheld scene',
+                       'Titles':['960×540（預設） · 960×540 (default)',
+                                 '800×450（較柔和） · 800×450 (softer)',
+                                 '640×360（最柔和） · 640×360 (softest)'],
+                       'Values':['960x540','800x450','640x360'],'DefaultValue':'960x540'})
     return settings_without_totk(root)
 
 def bananza_pane(root):

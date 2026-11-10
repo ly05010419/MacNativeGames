@@ -766,8 +766,8 @@ static uint32_t native_word(uint32_t original, int kind, int k) {   /* the same 
      main+0x18216c8  mov x8, #0x44a00000              (1280.0, the screen)
      main+0x18216cc  movk x8, #0x44a0, lsl #48        (1280.0, the render width) -> movk x8, #0x4470, lsl #48 (960.0)
    The renderer scales its targets by render / screen width, as docked play does at 1600 / 1920, so the scene is drawn at
-   960x540 and the game's own upscale draws it into the 1280x720 canvas (MetalFX does not replace it on the phone:
-   totk_mfx_up.m mfxup_enabled).
+   960x540 by default (or the handheld scene setting), then the game's own upscale draws into the 1280x720 canvas.
+   MetalFX does not replace it on the phone (totk_mfx_up.m mfxup_enabled).
    1.9.0: the display-mode routine main+0x1266074 jumps by a byte table (main+0x1725916, base main+0x12660bc): mode 1 ->
    main+0x1266114, the same pair (str x8, [x19, #0x1210]); mode 3 (VR) computes its own and is left alone:
      main+0x1266114  mov x8, #0x44a00000
@@ -778,6 +778,12 @@ enum { PHONE_RENDER = 0x18216c8u, PHONE_RENDER_STR = 0xf9094b88u };   /* str x8,
 #else
 enum { PHONE_RENDER = 0x1266114u, PHONE_RENDER_STR = 0xf9090a68u };   /* str x8, [x19, #0x1210] */
 #endif
+/* Like the docked pair at +16, handheld sizes live in writable data. Export
+   installs the same instructions for every choice; Settings only changes data
+   at launch, so iOS never needs to write executable pages. +0x28 is separate
+   from the frame step (+0), pad tick (+8), docked/output (+16/+24), aspect
+   (+0x20), FOV (+0x48/+0x4c), and font table (+0x1000). */
+#include "botw_handheld_scene.h"
 static void patch_phone_render(Module *m) {
     if (!ios_code()) return;
     const struct { uint32_t off, original; } check[] = {{PHONE_RENDER, 0xd2a89408u}, {PHONE_RENDER + 4, 0xf2e89408u}, {PHONE_RENDER + 8, PHONE_RENDER_STR}};
@@ -788,8 +794,15 @@ static void patch_phone_render(Module *m) {
             runtime_fail("the phone's render size requires the " TOTK_GAME_VERSION " handheld display-mode instructions");
         }
     }
-    put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
-    fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
+    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (data_off + 0x4000 != m->size) runtime_fail("the handheld scene size: no data page after the main module");
+    const uint64_t page = (uintptr_t)m->base + data_off;
+    unsigned render = botw_handheld_render_width(getenv("TOTK_BOTW_HANDHELD_SCENE"));
+    atomic_store((_Atomic uint64_t *)(void *)(page + BOTW_HANDHELD_PAIR), output_floats(1280, render));
+    put_word(m, PHONE_RENDER, adrp_reg(8, (uintptr_t)m->base + PHONE_RENDER, page), "handheld render size");
+    put_word(m, PHONE_RENDER + 4, BOTW_HANDHELD_LOAD, "handheld render size");
+    fprintf(stderr, "[botw] handheld render size %ux%u, the game's own upscale to the 1280x720 canvas (phone)\n",
+            render, render * 9 / 16);
 }
 #ifdef GAME_BOTW190
 /* The sun shadow map at 2048 per cascade (botw_shadow_res.h): TOTK_SHADOW_RES=2048, or 2048 in shadows.txt (the settings
