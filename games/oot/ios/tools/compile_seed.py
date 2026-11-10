@@ -6,6 +6,17 @@ from pathlib import Path
 # The options of totk_precise_opts() in nvn_mtl.m: the translated shaders need exactly rounded float arithmetic. The
 # offline compiler defaults to fast math ("Default is 'fast'"), which breaks their float integer-division idioms.
 METAL_FLAGS=['-fmetal-math-mode=safe']
+METAL_BRACKET_LIMIT=256
+def metal_flags(src):
+  """METAL_FLAGS, plus a higher parser limit for generated MSL nested past clang's 256 (as build_app.py metal_flags). It changes
+  no generated code, so it stays out of METAL_FLAGS and every cache key. Tears of the Kingdom's copy has had it since 07d93f93;
+  this one had not, and the first iOS build of every Ocarina of Time shader stopped at one 3.5 MB shader nested deeper
+  (2026-11-10: "bracket nesting level exceeded maximum of 256")."""
+  depth=deepest=0
+  for c in Path(src).read_bytes():
+    if c in b'([{': depth+=1; deepest=max(deepest,depth)
+    elif c in b')]}': depth-=1
+  return [*METAL_FLAGS,'-fbracket-depth=1024'] if deepest>METAL_BRACKET_LIMIT else METAL_FLAGS
 
 def main():
   seed=Path(sys.argv[1]).resolve(); sdk=sys.argv[2]
@@ -28,7 +39,7 @@ def main():
     if kept.is_file():
         shutil.copyfile(kept,lib); reused[0]+=1
     else:
-        subprocess.run(['xcrun','-sdk',sdk,'metal',*METAL_FLAGS,'-c',str(src),'-o',str(air)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        subprocess.run(['xcrun','-sdk',sdk,'metal',*metal_flags(src),'-c',str(src),'-o',str(air)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         subprocess.run(['xcrun','-sdk',sdk,'metallib',str(air),'-o',str(lib)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         air.unlink()
         with tempfile.NamedTemporaryFile(dir=cache,prefix=key+'.',suffix='.tmp',delete=False) as f: tmp=Path(f.name)

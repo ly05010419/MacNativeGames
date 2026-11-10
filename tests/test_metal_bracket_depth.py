@@ -127,13 +127,17 @@ class MetalBracketDepth(unittest.TestCase):
 
 class IosMetalBracketDepth(unittest.TestCase):
     def test_ios_tools_raise_the_limit_only_for_deep_sources(self):
-        spec = importlib.util.spec_from_file_location('ios_compile_seed', ROOT / 'games/totk/ios/tools/compile_seed.py')
-        seed = importlib.util.module_from_spec(spec); spec.loader.exec_module(seed)
-        with tempfile.TemporaryDirectory(prefix='mng-metal-depth-') as tmp:
-            shallow, deep = Path(tmp) / 'shallow.metal', Path(tmp) / 'deep.metal'
-            shallow.write_text(nested_kernel(10)); deep.write_text(nested_kernel(300))
-            self.assertEqual(seed.metal_flags(shallow), seed.METAL_FLAGS)
-            self.assertEqual(seed.metal_flags(deep), [*seed.METAL_FLAGS, '-fbracket-depth=1024'])
+        # every game's own copy: Ocarina of Time's lacked it and its first all-shader iOS build stopped (2026-11-10)
+        for game in ('totk', 'oot'):
+            with self.subTest(game=game):
+                spec = importlib.util.spec_from_file_location(f'ios_compile_seed_{game}', ROOT / f'games/{game}/ios/tools/compile_seed.py')
+                seed = importlib.util.module_from_spec(spec); spec.loader.exec_module(seed)
+                with tempfile.TemporaryDirectory(prefix='mng-metal-depth-') as tmp:
+                    shallow, deep = Path(tmp) / 'shallow.metal', Path(tmp) / 'deep.metal'
+                    shallow.write_text(nested_kernel(10)); deep.write_text(nested_kernel(300))
+                    self.assertEqual(seed.metal_flags(shallow), seed.METAL_FLAGS)
+                    self.assertEqual(seed.metal_flags(deep), [*seed.METAL_FLAGS, '-fbracket-depth=1024'])
+                    self.assertIn('*metal_flags(src)', (ROOT / f'games/{game}/ios/tools/compile_seed.py').read_text())
 
 
 if __name__ == '__main__':
