@@ -2730,7 +2730,7 @@ def build_oot(args, source):
 
 def main(argv):
     args = parse_args(argv)
-    if args.game.suffix.lower() == '.nup' or args.game.name.lower().endswith('.part1.rar'):
+    if args.game.suffix.lower() == '.nup':
         return build_oot(args, args.game.expanduser().resolve())
     if args.game.expanduser().is_dir():   # a Switch 2 dump folder
         return main_ns2(args, args.game.expanduser().resolve())

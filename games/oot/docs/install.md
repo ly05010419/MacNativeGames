@@ -12,8 +12,9 @@ Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · 
 
 **A Mac** with Apple silicon and **macOS 26** or later (the graphics use Metal 4). 16 GB of memory or more is recommended.
 
-**Your dump** of the game with the update **v131072**, title ID `0400486024DEC000`, in either form:
-- a `.nup` file, a multipart RAR containing one NUP with raw file extents, or
+**Your dump** of the game with the update **v131072**, title ID `0400486024DEC000`, in one of these forms:
+- a `.nup` file,
+- a multipart RAR containing one NUP with raw file extents, or
 - a dump folder holding `base/` and `updates/131072/` (each with `exefs/` and `romfs/`).
 
 The build checks the code and the game data against `expected-v131072.json`; another version is refused. No `prod.keys` is needed: the dump holds the decrypted files.
@@ -48,7 +49,7 @@ python3.14 build_app.py "<Ocarina of Time.nup>" --shared-fonts "<…/TOTK_build/
 
 # from a multipart RAR (keep all parts in the same folder)
 brew install sevenzip
-python3.14 build_app.py "<Ocarina of Time.part1.rar>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
+python3.14 games/oot/build_rar.py "<Ocarina of Time.part1.rar>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
 
 # from a dump folder (base/ and updates/131072/)
 python3.14 build_app.py "<dump folder>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
