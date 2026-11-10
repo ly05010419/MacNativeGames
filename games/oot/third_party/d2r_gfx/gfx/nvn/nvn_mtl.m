@@ -1764,6 +1764,7 @@ typedef struct { usnap_rng *r; int n, cap; } usnap_rngs;
 static usnap_rngs g_usr;   // replay side (the capture on the game thread uses its own list)
 static uint64_t g_usnap_presorted_subs, g_usnap_walked_subs;   // usnap_presorted (below): submissions merged from the copies' pre-sorted lists / walked op by op
 static uint64_t g_usnap_check_subs, g_usnap_check_bad;   // OOT_USNAP_PRESORTED=2 self-check: submissions compared / found different
+static uint64_t g_usnap_pre_cursor, g_usnap_rest_subs;   // resumed items: a cursor that could not be placed in its copy (walked instead) / merged from the copies' lists by their cursors
 static uint64_t g_usnap_pre_nocopy, g_usnap_pre_many, g_usnap_pre_deep;   // why a submission walked the ops instead (usp1: 69 % did)
 static void usnap_collect(usnap_rngs *v, const uint8_t *p, int depth) {
     for (;;) {
@@ -1974,10 +1975,10 @@ void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
         uint64_t cns = atomic_exchange(&g_ucap_ns, 0), cby = atomic_exchange(&g_ucap_bytes, 0);
         { uint64_t a = atomic_exchange(&g_ucap_t[0], 0), b = atomic_exchange(&g_ucap_t[1], 0), c = atomic_exchange(&g_ucap_t[2], 0), d = atomic_exchange(&g_ucap_t[3], 0);
           MLOG("[nvn] uniform capture in the submit call (ms per submission): collect %.3f / sort %.3f / merge %.3f / copy %.3f", a / 1800 / 1e6, b / 1800 / 1e6, c / 1800 / 1e6, d / 1800 / 1e6); }
-        MLOG("[nvn] uniform 提交时快照：每次提交平均 %.0f 段 / %.1f KB / 回放线程 %.3f ms（收集排序 %.3f / 合并 %.3f / 分配并派发 %.3f；预排序表合并 %llu 次、走操作流 %llu 次（非副本 %llu / 表过多 %llu / 过深 %llu）、自检 %llu 次不符 %llu）；辅助线程拷 %llu 段、回放自取 %llu 段、等辅助线程 %llu 次；本次提交里 GPU 写入使快照失效共 %llu 段，因前次提交的 GPU 写入未完成而不拷贝共 %llu 段%s",
+        MLOG("[nvn] uniform 提交时快照：每次提交平均 %.0f 段 / %.1f KB / 回放线程 %.3f ms（收集排序 %.3f / 合并 %.3f / 分配并派发 %.3f；预排序表合并 %llu 次、走操作流 %llu 次（非副本 %llu / 表过多 %llu / 过深 %llu / 游标不符 %llu）、其中续跑按游标取表 %llu 次、自检 %llu 次不符 %llu）；辅助线程拷 %llu 段、回放自取 %llu 段、等辅助线程 %llu 次；本次提交里 GPU 写入使快照失效共 %llu 段，因前次提交的 GPU 写入未完成而不拷贝共 %llu 段%s",
              (double)g_usnap_n / 1800, (double)g_usnap_bytes / 1800 / 1024, (double)g_usnap_ns / 1800 / 1e6,
              (double)g_usnap_t[0] / 1800 / 1e6, (double)g_usnap_t[1] / 1800 / 1e6, (double)g_usnap_t[2] / 1800 / 1e6, (unsigned long long)g_usnap_presorted_subs, (unsigned long long)g_usnap_walked_subs,
-             (unsigned long long)g_usnap_pre_nocopy, (unsigned long long)g_usnap_pre_many, (unsigned long long)g_usnap_pre_deep,
+             (unsigned long long)g_usnap_pre_nocopy, (unsigned long long)g_usnap_pre_many, (unsigned long long)g_usnap_pre_deep, (unsigned long long)g_usnap_pre_cursor, (unsigned long long)g_usnap_rest_subs,
              (unsigned long long)g_usnap_check_subs, (unsigned long long)g_usnap_check_bad,
              (unsigned long long)atomic_load(&g_usnap_helped), (unsigned long long)g_usnap_self, (unsigned long long)g_usnap_waits,
              (unsigned long long)g_usnap_drops, (unsigned long long)g_usnap_skip_gpu,
@@ -1993,6 +1994,14 @@ void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
     }
 }
 void mtl_sub_snapshot_ubos(const uint64_t *h, int n) { mtl_sub_snapshot_ubos_cap(h, n, NULL); }
+static int g_usnap_rest_ncur; static uint64_t g_usnap_rest_top;
+/* The uniforms of a resumed item: h = its ncur cursors (innermost first) and then the handles not started; top = the
+   handle the outermost cursor lies in (nvn_queue_order.inc qo_run). */
+void mtl_sub_snapshot_ubos_rest(const uint64_t *h, int n, int ncur, uint64_t top, void *cap) {
+    g_usnap_rest_ncur = ncur; g_usnap_rest_top = top;
+    mtl_sub_snapshot_ubos_cap(h, n, cap);
+    g_usnap_rest_ncur = 0; g_usnap_rest_top = 0;
+}
 static uint64_t g_usnap_take_stamp; static int g_usnap_take_over, g_usnap_take_npend, g_usnap_take_ngw;
 /* The uniform ranges of a submission from the lists its recordings gathered when they were flattened (hle_nvn.c flat_note:
    (start, end) pairs, deduplicated, sorted by start, plus the OP_CALL targets, which are followed as usnap_collect follows
@@ -2003,19 +2012,50 @@ int hle_copy_ubo_lists(uint64_t h, const uint64_t **ubo, int *nubo, const uint64
 static int usnap_presorted_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("OOT_USNAP_PRESORTED"); m = e ? atoi(e) : 1; if (!m) MLOG("OOT_USNAP_PRESORTED=0: the uniform snapshot walks the ops of every submission (A/B)"); if (m == 2) MLOG("OOT_USNAP_PRESORTED=2: every merged list is checked against the op walk (self-check)"); } return m; }
 static int usnap_presorted_on(void) { return usnap_presorted_mode() != 0; }
 static int usnap_presorted_check(void) { return usnap_presorted_mode() == 2; }
-typedef struct { const uint64_t *p; int n, i; } usnap_list;
+int hle_copy_ubo_rest(uint64_t h, const uint8_t *cur, const uint64_t **ubo, const uint32_t **last, int *nubo, const uint64_t **call, const uint32_t **coff, int *ncall, uint32_t *off);
+/* last / min: a list taken from a cursor inside its copy holds only the ranges whose last binding is at or past it. */
+typedef struct { const uint64_t *p; int n, i; const uint32_t *last; uint32_t min; } usnap_list;
+static inline void usnap_list_skip(usnap_list *l) { if (l->last) while (l->i < l->n && l->last[l->i] < l->min) l->i++; }
 static int usnap_lists_add(usnap_list *ls, int *nl, int cap, uint64_t h, int depth) {
     const uint64_t *ubo, *call; int nubo, ncall;
     if (depth > 16) { g_usnap_pre_deep++; return 0; }
     if (hle_copy_ubo_lists(h, &ubo, &nubo, &call, &ncall) < 0) { g_usnap_pre_nocopy++; return 0; }
-    if (nubo) { if (*nl == cap) { g_usnap_pre_many++; return 0; } ls[(*nl)++] = (usnap_list){ubo, nubo, 0}; }
+    if (nubo) { if (*nl == cap) { g_usnap_pre_many++; return 0; } ls[(*nl)++] = (usnap_list){ubo, nubo, 0, NULL, 0}; }
     for (int k = 0; k < ncall; k++) if (!usnap_lists_add(ls, nl, cap, call[k], depth + 1)) return 0;
+    return 1;
+}
+/* A resumed item (mtl_sub_snapshot_ubos_rest): the first g_usnap_rest_ncur entries of h are cursors, innermost first (the
+   stop point, then each caller's op after its OP_CALL), the outermost inside the copy g_usnap_rest_top; the copy of each
+   inner level is the target of the OP_CALL right before the next outer cursor. Each level gives the part of its copy's
+   lists from its cursor on. Returns 0 (the caller walks the ops) when a level is not a copy or a cursor is not where this
+   expects it; g_usnap_pre_cursor counts those. */
+
+static int usnap_lists_add_rest(usnap_list *ls, int *nl, int cap, const uint64_t *h, int ncur, uint64_t top) {
+    uint64_t base = top;
+    for (int k = ncur - 1; k >= 0; k--) {
+        const uint8_t *cur = (const uint8_t *)(uintptr_t)h[k];
+        const uint64_t *ubo, *call; const uint32_t *last, *coff; int nubo, ncall; uint32_t off;
+        if (hle_copy_ubo_rest(base, cur, &ubo, &last, &nubo, &call, &coff, &ncall, &off) < 0) { g_usnap_pre_cursor++; return 0; }
+        if (nubo) { usnap_list l = {ubo, nubo, 0, last, off}; usnap_list_skip(&l);
+            if (l.i < l.n) { if (*nl == cap) { g_usnap_pre_many++; return 0; } ls[(*nl)++] = l; } }
+        for (int c = 0; c < ncall; c++) if (coff[c] >= off && !usnap_lists_add(ls, nl, cap, call[c], 1)) return 0;
+        if (k) {   // the next inner level's copy: the call this level is waiting in, the op right before its cursor
+            op_hdr ch; if (off < 16) { g_usnap_pre_cursor++; return 0; }
+            memcpy(&ch, cur - 16, sizeof ch);
+            if (ch.op != OP_CALL || ch.size != 16) { g_usnap_pre_cursor++; return 0; }
+            memcpy(&base, cur - 8, 8);
+        }
+    }
     return 1;
 }
 static int usnap_presorted(const uint64_t *h, int n) {
     if (!usnap_presorted_on()) return 0;
-    enum { LMAX = 256 }; usnap_list ls[LMAX]; int nl = 0;
-    for (int i = 0; i < n; i++) if (!usnap_lists_add(ls, &nl, LMAX, h[i], 0)) return 0;
+    enum { LMAX = 256 }; usnap_list ls[LMAX]; int nl = 0, first = 0;
+    if (g_usnap_rest_ncur > 0) {
+        if (g_usnap_rest_ncur > n || !usnap_lists_add_rest(ls, &nl, LMAX, h, g_usnap_rest_ncur, g_usnap_rest_top)) return 0;
+        first = g_usnap_rest_ncur; g_usnap_rest_subs++;
+    }
+    for (int i = first; i < n; i++) if (!usnap_lists_add(ls, &nl, LMAX, h[i], 0)) return 0;
     int total = 0; for (int k = 0; k < nl; k++) total += ls[k].n;
     if (total > g_usr.cap) { g_usr.cap = total + 256; g_usr.r = realloc(g_usr.r, g_usr.cap * sizeof *g_usr.r); if (!g_usr.r) MDIE("uniform copy ranges"); }
     g_usr.n = 0;
@@ -2025,7 +2065,8 @@ static int usnap_presorted(const uint64_t *h, int n) {
     while (hn) {
         int k = heap[0]; usnap_rng r = {ls[k].p[2 * ls[k].i], ls[k].p[2 * ls[k].i + 1]};
         if (!g_usr.n || g_usr.r[g_usr.n - 1].lo != r.lo || g_usr.r[g_usr.n - 1].hi != r.hi) g_usr.r[g_usr.n++] = r;
-        if (++ls[k].i == ls[k].n) heap[0] = heap[--hn];
+        ls[k].i++; usnap_list_skip(&ls[k]);
+        if (ls[k].i == ls[k].n) heap[0] = heap[--hn];
         for (int c = 0; hn;) { int l = 2 * c + 1, rr = l + 1, m = c; if (l < hn && USNAP_HKEY(heap[l]) < USNAP_HKEY(heap[m])) m = l; if (rr < hn && USNAP_HKEY(heap[rr]) < USNAP_HKEY(heap[m])) m = rr; if (m == c) break; int t = heap[c]; heap[c] = heap[m]; heap[m] = t; c = m; }
     }
 #undef USNAP_HKEY
@@ -7692,6 +7733,12 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return NULL; }
     treg_t *rp = &g_treg[tid];
     rp->used = g_sub_serial;   // TOTK: the fast path below never reaches tex_mtl; pkg_evict_sweep reads this
+    { /* OOT_TEX_SLOW_STATS=1 (diagnostic, 2026-11-10): why the inline fast path (tex_view_valid) sent this lookup here, a line every 600 frames */
+      static int on = -1; static uint64_t n[8], last; if (on < 0) on = getenv("OOT_TEX_SLOW_STATS") != NULL;
+      if (on) { uint64_t sgx = g_ser_gen; int why = !rp->view ? 0 : (rp->view_pkg && rp->view_dirty != treg_stamp(rp->view_pkg)) ? (rp->view_pkg == 2 ? 2 : 1) : rp->view_ser == sgx ? 3 : rp->dead_pending ? 4 : totk_life_on() ? 5 : 6;
+        n[why]++; n[7]++; uint64_t f = atomic_load(&g_cur_frame);
+        if (f >= last + 600) { last = f; MLOG("[tex-slow] F%llu total %llu: no view %llu, stamp differs (kind 1) %llu, stamp differs (kind 2) %llu, valid after all %llu, dead pending %llu, lifetime log %llu, serial step for this texture %llu",
+            (unsigned long long)f, (unsigned long long)n[7], (unsigned long long)n[0], (unsigned long long)n[1], (unsigned long long)n[2], (unsigned long long)n[3], (unsigned long long)n[4], (unsigned long long)n[5], (unsigned long long)n[6]); } } }
     if (totk_life_on() && totk_life_match(&rp->t)) life_use(tid, &rp->t, "registered");
     uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // 先取代号再查：期间若有变更，下次必走慢路 | Take the generations first and then look up: if a change happens in between, the next time must take the slow path
     /* TOTK: serial-table steps since validation that were all for other serials leave this view as it was; then only a
