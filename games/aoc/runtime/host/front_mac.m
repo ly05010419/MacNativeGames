@@ -113,6 +113,7 @@ enum { DM_FACE_AUTO, DM_FACE_POSITION, DM_FACE_LABEL };
 static _Atomic int g_face_layout = DM_FACE_AUTO, g_swap_ab;
 static int g_start_fullscreen, g_output_preset;
 static int g_aspect, g_aspect_saved;   // Aspect ratio row: 0 = the game's 16:9, 1 = 16:10; saved: what the file keeps (DM_AOC_ASPECT may decide one run)
+static int g_aspect_ok;   // this build has the camera stubs (front_prefs.h dm_aspect_supported); otherwise no row and 16:9 for the run
 void dm_gfx_set_aspect(float r);   // gfx/nvn: present stretch and UI squeeze (nvn_mtl.m ar_squeeze)
 static DmSettingsPanel *g_settings_panel;
 static DmPerformanceHUD *g_performance_hud;
@@ -165,6 +166,8 @@ static void pad_settings_load(void) {
     { const char *a = getenv("DM_AOC_ASPECT");   // this run only; the saved choice stays until the row is changed
       if (a && (!strcmp(a, "16:10") || !strcmp(a, "1"))) g_aspect = 1; else if (a && (!strcmp(a, "16:9") || !strcmp(a, "0"))) g_aspect = 0;
       else if (a) LOG("front end: DM_AOC_ASPECT=%s is not 16:9 or 16:10: ignored", a); }
+    g_aspect_ok = dm_aspect_supported(dm_main_build());
+    if (!g_aspect_ok && g_aspect) { LOG("front end: 16:10 needs update 1.4.1 (main %s): the game's 16:9 for this run", dm_main_build()); g_aspect = 0; }
     const char *e;
     int fps=aoc_timing_target(), dynamic=aoc_timing_dynamic();
     if (l.file.fps_target == 120 || (l.file.fps_target >= 0 && aoc_timing_valid(l.file.fps_target))) fps = l.file.fps_target;   // the setter migrates legacy 120 to 60
@@ -368,7 +371,7 @@ static DmMacSettings settings_snapshot(void) {
     CGSize size = g_layer.drawableSize; int sw, sh, gw, gh; double sa, ga; dm_gfx_scene_size(&sw, &sh, &sa); dm_nvn_window_size(&gw, &gh, &ga);
     NSUInteger connected = 0; for (GCController *pad in GCController.controllers) if (pad.extendedGamepad) connected++;
     return (DmMacSettings){.face_layout = g_face_layout, .swap_ab = g_swap_ab, .start_fullscreen = g_start_fullscreen,
-        .output_preset = g_output_preset, .fullscreen = (g_win.styleMask & NSWindowStyleMaskFullScreen) != 0, .aspect = g_aspect,
+        .output_preset = g_output_preset, .fullscreen = (g_win.styleMask & NSWindowStyleMaskFullScreen) != 0, .aspect = g_aspect, .aspect_available = g_aspect_ok,
         .fps_target=aoc_timing_target(), .dynamic_fps=aoc_timing_dynamic(), .stats_mode=g_stats.value,
         .frame_graph=g_graph.value, .stats_locked=g_stats.locked, .graph_locked=g_graph.locked, .screen_fps=front_screen_max_fps(),
         .performance=aoc_stats_snapshot(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)),
@@ -398,7 +401,7 @@ static void settings_changed(DmMacSetting setting, NSInteger value) {
             if (((g_win.styleMask & NSWindowStyleMaskFullScreen) != 0) != (value != 0)) [g_win toggleFullScreen:nil];
             break;
         case DmSettingResetController: g_face_layout = DM_FACE_AUTO; g_swap_ab = 0; break;
-        case DmSettingAspect: if (value == 0 || value == 1) { g_aspect = g_aspect_saved = (int)value; aspect_apply(); } break;
+        case DmSettingAspect: if (g_aspect_ok && (value == 0 || value == 1)) { g_aspect = g_aspect_saved = (int)value; aspect_apply(); } break;
     }
     pad_settings_save(); settings_refresh();
     LOG("front end: settings layout=%d swap_ab=%d output=%d start_fullscreen=%d aspect=%s", g_face_layout, g_swap_ab, g_output_preset, g_start_fullscreen, g_aspect ? "16:10" : "16:9");

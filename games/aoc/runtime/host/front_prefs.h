@@ -6,6 +6,12 @@
 // value is ignored, with a log line, and the saved preference applies. A key missing from the file, or an out-of-range saved
 // value, is the default.
 #pragma once
+#include <string.h>
+// The aspect ratio row needs the camera stubs patches.py writes only into 1.4.1's main (build e5f275b5...): on another build the
+// panel leaves the row out and the run keeps the game's 16:9, while a saved 16:10 stays in the file for a 1.4.1 app.
+static inline int dm_aspect_supported(const char *main_build) {
+    return main_build && !strcmp(main_build, "e5f275b5d0889899e55de1a164eef060");
+}
 typedef struct { int saved, value, locked; } DmPref;
 // One decimal digit from 0 to max, nothing else.
 static inline int dm_pref_parse(const char *text, int max, int *out) {

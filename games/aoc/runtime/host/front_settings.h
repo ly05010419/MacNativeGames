@@ -4,6 +4,7 @@
 #include "../gfx/nvn/aoc_stats.h"
 typedef struct {
     int face_layout, swap_ab, start_fullscreen, output_preset, fullscreen, aspect;   // aspect: 0 = the game's 16:9, 1 = 16:10
+    int aspect_available;   // the game build has the camera stubs 16:10 needs (front_prefs.h dm_aspect_supported); 0: no Aspect ratio row
     NSUInteger output_width, output_height, controllers;
     int fps_target, dynamic_fps, stats_mode, frame_graph, screen_fps;
     int stats_locked, graph_locked;

@@ -9,7 +9,7 @@
 #include "../runtime/host/front_graph.h"
 #include <stdio.h>
 #include <string.h>
-static DmMacSettings state = {.dynamic_fps=1, .screen_fps=120, .output_width = 3840, .output_height = 2160};
+static DmMacSettings state = {.dynamic_fps=1, .screen_fps=120, .output_width = 3840, .output_height = 2160, .aspect_available = 1};
 static NSView *find(NSView *view, NSString *identifier) {
     if ([view.identifier isEqualToString:identifier]) return view;
     for (NSView *child in view.subviews) { NSView *result = find(child, identifier); if (result) return result; }
@@ -160,6 +160,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
           CHECK("choosing 16:10 reaches the host",state.aspect==1);
           [aspect selectItemWithTag:0]; [aspect sendAction:aspect.action to:aspect.target];
           CHECK("choosing 16:9 reaches the host",state.aspect==0); }
+        CHECK("16:10 is offered on 1.4.1's main",dm_aspect_supported("e5f275b5d0889899e55de1a164eef060"));
+        CHECK("16:10 is not offered on 1.3.0's main or an unknown one",!dm_aspect_supported("295d41bd00000000000000000000000")&&!dm_aspect_supported("")&&!dm_aspect_supported(NULL));
+        { DmMacSettings narrow=state; narrow.aspect_available=0;
+          DmSettingsPanel *other=[[DmSettingsPanel alloc] initWithParent:parent snapshot:^{return narrow;} change:^(DmMacSetting key, NSInteger value){(void)key;(void)value;}];
+          CHECK("without the camera stubs the panel has no aspect ratio row",!find(other.window.contentView,@"settings-aspect")&&!find_text(other.window.contentView,@"Aspect ratio"));
+          CHECK("without the camera stubs the other display rows stay",find(other.window.contentView,@"settings-output")&&find(other.window.contentView,@"settings-fullscreen"));
+          [other close]; }
         CHECK("no hints box over the game",find(parent.contentView,@"settings-shortcuts")==nil&&find(parent.contentView,@"shortcut-values")==nil);
         state=original;state.stats_mode=2;state.frame_graph=1;[performance refresh];
         [parent setContentSize:NSMakeSize(640,360)];[performance refresh];
