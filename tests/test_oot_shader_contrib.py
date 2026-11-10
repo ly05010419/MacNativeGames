@@ -53,6 +53,12 @@ class Packaging(unittest.TestCase):
     def test_the_fast_update_takes_the_same_path(self):
         self.assertIn('package_app(work,tree,app,', function(self.source, 'def update_runtime'))
 
+    def test_the_app_has_the_games_icon(self):
+        # build/AppIcon.icns was made but never put in the app (2026-11-10: the desktop app had no icon)
+        body = function(self.source, 'def package_app')
+        self.assertIn("clone_file(icon,res/'AppIcon.icns')", body)
+        self.assertIn("info['CFBundleIconFile']='AppIcon'", body)
+
     def test_contribution_folder_as_build_app(self):
         self.assertIn("info['MNGContributionFolder']=str(contrib_folder())", self.source)
 
