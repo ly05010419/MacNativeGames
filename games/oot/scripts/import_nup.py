@@ -38,25 +38,35 @@ def entries(reader, directory, directories=None):
                 yield path, node.index
 
 
-def import_package(source, output, version=131072):
+def package_files(reader, version):
+    packages = [p for p in reader.packages if p.version == version and p.kind in (0, 1)]
+    if len(packages) != 1:
+        raise ValueError(f'expected one application package at version {version}, found {len(packages)}')
+    package = packages[0]
+    if package.title_id & ~0xfff != 0x0400486024dec000:
+        raise ValueError('NUP package is not Ocarina of Time')
+    directories = []
+    all_files = sorted(entries(reader, package.root_dir, directories))
+    directories = sorted(p.removeprefix("romfs/") for p in directories if p.startswith("romfs/"))
+    code = [(p, i) for p, i in all_files if p.startswith('exefs/')]
+    data = [(p.removeprefix('romfs/'), i) for p, i in all_files if p.startswith('romfs/')]
+    if not code or not data:
+        raise ValueError('package has no complete ExeFS/RomFS')
+    return code, data, directories
+
+
+def extraction_output(output):
     output = Path(output).resolve()
     for source_root in (ROOT, *ROOT.parents):
         if (source_root / '.git').exists() and (output == source_root or source_root in output.parents):
             raise ValueError('game data must stay outside every source checkout')
+    return output
+
+
+def import_package(source, output, version=131072):
+    output = extraction_output(output)
     with NupReader(str(source)) as reader:
-        packages = [p for p in reader.packages if p.version == version and p.kind in (0, 1)]
-        if len(packages) != 1:
-            raise ValueError(f'expected one application package at version {version}, found {len(packages)}')
-        package = packages[0]
-        if package.title_id & ~0xfff != 0x0400486024dec000:
-            raise ValueError('NUP package is not Ocarina of Time')
-        directories = []
-        all_files = sorted(entries(reader, package.root_dir, directories))
-        directories = sorted(p.removeprefix("romfs/") for p in directories if p.startswith("romfs/"))
-        code = [(p, i) for p, i in all_files if p.startswith('exefs/')]
-        data = [(p.removeprefix('romfs/'), i) for p, i in all_files if p.startswith('romfs/')]
-        if not code or not data:
-            raise ValueError('package has no complete ExeFS/RomFS')
+        code, data, directories = package_files(reader, version)
         output.mkdir(parents=True, exist_ok=True)
         manifest = []
         exefs = output / 'exefs'; exefs.mkdir(exist_ok=True)
