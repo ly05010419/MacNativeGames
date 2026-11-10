@@ -30,7 +30,7 @@ brew install dav1d libvpx opus python@3.14
 
 and the full **Xcode** app with its Metal toolchain (Xcode › Settings › Components › Metal Toolchain, or `xcodebuild -downloadComponent MetalToolchain`): the build compiles the game's shaders with Apple's offline Metal compiler, which the command line tools do not include. The build also installs three Python packages (`lz4`, `capstone`, `zbic`) into its own environment in the work folder.
 
-**Free disk space** on the volume of the work folder: the work folder holds the 26 GB game data, about 3.5 GB of translated shaders and a pipeline archive of about 3.7 GB, plus the Metal libraries of every shader; the app comes on top (5–6 GB with `--mac-game-data library`, otherwise the game data is cloned into it). A fresh build's total has not been measured yet: leave room well beyond these.
+**Free disk space** on the volume of the work folder: about 40 GB.
 
 The work folder is `OcarinaOfTime_build` next to the dump. Keep it and the app on the **same APFS volume**: the game data is then cloned, not copied. Pass `--work <folder>` and `-o <app>` to put them on another APFS disk with room.
 

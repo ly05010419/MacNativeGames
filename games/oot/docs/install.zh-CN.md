@@ -30,7 +30,7 @@ brew install dav1d libvpx opus python@3.14
 
 另外要装完整的 **Xcode** 和它的 Metal 工具链（Xcode › 设置 › 组件 › Metal Toolchain，或 `xcodebuild -downloadComponent MetalToolchain`）：打包要用苹果的离线 Metal 编译器编译游戏的着色器，命令行工具里没有它。打包还会在工作目录自己的环境里装三个 Python 包（`lz4`、`capstone`、`zbic`）。
 
-**磁盘空间**（工作目录所在的盘）：工作目录里有 26 GB 游戏数据、约 3.5 GB 翻译好的着色器、约 3.7 GB 管线存档，另加全部着色器的 Metal 库；App 再另算（用 `--mac-game-data library` 时 5–6 GB，否则游戏数据会克隆进 App）。全新打包的总占用还没实测过，请留出比这些多得多的空间。
+**磁盘空间**（工作目录所在的盘）：大约 40 GB。
 
 工作目录是导出文件旁边的 `OcarinaOfTime_build`。让它和 App 在**同一个 APFS 盘**上，游戏数据就是克隆而不是复制。要放到别的 APFS 盘，用 `--work <目录>` 和 `-o <App>`。
 
