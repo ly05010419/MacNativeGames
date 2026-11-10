@@ -26,7 +26,13 @@ Logged footprint was around 0.3–1.2 GiB; many 30-second windows averaged
 29.8–30.0 FPS. New texture uploads and first-use pipeline compilation still
 caused isolated long frames. Longer sessions and other devices remain unverified.
 
-That build also carried a constrained-address-map fix and an upstream graphics
-reference-lifetime fix. It tests this backend, not a complete rebuild of this
+A later local diagnostic using the same backend at 800×450 and a 60 FPS
+target continued through outdoor testing without an observed memory-limit
+exit in that sampled run. Logged footprint peaked around 1.25 GiB, but
+2–6 second in-game stalls remained. This does not establish sustained
+60 FPS or identify whether paging caused those stalls.
+
+Those builds also carried a constrained-address-map fix and an upstream graphics
+reference-lifetime fix. They test this backend, not a complete rebuild of this
 branch or the Settings toggle itself. This PR only exposes the backend through
 Settings; it does not alter its implementation or make it a device default.
