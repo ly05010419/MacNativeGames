@@ -72,6 +72,11 @@ int dm_gfx_aniso_locked(void) { return 0; }
 static int fakeAniso;
 int dm_gfx_aniso(void) { return fakeAniso; }
 void dm_gfx_aniso_set(int n) { fakeAniso = n; }
+static int fakeKeepalive = 1;
+void dm_gfx_keepalive_start(int on) { fakeKeepalive = on != 0; }
+int dm_gfx_keepalive_locked(void) { return 0; }
+int dm_gfx_keepalive(void) { return fakeKeepalive; }
+void dm_gfx_keepalive_set(int on) { fakeKeepalive = on != 0; }
 void dm_gfx_sharpen_set(int pct) { fakeSharpen = pct; }
 int dm_gfx_sharpen(void) { return fakeSharpen; }
 static int fakeFxaaReplaced;   /* Breath of the Wild 1.9.0: MetalFX replaces the FXAA / upscale draw (gfx/nvn/botw_finish.h) */
@@ -623,7 +628,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 29 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1054,7 +1059,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Pages: Display, Input, User and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
-    assert(settingsPanel.rows.count == 6 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page */
+    assert(settingsPanel.rows.count == 7 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
     /* The display page's bottom right: contribute shaders and star the project, after the rows for a controller; the
        version stays clear of them; a result shows for a moment where the version is. */
     NSButton *contribute = settingsPanel.displayButtons[1], *starButton = settingsPanel.displayButtons[0];

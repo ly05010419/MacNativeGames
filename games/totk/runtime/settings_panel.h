@@ -11,6 +11,9 @@
                                                              one turns the other off (user 2026-10-25, not to mislead)
      frame interpolation  off / 30+30 / 40+40 / 50+50 /      runtime flag mfx_interp (gfx/nvn/totk_mfx.m)
                           unlimited
+     GPU keep-alive       switch, default on                 dm_gfx_keepalive_set (gfx/nvn/nvn_mtl.m), at once;
+                                                             gpu-keepalive.txt above the game's folder (both games);
+                                                             TOTK_GPU_KEEPALIVE first (greyed out)
      resolution           720p / + MetalFX / 1080p /         runtime_output_mode_set (game_patches*.c); the player picks,
                           + MetalFX / 2K /
                           2K + MetalFX (a 4K screen)
@@ -129,6 +132,7 @@
 void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
 void dm_gfx_aniso_start(int n); int dm_gfx_aniso_locked(void); int dm_gfx_aniso(void); void dm_gfx_aniso_set(int n);   /* gfx/nvn/nvn_mtl.m */
+void dm_gfx_keepalive_start(int on); int dm_gfx_keepalive_locked(void); int dm_gfx_keepalive(void); void dm_gfx_keepalive_set(int on);   /* gfx/nvn/nvn_mtl.m */
 #ifdef GAME_BOTW190
 int runtime_shadow_res_available(void); int runtime_shadow_res_locked(void); int runtime_shadow_res_saved(void);
 void runtime_shadow_res_save(int size);   /* game_patches_botw.c */
@@ -271,6 +275,7 @@ static void settings_restore_begin(void) {
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
  settings_ssao_restore();
  if(!dm_gfx_aniso_locked()&&settings_read_int("graphics-aniso.txt",&v)&&v<=16)dm_gfx_aniso_start(v);
+ if(!dm_gfx_keepalive_locked()&&runtime_shared_setting_word("gpu-keepalive.txt",word,sizeof word))dm_gfx_keepalive_start(!strncmp(word,"on",2));
  settings_effects_restore();
  const char *output=getenv("TOTK_OUTPUT_RES");
  if(
@@ -844,6 +849,13 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_60),@(MFX_MAX)],
   ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);settings_save_frame();
    if(v!=MFX_OFF&&front_hdr_enabled())runtime_front_hdr_set(0);})];   /* interpolated frames are SDR: HDR goes off (PR #1129) */
+ /* GPU keep-alive (nvn_mtl.m keepalive_start): short spin kernels hold the GPU clock up between frames. A Mac whose GPU
+    keeps its clock with the game's own work gains no frame from it, only heat and power (an M4 Max: ~90 % GPU busy with it,
+    ~63 % without, the same frames), so the player can turn it off. */
+ {NSString *t=settings_text("GPU 保活（防降频，更热更耗电）","GPU keep-alive (holds the clock up; hotter, more power)");
+  if(dm_gfx_keepalive_locked())[rows addObject:settings_fixed(t,settings_on_off(dm_gfx_keepalive()))];
+  else [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_keepalive();},
+   ^(int v){dm_gfx_keepalive_set(v);runtime_shared_setting_save("gpu-keepalive.txt",v?"on":"off","GPU keep-alive");})];}
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
  static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_720P_METALFX,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K,
