@@ -68,5 +68,29 @@ class BundledByDefault(unittest.TestCase):
             self.assertTrue(build.bundle_shaders())
 
 
+class ShaderSubset(unittest.TestCase):
+    """User 2026-11-10: "用户要编译 预热全部着色器。测试只预热我的": a player's build compiles every shader."""
+    def test_choice(self):
+        build = load_build()
+        self.assertIsNone(build.shader_subset(Path('t'), Path('l'), {}))
+        self.assertIsNone(build.shader_subset(Path('t'), Path('l'), {'OOT_SHADER_SUBSET': 'all'}))
+        self.assertEqual(build.shader_subset(Path('t'), Path('l'), {'OOT_SHADER_SUBSET': '/keys.txt'}), '/keys.txt')
+        with mock.patch.object(build, 'listed_shader_file', return_value='/listed.txt') as listed:
+            self.assertEqual(build.shader_subset(Path('t'), Path('l'), {'OOT_SHADER_SUBSET': 'listed'}), '/listed.txt')
+            listed.assert_called_once()
+
+
+class TestRunsSkipTheOpening(unittest.TestCase):
+    """User 2026-11-10: the opening is skipped in test runs only (GameSlot.env); a player's start shows it."""
+    def test_slot_env(self):
+        spec = importlib.util.spec_from_file_location('oot_game_slot', GAME / 'scripts/dev/game_slot.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        slot = module.GameSlot.__new__(module.GameSlot)
+        for name, value in dict(fd=3, dir=Path('/tmp'), owner='test', purpose='p', token='t', since=0, expect=1).items():
+            setattr(slot, name, value)
+        self.assertEqual(slot.env({})['OOT_AUTO_SKIP_OPENING'], '1')
+        self.assertEqual(slot.env({'OOT_AUTO_SKIP_OPENING': '0'})['OOT_AUTO_SKIP_OPENING'], '0')
+
+
 if __name__ == '__main__':
     unittest.main()

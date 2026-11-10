@@ -322,6 +322,9 @@ class GameSlot:
 
     def env(self, base=None):
         env = dict(os.environ if base is None else base)
+        # Every test run skips Ocarina of Time's title and opening (runtime/ns2_codec.c, romfs.c); a player's start does not
+        # (user 2026-11-10). Other games ignore it; a run that sets it itself keeps its value.
+        env.setdefault("OOT_AUTO_SKIP_OPENING", "1")
         env.update({"TOTK_GAME_SLOT_FD": str(self.fd), "TOTK_GAME_SLOT_DIR": str(self.dir),
                     "TOTK_SLOT_OWNER": self.owner, "TOTK_SLOT_PURPOSE": self.purpose, "TOTK_SLOT_TOKEN": self.token,
                     "TOTK_SLOT_SINCE": str(self.since), "TOTK_SLOT_EXPECT_S": str(self.expect),

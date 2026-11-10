@@ -102,7 +102,9 @@ typedef struct {
 } cv_dec;
 static const char *const k_name[] = {"VP8", "VP9", "AV1"};
 
-/* User-requested opening auto-skip. Identify the original title AV1 stream by
+/* Opening auto-skip, for test runs only (user 2026-11-10: "视频跳过 关闭，这个只在测试时候开启，用户不用使用"):
+ * OOT_AUTO_SKIP_OPENING=1 turns it on (scripts/dev/game_slot.py sets it for every test run); a player's start shows
+ * the original title and opening. Identify the original title AV1 stream by
  * their first packet's complete SHA-256, never by startup time or movie size.
  * Title playback uses its normal start input. The unskippable Kokiri opening
  * is shortened in its verified event timeline, not in the codec protocol. */
@@ -120,9 +122,9 @@ static void opening_packet(cv_dec *d,const void *data,uint64_t size) {
     for(unsigned i=0;i<sizeof digest;i++)snprintf(hex+i*2,3,"%02x",digest[i]);
     const char *name=NULL;
     if(size==370&&!strcmp(hex,"4ece583d775fd427ff989538571db1285bf82aec5b904fa3a0f00db7081da89e"))name="Dm_Title_0005";
-    const char *off=getenv("OOT_AUTO_SKIP_OPENING");
+    const char *on=getenv("OOT_AUTO_SKIP_OPENING");
     if(!name){LOG("[oot-opening] other AV1 stream: first packet %llu bytes SHA256 %s",(unsigned long long)size,hex);return;}
-    if(off&&!strcmp(off,"0")){LOG("[oot-opening] %s: automatic skip disabled",name);return;}
+    if(!on||strcmp(on,"1")){LOG("[oot-opening] %s: the original title (OOT_AUTO_SKIP_OPENING=1 starts through it, for test runs)",name);return;}
     d->opening_token=atomic_fetch_add(&opening_generation,1)+1;d->opening_picture_start=d->pictures;
     LOG("[oot-opening] %s identified; automatic title start input enabled",name);
 }

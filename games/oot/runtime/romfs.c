@@ -267,8 +267,10 @@ static void overlay_init(void) {
   fprintf(stderr,"[totk] texture pack enabled: %s (8 GB memory layout)\n",texture_pack_dir);}
  const char *dir=getenv("TOTK_ROMFS_PATCHES");
 #ifdef GAME_OOT
+ /* Ocarina of Time's romfs-patches hold only the shortened Kokiri opening (make_opening_overlay.py): a test-run
+    convenience, loaded with OOT_AUTO_SKIP_OPENING=1 (user 2026-11-10: players see the original opening). */
  const char *opening=getenv("OOT_AUTO_SKIP_OPENING");
- if(!dir&&opening&&!strcmp(opening,"0"))fprintf(stderr,"[oot-opening] original event timeline enabled\n");
+ if(!dir&&(!opening||strcmp(opening,"1")))fprintf(stderr,"[oot-opening] the original opening (OOT_AUTO_SKIP_OPENING=1 shortens it, for test runs)\n");
  else
 #endif
  if(!dir||strcmp(dir,"0"))overlay_load(dir?dir:"extracted/" TOTK_GAME_DIR "/romfs-patches",0,0);

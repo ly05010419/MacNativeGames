@@ -40,10 +40,11 @@ def clone_file(source, destination):
     return str(destination)
 
 def bundle_shaders():
-    """The App carries the offline seed, the Metal libraries of the shaders the list uses (listed_shader_keys) and the
-    pipeline archive. User 2026-11-08: no translated shaders while the port changes; 2026-11-09: "不要编译全部着色器 …
-    用我最近玩的 … 管线要全部预热", then "只要 我一直用的 我收集的" and "为什么不能和以前一样 自动": so a full build does
-    it by default, not only update_runtime. OOT_BUNDLE_SHADERS=0 leaves the shaders out (each translated at first use)."""
+    """The App carries the offline seed, the Metal libraries (every shader; OOT_SHADER_SUBSET=listed for test builds:
+    shader_subset) and the pipeline archive. User 2026-11-08: no translated shaders while the port changes; 2026-11-09:
+    "不要编译全部着色器 … 用我最近玩的 … 管线要全部预热", "只要 我一直用的 我收集的", "为什么不能和以前一样 自动";
+    2026-11-10: "用户要编译 预热全部着色器。测试只预热我的". OOT_BUNDLE_SHADERS=0 leaves the shaders out (each translated
+    at first use)."""
     return os.environ.get('OOT_BUNDLE_SHADERS','1')!='0'
 
 def oot_shader_list():
@@ -71,6 +72,14 @@ def listed_shader_keys(seed, shared, compute):
         keys.update(line.split('\t')[1] for line in Path(shared).read_text().splitlines() if line.startswith('V\t'))
     return keys
 
+def shader_subset(tree, shared, env=None):
+    """Which Metal libraries a full build compiles (user 2026-11-10: "用户要编译 预热全部着色器。测试只预热我的"): a
+    player's build compiles every shader (unset); OOT_SHADER_SUBSET=listed, for the test builds, the shaders the list uses
+    (listed_shader_file); a path, the keys in that file. None means every shader."""
+    want=(os.environ if env is None else env).get('OOT_SHADER_SUBSET','')
+    if want in ('','all'):return None
+    return listed_shader_file(tree,shared) if want=='listed' else want
+
 def listed_shader_file(tree, shared):
     """listed_shader_keys of this build's seed, written for build_shader_libs.py --only."""
     scripts=str(GAME/'scripts')
@@ -79,7 +88,7 @@ def listed_shader_file(tree, shared):
     seed=tree/'build/shader-seed/oot'
     keys=listed_shader_keys(seed,shared,compute_rows(seed))
     path=tree/'build/shader-libs-listed.txt';path.write_text(''.join(k+'\n' for k in sorted(keys)))
-    print(f'Metal libraries: {len(keys)} shaders the list uses (OOT_SHADER_SUBSET=all compiles every one)',flush=True)
+    print(f'Metal libraries: {len(keys)} shaders the list uses (OOT_SHADER_SUBSET=listed; unset compiles every one)',flush=True)
     return str(path)
 
 def verify_shader_resources(tree):
@@ -384,9 +393,9 @@ def build(args, source):
          '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
          *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
      if not device:
-      only=os.environ.get('OOT_SHADER_SUBSET') or listed_shader_file(tree,shared)   # a key file; "all": every shader
+      only=shader_subset(tree,shared)
       run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
-         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only!='all' else [])],'compile-shader-libraries')
+         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only else [])],'compile-shader-libraries')
     if device:
      # The phone's own Metal libraries and pipeline archive: the seed above is compiled for the device in ios/tools/build_ipa.py.
      run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',
