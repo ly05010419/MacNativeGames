@@ -49,3 +49,10 @@ totk_key_layer totk_key_layer_of(const char *key);
    keeps the cap in the pane, so the button only holds 30 until the next launch and saves nothing (NULL). */
 const char *totk_frame_button_key(int custom);
 int totk_frame_button_target(int held30);   /* 30 or the normal rate (60); the runtime only knows 30 or not-30 */
+
+/* Ocarina of Time (user 2026-11-09): the phone offers the Mac's resolution entries 0-3 (runtime/settings_panel.h's row,
+   game_patches_ns2.c's canvas list), 720p from 480p (0) by default. A pick "0".."3" gives the game's handheld canvas tier
+   (OOT_GFX_SCALE: 2 lays out 1280x720, 0 lays out 1920x1080), the fixed 3D scale inside it (OOT_FIXED_RES, written into
+   the game at start by game_patches_ns2.c oot_ios_fixed_res) and the drawable rows. 0 for anything else. */
+typedef struct { const char *tier, *scale, *drawable; } oot_picture;
+int oot_picture_build(const char *pick, oot_picture *out);

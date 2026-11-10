@@ -16,6 +16,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
     BOOL _hasScene;          // and a docked scene row: 1080p comes as original and HD
     BOOL _hasResolution;     // the game's own width x height parameter
+    BOOL _hasOotResolution;  // Ocarina of Time: the Mac's resolution entries 0-3 (OOT_RESOLUTION, settings_map.c oot_picture_build)
     NSString *_sceneKey;     // that row's key: TOTK_BOTW_SCENE (Breath of the Wild) or TOTK_DOCKED_SCENE (Tears of the Kingdom)
 }
 
@@ -56,19 +57,29 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         NSString *size=[d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
         _picture.selectedSegmentIndex=[size isEqualToString:@"960x540"]?0:[size isEqualToString:@"1280x720"]?1:[size isEqualToString:@"1920x1080"]?2:3;
     }
+    _hasOotResolution = [self settingsPaneHas:@"OOT_RESOLUTION"];
+    if (_hasOotResolution) {   // the Mac's resolution row (user 2026-11-09), the lowest by default
+        _picture = [[UISegmentedControl alloc] initWithItems:@[T(@"720p（480p 放大）", @"720p (from 480p)"), T(@"720p（原生）", @"720p (native)"),
+                                                                T(@"1080p（720p 放大）", @"1080p (from 720p)"), T(@"1080p（原生）", @"1080p (native)")]];
+        _picture.apportionsSegmentWidthsByContent = YES;
+        _picture.selectedSegmentIndex = MAX(0, MIN(3, ([d stringForKey:@"OOT_RESOLUTION"] ?: @"0").integerValue));
+    }
     _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"60 fps"]];
     _fps.selectedSegmentIndex = [[d stringForKey:@"TOTK_PHONE_FPS"] isEqualToString:@"30"] ? 0 : 1;
     for (UISegmentedControl *s in @[_picture, _fps]) {
         s.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-        [s.widthAnchor constraintEqualToConstant:(_hasScene || _hasResolution) && s == _picture ? 420 : 340].active = YES;   // picture presets need the room
+        [s.widthAnchor constraintEqualToConstant:_hasOotResolution && s == _picture ? 600 : (_hasScene || _hasResolution) && s == _picture ? 420 : 340].active = YES;   // picture presets need the room
         [s addTarget:self action:s==_picture && _hasResolution ? @selector(resolutionChanged:) : @selector(changed) forControlEvents:UIControlEventValueChanged];
     }
     UIStackView *pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     UIStackView *fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
-    _hasPicture = _hasResolution || [self settingsPaneHas:@"TOTK_DOCKED"];
+    _hasPicture = _hasResolution || _hasOotResolution || [self settingsPaneHas:@"TOTK_DOCKED"];
 
     UILabel *note = [UILabel new];
-    if (_hasResolution)
+    if (_hasOotResolution)
+        note.text = T(@"和 Mac 相同的分辨率档位（不含 2K），默认最低的 720p（480p 放大）。也可以在“设置”App 里改。保留原始贴图及完整 mip。",
+                      @"The Mac's resolution entries (without 2K); the lowest, 720p from 480p, by default. The Settings app has them too. Original textures and full mip chains are preserved.");
+    else if (_hasResolution)
         note.text = T(@"默认 540p（960×540）。自定义宽×高可在这里或“设置”App 中修改。保留原始贴图及完整 mip。",
                       @"540p (960×540) by default. Enter a custom width × height here or in Settings. Original textures and full mip chains are preserved.");
     else if (_hasScene)
@@ -136,7 +147,9 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 
 - (void)changed {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    if (_hasResolution) {
+    if (_hasOotResolution) {
+        if (_picture.selectedSegmentIndex >= 0) [d setObject:[NSString stringWithFormat:@"%ld", (long)_picture.selectedSegmentIndex] forKey:@"OOT_RESOLUTION"];
+    } else if (_hasResolution) {
         if(_picture.selectedSegmentIndex>=0 && _picture.selectedSegmentIndex<3) [d setObject:@[@"960x540",@"1280x720",@"1920x1080"][_picture.selectedSegmentIndex] forKey:@"TOTK_OUTPUT_RES"];
     } else [d setBool:_picture.selectedSegmentIndex >= 1 forKey:@"TOTK_DOCKED"];
     if (_hasScene && _picture.selectedSegmentIndex >= 1)   // 720p keeps the docked scene the player chose last

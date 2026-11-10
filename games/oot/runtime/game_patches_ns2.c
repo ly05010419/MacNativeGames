@@ -528,6 +528,25 @@ static void patch_oot_fixed_res(Module *m) {
     patch_oot_scale_live(m, page);
     patch_oot_output_size(m, page);
 }
+/* The iOS export only (TOTK_EXPORT_IOS; user 2026-11-09: the phone's resolution pick, Ocarina of Time only). patch_oot_fixed_res
+   stays the Mac's and skips the export, so this writes the same code into the exported text: main+0x805bd0 branches to the
+   game's "dynamic resolution disabled" path, main+0x806420 to a veneer that loads the scale from the data page (+48). The
+   data page is not exported (runtime/loader.c export-ios); the app writes the scale at start (oot_ios_fixed_res). A Mac run
+   never calls this. */
+static void export_oot_fixed_res_ios(Module *m) {
+    const uint64_t site = 0x805bd0, disabled = 0x80640c, scale_site = 0x806420;
+    uint32_t have, have_mov; memcpy(&have, m->base + site, 4); memcpy(&have_mov, m->base + scale_site, 4);
+    if (have != 0x360041e8 || have_mov != 0x52a7f009) runtime_fail("OOT resolution sites differ from verified update 131072");
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL;
+    int64_t pages = ((int64_t)page - (int64_t)(stub & ~4095ULL)) / 4096;
+    uint32_t veneer[3] = { 0x90000009 | (((uint32_t)pages & 3) << 29) | ((((uint32_t)pages >> 2) & 0x7ffff) << 5), 0xb9400129 | (((OOT_SCALE_CELL + (uint32_t)(page & 4095)) / 4) << 10), oot_step_branch(stub + 8, scale_site + 4) };
+    if (stub + sizeof veneer > rx_end || page + OOT_SCALE_CELL + 4 > m->size) runtime_fail("OOT fixed resolution (iOS export): no room left");
+    for (uint64_t k = stub; k < stub + sizeof veneer; k++) if (m->base[k]) runtime_fail("OOT fixed resolution (iOS export): text padding already in use");
+    uint32_t b = oot_step_branch(site, disabled), to_veneer = oot_step_branch(scale_site, stub);
+    memcpy(m->base + stub, veneer, sizeof veneer); memcpy(m->base + site, &b, 4); memcpy(m->base + scale_site, &to_veneer, 4);
+    fprintf(stderr, "[oot] fixed render scale: code exported for iOS; the app writes its scale at start\n");
+}
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
 /* OOT aspect ratio (2026-11-09). The game camera's parameters (near +0x134, far +0x138, fovy +0x13c, aspect +0x140) are
@@ -562,6 +581,26 @@ static void patch_oot_aspect(Module *m) {
     fprintf(stderr, "[oot] aspect veneer at main+0x%llx; ratio %g (0 = the game's 16:9)\n", (unsigned long long)site, r);
 }
 #endif
+#if defined(GAME_OOT) && TARGET_OS_IPHONE
+/* iOS (user 2026-11-09): the phone's resolution pick. The export wrote export_oot_fixed_res_ios's code in; the data page cell it
+   reads (+48, OOT_SCALE_CELL on the Mac) is not exported, so the scale main.m chose (OOT_FIXED_RES, settings_map.c
+   oot_picture_build) is written here, before the game first asks for it. */
+static void oot_ios_fixed_res(Module *m) {
+    const uint64_t site = 0x805bd0, disabled = 0x80640c, scale_site = 0x806420, cell = 48;
+    uint32_t have, have_mov; memcpy(&have, m->base + site, 4); memcpy(&have_mov, m->base + scale_site, 4);
+    if (have != (0x14000000u | (uint32_t)((disabled - site) / 4)) || (have_mov & 0xfc000000u) != 0x14000000u)
+        runtime_fail("embedded OOT code has no fixed render scale (export-ios from before 2026-11-09)");
+    const char *e = getenv("OOT_FIXED_RES"); char *end = NULL;
+    float s = e && *e ? strtof(e, &end) : 2.0f / 3.0f;
+    if ((e && *e && (!end || *end)) || !(s > 0 && s <= 1)) runtime_fail("OOT_FIXED_RES must be a scale in (0, 1]");
+    uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (page + cell + 4 > m->size) runtime_fail("OOT fixed resolution: no data page");
+    _Atomic uint32_t *slot = (_Atomic uint32_t *)(void *)(m->base + page + cell);
+    if (atomic_load(slot)) runtime_fail("OOT fixed resolution: data page already in use");
+    uint32_t bits; memcpy(&bits, &s, sizeof bits); atomic_store(slot, bits);
+    fprintf(stderr, "[oot] fixed render scale %g (iOS, OOT_FIXED_RES)\n", s);
+}
+#endif
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
@@ -574,6 +613,9 @@ void runtime_game_patches(Module *m) {
     patch_oot_timestep(m);
     patch_oot_fixed_res(m);
     patch_oot_aspect(m);
+    if (getenv("TOTK_EXPORT_IOS")) export_oot_fixed_res_ios(m);   /* only when exporting for the phone */
+#elif defined(GAME_OOT)
+    oot_ios_fixed_res(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {

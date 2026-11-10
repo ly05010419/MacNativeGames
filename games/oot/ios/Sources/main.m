@@ -25,6 +25,9 @@ void runtime_ios_sync_drawable(UIView *host);
 void runtime_ios_sync_safe_area(UIView *host);
 static char *host_argv[3];
 static BOOL outputResolutionFromEnvironment;
+#ifdef GAME_OOT
+static BOOL ootResolutionFromEnvironment;   /* OOT_RESOLUTION came from devicectl, not from the pane's handover */
+#endif
 static NSString *g_no_game_data;   // set when there is no RomFS image to play from (didFinishLaunching)
 static NSString *g_seed_pack, *g_seed_unpack_to;   // a pushed shader pack to unpack before the game starts (seed_unpack)
 
@@ -363,10 +366,20 @@ static void apply_frame_env(const totk_frame_env *e, int overwrite) {
 static void apply_display_settings(void) {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
 #ifdef GAME_OOT
-    /* The default picture (user 2026-11-09), as app/launcher.m on the Mac: handheld mode at the reduced graphics-scale tier,
-       960x540 inside a 1280x720 canvas, MetalFX between them (oot_net_bypass.inc). */
+    /* The picture (user 2026-11-09): the Mac's resolution entries 0-3 (OOT_RESOLUTION, the start screen's and the pane's
+       row), 720p from 480p (0, 854x480 inside 1280x720) by default, in handheld mode. settings_map.c oot_picture_build maps
+       the pick; runtime/game_patches_ns2.c oot_ios_fixed_res writes the scale into the game. A devicectl OOT_RESOLUTION wins
+       over the saved pick, and a devicectl OOT_* value over the mapping (overwrite 0). */
     apply_operation_mode("handheld");
-    setenv("OOT_GFX_SCALE", "2", 0); setenv("OOT_FIXED_RES", "0.75", 0); setenv("TOTK_IOS_DRAWABLE_H", "720", 0);
+    NSString *ootPick = ootResolutionFromEnvironment ? @(getenv("OOT_RESOLUTION")) : ([d stringForKey:@"OOT_RESOLUTION"] ?: @"0");
+    oot_picture ootPicture;
+    if (!oot_picture_build(ootPick.UTF8String, &ootPicture)) {
+        fprintf(stderr, "[oot] unknown resolution pick %s; using 0 (720p from 480p)\n", ootPick.UTF8String);
+        ootPick = @"0"; oot_picture_build("0", &ootPicture);
+    }
+    setenv("OOT_GFX_SCALE", ootPicture.tier, 0); setenv("OOT_FIXED_RES", ootPicture.scale, 0); setenv("TOTK_IOS_DRAWABLE_H", ootPicture.drawable, 0);
+    fprintf(stderr, "[oot] picture %s: canvas tier %s, 3D scale %s, %s rows\n",
+            ootPick.UTF8String, getenv("OOT_GFX_SCALE"), getenv("OOT_FIXED_RES"), getenv("TOTK_IOS_DRAWABLE_H"));
     NSString *ootFps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: @"60";
     totk_frame_env ootFrame;
     if (totk_preset_frame_env_build(ootFps.UTF8String, &ootFrame)) apply_frame_env(&ootFrame, 1);
@@ -570,6 +583,9 @@ static void apply_settings(void) {
     if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); setenv("TOTK_UW_CATALOG","1",0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
     outputResolutionFromEnvironment=getenv("TOTK_OUTPUT_RES")!=NULL;
+#ifdef GAME_OOT
+    ootResolutionFromEnvironment=getenv("OOT_RESOLUTION")!=NULL;
+#endif
     apply_settings();
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     setenv("TOTK_GAME_DATA",[res stringByAppendingPathComponent:@"game-data"].fileSystemRepresentation,1);   // runtime/game_data.h

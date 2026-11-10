@@ -91,3 +91,13 @@ int totk_frame_button_target(int held30) { return held30 ? 60 : 30; }
    count). Must match Root.plist's DefaultValue; tests/test_ios_settings.py checks that. */
 const char *totk_picture_mode_default(void) { return "720"; }
 const char *totk_frame_cap_default(void) { return "60"; }
+
+/* The Mac's canvas list 0-3 (game_patches_ns2.c runtime_oot_canvas_set): 1280x720 at 0.6667 and 1, 1920x1080 at 0.6667
+   and 1. Measured on the Mac (handheld): tier 2 lays out the 1280x720 canvas (combo-v23-a, T 960x540 -> O 1280x720),
+   tier 0 the 1920x1080 one (T 1280x720 -> O 1920x1080). */
+int oot_picture_build(const char *pick, oot_picture *out) {
+    static const oot_picture LIST[] = {{"2", "0.6667", "720"}, {"2", "1", "720"}, {"0", "0.6667", "1080"}, {"0", "1", "1080"}};
+    if (!pick || pick[0] < '0' || pick[0] > '3' || pick[1]) return 0;
+    *out = LIST[pick[0] - '0'];
+    return 1;
+}

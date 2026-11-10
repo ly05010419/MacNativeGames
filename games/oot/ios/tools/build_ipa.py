@@ -66,6 +66,22 @@ def bananza_pane(root):
         'DefaultValue':'960x540','AutocapitalizationType':'None','AutocorrectionType':'No','KeyboardType':'ASCIICapable'}
     return root
 
+def oot_pane(root):
+    """Ocarina of Time (user 2026-11-09): the Mac's resolution entries 0-3 (runtime/settings_panel.h), the lowest by default,
+    in place of the Full HD switch; the start screen shows the same row (start_screen.m). main.m maps the pick to the game's
+    handheld canvas and a fixed 3D scale (settings_map.c oot_picture_build)."""
+    root=settings_without_totk(root)
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+    specs[at-1]['FooterText']=('和 Mac 相同的分辨率檔位（不含 2K），預設最低的 720p（480p 放大）。保留原始貼圖和完整 mip。重新啟動遊戲後生效 · '
+        'The Mac\'s resolution entries (without 2K); the lowest, 720p from 480p, by default. '
+        'Original textures and full mip chains are preserved. Relaunch to apply.')
+    specs[at]={'Type':'PSMultiValueSpecifier','Key':'OOT_RESOLUTION','Title':'分辨率 · Resolution',
+        'Titles':['720p（480p 放大，默认）· 720p (from 480p, default)','720p（原生）· 720p (native)',
+                  '1080p（720p 放大）· 1080p (from 720p)','1080p（原生）· 1080p (native)'],
+        'Values':['0','1','2','3'],'DefaultValue':'0'}
+    return root
+
 def run(args, cwd, log, env):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
@@ -233,7 +249,7 @@ def main():
         define={'dkb':'GAME_DKB','pkp':'GAME_POKOPIA','oot':'GAME_OOT'}[a.version]
         project=project.replace('-I../build\n',f'-I../build -D{define}=1 -DGAME_NS2=1\n')
         root=plistlib.loads((settings/'Root.plist').read_bytes())
-        root=bananza_pane(root) if a.version=='dkb' else settings_without_totk(root)
+        root=bananza_pane(root) if a.version=='dkb' else oot_pane(root) if a.version=='oot' else settings_without_totk(root)
         (settings/'Root.plist').write_bytes(plistlib.dumps(root))
     elif botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
