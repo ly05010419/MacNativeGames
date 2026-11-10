@@ -359,7 +359,7 @@ static int world_camera_running(uint64_t now) {   // the camera hook counts its 
 #ifdef TOTK_GAME_V143
     (void)now;
     pthread_mutex_lock(&g.mu);
-    int slot=latest_picture(),world=slot>=0&&g.src_both[slot];   /* the newest picture is the world's (one picture for both eyes) */
+    int slot=latest_picture(),world=slot>=0&&(g.src_both[slot]||g.src_stereo[slot]==VR_NATIVE_WORLD);   /* the newest picture is the world's (one picture for both eyes) */
     pthread_mutex_unlock(&g.mu);
     return world;
 #elif defined(GAME_BOTW)
@@ -971,7 +971,7 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
                          g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }
-                  g.src_order[s]=g.ticket_order[ticket%64];
+                  g.src_order[s]=stereo?++g.capture_order:g.ticket_order[ticket%64];   /* a native pair is encoded at its place in the replay order, before its frame's present */
     }   // B1: the eye it was rendered for, -1 not known
     pthread_mutex_unlock(&g.mu);
     if (s < 0) return -1;

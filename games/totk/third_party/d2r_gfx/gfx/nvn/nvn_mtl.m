@@ -245,6 +245,26 @@ static void q4_commit(id<MTL4CommandBuffer> cb, TotkCommitOptions *o) {
 static void cb_commit(id<MTLCommandBuffer> cb) { bg_gate(); if (!nogpu()) [cb commit]; }
 static void cb_wait(id<MTLCommandBuffer> cb) { if (!nogpu()) [cb waitUntilCompleted]; }
 static uint64_t g_fence;                        // 已提交的最大栅栏值（提交线程独占递增） | Highest committed fence value (incremented exclusively by the submit thread)
+/* Stereo by replaying a submission once per eye (vr开发.md section 23; "flag stereo_replay 1", off by default): the game
+   runs and records once, with a frustum that covers both eyes; hle_nvn.c submit_exec replays the submission for the left
+   eye (g_eye_pass 1), then for the right (2). The two replays are one submission of the game's: the GPU writes and pending
+   updates the first replay leaves (its fence, g_eye_skip_fence during the second) are not an earlier submission's for the
+   second one: its uniform copies (usnap_take) and their pending-write overlay (pend_overlay_x) pass them over, as a single
+   replay would not have seen them; later submissions treat them as any other. Event signals, the CPU's synchronisation
+   with the frame, stay with the second replay; counter reports and resets run in both (commands of the same replay read
+   what they write). */
+int g_eye_pass; static uint64_t g_eye_skip_fence; static _Atomic int g_stereo_replay;
+int mtl_stereo_replay(void) { return atomic_load(&g_stereo_replay) != 0; }
+int mtl_stereo_project(void) { return atomic_load(&g_stereo_replay) == 2; }   // "flag stereo_replay 2": also the eye's projection (1: the same picture twice, a check of the replay alone)
+/* Each eye replay's picture: the last pass it drew into a texture the game presents (their serials are noted at every
+   present, with the picture's rectangle), copied at the replay's end into one side of a side-by-side texture; after the
+   right eye's the pair goes to the headset as one source with each eye's rays and the frame's rotation (the path of
+   Breath of the Wild's native stereo, vr_source_encode_stereo). g_eye_have: this replay got the eye's projection. */
+static uint64_t g_eye_presented[4]; static int g_eye_npresented, g_eye_crop[4], g_eye_crop_have, g_eye_have[2], g_eye_pair_ok;
+static id<MTLTexture> g_eye_swap, g_eye_sbs; static float g_eye_view[12], g_eye_fov[2][4];
+static _Atomic uint64_t g_eye_pairs, g_eye_nopic;
+static void eye_note_pass(MTL4RenderPassDescriptor *pd);
+void mtl_eye_pass(int e) { g_eye_skip_fence = e == 2 ? g_fence : 0; g_eye_pass = e; if (e) { g_eye_swap = nil; g_eye_have[e - 1] = 0; } }   // 2: the first replay was committed just before (mtl_sub_commit: ++g_fence)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;                         // 已完成的最大栅栏值（完成回调写） | Highest completed fence value (written by the completion callback)
@@ -1633,6 +1653,108 @@ void *mtl_sub_capture_ubos(const uint64_t *h, int n) {
     return c;
 }
 static void ucap_free(usnap_cap *c) { if (c) { free(c->r); free(c->off); ucap_bytes_put(c->bytes, c->cap); free(c); } }
+/* Stereo replay (hle_nvn.c submit_exec): a replay consumes its capture (usnap_finish frees it), so the first replay
+   takes a copy of the submission's capture and the second the capture itself. */
+void *mtl_ucap_dup(const void *basev) {
+    const usnap_cap *base = basev;
+    if (!base) return NULL;
+    usnap_cap *c = calloc(1, sizeof *c); if (!c) MDIE("uniform capture");
+    c->done = base->done; c->n = base->n; c->ns = 0;
+    size_t total = base->n ? base->off[base->n - 1] + (size_t)(base->r[base->n - 1].hi - base->r[base->n - 1].lo) : 0;
+    c->r = malloc(sizeof *c->r * (size_t)(c->n ? c->n : 1)); c->off = malloc(sizeof *c->off * (size_t)(c->n ? c->n : 1));
+    if (!c->r || !c->off) MDIE("uniform capture");
+    if (c->n) { memcpy(c->r, base->r, sizeof *c->r * (size_t)c->n); memcpy(c->off, base->off, sizeof *c->off * (size_t)c->n); }
+    c->bytes = ucap_bytes_get(total ? total : 1, &c->cap);
+    if (total) memcpy(c->bytes, base->bytes, total);
+    return c;
+}
+/* Stereo replay, the eye's projection (vr开发.md section 23). The game renders with one camera whose frustum covers both
+   eyes; a replay for one eye uses that camera's view matrix unchanged and, wherever a uniform of this submission holds
+   the camera's projection P, its inverse, P*V or (P*V)^-1 (row-major or transposed), the eye's: P_eye * T, P_eye the
+   headset's rays for that eye with the 1.06 overscan and P's own depth terms, T the shift of half the eye distance in
+   view space. View-space quantities stay the centre camera's and positions rebuilt from depth through the eye's inverse
+   land in that same view space. V and P are this submission's own bytes of the main scene camera's block
+   (runtime_vr_camera_block). Only the capture (our copy) is written. Returns the matrices replaced. */
+static int m4_inv(const double *m, double *o) {
+    double a[4][8];
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) { a[r][c] = m[r * 4 + c]; a[r][4 + c] = r == c; }
+    for (int c = 0; c < 4; c++) {
+        int p = c; for (int r = c + 1; r < 4; r++) if (fabs(a[r][c]) > fabs(a[p][c])) p = r;
+        if (fabs(a[p][c]) < 1e-12) return 0;
+        if (p != c) for (int k = 0; k < 8; k++) { double t = a[c][k]; a[c][k] = a[p][k]; a[p][k] = t; }
+        double d = a[c][c]; for (int k = 0; k < 8; k++) a[c][k] /= d;
+        for (int r = 0; r < 4; r++) if (r != c) { double f = a[r][c]; if (f != 0) for (int k = 0; k < 8; k++) a[r][k] -= f * a[c][k]; }
+    }
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) o[r * 4 + c] = a[r][4 + c];
+    return 1;
+}
+static void m4_mul(const double *a, const double *b, double *o) {
+    for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) { double s = 0; for (int k = 0; k < 4; k++) s += a[r * 4 + k] * b[k * 4 + c]; o[r * 4 + c] = s; }
+}
+static _Atomic uint64_t g_eye_fix[6];   // submissions patched, matrices replaced, submissions without a camera, nanoseconds, bytes scanned, ranges with a replacement
+int mtl_ucap_eye(void *capv, int eye) {
+    extern uint64_t runtime_vr_camera_block(void);
+    usnap_cap *c = capv; vr_views hv; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    /* one address for both eyes of a submission: the game flips the scene's camera blocks at its next frame's start, and
+       with the replay behind the game thread the second eye would look for the next frame's block (st-06: every right
+       eye without a camera block) */
+    static uint64_t latched; if (eye == 0) latched = runtime_vr_camera_block();
+    const uint64_t blk = latched;
+    if (!c || !c->n || !blk || eye < 0 || eye > 1 || !vr_link_views(&hv) || !(hv.ipd > 0.03f && hv.ipd < 0.09f)) { atomic_fetch_add(&g_eye_fix[2], 1); return 0; }
+    /* the camera block's bytes in the capture (a captured range must cover them: bound by this submission) */
+    int lo = 0, hi = c->n; while (lo < hi) { int m = (lo + hi) / 2; if (c->r[m].hi <= blk) lo = m + 1; else hi = m; }
+    if (lo >= c->n || c->r[lo].lo > blk || c->r[lo].hi < blk + 44 * 4) { atomic_fetch_add(&g_eye_fix[2], 1); return 0; }
+    float cam[44]; memcpy(cam, c->bytes + c->off[lo] + (blk - c->r[lo].lo), sizeof cam);
+    double V[16] = {0}, P[16], Pe[16], PV[16], PVe[16], Pi[16], Pei[16], PVi[16], PVei[16];
+    for (int i = 0; i < 12; i++) V[i] = cam[i]; V[15] = 1;
+    for (int i = 0; i < 16; i++) P[i] = cam[28 + i];
+    int ok = P[0] > 0.05 && P[5] > 0.05 && P[14] == -1 && P[15] == 0 && P[1] == 0 && P[4] == 0 && P[12] == 0 && P[13] == 0;
+    for (int r = 0; r < 3 && ok; r++) { double n2 = V[r * 4] * V[r * 4] + V[r * 4 + 1] * V[r * 4 + 1] + V[r * 4 + 2] * V[r * 4 + 2]; if (!(fabs(n2 - 1) < 1e-3)) ok = 0; }
+    if (!ok) { atomic_fetch_add(&g_eye_fix[2], 1); return 0; }
+    const double l = tan(hv.fov[eye][0]) * 1.06, r_ = tan(hv.fov[eye][1]) * 1.06, u = tan(hv.fov[eye][2]) * 1.06, d = tan(hv.fov[eye][3]) * 1.06;
+    if (!(r_ > l && u > d)) { atomic_fetch_add(&g_eye_fix[2], 1); return 0; }
+    memcpy(Pe, P, sizeof Pe);
+    Pe[0] = 2 / (r_ - l); Pe[2] = (r_ + l) / (r_ - l); Pe[5] = 2 / (u - d); Pe[6] = (u + d) / (u - d);
+    const double shift = (eye ? -0.5 : 0.5) * hv.ipd;   // the left eye sits at -ipd/2: the scene moves by +ipd/2 in its view space
+    for (int r = 0; r < 4; r++) Pe[r * 4 + 3] += Pe[r * 4] * shift;   // Pe * T(shift, 0, 0)
+    m4_mul(P, V, PV); m4_mul(Pe, V, PVe);
+    if (!m4_inv(P, Pi) || !m4_inv(Pe, Pei) || !m4_inv(PV, PVi) || !m4_inv(PVe, PVei)) { atomic_fetch_add(&g_eye_fix[2], 1); return 0; }
+    /* 8 patterns: {P, P^-1, PV, PV^-1} x {row-major, transposed}; key: the element of largest magnitude */
+    float pat[8][16], rep[8][16]; int key[8]; const double *src[4] = {P, Pi, PV, PVi}, *dst[4] = {Pe, Pei, PVe, PVei};
+    for (int k = 0; k < 4; k++) for (int i = 0; i < 16; i++) {
+        pat[2 * k][i] = (float)src[k][i]; rep[2 * k][i] = (float)dst[k][i];
+        pat[2 * k + 1][i] = (float)src[k][(i % 4) * 4 + i / 4]; rep[2 * k + 1][i] = (float)dst[k][(i % 4) * 4 + i / 4];
+    }
+    for (int k = 0; k < 8; k++) { key[k] = 0; for (int i = 1; i < 16; i++) if (fabsf(pat[k][i]) > fabsf(pat[k][key[k]])) key[k] = i; }
+    int replaced = 0, ranges = 0; uint64_t bytes = 0;
+    for (int i = 0; i < c->n; i++) {
+        const size_t nb = (size_t)(c->r[i].hi - c->r[i].lo); uint8_t *b = c->bytes + c->off[i];
+        const size_t skew = (size_t)((4 - (c->r[i].lo & 3)) & 3);   // floats at 4-byte addresses
+        if (nb < skew + 64) continue;
+        float *f = (float *)(void *)(b + skew); const size_t nf = (nb - skew) / 4; int here = 0; bytes += nb;
+        for (int k = 0; k < 8; k++) {
+            const float kv = pat[k][key[k]], tol = 2e-4f * fmaxf(1, fabsf(kv)); const int ko = key[k];
+            for (size_t o = 0; o + 16 <= nf; o++) {
+                float x; memcpy(&x, &f[o + ko], 4);
+                if (!(fabsf(x - kv) <= tol)) continue;
+                float w[16]; memcpy(w, &f[o], sizeof w); int same = 1;
+                for (int j = 0; j < 16 && same; j++) if (!(fabsf(w[j] - pat[k][j]) <= 5e-4f * fmaxf(1, fabsf(pat[k][j])))) same = 0;
+                if (same) { memcpy(&f[o], rep[k], sizeof rep[k]); replaced++; here = 1; o += 15; }
+            }
+        }
+        ranges += here;
+    }
+    memcpy(g_eye_view, cam, sizeof g_eye_view); g_eye_have[eye] = 1;
+    for (int j = 0; j < 4; j++) g_eye_fov[eye][j] = atanf(tanf(hv.fov[eye][j]) * 1.06f);
+    atomic_fetch_add(&g_eye_fix[0], 1); atomic_fetch_add(&g_eye_fix[1], (uint64_t)replaced); atomic_fetch_add(&g_eye_fix[3], clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0);
+    atomic_fetch_add(&g_eye_fix[4], bytes); atomic_fetch_add(&g_eye_fix[5], (uint64_t)ranges);
+    { static uint64_t said; const uint64_t n = atomic_load(&g_eye_fix[0]);
+      if (n >= said + 600 || !said) { said = n ? n : 1;
+        MLOG("[vr] stereo replay: %llu eye replays with the eye's projection (%llu matrices in %llu ranges, %.2f ms and %.0f KB scanned each), %llu without a camera block; this one: eye %d, %d matrices, P00 %.4f -> %.4f, P02 %.4f -> %.4f, shift %.4f m",
+             (unsigned long long)n, (unsigned long long)atomic_load(&g_eye_fix[1]), (unsigned long long)atomic_load(&g_eye_fix[5]), (double)atomic_load(&g_eye_fix[3]) / 1e6 / (double)(n ? n : 1),
+             (double)atomic_load(&g_eye_fix[4]) / 1024.0 / (double)(n ? n : 1), (unsigned long long)atomic_load(&g_eye_fix[2]), eye, replaced, P[0], Pe[0], P[2], Pe[2], shift); } }
+    return replaced;
+}
 /* The bytes of [a, a+n) as captured: memory at the capture where a captured range covers them (they are memory now
    elsewhere: no binding of this submission reads there). */
 static void ucap_read(const usnap_cap *c, uint64_t a, uint8_t *out, size_t n) {
@@ -1710,9 +1832,15 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     uint64_t tq0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t done = cap && !g_ucap_probe_now ? cap->done : __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
     int ng = 0; uint64_t gw_maxlen = 0;   // GPU writes not finished at the capture, sorted by start
-    for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) { g_gw[ng++] = g_gw[i]; if (g_gw[i].hi - g_gw[i].lo > gw_maxlen) gw_maxlen = g_gw[i].hi - g_gw[i].lo; }
-    g_ngw = ng;
+    static gw_t *eyegw; static int eyegw_cap; int neye = 0;   // stereo replay: the first replay's, kept for later submissions but not looked at here
+    for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) {
+        if (g_eye_skip_fence && g_gw[i].fence == g_eye_skip_fence) {
+            if (neye == eyegw_cap) { eyegw_cap = eyegw_cap ? eyegw_cap * 2 : 1024; eyegw = realloc(eyegw, (size_t)eyegw_cap * sizeof *eyegw); if (!eyegw) MDIE("GPU write ranges"); }
+            eyegw[neye++] = g_gw[i]; continue; }
+        g_gw[ng++] = g_gw[i]; if (g_gw[i].hi - g_gw[i].lo > gw_maxlen) gw_maxlen = g_gw[i].hi - g_gw[i].lo; }
     if (ng > 1) qsort(g_gw, (size_t)ng, sizeof *g_gw, gw_cmp);
+    if (neye) memcpy(g_gw + ng, eyegw, (size_t)neye * sizeof *g_gw);   // fits: they came out of g_gw
+    g_ngw = ng + neye;
     g_usr.n = 0;
     if (cap) {   // the bindings as captured (merged, inside pools); the merge below works on them as on fresh ones
         if (cap->n > g_usr.cap) { g_usr.cap = cap->n + 256; g_usr.r = realloc(g_usr.r, g_usr.cap * sizeof *g_usr.r); if (!g_usr.r) MDIE("uniform copy ranges"); }
@@ -1943,6 +2071,7 @@ static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wa
     for (int i = 0; i < npend; i++) {
         uint64_t lo = g_pend_lo[i], hi = g_pend_hi[i];
         if (hi <= a || lo >= a + n || g_pend_fence[i] <= done) continue;   // completed writes are already in memory (which may hold newer CPU writes)
+        if (g_eye_skip_fence && g_pend_fence[i] == g_eye_skip_fence) continue;   // stereo replay: the first replay's, not before the second (mtl_eye_pass)
         uint64_t s0 = lo > a ? lo : a, e0 = hi < a + n ? hi : a + n;
         if (g_pend_kind[i] == 0) memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
         else if (depth < 2) pend_materialize_x((uint64_t)(uintptr_t)g_pend_src[i] + (s0 - lo), out + (s0 - a), e0 - s0, depth + 1, wait);
@@ -2855,6 +2984,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "shadow_index_check")) { atomic_store(&g_shadow_index_check, v != 0); MLOG("[flag] shadow_index_check = %d", v != 0); return; }
     if (!strcmp(name, "pkg_final_cache")) { atomic_store(&g_pkg_final_cache, v != 0); MLOG("[flag] pkg_final_cache = %d", v != 0); return; }
     if (!strcmp(name, "pend_arena_pin")) { atomic_store(&g_pend_arena_pin, v != 0); MLOG("[flag] pend_arena_pin = %d", v != 0); return; }
+    if (!strcmp(name, "stereo_replay")) { atomic_store(&g_stereo_replay, v < 0 ? 0 : v > 2 ? 2 : v); MLOG("[flag] stereo_replay = %d (0 off, 1 each submission replayed once per eye, 2 with the eye's projection)", v); return; }
     if (!strncmp(name, "skipfs_", 7)) {
         const char *p = name + 7;
         if (strlen(p) != 16 || strspn(p, "0123456789abcdefABCDEF") != 16) { MLOG("[flag] skipfs needs exactly 16 hex digits"); return; }
@@ -4497,7 +4627,7 @@ static int passdump_slow(void) {
 }
 /* TOTK: TOTK_INPUT_FILE command "passdump <n>": full pass dump (as DM_NVN_PASSDUMP_ALL) of the n frames after the next one. */
 void dm_gfx_passdump_next(long n) { g_pd_n = n > 0 && n < 16 ? n : 1; g_pd_at = (long)atomic_load(&g_cur_frame) + 2; g_pd_armed = 1; MLOG("[pass] 按输入文件转储帧 %ld 起 %ld 帧", g_pd_at, g_pd_n); }
-#define PD(...) do { if (passdump()) { fprintf(stderr, "[pass] F%llu E0 ", (unsigned long long)atomic_load(&g_cur_frame)); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)   /* E0: a fixed field (scripts parse the line) */
+#define PD(...) do { if (passdump()) { fprintf(stderr, "[pass] F%llu E%d ", (unsigned long long)atomic_load(&g_cur_frame), g_eye_pass); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)   /* E0: a fixed field (scripts parse the line) */
 static void pd_xfer(const char *what, uint64_t src, uint64_t dst, uint64_t n) { PD("X %llu %s src=%#llx dst=%#llx n=%#llx", g_stat_pass, what, (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); }
 static void pd_update_bytes(const void *data, uint64_t dst, uint64_t n, uint64_t seq) {
     if (passdump()) { const char *dir = getenv("DM_NVN_CBDUMP"); if (dir && n <= 65536) {
@@ -5426,6 +5556,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         }
     }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
+    if (g_eye_pass) eye_note_pass(pd);   // stereo replay: this eye's picture
     g_enc = enc_r_begin(pd);
     args_dirty_all();
     g_stat_pass++;
@@ -14512,6 +14643,56 @@ static id<MTLTexture> vr_native_bound_canvas(uint64_t *serial) {
     id<MTLTexture> source=tid>0&&tid<g_ntreg&&g_treg[tid].ok?(__bridge id<MTLTexture>)tex_fast(tid):nil;
     *serial=source?g_treg[tid].t.serial:0;registry_unlock();return source;
 }
+static void eye_note_present(const tex_t *t, const int *crop) {   // the replay thread, at the game's present
+    if (!t) return;
+    g_eye_crop_have = crop && crop[2] > 0 && crop[3] > 0; if (g_eye_crop_have) memcpy(g_eye_crop, crop, sizeof g_eye_crop);
+    for (int i = 0; i < g_eye_npresented; i++) if (g_eye_presented[i] == t->serial) return;
+    g_eye_presented[g_eye_npresented < 4 ? g_eye_npresented++ : (int)(t->serial % 4)] = t->serial;
+}
+static void eye_note_pass(MTL4RenderPassDescriptor *pd) {
+    if (R.rt.n < 1 || !R.rt.color[0]) return;
+    for (int i = 0; i < g_eye_npresented; i++) if (g_eye_presented[i] == R.rt.color[0]->serial) { g_eye_swap = pd.colorAttachments[0].texture; return; }
+}
+/* hle_nvn.c submit_exec, before an eye replay's commit (eye 0 left, 1 right). */
+void mtl_eye_capture(int eye) {
+    if (eye == 0) g_eye_pair_ok = 1;
+    id<MTLTexture> src = g_eye_swap;
+    static uint64_t why[5], calls;   // diagnostic: no presented-texture pass, no eye projection, no command buffer, the left side missing, no source slot
+    if (++calls % 1200 == 0) MLOG("[vr] stereo replay: of %llu eye replays, %llu drew no presented texture, %llu had no eye projection, %llu no command buffer, %llu right eyes without a left, %llu pairs without a source slot; presented serials %d",
+        (unsigned long long)calls, (unsigned long long)why[0], (unsigned long long)why[1], (unsigned long long)why[2], (unsigned long long)why[3], (unsigned long long)why[4], g_eye_npresented);
+    if (!src || !g_eye_have[eye] || !g_cb) { why[!src ? 0 : !g_eye_have[eye] ? 1 : 2]++; g_eye_pair_ok = 0; if (eye == 1) atomic_fetch_add(&g_eye_nopic, 1); return; }
+    NSUInteger x = 0, y = 0, w = src.width, h = src.height;
+    if (g_eye_crop_have && (NSUInteger)(g_eye_crop[0] + g_eye_crop[2]) <= src.width && (NSUInteger)(g_eye_crop[1] + g_eye_crop[3]) <= src.height) {
+        x = (NSUInteger)g_eye_crop[0]; y = (NSUInteger)g_eye_crop[1]; w = (NSUInteger)g_eye_crop[2]; h = (NSUInteger)g_eye_crop[3]; }
+    id<MTLTexture> d = g_eye_sbs;
+    { static int said; if (said < 24) { said++; MLOG("[vr] stereo replay capture: eye %d, picture %lux%lu format %lu crop %d (%lu,%lu %lux%lu), pair ok %d, side-by-side %lux%lu format %lu", eye, (unsigned long)src.width, (unsigned long)src.height, (unsigned long)src.pixelFormat, g_eye_crop_have, (unsigned long)x, (unsigned long)y, (unsigned long)w, (unsigned long)h, g_eye_pair_ok, (unsigned long)(d ? d.width : 0), (unsigned long)(d ? d.height : 0), (unsigned long)(d ? d.pixelFormat : 0)); } }
+    if (!d || d.width != 2 * w || d.height != h || d.pixelFormat != src.pixelFormat) {
+        if (d) { res_remove(d); defer_obj_release(d); }
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:2 * w height:h mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        d = [g_dev newTextureWithDescriptor:td]; if (!d) MDIE("stereo replay: the side-by-side texture %lux%lu", (unsigned long)(2 * w), (unsigned long)h);
+        d.label = @"stereo replay eyes"; res_add(d); g_eye_sbs = d; g_eye_pair_ok = eye == 0;   // a new texture holds no left picture yet
+        if (!g_eye_pair_ok) { atomic_fetch_add(&g_eye_nopic, 1); return; }
+    }
+    rp_end(); blit_close(); rs_sync();
+    id<MTL4ComputeCommandEncoder> b = blit();
+    enc_b_copy_texture(b, src, 0, 0, MTLOriginMake(x, y, 0), MTLSizeMake(w, h, 1), d, 0, 0, MTLOriginMake(eye ? w : 0, 0, 0));
+    blit_close(); rs_sync();
+    if (eye != 1) return;
+    if (!g_eye_pair_ok) { why[3]++; return; }
+    float rotation[2][9];
+    for (int k = 0; k < 2; k++) for (int i = 0; i < 3; i++) memcpy(rotation[k] + 3 * i, g_eye_view + 4 * i, 3 * sizeof(float));
+    vr_source_native_frame();
+    int slot = vr_source_encode_stereo(g_cb, d, g_eye_fov, rotation);
+    { static int said; if (said < 12) { said++; MLOG("[vr] stereo replay capture: the pair's source slot %d", slot); } }
+    if (slot >= 0) {
+        static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
+        if (!g_vr_native_slots) g_vr_native_slots = [NSMutableArray array]; [g_vr_native_slots addObject:@(slot)];
+        const uint64_t n = atomic_fetch_add(&g_eye_pairs, 1) + 1;
+        if (n == 1 || n % 300 == 0) MLOG("[vr] stereo replay: %llu eye pairs handed to the headset (%lux%lu an eye, rays L %.3f %.3f %.3f %.3f / R %.3f %.3f %.3f %.3f); %llu frames without a pair",
+            (unsigned long long)n, (unsigned long)w, (unsigned long)h, g_eye_fov[0][0], g_eye_fov[0][1], g_eye_fov[0][2], g_eye_fov[0][3], g_eye_fov[1][0], g_eye_fov[1][1], g_eye_fov[1][2], g_eye_fov[1][3], (unsigned long long)atomic_load(&g_eye_nopic));
+    } else { why[4]++; atomic_fetch_add(&g_eye_nopic, 1); }
+}
 static void vr_labo_capture(NvProg *pr) {
     if(!pr||!pr->sh[0]||!pr->sh[1]||!vr_labo_active()||
        !vr_labo_lens_pair(pr->sh[0]->key,pr->sh[1]->key))return;
@@ -16144,6 +16325,7 @@ void mtl_exec(const uint8_t *p) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_) MDIE("corrupt command record at %p: op %u size %u (call depth %d)", (const void *)p, (unsigned)h.op, (unsigned)h.size, g_ret_n);
+        if (g_eye_pass == 1 && h.op == OP_SIGNAL_EVENT) { p += h.size; continue; }   // stereo replay: the CPU must not see the frame done after the first replay
         g_exec_cur = p;   // 写回前瞻的扫描起点：结束通道的那条操作（含） | Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
         sdx_seq(p);
@@ -18031,6 +18213,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // 当帧状态随票号入队，不在出图线程晚读可变window | The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
+    eye_note_present(t, crop);   // stereo replay: which textures the game presents, and the picture's rectangle
     if(vr_projection_tracking())vr_image_projection(vr_native_image(t,NULL,0));
     vr_present_queued(tk);   // VR head look: this frame's head pose goes with its ticket (the present thread copies it later)
     [g_native_eye_frames removeAllObjects]; /* No incomplete/cross-canvas eye can leak into another game frame. */

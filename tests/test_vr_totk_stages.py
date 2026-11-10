@@ -136,5 +136,6 @@ int main(void){
             self.assertEqual(subprocess.run([str(binary)]).returncode,0)
 
     def test_passdump_line_keeps_its_eye_field(self):
-        """Scripts parse "[pass] F<frame> E<eye>": the field stays, always 0, now that no replay is per eye."""
-        self.assertIn('"[pass] F%llu E0 "',(ROOT/'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text())
+        """Scripts parse "[pass] F<frame> E<eye>": the field is the replay's eye (0 one replay, 1 left, 2 right)."""
+        source=(ROOT/'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
+        self.assertIn('"[pass] F%llu E%d ", (unsigned long long)atomic_load(&g_cur_frame), g_eye_pass)',source)

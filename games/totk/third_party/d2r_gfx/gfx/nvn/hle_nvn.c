@@ -2652,12 +2652,26 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
     /* TOTK diagnostic (TOTK_WATCH_ADDR): submissions in progress, and their start / end times, to line up guest writes with replay */
     atomic_fetch_add(&dm_submit_busy, 1);
     { static int wl = -1; if (wl < 0) wl = getenv("TOTK_WATCH_ADDR") != NULL; if (wl) LOG("[sub] F%llu start t_us=%llu", (unsigned long long)g_frame_pub, (unsigned long long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000)); }
-    mtl_sub_begin();
-    mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, ucap);   // TOTK: uniforms as of the submit call (ucap: bytes captured there)
-    mtl_sub_index((const uint64_t *)h, n);
-    for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
-    mtl_exec_rest(NULL, 0);
-    mtl_sub_commit();
+    /* Stereo by replay (nvn_mtl.m g_eye_pass, vr开发.md section 23): the same recordings and the same uniform bytes once
+       per eye, the left eye first. */
+    extern int mtl_stereo_replay(void); extern void mtl_eye_pass(int e); extern void *mtl_ucap_dup(const void *base); extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
+    const int stereo = mtl_stereo_replay();
+    /* each replay consumes a capture: with two replays the submission's own (taken now when the replay runs inside the
+       submit call) goes to the second and a copy of it to the first */
+    void *base = stereo ? (ucap ? ucap : mtl_sub_capture_ubos((const uint64_t *)h, n)) : ucap;
+    for (int pass = 0; pass < (stereo ? 2 : 1); pass++) {
+        if (stereo) mtl_eye_pass(pass + 1);
+        void *cap = stereo && pass == 0 ? mtl_ucap_dup(base) : base;
+        if (stereo) { extern int mtl_ucap_eye(void *cap, int eye); extern int mtl_stereo_project(void); if (mtl_stereo_project()) (void)mtl_ucap_eye(cap, pass); }   // the eye's projection into this replay's uniforms
+        mtl_sub_begin();
+        mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, cap);   // TOTK: uniforms as of the submit call (cap: bytes captured there)
+        mtl_sub_index((const uint64_t *)h, n);
+        for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
+        mtl_exec_rest(NULL, 0);
+        if (stereo) { extern void mtl_eye_capture(int eye); extern int mtl_stereo_project(void); if (mtl_stereo_project()) mtl_eye_capture(pass); }   // this eye's picture, before the commit
+        mtl_sub_commit();
+    }
+    if (stereo) mtl_eye_pass(0);
     atomic_fetch_sub(&dm_submit_busy, 1);
     { static int wl = -1; if (wl < 0) wl = getenv("TOTK_WATCH_ADDR") != NULL; if (wl) LOG("[sub] F%llu end t_us=%llu", (unsigned long long)g_frame_pub, (unsigned long long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000)); }
     uint64_t dw = now_ns() - t0;

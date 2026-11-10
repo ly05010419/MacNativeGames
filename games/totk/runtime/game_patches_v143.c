@@ -1351,6 +1351,18 @@ __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  ldr x16, [x16, #72]\n  br x16\n");
 extern void vr_cam_hook(void);
 _Static_assert(offsetof(vr_cam_state,base_view)==3264&&offsetof(vr_cam_state,base_sequence)==3312&&offsetof(vr_cam_state,native_writer)==3320,"VR base publication offsets");
+/* The main scene camera's constant block (2368 bytes: view matrix rows R|t at float 0, projection at float 28), by the
+   game's own data: the scene manager [main+0x3acda18] (+0x18 scenes), the first scene's render step ([scene+0x138]), its
+   camera table ([step+0x18], entries of 0x480), entry 0's block pointer (+0x3e8). 0 when any link is missing. Read on
+   the thread that replays a submission inside the game's submit call (the stereo replay, nvn_mtl.m). */
+uint64_t runtime_vr_camera_block(void){
+    if(!diag_main)return 0;
+    uint64_t mgr=0,scenes=0,scene=0,step=0,entries=0,block=0;int32_t count=0,steps=0,cameras=0;
+    if(!jd_read((uintptr_t)diag_main->base+0x3acda18,&mgr,8)||!jd_read(mgr+0x10,&count,4)||count<1||!jd_read(mgr+0x18,&scenes,8)||
+       !jd_read(scenes,&scene,8)||!jd_read(scene+0x130,&steps,4)||steps<1||!jd_read(scene+0x138,&step,8)||
+       !jd_read(step+0x10,&cameras,4)||cameras<1||!jd_read(step+0x18,&entries,8)||!jd_read(entries+0x3e8,&block,8))return 0;
+    return block;
+}
 int runtime_vr_base_view(float out[12]) {
     if(!g_vr_headlook)return 0;
     for(unsigned attempt=0;attempt<8;attempt++){
