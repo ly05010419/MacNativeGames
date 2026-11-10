@@ -318,6 +318,7 @@ static void *input_file(void *arg) {
             else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
             else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
 #endif
+            else if (!strcmp(name,"fps_lock")) { extern void nvn_fps_lock_set(int); nvn_fps_lock_set(v); }   /* the frame lock (0 = off), as the settings panel's row: one run can try every lock */
             else if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
         } else if (!strncmp(line, "texdump ", 8)) {
             extern void dm_gfx_texdump_next(const char *path);

@@ -15459,9 +15459,39 @@ static void vr_camscan(void) {
     if (atomic_load(&g_vr_camscan) <= 0 && (f0 < 0 || f < f0 || f > f1)) return;
     static uint64_t seen[64]; static int nseen; static uint64_t seen_pass = ~0ull;
     if (seen_pass != g_stat_pass) { seen_pass = g_stat_pass; nseen = 0; }
+    /* TOTK_VR_CAMSCAN_SIZE=<bytes> (default MFX_CAM_SIZE; 0 = any size, 2026-11-10: another game's camera block, frame
+       interpolation for Ocarina of Time): which block sizes to log. A block of another size is not read as TOTK's layout:
+       the line names the offsets (floats) where three rows of four start with a unit, orthogonal 3x3 (a view rotation). */
+    static long want = -1; if (want < 0) { const char *e = getenv("TOTK_VR_CAMSCAN_SIZE"); want = e ? atol(e) : MFX_CAM_SIZE; }
     for (int st = 0; st < 6; st++) for (int sl = 0; sl < 16; sl++) {
         const p_bind_buf *u = &S.ubo[st][sl];
-        if (!u->addr || u->size != MFX_CAM_SIZE) continue;
+        if (!u->addr || u->size < 48 || (want && u->size != (uint64_t)want)) continue;
+        if (u->size != MFX_CAM_SIZE) {
+            uint64_t key = u->addr ^ ((uint64_t)st << 56) ^ ((uint64_t)sl << 60);
+            int dup = 0; for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
+            if (dup || nseen >= 64) continue;
+            seen[nseen++] = key;
+            size_t n = u->size < 8192 ? (size_t)u->size : 8192; float w[2048]; pend_materialize(u->addr, (uint8_t *)w, n, 0);
+            static const char *dump = (const char *)-1; if (dump == (const char *)-1) dump = getenv("TOTK_VR_CAMSCAN_DUMP");
+            if (dump) { char path[1024]; snprintf(path, sizeof path, "%s/F%ld-%llx-%llu.bin", dump, f, (unsigned long long)u->addr, (unsigned long long)u->size);
+                        if (access(path, F_OK)) { FILE *o = fopen(path, "wb"); if (o) { fwrite(w, 1, n, o); fclose(o); } } }
+            char offs[256]; int no = 0, used = 0; offs[0] = 0;
+            for (size_t o = 0; o + 12 <= n / 4 && no < 8; o++) {
+                const float *a = w + o, *b = w + o + 4, *c = w + o + 8; int ok = 1;
+                for (int i = 0; i < 12 && ok; i++) ok = isfinite(w[o + i]);
+                if (!ok) continue;
+                double la = a[0]*a[0]+a[1]*a[1]+a[2]*a[2], lb = b[0]*b[0]+b[1]*b[1]+b[2]*b[2], lc = c[0]*c[0]+c[1]*c[1]+c[2]*c[2];
+                double ab = a[0]*b[0]+a[1]*b[1]+a[2]*b[2], ac = a[0]*c[0]+a[1]*c[1]+a[2]*c[2], bc = b[0]*c[0]+b[1]*c[1]+b[2]*c[2];
+                int ident = fabsf(a[0]-1) < 1e-4f && fabsf(b[1]-1) < 1e-4f && fabsf(c[2]-1) < 1e-4f;
+                if (fabs(la-1) < 0.01 && fabs(lb-1) < 0.01 && fabs(lc-1) < 0.01 && fabs(ab) < 0.01 && fabs(ac) < 0.01 && fabs(bc) < 0.01 && !ident) {
+                    used += snprintf(offs + used, sizeof offs - (size_t)used, "%s%zu(t %.2f %.2f %.2f)", no ? " " : "", o, a[3], b[3], c[3]); no++;
+                    if (used >= (int)sizeof offs - 40) break;
+                }
+            }
+            MLOG("[vr] camscan F%ld pass %llu stage %d slot %d block %#llx size %llu targets %d depth %s rotations %s", f, g_stat_pass, st, sl,
+                 (unsigned long long)u->addr, (unsigned long long)u->size, R.rt.n, R.rt.depth ? "yes" : "no", no ? offs : "-");
+            continue;
+        }
         uint64_t key = u->addr ^ ((uint64_t)st << 56) ^ ((uint64_t)sl << 60);
         int dup = 0; for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
         if (dup || nseen >= 64) continue;
