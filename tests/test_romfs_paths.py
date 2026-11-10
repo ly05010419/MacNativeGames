@@ -22,7 +22,7 @@ class RomfsPaths(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(executable)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('27 RomFS path cases', result.stdout)
+            self.assertIn('37 RomFS path cases', result.stdout)
 
 
 if __name__ == '__main__':

@@ -325,8 +325,7 @@ static int path_ok(const char *p) {return romfs_path_valid_relative(p);}
 static const char *rom_path(const char *path) {
  static _Thread_local char norm[4096];
  const char *m=mount_of(path);
- const char *p=romfs_path_relative(m?m:mount_name,path);
- return p?romfs_path_collapse(p,norm,sizeof norm):NULL;
+ return romfs_path_relative_collapsed(m?m:mount_name,path,norm,sizeof norm);
 }
 static uint64_t lower(const char *name) {uint64_t lo=0,hi=file_count;while(lo<hi){uint64_t m=lo+(hi-lo)/2;if(strcmp(entry_name(entry(m)),name)<0)lo=m+1;else hi=m;}return lo;}
 static unsigned mount_rom(const char *name,void *cache,uint64_t size) {

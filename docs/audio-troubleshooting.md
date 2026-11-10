@@ -22,8 +22,12 @@ play while the remaining stream buffers contained zeros.
 The fix in `games/totk/runtime/romfs_path.h` skips repeated separators immediately
 after the mount prefix before validating the relative resource path. Mount
 names still have to match. Empty resources, `.` and `..` components,
-backslashes, and empty interior components remain rejected. Resource bytes,
-shader code and save formats are unchanged.
+backslashes, and empty interior components remain rejected by
+`romfs_path_relative`. Game file requests go through
+`romfs_path_relative_collapsed`, which first collapses repeated separators, as
+Ocarina of Time's voice paths need (`content://Voice/Resource//Stream/...`), and
+then applies the same validation. Resource bytes, shader code and save formats
+are unchanged.
 
 ## Rebuild and verify
 
