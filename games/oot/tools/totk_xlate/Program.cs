@@ -268,6 +268,8 @@ static class SwshXlate
     {
         if (args.Length == 2 && args[0] == "--raw-write-proof") { Console.WriteLine(RawWriteProof.Handle(File.ReadAllText(args[1]))); return 0; }
         if (args.Length == 2 && args[0] == "--check-ampere") return CheckAmpere(args[1]);
+        if (args.Length == 2 && args[0] == "--gather-offsets") { Console.Write(GatherOffsets.Rewrite(File.ReadAllText(args[1]))); return 0; }   // games/oot/tests/gather_offsets.py
+        if (args.Length == 2 && args[0] == "--frag-z-snap") { string rewritten = FragZSnap.Rewrite(File.ReadAllText(args[1]), out int reads); Console.Error.WriteLine(reads); Console.Write(rewritten); return 0; }   // games/oot/tests/frag_z_snap.py
         if (args.Length >= 2 && args[0] == "--disasm") return Disasm(args[1], args.Length > 2 ? args[2] : "vs");
         if (args.Length >= 1 && args[0] == "--service") return ShaderService.Run(args);   // the runtime's translation service (Service.cs)
         if (args.Length == 1 && args[0] == "--serve")

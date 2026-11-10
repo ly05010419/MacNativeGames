@@ -26,7 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'dev'))
 from game_slot import GameSlot
 
 # Match totk_precise_opts: the invariant position attribute requires this option.
-METAL_FLAGS = [*BASE_METAL_FLAGS, "-fpreserve-invariance"]
+# -fwrapv: SPIR-V, GLSL and the Switch's GPUs wrap on signed overflow; spirv-cross writes signed OpIMul / OpIAdd as plain int
+# arithmetic, where overflow is undefined in MSL and Metal's front end optimizes as if it cannot happen. Ocarina's mesh
+# shader 35785cddc971290c sign-extends a packed 16-bit light-probe coordinate with `as_type<int>(w) * 65536` and a shift;
+# the compiler took the sign from the wrong bits and a wall in the Deku Tree (Gohma's room) was lit brightly. From
+# seedds/nxnative docs/reference/shaders.md "Signed integer overflow in translated shaders" (MIT, PR #1844), which measured
+# no GPU cost. The runtime's own compiles (nvn_mtl.m totk_precise_opts, a variant no library holds) go through
+# MTLCompileOptions, which has no such option: a shader first met in play is compiled without it until the next build.
+METAL_FLAGS = [*BASE_METAL_FLAGS, "-fpreserve-invariance", "-fwrapv"]
 
 
 def digest(path):

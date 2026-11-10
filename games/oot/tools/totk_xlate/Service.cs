@@ -447,6 +447,8 @@ static partial class ShaderService
         if (stage == "vs") src = VertexBaseInstance(src);
         src = TensorMsl.Rewrite(src);
         src = PostProcess(src);
+        src = GatherOffsets.Rewrite(src);   // textureGatherOffsets with its offsets written out (GatherOffsets.cs)
+        if (stage == "ps") src = FragZSnap.Rewrite(src, out _);   // gl_FragCoord.z against a stored depth of its own surface (FragZSnap.cs)
         if (src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
         // the capture entry point after main0 (it reuses main0's structs and helpers); the reflection below reads main0 only

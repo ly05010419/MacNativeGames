@@ -412,7 +412,13 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
        a fragment flag and the Switch tests depth before the shader). Breath of the Wild's shorter sections (the size word
        at +0x20 between 0x7cc and 0x880, as for the key) are not read. Same rule as prepare_shader_seed.py. */
     { uint32_t size; memcpy(&size, control + 0x20, 4);
-      if (!nvn2 && stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
+      if (!nvn2 && stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES;
+      /* NVN2 (Switch 2) keeps the flag at control byte +0x5b: the NVN2 driver reads a pixel shader's flags one byte each
+         at +0x58..+0x62, and Ampere's shader header has no such bit. A shader whose header writes depth (word 19 bit 1,
+         +0x4c of the code) is left as it is: tested early, the depth it computes would not be the one tested. From
+         seedds/nxnative dmsh_ampere.early_fragment_tests / dmsh_build.early_fragment_tests (MIT, a888e668), which counted
+         746 of Ocarina of Time's 22,352 pixel shaders; before 2026-11-10 no NVN2 shader here got the attribute. */
+      if (nvn2 && stage == 1 && control[0x5b] && ninst >= 0x50) { uint32_t omap; memcpy(&omap, code + 0x4c, 4); if (!(omap & 2)) rq[@"early_fragment_tests"] = @YES; } }
     if (no_translator()) rq[@"code_hex"] = hex(code + skip, end - skip);
     return rq;
 }
