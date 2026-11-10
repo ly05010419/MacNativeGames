@@ -1,0 +1,74 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -35,6 +35,13 @@
+             x(0x388, InstName.Sts, AStLocalShared, N, writesRd: false);
+             x(0x988, InstName.Sts, AStLocalShared, N, writesRd: false);
+ 
++            // Register-handle texture forms, MIT adaptation from nxnative ee9b7765.
++            x(0x361, InstName.Tex, ATex, InstProps.Tex);
++            x(0x364, InstName.Tld4, ATex, InstProps.Tex);
++            x(0x367, InstName.Tld, ATex, InstProps.Tex);
++            x(0xf60, InstName.Tex, ATex, InstProps.Tex);
++            x(0xf63, InstName.Tld4, ATex, InstProps.Tex);
++            x(0xf6c, InstName.Txd, ATex, InstProps.Tex);
+             x(0xb60, InstName.Tex, ATex, InstProps.Tex);
+             x(0xb66, InstName.Tld, ATex, InstProps.Tex);
+             x(0xb63, InstName.Tld4, ATex, InstProps.Tex);
+@@ -613,6 +620,26 @@
+             AmpereOp x = new(context.CurrOp);
+             int opcode = x.Opcode;
+ 
++            // TEX through a handle in a register, not named by its offset: the compiler's form for a handle it read itself, usually from a table at a computed offset. BindlessElimination takes the
++            // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60, 0xf63 and 0xf6c (TEX, TLD4 and TXD, whose other fields are 0xb60's, 0xb63's and 0xb6c's): a uniform register at
++            // 40..46. 0x361, 0x364 and 0x367 (TEX, TLD4 and TLD, bit 59 set): a register, the first of the second source block,
++            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both
++            Operand boundHandle = null;
++            bool handleInB = opcode is 0x361 or 0x364 or 0x367;
++            bool bindless = handleInB || opcode is 0xf60 or 0xf63 or 0xf6c;
++
++            if (opcode is 0xf60 or 0xf63 or 0xf6c)
++            {
++                int ur = x.Bits(40, 46);
++
++                boundHandle = ur == RegisterConsts.UniformZeroIndex ? Const(0) : context.Copy(Register(ur, RegisterType.Uniform));
++            }
++
++            if (bindless)
++            {
++                opcode = opcode is 0xf63 or 0xf6c ? opcode - 0x400 : opcode is 0x364 or 0x367 ? opcode + 0x7ff : 0xb60;
++            }
++
+             TexDim dim = ATexDim(context, x.Bits(61, 64));
+             SamplerType type = ConvertSamplerType(dim);
+             bool isArray = type.HasFlag(SamplerType.Array);
+@@ -674,15 +701,17 @@
+                     break;
+             }
+ 
+-            (int handle, int cbufSlot) = ATexHandle(context, x);
++            (int handle, int cbufSlot) = bindless ? (0, TextureOperation.DefaultCbufSlot) : ATexHandle(context, x);
+             List<Operand> sources = [];
+             Operand arrayIndex = null;
++            if (bindless) flags |= TextureFlags.Bindless;
+ 
+             if (opcode == 0xb6c)
+             {
+                 int n0 = coords + (isArray || offset ? 1 : 0);
+                 (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, 2 * coords);
+ 
++                if (bindless) sources.Add(boundHandle);
+                 sources.AddRange(a.GetRange(0, coords));
+ 
+                 if (isArray)
+@@ -710,8 +739,10 @@
+             else
+             {
+                 int n0 = coords + (isArray ? 1 : 0);
+-                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1);
++                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1 + (handleInB ? 1 : 0));
+                 int ia = 0, ib = 0;
++                if (handleInB) boundHandle = b[ib++];
++                if (bindless) sources.Add(boundHandle);
+ 
+                 if (isArray)
+                 {

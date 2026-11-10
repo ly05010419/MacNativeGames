@@ -1,0 +1,19 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	2026-11-09 18:26:36
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	2026-11-09 18:26:36
+@@ -837,7 +837,15 @@
+                     sources.Add(arrayIndex);
+                 }
+ 
+-                sources.AddRange(b);
++                // The derivatives arrive interleaved (ddx.u, ddy.u, ddx.v, ddy.v); the texture operation takes dPdx, then dPdy. As they were,
++                // Metal got (ddx.u, ddy.u) and (ddx.v, ddy.v), and stretched OOT's terrain albedo into long streaks (2026-11-09).
++                for (int axis = 0; axis < 2; axis++)
++                {
++                    for (int i = 0; i < coords; i++)
++                    {
++                        sources.Add(b[i * 2 + axis]);
++                    }
++                }
+ 
+                 if (offset)
+                 {

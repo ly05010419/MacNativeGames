@@ -1,0 +1,49 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs	2026-11-07 18:57:04
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs	2026-11-07 18:57:04
+@@ -199,6 +199,35 @@
+             }
+         }
+ 
++        // RED.F32.FTZ.RN / ATOM.F32 (Ampere; agl's scene analysis sums luminance into memory this way): the host's buffer
++        // atomics have no float add in this form, so the word is updated with a compare-and-swap loop. Every attempt reads
++        // the word again, adds in FP32 and swaps only if the word is still what it read; a failed swap means another lane
++        // added in between, and the next attempt starts from the new word, so every lane's add lands exactly once. No value
++        // crosses an iteration: a first version kept the value read before the loop and compared the swap result against
++        // it, and the translator's optimizer dropped the re-assignment, so one failed swap looped the GPU for ever (Mac
++        // kernel panic through the WindowServer watchdog, 2026-11-07). Denormals are not flushed (Metal's precise math keeps
++        // them, an ulp-level difference from FTZ on luminance sums). The result is the word before the add, as ATOM returns.
++        private static Operand EmitAtomicAddF32(
++            EmitterContext context,
++            StorageKind storageKind,
++            Operand e0,
++            Operand e1,
++            Operand value)
++        {
++            Operand lblLoop = Label();
++
++            context.MarkLabel(lblLoop);
++
++            Operand old = context.Load(storageKind, e0, e1);
++            Operand sum = context.FPAdd(old, value);
++            Operand seen = context.AtomicCompareAndSwap(storageKind, e0, e1, old, sum);
++            Operand done = context.ICompareEqual(seen, old);
++
++            context.BranchIfFalse(lblLoop, done);
++
++            return seen;
++        }
++
+         private static Operand EmitAtomicOp(
+             EmitterContext context,
+             StorageKind storageKind,
+@@ -217,6 +246,10 @@
+                     {
+                         res = context.AtomicAdd(storageKind, e0, e1, value);
+                     }
++                    else if (type == AtomSize.F32FtzRn)
++                    {
++                        res = EmitAtomicAddF32(context, storageKind, e0, e1, value);
++                    }
+                     else
+                     {
+                         context.TranslatorContext.GpuAccessor.Log($"Invalid reduction type: {type}.");

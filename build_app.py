@@ -1389,7 +1389,7 @@ def remove_tree(path):
     shutil.rmtree(path)
 
 
-def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID):
+def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID, display_version=None):
     """The RomFS image (16 GB) as a bundle of its own, signed once and kept in the work folder (build/data-bundles). The
     app carries a clone of it in Contents/Helpers, and the app's seal records only its signature: sealing the image
     inside the app hashed all 16 GB on every packaging (88 s on an M4 Mac mini, 2026-10-20), now only when the image
@@ -1426,7 +1426,7 @@ def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID):
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier=f'{bundle_id}.data.{version}', CFBundleName='Game data', CFBundlePackageType='BNDL',
-        CFBundleShortVersionString=VERSIONS[version]['display_version'], CFBundleVersion='1')))
+        CFBundleShortVersionString=display_version or VERSIONS[version]['display_version'], CFBundleVersion='1')))
     run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-data-{version}.log')
     # Checked once here, where the 16 GB are hashed anyway; an app carrying this bundle checks only its own seal (which
     # records this bundle's signature), not --deep (55 s on each packaging, 2026-10-21).
@@ -1520,12 +1520,12 @@ def library_game_data(game, version, base=None):
     return base / version
 
 
-def place_library_image(tree, game, version, base=None):
+def place_library_image(tree, game, version, base=None, *, expected_romfs=None):
     """--mac-game-data library: the RomFS image in library_game_data instead of the app, put there once per image (an APFS
     clone when the work folder is on the same volume, else a 16 GB copy). romfs.sha256 is written last, so the launcher
     never takes a half-copied image; the image is not hashed here (the extraction checked it against the pin, and the
     runtime checks it once more at its first start). Returns whether it was put there now."""
-    image, sha = tree / f'extracted/{version}/romfs/romfs.bin', VERSIONS[version]['romfs']['sha256']
+    image, sha = tree / f'extracted/{version}/romfs/romfs.bin', (expected_romfs or VERSIONS[version]['romfs'])['sha256']
     folder = library_game_data(game, version, base)
     target, mark = folder / 'romfs.bin', folder / 'romfs.sha256'
     try:
@@ -2222,17 +2222,36 @@ def record_ns2_device_build(tree, out, g, args):
     sources = [p for root in roots for p in (tree / root).rglob('*') if p.is_file() and p.suffix in suffixes]
     sources += [tree / 'Makefile', tree / 'ios/project.yml', tree / 'ios/project.generated.yml',
                 tree / 'prebuilt/ios-arm64/libtotk_xlate.a', tree / 'prebuilt/macos-arm64/totk_xlate']
+    if args.platform == 'macos':
+        import plistlib
+        app_info = plistlib.loads((out / 'Contents/Info.plist').read_bytes())
+        sources = [p for p in sources + [tree / 'build.py', tree / 'tools/build_shader_service.py',
+                   tree / 'tools/shader_pins.py', tree / 'tools/totk_xlate/publish_native.sh'] if p.is_file()]
+        outputs = [out / 'Contents/MacOS' / g['executable'], out / 'Contents/Info.plist',
+                   out / 'Contents/_CodeSignature/CodeResources']
+        outputs += list((tree / f'build/game-data/{v}').glob('*'))
+        outputs += list((tree / f'rewritten/{v}').glob('*.patched.bin'))
+        record = dict(schema=1, game=v, platform='macos', input=g['expected'],
+                      options=dict(nvn_depth_mode=g['depth_mode'], cpu_execution='static-arm64-native',
+                                   shader_chain=g['shader_chain'],
+                                   mac_game_data='library' if app_info.get('MNGGameDataFolder') else 'app',
+                                   game_data_folder=app_info.get('MNGGameDataFolder')),
+                      build_app_sha256=sha256(Path(__file__)),
+                      source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(set(sources))},
+                      output_sha256={str(p): sha256(p) for p in sorted(outputs) if p.is_file()})
+        out.with_name(out.stem + '-build-record.json').write_text(json.dumps(record, indent=2) + '\n')
+        return
     seed = tree / f'build/shader-seed/{v}/seed-manifest.json'
     outputs = [p for p in out.rglob('*') if p.is_file()] if out.is_dir() else [out]
     outputs += [p for p in (tree / 'ios/Gen/modules').glob('*.bin')]
     outputs += [tree / 'ios/Gen/ios_embed.h', seed]
     device_seed = out.with_name(out.stem + '-shader-seed') if args.ios_game_data == 'documents' else tree / 'ios/Gen/totk/shader-seed'
     outputs += [p for p in device_seed.iterdir() if p.is_file()]
-    record = dict(schema=1, game=v, platform=args.platform, input=VERSIONS[v],
+    record = dict(schema=1, game=v, platform=args.platform, input=VERSIONS.get(v) or g['expected'],
                   options=dict(ios_game_data=args.ios_game_data, device_gpu=args.device_gpu or ['auto'],
                                nvn_depth_mode=g['depth_mode']),
                   build_app_sha256=sha256(Path(__file__)),
-                  source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources)},
+                  source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources) if p.is_file()},
                   output_sha256={str(p): sha256(p) for p in sorted(set(outputs))})
     icon_spec = g['folder'] / 'assets/app-icon.json'
     if icon_spec.is_file():
@@ -2250,6 +2269,8 @@ def main_ns2(args, dump):
         raise BuildError('a Switch 2 dump folder holds its update itself: leave out --update, --dlc and --mod')
     exefs = ns2_dump_exefs(dump)
     title = npdm_program_id(exefs / 'main.npdm') if (exefs / 'main.npdm').is_file() else None
+    if title == '0400486024DEC000':
+        return build_oot(args, dump)
     g = NS2.get(title or '')
     if not g:
         raise BuildError(f'{dump}: not a supported Switch 2 dump (title {title or "unknown"} in {exefs}); supported: '
@@ -2679,8 +2700,22 @@ def parse_args(argv):
     return ap.parse_args(argv)
 
 
+def build_oot(args, source):
+    # OOT carries its own runtime, GPU backend, rewriter and build inputs.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('oot_build', REPO / 'games/oot/build.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    out, tree, expected, shader_chain = module.build(args, source)
+    record_ns2_device_build(tree, out, dict(version='oot', expected=expected, folder=REPO / 'games/oot',
+                           executable='OcarinaOfTime', depth_mode='runtime-device-state',
+                           shader_chain=shader_chain), args)
+
+
 def main(argv):
     args = parse_args(argv)
+    if args.game.suffix.lower() == '.nup':
+        return build_oot(args, args.game.expanduser().resolve())
     if args.game.expanduser().is_dir():   # a Switch 2 dump folder
         return main_ns2(args, args.game.expanduser().resolve())
     if not args.keys:

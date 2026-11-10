@@ -1,0 +1,4 @@
+# Isolated native code build; ZBIC is an external GPLv2 build utility, never bundled.
+lz4==4.4.5
+capstone==5.0.9
+zbic==1.0.1.post1

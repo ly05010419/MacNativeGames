@@ -1,0 +1,75 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -99,6 +99,7 @@
+ 
+             alu(0x124, InstName.Out, AOut);
+             x(0x923, InstName.Isberd, AIsberd, N);
++            x(0x927, InstName.Ast, AStageOut, N, writesRd: false);
+             x(0x34e, InstName.Lepc, ALepc, N);
+             x(0x357, InstName.Nop, ANop, N, writesRd: false);
+             x(0x957, InstName.Nop, ANop, N, writesRd: false);
+@@ -124,10 +125,53 @@
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereStageMemory();
++
++            if (stage != null)
++            {
++                // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
++                int mode = x.Bits(72, 80);
++
++                if (mode != 0x78 && mode != 0x38)
++                {
++                    throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
++                }
++
++                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
++                EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
++                return;
++            }
++
+             if (x.Rd < RegisterConsts.RegisterZeroIndex)
+             {
+                 context.Copy(Register(x.Rd, RegisterType.Gpr), AGpr(x.Ra));
+             }
++        }
++
++        // Task and mesh shaders' stage output (0x927), [Ra + offset], Rb, mode 72..79: 0xb8 a word of the task's payload; 0xf8 a word of a mesh shader's attributes (each component
++        // 0x80 bytes for 32 vertices or primitives); 0x88 the primitive count byte, 0x80 a primitive index byte. Bytes go through the shared memory's byte store, a compare-and-swap
++        // on the word (SharedStoreSmallIntCas), since neighbouring threads write neighbouring bytes. A mesh workgroup of 32 threads is one warp on the console, all at the same
++        // instruction, so the zero count each thread writes first (Mario Kart World: at its start) cannot pass the count one thread writes later; Metal's threads run in no such step,
++        // and the stage memory starts at zero (dmsh_meshstage.py), so that store is left out
++        public static void AStageOut(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereStageMemory();
++            int mode = x.Bits(72, 80);
++
++            if (stage == null || (mode != 0xb8 && mode != 0xf8 && mode != 0x88 && mode != 0x80))
++            {
++                throw AFail(context, $"stage output store mode {mode:x2} outside a task or mesh shader");
++            }
++
++            if (mode == 0x88 && x.Rb == RegisterConsts.RegisterZeroIndex)
++            {
++                return;
++            }
++
++            bool word = mode == 0xb8 || mode == 0xf8;
++            Operand addr = context.IAdd(AGpr(x.Ra), Const((word ? stage[2] : stage[3]) + (int)x.SignedField(40, 64)));
++            EmitStore(context, StorageKind.SharedMemory, word ? LsSize2.B32 : LsSize2.U8, addr, x.Rb, 0);
+         }
+ 
+         public static void ALepc(EmitterContext context)
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -45,6 +45,8 @@
+         /// <param name="address">GPU virtual address of the data</param>
+         /// <param name="minimumSize">Minimum size that the returned span may have</param>
+         /// <returns>Span of the memory location</returns>
++        int[] QueryAmpereStageMemory() { return null; }
++
+         ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize);
+ 
+         /// <summary>

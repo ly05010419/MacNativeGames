@@ -1,0 +1,60 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -28,7 +28,7 @@
+             alu(0x008, InstName.Sel, AFsel);
+             alu(0x108, InstName.Mufu, AMufu);
+             alu(0x105, InstName.F2i, AF2i);
+-            x(0x243, InstName.F2i, AF2ipByte, N);
++            alu(0x043, InstName.F2i, AF2ipByte);
+             alu(0x106, InstName.I2f, AI2f);
+             alu(0x045, InstName.I2f, AI2fp);
+             alu(0x107, InstName.F2f, AFrnd);
+@@ -236,20 +236,37 @@
+         // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a 16-bit source
+         // is one half of the operand, the high one when 60..62 is 1 or 3 (as F2F reads it), widened to 32 bits first (exact),
+         // its abs / neg applied by EmitF2I as for a 32-bit one (Pokemon Pokopia: 169 fragment shaders round F16 to U32)
+-        // F2IP's observed low-byte form has no merge value (Ra=RZ).
+-        // Convert FP32 toward zero and saturate to U8; all other pack modes
+-        // remain rejected until their field layout is independently verified.
++        // NVIDIA's F2IP implements two FP32 conversions followed by cvt.pack:
++        // B -> byte 0, A -> byte 1, C's low half -> bytes 2/3 (PTX cvt.pack).
++        // The register and constant-B U8/S8 forms have NTZ at bit 74, signed at
++        // bit 76 and the usual rounding at 78..79. Reject other type/pack modes.
+         public static void AF2ipByte(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+-            if (x.Ra != RegisterConsts.RegisterZeroIndex || x.Bits(40, 64) != 0 || x.Bits(64, 96) != 0x0000c4ff)
+-                throw AFail(context, "F2IP low U8 form");
+-            EmitF2I(context, DstFmt.F32, IDstFmt.U16, RoundMode2.Trunc, AGpr(x.Rb), x.Rd, false, false);
+-            if (x.Rd != RegisterConsts.RegisterZeroIndex)
+-            {
+-                Operand r = Register(x.Rd, RegisterType.Gpr);
+-                context.Copy(r, context.IClampU32(r, Const(0), Const(255)));
+-            }
++            uint mode = (uint)x.Bits(64, 96);
++            if ((mode & ~0x0000d0ffu) != 0x00000400u || (x.Form != 1 && x.Form != 5))
++                throw AFail(context, "F2IP U8/S8 packing mode");
++            (ASrc sa, ASrc sb) = ASecond(context, x, neg: false, abs: false);
++            Operand a = AGet(context, sa), b = AGet(context, sb), c = AGpr(x.Rc);
++            bool signed = x.Bit(76);
++            Operand ConvertByte(Operand value)
++            {
++                // NaN converts to zero; round and saturate while still float,
++                // keeping out-of-range float-to-int casts away from the GPU.
++                value = context.ConditionalSelect(context.FPCompareEqual(value, value), value, ConstF(0));
++                value = (RoundMode2)x.Bits(78, 80) switch
++                {
++                    RoundMode2.Round => context.FPRound(value),
++                    RoundMode2.Floor => context.FPFloor(value),
++                    RoundMode2.Ceil => context.FPCeiling(value),
++                    _ => context.FPTruncate(value),
++                };
++                value = context.FPMinimum(context.FPMaximum(value, ConstF(signed ? -128 : 0)), ConstF(signed ? 127 : 255));
++                Operand integer = signed ? context.FP32ConvertToS32(value) : context.FP32ConvertToU32(value);
++                return context.BitwiseAnd(integer, Const(255));
++            }
++            Operand low = context.BitwiseOr(ConvertByte(b), context.ShiftLeft(ConvertByte(a), Const(8)));
++            ASet(context, x, context.BitwiseOr(low, context.ShiftLeft(c, Const(16))));
+         }
+ 
+         public static void AF2i(EmitterContext context)

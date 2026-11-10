@@ -1,0 +1,46 @@
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -48,0 +49 @@
++        bool QueryRawReadSameHighCache() { return false; }
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -854 +854,2 @@
+-            Operand capacityFlags = MapWord(Const(0), 4);
++            bool sameHighCache = gpuAccessor.QueryRawReadSameHighCache() && operation.Inst == Instruction.Load && !isSmall;
++            Operand capacityFlags = sameHighCache ? null : MapWord(Const(0), 4);
+@@ -860,0 +862,16 @@
++            if (sameHighCache && cache >= 0)
++            {
++                // Bit 1 certifies a nonempty interval contained in one upper
++                // uint32 half. The cached offset check is exactly equivalent
++                // to start <= address < end, including an end at a 4 GiB edge.
++                // This private state is reset per invocation and established
++                // only from the immutable bound mapping with its cache bit on.
++                Operand slow = Label();
++                context.BranchIfFalse(slow, context.ICompareNotEqual(context.BitwiseAnd(CacheWord(0), Const(2)), Const(0)));
++                context.BranchIfFalse(slow, context.ICompareEqual(addrHigh, CacheWord(3)));
++                context.BranchIfFalse(slow, context.ICompareLessUnsigned(context.ISubtract(addrLow, CacheWord(2)), CacheWord(1)));
++                context.Copy(deltaLow, CacheWord(6)); context.Copy(deltaHigh, CacheWord(7));
++                context.Branch(mapped);
++                context.MarkLabel(slow);
++                capacityFlags = MapWord(Const(0), 4);
++            }
+@@ -963 +980,14 @@
+-                CacheStore(1, index);
++                Operand narrow = null;
++                if (sameHighCache)
++                {
++                    // Word 1 was an unused cached ordinal. Store the unsigned
++                    // interval length there; preserve the full endpoints so
++                    // every failed fast check retains the original fallback.
++                    Operand sizeLow = context.ISubtract(endLow, MapWord(found, 0));
++                    Operand lastHigh = context.ISubtract(endHigh,
++                        context.ConditionalSelect(context.ICompareEqual(endLow, Const(0)), Const(1), Const(0)));
++                    narrow = context.BitwiseAnd(context.ICompareEqual(lastHigh, MapWord(found, 1)),
++                        context.ICompareNotEqual(sizeLow, Const(0)));
++                    CacheStore(1, sizeLow);
++                }
++                else CacheStore(1, index);
+@@ -967 +997 @@
+-                CacheStore(0, Const(1));
++                CacheStore(0, sameHighCache ? context.ConditionalSelect(narrow, Const(3), Const(1)) : Const(1));

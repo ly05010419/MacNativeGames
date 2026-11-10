@@ -298,6 +298,45 @@ class OtherGamesTests(unittest.TestCase):
                 collect_shader_issues.GAMES['odyssey'] = saved
 
 
+
+class OcarinaOfTimeTests(unittest.TestCase):
+    """Ocarina of Time's issues go through its own shader_list.py (collect_shader_issues.OWN_SCRIPT): its list keeps mesh
+    pipelines (M rows) TOTK's script does not know, and the bind state of every pipeline (2026-11-09, #1980-#1991)."""
+    LIST = TOTK.parent / 'oot/assets/shader_list.tsv'
+
+    @staticmethod
+    def issue(title, body='', number=1):
+        return {'number': number, 'title': title, 'body': body, 'labels': [], 'comments': [], 'author': {'login': 'p'}}
+
+    def test_the_launcher_titles_name_it(self):
+        titled = collect_shader_issues.titled_game
+        self.assertEqual(titled(self.issue('Shader list: 2557 shaders from Mac (OcarinaOfTime 1.0.0)')), 'oot')
+        self.assertEqual(titled(self.issue('Shader list: 151 shaders from Mac (OcarinaOfTime 2.0.0)')), 'oot')
+
+    @unittest.skipUnless(LIST.is_file(), 'needs the Ocarina of Time list')
+    def test_merged_by_its_own_script_keeping_mesh_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'games/oot/assets/shader_list.tsv'; path.parent.mkdir(parents=True)
+            shutil.copy2(self.LIST, path)
+            meshes = sum(1 for line in path.read_text().splitlines() if line.startswith('M\t'))
+            self.assertGreater(meshes, 0)
+            shared = collect_shader_issues.load_list('oot', path)
+            key = 'f' * 64
+            line, per_game = collect_shader_issues.merge_own(self.issue('Shader list: 1 shaders from Mac (OcarinaOfTime 2.0.0)',
+                                                                         f'```\nV\t{key}\t{{}}\n```'), 'oot', shared, token='')
+            self.assertEqual(per_game, {'oot': (1, 1)}, line)
+            saved = collect_shader_issues.GAMES['oot']
+            collect_shader_issues.GAMES['oot'] = (path, *saved[1:])
+            try:
+                collect_shader_issues.save_list('oot', shared)
+            finally:
+                collect_shader_issues.GAMES['oot'] = saved
+            text = path.read_text()
+            self.assertTrue(text.startswith('# Ocarina of Time'), text[:60])
+            self.assertEqual(sum(1 for line in text.splitlines() if line.startswith('M\t')), meshes)
+            self.assertIn(f'V\t{key}\t{{}}', text)
+
+
 sys.path.insert(0, str(TOTK / 'ios/tools'))
 import shader_contrib_watch as watch  # noqa: E402
 

@@ -1,0 +1,306 @@
+diff -ruN a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-11-07 19:46:03
+@@ -31,6 +31,7 @@
+             Add(Instruction.Absolute,                 GenerateAbsolute);
+             Add(Instruction.Add,                      GenerateAdd);
+             Add(Instruction.AtomicAdd,                GenerateAtomicAdd);
++            Add(Instruction.AtomicAddF32,             GenerateAtomicAddF32);
+             Add(Instruction.AtomicAnd,                GenerateAtomicAnd);
+             Add(Instruction.AtomicCompareAndSwap,     GenerateAtomicCompareAndSwap);
+             Add(Instruction.AtomicMinS32,             GenerateAtomicMinS32);
+@@ -178,6 +179,11 @@
+         private static OperationResult GenerateAtomicAdd(CodeGenContext context, AstOperation operation)
+         {
+             return GenerateAtomicMemoryBinary(context, operation, context.Delegates.AtomicIAdd);
++        }
++
++        private static OperationResult GenerateAtomicAddF32(CodeGenContext context, AstOperation operation)
++        {
++            return GenerateAtomicMemoryBinary(context, operation, context.Delegates.AtomicFAddEXT);
+         }
+ 
+         private static OperationResult GenerateAtomicAnd(CodeGenContext context, AstOperation operation)
+diff -ruN a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvDelegates.cs	2026-11-07 19:46:03
+@@ -92,6 +92,7 @@
+ 
+         // AtomicMemoryBinary
+         public readonly FuncQuaternaryInstruction AtomicIAdd;
++        public readonly FuncQuaternaryInstruction AtomicFAddEXT;
+         public readonly FuncQuaternaryInstruction AtomicAnd;
+         public readonly FuncQuaternaryInstruction AtomicSMin;
+         public readonly FuncQuaternaryInstruction AtomicUMin;
+@@ -200,6 +201,7 @@
+ 
+             // AtomicMemoryBinary
+             AtomicIAdd = context.AtomicIAdd;
++            AtomicFAddEXT = context.AtomicFAddEXT;
+             AtomicAnd = context.AtomicAnd;
+             AtomicSMin = context.AtomicSMin;
+             AtomicUMin = context.AtomicUMin;
+diff -ruN a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs	2026-11-07 19:46:03
+@@ -71,6 +71,12 @@
+                 context.AddCapability(Capability.Float64);
+             }
+ 
++            if (context.Properties.UsesFloatAtomicAdd)
++            {
++                context.AddCapability(Capability.AtomicFloat32AddEXT);
++                context.AddExtension("SPV_EXT_shader_atomic_float_add");
++            }
++
+             if (parameters.Definitions.TransformFeedbackEnabled && parameters.Definitions.LastInVertexPipeline)
+             {
+                 context.AddCapability(Capability.TransformFeedback);
+diff -ruN a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs	2026-11-07 19:46:03
+@@ -199,35 +199,6 @@
+             }
+         }
+ 
+-        // RED.F32.FTZ.RN / ATOM.F32 (Ampere; agl's scene analysis sums luminance into memory this way): the host's buffer
+-        // atomics have no float add in this form, so the word is updated with a compare-and-swap loop. Every attempt reads
+-        // the word again, adds in FP32 and swaps only if the word is still what it read; a failed swap means another lane
+-        // added in between, and the next attempt starts from the new word, so every lane's add lands exactly once. No value
+-        // crosses an iteration: a first version kept the value read before the loop and compared the swap result against
+-        // it, and the translator's optimizer dropped the re-assignment, so one failed swap looped the GPU for ever (Mac
+-        // kernel panic through the WindowServer watchdog, 2026-11-07). Denormals are not flushed (Metal's precise math keeps
+-        // them, an ulp-level difference from FTZ on luminance sums). The result is the word before the add, as ATOM returns.
+-        private static Operand EmitAtomicAddF32(
+-            EmitterContext context,
+-            StorageKind storageKind,
+-            Operand e0,
+-            Operand e1,
+-            Operand value)
+-        {
+-            Operand lblLoop = Label();
+-
+-            context.MarkLabel(lblLoop);
+-
+-            Operand old = context.Load(storageKind, e0, e1);
+-            Operand sum = context.FPAdd(old, value);
+-            Operand seen = context.AtomicCompareAndSwap(storageKind, e0, e1, old, sum);
+-            Operand done = context.ICompareEqual(seen, old);
+-
+-            context.BranchIfFalse(lblLoop, done);
+-
+-            return seen;
+-        }
+-
+         private static Operand EmitAtomicOp(
+             EmitterContext context,
+             StorageKind storageKind,
+@@ -248,7 +219,7 @@
+                     }
+                     else if (type == AtomSize.F32FtzRn)
+                     {
+-                        res = EmitAtomicAddF32(context, storageKind, e0, e1, value);
++                        res = context.AtomicAddF32(storageKind, e0, e1, value);   // RED.F32 / ATOM.F32: a native float add on a float view of the buffer, or a CAS loop (GlobalToStorage)
+                     }
+                     else
+                     {
+diff -ruN a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs	2026-11-07 19:46:03
+@@ -8,6 +8,7 @@
+         Absolute = 1,
+         Add,
+         AtomicAdd,
++        AtomicAddF32,
+         AtomicAnd,
+         AtomicCompareAndSwap,
+         AtomicMinS32,
+@@ -144,6 +145,7 @@
+             switch (inst & Instruction.Mask)
+             {
+                 case Instruction.AtomicAdd:
++                case Instruction.AtomicAddF32:
+                 case Instruction.AtomicAnd:
+                 case Instruction.AtomicCompareAndSwap:
+                 case Instruction.AtomicMaxS32:
+diff -ruN a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs	2026-11-07 19:46:03
+@@ -58,6 +58,7 @@
+                 switch (op.Inst & Instruction.Mask)
+                 {
+                     case Instruction.AtomicAdd:
++                    case Instruction.AtomicAddF32:
+                     case Instruction.AtomicAnd:
+                     case Instruction.AtomicCompareAndSwap:
+                     case Instruction.AtomicMaxS32:
+diff -ruN a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs	2026-11-07 19:46:03
+@@ -28,6 +28,7 @@
+ #pragma warning disable IDE0055 // Disable formatting
+             //  Inst                                  Destination type      Source 1 type          Source 2 type          Source 3 type          Source 4 type
+             Add(Instruction.AtomicAdd,                AggregateType.U32,    AggregateType.S32,     AggregateType.S32,     AggregateType.U32);
++            Add(Instruction.AtomicAddF32,             AggregateType.FP32,   AggregateType.S32,     AggregateType.S32,     AggregateType.FP32);
+             Add(Instruction.AtomicAnd,                AggregateType.U32,    AggregateType.S32,     AggregateType.S32,     AggregateType.U32);
+             Add(Instruction.AtomicCompareAndSwap,     AggregateType.U32,    AggregateType.S32,     AggregateType.S32,     AggregateType.U32,     AggregateType.U32);
+             Add(Instruction.AtomicMaxS32,             AggregateType.S32,    AggregateType.S32,     AggregateType.S32,     AggregateType.S32);
+diff -ruN a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs	2026-11-07 19:46:03
+@@ -23,6 +23,9 @@
+         // nxnative: a global memory access traced to no storage buffer goes through a physical storage buffer pointer (GlobalToStorage.TryGenerateRawStorageOp)
+         public bool UsesPhysicalPointers { get; set; }
+ 
++        /// <summary>A shader adds floats atomically to storage memory (OpAtomicFAddEXT): the SPIR-V declares the capability and extension.</summary>
++        public bool UsesFloatAtomicAdd { get; set; }
++
+         // Per-invocation exact raw-read range reuse. Never shared across threads,
+         // draws or dispatches; the bound mapping is immutable for their lifetime.
+         public int RawAddressCacheMemoryId { get; private set; } = -1;
+diff -ruN a/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs b/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs	2026-11-07 19:46:03
+@@ -12,6 +12,11 @@
+             return context.Add(Instruction.AtomicAdd, storageKind, Local(), a, b, c);
+         }
+ 
++        public static Operand AtomicAddF32(this EmitterContext context, StorageKind storageKind, Operand a, Operand b, Operand c)
++        {
++            return context.Add(Instruction.AtomicAddF32, storageKind, Local(), a, b, c);
++        }
++
+         public static Operand AtomicAnd(this EmitterContext context, StorageKind storageKind, Operand a, Operand b, Operand c)
+         {
+             return context.Add(Instruction.AtomicAnd, storageKind, Local(), a, b, c);
+@@ -60,6 +65,11 @@
+         public static Operand AtomicAdd(this EmitterContext context, StorageKind storageKind, int binding, Operand e0, Operand e1, Operand value)
+         {
+             return context.Add(Instruction.AtomicAdd, storageKind, Local(), Const(binding), e0, e1, value);
++        }
++
++        public static Operand AtomicAddF32(this EmitterContext context, StorageKind storageKind, int binding, Operand e0, Operand e1, Operand value)
++        {
++            return context.Add(Instruction.AtomicAddF32, storageKind, Local(), Const(binding), e0, e1, value);
+         }
+ 
+         public static Operand AtomicAnd(this EmitterContext context, StorageKind storageKind, int binding, Operand e0, Operand e1, Operand value)
+diff -ruN a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs	2026-11-07 19:46:03
+@@ -402,6 +402,13 @@
+                 return false;
+             }
+ 
++            // A float add needs the float view of its buffer or the CAS loop: both come from TryGenerateStorageOp, through a
++            // helper function, never from the in-place rewrite here.
++            if (operation.Inst == Instruction.AtomicAddF32)
++            {
++                return false;
++            }
++
+             return (operation.Inst != Instruction.AtomicMaxS32 &&
+                     operation.Inst != Instruction.AtomicMinS32) || targetLanguage == TargetLanguage.Spirv;
+         }
+@@ -1220,6 +1227,27 @@
+             return nameBuilder.ToString();
+         }
+ 
++        /// <summary>
++        /// Float add on a uint storage view (the raw pool table's buffers have no float view): a compare-and-swap loop
++        /// that reads the word again on every attempt, so nothing crosses an iteration (a version that kept the first read
++        /// lost its re-assignment in the optimizer and looped the GPU for ever, 2026-11-07). The result is the word before
++        /// the add, as ATOM returns it.
++        /// </summary>
++        private static Operand GenerateCasAddF32(EmitterContext context, int binding, Operand wordOffset, Operand value)
++        {
++            Operand lblLoop = Label();
++
++            context.MarkLabel(lblLoop);
++
++            Operand old = context.Load(StorageKind.StorageBuffer, binding, Const(0), wordOffset);
++            Operand sum = context.FPAdd(old, value);
++            Operand seen = context.AtomicCompareAndSwap(StorageKind.StorageBuffer, binding, Const(0), wordOffset, old, sum);
++
++            context.BranchIfFalse(lblLoop, context.ICompareEqual(seen, old));
++
++            return seen;
++        }
++
+         private static bool TryGenerateStorageOp(
+             ResourceManager resourceManager,
+             TargetLanguage targetLanguage,
+@@ -1253,6 +1281,16 @@
+                 {
+                     case Instruction.AtomicAdd:
+                         resultValue = context.AtomicAdd(StorageKind.StorageBuffer, binding, Const(0), wordOffset, value);
++                        break;
++                    case Instruction.AtomicAddF32:
++                        if (resourceManager.TryGetStorageBufferFloatBinding(binding, out int floatBinding))
++                        {
++                            resultValue = context.AtomicAddF32(StorageKind.StorageBuffer, floatBinding, Const(0), wordOffset, value);
++                        }
++                        else
++                        {
++                            resultValue = GenerateCasAddF32(context, binding, wordOffset, value);
++                        }
+                         break;
+                     case Instruction.AtomicAnd:
+                         resultValue = context.AtomicAnd(StorageKind.StorageBuffer, binding, Const(0), wordOffset, value);
+diff -ruN a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs	2026-11-07 19:46:03
+@@ -413,6 +413,7 @@
+                 switch (operation.Inst & Instruction.Mask)
+                 {
+                     case Instruction.AtomicAdd:
++                    case Instruction.AtomicAddF32:
+                     case Instruction.AtomicAnd:
+                     case Instruction.AtomicCompareAndSwap:
+                     case Instruction.AtomicMaxS32:
+diff -ruN a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs	2026-11-07 19:44:54
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs	2026-11-07 19:46:03
+@@ -638,6 +638,42 @@
+             Properties.AddOrUpdateConstantBuffer(new(BufferLayout.Std140, setIndex, binding, name, type));
+         }
+ 
++        private readonly Dictionary<int, int> _sbFloatAlias = new();
++
++        /// <summary>
++        /// A float-typed view of a game storage buffer, for OpAtomicFAddEXT: a storage buffer is declared as uint words, and a
++        /// float atomic needs a float pointer, which valid SPIR-V cannot make from a uint one. The view is a second binding over
++        /// the same buffer, named {stage}_sf{slot}; the host binds the same buffer to both (nvn_refl.m, kind sbuf). Only buffers
++        /// the game addresses itself get one: the raw pool table's buffers (GmemMapCbSlot) have no view and take the CAS loop.
++        /// </summary>
++        public bool TryGetStorageBufferFloatBinding(int binding, out int floatBinding)
++        {
++            if (_sbFloatAlias.TryGetValue(binding, out floatBinding))
++            {
++                return true;
++            }
++
++            int slot = Array.FindIndex(_sbSlotToBindingMap, pair => pair.Binding == binding);
++
++            if (slot < 0 || !_sbSlotsReverse.TryGetValue(slot, out int key) || UnpackSbCbInfo(key).Item1 == Optimizations.GlobalToStorage.GmemMapCbSlot)
++            {
++                floatBinding = 0;
++                return false;
++            }
++
++            SetBindingPair setAndBinding = _gpuAccessor.CreateStorageBufferBinding(slot);
++            string slotNumber = slot.ToString(CultureInfo.InvariantCulture);
++            StructureType type = new(new[]
++            {
++                new StructureField(AggregateType.Array | AggregateType.FP32, "data", 0),
++            });
++
++            Properties.AddOrUpdateStorageBuffer(new(BufferLayout.Std430, setAndBinding.SetIndex, setAndBinding.Binding, $"{_stagePrefix}_sf{slotNumber}", type));
++            Properties.UsesFloatAtomicAdd = true;
++            _sbFloatAlias[binding] = floatBinding = setAndBinding.Binding;
++            return true;
++        }
++
+         private void AddNewStorageBuffer(int setIndex, int binding, string name)
+         {
+             StructureType type = new(new[]

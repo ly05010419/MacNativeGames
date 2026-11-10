@@ -1,0 +1,36 @@
+--- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
+@@ -49,6 +49,8 @@
+         private static DecodedProgram DecodeAmpere(ShaderDefinitions definitions, IGpuAccessor gpuAccessor, ulong startAddress, HashSet<ulong> jumps)
+         {
+             Context context = new(gpuAccessor);
++            // Native Metal task/mesh stage IO is stored in shared stage memory.
++            if (gpuAccessor.QueryAmpereStageMemory() != null) context.SetUsedFeature(FeatureFlags.SharedMemory);
+             Dictionary<ulong, BrxTableAmpere> brxTables = new();
+             Queue<DecodedFunction> functionsQueue = new();
+             Dictionary<ulong, DecodedFunction> functionsVisited = new();
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -439,14 +439,20 @@
+             AmpereOp x = new(context.CurrOp);
+             int rd = x.Bits(16, 22);
+ 
+-            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || x.Bits(32, 64) != 1 || x.Bits(64, 96) != 0x08000000)
++            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || x.Bits(32, 64) > 0x7f || x.Bits(64, 96) != 0x08000000)
+             {
+                 throw AFail(context, "UP2UR form");
+             }
+ 
+             if (rd != RegisterConsts.UniformZeroIndex)
+             {
+-                context.Copy(Register(rd, RegisterType.Uniform), context.ConditionalSelect(APredReg(0, true), Const(1), Const(0)));
++                // Immediate mask selects predicate bits in the packed integer.
++                int mask = x.Bits(32, 39);
++                Operand packed = Const(0);
++                for (int bit = 0; bit < 7; bit++)
++                    if ((mask & (1 << bit)) != 0)
++                        packed = context.BitwiseOr(packed, context.ConditionalSelect(APredReg(bit, true), Const(1 << bit), Const(0)));
++                context.Copy(Register(rd, RegisterType.Uniform), packed);
+             }
+         }
+ 
