@@ -119,6 +119,19 @@ static inline NSString *totk_inbox_os(void) {
     return [NSString stringWithFormat:@"%@ %ld.%ld.%ld", system, (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion];
 }
 
+/* How many rows the inbox has taken from this file (.<name>.sent, a count kept by totk_inbox_send): the settings page shows
+   it as what the player has contributed. Rows the app itself serves also leave the file (the done file), so that file is
+   not this number. */
+static inline NSUInteger totk_inbox_sent(NSString *path) {
+    NSString *v = path ? [NSString stringWithContentsOfFile:totk_contrib_side(path, @"sent") encoding:NSUTF8StringEncoding error:nil] : nil;
+    return v ? (NSUInteger)strtoull(v.UTF8String, NULL, 10) : 0;
+}
+static inline void totk_inbox_count_sent(NSString *path, NSUInteger rows) {
+    if (!path || !rows) return;
+    [[NSString stringWithFormat:@"%lu\n", (unsigned long)(totk_inbox_sent(path) + rows)]
+        writeToFile:totk_contrib_side(path, @"sent") atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 /* One request: the HTTP status, or 0 when none came (no network, timeout). */
 static inline NSInteger totk_inbox_post(NSDictionary *body) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
@@ -160,7 +173,7 @@ static inline NSUInteger totk_inbox_send(NSString *path, NSString *platform) {
         if (status != 200) break;
         taken += totk_contrib_retire(path, [NSSet setWithArray:chunk]);   // malformed rows too: the inbox never takes them
     }
-    if (taken) fprintf(stderr, "[shader-inbox] sent %lu rows\n", (unsigned long)taken);
+    if (taken) { totk_inbox_count_sent(path, taken); fprintf(stderr, "[shader-inbox] sent %lu rows\n", (unsigned long)taken); }
     return taken;
 }
 

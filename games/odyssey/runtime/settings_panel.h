@@ -7,7 +7,7 @@
 #pragma once
 #include "../third_party/d2r_gfx/gfx/nvn/odyssey_graphics.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
-#include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the switch on the display page */
+#include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the 着色器贡献 page (contrib_tab.h) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
@@ -53,7 +53,7 @@ static void settings_restore_start(void) {
  totk_inbox_start(totk_contrib_path(),@"mac");
 }
 
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
@@ -201,14 +201,6 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    ^(int v){float r=ratios[(NSUInteger)v].floatValue;settingsPendingAspect=0;if(runtime_aspect_set_ratio(r)){runtime_front_resize_aspect(r);char word[32];snprintf(word,sizeof word,"%.8g",r);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");}})];}
  [rows addObject:settings_row(settings_text("边缘平滑（MetalFX 时间性）","Edge smoothing (MetalFX Temporal)"),nil,nil,
   ^int{return taa_enabled();},^(int v){taa_set(v);settings_save_int("graphics-taa.txt",v,"edge smoothing");})];
- /* The shader contribution (totk_contrib_upload.h, user 2026-11-10: a switch, "自动贡献着色器"): the start-up question's
-    choice; on starts the sending now, off stops it (each round checks). A development run has no contribution file. */
- { NSString *contrib=totk_contrib_path();
-   if(contrib&&totk_inbox_configured())
-    [rows addObject:settings_row(settings_text("自动贡献着色器","Contribute shaders automatically"),nil,nil,
-     ^int{return [totk_inbox_choice(contrib) isEqualToString:@"auto"];},
-     ^(int v){totk_inbox_choose(contrib,v);if(v)totk_inbox_start(contrib,@"mac");
-      fprintf(stderr,"[settings] contribute shaders automatically %s\n",v?"on":"off");})];}
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],
@@ -364,6 +356,8 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(NSMenu *)menuForInput:(int)input pad:(BOOL)pad;
 @end
 
+#include "contrib_tab.h"   /* the 着色器贡献 page */
+
 @implementation TOTKBindingButton
 -(void)rightMouseDown:(NSEvent *)e{(void)e;if(self.enabled)[self.panel clearBinding:self];}
 @end
@@ -415,7 +409,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("按键设置","Key bindings")]
+ NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders")]
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
@@ -442,6 +436,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  }
  NSRect bindingsFrame=NSMakeRect(0,SETTINGS_BOTTOM,W,body);
  NSView *bindings=drawings?[self drawingsPageWithFrame:bindingsFrame]:[self bindingsPageWithFrame:bindingsFrame];[self addSubview:bindings];[pages addObject:bindings];
+ NSView *contrib=[self contribPageWithFrame:bindingsFrame];[self addSubview:contrib];[pages addObject:contrib];   /* contrib_tab.h */
  self.pages=pages;
  /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, games/totk, user 2026-10-25); the reset buttons on the right
     of the key bindings page. */
@@ -529,6 +524,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  for(TOTKSettingRow *r in self.allRows)if(r.page==page)[rows addObject:r];
  self.rows=rows;self.controllerIndex=0;
+ if(page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];   /* the numbers now, not at the next tick */
  [self layoutFooter];[self updateTargets];[self refreshBindings];
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
  [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
@@ -558,7 +554,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
    switch, the controller's buttons (the controller drawing) and the buttons below. */
 -(void)updateTargets{
  [self.controllerTargets removeAllObjects];self.padOrder=@[];
- if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
+ if(self.page==SETTINGS_PAGE_CONTRIB)[self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
+ else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
   for(NSButton *b in self.displayButtons.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];}
  else if(!self.drawings){[self.controllerTargets addObjectsFromArray:self.bindingTargets];
   for(NSButton *b in @[self.resetButtons[0],self.resetButtons[1],self.listToggle])if(!b.hidden&&b.enabled)[self.controllerTargets addObject:b];}
@@ -648,7 +645,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  fprintf(stderr,"[totk] settings: controller %s -> %s\n",controller_physical_names[physical],action<0?"nothing":controller_switch_names[action]);
  [self refreshBindings];
 }
--(void)refresh{for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];}
+-(void)refresh{for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];}
 -(void)refreshBindings{
  if(self.page!=SETTINGS_PAGE_BINDINGS)return;
  if(self.drawings){[self.keyboardDiagram setNeedsDisplay:YES];[self.padDiagram setNeedsDisplay:YES];return;}
@@ -744,6 +741,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(BOOL)controllerEnabled:(NSInteger)i{
  if(i<0||i>=(NSInteger)self.controllerTargets.count)return NO;
  if(self.page==SETTINGS_PAGE_BINDINGS)return YES;
+ if(self.page==SETTINGS_PAGE_CONTRIB)return ((NSControl *)self.controllerTargets[(NSUInteger)i]).enabled;   /* the switch */
  TOTKSettingRow *r=self.rows[i];return r.set!=nil&&r.control.enabled;
 }
 /* The controller's place: drawn only once a controller has moved in the panel (g_settings_controller_active). On the
@@ -778,6 +776,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 }
 -(void)controllerChange:(int)step select:(BOOL)select{
  NSInteger i=self.controllerIndex;if(![self controllerEnabled:i])return;
+ if(self.page==SETTINGS_PAGE_CONTRIB){if(select)[(NSControl *)self.controllerTargets[(NSUInteger)i] performClick:nil];return;}   /* A flips the switch */
  if(self.page==SETTINGS_PAGE_BINDINGS){   /* A on a row: wait for the new controller button; on a reset button: press it */
   NSView *target=self.controllerTargets[(NSUInteger)i];
   if(target==self.deviceTabs){self.deviceTabs.selectedSegment=!g_settings_bindings_device;[self deviceChanged:self.deviceTabs];return;}   /* the other device */
