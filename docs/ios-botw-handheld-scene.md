@@ -39,5 +39,16 @@ neighboring data is untouched, and reject wrong instructions/layouts.
 Packaging checks keep this option BOTW-only, off visionOS, and at the
 existing default. Localization checks cover the updated pane.
 
-Real-device scene-size, image-quality and sustained-frame-rate validation
-remain pending. There is no claim of a locked 60 FPS result.
+A local BOTW 1.9.0 diagnostic backport on iPad mini 6 (A15, 4 GB RAM,
+iPadOS 27.2.1) confirms 800×450 in the runtime log and gameplay entry.
+The user reports mostly smooth outdoor movement with occasional sudden
+hitches. Several warmed 30-second windows measured 59.6–60.0 FPS with GPU
+samples around 13–15 ms in that view. Longer sampling also included windows
+around 39.5–42.8 FPS and unexplained 2–6 second in-game stalls; pausing USB
+log polling did not eliminate them.
+
+The diagnostic also includes address-layout changes, a file-backed heap and
+upstream asynchronous writeback. These measurements do not isolate the
+resolution choice as the cause of the improvement. Broader image-quality,
+640×360, heavy-view and sustained-frame-rate validation remain pending.
+There is no claim of a locked 60 FPS result.
