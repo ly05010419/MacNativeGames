@@ -43,8 +43,9 @@ Changes from the copy, reviewed as source changes:
   either count rises (`shader_activity.h`): a hint where to look, not proof of a compile or of a hitch's cause. Errors keep
   them orange; the first sample, and the first after the line or the box was hidden, light nothing.
 - `runtime/games/01006BB00C6F0000/pso_manifest.tsv` is new, not from nxnative: the warm-up seed the app ships in place
-  of the empty template, made by `scripts/pso_seed.py` from three Mac recordings of this project, named in its header
-  with their SHA-256 in the order merged (each file in its own order). It holds shader and pipeline keys only, no game
+  of the empty template, made by `scripts/pso_seed.py` from three Mac recordings of this project. On 2026-11-10 the
+  player list of a first launch on an emptied Metal cache (the 8 pipelines and 9 shaders that launch still built on demand,
+  when the saved game loads) was merged after it, the current list first; the header names both with their SHA-256. It holds shader and pipeline keys only, no game
   data, and is not a shader-chain input, so `assets/expected-1.1.0.json` and the shader pins are unchanged. Packaging
   refuses a staged seed that differs from it (`scripts/package_la.py` verify_seed).
 - Settings → Shader list exports the rows of the player's `pso_user.tsv` that the bundled seed lacks to a file they
