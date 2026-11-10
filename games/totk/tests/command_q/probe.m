@@ -41,6 +41,11 @@ static unsigned lastInputCode;
 static int heldInput[128];
 void runtime_input_key(unsigned code,int down){lastInputCode=code;if(code<128)heldInput[code]=down;if(down)inputDown++;else inputUp++;}
 void runtime_input_clear(void){}
+/* applet_host.c's virtual amiibo reader, which frontend.m's amiibo menu and picker call: no figures in this probe. */
+int runtime_amiibo_count(void){return 0;}
+const char *runtime_amiibo_name(int i){(void)i;return NULL;}
+int runtime_amiibo_current(void){return -1;}
+void runtime_amiibo_place(int i){(void)i;}
 void runtime_input_clear_window(void){inputClears++;memset(heldInput,0,sizeof heldInput);}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}

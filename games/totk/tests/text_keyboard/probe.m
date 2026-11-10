@@ -7,6 +7,11 @@
 _Noreturn void runtime_fail(const char *s){fprintf(stderr,"FAIL: %s\n",s);exit(1);}
 uint64_t runtime_now_ns(void){return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);}
 void runtime_feedback_attach(GCController *c){(void)c;}
+/* applet_host.c's virtual amiibo reader, which frontend.m's amiibo menu and picker call: no figures in this probe. */
+int runtime_amiibo_count(void){return 0;}
+const char *runtime_amiibo_name(int i){(void)i;return NULL;}
+int runtime_amiibo_current(void){return -1;}
+void runtime_amiibo_place(int i){(void)i;}
 void runtime_feedback_detach(GCController *c){(void)c;}
 void runtime_feedback_quiet(void){}
 void runtime_input_mouse(int button,int down){(void)button;(void)down;}
