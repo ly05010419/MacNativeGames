@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v23-txd-derivative-order"
+#define DMSH_CHAIN "oot-native-v24-depth-register"

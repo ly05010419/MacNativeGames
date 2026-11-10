@@ -1,0 +1,26 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-11-10 12:52:54
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-11-10 12:52:54
+@@ -160,8 +160,21 @@
+ 
+         internal int GetDepthRegister()
+         {
+-            // The depth register is always two registers after the last color output.
+-            return BitOperations.PopCount((uint)Definitions.OmapTargets) + 1;
++            // The colours are read four registers per target with any component enabled (EmitterContext: regIndexBase += 4),
++            // then comes the sample mask register, then the depth. Counting enabled components instead agrees only when every
++            // enabled target has all four: with OmapTargets 0x10f (target 0 RGBA, target 2 R) the depth is R9, not R6. Ocarina
++            // of Time's half-resolution depth downsample never writes R6, so its depth was the constant 0 (2026-11-10).
++            int targets = 0;
++
++            for (int rtIndex = 0; rtIndex < 8; rtIndex++)
++            {
++                if ((Definitions.OmapTargets & (0xf << (rtIndex * 4))) != 0)
++                {
++                    targets++;
++                }
++            }
++
++            return targets * 4 + 1;
+         }
+ 
+         public void SetLayerOutputAttribute(int attr)

@@ -26,3 +26,5 @@ Chain `oot-native-v21-predicated-deferred-writes` (patch `0031`) makes a predica
 Chain `oot-native-v22-one-translation-per-2d-slot` stops making separate translations for depth-format textures. A slot keeps its plain `texture2d` declaration whatever is bound; the runtime reads depth textures through a `(R, 0, 0, 1)` view and a point sampler (`games/oot/tests/depth_unified_gpu.m`). A queried slot answers `*2d` when translating it again with the other of 2D / 2D array gives the same MSL.
 
 Chain `oot-native-v23-txd-derivative-order` (patch `0032`) reorders Ampere TXD's interleaved derivatives (ddx.u, ddy.u, ddx.v, ddy.v) into the dPdx, dPdy the texture operation takes; `games/oot/tests/ampere_txd_gradient_order.py` checks the translated order.
+
+Chain `oot-native-v24-depth-register` (patch `0033`) reads a pixel shader's depth from R(4 x enabled colour targets + 1), as the colours are read four registers per enabled target; counting enabled components read R6 instead of R9 for OmapTargets 0x10f, and Ocarina of Time's half-resolution depth downsample wrote the constant 0. `games/oot/tests/ampere_depth_register.py` checks the register.
