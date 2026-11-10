@@ -589,6 +589,10 @@ static _Atomic int reported_mode_override=-1;
 void runtime_operation_mode_report(int docked){atomic_store(&reported_mode_override,docked?1:0);runtime_oe_push_message(30);fprintf(stderr,"[oot] operation mode reported as %s (notification sent)\n",docked?"docked":"handheld");}
 static int operation_mode(void) {int o=atomic_load(&reported_mode_override);return o>=0?o:handheld_mode()?0:1;}
 static int performance_mode(void) {int o=atomic_load(&reported_mode_override);return o>=0?o:handheld_mode()?0:1;}
+/* The settings panel's quality profile (user 2026-11-10): the same report, kept as the mode in force. notify 0 before the
+   guest starts (it reads the mode at its start), 1 while it runs. runtime_operation_mode_docked: the mode in force now. */
+void runtime_operation_mode_choose(int docked,int notify){atomic_store(&reported_mode_override,docked?1:0);if(notify)runtime_oe_push_message(30);fprintf(stderr,"[oot] quality profile: %s%s\n",docked?"docked":"handheld",notify?" (notification sent)":" (from the start)");}
+int runtime_operation_mode_docked(void){return operation_mode();}
 /* nn::oe::GetDisplayVersion: control.nacp's DisplayVersion (char[16]) through IApplicationFunctions, which the host does not
    serve, so the SDK read a null proxy (Donkey Kong Bananza at its start; from games/xc3's copy of this file). The build's
    version (game_version.h); a dump folder has no control data to read the real one from. */

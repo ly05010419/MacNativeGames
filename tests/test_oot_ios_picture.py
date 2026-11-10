@@ -76,7 +76,7 @@ class OOTPhonePicture(unittest.TestCase):
         panel = (ROOT / 'games/oot/runtime/settings_panel.h').read_text()
         start = (IOS / 'Sources/start_screen.m').read_text()
         # The Mac marks its own default entry ("，默认"); the phone's default is the lowest, so the stems are compared.
-        for label in ('720p（480p 放大', '720p（原生）', '1080p（720p 放大', '1080p（原生）'):
+        for label in ('720p（480p 放大', '720p（原生', '1080p（720p 放大', '1080p（原生）'):   # 720p native is the Mac's default since 2026-11-10
             self.assertIn(label, panel)
             self.assertIn(label, start)
         self.assertIn('OOT_RESOLUTION', start)

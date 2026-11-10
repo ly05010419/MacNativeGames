@@ -3506,7 +3506,8 @@ void dm_gfx_set_flag(const char *name, int v) {
     }
     if (!strcmp(name, "dead_stats")) { dead_stat_print(atomic_load(&g_cur_frame)); return; }
     if (!strcmp(name, "dead_dummy")) { atomic_store(&g_dead_dummy, v); MLOG("[flag] dead_dummy = %d (1 bindings, 2 pool tables with a proved demand set, 4 whole pool tables)", v); return; }
-    if (!strcmp(name, "net_bypass")) { extern void netbp_set_flag(int); netbp_set_flag(v); return; }   // OOT: oot_net_bypass.inc
+    if (!strcmp(name, "net_bypass")) { extern void netbp_set_flag(int); netbp_set_flag(v); return; }
+    if (!strcmp(name, "net_copy")) { extern void netbp_copy_set_flag(int); netbp_copy_set_flag(v); return; }   // OOT: the network at the canvas size replaced by a copy   // OOT: oot_net_bypass.inc
     if (!strncmp(name, "skipcs_", 7)) {   // the same for the dispatches of a compute shader
         const char *p = name + 7;
         if (strlen(p) != 16 || strspn(p, "0123456789abcdefABCDEF") != 16) { MLOG("[flag] skipcs needs exactly 16 hex digits"); return; }

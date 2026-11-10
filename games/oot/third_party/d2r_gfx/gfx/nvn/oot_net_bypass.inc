@@ -38,6 +38,17 @@ static int netbp_on(void) {
     return v;
 }
 static void netbp_set(int on) { atomic_store(&g_nb_on, on != 0); MLOG("[flag] net_bypass = %d", on != 0); }
+/* OOT_NET_COPY / "flag net_copy" / the settings panel (2026-11-10; default on: the user compared the two pictures in the
+   panel and chose "skip"; OOT_NET_COPY=0 or the panel keeps the network): when the game renders
+   at the canvas size (native resolution: T's rendered region is as large as O) the network still runs, 1:1, about 1.7 ms a
+   frame plus its two preparing dispatches (n90a: 8df148d5 1.73, a335c1db 0.23, d17eefaf 0.17 ms). With this on, those frames
+   copy T to O instead (same format and size, checked every frame). The picture then has no anti-aliasing from the network. */
+static _Atomic int g_nb_copy = -1; static uint64_t g_nb_copied; static int g_nb_ready_copy;   // g_nb_ready_copy: ready stands for the copy, not for a scaler
+static int netbp_copy_on(void) {
+    int v = atomic_load_explicit(&g_nb_copy, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("OOT_NET_COPY"); v = e ? strcmp(e, "0") != 0 : !TARGET_OS_IPHONE; atomic_store(&g_nb_copy, v);   /* on: the Mac's default (the user's choice there); the phone keeps the network until it is compared on a device */ MLOG("[net-bypass] %s: at the canvas size the network %s", e ? "OOT_NET_COPY" : "default", v ? "is replaced by a copy" : "runs"); }
+    return v;
+}
 /* Every draw: the viewport of the render target it draws into (the rendered region of T, also the FPS panel's internal resolution). */
 static void netbp_note_draw(void) {
     if (!R.has_rt || !R.rt.color[0] || !S.has_vp) return;
@@ -95,9 +106,12 @@ static void netbp_note_ui(NvShader *cs) {
 static int netbp_dispatch(NvShader *cs) {
     netbp_note_ui(cs);
     if (!strncmp(cs->key, NB_MIX_KEY, 16)) netbp_publish_internal();
-    if (!netbp_on()) { g_nb_ready = 0; return 0; }
+    int scale_on = netbp_on(), copy_on = netbp_copy_on();   // MetalFX in place of the network when it upscales / a copy when it runs 1:1: two switches
+    if (!scale_on && !copy_on) { g_nb_ready = g_nb_ready_copy = 0; return 0; }
+    if (!scale_on && g_nb_ready && !g_nb_ready_copy) g_nb_ready = 0;   // a scaler was ready, MetalFX is off now
     uint64_t f = atomic_load(&g_cur_frame);
-    if (!strncmp(cs->key, NB_PREP_KEY, 16)) { if (g_nb_ready) { g_nb_skip_frame = f; return 1; } return 0; }
+    if (!strncmp(cs->key, NB_PREP_KEY, 16)) { if (g_nb_ready_copy && !netbp_copy_on()) g_nb_ready = g_nb_ready_copy = 0;   // net_copy turned off: the network runs again from this frame
+        if (g_nb_ready) { g_nb_skip_frame = f; return 1; } return 0; }
     if (!strncmp(cs->key, NB_MIX_KEY, 16)) {
         int tt = netbp_tid(NB_T_SLOT, 0), tc = netbp_tid(NB_C_SLOT, 1);
         g_nb_t = netbp_tex(tt, 0); g_nb_t_mem = tt ? netbp_mem(tt) : NULL;
@@ -113,9 +127,20 @@ static int netbp_dispatch(NvShader *cs) {
     const char *bad = !t ? "no T" : !o ? "no O" : t.textureType != MTLTextureType2D || o.textureType != MTLTextureType2D ? "not 2D" :
                       !have_region ? "T's rendered region not seen this frame" : cw > t.width || ch > t.height ? "region larger than T" :
                       cw >= o.width || ch >= o.height ? "region not smaller than O" : NULL;
+    int same = bad && t && o && have_region && t.textureType == MTLTextureType2D && o.textureType == MTLTextureType2D && cw == o.width && ch == o.height &&
+               cw <= t.width && ch <= t.height && t.pixelFormat == o.pixelFormat && t.sampleCount == 1 && o.sampleCount == 1;
+    if (same && copy_on) {   // native resolution: nothing to upscale
+        if (!skipping) { if (!g_nb_ready) MLOG("[net-bypass] network %.16s at the canvas size %lux%lu (format %lu): copying T to O from the next frame", cs->key, (unsigned long)cw, (unsigned long)ch, (unsigned long)o.pixelFormat); g_nb_ready = g_nb_ready_copy = 1; return 0; }
+        rp_end();
+        enc_b_copy_texture(blit(), t, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(cw, ch, 1), o, 0, 0, MTLOriginMake(0, 0, 0));
+        if (++g_nb_copied == 1 || g_nb_copied % 300 == 0) MLOG("[net-bypass] copied %llu frames 1:1 (%lux%lu)", (unsigned long long)g_nb_copied, (unsigned long)cw, (unsigned long)ch);
+        return 1;
+    }
     { static uint64_t seen; if (!seen++ || (!bad && seen % 1800 == 0)) MLOG("[net-bypass] network %.16s: T %lux%lu fmt %lu region %lux%lu -> O %lux%lu fmt %lu usage %#lx%s%s", cs->key,
           (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, (unsigned long)cw, (unsigned long)ch, (unsigned long)o.width, (unsigned long)o.height,
           (unsigned long)o.pixelFormat, (unsigned long)o.usage, bad ? "; not replaced: " : "", bad ? bad : ""); }
+    g_nb_ready_copy = 0;
+    if (!scale_on) { g_nb_ready = 0; if (skipping) { g_nb_fail++; MLOG("【红】[net-bypass] frame %llu: the copy no longer applies (%s) after skipping the network's input; the network ran on the previous C", (unsigned long long)f, bad ? bad : "T smaller than O"); } return 0; }
     if (bad) { g_nb_ready = 0; if (!have_region) g_nb_novp++; if (skipping) { g_nb_fail++; MLOG("【红】[net-bypass] frame %llu: %s after skipping its input; the network ran on the previous C", (unsigned long long)f, bad); } return 0; }
     if (!skipping) {   // the network runs this frame; get a scaler ready for the next ones
         if (g_nb_gave_up) return 0;
@@ -139,4 +164,6 @@ static int netbp_dispatch(NvShader *cs) {
     return 1;
 }
 int netbp_flag(void) { return netbp_on(); }   // the settings panel
+int netbp_copy_flag(void) { return netbp_copy_on(); }   // the settings panel
+void netbp_copy_set_flag(int on) { atomic_store(&g_nb_copy, on != 0); MLOG("[flag] net_copy = %d (the network at the canvas size: %s)", on != 0, on ? "replaced by a copy" : "runs"); }   // "flag net_copy 0|1"
 void netbp_set_flag(int on) { netbp_set(on); }   // "flag net_bypass 0|1" (the flag handler comes earlier in nvn_mtl.m)

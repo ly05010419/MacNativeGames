@@ -278,7 +278,9 @@ static void settings_restore_begin(void) {
  }
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
- {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:2;   /* no choice saved: 2, 1080p from 720p (user 2026-11-09, with MetalFX, the Upscaler default); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
+ {extern void runtime_operation_mode_choose(int,int);if(!getenv("TOTK_OPERATION_MODE")&&!(settings_read_int("graphics-profile.txt",&v)&&v==0))runtime_operation_mode_choose(0,0);}   /* no choice saved: the handheld quality profile (user 2026-11-10, after comparing in the panel) */   /* the handheld quality profile, before the guest starts */
+ {extern void netbp_copy_set_flag(int);if(!getenv("OOT_NET_COPY")&&settings_read_int("graphics-net-copy.txt",&v)&&(v==0||v==1))netbp_copy_set_flag(v);}
+ {int c=settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:1;   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
  settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
@@ -694,10 +696,30 @@ static TOTKSettingRow *settings_oot_upscaler_row(void) {
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* At a native resolution the game's end-of-frame network still runs, 1:1 (about 2 ms a frame with its two preparing
+   dispatches); "skip" copies the picture to the canvas instead (oot_net_bypass.inc, net_copy). Takes effect on the next
+   frame. Measured 2026-11-10 at native 1080p: 44 -> 48 fps. The user compares the two pictures here. */
+extern int netbp_copy_flag(void); extern void netbp_copy_set_flag(int);
+static TOTKSettingRow *settings_oot_net_copy_row(void) {
+ return settings_row(settings_text("原生分辨率时的收尾网络","End-of-frame network at native resolution"),@[settings_text("运行（游戏原样）","Runs (as the game does)"),settings_text("跳过（更快，默认）","Skipped (faster, default)")],@[@0,@1],
+  ^int{return netbp_copy_flag();},^(int v){netbp_copy_set_flag(v);settings_save_int("graphics-net-copy.txt",v,"network at native resolution");});
+}
+/* The game's own quality profile: told it is docked or handheld (runtime/services.c). Handheld draws less vegetation
+   (grass 500 threadgroups a draw against 1,231 docked); measured 2026-11-10 at native 1080p, switched in one game (n90i):
+   44 -> 52 fps. In force at once (the game gets the "operation mode changed" notification a Switch sends when it is taken
+   off the dock); the resolution stays the row above's. Saved in graphics-profile.txt; TOTK_OPERATION_MODE in the
+   environment or the launcher's default (the mode of the start, with the handheld controller) is left alone. */
+extern void runtime_operation_mode_choose(int docked,int notify); extern int runtime_operation_mode_docked(void);
+static TOTKSettingRow *settings_oot_profile_row(void) {
+ return settings_row(settings_text("画质档位","Quality profile"),@[settings_text("底座","Docked"),settings_text("掌机（植被较少，更快，默认）","Handheld (less vegetation, faster, default)")],@[@0,@1],
+  ^int{return !runtime_operation_mode_docked();},^(int v){runtime_operation_mode_choose(!v,1);settings_save_int("graphics-profile.txt",v,"quality profile");});
+}
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
 /* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
  return settings_row(settings_text("分辨率","Resolution"),
-  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生）","720p (native)"),settings_text("1080p（720p 放大，默认）","1080p (from 720p, default)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)")],
+  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生，默认）","720p (native, default)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)")],
   @[@0,@1,@2,@3,@4,@5],^int{return settingsOotCanvas;},^(int v){
    settingsOotCanvas=v;runtime_oot_canvas_set(v,1);settings_save_int("graphics-canvas.txt",v,"resolution");dispatch_async(dispatch_get_main_queue(),^{settings_oot_window_sync();});});
 }
@@ -865,7 +887,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_ns2_resolution_row()];
 #elif defined(GAME_OOT) && !TARGET_OS_IPHONE
  (void)resolution;   /* every resolution setting of this game is on this page (user 2026-11-09) */
- [rows addObject:settings_oot_output_row()];[rows addObject:settings_oot_upscaler_row()];
+ [rows addObject:settings_oot_output_row()];[rows addObject:settings_oot_upscaler_row()];[rows addObject:settings_oot_net_copy_row()];[rows addObject:settings_oot_profile_row()];
 #else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,

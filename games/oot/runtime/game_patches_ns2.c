@@ -423,9 +423,9 @@ void runtime_oot_output_size_set(unsigned w, unsigned h) {
    game's own canvas). A change takes effect when the game lays out its display again, which it does when the operation mode
    changes: the mode is reported as the other one for a moment and then back (the notification alone is not enough, g28). */
 static uint64_t oot_output_pending; static _Atomic int oot_flip_busy, oot_flip_again;
-extern void runtime_operation_mode_report(int docked);
+extern void runtime_operation_mode_report(int docked); extern int runtime_operation_mode_docked(void);
 static void *oot_canvas_flip(void *arg) {
-    (void)arg; int docked = !runtime_handheld_mode();
+    (void)arg; int docked = runtime_operation_mode_docked();   /* the mode in force (the start's, or the settings panel's quality profile): the flip ends on it */
     do { atomic_store(&oot_flip_again, 0); runtime_operation_mode_report(!docked); usleep(400000); runtime_operation_mode_report(docked); usleep(100000); } while (atomic_exchange(&oot_flip_again, 0));
     atomic_store(&oot_flip_busy, 0); return NULL;
 }

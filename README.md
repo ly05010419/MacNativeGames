@@ -120,7 +120,7 @@ The [shared shader list](docs/shader-list.md) now holds **16,904 shader variants
 
 - **2026-11-10: The Legend of Zelda: Ocarina of Time (Switch 2) on the Mac.** Build it from your own dump (a `.nup` file or a
   dump folder with update 131072) with `build_app.py`; no keys needed. On an M4 it plays from the title into Kokiri Forest and the
-  village, about 81–83 fps standing in the village at the default 1080p (from 720p). The settings panel (key 1) has the resolution,
+  village, about 81–83 fps standing in the village at 720p or 1080p (from 720p); 720p is the default. The settings panel (key 1) has the resolution,
   the upscaler (MetalFX or the game's own), a frame lock and MetalFX frame interpolation ([games/oot](games/oot/README.md),
   [install](games/oot/docs/install.md)).
 - **2026-11-09: experimental Xenoblade Chronicles X 2.0.0 Mac diagnostic.** Separate integrity pins, cumulative update merge and version-aware packaging; original 30 FPS by default, opt-in checked 60/120 timing experiment awaiting broader acceptance ([details](games/xcx/README.md#update-200-mac-diagnostic)).

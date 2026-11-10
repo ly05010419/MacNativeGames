@@ -316,6 +316,7 @@ static void *input_file(void *arg) {
             else if (!strcmp(name,"oot_scale")) { extern void runtime_oot_scale_set(float); runtime_oot_scale_set((float)v / 10000.0f); }   /* render scale * 10000, at once */
             else if (!strcmp(name,"oot_canvas")) { extern void runtime_oot_canvas_set(int,int); runtime_oot_canvas_set(v,1); }   /* what the settings panel's resolution row does */
             else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
+            else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
             else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
 #endif
             else if (!strcmp(name,"fps_lock")) { extern void nvn_fps_lock_set(int); nvn_fps_lock_set(v); }   /* the frame lock (0 = off), as the settings panel's row: one run can try every lock */
