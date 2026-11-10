@@ -49,6 +49,10 @@ Warm-up seed without repeats (2026-11-10): `scripts/pso_seed.py` drops an R row 
 (`pso_key_norm`), repeats an earlier one (`scripts/pso_skey_layout.m` reports the offsets), and the seed made again from its
 four sources loses the 98 such rows the host already skipped while warming up; nothing else in it changes.
 
+Warm-up compile workers (2026-11-10): `runtime/gfx/nvn/nvn_mtl.m`'s warm-up reads, deduplicates and prepares the list's
+render pipelines on its thread and compiles them on two workers, each pipeline handed to the game as soon as it is made;
+`DM_PSO_WARM_THREADS=1` compiles them one at a time, as before.
+
 Pipeline phase 1 (2026-11-09):
 - `runtime/host/hle_hid.c`, `runtime/host/tests/t_hid.c`, `tests/test_hid_input.py`: scripted
   presses wait until the game sees each release, ported from Link's Awakening's fix
