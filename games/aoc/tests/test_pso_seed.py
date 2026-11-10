@@ -1,6 +1,7 @@
 """scripts/pso_seed.py: rows merged file by file in the order given, every malformed row refused with its line, the seed never cut;
 and the bundled seed itself (runtime/games/<title>/pso_manifest.tsv): valid rows, no repeats, its sources named, within its limit."""
 import hashlib
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -43,6 +44,16 @@ class PsoSeedTests(unittest.TestCase):
         want = ['S\tffffffffffffffff_b\t0', r1, 'C\t0000000000000001_b', 'S\t0000000000000002_b\t1', r2]
         self.assertEqual(rows, want)
         self.assertNotEqual(sorted(want), want)   # control: sorting would change the order the host pre-builds in
+
+    def test_rows_differing_only_in_unused_colour_state_are_repeats(self):
+        L = self.L; row = bytearray.fromhex(self.r_row()[2:])
+        struct.pack_into('<8I', row, L['cfmt'], 80, 0, 0, 0, 0, 0, 0, 0); struct.pack_into('<I', row, L['blend_en'], 0)
+        other = bytearray(row); other[L['blend'] + 1] ^= 0xff   # attachment 0's factors, blending off
+        third = bytearray(row); struct.pack_into('<I', third, L['chmask'], struct.unpack_from('<I', row, L['chmask'])[0] ^ 0xf0)   # attachment 1 absent
+        kept = bytearray(row); struct.pack_into('<I', kept, L['chmask'], struct.unpack_from('<I', row, L['chmask'])[0] ^ 0x0f)   # attachment 0 present: kept
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = pso_seed.merge(self.files(tmp, ''.join('R\t' + r.hex() + '\n' for r in (row, other, third, kept))), L)
+        self.assertEqual(rows, ['R\t' + row.hex(), 'R\t' + kept.hex()])
 
     def test_malformed_rows_are_refused_with_their_line(self):
         good = self.r_row()

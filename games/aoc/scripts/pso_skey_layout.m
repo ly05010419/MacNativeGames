@@ -1,5 +1,6 @@
 // Prints the layout of the host's pipeline manifest key (pso_skey, runtime/gfx/nvn/nvn_pso_skey.h) for pso_seed.py:
-// size, then the offsets of the vertex key, fragment key, vertex stage, fragment stage, merged and fz bytes.
+// size, then the offsets of the vertex key, fragment key, vertex stage, fragment stage, merged and fz bytes, then those of the key's colour state
+// (cfmt, blend_en, chmask, blend) and the size of one blend entry, for the normalization pso_key_norm does.
 #import <Foundation/Foundation.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -9,7 +10,9 @@
 #include "nvn_pso_skey.h"
 
 int main(void) {
-    printf("%zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(pso_skey), offsetof(pso_skey, vs), offsetof(pso_skey, fs), sizeof(((pso_skey *)0)->vs),
-           offsetof(pso_skey, vs_stage), offsetof(pso_skey, fs_stage), offsetof(pso_skey, merged), offsetof(pso_skey, fz));
+    size_t k = offsetof(pso_skey, k);
+    printf("%zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(pso_skey), offsetof(pso_skey, vs), offsetof(pso_skey, fs), sizeof(((pso_skey *)0)->vs),
+           offsetof(pso_skey, vs_stage), offsetof(pso_skey, fs_stage), offsetof(pso_skey, merged), offsetof(pso_skey, fz), k + offsetof(pso_key, cfmt),
+           k + offsetof(pso_key, blend_en), k + offsetof(pso_key, chmask), k + offsetof(pso_key, blend), sizeof(blend_st));
     return 0;
 }

@@ -45,6 +45,10 @@ its KIDS scheduler and scene/battle use independently measured intervals. The
 scene counter uses native CNTFRQ_EL0, independently checked against Mach time
 (the M5 exposes different native-counter and mach_absolute_time ABI rates).
 
+Warm-up seed without repeats (2026-11-10): `scripts/pso_seed.py` drops an R row whose key, normalized as the host does
+(`pso_key_norm`), repeats an earlier one (`scripts/pso_skey_layout.m` reports the offsets), and the seed made again from its
+four sources loses the 98 such rows the host already skipped while warming up; nothing else in it changes.
+
 Pipeline phase 1 (2026-11-09):
 - `runtime/host/hle_hid.c`, `runtime/host/tests/t_hid.c`, `tests/test_hid_input.py`: scripted
   presses wait until the game sees each release, ported from Link's Awakening's fix

@@ -7,7 +7,8 @@ a key being 16 lowercase hex digits and "_b". An R row is the host's pso_skey (n
 exactly its size, which scripts/pso_skey_layout.m reports from the header; its vertex key must be a key, its
 fragment key a key or empty, the bytes after each key zero, the stages 0-5 and the merged and fz flags 0 or 1.
 Rows keep each file's own order, the files taken in the order given (independent sessions have no common clock, so
-there is no global order of first use); repeats are dropped; lines starting with # are skipped. The header names
+there is no global order of first use); repeats are dropped, and so is an R row whose key, normalized as the host does (pso_key_norm
+in nvn_pso_norm.h: no colour state a pipeline does not use), repeats an earlier one; lines starting with # are skipped. The header names
 every input (its last two path parts, no local folders) with its SHA-256, in that order.
 More rows than --max-lines allows is an error and nothing is written: the seed is never cut to fit.
 With --shader-map (a built shader_map.tsv), every key of every row, an R row's vertex and fragment keys included, must also
@@ -18,6 +19,7 @@ Copied from games/la/scripts/pso_seed.py (Link's Awakening); only the header's s
 import argparse
 import hashlib
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -46,8 +48,20 @@ def layout():
         exe = Path(tmp) / 'layout'
         subprocess.run(['clang', '-arch', 'arm64', '-fobjc-arc', f'-I{NVN}', f'-I{NVN}/include', str(GAME / 'scripts/pso_skey_layout.m'),
                         '-framework', 'Foundation', '-o', str(exe)], check=True, capture_output=True)
-        size, vs, fs, keylen, vs_stage, fs_stage, merged, fz = map(int, subprocess.check_output([str(exe)], text=True).split())
-    return dict(size=size, vs=vs, fs=fs, keylen=keylen, vs_stage=vs_stage, fs_stage=fs_stage, merged=merged, fz=fz)
+        size, vs, fs, keylen, vs_stage, fs_stage, merged, fz, cfmt, blend_en, chmask, blend, blend_size = map(int, subprocess.check_output([str(exe)], text=True).split())
+    return dict(size=size, vs=vs, fs=fs, keylen=keylen, vs_stage=vs_stage, fs_stage=fs_stage, merged=merged, fz=fz, cfmt=cfmt, blend_en=blend_en,
+                chmask=chmask, blend=blend, blend_size=blend_size)
+
+
+def norm(b, L):
+    """pso_key_norm on a row's key: no blend bits or mask for a normal pass's absent attachments, no factors with blending off."""
+    b = bytearray(b); cfmt = struct.unpack_from('<8I', b, L['cfmt'])
+    be, cm = struct.unpack_from('<I', b, L['blend_en'])[0], struct.unpack_from('<I', b, L['chmask'])[0]
+    for i in range(8):
+        if not b[L['merged']] and not cfmt[i]: be &= ~(1 << i); cm &= ~(0xf << (4 * i))
+        if not be >> i & 1: b[L['blend'] + L['blend_size'] * i:L['blend'] + L['blend_size'] * (i + 1)] = bytes(L['blend_size'])
+    struct.pack_into('<I', b, L['blend_en'], be); struct.pack_into('<I', b, L['chmask'], cm)
+    return bytes(b)
 
 
 def shader_key(raw, empty_ok):
@@ -100,7 +114,8 @@ def merge(paths, L, known=None):
                 missing = [k for k in row_keys(row, L) if k not in known]
                 if missing: why = f'shader key not in the shader map: {missing[0]}_b'
             if why: raise SeedError(f'{path}:{n}: {why}')
-            if row not in seen: seen.add(row); rows.append(row)
+            key = ('R', norm(bytes.fromhex(row[2:]), L)) if row.startswith('R\t') else row
+            if key not in seen: seen.add(key); rows.append(row)
     return rows
 
 
