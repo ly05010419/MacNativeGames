@@ -2545,12 +2545,14 @@ static int cpend_lookup(uint64_t addr, uint64_t *val) {
 }
 extern uint64_t g_draw_skip[16];
 static _Atomic uint64_t g_cur_frame;
+static _Atomic int g_skipvc_any, g_skipvc_color, g_skipvc_depth;   // flag skipvc / skipvc_color / skipvc_depth (diagnostic)
+static struct { int kx, ky, cached; uint64_t x, y; } g_cond_last;   // passdump: what the last cond_eval read (replay thread)
 typedef struct { const void *op; uint64_t frame; int result; } cond_cache_ent;
 static cond_cache_ent g_cond_cache[1024];
 static int cond_eval(const void *payload, const void *op) {
     const p_render_cond *c = payload; uint64_t frame = atomic_load(&g_cur_frame);
     cond_cache_ent *ce = &g_cond_cache[((uintptr_t)op >> 3) & 1023];
-    if (ce->op == op && ce->frame == frame) return ce->result;
+    if (ce->op == op && ce->frame == frame) { g_cond_last.cached = 1; return ce->result; }
     uint64_t x = 0, y = 0; int kx = cpend_lookup(c->addr, &x), ky = cpend_lookup(c->addr + 16, &y), enabled = 1, unknown = 0;
     if (kx == 0 || ky == 0) unknown = 1;
     else {
@@ -2563,6 +2565,7 @@ static int cond_eval(const void *payload, const void *op) {
         }
     }
     if (unknown) { enabled = 1; g_draw_skip[14]++; } else if (!enabled) g_draw_skip[13]++;
+    g_cond_last.kx = kx; g_cond_last.ky = ky; g_cond_last.x = x; g_cond_last.y = y; g_cond_last.cached = 0;
     *ce = (cond_cache_ent){op, frame, enabled};
     return enabled;
 }
@@ -3400,6 +3403,9 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
+    if (!strcmp(name, "skipvc")) { atomic_store(&g_skipvc_any, v); MLOG("[flag] skipvc = %d", v); return; }
+    if (!strcmp(name, "skipvc_color")) { atomic_store(&g_skipvc_color, v); MLOG("[flag] skipvc_color = %d", v); return; }
+    if (!strcmp(name, "skipvc_depth")) { atomic_store(&g_skipvc_depth, v); MLOG("[flag] skipvc_depth = %d", v); return; }
     if (!strcmp(name, "qo_dump")) { extern void qo_ring_dump(void) __attribute__((weak)); if (qo_ring_dump) qo_ring_dump(); return; }   /* diagnostic: the guest queue event ring (nvn_queue_order.inc), e.g. when a run hangs */
     if (!strcmp(name, "skip_ms")) { extern _Atomic uint32_t g_skip_ms; atomic_store(&g_skip_ms, (uint32_t)v); MLOG("[flag] skip_ms: mesh draws with mesh shader %07x left out (diagnostic)", (uint32_t)v); return; }
     if (!strcmp(name, "never_fs")) { extern _Atomic uint32_t g_never_fs; atomic_store(&g_never_fs, (uint32_t)v); MLOG("[flag] never_fs: draws with fragment shader %07x fail the depth test (diagnostic)", (uint32_t)v); return; }
@@ -7873,12 +7879,27 @@ static inline __attribute__((always_inline)) int tex_view_valid(int tid) {   // 
 static inline MTLTextureType treg_view_type(int tid, __unsafe_unretained id<MTLTexture> t) {   // caller holds g_rmu
     return tid > 0 && tid < g_ntreg && (__bridge void *)t == g_treg[tid].view ? (MTLTextureType)g_treg[tid].view_tt : t.textureType;
 }
+/* Depth sampled by the draw that writes it (2026-11-10, after nxnative's "Depth sampled in the pass that writes it"). A draw
+   that writes depth or stencil and samples its pass's depth attachment through a texture slot must read the depth stored
+   when the draw starts, as on the console. On Apple's GPUs the attachment sampled in the pass that writes it reads blocks
+   of undefined content (Ocarina of Time: the seed bed's blended rim fb46ac21, alpha from the scene depth behind it, came
+   out transparent block by block and the background showed through the terrain's hole). Such a draw reads a copy: the
+   pass ends, the attachment is copied (dsnap_prepare) and the draw's slots that name the attachment resolve to the copy
+   (tex_fast / tex_fast_rid). TOTK_DEPTH_SNAP=0: the attachment is read directly, as before. */
+static uint64_t g_dsnap_ser;                 // serial of the depth attachment the current draw reads through the copy (0 = none)
+static void *g_dsnap_tex; static uint64_t g_dsnap_rid;   // the copy bound for this draw
+static uint64_t g_dsnap_copies;
+static inline __attribute__((always_inline)) int dsnap_hit(int tid) {   // caller holds g_rmu
+    return g_dsnap_ser && tid > 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].t.serial == g_dsnap_ser;
+}
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
+    if (dsnap_hit(tid)) return g_dsnap_tex;
     void *p=tex_view_valid(tid)?g_treg[tid].view:tex_by_id_p(tid);
     id<MTLTexture> hdr=hdr_shadow_sample((__bridge id<MTLTexture>)p);
     return hdr?(__bridge void *)hdr:p;
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
+    if (dsnap_hit(tid)) { if (out) *out = g_dsnap_tex; return g_dsnap_rid; }
     if(!hdr_shadow_enabled()) {
         if (tex_view_valid(tid)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
         void *t = tex_by_id_p(tid); if (out) *out = t; return t ? ((__bridge id<MTLTexture>)t).gpuResourceID._impl : 0;
@@ -13066,7 +13087,8 @@ static int state_op(uint32_t op, const void *a) {
         case OP_COPY_STRIDE: { const p_copy_stride *cs = a; if (cs->image) S.copy_image_stride = cs->stride; else S.copy_stride = cs->stride; break; }
         case OP_DEPTH_CLAMP: S.depth_clamp = ((const p_flag *)a)->value; break;
         case OP_RENDER_ENABLE: S.render_disabled = !((const p_flag *)a)->value; break;
-        case OP_RENDER_COND: S.render_disabled = !cond_eval(a, (const uint8_t *)a - 8); PD("E cond addr=%#llx mode=%d -> %s", (unsigned long long)((const p_render_cond *)a)->addr, ((const p_render_cond *)a)->mode, S.render_disabled ? "disabled" : "enabled"); break;
+        case OP_RENDER_COND: S.render_disabled = !cond_eval(a, (const uint8_t *)a - 8); PD("E cond addr=%#llx mode=%d -> %s (%s x=%llu%s y=%llu%s)", (unsigned long long)((const p_render_cond *)a)->addr, ((const p_render_cond *)a)->mode, S.render_disabled ? "disabled" : "enabled",
+                g_cond_last.cached ? "cached" : "read", (unsigned long long)g_cond_last.x, g_cond_last.kx < 0 ? " mem" : g_cond_last.kx ? " pending-known" : " pending-unknown", (unsigned long long)g_cond_last.y, g_cond_last.ky < 0 ? " mem" : g_cond_last.ky ? " pending-known" : " pending-unknown"); break;
         case OP_RASTER_DISCARD: S.raster_discard = ((const p_flag *)a)->value; break;
         case OP_PUSH_CONST: { const p_push_const *b = a;   /* NVN2 push constants into the graphics (0) or compute (1) block */
             if (b->compute < 2 && (uint32_t)b->offset + b->size <= NVN_PUSH_SIZE && memcmp(S.push[b->compute] + b->offset, b->data, b->size)) { memcpy(S.push[b->compute] + b->offset, b->data, b->size); args_dirty_all(); }
@@ -13612,6 +13634,30 @@ static int draw_att_reads(NvProg *pr, uint64_t out[ATT_READS_MAX]) {
             uint64_t ser = h ? h_ser(h) : 0;
             if (ser && has_ser(cand, nc, ser) && !has_ser(out, n, ser) && n < ATT_READS_MAX) out[n++] = ser; } }
     return n;
+}
+static int dsnap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_DEPTH_SNAP"); on = !(e && !strcmp(e, "0")); } return on; }
+static void dsnap_clear(void) { if (g_dsnap_ser) { g_dsnap_ser = 0; args_dirty_all(); } }
+/* The draw about to be encoded writes depth / stencil and samples its pass's depth attachment d: end the pass, copy the
+   attachment and let the draw's slots read the copy. Returns 0 when no copy can be made (the attachment is read directly). */
+static int dsnap_prepare(const tex_t *d) {
+    id<MTLTexture> src = tex_mtl(d);
+    if (!src || src.textureType != MTLTextureType2D || src.sampleCount != 1) return 0;
+    static id<MTLTexture> snap; static NSUInteger sw, sh; static MTLPixelFormat sf;
+    if (!snap || sw != src.width || sh != src.height || sf != src.pixelFormat) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> t = [g_dev newTextureWithDescriptor:td];
+        if (!t) { RED_ONCE(142, "depth snapshot %lux%lu: texture not made, the attachment is read directly", (unsigned long)src.width, (unsigned long)src.height); return 0; }
+        if (snap) defer_obj_release(snap);
+        snap = t; sw = src.width; sh = src.height; sf = src.pixelFormat; snap.label = @"same-pass depth snapshot"; res_add(snap); res_commit();
+    }
+    rp_flush();   // the depth the earlier draws wrote is stored; the copy reads it
+    id<MTL4ComputeCommandEncoder> b = blit();
+    enc_b_copy_texture(b, src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(src.width, src.height, 1), snap, 0, 0, MTLOriginMake(0, 0, 0));
+    g_dsnap_tex = (__bridge void *)snap; g_dsnap_rid = snap.gpuResourceID._impl; g_dsnap_ser = d->serial; args_dirty_all();
+    if (!g_dsnap_copies++) MLOG("[totk] same-pass depth sampling: a draw writes depth and samples its pass's depth attachment; it reads a copy (first: pass %llu, %lux%lu)", g_stat_pass, (unsigned long)src.width, (unsigned long)src.height);
+    PD("M %llu 绘制一边写深度一边采样本通道的深度附件：改读拷贝（ser=%llu）", g_stat_pass, (unsigned long long)d->serial);
+    return 1;
 }
 /* TOTK_ATT_STORE=0 turns the store-before-sample off (A/B; the decals ghost again) */
 static int att_store_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_ATT_STORE"); on = !(e && !strcmp(e, "0")); } return on; }
@@ -16613,6 +16659,8 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     // TOTK: the draw samples an attachment whose pixels are still only in tile memory: store them first (att_unstored_read).
     // Not in the second half of a fused pass: it reads the first half's pixels from tile memory by construction (fz_p2_draw).
     uint64_t att_rs[ATT_READS_MAX]; int att_n = att_store_on() ? draw_att_reads(pr, att_rs) : 0;
+    if (dsnap_on() && att_n && R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st) && has_ser(att_rs, att_n, R.rt.depth->serial)) { if (!dsnap_prepare(R.rt.depth)) dsnap_clear(); }
+    else dsnap_clear();
     id<MTLFunction> fb_fn = att_n ? att_fb_take(pr, att_rs, &att_n) : nil;   // TOTK: attachments it reads from the tile need no store
     if (!(g_fz.active && g_fz.phase == 2) && att_unstored_read(att_rs, att_n)) {
         static int once; if (!once++) MLOG("[totk] a draw samples an attachment its pass drew: the pass is stored first (first: pass %llu)", g_stat_pass);
@@ -16694,6 +16742,10 @@ frz_plain:;
     /* TOTK diagnostic TOTK_GPU_SKIP_VC=<n>: skip every draw whose vertex count is n and whose colour mask is 0 (isolates a single depth-only draw). */
     { static long skip_vc = -2; if (skip_vc == -2) { const char *e = getenv("TOTK_GPU_SKIP_VC"); skip_vc = e ? atol(e) : -1; }
       if (skip_vc >= 0 && S.chmask.mask == 0 && (long)(dw ? dw->count : di->count) == skip_vc) { static int said; if (said++ < 3) MLOG("TOTK_GPU_SKIP_VC: skipped a %ld-vertex depth-only draw (pass %llu)", skip_vc, g_stat_pass); return; } }
+    /* Diagnostic, off by default: `flag skipvc <n>` skips every draw of n vertices in any pass (0 = off); `flag skipvc_color <n>`
+       only those that write colour, `flag skipvc_depth <n>` only the depth-only ones. To find which draw owns a pixel. */
+    { int a = atomic_load(&g_skipvc_any), c = atomic_load(&g_skipvc_color), d = atomic_load(&g_skipvc_depth); long n_ = (long)(dw ? dw->count : di->count);
+      if ((a > 0 && n_ == a) || (c > 0 && n_ == c && S.chmask.mask != 0) || (d > 0 && n_ == d && S.chmask.mask == 0)) return; }
     { uint32_t sk = atomic_load_explicit(&g_skip_fs, memory_order_relaxed);
       if (sk && pr->sh[1]) { char h[8]; memcpy(h, pr->sh[1]->key, 7); h[7] = 0; if ((uint32_t)strtoul(h, NULL, 16) == sk) return; }
       uint32_t nv = atomic_load_explicit(&g_never_fs, memory_order_relaxed);
