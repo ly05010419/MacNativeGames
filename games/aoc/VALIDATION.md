@@ -378,6 +378,37 @@ The 1.3.0 offset is removed: it was never played by hand. 1.3.0 keeps its target
 cutscenes. Not yet checked with this watcher: a whole mission played by hand,
 mid-mission cutscenes, and the DLC missions.
 
+## Pipeline warm-up list — 2026-11-08 to 2026-11-10
+
+- **The list.** `scripts/pso_seed.py --shader-map` (the 1.4.1 build's `shader_map.tsv`, 40,729 shaders) merged four recordings
+  in this order: a player profile's `pso_user.tsv`, two test profiles and one scripted session. Made again on 2026-11-10 with R
+  rows whose normalized key repeats an earlier one dropped: 1,385 lines with the header, 495 S, 848 R, 36 C. The 98 rows dropped
+  are the ones the host was already skipping, so the pipelines it builds are the same 848.
+- **Packaged and read** (2026-11-08, a signed 1.4.1 app whose tree also carried this branch's settings work, which does not
+  touch the warm-up): the app's `profile/pso_manifest.tsv` was byte-identical to the repository's, and one scripted session
+  from the save through the map and the cutscene into a battle built every S, R and C row at start, with no shader key outside
+  the map. The player list received no row: the route needed no pipeline outside the list.
+- **Repeats** (2026-11-09): the host logged `946 = 98 duplicate rows avoided + 0 skipped before Metal + 848 reached
+  compilation; 848 Metal calls (0 layer retries); 848 created, 0 failed` for the list as it was then.
+- **First launch against later ones** (2026-11-09, the same route, full screen, three of each): with the system's Metal cache
+  emptied first, the game built 12, 14 and 39 pipelines on demand (about 181 ms waiting, median); on the next launch, 1
+  (0.2 ms). The cold misses were rows the list already holds: the serial warm-up took 21-22 s and the game asked for them
+  first.
+- **Two compile workers** (2026-11-10): the same app, list, profile and route, first launch on an emptied Metal cache, in the
+  order serial, two, two, serial (`DM_PSO_WARM_THREADS=1` for serial). The app's tree also carried the 1440p output, 16:10 and
+  the settings work, which do not touch the warm-up.
+
+| | Serial | Two workers |
+|---|---|---|
+| Warm-up, all 848 | 21.2 s, 21.1 s | 14.1 s, 14.0 s |
+| Pipelines the game built on demand | 10 (150 ms), 10 (151 ms) | 4 (34 ms), 3 (35 ms) |
+| A frame of about 180 ms near frame 436 | in both | in neither |
+| First present | 1.06 s, 1.01 s | 0.99 s, 1.00 s |
+| Frames over 50 ms | 17, 19 | 17, 16 |
+
+  Every launch built all 848 with none failed, and closed in order. Two launches per arm.
+- 1.3.0 has not been checked against the list.
+
 ## Newly run source and native tests
 
 | Check | Exact result | Scope |

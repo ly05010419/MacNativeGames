@@ -183,10 +183,14 @@ The host appends to `pso_user.tsv` every pipeline it had to build on demand that
 second session warms up what the first one met.
 
 The repository holds `runtime/games/01002B00111A2000/pso_manifest.tsv`, a list prepared from the recordings of earlier
-sessions (the title, menus, the first missions and the DLC up to its section). Whether a built app carries it unchanged
-and which of its rows the host actually builds at start are still to be checked (VALIDATION.md); it is not a claim of
-mission coverage. It was merged from recorded `pso_user.tsv` files by
-`scripts/pso_seed.py`, which keeps each file's order (the files in the order given), drops repeats, and checks every row:
+sessions (the title, menus, the first missions and the DLC up to its section). A built app carries it unchanged and the
+host builds all of its pipelines at start (VALIDATION.md); it is not a claim of mission coverage. The host warms up in the
+background: its thread reads the rows, drops a render row whose normalized key it already met and prepares each pipeline,
+and two workers compile them, each handed to the game as soon as it is made (`DM_PSO_WARM_THREADS=1` compiles them one at
+a time). Once the system's Metal cache holds them the warm-up takes about 0.1 s; on a first launch with an empty cache, about
+14 s. It was merged from recorded `pso_user.tsv` files by
+`scripts/pso_seed.py`, which keeps each file's order (the files in the order given), drops repeats, including R rows whose
+key, normalized as the host does, repeats an earlier one, and checks every row:
 S, R and C rows with their columns, an R row being the host's `pso_skey` at its exact size with valid keys, stages and
 flags, and with `--shader-map` (a built `shader_map.tsv`) every key one of the app's shaders. The list's header names each
 source by its folder and file with its SHA-256. More lines than `--max-lines` (1,500 by default, header included) is an
