@@ -2462,6 +2462,8 @@ uint64_t mtl_sub_commit(void) {
         if (g_b2_swap) g_b2_pics++; else g_b2_nopic++;
         if (g_b2_swap) {
             vr_image_projection(g_b2_image);
+            { static int shown; if (shown < 3) { shown++; MLOG("[vr] b2 left capture %d: texture %lux%lu, crop %s %d,%d %dx%d", shown, (unsigned long)g_b2_swap.width, (unsigned long)g_b2_swap.height,
+                  g_b2_crop_have ? "have" : "none", g_b2_crop[0], g_b2_crop[1], g_b2_crop[2], g_b2_crop[3]); } }
             const int slot = vr_source_encode_eye(g_cb, g_b2_swap, g_b2_crop_have ? g_b2_crop : NULL, eye);
             if (slot >= 0) {   // published when this command buffer completes, as the present's copy is
                 static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
@@ -4592,7 +4594,7 @@ static int passdump_slow(void) {
 }
 /* TOTK: TOTK_INPUT_FILE command "passdump <n>": full pass dump (as DM_NVN_PASSDUMP_ALL) of the n frames after the next one. */
 void dm_gfx_passdump_next(long n) { g_pd_n = n > 0 && n < 16 ? n : 1; g_pd_at = (long)atomic_load(&g_cur_frame) + 2; g_pd_armed = 1; MLOG("[pass] 按输入文件转储帧 %ld 起 %ld 帧", g_pd_at, g_pd_n); }
-#define PD(...) do { if (passdump()) { fprintf(stderr, "[pass] F%llu ", (unsigned long long)atomic_load(&g_cur_frame)); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
+#define PD(...) do { if (passdump()) { fprintf(stderr, "[pass] F%llu E%d ", (unsigned long long)atomic_load(&g_cur_frame), g_eye_pass); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)   /* E: stereo B2 replay eye (1 left, 2 right, 0 plain) */
 static void pd_xfer(const char *what, uint64_t src, uint64_t dst, uint64_t n) { PD("X %llu %s src=%#llx dst=%#llx n=%#llx", g_stat_pass, what, (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); }
 static void pd_update_bytes(const void *data, uint64_t dst, uint64_t n, uint64_t seq) {
     if (passdump()) { const char *dir = getenv("DM_NVN_CBDUMP"); if (dir && n <= 65536) {
@@ -17714,6 +17716,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
        published from the feedback handler below. */
     if (crop && interp < 0) { memcpy(g_b2_crop, crop, sizeof g_b2_crop); g_b2_crop_have = 1; }   // stereo B2: the left picture takes the same region
     const int *vr_crop = crop; id<MTLTexture> vr_src = interp < 0 ? vr_picture(cb, src, &vr_crop) : nil;   // the MetalFX picture modes: MetalFX's, twice as large
+    { static int shown; if (vr_src && shown < 3) { shown++; MLOG("[vr] present picture %d: src %lux%lu (window %lux%lu), crop %s %d,%d %dx%d", shown, (unsigned long)vr_src.width, (unsigned long)vr_src.height,
+          (unsigned long)src.width, (unsigned long)src.height, vr_crop ? "have" : "none", vr_crop ? vr_crop[0] : 0, vr_crop ? vr_crop[1] : 0, vr_crop ? vr_crop[2] : 0, vr_crop ? vr_crop[3] : 0); } }
     int vr_slot = interp < 0 ? vr_source_encode(cb, vr_src, vr_crop, ticket) : -1;
     if (vr_slot >= 0) { static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; } }
     BOOL grab_hdr=dr.texture.pixelFormat==MTLPixelFormatRGBA16Float;

@@ -210,6 +210,7 @@ static int selftest(void) {
 }
 
 int main(int argc, char **argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffered: a test driver reads the log while a run goes */
     if (argc >= 2 && !strcmp(argv[1], "selftest")) return selftest();
     if (argc >= 3 && !strcmp(argv[1], "serve")) {
         daemon_t d = { .seconds = argc > 3 ? atof(argv[3]) : 60, .png = argc > 4 ? argv[4] : NULL, .yaw_rate = argc > 5 ? atof(argv[5]) : 0,

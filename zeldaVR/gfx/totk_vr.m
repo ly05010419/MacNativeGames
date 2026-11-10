@@ -1449,6 +1449,12 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
                 (unsigned long long)order,(unsigned long long)(s>=0?g.src_pair[s]:0),world?"world":s>=0&&g.src_pair[s]?"flat-final":"flat",
                 se[0],se[1],se[0]>=0?g.src_mapped[se[0]]:0,se[1]>=0?g.src_mapped[se[1]]:0,
                 (unsigned long long)(se[0]>=0?g.src_order[se[0]]:0),(unsigned long long)(se[1]>=0?g.src_order[se[1]]:0));
+            /* diagnostic (vr_packet_log): what each eye's picture carries, and the head it will be placed for */
+            for(int k=0;k<2;k++){const float *f=native_fov[k],*r=source_rotation[k];
+                VLOG("[packet]  eye %d fov %.4f %.4f %.4f %.4f rot [%.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f] oriented %d world %d picture %lux%lu slot %d",k,
+                    (double)f[0],(double)f[1],(double)f[2],(double)f[3],(double)r[0],(double)r[1],(double)r[2],(double)r[3],(double)r[4],(double)r[5],(double)r[6],(double)r[7],(double)r[8],oriented,world,
+                    (unsigned long)(pics[k]?pics[k].width:0),(unsigned long)(pics[k]?pics[k].height:0),se[k]);}
+            VLOG("[packet]  head q %.4f %.4f %.4f %.4f p %.3f %.3f %.3f",(double)head->q[0],(double)head->q[1],(double)head->q[2],(double)head->q[3],(double)head->p[0],(double)head->p[1],(double)head->p[2]);
         }
     }
 #endif
