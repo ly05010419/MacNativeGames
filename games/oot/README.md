@@ -1,71 +1,49 @@
 # Ocarina of Time native port
 
-Work in progress for title `0400486024DEC000`, update `131072`, on Apple silicon and macOS 26. Game ARM64 instructions execute natively after the repository's offline rewrite. The isolated runtime supplies Horizon/NVN services and renders through Metal 4. No CPU emulator is used.
+The Legend of Zelda: Ocarina of Time for Nintendo Switch 2 (title `0400486024DEC000`, update `v131072`) as a native Mac app on Apple silicon and macOS 26. The game's ARM64 code runs natively after the repository's offline rewrite; the runtime in this folder supplies the Horizon / NVN services and renders through Metal 4. No CPU emulator is used, and nothing from the game is in this repository: you build the app from your own dump.
 
-Build through the root entry point, keeping all generated data outside the checkout:
+**Install:** [docs/install.md](docs/install.md) ([中文](docs/install.zh-CN.md)).
 
-```sh
-python3 build_app.py /path/to/original.nup \
-  --work /external/OcarinaOfTime_build \
-  --out '/external/Ocarina of Time.app' \
-  --shared-fonts /path/to/verified/shared-fonts
-```
+## Status (Mac, 2026-11-10)
 
-A complete extracted dump with `updates/131072/{exefs,romfs}` is also accepted. Import verifies original file hashes; module rewriting is checked against `assets/expected-v131072.json`. The App contains its runtime data and AV1 fallback library, is signed and strictly verified, and has a build record beside it. Game data and generated shaders are never repository assets.
+- Plays on an M4 Mac from the title into Kokiri Forest and the village, with real saves read back on the next start. The whole game has not been played through.
+- Frame rates, Kokiri village, standing still, M4, 100 Hz display, no frame lock:
 
-`--mac-game-data library` uses the existing repository resource-library packaging, keeping the verified image outside the App. Desktop launches and diagnostics still use the same App, image and player profile. The default `app` mode carries the image in a signed helper bundle so subsequent runtime updates can reuse its seal.
+  | Resolution (settings) | 3D picture | Upscaler: the game's | Upscaler: MetalFX |
+  |---|---|---|---|
+  | 720p (native) | 1280×720 | 81.4 fps | 81.5 fps |
+  | **1080p (from 720p), the default** | 1280×720 | 80.8 fps | 83.4 fps |
+  | 1080p (native) | 1920×1080 | 65.4 fps | 65.2 fps |
+  | 2K (from 1080p) | 1920×1080 | 61.0 fps | 69.8 fps |
+  | 2K (2560×1440 native) | 2560×1440 | 44.8 fps | 45.9 fps |
 
-The native runtime, GPU backend, rewriter and scripts live in this directory. Source provenance and licenses are in [third_party/COPIES.md](third_party/COPIES.md). The shader service can be rebuilt from pinned sources with `tools/build_shader_service.py` using an external workspace.
+  Busier places and new areas are slower; the first visit to a place can stutter briefly.
+- MetalFX frame interpolation works: at 50+50 on a 100 Hz display 595 of 600 game frames got an interpolated frame, about 3.7 ms of GPU each.
+- iPhone and iPad: a build path exists (`--platform ios`) and is being tested; the install page does not cover it yet.
 
-## Validation status
+## Settings
 
-The original game has reached the first playable scene on this Mac. The forest, Link’s house, character, Chinese text and controls have been observed in the packaged desktop App. The game created a real progress save, and a normal relaunch read that same shared save back into the world. This establishes initial playability, not whole-game compatibility or a 60 fps result.
+Key **1** opens the settings panel. The first page:
 
-The opening-to-scene run now passes the previously failing packed conversion, mesh output linkage and surface reduction shaders. A predicated block tail had skipped pending scoreboard commits, turning task counts into stale float bits; the original-independent GPU regression covers 48 cases. The black final image came from a writable image being replaced by a 1×1 dummy: swizzled sampling views were read-only, and shared-storage upgrades could select a different format entry at the same pool address. Image views now follow the exact physical resource, format and subresource range. GPU readbacks and actual argument-buffer tracing verified the final postprocessing chain.
+- **Resolution**, changed while the game runs: 720p (from 480p), 720p, **1080p (from 720p, the default)**, 1080p, 2K (from 1080p), 2K. The canvas is the picture and the window; the 3D is drawn inside it and upscaled once.
+- **Upscaler**: MetalFX (the default) or the game's own network, for that one upscale.
+- **Frame lock**: off (the default), 30, 40, 60, 72, 90, 120.
+- **Frame interpolation (MetalFX)**: 30+30, 40+40, 50+50, 60+60 or uncapped. On a 100 Hz display, 50+50 adds one frame between every two game frames. Choosing it turns the frame lock off.
 
-GPU regressions cover 192 packed float-to-integer conversions and 150 driver-header/indirect-dispatch checks. Offline shader translation and Metal compilation help diagnose missing instructions; they do not establish that a real scene renders correctly. Task/mesh rendering and dynamic descriptor pools remain under real-game validation.
+`defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` runs the game in handheld mode; `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` returns to docked. The environment variable of the same name wins.
 
-`tests/surface_atomic_gpu.py` prepares the surface reduction regression for `probe-gpu-sured`: 864 checked pixels across supported integer operations, byte/pixel addressing, memory scopes and coordinate bounds, plus explicit rejection of unsupported increment/decrement modes.
+## Shaders
 
-`tests/test_shader_corpus.py` checks structural identification of NVN2 shader records. `tests/f2ip_gpu.py --help` describes the production-backend GPU conversion regression; its work directory must be outside the checkout.
+A full build translates every shader of the game, compiles all of them into Metal libraries and builds a pipeline archive from the [shader list](assets/shader_list.tsv) (bind states and pipelines players recorded), so the game starts warm. A pipeline no one has recorded yet is built the first time it is drawn, a short stutter; the game writes it to `shader-list-contribution.txt` and reminds you to send that file in a GitHub issue. Those issues are merged into the list.
 
-The native `probe-gpu-mesh` regression checks 768 pixels through the production Metal 4 mesh pipeline and encoder FIFO: existing vertex and primitive outputs, missing float outputs, and missing integer outputs. An optional external `OOT_MESH_PIPELINE_CASES` manifest supplies original task/mesh/fragment sources and reflections for pipeline creation; these game-derived fixtures must remain outside the repository.
+## Known issues
 
-At the user's request, opening playback is skipped by default. An exact AV1 first-packet hash identifies `Dm_Title_0005`, which receives its original A/start input only while that stream is active. The Kokiri opening has no skip button: `scripts/make_opening_overlay.py` verifies the original event, dictionary and movie hashes, then generates a one-keyframe WebM without re-encoding and changes its timeline duration from 9255 frames to one frame. Actors, actions, parameters and relocation offsets remain byte-identical. The generator requires `ffmpeg`/`ffprobe` (`brew install ffmpeg`); it verifies a single 1920×1080 AV1 frame, its duration and unchanged packet hash, and records the tool fingerprint in `generation.json`. Original inputs and saves remain intact. `OOT_AUTO_SKIP_OPENING=0` restores original playback for diagnostics. Real-game runs verified title start after 129 delivered pictures and Kokiri end-of-stream after one picture, followed by native scene draws. The following native scene and first progress-save reload have also been verified on macOS.
+- A 4K canvas is not offered: at 4K with the 3D at full size the game crashes when it rebuilds its canvas.
+- The 90 fps frame lock once stopped showing new pictures for 11.6 s while the game kept running; under investigation.
+- A bright ring around the planting spots.
 
-`OOT_MESH_INPUT_CAPTURE` with `OOT_MESH_INPUT_CAPTURE_FS` captures selected mesh draws' storage inputs on the GPU timeline, before the draw. `DM_NVN_TEXSNAP_FS` selects intermediate pass snapshots by fragment shader prefix instead of changing pass indices. These diagnostics default off and write game-derived data only to an external directory.
+## Development
 
-Dynamic descriptor pools remain complete and GPU-indexed. Immutable resource-ID tables preserve old submissions when descriptors change. Physical sampling views are owned by shared storage and its exact layout, with retirement at storage replacement or pool destruction. Lazy visibility query buffers avoid waiting for the fixed result ring on submissions with no query. The earlier shared-save run had a steady frame median of about 26.3 ms on this M4, versus about 120.7 ms before this performance work. Its observed 30.79-second window delivered 890 frames (28.91 fps including stalls); the reciprocal of the median is not sustained fps. These sessions do not establish whole-game performance. The 16.67 ms / 60 fps target remains unachieved.
-
-Shader chain `oot-native-v10-pool-map-live-inputs` removed the raw-memory map's 4095-pool limit and preserved source inputs when one result of a multi-result instruction remained live. Independent GPU fixtures failed on the previous translator and passed on that translator: 14 raw-pool cases and 640 input/output checks for multi-result instructions. Of 468 real shader requests replayed, 393 produced identical MSL and 75 deliberately changed; all changed outputs passed SPIR-V validation and Metal compilation. One restored read-only storage-buffer reflection was explicitly reviewed. Mesh, uniform-buffer snapshot and storage-view regressions also passed. These checks establish the covered shader semantics, not a 60 fps result.
-
-A subsequent 200-second warm-cache run of the same desktop App read the shared progress save, displayed the tree-house world at both screenshot checkpoints and closed normally. Instrumented windows delivered about 26–27 fps including stalls, with frame medians near 33 ms. Debugger, sampling and source-migration activity make this a diagnostic run, not a clean comparative performance benchmark. Long CPU-side stalls and the 60 fps target remain unresolved; mesh-record reuse stays disabled by default.
-
-SDK22 address arbitration type 3 now compares the full 64-bit value, matching the original `nn::os::WaitForAddress(const long*, long)` call. Previously the host applied a signed 32-bit less-than comparison, immediately rejecting equal counters and leaving a worker polling. `make probe-address-wait64` checks poll and timed waits, unchanged 32-bit behavior, and a real guest thread released after only the high word changes. The previous implementation fails the equal-counter regression. Later world windows reached about 30 fps; this fixes that interface error, not every possible stall.
-
-Chain `oot-native-v12-optional-write-log` retains actual raw-memory stores, atomics, barriers, GMEML reflection and conservative host invalidation while making the unconsumed GPU per-page bookkeeping optional. `OOT_RAW_WRITE_LOG=1` or `flag raw_write_log 1` restores the original bookkeeping for comparison. Independent GPU fixtures check 504 load/store outcomes and 288 atomic exchange/CAS outcomes, including the returned old word, actual modified memory, unmapped gaps and bookkeeping on/off/on. An old-shader negative control fails the disabled-bookkeeping check. Of 468 real requests replayed from v11, only 11 MSL outputs changed; all changed outputs passed SPIR-V validation and Metal compilation, with identical reflection apart from the chain. The actual tree-house scene rendered with bookkeeping both enabled and disabled. Concurrent external pipeline compilation invalidated the whole-frame performance comparison; no speedup is claimed from it.
-
-An exact raw-address directory narrows searches within the original sorted mapping without changing unmapped-address behavior. It is enabled by default; `OOT_RAW_INDEX=0` or `flag raw_index 0` restores the full-table search for comparison. It uses 4 MiB buckets, bounded to 3 MiB of metadata over a 1 TiB span, and falls back to the complete search for larger spans. A process-memory capture found a roughly 445 GiB span: the earlier 256 GiB bound had disabled this optimization in the real game, so its apparent on/off FPS comparison did not exercise the accelerated path. `make probe-gmem-index` includes this widely separated allocation case and checks 2,486,528 addresses against an independent predecessor oracle.
-
-The subsequent same-process off/on/off/on world comparison verified activation of 114,471 directory buckets. Fixed measurement windows delivered 28.26 / 51.77 / 28.34 / 51.91 fps, calculated from actual frame counts and elapsed time. The second enabled window had no new shaders or pipelines, with frame p50/p95 of 18.97/22.51 ms. GPU frame accounting fell from about 40.7 to 21.5 ms; the sampled expensive mesh pass fell from about 10.8 to 3.7 ms. Screenshots with the directory enabled and disabled showed the same tree-house scene, character, lighting and HUD without observed missing geometry. The shared-save App closed normally. This establishes a substantial improvement in that scene, not sustained 60 fps or whole-game compatibility.
-
-Descriptor validation once per submission (`pool_validate_once`) and skipping unused mesh vertex exports after an empty primitive result (`mesh_empty_export`) remain diagnostic candidates, disabled by default. Production-backend GPU checks cover descriptor-table lifetimes and the mesh shader's retained side effects. A complete workgroup histogram found only 29 empty groups out of 827 in the measured expensive draw; a small sample of groups must not be treated as evidence that an entire draw is empty.
-
-
-The current chain, `oot-native-v13-raw-read-range-cache`, adds optional exact reuse of a raw-memory mapping within one shader invocation. It is enabled by default for compatible shaders; `OOT_RAW_RANGE_CACHE=0` or `flag raw_range_cache 0` disables it for comparison. A read must fall within the complete cached 64-bit `[start, end)` range before its address delta is reused. Misses use the existing directory/search, and validity is reset for every invocation. Small loads, stores and atomics retain their original paths. Header bit 31 is used only with reflection declaring `raw_read_range_cache_abi: 1`; legacy shaders always receive an ordinary mapping table. The two header variants have separate immutable buffers.
-
-Production-backend tests exercise 420 cases and 1,050 checks across legacy ABI, new ABI off/on, 8,193 mappings, gaps and boundaries. An earlier independent test checks 8,192 GPU output values including high-word aliases, carry and invocation reset, and detects a deliberately broken lower-bound check. Of 985 recorded variants, 966 were reconstructed only after the old translator reproduced their original MSL and reflection byte for byte; the new translator changed 89 of them with no unreviewed reflection changes. The remaining 19 keep their exact old MSL and legacy ABI. Actual request replay, SPIR-V validation and Metal compilation supplement these checks; they do not replace real-image validation.
-
-With 951 unique precompiled libraries packaged, the same-process v13 off/on/off/on tree-house windows delivered 48.49 / 58.30 / 48.51 / 57.06 fps. No libraries or pipelines were created during those measurement windows. Four actual screenshots showed the character, foliage, lighting and HUD without observed corruption. This comparison measures the new code's header switch, **not** its net improvement over the old translator: the private state can cost time even when the header switch is off. The target of stable actual 90 fps is unachieved. First-use pipeline compilation also remains expensive even with all source libraries precompiled.
-
-
-A subsequent old/new/new/old comparison used byte-identical v12 MSL with legacy ABI on the same v13 host, then the new MSL with range reuse enabled. All four runs used the same signed executable, desktop App, active profile and tree-house view. Actual 24-second windows delivered 54.66 / 58.47 / 58.42 / 53.11 fps; the new windows had frame p50/p95 of 17.02/19.13 and 17.02/18.97 ms. Sources were neither added nor changed during the runs. The second new window created one pipeline and loaded two libraries; drawing counts and idle animation varied between runs, so the approximately 8.5% difference between group means is an observation rather than a precisely isolated cache-only gain. Screenshots were inspected for both implementations and showed no observed corruption. This supports enabling range reuse by default, without establishing stable 60 fps, 90 fps, or whole-game compatibility.
-
-## Optional settings (Mac)
-
-- The default picture is 1280×720 inside a 1920×1080 canvas, scaled up by MetalFX. The settings panel's Resolution row (first page) changes the canvas
-  and the 3D inside it while the game runs: 720p (from 480p), 720p, 1080p (from 720p, the default), 1080p, 2K (from 1080p),
-  2K. The one upscale between them is the game's network or
-  MetalFX, as the Upscaler row says. A 4K canvas is not offered yet (it crashes at scale 1).
-- `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` runs the game in handheld mode;
-  `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` returns to docked. The environment variable of the same name wins.
+- Code: the runtime (`runtime/`), the GPU backend (`third_party/d2r_gfx/gfx/nvn/`), the rewriter and the build scripts (`scripts/`, `build.py`) live in this folder. Source provenance and licenses: [third_party/COPIES.md](third_party/COPIES.md). The shader service can be rebuilt from pinned sources with `tools/build_shader_service.py` in an external workspace.
+- Test builds: `OOT_SHADER_SUBSET=listed` compiles only the shaders the shader list uses, much faster than all of them. Every test run started through `scripts/dev/game_slot.py` skips the title movie and shortens the Kokiri opening (`OOT_AUTO_SKIP_OPENING=1`); a player's start does not.
+- Notes: [frame rate work](docs/fps-60-90.md), [shader preparation](docs/shader-preparation.md), [float atomics](docs/float-atomics.md), [time step](docs/time-step.md), [GPU profiling](docs/gpu-profiling.md), [validation history](docs/validation-history.md).
