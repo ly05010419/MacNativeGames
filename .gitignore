@@ -1,7 +1,7 @@
 .DS_Store
 __pycache__/
 *.pyc
-# what players' iPhones / iPads noted for the shared shader list (ios/tools/shader_contrib_watch.py): sent in an issue, not committed
+# what the player's Mac noted for the shared shader list (app/launcher.m contrib_file): contributed by the game, not committed
 /shader-list-contribution/
 # never commit keys or game files
 *.keys

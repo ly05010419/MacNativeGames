@@ -498,6 +498,24 @@
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>着色器 · Shaders</string>
+			<key>FooterText</key>
+			<string>开启后，游戏会自动把公共清单里还没有的着色器贡献出去，让大家以后不再卡顿。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号 · When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_CONTRIBUTE_SHADERS</string>
+			<key>Title</key>
+			<string>自动贡献着色器 · Contribute shaders automatically</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
 	</array>
 </dict>
 </plist>

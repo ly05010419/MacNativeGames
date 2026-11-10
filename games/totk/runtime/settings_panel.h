@@ -104,17 +104,16 @@
    Update (PR #1404; user 2026-10-31): the version, and that it is the newest or each newer commit's message; an Update
    button that closes the game, updates the app from its checkout and opens it again, or why it cannot and how to update
    the code and build again by hand (update_tab.h, app/auto_update.h).
-   On the display page, at the right of the bottom line, two buttons (user 2026-10-25): contribute the shaders and pipelines
-   the shared list lacks (sent with gh in the background when it is signed in, as the launcher's reminder does; else the
-   GitHub form opens and Finder shows the file), and star the project (its GitHub page); their results show for a few
-   seconds where the version is.
+   On the display page, the last row is "Contribute shaders automatically" (user 2026-11-10): the same choice as the
+   start-up question (totk_contrib_upload.h); on starts the sending at once, off stops it. At the right of the bottom line
+   a button stars the project (its GitHub page); its note shows for a few seconds where the version is.
    A setting this game or start cannot change shows its one value, greyed out. While the panel is open the game gets no
    keyboard, mouse or controller input (TOTKInputView, front_mouse_update and gamepad capture). The controls read their
    values again twice a second, so they always show what is in force. */
 #pragma once
 #include "totk_fps_limit.h"   /* totk_fps_limits: the frame lock choices */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
-#include "contrib_submit.h"   /* gh_path, contrib_submit (shared with app/launcher.m) */
+#include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the switch on the display page */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
@@ -896,6 +895,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 #endif
    }})];}
  }
+ /* The shader contribution (totk_contrib_upload.h, user 2026-11-10: a switch, "自动贡献着色器"): the start-up question's
+    choice; on starts the sending now, off stops it (each round checks). A development run has no contribution file. */
+ { NSString *contrib=totk_contrib_path();
+   if(contrib&&totk_inbox_configured())
+    [rows addObject:settings_row(settings_text("自动贡献着色器","Contribute shaders automatically"),nil,nil,
+     ^int{return [totk_inbox_choice(contrib) isEqualToString:@"auto"];},
+     ^(int v){totk_inbox_choose(contrib,v);if(v)totk_inbox_start(contrib,@"mac");
+      fprintf(stderr,"[totk] settings: contribute shaders automatically %s\n",v?"on":"off");})];}
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],
@@ -1070,7 +1077,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) NSSegmentedControl *tabs;
 @property(strong) NSArray<NSView *> *pages;
 @property(strong) NSTextField *versionLabel;   /* the bottom-left corner */
-@property(strong) NSArray<NSButton *> *displayButtons;   /* the display page: contribute shaders, star the project */
+@property(strong) NSArray<NSButton *> *displayButtons;   /* the display page: star the project */
 @property(strong) NSArray<NSButton *> *userButtons;   /* the user page: add a user */
 @property(strong) NSArray<NSButton *> *resetButtons;   /* the key bindings page: keyboard and mouse, controller */
 @property(strong) NSArray<NSButton *> *effectsButtons; /* the effects page: reset to defaults */
@@ -1216,13 +1223,12 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  for(NSButton *b in @[resetPad,resetKeys,toggle]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
   b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
  self.resetButtons=@[resetKeys,resetPad];self.listToggle=toggle;
- /* The display page's bottom right (user 2026-10-25, kept on the first page only): contribute the shaders and pipelines the
-    shared list lacks, and star the project. */
- NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
+ /* The display page's bottom right (user 2026-10-25, kept on the first page only): star the project. (Contributing is the
+    page's switch now, user 2026-11-10.) */
  NSButton *star=[NSButton buttonWithTitle:settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:@selector(star:)];
- for(NSButton *b in @[contrib,star]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
-  b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
- self.displayButtons=@[star,contrib];
+ star.controlSize=NSControlSizeSmall;star.font=[NSFont systemFontOfSize:11];star.refusesFirstResponder=YES;[star sizeToFit];
+ star.frame=NSMakeRect(0,5,star.frame.size.width,24);star.wantsLayer=YES;[self addSubview:star];
+ self.displayButtons=@[star];
  NSButton *resetEffects=[NSButton buttonWithTitle:settings_text("恢复默认","Reset to defaults") target:self action:@selector(resetEffects:)];
  resetEffects.controlSize=NSControlSizeSmall;resetEffects.font=[NSFont systemFontOfSize:11];resetEffects.refusesFirstResponder=YES;[resetEffects sizeToFit];
  resetEffects.frame=NSMakeRect(0,5,resetEffects.frame.size.width,24);resetEffects.wantsLayer=YES;[self addSubview:resetEffects];
@@ -1305,7 +1311,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
  [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
 }
-/* The bottom right: on the display page contribute and star; on the key bindings page the list / drawings switch and the
+/* The bottom right: on the display page star; on the key bindings page the list / drawings switch and the
    reset of the device shown (both resets with the list). */
 -(void)layoutFooter{
  BOOL bindings=self.page==SETTINGS_PAGE_BINDINGS;
@@ -1330,25 +1336,6 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 }
 /* The panel's note about a row: the tab of the page shown. */
 static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [settingsPanel note:text]; }
-/* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
-   thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
--(void)contribute:(NSButton *)button{
- NSString *path=totk_contrib_path();NSUInteger rows=path?totk_contrib_read(path).count:0;
- if(!rows){[self note:settings_text("现在没有要贡献的着色器和管线：公共清单里都有了","Nothing to contribute now: the shared list has them all")];return;}
- button.enabled=NO;[self note:[NSString stringWithFormat:@(TOTK_UI("正在提交 %lu 条着色器和管线…","Sending %lu shaders and pipelines…")),(unsigned long)rows]];
- __weak TOTKSettingsPanel *weak=self;
- dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-  NSString *gh=gh_path(),*issue=gh?contrib_submit(gh,path,rows):nil;
-  dispatch_async(dispatch_get_main_queue(),^{
-   button.enabled=YES;
-   if(issue){   /* contrib_submit moved the rows sent to the done file: the launcher's reminder counts from here */
-    [weak note:[NSString stringWithFormat:@(TOTK_UI("已提交 %lu 条，谢谢你的贡献！","Sent %lu, thank you for contributing!")),(unsigned long)rows]];
-    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:issue]];fprintf(stderr,"[totk] settings: contribution sent, %s\n",issue.UTF8String);return;}
-   [weak note:gh?settings_text("自动提交没成功：已打开提交页面，把访达里的文件拖进去","Sending did not work: drag the file Finder shows into the form")
-                           :settings_text("已打开提交页面：把访达里的文件拖进去","The form is open: drag the file Finder shows into it")];
-   [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_CONTRIB_ISSUE_URL]];
-   [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];});});
-}
 /* The effects page's reset: every row back to the game's own; the panel is made again so the titles say what is in force. */
 -(void)resetEffects:(id)sender{(void)sender;settings_effects_reset();dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});}
 /* The project's GitHub page, where the player stars it (as the launcher's star button). */

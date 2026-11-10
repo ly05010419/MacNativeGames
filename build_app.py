@@ -112,11 +112,26 @@ TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', str(Path(sys.executable).pa
 
 
 def contrib_folder():
-    """<clone>/shader-list-contribution (MNG_CONTRIB_FOLDER overrides): the one file players send, from the Mac and their
-    iPhones / iPads (app/launcher.m contrib_file, ios/tools/shader_contrib_watch.py). Made at build time if missing."""
+    """<clone>/shader-list-contribution (MNG_CONTRIB_FOLDER overrides): the Mac's contribution file (app/launcher.m
+    contrib_file), which the game contributes over HTTPS when the player lets it. Made at build time if missing."""
     folder = Path(os.environ.get('MNG_CONTRIB_FOLDER') or REPO / 'shader-list-contribution')
     folder.mkdir(parents=True, exist_ok=True)
     return folder
+
+
+# The Mac agent an iOS build installed until 2026-11-10 (ios/tools/shader_contrib_watch.py): while an iPhone / iPad was
+# connected it asked to send the device's shaders in a GitHub issue. The devices contribute over HTTPS on their own now
+# (totk_contrib_upload.h), and the script is gone, so a build takes the agent off.
+DEVICE_REMINDER_LABEL = 'org.macnativegames.totk.ios-shader-contrib'
+DEVICE_REMINDER = Path.home() / f'Library/LaunchAgents/{DEVICE_REMINDER_LABEL}.plist'
+
+
+def remove_device_reminder():
+    if not DEVICE_REMINDER.exists():
+        return
+    subprocess.run(['launchctl', 'bootout', f'gui/{os.getuid()}/{DEVICE_REMINDER_LABEL}'], capture_output=True)
+    DEVICE_REMINDER.unlink(missing_ok=True)
+    say('   removed the old Mac reminder for iPhone / iPad shader contributions: the devices contribute on their own now')
 
 
 # Nintendo's public ACID signing key (generation 0): a dump's main.npdm is genuine when this key verifies
@@ -2683,7 +2698,7 @@ def parse_args(argv):
                          'held is moved next to it as <version>.backup-<date>-<time>, not deleted. Without this flag '
                          'the build leaves the folder alone and prints the two commands that fill it by hand')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
-    ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
+    ap.add_argument('--no-shader-reminder', action='store_true', help='no longer used (2026-11-10: the devices contribute their shaders on their own); kept so older commands still run')
     ap.add_argument('--native-4k', action=argparse.BooleanOptionalAction, default=None,
                     help='Mac, Tears of the Kingdom 1.4.3 / 1.2.1 and Breath of the Wild: the settings panel also offers native 4K (a 3840x2160 canvas, UI and scene); the game then '
                          'reserves its swapchain and texture heaps for 4K (about 1.4 GiB more memory, whatever is shown). '
@@ -2936,6 +2951,7 @@ def main(argv):
         step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
+    remove_device_reminder()
     if device_app:
         if args.platform == 'ios':   # visionOS keeps the startup shaders only
             build_device_translator(tree, logs)
@@ -2944,16 +2960,6 @@ def main(argv):
              *(['--image-outside'] if args.ios_game_data == 'documents' else []),
              *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs/'build-ipa.log', cwd=tree, env=env)
         say_device_pipelines(logs)
-        if not args.no_shader_reminder:
-            # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the
-            # shared list lacks (ios/tools/shader_contrib_watch.py). Not essential: a failure only says so.
-            try:
-                run([py, 'ios/tools/shader_contrib_watch.py', 'install', '--store', contrib_folder()],   # in this clone, where players look
-                    logs/'shader-contrib-watch.log', cwd=tree, env=env)
-                say('   installed the Mac reminder for iPhone / iPad shader contributions (remove: python3 '
-                    'games/totk/ios/tools/shader_contrib_watch.py uninstall)')
-            except BuildError as e:
-                say(f'   the Mac reminder for iPhone / iPad shader contributions was not installed: {e}')
     else:
         step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder,
                  native_5k=False if args.native_4k is False else args.native_5k)

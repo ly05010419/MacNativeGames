@@ -90,15 +90,15 @@ its deps as `prepare_shader_seed.py` names a list row (`totk_contrib_listed_name
 - Mac: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - iPhone / iPad: Files app › On My iPhone (or iPad) › Tears of the Kingdom › `shader-list-contribution.txt`
 
-On a Mac, every 100 new rows of either kind the launcher asks once, before the game starts, whether to send the file. An iPhone or
-iPad never asks during play: while it is connected to the Mac that built its app (cable or the same Wi-Fi),
-`games/totk/ios/tools/shader_contrib_watch.py` (a LaunchAgent the iOS build installs) fetches the device's rows every
-10 minutes at most and adds the ones not there yet to the same file the Mac writes:
-`shader-list-contribution/shader-list-contribution.txt` in your clone (the build makes the folder; Breath of the Wild's
-is `shader-list-contribution-botw.txt`). One file for the Mac and every device, since the list does not tell platforms
-apart; the folder opens in Finder with each reminder, which comes every 100 new rows in that file. "Remind me next time" waits for the next 100;
-"Don't remind me again" stops the reminders for good (the file is still kept). "Send" opens the [shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)
-issue form; drag the file into it. The game never uploads anything by itself.
+Once the file holds 100 new rows of either kind, the game asks once, before it starts, on the Mac and on the iPhone or
+iPad alike: "Contribute shaders" or "Don't contribute". With "Contribute shaders" it uploads the rows by itself over
+HTTPS to the project's shader inbox (https://mac-native-games.com), about 20 seconds after it starts and then every half
+hour, and never asks again; "Don't contribute" sends nothing and never asks again. "Contribute shaders automatically" in
+Settings (the Mac's settings panel, display page; the iPhone / iPad Settings app) turns it on or off at any time. Only
+shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are
+sent. On the Mac the file is `shader-list-contribution/shader-list-contribution.txt` in your clone (Breath of the
+Wild's `shader-list-contribution-botw.txt`). A file can still be attached by hand to a
+[shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml) issue.
 
 The file holds only what still has to be sent (2026-11-01; before, every issue carried the whole file, and of one
 day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipeline rows were already in the list):
@@ -108,12 +108,11 @@ day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipe
   row whose bind state a seed variant serves (picked as the runtime picks one), an `R` / `B` / `T` row the warm lists
   hold. They were written by an older app, or another player's file brought them into the list since. A shader of
   another game version, and a pipeline the build names otherwise (0.6%), stay. This runs once per app build.
-- **Rows sent automatically leave it.** After "Submit automatically" (the launcher, the settings panel or
-  `shader_contrib_watch.py`) has made the issue, the rows it sent move out too, so the next issue carries only what came
-  after and the reminder counts from there.
-- Both go to a hidden `.shader-list-contribution.txt.done` beside the file. The game and `shader_contrib_watch.py` treat
-  its rows as ones they have, so neither writes them again. A file dragged into the issue form by hand is not known to
-  be sent; it leaves the file when the next build's list has it.
+- **Rows the inbox took leave it.** Each upload moves the rows the inbox took out of the file, so each row is sent
+  once; rows not taken (no network, a server error) stay for the next try.
+- Both go to a hidden `.shader-list-contribution.txt.done` beside the file. The game treats its rows as ones it has, so
+  it never writes or sends them again. A file attached to an issue by hand is not known to be sent; it leaves the file
+  when the next build's list has it.
 
 ## Breath of the Wild
 
@@ -222,7 +221,7 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - `L` 行：打包程序自己找不到的着色器在玩家游戏文件中的位置：文件路径、控制段和代码的偏移、代码长度。打包时从玩家自己的文件读出，核对哈希等于键才用。BNSH 文件、agl 的 `.sharcb` 包和游戏程序里的着色器，打包程序会自己找到。
   - `S`、`C`、`R` 行：预热用的着色器库和管线。`B` 行：同一条管线带着它当时采样器的边框颜色（Metal 没有的颜色要在着色器里模拟），预热按它建好补丁着色器和这条管线。`T` 行：同一条管线换成从 tile 直接读本次绘制自己颜色附件的片元变体（2026-10-26 以前只记在 `pso_user.tsv`，新装的人每次都在游玩中现建）。标记 `t` 是标题画面用的（第一帧只等这些），`m` 是其余预热。
   - 只有标识，不含游戏数据。
-- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行，从 tile 读附件的再加 `T` 行；普通管线清单里已有时，`B` / `T` 行也照记；变体名换成别人打包时也会有的名字）。着色器和管线合计每攒够 100 条，启动器会在游戏开始前问一次要不要发送；iPhone / iPad 玩的时候从不提醒，设备连着打包它的那台 Mac 时，由 Mac 上的 `ios/tools/shader_contrib_watch.py`（打包 iOS 版时装的后台任务）把文件拷过来，每台设备每多 100 条在 Mac 上问一次。“下次提醒”等到下一个 100 条再问，“不要提醒了”以后就不再问（文件照样记）；点“发送”会打开 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面，把文件拖进去即可。下次在 200、300 条时再提醒，每次发整个文件也没关系，清单里已有的会跳过。游戏不会自己上传任何东西。
+- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行，从 tile 读附件的再加 `T` 行；普通管线清单里已有时，`B` / `T` 行也照记；变体名换成别人打包时也会有的名字）。着色器和管线合计攒够 100 条时，Mac 和 iPhone / iPad 都会在游戏开始前问一次：“贡献着色器”还是“不贡献”。选“贡献着色器”，游戏会自己通过 HTTPS 上传到项目的着色器收件箱（https://mac-native-games.com）：开始后约 20 秒一次，之后每半小时一次，以后不再问；选“不贡献”就什么都不发，也不再问。之后随时可以在“设置”里用“自动贡献着色器”开关打开或关闭（Mac 在游戏内设置面板的画面页，iPhone / iPad 在系统“设置”App）。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号。想手动发的，也可以把文件拖进 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面。
 - **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py --seed <打包目录>/totk/build/shader-seed/v143 --seed <旷野之息打包目录>/totk/build/shader-seed/botw160` 先看两款游戏的每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件（上传失败时也看评论里补传的）里只取 `V` 行和管线的 `R` / `B` / `T` 行，种子自带的默认变体能用的 `V` 行丢掉。贡献文件两款游戏共用，所以每一行按它的着色器键归到所属游戏，不看 Issue 标题；每个 `--seed` 提供该版本的键（`shader-keys.json`，2026-10-22 以前的旧种子没有，会被拒绝），`--keys <游戏>=<文件>` 可再加键清单。两款游戏的键都不认识的行不并入、Issue 保持开着（可能少给了某个版本的种子，也可能是别的游戏的文件，如奥德赛 #525）；核对后用 `--drop-unknown` 丢掉并关闭。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
 - **其他游戏**（2026-10-28）：记贡献文件的其他游戏各有自己的清单 `games/<游戏>/assets/shader_list.tsv`，不混进王国之泪的：奥德赛（`odyssey`）、大乱斗（`ssbu`）、惊奇（`wonder`）、马力欧 vs. 大金刚（`mvdk`）。每个游戏自己的 `totk_shader_contrib.h` 写明它的贡献文件名 `shader-list-contribution-<游戏>.txt`（惊奇和大金刚在项目的 `shader-list-contribution/` 文件夹里；奥德赛和大乱斗写在各自数据文件夹的 `shader-list-contribution.txt`）、[其他游戏的 Issue 表单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-other.yml)（已填好游戏，标签 `shader-list-other`）和自动提交的标题 `Shader list (<游戏>): ...`。以前惊奇和大金刚的文件叫 `shader-list-contribution-botw.txt`，Issue 标题和王国之泪一样是 `Shader list: ... (Wonder 1.2.1)`。`collect_shader_issues.py` 按标题、表单里的游戏或旧标题里的 `(<数据文件夹> <版本>)` 认游戏；这些游戏这里没有种子，所以不属于王国之泪、旷野之息的行都归 Issue 所写的游戏，也不去掉默认变体；标题只写 `Shader list:` 的旧 Issue 里它们的着色器，靠清单里已有的键认出来。奥德赛和大乱斗打包时读自己的清单；惊奇和大金刚的打包还不读，清单目前只是先收着。
 - **用 git 贡献**：

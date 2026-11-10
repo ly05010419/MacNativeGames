@@ -45,7 +45,7 @@ class ContributionFileTests(unittest.TestCase):
             game = subprocess.run([str(probe), str(contrib), 'game'], capture_output=True, text=True)   # the iPhone / iPad app's tag
             self.assertEqual(game.returncode, 0, game.stderr)
             self.assertEqual(json.loads(game.stdout)['status'], 'pass')
-            self.assertEqual(watch.contribution_game(contrib.read_text()), 'TOTK 1.4.3')
+            self.assertIn('\n# Game: TOTK 1.4.3\n', contrib.read_text())
             prune = subprocess.run([str(probe), str(contrib), 'prune'], capture_output=True, text=True)   # served and sent rows leave
             self.assertEqual(prune.returncode, 0, prune.stderr)
             self.assertEqual(json.loads(prune.stdout)['status'], 'pass')
@@ -72,18 +72,12 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(attachment_urls(None), [])
 
     def test_an_automatic_submission_is_read_like_a_form_issue(self):
-        link = watch.gist_raw('https://gist.github.com/someone/0123abcd\n')
-        self.assertEqual(link, 'https://gist.githubusercontent.com/someone/0123abcd/raw/shader-list-contribution.txt')
-        self.assertIsNone(watch.gist_raw('error: HTTP 401'))
-        body = watch.issue_body('iPad', link)
+        # How the gh submissions of the Mac's device reminder laid out their issues (the reminder went on 2026-11-10: the
+        # devices contribute over HTTPS now); issues sent that way are still merged.
+        link = 'https://gist.githubusercontent.com/someone/0123abcd/raw/shader-list-contribution.txt'
+        body = ('### Game version / 游戏版本\n\n1.4.3\n\n### Device / 设备\n\niPhone\n\n'
+                f'### shader-list-contribution.txt\n\n{link}\n\n### Where you played (optional) / 玩了哪些地方（可选）\n\n_No response_\n')
         self.assertEqual(attachment_urls(body), [link])
-        self.assertIn('### Device / 设备\n\niPad\n', body)
-        self.assertNotIn('udid', body.lower())
-        self.assertIn('### Game version / 游戏版本\n\nSent automatically / 自动提交\n', body)   # an app from before the tag
-        tagged = watch.issue_body('iPhone', link, 'TOTK 1.4.3')   # the device's file names its game and version (2026-10-29)
-        self.assertIn('### Game version / 游戏版本\n\n1.4.3\n\n### Device / 设备\n\niPhone\n', tagged)
-        self.assertEqual(watch.contribution_game('# x\n# Game: TOTK 1.2.1\nV\ta\t{}\n# Game: TOTK 1.4.3\n'), 'TOTK 1.4.3')
-        self.assertIsNone(watch.contribution_game('# Game: TOTK\n# Game: TOTK 1.4.3 and more\nV\ta\t{}\n'))
 
     def test_only_shader_rows_are_taken(self):
         text = '\n'.join([
@@ -439,95 +433,3 @@ class ShaderInboxUploadTests(unittest.TestCase):
             run = subprocess.run([str(probe), str(tmp / 'shader-list-contribution.txt'), 'down'], capture_output=True, text=True, timeout=120)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(json.loads(run.stdout)['status'], 'pass')
-
-sys.path.insert(0, str(TOTK / 'ios/tools'))
-import shader_contrib_watch as watch  # noqa: E402
-
-
-class MacReminderForDevicesTests(unittest.TestCase):
-    def test_only_paired_reachable_ios_devices(self):
-        listing = {'result': {'devices': [
-            {'identifier': 'A', 'deviceProperties': {'name': 'iPhone'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-a'},
-             'connectionProperties': {'pairingState': 'paired', 'transportType': 'localNetwork', 'tunnelState': 'disconnected'}},
-            {'identifier': 'B', 'deviceProperties': {'name': 'iPad'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-b'},
-             'connectionProperties': {'pairingState': 'paired'}},                                   # not reachable now
-            {'identifier': 'E', 'deviceProperties': {'name': 'Tablet'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-e', 'deviceType': 'iPad'},
-             'connectionProperties': {'pairingState': 'paired', 'transportType': 'wired'}},
-            {'identifier': 'C', 'hardwareProperties': {'platform': 'watchOS'}, 'connectionProperties': {'pairingState': 'paired', 'transportType': 'wired'}},
-            {'identifier': 'D', 'hardwareProperties': {'platform': 'iOS'}, 'connectionProperties': {'pairingState': 'unpaired', 'transportType': 'wired'}}]}}
-        self.assertEqual(watch.reachable_devices(listing), [('A', 'u-a', 'iPhone', 'iPhone'), ('E', 'u-e', 'Tablet', 'iPad')])
-        self.assertEqual(watch.reachable_devices({}), [])
-
-    def test_the_game_is_found_by_name_or_bundle(self):
-        self.assertEqual(watch.game_bundle({'result': {'apps': [{'name': 'Other', 'bundleIdentifier': 'x.y'},
-                                                                 {'name': 'Tears of the Kingdom', 'bundleIdentifier': 'com.someone.totk'}]}}), 'com.someone.totk')
-        self.assertEqual(watch.game_bundle({'result': {'apps': [{'name': 'TOTK', 'bundleIdentifier': 'org.macnativegames.totk'}]}}), 'org.macnativegames.totk')
-        self.assertIsNone(watch.game_bundle({'result': {'apps': [{'name': 'Other', 'bundleIdentifier': 'x.y'}]}}))
-
-    def test_rows_and_every_100(self):
-        text = '# header\n' + ''.join(f'V\t{i:064x}\t{{}}\n' for i in range(3)) + f'V\t{0:064x}\t{{}}\n' + 'R\tab\n' + 'R\tab\n'
-        self.assertEqual(watch.contribution_rows(text), 4)   # shaders and pipelines together
-        self.assertFalse(watch.due(99, 0)); self.assertTrue(watch.due(100, 0))
-        self.assertFalse(watch.due(199, 100)); self.assertTrue(watch.due(200, 100))
-
-    def test_a_device_s_rows_are_merged_into_the_one_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d); phone, mine = d / 'phone.txt', d / 'shader-list-contribution.txt'
-            mine.write_text('# Mac\nR\tab\nV\t' + 'a' * 64 + '\t{}\n')
-            phone.write_text('# phone\nR\tab\nR\tcd\nR\tcd\nB\tcd\t-\t-\n')
-            self.assertEqual(watch.merge_rows(phone, mine), 4)      # ab and the V row, then cd and its B row once
-            self.assertEqual(watch.merge_rows(phone, mine), 4)      # nothing new the second time
-            fresh = d / 'new.txt'
-            self.assertEqual(watch.merge_rows(phone, fresh), 3)
-            self.assertTrue(fresh.read_text().startswith('# '))
-
-    def test_rows_sent_or_served_are_not_merged_again(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d); phone, mine = d / 'phone.txt', d / 'shader-list-contribution.txt'
-            done = d / '.shader-list-contribution.txt.done'   # totk_shader_contrib.h totk_contrib_side(path, "done")
-            mine.write_text('# Mac\nR\tab\n')
-            done.write_text('R\tcd\n')
-            phone.write_text('# phone\nR\tcd\nT\tef\t1:0;\nV\t' + 'a' * 64 + '\t{}\n')
-            self.assertEqual(watch.merge_rows(phone, mine), 3)      # ab, the T row and the V row; cd was sent
-            self.assertNotIn('R\tcd', mine.read_text())
-
-    def test_a_sent_file_keeps_only_what_came_after(self):
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d); mine = d / 'shader-list-contribution.txt'
-            done, state = d / '.shader-list-contribution.txt.done', d / '.shader-list-contribution.txt.reminded'
-            mine.write_text('# Mac\n# Game: TOTK 1.4.3\nR\tab\nR\tcd\nT\tef\t1:0;\n')
-            state.write_text('3\n')
-            self.assertEqual(watch.retire(mine, {'R\tab', 'T\tef\t1:0;'}), 2)
-            self.assertEqual(mine.read_text(), '# Mac\n# Game: TOTK 1.4.3\nR\tcd\n')
-            self.assertEqual(set(done.read_text().splitlines()), {'R\tab', 'T\tef\t1:0;'})
-            self.assertEqual(state.read_text(), '1\n')                # the reminder counts from the row left
-            state.write_text('never\n')
-            watch.retire(mine, {'R\tcd'})
-            self.assertEqual(state.read_text(), 'never\n')
-
-    def test_agent_runs_check_every_ten_minutes_with_the_xcode(self):
-        plist = watch.agent_plist('/usr/bin/python3', Path('/x/shader_contrib_watch.py'), '/X/Xcode.app/Contents/Developer')
-        self.assertEqual(plist['ProgramArguments'], ['/usr/bin/python3', '/x/shader_contrib_watch.py', 'check'])
-        self.assertEqual(plist['StartInterval'], 600)
-        stored = watch.agent_plist('/usr/bin/python3', Path('/x/w.py'), '/X', Path('/Users/me/MacNativeGames/shader-list-contribution'))
-        self.assertEqual(stored['ProgramArguments'][2:], ['check', '--store', '/Users/me/MacNativeGames/shader-list-contribution'])   # the clone
-        self.assertEqual(plist['EnvironmentVariables'], {'DEVELOPER_DIR': '/X/Xcode.app/Contents/Developer'})
-        self.assertFalse(plist['RunAtLoad'])
-
-    def test_never_stops_the_reminders(self):
-        self.assertEqual(watch.reminded_at(''), 0)
-        self.assertEqual(watch.reminded_at('500\n'), 500)
-        self.assertIsNone(watch.reminded_at('never\n'))
-        self.assertEqual(watch.message(500, 'iPad')[2:], ('Remind me next time', "Don't remind me again", 'Send')
-                         if not watch.chinese() else ('下次提醒', '不要提醒了', '发送'))
-
-    def test_gh_replaces_remind_me_next_time_with_submit(self):
-        self.assertEqual(watch.message(500, 'iPad', auto=True)[2:], ('Submit automatically', "Don't remind me again", 'Send')
-                         if not watch.chinese() else ('自动提交', '不要提醒了', '发送'))
-        with tempfile.TemporaryDirectory() as tmp:   # no gh on PATH or in the usual places: no automatic button
-            old = (watch.GH_CANDIDATES, watch.shutil.which)
-            watch.GH_CANDIDATES, watch.shutil.which = (str(Path(tmp) / 'gh'),), lambda name: None
-            try:
-                self.assertIsNone(watch.gh_path())
-            finally:
-                watch.GH_CANDIDATES, watch.shutil.which = old

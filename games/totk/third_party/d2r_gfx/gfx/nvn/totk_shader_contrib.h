@@ -6,15 +6,15 @@
 // (nvn_mtl.m pso_contribute; user 2026-10-22), their shaders named as a build names them (totk_contrib_listed_name).
 // Each row is written once to the player's contribution file (TOTK_SHADER_CONTRIB, set by app/launcher.m and
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
-// bind states and pipeline descriptors, no game data. Every TOTK_CONTRIB_STEP new rows of any kind the Mac launcher asks
-// the player, before the game starts, to send the file in a GitHub issue (an iPhone / iPad never asks during play: while
-// it is connected, ios/tools/shader_contrib_watch.py asks on the Mac); scripts/collect_shader_issues.py merges what
-// arrives. Header-only: the runtime and the Mac launcher share it.
+// bind states and pipeline descriptors, no game data. Once the file holds TOTK_CONTRIB_STEP new rows, the Mac launcher and
+// the iPhone / iPad app ask once, before the game starts, whether to contribute them automatically over HTTPS
+// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shader_issues.py --inbox merges what
+// arrives, as it merges GitHub issues sent by hand. Header-only: the runtime and the Mac launcher share it.
 // The file holds only what still has to be sent (user 2026-11-01: every issue used to carry the whole file, 83% of its
 // shaders and 99% of its pipelines already in the list): before the reminder counts it, rows the app's own seed and warm
-// lists serve leave it (totk_contrib_prune, once per app), and rows sent automatically leave it after the issue is made
-// (contrib_submit.h). Both go to a hidden done file beside it, which the game and ios/tools/shader_contrib_watch.py read
-// as rows they have, so neither writes them again.
+// lists serve leave it (totk_contrib_prune, once per app), and rows the inbox took leave it (totk_contrib_upload.h
+// totk_inbox_send). Both go to a hidden done file beside it, which the game reads as rows it has, so it never writes or
+// sends them again.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -124,9 +124,8 @@ static inline int totk_contrib_lock(NSString *path, int flags) {
 }
 /* Appends one row (a whole line without its newline), once: not when the file or its done file has it. Not thread-safe:
    the runtime calls it under its translation lock; the file's lock (flock) keeps it apart from totk_contrib_retire in
-   another process (the launcher, shader_contrib_watch.py). TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a
-   "# Game: " line, once per file and game, so the Mac that sends a device's file names the game and version in the issue
-   (ios/tools/shader_contrib_watch.py). */
+   another process (the launcher). TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a "# Game: " line, once per
+   file and game, so a device's file sent by hand in an issue names the game and version. */
 static inline void totk_contrib_add_line(NSString *line) {
     static NSString *path, *gameLine; static NSMutableSet<NSString *> *rows; static int off, tagged;
     if (off) return;
