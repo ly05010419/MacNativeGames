@@ -30,7 +30,13 @@
 // BUSY lasts at most one mprotect (plus, when setting read-only, the few atomic writes that change the state of the pages in the run). The wait has an upper limit BUSY_WAIT_MS and reports red beyond it:
 // in the page-fault handler, exceeding it returns "not our page" and lets the crash handler report the crash truthfully instead of spinning silently. The wait only reads atomics and takes no lock.
 enum { PG_NONE = 0, PG_PROT = 1, PG_BUSY = 2 };
-enum { BUSY_WAIT_MS = 2000 };
+#ifndef BUSY_WAIT_MS
+#define BUSY_WAIT_MS 2000
+#endif
+enum { BUSY_SITE_FAULT = 0, BUSY_SITE_PREP, BUSY_SITE_GPU, BUSY_SITE_PROTECT, BUSY_SITE_PROTECT_SEG, BUSY_SITE_N };
+static const char *const g_busy_site_name[BUSY_SITE_N] = {
+    "on_fault", "prep_write", "gpu_write_begin", "nvn_dirty_protect", "protect_seg",
+};
 // 跟踪区间 = 各内存池（MemoryPoolInitialize 登记）。池销毁后复用 live=0 的槽，信号处理里无锁扫描。
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
 #define MAX_RANGE 16384 // 原为 256：内存池多于它时超出的池不跟踪，里面的贴图每次取用都当成脏的重传（暗黑实测峰值见内存读数行的「内存池」；塞尔达约 300 个，踩过）。扫描只到已用的槽数，容量大不增加开销 | was 256: with more memory pools than that the excess pools are untracked and their textures are treated as dirty and re-uploaded on every use (for Diablo's measured peak see "memory pools" in the memory readout line; Zelda has about 300 and hit this). The scan only covers slots in use, so a larger capacity costs nothing. TOTK (2026-10-17): 4096 was full in the user's own games and most long test games (about 3,900 live pools in the world, more when moving between regions); now 16384
@@ -79,16 +85,22 @@ static void mp(uintptr_t a, size_t len, int prot) {
 }
 
 static mach_timebase_info_data_t g_tb;   // 首次登记池时取好（缺页路径里只做乘除） | Obtained when a pool is first registered (the fault path only multiplies and divides)
-static _Atomic int g_busy_red;
-// 等这一页离开 BUSY。返回 1 = 已离开；0 = 等过了上限（报红一次）。信号处理里可用：只有原子读、mach_absolute_time、sched_yield
-// Wait for this page to leave BUSY. Returns 1 = it has left; 0 = waited past the limit (reported red once). Usable in a signal handler: only atomic reads, mach_absolute_time and sched_yield
-static int busy_wait(range_t *r, uintptr_t p) {
+static _Atomic uint64_t g_busy_to[BUSY_SITE_N], g_busy_to_n;   // 各调用点与总计的 BUSY 超时次数 | per-site and total BUSY timeout counts
+// 等这一页离开 BUSY。返回 1 = 已离开；0 = 等过了上限（进程总计前 8 次各打一行，含调用点自身计数；之后只计数不再打）。信号处理里可用：只有原子操作、mach_absolute_time、sched_yield、LOG
+// Wait for this page to leave BUSY. Returns 1 = it has left; 0 = waited past the limit (log only the first 8 process-wide totals, with per-site count; further timeouts keep counting silently). Usable in a signal handler: only atomics, mach_absolute_time, sched_yield and LOG
+static int busy_wait(range_t *r, uintptr_t p, int site) {
     uint64_t t0 = 0;
     for (unsigned n = 1; atomic_load(&r->state[p]) == PG_BUSY; n++) {
         if (n & 0x3ff) continue;
         uint64_t now = mach_absolute_time(); if (!t0) t0 = now;
         if ((now - t0) * g_tb.numer / g_tb.denom > (uint64_t)BUSY_WAIT_MS * 1000000ull) {
-            if (!atomic_exchange(&g_busy_red, 1)) LOG("【红】脏页跟踪：页 %p 停在「忙」超过 %d 毫秒（改保护的线程没走完），不再等", (void *)(r->base + (p << g_shift)), BUSY_WAIT_MS);
+            uint64_t waited_ms = (now - t0) * g_tb.numer / g_tb.denom / 1000000ull;
+            uint64_t sk = atomic_fetch_add(&g_busy_to[site], 1) + 1;
+            uint64_t k = atomic_fetch_add(&g_busy_to_n, 1) + 1;
+            if (k <= 8) {
+                const char *sn = g_busy_site_name[site];
+                LOG("【红】脏页跟踪：页 %p 停在「忙」超过 %llu 毫秒，不再等 | dirty page %p stayed BUSY over %llu ms (%s #%llu, total #%llu)", (void *)(r->base + (p << g_shift)), (unsigned long long)waited_ms, (void *)(r->base + (p << g_shift)), (unsigned long long)waited_ms, sn, (unsigned long long)sk, (unsigned long long)k);
+            }
             return 0; }
         sched_yield();
     }
@@ -167,7 +179,7 @@ static int on_fault(void *addr, int is_write, void *uc) {
     if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { unprotect_page(r, p); atomic_fetch_add(&g_faults, 1);
         if (g_drec_on && uc) { _STRUCT_MCONTEXT64 *mc = ((ucontext_t *)uc)->uc_mcontext; drec_add(r->base + (p << g_shift), mc->__ss.__pc, mc->__ss.__lr, 0); }
         return 1; }
-    if (st == PG_BUSY) return busy_wait(r, p);   // 别的线程正在改这页的保护：等它改完重执行（改成了只读就再缺页一次、走上面那一支） | Another thread is changing this page's protection: wait for it to finish and re-execute (if it became read-only, it faults once more and takes the branch above)
+    if (st == PG_BUSY) return busy_wait(r, p, BUSY_SITE_FAULT);   // 别的线程正在改这页的保护：等它改完重执行（改成了只读就再缺页一次、走上面那一支） | Another thread is changing this page's protection: wait for it to finish and re-execute (if it became read-only, it faults once more and takes the branch above)
     return atomic_load(&r->gen[p]) != 0;   // 刚被别的线程解掉（本次缺页发生在解之前）：重执行；从未保护过的页不是我们的 | Just unprotected by another thread (this fault happened before the unprotect): re-execute; pages that were never protected are not ours
 }
 static void prep_write(void *addr, size_t len) {
@@ -179,7 +191,7 @@ static void prep_write(void *addr, size_t len) {
         for (uintptr_t p = (a - r->base) >> g_shift, q = (stop - 1 - r->base) >> g_shift; p <= q; p++) {
             for (;;) { uint8_t st = PG_PROT;   // 见 BUSY 等完要重看：对方可能是在设只读，等完这页是 PROT，照样得解 | After waiting out BUSY, look again: the other side may have been setting read-only, in which case the page is PROT after the wait and still has to be unprotected
                 if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { unprotect_page(r, p); atomic_fetch_add(&g_preps, 1); drec_add(r->base + (p << g_shift), dm_host_write_pc, 0, 1); break; }
-                if (st != PG_BUSY || !busy_wait(r, p)) break; }
+                if (st != PG_BUSY || !busy_wait(r, p, BUSY_SITE_PREP)) break; }
         }
         a = stop;
     }
@@ -200,7 +212,7 @@ void *nvn_dirty_gpu_write_begin(void *addr, size_t len) {
     for (uintptr_t p = p0; p <= p1; p++) {
         for (;;) { uint8_t st = PG_PROT;
             if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { mp(r->base + (p << g_shift), g_pg, PROT_READ | PROT_WRITE); was[p - p0] = 1; break; }
-            if (st != PG_BUSY || !busy_wait(r, p)) break; }
+            if (st != PG_BUSY || !busy_wait(r, p, BUSY_SITE_GPU)) break; }
     }
     return t;
 }
@@ -299,7 +311,7 @@ void nvn_dirty_protect(const void *addr, size_t len) {
         int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
         if (took && !open) { run = i; open = 1; }
         if (!took && open) { mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ); for (uintptr_t k = run; k < i; k++) atomic_store(&r->state[k], PG_PROT); open = 0; }
-        if (!took && st == PG_BUSY && busy_wait(r, i)) i--;   // this page again
+        if (!took && st == PG_BUSY && busy_wait(r, i, BUSY_SITE_PROTECT)) i--;   // this page again
     }
     pthread_mutex_unlock(&g_slot_mu);
 }
@@ -416,7 +428,7 @@ static void protect_seg(range_t *r, uintptr_t a, uintptr_t e) {
             if (keep) mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ);
             for (uintptr_t k = run; k < i; k++) atomic_store(&r->state[k], keep ? PG_PROT : PG_NONE);
             open = 0; }
-        if (!took && st == PG_BUSY && busy_wait(r, i)) i--;   // this page again
+        if (!took && st == PG_BUSY && busy_wait(r, i, BUSY_SITE_PROTECT_SEG)) i--;   // this page again
     }
 }
 void nvn_dirty_protect(const void *addr, size_t len) {
@@ -451,7 +463,7 @@ void *nvn_dirty_gpu_write_begin(void *addr, size_t len) {
         for (uintptr_t p = p0; p <= p1; p++) {
             for (;;) { uint8_t st = PG_PROT;
                 if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { mp(r->base + (p << g_shift), g_pg, PROT_READ | PROT_WRITE); was[p - p0] = 1; break; }
-                if (st != PG_BUSY || !busy_wait(r, p)) break; }
+                if (st != PG_BUSY || !busy_wait(r, p, BUSY_SITE_GPU)) break; }
         }
         a = stop;
     }
