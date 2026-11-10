@@ -51,6 +51,7 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         GCSupportsControllerUserInteraction: true
         NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
+        NSPhotoLibraryUsageDescription: Finds or creates this game's screenshot album and saves your controller screenshots there.
         NSPhotoLibraryAddUsageDescription: Saves the screenshots you take with a controller to your photo library.
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
