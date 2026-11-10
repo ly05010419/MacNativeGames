@@ -12,7 +12,9 @@
 #include <unistd.h>
 
 static void make_dir(const char *path) {
-    if (!mkdir(path, 0755) || errno == EEXIST) return;
+    if (!mkdir(path, 0755)) return;
+    struct stat info;
+    if (errno == EEXIST && !stat(path, &info) && S_ISDIR(info.st_mode)) return;
     fprintf(stderr, "mkdir %s: %s\n", path, strerror(errno));
     exit(1);
 }
@@ -59,7 +61,33 @@ int main(void) {
             return 1;
         }
     } else {
-        join(run, sizeof run, home, "Library/Application Support/Hyrule Warriors Age of Calamity");
+        char parent[PATH_MAX], legacy[PATH_MAX], legacy_lock[PATH_MAX];
+        join(parent, sizeof parent, home, "Library"); make_dir(parent);
+        join(parent, sizeof parent, home, "Library/Application Support"); make_dir(parent);
+        join(parent, sizeof parent, home, "Library/Application Support/MacNativeGames"); make_dir(parent);
+        join(run, sizeof run, parent, "AoC");
+        join(legacy, sizeof legacy, home, "Library/Application Support/Hyrule Warriors Age of Calamity");
+        struct stat info;
+        if (lstat(run, &info) && errno == ENOENT) {
+            if (!lstat(legacy, &info)) {
+                // Move the whole profile atomically, including preferences.
+                // Never merge/replace saves or move an active legacy session.
+                if (!S_ISDIR(info.st_mode)) {
+                    fprintf(stderr, "legacy profile must be a directory\n"); return 1;
+                }
+                join(legacy_lock, sizeof legacy_lock, legacy, "session.lock");
+                int migration = open(legacy_lock, O_RDWR | O_CREAT, 0600);
+                if (migration < 0 || flock(migration, LOCK_EX | LOCK_NB)) {
+                    fprintf(stderr, "close the old app before migrating its profile\n"); return 1;
+                }
+                if (renamex_np(legacy, run, RENAME_EXCL)) {
+                    perror("migrate AoC profile"); close(migration); return 1;
+                }
+                close(migration);
+            } else if (errno != ENOENT) {
+                perror("legacy profile"); return 1;
+            }
+        }
     }
     join(save, sizeof save, run, "save");
     join(temp, sizeof temp, run, "temp");
