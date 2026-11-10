@@ -46,35 +46,6 @@ jobs:
           persist-credentials: false
       # UBSan only: on macOS 26 an AddressSanitizer build of this test hangs in dyld before main
       # (AsanInitInternal -> StaticSpinMutex::LockSlow), which would hold the job until its timeout.
-      - name: Check native path parser with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_romfs_paths.c -o "$RUNNER_TEMP/test-romfs-paths"
-          "$RUNNER_TEMP/test-romfs-paths"
-      - name: Check the rumble and gyro settings files with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_feedback_settings.c -o "$RUNNER_TEMP/test-feedback-settings"
-          "$RUNNER_TEMP/test-feedback-settings"
-      - name: Check the controller layout parser with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_controller_map.c -o "$RUNNER_TEMP/test-controller-map"
-          "$RUNNER_TEMP/test-controller-map"
-      - name: Check the keyboard and mouse layout parser with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_keyboard_map.c -o "$RUNNER_TEMP/test-keyboard-map"
-          "$RUNNER_TEMP/test-keyboard-map"
-      - name: Check the local users store with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_users.c games/totk/runtime/account.c -Igames/totk/runtime -o "$RUNNER_TEMP/test-users"
-          "$RUNNER_TEMP/test-users"
-      - name: Check the game language mapping with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_game_language.c -o "$RUNNER_TEMP/test-game-language"
-          "$RUNNER_TEMP/test-game-language"
-      - name: Check the Breath of the Wild audio ramp arithmetic with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_audio_ramp.c -o "$RUNNER_TEMP/test-audio-ramp"
-          "$RUNNER_TEMP/test-audio-ramp"
-      - name: Check the bow state reader (DualSense triggers) with the undefined-behavior sanitizer
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_bow_state.c -o "$RUNNER_TEMP/test-bow-state"
-          "$RUNNER_TEMP/test-bow-state"
+      # The C test list lives in the root Makefile (C_TESTS); keep CI and `make check` in lockstep.
+      - name: Check C unit tests with the undefined-behavior sanitizer
+        run: make check-c
