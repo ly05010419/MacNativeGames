@@ -113,6 +113,7 @@ extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarde
 #include <errno.h>
 #include <execinfo.h>
 #include <os/lock.h>
+#include <sys/resource.h>
 #include <mach/mach_time.h>
 // 本文件的函数参数一律不在被调方重复持有（调用方 / 全局表已持有，生命期由 defer_obj_release 保证）：热路径每次调用省一对 retain / release
 // Function parameters in this file are never retained again in the callee (the caller / global tables already hold them, and lifetime is guaranteed by defer_obj_release): saves a retain / release pair per call on the hot path
@@ -4703,8 +4704,14 @@ static int guest_probe(const void *mem, uint64_t size) {
     (void)sink;
     return 1;
 }
+/* DM_NVN_UPTIME=<ms> (diagnostic, off by default): one log line per texture upload that takes at least that long on the
+   submit thread, split into its steps, with the process's page faults during it. */
+static uint64_t g_upt[6]; static int g_upt_path;   // step marks of the upload in progress (submit thread only)
+static int upt_on(void) { static int on = -1; if (on < 0) on = getenv("DM_NVN_UPTIME") != NULL; return on; }
+static inline void upt_mark(int i) { if (upt_on()) g_upt[i] = clock_gettime_nsec_np(CLOCK_MONOTONIC); }
 static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+    struct rusage ru0; if (upt_on()) { getrusage(RUSAGE_SELF, &ru0); memset(g_upt, 0, sizeof g_upt); g_upt_path = 0; upt_mark(0); }
     /* TOTK (2026-10-28): the copy reads the texture's guest memory, which the game can take away meanwhile. A texture made
        in memory the game had moved into the stack region (svcMapMemory) was uploaded after the move was undone: the
        submit thread read the decommitted page (PROT_NONE) in nvn_deswizzle and the process died with SIGBUS (100% save, about
@@ -4715,8 +4722,18 @@ static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key,
     if (!guest_probe(t->mem, t->L.size)) {
         uint64_t k = ++g_pkg_upload_unreadable;
         if (k <= 4 || k % 1000 == 0) MLOG("【红】贴图的内存已不可读，不上传（ser=%llu %ux%u 格式 %#x 存储 %p+%llu，第 %llu 次）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (const void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)k);
-    } else r = pkg_upload_(t, stamp, key, pk);
+    } else { upt_mark(1); r = pkg_upload_(t, stamp, key, pk); }
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
+    if (upt_on()) { static double min_ms = -1; if (min_ms < 0) min_ms = atof(getenv("DM_NVN_UPTIME"));
+        if (d_ / 1e6 >= min_ms) { struct rusage ru1; getrusage(RUSAGE_SELF, &ru1); uint64_t e = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+            #define UPT_MS(i, j) (g_upt[i] && g_upt[j] ? (g_upt[j] - g_upt[i]) / 1e6 : -1.0)
+            MLOG("[uptime] frame=%llu ser=%llu fmt=%#x %ux%u lv=%u tgt=%d size=%llu path=%s total=%.2f ms: probe %.2f, texture %.2f, protect %.2f, %s %.2f, %s %.2f, rest %.2f; faults minor %ld major %ld",
+                 (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, t->d.levels, t->d.target, (unsigned long long)t->L.size,
+                 g_upt_path == 1 ? "gpu" : g_upt_path == 2 ? "cpu" : g_upt_path == 3 ? "gpu-then-cpu" : "none", d_ / 1e6, UPT_MS(0, 1), UPT_MS(1, 2), UPT_MS(2, 3),
+                 g_upt_path == 1 ? "wrap" : "staging", UPT_MS(3, 4), g_upt_path == 1 ? "encode" : "copy", UPT_MS(4, 5), g_upt[5] ? (e - g_upt[5]) / 1e6 : -1.0,
+                 ru1.ru_minflt - ru0.ru_minflt, ru1.ru_majflt - ru0.ru_majflt);
+            #undef UPT_MS
+        } }
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
 }
@@ -4822,6 +4839,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         if (ul && (!ulw || (t->d.width == ulw && t->d.height == ulh))) { uint64_t nz = 0, n = t->L.size; const uint8_t *m = t->mem; for (uint64_t i = 0; i < n; i += 8) if (*(const uint64_t *)(m + i)) nz++;
             MLOG("[uplog] ser=%llu fmt=%#x %ux%u lv=%u tgt=%d size=%llu nz8=%llu/%llu pool=%p flags=%#x host=%p off=%lld frame=%llu", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, t->d.levels, t->d.target,
                  (unsigned long long)n, (unsigned long long)nz, (unsigned long long)(n / 8), (void *)t->pool, t->pool ? t->pool->flags : 0, t->pool ? (void *)t->pool->host : NULL, (long long)t->off, (unsigned long long)atomic_load(&g_cur_frame)); } }
+    upt_mark(2);
     *stamp = nvn_dirty_now();   // TOTK (#90): before protecting, as in wb_note: a write that faults during the protect or the copy is newer than it
     if (pk && pk->edge_want) pkg_edge_snap(t, pk);
     if (!pkg_hashed(t)) nvn_dirty_protect(t->mem, t->L.size);
@@ -4863,7 +4881,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     if (tck) for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) { uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u); xtotal += (size_t)((w + 3) / 4) * tco * ((h + 3) / 4) * layers; }
     int use_gpu = (!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d) && mtl_addr_known((uint64_t)t->mem, t->L.size);   // TOTK: linear textures take the CPU row copy
     if (g_nvn_deswz_gpu && !use_gpu && !unp) RED_ONCE(40, "预排布贴图存储不在内存池里，回退 CPU");
+    upt_mark(3);
     if (use_gpu) {
+        g_upt_path = 1;
         // GPU 执行时读内存池，比 CPU 上传时刻快照更接近 Switch 真机；脏页戳仍在编码前取，之后写入仍会触发重传。
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
         up_begin();up_reserve((size_t)t->L.size);
@@ -4880,6 +4900,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         if(!source)MDIE("texture upload source wrapper failed: %p+%llu",t->mem,(unsigned long long)t->L.size);
         res_add(source);[g_up_keep addObject:source];mb=(__bridge void *)source;mo=(uintptr_t)t->mem-a;
         if (race_on() || rdf_on()) { static char lbl[64][48]; static unsigned li; char *l = lbl[li++ & 63]; snprintf(l, 48, "upload ser=%llu %ux%u fmt=%#x", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); gpu_read_input((uint64_t)(uintptr_t)t->mem, t->L.size, l, 't'); }
+        upt_mark(4);
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits, nd0 = g_nup_decs, nt0 = g_nup_tcas, nx0 = g_nup_tcxs;
         for (unsigned l = drop; enc_ok && l < d.mipmapLevelCount + drop; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -4916,6 +4937,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
                 off += pitch * rows * z;
             }
         }
+        upt_mark(5);
         if (enc_ok) {
             [g_up_texs addObject:mt];
             if (!g_cb) up_flush();
@@ -4928,6 +4950,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
 
     if (tck) { RED_ONCE(47, "BC 转码贴图的 GPU 上传失败（格式 %#x %ux%u）：这张贴图留空", t->d.format, t->d.width, t->d.height); return mt; }
     if (tca) total = atotal;   // CPU path writes ASTC blocks (16 bytes) into the staging
+    g_upt_path = g_upt_path == 1 ? 3 : 2; upt_mark(3);
     up_begin();
     up_reserve(total ? total : 16);
     size_t sneed = ((total ? total : 16) + 255u) & ~(size_t)255u, off = 0;
@@ -4960,7 +4983,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         if (k <= 4 || k % 1000 == 0) MLOG("【红】贴图上传读到一半内存被收回（ser=%llu %ux%u 格式 %#x 存储 %p+%llu，第 %llu 次）：这次不传，留用旧贴图", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (const void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)k);
         return nil;
     }
-    runtime_fault_guard = &cjb;
+    runtime_fault_guard = &cjb; upt_mark(4);
     for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
         size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
@@ -4994,6 +5017,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         }
     }
     runtime_fault_guard = cprev;   // the guest reads are done
+    upt_mark(5);
     /* TOTK: during a replay submission the batch is flushed by mtl_sub_commit (or q_cb) before the game command buffer,
        like the GPU-deswizzle path above. Committing per texture made ~20 command buffers and residency commits per frame
        and stalled the submit thread on the three upload allocators. */
