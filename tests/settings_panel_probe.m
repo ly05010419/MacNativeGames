@@ -239,6 +239,15 @@ static void tick(void) {
     while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
     if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
 }
+/* Text entry also crosses a background queue: any number of main-queue passes can finish before it runs. */
+static void wait_for(BOOL (^ready)(void)) {
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:10];
+    while (!ready() && limit.timeIntervalSinceNow > 0) {
+        tick();
+        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    assert(ready());
+}
 static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
@@ -474,21 +483,24 @@ static void update_probe(void) {
     window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     settings_show(1); assert(settingsOpen);
-    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE == settings_pages() - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
-    for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
+    assert(settingsPanel.tabs.segmentCount == settings_pages() && settingsPanel.pages.count == (NSUInteger)settings_pages());
+    assert(SETTINGS_PAGE_CONTRIB == settings_pages() - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_CONTRIB] isEqualToString:@"Shaders"]);
+    assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
+    for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE && r.page != SETTINGS_PAGE_CONTRIB);
     assert(!spawned[0]);   /* nothing is asked before the page opens */
 
-    /* The display page: the controller past the last row (it used to raise here), the contribute button clicks. Its real
-       action could send a player's list, so the button is pointed at the probe. */
+    /* The display page: the controller reaches the star button after the last row. Point it at the probe so no URL opens. */
     assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
-    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *contribute = settingsPanel.displayButtons[1];
-    contribute.target = clicks; contribute.action = @selector(hit:);
+    assert(settingsPanel.displayButtons.count == 1);
+    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *star = settingsPanel.displayButtons[0];
+    star.target = clicks; star.action = @selector(hit:);
     pad_press(PAD_DOWN); assert(g_settings_controller_active);
-    for (int n = 0; n < 20 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != contribute; n++) pad_press(PAD_DOWN);
-    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == contribute && contribute.layer.borderWidth == 2);
+    for (int n = 0; n < 20 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != star; n++) pad_press(PAD_DOWN);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == star && star.layer.borderWidth == 2);
     pad_press(PAD_A); assert(clicks.hits == 1);
 
-    /* L1 / R1: the page is the last tab; opening it asks the launcher for a check. */
+    /* L1 / R1: wrap through Shaders to Update; only opening Update asks the launcher for a check. */
+    pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_CONTRIB && !spawned[0]);
     pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_UPDATE);
     assert(!strcmp(spawned, "--update-check ") && settingsPanel.rows.count == 0);
     for (NSButton *b in settingsPanel.displayButtons) assert(b.hidden);
@@ -975,40 +987,39 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSButton *addUser = settingsPanel.userButtons[0];
     assert([addUser.title isEqualToString:@"Add User…"] && !addUser.hidden);
     pick(@"User (from the next launch)", @"Zelda");
-    /* the row is made again with Zelda marked (the remake is dispatched); a run loop pass can end before it is
-       served, so wait for it instead of counting passes */
-    for (int i = 0; i < 100 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    /* The row is made again with Zelda marked; wait for the dispatched remake. */
+    wait_for(^BOOL{ return ![menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; });
     addUser = settingsPanel.userButtons[0];
     assert(fakeUsersActive == 1 && settingsPanel.rows.count == 2 &&
            [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
     assert([menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);   /* this run keeps its user */
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the text bar opens; the panel closed */
+    wait_for(^BOOL{ return !settingsOpen; });   /* the text bar opens; the panel closed */
     assert(!settingsOpen && settingsPanel.hidden);
     runtime_front_text_test("type", "Link"); tick();
     runtime_front_text_test("enter", "");
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();   /* the panel comes back, the user kept */
+    wait_for(^BOOL{ return settingsOpen != 0; });   /* the panel comes back, the user kept */
     assert(settingsOpen && fakeUsersCount == 3 && !strcmp(fakeUsers[2].name, "Link"));
     assert(menu(@"User (from the next launch)").numberOfItems == 3 &&
            [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
     addUser = settingsPanel.userButtons[0];
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();
+    wait_for(^BOOL{ return !settingsOpen; });
     runtime_front_text_test("esc", "");   /* Escape answers the bar: nothing is added */
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    wait_for(^BOOL{ return settingsOpen != 0; });
     assert(settingsOpen && fakeUsersCount == 3);
     addUser = settingsPanel.userButtons[0];
     while (fakeUsersCount < RUNTIME_USERS_MAX) assert(runtime_users_add("Filler") >= 0);
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the console is full: the bar still asks, the user is not kept */
+    wait_for(^BOOL{ return !settingsOpen; });   /* the console is full: the bar still asks, the user is not kept */
     runtime_front_text_test("type", "Extra"); tick();
     runtime_front_text_test("enter", "");
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    wait_for(^BOOL{ return settingsOpen != 0; });
     assert(settingsOpen && fakeUsersCount == RUNTIME_USERS_MAX);
     assert([settingsPanel.versionLabel.stringValue containsString:@"At most 8 users"]);
     while (fakeUsersCount > 2) fakeUsersCount--;   /* the two the next checks name */
     pick(@"User (from the next launch)", @"Local");
-    for (int i = 0; i < 100 && ![menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    wait_for(^BOOL{ return [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; });
     assert(fakeUsersActive == 0 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]);
 
     /* Key bindings and the Update page follow the user page in the tabs, so the checks below start on the input page again. */
@@ -1060,19 +1071,20 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
     assert(settingsPanel.rows.count == 7 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
-    /* The display page's bottom right: contribute shaders and star the project, after the rows for a controller; the
-       version stays clear of them; a result shows for a moment where the version is. */
-    NSButton *contribute = settingsPanel.displayButtons[1], *starButton = settingsPanel.displayButtons[0];
-    assert([contribute.title isEqualToString:@"Contribute shaders and pipelines"] && [starButton.title isEqualToString:@"⭐ Star the project"]);
-    assert(!contribute.hidden && !starButton.hidden && NSMaxX(contribute.frame) < NSMinX(starButton.frame) && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
-    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(contribute.frame) && contribute.frame.origin.y < 34 && starButton.frame.origin.y < 34);
-    assert(settingsPanel.controllerTargets.count == 8 && settingsPanel.controllerTargets[6] == contribute && settingsPanel.controllerTargets[7] == starButton);
+    /* The display page's bottom right: star the project, after the rows for a controller. Shader contributions have
+       their own tab; the version stays clear of the footer button. */
+    assert(settingsPanel.displayButtons.count == 1);
+    NSButton *starButton = settingsPanel.displayButtons[0];
+    assert([starButton.title isEqualToString:@"⭐ Star the project"]);
+    assert(!starButton.hidden && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
+    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(starButton.frame) && starButton.frame.origin.y < 34);
+    assert(settingsPanel.controllerTargets.count == 8 && settingsPanel.controllerTargets[7] == starButton);
     assert(settingsPanel.effectsButtons[0].hidden);   /* "Reset to defaults" only on the effects page */
     NSString *versionText = settingsPanel.versionLabel.stringValue;
     [settingsPanel note:@"Thank you!"]; assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Thank you!"]);
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
-    assert(contribute.hidden && starButton.hidden);   /* the first page only */
+    assert(starButton.hidden);   /* the first page only */
     assert(settingsPanel.rows.count == 9 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
