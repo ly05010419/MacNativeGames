@@ -336,3 +336,13 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 ## 许可证
 
 MIT（见 [LICENSE](LICENSE)）。第三方代码保留各自的许可证：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## Star History / Star 历史
+
+<a href="https://www.star-history.com/?repos=ly05010419%2FMacNativeGames&type=date&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ly05010419/MacNativeGames&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ly05010419/MacNativeGames&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ly05010419/MacNativeGames&type=date&legend=bottom-right" />
+ </picture>
+</a>
