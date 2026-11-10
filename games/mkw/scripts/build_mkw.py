@@ -288,9 +288,9 @@ def step_binary(tree, logs, have_fonts):
     for p in SHADER_CHAIN:
         if not os.access(tree / p, os.X_OK):
             raise BuildError(f'{p} was not built (see {logs / "shader-tools.log"})')
-    run(['xcrun', 'clang', '-mmacosx-version-min=26.0', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', '-DGAME_MKW=1',
+    run(['xcrun', 'clang', '-mmacosx-version-min=26.0', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', '-Ibuild', '-DGAME_MKW=1',
          'app/launcher.m', '-framework', 'AppKit', '-framework', 'GameController', '-framework', 'IOKit',
-         '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree)
+         '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree)   # -Ibuild: dmsh_chain.h includes the generated build/mkw_shader_chain.h
 
 
 # ---- 5. the app ----
