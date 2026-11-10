@@ -11,7 +11,10 @@
 #define GAME_NAME "Ocarina of Time"
 #define GAME_FOLDER "OcarinaOfTime"
 #define GAME_LOG "ocarina"
-#define GAME_SHADER_CONTRIB_SUPPORTED 0 /* no OOT issue form/shared-list route is registered yet */
+/* Its shared list is games/oot/assets/shader_list.tsv; contributions go through the other games' issue form, which
+   games/totk/scripts/collect_shader_issues.py (OTHER, OWN_SCRIPT) takes by this title prefix (user 2026-11-10: "要统一") */
+#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
+#define GAME_CONTRIB_TITLE "Shader list (Ocarina of Time):"
 #define TOTK_GAME_DIR "oot"
 #define GAME_ADDR_0xe995c4 0xffffffffu
 #define GAME_ADDR_0x2aa4fa0 0xffffffffu

@@ -56,6 +56,31 @@ def oot_shader_list():
         module=importlib.util.module_from_spec(spec);sys.modules['oot_shader_list']=module;spec.loader.exec_module(module)
     return sys.modules['oot_shader_list']
 
+def contrib_folder():
+    """<clone>/shader-list-contribution (MNG_CONTRIB_FOLDER overrides), as build_app.py contrib_folder: where the launcher
+    keeps the contribution file (shader-list-contribution-oot.txt, app/launcher.m contrib_file) and the iPhone / iPad
+    reminder merges the devices' rows into it (ios/tools/shader_contrib_watch.py). Made here if missing."""
+    folder=Path(os.environ.get('MNG_CONTRIB_FOLDER') or GAME.parents[1]/'shader-list-contribution')
+    folder.mkdir(parents=True,exist_ok=True)
+    return folder
+
+def resolve_lists(tree, data, logs):
+    """The App's warm-up lists beside build/shader-map.tsv, build/pso_manifest.tsv and build/pso_title.tsv: the shared
+    list's rows of this game, each variant named as the seed serves its bind state (scripts/shader_list.py resolve), as
+    build_app.py resolve_lists makes them for every game it packages. The Mac runtime reads the lists in the shader map's
+    folder (nvn_mtl.m warm_start, pso_user_record, pso_contribute) and the launcher prunes the contribution file against them
+    (app/launcher.m, totk_shader_contrib.h totk_contrib_prune). With them only in the seed (prepare_ns2_seed.py) every
+    pipeline the game drew was written as one the list lacks (2026-11-10: 3,091 rows, 3,040 of them in the list) and the
+    title list was never read (user: "要统一")."""
+    seed=tree/'build/shader-seed/oot';shared=tree/'assets/shader_list.tsv'
+    lists=(data/'build/pso_manifest.tsv',data/'build/pso_title.tsv')
+    log=Path(logs)/'shader-list-resolve.log';log.parent.mkdir(parents=True,exist_ok=True)
+    with log.open('w') as f:
+        subprocess.run([sys.executable,'-I',GAME/'scripts/shader_list.py','resolve',seed,shared,*lists],cwd=GAME,stdout=f,stderr=subprocess.STDOUT,check=True)
+    for path in lists:
+        if not path.is_file():raise ValueError(f'the shader list resolve wrote no {path}; see {log}')
+    print(log.read_text().strip(),flush=True)
+
 def listed_shader_keys(seed, shared, compute):
     """The shaders whose Metal libraries the Mac App carries: every shader the seed's resolved warm-up lists use (a render,
     tile or mesh row names its stages inside its hex key: shader_list.row_variants), the shared list's own variants (its
@@ -247,6 +272,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     rewrites=data/'rewritten/oot';rewrites.mkdir(parents=True)
     for module in sorted((tree/'rewritten/oot').glob('*.patched.bin')):clone_file(module,rewrites/module.name)
     clone_file(tree/'build/shader-map.tsv',data/'build/shader-map.tsv')
+    resolve_lists(tree,data,work/'logs')   # beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     # VideoToolbox is the primary AV1 decoder; the same bounded dav1d fallback
     # used by the native host is bundled, independent of a Homebrew installation.
     dependencies=subprocess.check_output(['otool','-L',mac/'OcarinaOfTime'],text=True)
@@ -258,6 +284,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     clone_file(GAME/'third_party/dav1d-COPYING',res/'licenses/dav1d-COPYING')
     info=dict(CFBundleDevelopmentRegion='en',CFBundleExecutable='OcarinaOfTime',CFBundleIdentifier='org.macnativegames.oot',CFBundleName='Ocarina of Time',CFBundleDisplayName='Ocarina of Time',CFBundlePackageType='APPL',CFBundleShortVersionString='131072',CFBundleVersion='131072',LSMinimumSystemVersion='26.0',NSHighResolutionCapable=True,LSSupportsGameMode=True,GCSupportsControllerUserInteraction=True)
     if game_data_mode=='library':info['MNGGameDataFolder']=str(game_data_folder)
+    info['MNGContributionFolder']=str(contrib_folder())   # app/launcher.m contrib_file: where players find it, as build_app.py sets it
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(info));(temporary/'Contents/PkgInfo').write_bytes(b'APPL????')
     subprocess.run(['codesign','--force','--sign','-',temporary],check=True)
     subprocess.run(['codesign','--verify','--strict',temporary],check=True)
@@ -401,6 +428,10 @@ def build(args, source):
      run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',
          *([] if os.environ.get('OOT_IOS_ALL_SHADERS')=='1' else ['--listed-shaders-only']),   # user 2026-11-09: only the shaders the render pipelines use, for now
          *(['--image-outside'] if args.ios_game_data=='documents' else []),*[x for g in args.device_gpu or [] for x in ('--device-gpu',g)]],'build-ipa')
+     # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the shared list
+     # lacks (ios/tools/shader_contrib_watch.py, Ocarina of Time's own), as build_app.py installs it. Not essential.
+     try:run([py,tree/'ios/tools/shader_contrib_watch.py','install','--store',contrib_folder()],'shader-contrib-watch')
+     except Exception as e:print(f'the Mac reminder for iPhone / iPad shader contributions was not installed: {e}',flush=True)
     else:
      package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)

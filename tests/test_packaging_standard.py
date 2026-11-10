@@ -30,6 +30,9 @@ STANDARDS = {
     'repackaging keeps the .app folder': lambda t: 'install_app(' in t and re.search(r'(partial|temporary)\.rename\(out\)', t) is None,
     'a runtime change can update quickly': lambda t: 'place_runtime' in t or 'update_ocarina' in t,
     'a runtime change keeps the translations': seed_identity_ignores_runtime,
+    # the runtime's warm-up, its contribution filter and the launcher's prune read pso_title.tsv / pso_manifest.tsv beside the
+    # shader map (build/): Ocarina of Time's were only in the seed, so every pipeline it drew was contributed (2026-11-10)
+    'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t,
 }
 
 GFX = 'games/{}/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m'
@@ -49,6 +52,7 @@ PATHS = {
         'seed and library digests are reused': 'not done for this game yet',
         'repackaging keeps the .app folder': 'not done for this game yet',
         'a runtime change can update quickly': 'not done for this game yet',
+        'warm-up lists beside the shader map': 'not done for this game yet',
     }),
 }
 

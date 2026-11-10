@@ -131,9 +131,6 @@ static NSString *cloud_folder_offer(NSUserDefaults *sync) {
    With gh signed in, "Submit automatically" takes the place of "Remind me next time" and sends this file at once.
    The star button only opens the project page (the player stars it there) and asks again next time. */
 static void contrib_reminder(NSString *path) {
-#if defined(GAME_OOT)
-    if (!GAME_SHADER_CONTRIB_SUPPORTED) return;
-#endif
     NSUInteger rows = totk_contrib_due(path);
     if (!rows) return;
     totk_contrib_reminded(path, rows);   // "next time": TOTK_CONTRIB_STEP rows later; "don't remind me again": never
@@ -177,8 +174,12 @@ static NSString *contrib_file(NSString *data) {
     if (![folder isKindOfClass:NSString.class] || !folder.length || ![fm fileExistsAtPath:folder.stringByDeletingLastPathComponent]) return old;
     if (![fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]) return old;
     // one file for the Mac and every iPhone / iPad (ios/tools/shader_contrib_watch.py merges theirs in): the rows are the same
-    // for every platform; Breath of the Wild has a list of its own
-    NSString *mine = [folder stringByAppendingPathComponent:strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution-botw.txt" : @"shader-list-contribution.txt"];
+    // for every platform. Each game has a list of its own and so a file of its own in the folder: Tears of the Kingdom's
+    // without a suffix, Breath of the Wild's -botw, every other game's -<TOTK_GAME_DIR>, as the other games' issue form names
+    // it (.github/ISSUE_TEMPLATE/shader-list-other.yml). Ocarina of Time's used to be -botw's (user 2026-11-10: "要统一")
+    NSString *mine = [folder stringByAppendingPathComponent:!strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution.txt"
+                      : !strcmp(GAME_FOLDER, "BotW") ? @"shader-list-contribution-botw.txt"
+                      : [NSString stringWithFormat:@"shader-list-contribution-%s.txt", TOTK_GAME_DIR]];
     if (![fm fileExistsAtPath:mine] && [fm fileExistsAtPath:old]) {
         [fm moveItemAtPath:old toPath:mine error:nil];
         NSString *state = [old stringByAppendingString:@".reminded"];   // where the state was kept before (totk_contrib_state)

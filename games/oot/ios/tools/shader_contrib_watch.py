@@ -26,15 +26,19 @@ from pathlib import Path
 STEP = 100                     # as TOTK_CONTRIB_STEP in totk_shader_contrib.h
 CHECK_EVERY = 10 * 60          # the LaunchAgent's interval
 PULL_EVERY = 30 * 60           # one copy per device at most this often
-ISSUE_URL = 'https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml'
-APP_NAME = 'Tears of the Kingdom'
-LABEL = 'org.macnativegames.totk.ios-shader-contrib'
-DATA = Path.home() / 'Library/Application Support/MacNativeGames/TOTK'
+# Ocarina of Time's own reminder (user 2026-11-10: "要统一"): this copy came from Tears of the Kingdom's and looked for that
+# game, in its folder, under its LaunchAgent. Its list and file are its own, sent through the other games' issue form, which
+# games/totk/scripts/collect_shader_issues.py takes by GAME_TITLE (runtime/game_version.h GAME_CONTRIB_*).
+ISSUE_URL = 'https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-other.yml'
+APP_NAME = 'Ocarina of Time'
+GAME_TITLE = 'Shader list (Ocarina of Time):'   # runtime/game_version.h GAME_CONTRIB_TITLE
+LABEL = 'org.macnativegames.oot.ios-shader-contrib'
+DATA = Path.home() / 'Library/Application Support/MacNativeGames/OcarinaOfTime'   # runtime/game_version.h GAME_FOLDER
 WORK = DATA / 'ios-contributions'   # each device's copy by UDID and its reminder state (hidden: players do not need them)
 STORE = WORK                        # main: --store, normally <clone>/shader-list-contribution, holding the one file players send
-MERGED = 'shader-list-contribution.txt'   # the Mac's and every device's rows (app/launcher.m contrib_file writes the Mac's)
+MERGED = 'shader-list-contribution-oot.txt'   # the Mac's and every device's rows (app/launcher.m contrib_file writes the Mac's)
 AGENT = Path.home() / f'Library/LaunchAgents/{LABEL}.plist'
-LOG = Path.home() / 'Library/Logs/MacNativeGames/ios-shader-contrib.log'
+LOG = Path.home() / 'Library/Logs/MacNativeGames/ios-shader-contrib-oot.log'
 REPO = 'ly05010419/MacNativeGames'
 UPLOAD_NAME = 'shader-list-contribution.txt'   # the copy here is named after the device id, which is not sent
 GH_CANDIDATES = ('/opt/homebrew/bin/gh', '/usr/local/bin/gh')   # the LaunchAgent's PATH has no Homebrew
@@ -54,7 +58,8 @@ def reachable_devices(listing):
 def game_bundle(apps):
     """The game's bundle identifier on a device, from `device info apps --json-output`, or None."""
     for app in apps.get('result', {}).get('apps', []):
-        if app.get('name') in (APP_NAME, 'TOTK') or '.totk' in app.get('bundleIdentifier', ''):   # TOTK: the home screen name since 2026-10-22
+        # the home screen name (ios/tools/build_ipa.py --app-name) or org.macnativegames.oot[.<team>] (build.py --bundle-id)
+        if app.get('name') in (APP_NAME, 'OcarinaOfTime') or re.search(r'\.oot(\.|$)', app.get('bundleIdentifier', '')):
             return app['bundleIdentifier']
     return None
 
@@ -162,7 +167,7 @@ def issue_body(platform, link, game=None):
     """An issue laid out like the shader-list form, so scripts/collect_shader_issues.py reads it the same way. game: the
     device's "TOTK 1.4.3", whose version fills the form's field (an older app gives none: the field says how it came)."""
     version = game.split()[-1] if game else 'Sent automatically / 自动提交'
-    return (f'### Game version / 游戏版本\n\n{version}\n\n### Device / 设备\n\n{platform}\n\n'
+    return (f'### Game / 游戏\n\n{APP_NAME}\n\n### Game version / 游戏版本\n\n{version}\n\n### Device / 设备\n\n{platform}\n\n'
             f'### {UPLOAD_NAME}\n\n{link}\n\n### Where you played (optional) / 玩了哪些地方（可选）\n\n_No response_\n')
 
 
@@ -176,7 +181,7 @@ def submit(gh, path, rows, platform, game=None):
         link = gist_raw(made.stdout) if made.returncode == 0 else None
         if not link:
             return None
-        issue = subprocess.run([gh, 'issue', 'create', '--repo', REPO, '--title', f'Shader list: {rows} shaders from {platform}' + (f' ({game})' if game else ''),
+        issue = subprocess.run([gh, 'issue', 'create', '--repo', REPO, '--title', f'{GAME_TITLE} {rows} shaders from {platform}' + (f' ({game})' if game else ''),
                                 '--body', issue_body(platform, link, game)], capture_output=True, text=True, timeout=120)
         found = re.search(r'https://github\.com/\S+/issues/\d+', issue.stdout) if issue.returncode == 0 else None
         if found:
