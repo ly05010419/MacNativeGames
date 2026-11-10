@@ -114,6 +114,18 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(games['botw'], ({(self.KEY_B, '{}')}, [compute]))
         self.assertEqual(unknown, ({(key_c, '{}')}, [mixed, foreign]))
 
+    def test_a_row_two_games_hold_is_theirs_not_unknown(self):
+        # Tears of the Kingdom and Breath of the Wild share shaders (2026-11-10: 1,880 BotW pipelines whose every shader both
+        # lists hold had counted as unknown, and a plain title then gave them to Ocarina of Time)
+        both_key, botw_key = 'b' * 64, 'd' * 64
+        keys = {'totk': {both_key}, 'botw': {both_key, botw_key}}
+        both, botw_pipe = self.pipeline(both_key, both_key), self.pipeline(both_key, botw_key)
+        held = (set(), [])
+        games, unknown = route({(both_key, '{}')}, [both, botw_pipe], keys, held)
+        self.assertEqual(games, {'botw': (set(), [botw_pipe])})   # only Breath of the Wild holds both its shaders
+        self.assertEqual(held, ({(both_key, '{}')}, [both]))
+        self.assertEqual(unknown, (set(), []))
+
     def test_shader_keys_come_from_a_seed_or_a_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             seed = Path(tmp) / 'botw160'; seed.mkdir()
@@ -257,6 +269,19 @@ class OtherGamesTests(unittest.TestCase):
         self.assertIsNone(per_game)
         self.assertIn('neither game has', line)
 
+    def test_rows_two_seeded_games_hold_never_go_to_the_other_game(self):
+        # a plainly titled file whose known rows are one other game's gives it the rows no game has, not the rows Tears of
+        # the Kingdom and Breath of the Wild both hold (2026-11-10, #2000 #2005 #2007: those went to Ocarina of Time)
+        both_key = 'b' * 64
+        keys = {g: set() for g in collect_shader_issues.GAMES}
+        keys['totk'] = {both_key}; keys['botw'] = {both_key}; keys['wonder'] = {self.KEY_W}
+        body = f'```\nV\t{self.KEY_W}\t{{}}\nV\t{both_key}\t{{}}\nV\t{"f" * 64}\t{{}}\n```'
+        lists, line, per_game = self.merge(self.issue('Shader list:', body), keys)
+        self.assertEqual(lists['wonder'].variants, {(self.KEY_W, '{}'), ('f' * 64, '{}')})
+        self.assertEqual(lists['totk'].variants | lists['botw'].variants, set())
+        self.assertEqual(per_game, {'wonder': (2, 2)})
+        self.assertIn('1 rows two games share', line)
+
     def test_a_pipeline_naming_a_bind_state_the_file_does_not_give_is_not_merged(self):
         keys = {g: set() for g in collect_shader_issues.GAMES}; keys['totk'] = {self.KEY_A}
         deps = '{"tex":{"0":"cube"}}'
@@ -309,6 +334,23 @@ class OcarinaOfTimeTests(unittest.TestCase):
         titled = collect_shader_issues.titled_game
         self.assertEqual(titled(self.issue('Shader list: 2557 shaders from Mac (OcarinaOfTime 1.0.0)')), 'oot')
         self.assertEqual(titled(self.issue('Shader list: 151 shaders from Mac (OcarinaOfTime 2.0.0)')), 'oot')
+
+    def test_its_rows_in_a_plain_titled_file_go_through_its_own_merge(self):
+        # until ca3c4ad6 it wrote the contribution file TotK and BotW share, so one file holds rows of each (2026-11-10, #2000):
+        # the rows routed to it are merged as an issue titled for it is, keeping each warm row's bind state (A row)
+        oot_key, botw_key = 'a' * 64, 'd' * 64
+        keys = {g: set() for g in collect_shader_issues.GAMES}; keys['oot'] = {oot_key}; keys['botw'] = {botw_key}
+        lists = {g: ShaderList() for g in collect_shader_issues.GAMES}
+        seen = []
+        def own(label, texts, problems, game, shared):
+            seen.append((game, texts))
+            return '; oot 1 rows (1 new)', {'oot': (1, 1)}
+        body = f'```\nV\t{oot_key}\t{{}}\nV\t{botw_key}\t{{}}\n```'
+        with mock.patch.object(collect_shader_issues, 'merge_own_texts', own):
+            line, per_game = collect_shader_issues.merge_issue(self.issue('Shader list:', body), lists, keys, {}, '', False)
+        self.assertEqual(seen, [('oot', [f'V\t{oot_key}\t{{}}\n'])])
+        self.assertEqual(lists['botw'].variants, {(botw_key, '{}')})
+        self.assertEqual(per_game, {'oot': (1, 1), 'botw': (1, 1)})
 
     @unittest.skipUnless(LIST.is_file(), 'needs the Ocarina of Time list')
     def test_merged_by_its_own_script_keeping_mesh_rows(self):
