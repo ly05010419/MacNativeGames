@@ -6,6 +6,9 @@ Code in this repository that comes from other projects keeps its license; the li
 |---|---|---|---|
 | `games/totk/third_party/d2r` (NSO rewriter, verification tools) | [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile), adapted | MIT | `games/totk/third_party/d2r/LICENSE` |
 | `games/totk/third_party/d2r_gfx` (NVN on Metal, texture tools, host headers) | d2r-mobile, extended for this game | MIT | `games/totk/third_party/d2r_gfx/LICENSE` |
+| `games/oot/third_party/nup` (NUP reader) | [a55uka/nup](https://github.com/a55uka/nup) at `d40d9cf` | MIT | `games/oot/third_party/nup/LICENSE` |
+| `games/oot` AV1 movie decoder, mesh / task stages, HMMA lowering, typed pool arrays (adapted; each marked in its source) | [seedds/nxnative](https://github.com/seedds/nxnative), [ChiefSZ13/nxnative](https://github.com/ChiefSZ13/nxnative) at `ee9b776` | MIT | listed in `games/oot/third_party/COPIES.md` |
+| dav1d 1.5.3 (Homebrew build), bundled in the Ocarina of Time Mac app | AV1 fallback decoder | BSD-2-Clause | `games/oot/third_party/dav1d-COPYING` |
 | `games/totk/third_party/smaa` lookup tables and `totk_smaa_shader.h` (Metal adaptation of SMAA 1x presets) | [iryoku/smaa](https://github.com/iryoku/smaa) at `71c806a838bdd7d517df19192a20f0c61b3ca29d`; adapter origin recorded in `games/totk/third_party/smaa/README.md` | MIT | `games/totk/third_party/smaa/LICENSE.txt` |
 | `totk_fxaa_shader.h` (Metal adaptation of FXAA 3.11 Quality preset 39) | NVIDIA, Timothy Lottes; reference in [GameTechDev/CMAA2](https://github.com/GameTechDev/CMAA2) at `071c6b0857559f4e36f614362e6d2aab1b61938a`, `Projects/CMAA2/FXAA/Fxaa3_11.h` | NVIDIA BSD-3-Clause-style terms | `games/totk/third_party/fxaa/LICENSE.txt`; copied into Mac apps as `Contents/Resources/totk/licenses/fxaa.txt` |
 | texture layout sizes in `games/totk/third_party/d2r_gfx/gfx/nvn/nvn_tex.c` | deko3d | zlib | `games/totk/third_party/d2r_gfx/LICENSE.deko3d` |
