@@ -149,7 +149,8 @@ static Vol *vol_of_path(const char *path, const char **rel) {
     if (!path) return NULL;
     for (int i = 0; i < AOC_MAX; i++) { Vol *v = &vols[i]; if (!v->loaded || !*v->mount) continue;
         size_t n = strlen(v->mount); if (strncmp(path, v->mount, n) || path[n] != ':') continue;
-        if (rel) *rel = romfs_path_relative(v->mount, path); return v; }
+        static _Thread_local char norm[4096];
+        if (rel) *rel = romfs_path_relative_collapsed(v->mount, path, norm, sizeof norm); return v; }
     return NULL;
 }
 int runtime_aoc_owns(const char *path) { return vol_of_path(path, NULL) != NULL; }
