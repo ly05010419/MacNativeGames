@@ -117,13 +117,13 @@ rates depend on the scene and screen.
 their animation and camera ran too fast while dialogue and audio stayed at normal
 speed, even with Dynamic step enabled. The
 [FPSLocker configuration for this exact 1.3.0 build](https://github.com/masagrator/FPSLocker-Warehouse/blob/v4/SaltySD/plugins/FPSLocker/patches/01002B00111A2000/C3CF52BF2B05D731.yaml)
-also identifies cutscenes whose speed is fixed to 30 fps. The host now watches the
-battle interface's state (`runtime/host/hle_aoc_scene.c`) and goes back to the
-game's own 30 fps timing while it is closed; the chosen target returns when it
-reopens. Loading screens may read the same, and 30 fps does no harm there. Played
-on 1.4.1: cutscenes at normal speed and gameplay back at 60. On 1.3.0 a scripted
-session showed the same hold and return; it has not been played by hand. A build
-not listed keeps its target through cutscenes. 60 fps stays experimental.
+also identifies cutscenes whose speed is fixed to 30 fps. The host reads a count
+the game keeps itself (`runtime/host/hle_aoc_scene.c`): the holds on a shared
+resource, 1 from start-up and 2 while an in-engine cutscene plays. While it is 2
+the game goes back to its own 30 fps timing, and the chosen target returns when
+the cutscene ends. The title screen, the map, menus, loading screens and battle
+keep the chosen target. 1.4.1 only; 1.3.0 keeps its target through cutscenes.
+60 fps stays experimental.
 
 **120 fps is disabled.** Gameplay testing in the first mission, including the
 Impa tower cutscene, exposed accelerated game time at that target. The engine
@@ -200,7 +200,7 @@ executable-memory allocation, or game binaries, and skip on other architectures.
 - **macOS / Apple M5, game 1.3.0 (v327680):** signed app built; first-mission
   gameplay played with audio, keyboard and DualSense. Smooth 60 fps gameplay
   was observed, but the Impa tower cutscene ran too fast at 60 fps; the cutscene
-  fix described above has not been played by hand on this version. Later missions, full rendering acceptance and save/reload acceptance
+  fix described above covers 1.4.1 only. Later missions, full rendering acceptance and save/reload acceptance
   remain incomplete. The compliance changes are checked with native probes,
   settings tests and a host rebuild; they do not constitute another playthrough.
 - **macOS / Apple M5, game 1.4.1 (v458752):** signed app built with 40,729

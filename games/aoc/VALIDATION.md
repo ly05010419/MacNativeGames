@@ -352,9 +352,31 @@ scripted sessions on the final host each left a cutscene and held 59.9 fps in th
 
 A signed 1.4.1 app built from this change repeated it by script: held from the title,
 the present interval back from 2 to 1 when the cutscene ended, and a median frame of
-16.8 to 16.9 ms after it. 1.3.0, with the offset found by disassembly, did the same in
-one scripted session on the same host, with a median frame of 16.6 to 16.7 ms after
-it. That session used a copy of a 1.4.1 save, and 1.3.0 has not been played by hand.
+16.8 to 16.9 ms after it. That watcher read the battle interface's state, so it also
+held the title screen, the map, menus and loading screens at 30 fps. It is replaced
+by the count below.
+
+## Cutscene state from the game's own count — 2026-11-10
+
+Game 1.4.1. The watcher now reads a count the game keeps at main+0x2783ad0: the holds
+on a shared resource, taken through main+0x8db820 and given back at main+0x8ae58c and
+main+0xb09b80, which clear the held pointer at main+0x2783ac8 when it reaches 0.
+
+- **Memory captures, one scripted route:** 55 captures every 5 s, each classified by
+  the screenshot taken at the same moment: title 7, map and mission menus 9, loading 1,
+  a narration screen 4, the mission's information screen 4, the opening in-engine
+  cutscene 18, battle 12. The count read 2 in all 18 cutscene captures and 1 in all 37
+  others. It fell back to 1 on the black frame that ends the cutscene.
+- **Memory captures from a mission played by hand (2026-11-06):** 2 in all 5 cutscene
+  captures, 1 in all 7 in play.
+- **Signed app from this change, the same route by script:** held once, for 89.9 s,
+  the opening cutscene; median frame 33 ms during it. Title, map, menus, loading and
+  battle stayed at 16.8 ms. One 20 s stretch at 34 ms came from the window losing focus
+  (the display link stalled and dropped frames), not from the watcher.
+
+The 1.3.0 offset is removed: it was never played by hand. 1.3.0 keeps its target through
+cutscenes. Not yet checked with this watcher: a whole mission played by hand,
+mid-mission cutscenes, and the DLC missions.
 
 ## Newly run source and native tests
 
