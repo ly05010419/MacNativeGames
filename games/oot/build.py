@@ -362,6 +362,11 @@ def build(args, source):
     if out.suffix!='.app' and not (device and out.suffix=='.ipa'):raise ValueError('output must end in .app'+(' or .ipa' if device else ''))
     if out==repo or repo in out.parents:raise ValueError('App must remain outside the source checkout')
     if args.vr or args.native_4k or args.native_5k:raise ValueError('this title currently uses its original rendering options')
+    configured_llvm=os.environ.get('LLVM_BIN')
+    llvm_candidates=[configured_llvm] if configured_llvm else ['/opt/homebrew/opt/llvm@23/bin','/opt/homebrew/opt/llvm/bin']
+    llvm=next((folder for folder in llvm_candidates if all(os.access(Path(folder)/tool,os.X_OK)
+               for tool in ('llvm-objcopy','llvm-objdump'))),None)
+    if llvm is None:raise ValueError('OoT needs llvm-objcopy and llvm-objdump for rewrite verification; install llvm or set LLVM_BIN')
     # Close this title normally before changing its resource workspace or App.
     # The input command follows the same save-safe window close as normal play.
     executable=out/'Contents/MacOS/OcarinaOfTime'
@@ -377,7 +382,7 @@ def build(args, source):
             time.sleep(1)
     work.mkdir(parents=True,exist_ok=True);tree=work/'oot';logs=work/'logs';logs.mkdir(exist_ok=True)
     shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
-    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
+    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0',LLVM_BIN=llvm)
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
