@@ -85,6 +85,8 @@ int vr_set_resolution(int w, int h) { (void)w; (void)h; return 0; }
 void vr_note_camera(const float *cam) { (void)cam; }
 void vr_source_projection(const float fov[4],const float rotation[9]){(void)fov;(void)rotation;}
 void vr_packet_trace(int packets){(void)packets;}
+void vr_head_only_set(int on){(void)on;}
+void vr_source_stereo_view(const float view[12]){(void)view;}
 int vr_frame_pos(float p[3]) { (void)p; return 0; }
 int vr_frame_ring(void) { return -1; }
 void vr_frame_match_desc(char *out, size_t n) { if (n) out[0] = 0; }
@@ -125,6 +127,10 @@ static struct {
     id<MTLTexture> hud[2]; int hud_i, hud_w, hud_h; uint64_t hud_at, hud_frames, hud_copies;   // VR thread
     // stage 2 (head look): the head pose of each rotation handed to the game, by its seq; each picture's seq
     vr_pose hl_pose[64]; uint32_t src_used[SRC_SLOTS]; float hl_ref[4]; int hl_have_ref;
+    /* The head rotation h sent to the camera hook, by its seq: a picture rendered with seq k is reprojected for the head's
+       turn since k only, not for what the game's own camera did meanwhile (hl_h, head_only below). */
+    float hl_h[64][12]; uint32_t hl_hseq[64]; _Atomic uint32_t stereo_seq; _Atomic int head_only_off, packet_delta;
+    _Atomic uint64_t native_head_only, native_latest_base;
     float hl_sent[4]; int hl_have_sent; _Atomic uint64_t hl_held;   // the dead band: the rotation the game has, frames it kept
     float fov_tanh, fov_aspect; int fov_on, hud_inside;   // the game's field of view set to the headset's (runtime_aspect_vr)
     _Atomic uint32_t frame_seq; _Atomic uint64_t seq_matched, seq_matched_rot, seq_missed;   // the replayed frame's head-rotation seq
@@ -138,6 +144,7 @@ static struct {
     _Atomic int frame_native, ticket_native[64];
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 void vr_packet_trace(int packets){atomic_store(&g.packet_trace,packets>0?packets:0);}
+void vr_head_only_set(int on){atomic_store(&g.head_only_off,!on);VLOG("reprojection for the head's turn only: %s",on?"on":"off (the game camera's newest base, as before)");}
 
 int vr_enabled(void) {
     static _Atomic int on = -1;
@@ -715,6 +722,7 @@ static void headlook_update(const vr_pose *head, int recenter) {
     uint32_t seq = s->seq + 1;
     g.hl_pose[seq % 64] = *head;
     float h[12] = { col[0][0], col[0][1], col[0][2], 0, col[1][0], col[1][1], col[1][2], 0, col[2][0], col[2][1], col[2][2], 0 };   // rows of R^T
+    memcpy(g.hl_h[seq % 64], h, sizeof h); g.hl_hseq[seq % 64] = seq;
     memcpy(s->h, h, sizeof h);
     __atomic_store_n(&s->seq, seq, __ATOMIC_RELEASE);
     __atomic_store_n(&s->on, 1, __ATOMIC_RELEASE);
@@ -916,6 +924,17 @@ static void vr_residency_replace(id<MTLAllocation> old,id<MTLAllocation> replace
 
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect);
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2, NULL, NULL, 0); }
+/* The stereo pair's camera matrix (its frame's camera block): the head seq it was rendered with, from the hook's ring
+   (the exact matrix, else the same rotation), for the next vr_source_encode_stereo. */
+void vr_source_stereo_view(const float view[12]){
+    const vr_cam_state *s=g_vr_headlook;uint32_t seq=0;
+    if(s&&view){
+        for(int i=0;i<16&&!seq;i++)if(!memcmp(s->ring[i].m,view,48))seq=__atomic_load_n(&s->ring[i].seq,__ATOMIC_RELAXED);
+        for(int i=0;i<16&&!seq;i++){int same=1;for(int r=0;r<3&&same;r++)if(memcmp(s->ring[i].m+4*r,view+4*r,12))same=0;
+            if(same)seq=__atomic_load_n(&s->ring[i].seq,__ATOMIC_RELAXED);}
+    }
+    atomic_store(&g.stereo_seq,seq);
+}
 int vr_source_encode_stereo(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const float fov[2][4], const float rotation[2][9]) { return source_encode(cb, src, NULL, 0, -3, fov, rotation, 0); }
 int vr_source_encode_stereo_menu(id<MTL4CommandBuffer> cb, id<MTLTexture> src, float aspect) { return source_encode(cb, src, NULL, 0, -4, NULL, NULL, aspect); }
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect) {   // eye -2: from the ticket
@@ -966,7 +985,7 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
 #endif
         g.src_menu_aspect[s]=kind==VR_NATIVE_MENU&&isfinite(menu_aspect)&&menu_aspect>0?menu_aspect:0; g.writing[s] = 1; g.seq[s] = 0; g.src_stereo[s] = kind; g.src_oriented[s] = kind == VR_NATIVE_WORLD && rotation;
                   if (g.src_oriented[s]) memcpy(g.src_rotation[s], rotation, sizeof g.src_rotation[s]);
-                  if (stereo) { g.src_used[s] = 0; g.src_eye[s] = -1;
+                  if (stereo) { g.src_used[s] = atomic_exchange(&g.stereo_seq, 0); g.src_eye[s] = -1;   // the pair's head seq (vr_source_stereo_view), 0 unknown
                       if (kind == VR_NATIVE_WORLD) memcpy(g.src_fov[s], fov, sizeof g.src_fov[s]);
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
@@ -1371,7 +1390,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     }
     {static uint64_t traced;uint64_t order=s>=0?g.src_order[s]:0;
         if(order!=traced&&atomic_load(&g.packet_trace)>0){
-            traced=order;atomic_fetch_sub(&g.packet_trace,1);
+            traced=order;atomic_fetch_sub(&g.packet_trace,1);atomic_store(&g.packet_delta,1);
             VLOG("[packet] order=%llu mode=%s slot=%d both=%d",
                 (unsigned long long)order,world?"world":"flat",s,s>=0?g.src_both[s]:0);
             /* diagnostic (vr_packet_log): what each eye's picture carries, and the head it will be placed for */
@@ -1388,10 +1407,29 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
        Their product is the target game view in the source view's coordinates. */
     if(world&&oriented){
         float base[12],target[12];vr_cam_state control;vr_camera_control_read(&control);
-        if(control.on&&runtime_vr_base_view(base)){
+        /* The picture was rendered with V = H_k * base_k (H_k the head rotation of its seq k). Its target is the newest
+           head on that same base, H_now * base_k: only the head's turn since k is reprojected. With the game camera's
+           newest base instead, a camera orbiting the player (the stick) was extrapolated by a pure rotation as well,
+           which moved the player, who stays in the middle of every rendered picture, sideways until the next picture
+           came (user on the Quest, stereo at 30 fps: "旋转镜头 围绕link ，link总是左右闪烁"). */
+        const uint32_t k=useds[0];int head_only=0;
+        if(!atomic_load(&g.head_only_off)&&control.on&&k&&g.hl_hseq[k%64]==k){
+            const float *hs=g.hl_h[k%64];
+            for(int i=0;i<3;i++){for(int j=0;j<3;j++)base[4*i+j]=hs[i]*source_rotation[0][j]+hs[4+i]*source_rotation[0][3+j]+hs[8+i]*source_rotation[0][6+j];base[4*i+3]=0;}
+            head_only=1;
+        }
+        atomic_fetch_add(head_only?&g.native_head_only:&g.native_latest_base,1);
+        if(control.on&&(head_only||runtime_vr_base_view(base))){
             vr_view_turn(base,control.h,target);
             reproject=vr_view_reprojection(source_rotation[0],target,delta[0])&&vr_view_reprojection(source_rotation[1],target,delta[1]);
             if(!reproject)atomic_fetch_add(&g.native_bad_rotation,1);
+            /* diagnostic: a picture turned far out of the eye's view shows as a dark frame (user: "偶尔还会黑屏一下") */
+            if(reproject){float tr0=delta[0][0]+delta[0][4]+delta[0][8];float turn=acosf(fmaxf(-1,fminf(1,(tr0-1)*.5f)))*57.29578f;
+                if(turn>25){static uint64_t far;static int said;far++;if(said<40){said++;
+                    VLOG("[vr] reprojection turned a picture by %.1f degrees (%s, picture seq %u, head seq now %u); %llu such headset frames so far",(double)turn,head_only?"head only":"the game camera's newest base",k,control.seq,(unsigned long long)far);}}}
+            if(reproject&&atomic_exchange(&g.packet_delta,0)){float tr=delta[0][0]+delta[0][4]+delta[0][8];
+                VLOG("[packet]  reprojection: %s, picture seq %u, head seq now %u, turn %.3f degrees",head_only?"head only":"the game camera's newest base",k,control.seq,
+                    (double)(acosf(fmaxf(-1,fminf(1,(tr-1)*.5f)))*57.29578f));}
         }else atomic_fetch_add(&g.native_no_owner,1);
     }else if(world)atomic_fetch_add(&g.native_no_rotation,1);
     if(world)atomic_fetch_add(reproject?&g.native_reprojected:&g.native_uncompensated,1);

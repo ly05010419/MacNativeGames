@@ -2904,6 +2904,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "vr_quest_fov")) { atomic_store(&g_vr_quest_fov_on,v!=0); MLOG("[flag] Quest native projection %s",v?"on":"off"); return; }
     if (!strcmp(name, "vr_ui_layout")) { atomic_store(&g_vr_ui_layout_on,v!=0); MLOG("[flag] native UI camera viewport fitting %s",v?"on":"off"); return; }
     if (!strcmp(name,"vr_packet_log")){vr_packet_trace(v);return;}
+    if (!strcmp(name,"vr_head_only")){extern void vr_head_only_set(int on);vr_head_only_set(v!=0);return;}
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
     if (!strcmp(name, "vr_pitch")) { vr_set_pitch_lock(v); return; }   // 1: up / down only from the headset
@@ -14686,6 +14687,7 @@ void mtl_eye_capture(int eye) {
     float rotation[2][9];
     for (int k = 0; k < 2; k++) for (int i = 0; i < 3; i++) memcpy(rotation[k] + 3 * i, g_eye_view + 4 * i, 3 * sizeof(float));
     vr_source_native_frame();
+    { extern void vr_source_stereo_view(const float view[12]); vr_source_stereo_view(g_eye_view); }   // the head seq this frame was rendered with
     int slot = vr_source_encode_stereo(g_cb, d, g_eye_fov, rotation);
     { static int said; if (said < 12) { said++; MLOG("[vr] stereo replay capture: the pair's source slot %d", slot); } }
     if (slot >= 0) {
