@@ -80,8 +80,9 @@ Community ports keep their own runtime, graphics layer and scripts in their fold
 
 - **Tears of the Kingdom 1.4.3:** the game renders one picture per frame, wide enough for both eyes, and each eye looks
   it up along its own rays; turning the head reprojects it to the newest pose. The picture is what the game draws
-  without VR (grass, lighting, shadows). On an M4 the Quest showed about 55 to 59 fps (measured 2026-11-10); the VR page
-  sets the render size per eye. Both eyes see the same picture, so there is
+  without VR (grass, lighting, shadows). The stream to the headset is HEVC at the render size per eye chosen in the VR page
+  (at most 2048×2208); on an M4 at 1536×1656 a Quest 3 showed about 70 fps and about 70 ms from input to display
+  (measured 2026-11-10; 2048×2208 H.264, the setting before, gave 53 fps and 132 ms). Both eyes see the same picture, so there is
   **no stereo depth by default**.
 - **Stereo depth for Tears of the Kingdom (experimental, off by default):** the game still runs each frame once; the
   graphics layer replays the frame once per eye with the eye moved sideways by half the eye distance, so both eyes are
@@ -264,8 +265,9 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 > Quest 3 手柄和体感手势已经做进去，还没在头显里实测。
 
 - **王国之泪 1.4.3**：游戏每帧只渲染一幅画面，视野宽到同时盖住两只眼，每只眼按自己的视线从这幅画面里取图；转头时按最新
-  姿态重投影。画面和不开 VR 时一样（草、光照、阴影）。M4 上 Quest 显示约 55–59 帧（2026-11-10 实测）；每眼的渲染
-  分辨率在 VR 页里选。两只眼看到的是同一幅画面，所以**默认没有立体深度**。
+  姿态重投影。画面和不开 VR 时一样（草、光照、阴影）。串流到头显用 HEVC，尺寸跟随 VR 页里选的每眼渲染分辨率
+  （最大 2048×2208）；M4 上 1536×1656 时 Quest 3 显示约 70 帧，从输入到显示约 70 毫秒（2026-11-10 实测；之前固定的
+  2048×2208 H.264 是 53 帧、132 毫秒）。两只眼看到的是同一幅画面，所以**默认没有立体深度**。
 - **王国之泪的立体深度（实验性，默认关）**：游戏仍然每帧只运行一遍；图形层把这一帧按每只眼各回放一次，眼睛向两侧各移半个
   瞳距，所以两只眼都是同一时刻的真实渲染。代价是帧率约减半（M4、2048×2208 下约 30 帧，单画面约 53 帧），VR 页里还没有开关。
   王国之泪自己没有双眼渲染器；早先“把游戏的渲染任务跑两遍”的做法会弄坏画面（草消失、光照错误），已经删除。

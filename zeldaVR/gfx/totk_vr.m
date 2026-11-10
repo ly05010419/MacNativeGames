@@ -1542,9 +1542,29 @@ void vr_resolution(int *w, int *h) {
 #endif
     pthread_mutex_unlock(&g_st_mu);
 }
+/* The stream's size per eye, fixed while the streamer runs. TOTK_VR_STREAM=<w>x<h> (640..4096, even) decides first.
+   Tears of the Kingdom 1.4.3: the render size per eye chosen in the VR page when the streamer starts, at most
+   VR_STREAM_EYE_WIDTH x HEIGHT: a stream larger than the picture only costs time. The Quest's decode time and the Mac's
+   encode time follow the stream's pixels; measured on a Quest 3 over the cable, 2026-11-10 (q-matrix.txt), input to
+   display: 2048x2208 H.264 131.6 ms at 52.7 fps (decode 38.8, waiting for the display 43.3), 2048x2208 HEVC 116.5 ms,
+   1792x1932 HEVC 90.8 ms at 64.5 fps, 1536x1656 H.264 81.9 ms, 1536x1656 HEVC 70.5 ms at 70.9 fps (decode 19.8, display
+   19.3), 1344x1408 HEVC 67.1 ms. Breath of the Wild keeps VR_STREAM_EYE_WIDTH x HEIGHT. */
+static void stream_eye_size(int *w,int *h){
+    static int sw,sh;
+    if(!sw){int a=0,b=0;const char *e=getenv("TOTK_VR_STREAM");
+        if(e&&sscanf(e,"%dx%d",&a,&b)==2&&a>=640&&a<=4096&&b>=640&&b<=4416&&!(a&1)&&!(b&1)){sw=a;sh=b;}
+#ifdef TOTK_GAME_V143
+        else if(g_res_loaded&&g_res_w>=640&&g_res_h>=640){sw=g_res_w<VR_STREAM_EYE_WIDTH?g_res_w:VR_STREAM_EYE_WIDTH;sh=g_res_h<VR_STREAM_EYE_HEIGHT?g_res_h:VR_STREAM_EYE_HEIGHT;sw&=~1;sh&=~1;}
+        else{*w=VR_STREAM_EYE_WIDTH;*h=VR_STREAM_EYE_HEIGHT;return;}   /* the render size is not loaded yet: not fixed yet */
+#else
+        else{sw=VR_STREAM_EYE_WIDTH;sh=VR_STREAM_EYE_HEIGHT;}
+#endif
+    }
+    *w=sw;*h=sh;
+}
 void vr_stream_resolution(int *w,int *h) {
 #if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
-    if(vr_streamer_managed()){*w=VR_STREAM_EYE_WIDTH;*h=VR_STREAM_EYE_HEIGHT;return;}
+    if(vr_streamer_managed()){stream_eye_size(w,h);return;}
     vr_link_view_size(w,h);
 #else
     vr_resolution(w,h);
@@ -1563,7 +1583,10 @@ static void streamer_start_locked(void) {
     const char *bin = getenv("TOTK_VR_STREAMER"), *ctl = getenv("TOTK_VR_CONTROL"), *mb = getenv("TOTK_VR_MBPS");
     char res[32], mbps[16], log[1100]; res_load();
 #if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
-    snprintf(res, sizeof res, "%dx%d", VR_STREAM_EYE_WIDTH, VR_STREAM_EYE_HEIGHT);
+    {int sw,sh;stream_eye_size(&sw,&sh);snprintf(res, sizeof res, "%dx%d", sw, sh);}
+#ifdef TOTK_GAME_V143
+    setenv("BASALT_CODEC","hevc",0);   /* the Quest decodes HEVC in about 20 ms, H.264 in 31 to 39 (q-matrix.txt); BASALT_CODEC=h264 keeps H.264 */
+#endif
 #else
     snprintf(res, sizeof res, "%dx%d", g_res_w, g_res_h);
 #endif
@@ -1582,7 +1605,10 @@ static void streamer_start_locked(void) {
         "while kill -0 \"$G\" 2>/dev/null && kill -0 $C 2>/dev/null; do sleep 1; done; "
         "kill -TERM $C 2>/dev/null; wait $C";
     char game[16]; snprintf(game, sizeof game, "%d", (int)getpid());
-    char *argv[] = { "/bin/sh", "-c", (char *)watch, "vr-streamer", (char *)bin, game, "--wired", "--runtime", (char *)ctl, "--resolution", res, "--mbps", mbps, NULL };
+    /* The Quest's decoder buffering (the streamer's --latency): low (1.3 frames, the default), ultra (1.0, less history)
+       or balanced (1.5); TOTK_VR_LATENCY chooses. */
+    const char *lat = getenv("TOTK_VR_LATENCY"); if (!lat || (strcmp(lat, "ultra") && strcmp(lat, "balanced"))) lat = "low";
+    char *argv[] = { "/bin/sh", "-c", (char *)watch, "vr-streamer", (char *)bin, game, "--wired", "--runtime", (char *)ctl, "--resolution", res, "--mbps", mbps, "--latency", (char *)lat, NULL };
     int r = posix_spawn(&g_streamer, "/bin/sh", &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     if (r) { g_streamer = 0; VLOG("【红】could not start the streamer %s: %s", bin, strerror(r)); return; }
