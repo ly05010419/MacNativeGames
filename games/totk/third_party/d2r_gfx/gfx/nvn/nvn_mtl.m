@@ -254,7 +254,11 @@ static uint64_t g_fence;                        // 已提交的最大栅栏值�
    with the frame, stay with the second replay; counter reports and resets run in both (commands of the same replay read
    what they write). */
 int g_eye_pass; static uint64_t g_eye_skip_fence; static _Atomic int g_stereo_replay;
-int mtl_stereo_replay(void) { return atomic_load(&g_stereo_replay) != 0; }
+/* TOTK_VR_STEREO=1 at start turns the stereo replay with the eye's projection on (as "flag stereo_replay 2" does later). */
+static void stereo_replay_init(void) {   // applied once the VR camera runs (the first submissions come before the headset is there)
+    static int want = -1, applied; if (want < 0) { const char *e = getenv("TOTK_VR_STEREO"); want = e && *e == '1' && !e[1]; }
+    if (want && !applied && vr_wants_camera()) { applied = 1; atomic_store(&g_stereo_replay, 2); MLOG("[vr] stereo replay on from the start (TOTK_VR_STEREO=1)"); } }
+int mtl_stereo_replay(void) { stereo_replay_init(); return atomic_load(&g_stereo_replay) != 0; }
 int mtl_stereo_project(void) { return atomic_load(&g_stereo_replay) == 2; }   // "flag stereo_replay 2": also the eye's projection (1: the same picture twice, a check of the replay alone)
 /* Each eye replay's picture: the last pass it drew into a texture the game presents (their serials are noted at every
    present, with the picture's rectangle), copied at the replay's end into one side of a side-by-side texture; after the
@@ -264,7 +268,7 @@ static uint64_t g_eye_presented[4]; static int g_eye_npresented, g_eye_crop[4], 
 static id<MTLTexture> g_eye_swap, g_eye_sbs; static float g_eye_view[12], g_eye_fov[2][4];
 static _Atomic uint64_t g_eye_pairs, g_eye_nopic;
 static void eye_note_pass(MTL4RenderPassDescriptor *pd);
-void mtl_eye_pass(int e) { g_eye_skip_fence = e == 2 ? g_fence : 0; g_eye_pass = e; if (e) { g_eye_swap = nil; g_eye_have[e - 1] = 0; } }   // 2: the first replay was committed just before (mtl_sub_commit: ++g_fence)
+void mtl_eye_pass(int e) { g_eye_skip_fence = e == 2 ? g_fence : 0; g_eye_pass = e; if (e) g_eye_swap = nil; }   // 2: the first replay was committed just before (mtl_sub_commit: ++g_fence)
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;                         // 已完成的最大栅栏值（完成回调写） | Highest completed fence value (written by the completion callback)
@@ -1653,6 +1657,7 @@ void *mtl_sub_capture_ubos(const uint64_t *h, int n) {
     return c;
 }
 static void ucap_free(usnap_cap *c) { if (c) { free(c->r); free(c->off); ucap_bytes_put(c->bytes, c->cap); free(c); } }
+void mtl_ucap_free(void *c) { ucap_free(c); }   // hle_nvn.c: a copy made for an eye replay that does not happen
 /* Stereo replay (hle_nvn.c submit_exec): a replay consumes its capture (usnap_finish frees it), so the first replay
    takes a copy of the submission's capture and the second the capture itself. */
 void *mtl_ucap_dup(const void *basev) {
@@ -1694,6 +1699,7 @@ static _Atomic uint64_t g_eye_fix[6];   // submissions patched, matrices replace
 int mtl_ucap_eye(void *capv, int eye) {
     extern uint64_t runtime_vr_camera_block(void);
     usnap_cap *c = capv; vr_views hv; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (eye == 0 || eye == 1) g_eye_have[eye] = 0;   // set again below once this replay has the eye's projection
     /* one address for both eyes of a submission: the game flips the scene's camera blocks at its next frame's start, and
        with the replay behind the game thread the second eye would look for the next frame's block (st-06: every right
        eye without a camera block) */

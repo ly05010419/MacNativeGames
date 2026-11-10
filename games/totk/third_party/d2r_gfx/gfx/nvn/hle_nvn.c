@@ -2655,20 +2655,24 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
     /* Stereo by replay (nvn_mtl.m g_eye_pass, vr开发.md section 23): the same recordings and the same uniform bytes once
        per eye, the left eye first. */
     extern int mtl_stereo_replay(void); extern void mtl_eye_pass(int e); extern void *mtl_ucap_dup(const void *base); extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
-    const int stereo = mtl_stereo_replay();
+    extern int mtl_ucap_eye(void *cap, int eye); extern int mtl_stereo_project(void); extern void mtl_ucap_free(void *c); extern void mtl_eye_capture(int eye);
+    int stereo = mtl_stereo_replay(); const int project = stereo && mtl_stereo_project();
     /* each replay consumes a capture: with two replays the submission's own (taken now when the replay runs inside the
        submit call) goes to the second and a copy of it to the first */
-    void *base = stereo ? (ucap ? ucap : mtl_sub_capture_ubos((const uint64_t *)h, n)) : ucap;
+    void *base = stereo ? (ucap ? ucap : mtl_sub_capture_ubos((const uint64_t *)h, n)) : ucap, *first = stereo ? mtl_ucap_dup(base) : NULL;
+    /* a submission without the world camera's block (menus, the title, loading, a frame's other submissions) has no eyes
+       to make: it is replayed once, as without stereo */
+    if (project && mtl_ucap_eye(first, 0) <= 0) { mtl_ucap_free(first); first = NULL; stereo = 0; }
     for (int pass = 0; pass < (stereo ? 2 : 1); pass++) {
         if (stereo) mtl_eye_pass(pass + 1);
-        void *cap = stereo && pass == 0 ? mtl_ucap_dup(base) : base;
-        if (stereo) { extern int mtl_ucap_eye(void *cap, int eye); extern int mtl_stereo_project(void); if (mtl_stereo_project()) (void)mtl_ucap_eye(cap, pass); }   // the eye's projection into this replay's uniforms
+        void *cap = stereo && pass == 0 ? first : base;
+        if (stereo && project && pass == 1) (void)mtl_ucap_eye(cap, 1);   // the right eye's projection into the second replay's uniforms
         mtl_sub_begin();
         mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, cap);   // TOTK: uniforms as of the submit call (cap: bytes captured there)
         mtl_sub_index((const uint64_t *)h, n);
         for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
         mtl_exec_rest(NULL, 0);
-        if (stereo) { extern void mtl_eye_capture(int eye); extern int mtl_stereo_project(void); if (mtl_stereo_project()) mtl_eye_capture(pass); }   // this eye's picture, before the commit
+        if (stereo && project) mtl_eye_capture(pass);   // this eye's picture, before the commit
         mtl_sub_commit();
     }
     if (stereo) mtl_eye_pass(0);
