@@ -2319,7 +2319,8 @@ def main_ns2(args, dump):
                 logs / f'output_res_overlay-{v}-{size}.log', cwd=tree, env=env)
     icon_spec = g['folder'] / 'assets/app-icon.json'
     if icon_spec.is_file():
-        run([py, 'scripts/extract_app_icon.py', '--source-spec', icon_spec, '--output', 'build/AppIcon.icns'],
+        # the work tree's Python: extract_app_icon imports extract_exefs, which needs cryptography (only in the venv)
+        run([tree / '.venv/bin/python', 'scripts/extract_app_icon.py', '--source-spec', icon_spec, '--output', 'build/AppIcon.icns'],
             logs / 'app_icon.log', cwd=tree, env=env)
     say('2/4 data and 4/4 binary: building the game binary, its tables and the launcher')
     step_binary(tree, None, None, {**env, 'SHADER_LIST': f'../{g["folder"].name}/assets/shader_list.tsv'}, logs, version=v)
