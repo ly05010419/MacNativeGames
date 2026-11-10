@@ -159,6 +159,7 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
     }
     NSDictionary *match=nil;
     for(NSDictionary *d in (raw_write_domain_on()?sh->raw_write_domains:nil))if([d isKindOfClass:NSDictionary.class]&&raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
+    if(raw_write_auto_on())raw_write_auto_collect();
     if(!match&&raw_write_auto_on())for(NSDictionary *d in sh->raw_write_auto_domains)if(raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
     if(!match)match=raw_write_auto_prove(sh,stage,slots,resolved);
     if(!match){g_write_domain_misses++;if(g_write_domain_misses<=4)MLOG("[write-domain] fallback %.16s direct=%d simd=%d variants=%lu",sh->key,g_dispatch_domain_direct,g_dispatch_domain_simd,(unsigned long)sh->raw_write_domains.count);return 0;}
