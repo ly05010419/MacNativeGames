@@ -5213,6 +5213,10 @@ static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs; NSUInteger tw
 #define MFX_ROLE_UI 2
 #define MFX_ROLE_UI_OPAQUE 3
 static struct { uint64_t canvas, last_c0, swap[4]; uint32_t swap_w, swap_h; int nswap, scene_done, ui_cleared, depth_done, want_cam, role; uint64_t frames; } g_mfx;
+#ifdef GAME_OOT
+static id<MTLTexture> g_mfx_depth_candidate;   // Ocarina of Time: this pass's 32-bit depth, the scene's if its draws use the main camera (mfx_take_camera)
+static uint64_t g_mfx_depth_pass;
+#endif
 static id<MTLRenderPipelineState> g_enc_pso; static id<MTLDepthStencilState> g_enc_dss;   // 本编码器上已设的（相同不重设） | Already set on this encoder (not set again if identical)
 static int g_enc_vis, g_enc_has_vis;   // 本编码器当前的可见性计数模式（0 关 / 槽号 + 1）、是否挂了可见性缓冲 | This encoder's current visibility count mode (0 off / slot number + 1), and whether a visibility buffer is attached
 static int g_pso_dirty = 1, g_dss_dirty = 1;   // 回放中改了管线 / 深度模板相关状态 | Pipeline / depth-stencil related state was changed during replay
@@ -5938,10 +5942,20 @@ static void mfx_pass_setup(MTL4RenderPassDescriptor *pd) {
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
     id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil;
     id<MTLTexture> dt = pd.depthAttachment.texture;
+#ifdef GAME_OOT
+    /* Ocarina of Time has no G-buffer (2026-11-10, g44): the scene's depth is the 32-bit depth of the passes whose draws use
+       the main camera (one depth, 13 passes a frame, the main mesh pass among them). That shows at a draw: mfx_take_camera
+       looks at this pass's draws and, when one binds the main camera's block, takes this depth with it. */
+    if (!g_mfx.depth_done) {
+        int cand = dt && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.textureType == MTLTextureType2D && dt.width >= 320;
+        g_mfx_depth_candidate = cand ? dt : nil; g_mfx_depth_pass = g_stat_pass + 1; g_mfx.want_cam = cand;
+    }
+#else
     if (!g_mfx.depth_done && dt && c0 && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.width == c0.width && dt.height == c0.height && dt.width >= 320) {
         int nc = 0; for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
         if (nc >= 3) { mfx_note_depth(dt); g_mfx.depth_done = 1; g_mfx.want_cam = 1; }
     }
+#endif
     if (t0 && c0 && g_mfx.scene_done && g_mfx.canvas == t0->serial && R.rt.n <= 7 && pd.colorAttachments[0].level == 0 && !pd.colorAttachments[7].texture) {
         MTLRenderPassColorAttachmentDescriptor *a7 = pd.colorAttachments[7];
         a7.texture = mfx_ui_target(g_dev, c0.width, c0.height);
@@ -14829,6 +14843,33 @@ static void prepare_draw_textures(NvProg *pr) {
 /* TOTK_MFX: the camera of the G-buffer pass, from its first draw: vertex uniform 1, the 2368-byte block (view, view-projection,
    projection, inverse view, near / far, aspect, field of view; floats 84..167 hold the camera of two frames earlier). */
 static void mfx_take_camera(void) {
+#ifdef GAME_OOT
+    /* Ocarina of Time (2026-11-10, g44): the main camera's view block is 13,568 bytes, bound to the vertex stage at slot 0 or 9,
+       or to the task / mesh stage, TOTK's camera layout in its first 84 floats (view 0, view-projection 12, projection 28,
+       inverse view 44, near / far 56 / 57, aspect 62, vertical field of view 70) and the size it renders at in 72 / 73. The
+       main camera is the one with a field of view (the shadows' views are orthographic) rendered at this depth's size (the
+       half-size view and the cube views are not). A draw that binds none leaves the question to the pass's next draw. */
+    id<MTLTexture> dt = g_mfx_depth_candidate;
+    if (!dt || g_mfx_depth_pass != g_stat_pass) { g_mfx.want_cam = 0; return; }
+    static const int stages[] = {0, 3, 4};
+    for (int i = 0; i < 3; i++) for (int sl = 0; sl < 16; sl++) {
+        const p_bind_buf *u = &S.ubo[stages[i]][sl]; float cam[84];
+        if (!u->addr || u->size != MFX_CAM_SIZE) continue;
+        pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);   // the bytes this draw sees: memory plus pending inline updates
+        if (!(cam[70] > 0 && cam[56] > 0 && cam[57] > cam[56])) continue;
+        if (fabsf(cam[72] - (float)dt.width) >= 0.5f || fabsf(cam[73] - (float)dt.height) >= 0.5f) {
+            static int odd; if (odd < 5 && cam[72] >= 320) { odd++; MLOG("[mfx] a perspective view rendered at %.0fx%.0f in a pass whose depth is %lux%lu: not taken as the scene (frame %llu)",
+                cam[72], cam[73], (unsigned long)dt.width, (unsigned long)dt.height, (unsigned long long)atomic_load(&g_cur_frame)); }
+            continue;
+        }
+        mfx_note_depth(dt); mfx_note_camera(cam, 84);
+        g_mfx.depth_done = 1; g_mfx.want_cam = 0; g_mfx_depth_candidate = nil;
+        static int said; if (said < 3) { said++; MLOG("[mfx] scene depth %lux%lu and camera (stage %d slot %d, field of view %.1f deg, %.0fx%.0f) from pass %llu, frame %llu",
+            (unsigned long)dt.width, (unsigned long)dt.height, stages[i], sl, cam[70] * 180 / M_PI, cam[72], cam[73], g_stat_pass, (unsigned long long)atomic_load(&g_cur_frame)); }
+        return;
+    }
+    return;
+#endif
     g_mfx.want_cam = 0;
     const p_bind_buf *u = &S.ubo[0][MFX_CAM_SLOT]; float cam[84];
     if (u->addr && u->size == MFX_CAM_SIZE) {
