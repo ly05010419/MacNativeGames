@@ -47,7 +47,7 @@ The work folder is `OcarinaOfTime_build` next to the dump. Keep it and the app o
 # from a .nup file
 python3.14 build_app.py "<Ocarina of Time.nup>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Ocarina of Time.app"
 
-# from a multipart RAR (keep all parts in the same folder)
+# one build from all volumes of a split RAR
 brew install sevenzip
 python3.14 games/oot/build_rar.py "<Ocarina of Time.part1.rar>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
 
@@ -56,6 +56,8 @@ python3.14 build_app.py "<dump folder>" --shared-fonts "<…/shared-fonts>" -o "
 ```
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
+
+For a split RAR, keep every volume (such as `.part1.rar`, `.part2.rar`, and `.part3.rar`) in the same folder. Run the command once with `.part1.rar`. 7-Zip uses it to locate the remaining volumes and reads them as one archive. The build produces one app.
 
 Optional: `--mac-game-data library` keeps the 26 GB game image out of the app, in `~/Library/Application Support/MacNativeGames/OcarinaOfTime/GameData` (or `--mac-game-data-folder <folder>` to name another folder). The app is then 5–6 GB and later builds install faster.
 

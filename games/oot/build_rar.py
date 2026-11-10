@@ -1,4 +1,4 @@
-"""Build Ocarina of Time from the first part of a multipart RAR."""
+"""Build one Ocarina of Time app from all volumes of a split RAR."""
 import sys
 
 from build import build_helpers
@@ -9,7 +9,7 @@ def main():
     args = builder.parse_args(sys.argv[1:])
     source = args.game.expanduser().resolve()
     if not source.is_file() or not source.name.lower().endswith(".part1.rar"):
-        raise SystemExit("Pass the .part1.rar file with all parts in the same directory.")
+        raise SystemExit("Keep all RAR volumes together and pass .part1.rar to start one build.")
     try:
         builder.build_oot(args, source)
     except (builder.BuildError, OSError, ValueError) as error:
