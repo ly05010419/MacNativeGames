@@ -14,7 +14,9 @@
 #include <stdatomic.h>
 #include <math.h>
 #include <TargetConditionals.h>
+#include "text_padding_v143.h"   /* who owns which bytes after the code */
 #include "prompt_cache_v143.h"
+_Static_assert(PAD_V143_ASPECT_LEN == 4 * ASPECT_STUB && PAD_V143_VERT_LEN == 2 * ASPECT_VSTUB, "1.4.3 padding: aspect stub sizes");
 #if !TARGET_OS_IPHONE
 #include <mach/mach.h>
 #include <mach/mach_vm.h>   /* the VR camera search (Mac diagnostic) */
@@ -101,6 +103,7 @@ static void patch_secondary_animation(Module *m,uint64_t data,uint64_t stub){
         {0x28bc98,0x9400546a,0}, /* bl 0x2a0e40: includes both transform branches */
     };
     enum { WORDS=19 };
+    _Static_assert(WORDS*4==PAD_V143_CLOTH_LEN,"1.4.3 padding: cloth veneer size");
     if(stub+WORDS*4>((m->text_end+0x3fff)&~0x3fffULL)||data+8>m->size)
         runtime_fail("1.4.3 secondary animation patch layout");
     uint32_t code[WORDS]={
@@ -137,8 +140,8 @@ static void patch_realtime(Module *m){
     /* Keep executable veneers inside the text segment. iOS embeds x0 as a
      * signed RX segment, so these bytes must be emitted by export-ios rather
      * than written after the app starts. */
-    uint64_t stub=(m->text_end+15)&~15ULL;
-    if(data+0x4000!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
+    uint64_t stub=((m->text_end+15)&~15ULL)+PAD_V143_FRAME_STEP;
+    if(data+0x4000!=m->size||stub+PAD_V143_FRAME_STEP_LEN>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
     const Patch guards[]={
         {0x3e5658,0x1e210808,0},{0x2daa54,0xbd425260,0},{0x2daa58,0x52a84e08,0},
         {0x2daa6c,0x5e21d800,0},{0x2daa70,0x1e201820,0},{0x2daa74,0x1e2c1001,0},{0x2daa78,0x1e210800,0}};
@@ -172,7 +175,7 @@ static void patch_realtime(Module *m){
  #endif
     frame_step_data=(_Atomic uint64_t *)(void *)(m->base+data);
     frame_interval_data=(_Atomic uint32_t *)(void *)(m->base+data+8);frame_step_store(1.0f/60.0f);
-    patch_secondary_animation(m,data,stub+176);
+    patch_secondary_animation(m,data,((m->text_end+15)&~15ULL)+PAD_V143_CLOTH);
     fprintf(stderr,"[totk] 1.4.3 real-time frame step: 7 guarded sites, producer veneer +%#llx; original half-step selector and ratio/inverse/seconds/FPS calculations retained\n",(unsigned long long)stub);
 }
 /* High frame rates (#61, sky-island trampolines): the contact code at main+0x562a64 scales the bounce vector by 0.1
@@ -184,8 +187,8 @@ static void patch_slowmo_bounce(Module *m){
     const char *e=getenv("TOTK_HIGHFPS_FIX");if(e&&!strcmp(e,"0"))return;
     /* after the ultrawide veneers (+48, 4 x 32 bytes) and the cloth/hair clock (+176, 19 words); read-only data starts
        at the next 4 KiB page */
-    uint64_t stub=((m->text_end+15)&~15ULL)+256;
-    if(stub+20>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 bounce veneer layout");
+    uint64_t stub=((m->text_end+15)&~15ULL)+PAD_V143_BOUNCE;
+    if(stub+PAD_V143_BOUNCE_LEN>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 bounce veneer layout");
     uint32_t veneer[]={0xbd402920,   /* ldr s0, [x9, #0x28]: X+0x28 */
         0xbd403921,                  /* ldr s1, [x9, #0x38]: the 30 Hz ratio (s1 is set again by the next original instruction) */
         0x1e210800,                  /* fmul s0, s0, s1 */
@@ -216,8 +219,8 @@ static void patch_slowmo_bounce(Module *m){
 static void patch_fade_increment(Module *m){
     const char *e=getenv("TOTK_HIGHFPS_FIX");if(e&&!strcmp(e,"0"))return;
     const char *f=getenv("TOTK_FADE_FIX");if(f&&!strcmp(f,"0"))return;
-    uint64_t stub=((m->text_end+15)&~15ULL)+928;
-    if(stub+80>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 fade veneer layout");
+    uint64_t stub=((m->text_end+15)&~15ULL)+PAD_V143_FADE;
+    if(stub+PAD_V143_FADE_LEN>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 fade veneer layout");
     uint32_t veneer[]={
         /* stub + 0 (28 bytes): site 1 (mesh LOD fade 0x0a7ac4) */
         0x1e380008,   /* fcvtzs w8, s0 */
@@ -1469,8 +1472,8 @@ void runtime_game_patches(Module *m) {
     { const char *ctl=getenv("TOTK_VR_CONTROL"),*hl=getenv("TOTK_VR_HEADLOOK"); if(ctl&&*ctl&&!(hl&&!strcmp(hl,"0")))setenv("TOTK_ASPECT_VERT","1",0); }
 #endif
     { static const uint64_t sites[] = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0};   /* camera update and setup, viewport x2 */
-      aspect_install(m, "1.4.3", sites, 4, 2, ((m->text_end + 15) & ~15ULL) + 48,   /* after the two veneers above */
-                     ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
+      aspect_install(m, "1.4.3", sites, 4, 2, ((m->text_end + 15) & ~15ULL) + PAD_V143_ASPECT,   /* text_padding_v143.h */
+                     ((m->text_end + 15) & ~15ULL) + PAD_V143_VERT,   /* Vert+ stubs, written only when TOTK_ASPECT_VERT is on */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
 #if !TARGET_OS_IPHONE
     /* Not into the iOS export either (TOTK_EXPORT_IOS runs these patches on the Mac and embeds the code they leave): the
@@ -1696,8 +1699,8 @@ static void picture_mode_restore(uint8_t *page){
 }
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
-    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+16;
-    if(data+0x4000!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+PAD_V143_OUTPUT;
+    if(data+0x4000!=m->size||stub+PAD_V143_OUTPUT_LEN>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
     const Patch guards[]={
         {0xbdb578,0xd280f008,0},{0xbdb584,0xf2c08708,0},
         {0x3dcb28,0xd360fc64,0},{0x3dcb2c,0xf9028663,0},{0x3dcb30,0xd001ac08,0}};

@@ -10,6 +10,7 @@
    These offsets must be re-verified before enabling another game version. */
 #pragma once
 #include "runtime.h"
+#include "text_padding_v143.h"
 #include "prompt_bindings.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_prompt_icons.h"
 #include <stdio.h>
@@ -71,7 +72,7 @@ static void prompt_cache_install(Module *m) {
     const char *enabled = getenv("TOTK_PROMPT_ICONS");
     if ((enabled && !strcmp(enabled, "0")) || getenv("TOTK_EXPORT_IOS")) return;
     const size_t calls[] = {0xc624e8, 0xcd87fc};
-    const size_t original = 0xcd8810, stub = ((m->text_end + 15) & ~15ULL) + 896;
+    const size_t original = 0xcd8810, stub = ((m->text_end + 15) & ~15ULL) + PAD_V143_PROMPT;   /* text_padding_v143.h */
     if (stub + 16 > m->ro_off) runtime_fail("prompt cache: no veneer space");
     for (unsigned i = 0; i < sizeof calls / sizeof *calls; i++) {
         uint32_t expected = 0x94000000u | ((uint32_t)((int64_t)original - calls[i]) / 4 & 0x03ffffff);
