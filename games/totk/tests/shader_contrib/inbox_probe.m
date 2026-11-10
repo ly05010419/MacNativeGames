@@ -23,8 +23,13 @@ int main(int argc, char **argv) {
 
         check(totk_inbox_configured(), "the URL is built in");
         check(totk_inbox_choice(path) == nil, "not asked yet");
+        check(totk_inbox_should_ask(path) != 0, "three rows and no choice: the question is due (no row threshold)");
+        NSString *none = [path stringByAppendingString:@".none"];   /* a first start: no contribution file yet */
+        check(totk_inbox_should_ask(none) != 0, "no rows yet and no choice: the question is due at the first start");
+        check(totk_inbox_should_ask(nil) == 0, "no contribution file path (a development run): nothing to ask");
         totk_inbox_choose(path, NO);
         check([totk_inbox_choice(path) isEqualToString:@"off"], "off is kept");
+        check(totk_inbox_should_ask(path) == 0, "chosen: never asked again");
         totk_inbox_choose(path, YES);
         check([totk_inbox_choice(path) isEqualToString:@"auto"], "auto is kept");
 

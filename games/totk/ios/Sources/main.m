@@ -179,8 +179,8 @@ static void contrib_settings_sync(NSString *contrib) {
     if (!now || [now isEqualToString:@"auto"] != on) totk_inbox_choose(contrib, on);
 }
 /* The one question about the shader contribution (totk_contrib_upload.h, the same as the Mac's app/launcher.m
-   contrib_ask), before the game starts, once Documents/shader-list-contribution.txt holds TOTK_CONTRIB_STEP new rows and
-   the player has not chosen. The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
+   contrib_ask), before the game starts, at the first start where
+   the player has not chosen yet (no row threshold, user 2026-11-10). The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
    what the app serves in prepareAndStart, so the first count after a new build can be a little high.) */
 - (BOOL)offerShaderUpload {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;

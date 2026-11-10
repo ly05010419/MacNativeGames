@@ -27,7 +27,7 @@
 #endif
 #define TOTK_INBOX_CHUNK 2000           /* rows per request (the inbox takes 5,000; a row is about 1.2 KB at most) */
 #define TOTK_INBOX_FIRST 20             /* seconds after start: the game's own start-up goes first */
-#define TOTK_INBOX_EVERY (30 * 60)      /* then every half hour, for the rows play adds */
+#define TOTK_INBOX_EVERY (60 * 60)      /* then every hour, for the rows play adds (user 2026-11-10) */
 #define TOTK_INBOX_TIMEOUT 60.0
 
 static inline BOOL totk_inbox_configured(void) { return TOTK_CONTRIB_INBOX[0] != 0; }
@@ -60,11 +60,14 @@ static inline NSArray<NSString *> *totk_inbox_prompt_answers(void) {
     return @[@(TOTK_UI("贡献着色器", "Contribute shaders")), @(TOTK_UI("不贡献", "Don't contribute"))];
 }
 
-/* The rows to ask about (totk_contrib_due: TOTK_CONTRIB_STEP new rows since the last answer), or 0 when nothing is to be
-   asked: no inbox, already chosen, "never", or too few rows yet. */
+/* Whether the question is due: at the first start that has not chosen yet, whatever the file holds (user 2026-11-10: it
+   waited for TOTK_CONTRIB_STEP rows before, so a player whose game met few new shaders was never asked and the Settings
+   switch stayed off with nothing to show). 0 when nothing is to be asked: no contribution file path, no inbox, already
+   chosen, or "never" from the older reminder ("Don't remind me again", totk_contrib_never). */
 static inline NSUInteger totk_inbox_should_ask(NSString *path) {
     if (!path || !totk_inbox_configured() || totk_inbox_choice(path)) return 0;
-    return totk_contrib_due(path);
+    NSString *last = [NSString stringWithContentsOfFile:totk_contrib_state(path) encoding:NSUTF8StringEncoding error:nil];
+    return [last hasPrefix:@"never"] ? 0 : 1;
 }
 
 /* Keeps the player's answer, either way never asked again: auto uploads from now on; never uploads nothing. */

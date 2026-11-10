@@ -425,6 +425,22 @@ class ShaderInboxTests(unittest.TestCase):
         self.assertTrue(all(p.startswith('/v1/export?game=totk&') for p in asked))
 
 
+class ShaderInboxScheduleTests(unittest.TestCase):
+    """Every game's copy of the upload (user 2026-11-10): the question has no row threshold, one upload at each start,
+    then one an hour."""
+
+    def test_every_copy_asks_without_rows_and_uploads_hourly(self):
+        copies = sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'))
+        self.assertGreaterEqual(len(copies), 7)
+        for copy in copies:
+            text = copy.read_text()
+            ask = text[text.index('static inline NSUInteger totk_inbox_should_ask'):]
+            ask = ask[:ask.index('\n}\n')]
+            self.assertNotIn('totk_contrib_due', ask, f'{copy}: the question waits for rows')
+            self.assertIn('#define TOTK_INBOX_EVERY (60 * 60)', text, f'{copy}: not hourly')
+            self.assertIn('#define TOTK_INBOX_FIRST 20', text, f'{copy}: no upload at the start')
+
+
 # The inbox is a project of its own (not in this repository): $SHADER_INBOX_DIR, else MacNativeGamesWeb/shader-inbox beside it.
 INBOX = Path(os.environ.get('SHADER_INBOX_DIR') or TOTK.parents[2] / 'MacNativeGamesWeb/shader-inbox')
 

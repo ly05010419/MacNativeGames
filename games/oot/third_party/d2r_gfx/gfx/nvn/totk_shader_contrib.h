@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -144,7 +145,12 @@ static inline void totk_contrib_add_line(NSString *line) {
     if ([rows containsObject:line]) return;
     int fd = totk_contrib_lock(path, O_WRONLY | O_APPEND | O_CREAT);
     FILE *f = fd < 0 ? NULL : fdopen(fd, "a");
-    if (!f) { if (fd >= 0) close(fd); return; }
+    if (!f) {   /* said once: a row that cannot be kept was dropped without a word before (2026-11-10) */
+        static int said;
+        if (!said) { said = 1; fprintf(stderr, "[shader-contrib] cannot write %s: %s; rows met in this run are not kept\n", path.UTF8String, strerror(errno)); }
+        if (fd >= 0) close(fd);
+        return;
+    }
     fseek(f, 0, SEEK_END);
     if (ftell(f) == 0)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"

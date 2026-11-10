@@ -9785,7 +9785,13 @@ static void pso_contribute(const pso_skey *sk, NSString *brec, NSString *trec) {
         NSString *locals[3] = {[NSString stringWithFormat:@"R\t%s", local], brec ? [NSString stringWithFormat:@"B\t%s\t%@", local, brec] : nil,
                                trec ? [NSString stringWithFormat:@"T\t%s\t%@", local, trec] : nil};
         for (int i = 0; i < 3; i++) {
-            if (!rows[i] || [shipped containsObject:seen_key_str(rows[i])] || [shipped containsObject:seen_key_str(locals[i])]) continue;
+            if (!rows[i]) continue;
+            int listed = [shipped containsObject:seen_key_str(rows[i])], listed_local = [shipped containsObject:seen_key_str(locals[i])];
+            /* which way each row went (2026-11-10: pipelines built in play were missing from the contribution file and
+               nothing recorded whether they were taken as listed or handed to the file) */
+            if (survey_shader_log()) MLOG("[survey-shader] contribution %c row %.32s...: %s", "RBT"[i], hexs,
+                                          listed ? "in the app's lists (portable names)" : listed_local ? "in the app's lists (this build's names)" : "new, to the contribution file");
+            if (listed || listed_local) continue;
             [shipped addObject:seen_key_str(rows[i])];
             totk_rt_contrib_line(rows[i]);
         }
