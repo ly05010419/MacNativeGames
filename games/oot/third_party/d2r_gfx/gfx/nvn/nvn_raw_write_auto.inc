@@ -18,7 +18,7 @@ static void raw_write_auto_collect(void) {
     if(!atomic_exchange(&g_raw_write_auto_ready,0))return;
     os_unfair_lock_lock(&g_raw_write_auto_lock);NSArray *done=g_raw_write_auto_done;g_raw_write_auto_done=nil;os_unfair_lock_unlock(&g_raw_write_auto_lock);
     for(NSArray *e in done){
-        NvShader *sh=e[0];NSDictionary *result=e[1]==(id)NSNull.null?nil:e[1];double ms=[e[3] unsignedLongLongValue]*41.6667/1e6;
+        NvShader *sh=e[0];NSDictionary *result=e[1]==(id)NSNull.null?nil:e[1];sh->raw_write_auto_pending=0;double ms=[e[3] unsignedLongLongValue]*41.6667/1e6;
         if(![result[@"ok"] boolValue]){
             MLOG("[write-domain-auto] fallback %.16s attempt=%d reason=%s (background, %.0f ms)",sh->key,[e[2] intValue],[result[@"error"] description].UTF8String?:"invalid result",ms);continue;
         }
@@ -47,7 +47,10 @@ static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t 
         library=dlopen(path.fileSystemRepresentation,RTLD_NOW|RTLD_LOCAL);if(library)prove=dlsym(library,"oot_raw_write_proof");
         MLOG("[write-domain-auto] native analyzer %s",prove?"loaded":"unavailable; full fallback");
     }
-    if(!prove||sh->raw_write_auto_attempts>=16)return nil;
+    /* One analysis in flight per shader: a uniform word outside the guards (a frame counter) makes every frame a new
+       input identity, and until the first result is collected each of them would queue the same proof again and use
+       up the 16 attempts (2026-11-10: 12 analyses for 2 distinct guard sets). The identity is not marked attempted. */
+    if(!prove||sh->raw_write_auto_attempts>=16||sh->raw_write_auto_pending)return nil;
     NSMutableArray *inputs=[NSMutableArray array];CC_SHA256_CTX digest;CC_SHA256_Init(&digest);
     CC_SHA256_Update(&digest,g_dispatch_grid,sizeof g_dispatch_grid);CC_SHA256_Update(&digest,sh->rf.tg,sizeof sh->rf.tg);
     for(NSDictionary *binding in cap[@"bindings"]){
@@ -72,7 +75,7 @@ static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t 
     /* The analysis takes 0.2-0.3 s (2026-11-10: 256-308 ms per proof in the game log, one long frame each when it ran
        here). It runs on a serial background queue; this dispatch falls back, and raw_write_auto_collect() adds the
        result on a later dispatch, where raw_write_domain_match accepts it against the bindings of that dispatch. */
-    int attempt=sh->raw_write_auto_attempts;
+    int attempt=sh->raw_write_auto_attempts;sh->raw_write_auto_pending=1;
     dispatch_async(raw_write_auto_queue(),^{
         uint64_t t=mach_absolute_time();NSDictionary *result=nil;
         NSData *json=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
@@ -84,6 +87,13 @@ static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t 
                 if(n>0&&n<131072)result=[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:reply length:(size_t)n] options:0 error:nil];
                 free(reply);
             }
+        }
+        /* Diagnostic, off by default: OOT_RAW_WRITE_AUTO_DUMP=<dir> keeps each request (minus the SPIR-V) and its result. */
+        static const char *dump;static dispatch_once_t dump_once;dispatch_once(&dump_once,^{dump=getenv("OOT_RAW_WRITE_AUTO_DUMP");});
+        if(dump){
+            NSMutableDictionary *small=[request mutableCopy];[small removeObjectForKey:@"spirv"];
+            NSDictionary *record=@{@"shader":@(sh->key),@"attempt":@(attempt),@"request":small,@"result":[result isKindOfClass:NSDictionary.class]?result:@{}};
+            [[NSJSONSerialization dataWithJSONObject:record options:0 error:nil] writeToFile:[NSString stringWithFormat:@"%@/%.16s-%02d.json",@(dump),sh->key,attempt] atomically:YES];
         }
         id done=[result isKindOfClass:NSDictionary.class]?result:(id)NSNull.null;
         os_unfair_lock_lock(&g_raw_write_auto_lock);

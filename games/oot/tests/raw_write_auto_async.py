@@ -16,4 +16,8 @@ assert body.rstrip().endswith("return nil;\n}") or re.search(r"\}\);\s*return ni
 collect = domain.find("raw_write_auto_collect();")
 first_use = domain.find("sh->raw_write_auto_domains")
 assert 0 <= collect < first_use, "finished analyses must be collected before the proved domains are matched"
+gate = body.find("sh->raw_write_auto_pending)return nil;")
+attempted = body.find("[sh->raw_write_attempted addObject:identity]")
+assert 0 <= gate < attempted, "a shader with an analysis in flight must not queue another, nor mark the identity attempted"
+assert "sh->raw_write_auto_pending=1;" in body and "sh->raw_write_auto_pending=0;" in auto, "the in-flight mark is set at the hand-over and cleared at collection"
 print("PASSED")
