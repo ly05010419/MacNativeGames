@@ -1,6 +1,7 @@
 /* The real view-set setter receives the native source PerspectiveProjection
- * at x3. Prepare that owner only while copying the controlled gameplay camera
- * into a B2 eye; the renderer then builds its own matrices and camera UBOs. */
+ * at x3. Prepare that owner only while copying the controlled gameplay camera:
+ * one picture whose frustum covers both eyes (the compositor looks it up per
+ * eye); the renderer then builds its own matrices and camera UBOs. */
 #pragma once
 #include "../zeldaVR/gfx/totk_vr_link.h"
 #include "../zeldaVR/gfx/vr_projection.h"
@@ -12,14 +13,15 @@ __attribute__((used,noinline)) static void totk_vr_view_set(uint64_t views,uint3
     uint64_t vt=0;int owned=runtime_vr_camera_owned(camera,projection);
     uint64_t views_owner=__atomic_load_n(&g_vr_cam.main_vs,__ATOMIC_RELAXED);
     if(index==0&&owned&&(!views_owner||views_owner==views))__atomic_store_n(&g_vr_cam.cam,camera,__ATOMIC_RELAXED);
-    unsigned phase=__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);
-    if(!vr_active()||!g_vr_b2.on||phase>1||!owned||camera!=g_vr_cam.cam||!projection){
+    if(!vr_active()||!owned||camera!=g_vr_cam.cam||!projection){
         set(views,index,matrix,projection,extra);return;
     }
     memcpy(&vt,(const void *)(uintptr_t)projection,8);
     if(vt!=(uintptr_t)diag_main->base+0x39023e0){set(views,index,matrix,projection,extra);return;}
-    vr_views headset;float target[4];
-    if(!vr_link_views(&headset)||!vr_eye_intrinsics_overscan(headset.fov[phase],1.06f,target)){
+    vr_views headset;float target[4],rays[4];
+    if(!vr_link_views(&headset)){set(views,index,matrix,projection,extra);return;}
+    vr_projection_union(headset.fov,rays);
+    if(!vr_eye_intrinsics_overscan(rays,1.06f,target)){
         set(views,index,matrix,projection,extra);return;
     }
     float values[7]={target[0],sinf(target[0]*.5f),cosf(target[0]*.5f),tanf(target[0]*.5f),target[1],target[2],target[3]},saved[7];
@@ -28,11 +30,11 @@ __attribute__((used,noinline)) static void totk_vr_view_set(uint64_t views,uint3
     memcpy(saved,owner+0xa0,sizeof saved);memcpy(owner+0xa0,values,sizeof values);owner[8]=1;
     set(views,index,matrix,projection,extra);
     /* Keep later game-owned writes, otherwise restore this temporary input.
-       Dirty stays set: the cached matrix was rebuilt for the eye just copied. */
+       Dirty stays set: the cached matrix was rebuilt for the view just copied. */
     if(!memcmp(owner+0xa0,values,sizeof values)){memcpy(owner+0xa0,saved,sizeof saved);owner[8]=1;}
-    static unsigned logs[2];if(logs[phase]++<6)fprintf(stderr,
-        "[vr-totk-projection] eye=%u view=%u native-camera=%#llx projection=%#llx vtable=main+39023e0 fovy=%.7f aspect=%.7f shift=%.7f,%.7f\n",
-        phase,index,(unsigned long long)camera,(unsigned long long)projection,target[0],target[1],target[2],target[3]);
+    static unsigned logs;if(logs++<6)fprintf(stderr,
+        "[vr-totk-projection] one picture for both eyes: view=%u native-camera=%#llx projection=%#llx vtable=main+39023e0 fovy=%.7f aspect=%.7f shift=%.7f,%.7f\n",
+        index,(unsigned long long)camera,(unsigned long long)projection,target[0],target[1],target[2],target[3]);
     pthread_mutex_unlock(&totk_vr_projection_mu);
 }
 void runtime_totk_projection_probe(void){

@@ -395,23 +395,6 @@ static void *input_file(void *arg) {
             char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10);
             if (e2 != e) { char *e3; uint64_t lo = strtoull(e2, &e3, 16); runtime_diag_bp_regs_if(o, (int)r, lo, strtoull(e3, NULL, 16)); }   /* "bpregs <off> <reg> <lo> <hi>": only when x<reg> is in [lo, hi) */
             else runtime_diag_bp_regs(o);
-        } else if (!strncmp(line, "b2pair", 6)) {   /* "b2pair": first / second run recordings paired by identity (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_pair(void);
-            runtime_vr_b2_pair();
-        } else if (!strncmp(line, "b2slots", 7)) {   /* "b2slots": where the game keeps the runs' handles (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_slots(void);
-            runtime_vr_b2_slots();
-        } else if (!strncmp(line, "b2calls", 7)) {   /* "b2calls": the next frame's calls of the runs' recordings (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_calls(void);
-            runtime_vr_b2_calls();
-        } else if (!strncmp(line, "b2eye ", 6)) {   /* "b2eye <mm>": half the eye distance for stereo B2 (diagnostic until the VR thread sets it) */
-            extern void runtime_vr_b2_eye(float mm);
-            runtime_vr_b2_eye((float)atof(line + 6));
-        } else if (!strncmp(line, "b2 ", 3)) {   /* "b2 <0|1|2|3> [mask]": zeldaVR stereo B2, the second render run per game update (game_patches_v143.c) */
-            extern void runtime_vr_b2(int on);
-            extern void runtime_vr_b2_mask(unsigned m);
-            char *e; long mode = strtol(line + 3, &e, 10); if (*e == ' ') runtime_vr_b2_mask((unsigned)strtoul(e, NULL, 0));
-            runtime_vr_b2((int)mode);
         } else if (!strncmp(line, "dumpmain ", 9)) {   /* "dumpmain <file>": main's loaded image, relocated (VR stereo RE) */
             extern void runtime_diag_dump_main(const char *path);
             char path[1024]; snprintf(path, sizeof path, "%s", line + 9); path[strcspn(path, "\r\n")] = 0;

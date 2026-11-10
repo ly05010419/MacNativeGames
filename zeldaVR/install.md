@@ -16,7 +16,7 @@ camera aspect on the same screen plane as our overlay. Weapon shortcuts retain
 the paused world's stereo projection and source rotation. Full-eye restoration
 and background layers preserve canvas coordinates; HUD widgets alone receive
 the binocular ray transform. Its VR settings omit
-alternating-eye rendering; legacy B1/B2 camera
+alternating-eye rendering; legacy alternating-eye camera
 offsets and the angular dead band do not run in this adapter. Renderer mode is
 fixed to same-frame docked stereo. BotW 1.6.0 has the
 player-position source for first person; 1.9.0 currently keeps third person.
@@ -27,7 +27,7 @@ the default; the legacy positional 6DoF and Mac lens-preview/zoom controls are
 unavailable in BotW, including through previously saved options. Map and inventory composition, clipping,
 and menu depth have also been checked on BotW 1.6.0. BotW 1.9.0 has not had the
 same Quest acceptance checks or the native UI producer adaptation. The
-same-frame stereo described below applies to TotK.
+one-picture rendering described below applies to TotK.
 
 [English](#english) · [中文](#中文)
 
@@ -38,13 +38,11 @@ It is not a flat screen floating in the headset: the game draws the view for eve
 
 - **6DoF**: turning your head turns the game camera (3 degrees of freedom, always on). With **Head position (6DoF)** on in
   the VR page, leaning and crouching move the camera too (all 6 degrees of freedom, up to a metre each way).
-- **Stereo** (same-frame, on whenever VR runs): every game update is rendered twice, once from each eye (the game's
-  render jobs run a second time with the other eye's camera; **Stereo · eye distance** 30–200% in the VR page), and the
-  headset shows the pair of that one update. Each eye's picture carries the projection and rotation it was really
-  rendered with, so turning the head reprojects it to the latest pose. Full menus (inventory, map) are shown flat on a
-  fixed screen 2 m ahead of where you looked when the headset connected (recentre with both stick clicks). The GPU draws
-  the scene twice, so the render size on the VR page sets the frame rate (M4: about 32 fps at 1.0× 2048×2208 per eye,
-  about 45 fps at 0.625×). Checked with a fake headset on 2026-11-07; the Quest 3 fusion check is still pending.
+- **One picture for both eyes**: the game renders every update once, with a view wide enough to cover both eyes, and
+  the headset looks that picture up for each eye by the eye's own rays. The picture carries the projection and rotation
+  it was really rendered with, so turning the head reprojects it to the latest pose. There is no stereo depth yet: both
+  eyes see the same picture. Full menus (inventory, map) are shown flat on a fixed screen 2 m ahead of where you looked
+  when the headset connected (recentre with both stick clicks).
 - **First person** (Link's head hidden, the camera at his eyes) or **third person**. `P` switches between them (eased
   over 0.6 s); a camera spring smooths the head's bob while running.
 - **Game sound in the headset** (the Mac's speakers go quiet while it is connected).
@@ -134,7 +132,7 @@ sources.
 《王国之泪》1.4.3 照常在 Mac 上运行，画面通过 USB-C 数据线送到 **Meta Quest 3**。不是把平面画面挂在头显里：游戏按每一个头部姿态重新渲染画面。
 
 - **6DoF**：转头，游戏镜头跟着转（3 个自由度，一直开着）。在 VR 页打开 **头部位置（6DoF）** 后，探身、下蹲也会移动镜头（完整的 6 个自由度，每个方向最多 1 米）。
-- **立体**（同帧双眼，VR 运行时一直开）：游戏的每次更新渲染两遍，左右眼各一遍（渲染任务用另一只眼的相机再跑一次；VR 页的 **立体 · 两眼间距** 30–200%），头显里看到的是同一次更新的一对画面。每只眼的画面带着它真正渲染时的投影和朝向，转头时按最新姿态重投影。完整菜单（背包、地图）平铺在头显连接时正前方 2 米的固定屏上（同时按下两个摇杆可重新摆正）。GPU 要画两遍场景，VR 页的渲染分辨率决定帧率（M4：每眼 1.0× 2048×2208 约 32 帧，0.625× 约 45 帧）。2026-11-07 用假头显核过数据；Quest 3 上的合焦确认还没做。
+- **两只眼共用一幅画面**：游戏的每次更新只渲染一遍，视野宽到同时盖住两只眼；头显按每只眼自己的视线从这幅画面里取图。画面带着它真正渲染时的投影和朝向，转头时按最新姿态重投影。目前还没有立体深度：两只眼看到的是同一幅画面。完整菜单（背包、地图）平铺在头显连接时正前方 2 米的固定屏上（同时按下两个摇杆可重新摆正）。
 - **第一人称**（隐藏林克的头，镜头在眼睛的位置）或**第三人称**，按 `P` 切换（0.6 秒平滑过渡）；奔跑时头部的晃动由镜头弹性平滑掉。
 - **游戏声音进头显**（头显连着时 Mac 扬声器静音）。
 - **Quest 3 手柄和体感手势**（挥剑、举盾、拉弓、口哨）：已经做进去，还没在头显里实测。Mac 上连的手柄（DualSense、Xbox）照常能用。

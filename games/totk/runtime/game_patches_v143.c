@@ -588,10 +588,7 @@ static uint64_t time_object(void){uint64_t x;memcpy(&x,diag_main->base+0x3ad27c8
 static uint64_t watch_addr;
 static int watch_store;   /* the VR camera search watches stores, frmwatch loads */
 enum{WATCH_SLOTS=512};
-static struct{_Atomic uint64_t pc;_Atomic uint64_t lr;_Atomic uint64_t up[3];_Atomic uint64_t x1;_Atomic uint64_t xr[6];_Atomic uint32_t n;_Atomic uint32_t ph[3];} watch_hits[WATCH_SLOTS];   /* xr: x0 x19 x20 x21 x22 x8; ph: hits by stereo B2 run (b2_in_second_run) */
-extern void vr_stage_hook(void);
-uint64_t g_b2_stage_return;
-static int b2_in_second_run(void);
+static struct{_Atomic uint64_t pc;_Atomic uint64_t lr;_Atomic uint64_t up[3];_Atomic uint64_t x1;_Atomic uint64_t xr[6];_Atomic uint32_t n;} watch_hits[WATCH_SLOTS];   /* xr: x0 x19 x20 x21 x22 x8 */
 static void watch_set(thread_act_t t,int on){
     arm_debug_state64_t d;mach_msg_type_number_t c=ARM_DEBUG_STATE64_COUNT;
     if(thread_get_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,&c)!=KERN_SUCCESS)return;
@@ -644,7 +641,6 @@ int runtime_diag_watch_trap(void *context){
             uint64_t fp=u->uc_mcontext->__ss.__fp;for(int d=0;d<3;d++){uint64_t fr[2]={0,0};if(!fp||(fp&15))break;memcpy(fr,(const void *)(uintptr_t)fp,16);atomic_store(&watch_hits[i].up[d],fr[1]);fp=fr[0];}
             atomic_store(&watch_hits[i].x1,u->uc_mcontext->__ss.__x[1]);
             {static const int rn[6]={0,19,20,21,22,8};for(int r=0;r<6;r++)atomic_store(&watch_hits[i].xr[r],u->uc_mcontext->__ss.__x[rn[r]]);}
-            atomic_fetch_add(&watch_hits[i].ph[b2_in_second_run()],1);
             atomic_fetch_add(&watch_hits[i].n,1);break;}
     }
     thread_act_t self=mach_thread_self();watch_set(self,0);mach_port_deallocate(mach_task_self(),self);
@@ -675,7 +671,7 @@ static void vr_desc(uint64_t a,char *b,size_t n){extern void runtime_describe_ad
 /* One store-watch phase of 15 s on addr: prints every writer; returns x1 of the most frequent one (its source). */
 static double vr_watch_secs=15;   /* "camwatch <seconds>" sets its own */
 static uint64_t vr_watch_phase(uint64_t addr,int stage){
-    for(unsigned i=0;i<WATCH_SLOTS;i++){atomic_store(&watch_hits[i].pc,0);atomic_store(&watch_hits[i].n,0);for(int k=0;k<3;k++)atomic_store(&watch_hits[i].ph[k],0);}
+    for(unsigned i=0;i<WATCH_SLOTS;i++){atomic_store(&watch_hits[i].pc,0);atomic_store(&watch_hits[i].n,0);}
     watch_store=1;watch_addr=addr;
     fprintf(stderr,"[vr] findcam stage %d: store watchpoint on %#llx for %.0f s\n",stage,(unsigned long long)addr,vr_watch_secs);
     for(double t=0;t<vr_watch_secs;t+=0.01){watch_all(1);usleep(10000);}
@@ -684,7 +680,7 @@ static uint64_t vr_watch_phase(uint64_t addr,int stage){
         char d0[96],d1[96],d2[96],d3[96],d4[96];vr_desc(pc,d0,96);vr_desc(atomic_load(&watch_hits[i].lr),d1,96);
         vr_desc(atomic_load(&watch_hits[i].up[0]),d2,96);vr_desc(atomic_load(&watch_hits[i].up[1]),d3,96);vr_desc(atomic_load(&watch_hits[i].up[2]),d4,96);
         uint64_t x1=atomic_load(&watch_hits[i].x1);
-        fprintf(stderr,"[vr] findcam stage %d write x%u (B2 runs: first %u, second %u, after %u) pc %s lr %s < %s < %s < %s  x1 %#llx x0 %#llx x19 %#llx x20 %#llx x21 %#llx x22 %#llx x8 %#llx\n",stage,n,atomic_load(&watch_hits[i].ph[0]),atomic_load(&watch_hits[i].ph[1]),atomic_load(&watch_hits[i].ph[2]),d0,d1,d2,d3,d4,(unsigned long long)x1,
+        fprintf(stderr,"[vr] findcam stage %d write x%u pc %s lr %s < %s < %s < %s  x1 %#llx x0 %#llx x19 %#llx x20 %#llx x21 %#llx x22 %#llx x8 %#llx\n",stage,n,d0,d1,d2,d3,d4,(unsigned long long)x1,
                 (unsigned long long)atomic_load(&watch_hits[i].xr[0]),(unsigned long long)atomic_load(&watch_hits[i].xr[1]),(unsigned long long)atomic_load(&watch_hits[i].xr[2]),
                 (unsigned long long)atomic_load(&watch_hits[i].xr[3]),(unsigned long long)atomic_load(&watch_hits[i].xr[4]),(unsigned long long)atomic_load(&watch_hits[i].xr[5]));
         if(n>best){best=n;best_x1=x1;}}
@@ -845,8 +841,8 @@ void runtime_diag_cam_src(double secs){
     if(bp_addr){fprintf(stderr,"[vr] camsrc: a breakpoint is already set\n");return;}
     double *a=malloc(sizeof *a);*a=secs;pthread_t t;pthread_create(&t,NULL,vr_camsrc_run,a);pthread_detach(t);
 }
-/* "frametrace <seconds> <hex offset> [<hex offset>...]" (diagnostic, stereo B2 survey 2026-11-02: where one game update
-   ends and its drawing starts, so that the scene can be drawn twice per update): hardware breakpoints (BVR 1-4) on up to
+/* "frametrace <seconds> <hex offset> [<hex offset>...]" (diagnostic, 2026-11-02: where one game update
+   ends and its drawing starts): hardware breakpoints (BVR 1-4) on up to
    four main instructions in every thread, re-armed every 10 ms; each hit records its site, thread, time and up to 20
    return addresses up the frame chain. The game's submits, presents and command-buffer recordings (hle_nvn.c,
    runtime_frametrace_event) go into the same log. At the end: each distinct (site, thread, call chain) with its count,
@@ -865,9 +861,7 @@ static void ft_record(int site,const uint64_t *ret,int depth){
 /* 8 submit, 9 present, 10/11 begin/end recording (hle_nvn.c). Submits and recording starts also get the guest's call
    chain: the host frames lead through the HLE stack switch's frame record (hle_stack.S) to the guest caller; frames are
    read with mach_vm_read_overwrite since the walk crosses from the host stack to the guest's. */
-static void b2_calls_present(void);
 void runtime_frametrace_event(int kind){
-    if(kind==9)b2_calls_present();   /* "b2calls" frames are counted between presents */
     if(!atomic_load_explicit(&ft_on,memory_order_relaxed))return;
     uint64_t ret[FT_DEPTH];int depth=0;
     if(kind==8||kind==10){const uint64_t mlo=(uintptr_t)diag_main->base,mhi=mlo+diag_main->size;uint64_t fp=(uintptr_t)__builtin_frame_address(0);int guest=0;
@@ -934,7 +928,7 @@ void runtime_diag_frame_trace(double secs,const char *offs){
     if(!n){fprintf(stderr,"[vr] frametrace: no addresses\n");return;}
     ft_nsite=n;double *a=malloc(sizeof *a);*a=secs;pthread_t t;pthread_create(&t,NULL,ft_run,a);pthread_detach(t);
 }
-/* "jobdump" (diagnostic, stereo B2 2026-11-02): the frame's calc runs its render work as job lists on one queue: at
+/* "jobdump" (diagnostic, 2026-11-02): the frame's calc runs its render work as job lists on one queue: at
    main+0x3e5abc (bl main+0x3e60b0: queue [x19+0x4b8], x1 [x19+0x4c0], x2 the list [x19+0x4d8]) a breakpoint takes x19;
    then the lists at x19+0x4c8, +0x4d0, +0x4d8 (count at +8, array at +0x10 of pointers to entries: tag, job) are printed: per job its
    first 12 words (main addresses as main+off, pointers to text as the text), its vtable's first 6 entries. Read with
@@ -970,7 +964,7 @@ static void *jd_run(void *arg){
     }
     fprintf(stderr,"[vr] jobdump done\n");return NULL;
 }
-/* "calctree" (diagnostic, stereo B2): the method tree the frame's calc walks (procCalc main+0x2dad80 calls callRec
+/* "calctree" (diagnostic): the method tree the frame's calc walks (procCalc main+0x2dad80 calls callRec
    main+0x8384 on its root at main+0x2dadd8, x0). Walked as callRec does: flags byte +0x7c (bit 0/1: skip the node's
    method / its children), the delegate at +0x50 (vtable, object +0x58, method +0x60, adjustment +0x68: odd = virtual,
    the method is then a vtable offset), children: link = [node+0x28], child = [link+0x20], next link = [child+0x30].
@@ -1002,7 +996,7 @@ void runtime_diag_calc_tree(void){
     if(bp_addr){fprintf(stderr,"[vr] calctree: a breakpoint is already set\n");return;}
     pthread_t t;pthread_create(&t,NULL,ct_run,NULL);pthread_detach(t);
 }
-/* "dumpmain <file>" (diagnostic, stereo B2): main's whole loaded image as it is now (relocated: GOT slots and vtables hold
+/* "dumpmain <file>" (diagnostic): main's whole loaded image as it is now (relocated: GOT slots and vtables hold
    real addresses), with its base in a ".base" file beside it, for static analysis outside the game. Kept outside the
    repository (the user's own game code). "peek <hex address> [n]" / "peekm <hex main offset> [n]": n (default 8, at
    most 64) words from memory, main addresses as main+off, text as text. */
@@ -1020,7 +1014,7 @@ void runtime_diag_peek(uint64_t a,int n,int rel){
         for(int k=i;k<n&&k<i+4;k++){uint64_t v=0;char d[64];if(!jd_read(a+8*(uint64_t)k,&v,8)){u+=(size_t)snprintf(line+u,sizeof line-u," ??");continue;}jd_word(v,d,sizeof d);u+=(size_t)snprintf(line+u,sizeof line-u," %s",d);}
         fprintf(stderr,"%s\n",line);}
 }
-/* "watchw <hex address> <seconds>" (diagnostic, stereo B2): a store watchpoint on the 4 bytes at the address for that
+/* "watchw <hex address> <seconds>" (diagnostic): a store watchpoint on the 4 bytes at the address for that
    long, every writer printed (vr_watch_phase: pc, return addresses, registers). "bpregs <hex main offset>": a one-shot
    breakpoint (BVR 5) in every thread; the first hit prints x0-x28, sp, the return address and 3 callers. */
 /* "watchr <hex address> <seconds>": the same for loads. */
@@ -1056,13 +1050,12 @@ static void br_all(int on){
     vm_deallocate(mach_task_self(),(vm_address_t)list,n*sizeof *list);mach_port_deallocate(mach_task_self(),self);
 }
 /* "bpvals <hex main offset> <register 0-28> <seconds>": the same breakpoint kept armed (every 10 ms), counting each
-   distinct value of the register, split by the stereo B2 run it was seen in (outside / in the second run). */
-static int bv_on,bv_reg;static struct{_Atomic uint64_t v;_Atomic uint32_t n[3];} bv_seen[32];
-static int b2_in_second_run(void);   /* below g_vr_b2: 0 the first run (or before stereo), 1 the second, 2 after it */
+   distinct value of the register. */
+static int bv_on,bv_reg;static struct{_Atomic uint64_t v;_Atomic uint32_t n;} bv_seen[32];
 static int br_trap(ucontext_t *u,unsigned ec){
     if(!br_addr||(ec!=0x30&&ec!=0x31)||u->uc_mcontext->__ss.__pc!=br_addr)return 0;
-    if(bv_on){const uint64_t v=u->uc_mcontext->__ss.__x[bv_reg];const int ph=b2_in_second_run();
-        for(unsigned i=0;i<32;i++){uint64_t z=0;if(atomic_compare_exchange_strong(&bv_seen[i].v,&z,v)||z==v){atomic_fetch_add(&bv_seen[i].n[ph],1);break;}}
+    if(bv_on){const uint64_t v=u->uc_mcontext->__ss.__x[bv_reg];
+        for(unsigned i=0;i<32;i++){uint64_t z=0;if(atomic_compare_exchange_strong(&bv_seen[i].v,&z,v)||z==v){atomic_fetch_add(&bv_seen[i].n,1);break;}}
         thread_act_t self=mach_thread_self();br_set(self,0);mach_port_deallocate(mach_task_self(),self);return 1;}
     if(br_creg>=0){const uint64_t cv=u->uc_mcontext->__ss.__x[br_creg];if(cv<br_clo||cv>=br_chi){thread_act_t self=mach_thread_self();br_set(self,0);mach_port_deallocate(mach_task_self(),self);return 1;}}   /* condition not met: re-armed later */
     int z=0;if(atomic_compare_exchange_strong(&br_hit,&z,1)){for(int i=0;i<29;i++)br_x[i]=u->uc_mcontext->__ss.__x[i];
@@ -1083,12 +1076,12 @@ static void *br_run(void *arg){
 }
 static void *bv_run(void *arg){
     const double secs=*(double *)arg;free(arg);
-    for(unsigned i=0;i<32;i++){atomic_store(&bv_seen[i].v,0);for(int k=0;k<3;k++)atomic_store(&bv_seen[i].n[k],0);}
+    for(unsigned i=0;i<32;i++){atomic_store(&bv_seen[i].v,0);atomic_store(&bv_seen[i].n,0);}
     bv_on=1;for(double t=0;t<secs;t+=0.01){br_all(1);usleep(10000);}
     br_all(0);usleep(20000);const uint64_t a=br_addr;br_addr=0;bv_on=0;
     fprintf(stderr,"[vr] bpvals main+%#llx x%d over %.0f s:\n",(unsigned long long)(a-(uintptr_t)diag_main->base),bv_reg,secs);
     for(unsigned i=0;i<32;i++){const uint64_t v=atomic_load(&bv_seen[i].v);if(!v)continue;char d[64];jd_word(v,d,sizeof d);
-        fprintf(stderr,"[vr] bpvals   %s: %u in the first run (or without stereo), %u in the second, %u after it\n",d,atomic_load(&bv_seen[i].n[0]),atomic_load(&bv_seen[i].n[1]),atomic_load(&bv_seen[i].n[2]));}
+        fprintf(stderr,"[vr] bpvals   %s: %u\n",d,atomic_load(&bv_seen[i].n));}
     return NULL;
 }
 void runtime_diag_bp_vals(uint64_t off,int reg,double secs){
@@ -1414,496 +1407,7 @@ static void camera_distance_load(void){
     if(f){if(fscanf(f,"%d",&cm)!=1||cm<-500||cm>1000)cm=0;fclose(f);}
     if(cm){camera_distance_apply(cm/100.0f);fprintf(stderr,"[totk] camera distance (third person): %+d cm (kept in %s)\n",cm,p);}
 }
-/* Stereo B2, step 1 (2026-11-02, user: "开始 最好的办法": both eyes of one game update): the frame's last calc stage
-   (main+0x3e55e0 sets the job list [x19+0x4d8] and tail-calls the queue runner main+0x3e5dfc at main+0x3e5adc) runs the
-   game's 35 render jobs (vtable entry 2 = main+0x2887b80, each with a mask of the render work it does: views, culling,
-   command recording) together with logic jobs (actors, physics, events, sound) in one dependency graph. The tail call
-   goes to vr_b2_hook instead, which runs the stage as before and then, with "b2 1", runs a second list through the
-   game's own queue: main+0x3e60b0 (queue [x19+0x4b8], [x19+0x4c0], list) then the runner, as the stage does. The second
-   list holds only the render jobs and the dependencies among them (the second eye's picture, once the camera changes
-   between the runs: later steps). Called directly, outside the queue, the view job waited forever for the sub-jobs it
-   hands to the queue's workers (b2a, 2026-11-02). Off (the default) the hook only calls the runner and returns.
-   Before the second list every view's per-frame start runs again (main+0x3dbf28 (view, [render system+0x9a4] != 0, 1)
-   for each view of the view manager [main+0x3acda18] (+0x10 count, +0x18 views), as the render system's per-frame start
-   main+0x3db120 does): it clears the view's work counters and masks (+0x3ba8...) and prepares it. Without it the view
-   job found its work items all taken and waited forever at its barrier (b2b). The whole per-frame start is not run:
-   it also empties the frame's model lists, which only the logic jobs fill (b2c: the second picture was sky only).
-   Work in progress (2026-11-02), off by default, Mac VR only. Modes ("b2 <mode> [mask]"):
-   1 each view's per-frame start before the second list: no hang, but the view's model requests (+0x3350..+0x3380, filled
-     by the logic jobs after the render system's per-frame start) are emptied: sky only (b2d, 99 draws a frame);
-   2 only the view's job counters, no per-frame start: hangs at the view barrier (b2f; the start does more that the jobs
-     need);
-   3 the per-frame start with the fields chosen by the mask saved before it and put back after it: bit 0 +0x3350..+0x3380,
-     bit 1 +0x3398..+0x33a8, bit 2 +0x33e0..+0x3420, bit 3 each render step's +0x5d0 word and +0x2914 half-word. Mask 1
-     (b2g): the second picture has the scene (1021 draws a frame, G-buffer 566 + 191 against 691 + 598) but almost no
-     shadows (44 draws against about 1300): the shadow casters' requests are kept elsewhere (next step). Mask 9 untested.
-     Bit 4 (2026-11-10): only +0x33e0, the count of the view's item list (+0x33e8 items, +0x33e4 capacity) that the
-     render jobs take items from (main+0x2888d10) and six callers fill (main+0x78fbc, 0xa2c88, 0x778c7c, 0xe677b0,
-     0x2b406fc, 0x8af5c): the per-frame start clears it with the counters after it (+0x33f0..+0x341c, which the render
-     jobs add up, +0x341c at main+0x288911c). Bit 12 (0x1000, diagnostic): each view's list counts after the first run
-     and after the second, every 60th stereo frame (b2_view_lists).
-   Eyes: with "b2eye <mm>" (half the eye distance) the main camera's view matrix moves left for the first run and right
-   for the second (t.x += / -= in view space, as the B1 hook), back afterwards; the camera is final before this stage.
-   The first eye's constants and both eyes' submission are later steps.
-   g_vr_b2: +0 the runner, +8 the list setter, +16 the mode (0 off), +20 the mask, +24 second runs done, +28 1 during the second run, +32 the stage
-   object (x19), +40 the second list, +48 the view's per-frame start, +56 the render system, +64 the view manager's slot,
-   +72 the saved fields (27 words), then the render steps' saved words and half-words. */
-typedef struct { uint64_t run, setlist; uint32_t on, mask, runs, phase; uint64_t stage, list, begin, begin_obj, vmgr; uint64_t save[27]; uint32_t step_flags[32]; uint16_t step_bits[32]; uint64_t camp; float eh; uint32_t pad3; } vr_b2_state;
-vr_b2_state g_vr_b2 __attribute__((aligned(16)));
 #include "totk_vr_projection.h"
-static uint64_t b2_s1_deleg;   /* render stage 1's view renderer (b2_stage1_run1) */
-static uint64_t b2_slot_obj[8];static int b2_slot_n;   /* the owners of the render stages' summary slots (runtime_b2_twin) */
-static _Atomic uint64_t b2_map_n; /* exact renderer/layer pairs transferred to right-copy ownership */
-static int b2_in_second_run(void){const uint32_t p=__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);return p==1?1:p==3?2:0;}
-__asm__(".text\n.p2align 4\n.globl _vr_b2_hook\n_vr_b2_hook:\n"
-        "  stp x29, x30, [sp, #-64]!\n  mov x29, sp\n  stp x19, x20, [sp, #16]\n  stp x21, x22, [sp, #32]\n  str x23, [sp, #48]\n"
-        "  adrp x19, _g_vr_b2@PAGE\n  add x19, x19, _g_vr_b2@PAGEOFF\n"
-        /* on: the main camera's view matrix (the camera object's +8, rows R | t) to the left eye for the first run:
-           t.x += half the eye distance (as the B1 hook does), x0 (the queue) kept */
-        "  ldr w8, [x19, #16]\n  cbz w8, 20f\n  str wzr, [x19, #28]\n"
-        "  ldr x9, [x19, #480]\n  ldr x9, [x9]\n  cbz x9, 20f\n"
-        "  ldr s0, [x19, #488]\n  ldr s1, [x9, #20]\n  fadd s1, s1, s0\n  str s1, [x9, #20]\n"
-        "20:\n  ldr x16, [x19]\n  blr x16\n"                       /* the stage, as the tail call did */
-        "  ldr w8, [x19, #16]\n  cbz w8, 9f\n"
-        "  adrp x16, _b2_between_runs@PAGE\n  add x16, x16, _b2_between_runs@PAGEOFF\n  blr x16\n"
-        "  mov w8, #1\n  str w8, [x19, #28]\n"   /* recordings from here on are the second run's (runtime_b2_rec) */
-        "  ldr x9, [x19, #480]\n  ldr x9, [x9]\n  cbz x9, 21f\n"   /* the right eye: t.x -= the eye distance */
-        "  ldr s0, [x19, #488]\n  ldr s1, [x9, #20]\n  fsub s1, s1, s0\n  fsub s1, s1, s0\n  str s1, [x9, #20]\n"
-        "21:\n"
-        "  ldr x9, [x19, #56]\n  ldr w10, [x9, #0x9a4]\n  cmp w10, #0\n  cset w20, ne\n"
-        "  ldr x9, [x19, #64]\n  ldr x21, [x9]\n  cbz x21, 3f\n  ldrsw x22, [x21, #0x10]\n  ldr x23, [x21, #0x18]\n"
-        "2:\n  cbz x22, 3f\n  ldr x0, [x23], #8\n"
-        "  ldr w8, [x19, #16]\n  cmp w8, #2\n  b.eq 4f\n"
-        "  cmp w8, #3\n  b.ne 8f\n"   /* "b2 3 <mask>": keep the view's lists at +0x3350..+0x3428 the per-frame start would clear */
-        "  mov x10, #0x3350\n  add x10, x0, x10\n  add x11, x19, #72\n  mov w12, #27\n"
-        "10:\n  ldr x13, [x10], #8\n  str x13, [x11], #8\n  subs w12, w12, #1\n  b.ne 10b\n"
-        /* the render steps (+0x130 of them at +0x138, 0x2920 bytes each): their +0x5d0 word and +0x2914 half-word */
-        "  ldr w12, [x0, #0x130]\n  cmp w12, #32\n  mov w13, #32\n  csel w12, w12, w13, ls\n  ldr x10, [x0, #0x138]\n"
-        "  add x11, x19, #72+27*8\n  add x15, x19, #72+27*8+32*4\n  mov x16, #0x2914\n"
-        "16:\n  cbz w12, 17f\n  ldr w13, [x10, #0x5d0]\n  str w13, [x11], #4\n  ldrh w13, [x10, x16]\n  strh w13, [x15], #2\n"
-        "  mov x13, #0x2920\n  add x10, x10, x13\n  sub w12, w12, #1\n  b 16b\n"
-        "17:\n  str x0, [sp, #56]\n"
-        "  mov w1, w20\n  mov w2, #1\n  ldr x16, [x19, #48]\n  blr x16\n"
-        "  ldr x0, [sp, #56]\n  ldr w14, [x19, #20]\n"
-        "  tbz w14, #3, 18f\n"
-        "  ldr w12, [x0, #0x130]\n  cmp w12, #32\n  mov w13, #32\n  csel w12, w12, w13, ls\n  ldr x10, [x0, #0x138]\n"
-        "  add x11, x19, #72+27*8\n  add x15, x19, #72+27*8+32*4\n  mov x16, #0x2914\n"
-        "19:\n  cbz w12, 18f\n  ldr w13, [x11], #4\n  str w13, [x10, #0x5d0]\n  ldrh w13, [x15], #2\n  strh w13, [x10, x16]\n"
-        "  mov x13, #0x2920\n  add x10, x10, x13\n  sub w12, w12, #1\n  b 19b\n"
-        "18:\n"
-        "  tbz w14, #0, 11f\n  mov x10, #0x3350\n  add x10, x0, x10\n  add x11, x19, #72\n  mov w12, #6\n"
-        "12:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 12b\n"
-        "11:\n  tbz w14, #1, 13f\n  mov x10, #0x3398\n  add x10, x0, x10\n  add x11, x19, #72+0x48\n  mov w12, #3\n"
-        "14:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 14b\n"
-        "13:\n  tbz w14, #2, 23f\n  mov x10, #0x33e0\n  add x10, x0, x10\n  add x11, x19, #72+0x90\n  mov w12, #9\n"
-        "15:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 15b\n"
-        /* bit 4: only the view's item list count +0x33e0 (its items at [+0x33e8], the render jobs' input), not the
-           counters after it that the render jobs add up (+0x341c) */
-        "23:\n  tbz w14, #4, 5f\n  ldr w13, [x19, #72+0x90]\n  mov x10, #0x33e0\n  str w13, [x0, x10]\n"
-        "  b 5f\n"
-        "8:\n  mov w1, w20\n  mov w2, #1\n  ldr x16, [x19, #48]\n  blr x16\n"   /* "b2 1": each view's per-frame start */
-        "  b 5f\n"
-        /* "b2 2": only the view's job state: the record batches (+0x3b78, +0x3b80), the pairs at +0x3ba0 (+0x3b98 of them),
-           the work counters +0x3ba8..+0x3bd4, and the flags the per-frame start sets (+0x3340 |= 0x1001, &= ~0x400;
-           +0x3a80 &= ~2). The lists the logic jobs fill after the per-frame start stay. */
-        "4:\n  str wzr, [x0, #0x3b78]\n  str wzr, [x0, #0x3b80]\n"
-        "  ldr w8, [x0, #0x3b98]\n  ldr x9, [x0, #0x3ba0]\n"
-        "6:\n  cbz w8, 7f\n  str xzr, [x9], #8\n  sub w8, w8, #1\n  b 6b\n"
-        "7:\n  mov x10, #0x3ba8\n  add x10, x0, x10\n  stp xzr, xzr, [x10]\n  stp xzr, xzr, [x10, #16]\n  stp xzr, xzr, [x10, #32]\n  str wzr, [x10, #44]\n"
-        "  ldr w8, [x0, #0x3340]\n  and w8, w8, #0xfffffbff\n  orr w8, w8, #0x1\n  orr w8, w8, #0x1000\n  str w8, [x0, #0x3340]\n"
-        "  ldr w8, [x0, #0x3a80]\n  and w8, w8, #0xfffffffd\n  str w8, [x0, #0x3a80]\n"
-        "5:\n  sub x22, x22, #1\n  b 2b\n"
-        "3:\n"
-        "  ldr x9, [x19, #32]\n  ldr x0, [x9, #0x4b8]\n  ldr x1, [x9, #0x4c0]\n  ldr x2, [x19, #40]\n"
-        "  ldr x16, [x19, #8]\n  blr x16\n"                   /* main+0x3e60b0: the render-only list onto the queue */
-        "  ldr x9, [x19, #32]\n  ldr x0, [x9, #0x4b8]\n  ldr x16, [x19]\n  blr x16\n"   /* and run it */
-        "  adrp x16, _b2_after_runs@PAGE\n  add x16, x16, _b2_after_runs@PAGEOFF\n  blr x16\n"   /* the stage slots of both runs (runtime_b2_twin) */
-        "  mov w8, #3\n  str w8, [x19, #28]\n"   /* after the second run (the post-calc pass, the final assembly): phase 3 */
-        "  ldr x9, [x19, #480]\n  ldr x9, [x9]\n  cbz x9, 22f\n"   /* back to the game's camera */
-        "  ldr s0, [x19, #488]\n  ldr s1, [x9, #20]\n  fadd s1, s1, s0\n  str s1, [x9, #20]\n"
-        "22:\n  ldr w8, [x19, #24]\n  add w8, w8, #1\n  str w8, [x19, #24]\n"
-        "9:\n  ldr x23, [sp, #48]\n  ldp x21, x22, [sp, #32]\n  ldp x19, x20, [sp, #16]\n  ldp x29, x30, [sp], #64\n  ret\n");
-extern void vr_b2_hook(void);
-_Static_assert(offsetof(vr_b2_state,on)==16&&offsetof(vr_b2_state,runs)==24&&offsetof(vr_b2_state,phase)==28&&offsetof(vr_b2_state,stage)==32&&offsetof(vr_b2_state,list)==40&&offsetof(vr_b2_state,begin)==48&&offsetof(vr_b2_state,begin_obj)==56&&offsetof(vr_b2_state,vmgr)==64&&offsetof(vr_b2_state,mask)==20&&offsetof(vr_b2_state,save)==72&&offsetof(vr_b2_state,step_flags)==72+27*8&&offsetof(vr_b2_state,step_bits)==72+27*8+32*4&&offsetof(vr_b2_state,camp)==480&&offsetof(vr_b2_state,eh)==488,"vr_b2_hook offsets");
-static uint64_t vr_b2_job_fn;   /* the render jobs' run function (main+0x2887b80) */
-static void vr_b2_install(Module *m){
-    const uint64_t site=0x3e5adc,runner=0x3e5dfc,setlist=0x3e60b0,job_fn=0x2887b80,data=(m->file_size+0x3fff)&~0x3fffULL,v0=((data-64)&~15ULL)-32;
-    uint32_t got;memcpy(&got,m->base+site,4);
-    const uint32_t want=0x14000000u|((uint32_t)((int64_t)(runner-site)>>2)&0x3ffffff);
-    if(got!=want){fprintf(stderr,"[vr] stereo B2: main+%#llx is %08x, not 1.4.3's tail call (%08x); off\n",(unsigned long long)site,got,want);return;}
-    if(v0<m->patch_off){fprintf(stderr,"[vr] stereo B2: no room in main's patch area tail; off\n");return;}
-    for(unsigned i=0;i<16;i++)if(m->base[v0+i]){fprintf(stderr,"[vr] stereo B2: patch area tail at +%#llx in use; off\n",(unsigned long long)v0);return;}
-    uint32_t c[4]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0};uint64_t hook=(uint64_t)(uintptr_t)vr_b2_hook;memcpy(&c[2],&hook,8);
-    const uint32_t b=aspect_b(site,v0);if(!b){fprintf(stderr,"[vr] stereo B2: branch out of range; off\n");return;}
-    memset(&g_vr_b2,0,sizeof g_vr_b2);g_vr_b2.run=(uint64_t)(uintptr_t)(m->base+runner);g_vr_b2.setlist=(uint64_t)(uintptr_t)(m->base+setlist);
-    vr_b2_job_fn=(uint64_t)(uintptr_t)(m->base+job_fn);g_vr_b2.camp=(uint64_t)(uintptr_t)&g_vr_cam.cam;g_vr_b2.begin=(uint64_t)(uintptr_t)(m->base+0x3dbf28);g_vr_b2.vmgr=(uint64_t)(uintptr_t)(m->base+0x3acda18);
-    uint32_t stage_word;memcpy(&stage_word,m->base+0x97aa4,4);
-    if(stage_word!=0xf9002b00u)runtime_fail("VR summary owner: original instruction mismatch");
-    for(unsigned i=0;i<16;i++)if(m->base[v0-16+i])runtime_fail("VR summary veneer is occupied");
-    uint32_t stage_stub[4]={0x58000050u,0xd61f0200u,0,0};uint64_t stage_hook=(uint64_t)(uintptr_t)vr_stage_hook;
-    memcpy(stage_stub+2,&stage_hook,8);g_b2_stage_return=(uint64_t)(uintptr_t)(m->base+0x97aa8);
-    uint32_t stage_branch=aspect_b(0x97aa4,v0-16);if(!stage_branch)runtime_fail("VR summary veneer out of range");
-    memcpy(m->base+v0-16,stage_stub,sizeof stage_stub);memcpy(m->base+0x97aa4,&stage_branch,4);
-    memcpy(m->base+v0,c,sizeof c);memcpy(m->base+site,&b,4);
-    fprintf(stderr,"[vr] stereo B2: last calc stage through the hook at main+%#llx (veneer +%#llx); second render run off (\"b2 1\")\n",(unsigned long long)site,(unsigned long long)v0);
-}
-/* The object of the calc-tree node (from node, as calctree walks it) whose method is fn; 0 when none. */
-static uint64_t vr_b2_node_obj(uint64_t node,uint64_t fn,int depth){
-    if(depth>24)return 0;
-    uint64_t d[4]={0};jd_read(node+0x50,d,32);uint64_t f=d[2];const uint64_t obj=d[1]+(uint64_t)((int64_t)d[3]>>1);
-    if((d[3]&1)&&obj){uint64_t vt=0;if(jd_read(obj,&vt,8))jd_read(vt+f,&f,8);}
-    if(f==fn&&obj)return obj;
-    uint64_t link=0;jd_read(node+0x28,&link,8);
-    for(int i=0;link&&i<200;i++){uint64_t child=0;if(!jd_read(link+0x20,&child,8)||!child)break;
-        const uint64_t r=vr_b2_node_obj(child,fn,depth+1);if(r)return r;if(!jd_read(child+0x30,&link,8))break;}
-    return 0;
-}
-/* "b2 <0|1|2|3> [mask]": the second render run (modes above). The first "b2" that turns it on builds the render-only list: a breakpoint at main+0x3e5abc gives the
-   stage object x19; its list [x19+0x4d8] (+8 entry count, +0x10 pointers to entries {.., +8 the job}, +0x30 dependency
-   count, +0x38 pointers to dependencies {u16 before, u16 after}: indices in the list) gives every entry whose job's
-   vtable entry 2 is main+0x2887b80, and every dependency between two of them, renumbered. The list object's other
-   fields are copied. The memory is the runtime's own and lives for the session. */
-static void *vr_b2_find(void *arg){
-    const int on=(int)(intptr_t)arg;
-    if(on&&!g_vr_b2.list){
-        bp_reg=19;bp_addr=(uintptr_t)diag_main->base+0x3e5abc;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
-        for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
-        bp_all(0);const uint64_t x19=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
-        uint64_t L=0;uint8_t head[0x48];
-        if(!x19||!jd_read(x19+0x4d8,&L,8)||!jd_read(L,head,sizeof head)){fprintf(stderr,"[vr] b2: the job list was not found\n");return NULL;}
-        int32_t cnt,ecnt;uint64_t arr,earr;memcpy(&cnt,head+8,4);memcpy(&arr,head+0x10,8);memcpy(&ecnt,head+0x30,4);memcpy(&earr,head+0x38,8);
-        if(cnt<=0||cnt>256||ecnt<0||ecnt>4096){fprintf(stderr,"[vr] b2: list sizes %d / %d out of range\n",cnt,ecnt);return NULL;}
-        int map[256];uint64_t *na=calloc((size_t)cnt,8);uint32_t n=0;
-        for(int i=0;i<cnt;i++){uint64_t ent=0,job=0,vt=0,fn=0;map[i]=-1;
-            if(jd_read(arr+8*(uint64_t)i,&ent,8)&&jd_read(ent+8,&job,8)&&jd_read(job,&vt,8)&&jd_read(vt+16,&fn,8)&&fn==vr_b2_job_fn){map[i]=(int)n;na[n++]=ent;}}
-        uint64_t *ne=calloc((size_t)ecnt+1,8);uint16_t *edges=calloc((size_t)ecnt+1,4);uint32_t m=0,dropped=0;
-        for(int i=0;i<ecnt;i++){uint64_t e=0;uint16_t ab[2];if(!jd_read(earr+8*(uint64_t)i,&e,8)||!jd_read(e,ab,4))continue;
-            if(ab[0]>=cnt||ab[1]>=cnt||map[ab[0]]<0||map[ab[1]]<0){dropped++;continue;}
-            edges[2*m]=(uint16_t)map[ab[0]];edges[2*m+1]=(uint16_t)map[ab[1]];ne[m]=(uint64_t)(uintptr_t)&edges[2*m];m++;}
-        uint8_t *nl=calloc(1,sizeof head);memcpy(nl,head,sizeof head);
-        int32_t n32=(int32_t)n,m32=(int32_t)m;uint64_t pa=(uint64_t)(uintptr_t)na,pe=(uint64_t)(uintptr_t)ne;
-        memcpy(nl+8,&n32,4);memcpy(nl+0x10,&pa,8);memcpy(nl+0x30,&m32,4);memcpy(nl+0x38,&pe,8);
-        /* the render system's per-frame start: the calc-tree node whose method is main+0x3db120 (calctree's walk) */
-        bp_reg=0;bp_addr=(uintptr_t)diag_main->base+0x2dadd8;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
-        for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
-        bp_all(0);const uint64_t root=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
-        const uint64_t bobj=root?vr_b2_node_obj(root,(uintptr_t)diag_main->base+0x3db120,0):0;
-        if(!bobj){fprintf(stderr,"[vr] b2: the render system's per-frame start was not found in the calc tree\n");return NULL;}
-        g_vr_b2.begin_obj=bobj;
-        /* the view handler of the render stage 1 (the camera constants' upload, main+0x97fb0 case 1 at main+0x984e4: x0 its
-           view renderer, [x0+0x8a8] the view): b2_stage1_run1 runs it for the first run's render step */
-        bp_reg=0;bp_addr=(uintptr_t)diag_main->base+0x984e4;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
-        for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
-        bp_all(0);b2_s1_deleg=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
-        {uint64_t v=0;if(b2_s1_deleg)jd_read(b2_s1_deleg+0x8a8,&v,8);fprintf(stderr,"[vr] b2: the camera upload (render stage 1) of view renderer %#llx, view %#llx\n",(unsigned long long)b2_s1_deleg,(unsigned long long)v);}
-        /* the summary slots' owners: x25 where the render stage's summary recording ends (main+0x97aa4, after EndRecording;
-           the handle goes to [x24+0x50], x24 = [x25+0xd8] + 0x98 * (byte [x25+0xe1] * half [x25+0xea] + stage slot)) */
-        for(unsigned i=0;i<8;i++){atomic_store(&bp_seen[i].v,0);atomic_store(&bp_seen[i].n,0);atomic_store(&bp_seen[i].raw,0);}
-        bp_reg=25;bp_collect=1;bp_addr=(uintptr_t)diag_main->base+0x97aa4;
-        for(int t=0;t<50;t++){bp_all(1);usleep(10000);}
-        bp_all(0);bp_addr=0;bp_collect=0;bp_reg=1;b2_slot_n=0;
-        for(unsigned i=0;i<8;i++){const uint64_t o=atomic_load(&bp_seen[i].v);if(!o)continue;b2_slot_obj[b2_slot_n++]=o;
-            int32_t n=0;uint8_t half=0;uint16_t stride=0;uint64_t arr=0;jd_read(o+0xd0,&n,4);jd_read(o+0xe1,&half,1);jd_read(o+0xea,&stride,2);jd_read(o+0xd8,&arr,8);
-            fprintf(stderr,"[vr] b2: render stage summaries of %#llx: %d slots of 0x98 at %#llx, %u a half, current half %u (%u recordings in 0.5 s)\n",(unsigned long long)o,n,(unsigned long long)arr,stride,half,atomic_load(&bp_seen[i].n));}
-        g_vr_b2.stage=x19;__atomic_store_n(&g_vr_b2.list,(uint64_t)(uintptr_t)nl,__ATOMIC_RELEASE);
-        fprintf(stderr,"[vr] b2: render-only list: %u of %d jobs, %u of %d dependencies (%u to other jobs dropped); per-frame start on %#llx\n",n,cnt,m,ecnt,dropped,(unsigned long long)bobj);
-        if(!n)return NULL;
-    }
-    __atomic_store_n(&g_vr_b2.on,(uint32_t)on,__ATOMIC_RELEASE);
-    fprintf(stderr,"[vr] b2: second render run %s (%u done so far)\n",!on?"off":on==2?"on, views' job state only":"on, views' per-frame start",g_vr_b2.runs);
-    return NULL;
-}
-/* Draws recorded per run (hle_nvn.c at each recording's end): the first run's (with the frame's few other recordings) and
-   the second run's, averaged per frame every 60 second runs: the second run is complete when the two agree.
-   Each recording's handle (the runtime's copy of it, hle_nvn.c) is kept with its run and draws (b2_tab, the last 8192),
-   and the handles the frame calls (CallCommands: the frame's primary command buffers call the recordings) are counted
-   by run: which run's pictures the game's single submission holds. */
-static void *_Atomic b2_left_cap;
-static _Atomic uint32_t b2_cap_frame;static _Atomic uint64_t b2_cap_taken,b2_cap_mismatch,b2_why[4],b2_slot_hits;static _Atomic uint32_t b2_twin_frame;   /* the left capture's frame against the twins' (runtime_b2_left_cap) */
-/* Called by vr_b2_hook between the runs (the game's thread, the first run complete): the uniforms the first run's
-   recordings bind, captured now (mtl_sub_capture_ubos, as the translation thread mode does at the submit call), for the
-   left replay of the stereo submission (hle_nvn.c submit_exec): the second run writes the same blocks. */
-/* Render stage 1 for the first run (mask bit 8, stereo B2 step 2): the game uploads each view's camera constants (the
-   camera blocks: view, projection, the frames before, the shadow cascades) only after the calc stage, in render stage 1
-   (main+0x97fb0 with stage 1, run by the post-calc pass), from the view's current render step: the views' per-frame
-   start flips between two render steps, each with its own blocks (entries of 0x480 at [step+0x18], block pointer at
-   +0x3e8). With two runs the first run's step is never uploaded: its recordings bound blocks that kept the camera of
-   the frame stereo began (b2ah / b2aj: the left eye's camera fixed while the right one turned with the head). So between
-   the runs the view handler of stage 1 runs here for the first run's step, as the game does it (main+0x984e4..0x982bc):
-   the view's +0x170 list (vt+0x48 (object, step), the default no-op left out), main+0xe31d4 (step, [view+0x3a80] bit 2),
-   then [view+0x3ab0] vt+0x88 (object, step, view). The game's state is the one stage 1 sees after a frame's run. */
-static void b2_stage1_run1(void){
-    const uint64_t d=b2_s1_deleg,mb=(uintptr_t)diag_main->base;if(!d)return;
-    uint64_t view=0,sa=0,dflt=0;int8_t idx=0;int32_t ns=0;uint8_t fl909=0;uint16_t fl8a4=0;uint64_t f228=1;
-    if(!jd_read(d+0x8a8,&view,8)||!view||!jd_read(d+0x908,&idx,1)||!jd_read(d+0x909,&fl909,1)||!jd_read(d+0x8a4,&fl8a4,2)||!jd_read(d+0x228,&f228,8))return;
-    if(f228||!(fl8a4&0x10)||(fl909&8))return;   /* the conditions of the game's inline view handler */
-    jd_read(view+0x130,&ns,4);jd_read(view+0x138,&sa,8);jd_read(mb+0x3970540,&dflt,8);
-    const int32_t k=(uint32_t)ns>(uint32_t)(int32_t)idx?idx:0;const uint64_t step=sa+(uint64_t)k*0x2920;
-    uint16_t sf=0;jd_read(step+0x2914,&sf,2);if(!(sf&1))return;
-    int32_t nl=0;uint64_t la=0;jd_read(view+0x170,&nl,4);jd_read(view+0x178,&la,8);
-    for(int32_t i=0;i<nl&&i<64;i++){uint64_t o=0,vt=0,fn=0;if(!jd_read(la+8*(uint64_t)i,&o,8)||!o||!jd_read(o,&vt,8)||!jd_read(vt+0x48,&fn,8)||fn==dflt)continue;
-        ((void(*)(uint64_t,uint64_t))(uintptr_t)fn)(o,step);}
-    uint32_t f3a80=0;jd_read(view+0x3a80,&f3a80,4);
-    ((void(*)(uint64_t,uint32_t))(mb+0xe31d4))(step,(f3a80>>2)&1);
-    uint64_t o=0,vt=0,fn=0;if(jd_read(view+0x3ab0,&o,8)&&o&&jd_read(o,&vt,8)&&jd_read(vt+0x88,&fn,8)&&fn)((void(*)(uint64_t,uint64_t,uint64_t))(uintptr_t)fn)(o,step,view);
-    static int said;if(said<3){said++;uint64_t ents=0,blk=0;int32_t ne=0;jd_read(step+0x10,&ne,4);jd_read(step+0x18,&ents,8);if(ents)jd_read(ents+0x3e8,&blk,8);
-        fprintf(stderr,"[vr] b2: render stage 1 for the first run: view %#llx, render step %d of %d (%#llx, %d cameras, the first one's block %#llx)\n",(unsigned long long)view,k,ns,(unsigned long long)step,ne,(unsigned long long)blk);}
-}
-void b2_between_runs(void);
-void *runtime_b2_left_cap(void){
-    void *c=atomic_exchange(&b2_left_cap,NULL);
-    if(c){atomic_fetch_add(&b2_cap_taken,1);if(atomic_load(&b2_cap_frame)!=atomic_load_explicit(&b2_twin_frame,memory_order_relaxed))atomic_fetch_add(&b2_cap_mismatch,1);}
-    return c;}
-static _Atomic uint64_t b2_draws[3],b2_calls[4],b2_cdraws[4];static _Atomic uint64_t b2_twin_hits,b2_twin_miss;static _Atomic uint32_t b2_printed;
-enum{B2_TAB=8192};static struct{_Atomic uint64_t h;uint64_t key;uint32_t draws,frame;uint16_t occ;uint8_t phase;uint32_t ra[6];} b2_tab[B2_TAB];   /* ra: the innermost main return addresses (diagnostic) */
-/* A recording's identity: the guest code that recorded it (its 3 innermost return addresses in main, from the host frames
-   through the HLE stack switch's frame record) and how many recordings with that key the same run made before it. */
-/* The summary's arguments identify the renderer and render-layer object.
-   Recording order and call stacks vary with worker scheduling. */
-static pthread_mutex_t b2_stage_mu=PTHREAD_MUTEX_INITIALIZER;
-static struct { uint64_t owner,layer,handle;uint32_t frame;int phase; } b2_stage_records[2048];
-static unsigned b2_stage_next;
-void b2_stage_record(uint64_t handle,uint64_t owner,uint64_t layer) {
-    if(!g_vr_b2.on||!owner||!layer)return;
-    extern uint64_t hle_vr_copy_record(uint64_t);
-    const uint64_t identity=hle_vr_copy_record(handle);unsigned phase=(unsigned)identity;uint32_t frame=(uint32_t)(identity>>32);
-    if(phase>1)return;
-    pthread_mutex_lock(&b2_stage_mu);
-    extern void hle_vr_copy_retain(uint64_t);
-    unsigned at=2048;for(unsigned i=0;i<2048;i++)if(!b2_stage_records[i].handle){at=i;break;}
-    if(at==2048)runtime_fail("VR stage ownership table is full");
-    hle_vr_copy_retain(handle);b2_stage_next++;
-    b2_stage_records[at].owner=owner;b2_stage_records[at].layer=layer;b2_stage_records[at].handle=handle;
-    b2_stage_records[at].frame=frame;b2_stage_records[at].phase=(int)phase;
-    if(b2_stage_next<=32)fprintf(stderr,"[vr] stage identity frame %u eye %d owner %#llx layer %#llx handle %#llx\n",frame,(int)phase,(unsigned long long)owner,(unsigned long long)layer,(unsigned long long)handle);
-    pthread_mutex_unlock(&b2_stage_mu);
-}
-__asm__(".text\n.p2align 4\n.globl _vr_stage_hook\n_vr_stage_hook:\n"
-        "str x0,[x24,#0x50]\nsub sp,sp,#320\nstp x0,x1,[sp]\nstp x2,x3,[sp,#16]\n"
-        "stp x4,x5,[sp,#32]\nstp x6,x7,[sp,#48]\nstp x8,x9,[sp,#64]\nstp x10,x11,[sp,#80]\n"
-        "stp x12,x13,[sp,#96]\nstp x14,x15,[sp,#112]\nstp x18,x30,[sp,#128]\n"
-        "mrs x17,nzcv\nstr x17,[sp,#144]\nstp q0,q1,[sp,#160]\nstp q2,q3,[sp,#192]\nstp q4,q5,[sp,#224]\nstp q6,q7,[sp,#256]\n"
-        "ldr x1,[sp,#400]\nldr x2,[sp,#408]\nbl _b2_stage_record\n"
-        "ldp q0,q1,[sp,#160]\nldp q2,q3,[sp,#192]\nldp q4,q5,[sp,#224]\nldp q6,q7,[sp,#256]\n"
-        "ldr x17,[sp,#144]\nmsr nzcv,x17\nldp x18,x30,[sp,#128]\nldp x14,x15,[sp,#112]\nldp x12,x13,[sp,#96]\n"
-        "ldp x10,x11,[sp,#80]\nldp x8,x9,[sp,#64]\nldp x6,x7,[sp,#48]\nldp x4,x5,[sp,#32]\nldp x2,x3,[sp,#16]\nldp x0,x1,[sp]\nadd sp,sp,#320\n"
-        "adrp x16,_g_b2_stage_return@PAGE\nldr x16,[x16,_g_b2_stage_return@PAGEOFF]\nbr x16\n");
-extern void vr_stage_hook(void);
-/* Diagnostic (b2 mask 0x1000, off by default; 2026-11-10: the second picture lost the grass, the ground's shading and
-   the sky): each view's list counts after the first run, before its per-frame start runs again, and after the second
-   run, every 60th stereo frame, 64 lines at most. A list the logic jobs fill once a frame keeps its count through the
-   first run and is empty after a second run that cleared it; one the render jobs fill on each run is about as full
-   after the second run as after the first. */
-static void b2_view_lists(const char *when){
-    if(!(g_vr_b2.mask&0x1000))return;
-    static uint32_t lines;const uint32_t run=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);
-    if(run%60!=1||lines>=64)return;
-    uint64_t mgr=0,views=0;int32_t n=0;
-    if(!jd_read(g_vr_b2.vmgr,&mgr,8)||!mgr||!jd_read(mgr+0x10,&n,4)||!jd_read(mgr+0x18,&views,8)||!views)return;
-    static const uint32_t at[5]={0x3358,0x3368,0x3378,0x33a0,0x33e0};
-    for(int i=0;i<n&&i<8;i++){
-        uint64_t v=0;if(!jd_read(views+8*(uint64_t)i,&v,8)||!v)continue;
-        uint32_t a[5],c[12];
-        for(int k=0;k<5;k++)if(!jd_read(v+at[k],&a[k],4))a[k]=~0u;
-        for(int k=0;k<12;k++)if(!jd_read(v+0x33f0+4*(uint64_t)k,&c[k],4))c[k]=~0u;
-        lines++;
-        fprintf(stderr,"[vr] b2 lists %s: frame %u view %d: models %u %u %u, +0x33a0 %u, items +0x33e0 %u, counters +0x33f0.. %u %u %u %u %u %u %u %u %u %u %u %u\n",
-                when,run,i,a[0],a[1],a[2],a[3],a[4],c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11]);
-    }
-}
-void b2_between_runs(void){
-    b2_view_lists("after the first run");
-    if(g_vr_b2.mask&0x100)b2_stage1_run1();
-    extern void *mtl_sub_capture_ubos(const uint64_t *,int);extern void mtl_ucap_free(void *);
-    const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);uint64_t handles[2048];int count=0;
-    pthread_mutex_lock(&b2_stage_mu);
-    for(unsigned i=0;i<2048;i++)if(b2_stage_records[i].handle&&b2_stage_records[i].frame==frame&&b2_stage_records[i].phase==0)handles[count++]=b2_stage_records[i].handle;
-    void *capture=count&&(g_vr_b2.mask&0x80)?mtl_sub_capture_ubos(handles,count):NULL;
-    pthread_mutex_unlock(&b2_stage_mu);
-    atomic_store(&b2_cap_frame,frame);void *old=atomic_exchange(&b2_left_cap,capture);if(old)mtl_ucap_free(old);
-}
-static uint64_t b2_rec_key(uint32_t ra[6]){
-    const uint64_t mlo=(uintptr_t)diag_main->base,mhi=mlo+diag_main->size;uint64_t fp=(uintptr_t)__builtin_frame_address(0),k=0xcbf29ce484222325ull;int got=0;
-    for(int i=0;i<6;i++)ra[i]=0;
-    for(int q=0;q<64&&got<6&&fp&&!(fp&15);q++){uint64_t fr[2];if(!jd_read(fp,fr,16))break;if(fr[1]>=mlo&&fr[1]<mhi){if(got<3)k=(k^(fr[1]-mlo))*0x100000001b3ull;ra[got++]=(uint32_t)(fr[1]-mlo);}fp=fr[0];}
-    return k;
-}
-/* The first run's recordings by identity (key, occurrence, frame): the twin of a second-run recording. */
-static struct{_Atomic uint64_t h;uint64_t key;uint32_t frame;uint16_t occ;} b2_lidx[8192];
-static struct{uint64_t key;uint32_t frame;uint16_t n;uint8_t phase;} b2_occ[1024];static pthread_mutex_t b2_occ_mu=PTHREAD_MUTEX_INITIALIZER;
-static uint16_t b2_occ_next(uint64_t key,uint32_t frame,uint8_t phase){
-    pthread_mutex_lock(&b2_occ_mu);unsigned i=(unsigned)(key*0x9E3779B97F4A7C15ull>>54)&1023;uint16_t r=0;
-    for(int t=0;t<1024;t++,i=(i+1)&1023){if(b2_occ[i].frame!=frame||b2_occ[i].phase!=phase||!b2_occ[i].key){b2_occ[i].key=key;b2_occ[i].frame=frame;b2_occ[i].phase=phase;b2_occ[i].n=1;r=0;break;}
-        if(b2_occ[i].key==key){r=b2_occ[i].n++;break;}}
-    pthread_mutex_unlock(&b2_occ_mu);return r;
-}
-void runtime_b2_rec(uint32_t draws,uint64_t handle){
-    if(!g_vr_b2.on)return;
-    const uint32_t ph0=__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);const int ph=ph0==1?1:ph0==3?2:0;   /* 0 first run, 1 second run, 2 after it (the post-calc pass, the final assembly) */
-    atomic_fetch_add_explicit(&b2_draws[ph],draws,memory_order_relaxed);
-    const unsigned k=(unsigned)((handle>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
-    uint32_t ra[6];const uint64_t key=b2_rec_key(ra);const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED)-(ph==2?1u:0u);   /* after the second run the counter has moved on */
-    {extern void hle_vr_copy_tag(uint64_t,uint32_t,unsigned);hle_vr_copy_tag(handle,frame,(unsigned)ph);}
-    memcpy(b2_tab[k].ra,ra,sizeof ra);b2_tab[k].draws=draws;b2_tab[k].phase=(uint8_t)ph;b2_tab[k].key=key;b2_tab[k].frame=frame;b2_tab[k].occ=b2_occ_next(key,frame,(uint8_t)ph);
-    atomic_store_explicit(&b2_tab[k].h,handle,memory_order_release);
-
-    if(ph==0){const unsigned j=(unsigned)((key^((uint64_t)b2_tab[k].occ*0x9E3779B97F4A7C15ull)^((uint64_t)frame<<32))*0xD6E8FEB86659FD93ull>>51)&(B2_TAB-1);
-        b2_lidx[j].key=key;b2_lidx[j].occ=b2_tab[k].occ;b2_lidx[j].frame=frame;atomic_store_explicit(&b2_lidx[j].h,handle,memory_order_release);}
-    const uint32_t runs=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);uint32_t last=atomic_load(&b2_printed);
-    if(runs>=last+60&&atomic_compare_exchange_strong(&b2_printed,&last,runs)){
-        const uint64_t a=atomic_exchange(&b2_draws[0],0),b=atomic_exchange(&b2_draws[1],0),f=atomic_exchange(&b2_draws[2],0);const uint32_t n=last?runs-last:60;
-        uint64_t c[4],d[4];for(int i=0;i<4;i++){c[i]=atomic_exchange(&b2_calls[i],0);d[i]=atomic_exchange(&b2_cdraws[i],0);}
-        {const uint64_t th=atomic_exchange(&b2_twin_hits,0),tm=atomic_exchange(&b2_twin_miss,0);if(th||tm)fprintf(stderr,"[vr] b2 twins: %.1f second-run recordings replaced by their first-run twin a frame, %.1f without a twin\n",(double)th/n,(double)tm/n);
-         uint64_t w[4];for(int i=0;i<4;i++)w[i]=atomic_exchange(&b2_why[i],0);
-         fprintf(stderr,"[vr] b2 twins: calls not paired a frame: %.1f not second-run recordings, %.1f of the frame in progress, %.1f too old, %.1f without a twin; left captures of another frame than their twins %llu of %llu\n",
-                 (double)w[0]/n,(double)w[1]/n,(double)w[2]/n,(double)w[3]/n,(unsigned long long)atomic_exchange(&b2_cap_mismatch,0),(unsigned long long)atomic_exchange(&b2_cap_taken,0));
-         fprintf(stderr,"[vr] b2 twins: by renderer/layer identities %.1f a frame (%.1f stage pairs owned a frame)\n",(double)atomic_exchange(&b2_slot_hits,0)/n,(double)atomic_exchange(&b2_map_n,0)/n);}
-        fprintf(stderr,"[vr] b2 draws a frame: first run %.0f, second run %.0f, after it %.0f; calls of first-run recordings %.1f (%.0f draws), second-run %.1f (%.0f), after-run %.1f (%.0f), unknown %.1f (%u frames, mode %u mask %#x)\n",
-                (double)a/n,(double)b/n,(double)f/n,(double)c[0]/n,(double)d[0]/n,(double)c[1]/n,(double)d[1]/n,(double)c[2]/n,(double)d[2]/n,(double)c[3]/n,n,g_vr_b2.on,g_vr_b2.mask);
-        {const uint64_t cam=g_vr_cam.cam,writer=__atomic_load_n(&g_vr_cam.native_writer,__ATOMIC_ACQUIRE);float tx=0;if(cam)memcpy(&tx,(const void *)(uintptr_t)(cam+20),4);fprintf(stderr,"[vr] b2 eyes: half the eye distance %.4f m; the main camera %#llx, native writer %#llx, owner match %d, its view t.x now %.4f\n",g_vr_b2.eh,(unsigned long long)cam,(unsigned long long)writer,runtime_vr_camera_owned(cam,0),tx);}}
-}
-/* "b2calls": the calls of known recordings (first / second run) between the next two presents, in order, by caller
-   (the command buffer object, and the run it was in when it called): how the game's frame strings the runs' recordings
-   together. Calls of recordings the table does not know (made before, e.g. the materials' small command lists) are
-   only counted. */
-enum{B2_CL=4096};static struct{uint64_t caller,where;uint32_t draws;uint8_t callee,inrun;} b2_cl[B2_CL];
-static _Atomic uint32_t b2_cln,b2_clunk;static _Atomic int b2_clstate;   /* 1 armed, 2 recording */
-static uint64_t b2_clchain[12];static _Atomic int b2_clchain_n;   /* the guest's call chain at the first call from a stack array (the final assembly) */
-void runtime_vr_b2_calls(void){atomic_store(&b2_cln,0);atomic_store(&b2_clunk,0);atomic_store(&b2_clstate,1);fprintf(stderr,"[vr] b2calls: the next frame's calls\n");}
-static void b2_calls_present(void){
-    int st=atomic_load(&b2_clstate);
-    if(st==1){atomic_store(&b2_cln,0);atomic_store(&b2_clunk,0);atomic_store(&b2_clstate,2);return;}
-    if(st!=2)return;
-    atomic_store(&b2_clstate,0);uint32_t n=atomic_load(&b2_cln);if(n>B2_CL)n=B2_CL;
-    fprintf(stderr,"[vr] b2calls: %u calls of known recordings, %u of others\n",n,atomic_load(&b2_clunk));
-    {int cn=atomic_load(&b2_clchain_n);char cl[900];size_t cu=(size_t)snprintf(cl,sizeof cl,"[vr] b2calls the first call from a stack array came from:");
-     for(int i=0;i<cn&&cu<sizeof cl-64;i++){char d[64];vr_desc(b2_clchain[i],d,sizeof d);cu+=(size_t)snprintf(cl+cu,sizeof cl-cu," < %s",d);}
-     fprintf(stderr,"%s\n",cl);atomic_store(&b2_clchain_n,0);}
-    char line[1200];size_t u=0;uint64_t cur=~0ull;int curin=-1;
-    for(uint32_t i=0;i<=n;i++){
-        if(i==n||b2_cl[i].caller!=cur||b2_cl[i].inrun!=curin){if(u)fprintf(stderr,"%s\n",line);if(i==n)break;
-            cur=b2_cl[i].caller;curin=b2_cl[i].inrun;u=(size_t)snprintf(line,sizeof line,"[vr] b2calls caller %#llx (%s):",(unsigned long long)cur,curin==1?"in the second run":curin==3?"after the second run":"in the first run");}
-        if(b2_cl[i].callee==4){if(u<sizeof line-48)u+=(size_t)snprintf(line+u,sizeof line-u," ?%#x@%#llx",b2_cl[i].draws,(unsigned long long)b2_cl[i].where);continue;}   /* unknown, low 32 bits of the handle */
-        if(u<sizeof line-40)u+=(size_t)snprintf(line+u,sizeof line-u," %c%u","LRP"[b2_cl[i].callee<3?b2_cl[i].callee:0],b2_cl[i].draws);
-        if(!b2_cl[i].inrun&&b2_cl[i].callee&&u<sizeof line-40)u+=(size_t)snprintf(line+u,sizeof line-u,"@%#llx",(unsigned long long)b2_cl[i].where);}   /* where the game passed the handle from */
-}
-/* "b2slots" (stereo B2 diagnostic): where the game keeps the runs' recording handles between frames. Scans the view
-   manager [main+0x3acda18] (0x400 bytes), each of its views (+0x10 count, +0x18 views: 0x3c00 bytes each, and the
-   view's render steps: +0x130 of them at +0x138, 0x2920 bytes each) and the render system [main+0x3acdf90] (0x1000
-   bytes) for words that are handles of the table (b2_tab): first-run (L) or second-run (R) recordings. */
-static int b2_known(uint64_t v,int *ph,uint32_t *dr){const unsigned k=(unsigned)((v>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
-    if(!v||atomic_load_explicit(&b2_tab[k].h,memory_order_acquire)!=v)return 0;*ph=b2_tab[k].phase;*dr=b2_tab[k].draws;return 1;}
-static int b2_scan(uint64_t base,uint64_t len,const char *what,int shown){
-    static uint64_t buf[0x800];
-    for(uint64_t off=0;off<len&&shown<96;off+=sizeof buf){const uint64_t n=len-off<sizeof buf?len-off:sizeof buf;if(!jd_read(base+off,buf,n))continue;
-        for(uint64_t i=0;i<n/8&&shown<96;i++){int ph;uint32_t dr;if(!b2_known(buf[i],&ph,&dr))continue;
-            fprintf(stderr,"[vr] b2slots %s+%#llx (%#llx) = %c handle, %u draws\n",what,(unsigned long long)(off+8*i),(unsigned long long)(base+off+8*i),ph?'R':'L',dr);shown++;}}
-    return shown;
-}
-static void *b2_slots_run(void *arg){
-    (void)arg;int shown=0;const uint64_t mb=(uintptr_t)diag_main->base;uint64_t V=0,C=0;jd_read(mb+0x3acda18,&V,8);jd_read(mb+0x3acdf90,&C,8);
-    if(V){shown=b2_scan(V,0x400,"viewmgr",shown);int32_t nv=0;uint64_t va=0;jd_read(V+0x10,&nv,4);jd_read(V+0x18,&va,8);
-        for(int i=0;i<nv&&i<8;i++){uint64_t v=0;if(!jd_read(va+8*(uint64_t)i,&v,8)||!v)continue;char w[32];snprintf(w,sizeof w,"view%d",i);shown=b2_scan(v,0x3c00,w,shown);
-            int32_t ns=0;uint64_t sa=0;jd_read(v+0x130,&ns,4);jd_read(v+0x138,&sa,8);
-            if(ns>0&&ns<64&&sa){snprintf(w,sizeof w,"view%d.steps",i);fprintf(stderr,"[vr] b2slots view%d: %d render steps at %#llx\n",i,ns,(unsigned long long)sa);shown=b2_scan(sa,(uint64_t)ns*0x2920,w,shown);}}}
-    if(C)shown=b2_scan(C,0x1000,"rendersys",shown);
-    fprintf(stderr,"[vr] b2slots done: %d handles found\n",shown);return NULL;
-}
-/* "b2pair": the last complete frame's recordings by identity: first run (L) against second run (R), (key, occurrence)
-   pairs matched, and the unmatched ones with their keys and draws. */
-static void *b2_pair_run(void *arg){
-    (void)arg;const uint32_t f=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED)-2;
-    static struct{uint64_t key;uint32_t draws;uint16_t occ;uint8_t ph,used;} e[2048];int n=0;
-    for(unsigned i=0;i<B2_TAB&&n<2048;i++){if(!atomic_load(&b2_tab[i].h)||b2_tab[i].frame!=f||b2_tab[i].phase>1)continue;e[n].key=b2_tab[i].key;e[n].draws=b2_tab[i].draws;e[n].occ=b2_tab[i].occ;e[n].ph=b2_tab[i].phase;e[n].used=0;n++;}
-    {int hist[7][3]={{0}};int tot=0;for(unsigned i=0;i<B2_TAB;i++){if(!atomic_load(&b2_tab[i].h))continue;tot++;const int d=(int)(b2_tab[i].frame-f);if(d>=-3&&d<=3&&b2_tab[i].phase<3)hist[d+3][b2_tab[i].phase]++;}
-     fprintf(stderr,"[vr] b2pair table: %d handles; by frame - %u (first / second / after):",tot,f);for(int d=0;d<7;d++)fprintf(stderr," %+d: %d/%d/%d",d-3,hist[d][0],hist[d][1],hist[d][2]);fprintf(stderr,"\n");}
-    {int hist[7][3]={{0}};int tot=0;for(unsigned i=0;i<B2_TAB;i++){if(!atomic_load(&b2_tab[i].h))continue;tot++;const int d=(int)(b2_tab[i].frame-f);if(d>=-3&&d<=3&&b2_tab[i].phase<3)hist[d+3][b2_tab[i].phase]++;}
-     fprintf(stderr,"[vr] b2pair table: %d handles; by frame - %u (first / second / after):",tot,f);for(int d=0;d<7;d++)fprintf(stderr," %+d: %d/%d/%d",d-3,hist[d][0],hist[d][1],hist[d][2]);fprintf(stderr,"\n");}
-    int nl=0,nr=0,m=0,dd=0;for(int i=0;i<n;i++){if(e[i].ph)nr++;else nl++;}
-    for(int i=0;i<n;i++){if(e[i].ph!=1)continue;for(int j=0;j<n;j++)if(!e[j].used&&e[j].ph==0&&e[j].key==e[i].key&&e[j].occ==e[i].occ){e[j].used=e[i].used=1;m++;if(e[j].draws!=e[i].draws)dd++;break;}}
-    fprintf(stderr,"[vr] b2pair frame %u: %d first-run recordings, %d second-run, %d pairs by (code, order) (%d with different draws)\n",f,nl,nr,m,dd);
-    int shown=0;for(int i=0;i<n&&shown<24;i++)if(!e[i].used){fprintf(stderr,"[vr] b2pair   unmatched %c key %#llx #%u, %u draws\n",e[i].ph?'R':'L',(unsigned long long)e[i].key,e[i].occ,e[i].draws);shown++;}
-    return NULL;
-}
-void runtime_vr_b2_pair(void){pthread_t t;pthread_create(&t,NULL,b2_pair_run,NULL);pthread_detach(t);}
-void runtime_vr_b2_slots(void){pthread_t t;pthread_create(&t,NULL,b2_slots_run,NULL);pthread_detach(t);}
-/* hle_nvn.c CallCommands: the handle to inline instead of h, or 0. Mask bit 6 (a check of the pairing and of the first
-   run's completeness): after the second run (the post-calc pass, the frame's final assembly), a second-run recording is
-   replaced by its first-run twin, so the screen shows the first run (the left eye). */
-/* Mask bit 7: stereo frames (the twin goes behind the second-run recording between OP_EYE marks, hle_nvn.c), counted
-   in b2_marks so the submission that carries them is replayed once per eye (hle_nvn.c submit_exec). */
-static _Atomic uint64_t b2_marks;
-int runtime_b2_stereo(void){return g_vr_b2.on&&(g_vr_b2.mask&0x80);}
-int runtime_b2_keep(void){return g_vr_b2.on&&(g_vr_b2.mask&0xc0)&&__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED)==0;}   /* hle_nvn.c: first-run copies stay two submits */
-uint64_t runtime_b2_stereo_marks(void){return atomic_load_explicit(&b2_marks,memory_order_relaxed);}
-/* Outside the second run, a second-run recording of a frame already done: the final assembly (the post-calc pass runs
-   asynchronously and sometimes still records after the next frame's stage has begun, phase 0; b2ae: half the stereo
-   frames had no twins when only phase 3 counted). */
-/* Stereo B2: the twins by the game's own data. A render stage's summary recording (main+0x96ca0, ending at main+0x97aa4)
-   is stored in its owner's slot [owner+0xd8] + 0x98 * (half * per-half count + stage) at +0x50, the half ([owner+0xe1])
-   flipping with each views' per-frame start: the first run fills one half, the second the other. When the second run
-   ends (vr_b2_hook) both halves hold this frame's summaries, before the final assembly takes the second run's: each
-   second-run summary is mapped to the first-run one of the same stage (b2_map). The call chain of a recording is no
-   identity: the same job runs on the calc thread or a worker, inline or not (b2ar: every other frame's summaries unpaired). */
-void b2_after_runs(void){
-    b2_view_lists("after the second run");
-    const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);
-    extern void hle_vr_copy_bind(uint64_t,uint64_t);extern void hle_vr_copy_release(uint64_t);
-    pthread_mutex_lock(&b2_stage_mu);
-    for(unsigned i=0;i<2048;i++){
-        __typeof__(b2_stage_records[0]) *right=&b2_stage_records[i];
-        if(!right->handle||right->phase!=1||right->frame!=frame)continue;
-        unsigned left_count=0,right_count=0;uint64_t left=0;
-        for(unsigned j=0;j<2048;j++){
-            __typeof__(b2_stage_records[0]) *candidate=&b2_stage_records[j];
-            if(!candidate->handle||candidate->frame!=frame||candidate->owner!=right->owner||candidate->layer!=right->layer)continue;
-            if(candidate->phase==0){left=candidate->handle;left_count++;}else right_count++;
-        }
-        if(left_count==1&&right_count==1){hle_vr_copy_bind(right->handle,left);atomic_fetch_add(&b2_map_n,1);}
-    }
-    for(unsigned i=0;i<2048;i++)if(b2_stage_records[i].handle&&b2_stage_records[i].frame==frame){hle_vr_copy_release(b2_stage_records[i].handle);b2_stage_records[i].handle=0;}
-    pthread_mutex_unlock(&b2_stage_mu);
-}
-/* By the recording's own frame, not by the run in progress: the final assembly of a frame (asynchronous) sometimes runs
-   while the next frame's second run is recording (b2am: every other stereo frame had no twins while calls during the
-   second run were never paired). That run's own recordings (calls nested in its summaries) are of the frame in progress
-   (frame == runs) and stay as they are. A recording more than two frames old is not paired: its twin's copy is kept for
-   two submits only (hle_nvn.c keep_until). b2_why counts the calls that were not paired: [0] not a known second-run
-   recording, [1] of the frame in progress, [2] too old, [3] no twin. */
-uint64_t runtime_b2_twin(uint64_t h){
-    if(!g_vr_b2.on||!(g_vr_b2.mask&0xc0))return 0;
-    extern uint64_t hle_vr_copy_twin(uint64_t);
-    uint64_t twin=hle_vr_copy_twin(h);
-    if(twin){atomic_fetch_add_explicit(&b2_twin_hits,1,memory_order_relaxed);atomic_fetch_add(&b2_slot_hits,1);
-        extern uint64_t hle_vr_copy_record(uint64_t);atomic_store_explicit(&b2_twin_frame,(uint32_t)(hle_vr_copy_record(h)>>32),memory_order_relaxed);
-        if(g_vr_b2.mask&0x80)atomic_fetch_add_explicit(&b2_marks,1,memory_order_relaxed);return twin;}
-    atomic_fetch_add_explicit(&b2_twin_miss,1,memory_order_relaxed);return 0;
-}
-void runtime_b2_called(int n,const uint64_t *h,uint64_t caller){
-    if(!g_vr_b2.on)return;
-    const int st=atomic_load_explicit(&b2_clstate,memory_order_relaxed);
-    for(int i=0;i<n;i++){const unsigned k=(unsigned)((h[i]>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
-        const int known=atomic_load_explicit(&b2_tab[k].h,memory_order_acquire)==h[i];const int ph=known?b2_tab[k].phase:3;
-        atomic_fetch_add_explicit(&b2_calls[ph],1,memory_order_relaxed);if(known)atomic_fetch_add_explicit(&b2_cdraws[ph],b2_tab[k].draws,memory_order_relaxed);
-        if(st==2){if(!known){atomic_fetch_add_explicit(&b2_clunk,1,memory_order_relaxed);
-                /* an unknown handle passed from a stack array (the final assembly passes its handles that way): logged */
-                const uint64_t w=(uint64_t)(uintptr_t)&h[i];
-                if(w>=0x100000000ull&&w<0x200000000ull){const uint32_t j=atomic_fetch_add(&b2_cln,1);if(j<B2_CL){b2_cl[j].caller=caller;b2_cl[j].where=w;b2_cl[j].draws=(uint32_t)(h[i]&0xffffffffu);b2_cl[j].callee=4;b2_cl[j].inrun=(uint8_t)__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);}}
-                continue;}
-            {const uint64_t w=(uint64_t)(uintptr_t)&h[i];if(w>=0x160000000ull&&w<0x180000000ull&&!atomic_load(&b2_clchain_n)){   /* the first call from a stack array (the final assembly): the guest code that made it */
-                const uint64_t mlo=(uintptr_t)diag_main->base,mhi=mlo+diag_main->size;uint64_t fp=(uintptr_t)__builtin_frame_address(0);int guest=0,cn=0;
-                for(int q=0;q<64&&cn<12&&fp&&!(fp&15);q++){uint64_t fr[2];if(!jd_read(fp,fr,16))break;if(!guest&&fr[1]>=mlo&&fr[1]<mhi)guest=1;if(guest)b2_clchain[cn++]=fr[1];fp=fr[0];}
-                atomic_store(&b2_clchain_n,cn);}}
-            const uint32_t j=atomic_fetch_add(&b2_cln,1);if(j<B2_CL){b2_cl[j].caller=caller;b2_cl[j].where=(uint64_t)(uintptr_t)&h[i];b2_cl[j].draws=b2_tab[k].draws;b2_cl[j].callee=(uint8_t)ph;b2_cl[j].inrun=(uint8_t)__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);}}}
-}
-void runtime_vr_b2_set_eye(float m){if(m>0&&m<0.2f)g_vr_b2.eh=m;}   /* a valid eye distance only: "b2eye" stays otherwise */   /* the VR thread, every headset frame: half the eye distance (metres) */
-void runtime_vr_b2_eye(float mm){g_vr_b2.eh=mm/1000.0f;fprintf(stderr,"[vr] b2: half the eye distance %.1f mm (the first run left of the game's camera, the second right)\n",mm);}
-void runtime_vr_b2_mask(unsigned m){g_vr_b2.mask=m;fprintf(stderr,"[vr] b2: lists kept over the views' per-frame start: mask %#x\n",m);}
-void runtime_vr_b2(int on){
-    if(!g_vr_b2.run){fprintf(stderr,"[vr] b2: not installed\n");return;}
-    if(bp_addr){fprintf(stderr,"[vr] b2: a breakpoint is in use\n");return;}
-    pthread_t t;pthread_create(&t,NULL,vr_b2_find,(void *)(intptr_t)on);pthread_detach(t);
-}
 static void vr_headlook_install(Module *m){
     /* zeldaVR: also without VR, for the third-person camera distance (runtime_camera_distance_set) */
     const char *hl=getenv("TOTK_VR_HEADLOOK");
@@ -1974,7 +1478,6 @@ void runtime_game_patches(Module *m) {
        Mac address and the iPad stopped at the first camera update ("Invalid Page", 2026-11-03, every 1.4.3 iOS build
        since zeldaVR came in, d1509b4b). */
     if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);
-    if (!getenv("TOTK_EXPORT_IOS") && vr_active()) vr_b2_install(m);   /* zeldaVR stereo B2 (step 1: the second render run, "b2 1") */
 #endif
     patch_bench_cam(m);
     patch_lod_distance(m);

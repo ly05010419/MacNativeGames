@@ -93,10 +93,6 @@ int vr_afr(void) { return 0; }
 void vr_set_afr(int on) { (void)on; }
 int vr_ipd_pct(void) { return 100; }
 void vr_set_ipd_pct(int pct) { (void)pct; }
-int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye) { (void)cb; (void)src; (void)crop; (void)eye; return -1; }
-void vr_b2_present_eye(int eye) { (void)eye; }
-void vr_b2_pair_begin(void) {}
-void vr_b2_eye_begin(void) {}
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -116,8 +112,8 @@ static struct {
     // picture copies: written by the present thread, read by the VR thread (g.mu)
     pthread_mutex_t mu;
     id<MTLTexture> src[SRC_SLOTS]; uint64_t seq[SRC_SLOTS], next_seq; int writing[SRC_SLOTS], readers[SRC_SLOTS];
-    int src_mapped[SRC_SLOTS];uint64_t src_pair[SRC_SLOTS],capture_pair,ticket_pair[64];
-    uint64_t src_order[SRC_SLOTS],capture_order,ticket_order[64];
+    int src_both[SRC_SLOTS];   // one world picture whose frustum covers both eyes
+    uint64_t src_order[SRC_SLOTS],capture_order,ticket_order[64];   // the order of the game's presents (replay order)
     _Atomic int packet_trace;
     struct { int valid; float fov[4],rotation[9]; } frame_projection,ticket_projection[64];
     id<MTLTexture> src_views[SRC_SLOTS][2]; int src_stereo[SRC_SLOTS]; float src_fov[SRC_SLOTS][2][4], src_rotation[SRC_SLOTS][2][9]; int src_oriented[SRC_SLOTS]; float src_menu_aspect[SRC_SLOTS];
@@ -136,7 +132,6 @@ static struct {
     _Atomic uint64_t copies, frames, no_image, no_pose, gpu_errors, encoder_waits;
     // B1 stereo (alternating eyes): the eye each picture was rendered for (0 left, 1 right, -1 not known), by its ticket
     int src_eye[SRC_SLOTS]; _Atomic int frame_eye, ticket_eye[64];   // frame_eye / ticket_eye: eye + 1, 0 not known
-    _Atomic uint64_t b2_seen_ns;   // stereo B2: when the replay last handed a left-eye picture of a stereo frame (vr_source_encode_eye)
     _Atomic uint64_t afr_pairs, afr_mono;   // headset frames drawn with both eyes' own pictures / with one picture
     _Atomic uint64_t native_pairs, native_menu_pairs, native_reprojected, native_uncompensated, native_no_rotation, native_no_owner, native_bad_rotation;
     _Atomic uint64_t native_fov_calibrated,native_fov_uncalibrated;
@@ -358,13 +353,13 @@ static uint64_t press(press_state *p, int down, uint64_t now, uint64_t long_ns, 
 static _Atomic int g_link_up;   // (defined with the VR thread below)
 static int latest_slot(void);
 #ifdef TOTK_GAME_V143
-static int totk_picture_sources(int pair[2]);
+static int latest_picture(void);
 #endif
 static int world_camera_running(uint64_t now) {   // the camera hook counts its calls (vr_cam_state.calls)
 #ifdef TOTK_GAME_V143
     (void)now;
     pthread_mutex_lock(&g.mu);
-    int pair[2],world=totk_picture_sources(pair)==2;
+    int slot=latest_picture(),world=slot>=0&&g.src_both[slot];   /* the newest picture is the world's (one picture for both eyes) */
     pthread_mutex_unlock(&g.mu);
     return world;
 #elif defined(GAME_BOTW)
@@ -774,8 +769,7 @@ int vr_wants_camera(void) { return g_vr_headlook && __atomic_load_n(&g_vr_headlo
    body really is, not how far it moved since (user 2026-10-31: in a Zonai device the body drifted off the camera). */
 static float g_frame_pos[3]; static int g_frame_pos_have, g_frame_idx;   // the replay thread's (g_frame_idx: its ring entry)
 static void frame_pos_take(int i) { memcpy(g_frame_pos, g_vr_headlook->ring[i].pos, sizeof g_frame_pos); g_frame_idx = i; g_frame_pos_have = g_frame_pos[0] || g_frame_pos[1] || g_frame_pos[2];
-    /* Legacy alternating-eye mode only. TotK's actual B2 capture/present owns
-       the eye identity; a pose-ring match must not override it. */
+    /* Alternating-eye mode only (B1, Tears of the Kingdom 1.2.1). */
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     atomic_store(&g.frame_eye, g_vr_headlook->eye_half > 0 ? ((i & 1) ? 1 : 2) : 0);
 #endif
@@ -867,34 +861,14 @@ void vr_source_projection(const float fov[4],const float rotation[9]){
 void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's present (after that frame's replay)
 #ifdef TOTK_GAME_V143
     pthread_mutex_lock(&g.mu);g.ticket_projection[ticket%64]=g.frame_projection;
-    uint64_t pair=atomic_load(&g.frame_eye)?g.capture_pair:0;
-    g.ticket_pair[ticket%64]=pair;g.ticket_order[ticket%64]=pair?pair:++g.capture_order;
+    g.ticket_order[ticket%64]=++g.capture_order;
     g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
-    uint64_t camera=g_vr_headlook?__atomic_load_n(&g_vr_headlook->cam,__ATOMIC_RELAXED):0;
-    if(vr_wants_camera()&&runtime_vr_camera_owned(camera,0)&&vr_link_alive()&&runtime_player_pos_address&&runtime_player_pos_address()){
-        static _Atomic int started;int expected=0;
-        if(atomic_compare_exchange_strong(&started,&expected,1)){
-            extern void runtime_vr_b2_mask(unsigned);extern void runtime_vr_b2(int);
-            runtime_vr_b2_mask(0x181);runtime_vr_b2(3);
-        }
-    }
 #endif
     atomic_store(&g.ticket_native[ticket % 64], atomic_exchange(&g.frame_native, 0));
     if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
 }
 void vr_source_native_frame(void) { atomic_store(&g.frame_native, 1); }
 
-
-void vr_b2_pair_begin(void){
-#ifdef TOTK_GAME_V143
-    pthread_mutex_lock(&g.mu);g.capture_pair=++g.capture_order;pthread_mutex_unlock(&g.mu);
-#endif
-}
-void vr_b2_eye_begin(void){
-#ifdef TOTK_GAME_V143
-    pthread_mutex_lock(&g.mu);g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
-#endif
-}
 
 // ---- picture copies (present thread) ----
 static id<MTLTexture> src_tex(NSUInteger w, NSUInteger h, MTLPixelFormat f, int stereo) {
@@ -913,37 +887,16 @@ static int latest_slot_eye(int eye) {   // under g.mu: B1, the newest picture re
     int b = -1; for (int i = 0; i < SRC_SLOTS; i++) if (g.seq[i] && !g.writing[i] && g.src_eye[i] == eye && (b < 0 || g.seq[i] > g.seq[b])) b = i;
     return b;
 }
-static int latest_pair(int pair[2]){ /* g.mu held */
-    uint64_t newest=0;pair[0]=pair[1]=-1;
-    for(int l=0;l<SRC_SLOTS;l++)if(g.seq[l]&&!g.writing[l]&&g.src_eye[l]==0&&g.src_pair[l]>newest)
-        for(int r=0;r<SRC_SLOTS;r++)if(g.seq[r]&&!g.writing[r]&&g.src_eye[r]==1&&g.src_pair[r]==g.src_pair[l]){
-            newest=g.src_pair[l];pair[0]=l;pair[1]=r;break;
-        }
-    return newest!=0;
+#ifdef TOTK_GAME_V143
+/* The newest completed picture in the order of the game's presents (replay
+   order), never in GPU callback order: a late completion of an older picture
+   must not bring the older picture back. */
+static int latest_picture(void){ /* g.mu held */
+    int newest=-1;
+    for(int i=0;i<SRC_SLOTS;i++)if(g.seq[i]&&!g.writing[i]&&(newest<0||g.src_order[i]>g.src_order[newest]))newest=i;
+    return newest;
 }
-/* One logical picture is either a complete B2 pair or an ordinary present.
-   Projection validity classifies the complete picture; it never makes one
-   completed eye publish itself over the other eye or over an older world.
-   Replay order, rather than GPU callback order, also orders menu transitions. */
-static int latest_picture(int picture[2]){
-    int pair[2],mono=-1;int have=latest_pair(pair);
-    for(int i=0;i<SRC_SLOTS;i++)if(g.seq[i]&&!g.writing[i]&&!g.src_pair[i]&&
-        (mono<0||g.src_order[i]>g.src_order[mono]))mono=i;
-    if(have&&(mono<0||g.src_order[pair[0]]>g.src_order[mono])){
-        picture[0]=pair[0];picture[1]=pair[1];return 2;
-    }
-    picture[0]=picture[1]=mono;return mono>=0;
-}
-/* A flat UI has one authoritative composite: the game's final present.
-   Inventory's 3D preview can finish after the left B2 capture (F2533 had
-   its preview camera only after that capture). Two UI matrices matching
-   does not make those two intermediate pixel images the same picture. */
-static int totk_picture_sources(int picture[2]){
-    int packet=latest_picture(picture);
-    if(packet!=2)return packet;
-    if(g.src_mapped[picture[0]]&&g.src_mapped[picture[1]])return 2;
-    picture[0]=picture[1];return 1;
-}
+#endif
 static void start_thread(id<MTLDevice> dev);
 /* Native canvas capture and ordinary presents can arrive on different
    threads during startup. Publish the entire VR context exactly once. */
@@ -965,19 +918,6 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2, NULL, NULL, 0); }
 int vr_source_encode_stereo(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const float fov[2][4], const float rotation[2][9]) { return source_encode(cb, src, NULL, 0, -3, fov, rotation, 0); }
 int vr_source_encode_stereo_menu(id<MTL4CommandBuffer> cb, id<MTLTexture> src, float aspect) { return source_encode(cb, src, NULL, 0, -4, NULL, NULL, aspect); }
-/* Stereo B2: the left eye's picture of a stereo frame, from the replay's left pass (nvn_mtl.m mtl_sub_commit), tagged with
-   its eye; placed by the pose the replay matched last (0: the newest). The right eye's comes at the present, tagged by
-   vr_b2_present_eye. */
-#ifndef GAME_BOTW
-int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye) {
-    atomic_store(&g.b2_seen_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    return source_encode(cb, src, crop, 0, eye, NULL, NULL, 0);
-}
-void vr_b2_present_eye(int eye) { atomic_store(&g.frame_eye, eye + 1); }
-#else
-int vr_source_encode_eye(id<MTL4CommandBuffer> cb,id<MTLTexture> src,const int crop[4],int eye){(void)cb;(void)src;(void)crop;(void)eye;return -1;}
-void vr_b2_present_eye(int eye){(void)eye;}
-#endif
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect) {   // eye -2: from the ticket
     if (!vr_enabled() || g.failed || !src) return -1;
     vr_source_start(src.device);
@@ -1006,24 +946,21 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
     pthread_mutex_lock(&g.mu);
     int s=-1;
 #ifdef TOTK_GAME_V143
-    int published[2];latest_picture(published);
-    /* Keep the complete published packet. Unpublished copies may be replaced,
-       oldest first; protecting each eye's independent latest image can pin
-       unrelated incomplete packets and starve the next pair's allocation. */
-    for(int i=0;i<SRC_SLOTS;i++)if(i!=published[0]&&i!=published[1]&&!g.writing[i]&&!g.readers[i]&&
+    const int published=latest_picture();
+    /* Keep the published picture. Other copies may be replaced, oldest first. */
+    for(int i=0;i<SRC_SLOTS;i++)if(i!=published&&!g.writing[i]&&!g.readers[i]&&
         (s<0||(!g.seq[i]&&g.seq[s])||(!!g.seq[i]==!!g.seq[s]&&g.src_order[i]<g.src_order[s])))s=i;
 #else
-    int latest=latest_slot(),l0=latest_slot_eye(0),l1=latest_slot_eye(1),retained_pair[2];latest_pair(retained_pair);
-    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && i != retained_pair[0] && i != retained_pair[1] && !g.writing[i] && !g.readers[i]) s = i;
+    int latest=latest_slot(),l0=latest_slot_eye(0),l1=latest_slot_eye(1);
+    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && !g.writing[i] && !g.readers[i]) s = i;
 #endif
     if (s >= 0) {
-        g.src_mapped[s]=0;
+        g.src_both[s]=0;
 #ifdef TOTK_GAME_V143
         if(!stereo){
-            __typeof__(g.frame_projection) projection=eye>=-1?g.frame_projection:g.ticket_projection[ticket%64];
-            int projection_eye=eye>=0?eye:atomic_load(&g.ticket_eye[ticket%64])-1;
-            g.src_mapped[s]=projection.valid&&have_calibrated_views&&projection_eye>=0&&projection_eye<2&&
-                vr_projection_eye_grid(projection.fov,calibrated_views.fov[projection_eye],1.06f);
+            __typeof__(g.frame_projection) projection=g.ticket_projection[ticket%64];
+            if(projection.valid&&have_calibrated_views){float both[4];vr_projection_union(calibrated_views.fov,both);
+                g.src_both[s]=vr_projection_eye_grid(projection.fov,both,1.06f);}
             if(projection.valid){memcpy(g.src_fov[s][0],projection.fov,sizeof projection.fov);memcpy(g.src_rotation[s][0],projection.rotation,sizeof projection.rotation);}
         }
 #endif
@@ -1032,12 +969,10 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
                   if (stereo) { g.src_used[s] = 0; g.src_eye[s] = -1;
                       if (kind == VR_NATIVE_WORLD) memcpy(g.src_fov[s], fov, sizeof g.src_fov[s]);
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
-                  else if (eye >= -1) { g.src_used[s] = g_vr_headlook ? atomic_load(&g.frame_seq) : 0; g.src_eye[s] = eye; }   // stereo B2's left picture
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
                          g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }
-                  g.src_pair[s]=g.src_eye[s]==0?g.capture_pair:g.src_eye[s]==1?g.ticket_pair[ticket%64]:0;
-                  g.src_order[s]=g.src_eye[s]==0?g.capture_pair:g.ticket_order[ticket%64];
-    }   // B1 / B2: the eye it was rendered for, -1 not known
+                  g.src_order[s]=g.ticket_order[ticket%64];
+    }   // B1: the eye it was rendered for, -1 not known
     pthread_mutex_unlock(&g.mu);
     if (s < 0) return -1;
     id<MTLTexture> t = g.src[s];
@@ -1397,26 +1332,18 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     int own = 0;
 #elif defined(TOTK_GAME_V143)
     const float half=0;
-    int own=0; /* Chosen from the actual completed packet below. */
-    const int ipd_ok=v->ipd>.03f&&v->ipd<.09f;
-    extern void runtime_vr_b2_set_eye(float m);
-    runtime_vr_b2_set_eye(ipd_ok?v->ipd*.5f*vr_ipd_pct()/100.0f:0);
+    int own=0; /* One picture for both eyes, looked up by each eye's own rays. */
 #else
     const int ipd_ok = v->ipd > 0.03f && v->ipd < 0.09f;
     const int afr = g_vr_headlook && vr_afr() && ipd_ok;
     const float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%)
     if (g_vr_headlook) { uint32_t hb; memcpy(&hb, &half, 4); __atomic_store_n((uint32_t *)(void *)&g_vr_headlook->eye_half, hb, __ATOMIC_RELAXED); }   // read by the hook on the game's thread
-    /* Stereo B2: both eyes of one game update (game_patches_v143.c); its camera moves by half the eye distance per eye, and
-       each eye takes its own picture while stereo frames come (the left one within the last half second) */
-    { extern void runtime_vr_b2_set_eye(float m); runtime_vr_b2_set_eye(ipd_ok ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0); }
-    const int b2 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g.b2_seen_ns) < 500000000ull;
-    int own = afr || b2;
+    int own = afr;
 #endif
     int se[2]; id<MTLTexture> pics[2]; uint32_t useds[2]; int peye[2]; float native_fov[2][4],source_rotation[2][9],delta[2][9]; int oriented=0,reproject=0;
     pthread_mutex_lock(&g.mu);
-    int complete_pair[2]={-1,-1};
 #ifdef TOTK_GAME_V143
-    int mode=totk_picture_sources(complete_pair);const int s=complete_pair[0];own=mode==2;
+    const int s=latest_picture();
 #else
     const int s = latest_slot();
 #endif
@@ -1432,23 +1359,21 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         if(oriented)memcpy(source_rotation,g.src_rotation[s],sizeof source_rotation); }
     if (stereo) own = 1;
     for (int k = 0; k < 2; k++) {
-        int t = stereo ? s : own ? (complete_pair[k]>=0?complete_pair[k]:latest_slot_eye(k)) : -1; if (t < 0) t = s;
+        int t = stereo ? s : own ? latest_slot_eye(k) : -1; if (t < 0) t = s;
         se[k] = t; if (t >= 0) g.readers[t]++;
         pics[k] = t >= 0 ? (stereo ? g.src_views[t][k] : g.src[t]) : nil;
         useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = stereo ? k : t >= 0 ? g.src_eye[t] : -1;
     }
 #ifdef TOTK_GAME_V143
-    if(!stereo&&own&&se[0]>=0&&se[1]>=0&&g.src_mapped[se[0]]&&g.src_mapped[se[1]]){
+    if(!stereo&&s>=0&&g.src_both[s]){   /* one world picture for both eyes: each eye looks it up by its own rays */
         world=1;oriented=1;
-        for(int k=0;k<2;k++){memcpy(native_fov[k],g.src_fov[se[k]][0],sizeof native_fov[k]);memcpy(source_rotation[k],g.src_rotation[se[k]][0],sizeof source_rotation[k]);}
+        for(int k=0;k<2;k++){memcpy(native_fov[k],g.src_fov[s][0],sizeof native_fov[k]);memcpy(source_rotation[k],g.src_rotation[s][0],sizeof source_rotation[k]);}
     }
     {static uint64_t traced;uint64_t order=s>=0?g.src_order[s]:0;
         if(order!=traced&&atomic_load(&g.packet_trace)>0){
             traced=order;atomic_fetch_sub(&g.packet_trace,1);
-            VLOG("[packet] order=%llu pair=%llu mode=%s slots=%d/%d mapped=%d/%d source-order=%llu/%llu",
-                (unsigned long long)order,(unsigned long long)(s>=0?g.src_pair[s]:0),world?"world":s>=0&&g.src_pair[s]?"flat-final":"flat",
-                se[0],se[1],se[0]>=0?g.src_mapped[se[0]]:0,se[1]>=0?g.src_mapped[se[1]]:0,
-                (unsigned long long)(se[0]>=0?g.src_order[se[0]]:0),(unsigned long long)(se[1]>=0?g.src_order[se[1]]:0));
+            VLOG("[packet] order=%llu mode=%s slot=%d both=%d",
+                (unsigned long long)order,world?"world":"flat",s,s>=0?g.src_both[s]:0);
             /* diagnostic (vr_packet_log): what each eye's picture carries, and the head it will be placed for */
             for(int k=0;k<2;k++){const float *f=native_fov[k],*r=source_rotation[k];
                 VLOG("[packet]  eye %d fov %.4f %.4f %.4f %.4f rot [%.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f] oriented %d world %d picture %lux%lu slot %d",k,

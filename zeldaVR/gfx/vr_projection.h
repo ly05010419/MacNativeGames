@@ -16,6 +16,13 @@ static inline int vr_projection_eye_grid(const float source[4],const float eye[4
     }return 1;
 }
 
+/* One picture for both eyes: the rays that cover the two eyes' frusta (the game renders it once, each eye looks it up
+   by its own rays). */
+static inline void vr_projection_union(const float eyes[2][4],float out[4]){
+    out[0]=fminf(eyes[0][0],eyes[1][0]);out[1]=fmaxf(eyes[0][1],eyes[1][1]);
+    out[2]=fmaxf(eyes[0][2],eyes[1][2]);out[3]=fminf(eyes[0][3],eyes[1][3]);
+}
+
 enum { VR_PROJECTION_NO_WRITE,VR_PROJECTION_CAMERA,VR_PROJECTION_COPY,VR_PROJECTION_INHERIT };
 /* A depth-only draw never writes color provenance. A blended auxiliary draw
    composes into the established image grid; its sampled pictures do not own it. */
