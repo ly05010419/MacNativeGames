@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <time.h>
+#include <TargetConditionals.h>
 #include <CommonCrypto/CommonDigest.h>
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
@@ -98,6 +100,12 @@ typedef struct {
     uint32_t pend[CV_BUFS], phead, pcount;    /* released, waiting for a picture */
     vpx_image_t *held[CV_HOLD]; int64_t held_ts[CV_HOLD]; uint8_t held_eos[CV_HOLD]; int nheld;
     int eos_pending;
+#if !TARGET_OS_IPHONE
+    int clk_on, catching;
+    int64_t clk_ts0, clk_last;
+    double clk_t0;
+    uint64_t skipped, restarts, catchups, take_frame;
+#endif
     int opening_packet_seen,opening_ready;uint64_t opening_token,opening_picture_start;
 } cv_dec;
 static const char *const k_name[] = {"VP8", "VP9", "AV1"};
@@ -168,16 +176,66 @@ static void spt_fire(cv_dec *d, uint32_t i) {   /* buffer i of d filled: signal 
 }
 static void spt_unarm(void *e) { pthread_mutex_lock(&g_spt_mu); for (int k = 0; k < 64; k++) if (g_spt[k] == e) g_spt[k] = NULL; pthread_mutex_unlock(&g_spt_mu); SPT(e)->armed = 0; }
 
+#if !TARGET_OS_IPHONE
+/* Movie-clock selection adapted from MIT nxnative PR1379, 7ee81e9185bfbca06292780ff9928c87c1cad17f.
+   Mac guest/audio time uses uptime (excluding machine sleep). Focus follows this runtime's guest policy (always active on Mac, lifecycle-driven on iOS),
+   so merely switching Mac apps does not restart the clock while audio keeps playing. Only AV1 timestamps have this verified nanosecond contract. */
+uint64_t mtl_oot_movie_frame(void);
+static double cv_now(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
+static int cv_late_on(void) {
+    static _Atomic int setting = -1;
+    int value = atomic_load(&setting);
+    if (value < 0) { const char *e = getenv("OOT_MOVIE_CLOCK"); value = e && !strcmp(e, "1"); atomic_store(&setting, value); }
+    return value;
+}
+#define CV_PAUSE_FRAMES 6   // frames presented without a picture taken that make a gap the game's: a stall in the host presents at most the frame it held, plus the frames
+                            // a movie slower than the game skips between pictures
+static const char *cv_pause(const cv_dec *d) {
+    if (mtl_oot_movie_frame() - d->take_frame >= CV_PAUSE_FRAMES) return "the game presented frames without taking a picture";
+    if (!runtime_front_focus()) return "the game was paused";
+    return NULL;
+}
+static void cv_skip_late(cv_dec *d) {   // decoder lock held, at least one picture waiting
+    double now = cv_now(); int64_t ts = d->held_ts[0];
+    double late = d->clk_on ? now - (d->clk_t0 + ((double)ts - (double)d->clk_ts0) / 1e9) : 0;
+    const char *why = !d->clk_on ? "" : ts < d->clk_last ? "a timestamp went back (a loop or a new stream)" : late > 1.0 ? cv_pause(d) : NULL;
+    if (why) {
+        if (*why && d->restarts++ < 8) {
+            if (ts < d->clk_last) LOG("[codec] %s decoder %u: the movie clock starts again: %s", k_name[d->codec], d->id, why);
+            else LOG("[codec] %s decoder %u: the movie clock starts again, %.2f s behind: %s", k_name[d->codec], d->id, late, why);
+        }
+        d->clk_on = 1; d->clk_ts0 = ts; d->clk_t0 = now; d->catching = 0; return;
+    }
+    if (late <= 1.0) d->catching = 0;
+    else if (!d->catching) {
+        d->catching = 1;
+        if (d->catchups++ < 8) LOG("[codec] %s decoder %u: %.2f s behind after the game stood still: late pictures skipped to catch up with the movie's clock", k_name[d->codec], d->id, late);
+    }
+    while (d->nheld > 1 && !d->held_eos[0] && d->clk_t0 + ((double)d->held_ts[1] - (double)d->clk_ts0) / 1e9 <= now - 0.05) {   // the next one is overdue too: this one is late
+        vpx_img_free(d->held[0]); d->nheld--;
+        memmove(d->held, d->held + 1, (size_t)d->nheld * sizeof d->held[0]); memmove(d->held_ts, d->held_ts + 1, (size_t)d->nheld * sizeof d->held_ts[0]);
+        memmove(d->held_eos, d->held_eos + 1, (size_t)d->nheld * sizeof d->held_eos[0]);
+        if (!d->skipped++) LOG("[codec] %s decoder %u: late pictures skipped to keep the movie on its clock (the game shows fewer pictures a second than the movie has)", k_name[d->codec], d->id);
+    }
+}
+#endif
+
 /* Pictures and end of stream into the released buffers, in order (decoder lock held). */
 static void drain(cv_dec *d) {
     while (d->pcount && (d->nheld || d->eos_pending)) {
         uint32_t i = d->pend[d->phead]; d->phead = (d->phead + 1) % CV_BUFS; d->pcount--;
         cv_buf *b = &d->buf[i];
+#if !TARGET_OS_IPHONE
+        if (d->nheld && d->codec == CV_AV1 && cv_late_on()) cv_skip_late(d);
+#endif
         if (d->nheld) {
             vpx_image_t *im = d->held[0]; int64_t ts = d->held_ts[0]; uint8_t eos = d->held_eos[0];
             memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD - 1)); memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD - 1));
             memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1); d->nheld--;
             b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos;
+#if !TARGET_OS_IPHONE
+            if (d->codec == CV_AV1 && cv_late_on()) { d->clk_last = ts; d->take_frame = mtl_oot_movie_frame(); }
+#endif
             if (b->pool && b->pidx < b->pool->count) { if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
             if (!d->pictures++) LOG("%s decoder %u: first picture %ux%u into buffer %u", k_name[d->codec], d->id, b->w, b->h, i);
         } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; }
@@ -294,6 +352,9 @@ static Result cv_dec_reset(void *t) {   /* Stop / Flush: undelivered pictures an
     opening_end(d);d->opening_packet_seen=0;
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
     d->nheld = 0; d->eos_pending = 0;
+#if !TARGET_OS_IPHONE
+    d->clk_on = 0; d->catching = 0;
+#endif
     cv_open(d);
     if (d->event) hle_signal_system_event(d->event);
     pthread_mutex_unlock(&d->mu);
