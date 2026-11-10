@@ -1437,6 +1437,11 @@ static void camera_distance_load(void){
      bit 1 +0x3398..+0x33a8, bit 2 +0x33e0..+0x3420, bit 3 each render step's +0x5d0 word and +0x2914 half-word. Mask 1
      (b2g): the second picture has the scene (1021 draws a frame, G-buffer 566 + 191 against 691 + 598) but almost no
      shadows (44 draws against about 1300): the shadow casters' requests are kept elsewhere (next step). Mask 9 untested.
+     Bit 4 (2026-11-10): only +0x33e0, the count of the view's item list (+0x33e8 items, +0x33e4 capacity) that the
+     render jobs take items from (main+0x2888d10) and six callers fill (main+0x78fbc, 0xa2c88, 0x778c7c, 0xe677b0,
+     0x2b406fc, 0x8af5c): the per-frame start clears it with the counters after it (+0x33f0..+0x341c, which the render
+     jobs add up, +0x341c at main+0x288911c). Bit 12 (0x1000, diagnostic): each view's list counts after the first run
+     and after the second, every 60th stereo frame (b2_view_lists).
    Eyes: with "b2eye <mm>" (half the eye distance) the main camera's view matrix moves left for the first run and right
    for the second (t.x += / -= in view space, as the B1 hook), back afterwards; the camera is final before this stage.
    The first eye's constants and both eyes' submission are later steps.
@@ -1490,8 +1495,11 @@ __asm__(".text\n.p2align 4\n.globl _vr_b2_hook\n_vr_b2_hook:\n"
         "12:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 12b\n"
         "11:\n  tbz w14, #1, 13f\n  mov x10, #0x3398\n  add x10, x0, x10\n  add x11, x19, #72+0x48\n  mov w12, #3\n"
         "14:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 14b\n"
-        "13:\n  tbz w14, #2, 5f\n  mov x10, #0x33e0\n  add x10, x0, x10\n  add x11, x19, #72+0x90\n  mov w12, #9\n"
+        "13:\n  tbz w14, #2, 23f\n  mov x10, #0x33e0\n  add x10, x0, x10\n  add x11, x19, #72+0x90\n  mov w12, #9\n"
         "15:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 15b\n"
+        /* bit 4: only the view's item list count +0x33e0 (its items at [+0x33e8], the render jobs' input), not the
+           counters after it that the render jobs add up (+0x341c) */
+        "23:\n  tbz w14, #4, 5f\n  ldr w13, [x19, #72+0x90]\n  mov x10, #0x33e0\n  str w13, [x0, x10]\n"
         "  b 5f\n"
         "8:\n  mov w1, w20\n  mov w2, #1\n  ldr x16, [x19, #48]\n  blr x16\n"   /* "b2 1": each view's per-frame start */
         "  b 5f\n"
@@ -1681,7 +1689,30 @@ __asm__(".text\n.p2align 4\n.globl _vr_stage_hook\n_vr_stage_hook:\n"
         "ldp x10,x11,[sp,#80]\nldp x8,x9,[sp,#64]\nldp x6,x7,[sp,#48]\nldp x4,x5,[sp,#32]\nldp x2,x3,[sp,#16]\nldp x0,x1,[sp]\nadd sp,sp,#320\n"
         "adrp x16,_g_b2_stage_return@PAGE\nldr x16,[x16,_g_b2_stage_return@PAGEOFF]\nbr x16\n");
 extern void vr_stage_hook(void);
+/* Diagnostic (b2 mask 0x1000, off by default; 2026-11-10: the second picture lost the grass, the ground's shading and
+   the sky): each view's list counts after the first run, before its per-frame start runs again, and after the second
+   run, every 60th stereo frame, 64 lines at most. A list the logic jobs fill once a frame keeps its count through the
+   first run and is empty after a second run that cleared it; one the render jobs fill on each run is about as full
+   after the second run as after the first. */
+static void b2_view_lists(const char *when){
+    if(!(g_vr_b2.mask&0x1000))return;
+    static uint32_t lines;const uint32_t run=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);
+    if(run%60!=1||lines>=64)return;
+    uint64_t mgr=0,views=0;int32_t n=0;
+    if(!jd_read(g_vr_b2.vmgr,&mgr,8)||!mgr||!jd_read(mgr+0x10,&n,4)||!jd_read(mgr+0x18,&views,8)||!views)return;
+    static const uint32_t at[5]={0x3358,0x3368,0x3378,0x33a0,0x33e0};
+    for(int i=0;i<n&&i<8;i++){
+        uint64_t v=0;if(!jd_read(views+8*(uint64_t)i,&v,8)||!v)continue;
+        uint32_t a[5],c[12];
+        for(int k=0;k<5;k++)if(!jd_read(v+at[k],&a[k],4))a[k]=~0u;
+        for(int k=0;k<12;k++)if(!jd_read(v+0x33f0+4*(uint64_t)k,&c[k],4))c[k]=~0u;
+        lines++;
+        fprintf(stderr,"[vr] b2 lists %s: frame %u view %d: models %u %u %u, +0x33a0 %u, items +0x33e0 %u, counters +0x33f0.. %u %u %u %u %u %u %u %u %u %u %u %u\n",
+                when,run,i,a[0],a[1],a[2],a[3],a[4],c[0],c[1],c[2],c[3],c[4],c[5],c[6],c[7],c[8],c[9],c[10],c[11]);
+    }
+}
 void b2_between_runs(void){
+    b2_view_lists("after the first run");
     if(g_vr_b2.mask&0x100)b2_stage1_run1();
     extern void *mtl_sub_capture_ubos(const uint64_t *,int);extern void mtl_ucap_free(void *);
     const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);uint64_t handles[2048];int count=0;
@@ -1815,6 +1846,7 @@ uint64_t runtime_b2_stereo_marks(void){return atomic_load_explicit(&b2_marks,mem
    second-run summary is mapped to the first-run one of the same stage (b2_map). The call chain of a recording is no
    identity: the same job runs on the calc thread or a worker, inline or not (b2ar: every other frame's summaries unpaired). */
 void b2_after_runs(void){
+    b2_view_lists("after the second run");
     const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);
     extern void hle_vr_copy_bind(uint64_t,uint64_t);extern void hle_vr_copy_release(uint64_t);
     pthread_mutex_lock(&b2_stage_mu);
