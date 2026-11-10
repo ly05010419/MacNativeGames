@@ -17,6 +17,8 @@ Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · 
 - a multipart RAR containing one NUP with raw file extents, or
 - a dump folder holding `base/` and `updates/131072/` (each with `exefs/` and `romfs/`).
 
+An already extracted `.nup` goes straight to `build_app.py`. Split RAR support is optional and saves the disk space needed to extract the NUP first. The OoT builder accepts a decrypted ExeFS/RomFS dump folder as well. It does not accept an `.nsp` directly.
+
 The build checks the code and the game data against `expected-v131072.json`; another version is refused. No `prod.keys` is needed: the dump holds the decrypted files.
 
 **System fonts**: the six `.bfttf` files and their `manifest.json` that a Tears of the Kingdom or Breath of the Wild build of this repository extracted, in `TOTK_build/totk/extracted/firmware/shared-fonts` (or `BotW_build/botw/...`). Give that folder with `--shared-fonts`. This build has no `--firmware` option. After the first build the work folder keeps them, so later builds need no `--shared-fonts`.
