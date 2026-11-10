@@ -121,10 +121,14 @@ static uint32_t vib_info(VibrationDeviceInfo *out, const uint32_t *h) {
 static uint32_t vib_mounted(bool *out, const uint32_t *h) { if (!out) runtime_fail("vibration mounted pointer"); *out = vibration_side(h) >= 0; return 0; }
 static uint32_t vib_permitted(bool *out) { if (!out) runtime_fail("vibration permitted pointer"); *out = true; return 0; }
 
-#ifdef GAME_OOT
-/* Host controllers expose the standard vibration path, with no Ounce actuator. */
-static bool ounce_vibration_mounted(const uint32_t *h) { (void)h; return false; }
-#endif
+/* nn::hid::IsOunceVibrationDeviceMounted (main imports it; the ocarina asks first): host controllers have the standard
+   vibration path and no Switch 2 actuator. Unanswered, the SDK's own code opened the hid service the runtime does not
+   serve and the process stopped (PR #2030). */
+static bool ounce_vibration_mounted(const uint32_t *h) {
+    if (!h) runtime_fail("Ounce vibration handle pointer");
+    static _Atomic int once; note_once(&once, "the game asked for a Switch 2 vibration device: none", *h);
+    return false;
+}
 
 static void six_axis_check(const uint32_t *h) {
     if (!h) runtime_fail("six-axis handle pointer");
@@ -204,10 +208,8 @@ void runtime_feedback_choose(int gyro, int on) {
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads) { *values = atomic_load(&values_in); *motion_reads = atomic_load(&reads); }
 
 void *runtime_hid_feedback_override(const char *name) {
-#ifdef GAME_OOT
     if (!strcmp(name, "_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE"))
         return (void *)ounce_vibration_mounted;
-#endif
     const bool rumble = runtime_rumble_enabled(), gyro = runtime_gyro_enabled();
     if (!strcmp(name, "_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE"))
         return rumble ? NULL : (void *)no_handles;   /* on: the SDK's own (nn::hid::utility) */
