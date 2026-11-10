@@ -560,7 +560,7 @@ static void udc_selftest(void) {
         MLOG("UDC自检 %s %s %lux%lu 首值 %08x 与首值不同 %lu / %lu", g_dev.name.UTF8String, depth ? "Depth32F_S8" : "RGBA8", (unsigned long)w, (unsigned long)h, px[0], (unsigned long)bad, (unsigned long)(w * h));
     }
 }
-/* TOTK: GPU keep-alive (default on on the Mac, TOTK_GPU_KEEPALIVE=0 turns it off; off on iOS, TOTK_GPU_KEEPALIVE=1 turns it on). A thread keeps up to two short spin kernels (one
+/* TOTK: GPU keep-alive (default on on the Mac, TOTK_GPU_KEEPALIVE=0 or the settings panel's switch turns it off; off on iOS, TOTK_GPU_KEEPALIVE=1 turns it on). A thread keeps up to two short spin kernels (one
    threadgroup) in flight on its own command queue while the game is submitting frames. The M4 GPU lowers its clock when it
    idles part of each frame: the same compute work took 10.9 ms back to back, 16.8 ms with 10 ms gaps and 10.9 ms again with a
    spinner in the gaps (standalone test). TOTK idles the GPU between frames because it waits for each frame before it submits
@@ -576,26 +576,49 @@ static _Atomic uint64_t g_last_sub_ns;
 static _Atomic int g_ka_target_us = 1000;
 static _Atomic uint64_t g_ka_n, g_ka_us, g_ka_max_us;   // spin kernels completed, their summed / longest GPU time (us)
 void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = atomic_load(&g_ka_us); v[2] = atomic_exchange(&g_ka_max_us, 0); }
-static void keepalive_start(void) {
-    static int started; const char *e = getenv("TOTK_GPU_KEEPALIVE");
+/* On or off: TOTK_GPU_KEEPALIVE decides first; otherwise, on the Mac, the settings panel's switch (gpu-keepalive.txt, read
+   before the guest starts: dm_gfx_keepalive_start) or, in play, dm_gfx_keepalive_set. Switched off in play, the thread stays
+   and only sleeps; switched on, it starts if it has not yet. On a fast Mac the game's own work may keep the clock up anyway:
+   an M4 Max at 60+60 interpolation lost no frame without the spinner, which kept its GPU ~90 % busy instead of ~63 %. */
+static _Atomic int g_ka_on = -1, g_ka_started;
+static void keepalive_start(void);
+int dm_gfx_keepalive_locked(void) { return getenv("TOTK_GPU_KEEPALIVE") != NULL; }
+int dm_gfx_keepalive(void) {
+    int v = atomic_load(&g_ka_on);
+    if (v < 0) {
+        const char *e = getenv("TOTK_GPU_KEEPALIVE");
 #if TARGET_OS_IPHONE
-    int on = e && atoi(e);    // iPhone / iPad: off unless TOTK_GPU_KEEPALIVE=1 (the spinning heats the phone; the gain above was measured on the M4)
+        int on = e && atoi(e);    // iPhone / iPad: off unless TOTK_GPU_KEEPALIVE=1 (the spinning heats the phone; the gain above was measured on the M4)
 #else
-    int on = !e || atoi(e);
+        int on = !e || atoi(e);
 #endif
-    if (started || !on || nogpu() || getenv("TOTK_HEADLESS")) return; started = 1;   // not in standalone probes
+        int was = -1; atomic_compare_exchange_strong(&g_ka_on, &was, on); v = atomic_load(&g_ka_on);
+    }
+    return v;
+}
+void dm_gfx_keepalive_start(int on) { if (!dm_gfx_keepalive_locked()) atomic_store(&g_ka_on, on ? 1 : 0); }
+void dm_gfx_keepalive_set(int on) {
+    if (dm_gfx_keepalive_locked() || dm_gfx_keepalive() == !!on) return;
+    atomic_store(&g_ka_on, on ? 1 : 0);
+    MLOG("GPU 保活：设置面板%s | GPU keep-alive: %s from the settings panel", on ? "打开" : "关闭", on ? "on" : "off");
+    if (on && atomic_load(&g_last_sub_ns)) keepalive_start();   // the game already renders; before that the first submission starts it
+}
+static void keepalive_start(void) {
+    if (!dm_gfx_keepalive() || nogpu() || getenv("TOTK_HEADLESS")) return;   // not in standalone probes
+    if (atomic_exchange(&g_ka_started, 1)) return;
     NSError *err = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
     if (!ps || !q || !buf) { MLOG("【红】TOTK_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
     { const char *us = getenv("TOTK_GPU_KEEPALIVE_US"); int v = us ? atoi(us) : 0; if (v >= 100 && v <= 1000) atomic_store(&g_ka_target_us, v); }   /* like flag keepalive_us, from the start */
-    MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（TOTK_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
+    MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（设置面板或 TOTK_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
     g_ka_idle = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
         for (;;) @autoreleasepool {
             int target_us = atomic_load(&g_ka_target_us);
+            if (!atomic_load(&g_ka_on)) { usleep(20000); continue; }   // switched off in the settings panel
             if (!target_us) { usleep(2000); continue; }
             uint64_t last = atomic_load(&g_last_sub_ns);
             if (!last || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
