@@ -156,6 +156,7 @@ int mfx_requested(void){return 0;}
 int fps_overlay_hud_mode(void){return 1;}
 void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
 void dm_gfx_aniso_start(int n){(void)n;} int dm_gfx_aniso_locked(void){return 0;} int dm_gfx_aniso(void){return 0;} void dm_gfx_aniso_set(int n){(void)n;}   /* the display page's anisotropy row (nvn_mtl.m) */
+void dm_gfx_keepalive_start(int on){(void)on;} int dm_gfx_keepalive_locked(void){return 0;} int dm_gfx_keepalive(void){return 1;} void dm_gfx_keepalive_set(int on){(void)on;}   /* the display page's GPU keep-alive row (nvn_mtl.m, PR #2049) */
 int runtime_output_modes(void){return 0;}
 int runtime_output_mode(void){return 0;}
 int runtime_output_mode_set(int mode){(void)mode;return 0;}
