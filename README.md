@@ -71,12 +71,25 @@ Ocarina of Time and Pokopia package as a Mac app with `build_app.py`. Not yet: i
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
-### VR: Tears of the Kingdom on a Meta Quest 3 (6DoF)
+### VR: Tears of the Kingdom and Breath of the Wild on a Meta Quest 3 (6DoF)
 
 > **Play Tears of the Kingdom 1.4.3 in a Meta Quest 3, with full 6DoF.** The game runs on your Mac and draws the view
 > for every head pose, streamed to the headset over the USB-C cable: turn your head and the camera turns; lean and crouch
-> and it moves (Head position, 6DoF). First or third person, the game's sound in the headset, about 72 fps at 1680×1760
-> per eye on an M4. Quest 3 controllers and motion gestures are built in but not yet tested on a headset.
+> and it moves (Head position, 6DoF). First or third person, the game's sound in the headset. Quest 3 controllers and
+> motion gestures are built in but not yet tested on a headset.
+
+- **Tears of the Kingdom 1.4.3:** the game renders one picture per frame, wide enough for both eyes, and each eye looks
+  it up along its own rays; turning the head reprojects it to the newest pose. The picture is what the game draws
+  without VR (grass, lighting, shadows). On an M4 the Quest showed about 55 to 59 fps (measured 2026-11-10); the VR page
+  sets the render size per eye. Both eyes see the same picture, so there is
+  **no stereo depth by default**.
+- **Stereo depth for Tears of the Kingdom (experimental, off by default):** the game still runs each frame once; the
+  graphics layer replays the frame once per eye with the eye moved sideways by half the eye distance, so both eyes are
+  real renderings of the same moment. It costs about half the frame rate (about 30 fps against 53 with one picture, at
+  2048×2208 on an M4) and has no switch in the VR page yet. The game has no stereo renderer of its own, and an earlier attempt
+  that ran the game's render jobs twice was removed because it damaged the picture (no grass, wrong lighting).
+- **Breath of the Wild 1.6.0 / 1.9.0:** the game's own same-frame stereo renderer (the one of its Labo VR mode) draws
+  both eyes with the headset's projection and eye distance; see the install page for its settings and limits.
 
 One script builds and installs it, the headset side included: [`zeldaVR/install.md`](zeldaVR/install.md) (code in
 [`zeldaVR`](zeldaVR)). VR stays off in the normal app.
@@ -244,11 +257,20 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
-### VR：在 Meta Quest 3 里玩王国之泪（6DoF）
+### VR：在 Meta Quest 3 里玩王国之泪和旷野之息（6DoF）
 
 > **在 Meta Quest 3 里玩《王国之泪》1.4.3，完整 6DoF。** 游戏在你的 Mac 上运行，按每一个头部姿态渲染画面，通过 USB-C
-> 数据线串流到头显：转头，镜头跟着转；探身、下蹲，镜头跟着移动（头部位置，6DoF）。第一人称或第三人称，游戏声音进头显，
-> M4 上每眼 1680×1760 约 72 帧。Quest 3 手柄和体感手势已经做进去，还没在头显里实测。
+> 数据线串流到头显：转头，镜头跟着转；探身、下蹲，镜头跟着移动（头部位置，6DoF）。第一人称或第三人称，游戏声音进头显。
+> Quest 3 手柄和体感手势已经做进去，还没在头显里实测。
+
+- **王国之泪 1.4.3**：游戏每帧只渲染一幅画面，视野宽到同时盖住两只眼，每只眼按自己的视线从这幅画面里取图；转头时按最新
+  姿态重投影。画面和不开 VR 时一样（草、光照、阴影）。M4 上 Quest 显示约 55–59 帧（2026-11-10 实测）；每眼的渲染
+  分辨率在 VR 页里选。两只眼看到的是同一幅画面，所以**默认没有立体深度**。
+- **王国之泪的立体深度（实验性，默认关）**：游戏仍然每帧只运行一遍；图形层把这一帧按每只眼各回放一次，眼睛向两侧各移半个
+  瞳距，所以两只眼都是同一时刻的真实渲染。代价是帧率约减半（M4、2048×2208 下约 30 帧，单画面约 53 帧），VR 页里还没有开关。
+  王国之泪自己没有双眼渲染器；早先“把游戏的渲染任务跑两遍”的做法会弄坏画面（草消失、光照错误），已经删除。
+- **旷野之息 1.6.0 / 1.9.0**：用游戏自带的同帧双眼渲染器（Labo VR 模式的那一个），按头显的投影和瞳距画两只眼；设置和
+  限制见安装文档。
 
 一个脚本完成打包和安装，包括头显上的准备：[`zeldaVR/install.md`](zeldaVR/install.md)（代码在 [`zeldaVR`](zeldaVR)）。普通 App 里 VR 不会打开。
 

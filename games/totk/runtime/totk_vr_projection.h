@@ -3,6 +3,7 @@
  * one picture whose frustum covers both eyes (the compositor looks it up per
  * eye); the renderer then builds its own matrices and camera UBOs. */
 #pragma once
+#include <stdlib.h>
 #include "../zeldaVR/gfx/totk_vr_link.h"
 #include "../zeldaVR/gfx/vr_projection.h"
 #include "../zeldaVR/runtime/vr_view_math.h"
@@ -21,6 +22,10 @@ __attribute__((used,noinline)) static void totk_vr_view_set(uint64_t views,uint3
     vr_views headset;float target[4],rays[4];
     if(!vr_link_views(&headset)){set(views,index,matrix,projection,extra);return;}
     vr_projection_union(headset.fov,rays);
+    /* Diagnostic (TOTK_VR_PROJECTION_EYE=0|1, off by default): the one picture with that eye's asymmetric rays instead,
+       to see which constants of the game follow a horizontal offset of the projection (vr开发.md section 23). */
+    {static int eye=-2;if(eye==-2){const char *e=getenv("TOTK_VR_PROJECTION_EYE");eye=e&&(*e=='0'||*e=='1')&&!e[1]?*e-'0':-1;}
+     if(eye>=0)memcpy(rays,headset.fov[eye],sizeof rays);}
     if(!vr_eye_intrinsics_overscan(rays,1.06f,target)){
         set(views,index,matrix,projection,extra);return;
     }
