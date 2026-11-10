@@ -44,9 +44,9 @@ def botw_pane(root):
     specs=root['PreferenceSpecifiers']
     at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
     specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
-                               'iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · '
+                               '超過 4 GB 的 iPad 預設開啟；4 GB 或以下 iPad 預設手持、30 幀。關閉：手持 1280×720（內部 960×540），iPhone 預設。已保存的選擇保留。重新啟動遊戲後生效 · '
                                'on: the game\'s docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch '
-                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 (960×540 inside), '
+                               'docked; HD: 1920×1080, sharper and heavier), the default on iPads above 4 GB. iPads with 4 GB or less start handheld at 30 fps. Saved choices are kept. Off: handheld 1280×720 (960×540 inside), '
                                'the iPhone\'s default. Takes effect after relaunching the game')
     specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
                        'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],

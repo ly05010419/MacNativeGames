@@ -14,6 +14,7 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#include "device_defaults.h"
 #include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "touch_pad.h"
@@ -422,6 +423,13 @@ static void apply_settings(void) {
         }
         defaults[key] = value;
     }
+#ifdef GAME_BOTW
+    /* Four-GB iPads should start with the lighter handheld scene and a 30-fps
+       cap. The existing persistence step below preserves stored player choices. */
+    totk_ios_botw_device_defaults(defaults, pad,
+        UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad,
+        NSProcessInfo.processInfo.physicalMemory);
+#endif
     /* A package without the pane is broken; do not keep a second, hand-copied copy of the defaults here. Each
        consumer falls back to its own documented default (the picture and frame maps have theirs). */
     if (!defaults.count) fprintf(stderr, "[totk] settings: no Settings.bundle defaults; using the runtime defaults\n");
