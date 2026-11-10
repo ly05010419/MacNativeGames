@@ -6,12 +6,16 @@
 // (nvn_mtl.m pso_contribute; user 2026-10-22), their shaders named as a build names them (totk_contrib_listed_name).
 // Each row is written once to the player's contribution file (TOTK_SHADER_CONTRIB, set by app/launcher.m and
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
-// bind states and pipeline descriptors, no game data. Every TOTK_CONTRIB_STEP new rows of any kind the Mac launcher asks
-// the player, before the game starts, to send the file in a GitHub issue (an iPhone / iPad never asks during play: while
-// it is connected, ios/tools/shader_contrib_watch.py asks on the Mac); scripts/collect_shader_issues.py merges what
+// bind states and pipeline descriptors, no game data. Once the file holds TOTK_CONTRIB_STEP new rows, the
+// Mac launcher asks once, before the game starts, whether to contribute them automatically over HTTPS
+// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shader_issues.py --inbox merges what
 // arrives. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,14 +45,68 @@ static inline NSString *totk_contrib_path(void) {
     return e && *e ? @(e) : nil;
 }
 
+/* A row of the file, a whole line (shader-list rows): what is counted, sent and moved to the done file. */
+static inline BOOL totk_contrib_is_row(NSString *line) {
+    return [line hasPrefix:@"V\t"] || [line hasPrefix:@"R\t"] || [line hasPrefix:@"B\t"] || [line hasPrefix:@"T\t"];
+}
 /* The rows already in the file, whole lines: "V\t<shader>\t<deps>" per shader and bind state, "R\t<pipeline key>" and
    "B\t<pipeline key>\t<vertex>\t<fragment>" per render pipeline (shader_list.py rows). */
 static inline NSMutableSet<NSString *> *totk_contrib_read(NSString *path) {
     NSMutableSet *rows = [NSMutableSet set];
     NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     for (NSString *line in [text componentsSeparatedByString:@"\n"])
-        if ([line hasPrefix:@"V\t"] || [line hasPrefix:@"R\t"] || [line hasPrefix:@"B\t"]) [rows addObject:line];
+        if (totk_contrib_is_row(line)) [rows addObject:line];
     return rows;
+}
+
+/* A hidden file beside the contribution file, .<name>.<ext> (the shader inbox port, 2026-11-10): "done" holds the rows the
+   inbox took (never written or sent again), "upload" the player's choice, "install" a random id. */
+static inline NSString *totk_contrib_side(NSString *path, NSString *ext) {
+    return [path.stringByDeletingLastPathComponent stringByAppendingPathComponent:[NSString stringWithFormat:@".%@.%@", path.lastPathComponent, ext]];
+}
+/* The file opened with these flags and locked (flock, exclusive), or -1. totk_contrib_retire replaces the file by a rename,
+   so a descriptor opened before it names the old one: then the file is opened again. */
+static inline int totk_contrib_lock(NSString *path, int flags) {
+    for (int tries = 0; tries < 8; tries++) {
+        int fd = open(path.fileSystemRepresentation, flags | O_CLOEXEC, 0644);
+        if (fd < 0) return -1;
+        struct stat held, now;
+        if (flock(fd, LOCK_EX) == 0 && fstat(fd, &held) == 0 && stat(path.fileSystemRepresentation, &now) == 0 &&
+            held.st_ino == now.st_ino && held.st_dev == now.st_dev) return fd;
+        close(fd);
+    }
+    return -1;
+}
+/* Moves these rows from the file to its done file, under the file's lock: header lines and every other row stay, in
+   order; the file is replaced by a rename. Returns how many moved; 0 when the done file could not be written. */
+static inline NSUInteger totk_contrib_retire(NSString *path, NSSet<NSString *> *rows) {
+    if (!path || !rows.count) return 0;
+    int fd = totk_contrib_lock(path, O_RDONLY);
+    if (fd < 0) return 0;
+    NSMutableData *data = [NSMutableData data]; char buf[1 << 16]; ssize_t n;
+    while ((n = read(fd, buf, sizeof buf)) > 0) [data appendBytes:buf length:(NSUInteger)n];
+    NSString *text = n < 0 ? nil : [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSMutableString *kept = [NSMutableString string], *moved = [NSMutableString string];
+    NSMutableSet *seen = [NSMutableSet set];
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        NSString *line = lines[i];
+        if (i + 1 == lines.count && !line.length) break;   // after the last newline
+        if (!totk_contrib_is_row(line) || ![rows containsObject:line]) { [kept appendFormat:@"%@\n", line]; continue; }
+        if (![seen containsObject:line]) { [seen addObject:line]; [moved appendFormat:@"%@\n", line]; }
+    }
+    NSUInteger count = seen.count;
+    if (count) {
+        NSString *done = totk_contrib_side(path, @"done"), *tmp = totk_contrib_side(path, @"tmp");
+        FILE *f = fopen(done.fileSystemRepresentation, "a");
+        BOOL wrote = f && fputs(moved.UTF8String, f) >= 0;
+        if (f && fclose(f)) wrote = NO;
+        if (!wrote) count = 0;
+        else if (![kept writeToFile:tmp atomically:NO encoding:NSUTF8StringEncoding error:nil] ||
+                 rename(tmp.fileSystemRepresentation, path.fileSystemRepresentation)) unlink(tmp.fileSystemRepresentation);
+    }
+    close(fd);
+    return count;
 }
 
 /* Where the last reminder's row count (or "never") is kept: a hidden file beside the contribution file,
@@ -108,10 +166,12 @@ static inline void totk_contrib_add_line(NSString *line) {
         path = totk_contrib_path();
         if (!path) { off = 1; return; }
         rows = totk_contrib_read(path);
+        [rows unionSet:totk_contrib_read(totk_contrib_side(path, @"done"))];   /* rows the inbox took */
     }
     if ([rows containsObject:line]) return;
-    FILE *f = fopen(path.fileSystemRepresentation, "a");
-    if (!f) return;
+    int fd = totk_contrib_lock(path, O_WRONLY | O_APPEND | O_CREAT);
+    FILE *f = fd < 0 ? NULL : fdopen(fd, "a");
+    if (!f) { if (fd >= 0) close(fd); return; }
     fseek(f, 0, SEEK_END);
     if (ftell(f) == 0)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"

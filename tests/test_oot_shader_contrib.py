@@ -56,8 +56,11 @@ class Packaging(unittest.TestCase):
     def test_contribution_folder_as_build_app(self):
         self.assertIn("info['MNGContributionFolder']=str(contrib_folder())", self.source)
 
-    def test_ios_build_installs_its_own_reminder(self):
-        self.assertIn("ios/tools/shader_contrib_watch.py','install','--store',contrib_folder()", self.source)
+    def test_ios_build_takes_the_old_device_reminder_off(self):
+        # the devices contribute over HTTPS on their own since 2026-11-10; the agent an older build installed goes
+        self.assertIn("DEVICE_REMINDER_LABEL='org.macnativegames.oot.ios-shader-contrib'", self.source)
+        self.assertIn('remove_device_reminder()', function(self.source, 'def build(args'))
+        self.assertNotIn('shader_contrib_watch.py\',\'install', self.source)
 
 
 class Route(unittest.TestCase):
@@ -80,20 +83,10 @@ class Route(unittest.TestCase):
         self.assertEqual(titled({'title': 'Shader list (Ocarina of Time): 32 shaders from Mac (OcarinaOfTime 131072)', 'body': ''}), 'oot')
         self.assertEqual(titled({'title': 'Shader list: 3091 shaders from Mac (OcarinaOfTime 131072)', 'body': ''}), 'oot')   # an older build's
 
-    def test_ios_reminder_is_the_games_own(self):
-        spec = importlib.util.spec_from_file_location('oot_shader_contrib_watch', OOT / 'ios/tools/shader_contrib_watch.py')
-        watch = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(watch)
-        totk = {'name': 'TOTK', 'bundleIdentifier': 'org.macnativegames.totk.csl9l993h3'}
-        oot = {'name': 'OcarinaOfTime', 'bundleIdentifier': 'org.macnativegames.oot.csl9l993h3'}
-        self.assertEqual(watch.game_bundle({'result': {'apps': [totk, oot]}}), oot['bundleIdentifier'])
-        self.assertIsNone(watch.game_bundle({'result': {'apps': [totk]}}))
-        self.assertEqual(watch.MERGED, 'shader-list-contribution-oot.txt')
-        self.assertIn('template=shader-list-other.yml', watch.ISSUE_URL)
-        self.assertNotEqual(watch.LABEL, 'org.macnativegames.totk.ios-shader-contrib')   # would replace Tears of the Kingdom's agent
-        issue = {'title': f'{watch.GAME_TITLE} 120 shaders from iPhone (OcarinaOfTime 131072)',
-                 'body': watch.issue_body('iPhone', 'https://gist.githubusercontent.com/a/b/raw/x', 'OcarinaOfTime 131072')}
-        self.assertEqual(collect_shader_issues.titled_game(issue), 'oot')
+    def test_uploads_under_its_own_name(self):
+        upload = (OOT / 'third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h').read_text()
+        self.assertIn('#define GAME_INBOX_ID "oot"', upload)
+        self.assertFalse((OOT / 'ios/tools/shader_contrib_watch.py').exists())
 
 
 PROBE = r'''

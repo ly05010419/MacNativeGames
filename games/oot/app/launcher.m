@@ -27,7 +27,7 @@
 #include "../runtime/runtime.h"
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"
-#include "../runtime/contrib_submit.h"
+#include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"
 #include "auto_update.h"
 
 static void show_error(NSString *detail) {
@@ -126,41 +126,18 @@ static NSString *cloud_folder_offer(NSUserDefaults *sync) {
     return panel.URL.path;
 }
 
-/* Every TOTK_CONTRIB_STEP shaders and render pipelines the shared list does not have yet (totk_shader_contrib.h), before the game starts: ask
-   the player to send the file in a GitHub issue. "Send" opens the issue form and shows the file in Finder to drag in.
-   With gh signed in, "Submit automatically" takes the place of "Remind me next time" and sends this file at once.
-   The star button only opens the project page (the player stars it there) and asks again next time. */
-static void contrib_reminder(NSString *path) {
-    NSUInteger rows = totk_contrib_due(path);
+/* The one question about the shader contribution (totk_contrib_upload.h, the same as Tears of the Kingdom's), before the
+   game starts, once the file holds TOTK_CONTRIB_STEP new rows and the player has not chosen. */
+static void contrib_ask(NSString *path) {
+    NSUInteger rows = totk_inbox_should_ask(path);
     if (!rows) return;
-    totk_contrib_reminded(path, rows);   // "next time": TOTK_CONTRIB_STEP rows later; "don't remind me again": never
-    NSString *gh = gh_path();
     [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
-    [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];   // the folder, before the question
     NSAlert *alert = [NSAlert new];
-    alert.messageText = @(TOTK_UI("期待你的贡献", "We would love your contribution"));
-    alert.informativeText = [NSString stringWithFormat:@"%@%@", [NSString stringWithFormat:@(TOTK_UI("你有 %lu 条着色器和渲染管线可以贡献：玩的时候遇到的、公共着色器清单里还没有的。它们记在一个小文件里，只有着色器和管线的标识，不含游戏内容、存档或个人信息。把它发到 GitHub 加进公共清单，以后大家打包的 App 都会带上它们，玩到那里不再卡顿。\n\n",
-                                      "You have %lu shaders and render pipelines to contribute: ones your game met that the shared shader list does not have yet. They are kept in a small file with shader and pipeline identifiers only: no game data, saves or personal information. Sent to GitHub and added to the shared list, they come with everyone's next build, and nobody stutters there again.\n\n")), (unsigned long)rows],
-                             gh ? @(TOTK_UI("点“自动提交”会用这台 Mac 上登录的 GitHub 命令行（gh）直接提交，不用打开网页。点“发送”会打开 GitHub 的提交页面，并在访达里显示这个文件，把它拖进页面即可。",
-                                            "\"Submit automatically\" sends it now with the GitHub CLI (gh) signed in on this Mac, without the browser. \"Send\" opens the GitHub form and shows the file in Finder: drag it into the form."))
-                                : @(TOTK_UI("点“发送”会打开 GitHub 的提交页面，并在访达里显示这个文件，把它拖进页面即可。",
-                                            "\"Send\" opens the GitHub form and shows the file in Finder: drag it into the form."))];
-    [alert addButtonWithTitle:@(TOTK_UI("发送", "Send"))];
-    [alert addButtonWithTitle:gh ? @(TOTK_UI("自动提交", "Submit automatically")) : @(TOTK_UI("下次提醒", "Remind me next time"))];
-    [alert addButtonWithTitle:@(TOTK_UI("不要提醒了", "Don't remind me again"))];
-    [alert addButtonWithTitle:@(TOTK_UI("⭐ 喜欢就点个 Star", "⭐ Like it? Star it on GitHub"))];
+    alert.messageText = totk_inbox_prompt_title();
+    alert.informativeText = totk_inbox_prompt_text();
+    for (NSString *answer in totk_inbox_prompt_answers()) [alert addButtonWithTitle:answer];
     NSModalResponse choice = [alert runModal];
-    if (choice == NSAlertThirdButtonReturn + 1) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_REPO_URL]];
-    if (choice == NSAlertThirdButtonReturn) totk_contrib_never(path);
-    if (choice == NSAlertSecondButtonReturn && gh) {
-        NSString *issue = contrib_submit(gh, path, rows);
-        if (issue) { note([NSString stringWithFormat:@"%@\n%@", @(TOTK_UI("感谢你的 shader 贡献，让我们一起让游戏更流畅！", "Thank you for your shader contribution! Let's make the game smoother together!")), issue]); return; }
-        note(@(TOTK_UI("自动提交没有成功，改为打开提交页面。", "Submitting automatically did not work; opening the form instead.")));
-        choice = NSAlertFirstButtonReturn;
-    }
-    if (choice != NSAlertFirstButtonReturn) return;
-    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_CONTRIB_ISSUE_URL]];
-    [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
+    totk_inbox_answer(path, choice == NSAlertFirstButtonReturn ? TOTK_INBOX_AUTO : TOTK_INBOX_NEVER);
 }
 
 /* The contribution file: in the project folder the app was built from, <clone>/shader-list-contribution/shader-list-contribution.txt
@@ -173,7 +150,7 @@ static NSString *contrib_file(NSString *data) {
     NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGContributionFolder"];
     if (![folder isKindOfClass:NSString.class] || !folder.length || ![fm fileExistsAtPath:folder.stringByDeletingLastPathComponent]) return old;
     if (![fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]) return old;
-    // one file for the Mac and every iPhone / iPad (ios/tools/shader_contrib_watch.py merges theirs in): the rows are the same
+    // the Mac's file (an iPhone / iPad contributes its own, totk_contrib_upload.h): the rows are the same
     // for every platform. Each game has a list of its own and so a file of its own in the folder: Tears of the Kingdom's
     // without a suffix, Breath of the Wild's -botw, every other game's -<TOTK_GAME_DIR>, as the other games' issue form names
     // it (.github/ISSUE_TEMPLATE/shader-list-other.yml). Ocarina of Time's used to be -botw's (user 2026-11-10: "要统一")
@@ -474,7 +451,8 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
           NSString *build = [root stringByAppendingPathComponent:@"build"];
           totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
-        contrib_reminder(contrib);
+        contrib_ask(contrib);
+        totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
         { NSString *cmds = env_or("TOTK_INPUT_FILE", [data stringByAppendingPathComponent:@"input.txt"]);

@@ -58,11 +58,23 @@ def oot_shader_list():
 
 def contrib_folder():
     """<clone>/shader-list-contribution (MNG_CONTRIB_FOLDER overrides), as build_app.py contrib_folder: where the launcher
-    keeps the contribution file (shader-list-contribution-oot.txt, app/launcher.m contrib_file) and the iPhone / iPad
-    reminder merges the devices' rows into it (ios/tools/shader_contrib_watch.py). Made here if missing."""
+    keeps the contribution file (shader-list-contribution-oot.txt, app/launcher.m contrib_file), which the game contributes
+    over HTTPS when the player lets it. Made here if missing."""
     folder=Path(os.environ.get('MNG_CONTRIB_FOLDER') or GAME.parents[1]/'shader-list-contribution')
     folder.mkdir(parents=True,exist_ok=True)
     return folder
+
+# The Mac agent an iOS build installed until 2026-11-10 (ios/tools/shader_contrib_watch.py, Ocarina of Time's own): while
+# an iPhone / iPad was connected it asked to send the device's shaders in a GitHub issue. The devices contribute over HTTPS
+# on their own now (totk_contrib_upload.h) and the script is gone, so a build takes the agent off (as build_app.py does).
+DEVICE_REMINDER_LABEL='org.macnativegames.oot.ios-shader-contrib'
+
+def remove_device_reminder():
+    agent=Path.home()/f'Library/LaunchAgents/{DEVICE_REMINDER_LABEL}.plist'
+    if not agent.exists():return
+    subprocess.run(['launchctl','bootout',f'gui/{os.getuid()}/{DEVICE_REMINDER_LABEL}'],capture_output=True)
+    agent.unlink(missing_ok=True)
+    print('removed the old Mac reminder for iPhone / iPad shader contributions: the devices contribute on their own now',flush=True)
 
 def resolve_lists(tree, data, logs):
     """The App's warm-up lists beside build/shader-map.tsv, build/pso_manifest.tsv and build/pso_title.tsv: the shared
@@ -428,10 +440,7 @@ def build(args, source):
      run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',
          *([] if os.environ.get('OOT_IOS_ALL_SHADERS')=='1' else ['--listed-shaders-only']),   # user 2026-11-09: only the shaders the render pipelines use, for now
          *(['--image-outside'] if args.ios_game_data=='documents' else []),*[x for g in args.device_gpu or [] for x in ('--device-gpu',g)]],'build-ipa')
-     # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the shared list
-     # lacks (ios/tools/shader_contrib_watch.py, Ocarina of Time's own), as build_app.py installs it. Not essential.
-     try:run([py,tree/'ios/tools/shader_contrib_watch.py','install','--store',contrib_folder()],'shader-contrib-watch')
-     except Exception as e:print(f'the Mac reminder for iPhone / iPad shader contributions was not installed: {e}',flush=True)
+     remove_device_reminder()
     else:
      package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)
