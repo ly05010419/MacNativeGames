@@ -239,6 +239,15 @@ static void tick(void) {
     while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
     if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
 }
+/* Text entry also crosses a background queue: any number of main-queue passes can finish before it runs. */
+static void wait_for(BOOL (^ready)(void)) {
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:10];
+    while (!ready() && limit.timeIntervalSinceNow > 0) {
+        tick();
+        [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    assert(ready());
+}
 static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
@@ -976,40 +985,39 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSButton *addUser = settingsPanel.userButtons[0];
     assert([addUser.title isEqualToString:@"Add User…"] && !addUser.hidden);
     pick(@"User (from the next launch)", @"Zelda");
-    /* the row is made again with Zelda marked (the remake is dispatched); a run loop pass can end before it is
-       served, so wait for it instead of counting passes */
-    for (int i = 0; i < 100 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    /* The row is made again with Zelda marked; wait for the dispatched remake. */
+    wait_for(^BOOL{ return ![menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; });
     addUser = settingsPanel.userButtons[0];
     assert(fakeUsersActive == 1 && settingsPanel.rows.count == 2 &&
            [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
     assert([menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);   /* this run keeps its user */
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the text bar opens; the panel closed */
+    wait_for(^BOOL{ return !settingsOpen; });   /* the text bar opens; the panel closed */
     assert(!settingsOpen && settingsPanel.hidden);
     runtime_front_text_test("type", "Link"); tick();
     runtime_front_text_test("enter", "");
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();   /* the panel comes back, the user kept */
+    wait_for(^BOOL{ return settingsOpen != 0; });   /* the panel comes back, the user kept */
     assert(settingsOpen && fakeUsersCount == 3 && !strcmp(fakeUsers[2].name, "Link"));
     assert(menu(@"User (from the next launch)").numberOfItems == 3 &&
            [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Zelda"]);
     addUser = settingsPanel.userButtons[0];
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();
+    wait_for(^BOOL{ return !settingsOpen; });
     runtime_front_text_test("esc", "");   /* Escape answers the bar: nothing is added */
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    wait_for(^BOOL{ return settingsOpen != 0; });
     assert(settingsOpen && fakeUsersCount == 3);
     addUser = settingsPanel.userButtons[0];
     while (fakeUsersCount < RUNTIME_USERS_MAX) assert(runtime_users_add("Filler") >= 0);
     [addUser performClick:nil];
-    for (int i = 0; i < 100 && settingsOpen; i++) tick();   /* the console is full: the bar still asks, the user is not kept */
+    wait_for(^BOOL{ return !settingsOpen; });   /* the console is full: the bar still asks, the user is not kept */
     runtime_front_text_test("type", "Extra"); tick();
     runtime_front_text_test("enter", "");
-    for (int i = 0; i < 100 && !settingsOpen; i++) tick();
+    wait_for(^BOOL{ return settingsOpen != 0; });
     assert(settingsOpen && fakeUsersCount == RUNTIME_USERS_MAX);
     assert([settingsPanel.versionLabel.stringValue containsString:@"At most 8 users"]);
     while (fakeUsersCount > 2) fakeUsersCount--;   /* the two the next checks name */
     pick(@"User (from the next launch)", @"Local");
-    for (int i = 0; i < 100 && ![menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; i++) tick();
+    wait_for(^BOOL{ return [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; });
     assert(fakeUsersActive == 0 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]);
 
     /* Key bindings and the Update page follow the user page in the tabs, so the checks below start on the input page again. */
