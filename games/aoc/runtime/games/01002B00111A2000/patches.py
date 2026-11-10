@@ -1,6 +1,9 @@
 # Hyrule Warriors: Age of Calamity (01002B00111A2000): the rewriter's patches of this game's own builds. dm/tools/patch_nso.py loads every profile's patches.py and applies those of a module's NSO build ID;
 # CUTS, OBS and FRAME_STEP as described there ("Registered patches"). Patches of Nintendo SDK module builds are in dm/tools/sdk_patches.py
+from functools import partial
 from nso_asm import ADRP, B
+SOUND_HEAPS = ('sound engine heap: mov x8,#0xf00000 → mov x8,#0x1300000 (+4 MB)',
+               'sound data heap: mov w9,#0x8e00000 → mov w9,#0x8a00000 (-4 MB; the block the three heaps come from keeps its total size)')
 CUTS = {
   # Hyrule Warriors: Age of Calamity 1.3.0 (v327680) main: the init (main+0x8d9610) hands the KTSL sound engine three heaps carved from one block: 15 MB engine memory, 2 MB, and
   # 142 MB sound data (sizes built by mov x8,#0xf00000; movk x8,#0x20,lsl #48 and mov w9,#0x8e00000; constructor main+0x12647a0, heaps created at main+0x1a2ba58). The audio renderer
@@ -9,10 +12,28 @@ CUTS = {
   # the first sound archive (ASRS) never loaded and nnMain's resource wait (main+0x8d9bc8) spun forever. Where hardware differs is not known. The engine heap gets 4 MB from the
   # sound data heap, so the block the three come from keeps its size
   'c3cf52bf2b05d7310884971b50bcccb8': [
-    (0x8d9610, '081ea0d2', '0826a0d2', 'sound engine heap: mov x8,#0xf00000 → mov x8,#0x1300000 (+4 MB)'),
-    (0x8d9618, '091ca152', '0914a152', 'sound data heap: mov w9,#0x8e00000 → mov w9,#0x8a00000 (-4 MB; the block the three heaps come from keeps its total size)'),
+    (0x8d9610, '081ea0d2', '0826a0d2', SOUND_HEAPS[0]),
+    (0x8d9618, '091ca152', '0914a152', SOUND_HEAPS[1]),
+  ],
+  # 1.4.1 (v458752) main: the same instructions, 0x630 further on.
+  'e5f275b5d0889899e55de1a164eef060': [
+    (0x8d9c40, '081ea0d2', '0826a0d2', SOUND_HEAPS[0]),
+    (0x8d9c48, '091ca152', '0914a152', SOUND_HEAPS[1]),
   ],
 }
+
+# Where each build keeps what the stubs below touch. Addresses are 1.3.0's in the
+# comments of this file. 1.4.1 was mapped by matching the code that reads each one
+# and checked by disassembly: the instructions are the same, except that the scene
+# site reads the frame-rate block at its new offset. The device fields (+0x2aa4,
+# +0x32d0) stay where they were.
+#   task, step, device, scene: the four stub sites; scene_word: the scene site's original
+#   instruction; rate: the {fps, interval, fps, float fps} block; ntsc: the 59.94 float;
+#   ktgl: the pointer to the KTGL device.
+LAYOUT_130 = dict(task=0x166dab4, step=0x166dc60, device=0x8d94b0, scene=0x8c3610, scene_word='295d41bd',
+                  rate=0x269e150, ntsc=0x1ef5f3c, ktgl=0x2bac798)
+LAYOUT_141 = dict(task=0x1670124, step=0x16702d0, device=0x8d9ae0, scene=0x8c3c40, scene_word='298d42bd',
+                  rate=0x26a2280, ntsc=0x1ef8ddc, ktgl=0x2bb0798)
 
 # AoC 1.3.0 has three independent clocks: KIDS task, battle float-fps,
 # and KTGL event/device rate. At +0x166dc60, x0 is the post-wait tick,
@@ -30,13 +51,16 @@ CUTS = {
 # main+0x269e154 (movement/effects/script countdowns). At 120 updates/sec,
 # interval 1 advances those consumers twice as fast. The host consequently
 # restricts targets to 30/60; correct task/scene counters do not validate 120.
-def frame_step(ctx):
+def frame_step(ctx, at=LAYOUT_130):
     ctx.aoc_timing_abi = 3
     here, emit, state = ctx.here, ctx.emit, ctx.state
-    ctx.site(0x166dab4, '68734339')
-    ctx.site(0x166dc60, 'e83640b9681a00b9e04640bd')
-    ctx.site(0x8d94b0, '4900c0f2')
-    ctx.site(0x8c3610, '295d41bd')
+    task, step, device, scene = at['task'], at['step'], at['device'], at['scene']
+    rate, ntsc, ktgl = at['rate'], at['ntsc'], at['ktgl']
+    rate_lo, scene_word = rate & 0xfff, int.from_bytes(bytes.fromhex(at['scene_word']), 'little')
+    ctx.site(task, '68734339')
+    ctx.site(step, 'e83640b9681a00b9e04640bd')
+    ctx.site(device, '4900c0f2')
+    ctx.site(scene, at['scene_word'])
 
     # Local label assembler: avoids fragile hand-counted branch displacements.
     def stub(site, resume, words, reason):
@@ -66,11 +90,11 @@ def frame_step(ctx):
     def st(base, reg, off, kind='s'):
         return ld(base, reg, off, kind) - 0x00400000
     page = ('page', (16, state))
-    stub(0x8d94b0, 0x8d94b4, [page, ld(16,16,0,'w'),
+    stub(device, device + 4, [page, ld(16,16,0,'w'),
         0x52a83e11, 0x6b11021f, ('cond13','two'), 0xf2c00029, ('b','done'),
         'two', 0xf2c00049, 'done'], 'AoC device interval: 1 above 30 fps, else original 2')
 
-    stub(0x166dab4, 0x166dab8, [page, ld(16,16,0),
+    stub(task, task + 4, [page, ld(16,16,0),
         0x1e202208, ('cond13','native'),             # fcmp target,0; b.le
         0x1e380208, st(19,8,0x30,'w'),             # task limiter = cap
         0x1e2e1012, 0x1e301a52,                    # s18 = 1 / cap
@@ -87,15 +111,15 @@ def frame_step(ctx):
         'native', 0x528003c8, st(19,8,0x30,'w'),   # restore 30 on live switch
         0x1e230110,                               # ucvtf s16,w8
         st(16,31,0x58,'w'), st(16,31,0x74,'w'), st(16,31,0x68,'x'),
-        'block', ('page',(17,0x269e150)),
-        st(17,8,0x150,'w'), st(17,8,0x158,'w'), st(17,16,0x15c),
+        'block', ('page',(17,rate)),
+        st(17,8,rate_lo,'w'), st(17,8,rate_lo + 8,'w'), st(17,16,rate_lo + 12),
         ld(16,8,0,'w'), 0x52a83e11, 0x6b11011f,  # target bits <= 30 bits
         0x1a9fc7e8, 0x11000508,                    # interval = 2 at 30, else 1
-        ('page',(17,0x269e150)), st(17,8,0x154,'w'),
+        ('page',(17,rate)), st(17,8,rate_lo + 4,'w'),
         # Device events retain the original 59.94/60 convention at any rate.
-        ('page',(8,0x1ef5f3c)), ld(8,17,0xf3c),
+        ('page',(8,ntsc)), ld(8,17,ntsc & 0xfff),
         0x52800788, 0x1e230112, 0x1e321a31, 0x1e310a10,
-        ('page',(17,0x2bac798)), ld(17,17,0x798,'x'),
+        ('page',(17,ktgl)), ld(17,17,ktgl & 0xfff,'x'),
         # cbz x17 (64-bit; local cbz helper's w encoding is patched here)
         # device is initialized before the frame task starts. Still tolerate null.
         0xb5000051, ('b','orig'),                   # cbnz x17,+8
@@ -104,7 +128,7 @@ def frame_step(ctx):
         0x1a9fc7e8, 0x11000508, st(17,8,0x2aa4,'w'), # live device interval
         'orig', 0x39437368], 'AoC task cap and dynamic battle/event clocks (30/60/120)')
 
-    stub(0x166dc60, 0x166dc6c, [0xbd4036f0, page,
+    stub(step, step + 12, [0xbd4036f0, page,
         ld(16,8,0,'w'), ('cbz8','original'),
         ld(16,17,0), 0x1e2e1012,                  # s18=1/target
         0x1e311a52,                               # fdiv s18,s18,s17
@@ -130,7 +154,7 @@ def frame_step(ctx):
     # On M5 this is 1 GHz; the 24 MHz mach_absolute_time ABI is a different clock.
     # x9 is overwritten by the original next instruction; x16/x17 and s16-s18
     # are scratch before the next call. s9 replaces the original fps load.
-    stub(0x8c3610, 0x8c3614, [page, ld(16,16,0), 0x1e202208, ('cond13','original'),
+    stub(scene, scene + 4, [page, ld(16,16,0), 0x1e202208, ('cond13','original'),
         0x1e2e1012, 0x1e301a52,                  # default dt=1/target
         0xd53be051, ld(16,9,0x68,'x'), st(16,17,0x68,'x'),
         ld(16,17,0x38,'w'), ('cbz17','dt'),
@@ -140,11 +164,12 @@ def frame_step(ctx):
         ld(16,17,0x50), 0x1e315a52, ld(16,17,0x54), 0x1e314a52,
         'dt', st(16,18,0x70), 0x52800029, st(16,9,0x74,'w'),
         0x1e2e1011, 0x1e321a29,                # s9=1/dt, consumed by battle's own reciprocal
-        0x1e200129, ('page',(17,0x269e150)),
-        st(17,9,0x150,'w'), st(17,9,0x158,'w'), st(17,9,0x15c),
+        0x1e200129, ('page',(17,rate)),
+        st(17,9,rate_lo,'w'), st(17,9,rate_lo + 8,'w'), st(17,9,rate_lo + 12),
         0x1e22c251, ld(16,18,0x80,'d'), 0x1e712a52, st(16,18,0x80,'d'),
         ld(16,17,0x78,'x'), 0x91000631, st(16,17,0x78,'x'),
-        ('b','done'), 'original', 0xbd415d29, 'done'],
+        ('b','done'), 'original', scene_word, 'done'],
         'AoC scene/battle clock: own measured interval, independent of KIDS/present rates')
 
-FRAME_STEP = {'c3cf52bf2b05d7310884971b50bcccb8': frame_step}
+FRAME_STEP = {'c3cf52bf2b05d7310884971b50bcccb8': frame_step,
+              'e5f275b5d0889899e55de1a164eef060': partial(frame_step, at=LAYOUT_141)}

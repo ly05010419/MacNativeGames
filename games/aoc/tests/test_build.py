@@ -48,6 +48,24 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(result.returncode,1);self.assertIn('outside the signed app',result.stderr)
             self.assertEqual({p.relative_to(app):p.read_bytes() for p in app.rglob('*') if p.is_file()},original)
 
+    @unittest.skipUnless(sys.platform=='darwin','native macOS launcher')
+    def test_launcher_points_the_host_at_bundled_dlc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();contents=root/'Test.app/Contents'
+            mac=contents/'MacOS';game=contents/'Resources/game'
+            mac.mkdir(parents=True);game.mkdir(parents=True)
+            binary=mac/'AgeOfCalamity'
+            subprocess.run(['clang','-arch','arm64','-mmacosx-version-min=26.0','-O2','-Wall','-Wextra','-Werror',
+                            str(GAME/'app/launcher.c'),'-o',str(binary)],check=True)
+            host=game/'dmhost';host.write_text('#!/bin/sh\nprintf "[%s]\\n" "$DM_AOC_DIR"\nexit 23\n');host.chmod(0o755)
+            env={k:v for k,v in os.environ.items() if k!='DM_AOC_DIR'}
+            for name,expected in (('none','[]'),('some',f'[{game/"aoc"}]')):
+                profile=root/name;profile.mkdir()
+                if name=='some':(game/'aoc').mkdir()
+                subprocess.run([str(binary)],env=dict(env,DM_AOC_PROFILE=str(profile)),capture_output=True)
+                log,=profile.glob('session-*.log')
+                self.assertEqual(log.read_text().splitlines(),[expected])
+
     def test_tooling_checksums(self):
         build.verify_prebuilt()
 
@@ -165,7 +183,7 @@ class BuildTests(unittest.TestCase):
         profile=game.load(build.TITLE)
         self.assertEqual(profile.get('fps_target'),'0')
         self.assertEqual(profile.get('sys_resource'),'0')
-        self.assertEqual(set(profile.builds()),{'v327680'})
+        self.assertEqual(set(profile.builds()),{'v327680','v458752'})
         self.assertFalse((GAME/'runtime/games/0100965017338000').exists())
 
     def test_profile_rejects_unsupported_120_fps(self):

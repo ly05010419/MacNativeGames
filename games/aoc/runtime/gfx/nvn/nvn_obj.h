@@ -189,7 +189,6 @@ void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full_rw_passes);   // Cum
 uint64_t mtl_udc_saved_bytes(void);                                      // Write-back bytes actually saved by DM_NVN_UNWRITTEN_DC
 int mtl_has_window(void);
 int mtl_fps_target(void);                                   // AoC presentation target: 30 / 60 / 120, coordinated with task timing
-int mtl_warm_wait(int timeout_ms);
 int mtl_link_active(void);
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // vsyncs = the game's present interval
 double mtl_presented_time(uint64_t n);

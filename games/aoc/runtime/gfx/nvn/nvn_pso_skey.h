@@ -34,6 +34,7 @@ static inline void pso_skey_hex(const pso_skey *key, char *out) {
     out[sizeof *key * 2] = 0;
 }
 
+#include "nvn_pso_norm.h"   // pso_key_norm: a parsed row (an old seed's too) gets the key pso_key_fill makes now
 static inline int pso_skey_parse(const char *hex, pso_skey *out) {
     size_t n = sizeof *out * 2;
     if (!hex || strlen(hex) != n) return -1;
@@ -44,5 +45,6 @@ static inline int pso_skey_parse(const char *hex, pso_skey *out) {
         if (a < 0 || b < 0) return -1;
         p[i / 2] = (uint8_t)(a << 4 | b);
     }
+    pso_key_norm(&out->k, out->merged);
     return 0;
 }

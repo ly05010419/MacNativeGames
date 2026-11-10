@@ -1,4 +1,4 @@
-# Hyrule Warriors: Age of Calamity (Koei Tecmo's KTGL engine on NVN, SDK 9.6.0), update v327680 = 1.3.0.
+# Hyrule Warriors: Age of Calamity (Koei Tecmo's KTGL engine on NVN, SDK 9.6.0), update v327680 = 1.3.0, v458752 = 1.4.1.
 # Started from the NSP script's provisional profile; values marked "Mario's" are not measured for this game yet.
 # RomFS: Koei Tecmo RDB archives (asset/*.rdb index + asset/*.rdb.bin* data, asset/data/*.file), a run of IDRK entries with zlib in chunks.
 # The shaders are GLSLC compiler outputs: 118 in main and the rest in KTGL's G2S containers inside the RDB data files (shader_split.py idrk_shaders).
@@ -16,6 +16,7 @@ pad_layout	full
 
 # ---- Versions ----
 build	v327680	1.3.0	main=c3cf52bf2b05d7310884971b50bcccb8	subsdk0=3ab92c3444d4ece2f52417b5d8ee86eb	sdk=95832210b36121e88b4f9b7b66239dad
+build	v458752	1.4.1	main=e5f275b5d0889899e55de1a164eef060	subsdk0=3ab92c3444d4ece2f52417b5d8ee86eb	sdk=95832210b36121e88b4f9b7b66239dad
 package	v327680
 shader_versions	v327680
 
@@ -41,6 +42,10 @@ sys_resource	0
 # Movie frames (VP9, NV12 to a buffer): the game copies each frame into a 1280x720 R8 and a 640x360 RG8 texture in a CPU-visible pool and publishes them with
 # nvnMemoryPoolFlushMappedRange; without the upload the intro movie stayed black under its "+ Skip" prompt
 tex_flush_upload	on
+# Black squares: KTGL's full-screen stencil effects read the 1440x810 scene target (RG11B10Float) while drawing into it, an
+# undefined read on Metal. NaN appeared in that target, small and sharp in play and spread into dark patches by a 720x405
+# pass in menus and cutscenes. With a snapshot before these draws the scan found none (nvn_mtl.m fb_prepare)
+feedback_snap	b7925c00a295bfdb f0fdd965f01181da 315e5a651f5ca0c2 78cf921ff6b210e0
 
 # ---- Presentation ----
 # Original simulation is 30 fps. The version-gated stubs coordinate the KIDS

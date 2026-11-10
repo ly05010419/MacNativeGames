@@ -1,6 +1,11 @@
 // Players and controllers (GitHub issue #74): the Mac front end's slot assignment (pad_slots.h) and the npads hle_hid.c reports for each player, docked and handheld, with the
 // game's supported npad ids; no controller, window or guest exists in this test (the hid take-overs are called directly, events are recorded by the stubs)
+#include <unistd.h>
+// Scripted input steps (DM_CTL, DM_KEYS) run on threads that sleep: the test owns their sleep, so each one waits at a gate until the test lets it on (no race decides a result)
+int test_usleep(useconds_t us);
+#define usleep test_usleep
 #include "../hle_hid.c"
+#undef usleep
 #include "../pad_slots.h"
 
 static int checks, fails, g_mode = 1, g_signals;
@@ -25,6 +30,11 @@ void dm_ctl_cvar_i32(uint64_t off, int32_t v) { (void)off; (void)v; }
 void dm_ctl_cvar_f32(uint64_t off, float v) { (void)off; (void)v; }
 void dm_gfx_texdump_next(const char *path) { (void)path; }
 void dm_gfx_passdump_next(long n) { (void)n; }
+// DM_CTL's "fps" lines (aoc_timing.c, not built here): the test sends none
+int aoc_timing_valid(int target) { (void)target; return 0; }
+void aoc_timing_set(int target, int dynamic) { (void)target; (void)dynamic; }
+int aoc_timing_target(void) { return 0; }
+int aoc_timing_dynamic(void) { return 0; }
 
 static uint64_t buttons_of(uint32_t id, uint32_t style) { NpadState s; fill(&s, id, style); return s.attributes ? s.buttons & 0xffff : 0; }
 static int32_t lx_of(uint32_t id) { NpadState s; fill(&s, id, STYLE_FULLKEY); return s.lx; }
@@ -146,10 +156,76 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
 }
 
+static pthread_mutex_t g_gate_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_gate_cv = PTHREAD_COND_INITIALIZER;
+static int g_gate_calls, g_gate_allowed, g_gate_open, g_gate_stop, g_ended;   // sleeps reached, let through; open: every sleep returns at once; stop: a sleeping script ends
+static pthread_key_t g_script_key;   // set on a script's thread at its first gated sleep; its destructor counts the thread's end
+static void script_ended(void *v) { (void)v; pthread_mutex_lock(&g_gate_mu); g_ended++; pthread_cond_broadcast(&g_gate_cv); pthread_mutex_unlock(&g_gate_mu); }
+int test_usleep(useconds_t us) {
+    (void)us; if (g_gate_open) return 0;
+    if (!pthread_getspecific(g_script_key)) pthread_setspecific(g_script_key, &g_script_key);
+    pthread_mutex_lock(&g_gate_mu); int me = ++g_gate_calls; pthread_cond_broadcast(&g_gate_cv);
+    while (g_gate_allowed < me && !g_gate_stop) pthread_cond_wait(&g_gate_cv, &g_gate_mu);
+    int stop = g_gate_stop; pthread_mutex_unlock(&g_gate_mu);
+    if (stop) pthread_exit(NULL);   // DM_CTL's thread polls its file for good: the test ends it here, between polls (its file is closed)
+    return 0;
+}
+static int scripts_ended(int n) {   // 1 once n script threads have ended, 0 after 5 s
+    struct timespec end; clock_gettime(CLOCK_REALTIME, &end); end.tv_sec += 5; int ok = 1;
+    pthread_mutex_lock(&g_gate_mu);
+    while (g_ended < n && ok) ok = !pthread_cond_timedwait(&g_gate_cv, &g_gate_mu, &end);
+    int done = g_ended >= n; pthread_mutex_unlock(&g_gate_mu); return done;
+}
+static void gate_reached(int n) {   // a script that never gets there fails the test after 5 s instead of hanging it
+    struct timespec end; clock_gettime(CLOCK_REALTIME, &end); end.tv_sec += 5;
+    pthread_mutex_lock(&g_gate_mu);
+    while (g_gate_calls < n) if (pthread_cond_timedwait(&g_gate_cv, &g_gate_mu, &end)) { fprintf(stderr, "FAIL: the script never reached sleep %d\n", n); exit(1); }
+    pthread_mutex_unlock(&g_gate_mu);
+}
+static void gate_let(int n) { pthread_mutex_lock(&g_gate_mu); g_gate_allowed = n; pthread_cond_broadcast(&g_gate_cv); pthread_mutex_unlock(&g_gate_mu); }
+static uint64_t game_read(void) { NpadState s; h_hid_StateFullKey(&s, &(uint32_t){0}); return s.buttons & 0xffff; }   // a frame's read, as the game makes it
+// Steps 1 and 2 of a script that presses A twice, from the first gate on: the game reads at the chosen moments only
+static void two_presses(const char *path, int first, int read_while_held) {
+    gate_reached(first); CHECK(atomic_load(&g_pad_btn[0]) == DM_BTN_A, path);
+    uint64_t r = atomic_load(&g_released);
+    if (read_while_held) CHECK(game_read() == DM_BTN_A && atomic_load(&g_released) == r, "a sample taken while held never counts as the release");
+    gate_let(first); gate_reached(first + 1);
+    CHECK(atomic_load(&g_pad_btn[0]) == 0, "let go, and the next press waits for the game to see it");
+    int g = first + 1;
+    if (!read_while_held) {   // the press was latched and no frame read it: the first read after the release still gets A, and does not count
+        CHECK(game_read() == DM_BTN_A && atomic_load(&g_released) == r, "a pending press that the first read consumes does not count as the release");
+        gate_let(g); gate_reached(++g); CHECK(atomic_load(&g_pad_btn[0]) == 0, "still waiting for a released sample");
+    }
+    CHECK(game_read() == 0 && atomic_load(&g_released) == r + 1, "the game gets a released sample");
+    gate_let(g); gate_reached(g + 1);
+    CHECK(atomic_load(&g_pad_btn[0]) == DM_BTN_A && game_read() == DM_BTN_A, "then the second press: two presses with a release between them");
+    gate_let(g + 1); gate_reached(g + 2); CHECK(game_read() == 0, "the second press is let go and seen");
+    gate_let(g + 2);
+}
+static void t_script(void) {
+    pthread_key_create(&g_script_key, script_ended);
+    g_mode = 1; dm_pad_players(0); ids((uint32_t[]){0, NPAD_HANDHELD}, 2); dm_input_set(0, 0, 0, 0, 0); dm_pad_set(0, 0, 0, 0, 0); game_read();
+    g_gate_open = 1;   // nobody reads: the wait ends after its 1 s and says the release was not seen
+    key_step st = {0, 0.15, DM_BTN_A};
+    CHECK(!script_press(&st), "no released sample within the time limit: reported, not assumed");
+    g_gate_open = 0; game_read();
+    unsetenv("DM_CTL"); setenv("DM_KEYS", "0:A,0:A", 1); hid_keys_init();
+    two_presses("DM_KEYS presses A", 1, 0);
+    CHECK(scripts_ended(1), "DM_KEYS's thread ends after its last step");
+    char path[] = "/tmp/t_hid_ctl_XXXXXX"; int fd = mkstemp(path);
+    CHECK(fd >= 0 && write(fd, "A\nA\n", 4) == 4, "a DM_CTL file"); close(fd);
+    int base = g_gate_calls; unsetenv("DM_KEYS"); setenv("DM_CTL", path, 1); ctl_start();
+    two_presses("DM_CTL presses A", base + 1, 1);
+    gate_reached(base + 5);   // its file read to the end, back to polling it
+    pthread_mutex_lock(&g_gate_mu); g_gate_stop = 1; pthread_cond_broadcast(&g_gate_cv); pthread_mutex_unlock(&g_gate_mu);
+    CHECK(scripts_ended(2), "every script thread the test started has ended");
+    unlink(path);
+}
+
 int main(void) {
     t_slots();
     t_npads();
     t_vibration();
+    t_script();   // last: it sets its own supported npads
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

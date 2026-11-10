@@ -49,6 +49,10 @@ int main(void){
     aoc_timing_set(120,0);CHECK(value(0)==60 && aoc_timing_target()==60 && !aoc_timing_dynamic());
     aoc_timing_set(60,1);
     aoc_timing_set(75,0);CHECK(aoc_timing_target()==60 && aoc_timing_dynamic());
+    aoc_timing_hold(1);CHECK(value(0)==0 && aoc_timing_target()==60);
+    aoc_timing_set(30,1);CHECK(value(0)==30 && aoc_timing_target()==30);
+    aoc_timing_set(60,1);CHECK(value(0)==0 && aoc_timing_target()==60);
+    aoc_timing_hold(0);CHECK(value(0)==60 && aoc_timing_target()==60);
     setenv("DM_FPS_TARGET","120",1);setenv("DM_DYNAMIC_FPS","0",1);
     aoc_timing_apply(0);CHECK(value(0)==60 && aoc_timing_target()==60 && !aoc_timing_dynamic());
     CHECK(fabs(value(AOC_DT)-1.0/60)<1e-7);

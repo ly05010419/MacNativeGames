@@ -1904,8 +1904,8 @@ NVN(nvnTextureViewSetSwizzle, void, NVNtextureView *v, NVNtextureSwizzle r, NVNt
 }
 
 // Color state: alpha test function, logic op (the fields already exist in color_st)
-NVN(nvnColorStateSetAlphaTest, void, NVNcolorState *s, NVNalphaFunc f) { ST(color_st, s)->alpha_func = (uint32_t)f; }
-NVN(nvnColorStateSetLogicOp, void, NVNcolorState *s, NVNlogicOp op) { ST(color_st, s)->logic_op = (uint32_t)op; }
+NVN(nvnColorStateSetAlphaTest, void, NVNcolorState *s, NVNalphaFunc f) { ST(color_st, s)->alpha_func = (uint32_t)f; if (f != NVN_ALPHA_FUNC_ALWAYS) ONCE_LOG("ColorStateSetAlphaTest %u: an alpha test the host does not emulate (only recorded)", (unsigned)f); }
+NVN(nvnColorStateSetLogicOp, void, NVNcolorState *s, NVNlogicOp op) { ST(color_st, s)->logic_op = (uint32_t)op; if (op != NVN_LOGIC_OP_COPY) ONCE_LOG("ColorStateSetLogicOp %u: a logic op the host does not emulate (only recorded)", (unsigned)op); }
 // Getters and the rest of the multisample state: Pokémon Legends: Z-A (Trinity, SDK 19) reads its state objects and builders back when it builds its pipeline states; the stub returned
 // whatever was left in x0 (the object's address), so a blend enable or depth test read back as true, a texture builder's width as an address
 NVN(nvnColorStateGetBlendEnable, NVNboolean, const NVNcolorState *s, int i) { return i >= 0 && i < 8 && (((const color_st *)s)->blend_en >> i & 1); }

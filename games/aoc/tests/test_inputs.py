@@ -1,5 +1,6 @@
 """Extracted-input negative controls, using synthetic data only."""
 import hashlib
+import json
 from pathlib import Path
 import os
 import struct
@@ -30,6 +31,18 @@ class InputTests(unittest.TestCase):
             p.write_bytes(b[:256])
             with self.assertRaisesRegex(ValueError,'truncated NSO segment'): inputs.nso(p)
 
+    def test_version_comes_from_main(self):
+        self.assertEqual(inputs.version_of(inputs.VERSIONS['1.4.1']['main'] + '00'*16)['tag'],'v458752')
+        self.assertEqual(inputs.version_of(inputs.VERSIONS['1.3.0']['main'])['tag'],'v327680')
+        with self.assertRaisesRegex(ValueError,'unsupported executable build'): inputs.version_of('00'*16)
+
+    def test_each_version_has_its_pins(self):
+        for version in inputs.VERSIONS.values():
+            pins=json.loads(inputs.pins_of(version).read_text())
+            self.assertEqual((pins['version'],pins['version_code']),(version['name'],version['code']))
+            self.assertTrue(pins['modules']['main']['build_id'].startswith(version['main']))
+            for name,bid in inputs.COMMON.items(): self.assertTrue(pins['modules'][name]['build_id'].startswith(bid))
+
     def test_npdm_title_memory_and_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'main.npdm';b=bytearray(256);b[:4]=b'META'
@@ -51,6 +64,28 @@ class InputTests(unittest.TestCase):
             (root/'link').symlink_to(p)
             with self.assertRaisesRegex(ValueError,'symlink'): inputs.tree_manifest(root)
             with self.assertRaisesRegex(ValueError,'directory tree'): inputs.tree_manifest(p)
+
+    def test_dlc_is_pinned_and_only_for_141(self):
+        from unittest import mock
+        v141,v130=inputs.VERSIONS['1.4.1'],inputs.VERSIONS['1.3.0']
+        with tempfile.TemporaryDirectory() as tmp:
+            game=Path(tmp)/'game';(game/'assets').mkdir(parents=True)
+            dlc=Path(tmp)/'dlc';(dlc/'2').mkdir(parents=True);(dlc/'2/DLCDATA.dat').write_bytes(b'\2\0\0\0')
+            tree={k:v for k,v in inputs.tree_manifest(dlc/'2').items() if k!='entries'}
+            (game/'assets/expected-dlc.json').write_text(json.dumps({'2':tree}))
+            with mock.patch.object(inputs,'GAME',game):
+                self.assertEqual(inputs.inspect_dlc(dlc,v141),{'2':tree})
+                with self.assertRaisesRegex(ValueError,'1.4.1 only'): inputs.inspect_dlc(dlc,v130)
+                (dlc/'2/DLCDATA.dat').write_bytes(b'\3\0\0\0')
+                with self.assertRaisesRegex(ValueError,'DLC hash mismatch: 2'): inputs.inspect_dlc(dlc,v141)
+                (dlc/'2').rename(dlc/'9')
+                with self.assertRaisesRegex(ValueError,'unsupported DLC folder: 9'): inputs.inspect_dlc(dlc,v141)
+                (dlc/'9/DLCDATA.dat').unlink();(dlc/'9').rmdir()
+                with self.assertRaisesRegex(ValueError,'numbered folder'): inputs.inspect_dlc(dlc,v141)
+
+    def test_dlc_pins_cover_the_four_add_ons(self):
+        pins=json.loads((GAME/'assets/expected-dlc.json').read_text())
+        self.assertEqual(sorted(pins),['1','2','3','4'])
 
     def test_unknown_module_build_rejected_before_romfs_read(self):
         from unittest import mock

@@ -3,21 +3,23 @@
 [Source copies](third_party/COPIES.md) · [Licenses](THIRD_PARTY_NOTICES.md)
 
 This directory contains an isolated Apple silicon target for **Hyrule Warriors:
-Age of Calamity 1.3.0**, title ID `01002B00111A2000`. The original ARM64 modules
+Age of Calamity 1.3.0 and 1.4.1**, title ID `01002B00111A2000`. The original ARM64 modules
 are rewritten ahead of time and execute natively; Horizon services run through
 the host and NVN commands map to Metal. This is an experimental bring-up. Native
 gameplay has been reached with keyboard and DualSense input and audio. Full
 rendering, save/reload and packaged-app acceptance remain in progress; a
 successful build is not a claim that the full game works.
 
-The supported input is an unmodified, already merged **1.3.0 / v327680 extracted
-directory**, containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}` and a `RomFS/`
-directory tree. NSP/XCI files, keys and LibHac are not needed for this mode.
-Other builds and RomFS images are rejected. This path does not claim base/update
+The supported input is an unmodified, already merged **1.3.0 / v327680 or 1.4.1 /
+v458752 extracted directory**, containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}`
+and a `RomFS/` directory tree. The version comes from main's build ID. NSP/XCI
+files, keys and LibHac are not needed for this mode. Other builds and RomFS
+images are rejected. This path does not claim base/update
 composition, NCA signature verification or container integrity verification.
 
 The inspected input's NSO hashes/build IDs, segment hashes, NPDM and RomFS tree
-digest are pinned in [expected-1.3.0.json](assets/expected-1.3.0.json). Every
+digest are pinned in [expected-1.3.0.json](assets/expected-1.3.0.json) and
+[expected-1.4.1.json](assets/expected-1.4.1.json). Every
 build verifies the files, uses APFS clones in a separate workspace, and never
 patches the originals. The tree digest is SHA-256 over sorted UTF-8 rows
 `sha256<TAB>size<TAB>relative POSIX path<NEWLINE>`; Finder `.DS_Store` is
@@ -38,6 +40,13 @@ python3 -m venv /path/to/aoc-python
   --work-dir "/path/to/private-aoc-work" \
   --output "/path/to/Hyrule Warriors Age of Calamity.app"
 ```
+
+Add-on content is optional and 1.4.1 only. Add `--dlc "/path/to/dlc"`, a folder
+holding one numbered folder per owned DLC, each the extracted RomFS of that DLC's
+data NCA. The number is the end of the title ID: `01002B00111A3001` is `1` and
+`01002B00111A3004` is `4`. Each folder must match its digest in
+[expected-dlc.json](assets/expected-dlc.json). The folders go inside the app and the
+game finds them at launch. They hold no shaders, so the shader build does not change.
 
 Work and output must be outside the checkout and original input directory. Use a
 new output path; an existing app is preserved. The builder supports `--phase
@@ -104,16 +113,17 @@ cadence when rendering falls behind. Gaps above 100 ms are capped during
 loading or focus changes. 60 fps is experimental; achieved rendering/display
 rates depend on the scene and screen.
 
-**Known 60 fps cutscene issue:** the first mission's Impa tower cutscene can
-run its animation and camera too fast while dialogue/audio remains at normal
+**Cutscenes at 60 fps:** cutscenes advance a fixed step per frame, so at 60 fps
+their animation and camera ran too fast while dialogue and audio stayed at normal
 speed, even with Dynamic step enabled. The
 [FPSLocker configuration for this exact 1.3.0 build](https://github.com/masagrator/FPSLocker-Warehouse/blob/v4/SaltySD/plugins/FPSLocker/patches/01002B00111A2000/C3CF52BF2B05D731.yaml)
-also identifies cutscenes whose speed is fixed to 30 fps. Our task/scene clock
-telemetry does not validate those animation paths, and disabling 120 does not
-resolve this issue. Original 30 is the baseline to compare on replay; an
-automatic cutscene fallback has not been implemented or validated. Keep 60 fps
-experimental until cutscene entry, playback, audio synchronization and return
-to gameplay are tested.
+also identifies cutscenes whose speed is fixed to 30 fps. The host reads a count
+the game keeps itself (`runtime/host/hle_aoc_scene.c`): the holds on a shared
+resource, 1 from start-up and 2 while an in-engine cutscene plays. While it is 2
+the game goes back to its own 30 fps timing, and the chosen target returns when
+the cutscene ends. The title screen, the map, menus, loading screens and battle
+keep the chosen target. 1.4.1 only; 1.3.0 keeps its target through cutscenes.
+60 fps stays experimental.
 
 **120 fps is disabled.** Gameplay testing in the first mission, including the
 Impa tower cutscene, exposed accelerated game time at that target. The engine
@@ -157,6 +167,43 @@ rejects the previous timing ABI.
 A sound-heap compatibility patch moves 4 MiB between subheaps without changing their total;
 its underlying hardware/work-buffer discrepancy remains unresolved.
 
+Black squares in menus, cutscenes and play were NaN pixels in the 1440x810 scene
+target: full-screen stencil effects read that target while drawing into it, which
+is undefined on Metal. The profile's `feedback_snap` keys copy it before those
+draws. Tested on 1.4.1, where the squares went away with the copies. On the
+measured route they added 0.33 and 0.60 ms to a mean GPU frame of about 6 ms, and
+sessions held 59.9 fps with and without them.
+
+## Pipeline warm-up list
+
+Every Metal shader library is translated when the app is built. What can still cost a stutter in play is the first use of
+a pipeline (a library loaded and a render or compute pipeline created on demand). At start the host warms up, in the
+background, the pipelines listed in the app's `pso_manifest.tsv` and in the player's own `pso_user.tsv`, next to the save.
+The host appends to `pso_user.tsv` every pipeline it had to build on demand that neither list held, so each player's
+second session warms up what the first one met.
+
+The repository holds `runtime/games/01002B00111A2000/pso_manifest.tsv`, a list prepared from the recordings of earlier
+sessions (the title, menus, the first missions and the DLC up to its section). A built app carries it unchanged and the
+host builds all of its pipelines at start (VALIDATION.md); it is not a claim of mission coverage. The host warms up in the
+background: its thread reads the rows, drops a render row whose normalized key it already met and prepares each pipeline,
+and two workers compile them, each handed to the game as soon as it is made (`DM_PSO_WARM_THREADS=1` compiles them one at
+a time). Once the system's Metal cache holds them the warm-up takes about 0.1 s; on a first launch with an empty cache, about
+14 s. It was merged from recorded `pso_user.tsv` files by
+`scripts/pso_seed.py`, which keeps each file's order (the files in the order given), drops repeats, including R rows whose
+key, normalized as the host does, repeats an earlier one, and checks every row:
+S, R and C rows with their columns, an R row being the host's `pso_skey` at its exact size with valid keys, stages and
+flags, and with `--shader-map` (a built `shader_map.tsv`) every key one of the app's shaders. The list's header names each
+source by its folder and file with its SHA-256. More lines than `--max-lines` (1,500 by default, header included) is an
+error and nothing is written; the list is never cut to fit.
+
+```sh
+python3 scripts/pso_seed.py --output NEW/pso_manifest.tsv --shader-map WORK/source/dm/games/01002B00111A2000/shader_map.tsv \
+    REC1/pso_user.tsv REC2/pso_user.tsv ...
+```
+
+The list does not change the shader chain or any pin: `pso_manifest.tsv` is not one of the chain's input tables, and the
+build copies it into the app as it copies the rest of `runtime/`.
+
 ## Tests
 
 ```sh
@@ -182,10 +229,15 @@ executable-memory allocation, or game binaries, and skip on other architectures.
 
 - **macOS / Apple M5, game 1.3.0 (v327680):** signed app built; first-mission
   gameplay played with audio, keyboard and DualSense. Smooth 60 fps gameplay
-  was observed, but the Impa tower cutscene has the timing failure described
-  above. Later missions, full rendering acceptance and save/reload acceptance
+  was observed, but the Impa tower cutscene ran too fast at 60 fps; the cutscene
+  fix described above covers 1.4.1 only. Later missions, full rendering acceptance and save/reload acceptance
   remain incomplete. The compliance changes are checked with native probes,
   settings tests and a host rebuild; they do not constitute another playthrough.
+- **macOS / Apple M5, game 1.4.1 (v458752):** signed app built with 40,729
+  shaders; the first missions played by hand with audio at 60 fps, and the save
+  carried across launches. Full rendering and whole-game acceptance remain
+  incomplete. The DLC works on 1.4.1 as far as its bonus items and the game's DLC
+  section; no DLC mission has been played, and 1.3.0 does not take it.
 - **iOS/iPadOS:** no full app build or device playtest. The copied iOS tools lack
   this target's `runtime/ios/Sources` and `runtime/ios/project.yml`; the public
   AoC builder targets macOS. Shared-source SDK compile checks are separate from
