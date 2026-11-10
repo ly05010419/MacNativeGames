@@ -26,6 +26,34 @@ def sha(path):
         while data:=f.read(8<<20):h.update(data)
     return h.hexdigest()
 
+def _script(name):
+    """games/oot/scripts/<name>.py by its path (games/totk/scripts may hold a module of the same name)."""
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('oot_'+name,GAME/f'scripts/{name}.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+romfs_pin=_script('romfs_pin')
+
+def imported_romfs(tree):
+    """The RomFS image this tree imported (its index.json): the shader seed is translated from it and the game-data marker
+    names it. Not a pinned image: two retail dumps of update 131072 pack to different images (#2009, #2011)."""
+    index=json.loads((Path(tree)/'extracted/oot/romfs/index.json').read_text())
+    return dict(sha256=index['romfs_sha256'],size=index['romfs_size'])
+
+def make_path(work):
+    """The work folder as make can name it (#2045): make splits target and prerequisite names at spaces, and the default
+    work folder sits next to the dump, named after the game. A path with spaces gets a fixed alias in the temporary
+    folder, a link to it; the build's files still land in the work folder."""
+    work=Path(work)
+    if ' ' not in str(work):return work
+    import tempfile
+    alias=Path(tempfile.gettempdir())/('oot-work-'+hashlib.sha256(str(work.resolve()).encode()).hexdigest()[:12])
+    if ' ' in str(alias):raise ValueError(f'the temporary folder {alias.parent} has a space too: set TMPDIR to a folder without one')
+    if alias.is_symlink() and alias.resolve()==work.resolve():return alias
+    if alias.is_symlink() or alias.exists():alias.unlink()
+    alias.symlink_to(work.resolve(),target_is_directory=True)
+    return alias
+
 def clone_file(source, destination):
     """APFS copy-on-write keeps the verified game image independent without duplicating disk blocks."""
     import ctypes
@@ -134,8 +162,8 @@ def verify_shader_resources(tree):
     if not seed.exists():return None   # explicit development packages from before offline preparation
     metadata=json.loads((seed/'seed-manifest.json').read_text())
     chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
-    expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
-    if (metadata.get('version')!='oot' or metadata.get('source_romfs_sha256')!=expected['romfs']['sha256'] or
+    imported=imported_romfs(tree)   # the seed is translated from this tree's own RomFS image (#2009: images differ by dump)
+    if (metadata.get('version')!='oot' or metadata.get('source_romfs_sha256')!=imported['sha256'] or
         metadata.get('translator_sha256')!=sha(GAME/'prebuilt/macos-arm64/totk_xlate') or
         metadata.get('chain')!=chain or not metadata.get('all_default') or
         metadata.get('nvn_depth_mode')!='minus-w' or not metadata.get('corpus_shaders') or
@@ -274,8 +302,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
         game_data_folder=(Path(game_data_folder) if game_data_folder else Path.home()/'Library/Application Support/MacNativeGames/OcarinaOfTime/GameData').expanduser().resolve()
         repo=GAME.parents[1]
         if game_data_folder==repo or repo in game_data_folder.parents:raise ValueError('game library must remain outside the source checkout')
-        expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
-        build_app.place_library_image(tree,'oot','oot',game_data_folder,expected_romfs=expected['romfs'])
+        build_app.place_library_image(tree,'oot','oot',game_data_folder,expected_romfs=imported_romfs(tree))   # the launcher compares it with romfs-config.txt
     elif game_data_mode=='app':
         logs=work/'logs';logs.mkdir(exist_ok=True)
         bundle=build_app.data_bundle(tree,'oot',logs,bundle_id='org.macnativegames.oot',display_version='131072')
@@ -299,6 +326,9 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     if icon.is_file():clone_file(icon,res/'AppIcon.icns');info['CFBundleIconFile']='AppIcon'
     if game_data_mode=='library':info['MNGGameDataFolder']=str(game_data_folder)
     info['MNGContributionFolder']=str(contrib_folder())   # app/launcher.m contrib_file: where players find it, as build_app.py sets it
+    build_app.record_update_source(info,work)   # Settings > Update (#2055): the checkout, the work folder and the Python, as build_app.py records them
+    commit=build_app.source_commit()
+    if commit:info['MNGSourceCommit']=commit   # the HUD box and the Update page name the commit the app was built from
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(info));(temporary/'Contents/PkgInfo').write_bytes(b'APPL????')
     subprocess.run(['codesign','--force','--sign','-',temporary],check=True)
     subprocess.run(['codesign','--verify','--strict',temporary],check=True)
@@ -308,8 +338,21 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     return out
 
 def app_running(app):
+    """The game is running from this App. The Update window runs the same executable as "--update-install <pid>" or
+    "--update-check" and waits for this installer, so it is not the game (#1784; build_app.py wait_until_closed, 577e4576)."""
     executable=str((Path(app)/'Contents/MacOS/OcarinaOfTime').resolve())
-    return executable in {p.strip()for p in subprocess.check_output(['ps','-axo','comm='],text=True).splitlines()}
+    table=subprocess.run(['ps','-axo','pid=,comm='],capture_output=True,text=True,check=True).stdout.splitlines()
+    for line in table:
+        fields=line.strip().split(maxsplit=1)
+        if len(fields)!=2 or fields[1]!=executable:continue
+        args=subprocess.run(['ps','-ww','-p',fields[0],'-o','args='],capture_output=True,text=True)
+        if args.returncode==1 and not args.stdout.strip():continue   # it exited between the two snapshots
+        args.check_returncode()
+        command=args.stdout.strip()
+        options=command[len(executable)+1:].split() if command.startswith(executable+' ') else []
+        if options==['--update-check'] or (len(options)==2 and options[0]=='--update-install' and options[1].isdigit() and int(options[1])>0):continue
+        return True
+    return False
 
 def update_runtime(app,work=None):
     """Put a new runtime into an App this build made, keeping its shaders: rebuild the runtime and its pipeline archive only.
@@ -339,7 +382,7 @@ def update_runtime(app,work=None):
     logs=work/'logs';logs.mkdir(exist_ok=True)
     print('building the runtime',flush=True)
     with (logs/'native-runtime.log').open('w') as f:
-        subprocess.run(['make','-C',GAME,'WORK='+str(work),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,
+        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,
                        env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0'))
     os.environ['OOT_BUNDLE_SHADERS']='1'
     folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
@@ -392,8 +435,9 @@ def build(args, source):
     code=extracted/'exefs'
     for name,digest in expected['exefs_sha256'].items():
         if sha(code/name)!=digest:raise ValueError('unsupported or damaged original ExeFS: '+name)
+    check=romfs_pin.check(extracted/'romfs')   # every file of update 131072 by size and hash (#2009, #2011); ValueError names what differs
+    print(f"RomFS: the {check['files']} files of update 131072 verified"+(f"; {len(check['extra'])} more files the list does not name: {', '.join(check['extra'][:20])}" if check['extra'] else ''),flush=True)
     rom=json.loads(index.read_text())
-    if rom['romfs_sha256']!=expected['romfs']['sha256'] or rom['romfs_size']!=expected['romfs']['size']:raise ValueError('unsupported RomFS image')
     if 'directories' not in rom:
         folder=source/'updates/131072/romfs'
         if not folder.is_dir():raise ValueError('directory metadata missing from original dump')
@@ -424,7 +468,7 @@ def build(args, source):
     shutil.copy2(proof,service/proof.name)
     shutil.copy2(proof.with_name('SPIRV-Tools.LICENSE'),service/'SPIRV-Tools.LICENSE')
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
-    run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
+    run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j2'],'native-runtime',work)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
     if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
     if not device and not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=0): translated at first use',flush=True)

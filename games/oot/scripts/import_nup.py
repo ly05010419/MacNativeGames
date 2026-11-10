@@ -100,7 +100,7 @@ def import_package(source, output, version=131072):
                 padding = (-offset) % 16
                 if padding:
                     f.write(bytes(padding)); digest.update(bytes(padding)); offset += padding
-                rows.append(dict(path=path,offset=offset,size=len(payload)))
+                rows.append(dict(path=path,offset=offset,size=len(payload),sha256=reader.files[index][2].hex()))   # romfs_pin.py checks it
                 f.write(payload); digest.update(payload); offset += len(payload)
                 if time.monotonic()-last > 15:
                     print(f'RomFS: {count}/{len(data)} files, {offset/2**30:.2f} GiB, {time.monotonic()-start:.0f}s',flush=True)

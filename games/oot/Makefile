@@ -3,6 +3,10 @@ WORK ?=
 ifeq ($(strip $(WORK)),)
 $(error WORK must name an external workspace)
 endif
+# make splits target names at spaces (#2045); build.py passes a link without them (make_path)
+ifneq ($(words $(WORK)),1)
+$(error WORK must not contain spaces: $(WORK) (build.py passes a link without them))
+endif
 OUT := $(WORK)/build
 NATIVE_OPT ?= -O2
 GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist

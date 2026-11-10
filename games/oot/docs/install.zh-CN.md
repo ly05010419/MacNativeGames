@@ -89,7 +89,7 @@ python3.14 build_app.py "<导出目录>" --shared-fonts "<…/shared-fonts>" -o 
 
 | 报错里写着 | 怎么办 |
 |---|---|
-| `unsupported or damaged original ExeFS`、`unsupported RomFS image` | 不是 v131072 更新，或导出文件损坏：重新导出游戏。 |
+| `unsupported or damaged original ExeFS`、`RomFS is not update 131072: missing … / different …` | 不是 v131072 更新，或导出文件损坏：重新导出游戏。RomFS 按文件逐个核对，报错会列出是哪些文件；清单里没有的多余文件不算错（同一个 131072 的两份导出可能差几个文件）。 |
 | `use the complete original update 131072 in the dump/NUP`、`leave out --update, --dlc and --mod` | 只给 `.nup` 或导出目录，它已经包含更新。 |
 | `pass --shared-fonts with the six verified firmware fonts` | 加上 `--shared-fonts`（见[需要什么](#需要什么)）。 |
 | `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | 安装完整的 Xcode 和它的 Metal 工具链。 |

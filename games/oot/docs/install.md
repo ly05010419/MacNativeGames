@@ -89,7 +89,7 @@ Read the `ERROR:` line and the log file in `<work folder>/logs/`, fix the cause,
 
 | The message says | Fix |
 |---|---|
-| `unsupported or damaged original ExeFS`, `unsupported RomFS image` | Not update v131072, or a damaged dump: dump the game again. |
+| `unsupported or damaged original ExeFS`, `RomFS is not update 131072: missing … / different …` | Not update v131072, or a damaged dump: dump the game again. The RomFS check goes file by file and names the files; files it does not list are fine (two dumps of 131072 can differ by a few files). |
 | `use the complete original update 131072 in the dump/NUP`, `leave out --update, --dlc and --mod` | Give only the `.nup` or the dump folder; it holds its update. |
 | `pass --shared-fonts with the six verified firmware fonts` | Add `--shared-fonts` (see [What you need](#what-you-need)). |
 | `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | Install the full Xcode and its Metal toolchain. |

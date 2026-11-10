@@ -66,15 +66,16 @@ def pack(folder, output):
                 out.write(bytes(pad))
                 digest.update(bytes(pad))
                 offset += pad
-            done = 0
+            done, own = 0, hashlib.sha256()
             with (folder / rel).open('rb') as f:
                 while chunk := f.read(CHUNK):
                     out.write(chunk)
                     digest.update(chunk)
+                    own.update(chunk)
                     done += len(chunk)
             if done != size:
                 raise SystemExit(f'{rel}: changed while packing ({size} -> {done} bytes)')
-            rows.append(dict(path=rel, offset=offset, size=size))
+            rows.append(dict(path=rel, offset=offset, size=size, sha256=own.hexdigest()))   # romfs_pin.py checks it
             offset += size
     partial.replace(image)
     directories=sorted(str(p.relative_to(folder)) for p in folder.rglob('*') if p.is_dir())

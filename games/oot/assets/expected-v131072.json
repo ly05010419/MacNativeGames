@@ -9,9 +9,10 @@
     "subsdk0": "0d32c4bdbcfcfa1c4110c37eff18eaf70061a55090b7fedc741a2e37224065ba"
   },
   "display_version": "131072",
-  "romfs": {
-    "sha256": "d713a4444462d92e6779bcd6612272d790bb59129a40669d372201161f48a291",
-    "size": 26237710284
+  "romfs_files": {
+    "list": "romfs-v131072.tsv.gz",
+    "files": 186583,
+    "note": "every file of update 131072 by path, size and SHA-256 prefix (scripts/romfs_pin.py); the image hash is not pinned: two retail dumps pack to different images (#2009, #2011)"
   },
   "rewritten_sha256": {
     "main.patched.bin": "2573dd00668fad679d7d631655167ba2786a32ec908e9c2c81056ab54fa73570",

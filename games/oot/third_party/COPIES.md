@@ -6,7 +6,7 @@ The disabled VR linkage sources are copied from zeldaVR/gfx and zeldaVR/runtime 
 
 External nxnative and Lichii reports are references for missing SDK/NVN semantics, not replacement runtimes. Every adapted implementation is identified in its source.
 
-NUP reader: a55uka/nup at d40d9cfa50792ba8021d2967d994d1b1c25d62b0, MIT, third_party/nup. The ZBIC decoder (zbic 1.0.1.post1, GPLv2) is a separately installed external build utility, not copied into this repository or shipped in the native app.
+NUP reader: a55uka/nup at d40d9cfa50792ba8021d2967d994d1b1c25d62b0, MIT, third_party/nup. One change: `nup/read.py` decompresses zstd members with Python 3.14's standard `compression.zstd` and falls back to `zstandard` only without it (2026-11-10, #2009: the build's environment had no `zstandard`). The ZBIC decoder (zbic 1.0.1.post1, GPLv2) is a separately installed external build utility, not copied into this repository or shipped in the native app.
 
 The bounded AV1 platform decoder hle_movie_av1.c/.h is adapted from seedds/nxnative ee9b7765 (MIT) into our existing ns2_codec.c protocol; the rest of that project's host/runtime is not used. dav1d is a separate BSD-licensed decoder dependency.
 

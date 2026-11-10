@@ -28,8 +28,9 @@ class PackageTests(unittest.TestCase):
         self.recorded_library=self.libs/('c'*64+'.metallib')
         self.recorded_library.write_bytes(b'synthetic recorded binding variant')
         chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
-        expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
-        self.metadata=dict(schema=1,version='oot',source_romfs_sha256=expected['romfs']['sha256'],
+        romfs=self.tree/'extracted/oot/romfs';romfs.mkdir(parents=True)   # the image this tree imported names the seed (#2009)
+        (romfs/'index.json').write_text(json.dumps(dict(romfs_sha256='d'*64,romfs_size=16,files=[])))
+        self.metadata=dict(schema=1,version='oot',source_romfs_sha256='d'*64,
                            translator_sha256=package.sha(GAME/'prebuilt/macos-arm64/totk_xlate'),
                            chain=chain,all_default=True,nvn_depth_mode='minus-w',corpus_shaders=1,
                            translated_default=1,shaders=1,files={self.source.name:source_hash})
