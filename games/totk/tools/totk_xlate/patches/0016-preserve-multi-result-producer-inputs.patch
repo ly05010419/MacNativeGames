@@ -1,0 +1,13 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+@@ -390,7 +390,9 @@
+                         // result is unused, so its sources are still live: stripping their use lists here made the next
+                         // DCE pass delete the whole chain feeding a global-memory atomic turned into a helper call, which
+                         // then read an uninitialised value (TOTK's sun-visibility kernel; our c7830fac lost its atomicMin).
+-                        if (!HasSideEffects(src.AsgOp))
++                        // A multi-result producer also remains live when any other
++                        // result is used, so its input use lists must stay intact.
++                        if (IsUnused(src.AsgOp))
+                         {
+                             nodes.Enqueue(src.AsgOp);
+                         }

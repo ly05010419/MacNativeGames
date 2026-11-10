@@ -293,7 +293,8 @@ unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer
     (unsigned long long)atomic_exchange(&read_calls,0),(unsigned long long)atomic_exchange(&read_bytes,0),atomic_exchange(&read_ns,0)/1e6,atomic_exchange(&read_prepare_ns,0)/1e6);}
  /* PSV_FS_LOG=reads: also each read (file, offset, size asked, bytes returned). */
  {static int reads=-1;if(reads<0){const char *l=getenv("PSV_FS_LOG");reads=l&&!strcmp(l,"reads");}
-  if(reads)fprintf(stderr,"[psv-fs] read %s +%#llx %#llx -> %#llx\n",entry_name(e),(unsigned long long)offset,(unsigned long long)size,(unsigned long long)done);}
+  if(reads){char tn[64]="";pthread_getname_np(pthread_self(),tn,sizeof tn);   /* t: the clock of the [glitch] marks; thread: which guest thread waited for it */
+   fprintf(stderr,"[psv-fs] read %s +%#llx %#llx -> %#llx t=%.4f thread=%s\n",entry_name(e),(unsigned long long)offset,(unsigned long long)size,(unsigned long long)done,runtime_now_ns()/1e9,tn);}}
  *out=done;return 0;
 }
 unsigned runtime_romfs_size(int64_t *out,uint64_t h) {Entry e;if(!out||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,size;handle_source(h,&e,&fd,&base,&size);*out=(int64_t)size;return 0;}

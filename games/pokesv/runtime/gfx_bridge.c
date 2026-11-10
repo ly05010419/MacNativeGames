@@ -57,11 +57,16 @@ static int watch_fault(void *addr,int is_write,void *context){
  uintptr_t a=(uintptr_t)addr;if(!watch_lo||a<watch_lo||a>=watch_hi)return 0;
  if(a<watch_addr||a>=watch_end){mprotect((void *)watch_lo,watch_hi-watch_lo,PROT_READ|PROT_WRITE);return 1;}   /* other data in the pages: silently unprotect (re-armed at the next present) */
  ucontext_t *u=context;char b[1024];size_t n=0;
+ { /* each writer (pc, lr) is logged once and does not count toward the cap: a value written every frame keeps the watch useful */
+   static uint64_t seen[128][2];static int nseen;uint64_t pc=u->uc_mcontext->__ss.__pc,lr=u->uc_mcontext->__ss.__lr;int dup=0;
+   for(int i=0;i<nseen;i++)if(seen[i][0]==pc&&seen[i][1]==lr){dup=1;break;}
+   if(dup){mprotect((void *)watch_lo,watch_hi-watch_lo,PROT_READ|PROT_WRITE);return 1;}
+   if(nseen<128){seen[nseen][0]=pc;seen[nseen][1]=lr;nseen++;} }
  { extern uint64_t g_frame_pub; extern _Atomic int dm_submit_busy; uint64_t th=0; pthread_threadid_np(NULL,&th);
    watch_hex(b,&n,"[watch] F",g_frame_pub);watch_hex(b,&n," t_us=",clock_gettime_nsec_np(CLOCK_UPTIME_RAW)/1000);watch_hex(b,&n," th=",th);watch_hex(b,&n," submit_busy=",(uint64_t)atomic_load(&dm_submit_busy)); }
  watch_hex(b,&n,is_write?" write hit addr=":" read hit addr=",a);watch_hex(b,&n," off=",a-watch_addr);
  watch_sym(b,&n," pc=",u->uc_mcontext->__ss.__pc);watch_sym(b,&n," lr=",u->uc_mcontext->__ss.__lr);
- uint64_t fp=u->uc_mcontext->__ss.__fp;for(int d=0;d<8&&fp&&!(fp&15);d++){uint64_t fr[2];mach_vm_size_t got=0;if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)fr,&got)!=KERN_SUCCESS||got!=16)break;watch_sym(b,&n," <",fr[1]);fp=fr[0];}
+ uint64_t fp=u->uc_mcontext->__ss.__fp;for(int d=0;d<24&&fp&&!(fp&15)&&n<900;d++){uint64_t fr[2];mach_vm_size_t got=0;if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)fr,&got)!=KERN_SUCCESS||got!=16)break;watch_sym(b,&n," <",fr[1]);fp=fr[0];}
  b[n++]='\n';write(2,b,n);watch_hits++;
  mprotect((void *)watch_lo,watch_hi-watch_lo,PROT_READ|PROT_WRITE);return 1;
 }

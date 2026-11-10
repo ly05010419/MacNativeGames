@@ -1,0 +1,10 @@
+# Hand-written translation facts, merged over the generated rows of shader_facts.tsv by dm/gfx/tools/shader_split.py: key <TAB> facts JSON (same format)
+# 147c829e79fb322f (shadowmap_pbr.bfsha variant 641, vertex): inputs 1-5 only move bits (in a loop: x bit-cast to int, y copied as a float), so dmsh_build.py's integer-input guess declared them uint4;
+# the game feeds them 16-bit normalized formats (RG16 / RG16_SNORM), which Maxwell converts to floats and Metal will not pair with an integer input. The pipeline failed, and with it the foliage's
+# shadow-map and depth pre-pass draws: the main pass shades with depth test EQUAL, so the palm tree and the flowers in Marin and Tarin's house never appeared. Declared float, the bits match the hardware's
+147c829e79fb322f	{"attr":{"1":"float","2":"float","3":"float","4":"float","5":"float"}}
+# The same five-input loop in outdoor shaders that failed on the iPhone (Mabe Village) with Half2 / RG8 / RG16 normalized formats: inputs 1-5 declared float (input 7, a bone index used as an integer, stays uint)
+03c43da3e3f46da8	{"attr":{"1":"float","2":"float","3":"float","4":"float","5":"float"}}
+079700f3577e311f	{"attr":{"1":"float","2":"float","3":"float","4":"float","5":"float"}}
+15c02683a10f8e9d	{"attr":{"1":"float","2":"float","3":"float","4":"float","5":"float"}}
+2344874045b1e758	{"attr":{"1":"float","2":"float","3":"float","4":"float","5":"float"}}

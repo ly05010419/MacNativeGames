@@ -96,7 +96,8 @@ static NSString *seed_dir(void) {   // the prepared startup shaders that come wi
 }
 NSString *totk_rt_dir(void) {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
+    // Guest threads may keep their outer pool for the whole run; release import metadata now.
+    dispatch_once(&once, ^{ @autoreleasepool {
         const char *e = getenv("TOTK_SHADER_CACHE");
         NSString *cacheChain = @DMSH_CHAIN;
         NSData *manifest = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"seed-manifest.json"]];
@@ -106,7 +107,7 @@ NSString *totk_rt_dir(void) {
             [context rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound)
             cacheChain = [cacheChain stringByAppendingFormat:@"-%@", context];
 #ifdef GAME_NS2
-        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1"];   // development runs without a seed
+        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1-predicated-writes"];   // development runs without a seed; the suffix names the translator semantics such caches hold
 #endif
 #if TARGET_OS_IPHONE
         g_dir = e ? @(e) : [NSString stringWithFormat:@"shader-cache/rt-%@", cacheChain];   // in Documents (the app's working directory)
@@ -163,7 +164,7 @@ NSString *totk_rt_dir(void) {
             (unsigned long)[fill[@"packs"] unsignedIntegerValue], (unsigned long)[fill[@"imported_files"] unsignedIntegerValue]);
         for (NSString *why in fill[@"rejected"]) LOG("【红】[shader-fill] 丢弃不完整的着色器包 %s（请在 Mac 上重新运行 fill_shaders.py）", why.UTF8String);
 #endif
-    });
+    } });
     return g_dir;
 }
 

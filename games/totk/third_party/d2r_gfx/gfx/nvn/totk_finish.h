@@ -96,7 +96,7 @@ static int fin_draw(__unsafe_unretained NvShader *fs) {
         g_fin.pending = 0; g_fin.src = nil; g_fin.dst = nil;
         const view_t *cv = &R.rt.cview[0]; int hv = R.rt.has_cview[0];
         uint64_t h = fin_frag_tex(fs); int tid = (int)(h & 0xfffff);
-        id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast(tid) : nil;
+        id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast_lk(tid) : nil;
         id<MTLTexture> dst = R.rt.n == 1 && R.rt.color[0] ? attachment_texture(R.rt.color[0], cv, hv) : nil;
         int ok = src && dst && src.textureType == MTLTextureType2D && dst.textureType == MTLTextureType2D && src.width == dst.width && src.height == dst.height &&
                  !(S.color.blend_en & 1) && !(hv && ((cv->set_levels && cv->base_level) || (cv->set_layers && cv->min_layer))) &&

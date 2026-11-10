@@ -131,7 +131,8 @@ __attribute__((constructor)) static void register_system_services(void) {
     /* Present pacing as on the Switch: a 60 Hz base, the game's present interval on top (1 = 60 fps, 2 = 30 fps). The
        TotK host follows the display (120 Hz on ProMotion) and runs uncapped, which relies on TotK's real-time frame step
        patch; without it a game that advances per frame would run twice as fast. */
-    setenv("DM_PRESENT_HZ", "60", 0);
+    const char *limit = getenv("XCX_FPS_LIMIT");
+    setenv("DM_PRESENT_HZ", limit && !strcmp(limit, "120") ? "120" : "60", 0);
     setenv("TOTK_UNCAPPED", "0", 0);
     /* It draws a depth pre-pass, then the colour pass with a LEQUAL test: positions must match bit for bit between the two
        (nvn_mtl.m totk_precise_opts, preserveInvariance). */

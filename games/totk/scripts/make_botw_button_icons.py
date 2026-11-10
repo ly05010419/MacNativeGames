@@ -17,12 +17,22 @@ Which icon each input gets comes from the builder's model (tools/builder/icons_p
 controls.txt as tools/builder/controls_file reads it): the face letters of an Xbox controller by position, LB RB LT RT
 as L R ZL ZR, Menu and View as + and -, the stick presses and the d-pad arms as their own icons, a cross for an input no
 button drives. A combined d-pad icon whose inputs are not all on the d-pad keeps its icon (nothing to draw it with).
-PlayStation symbols are not in the font, so a PlayStation controller gets the Xbox letters; a Nintendo controller (by
+PlayStation symbols are not in the font: with --style playstation (the default when controller-type.txt says playstation)
+botw_playstation_icons.py draws them over the glyphs the Xbox letters
+use (Cross, Circle, Square, Triangle, L1 R1 L2 R2, Options and Create), in the sheet's own cells, so each archive still keeps
+its size, and the action guide's key textures with them (its faint letters are left blank). A Nintendo controller (by
 label, controller-type.txt 'switch') is refused, as the builder's icons for Tears of the Kingdom refuse it.
 
-Checked on 1.9.0 (the code points of 1.6.0 are not checked). Needs no package beyond the standard library.
-usage: make_botw_button_icons.py <mod folder> (--app <Breath of the Wild.app> | --romfs <folder>) [--version botw190]
-                                 [--controls <controls.txt> | --glyphs <json>] [--write-all]
+1.6.0 has six region archives (no TH) and a smaller font: 49 icons in 44x39 cells (2 x 25 on a 128x1024 sheet) for
+U+E040-E08F, with Tears of the Kingdom's code points past U+E04C (the stick presses at U+E056 E057, the d-pad at
+U+E060-E065) and its cross at U+E08F; icons_plan.BOTW_TABLES holds each version's. Its action guide is laid out as 1.9.0's.
+A code point is only pointed at an icon the font has, so a plan made for the other version stops the run.
+
+Checked on 1.9.0 and 1.6.0 (the font's icons and the guide's parts read from each version's files). Needs no package
+beyond the standard library.
+usage: make_botw_button_icons.py <mod folder> (--app <Breath of the Wild.app> | --romfs <folder>)
+                                 [--version botw190|botw160]
+                                 [--controls <controls.txt> | --plan <json>] [--style xbox|playstation] [--write-all]
 """
 import argparse
 import json
@@ -34,11 +44,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # the builder runs it
 import make_mod_manifest  # noqa: E402
 from make_mod_manifest import app_image_dir, image_file, manifest, read_index, write_manifest  # noqa: E402
 from prepare_shader_seed import yaz0  # noqa: E402
+import botw_playstation_icons as playstation  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
 ARCHIVES = 'Font/Font_'                             # Font/Font_<region>.sbfarc
 MEMBER = 'External_00.bffnt'
+STYLES = ('xbox', 'playstation')
 DATA = Path.home()/'Library/Application Support/MacNativeGames/BotW'
+VERSIONS = ('botw190', 'botw160')
 
 
 def sarc_member(sarc, name):
@@ -78,6 +91,7 @@ def remap(ffnt, glyphs):
     out = bytearray(ffnt)
     for cp, shown in glyphs.items():
         assert lo <= cp <= hi and lo <= shown <= hi, f'U+{cp:X} or U+{shown:X} outside U+{lo:X}-U+{hi:X}'
+        assert index(shown) != 0xFFFF, f'U+{shown:X} has no icon in this font (a plan made for another version?)'
         struct.pack_into('<H', out, table + (cp - lo)*2, index(shown))
     return bytes(out)
 
@@ -135,8 +149,9 @@ def flyt_panes(flyt):
     return panes
 
 
-def diamond(flyt, home, slot):
-    """flyt (a part whose button is at home) with that button at slot and the Xbox letters in the other three places."""
+def diamond(flyt, home, slot, named=True):
+    """flyt (a part whose button is at home) with that button at slot and the Xbox letters in the other three places
+    (named=False: blank, for the PlayStation shapes, which the guide's text font has not)."""
     panes, out = flyt_panes(flyt), bytearray(flyt)
     index = {name: i for i, (_, _, name, _) in enumerate(panes)}
     under = lambda p: [i for i, q in enumerate(panes) if q[3] == p]  # noqa: E731
@@ -167,7 +182,7 @@ def diamond(flyt, home, slot):
                 out[at] = out[at] & ~3 | {1: 2, 2: 1}.get(out[at] & 3, out[at] & 3)
     for i, spot in zip(letters, [s for s in ('right', 'bottom', 'top', 'left') if s != slot]):
         k = panes[i][1]
-        struct.pack_into('<2f', out, k + 0x2c, *LETTER[spot]); out[text(k)] = ord(LABEL[spot])
+        struct.pack_into('<2f', out, k + 0x2c, *LETTER[spot]); out[text(k)] = ord(LABEL[spot] if named else ' ')
     at = flyt.index(b'Nt_KeyTex', flyt.index(b'txl1')) + 9
     assert flyt[at:at + 5] in (b'A_00^', b'B_00^', b'X_00^', b'Y_00^'), 'no key texture'
     out[at] = ord(LABEL[slot])
@@ -180,12 +195,20 @@ def diamond(flyt, home, slot):
     return bytes(out)
 
 
-def layout_remap(blarc, slots):
-    """blarc with each part of slots ({switch letter: slot}) drawn by diamond(); same size."""
+def layout_remap(blarc, slots, style='xbox', glyphs=None):
+    """blarc with each part of slots ({switch letter: slot}) drawn by diamond(), and for the playstation style the key
+    textures drawn by botw_playstation_icons (glyphs: the font's remap, for the L and ZL keys); same size."""
     out = bytearray(blarc)
     for s, slot in slots.items():
-        a, b = sarc_member(blarc, PARTS[s]); out[a:b] = diamond(blarc[a:b], HOME[s], slot)
+        a, b = sarc_member(blarc, PARTS[s]); out[a:b] = diamond(blarc[a:b], HOME[s], slot, style != 'playstation')
+    if style == 'playstation':
+        a, b = sarc_member(blarc, playstation.BNTX); out[a:b] = playstation.layout_textures(blarc[a:b], glyphs or {})
     return bytes(out)
+
+
+def font_remap(ffnt, glyphs, style='xbox', cache=None):
+    """External_00.bffnt with the remap of glyphs, and for the playstation style its button glyphs drawn again."""
+    return remap(playstation.font(ffnt, cache) if style == 'playstation' else ffnt, glyphs)
 
 
 def yaz0_patch(packed, old, new):
@@ -234,17 +257,26 @@ def yaz0_stored(data, alignment):
 
 
 def own(path, sarc):
-    """Whether the archive at path is this script's: the game's sarc with only External_00.bffnt's CMAP table changed."""
+    """Whether the archive at path is this script's: the game's sarc with only External_00.bffnt's CMAP table changed (and
+    its glyph sheet's pixels, which the playstation style draws on)."""
     try:
         mine = yaz0(path.read_bytes())
     except (OSError, ValueError):
         return False
-    a, b = sarc_member(sarc, MEMBER); table, lo, hi = cmap_table(sarc[a:b]); t0, t1 = a + table, a + table + (hi - lo + 1)*2
-    return len(mine) == len(sarc) and mine[:t0] == sarc[:t0] and mine[t1:] == sarc[t1:]
+    a, b = sarc_member(sarc, MEMBER); table, lo, hi = cmap_table(sarc[a:b])
+    spans = [(a + table, a + table + (hi - lo + 1)*2)]
+    try:
+        spans.append(tuple(a + x for x in playstation.sheet_span(sarc[a:b])))
+    except (ValueError, KeyError, struct.error):     # no glyph sheet as expected: only the table may differ
+        pass
+    edges = [0] + [x for span in sorted(spans) for x in span] + [len(sarc)]
+    return len(mine) == len(sarc) and all(mine[edges[i]:edges[i+1]] == sarc[edges[i]:edges[i+1]]
+                                          for i in range(0, len(edges), 2))
 
 
 def own_pack(path, pack, blarc):
-    """Whether the pack at path is this script's: the game's pack with only the four parts of its layout archive changed."""
+    """Whether the pack at path is this script's: the game's pack with only the four parts of its layout archive changed
+    (and its textures, which the playstation style draws on)."""
     try:
         mine = path.read_bytes(); layout = yaz0(mine[slice(*sarc_member(mine, LAYOUT))])
         others = sorted(set(pack_names(pack)) - {LAYOUT})
@@ -253,7 +285,10 @@ def own_pack(path, pack, blarc):
             return False
     except (OSError, ValueError, KeyError, AssertionError):
         return False
-    edges = [0] + [x for p in sorted(sarc_member(blarc, p) for p in PARTS.values()) for x in p] + [len(blarc)]
+    spans = [sarc_member(blarc, p) for p in PARTS.values()]
+    if playstation.BNTX in pack_names(blarc):
+        spans.append(sarc_member(blarc, playstation.BNTX))
+    edges = [0] + [x for p in sorted(spans) for x in p] + [len(blarc)]
     return all(layout[edges[i]:edges[i+1]] == blarc[edges[i]:edges[i+1]] for i in range(0, len(edges), 2))
 
 
@@ -263,7 +298,7 @@ def pack_names(sarc):
             (names + (struct.unpack_from('<I', sarc, 0x20 + k*16 + 4)[0] & 0xffffff)*4 for k in range(nodes))]
 
 
-def layout_plan(controls):
+def layout_plan(controls, version='botw190'):
     """(glyphs, diamond) for the layout of a controls.txt (bytes, or None for the default layout), by position."""
     sys.path.insert(0, str(REPO))
     from tools.builder import controls_file, icons_plan
@@ -271,24 +306,38 @@ def layout_plan(controls):
     if parsed.line:
         sys.exit(f'controls.txt line {parsed.line}: {parsed.error}')
     inputs, _ = controls_file.layout(parsed, False)
-    return icons_plan.botw_glyphs(inputs), icons_plan.botw_diamond(inputs)
+    return icons_plan.botw_glyphs(inputs, version), icons_plan.botw_diamond(inputs)
+
+
+def default_style(kind):
+    """playstation when controller-type.txt (kind) says so; else xbox."""
+    return 'playstation' if kind.is_file() and kind.read_text().strip() == 'playstation' else 'xbox'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('mod', type=Path, help='the mod folder (for the app: <data>/BotW/mods/botw190)')
+    parser.add_argument('mod', type=Path, help='the mod folder (for the app: <data>/BotW/mods/<version>)')
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--app', type=Path, help='the built Breath of the Wild.app')
     source.add_argument('--romfs', type=Path, help='a folder holding romfs.bin and runtime-index.bin')
-    parser.add_argument('--version', default='botw190', choices=('botw190',), help='the game version (default botw190)')
+    parser.add_argument('--version', choices=VERSIONS, help='the game version (default: the one the app was built '
+                        'from, botw190 with --romfs)')
     parser.add_argument('--controls', type=Path, default=DATA/'controls.txt',
                         help='the layout (default: the game\'s controls.txt; a missing file is the default layout)')
     parser.add_argument('--plan', type=Path, help='JSON {"glyphs": [[code point, code point shown], ...], "diamond": '
                         '{switch letter: bottom|right|left|top}} (the builder\'s plan; replaces --controls)')
+    parser.add_argument('--style', choices=STYLES, help='the button icons: xbox (the font\'s letters) or playstation '
+                        '(drawn); default: playstation when controller-type.txt says so, else xbox; with '
+                        '--plan, xbox')
     parser.add_argument('--write-all', action='store_true', help='write every archive, also one whose icons the layout '
                         'leaves as they are (the builder: its icons mod must replace something to be valid)')
     args = parser.parse_args()
     romfs = args.romfs
+    if args.version is None:
+        built = [v for v in VERSIONS if args.app and (args.app/f'Contents/Resources/totk/extracted/{v}').is_dir()]
+        if len(built) > 1:
+            parser.error(f'{args.app} holds {" and ".join(built)}: name one with --version')
+        args.version = built[0] if built else 'botw190'
     if args.app:
         romfs = args.app/f'Contents/Resources/totk/extracted/{args.version}/romfs'
         if not (romfs/'romfs.bin').exists():   # built with --mac-game-data library
@@ -296,14 +345,17 @@ def main():
     for need in (image_file(romfs), romfs/'runtime-index.bin'):
         if not need.is_file():
             parser.error(f'{need} not found')
+    kind = args.controls.with_name('controller-type.txt')
+    style = args.style or ('xbox' if args.plan else default_style(kind))   # the builder's plan names its style
+    if style == 'playstation' and args.version != 'botw190':
+        sys.exit("the PlayStation icons are drawn for 1.9.0's sheet only (1.6.0's cells are smaller and not checked)")
     if args.plan:
         plan = json.loads(args.plan.read_text())
         glyphs, slots = {cp: shown for cp, shown in plan['glyphs']}, plan['diamond']
     else:
-        kind = args.controls.with_name('controller-type.txt')
         if kind.is_file() and kind.read_text().strip() == 'switch':
             sys.exit(f'{kind} says switch: a Nintendo controller\'s face buttons go by label, which this does not draw')
-        glyphs, slots = layout_plan(args.controls.read_bytes() if args.controls.is_file() else None)
+        glyphs, slots = layout_plan(args.controls.read_bytes() if args.controls.is_file() else None, args.version)
     assert set(slots) <= set(PARTS) and set(slots.values()) <= set(BUTTON), f'bad diamond plan {slots}'
     index = read_index(romfs/'runtime-index.bin')
     archives = sorted(p for p in index if p.startswith(ARCHIVES) and p.endswith('.sbfarc'))
@@ -313,17 +365,17 @@ def main():
         misspelt = manifest(args.mod, romfs).misspelt
         if misspelt:
             sys.exit('nothing written: ' + ', '.join(f'{a} (the RomFS has {b})' for a, b in misspelt))
-    work = []
+    work, cache = [], {}
     with open(image_file(romfs), 'rb') as image:
         for path in archives:
             offset, size = index[path]; image.seek(offset); packed = image.read(size)
             sarc = yaz0(packed); a, b = sarc_member(sarc, MEMBER)
             if (args.mod/path).exists() and not own(args.mod/path, sarc):
                 sys.exit(f'nothing written: {args.mod/path} is another mod\'s font archive (move it away first)')
-            work.append((path, packed, sarc, sarc[:a] + remap(sarc[a:b], glyphs) + sarc[b:]))
+            work.append((path, packed, sarc, sarc[:a] + font_remap(sarc[a:b], glyphs, style, cache) + sarc[b:]))
         if LAYOUT_PACK in index:
             offset, size = index[LAYOUT_PACK]; image.seek(offset); pack = image.read(size)
-            a, b = sarc_member(pack, LAYOUT); blarc = yaz0(pack[a:b]); guide = layout_remap(blarc, slots)
+            a, b = sarc_member(pack, LAYOUT); blarc = yaz0(pack[a:b]); guide = layout_remap(blarc, slots, style, glyphs)
             if (args.mod/LAYOUT_PACK).exists() and not own_pack(args.mod/LAYOUT_PACK, pack, blarc):
                 sys.exit(f'nothing written: {args.mod/LAYOUT_PACK} is another mod\'s pack (move it away first)')
             changed = pack if guide == blarc else sarc_put(pack, LAYOUT, yaz0_patch(pack[a:b], blarc, guide))
@@ -340,7 +392,7 @@ def main():
         sys.exit('manifest not written: ' + ', '.join(f'{a} (the RomFS has {b})' for a, b in found.misspelt))
     moved = ', '.join(f'U+{cp:X} -> U+{shown:X}' for cp, shown in sorted(glyphs.items())) or 'none (the prompts already name these buttons)'
     lit = ', '.join(f'{s.upper()} {slot}' for s, slot in sorted(slots.items())) or 'none'
-    print(f'{args.mod}: {len(archives)} font archives; icons moved: {moved}; action guide: {lit}')
+    print(f'{args.mod}: {len(archives)} font archives, {style} icons; icons moved: {moved}; action guide: {lit}')
 
 
 if __name__ == '__main__':

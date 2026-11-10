@@ -1,5 +1,5 @@
 #pragma once
-/* Host-only FP16 companions for the scene's post-tonemap dataflow. Guest formats,
+/* Host-only FP16 companions for render and compute scene postprocessing. Guest formats,
  * byte sizes and CPU-visible storage stay intact. No generic format promotion.
  * This file is included after the replay, residency and encoder helpers. */
 #define HDR_SHADOW_MAX 24
@@ -15,6 +15,13 @@ static int hdr_shadow_enabled(void) {
     /* mtl_set_frame already gates this by platform, game version and user mode. */
     return atomic_load_explicit(&g_hdr_frame_enabled,memory_order_relaxed);
 }
+/* Companions take shader writes only where a game's compute passes store to them (Bananza's final upscale); TotK and BotW
+   render to and sample theirs, and keep the usage they always had. The dispatch probe turns it on. */
+#ifdef GAME_NS2
+static int g_hdr_companion_store = 1;
+#else
+static int g_hdr_companion_store;
+#endif
 static id<MTLTexture> hdr_shadow_find(id<MTLTexture> source) {
     if(!source || !hdr_shadow_enabled() || source.pixelFormat!=MTLPixelFormatRG11B10Float)return nil;
     id<MTLTexture> base=source.parentTexture?:source;
@@ -101,7 +108,7 @@ static id<MTLTexture> hdr_shadow_make(id<MTLTexture> source) {
         g_hdr_shadow[slot].reads=nil;
         if(g_hdr_shadow[slot].texture)defer_obj_release(g_hdr_shadow[slot].texture);
         MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:base.width height:base.height mipmapped:NO];
-        d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+        d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead|(g_hdr_companion_store?MTLTextureUsageShaderWrite:0);
         id<MTLTexture> t=[g_dev newTextureWithDescriptor:d];
         if(!t)MDIE("HDR postprocess FP16 allocation failed");
         res_add(t);res_commit();g_hdr_shadow[slot].base=base;g_hdr_shadow[slot].texture=t;

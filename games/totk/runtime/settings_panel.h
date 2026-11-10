@@ -52,10 +52,11 @@
                                                              are always the patched ones on the Mac (off: the stock AO,
                                                              bit for bit), so every choice acts at once (user 2026-10-30);
                                                              TOTK_SSAO / _STRENGTH / _RADIUS decide first (greyed out)
-     shadow resolution    as the game has it / 2048 per       Breath of the Wild 1.9.0 (PR #1447): runtime_shadow_res_save
-                          cascade                            (game_patches_botw.c, botw_shadow_res.h), shadows.txt (off or
+     shadow resolution    off / as the game has it / 2048     Breath of the Wild 1.9.0 (PR #1447): runtime_shadow_res_save
+                          per cascade                        (game_patches_botw.c, botw_shadow_res.h), shadows.txt (off or
                                                              2048); the game sizes the map once, so the choice is the next
-                                                             launch's (its title says so); TOTK_SHADOW_RES decides first
+                                                             launch's (its title says so); TOTK_SHADOW_RES decides first;
+                                                             off is the effect switch "shadow", at once (botw_effects.h)
      model detail distance 1x / 2x / 4x / 10x / 20x / 50x / runtime_lod_scale_set (game_patches_v143.c): the level of
                                                              detail a model gets at a distance is the one it had at
      100x                                                    1/K of it; graphics-lod.txt (x100); TOTK_LOD_SCALE first
@@ -118,6 +119,7 @@
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
+#include "input_prompts.h"
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
@@ -745,8 +747,9 @@ static void settings_effects_reset(void) {
 #endif
  fprintf(stderr,"[totk] settings: the effects page back to the defaults\n");
 }
-/* Sun shadows (Breath of the Wild 1.9.0, botw_shadow_res.h): the game's sizes or 2048 per cascade. The game sizes its map
-   once, at the start, so the row shows and saves the next launch's choice, never this run's. Where the patch does not act
+/* Sun shadows (Breath of the Wild 1.9.0, botw_shadow_res.h): off, the game's sizes or 2048 per cascade. The game sizes its
+   map once, at the start, so for the sizes the row shows and saves the next launch's choice, never this run's; off acts at
+   once (P9, 2026-11-05: on the Great Plateau the shadows of Link, rocks and cliffs go, with no other evident fault in that scene; AO and other conditions not checked). Where the patch does not act
    (the iOS export's run) the row offers nothing to save. On the effects page of the other versions (TOTK 1.4.3 has its own). */
 #ifndef TOTK_GAME_V143
 static TOTKSettingRow *settings_botw_shadow_row(void) {
@@ -754,11 +757,7 @@ static TOTKSettingRow *settings_botw_shadow_row(void) {
 #ifndef GAME_BOTW190
  return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
 #else
- if(!runtime_shadow_res_available())return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
- if(runtime_shadow_res_locked())return settings_fixed(t,settings_text("由 TOTK_SHADOW_RES 设置","Set by TOTK_SHADOW_RES"));
- t=[t stringByAppendingString:settings_text("（下次启动生效）"," (from the next launch)")];
- return settings_row(t,@[settings_text("游戏原样","As the game has it"),settings_text("2048（每级）","2048 per cascade")],@[@0,@2048],
-  ^int{return runtime_shadow_res_saved();},^(int v){runtime_shadow_res_save(v);});
+ return settings_botw190_shadow_row(t);   /* botw_effects.h */
 #endif
 }
 /* The field of view (Breath of the Wild 1.9.0, botw_fov.h): as 1.4.3's row, in hundredths of the game's own, at once; from
@@ -903,6 +902,12 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_PLAYSTATION),@(GAMEPAD_TYPE_SWITCH)],
   ^int{return runtime_gamepad_type(NULL);},^(int v){runtime_gamepad_type_set(v);});
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
+#if defined(TOTK_GAME_V143)
+ [rows addObject:settings_row(settings_text("按键提示图标","Button prompts"),
+  @[settings_text("自动","Auto"),settings_text("键盘和鼠标","Keyboard / mouse"),@"Xbox",@"PlayStation",@"Switch",settings_text("关闭（游戏原图标）","Off (the game's icons)")],
+  @[@(PROMPT_AUTO),@(PROMPT_KEYBOARD),@(PROMPT_XBOX),@(PROMPT_PLAYSTATION),@(PROMPT_SWITCH),@(PROMPT_STYLE_OFF)],
+  ^int{return runtime_prompt_style();},^(int v){runtime_prompt_style_set(v);})];
+#endif
  [rows addObject:settings_row(settings_text("后台手柄输入","Controller input in background"),nil,nil,
   ^int{return runtime_gamepad_background_enabled();},^(int v){runtime_gamepad_background_set(v);})];
  NSString *bow=settings_text("DualSense 拉弓扳机（R2）","DualSense bow trigger (R2)");

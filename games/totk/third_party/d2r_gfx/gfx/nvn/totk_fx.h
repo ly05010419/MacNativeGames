@@ -12,7 +12,14 @@ typedef struct { const char *id, *zh, *en; const char *fs[6], *cs[4]; } fx_effec
 static const fx_effect k_fx[] = {
     {"ao", "环境光遮蔽", "Ambient occlusion", {0}, {0}},   // totk_ssao.h
     {"shadow", "阴影", "Shadows", {0}, {0}},   // every shadow-map comparison reads lit (nvn_mtl.m) and the shadow pre-pass's term too (totk_ssao.h: its far terrain shadow compares by hand)
+#if defined(GAME_BOTW190)
+    /* Breath of the Wild 1.9.0's grass blades: this fragment shader with this vertex shader (P8, 2026-11-05: on the Great
+       Plateau, left out the blades go and the ground, rocks, clovers and flowers stay; the only pair seen there; other
+       areas' grass not checked). The keys the E25 survey named (65227fe0, 8d56b5ce, c660cc38) remove nothing visible. */
+    {"grass", "草", "Grass", {"d0cead9357ae8c7b/9a3f53268b7c3433"}, {0}},
+#else
     {"grass", "草", "Grass", {"33099f8c133950f5"}, {0}},   // the field's grass blades (2026-10-30 survey, v143-grass)
+#endif
     /* The extra light the game puts on Link (61315f715cdf30ed) had a switch until 2026-10-31; the user: "角色补光 去掉 默认开
        不能关". It is always drawn; a "charlight" left in graphics-effects.txt is a word no effect has, so it is ignored. */
     /* The fog of the air: the scattering images at 1/8 and 1/16 of the screen (240x135 / 120x67 at 1080p) take additive
@@ -24,7 +31,7 @@ static const fx_effect k_fx[] = {
     {"vfog", "体积雾", "Volumetric fog", {"3231347c1ef88f06"}, {0}},
     {"fog", "雾效", "Fog", {"c7df2e9641b1ee60/4c68cebf72d716f1", "f459822d1a4e71ab/da1c7d4fcff1d416"}, {0}},
 };
-enum { FX_N = sizeof k_fx / sizeof *k_fx, FX_AO = 0, FX_SHADOW = 1 };
+enum { FX_N = sizeof k_fx / sizeof *k_fx, FX_AO = 0, FX_SHADOW = 1, FX_GRASS = 2 };
 static _Atomic uint32_t g_fx_off;   // bit i: k_fx[i] is off
 
 /* The effect a shader belongs to: k_fx index + 1, or -1 for none; worked out at its first draw while any effect is off and
@@ -65,7 +72,7 @@ const char *dm_gfx_fx_id(int i) { return i >= 0 && i < FX_N ? k_fx[i].id : ""; }
 const char *dm_gfx_fx_name(int i, int english) { return i >= 0 && i < FX_N ? (english ? k_fx[i].en : k_fx[i].zh) : ""; }
 int dm_gfx_fx_available(int i) {
 #if defined(GAME_BOTW190)
-    return i == FX_AO && ssao_on();   // the keys are TOTK's; AO is the AO patch's own switch (0eeb23f2's c1[3].w)
+    return (i == FX_AO && ssao_on()) || i == FX_GRASS || i == FX_SHADOW;   // grass: its own key pair above; the others' keys are TOTK's; AO is the AO patch's own switch (0eeb23f2's c1[3].w), shadows the comparison samplers (its shadow pre-pass compares by sampler; the AO patch's bit 1 is TOTK's only)
 #elif defined(GAME_BOTW)
     (void)i; return 0;   // the keys are TOTK's
 #else
@@ -77,6 +84,12 @@ void dm_gfx_fx_set(int i, int on) {
     if (!dm_gfx_fx_available(i)) return;
     if (on) atomic_fetch_and(&g_fx_off, ~(1u << i)); else atomic_fetch_or(&g_fx_off, 1u << i);
     if (i == FX_AO) ssao_set_off(!on);
-    if (i == FX_SHADOW) { extern void dm_gfx_shadow_samplers_off(int off); ssao_set_shadow_off(!on); dm_gfx_shadow_samplers_off(!on); }
+    if (i == FX_SHADOW) {
+        extern void dm_gfx_shadow_samplers_off(int off);
+#ifndef GAME_BOTW
+        ssao_set_shadow_off(!on);   // TOTK's shadow pre-pass term (AO patch bit 1); Breath of the Wild's compares by sampler
+#endif
+        dm_gfx_shadow_samplers_off(!on);
+    }
     MLOG("[fx] %s %s", k_fx[i].id, on ? "on" : "off");
 }

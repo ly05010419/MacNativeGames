@@ -1,0 +1,8 @@
+{
+  "source": "seedds/nxnative 7861e7c1a9913e020600b1cc7f65132427e9cc50, dm/games/01006BB00C6F0000/shader_map.tsv blob 2ea2c96075b847ca26ea214390939613ae5709b0",
+  "reason": "SPIRV-Cross throws on a null pointer for this program, as nxnative's game note records; no run there has loaded either variation",
+  "shaders": [
+    {"key": "9d8f6b8543355374", "package": "ps_shader.bin", "stage": "pixel", "file": "region_common/shader/postprocess.bfsha", "bnsh": "0x252000", "variation": 0, "st": "MSL failed"},
+    {"key": "9338e3f1b597fe7c", "package": "ps_shader.bin", "stage": "pixel", "file": "region_common/shader/postprocess.bfsha", "bnsh": "0x252000", "variation": 1, "st": "MSL failed"}
+  ]
+}

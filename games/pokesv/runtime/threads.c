@@ -762,6 +762,36 @@ static void dump_threads(unsigned secs) {
         if (t->wkind == 2) svc_ring_dump(t->wkey, t->waddr);
         if (!t->wkind && !t->exited && t->mport && nrun < 64) run[nrun++] = t;
     }
+    /* The game's job system (main+0xb479f4, worker step; 2026-11-04): a stall with the main thread and every job worker
+       waiting in main+0xb47d18 is a job nobody runs. Each waiter's condition key is its worker context + 0x4ec (the variable at +0x4e8); the context's
+       array [ctx+0x508] holds every context at +0x18 + 8 * i (count at +0x200, own index at ctx+0x504). The contexts are
+       printed raw (lock owner +0x4b0, popped job +0x518, queue words before it), so the next stall shows whether the job
+       sits in a queue the workers do not see, or is in none. */
+    { uint64_t done[16]; int nd = 0;
+      for (thr_t *t = g_all; t; t = t->all) {
+        if (t->wkind != 2 || !t->wkey) continue;
+        uint64_t ctx = t->wkey - 0x4ec, arr = 0, idx = 0, me = 0, cnt = 0; mach_vm_size_t got = 0;
+        if (mach_vm_read_overwrite(mach_task_self(), ctx + 0x508, 8, (mach_vm_address_t)(uintptr_t)&arr, &got) != KERN_SUCCESS || !arr) continue;
+        if (mach_vm_read_overwrite(mach_task_self(), ctx + 0x504, 4, (mach_vm_address_t)(uintptr_t)&idx, &got) != KERN_SUCCESS) continue;
+        if (mach_vm_read_overwrite(mach_task_self(), arr + 0x200, 4, (mach_vm_address_t)(uintptr_t)&cnt, &got) != KERN_SUCCESS || !cnt || cnt > 62 || idx >= cnt) continue;
+        if (mach_vm_read_overwrite(mach_task_self(), arr + 0x18 + 8 * idx, 8, (mach_vm_address_t)(uintptr_t)&me, &got) != KERN_SUCCESS || me != ctx) continue;
+        int seen = 0; for (int i = 0; i < nd; i++) if (done[i] == arr) seen = 1;
+        if (seen || nd >= 16) continue; done[nd++] = arr;
+        fprintf(stderr, "[psv-dump] job system: context array %#llx, %llu workers\n", (unsigned long long)arr, (unsigned long long)cnt);
+        for (uint64_t i = 0; i < cnt; i++) {
+            uint64_t c = 0, w[0x520 / 8];
+            if (mach_vm_read_overwrite(mach_task_self(), arr + 0x18 + 8 * i, 8, (mach_vm_address_t)(uintptr_t)&c, &got) != KERN_SUCCESS || !c) continue;
+            if (mach_vm_read_overwrite(mach_task_self(), c, sizeof w, (mach_vm_address_t)(uintptr_t)w, &got) != KERN_SUCCESS || got != sizeof w) continue;
+            const char *who = "-"; for (thr_t *u = g_all; u; u = u->all) if (u->wkind == 2 && u->wkey == c + 0x4ec) { static char hb[16]; snprintf(hb, sizeof hb, "%#x", u->handle); who = hb; }
+            fprintf(stderr, "[psv-dump] job worker %llu ctx %#llx waiter %s lock owner %#llx job %#llx state %u flags %#x/%#x\n", (unsigned long long)i, (unsigned long long)c, who,
+                    (unsigned long long)w[0x4b0 / 8], (unsigned long long)w[0x518 / 8], (unsigned)(w[0x510 / 8] >> 32), (unsigned)(w[0x248 / 8] & 0xff), (unsigned)(w[0x248 / 8] >> 32));
+            for (unsigned o = 0; o < sizeof w / 8; o += 8) {
+                int any = 0; for (unsigned k = 0; k < 8; k++) if (w[o + k]) any = 1;
+                if (!any) continue;
+                fprintf(stderr, "    +%03x", o * 8); for (unsigned k = 0; k < 8; k++) fprintf(stderr, " %016llx", (unsigned long long)w[o + k]); fputc('\n', stderr);
+            }
+        }
+      } }
     if (locked) pthread_mutex_unlock(&G);
     for (int i = 0; i < nrun; i++) { thr_t *t = run[i]; fprintf(stderr, "[psv-dump] live h=%#x\n", t->handle);
             for (int k = 0; k < 3; k++) {

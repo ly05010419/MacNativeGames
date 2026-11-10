@@ -1,0 +1,48 @@
+{
+  "title_id": "0100453019AA8000",
+  "display_version": "2.0.0",
+  "scope": "Pinned native host; validation described in README",
+  "exefs_sha256": {
+    "rtld": "ccc8301636595a6273681568f919435238c1a9f2a31263e991a0d6f11bf16771",
+    "subsdk0": "24bc0737080524edcb690523ece78a610ca2260dfacff4a8fbeb463d5a0aec97",
+    "main.npdm": "75dc2bc1dd297288c1a6b79dced8c68b9a932154c31c077cab079816754daa12",
+    "sdk": "0b72afe99b4c2e4ee89ddbf449351aed2036b077536bf01be02f4991c8af22d3",
+    "main": "0a9dbf1f3816dd0fab0a08883d538c74d9b9fd7d939cb29aaf0947d71a201026"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "fc092df7ed64f3afedf812ff93dd5fc855c72276d077c7ed8d03a38ec0aba9b5",
+    "sdk.patched.bin": "9d629869f383b2966067391a3c3cf2102550274f523c0d550fff7cde1b605680",
+    "subsdk0.patched.bin": "407f783cf6f501131b140ba597897166dc3acac914b80e1b3cb15c1eb12e4907"
+  },
+  "rewrite_metadata_sha256": {
+    "subsdk0.fixups.tsv": "aa3ee6b66370bc1f10470778d925eef98da68907f071a536ee1ca29ab2207475",
+    "sdk.gates.tsv": "e13c57595c62e333af921420898b9feda26f792423d01f7fc37f684496641f43",
+    "subsdk0.cuts.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0",
+    "main.cuts.tsv": "15869fa37a5a9b3b22fcffa6007d3b97cc73e14e7804eb42f197d5352b47ee47",
+    "main.params.tsv": "15869fa37a5a9b3b22fcffa6007d3b97cc73e14e7804eb42f197d5352b47ee47",
+    "sdk.cuts.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "sdk.params.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "sdk.sites.tsv": "8973a30701cc0a7a8c2e4a961ba7f591b6c953a25707c120325bbb57d607b651",
+    "main.sites.tsv": "8acc4055c4505f81d07e20630919d7751ce90dae5d065a3aab9f6678c755716d",
+    "subsdk0.sites.tsv": "18fc59b0caca02231ca762b224646426dcda696a584d99067798aed6ac21e3a8",
+    "sdk.obs.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "main.gates.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "subsdk0.params.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0",
+    "main.obs.tsv": "15869fa37a5a9b3b22fcffa6007d3b97cc73e14e7804eb42f197d5352b47ee47",
+    "main.fixups.tsv": "95c8a6b6e17ed4c6aadaa33f5746a0a7ba11afdd99fb5aae3f62da469624e614",
+    "subsdk0.gates.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk.fixups.tsv": "77847140d9801fd243c51e0ca8afec893b92c21c70c2ac53a2442e646549eada",
+    "subsdk0.obs.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0"
+  },
+  "romfs": {
+    "sha256": "31afb6d9d956b4dba5117a951055c47c9adf132deaca548579cfabc77ceea91a",
+    "size": 14331812280
+  },
+  "main_build_id": "ec4ed46bbc4a9ebbe7ce0af7a4a8ebbc09e5724a000000000000000000000000",
+  "rewrite_validation": {
+    "source_commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
+    "structure_modules_passed": 3,
+    "semantic_sites": 36711,
+    "mutation_controls_caught": 900
+  }
+}

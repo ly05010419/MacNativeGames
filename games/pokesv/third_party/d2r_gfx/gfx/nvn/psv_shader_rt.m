@@ -190,10 +190,16 @@ static int no_translator(void) {
     return v;
 #endif
 }
-int psv_rt_fix_bindless(NSString *base) {
+int psv_rt_fix_bindless(NSString *base) { return psv_rt_fix_bindless_data(base, nil); }
+int psv_rt_fix_bindless_data(NSString *base, NSData *have) {   /* have: the .metal's bytes when the caller read them already */
     NSString *mp = [base stringByAppendingString:@".metal"], *jp = [base stringByAppendingString:@".json"];
-    NSString *msl = [NSString stringWithContentsOfFile:mp encoding:NSUTF8StringEncoding error:nil];
-    if (!msl || ![msl containsString:@"_cb0_"] || ![msl containsString:@"array<"]) return 0;
+    /* runs for every shader load (the warm-up: about 12,000 per start): the two substrings are looked for in the bytes
+       first, and the file becomes a string only for the few shaders that have both (2026-11-04: NSString searches of
+       every file cost about 7% of the warm-up's CPU) */
+    NSData *md = have ? have : [NSData dataWithContentsOfFile:mp options:NSDataReadingMappedIfSafe error:nil];
+    if (!md || !psv_has_bytes(md.bytes, md.length, "_cb0_", 2) || !psv_has_bytes(md.bytes, md.length, "array<", 5)) return 0;
+    NSString *msl = [[NSString alloc] initWithData:md encoding:NSUTF8StringEncoding];
+    if (!msl) return 0;
     NSData *jd = [NSData dataWithContentsOfFile:jp];
     NSMutableDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:NSJSONReadingMutableContainers error:nil] : nil;
     if (![j isKindOfClass:[NSMutableDictionary class]] || ![j[@"bindings"] isKindOfClass:[NSArray class]]) return 0;

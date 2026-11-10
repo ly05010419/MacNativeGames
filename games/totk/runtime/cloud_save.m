@@ -41,6 +41,9 @@
 static NSString *g_local, *g_state, *g_backups, *g_cloud, *g_user;   // save folder, <profile>/cloud-sync.plist, backups, <cloud>/Saves
 static dispatch_queue_t g_queue;
 static void watch_lifecycle(void);   // upload at quit / background (below)
+/* Tell the player (runtime/frontend.m on the Mac, ios/Sources/main.m on the phone; absent in tests). */
+__attribute__((weak)) void runtime_front_notice(const char *title, const char *detail) { (void)title; (void)detail; }
+static void notice(NSString *title, NSString *detail) { runtime_front_notice(title.UTF8String, detail.UTF8String); }
 static int g_push_pending, g_superseded, g_identity_conflict;   // an upload is waiting; another device uploaded since this one synced
 static long long g_start_gen;   // the generation the start compared this device's save with (0: the folder had none)
 
@@ -59,12 +62,34 @@ static NSArray<NSString *> *save_files(NSString *dir) { return save_files_all(di
 /* What says where the game is: storage/ (CacheStorageKey.dat and the like) is rewritten while nobody plays, so it is
    copied with the save but left out of its hash and of its time. */
 static NSArray<NSString *> *progress_files(NSString *dir) { return save_files_all(dir, YES); }
+/* iCloud Drive's conflict copies ("progress 2.sav", "000_Photo 3.jpg"): when two devices' uploads cross, it keeps the losing
+   files beside the others under such names. The game's own names have no spaces, so they are never part of a save; counted,
+   they made a complete folder look incomplete at every start (2026-11-06: 35 of them, generation 10 never loaded). */
+static BOOL conflict_copy(NSString *name) {
+    NSString *base = name.stringByDeletingPathExtension;
+    NSRange sp = [base rangeOfString:@" " options:NSBackwardsSearch];
+    if (sp.location == NSNotFound || sp.location + 1 >= base.length) return NO;
+    NSString *tail = [base substringFromIndex:sp.location + 1];
+    return [tail rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location == NSNotFound;
+}
+static void drop_conflict_copies(NSString *dir) {
+    int n = 0;
+    for (NSString *rel in [NSFileManager.defaultManager subpathsOfDirectoryAtPath:dir error:nil])
+        if (conflict_copy(rel.lastPathComponent) && [NSFileManager.defaultManager removeItemAtPath:[dir stringByAppendingPathComponent:rel] error:nil]) n++;
+    if (n) LOG("left out %d iCloud conflict copies (\"name 2.sav\" and the like)\n", n);
+}
+/* The folder's copy, once it is known to hold the save: its conflict copies go, under the writer's coordination, so they do
+   not pile up (iCloud keeps them across later uploads). Only such names are removed. */
+static void clean_cloud(NSString *cur) {
+    [[[NSFileCoordinator alloc] initWithFilePresenter:nil] coordinateWritingItemAtURL:[NSURL fileURLWithPath:cur] options:0 error:nil
+        byAccessor:^(NSURL *u) { drop_conflict_copies(u.path); }];
+}
 static NSArray<NSString *> *save_files_all(NSString *dir, BOOL progress_only) {
     NSMutableArray *out = [NSMutableArray array];
     NSDirectoryEnumerator *en = [NSFileManager.defaultManager enumeratorAtPath:dir];
     for (NSString *rel in en) {
         NSString *name = rel.lastPathComponent;
-        if ([name isEqualToString:@".DS_Store"] || [rel isEqualToString:@"sync.plist"] || ([name hasPrefix:@"."] && [name hasSuffix:@".icloud"])) continue;
+        if ([name isEqualToString:@".DS_Store"] || [rel isEqualToString:@"sync.plist"] || ([name hasPrefix:@"."] && [name hasSuffix:@".icloud"]) || conflict_copy(name)) continue;
         if (progress_only && [rel hasPrefix:@"storage/"]) continue;
         if ([en.fileAttributes.fileType isEqualToString:NSFileTypeRegular]) [out addObject:rel];
     }
@@ -143,6 +168,13 @@ static void write_superseded(NSDictionary *state, NSNumber *cloudGen) {
     NSMutableDictionary *d = [state ?: @{} mutableCopy]; d[@"superseded"] = cloudGen;
     [d writeToFile:g_state atomically:YES];
 }
+/* Conflict copies go only once the files in the folder are the save sync.plist describes: a copy may hold the real data
+   while the main file is still half synced. */
+static void clean_cloud_checked(NSString *cur, NSString *hash) {
+    __block BOOL same = NO;
+    read_coordinated(cur, ^(NSString *p) { same = [save_hash(p) isEqualToString:hash]; });
+    if (same) clean_cloud(cur); else LOG("the folder's files do not match its sync.plist yet: conflict copies kept\n");
+}
 
 /* Replace the contents of `dst` with those of `src`, through a sibling folder so a failure leaves `dst` as it was. */
 static BOOL replace_folder(NSString *src, NSString *dst) {
@@ -219,6 +251,7 @@ static void push(void) {
             LOG("remote folder is incomplete; left untouched\n"); return;
         }
         if (!replace_folder(g_local, u.path)) return;
+        drop_conflict_copies(u.path);
         ok = [@{@"uid": g_user, @"gen": @(gen), @"device": NSProcessInfo.processInfo.hostName ?: @"?", @"time": @(NSDate.date.timeIntervalSince1970), @"hash": hash}
                  writeToFile:[u.path stringByAppendingPathComponent:@"sync.plist"] atomically:YES];
     }];
@@ -277,10 +310,10 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
                the game uploads, after push looks again (or the next start, if a save has arrived by then). */
             LOG("no save in the folder yet%s\n", localSaves ? "; this device's save goes up at its first save in the game, if the folder is still empty then" : ""); return;
         }
-        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); return; }
+        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); clean_cloud_checked(cur, meta[@"hash"]); return; }
         long long cloudGen = [meta[@"gen"] longLongValue], ownGen = [state[@"gen"] longLongValue];
         BOOL localChanged = localSaves && !(state && [state[@"hash"] isEqualToString:local]);
-        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); return; }   // new progress goes up with the next save
+        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); clean_cloud_checked(cur, meta[@"hash"]); return; }   // new progress goes up with the next save
         if (state && cloudGen < ownGen) {
             /* An older generation than this device synced: another device wrote from an out-of-date view of the folder. This
                device's save is the newer one. */
@@ -293,14 +326,29 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         BOOL superseded = state[@"superseded"] && cloudGen >= [state[@"superseded"] longLongValue];
         double cloudTime = [meta[@"time"] doubleValue], localTime = localSaves ? newest_mtime(g_local) : 0;
         if (localChanged && !superseded && localTime > cloudTime) { LOG("both saved; this device's save is newer\n"); push(); return; }
-        if (!ensure_downloaded(cur, 60)) { LOG("the folder's save did not download in time; this device's save is used\n"); return; }
+        /* The folder's save is the one to take. When it cannot be taken now (not downloaded, incomplete, the backup or the
+           copy failed), this device plays its own save but never uploads it this session: an upload would replace the
+           newer save it could not read (2026-11-06: a Mac start that timed out on a phone's upload put its older save
+           over it). Its next start takes the folder's save, keeping this one in cloud-backups. */
+        __block BOOL taken = NO;
+        if (!ensure_downloaded(cur, 60)) LOG("the folder's save did not download in time; this device's save is used\n");
         /* Checked and copied in one coordinated read, so an upload arriving meanwhile cannot slip between the two. */
-        read_coordinated(cur, ^(NSString *p) {
+        else read_coordinated(cur, ^(NSString *p) {
             NSDictionary *m = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]);
             if (![m[@"gen"] isEqual:meta[@"gen"]] || ![save_hash(p) isEqualToString:m[@"hash"]]) { LOG("the folder's save is incomplete (still syncing); this device's save is used\n"); return; }
             if (localSaves && !backup(g_local, @"local")) return;
-            if (replace_folder(p, g_local)) { write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
+            if (replace_folder(p, g_local)) { drop_conflict_copies(g_local); taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
+        if (taken) clean_cloud(cur);
+        if (!taken && !g_identity_conflict) {
+            g_superseded = 1; write_superseded(state, meta[@"gen"]);
+            LOG("the folder's newer save (generation %lld) is not loaded: this device's saves stay local, and its next start takes that one (keeping this one in cloud-backups)\n", cloudGen);
+            BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+            NSString *from = meta[@"device"] ?: @"?";
+            notice(zh ? @"云端存档没有同步下来" : @"The synced save did not load",
+                   [NSString stringWithFormat:(zh ? @"同步文件夹里有一份更新的存档（来自 %@），但还没下载完，这次没能读取。现在用的是这台设备上的存档。\n\n这一局的存档只留在这台设备上，不会上传，云端那份不会被动。等 iCloud 下载完再打开游戏，会换成云端那份，这台设备的存档备份到 cloud-backups。"
+                                                     : @"The sync folder has a newer save (from %@), but it had not finished downloading and could not be read. This device's save is used now.\n\nThis session's saves stay on this device and are not uploaded, so the folder's save is left alone. Open the game again once iCloud has downloaded it: that start takes the folder's save and keeps this device's in cloud-backups."), from]);
+        }
     }
 }
 

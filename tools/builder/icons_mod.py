@@ -94,8 +94,9 @@ def status(library, current):
     return 'current' if library.state.get('icons') == current else 'outdated'
 
 
-def build(repo, app, version, library, inputs, builder_dir, cancel=None):
-    """The made mod's folder (<library>/.icons-build, holding romfs/); BuildError with the step that failed."""
+def build(repo, app, version, library, inputs, builder_dir, cancel=None, style='xbox'):
+    """The made mod's folder (<library>/.icons-build, holding romfs/); BuildError with the step that failed. style: the
+    Breath of the Wild icons, xbox or playstation (make_botw_button_icons.py --style)."""
     work = library.root / '.icons-build'
     shutil.rmtree(work, ignore_errors=True)
     romfs = work / 'romfs'
@@ -108,10 +109,10 @@ def build(repo, app, version, library, inputs, builder_dir, cancel=None):
             (romfs / name).write_bytes(table)
         plan_file = work / 'plan.json'
         if botw(version):
-            plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs).items()),
+            plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs, version).items()),
                                              'diamond': icons_plan.botw_diamond(inputs)}))
             argv = [sys.executable, '-I', BOTW_SCRIPT, romfs, '--app', app, '--version', version, '--plan', plan_file,
-                    '--write-all']
+                    '--style', style, '--write-all']
         else:
             plan_file.write_text(json.dumps(icons_plan.plan(inputs)))
             argv = [icons_env.python(icons_env.venv(builder_dir)), '-I', SCRIPT, romfs, app, version, plan_file]

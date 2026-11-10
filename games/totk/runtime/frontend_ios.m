@@ -283,3 +283,19 @@ void *runtime_front_override(const char *name){
  {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
+
+/* A notice from the game's services (runtime/cloud_save.m: the folder's newer save did not load), as an alert over the
+   game; the game keeps running behind it. */
+void runtime_front_notice(const char *title,const char *detail){
+ NSString *t=@(title?title:""),*d=@(detail?detail:"");
+ dispatch_async(dispatch_get_main_queue(),^{
+  UIViewController *vc=nil;
+  for(UIScene *s in UIApplication.sharedApplication.connectedScenes)
+   if([s isKindOfClass:UIWindowScene.class])for(UIWindow *w in ((UIWindowScene *)s).windows)if(w.isKeyWindow)vc=w.rootViewController;
+  while(vc.presentedViewController)vc=vc.presentedViewController;
+  if(!vc){fprintf(stderr,"[totk] notice not shown (no window yet): %s\n",t.UTF8String);return;}
+  UIAlertController *a=[UIAlertController alertControllerWithTitle:t message:d preferredStyle:UIAlertControllerStyleAlert];
+  [a addAction:[UIAlertAction actionWithTitle:@(TOTK_UI("好","OK")) style:UIAlertActionStyleDefault handler:nil]];
+  [vc presentViewController:a animated:YES completion:nil];
+ });
+}

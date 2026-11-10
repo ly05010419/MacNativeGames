@@ -75,10 +75,10 @@ class Layouts(unittest.TestCase):
         layout = kl.parse_layout('a = none\n', 'keyboard.txt')
         self.assertEqual(layout.bindings['a'], ())
 
-    def test_a_later_line_wins_a_shared_input(self):
+    def test_conflicting_explicit_inputs_use_runtime_fallback(self):
         layout = kl.parse_layout('x = f\nl = f\n', 'keyboard.txt')
-        self.assertEqual(layout.bindings['x'], ())
-        self.assertEqual(layout.bindings['l'], ('f',))
+        self.assertFalse(layout.valid)
+        self.assertEqual(layout.bindings, kl.default_layout().bindings)
 
     def test_names_are_case_insensitive(self):
         layout = kl.parse_layout('A = SHIFT C\n', 'keyboard.txt')

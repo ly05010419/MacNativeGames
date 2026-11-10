@@ -1,0 +1,26 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -415,18 +415,11 @@
+ 
+                 if (a.Pred != RegisterConsts.PredicateTrueIndex && a.Opcode != Instructions.AmpereOpcodes.Bra)
+                 {
+-                    Operand label;
+-
+-                    if (opIndex == block.OpCodes.Count - 1 && block.HasNext())
+-                    {
+-                        label = context.GetLabel(block.Successors[0].Address);
+-                    }
+-                    else
+-                    {
+-                        label = Label();
+-
+-                        predSkipLbl = label;
+-                    }
++                    // Keep the skip target before the block's deferred-write
++                    // commits. Jumping straight to the successor would skip
++                    // pending unpredicated results when this guard is false.
++                    Operand label = Label();
++                    predSkipLbl = label;
+ 
+                     RegisterType predType = Instructions.AmpereTable.HasUniformGuard(a.Opcode) ? RegisterType.UniformPredicate : RegisterType.Predicate;
+                     Operand pred = Register(a.Pred, predType);

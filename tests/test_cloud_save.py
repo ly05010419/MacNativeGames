@@ -65,3 +65,72 @@ class CloudSave(unittest.TestCase):
             self.assertEqual((other / f'save/{A}/progress.sav').read_text(), 'local copy')
             self.assertEqual({p.name: p.read_bytes() for p in current.iterdir()}, before)
             self.assertFalse((other / f'cloud-sync/{A}.plist').exists())
+
+    def test_unchanged_save_never_goes_over_a_newer_one_that_did_not_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            good = (current / 'progress.sav').read_bytes()
+            (current / 'progress.sav').write_bytes(b'half')   # still syncing: the files do not match sync.plist's hash
+            other = root / 'other'
+            run = subprocess.run([str(self.exe), str(cloud), str(other), A, 'mismatch'],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('stay local', run.stderr)
+            self.assertEqual((current / 'progress.sav').read_bytes(), b'half')
+            self.assertEqual(plistlib.loads((current / 'sync.plist').read_bytes())['gen'], 1)
+            (current / 'progress.sav').write_bytes(good)   # the download finished
+            self.run_save(cloud, other, A, 'pull')
+            self.assertEqual((other / f'save/{A}/progress.sav').read_bytes(), good)
+            backups = list((other / f'cloud-backups/{A}').glob('*/progress.sav'))
+            self.assertEqual([b.read_text() for b in backups], ['local copy'])
+
+    def test_new_save_after_a_failed_load_stays_local_until_the_next_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            good = (current / 'progress.sav').read_bytes()
+            (current / 'progress.sav').write_bytes(b'half')
+            other = root / 'other'
+            run = subprocess.run([str(self.exe), str(cloud), str(other), A, 'played'],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertNotIn('saved to the sync folder', run.stderr)
+            self.assertEqual((current / 'progress.sav').read_bytes(), b'half')
+            self.assertEqual(plistlib.loads((current / 'sync.plist').read_bytes())['gen'], 1)
+            (current / 'progress.sav').write_bytes(good)   # the download finished
+            self.run_save(cloud, other, A, 'pull')
+            self.assertEqual((other / f'save/{A}/progress.sav').read_bytes(), good)
+            backups = list((other / f'cloud-backups/{A}').glob('*/progress.sav'))
+            self.assertEqual(sorted(b.read_text() for b in backups), ['local copy'])
+
+    def test_conflict_copies_stay_while_the_folder_does_not_match_its_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            (current / 'progress.sav').write_bytes(b'half')
+            (current / 'progress 2.sav').write_bytes(b'may hold the real data')
+            run = subprocess.run([str(self.exe), str(cloud), str(profile), A, 'pull'],
+                                 capture_output=True, text=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('conflict copies kept', run.stderr)
+            self.assertEqual((current / 'progress 2.sav').read_bytes(), b'may hold the real data')
+
+    def test_icloud_conflict_copies_do_not_block_a_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            (current / 'progress 2.sav').write_bytes(b'the other device')   # iCloud keeps a crossed upload's file so
+            other = root / 'other'
+            self.run_save(cloud, other, A, 'pull')
+            self.assertEqual((other / f'save/{A}/progress.sav').read_text(), A)
+            self.assertFalse((other / f'save/{A}/progress 2.sav').exists())
+            self.assertFalse((current / 'progress 2.sav').exists())   # cleaned from the folder too
+            (current / 'progress 2.sav').write_bytes(b'again')
+            self.run_save(cloud, other, A, 'pull')   # in sync now: still cleaned
+            self.assertFalse((current / 'progress 2.sav').exists())
+            self.assertEqual((current / 'progress.sav').read_text(), A)

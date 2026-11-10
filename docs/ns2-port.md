@@ -90,7 +90,8 @@ How it is built and run (outside the repository; game files stay with the dump):
 
 Found on the way (general fixes, each in the code with its reason):
 - a mip-chain pass sampled the level it renders (Metal fetches it at weight 0; undefined data, 0 x NaN): the environment
-  cube's NaN spread as bright blotches with black specks; the draw now samples the levels below (nvn_mtl.m mip_feedback_view);
+  cube's NaN spread as bright blotches with black specks; the draw now samples the levels below, or the one level its sampler pins, since an upsample reads the level above
+  (nvn_mtl.m mip_feedback_view);
 - the equivalence checker modelled an ARMv8.0 CPU (no LSE atomics, LDAPR) and counted alignment exceptions as differences;
 - released recording copies were freed while the translation thread still had them queued (a game may add control memory
   again right after a submit; TotK never did): freed once every earlier submission is replayed;
@@ -381,6 +382,47 @@ about 6.9 ms); what was measured and planned:
   above) before each run. Compare GPU time and submit time, not frame time, while the game holds 60 fps.
 - Where the GPU time goes, per pass (games/totk/scripts/metal_perf_report.py, merged from main), before choosing the next
   GPU change; then mesh shaders (above).
+
+## HDR and late image stores
+
+Bananza's final compute upscale can write a scene texture already promoted to an
+FP16 HDR companion. Companions allow shader writes as well as rendering and
+sampling. Image slots bind the writable companion itself, not its RGB-only
+sampling view (whose alpha is forced to one). After dispatch, convert written
+companions back to the guest-format originals so texture copies and readbacks see
+the result. Otherwise the image write is rejected and discarded into a dummy
+texture: the UI remains visible over the purple clear colour even though
+intermediate scene targets contain valid geometry.
+
+The new-game intro also uses non-HDR render targets allocated without image
+usage. Before opening the compute encoder, promote those targets to shader-write
+storage using the existing content-preserving format-view upgrade path, including
+shared-storage aliases. Metal's swizzled views remain read-only even when their
+parent is writable, so image slots use a separately cached, unswizzled view of
+the same format, mip range, layers and type. Sampling keeps its original swizzle;
+both views retire together when the registration or backing storage changes.
+
+The upscaler also reads NVN2 push constants from bank 24. Reflection from the
+bundled translator calls this `drvcb`, but it must resolve to the existing pushed
+constant block, not the synthesized c0 driver table. Correct this at reflection
+load time so existing shader caches work without regeneration. Write permission
+alone does not fix a new game: the upscaler still needs the pushed image
+rectangles and scaling parameters.
+
+`probe-gpu-dispatch-chain` checks RGB writes through the production dispatch,
+the sampling view's alpha-one swizzle, guest-format readback, HDR without a
+companion, SDR, and swizzled SDR with predeclared or late image usage.
+The output colour comes from bank-24 push constants, checked through both
+`drvcb` and explicit `cbuf` metadata.
+Removing companion write permission reproduces the missing
+writable-usage warning and incorrect RGB. Mac v458752 was also checked in the mining tunnel from a save
+copy with Metal API validation enabled: the presented scene replaces the purple
+output. A separate save copy was used to start a new game without validation:
+the island opening and the initial punch tutorial (rock, lighting and fracture
+animation), continuing into the playable tunnel with DK and HUD, replace the
+purple output. Strict validation during that new-game
+flow stops on a separate zero-width dispatch; it is not a clean full-game
+validation run. This does not constitute a full-game or iOS playthrough.
 
 ## Offline shader depth mode
 

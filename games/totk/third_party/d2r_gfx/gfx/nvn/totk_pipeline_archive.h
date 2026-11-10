@@ -33,7 +33,7 @@
 // Breath of the Wild 1.6.0 at 8 per file: 23.4 s first start (9,224 pipelines), 3.4 s second.
 // The key only finds the file: Metal checks the functions and state, so a wrong file is a miss, never a wrong pipeline.
 // On everywhere; TOTK_PIPELINE_ARCHIVE=0 turns it off. Valid for one OS version, GPU and translation chain
-// (pipelines/identity.json); otherwise the folder is removed. Included by nvn_mtl.m after MLOG and g_dev.
+// (pipelines/identity.json); otherwise the folder is removed (not while another process writes it: no archive that run). Included by nvn_mtl.m after MLOG and g_dev.
 #pragma once
 #import <Metal/Metal.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -85,6 +85,7 @@ static int par_fill_light(void) {
 static NSString *par_dir(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines"]; }
 static NSString *par_file(NSString *name) { return [par_dir() stringByAppendingFormat:@"/%@.metalarchive", name]; }
 static NSString *par_keys_file(NSString *name) { return [par_dir() stringByAppendingFormat:@"/%@.keys", name]; }
+static NSString *par_lock_file(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines.lock"]; }   // never removed
 // 5 (2026-10-29): border and tile-read pipelines are keyed with their variant (nvn_mtl.m pso_archive_key); files of 4 held
 // some under the plain pipeline's key, which then missed in every session.
 #define PAR_SCHEMA 6   /* vertex fetches omit trailing lanes proven unused by the MSL */
@@ -107,24 +108,8 @@ static int64_t par_total(void) {
     pthread_mutex_lock(&g_par_mu); int64_t n = (int64_t)g_par_have.count; pthread_mutex_unlock(&g_par_mu);
     return n;
 }
-/* The keys of the files in the folder (g_par_have, g_par_where); removes what a write cut short left. Returns the files' bytes. */
-static uint64_t par_load_dir(NSUInteger *files) {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    g_par_have = [NSMutableSet set]; g_par_where = [NSMutableDictionary dictionary]; g_par_pending = [NSMutableSet set];
-    g_par_open = [NSMutableDictionary dictionary]; uint64_t bytes = 0; *files = 0;
-    NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:par_dir() error:nil] ?: @[];
-    NSSet<NSString *> *present = [NSSet setWithArray:names];
-    for (NSString *name in names) {   // a file counts with its key list, written after it; the rest is a write cut short
-        NSString *base = name.stringByDeletingPathExtension, *ext = name.pathExtension;
-        if ([ext isEqualToString:@"keys"] && [present containsObject:[base stringByAppendingPathExtension:@"metalarchive"]]) {
-            NSString *list = [NSString stringWithContentsOfFile:par_keys_file(base) encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *key in [list componentsSeparatedByString:@"\n"]) if (key.length) { [g_par_have addObject:key]; g_par_where[key] = base; }
-            bytes += [[fm attributesOfItemAtPath:par_file(base) error:nil] fileSize]; ++*files;
-        } else if ([ext isEqualToString:@"metalarchive"] ? ![present containsObject:[base stringByAppendingPathExtension:@"keys"]] : ![name isEqualToString:@"identity.json"])
-            [fm removeItemAtPath:[par_dir() stringByAppendingPathComponent:name] error:nil];
-    }
-    return bytes;
-}
+#include "totk_pipeline_archive_publish.h"
+#include "totk_pipeline_archive_files.h"
 /* Pipelines the Mac compiled for this device's GPU while packaging (2026-10-29; ios/tools/device_pipelines.py, run by
    build_ipa.py): flat in the seed folder, since a pushed seed is one stream of files (install_device.py write_pack):
    pipelines-<GPU architecture>.json (schema, chain, arch), .tsv (key, file name) and pipelines-<arch>-<name>.metalarchive.
@@ -174,26 +159,42 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     g_par_pre_base = [base stringByAppendingString:@"-"];
     return n;
 }
+/* The folder for this OS version, GPU and chain: another identity's folder is removed (par_pub_wipe), identity.json is
+   written under the shared lock (a start cleaning the folder must not take the stamp's temp file). 0: the archive stays
+   off this run (another process of the app writes the folder for another identity, or the lock cannot be taken). */
+static int par_open_identity(id<MTLDevice> dev) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *stamp_path = [par_dir() stringByAppendingPathComponent:@"identity.json"];
+    NSData *sd = [NSData dataWithContentsOfFile:stamp_path];
+    NSDictionary *stamp = sd ? [NSJSONSerialization JSONObjectWithData:sd options:0 error:nil] : nil;
+    [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.metalarchive"] error:nil];   // layouts of earlier tests
+    [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.json"] error:nil];
+    if (![stamp isEqual:par_identity(dev)] && [fm fileExistsAtPath:par_dir()]) {
+        if (stamp) MLOG("管线存档：系统版本、GPU 或翻译链变了，删掉重建");
+        if (!par_pub_wipe(par_dir(), par_lock_file())) {   // totk_pipeline_archive_publish.h
+            MLOG("【红】[pipeline-archive] another process of the app is writing %s for another system, GPU or chain: no archive this run", par_dir().UTF8String);
+            return 0;
+        }
+    }
+    [fm createDirectoryAtPath:par_dir() withIntermediateDirectories:YES attributes:nil error:nil];
+    int lk = par_pub_lock(par_lock_file(), LOCK_SH);
+    if (lk < 0) {   // nothing is written to the folder without the lock
+        MLOG("【红】[pipeline-archive] cannot lock %s (%s): no archive this run", par_lock_file().UTF8String, strerror(errno));
+        return 0;
+    }
+    [[NSJSONSerialization dataWithJSONObject:par_identity(dev) options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
+    par_pub_unlock(lk);
+    return 1;
+}
 // Once: the folder of this OS version, GPU and chain, and the keys it has files for.
 static void par_open_dir(id<MTLDevice> dev) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         if (!par_enabled()) return;
-        NSFileManager *fm = NSFileManager.defaultManager;
         /* Only earlier runs' owned folders may be removed. Finish before dispatch_once publishes the archive to any
            writer: batches no longer hold g_par_wmu while Metal uses their build folders. Shared folders stay intact. */
         par_ga_cleanup_startup();
-        NSString *stamp_path = [par_dir() stringByAppendingPathComponent:@"identity.json"];
-        NSData *sd = [NSData dataWithContentsOfFile:stamp_path];
-        NSDictionary *stamp = sd ? [NSJSONSerialization JSONObjectWithData:sd options:0 error:nil] : nil;
-        [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.metalarchive"] error:nil];   // layouts of earlier tests
-        [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.json"] error:nil];
-        if (![stamp isEqual:par_identity(dev)] && [fm fileExistsAtPath:par_dir()]) {
-            if (stamp) MLOG("管线存档：系统版本、GPU 或翻译链变了，删掉重建");
-            [fm removeItemAtPath:par_dir() error:nil];
-        }
-        [fm createDirectoryAtPath:par_dir() withIntermediateDirectories:YES attributes:nil error:nil];
-        [[NSJSONSerialization dataWithJSONObject:par_identity(dev) options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
+        if (!par_open_identity(dev)) return;
         NSUInteger files = 0; uint64_t bytes = par_load_dir(&files), own = g_par_have.count, pre = par_load_prebuilt(dev);
         g_par_on = 1; g_par_valid = g_par_have.count > 0;
         if (pre) MLOG("管线存档：App 带了 Mac 为这台设备的 GPU（%s）编好的 %llu 条管线，首次启动不用填充；本机自己的 %llu 条", dev.architecture.name.UTF8String,
@@ -255,17 +256,18 @@ static NSString *const k_par_batch = @"totk.pipeline-archive.batch";
 static void par_flush_thread(void) {
     NSMutableDictionary *td = NSThread.currentThread.threadDictionary;
     if (!td[k_par_batch]) return;
-    NSArray<NSString *> *keys = nil; NSString *name = nil; NSError *e = nil; BOOL ok = YES; uint64_t t0 = bp_now();
+    NSArray<NSString *> *keys = nil; NSString *name = nil; __block NSError *e = nil; BOOL ok = YES; uint64_t t0 = bp_now();
     @autoreleasepool {
         ParBatch *b = td[k_par_batch]; [td removeObjectForKey:k_par_batch];
         keys = b->keys;
         if (keys.count) {
-            name = [keys.firstObject stringByAppendingFormat:@"-%lu", (unsigned long)keys.count];
-            NSString *path = par_file(name), *temp = [path stringByAppendingString:@".tmp"], *list = par_keys_file(name), *ltemp = [list stringByAppendingString:@".tmp"];
-            ok = [b->archive serializeToURL:[NSURL fileURLWithPath:temp] error:&e] && rename(temp.fileSystemRepresentation, path.fileSystemRepresentation) == 0
-              && [[keys componentsJoinedByString:@"\n"] writeToFile:ltemp atomically:NO encoding:NSUTF8StringEncoding error:&e]
-              && rename(ltemp.fileSystemRepresentation, list.fileSystemRepresentation) == 0;
-            if (!ok) { unlink(temp.fileSystemRepresentation); unlink(ltemp.fileSystemRepresentation); unlink(path.fileSystemRepresentation); }
+            /* Named after its first key; a name taken (another writer) goes to -2, -3, ...
+               (totk_pipeline_archive_publish.h: reserved temp files, no file replaced, only its own files removed). */
+            id<MTLBinaryArchive> archive = b->archive;
+            name = par_pub_batch(par_dir(), par_lock_file(), [keys.firstObject stringByAppendingFormat:@"-%lu", (unsigned long)keys.count],
+                ^BOOL(NSString *temp) { NSError *we = nil; BOOL r = [archive serializeToURL:[NSURL fileURLWithPath:temp] error:&we]; if (!r) e = we; return r; },
+                [keys componentsJoinedByString:@"\n"], NULL);
+            ok = name != nil;
         }
         b->archive = nil;
     }
@@ -274,7 +276,7 @@ static void par_flush_thread(void) {
     for (NSString *key in keys) { [g_par_pending removeObject:key]; if (ok) { [g_par_have addObject:key]; g_par_where[key] = name; } }
     pthread_mutex_unlock(&g_par_mu);
     atomic_fetch_add(&g_par_flush_ns, bp_now() - t0);
-    if (!ok) { if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】管线存档：写不了（%s）", e ? e.localizedDescription.UTF8String : "改名失败"); return; }
+    if (!ok) { if (atomic_fetch_add(&g_par_write_failed, 1) < 4) MLOG("【红】管线存档：写不了（%s）", e ? e.localizedDescription.UTF8String : "no shared lock, or publishing failed"); return; }
     if (!keys.count) return;
     atomic_fetch_add(&g_par_files, 1);
     uint64_t n = atomic_fetch_add(&g_par_written, keys.count) + keys.count;

@@ -1,0 +1,183 @@
+{
+  "external": {
+    "source": "seedds/nxnative 7861e7c1a9913e020600b1cc7f65132427e9cc50, dm/games/01006BB00C6F0000 (game.tsv; shader_map.tsv blob 2ea2c96075b847ca26ea214390939613ae5709b0)",
+    "title_id": "01006BB00C6F0000",
+    "version": "1.1.0",
+    "version_code": 131072,
+    "modules": {
+      "main": "909e904af78ac1b8deefe97ab2ccdb51",
+      "subsdk0": "c8a3cc0b1d1858330a881c0c2fc87940",
+      "subsdk1": "8df876f80ce4ceee62360b31405c452f",
+      "sdk": "3ae34e689d7a35f13cbf42bfd672af8b"
+    },
+    "romfs_marker": "region_common/shader/postprocess.bfsha",
+    "npdm_sys_resource": 0,
+    "shader_keys": 9698,
+    "shader_stage_key_sha256": "77b8ba0077c3b621245a027553866d3135c0a875d42d79951c4a15eb60f58b2d"
+  },
+  "observed": {
+    "modules": {
+      "main": {
+        "size": 14983439,
+        "sha256": "0d8fe78ce58d444d729f279a172eda648b382a860ba877dacff342524e4ec3ba",
+        "build_id": "909e904af78ac1b8deefe97ab2ccdb51968f0ec7000000000000000000000000",
+        "segments": [
+          {
+            "name": "text",
+            "address": 0,
+            "size": 21182720,
+            "sha256": "90e9484a29660c16e1ef7ce594c67dfbe802722513430ad22978553b33de1b8a",
+            "header_hash_verified": true
+          },
+          {
+            "name": "rodata",
+            "address": 21184512,
+            "size": 7451648,
+            "sha256": "ff9de36f190a405d3deb8beecf57ca95d2f8217f429bab1fd221a774211243b9",
+            "header_hash_verified": true
+          },
+          {
+            "name": "data",
+            "address": 28639232,
+            "size": 1338944,
+            "sha256": "4f928003e60e90597e2bf5411a804a8f1d5bcfd15c59a666d8eb87590e2fd29d",
+            "header_hash_verified": true
+          }
+        ],
+        "mapped_size": 30253056
+      },
+      "rtld": {
+        "size": 7435,
+        "sha256": "bc52eeaae18053433a64caeeed0c12b63fd29fbde635346d732203ec41f585f0",
+        "build_id": "285183cac95179371cc22cec3723f882e1589659000000000000000000000000",
+        "segments": [
+          {
+            "name": "text",
+            "address": 0,
+            "size": 6656,
+            "sha256": "5d2e542d868f5e4d049d7e66c332a26227c95ae89663c9ed7c81d8ab4a1cd70f",
+            "header_hash_verified": true
+          },
+          {
+            "name": "rodata",
+            "address": 8192,
+            "size": 3360,
+            "sha256": "18b5fbc6100724d4c8d979ca2b143f9deaec0b300f994030db3d71a7c2a38877",
+            "header_hash_verified": true
+          },
+          {
+            "name": "data",
+            "address": 12288,
+            "size": 640,
+            "sha256": "1628b2cf4e6269f2bdd94cb85015bc80259b48a2377e8fa70d65860b0a687159",
+            "header_hash_verified": true
+          }
+        ],
+        "mapped_size": 16384
+      },
+      "sdk": {
+        "size": 5374578,
+        "sha256": "21e08d575abd8cb08ba1ab3be3fa92c02a1384428f161e8e88eb578e897f2c0b",
+        "build_id": "3ae34e689d7a35f13cbf42bfd672af8b5eb64a9d000000000000000000000000",
+        "segments": [
+          {
+            "name": "text",
+            "address": 0,
+            "size": 5507408,
+            "sha256": "023da097f710399d6d2135fc89632e1450302352a1759043ff25a8f3c55d0bb6",
+            "header_hash_verified": true
+          },
+          {
+            "name": "rodata",
+            "address": 5509120,
+            "size": 6917288,
+            "sha256": "87460d1b7f3db79dcc6e5e67f4998f3fa6e9f4d403fff669e7241b6c50a19ff6",
+            "header_hash_verified": true
+          },
+          {
+            "name": "data",
+            "address": 12427264,
+            "size": 401392,
+            "sha256": "e1346d9f6e431ede0f2bae8d266158568a284d839e66b915c83ab0b2f617a94c",
+            "header_hash_verified": true
+          }
+        ],
+        "mapped_size": 13611008
+      },
+      "subsdk0": {
+        "size": 4552723,
+        "sha256": "5535bedc3a91fb560b8bcd3f7dc6e4318c38ad09184195880ae05d13a46d67fe",
+        "build_id": "c8a3cc0b1d1858330a881c0c2fc879409c4ecdae000000000000000000000000",
+        "segments": [
+          {
+            "name": "text",
+            "address": 0,
+            "size": 5710208,
+            "sha256": "4850fb7baed846011a61ae10ae8b69543ef3eb810752b0e26d692047d63009a7",
+            "header_hash_verified": true
+          },
+          {
+            "name": "rodata",
+            "address": 5713920,
+            "size": 3055296,
+            "sha256": "55c6b6bcba8b636b65daceec3dadfda1ce0e9a5a8723e7ca62d5ef271303d87e",
+            "header_hash_verified": true
+          },
+          {
+            "name": "data",
+            "address": 8769536,
+            "size": 935496,
+            "sha256": "4df0717bdb28ad2545f68a460a006caade5e7bdf421947602c23e15a264dc7a8",
+            "header_hash_verified": true
+          }
+        ],
+        "mapped_size": 9715712
+      },
+      "subsdk1": {
+        "size": 3535964,
+        "sha256": "74b5f47da7ca53ba8239ec9f0b79ae368d89d0d8483177501e12dd3ad30e1328",
+        "build_id": "8df876f80ce4ceee62360b31405c452f3f5abcdf000000000000000000000000",
+        "segments": [
+          {
+            "name": "text",
+            "address": 0,
+            "size": 3590256,
+            "sha256": "e8ca1c72b9aed00f624f531de6df343762d14e37b16c39dc6de2db22ff53bb2e",
+            "header_hash_verified": true
+          },
+          {
+            "name": "rodata",
+            "address": 3592192,
+            "size": 2464664,
+            "sha256": "86722f95b8e704373fa4fb76eacf9da59a203761eea42a19807c948a5770d501",
+            "header_hash_verified": true
+          },
+          {
+            "name": "data",
+            "address": 6057984,
+            "size": 201816,
+            "sha256": "92bef4dbd256ea4d78c5bfd14563aef17f19030ceb44ffc655bd32ea4c0877a4",
+            "header_hash_verified": true
+          }
+        ],
+        "mapped_size": 7426048
+      }
+    },
+    "npdm": {
+      "size": 1508,
+      "sha256": "97eb5b50aab8a01952c3ac390ab57929138b4b030ce806e62d071e1fa6113257",
+      "program_id": "01006BB00C6F0000",
+      "sys_resource": 0,
+      "main_thread_priority": 44,
+      "main_thread_core": 0,
+      "main_thread_stack": 1048576,
+      "signature_verification": "not performed"
+    },
+    "romfs": {
+      "form": "directory",
+      "files": 3836,
+      "bytes": 6232003903,
+      "sha256": "49e3b7fd34b5732c1948121d3e264ef02ce5a7189dfba96d8ddb3b14fa2bb342"
+    }
+  }
+}
