@@ -260,7 +260,8 @@ def compute_pipeline_archive(work, tree):
     expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
     index=target/f"pipelines-{report['arch']}.tsv"
     actual={line.split('\t')[0]for line in index.read_text().splitlines()} if index.exists() else set()
-    if not expected<=actual:raise ValueError('compute archive index omits planned pipelines')
+    missing=missing_compute(rows,actual)
+    if missing:raise ValueError(missing_compute_message(missing,report['arch'],log))
     report.update(planned=len(rows),listed_render=render_rows,lists=[p.name for p in lists],indexed=count,chain=chain,
                   plan_sha256=sha(plan),runtime_sha256=sha(work/'build/oot-native'),
                   files={p.name:sha(p)for p in sorted(target.iterdir()) if p.is_file() and p.name!='compute-manifest.json'})
@@ -336,6 +337,18 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     while app_running(out):time.sleep(5)   # the build may have taken a while: the App is replaced only once it is closed
     build_app.install_app(temporary,out)
     return out
+
+def missing_compute(rows,index_ids):
+    """The variants of the planned compute rows ("C\\t<variant>") the archive index lacks (index ids: 'c' + 40 hex of the
+    row's SHA-256, as mac_pipeline_files names them)."""
+    return [row[2:] for row in rows if 'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40] not in index_ids]
+
+def missing_compute_message(missing,arch,log):
+    """#2070: name the shaders whose compute pipelines this Mac's Metal compiler could not build, instead of a bare error."""
+    return (f"{len(missing)} compute pipeline{'s' if len(missing)!=1 else ''} could not be built on this Mac ({arch}): "
+            +', '.join(missing[:10])+(' …' if len(missing)>10 else '')
+            +f". The Metal compiler failed on {'them' if len(missing)!=1 else 'it'}; the reason is in {log}. "
+            'Please report the shader key and the log lines in an issue.')
 
 def app_running(app):
     """The game is running from this App. The Update window runs the same executable as "--update-install <pid>" or

@@ -90,6 +90,7 @@ python3.14 build_app.py "<导出目录>" --shared-fonts "<…/shared-fonts>" -o 
 | 报错里写着 | 怎么办 |
 |---|---|
 | `unsupported or damaged original ExeFS`、`RomFS is not update 131072: missing … / different …` | 不是 v131072 更新，或导出文件损坏：重新导出游戏。RomFS 按文件逐个核对，报错会列出是哪些文件；清单里没有的多余文件不算错（同一个 131072 的两份导出可能差几个文件）。 |
+| `… compute pipeline(s) could not be built on this Mac (…)` | 这台 Mac 的 Metal 编译器编不过报错里列出的着色器（Apple M5 + macOS 26.6.2 上见过，#2070）。有系统更新就先更新再打包；仍然失败的话，开 issue 附上着色器键和报错指出的 `logs/compute-pipelines.log` 里的那几行。 |
 | `use the complete original update 131072 in the dump/NUP`、`leave out --update, --dlc and --mod` | 只给 `.nup` 或导出目录，它已经包含更新。 |
 | `pass --shared-fonts with the six verified firmware fonts` | 加上 `--shared-fonts`（见[需要什么](#需要什么)）。 |
 | `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | 安装完整的 Xcode 和它的 Metal 工具链。 |

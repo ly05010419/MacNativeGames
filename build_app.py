@@ -2722,7 +2722,10 @@ def build_oot(args, source):
     spec = importlib.util.spec_from_file_location('oot_build', REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    out, tree, expected, shader_chain = module.build(args, source)
+    try:
+        out, tree, expected, shader_chain = module.build(args, source)
+    except ValueError as e:   # the port's checks say what stopped it; the player reads it on the ERROR line (#2070)
+        raise BuildError(str(e)) from e
     record_ns2_device_build(tree, out, dict(version='oot', expected=expected, folder=REPO / 'games/oot',
                            executable='OcarinaOfTime', depth_mode='runtime-device-state',
                            shader_chain=shader_chain), args)
