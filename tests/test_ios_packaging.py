@@ -161,6 +161,29 @@ class FullHD(unittest.TestCase):
         self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
         self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
 
+    def test_botw_memory_mode_is_opt_in_and_does_not_reach_other_games(self):
+        import copy, plistlib
+        original = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
+        for pane in (original, build_ipa.bananza_pane(copy.deepcopy(original))):
+            self.assertNotIn('TOTK_FILE_HEAP', {s.get('Key') for s in pane['PreferenceSpecifiers']})
+        pane = build_ipa.botw_pane(copy.deepcopy(original))
+        # Exercise the actual packaged plist format, not just an in-memory dictionary.
+        specs = plistlib.loads(plistlib.dumps(pane))['PreferenceSpecifiers']
+        rows = [s for s in specs if s.get('Key') == 'TOTK_FILE_HEAP']
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row['Type'], 'PSToggleSwitchSpecifier')
+        self.assertIs(row['DefaultValue'], False)
+        self.assertNotIn('DefaultValuePad', row)
+        self.assertTrue(row['TOTKPhone'], 'visionOS keeps its existing heap policy')
+        group = specs[specs.index(row)-1]
+        self.assertEqual(group['Type'], 'PSGroupSpecifier')
+        self.assertIn('Experimental:', group['FooterText'])
+        self.assertIn('storage', group['FooterText'])
+        self.assertIn('Relaunch to apply.', group['FooterText'])
+        keys = [s['Key'] for s in specs if 'Key' in s]
+        self.assertEqual(len(keys), len(set(keys)))
+
     def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
         """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
         must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""

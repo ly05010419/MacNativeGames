@@ -51,6 +51,17 @@ def botw_pane(root):
     specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
                        'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
                        'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
+    # Opt-in: file-backed pages trade storage traffic for a reclaimable guest heap.
+    # The runtime already supports this flag; other games keep their own policy.
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_PHONE_FPS')
+    specs[at+1:at+1]=[
+        {'Type':'PSGroupSpecifier','TOTKPhone':True,'Title':'記憶體 · Memory',
+         'FooterText':('實驗功能：以暫存檔支援遊戲記憶體，讓系統回收閒置頁面。可能減少記憶體不足退出，但增加儲存空間使用與讀寫，可能造成載入停頓。重新啟動遊戲後生效 · '
+                       'Experimental: backs guest memory with a temporary file so the system can reclaim idle pages. '
+                       'May reduce memory-limit exits, but uses storage and adds I/O that can cause loading pauses. Relaunch to apply.')},
+        {'Type':'PSToggleSwitchSpecifier','Key':'TOTK_FILE_HEAP','TOTKPhone':True,
+         'Title':'記憶體相容模式 · Memory compatibility mode','DefaultValue':False},
+    ]
     return settings_without_totk(root)
 
 def bananza_pane(root):
