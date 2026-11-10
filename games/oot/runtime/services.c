@@ -244,6 +244,7 @@ static void heap_file_backing(void) {
  if(p!=heap)runtime_fail("map guest heap backing");
  fprintf(stderr,"[totk-mem] guest heap: shared scratch-file backing, %llu MiB address space; bytes retained on page-out, file removed on exit\n",(unsigned long long)(HEAP_CAP>>20));
 }
+static int guest_files_init(void);   /* iOS: the guest block in files (below memory_lock) */
 static void memory_init(void) {
  if(alias_space)return;
 #if TARGET_OS_IPHONE
@@ -290,7 +291,7 @@ static void memory_init(void) {
   if(!alias_space)alias_space=low_space+LOW_SIZE;
  }
 #endif
- heap=low_space+HEAP_OFF;heap_file_backing();
+ heap=low_space+HEAP_OFF;if(!guest_files_init())heap_file_backing();
  fprintf(stderr,"[totk] guest layout: alias %#llx+%#llx stack %#llx+%#llx heap %#llx (cap %#llx)\n",(unsigned long long)ALIAS_START,ALIAS_SIZE,(unsigned long long)STACK_START,STACK_SIZE,(unsigned long long)(uintptr_t)heap,HEAP_CAP);
  mem_classes_start();
 }
@@ -299,6 +300,175 @@ static void memory_init(void) {
  * The leading/trailing partial source pages cannot be isolated on this host.
  */
 static pthread_mutex_t memory_lock=PTHREAD_MUTEX_INITIALIZER;
+/* The game's memory in files on iOS (user 2026-11-10: "照 nxnative 做，只限 iOS"), after seedds/nxnative hle_svc.c and its
+   docs/reference/memory.md "iOS ends the app once the guest's touched pages reach its memory limit" (b54968e7). Every page
+   the game touches is anonymous memory, which phys_footprint charges and iOS cannot write out: on an iPhone 14 the guest
+   regions held 3,357 MB of a 4,095 MB limit at the title and the app was ended at 114 s (res-mem-4), and a smaller pool
+   reported to the game crashes it (7 and 5 GiB). In sparse files, unlinked at once and mapped shared over the reservation at
+   the same addresses, the pages are out of the footprint and the kernel writes them out when it needs the room. On when the
+   game's pool is larger than the room to the memory limit at start; OOT_GUEST_FILE=1 / 0 forces it on / off. 1 GB files: the
+   stall at the system's periodic flush grows with the file (nxnative: 148 ms with one 20 GB file, 4 ms with 1 GB files).
+   What the game gives back goes PROT_NONE and its blocks are punched out: the heap's at once, the alias region's by a sweep
+   every 10 s of the host pages given back over a whole interval (the game maps and unmaps about 0.5 GB of the same ranges a
+   second). A page that keeps its bytes (wired under a Metal no-copy buffer) is zeroed when it is opened again; one that reads
+   0 is left clean. A thread stops the game (exit 87) before the disk fills: under OOT_GUEST_FILE_MIN_FREE (2 GB) of free space
+   less what the dirty pages may still take, as a full disk leaves dirty pages that can never be written out. The Mac keeps
+   anonymous memory: there file pages the GPU had wired deadlocked against APFS's sync (heap_file_backing's note). */
+#if TARGET_OS_IPHONE
+#include <os/proc.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+enum { GF_MAX = 64 };
+static int gf_tab[GF_MAX],gf_n;static uint64_t gf_chunk,gf_block,gf_min_free=2ULL<<30;static _Atomic uint64_t gf_punched;
+static uint64_t alias_rel[ALIAS_SIZE_MAX/0x4000/64+1],alias_aged[ALIAS_SIZE_MAX/0x4000/64+1];   /* host pages given back since / before the last sweep */
+static _Atomic uint64_t alias_hw,heap_hw;   /* the highest alias offset mapped and the largest heap: what the dirty count reads */
+static char gf_dir[1024];
+static void gf_punch(uint64_t lo,uint64_t hi){
+ while(lo<hi){
+  uint64_t off=lo-(uintptr_t)low_space,k=off/gf_chunk,in=off-k*gf_chunk,fsz=(int)k==gf_n-1?gf_block-k*gf_chunk:gf_chunk,len=hi-lo<fsz-in?hi-lo:fsz-in;
+  fpunchhole_t ph;memset(&ph,0,sizeof ph);ph.fp_offset=(off_t)in;ph.fp_length=(off_t)len;
+  if(!fcntl(gf_tab[k],F_PUNCHHOLE,&ph))atomic_fetch_add(&gf_punched,len);
+  else{static _Atomic int nred;if(atomic_fetch_add(&nred,1)<4)fprintf(stderr,"[totk-mem] 【红】guest file: F_PUNCHHOLE file %llu +%#llx+%#llx failed (errno %d): the range keeps its disk blocks\n",(unsigned long long)k,(unsigned long long)in,(unsigned long long)len,errno);}
+  lo+=len;
+ }
+}
+/* Zero the 4 KiB pages of [a, a+n) that do not read 0: a hole reads 0 and stays clean, where a memset would dirty it */
+static void gf_zero(uint8_t *a,uint64_t n){
+ for(uint8_t *e=a+n;a<e;a+=4096){uint64_t any=0;
+  for(size_t i=0;!any&&i<4096;i+=64){uint64_t w[8];memcpy(w,a+i,sizeof w);any=w[0]|w[1]|w[2]|w[3]|w[4]|w[5]|w[6]|w[7];}
+  if(any)memset(a,0,4096);}
+}
+/* Punch the alias host pages given back before the last sweep and not mapped again since, then age the ones given back since.
+   Under memory_lock, so no MapPhysicalMemory opens a page while it is punched */
+static void gf_sweep(void){
+ pthread_mutex_lock(&memory_lock);
+ for(size_t w=0;w<sizeof alias_aged/sizeof alias_aged[0];w++){uint64_t a=alias_aged[w];
+  while(a){unsigned b=(unsigned)__builtin_ctzll(a),e=b;while(e<64&&(a>>e&1))e++;
+   gf_punch(ALIAS_START+((uint64_t)w*64+b)*0x4000,ALIAS_START+((uint64_t)w*64+e)*0x4000);a&=e==64?0:~0ULL<<e;}
+  alias_rel[w]&=~alias_aged[w];alias_aged[w]=alias_rel[w];}
+ pthread_mutex_unlock(&memory_lock);
+}
+/* The disk's free space with what the system can purge (caches, offloadable data): -1 when the query fails */
+static double gf_free_important(void){
+ CFURLRef u=CFURLCreateFromFileSystemRepresentation(NULL,(const UInt8 *)gf_dir,(CFIndex)strlen(gf_dir),true);double r=-1;CFTypeRef v=NULL;int64_t x;
+ if(!u)return r;
+ if(CFURLCopyResourcePropertyForKey(u,kCFURLVolumeAvailableCapacityForImportantUsageKey,&v,NULL)&&v){
+  if(CFGetTypeID(v)==CFNumberGetTypeID()&&CFNumberGetValue((CFNumberRef)v,kCFNumberSInt64Type,&x)&&x>=0)r=(double)x;CFRelease(v);}
+ CFRelease(u);return r;
+}
+/* The files' modified pages (mincore over what the game has opened): what the disk may still have to take; -1 on failure */
+static double gf_dirty(char *vec){
+ uint64_t all=0,range[2][2]={{(uintptr_t)low_space,HEAP_OFF+atomic_load(&heap_hw)},{ALIAS_START,atomic_load(&alias_hw)}};
+ for(int i=0;i<2;i++){uint64_t n=(range[i][1]+0x3fff)/0x4000;if(!n)continue;
+  if(mincore((void *)(uintptr_t)range[i][0],(size_t)(n*0x4000),vec))return -1;
+  for(uint64_t j=0;j<n;j++)all+=(vec[j]&MINCORE_MODIFIED)!=0;}
+ return (double)all*0x4000;
+}
+/* Every second the disk's room less the dirty pages (counted every 10 s), as nxnative's guest_file_thread: under the minimum
+   the free space with what the system can purge is asked (at most every 10 s), and the game goes on on that while the disk's
+   own room stays above half the minimum. Every 10 s the alias sweep and one line, with the page-ins (thrashing shows there) */
+static void *gf_thread(void *arg){
+ (void)arg;const double G=1073741824.0;char *vec=malloc((size_t)(gf_block/0x4000)+1);double dirty=-1,imp=-1,count_ms=0;unsigned imp_at=0;int lines=0,purge_told=0;
+ pthread_set_qos_class_self_np(QOS_CLASS_UTILITY,0);
+ for(unsigned sec=1;;sec++){
+  sleep(1);
+  if(sec%10==0)gf_sweep();
+  if(sec%10==1&&vec){uint64_t t0=clock_gettime_nsec_np(CLOCK_MONOTONIC);dirty=gf_dirty(vec);count_ms=(double)(clock_gettime_nsec_np(CLOCK_MONOTONIC)-t0)/1e6;}
+  struct statfs fs;int ok=!fstatfs(gf_tab[0],&fs);double avail=ok?(double)fs.f_bavail*fs.f_bsize:-1,need=dirty>0?dirty:0,room=avail-need;
+  if(ok&&gf_min_free&&room<(double)gf_min_free){
+   if(imp<0||sec-imp_at>=10){imp=gf_free_important();imp_at=sec;}
+   if(room<gf_min_free/2.0||imp-need<(double)gf_min_free){
+    fprintf(stderr,"[totk-mem] 【红】guest file: %.1f GB free on its disk (%.1f with what the system can purge), %.1f GB of it still to be taken by dirty pages: under %.1f GB left, stopping the game\n",avail/G,imp/G,need/G,gf_min_free/G);
+    _exit(87);}
+   if(!purge_told){purge_told=1;fprintf(stderr,"[totk-mem] guest file: %.1f GB free on its disk, less %.1f GB for dirty pages, is under %.1f GB, but %.1f GB with what the system can purge: going on (stopping under %.1f GB of it)\n",avail/G,need/G,gf_min_free/G,imp/G,gf_min_free/2.0/G);}
+  }
+  if(sec%10||lines>=360)continue;
+  double held=0;struct stat st;for(int i=0;i<gf_n;i++)if(!fstat(gf_tab[i],&st))held+=(double)st.st_blocks*512.0;
+  task_vm_info_data_t vi;memset(&vi,0,sizeof vi);mach_msg_type_number_t n=TASK_VM_INFO_COUNT;if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&vi,&n)!=KERN_SUCCESS)memset(&vi,0,sizeof vi);
+  struct rusage ru;memset(&ru,0,sizeof ru);getrusage(RUSAGE_SELF,&ru);
+  lines++;
+  fprintf(stderr,"[totk-mem] %sguest file: %.2f GB on disk, %.2f GB dirty in memory (%.0f ms to count), %.2f GB given back as holes; page-ins %ld, block reads %ld; footprint %.2f GB (internal %.2f, compressed %.2f, peak %.2f), file pages mapped %.2f GB; %.1f GB free on its disk\n",
+   gf_min_free&&ok&&avail-need<gf_min_free+G?"【红】":"",held/G,need/G,count_ms,atomic_load(&gf_punched)/G,(long)ru.ru_majflt,(long)ru.ru_inblock,
+   vi.phys_footprint/G,vi.internal/G,vi.compressed/G,vi.ledger_phys_footprint_peak/G,vi.external/G,avail/G);
+ }
+}
+/* The iOS reservation (stack, heap, then the alias region, memory_init) in GF files: 1 when the guest is in them */
+static int guest_files_init(void){
+ const double G=1073741824.0;const char *e=getenv("OOT_GUEST_FILE"),*mf=getenv("OOT_GUEST_FILE_MIN_FREE");
+ uint64_t room=os_proc_available_memory();int want=e&&*e?atoi(e)>0:room&&APP_POOL>room;
+ fprintf(stderr,"[totk-mem] guest memory: pool %.2f GB, room to the memory limit %.2f GB, OOT_GUEST_FILE %s: %s\n",APP_POOL/G,room/G,e&&*e?e:"unset",want?"in files":"anonymous");
+ if(!want)return 0;
+ if(mf&&*mf)gf_min_free=strtoull(mf,NULL,0);
+ if(ALIAS_START!=(uintptr_t)low_space+LOW_SIZE){fprintf(stderr,"[totk-mem] 【红】guest memory: anonymous (the alias region does not follow the heap region)\n");return 0;}
+ gf_block=LOW_SIZE+ALIAS_SIZE;gf_chunk=1ULL<<30;
+ if((gf_block+gf_chunk-1)/gf_chunk>GF_MAX)gf_chunk=((gf_block+GF_MAX-1)/GF_MAX+0x3fff)&~0x3fffULL;
+ int n=(int)((gf_block+gf_chunk-1)/gf_chunk),made=0,ok=1;char why[600]="";struct statfs fs;
+ /* the app's own temporary folder (in its data container, on the phone's one APFS volume): what nxnative uses */
+ if(!confstr(_CS_DARWIN_USER_TEMP_DIR,gf_dir,sizeof gf_dir)||!gf_dir[0]){const char *tmp=getenv("TMPDIR");snprintf(gf_dir,sizeof gf_dir,"%s",tmp&&*tmp?tmp:"/tmp");}
+ const char *sep=gf_dir[strlen(gf_dir)-1]=='/'?"":"/";
+ for(int k=0;ok&&k<n;k++){
+  char path[PATH_MAX];snprintf(path,sizeof path,"%s%sguest-%d-%d.mem",gf_dir,sep,(int)getpid(),k);unlink(path);
+  const int fl=O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC;
+  int fd=open_dprotected_np(path,fl,3,0,0600);   /* protection class C: readable and writable from the first unlock on, also while locked */
+  if(fd<0&&errno!=EEXIST)fd=open(path,fl,0600);
+  if(fd<0){snprintf(why,sizeof why,"cannot create %s, errno %d",path,errno);ok=0;break;}
+  gf_tab[made++]=fd;
+  if(unlink(path)){snprintf(why,sizeof why,"cannot unlink %s, errno %d",path,errno);ok=0;break;}
+  int cls=fcntl(fd,F_GETPROTECTIONCLASS);if(cls!=3&&cls!=4){fcntl(fd,F_SETPROTECTIONCLASS,3);cls=fcntl(fd,F_GETPROTECTIONCLASS);}
+  if(cls!=3&&cls!=4){snprintf(why,sizeof why,"protection class %d, not C (3) or D (4)",cls);ok=0;}
+ }
+ if(ok&&fstatfs(gf_tab[0],&fs)){snprintf(why,sizeof why,"cannot read the disk's free space, errno %d",errno);ok=0;}
+ if(ok){double avail=(double)fs.f_bavail*fs.f_bsize,imp=avail<gf_min_free?gf_free_important():-1;
+  if(avail<gf_min_free&&imp<(double)gf_min_free){snprintf(why,sizeof why,"%.1f GB free on the disk (%.1f with what the system can purge), under %.1f",avail/G,imp/G,gf_min_free/G);ok=0;}}
+ for(int k=0;ok&&k<n;k++){uint64_t sz=k==n-1?gf_block-(uint64_t)k*gf_chunk:gf_chunk;uint8_t *at=low_space+(uint64_t)k*gf_chunk;
+  if(ftruncate(gf_tab[k],(off_t)sz)){snprintf(why,sizeof why,"cannot size file %d, errno %d",k,errno);ok=0;}
+  else if(mmap(at,(size_t)sz,PROT_NONE,MAP_SHARED|MAP_FIXED,gf_tab[k],0)!=at){snprintf(why,sizeof why,"cannot map file %d, errno %d",k,errno);ok=0;}}
+ if(!ok){
+  for(int k=0;k<made;k++)close(gf_tab[k]);
+  if(mmap(low_space,(size_t)gf_block,PROT_NONE,MAP_PRIVATE|MAP_ANON|MAP_FIXED,-1,0)!=(void *)low_space)runtime_fail("reserve the guest block again after the guest files failed");
+  fprintf(stderr,"[totk-mem] 【红】guest memory: anonymous (guest files: %s)\n",why);return 0;}
+ gf_n=n;
+ double avail=(double)fs.f_bavail*fs.f_bsize,imp=gf_free_important(),most=avail>imp?avail:imp;
+ fprintf(stderr,"[totk-mem] guest memory: %d files of %.2f GB in %s (unlinked, sparse, shared, protection class C), %.2f GB in all, on the %s volume, %.1f GB free on it (%.1f with what the system can purge); holes punched where the game gives memory back\n",
+  n,gf_chunk/G,gf_dir,gf_block/G,fs.f_fstypename,avail/G,imp/G);
+ /* the files take up to what the game touches: at most about its pool while what it gives back is punched out */
+ if(gf_min_free&&most<(double)(APP_POOL+gf_min_free))fprintf(stderr,"[totk-mem] 【红】guest file: the files may take up to the memory pool, %.1f GB, and %.1f GB is free: the game is stopped if under %.1f GB is left\n",APP_POOL/G,most/G,gf_min_free/G);
+ if(strcmp(fs.f_fstypename,"apfs")||!(fs.f_flags&MNT_LOCAL))fprintf(stderr,"[totk-mem] 【红】guest file: not on a local APFS volume, where it may not be sparse, or be slow\n");
+ pthread_t t;if(!pthread_create(&t,NULL,gf_thread,NULL))pthread_detach(t);else fprintf(stderr,"[totk-mem] 【红】guest file: no thread to watch the disk (nothing stops the game when its disk fills)\n");
+ return 1;
+}
+/* alias_map gives a whole host page back: with the files it goes PROT_NONE and is marked for the sweep, and keeps its bytes
+   until it is punched, so alias_stale stays set for its pages; an anonymous mapping over it would turn it back into memory
+   the footprint charges as soon as the game maps it again. 1 when handled here */
+static int gf_alias_release(uint64_t page){
+ if(!gf_n)return 0;
+ if(mprotect((void *)(uintptr_t)page,0x4000,PROT_NONE))runtime_fail("decommit physical alias page");
+ uint64_t h=(page-ALIAS_START)/0x4000;alias_rel[h>>6]|=1ULL<<(h&63);return 1;
+}
+/* alias_map opens host pages [lo, hi) again: in use, not to be punched; and the dirty count reads up to them */
+static void gf_alias_open(uint64_t lo,uint64_t hi){
+ if(!gf_n)return;
+ for(uint64_t h=(lo-ALIAS_START)/0x4000,e=(hi-ALIAS_START)/0x4000;h<e;h++){uint64_t m=~(1ULL<<(h&63));alias_rel[h>>6]&=m;alias_aged[h>>6]&=m;}
+ if(hi-ALIAS_START>atomic_load(&alias_hw))atomic_store(&alias_hw,hi-ALIAS_START);
+}
+/* A 4 KiB alias page mapped again over old bytes reads 0, as a fresh pool page: over the files only when it does not already */
+static void gf_alias_zero(void *a){if(gf_n)gf_zero(a,4096);else memset(a,0,4096);}
+/* SetHeapSize: what the heap gives back is punched out at once; what it grows back over reads 0 again (a wired page keeps its
+   bytes through the punch) */
+static void gf_heap_resized(uint64_t was,uint64_t now){
+ if(!gf_n)return;
+ if(now<was){gf_punch((uintptr_t)heap+now,(uintptr_t)heap+was);return;}
+ uint64_t hw=atomic_load(&heap_hw);
+ if(now>was&&hw>was)gf_zero(heap+was,(now<hw?now:hw)-was);
+ if(now>hw)atomic_store(&heap_hw,now);
+}
+#else
+static int guest_files_init(void){return 0;}   /* the Mac keeps anonymous guest memory */
+static int gf_alias_release(uint64_t page){(void)page;return 0;}
+static void gf_alias_open(uint64_t lo,uint64_t hi){(void)lo;(void)hi;}
+static void gf_alias_zero(void *a){memset(a,0,4096);}
+static void gf_heap_resized(uint64_t was,uint64_t now){(void)was;(void)now;}
+#endif
 typedef struct{uint64_t dst,src,size;} StackMap;static StackMap stack_maps[4096];static unsigned nstack_maps;
 static int overlaps(uint64_t a,uint64_t n,uint64_t b,uint64_t m){return a<b+m&&b<a+n;}
 static uint64_t stack_move(int unmap,uint64_t dst,uint64_t src,uint64_t size){
@@ -350,13 +520,15 @@ static uint64_t alias_map(int unmap,uint64_t addr,uint64_t size){
   uint64_t released=0;for(unsigned i=0;i<count;i++)if(alias_pages[first+i]){alias_pages[first+i]=0;alias_stale[first+i]=1;released+=4096;}alias_bytes-=released;
   uint64_t low=addr&~0x3fffULL,high=(addr+size+0x3fff)&~0x3fffULL;
   for(uint64_t page=low;page<high;page+=0x4000){unsigned p=(unsigned)((page-start)/4096);if(!alias_pages[p]&&!alias_pages[p+1]&&!alias_pages[p+2]&&!alias_pages[p+3]){
+   if(gf_alias_release(page))continue;   /* iOS, the game in files: PROT_NONE, punched by the sweep */
    if(mmap((void *)page,0x4000,PROT_NONE,MAP_FIXED|MAP_PRIVATE|MAP_ANON,-1,0)!=(void *)page)runtime_fail("decommit physical alias page");
    memset(alias_stale+p,0,4);}}
  }else if(fresh){
   uint64_t low=addr&~0x3fffULL,high=(addr+size+0x3fff)&~0x3fffULL;
   if(mprotect((void *)low,high-low,PROT_READ|PROT_WRITE))runtime_fail("commit physical alias pages");
+  gf_alias_open(low,high);
   for(unsigned i=0;i<count;i++)if(!alias_pages[first+i]){   /* new pages only: zero-filled like fresh pool pages */
-   if(alias_stale[first+i]){memset((void *)(addr+(uint64_t)i*4096),0,4096);alias_stale[first+i]=0;}
+   if(alias_stale[first+i]){gf_alias_zero((void *)(addr+(uint64_t)i*4096));alias_stale[first+i]=0;}
    alias_pages[first+i]=1;}
   alias_bytes+=fresh;
  }
@@ -616,7 +788,7 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  case 0x01:{size_t size=r[1];if(getenv("TOTK_MEM_LOG"))fprintf(stderr,"[totk-mem] SetHeapSize %#zx (image=%#llx alias=%#llx pool=%#llx)\n",size,(unsigned long long)runtime_image_bytes(),(unsigned long long)alias_bytes,(unsigned long long)APP_POOL);
   if(size>HEAP_CAP||size%0x200000||size+runtime_image_bytes()>APP_POOL){r[0]=0xd401;return r[0];}
   if(size>heap_size&&mprotect(heap+heap_size,size-heap_size,PROT_READ|PROT_WRITE))runtime_fail("commit heap");
-  if(size<heap_size&&mprotect(heap+size,heap_size-size,PROT_NONE))runtime_fail("decommit heap");heap_size=size;r[0]=0;r[1]=(uintptr_t)heap;return 0;}
+  if(size<heap_size&&mprotect(heap+size,heap_size-size,PROT_NONE))runtime_fail("decommit heap");gf_heap_resized(heap_size,size);heap_size=size;r[0]=0;r[1]=(uintptr_t)heap;return 0;}
  case 0x0c: r[0]=0;r[1]=44;return 0;
  case 0x0e: r[0]=0;r[1]=0;r[2]=15;return 0;
  case 0x25: {uint64_t id;pthread_threadid_np(NULL,&id);r[0]=0;r[1]=id;return 0;}
