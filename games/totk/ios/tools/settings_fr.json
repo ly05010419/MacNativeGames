@@ -74,5 +74,8 @@
   "Folder": "Dossier",
   "Choose folder": "Choisir un dossier",
   "Stop syncing": "Arrêter la synchronisation",
-  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil"
+  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil",
+  "Shaders": "Shaders",
+  "Contribute shaders automatically": "Partager les shaders automatiquement",
+  "When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only": "Activé, le jeu partage les shaders absents de la liste commune : uniquement des identifiants, des versions, le modèle de l'appareil et un numéro aléatoire"
 }
