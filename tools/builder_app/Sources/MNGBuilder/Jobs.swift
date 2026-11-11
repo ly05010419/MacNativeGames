@@ -1,0 +1,105 @@
+import Foundation
+
+/// Where the repository and its Python are, and how a job of tools/builder_jobs is started. The window holds no rule:
+/// it runs `python -m tools.builder_jobs <job>` in the repository and shows what it prints.
+enum Paths {
+    /// The checkout this app was made from (make_app.py writes MNGRepo into Info.plist).
+    static var repo: URL? {
+        if let path = ProcessInfo.processInfo.environment["MNG_REPO"] { return URL(fileURLWithPath: path) }
+        guard let path = Bundle.main.object(forInfoDictionaryKey: "MNGRepo") as? String else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    /// The Python the app carries (Contents/Resources/python), else the one make_app.py recorded, else Homebrew's.
+    static var python: URL {
+        let fm = FileManager.default
+        if let res = Bundle.main.resourceURL {
+            let own = res.appendingPathComponent("python/bin/python3.14")
+            if fm.isExecutableFile(atPath: own.path) { return own }
+        }
+        if let rec = Bundle.main.object(forInfoDictionaryKey: "MNGPython") as? String, fm.isExecutableFile(atPath: rec) {
+            return URL(fileURLWithPath: rec)
+        }
+        return URL(fileURLWithPath: "/opt/homebrew/bin/python3.14")
+    }
+
+    static let support = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/MacNativeGames/Builder")
+}
+
+/// One running job: its output lines come back on the main thread, one call per line, then `ended` with the exit code.
+final class Job {
+    private let process = Process()
+    private var buffer = Data()
+
+    init(_ arguments: [String], onLine: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws {
+        guard let repo = Paths.repo else { throw JobError.noRepo }
+        process.executableURL = Paths.python
+        process.arguments = ["-u", "-m", "tools.builder_jobs"] + arguments
+        process.currentDirectoryURL = repo
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = repo.path
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["MNG_LANG"] = T.zh ? "zh" : "en"
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard let self else { return }
+            if data.isEmpty { handle.readabilityHandler = nil; return }
+            self.buffer.append(data)
+            while let nl = self.buffer.firstIndex(of: 0x0A) {
+                let line = String(decoding: self.buffer[self.buffer.startIndex..<nl], as: UTF8.self)
+                self.buffer.removeSubrange(self.buffer.startIndex...nl)
+                DispatchQueue.main.async { onLine(line) }
+            }
+        }
+        process.terminationHandler = { p in
+            // the last lines are read by the handler above before the pipe closes; give it that moment
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { ended(p.terminationStatus) }
+        }
+        try process.run()
+    }
+
+    /// The job forwards it to the build's process group (SIGINT, then SIGKILL 10 s later).
+    func cancel() { if process.isRunning { process.interrupt() } }
+
+    /// Runs a job to its end and returns everything it printed (for the one-object jobs: classify, checks).
+    static func collect(_ arguments: [String]) async throws -> Data {
+        guard let repo = Paths.repo else { throw JobError.noRepo }
+        let p = Process()
+        p.executableURL = Paths.python
+        p.arguments = ["-m", "tools.builder_jobs"] + arguments
+        p.currentDirectoryURL = repo
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = repo.path
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["MNG_LANG"] = T.zh ? "zh" : "en"
+        p.environment = env
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        return try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global().async {
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let problem = err.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                if p.terminationStatus == 0 { cont.resume(returning: data) }
+                else { cont.resume(throwing: JobError.failed(String(decoding: problem, as: UTF8.self))) }
+            }
+        }
+    }
+}
+
+enum JobError: LocalizedError {
+    case noRepo, failed(String)
+    var errorDescription: String? {
+        switch self {
+        case .noRepo: return T.noRepo
+        case .failed(let text): return text.split(separator: "\n").suffix(8).joined(separator: "\n")
+        }
+    }
+}
