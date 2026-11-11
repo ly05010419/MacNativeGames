@@ -35,14 +35,18 @@ class VisionOS(unittest.TestCase):
             seed = Path(d)
             (seed/'a_b.metallib').write_bytes(b'compiled')
             manifest = {'ios_source_manifest_sha256': 'source', 'ios_metallibs': 1,
-                        'ios_metal_flags': ' '.join(build_ipa.METAL_FLAGS)}
+                        'ios_metal_flags': build_ipa.seed_flags('iphoneos')}
             def check(sdk): return build_ipa.seed_reusable(seed, 'source', ['a_b.metal'], sdk)
             for origin in (None, 'iphoneos', 'xros'):
                 with self.subTest(origin=origin):
                     if origin: manifest['ios_sdk'] = origin
+                    manifest['ios_metal_flags'] = build_ipa.seed_flags(origin or 'iphoneos')
                     (seed/'seed-manifest.json').write_text(json.dumps(manifest))
                     self.assertEqual(check('iphoneos'), origin != 'xros')
                     self.assertEqual(check('xros'), origin == 'xros')
+            manifest['ios_sdk'] = 'iphoneos'; manifest['ios_metal_flags'] = ' '.join(build_ipa.METAL_FLAGS)
+            (seed/'seed-manifest.json').write_text(json.dumps(manifest))
+            self.assertFalse(check('iphoneos'))   # libraries built before the target OS was set (#1845) are built again
             (seed/'a_b.metallib').unlink()
             self.assertFalse(check('xros'))
 
