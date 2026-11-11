@@ -4507,6 +4507,14 @@ static id<MTLBuffer> atom_scratch(const tex_t *t) {
 }
 // Snapshot substitution for same-pass feedback sampling (registered by fb_prepare, used by encode_args; see the notes before draw)
 static uint64_t g_draw_seq, g_fb_seq, g_fb_count; static int g_fb_n, g_fb_rebind;
+// The scene target's size as last observed, width << 16 | height, and when (monotonic ns): the attachment the profile's feedback_snap draws read (Age of Calamity:
+// its 3D scene target). The settings panel shows it as the game's picture, current while fresh and as last seen otherwise. *age_s is -1 before the first snapshot,
+// and stays so while DM_NVN_FB_SNAP=0 turns the snapshots off
+static _Atomic uint32_t g_fb_scene_wh; static _Atomic uint64_t g_fb_scene_ns;
+void dm_gfx_scene_size(int *w, int *h, double *age_s) {
+    uint32_t v = atomic_load(&g_fb_scene_wh); uint64_t t = atomic_load(&g_fb_scene_ns);
+    *w = (int)(v >> 16); *h = (int)(v & 0xffff); *age_s = t ? (double)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t) / 1e9 : -1;
+}
 static __unsafe_unretained id<MTLTexture> g_fb_src[4]; static __strong id<MTLTexture> g_fb_use[4]; static uint64_t g_fb_rid[4];
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen;
@@ -4994,10 +5002,133 @@ static int attr_read(int a, const p_draw *dw, const p_draw_idx *di, float P[64][
     }
     return 0;
 }
+// Aspect ratio (Age of Calamity's "Aspect ratio" row; the host calls dm_gfx_set_aspect): the game keeps its 16:9 canvas, the
+// present stretches it to the chosen shape (present_fit) and the cameras see that shape (the game's patches.py), so the UI drawn
+// into the window texture would come out stretched too. Its draws are squeezed back about the canvas centre instead, as in TOTK
+// (totk_ui_squeeze.h): flattened below 16:9 (16:10: the HUD in the middle 16:9), narrowed above it. A draw with a quad that covers
+// the whole canvas keeps it (the scene's scale pass, fades, menu backdrops), so nothing leaves bands. 0 = the game's own ratio:
+// nothing here changes anything (Link's Awakening never sets it).
+static _Atomic uint32_t g_aspect_bits;
+void dm_gfx_set_aspect(float r) { uint32_t b; memcpy(&b, &r, 4); atomic_store(&g_aspect_bits, b); }
+static double dm_aspect(void) { uint32_t b = atomic_load_explicit(&g_aspect_bits, memory_order_relaxed); float r; memcpy(&r, &b, 4); return r > 0.1f && r < 10 ? r : 0; }
+// Attribute a of vertex k of this draw (ib: its 16 / 32-bit indices, CPU-visible; NULL for a non-indexed draw), as attr_read reads it. 0 on success.
+static int ar_vertex(int a, const p_draw *dw, const p_draw_idx *di, const uint8_t *ib, int k, float v[4]) {
+    if (a < 0 || a >= S.nattr || S.attr[a].stream >= 16) return 7;
+    va_st at = S.attr[a]; vs_st sm = S.stream[at.stream]; NVNbufferRange vb = S.vbuf[at.stream];
+    MTLVertexFormat vf = vfmt(at.fmt);
+    int nc = vf == MTLVertexFormatFloat ? 1 : vf == MTLVertexFormatFloat2 ? 2 : vf == MTLVertexFormatFloat3 ? 3 : vf == MTLVertexFormatFloat4 ? 4 : 0, half = 0;
+    if (!nc) { nc = vf == MTLVertexFormatHalf ? 1 : vf == MTLVertexFormatHalf2 ? 2 : vf == MTLVertexFormatHalf3 ? 3 : vf == MTLVertexFormatHalf4 ? 4 : 0; half = nc > 0; }
+    if (!nc || !sm.stride || sm.divisor || !vb.address) return 8;
+    int esz = half ? 2 : 4;
+    int64_t vid = dw ? (int64_t)dw->first + k : (di->itype == 1 ? (int64_t)((const uint16_t *)ib)[k] : (int64_t)((const uint32_t *)ib)[k]) + di->base_vertex;
+    uint64_t off = (uint64_t)vid * sm.stride + at.offset;
+    if (vid < 0 || off + (uint64_t)esz * nc > vb.size) return 9;
+    if (pend_hits(vb.address + off, (uint64_t)esz * nc)) return 10;
+    void *mb; uint64_t mo; const uint8_t *base;
+    if (!mtl_addr(vb.address + off, (uint64_t)esz * nc, &mb, &mo) || !(base = [(__bridge id<MTLBuffer>)mb contents])) return 10;
+    v[0] = v[1] = v[2] = 0; v[3] = 1;
+    if (half) for (int c = 0; c < nc; c++) { __fp16 h; memcpy(&h, base + mo + 2 * c, 2); v[c] = (float)h; }
+    else memcpy(v, base + mo, 4 * nc);
+    return 0;
+}
+// Whether a quad of this draw covers the whole canvas, from the game's two UI vertex shaders read on the CPU:
+//   ed6a148ff8a04d3c (KTGL's 2D quads: the scene's scale pass, minimap markers): ndc = position.xy * c0.xy + c0.zw (cbuf 0 vec 0)
+//   23cc425cbc9f2d26 (the layout panes, batched): pane i = trunc(attribute 0 .x); its rows B, A, C at cbuf floats 24 / 28 / 32 + 12 i
+//   take the position (attribute 2, xyzw) to (B.v, A.v, C.v, w), projected by the columns at vec 2..5.
+// 1: one of its quads (6 indices of a triangle list) covers the canvas; 0: none does; -1: cannot tell (another shader, an
+// indirect draw, data written on the GPU in this submission or out of reach). *why: what was decided, for the diagnostic log.
+static int ar_covers(NvProg *pr, const p_draw *dw, const p_draw_idx *di, float box[4], int *edge_only, const char **why) {
+    *why = "other shader"; box[0] = box[2] = 9; box[1] = box[3] = -9; *edge_only = 1;
+    if (!pr || !pr->sh[0]) return -1;
+    // The pane family, read from each one's MSL: pane i = trunc(attribute 0 .x), position attribute 2 (23cc425c, its one-pane
+    // e275b545, cfa997bd, 6f444fbc: more inputs, the same position); c2b68335: no pane index, pane 0's rows, position attribute 1.
+    const char *key = pr->sh[0]->key; int pos_attr = 2, idx_attr = 0;
+    int kind = !strncmp(key, "ed6a148ff8a04d3c", 16) ? 1 : !strncmp(key, "23cc425cbc9f2d26", 16) || !strncmp(key, "e275b545afb53959", 16) ||
+               !strncmp(key, "cfa997bd39db7a25", 16) || !strncmp(key, "6f444fbccdc31d3d", 16) ? 2 : !strncmp(key, "c2b6833579e37109", 16) ? 3 : 0;
+    if (kind == 3) { kind = 2; pos_attr = 1; idx_attr = -1; }
+    if (!kind) return -1;
+    static char reason[48]; *why = reason;
+#define AR_NO(code) do { snprintf(reason, sizeof reason, "unreadable (%d)", code); return -1; } while (0)
+    if ((dw && dw->ind) || (di && di->ind)) AR_NO(1);
+    int n = dw ? dw->count : di->count, prim = dw ? dw->prim : di->prim;
+    if (prim != NVN_DRAW_PRIMITIVE_TRIANGLES || n < 6 || n > 3072 || (dw && dw->first < 0) || (di && (di->itype < 1 || di->itype > 2))) AR_NO(2);
+    const p_bind_buf *u = &S.ubo[0][0]; void *m; uint64_t o; const uint8_t *cbb;
+    if (!u->addr || u->size < 16 || u->size > 65536) AR_NO(3);
+    if (pend_hits(u->addr, u->size)) AR_NO(4);
+    if (!mtl_addr(u->addr, u->size, &m, &o) || !(cbb = [(__bridge id<MTLBuffer>)m contents])) AR_NO(5);
+    const float *c = (const float *)(cbb + o); uint64_t nf = u->size / 4;
+    if (kind == 2 && nf < 36) AR_NO(3);
+    const uint8_t *ib = NULL; int isz = di ? (di->itype == 1 ? 2 : 4) : 0;
+    if (di) { if (pend_hits(di->ibuf, (uint64_t)n * isz)) AR_NO(6); void *im; uint64_t io; if (!mtl_addr(di->ibuf, (uint64_t)n * isz, &im, &io) || !(ib = [(__bridge id<MTLBuffer>)im contents])) AR_NO(6); ib += io; }
+    int covers = 0;
+    for (int q = 0; q + 6 <= n; q += 6) {
+        float x0 = 9, x1 = -9, y0 = 9, y1 = -9;
+        for (int k = q; k < q + 6; k++) {
+            float p[4], x, y; int e;
+            if (kind == 1) { if ((e = ar_vertex(0, dw, di, ib, k, p))) AR_NO(10 + e); x = p[0] * c[0] + c[2]; y = p[1] * c[1] + c[3]; }
+            else {
+                float id[4] = {0, 0, 0, 1}; if ((idx_attr >= 0 && (e = ar_vertex(idx_attr, dw, di, ib, k, id))) || (e = ar_vertex(pos_attr, dw, di, ib, k, p))) AR_NO(10 + e);
+                int64_t i = (int64_t)truncf(id[0]); if (i < 0 || 36 + 12 * (uint64_t)i > nf) AR_NO(30);
+                const float *r = c + 24 + 12 * i; float b = r[0] * p[0] + r[1] * p[1] + r[2] * p[2] + r[3] * p[3],
+                    a = r[4] * p[0] + r[5] * p[1] + r[6] * p[2] + r[7] * p[3], cc = r[8] * p[0] + r[9] * p[1] + r[10] * p[2] + r[11] * p[3];
+                float cx = b * c[8] + a * c[12] + cc * c[16] + p[3] * c[20], cy = b * c[9] + a * c[13] + cc * c[17] + p[3] * c[21],
+                      cw = b * c[11] + a * c[15] + cc * c[19] + p[3] * c[23];
+                if (!(fabsf(cw) > 1e-6f)) AR_NO(31);
+                x = cx / cw; y = cy / cw;
+            }
+            x0 = fminf(x0, x); x1 = fmaxf(x1, x); y0 = fminf(y0, y); y1 = fmaxf(y1, y);
+        }
+        box[0] = fminf(box[0], x0); box[1] = fmaxf(box[1], x1); box[2] = fminf(box[2], y0); box[3] = fmaxf(box[3], y1);
+        // a frame's quad lies on the canvas and on one of its edges; one off every edge, or one running past the canvas (a map piece
+        // that happens to end on an edge while it scrolls), is content
+        if (!(fabsf(x0 + 1) < 0.01f || fabsf(x1 - 1) < 0.01f || fabsf(y0 + 1) < 0.01f || fabsf(y1 - 1) < 0.01f) ||
+            x0 < -1.01f || x1 > 1.01f || y0 < -1.01f || y1 > 1.01f) *edge_only = 0;
+        // a backdrop is the canvas itself (or a hair larger); a map zoomed in past the screen is not one: it is squeezed with its other tiles
+        if (x0 <= -0.995f && x1 >= 0.995f && y0 <= -0.995f && y1 >= 0.995f && x0 >= -1.05f && x1 <= 1.05f && y0 >= -1.05f && y1 <= 1.05f) covers = 1;
+    }
+#undef AR_NO
+    snprintf(reason, sizeof reason, covers ? "covers the canvas" : "box %.2f..%.2f x %.2f..%.2f%s", box[0], box[1], box[2], box[3], *edge_only ? " edge" : "");
+    return covers;
+}
+// The squeeze of this draw: *ux narrows it, *uy flattens it, both 1 when it is not drawn into the window texture, keeps the
+// canvas or the ratio is the game's own. DM_AOC_AR_LOG=<frames>: one [ar] line per window-texture draw for that many frames.
+// *ax / *ay: the line kept in place, in canvas pixels (always the canvas centre). A frame as tall as the canvas keeps its height,
+// one as wide keeps its width.
+static void ar_squeeze(NvProg *pr, const p_draw *dw, const p_draw_idx *di, double tw, double th, double *ux, double *uy, double *ax, double *ay) {
+    *ux = *uy = 1; *ax = tw / 2; *ay = th / 2;
+    double ar = dm_aspect();
+    if (!ar || R.rt.n < 1 || !R.rt.color[0] || !xv_present(R.rt.color[0]->serial)) return;
+    double f = ar / (16.0 / 9.0);
+    if (f > 1.001) *ux = f; else if (f < 0.999) *uy = 1 / f; else return;
+    const char *why; float b[4]; int edge_only; int cov = ar_covers(pr, dw, di, b, &edge_only, &why);
+    if (cov < 0 && !(S.color.blend_en & 1)) { cov = 1; why = "opaque, not readable"; }   // an opaque draw that cannot be read (as the scale pass would be) keeps the canvas: squeezed, it would leave bands
+    if (cov == 1) *ux = *uy = 1;
+    else if (cov == 0 && edge_only) {
+        // A frame (every quad of the draw lies on the canvas and on one of its edges) that is exactly as tall as the canvas, or exactly
+        // as wide and on the top or bottom edge, keeps its height as a backdrop does: the title's side panel, a menu frame's bands.
+        // Everything else takes the centre. Nothing is pinned to a single edge: the game clips the mission map's picture quads exactly
+        // at the screen edge while it scrolls, and pinned they opened a band against the part squeezed about the centre
+        // (Albert 2026-11-09, v2-v5). NDC: y up (+1 = the top row), x right.
+        int top = fabsf(b[3] - 1) < 0.01f, bottom = fabsf(b[2] + 1) < 0.01f, left = fabsf(b[0] + 1) < 0.01f, right = fabsf(b[1] - 1) < 0.01f;
+        if ((top && bottom) || (left && right && (top || bottom))) *uy = 1;
+        if ((left && right) || (top && bottom && (left || right))) *ux = 1;
+    }
+    // DM_AOC_AR_LOG_EVERY=<k>: also every k-th frame, so screens far into a run are logged too
+    static long left = -1, every; static uint64_t last_frame; if (left < 0) { const char *e = getenv("DM_AOC_AR_LOG"); left = e ? atol(e) : 0;
+        e = getenv("DM_AOC_AR_LOG_EVERY"); every = e ? atol(e) : 0; }
+    uint64_t fr = atomic_load(&g_cur_frame);
+    if (left > 0 || (every > 0 && fr % (uint64_t)every == 0)) {
+        if (left > 0 && fr != last_frame) { last_frame = fr; left--; }
+        MLOG("[ar] F%llu pass %llu vs %.16s fs %.16s count %d inst %d %s → squeeze %.3f/%.3f about %.0f,%.0f", (unsigned long long)fr, g_stat_pass,
+             pr && pr->sh[0] ? pr->sh[0]->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-", dw ? dw->count : di ? di->count : 0,
+             dw ? dw->instances : di ? di->instances : 0, why, *ux, *uy, *ax, *ay);
+    }
+}
 static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
     const p_draw *dw = g_fd_dw; const p_draw_idx *di = g_fd_di;
     int n = dw ? dw->count : di->count, prim = dw ? dw->prim : di->prim;
     __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr) return g_fd_why = 1, 0;
+    if (dm_aspect() && i < R.rt.n && R.rt.color[i] && xv_present(R.rt.color[i]->serial)) return g_fd_why = 3, 0;   // a chosen aspect ratio may squeeze it (ar_squeeze): keep the load
     NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs || !fs || vs->rf.pos_attr < 0 || fs->rf.may_discard || fs->rf.writes_smask || !(fs->rf.color_mask >> i & 1)) return g_fd_why = 2, 0;
     if (!t || t.sampleCount != 1 || t.textureType == MTLTextureType3D) return g_fd_why = 3, 0;
@@ -6306,7 +6437,7 @@ static void fb_prepare(NvProg *pr) {
             if (!use) { RED_ONCE(81, "same-pass feedback sampling: cannot create the snapshot view (format %lu); left as is", (unsigned long)t.pixelFormat); continue; }
             if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
             g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = use; g_fb_rid[g_fb_n] = use.gpuResourceID._impl; g_fb_n++;
-            g_fb_count++;
+            g_fb_count++; atomic_store(&g_fb_scene_wh, (uint32_t)(w & 0xffff) << 16 | (uint32_t)(h & 0xffff)); atomic_store(&g_fb_scene_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
             if (g_fb_count == 1 || g_fb_count == 10 || g_fb_count == 1000 || g_fb_count % 100000 == 0)
                 MLOG("same-pass feedback sampling: snapshot #%llu (frame %llu pass %llu, shader %s slot %d samples attachment %d ser=%llu %lux%lu format %lu)", (unsigned long long)g_fb_count, (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass + !g_enc,
                      fs->key, b->reg, k, (unsigned long long)ser, (unsigned long)w, (unsigned long)h, (unsigned long)base.pixelFormat);
@@ -6881,7 +7012,10 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
       if (!(g_ed.ok & ED_SREF) || g_ed.sref != sr) { enc_r_stencil_ref(en, sr, sr); g_ed.sref = sr; g_ed.ok |= ED_SREF; } }
     // Viewport / scissor (clamped within the target size)
     NSUInteger tw = g_pass.tw, th = g_pass.th;
+    double ar_ux, ar_uy, ar_ax, ar_ay; ar_squeeze(pr, dw, di, tw, th, &ar_ux, &ar_uy, &ar_ax, &ar_ay);   // the chosen aspect ratio: UI squeezed about the canvas centre or the edge it touches (ar_squeeze)
     { MTLViewport v = S.has_vp ? (MTLViewport){S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3], S.dr[0], S.dr[1]} : (MTLViewport){0, 0, tw, th, 0, 1};
+      if (ar_ux != 1) { v.originX = ar_ax + (v.originX - ar_ax) / ar_ux; v.width /= ar_ux; }
+      if (ar_uy != 1) { v.originY = ar_ay + (v.originY - ar_ay) / ar_uy; v.height /= ar_uy; }
       if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { v.originY += v.height; v.height = -v.height; }   // lower-left origin (see g_origin_ll)
       // Viewport swizzle: NEGATIVE_Y negates clip y, the same as the viewport flipped about its centre; facing is decided after it on the GPU as in Metal, so the winding stays.
       // Other swizzles (axis exchanges, negated x / z / w) are no viewport change and are drawn unswizzled
@@ -6895,6 +7029,12 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
         if (x1 <= x0 || y1 <= y0) { PD("Z %llu draw skipped: empty scissor (%d,%d %dx%d, target %lux%lu)", g_stat_pass, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw, (unsigned long)th); return; }
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
+        if ((ar_ux != 1 || ar_uy != 1) && !(x0 == 0 && y0 == 0 && x1 == (long)tw && y1 == (long)th)) {   // a part of the canvas: squeezed with the draw (rounded outwards)
+            double cx = ar_ax, cy = ar_ay;
+            long sx0 = (long)floor(cx + (x0 - cx) / ar_ux), sx1 = (long)ceil(cx + (x1 - cx) / ar_ux), sy0 = (long)floor(cy + (y0 - cy) / ar_uy), sy1 = (long)ceil(cy + (y1 - cy) / ar_uy);
+            sx0 = MAX(sx0, 0); sy0 = MAX(sy0, 0); sx1 = MIN(sx1, (long)tw); sy1 = MIN(sy1, (long)th);
+            if (sx1 > sx0 && sy1 > sy0) sc = (MTLScissorRect){(NSUInteger)sx0, (NSUInteger)sy0, (NSUInteger)(sx1 - sx0), (NSUInteger)(sy1 - sy0)};
+        }
     }
     if (!(g_ed.ok & ED_SC) || memcmp(&g_ed.sc, &sc, sizeof sc)) { enc_r_scissor(en, sc); g_ed.sc = sc; g_ed.ok |= ED_SC; }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) { PD("Z %llu draw skipped: both faces culled", g_stat_pass); return; }
@@ -8123,6 +8263,14 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
     if (!v) { RED_ONCE(69, "present: cannot create a non-sRGB view of the sRGB swapchain texture (format %lu); presenting the decoded values", (unsigned long)src.pixelFormat); return src; }
     return v;
 }
+// The rectangle the picture is shown in: centred at its own ratio, or at the chosen aspect ratio (dm_aspect: the canvas stretched to it),
+// with black bars in the rest; within 1% of the drawable's ratio it fills the drawable (no few-pixel border).
+static MTLViewport present_fit(double dw, double dh, double cw, double ch) {
+    double ar = dm_aspect(), r = ar ? ar : cw / ch, w = fmin(dw, dh * r), h = w / r;
+    MTLViewport vp = {floor((dw - w) / 2), floor((dh - h) / 2), round(w), round(h), 0, 1};
+    if (fabs((dw / dh) / r - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    return vp;
+}
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -8140,9 +8288,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     // Keep the game picture's aspect ratio and center it, leaving black bars in the rest (no stretching when the screen ratio differs from the game's, e.g. iPhone about 19.5:9 versus the game's 16:9);
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
-    double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    double dw = dst.width, dh = dst.height; MTLViewport vp = present_fit(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
@@ -8171,9 +8317,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
     }
     present_pipeline(dst.pixelFormat);
-    double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    double dw = dst.width, dh = dst.height; MTLViewport vp = present_fit(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;

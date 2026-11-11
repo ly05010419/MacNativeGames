@@ -24,14 +24,16 @@ int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnable
 #include "haptics_apple.h"
 #import "front_settings.h"
 #include "front_shortcuts.h"
+#include "front_keys.h"
+#include "front_prefs.h"
+#include "front_settings_file.h"
 #include "../gfx/nvn/aoc_timing.h"
 #include "mac_display_settings.h"
 #include <signal.h>
 #include <math.h>
 
 static CAMetalLayer *g_layer;
-static uint64_t g_btn;
-static int g_w, g_a, g_s, g_d;
+static DmKeyboard g_kbd;   // the keyboard as controller input (front_keys.h)
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 static _Atomic int g_screen_fps;   // the window's screen's maximumFramesPerSecond, kept up to date when the window moves to another screen
@@ -93,27 +95,11 @@ void front_screen_match(int fps) {
     g_match_want = fps; dispatch_async(dispatch_get_main_queue(), ^{ screen_match_apply(); });
 }
 static void push(void) {
-    int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
-    dm_input_set(g_btn, lx, ly, 0, 0);
+    int32_t lx = (g_kbd.d - g_kbd.a) * 32767, ly = (g_kbd.w - g_kbd.s) * 32767;
+    dm_input_set(g_kbd.buttons, lx, ly, 0, 0);
 }
-static int key_bit(unsigned short code) {
-    switch (code) {
-        case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
-        case 3: return 4;   case 5: return 5;                                            // F G → press stick
-        case 12: return 6;  case 14: return 7;  case 6: return 8;   case 8: return 9;    // Q E Z C → L R ZL ZR
-        case 36: return 10; case 48: return 11;                                          // Return Tab → + −
-        case 123: return 12; case 126: return 13; case 124: return 14; case 125: return 15; // ← ↑ → ↓
-    }
-    return -1;
-}
-static void on_key(NSEvent *e, int down) {
-    unsigned short c = e.keyCode;
-    switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
-    int b = key_bit(c);
-    uint64_t m = b >= 0 ? 1ull << b : c == 49 ? DM_BTN_SHAKE : 0;   // Space: shaken while held
-    g_btn = down ? (g_btn | m) : (g_btn & ~m);
-    push();
-}
+static void on_key(NSEvent *e, int down) { dm_keyboard_key(&g_kbd, e.keyCode, down); push(); }
+static void keyboard_release(void) { dm_keyboard_release(&g_kbd); push(); }   // nothing held once the window stops getting keys
 
 // Physical controllers (GameController) go to dm_pad_set_player, mapped as the iPhone's (DmGamepad.m read_pad, same layout); player 1's is ORed with the keyboard, a stick takes
 // whichever is deflected more (hle_hid.c). DM_KEYS uses player 1's path, so player 1's controller touched during a script takes it over.
@@ -125,15 +111,17 @@ static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept 
 static int g_merge, g_kbd_own;
 enum { DM_FACE_AUTO, DM_FACE_POSITION, DM_FACE_LABEL };
 static _Atomic int g_face_layout = DM_FACE_AUTO, g_swap_ab;
-static int g_start_fullscreen, g_output_preset, g_show_hints = 1;
+static int g_start_fullscreen, g_output_preset;
+static int g_aspect, g_aspect_saved;   // Aspect ratio row: 0 = the game's 16:9, 1 = 16:10; saved: what the file keeps (DM_AOC_ASPECT may decide one run)
+static int g_aspect_ok;   // this build has the camera stubs (front_prefs.h dm_aspect_supported); otherwise no row and 16:9 for the run
+void dm_gfx_set_aspect(float r);   // gfx/nvn: present stretch and UI squeeze (nvn_mtl.m ar_squeeze)
 static DmSettingsPanel *g_settings_panel;
-static DmShortcutHUD *g_shortcut_hud;
 static DmPerformanceHUD *g_performance_hud;
-static int g_stats_mode, g_frame_graph; // diagnostics opt in; saved settings/env can enable
+static DmPref g_stats, g_graph;   // stats pane 0-2 and frame graph 0-1: saved preference, value in force, decided by the environment (front_prefs.h)
 static void settings_changed(DmMacSetting setting, NSInteger value);
 static void settings_refresh(void);
 static NSString *g_pad_settings_path;
-static NSMenuItem *g_face_items[3], *g_swap_item, *g_fullscreen_item, *g_hints_item, *g_output_items[5];
+static NSMenuItem *g_face_items[3], *g_swap_item, *g_fullscreen_item, *g_output_items[5];
 
 static NSString *pad_settings_path(void) {
     const char *save = getenv("DM_SAVE");
@@ -141,52 +129,57 @@ static NSString *pad_settings_path(void) {
     return [[@(save) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"controller-layout.txt"];
 }
 
+// The chosen aspect ratio: the 16:9 canvas is stretched to it at the present, the cameras see that shape (patches.py: their
+// aspect times ratio / (16/9)) and the UI is squeezed back to the middle 16:9 (nvn_mtl.m), as in Tears of the Kingdom. A window
+// takes that shape; full screen fills a screen of that shape and leaves bars on another. DM_AOC_ASPECT_OWN=0 leaves the camera
+// of main+0x115fa64 at its own aspect (a diagnostic).
+static double aspect_ratio(void) { return g_aspect == 1 ? 1.6 : 0; }
+static void aspect_apply(void) {
+    double r = aspect_ratio(); const char *own = getenv("DM_AOC_ASPECT_OWN");
+    aoc_aspect_set((float)r, !(own && !strcmp(own, "0"))); dm_gfx_set_aspect((float)r);
+    if (!g_win) return;
+    if (r <= 0) { g_win.contentResizeIncrements = NSMakeSize(1, 1); return; }   // clears the aspect constraint
+    g_win.contentAspectRatio = NSMakeSize(r * 1000, 1000);
+    if (g_win.styleMask & NSWindowStyleMaskFullScreen) return;
+    NSRect c = [g_win contentRectForFrameRect:g_win.frame], vis = (g_win.screen ?: NSScreen.mainScreen).visibleFrame;
+    double w = c.size.width, h = round(w / r), hmax = vis.size.height - 40;
+    if (h > hmax) { h = hmax; w = round(h * r); }
+    if (fabs(h - c.size.height) >= 1 || fabs(w - c.size.width) >= 1) [g_win setContentSize:NSMakeSize(w, h)];
+}
+
 static void pad_settings_save(void) {
     if (!g_pad_settings_path) return;
-    static const char *layout[] = {"auto", "position", "label"};
-    NSString *text = [NSString stringWithFormat:@"layout=%s\nswap_ab=%d\nfullscreen=%d\noutput=%d\nhints=%d\nfps_target=%d\ndynamic_fps=%d\nstats=%d\nframe_graph=%d\n",
-                                                layout[g_face_layout], !!g_swap_ab, !!g_start_fullscreen, g_output_preset, !!g_show_hints, aoc_timing_target(), aoc_timing_dynamic(), g_stats_mode, g_frame_graph];
-    NSError *error = nil;
-    if (![text writeToFile:g_pad_settings_path atomically:YES encoding:NSUTF8StringEncoding error:&error])
+    DmSettingsFile now = {g_face_layout, g_swap_ab, g_start_fullscreen, g_output_preset, aoc_timing_target(), aoc_timing_dynamic(), -1, -1, g_aspect_saved};
+    NSError *error = nil;   // stats and frame graph go in as their saved choices (front_settings_file.h)
+    if (!dm_settings_save(g_pad_settings_path, now, g_stats, g_graph, &error))
         LOG("front end: could not save controller settings to %s: %s", g_pad_settings_path.fileSystemRepresentation,
             error.localizedDescription.UTF8String ?: "unknown error");
 }
 
 static void pad_settings_load(void) {
     g_pad_settings_path = pad_settings_path();
-    g_face_layout = DM_FACE_AUTO;
-    g_swap_ab = 0;
-    g_start_fullscreen = 0; g_output_preset = 0; g_show_hints = 1;
-    g_stats_mode = g_frame_graph = 0;
+    DmSettingsLoaded l = dm_settings_load(g_pad_settings_path, getenv("DM_AOC_STATS"), getenv("DM_AOC_FRAME_GRAPH"));
+    g_face_layout = l.file.layout >= 0 ? l.file.layout : DM_FACE_AUTO;
+    g_swap_ab = l.file.swap_ab > 0;
+    g_start_fullscreen = l.file.fullscreen > 0; g_output_preset = l.file.output >= 0 ? l.file.output : 0;
+    g_aspect = g_aspect_saved = l.file.aspect == 1;
+    { const char *a = getenv("DM_AOC_ASPECT");   // this run only; the saved choice stays until the row is changed
+      if (a && (!strcmp(a, "16:10") || !strcmp(a, "1"))) g_aspect = 1; else if (a && (!strcmp(a, "16:9") || !strcmp(a, "0"))) g_aspect = 0;
+      else if (a) LOG("front end: DM_AOC_ASPECT=%s is not 16:9 or 16:10: ignored", a); }
+    g_aspect_ok = dm_aspect_supported(dm_main_build());
+    if (!g_aspect_ok && g_aspect) { LOG("front end: 16:10 needs update 1.4.1 (main %s): the game's 16:9 for this run", dm_main_build()); g_aspect = 0; }
     const char *e;
     int fps=aoc_timing_target(), dynamic=aoc_timing_dynamic();
-    NSString *text = g_pad_settings_path ? [NSString stringWithContentsOfFile:g_pad_settings_path encoding:NSUTF8StringEncoding error:nil] : nil;
-    for (NSString *raw in [text componentsSeparatedByString:@"\n"]) {
-        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        NSArray<NSString *> *pair = [line componentsSeparatedByString:@"="];
-        if (pair.count != 2) continue;
-        NSString *key = [pair[0] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        NSString *value = [pair[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if ([key isEqualToString:@"layout"]) {
-            if ([value isEqualToString:@"position"]) g_face_layout = DM_FACE_POSITION;
-            else if ([value isEqualToString:@"label"]) g_face_layout = DM_FACE_LABEL;
-        } else if ([key isEqualToString:@"swap_ab"]) g_swap_ab = value.intValue != 0;
-        else if ([key isEqualToString:@"fullscreen"]) g_start_fullscreen = value.intValue != 0;
-        else if ([key isEqualToString:@"output"]) { NSInteger n = value.integerValue; if (n >= 0 && n < 5) g_output_preset = (int)n; }
-        else if ([key isEqualToString:@"hints"]) g_show_hints = value.intValue != 0;
-        else if ([key isEqualToString:@"fps_target"]) { int n=value.intValue; if(n==120 || aoc_timing_valid(n)) fps=n; } // setter migrates legacy 120 to 60
-        else if ([key isEqualToString:@"dynamic_fps"]) dynamic=value.intValue!=0;
-        else if ([key isEqualToString:@"stats"]) { int n=value.intValue; if(n>=0 && n<=2) g_stats_mode=n; }
-        else if ([key isEqualToString:@"frame_graph"]) g_frame_graph=value.intValue!=0;
-    }
-    // Explicit diagnostics override saved preferences, including invalid-value fallback.
+    if (l.file.fps_target == 120 || (l.file.fps_target >= 0 && aoc_timing_valid(l.file.fps_target))) fps = l.file.fps_target;   // the setter migrates legacy 120 to 60
+    if (l.file.dynamic_fps >= 0) dynamic = l.file.dynamic_fps;
+    // Explicit diagnostics override saved preferences. DM_FPS_TARGET / DM_DYNAMIC_FPS: an invalid value falls back (aoc_timing.c).
+    // DM_AOC_STATS / DM_AOC_FRAME_GRAPH: an invalid value is ignored, and a valid one never replaces the saved choice (front_prefs.h).
     if(getenv("DM_FPS_TARGET")) fps=aoc_timing_target();
     if(getenv("DM_DYNAMIC_FPS")) dynamic=aoc_timing_dynamic();
-    e=getenv("DM_AOC_STATS");
-    if(e) g_stats_mode=e[0]>='0' && e[0]<='2' && !e[1] ? e[0]-'0' : 0;
-    e=getenv("DM_AOC_FRAME_GRAPH");
-    if(e) g_frame_graph=!strcmp(e,"1");
-    aoc_stats_enable(g_stats_mode!=0);
+    g_stats = l.stats; g_graph = l.graph;
+    if(l.stats_rejected) LOG("front end: DM_AOC_STATS=%s is not 0, 1 or 2: ignored, the saved stats pane setting applies", getenv("DM_AOC_STATS"));
+    if(l.graph_rejected) LOG("front end: DM_AOC_FRAME_GRAPH=%s is not 0 or 1: ignored, the saved frame graph setting applies", getenv("DM_AOC_FRAME_GRAPH"));
+    aoc_stats_enable(g_stats.value!=0);
     aoc_timing_set(fps,dynamic);
     e = getenv("DM_PAD_LAYOUT");
     if (e && !strcmp(e, "auto")) g_face_layout = DM_FACE_AUTO;
@@ -199,6 +192,7 @@ static void pad_settings_load(void) {
     static const char *layout[] = {"auto", "position", "label"};
     LOG("front end: controller face buttons %s%s%s", layout[g_face_layout], g_swap_ab ? ", A/B swapped" : "",
         g_pad_settings_path ? "" : " (no DM_SAVE: settings are not kept)");
+    aspect_apply();
 }
 
 static int pad_names_nintendo(NSString *text) {
@@ -302,7 +296,8 @@ static void pads_start(void) {
     NSPoint p = [self convertPoint:e.locationInWindow fromView:nil]; NSSize b = self.bounds.size;
     double w = b.width, h = b.height;
     if (w <= 0 || h <= 0) return;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;   // the centered 16:9 picture the present fits into the view, as on the iPhone (DmGamepad.m)
+    double r = aspect_ratio() > 0 ? aspect_ratio() : 16.0 / 9.0;   // the picture's shape on screen: 16:9, or the chosen ratio it is stretched to
+    if (w / h > r) w = h * r; else h = w / r;   // the centered picture the present fits into the view, as on the iPhone (DmGamepad.m)
     double x0 = (b.width - w) / 2, y0 = (b.height - h) / 2;
     dm_touch t = {0, (float)fmin(fmax((p.x - x0) / w, 0), 0.999), (float)fmin(fmax(1 - (p.y - y0) / h, 0), 0.999)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
     dm_touch_set(&t, 1);
@@ -329,7 +324,6 @@ static void pads_start(void) {
 - (void)toggleStartFullscreen:(NSMenuItem *)item;
 - (void)openSettings:(id)sender;
 - (void)chooseOutput:(NSMenuItem *)item;
-- (void)toggleHints:(id)sender;
 @end
 
 @implementation DmSettingsMenu
@@ -339,7 +333,6 @@ static void pads_start(void) {
 - (void)toggleStartFullscreen:(NSMenuItem *)item { (void)item; settings_changed(DmSettingStartFullscreen, !g_start_fullscreen); }
 - (void)openSettings:(id)sender { (void)sender; [g_settings_panel showPanel]; }
 - (void)chooseOutput:(NSMenuItem *)item { settings_changed(DmSettingOutput, item.tag); }
-- (void)toggleHints:(id)sender { (void)sender; settings_changed(DmSettingHints, !g_show_hints); }
 @end
 
 static DmSettingsMenu *g_settings_menu_target;
@@ -369,50 +362,49 @@ static void install_controller_menu(NSMenu *bar) {
         item.tag = i; item.target = g_settings_menu_target; g_output_items[i] = item;
     }
     [[view addItemWithTitle:outputs.title action:nil keyEquivalent:@""] setSubmenu:outputs];
-    g_hints_item = [view addItemWithTitle:@"Shortcut hints" action:@selector(toggleHints:) keyEquivalent:@""];
-    g_hints_item.target = g_settings_menu_target;
     [[bar addItemWithTitle:@"Display" action:nil keyEquivalent:@""] setSubmenu:view];
     pad_apply_settings();
 }
 
+void dm_gfx_scene_size(int *w, int *h, double *age_s); void dm_nvn_window_size(int *w, int *h, double *age_s);   // gfx/nvn: scene target and presented texture, as last observed
 static DmMacSettings settings_snapshot(void) {
-    CGSize size = g_layer.drawableSize;
+    CGSize size = g_layer.drawableSize; int sw, sh, gw, gh; double sa, ga; dm_gfx_scene_size(&sw, &sh, &sa); dm_nvn_window_size(&gw, &gh, &ga);
     NSUInteger connected = 0; for (GCController *pad in GCController.controllers) if (pad.extendedGamepad) connected++;
     return (DmMacSettings){.face_layout = g_face_layout, .swap_ab = g_swap_ab, .start_fullscreen = g_start_fullscreen,
-        .output_preset = g_output_preset, .show_hints = g_show_hints, .fullscreen = (g_win.styleMask & NSWindowStyleMaskFullScreen) != 0,
-        .fps_target=aoc_timing_target(), .dynamic_fps=aoc_timing_dynamic(), .stats_mode=g_stats_mode,
-        .frame_graph=g_frame_graph, .screen_fps=front_screen_max_fps(),
+        .output_preset = g_output_preset, .fullscreen = (g_win.styleMask & NSWindowStyleMaskFullScreen) != 0, .aspect = g_aspect, .aspect_available = g_aspect_ok,
+        .fps_target=aoc_timing_target(), .dynamic_fps=aoc_timing_dynamic(), .stats_mode=g_stats.value,
+        .frame_graph=g_graph.value, .stats_locked=g_stats.locked, .graph_locked=g_graph.locked, .screen_fps=front_screen_max_fps(),
         .performance=aoc_stats_snapshot(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)),
-        .output_width = (NSUInteger)size.width, .output_height = (NSUInteger)size.height, .controllers = connected};
+        .output_width = (NSUInteger)size.width, .output_height = (NSUInteger)size.height, .controllers = connected,
+        .scene_width = sw, .scene_height = sh, .game_width = gw, .game_height = gh, .scene_age_s = sa, .game_age_s = ga};
 }
 static void settings_refresh(void) {
     pad_apply_settings();
     for (int i = 0; i < 5; i++) g_output_items[i].state = g_output_preset == i;
-    g_hints_item.state = g_show_hints;
-    [g_settings_panel refresh]; [g_shortcut_hud refresh]; [g_performance_hud refresh];
+    [g_settings_panel refresh]; [g_performance_hud refresh];
 }
 static void settings_changed(DmMacSetting setting, NSInteger value) {
     switch (setting) {
         case DmSettingFpsTarget: aoc_timing_set((int)value,aoc_timing_dynamic()); break;
         case DmSettingDynamicFps: aoc_timing_set(aoc_timing_target(),value!=0); break;
-        case DmSettingStats:
-            if(value>=0 && value<=2) { g_stats_mode=(int)value; aoc_stats_enable(g_stats_mode!=0); }
+        case DmSettingStats:   // refused while DM_AOC_STATS decides it (its row is greyed): the saved preference stays
+            if (value >= 0 && value <= 2 && dm_pref_set(&g_stats, (int)value)) aoc_stats_enable(g_stats.value != 0);
             break;
-        case DmSettingFrameGraph: g_frame_graph=value!=0; break;
+        case DmSettingFrameGraph: dm_pref_set(&g_graph, value != 0); break;   // likewise with DM_AOC_FRAME_GRAPH
         case DmSettingFaceLayout: if (value >= 0 && value < 3) g_face_layout = (int)value; break;
         case DmSettingSwapAB: g_swap_ab = value != 0; break;
         case DmSettingStartFullscreen: g_start_fullscreen = value != 0; break;
         case DmSettingOutput:
             if (value >= 0 && value < 5) g_output_preset = (int)value;
             [(DmGameView *)g_win.contentView fitDrawable]; break;
-        case DmSettingHints: g_show_hints = value != 0; break;
         case DmSettingFullscreen:
             if (((g_win.styleMask & NSWindowStyleMaskFullScreen) != 0) != (value != 0)) [g_win toggleFullScreen:nil];
             break;
         case DmSettingResetController: g_face_layout = DM_FACE_AUTO; g_swap_ab = 0; break;
+        case DmSettingAspect: if (g_aspect_ok && (value == 0 || value == 1)) { g_aspect = g_aspect_saved = (int)value; aspect_apply(); } break;
     }
     pad_settings_save(); settings_refresh();
-    LOG("front end: settings layout=%d swap_ab=%d output=%d hints=%d start_fullscreen=%d", g_face_layout, g_swap_ab, g_output_preset, g_show_hints, g_start_fullscreen);
+    LOG("front end: settings layout=%d swap_ab=%d output=%d start_fullscreen=%d aspect=%s", g_face_layout, g_swap_ab, g_output_preset, g_start_fullscreen, g_aspect ? "16:10" : "16:9");
 }
 
 typedef struct { void (*fn)(void); } guest_arg;
@@ -458,10 +450,6 @@ void front_run(void (*guest)(void)) {
         pad_settings_load(); [(DmGameView *)v fitDrawable];
         g_settings_panel = [[DmSettingsPanel alloc] initWithParent:win snapshot:^{ return settings_snapshot(); }
             change:^(DmMacSetting setting, NSInteger value) { settings_changed(setting, value); }];
-        g_shortcut_hud = [[DmShortcutHUD alloc] initWithSnapshot:^{ return settings_snapshot(); }
-            openSettings:^{ [g_settings_panel showPanel]; }];
-        g_shortcut_hud.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
-        [v addSubview:g_shortcut_hud]; [g_shortcut_hud refresh];
         g_performance_hud=[[DmPerformanceHUD alloc] initWithSnapshot:^{ return settings_snapshot(); }];
         [v addSubview:g_performance_hud]; [g_performance_hud refresh];
         // Main menu: AppKit runs ⌘ shortcuts only through menu items, so ⌘Q quits and ⌃⌘F toggles fullscreen from here (AppKit shows the item as Globe-F and keeps ⌃⌘F as a hidden twin)
@@ -486,19 +474,14 @@ void front_run(void (*guest)(void)) {
         pads_start();
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
-            if (e.type == NSEventTypeKeyDown && (e.modifierFlags & NSEventModifierFlagCommand)) return e;   // ⌘ shortcuts go to the menu; a key released while ⌘ is held still reaches the game, or it would stay pressed
-            if (!(e.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption)) &&
-                dm_mac_is_shortcut(e.keyCode)) {
-                if (e.type == NSEventTypeKeyDown && !e.isARepeat) {
-                    DmMacSetting setting; NSInteger value;
-                    DmShortcutAction action=dm_mac_shortcut(e.keyCode,settings_snapshot(),&setting,&value);
-                    if(action==DmShortcutSettings) [g_settings_panel showPanel];
-                    else if(action==DmShortcutChange) settings_changed(setting,value);
-                }
-                return nil;
+            int down = e.type == NSEventTypeKeyDown;
+            switch (dm_mac_game_key(e.keyCode, e.modifierFlags, down, down && e.isARepeat)) {   // front_shortcuts.h
+                case DmKeyToSystem: return e;
+                case DmKeyTogglePanel: if (!g_settings_panel.window.visible) keyboard_release(); [g_settings_panel togglePanel]; return nil;
+                case DmKeyToGame: on_key(e, down); return nil;
+                case DmKeySwallow: return nil;   // Swallowed rather than passed on, to avoid the system beep
             }
-            if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
-            return nil;   // Swallow it to avoid the system beep
+            return nil;
         }];
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
                                                       usingBlock:^(NSNotification *n) { (void)n; dm_host_shutdown("Mac game window closed"); }];
@@ -511,7 +494,7 @@ void front_run(void (*guest)(void)) {
         // content view by itself; only the scale factor has to be carried over to the screen the window ended up on. The screen's rate is matched in fullscreen only (screen_match_apply)
         [nc addObserverForName:NSWindowDidEnterFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
         [nc addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); if (!win.miniaturized) dm_focus_set(2); }];
+        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; keyboard_release(); if (!win.miniaturized) dm_focus_set(2); }];
         [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(1); }];
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];

@@ -74,24 +74,21 @@ Keyboard gameplay mappings:
 The keyboard has no right-stick/camera-direction binding. Supported physical
 controllers use GameController.
 
-With the game window focused, these shortcuts apply immediately and save their
-settings. Auto-repeat does not repeatedly toggle a setting.
+As in Tears of the Kingdom, key 1 opens and closes the settings panel. The panel
+holds every setting the number keys 2 to 7 used to change (FPS target, window size cap,
+dynamic step, stats, controller layout, frame graph); 2 to 7 are no longer
+shortcuts, and the hints box that listed them is gone, as in Tears of the Kingdom.
+Changes apply immediately and are saved.
 
 | Key | Action |
 |---|---|
-| F1 or Command-comma | Open settings |
-| 1 | Show/hide shortcut hints |
-| 2 | Cycle FPS target: Original 30 ↔ 60 |
-| 3 | Cycle output cap: Auto → 720p → 1080p → 1440p → 2160p |
-| 4 | Toggle dynamic timing (inactive in Original mode) |
-| 5 | Cycle stats: Off → FPS only → Full |
-| 6 | Cycle physical-controller layout: Auto → Position → Nintendo labels |
-| 7 | Toggle frame-time graph (visible when stats are enabled) |
+| 1, F1 or Command-comma | Open settings (1, F1 or Esc closes them) |
 | Control-Command-F | Toggle full screen |
 | Command-Q | Quit |
 
-The small shortcuts pane shows the current FPS target, dynamic mode, stats mode
-and graph state alongside the existing output and controller controls.
+Holding 1 opens or closes the panel once. Key 1 never reaches the game, and the
+game window lets go of every held key when the panel opens, so no button stays
+held after it closes. The Settings… menu item (Command-comma) opens the panel too.
 
 For bounded diagnostics, `scripts/run_aoc.py --work-dir WORK --session NAME
 --seconds 60 --window --audio` creates a disposable save and freezes the
@@ -105,7 +102,7 @@ The runner freezes the binary, rewritten modules and generated profile tables.
 For package validation, `DM_AOC_PROFILE=/existing/absolute/disposable-directory`
 selects separate writable state; paths inside the signed app are rejected.
 
-Settings (F1 or Command-comma) offer **Original 30**, **30** and **60 fps**
+Settings (1, F1 or Command-comma) offer **Original 30**, **30** and **60 fps**
 targets. Original 30 remains the default. The other targets support
 **Dynamic step**, which scales the task clock from elapsed scheduler time and
 measures the scene/battle clock independently. The event clock follows the scene
@@ -133,20 +130,47 @@ scene clock telemetry alone does not prove correct game speed. Saved 120 fps
 settings and legacy environment overrides fall back to 60. Re-enabling 120
 requires addressing these timers and testing gameplay and cutscene transitions.
 
-The independent stats pane offers Off, FPS only and Full stats, plus a frame-time
-graph. It reports game presents and actual display FPS separately, frame/GPU
+The independent stats pane offers Off, FPS only and Full stats, plus a graph of
+frames per second from 0 to 60, as in Tears of the Kingdom. It reports game presents and actual display FPS separately, frame/GPU
 milliseconds, p50/p95/p99 over the last 240 frames, resident shader libraries,
 shader inventory, render/compute pipelines, synchronous load/build costs,
 imported prewarm objects and load/render-pipeline errors. Prewarm imports are
 not a count of shaders actually drawn. Headless runs have no display FPS.
-Shortcut hints remain independently configurable.
+
+Both stats modes also show on-demand activity: Metal library loads and pipeline
+build attempts made while playing (failed ones included), against the libraries
+and render + compute pipelines ready. As in Tears of the Kingdom's shader line and
+Link's Awakening's stats pane, the text turns yellow for three seconds after either
+count rises, and stays orange while any load or pipeline error has been counted.
+Yellow only says that such work happened: it does not prove a new compile, nor
+that the work caused a stutter seen at the same moment.
+
+The settings panel's Display card and both stats modes show the resolutions as
+the host last observed them: the game's 3D picture (the scene target the
+profile's `feedback_snap` draws read) and the game's output (the texture it
+presents), next to the window size. A size observed within the last second is
+shown as is; an older one says when it was last seen (the game stopped drawing
+that target or presenting); one never observed is --, as the picture stays while
+`DM_NVN_FB_SNAP=0` turns those copies off. The window size cap only scales the
+shown picture: it does not change the game's own resolution.
 
 Stats and the frame graph default to **Off**. Stats-pane timing/display sample
-collection is disabled while stats are off. Key 5 or Settings enables stats;
-key 7 enables the graph. Explicit choices are saved in `controller-layout.txt`. Environment
-overrides `DM_AOC_STATS=0|1|2` (Off/FPS/Full) and `DM_AOC_FRAME_GRAPH=0|1` take
-precedence over saved preferences. Disabling/re-enabling collection starts a
-fresh sample window. Existing explicit saved preferences are retained.
+collection is disabled while stats are off. Disabling/re-enabling collection
+starts a fresh sample window. The settings panel changes both, and the choices
+are saved in `controller-layout.txt` (`stats=` and `frame_graph=`). For one run,
+an environment variable can decide them instead:
+
+| Variable | Valid values | Saved as | Default |
+|---|---|---|---|
+| `DM_AOC_STATS` | `0` Off, `1` FPS only, `2` Full | `stats=` | `0` |
+| `DM_AOC_FRAME_GRAPH` | `0` Off, `1` On | `frame_graph=` | `0` |
+
+A valid value decides the setting for that run and greys out its row in the
+panel. The saved choice is not changed: it is written back as it was and applies
+again on the next run without the variable. Any other value is ignored, with a
+log line, and the saved choice applies. A missing or out-of-range saved value is
+the default.
+The `hints=` key of older versions is ignored and dropped on the next save.
 
 The frame timer measures time between game presents, not simulation correctness;
 actual display FPS comes from drawable presentation callbacks. Shader counters
