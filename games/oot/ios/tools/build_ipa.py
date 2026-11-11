@@ -4,7 +4,7 @@ or Breath of the Wild (botw160, botw190; the runtime and graphics layer built wi
 shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
-from compile_seed import METAL_FLAGS
+from compile_seed import METAL_FLAGS, seed_flags
 from device_pipelines import SCHEMA, connected_gpus, seed_check
 from xcode_dir import developer_dir
 import settings_strings
@@ -202,7 +202,7 @@ def seed_reusable(seed, source_hash, source_files, sdk):
     shaders=[name for name in source_files if name.endswith('_b.metal')]
     return (cached.get('ios_source_manifest_sha256')==source_hash and
             cached.get('ios_metallibs')==len(shaders) and cached.get('ios_sdk','iphoneos')==sdk and
-            cached.get('ios_metal_flags')==' '.join(METAL_FLAGS) and
+            cached.get('ios_metal_flags')==seed_flags(sdk) and
             all((seed/(name.removesuffix('.metal')+'.metallib')).is_file() for name in shaders))
 
 def main():

@@ -13,7 +13,7 @@ usage: fill_shaders.py --tree <work tree> --device <id> [--bundle-id <id>] [--ga
 import argparse, concurrent.futures, hashlib, json, os, platform, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from xcode_dir import developer_dir
-from compile_seed import METAL_FLAGS
+from compile_seed import METAL_FLAGS, target_flags
 
 TOTK = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(TOTK/'scripts'))
@@ -139,7 +139,7 @@ def record(out, variant, write=True):
 def compile_metallib(pack, name, env):
     src = pack/f'{name}.metal'; air = pack/f'{name}.air'
     try:
-        subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', *METAL_FLAGS, '-c', str(src), '-o', str(air)], check=True, capture_output=True, env=env)
+        subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', *METAL_FLAGS, *target_flags('iphoneos'), '-c', str(src), '-o', str(air)], check=True, capture_output=True, env=env)
         subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metallib', str(air), '-o', str(pack/f'{name}.metallib')], check=True, capture_output=True, env=env)
         return None
     except subprocess.CalledProcessError as e:   # the device then compiles the MSL source itself
