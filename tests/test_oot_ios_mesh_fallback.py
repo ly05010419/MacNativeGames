@@ -36,8 +36,14 @@ class MeshFallback(unittest.TestCase):
         self.assertLess(body.rindex('#if TARGET_OS_IPHONE', 0, skip), skip)
 
     def test_warm_up_leaves_the_m_rows_first(self):
+        # since 2026-11-11 the row is parsed and built by mtk_row_parse / mtk_row_build (shared with the archive fill)
         body = function(self.source, 'static void mtk_warm_row')
-        self.assertLess(body.index('if(!mtk_device_compiles())'), body.index('mtk_build('))
+        self.assertLess(body.index('if(!mtk_device_compiles())'), body.index('mtk_row_parse('))
+
+    def test_the_archive_fill_leaves_the_m_rows_on_the_phone_and_for_device_libraries(self):
+        body = function(self.source, 'static int mtk_fill_row')
+        check = body.index('if(!mtk_device_compiles()||getenv("TOTK_SHADER_DEVICE_LIBS"))return -1;')
+        self.assertLess(check, body.index('mtk_row_parse('))
 
     def test_a_refused_pipeline_is_a_skip_on_the_phone(self):
         body = function(self.source, 'static id<MTLRenderPipelineState> mtk_pso')

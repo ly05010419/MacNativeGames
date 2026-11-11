@@ -33,6 +33,10 @@ STANDARDS = {
     # the runtime's warm-up, its contribution filter and the launcher's prune read pso_title.tsv / pso_manifest.tsv beside the
     # shader map (build/): Ocarina of Time's were only in the seed, so every pipeline it drew was contributed (2026-11-10)
     'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t,
+    # the pipeline archive is built from those same build/ lists: Ocarina of Time's fast update built it from the seed's
+    # older list, 2,957 of the App's 7,516 render pipelines, and 4,559 were compiled at the first start (2026-11-11)
+    'pipeline archive built from the App\'s lists': lambda t: (
+        'check_archive_lists(' in t or "lists = [p for p in (build / 'pso_title.tsv', build / 'pso_manifest.tsv'" in t),
 }
 
 GFX = 'games/{}/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m'
@@ -53,6 +57,7 @@ PATHS = {
         'repackaging keeps the .app folder': 'not done for this game yet',
         'a runtime change can update quickly': 'not done for this game yet',
         'warm-up lists beside the shader map': 'not done for this game yet',
+        'pipeline archive built from the App\'s lists': 'no pipeline archive for this game yet',
     }),
 }
 

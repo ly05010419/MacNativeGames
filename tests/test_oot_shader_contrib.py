@@ -45,10 +45,20 @@ class Packaging(unittest.TestCase):
     def test_lists_go_beside_the_shader_map(self):
         body = function(self.source, 'def package_app')
         shader_map = body.index("clone_file(tree/'build/shader-map.tsv',data/'build/shader-map.tsv')")
-        self.assertLess(shader_map, body.index('resolve_lists(tree,data,'))
+        self.assertLess(shader_map, body.index("clone_file(manifest,data/'build/pso_manifest.tsv')"))
+        self.assertIn("clone_file(title,data/'build/pso_title.tsv')", body)
         resolve = function(self.source, 'def resolve_lists')
-        self.assertIn("'resolve',seed,shared,*lists", resolve)
-        self.assertIn("lists=(data/'build/pso_manifest.tsv',data/'build/pso_title.tsv')", resolve)   # shader_list.py resolve order
+        self.assertIn("'resolve',seed,shared,manifest,title", resolve)   # shader_list.py resolve order
+
+    def test_the_pipeline_archive_takes_the_apps_lists(self):
+        # 2026-11-11: a fast update kept the seed's lists of 11-09 (2,957 render rows) for the archive while the App's
+        # build/ lists, resolved from the current shared list, had 7,516: 4,559 listed pipelines were built at first start.
+        body = function(self.source, 'def package_app')
+        resolved = body.index("lists=resolve_lists(tree,tree/'build/warm-lists',")
+        self.assertLess(resolved, body.index('compute_pipeline_archive(work,tree,lists)'))
+        archive = function(self.source, 'def compute_pipeline_archive')
+        self.assertNotIn("seed/'pso_manifest.tsv'", archive)
+        self.assertNotIn("seed/'pso_title.tsv'", archive)
 
     def test_the_fast_update_takes_the_same_path(self):
         self.assertIn('package_app(work,tree,app,', function(self.source, 'def update_runtime'))
