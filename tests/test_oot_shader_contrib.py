@@ -9,6 +9,7 @@ the Wild's file, and its iPhone / iPad reminder looked for Tears of the Kingdom 
 """
 import importlib.util
 import re
+import json
 import shutil
 import subprocess
 import sys
@@ -151,6 +152,56 @@ class Prune(unittest.TestCase):
             tmp = Path(tmp); build = tmp / 'build'; build.mkdir()
             moved, _ = self.run_prune(tmp, build)
             self.assertEqual(moved, 0)
+
+
+NAME_PROBE = r'''
+#import <Foundation/Foundation.h>
+#include "totk_shader_contrib.h"
+int main(int argc, char **argv) {
+    @autoreleasepool {
+        if (argc == 4 && !strcmp(argv[1], "name")) {   // the name a pipeline row gives a variant of this shader and deps
+            id deps = [NSJSONSerialization JSONObjectWithData:[@(argv[3]) dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            printf("%s_b\n", totk_contrib_listed_name(@(argv[2]), deps).UTF8String);
+        } else if (argc == 5 && !strcmp(argv[1], "prune")) {
+            printf("%lu\n", (unsigned long)totk_contrib_prune(@(argv[2]), @(argv[3]), @(argv[4])));
+        } else return 2;
+    }
+    return 0;
+}
+'''
+
+
+@unittest.skipUnless(shutil.which('xcrun'), 'needs the Xcode command line tools')
+class PruneKeepsNamedBindStates(unittest.TestCase):
+    """A V row the seed serves stays in the file while a pipeline row there names its variant: it is what tells the merge
+    the bind state behind that name (2026-11-11: 79 OoT rows were refused, naming bind states no upload carried)."""
+    SHADER = 'cd' * 32
+    DEPS = '{"tex":{"0":"2d"}}'
+
+    def run_case(self, with_pipeline):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / 'probe.m').write_text(NAME_PROBE)
+            built = subprocess.run(['xcrun', 'clang', '-fobjc-arc', f'-I{OOT}/third_party/d2r_gfx/gfx/nvn', str(tmp / 'probe.m'),
+                                    '-framework', 'Foundation', '-o', str(tmp / 'probe')], capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr[-600:])
+            name = subprocess.run([str(tmp / 'probe'), 'name', self.SHADER, self.DEPS], capture_output=True, text=True, check=True).stdout.strip()
+            seed = tmp / 'seed'; seed.mkdir(); (seed / 'seed-manifest.json').write_text('{}\n')
+            (seed / f'{self.SHADER}.variants').write_text(json.dumps([{'variant': f'{self.SHADER}-aaaaaaaaaaaa', 'deps': {'tex': {'0': '*'}}}]))
+            build = tmp / 'build'; build.mkdir(); (build / 'pso_manifest.tsv').write_text('# list\n'); (build / 'pso_title.tsv').write_text('# title\n')
+            key = (name.encode().ljust(80, b'\0') + bytes(544 - 80)).hex()
+            vrow = f'V\t{self.SHADER}\t{self.DEPS}'
+            contrib = tmp / 'shader-list-contribution-oot.txt'
+            contrib.write_text('# header\n' + vrow + '\n' + (f'R\t{key}\n' if with_pipeline else ''))
+            run = subprocess.run([str(tmp / 'probe'), 'prune', str(contrib), str(seed), str(build)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            return int(run.stdout), vrow in contrib.read_text().splitlines()
+
+    def test_a_named_bind_state_stays(self):
+        self.assertEqual(self.run_case(with_pipeline=True), (0, True))
+
+    def test_an_unnamed_one_the_seed_serves_leaves(self):
+        self.assertEqual(self.run_case(with_pipeline=False), (1, False))
 
 
 if __name__ == '__main__':
