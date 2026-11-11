@@ -443,7 +443,9 @@ class ShaderInboxScheduleTests(unittest.TestCase):
     """Every game's copy of the upload (user 2026-11-10): the question has no row threshold, one upload at each start,
     then one an hour."""
 
-    def test_every_copy_asks_without_rows_and_uploads_hourly(self):
+    def test_every_copy_asks_without_rows_and_uploads_at_start_then_on_a_timer(self):
+        # The three Zelda games (games/totk: TotK and BotW; games/oot) send every half hour (user 2026-11-11: "开机和半小时间隔"),
+        # the other games every hour.
         copies = sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'))
         self.assertGreaterEqual(len(copies), 7)
         for copy in copies:
@@ -451,7 +453,9 @@ class ShaderInboxScheduleTests(unittest.TestCase):
             ask = text[text.index('static inline NSUInteger totk_inbox_should_ask'):]
             ask = ask[:ask.index('\n}\n')]
             self.assertNotIn('totk_contrib_due', ask, f'{copy}: the question waits for rows')
-            self.assertIn('#define TOTK_INBOX_EVERY (60 * 60)', text, f'{copy}: not hourly')
+            zelda = copy.relative_to(TOTK.parent).parts[0] in ('totk', 'oot')
+            every = '(30 * 60)' if zelda else '(60 * 60)'
+            self.assertIn(f'#define TOTK_INBOX_EVERY {every}', text, f'{copy}: not every {"half hour" if zelda else "hour"}')
             self.assertIn('#define TOTK_INBOX_FIRST 20', text, f'{copy}: no upload at the start')
 
 
