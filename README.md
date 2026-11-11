@@ -59,15 +59,16 @@ Ocarina of Time and Pokopia package as a Mac app with `build_app.py`. Not yet: i
 | The Legend of Zelda: Echoes of Wisdom | 1.1.0 | Mac | Community port, early | [`games/eow`](games/eow/README.md) |
 | Animal Crossing: New Horizons | 1.2.1; 3.0.1 (experimental) | Mac | Community port | [`games/acnh`](games/acnh/README.md) |
 | Octopath Traveler 0 | 1.0.3, 1.0.4, 1.0.5 | Mac | Community port, work in progress | [`games/ot0`](games/ot0/README.md) |
-| Hyrule Warriors: Age of Calamity | 1.3.0 | Mac | Community port, experimental | [`games/aoc`](games/aoc/README.md) |
+| Hyrule Warriors: Age of Calamity | 1.3.0, 1.4.1 | Mac | Community port, experimental | [`games/aoc`](games/aoc/README.md) |
 | Mario Kart 8 Deluxe | 4.0.1 | Mac | Community port, early | [`games/mk8d`](games/mk8d/README.md) |
 | Kirby and the Forgotten Land | 1.0.0 | Mac | Community port, early | [`games/kirby`](games/kirby/README.md) |
 | Luigi's Mansion 3 | 1.2.0 | Mac | Community port, work in progress; playable | [`games/lm3`](games/lm3/README.md) |
 | Astral Chain | 1.0.1 | Mac | Community port, work in progress; the first frame is presented and the title flow runs | [`games/alc`](games/alc/README.md) |
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, playable; a few shaders translate on first use | [`games/xc3`](games/xc3/README.md) |
 | Pokémon Violet | 4.0.0 | Mac | Community port, work in progress | [`games/pokesv`](games/pokesv/README.md) |
-| Xenoblade Chronicles X: Definitive Edition | 1.0.0 | Mac | Community diagnostic host, early field gameplay; external work folder required | [`games/xcx`](games/xcx/README.md) |
+| Xenoblade Chronicles X: Definitive Edition | 1.0.0; 2.0.0 (diagnostic) | Mac | Community diagnostic host, early field gameplay; external work folder required | [`games/xcx`](games/xcx/README.md) |
 | Tomodachi Life: Living the Dream | 1.0.0 | Mac | Community port, experimental | [`games/tomodachi`](games/tomodachi/README.md) |
+| The Legend of Zelda: Link's Awakening | 1.1.0 | Mac | Community port, experimental | [`games/la`](games/la/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
@@ -242,6 +243,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 超级马力欧 奥德赛 | 1.3.0、1.4.1 | Mac | 社区移植，早期 | [`games/odyssey`](games/odyssey/README.md) |
 | 猎天使魔女 3 | 1.2.0 | Mac | 社区移植，开发中 | [`games/by3`](games/by3/README.md) |
 | 超级马力欧兄弟 惊奇 | 1.0.0、1.2.1 | Mac | 社区移植，早期 | [`games/wonder`](games/wonder/README.md) |
+| 宝可梦传说 阿尔宙斯 | 1.1.1 | Mac | 社区移植，早期 | [`games/pla`](games/pla/README.md) |
 | 奥日与黑暗森林 终极版 | 1.0.1 | Mac | 社区移植 | [`games/ori`](games/ori/README.md) |
 | 超级马力欧派对 空前盛会 | 2.3.0 | Mac | 社区移植，实验 | [`games/jamboree`](games/jamboree/README.md) |
 | 马力欧 vs. 大金刚 | 1.0.1 | Mac | 社区移植，早期 | [`games/mvdk`](games/mvdk/README.md) |
@@ -250,16 +252,16 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 塞尔达传说 智慧的再现 | 1.1.0 | Mac | 社区移植，早期 | [`games/eow`](games/eow/README.md) |
 | 集合啦！动物森友会 | 1.2.1；3.0.1（实验性） | Mac | 社区移植 | [`games/acnh`](games/acnh/README.md) |
 | 歧路旅人0 | 1.0.3、1.0.4、1.0.5 | Mac | 社区移植，开发中 | [`games/ot0`](games/ot0/README.md) |
-| 塞尔达无双 灾厄启示录 | 1.3.0 | Mac | 社区移植，实验 | [`games/aoc`](games/aoc/README.md) |
+| 塞尔达无双 灾厄启示录 | 1.3.0、1.4.1 | Mac | 社区移植，实验 | [`games/aoc`](games/aoc/README.md) |
 | 马力欧卡丁车8 豪华版 | 4.0.1 | Mac | 社区移植，早期 | [`games/mk8d`](games/mk8d/README.md) |
 | 星之卡比 探索发现 | 1.0.0 | Mac | 社区移植，早期 | [`games/kirby`](games/kirby/README.md) |
 | 路易吉洋馆3 | 1.2.0 | Mac | 社区移植，开发中；可以玩 | [`games/lm3`](games/lm3/README.md) |
 | 异界锁链 | 1.0.1 | Mac | 社区移植，开发中；能出第一帧，标题流程能走 | [`games/alc`](games/alc/README.md) |
 | 异度神剑3 | 1.0.0、2.2.1 | Mac | 社区移植，可玩；少数着色器首次使用时才翻译 | [`games/xc3`](games/xc3/README.md) |
 | 宝可梦 紫 | 4.0.0 | Mac | 社区移植，开发中 | [`games/pokesv`](games/pokesv/README.md) |
-| 宝可梦传说 阿尔宙斯 | 1.1.1 | Mac | 社区移植，早期 | [`games/pla`](games/pla/README.md) |
+| 异度神剑 X 终极版 | 1.0.0；2.0.0（诊断） | Mac | 社区诊断宿主，首区域可探索；需要外部工作目录 | [`games/xcx`](games/xcx/README.md) |
 | 朋友收集 梦想生活 | 1.0.0 | Mac | 社区移植，实验性 | [`games/tomodachi`](games/tomodachi/README.md) |
-| 异度神剑 X 终极版 | 1.0.0 | Mac | 社区诊断宿主，首区域可探索；需要外部工作目录 | [`games/xcx`](games/xcx/README.md) |
+| 塞尔达传说 织梦岛 | 1.1.0 | Mac | 社区移植，实验性 | [`games/la`](games/la/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
@@ -321,9 +323,17 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
   按锁帧和补帧设置分组。**我要上榜**默认关，不弹窗询问；打开后每 5 分钟在本机记一次这局的成绩，开机时和每 30 分钟上传；
   你自己那一行是绿色，所有人都只显示匿名玩家名（[操作与设置](docs/controls.zh-CN.md)）。着色器贡献也改为开机时和每 30 分钟上传。
 - **2026-11-10：塞尔达传说 时之笛（Switch 2）登陆 Mac。** 用你自己导出的游戏（`.nup` 文件，或带更新 131072 的导出目录）
-  通过 `build_app.py` 打包，不需要 keys。在 M4 上从标题玩进科奇里森林和村子，默认 1080p（720p 放大）站在村子里约 81–83 fps。
-  设置面板（按 1）里有分辨率、放大方式（MetalFX 或游戏自带）、锁帧和 MetalFX 补帧（[games/oot](games/oot/README.md)、
-  [安装](games/oot/docs/install.zh-CN.md)）。
+  通过 `build_app.py` 打包，不需要 keys。在 M4 上从标题玩进科奇里森林和村子，720p 或 1080p（720p 放大）站在村子里约
+  81–83 fps；默认 720p。设置面板（按 1）里有分辨率、放大方式（MetalFX 或游戏自带）、锁帧和 MetalFX 补帧
+  （[games/oot](games/oot/README.md)、[安装](games/oot/docs/install.zh-CN.md)）。
+- **2026-11-09：异度神剑 X 2.0.0 的 Mac 诊断版，实验性。** 单独的完整性校验、累积更新合并、按版本打包；默认保持原版
+  30 FPS，可选的 60 / 120 帧时间实验还在等更多人验收（[详情](games/xcx/README.md#update-200-mac-diagnostic)）。
+- **2026-11-08：塞尔达传说 织梦岛 1.1.0 登陆 Mac，实验性。** 用你自己的游戏文件打包；在梅贝村一带手动玩过
+  （[games/la](games/la/README.md)）。
+- **2026-11-07：塞尔达无双 灾厄启示录除了 1.3.0，也能用 1.4.1 更新打包（Mac，实验性）。** 打包时从解包出的游戏目录
+  读取版本（[`games/aoc`](games/aoc/README.md)）。
+- **2026-11-03：王国之泪 1.4.3 在 Mac 上可选 SMAA 和 FXAA Quality。** 在效果页分别选择抗锯齿方式和质量；默认仍是
+  游戏原版的 FXAA（[操作与设置](docs/controls.zh-CN.md)）。
 - **2026-11-03：第一批 Switch 2 游戏，实验性。** 大金刚 Bananza 用开发构建可以在 Mac 上玩；宝可梦 Pokopia 能玩过开场
   进到第一个区域（脚本测试）。Pokopia 2.0.1 可以用你自己的转储目录打包成 Mac App：`python3 build_app.py <转储目录>
   --shared-fonts <王国之泪 / 旷野之息打包时提取的六个 .bfttf 字体>`（不需要 keys；[docs/ns2-port.md](docs/ns2-port.md)）。
