@@ -22,6 +22,10 @@ The Legend of Zelda: Ocarina of Time for Nintendo Switch 2 (title `0400486024DEC
 - MetalFX frame interpolation works: at 50+50 on a 100 Hz display 595 of 600 game frames got an interpolated frame, about 3.7 ms of GPU each.
 - iPhone and iPad: a build path exists (`--platform ios`) and is being tested; the install page does not cover it yet.
 
+## Mods and save editing
+
+See [the install guide](docs/install.md#mods-and-save-editing) for Switch 2 RomFS compatibility, controller prompt packs, and offline save editing on the Mac.
+
 ## Settings
 
 Key **1** opens the settings panel. The first page:
