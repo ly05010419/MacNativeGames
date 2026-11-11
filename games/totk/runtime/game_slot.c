@@ -114,7 +114,8 @@ static int pid_same(pid_t pid, uint64_t start) { return start && pid_start(pid) 
 static int slot_path_is_game(const char *path) {
     const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
     if (b - path >= 16 && !strncmp(b - 16, "/Contents/MacOS/", 16) &&
-        (!strcmp(b, "TOTK") || !strcmp(b, "BotW") || !strcmp(b, "OcarinaOfTime"))) return 1;   /* the Mac apps' games */
+        (!strcmp(b, "TOTK") || !strcmp(b, "BotW") || !strcmp(b, "Bananza") || !strcmp(b, "Pokopia") ||
+         !strcmp(b, "OcarinaOfTime"))) return 1;   /* the Mac apps' games (build_app.py APPS; games/oot/build.py) */
     return !strncmp(b, "totk-native", 11) || !strncmp(b, "oot-native", 10);   /* also renamed copies such as totk-native.base */
 }
 static int pid_is_game(pid_t pid) {

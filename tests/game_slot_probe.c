@@ -15,6 +15,8 @@ int main(int argc, char **argv) {
     expect(slot_path_is_game("/w/build/totk-native.base"), "a renamed totk-native copy");
     expect(slot_path_is_game("/A/Tears of the Kingdom.app/Contents/MacOS/TOTK"), "Tears of the Kingdom's App");
     expect(slot_path_is_game("/A/Breath of the Wild.app/Contents/MacOS/BotW"), "Breath of the Wild's App");
+    expect(slot_path_is_game("/A/Pokémon Pokopia.app/Contents/MacOS/Pokopia"), "Pokopia's App");
+    expect(slot_path_is_game("/A/Donkey Kong Bananza.app/Contents/MacOS/Bananza"), "Bananza's App");
     expect(!slot_path_is_game("/tmp/OcarinaOfTime"), "the App's name outside an App");
     expect(!slot_path_is_game("/A/X.app/Contents/MacOS/OcarinaOfTimeHelper"), "another program in an App");
     expect(!slot_path_is_game("/usr/bin/python3"), "a script");

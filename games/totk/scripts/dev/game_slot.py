@@ -73,7 +73,8 @@ def pid_path(pid):
     return buf.value.decode(errors="replace") if _libproc.proc_pidpath(pid, buf, 4096) > 0 else ""
 
 
-APP_GAMES = ("TOTK", "BotW", "OcarinaOfTime")   # <App>/Contents/MacOS/<name>: the Mac apps' games
+APP_GAMES = ("TOTK", "BotW", "Bananza", "Pokopia", "OcarinaOfTime")   # <App>/Contents/MacOS/<name>: the Mac apps' games
+                                                                      # (build_app.py APPS; games/oot/build.py)
 
 
 def is_game_path(path):

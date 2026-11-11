@@ -82,8 +82,34 @@ class DefaultFolder(unittest.TestCase):
 class GameProcesses(unittest.TestCase):
     GAME_PATHS = ('/Applications/Ocarina of Time.app/Contents/MacOS/OcarinaOfTime', '/w/scratch/build/oot/build/oot-native',
                   '/w/build/totk-native.base', '/A/Tears of the Kingdom.app/Contents/MacOS/TOTK',
-                  '/A/Breath of the Wild.app/Contents/MacOS/BotW')
+                  '/A/Breath of the Wild.app/Contents/MacOS/BotW',
+                  '/A/Pokémon Pokopia.app/Contents/MacOS/Pokopia', '/A/Donkey Kong Bananza.app/Contents/MacOS/Bananza')
     OTHER_PATHS = ('/tmp/OcarinaOfTime', '/A/X.app/Contents/MacOS/OcarinaOfTimeHelper', '/usr/bin/python3', '')
+
+    def test_every_app_the_packaging_makes_is_known(self):
+        """build_app.py APPS names each App's game program (its third field); every one of them is a game to the slot.
+        Read from the source: Bananza and Pokopia use their own slot folders, so only their process name tells."""
+        import ast
+        tree = ast.parse((ROOT / 'build_app.py').read_text(encoding='utf-8'))
+        names = set()
+        for node in ast.walk(tree):
+            value = getattr(node, 'value', None)
+            targets = getattr(node, 'targets', [])
+            if not (isinstance(value, (ast.Dict, ast.Tuple)) and targets):
+                continue
+            target = targets[0]
+            is_apps = (isinstance(target, ast.Name) and target.id == 'APPS') or \
+                      (isinstance(target, ast.Subscript) and getattr(target.value, 'id', '') == 'APPS')
+            if not is_apps:
+                continue
+            for entry in (value.values if isinstance(value, ast.Dict) else [value]):
+                if isinstance(entry, ast.Tuple) and len(entry.elts) == 3 and isinstance(entry.elts[2], ast.Constant):
+                    names.add(entry.elts[2].value)
+        self.assertTrue({'TOTK', 'BotW', 'Pokopia', 'Bananza'} <= names, names)
+        for game in GAMES:
+            slot = load_slot(game)
+            for name in sorted(names):
+                self.assertTrue(slot.is_game_path(f'/A/X.app/Contents/MacOS/{name}'), f'{game}: {name}')
 
     def test_scripts_know_every_apps_game(self):
         for game in GAMES:
