@@ -898,8 +898,17 @@ void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the cam
    128, so the cache holds about 7x fewer glyphs. The height becomes 16384, and the font heap the cache texture comes
    from (main+0x13e629c: mov / movk w0) 0xd33333 -> 0x2533333: the 24 MiB the bigger texture adds, the same slack as
    shipped.
+   The typing speed (2026-11-11: Master Kohga's entrance stopped on line C08-1). A text box that types its text (talk
+   window, demo lines) gets a typewriter (made by main+0xf67e38 with the box's speed; fields +0x28 box, +0x40 speed, +0x54
+   budget). Its update main+0xf55158 adds step x speed to the budget (main+0xf551fc) and shows a character when the budget
+   covers its width: the font's GetCharWidth (vtable +0x80, raster pixels) plus the box's character space. At fs' every line
+   typed fs' / fs times slower in frames (x2.70: C08-0 took 112 frames, not 82, and missed Kohga's animation trigger at frame
+   100). The speed load main+0xf551e8 now calls a stub in the patch area's tail (after the rewriter's stubs, before the data
+   page): speed x W / table[W], W = the box font's GetWidth (vtable +0x20) and the table of 3; a bitmap font gets x1.0. The
+   pause and auto-advance tags count frames and are unchanged. 1.6.0: the update is main+0x134b100 and the speed load
+   main+0x134b1b0 (into s2), the same fields; one stub serves both and returns the speed in s1 and s2.
    The sizes are for the largest canvas of the session (the swapchain size). Key 3 does not make the fonts again: a
-   smaller canvas draws the bigger glyphs scaled down. TOTK_FONT_RES=0 keeps all three as shipped.
+   smaller canvas draws the bigger glyphs scaled down. TOTK_FONT_RES=0 keeps all of them as shipped.
    1.6.0 has the same code, compiled differently (the site addresses below, from the data and the code of both mains):
    the font setup is one function (main+0x18439fc lets languages 13, 14 and 15 through; 17 does not exist), adrp / add
    pairs at main+0x1844174 pick its three tables (main+0x2bfcec0, f00, f40) and its loop reads the rows inline; the
@@ -932,6 +941,15 @@ enum { FONT_SCALE = 0xf67c04, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_T
 static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont / ... / scvtf s0, w0 / ... */
     0xaa1303e0u, 0x97c32807u, 0xf9400008u, 0xf9401108u, 0xd63f0100u, 0x1e220000u, 0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,
 };
+static const struct { uint32_t off, original; } g_font_type_check[] = {   /* the typewriter update and what the stub relies on */
+    {0xf55184u, 0xaa0003f3u},   /* mov x19, x0: the typewriter */
+    {0xf551acu, 0xf9401660u},   /* ldr x0, [x19, #0x28]: its text box */
+    {0xf551d8u, 0x7940ba62u},   /* ldrh w2, [x19, #0x5c]: live across the site, the stub keeps x2 */
+    {0xf551e8u, 0xbd404261u},   /* ldr s1, [x19, #0x40]: the speed (the site) */
+    {0xf551fcu, 0x1f000820u},   /* fmadd s0, s1, s0, s2: budget += speed x step */
+    {0x31c24u, 0xf9407c00u},    /* TextBox::GetFont: ldr x0, [x0, #0xf8] */
+};
+enum { FONT_TYPE_SITE = 0xf551e8 };
 #else
 static const struct { uint32_t off, original; } g_font_rel[] = {   /* the language gate and the table picks (code words, not tables) */
     {0x18439fcu, 0x510036a8u},   /* sub w8, w21, #13 */
@@ -958,7 +976,54 @@ enum { FONT_SCALE = 0x1366720, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_
 static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont (main+0x1d51cc0) / ... */
     0xaa1303e0u, 0x9427ad67u, 0xf9400008u, 0xf9401108u, 0xd63f0100u, 0x1e220000u, 0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,
 };
+static const struct { uint32_t off, original; } g_font_type_check[] = {   /* the typewriter update main+0x134b100 and what the stub relies on */
+    {0x134b12cu, 0xaa0003f3u},   /* mov x19, x0: the typewriter */
+    {0x134b150u, 0xf9401660u},   /* ldr x0, [x19, #0x28]: its text box */
+    {0x134b1b0u, 0xbd404262u},   /* ldr s2, [x19, #0x40]: the speed (the site; only s0 and s2 are live after it) */
+    {0x134b1ccu, 0x1e200840u},   /* fmul s0, s2, s0: speed x step, added to the budget next */
+    {0x1d51cc0u, 0xf9407c00u},   /* TextBox::GetFont: ldr x0, [x0, #0xf8] */
+};
+enum { FONT_TYPE_SITE = 0x134b1b0 };
 #endif
+enum { FONT_TYPE_ADRP = 13 };
+static const uint32_t g_font_type_stub[] = {   /* both versions; s0 and x2 kept; the speed is returned in s1 (1.9.0) and s2 (1.6.0) */
+    0xa9be7bfdu, 0x910003fdu, 0xf9000be2u, 0xbd001be0u,   /* stp x29, x30, [sp, #-32]! / mov x29, sp / str x2, [sp, #16] / str s0, [sp, #24] */
+    0xf9401668u, 0xf9407d00u,   /* ldr x8, [x19, #0x28] / ldr x0, [x8, #0xf8]: the box's font */
+    0xf9400008u, 0xf9401108u, 0xd63f0100u,   /* ldr x8, [x0] / ldr x8, [x8, #0x20] / blr x8: W = GetWidth() */
+    0xbd404261u,   /* ldr s1, [x19, #0x40]: the speed */
+    0x51000409u, 0x712ffd3fu, 0x540000c2u,   /* sub w9, w0, #1 / cmp w9, #3071 / b.hs +0x18: W outside the table keeps the speed */
+    0x90000008u,   /* adrp x8, the table (set at patch time) */
+    0xbc605902u,   /* ldr s2, [x8, w0, uxtw #2]: the shipped width */
+    0x1e230003u, 0x1e221863u, 0x1e230821u,   /* ucvtf s3, w0 / fdiv s3, s3, s2 / fmul s1, s1, s3 */
+    0x1e204022u,   /* fmov s2, s1 */
+    0xbd401be0u, 0xf9400be2u, 0xa8c27bfdu, 0xd65f03c0u,   /* ldr s0, [sp, #24] / ldr x2, [sp, #16] / ldp x29, x30, [sp], #32 / ret */
+};
+_Static_assert(FONT_TABLE_N == 3072, "the typing stub's cmp w9, #3071 is the table size - 1");
+static void patch_font_typing(Module *m, uint64_t data_off) {
+    uint32_t word;
+    for (size_t i = 0; i < sizeof g_font_type_check / sizeof *g_font_type_check; i++) {
+        memcpy(&word, m->base + g_font_type_check[i].off, 4);
+        if (word != g_font_type_check[i].original) {
+            fprintf(stderr, "[botw] font typing speed main+%#x: found %08x expected %08x\n", g_font_type_check[i].off, word, g_font_type_check[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " typewriter instructions");
+        }
+    }
+    const uint64_t stub = (m->file_size + 15) & ~15ULL;   /* the patch area's tail: executable, after the rewriter's stubs */
+    int room = stub >= m->patch_off && stub + sizeof g_font_type_stub <= data_off;   /* the tail's size follows the rewrite */
+    for (size_t i = 0; room && i < sizeof g_font_type_stub; i++) room = !m->base[stub + i];
+    if (!room) {
+        fprintf(stderr, "[botw] font typing speed: no free %zu bytes at main+%#llx before the data page: typed text stays slower at this raster\n",
+                sizeof g_font_type_stub, (unsigned long long)stub);
+        return;
+    }
+    uint32_t words[sizeof g_font_type_stub / 4];
+    memcpy(words, g_font_type_stub, sizeof words);
+    words[FONT_TYPE_ADRP] = adrp_reg(8, (uintptr_t)m->base + stub + 4 * FONT_TYPE_ADRP, (uintptr_t)m->base + data_off + FONT_TABLE);
+    put_words(m, stub, words, sizeof words / 4, "font typing speed stub");
+    put_word(m, FONT_TYPE_SITE, 0x80000000u | branch_to(FONT_TYPE_SITE, stub), "font typing speed");   /* bl stub */
+    fprintf(stderr, "[botw] font typing speed: main+%#x calls the stub at main+%#llx (speed x font width / shipped width)\n",
+            FONT_TYPE_SITE, (unsigned long long)stub);
+}
 static void patch_font_size(Module *m) {
     if (ios_code()) return;   /* the phone: the handheld 720p canvas, the shipped size */
     const char *e = getenv("TOTK_FONT_RES");
@@ -1046,6 +1111,7 @@ static void patch_font_size(Module *m) {
     put_words(m, FONT_SCALE, scale, FONT_SCALE_WORDS, "font TextScaleOn width");
     for (size_t i = 0; i < sizeof g_font_cache / sizeof *g_font_cache; i++) put_word(m, g_font_cache[i].off, g_font_cache[i].word, "font glyph cache");
     fprintf(stderr, "[botw] font glyph cache 2048x16384 (shipped 2048x4096), font heap 0x2533333\n");
+    patch_font_typing(m, data_off);
     fprintf(stderr, "[botw] font raster size x%.2f for the %u-pixel canvas: 18 -> %u, 20 -> %u, 30 -> %u, 80 -> %u; text sizes kept "
             "(reference table, main+%#x TextScaleOn) (TOTK_FONT_RES=0 keeps 720p)\n",
             h / 720.0, h, big[1], big[2], big[3], big[0], FONT_SCALE);
