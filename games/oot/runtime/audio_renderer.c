@@ -180,10 +180,20 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     take(&in, h.render_info, "render info");
     need(in.p == in.end, "unconsumed update input");
 
+    /* Channel resources are positional: record i is resource i, the one a voice's channel_ids name. An unused record
+       keeps a stale id (often 0), so copying by id overwrote resource 0 (the front-left mix of voice 0) with an unused
+       record's zero mix. The server keeps an unused resource's mix (Eglantine/yuzu InfoUpdater::UpdateVoiceChannelResources).
+       After christianfurr's fork (c68ce332), where Ocarina of Time lost its front-left voice. */
     for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
-        need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
-        r->channels[chans[i].id] = chans[i];
+        if (chans[i].in_use) r->channels[i] = chans[i];
+        else r->channels[i].in_use = 0;
     }
+    /* Voices: a record in use names its voice by id; a record not in use names nothing (its id is stale, often 0) and
+       is skipped, so it can no longer reset a playing voice (InfoUpdater::UpdateVoices). A voice in use before this
+       request that no record in use names any more was stopped by the game: it gets the stop it got before (reset, and
+       Breath of the Wild's fade-out), once all records are read. */
+    uint8_t was_used[vc], named[vc];
+    for (int i = 0; i < vc; i++) { was_used[i] = r->voices[i].in.in_use; named[i] = 0; }
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
@@ -199,10 +209,17 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
                 }
             }
         }else memcpy(&v,voices+i*voice_stride,sizeof v);
-        update_voice(r,&v);
+        if(!v.in_use){
+            static unsigned stale;   /* evidence: the case that used to reset a playing voice */
+            if(v.id<(uint32_t)vc&&(int)v.id!=i&&was_used[v.id]&&stale<3)
+                fprintf(stderr,"[totk-audio] voice record %d is not in use and names voice %u, which is (%u of 3; before the fix this reset that voice)\n",i,v.id,++stale);
+            continue;
+        }
+        update_voice(r,&v);named[v.id]=1;
         ServerVoice *server=&r->voices[v.id];server->use_float_biquads=float_voices;
         if(float_voices)memcpy(server->float_biquads,v2.biquads,sizeof v2.biquads);
     }
+    for (int i = 0; i < vc; i++) if (was_used[i] && !named[i]) { AudrenVoiceIn stop = {.id = (uint32_t)i}; update_voice(r, &stop); }
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     if (getenv("TOTK_AUDIO_DUMP")) { static unsigned dumped; unsigned active = 0; for (int i=0;i<ec;i++) if (effects[i].enabled && effects[i].type) active++;
         if (active > dumped) { dumped = active; FILE *f = fopen("analysis/audio-effects.bin", "wb"); if (f) { fwrite(effects, sizeof *effects, ec, f); fclose(f); } }
@@ -381,6 +398,43 @@ __attribute__((constructor)) static void register_audio(void) { runtime_audio_re
 /* ---------- make probe-audio: mixer checks on constructed renderer state (no game, no audio device) ---------- */
 int audio_mixer_read(AudioRenderer *r, float *lr, int frames);
 static int near(float a, float b) { return fabsf(a - b) <= 1e-4f; }
+/* Full positional tables, including unused records whose metadata id is zero.
+ * Actual wire parsing must preserve both active voices and their matrices,
+ * update gain on the next request, and release only the specified slot. */
+static int probe_positional_voice_tables(unsigned revision) {
+    AudrenParameter p={.sample_rate=48000,.sample_count=240,.mix_buffer_count=2,.voice_count=3,.sink_count=1,.revision=REV(revision)};
+    AudioRenderer *r=renderer_new(&p);audio_mixer_open(r);
+    float pcm[2][720];for(unsigned i=0;i<720;i++){pcm[0][i]=0.25f;pcm[1][i]=0.125f;}
+    AudrenHeader h={.revision=REV(revision),.behavior=16,.memory_pools=12*sizeof(AudrenPoolIn),.voice_resources=3*sizeof(AudrenChannelIn),.voices=3*sizeof(AudrenVoiceInV2),.mixes=sizeof(AudrenMixIn),.sinks=sizeof(AudrenSinkIn),.performance=16};
+    h.total=sizeof h+h.behavior+h.memory_pools+h.voice_resources+h.voices+h.mixes+h.sinks+h.performance;
+    uint8_t *input=calloc(1,h.total),output[4096];need(input!=NULL,"positional voice probe allocation");
+    int checked=0;
+    for(unsigned block=0;block<3;block++) {
+        uint8_t *at=input;memcpy(at,&h,sizeof h);at+=sizeof h+h.behavior+h.memory_pools;
+        float gain=block?0.25f:1.0f;
+        AudrenChannelIn channels[3]={{.id=0,.mix={gain,0},.in_use=1},{.id=1,.mix={0,gain},.in_use=block<2},{.id=0,.in_use=0}};
+        memcpy(at,channels,sizeof channels);at+=sizeof channels;
+        for(unsigned i=0;i<3;i++) {
+            unsigned active=i<2 && !(block==2&&i==1);
+            AudrenVoiceIn voice={.id=active?i:0,.is_new=!block,.in_use=active,.play_state=PLAY_STARTED,.sample_format=FMT_PCMF32,.sample_rate=48000,.channel_count=1,.pitch=1,.volume=1,.mix_id=0,.splitter_id=0xffffffff,.channel_ids={i}};
+            voice.wave_buffers[0]=(AudrenWaveBuffer){.address=(uintptr_t)pcm[i<2?i:0],.size=sizeof pcm[0],.end=720,.sent=block!=0};
+            for(unsigned j=1;j<4;j++)voice.wave_buffers[j].sent=1;
+            AudrenVoiceInV2 wire={0};memcpy(wire.prefix,&voice,sizeof wire.prefix);memcpy(wire.tail,(uint8_t *)&voice+0x3c,sizeof wire.tail);
+            memcpy(at,&wire,sizeof wire);at+=sizeof wire;
+        }
+        AudrenMixIn mix={.volume=1,.sample_rate=48000,.buffer_count=2,.in_use=1,.mix_id=0,.dest_mix_id=0x7fffffff,.dest_splitter_id=0xffffffff};memcpy(at,&mix,sizeof mix);at+=sizeof mix;
+        AudrenSinkIn sink={.type=SINK_DEVICE,.in_use=1,.input_count=2,.inputs={0,1}};memcpy(at,&sink,sizeof sink);
+        request_update(r,input,h.total,output,sizeof output,0);
+        audio_voices_prepare(r);audio_mixer_render(r,240.0/48000);
+        for(unsigned i=0;i<2;i++)advance_voice(r,&r->voices[i],240.0/48000);
+        float samples[480];need(audio_mixer_read(r,samples,240)==240,"positional voice probe ring");
+        for(unsigned k=0;k<240;k++) {
+            need(near(samples[2*k],0.25f*gain)&&near(samples[2*k+1],block==2?0:0.125f*gain),"audio probe: positional voice and resource tables");checked+=2;
+        }
+    }
+    free(input);audio_mixer_close(r);free(r->voices);free(r->pools);free(r->mixes);free(r->sinks);free(r->effects);free(r->channels);free(r);
+    return checked;
+}
 /* Complete REV15 wire request -> parser -> float voice/splitter filters -> sink.
  * Expected samples use separate double-precision recurrences, including state
  * across two requests. Coefficients deliberately cannot be represented in Q14. */
@@ -501,7 +555,7 @@ void runtime_audio_probe(void) {
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
-    int checked = probe_rev15();
+    int checked = probe_rev15() + probe_positional_voice_tables(15) + probe_positional_voice_tables(16);
 #ifdef GAME_NS2
     { int runtime_ns2_input_stream_probe(void); checked += runtime_ns2_input_stream_probe(); }
 #endif
