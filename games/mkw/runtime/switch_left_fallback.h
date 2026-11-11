@@ -1,12 +1,15 @@
 /* Some Switch-compatible controllers send live 12-bit stick reports while
    GameController leaves the left stick at zero. Use raw input only after a
-   sustained discrepancy, and abandon it as soon as native input works. */
+   sustained discrepancy, and abandon it as soon as native input works.
+   Once a controller has shown the discrepancy (a third-party Pro Controller over
+   Bluetooth on macOS), raw input is kept for it from then on: re-checking native
+   input lost the short flicks menus are driven with. */
 #pragma once
 #include <math.h>
 #include <stdint.h>
 
 typedef struct {
-    int x, y, valid, active;
+    int x, y, valid, active, confirmed;
     uint64_t at, zeroSince;
 } SwitchLeftFallback;
 
@@ -25,13 +28,17 @@ static inline int switch_left_get(SwitchLeftFallback *s, float nativeX, float na
     if (!s->valid || now < s->at || now - s->at > 250000000ULL) {
         s->active = 0; s->zeroSince = 0; return 0;
     }
+    if (s->confirmed) {
+        *x = switch_left_axis(s->x); *y = switch_left_axis(s->y);
+        s->active = 1; return 1;
+    }
     if (fabsf(nativeX) > 0.0001f || fabsf(nativeY) > 0.0001f) {
         s->active = 0; s->zeroSince = 0; return 0;
     }
     *x = switch_left_axis(s->x); *y = switch_left_axis(s->y);
-    if (fmaxf(fabsf(*x), fabsf(*y)) > 0.5f) {
+    if (fmaxf(fabsf(*x), fabsf(*y)) > 0.3f) {
         if (!s->zeroSince) s->zeroSince = now;
-        if (now - s->zeroSince >= 200000000ULL) s->active = 1;
+        if (now - s->zeroSince >= 80000000ULL) s->active = s->confirmed = 1;
     } else s->zeroSince = 0;
     return s->active;
 }
