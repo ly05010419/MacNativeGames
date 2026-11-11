@@ -448,9 +448,7 @@ def build(args, source):
     if dependencies.returncode:run([py,'-m','pip','install','-r',GAME/'requirements.txt'],'python-dependencies',work)
     extracted=tree/'extracted/oot';index=extracted/'romfs/index.json'
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
-    if source.name.lower().endswith('.part1.rar'):
-        run([py,'scripts/import_rar.py',source,'--output',extracted],'import-original-rar')
-    elif source.is_file():run([py,'scripts/import_nup.py',source,'--output',extracted],'import-original-nup')
+    if source.is_file():run([py,'scripts/import_nup.py',source,'--output',extracted],'import-original-nup')
     elif not index.exists():run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072'],'import-original-dump')
     code=extracted/'exefs'
     for name,digest in expected['exefs_sha256'].items():

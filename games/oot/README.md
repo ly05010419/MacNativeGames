@@ -24,7 +24,7 @@ The Legend of Zelda: Ocarina of Time for Nintendo Switch 2 (title `0400486024DEC
 
 ## Mods and save editing
 
-See [the install guide](docs/install.md#mods-and-save-editing) for Switch 2 RomFS compatibility, controller prompt packs, and offline save editing on the Mac.
+See [mods and save editing](docs/mods.md) for Switch 2 RomFS compatibility, controller prompt packs, and offline save editing on the Mac.
 
 ## Settings
 
