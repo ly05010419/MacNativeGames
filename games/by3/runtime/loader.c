@@ -18,14 +18,68 @@
 #include <mach/mach.h>
 #include "mach_vm_compat.h"
 #include <sys/ucontext.h>
-#include "runtime_tables.h"
+#include "game_data.h"
 #include "game_patches.h"
 #include "game_version.h"
-#define NM (sizeof(modules)/sizeof(modules[0]))
+#include <errno.h>
 pthread_key_t runtime_keys[8];
 static uint64_t timer_calls, svc_calls;
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr,"[totk] FAIL: %s\n",message); exit(1); }
 static void need(bool c,const char *m) { if(!c) runtime_fail(m); }
+/* The modules' tables (layout, symbols, relocations, gates) that scripts/prepare_runtime.py derives from the player's
+   verified rewrites: runtime-tables.bin in the game data folder (game_data.h), mapped at start. Nothing of them is compiled
+   in, so this program can be replaced in an app on its own. Every count and offset is checked before use; each module's
+   SHA-256 in the file binds it to its image as before (map_module). */
+/* main first, then the subsdk modules the title ships, sdk last: three for TotK and BotW (main, subsdk0, sdk), two for a
+   Switch 2 game such as Donkey Kong Bananza (main, sdk). The tables give the count (scripts/prepare_runtime.py). */
+#define MAX_MODULES 12
+static Module modules[MAX_MODULES];
+static unsigned module_count;
+#define NM module_count
+static uint64_t probe_plt,probe_slot;   /* main's original PLT stub of nn::os::GetSystemTick and its GOT slot (probe) */
+#define PROBE_PLT probe_plt
+#define PROBE_SLOT probe_slot
+typedef struct {char magic[8],version[8];uint32_t nmodule,format;uint64_t probe_plt,probe_slot,strings,strings_size,size;} TablesHeader;
+typedef struct {char name[16],digest[72];uint64_t file_size,text_end,ro_off,data_off,patch_off,key_off,init,ctor_flag,init_array,init_size,symbols,relocs,gates;uint32_t nsym,nreloc,ngate,reserved;} TablesModule;
+typedef struct {uint64_t value,size;uint32_t name;uint8_t defined,binding,type,reserved;} TablesSymbol;
+_Static_assert(sizeof(TablesHeader)==64&&sizeof(TablesModule)==208&&sizeof(TablesSymbol)==24&&sizeof(Reloc)==24&&sizeof(Gate)==24,"runtime-tables.bin layout");
+static int gate_order(const void *a,const void *b){uint64_t x=((const Gate *)a)->ret,y=((const Gate *)b)->ret;return (x>y)-(x<y);}
+static int tables_range(uint64_t size,uint64_t off,uint64_t count,uint64_t each){return off%8==0&&off<=size&&count<=(size-off)/each;}
+static void load_tables(void) {
+ char path[4096];runtime_game_data_path("runtime-tables.bin",path,sizeof path);
+ int fd=open(path,O_RDONLY);
+ if(fd<0){fprintf(stderr,"[totk] %s: %s\n",path,strerror(errno));runtime_fail("game tables missing (build_app.py writes them into the app; update_runtime.py --work adds them to an older app)");}
+ struct stat st;need(fstat(fd,&st)==0&&st.st_size>=(off_t)sizeof(TablesHeader)&&st.st_size<(1LL<<30),"game tables size");
+ const uint8_t *b=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);need(b!=MAP_FAILED,"map game tables");
+ const TablesHeader *h=(const void *)b;uint64_t size=(uint64_t)st.st_size;
+ need(!memcmp(h->magic,"TOTKTAB1",8)&&h->format==1&&h->size==size,"game tables format");
+ if(strncmp(h->version,TOTK_GAME_DIR,sizeof h->version)){fprintf(stderr,"[totk] game tables are for %.8s, this program for " TOTK_GAME_DIR "\n",h->version);runtime_fail("game tables of another game version");}
+ need(h->nmodule>=2&&h->nmodule<=MAX_MODULES&&tables_range(size,sizeof *h,h->nmodule,sizeof(TablesModule))&&h->strings_size>0&&tables_range(size,h->strings,h->strings_size,1)&&!b[h->strings+h->strings_size-1],"game tables layout");
+ const char *strings=(const char *)b+h->strings;module_count=h->nmodule;
+ for(unsigned i=0;i<NM;i++){
+  char want[16];if(i==0)strcpy(want,"main");else if(i==NM-1)strcpy(want,"sdk");else snprintf(want,sizeof want,"subsdk%u",i-1);
+  const TablesModule *t=(const TablesModule *)(b+sizeof *h)+i;Module *m=&modules[i];
+  need(!t->name[sizeof t->name-1]&&!strcmp(t->name,want)&&strnlen(t->digest,sizeof t->digest)==64,"game tables module");
+  need(tables_range(size,t->symbols,t->nsym,sizeof(TablesSymbol))&&tables_range(size,t->relocs,t->nreloc,sizeof(Reloc))&&tables_range(size,t->gates,t->ngate,sizeof(Gate)),"game tables bounds");
+  *m=(Module){.name=t->name,.digest=t->digest,.file_size=t->file_size,.text_end=t->text_end,.ro_off=t->ro_off,.data_off=t->data_off,.patch_off=t->patch_off,.key_off=t->key_off,
+   .init=t->init,.ctor_flag=t->ctor_flag,.init_array=t->init_array,.init_size=t->init_size,.nsym=t->nsym,.relocs=(const Reloc *)(b+t->relocs),.nreloc=t->nreloc,
+   .gates=(const Gate *)(b+t->gates),.ngate=t->ngate};
+  Symbol *symbols=calloc(t->nsym?t->nsym:1,sizeof *symbols);need(symbols!=NULL,"game tables memory");
+  const TablesSymbol *ts=(const TablesSymbol *)(b+t->symbols);
+  for(unsigned k=0;k<t->nsym;k++){need(ts[k].name<h->strings_size,"game tables symbol name");
+   symbols[k]=(Symbol){.name=strings+ts[k].name,.value=ts[k].value,.size=ts[k].size,.defined=ts[k].defined,.binding=ts[k].binding,.type=ts[k].type};}
+  m->symbols=symbols;
+  /* runtime_dispatch finds a gate by binary search: sorted here too, so tables written before prepare_runtime.py sorted them work. */
+  Gate *gates=malloc((t->ngate?t->ngate:1)*sizeof *gates);need(gates!=NULL,"game tables memory");
+  memcpy(gates,b+t->gates,t->ngate*sizeof *gates);qsort(gates,t->ngate,sizeof *gates,gate_order);
+  for(unsigned k=1;k<t->ngate;k++)need(gates[k].ret>gates[k-1].ret,"game tables: two gates with one return address");
+  m->gates=gates;
+ }
+ probe_plt=h->probe_plt;probe_slot=h->probe_slot;
+ fprintf(stderr,"[totk] game tables %s: %u modules,",path,NM);
+ for(unsigned i=0;i<NM;i++)fprintf(stderr," %s %u",modules[i].name,modules[i].nreloc);
+ fprintf(stderr," relocations\n");
+}
 static size_t page_up(size_t x) { return (x+0x3fff)&~(size_t)0x3fff; }
 static unsigned hash_name(const char *s) { unsigned h=2166136261u; for(;*s;s++)h=(h^(uint8_t)*s)*16777619u;return h; }
 static void make_hash(Module *m) {
@@ -51,12 +105,15 @@ void *runtime_symbol(const char *name) {
  return NULL;
 }
 uint8_t *runtime_module_base(const char *name){for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,name))return modules[i].base;return NULL;}
+/* Is pc in a module's original code (not in the patch area, where rewritten windows and gates are)? Called from a signal
+   handler (threads.c, asynchronous preemption, both games): only reads the module table. */
+int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
 /* RELRO in newer SDKs protects relocated data after linking. Keep permissions at
  * the guest's 4 KiB granularity. A Darwin 16 KiB page receives the union of its
  * four guest permissions, so protecting an edge never removes access from an
  * adjacent writable object. Whole interior pages are actually made read-only. */
 static pthread_mutex_t module_permission_lock=PTHREAD_MUTEX_INITIALIZER;
-static unsigned char *module_permissions[NM];
+static unsigned char *module_permissions[MAX_MODULES];
 static unsigned module_page_permission(unsigned i,uint64_t off){
  Module *m=&modules[i];
  if(off<m->data_off)return off<page_up(m->text_end)?5:1;
@@ -191,11 +248,13 @@ static void map_module(Module *m,const char *dir) {
  uint64_t *key=(void *)(m->base+m->key_off);
  for(unsigned i=0;i<8;i++)key[i]=runtime_keys[i]*8;
  make_hash(m);
- fprintf(stderr,"[totk] mapped %s size=%zu symbols=%u\n",m->name,m->size,m->nsym);
+ fprintf(stderr,"[totk] mapped %s at %p size=%zu symbols=%u\n",m->name,(void *)m->base,m->size,m->nsym);
 }
-/* TOTK_EXPORT_IOS=<dir>: after the game patches, write each module's text [0, page_up(TEXT_END)) for ios/tools/gen_embed.py.
-   Relocations never reach the text (they start at DATA_OFF), so the exported bytes differ from the verified image only at
-   the patch sites; the count is printed and checked by the generator. */
+/* TOTK_EXPORT_IOS=<dir>: after the game patches, write each module's text [0, page_up(TEXT_END)) and patch area
+   [PATCH_OFF, page_up(file size)) for ios/tools/gen_embed.py (Breath of the Wild's exclusive-acquire patch also changes the
+   rewriter's patch area; Tears of the Kingdom's leave it as it is). Relocations never reach either (they start at
+   DATA_OFF, below PATCH_OFF), so the exported bytes differ from the verified image only at the patch sites; the counts
+   are printed. */
 static void export_ios_text(const char *rewritten,const char *out) {
  for(unsigned i=0;i<NM;i++){Module *m=&modules[i];char path[4096];size_t n=page_up(m->text_end);
   need(snprintf(path,sizeof path,"%s/%s.patched.bin",rewritten,m->name)<(int)sizeof path,"image path");
@@ -203,7 +262,14 @@ static void export_ios_text(const char *rewritten,const char *out) {
   unsigned diff=0;for(size_t k=0;k<n;k+=4)if(memcmp(orig+k,m->base+k,4))diff++;free(orig);
   need(snprintf(path,sizeof path,"%s/%s.x0.bin",out,m->name)<(int)sizeof path,"export path");
   f=fopen(path,"wb");need(f&&fwrite(m->base,1,n,f)==n&&fclose(f)==0,"write exported text");
-  printf("%s text_bytes=%zu patched_words=%u\n",m->name,n,diff);}
+  size_t p0=m->patch_off,p1=page_up(m->file_size);need(p0<=p1&&p1<=m->size,"patch area layout");
+  need(snprintf(path,sizeof path,"%s/%s.patched.bin",rewritten,m->name)<(int)sizeof path,"image path");
+  f=fopen(path,"rb");need(f!=NULL,"open patched module");uint8_t *img=calloc(1,p1-p0);need(img!=NULL,"patch area buffer");
+  need(fseek(f,(long)p0,SEEK_SET)==0,"seek patch area");size_t got=fread(img,1,m->file_size-p0,f);fclose(f);need(got==m->file_size-p0,"read patch area");
+  unsigned pdiff=0;for(size_t k=0;k<p1-p0;k+=4)if(memcmp(img+k,m->base+p0+k,4))pdiff++;free(img);
+  need(snprintf(path,sizeof path,"%s/%s.x1.bin",out,m->name)<(int)sizeof path,"export path");
+  f=fopen(path,"wb");need(f&&fwrite(m->base+p0,1,p1-p0,f)==p1-p0&&fclose(f)==0,"write exported patch area");
+  printf("%s text_bytes=%zu patched_words=%u patch_area_bytes=%zu patched_words=%u\n",m->name,n,diff,p1-p0,pdiff);}
 }
 #endif
 static void relocate(Module *m) {
@@ -293,11 +359,24 @@ static void thread_cleanup(void) {
  for(unsigned i=0;i<4;i++)pthread_setspecific(runtime_keys[i],NULL);environment_destroy(e);
 }
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
+/* The system counter (cntpct / cntvct) at the rate the game's SDK converts it with: the Switch's 19.2 MHz, or the Switch 2's
+   31.25 MHz (32 ns a tick; its nn::os::GetSystemTickFrequency answers 0x1dcd650). At 19.2 MHz a Switch 2 game measured every
+   span 1.63 times too short and its frame-rate controller held 20 fps: seedds/nxnative c4b0618c (MIT). */
+#ifdef GAME_NS2
+#define GUEST_TICKS(ns) ((ns)/32)
+#else
+#define GUEST_TICKS(ns) ((ns)*12/625)
+#endif
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
- for(unsigned i=0;i<NM;i++)for(unsigned j=0;j<modules[i].ngate;j++) {
-  const Gate *g=&modules[i].gates[j];if((uintptr_t)modules[i].base+g->ret!=ret)continue;
+ for(unsigned i=0;i<NM;i++) {
+  uintptr_t b=(uintptr_t)modules[i].base;if(!b||ret<b)continue;
+  unsigned lo=0,hi=modules[i].ngate;   // gates sorted by return address (prepare_runtime.py)
+  while(lo<hi){unsigned m=(lo+hi)/2;if(b+modules[i].gates[m].ret<ret)lo=m+1;else hi=m;}
+  if(lo==modules[i].ngate||b+modules[i].gates[lo].ret!=ret)continue;
+  const Gate *g=&modules[i].gates[lo];
+  if(g->timer==2){runtime_spin_wait(i,g->original);return;}   // spin wait (patch_nso.py "Spin waits"): no register changes
   if(g->timer){mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
-   need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)(ns*12/625);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
+   need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)GUEST_TICKS(ns);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
   __atomic_fetch_add(&svc_calls,1,__ATOMIC_RELAXED);runtime_svc(g->arg,regs,modules[i].name,g->original);return;
  }
  runtime_fail("unknown gate return address");
@@ -310,19 +389,95 @@ static void signal_hex(const char *label,uint64_t value) {
 }
 /* CTR_EL0 for 128-byte host cache lines: DminLine=IminLine=5 (32 words), ERG=CWG=5, PIPT I-cache, IDC/DIC clear. */
 #define HOST_CTR_EL0 0x8555c005ULL
+#ifdef GAME_TOTK   /* TOTK addresses (GAME_ADDR) */
+/* #57: the same optional reference as below (object+0x6b0, a holder whose first word is the target) can outlive its
+   holder: after long play the freed holder's memory held other data (the low region's base, two floats 1.0), the caller
+   at GAME_ADDR(0x15ecb0c) passed that word as the target, and the callee faulted reading the target's id (+0x10). The
+   callee takes a null target, but its caller then uses the word again, so the target is treated as absent where it is
+   read: the callee's frame is popped (its prologue decoded: frame size and the callee-saved registers it stored), the
+   caller resumes at its "no target" branch, and the stale reference is cleared as in the load-time case. Only this exact
+   signature is handled: fault at the callee's ldr w8,[x22,#0x10] with x1 == x22 and the address x22+0x10, return address
+   right after the caller's bl, and the caller's instructions as expected. */
+static int stale_target_reference(int num,siginfo_t *info,ucontext_t *u){
+ if((num!=SIGSEGV&&num!=SIGBUS)||!modules[0].base)return 0;
+ const uint32_t *site=(const uint32_t *)(uintptr_t)(modules[0].base+GAME_ADDR(0x15ecb0c));   /* ldr x21,[x8] */
+ uint64_t pc=u->uc_mcontext->__ss.__pc,*x=u->uc_mcontext->__ss.__x;
+ if(site[-2]!=0xf9435a68u||site[0]!=0xf9400115u||(site[1]&0xff00001fu)!=0xb4000015u||(site[6]&0xfc000000u)!=0x94000000u)return 0;   /* ldr x8,[x19,#0x6b0]; ldr x21,[x8]; cbz x21; bl */
+ if(u->uc_mcontext->__ss.__lr!=(uintptr_t)(site+7)||*(const uint32_t *)(uintptr_t)pc!=0xb94012c8u||x[1]!=x[22]||(uintptr_t)info->si_addr!=x[22]+0x10)return 0;
+ int32_t bl=(int32_t)(site[6]<<6)>>6,skip=(int32_t)((site[1]>>5)<<13)>>13;
+ const uint32_t *callee=site+6+bl,*resume=site+1+skip;
+ int64_t frame=0;unsigned saved[32]={0};int nsaved=0;uint64_t at[32];
+ for(const uint32_t *i=callee;i<callee+12&&(uintptr_t)i<pc;i++){uint32_t w=*i;unsigned rt=w&31,rt2=(w>>10)&31,rn=(w>>5)&31;int64_t imm7=((int64_t)(int32_t)(((w>>15)&0x7f)<<25)>>25)*8;
+  if((w&0xffc00000u)==0xa9800000u&&rn==31&&rt==29&&rt2==30&&imm7<0&&!frame){frame=-imm7;saved[nsaved]=29;at[nsaved++]=0;saved[nsaved]=30;at[nsaved++]=8;}   /* stp x29,x30,[sp,#-N]! */
+  else if((w&0xffc00000u)==0xa9000000u&&rn==31&&frame&&nsaved<30){saved[nsaved]=rt;at[nsaved++]=(uint64_t)imm7;saved[nsaved]=rt2;at[nsaved++]=(uint64_t)imm7+8;}   /* stp xa,xb,[sp,#o] */
+  else if((w&0xffc00000u)==0xf9000000u&&rn==31&&frame&&nsaved<31){saved[nsaved]=rt;at[nsaved++]=((w>>10)&0xfff)*8;}}   /* str xa,[sp,#o] */
+ if(!frame||frame>0x100)return 0;
+ uint64_t sp=u->uc_mcontext->__ss.__sp,stack[32];mach_vm_size_t got=0;
+ if(mach_vm_read_overwrite(mach_task_self(),sp,(mach_vm_size_t)frame,(uintptr_t)stack,&got)!=KERN_SUCCESS||got!=(mach_vm_size_t)frame)return 0;
+ for(int i=0;i<nsaved;i++){if(at[i]+8>(uint64_t)frame)return 0;uint64_t v=stack[at[i]/8];
+  if(saved[i]==29)u->uc_mcontext->__ss.__fp=v;else if(saved[i]==30)u->uc_mcontext->__ss.__lr=v;else if(saved[i]<29)x[saved[i]]=v;}
+ u->uc_mcontext->__ss.__sp=sp+(uint64_t)frame;u->uc_mcontext->__ss.__pc=(uintptr_t)resume;
+ uint64_t stale=x[21];uintptr_t field=x[19]+0x6b0;uint64_t holder=0,word=0;   /* the caller's x19 = the object, x21 = the stale word */
+ if(mach_vm_read_overwrite(mach_task_self(),field,8,(uintptr_t)&holder,&got)==KERN_SUCCESS&&got==8&&holder&&
+    mach_vm_read_overwrite(mach_task_self(),holder,8,(uintptr_t)&word,&got)==KERN_SUCCESS&&got==8&&word==stale)
+  __atomic_compare_exchange_n((uint64_t *)field,&holder,0,false,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST);
+ static const char note[]="[totk] ignored a stale optional target reference (#57)\n";write(2,note,sizeof(note)-1);
+ return 1;
+}
+#endif
 static void crash(int num,siginfo_t *info,void *context) {
  ucontext_t *u=context;
- /* (The TotK fault workaround for an invalid optional menu reference is TotK-only and not carried over.) */
+#if !TARGET_OS_IPHONE
+ if(num==SIGTRAP){extern int runtime_mem_scan_trap(void *);if(runtime_mem_scan_trap(context))return;}   /* mscan watch (diagnostic, runtime/mem_scan.h) */
+#endif
+#ifdef GAME_BOTW
+ if(num==SIGTRAP){extern int botw_jq_hook(void *);if(botw_jq_hook(context))return;}   /* TOTK_JQ_CHECK diagnostics (game_patches_botw.c) */
+#endif
+#ifdef GAME_TOTK
+#if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE
+ if(num==SIGTRAP){extern int runtime_diag_watch_trap(void *);if(runtime_diag_watch_trap(context))return;}   /* #61 frmwatch (diagnostic) */
+#endif
+ if(stale_target_reference(num,info,u))return;
+ /* During save load, this optional game object can contain a tagged invalid
+    reference. Treat it as absent, as the following cbz path expects (TOTK). */
+ if(num==SIGSEGV&&modules[0].base&&
+    u->uc_mcontext->__ss.__pc==(uintptr_t)modules[0].base+GAME_ADDR(0x15ecb0c)&&
+    (uintptr_t)info->si_addr==0xffff0000ffffffffULL&&
+    u->uc_mcontext->__ss.__x[8]==0xffff0000ffffffffULL){
+  uintptr_t field=u->uc_mcontext->__ss.__x[19]+0x6b0;
+  uint64_t current=0;mach_vm_size_t got=0;
+  if(mach_vm_read_overwrite(mach_task_self(),field,sizeof(current),(uintptr_t)&current,&got)==KERN_SUCCESS&&
+     got==sizeof(current)&&current==0xffff0000ffffffffULL){
+   uint64_t expected=current;
+   if(__atomic_compare_exchange_n((uint64_t *)field,&expected,0,false,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST)){
+    static const char note[]="[totk] ignored invalid optional menu reference\n";
+    write(2,note,sizeof(note)-1);
+    u->uc_mcontext->__ss.__x[8]=0;
+    u->uc_mcontext->__ss.__pc-=4;
+    return;
+   }
+  }
+ }
+#endif
  /* EL0 cache maintenance that Darwin traps but Horizon allows: emulate exactly two encodings (SDK only). */
  if(num==SIGILL){uint32_t insn=*(const uint32_t *)(uintptr_t)u->uc_mcontext->__ss.__pc;unsigned rt=insn&31;
   if((insn&~31u)==0xd53b0020u){if(rt!=31)u->uc_mcontext->__ss.__x[rt]=HOST_CTR_EL0;u->uc_mcontext->__ss.__pc+=4;return;}   /* mrs Xt, CTR_EL0 */
   if((insn&~31u)==0xd50b7e20u){uintptr_t a=rt==31?0:(uintptr_t)u->uc_mcontext->__ss.__x[rt];sys_dcache_flush((void *)(a&~(uintptr_t)127),128);u->uc_mcontext->__ss.__pc+=4;return;}   /* dc civac, Xt */
  }
- if((num==SIGBUS||num==SIGSEGV)&&runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;siglongjmp(*g,1);}   /* guarded host read of guest memory (uniform snapshot copies) */
- if(runtime_gfx_fault(info->si_addr,(u->uc_mcontext->__es.__esr>>6)&1,context))return;uint64_t pc=u->uc_mcontext->__ss.__pc,fp=u->uc_mcontext->__ss.__fp;
+ /* The graphics layer's write tracking first: a guarded write (WriteTexels) to a page it keeps read-only is its fault to
+    resolve, not a lost page (2026-10-29: the guard took it first and dropped a 17 MiB texture's update). */
+ if(runtime_gfx_fault(info->si_addr,(u->uc_mcontext->__es.__esr>>6)&1,context))return;
+ if((num==SIGBUS||num==SIGSEGV)&&runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;siglongjmp(*g,1);}   /* guarded host access to guest memory (uniform snapshot copies, texture reads, ReadTexels / WriteTexels) */
+ uint64_t pc=u->uc_mcontext->__ss.__pc,fp=u->uc_mcontext->__ss.__fp;
  signal_hex("[totk] signal=",num);signal_hex("fault=",(uintptr_t)info->si_addr);signal_hex("esr=",u->uc_mcontext->__es.__esr);
  {mach_vm_address_t ra=(uintptr_t)info->si_addr;mach_vm_size_t rs=0;vm_region_basic_info_data_64_t ri;mach_msg_type_number_t rc=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t ro=0;
   if(mach_vm_region(mach_task_self(),&ra,&rs,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&ri,&rc,&ro)==KERN_SUCCESS){signal_hex("region=",ra);signal_hex("region size=",rs);signal_hex("region prot=",(uint64_t)ri.protection|((uint64_t)ri.max_protection<<8));}}signal_hex("pc=",pc);signal_hex("lr=",u->uc_mcontext->__ss.__lr);signal_hex("fp=",fp);
+#ifdef GAME_BOTW
+ {Dl_info di;for(int k=0;k<2;k++){uint64_t a=k?u->uc_mcontext->__ss.__lr:pc;if(dladdr((void *)(uintptr_t)a,&di)&&di.dli_sname){write(2,k?"lr host ":"pc host ",8);write(2,di.dli_sname,strlen(di.dli_sname));signal_hex(" +",a-(uintptr_t)di.dli_saddr);}}}   /* a fault in a host function: name it */
+ /* Diagnostics (TOTK_CRASH_THREADS=1): what every other guest thread was doing at the fault (wait states, last SVC chains,
+    and the live pc of the ones running), to see a job running into data another thread is rebuilding. Once per process. */
+ {static int dumped;if(getenv("TOTK_CRASH_THREADS")&&!__atomic_fetch_add(&dumped,1,__ATOMIC_SEQ_CST)){extern void runtime_dump_threads(void);runtime_dump_threads();}}
+#endif
  for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",pc-(uintptr_t)modules[i].base);}
  for(unsigned i=0;i<29;i++)signal_hex("x=",u->uc_mcontext->__ss.__x[i]);signal_hex("sp=",u->uc_mcontext->__ss.__sp);
  for(unsigned depth=0;depth<24&&fp&&!(fp&15);depth++){uint64_t frame[2];mach_vm_size_t got=0;if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)frame,&got)!=KERN_SUCCESS||got!=16)break;signal_hex("frame lr=",frame[1]);for(unsigned i=0;i<NM;i++)if(frame[1]>=(uintptr_t)modules[i].base&&frame[1]<(uintptr_t)modules[i].base+modules[i].size){write(2,modules[i].name,strlen(modules[i].name));signal_hex(" offset=",frame[1]-(uintptr_t)modules[i].base);}if(frame[0]==fp)break;fp=frame[0];   /* host-stack switch: frames may move between stacks */}
@@ -390,7 +545,17 @@ int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
  return 0;
 }
 uintptr_t runtime_frame_controller_return_pc(void) {
- return 0; /* The graphics diagnostic reads TotK's frame controller; Bayonetta 3 has none. */
+
+#if defined(GAME_BOTW) || defined(GAME_NS2) || defined(GAME_BY3)
+ return 0; /* no survey on Breath of the Wild, a Switch 2 game or Bayonetta 3 (no TotK frame controller) */
+#elif defined(TOTK_GAME_V143)
+ /* The older graphics diagnostic reads the pre-1.4 controller layout. The survey only needs the system object (caller's x19
+    at x29 + 0x38, same frame as 1.2.1) for its frame-end fence, so 1.4.3 finds it only while TOTK_SURVEY is on. */
+ const char *survey=getenv("TOTK_SURVEY");
+ return survey&&!strcmp(survey,"1")?(uintptr_t)modules[0].base+GAME_ADDR(0x8f6cbc):0;
+#else
+ return (uintptr_t)modules[0].base + GAME_ADDR(0x8f6cbc);
+#endif
 }
 uint64_t runtime_image_bytes(void) { uint64_t total=0;for(unsigned i=0;i<NM;i++)total+=modules[i].key_off;return page_up(total); }
 static void loader_ready(void) { fprintf(stderr,"[totk] rtld callback: modules linked\n"); }
@@ -405,13 +570,34 @@ void runtime_startup_checkpoint(uintptr_t caller) {
  for(unsigned i=0;i<NM;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
  printf("{\"status\":\"pass\",\"phase\":4,\"caller_main_offset\":\"0x%llx\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at focus setup\"}\n",(unsigned long long)(caller-(uintptr_t)modules[0].base));fflush(stdout);_exit(0);
 }
+#ifndef GAME_BOTW160
 static void module_finis(void) { runtime_fail("guest exited: module finalizers not yet implemented"); }
+#endif
 static void boot(void) {
  fprintf(stderr,"[totk] game version %s\n", TOTK_GAME_VERSION);
  runtime_boot_status(TOTK_UI("启动游戏运行环境","Starting the game runtime"),TOTK_UI("连接游戏代码与 macOS 系统服务","Connecting the game code to macOS system services"));
  runtime_thread_init();uint32_t main_handle=svc_thread_main_init();
+#ifdef GAME_BOTW
+ /* SDK 7.3.2 (Breath of the Wild 1.6.0): Start(handle, arg, rtld callback, module initializers). The order inside is the one of
+    TOTK's SDK 15 (libc0, nnosInitialize, callback, libc1, InitializeSdkModule, nninitStartup, libc2, callback, nnMain), but
+    after nnMain it calls nninitFinalizeSdkModule and quick-exits itself instead of a third callback. */
+ /* Host functions called from the main thread run on a stack of their own (8 MiB, guard page), as on every other guest
+    thread: the host-stack slot is then set while it runs guest code and cleared inside host code, which is how an
+    asynchronous preemption signal tells the two apart (threads.c preempt_signal). Without it a better thread that only
+    runs on core 0 waited for the main thread's next SVC (botw.md). */
+ if(!getenv("TOTK_MAIN_PREEMPT")||strcmp(getenv("TOTK_MAIN_PREEMPT"),"0")){extern void runtime_hle_stack_set(uintptr_t top);size_t n=8u<<20;void *hs=mmap(NULL,n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+  need(hs!=MAP_FAILED&&mprotect(hs,0x4000,PROT_NONE)==0,"main thread host-service stack");runtime_hle_stack_set((uintptr_t)hs+n-64);}
+#endif
+#ifdef GAME_BOTW160
+ fprintf(stderr,"[totk] ENTER original nn::init::Start (SDK 7)\n");
+ ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_"))(main_handle,0,loader_ready,module_inits);
+#elif defined(GAME_BOTW)   /* 1.9.0 (SDK 20.5) takes the five-argument Start of TOTK's SDK */
+ fprintf(stderr,"[totk] ENTER original nn::init::Start (SDK 20.5)\n");
+ ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_S2_"))(main_handle,0,loader_ready,module_inits,module_finis);
+#else
  fprintf(stderr,"[totk] ENTER original nn::init::Start sdk+0xfa060\n");
  ((void(*)(uint64_t,uint64_t,void(*)(void),void(*)(void),void(*)(void)))required("_ZN2nn4init5StartEmmPFvvES2_S2_"))(main_handle,0,loader_ready,module_inits,module_finis);
+#endif
  runtime_fail("SDK Start unexpectedly returned");
 }
 /* Host aborts (e.g. Metal validation assertions) print the host call stack before the process ends. */
@@ -421,7 +607,7 @@ static void abort_report(int num) {
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
 int main(int argc,char **argv) {
- need(argc==3,"usage: totk-native rewritten-dir probe|boot");
+ need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive"))||((argc==4||argc==5)&&!strcmp(argv[2],"seed-shaders")),"usage: totk-native rewritten-dir probe|boot (pipeline-archive <list>... | seed-shaders <corpus> [<shader list>])");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
@@ -432,13 +618,15 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<8;i++)need(pthread_key_create(&runtime_keys[i],NULL)==0&&runtime_keys[i]!=0,"allocate Darwin key");
  runtime_hle_stack_init((uint64_t)runtime_keys[4]*8);
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
+ load_tables();
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
+ if(!strcmp(argv[2],"pipeline-archive"))return mtl_pipeline_archive_tool(argc-3,argv+3);   // packaging: the device's pipelines made on the Mac (ios/tools/build_ipa.py)
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
- if(!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
+ if(!strcmp(argv[2],"probe-gpu-writeback")||!strcmp(argv[2],"probe-gpu-sampler-border")||!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-vin")||!strcmp(argv[2],"probe-gpu-fout")||!strcmp(argv[2],"probe-gpu-pipeline-archive")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-texels-region")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"seed-shaders")){if(argc<4)runtime_fail("seed-shaders needs the corpus: <modules> seed-shaders <corpus.bin> (scripts/ns2_shader_corpus.py)");runtime_shader_seed(argv[3],argc>4?argv[4]:NULL);}else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
 }

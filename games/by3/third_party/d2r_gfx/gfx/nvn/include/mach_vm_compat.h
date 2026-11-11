@@ -28,6 +28,12 @@ static inline kern_return_t mach_vm_region(vm_map_t t, mach_vm_address_t *a, mac
     kern_return_t kr = vm_region_64(t, &v, &n, flavor, info, cnt, obj);
     *a = v; *s = n; return kr;
 }
+static inline kern_return_t mach_vm_region_recurse(vm_map_t t, mach_vm_address_t *a, mach_vm_size_t *s, natural_t *depth,
+                                                   vm_region_recurse_info_t info, mach_msg_type_number_t *cnt) {
+    vm_address_t v = (vm_address_t)*a; vm_size_t n = 0;
+    kern_return_t kr = vm_region_recurse_64(t, &v, &n, depth, info, cnt);
+    *a = v; *s = n; return kr;
+}
 static inline kern_return_t mach_vm_remap(vm_map_t t, mach_vm_address_t *a, mach_vm_size_t s, mach_vm_offset_t mask, int f,
                                           vm_map_t src, mach_vm_address_t src_a, boolean_t copy, vm_prot_t *cur,
                                           vm_prot_t *max, vm_inherit_t inh) {

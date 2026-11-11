@@ -27,18 +27,18 @@ enum { MFXUP_OLD = 8, MFXUP_OLD_AFTER = 8, MFXUP_CACHE = 3, MFXUP_BAD = 4, MFXUP
    while the caller keeps its fallback (the game's own upscale, the bilinear present) for those frames, and the last few
    are kept: switching back (key 3, a window going in and out of full screen) is instant. */
 typedef struct { NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat in_fmt, out_fmt; int mode, own; } cfg_t;   // out_fmt: dst's (own output: invalid)
-typedef struct { cfg_t cfg; id<MTL4FXSpatialScaler> sc; id<MTLTexture> out; uint64_t used; } built_t;
+typedef struct { cfg_t cfg; id<MTL4FXSpatialScaler> sc; id<MTLTexture> out; uint64_t used; int back_logged; } built_t;
 typedef struct {
     built_t cache[MFXUP_CACHE]; int ncache, cur;   // cur: the cache entry in use, -1 none yet
     struct { cfg_t cfg; uint64_t at_ms; } bad[MFXUP_BAD]; int nbad;   // builds that failed: the caller's own path stays, retried after MFXUP_RETRY_MS
     _Atomic int building;                           // a background build in flight; its result waits in ready
     built_t ready; int has_ready, ready_ok;         // under g_build_mu
     id<MTLFence> fence;
-    uint64_t done, refused, waited, tick;
+    uint64_t done, refused, waited, tick, switches;   // switches: the current scaler changed to another cached one
     struct { id obj; id<MTLTexture> tex; uint64_t at; } old[MFXUP_OLD]; int nold;
 } ctx_t;
-static ctx_t g_c[MFXUP_NCTX] = {{.cur = -1}, {.cur = -1}, {.cur = -1}};
-static const char *g_name[MFXUP_NCTX] = {"scene", "docked", "output"};
+static ctx_t g_c[MFXUP_NCTX] = {{.cur = -1}, {.cur = -1}, {.cur = -1}, {.cur = -1}};
+static const char *g_name[MFXUP_NCTX] = {"scene", "docked", "output", "vr"};
 static id<MTLDevice> g_dev;
 static id<MTL4Compiler> g_comp;
 static id<MTLResidencySet> g_rs;
@@ -52,6 +52,11 @@ int mfxup_enabled(void) {
     int v = atomic_load_explicit(&g_on, memory_order_relaxed);
     if (v < 0) {
         const char *e = getenv("TOTK_MFX_UPSCALE");
+        /* Off by default everywhere. The phone renders its scene at 960x540 (game_patches_v143.c render_res,
+           game_patches_botw.c patch_phone_render) and the game's own upscale draws it into the 1280x720 canvas, for both
+           games (user 2026-10-23: "两个统一", no MetalFX on the iPhone): Tears of the Kingdom's is FSR 1 EASU, Breath of the
+           Wild's a bilinear upscale with an FXAA-style edge pass, both one cheap pass. TOTK_MFX_UPSCALE=1 (or key 3 on
+           the Mac) lets MetalFX do it. */
         v = e ? strcmp(e, "0") != 0 : 0;
         atomic_store(&g_on, v);
         ULOG("MetalFX spatial upscaling (TOTK_MFX_UPSCALE): %s", v ? "on" : "off");
@@ -168,8 +173,17 @@ static void adopt(ctx_t *c) {
 static int use_cached(int ci, ctx_t *c, const cfg_t *want) {
     adopt(c);
     for (int i = 0; i < c->ncache; i++) if (cfg_eq(&c->cache[i].cfg, want)) {
-        if (c->cur >= 0) ULOG("%s: %s %lux%lu -> %lux%lu", g_name[ci], c->cache[i].used ? "back to the kept scaler" : "switched to the scaler just built",
-                              (unsigned long)want->in_w, (unsigned long)want->in_h, (unsigned long)want->out_w, (unsigned long)want->out_h);
+        /* Two sources in turn are normal for the output: with key 2 and MetalFX 2K the interpolated frames come at the
+           canvas size, the game's at the 2K swapchain (#135). Cached scalers make that free, so going back to one is
+           logged once and then only counted (mfxup_switches); before, one line per present (45 a second). */
+        if (c->cur >= 0) {
+            c->switches++;
+            if (!c->cache[i].used || !c->cache[i].back_logged)
+                ULOG("%s: %s %lux%lu -> %lux%lu%s", g_name[ci], c->cache[i].used ? "back to the kept scaler" : "switched to the scaler just built",
+                     (unsigned long)want->in_w, (unsigned long)want->in_h, (unsigned long)want->out_w, (unsigned long)want->out_h,
+                     c->cache[i].used ? " (further switches are counted, not logged)" : "");
+            if (c->cache[i].used) c->cache[i].back_logged = 1;
+        }
         c->cur = i; c->cache[i].used = ++c->tick; return 1;
     }
     return 0;
@@ -226,6 +240,7 @@ id<MTLTexture> mfxup_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInt
     return src ? mfxup_encode_ex(MFXUP_SCENE, cb, src, src.width, src.height, nil, out_w, out_h, MTLFXSpatialScalerColorProcessingModeHDR) : nil;
 }
 
+uint64_t mfxup_switches(int ci) { return ci >= 0 && ci < MFXUP_NCTX ? g_c[ci].switches : 0; }
 void mfxup_stats(int ci, char *out, size_t n) {
     if (ci < 0 || ci >= MFXUP_NCTX) { snprintf(out, n, "?"); return; }
     const ctx_t *c = &g_c[ci];

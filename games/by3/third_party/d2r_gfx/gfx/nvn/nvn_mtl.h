@@ -5,6 +5,7 @@
 // Ordering convention (to avoid repeating the GO_MAP_SHARE corrupted-picture mistake of the x86 route): every visible effect of "GPU completion" (sync object ready, event values, counters)
 // happens only after the Metal command buffer has actually completed; CPU-side waits look only at the completed value of the MTLSharedEvent.
 #pragma once
+int mtl_probe_writeback(void);
 #include <stdint.h>
 #include <stddef.h>
 
@@ -40,8 +41,12 @@ void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v);   // 完�
 void mtl_sub_counter(uint64_t addr, uint32_t type);                       // 完成后写计数器记录 | Write the counter record after completion
 uint64_t mtl_sub_commit(void);
 int mtl_probe_vertex_streams(void);
+int mtl_probe_vertex_input_types(void);
+int mtl_probe_fragment_output_types(void);
+int mtl_probe_pipeline_archive(void);
 int mtl_probe_arg_epoch(void);
 int mtl_probe_tex_slots(void);
+int mtl_probe_sampler_border(void);
 int mtl_probe_pool_retire(void);
 int mtl_probe_anomaly(void);
 int mtl_probe_widen(void);     // TOTK: standalone probes of isolated GPU paths (die on mismatch, return checked count)
@@ -51,6 +56,7 @@ int mtl_probe_srgb_view(void);
 int mtl_probe_storage_view(void);
 int mtl_probe_compressed_alias(void);
 int mtl_probe_linear_rt_upload(void);
+int mtl_probe_texels_region(void);
 int mtl_probe_texture_retire(void);
 int mtl_probe_ds_clear(void);
 int mtl_probe_ub_rename(void);

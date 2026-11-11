@@ -23,42 +23,48 @@ def main():
         require(actual['name']==record['name'] and actual['size']==record['size'] and
                 record_offset(actual)==record_offset(record),'Source Program NCA changed; extract ExeFS again')
         ctr_key=nca_ctr_key(hdr,keys,common_tickets(f,entries))
-        for i in range(4):
-            start,end=struct.unpack_from('<II',hdr,0x240+i*16)
-            if not start:continue
-            fs=hdr[0x400+512*i:0x600+512*i]
-            require(hashlib.sha256(fs).digest()==hdr[0x280+32*i:0x2a0+32*i],'FS header hash')
-            if fs[2:5]!=bytes([0,3,3]):continue
-            require(fs[8:12]==b'IVFC' and struct.unpack_from('<III',fs,12)==(0x20000,32,7),'Unsupported IVFC layout')
-            levels=[struct.unpack_from('<QQII',fs,0x18+j*24) for j in range(6)]
-            def read(relative,size):
-                require(0<=relative<=relative+size<=(end-start)*512,'Section bounds')
-                absolute=start*512+relative;aligned=absolute&~15;skip=absolute-aligned
-                iv=fs[0x140:0x148][::-1]+(aligned//16).to_bytes(8,'big')
-                return decrypt(ctr_key,modes.CTR(iv),read_at(f,record_offset(record)+aligned,size+skip))[skip:]
-            args.output.mkdir(parents=True);image_path=args.output/'romfs.bin';digest=hashlib.sha256();counts=[]
-            parent=fs[0xc8:0xe8]
-            with image_path.open('wb') as image:
-                for level,(offset,size,power,reserved) in enumerate(levels):
-                    require(12<=power<=24 and reserved==0,'IVFC block size');block=1<<power
-                    require(len(parent)>=(size+block-1)//block*32,'IVFC parent size')
-                    captured=bytearray() if level<5 else None
-                    index=0
-                    for pos in range(0,size,8*1024*1024):
-                        chunk=read(offset+pos,min(8*1024*1024,size-pos))
-                        for j in range(0,len(chunk),block):
-                            payload=chunk[j:j+block]
-                            require(hashlib.sha256(payload+bytes(block-len(payload))).digest()==parent[index*32:index*32+32],f'IVFC level {level} block {index} failed')
-                            index+=1
-                        if captured is not None:captured.extend(chunk)
-                        else:image.write(chunk);digest.update(chunk)
-                    counts.append(index)
-                    if captured is not None:parent=bytes(captured)
-                    print(f'IVFC level {level}: {index} blocks verified',flush=True)
-            files=index_romfs(image_path)
-            report=dict(status='pass',source_size=source.stat().st_size,program=record['name'],section=i,ivfc_blocks=counts,romfs_size=levels[-1][1],romfs_sha256=digest.hexdigest(),files=files,integrity='FS header and all six IVFC levels verified; RSA signature not checked')
-            (args.output/'index.json').write_text(json.dumps(report,indent=2)+'\n')
-            print(json.dumps(dict(status='pass',file_count=len(files),size=levels[-1][1],sha256=digest.hexdigest())),flush=True);return
+        result=verify_ivfc(f,record_offset(record),hdr,ctr_key,args.output/'romfs.bin')
+    files=index_romfs(args.output/'romfs.bin')
+    report=dict(status='pass',source_size=source.stat().st_size,program=record['name'],section=result['section'],ivfc_blocks=result['ivfc_blocks'],romfs_size=result['romfs_size'],romfs_sha256=result['romfs_sha256'],files=files,integrity='FS header and all six IVFC levels verified; RSA signature not checked')
+    (args.output/'index.json').write_text(json.dumps(report,indent=2)+'\n')
+    print(json.dumps(dict(status='pass',file_count=len(files),size=result['romfs_size'],sha256=result['romfs_sha256'])),flush=True)
+
+def verify_ivfc(f,nca_offset,hdr,ctr_key,image_path):
+    """Check the FS header hashes and all six IVFC levels of the first RomFS section of the NCA at nca_offset in f,
+    and write its last level (the RomFS image) to image_path. Returns dict(section, ivfc_blocks, romfs_size, romfs_sha256)."""
+    for i in range(4):
+        start,end=struct.unpack_from('<II',hdr,0x240+i*16)
+        if not start:continue
+        fs=hdr[0x400+512*i:0x600+512*i]
+        require(hashlib.sha256(fs).digest()==hdr[0x280+32*i:0x2a0+32*i],'FS header hash')
+        if fs[2:5]!=bytes([0,3,3]):continue
+        require(fs[8:12]==b'IVFC' and struct.unpack_from('<III',fs,12)==(0x20000,32,7),'Unsupported IVFC layout')
+        levels=[struct.unpack_from('<QQII',fs,0x18+j*24) for j in range(6)]
+        def read(relative,size):
+            require(0<=relative<=relative+size<=(end-start)*512,'Section bounds')
+            absolute=start*512+relative;aligned=absolute&~15;skip=absolute-aligned
+            iv=fs[0x140:0x148][::-1]+(aligned//16).to_bytes(8,'big')
+            return decrypt(ctr_key,modes.CTR(iv),read_at(f,nca_offset+aligned,size+skip))[skip:]
+        image_path.parent.mkdir(parents=True);digest=hashlib.sha256();counts=[]
+        parent=fs[0xc8:0xe8]
+        with image_path.open('wb') as image:
+            for level,(offset,size,power,reserved) in enumerate(levels):
+                require(12<=power<=24 and reserved==0,'IVFC block size');block=1<<power
+                require(len(parent)>=(size+block-1)//block*32,'IVFC parent size')
+                captured=bytearray() if level<5 else None
+                index=0
+                for pos in range(0,size,8*1024*1024):
+                    chunk=read(offset+pos,min(8*1024*1024,size-pos))
+                    for j in range(0,len(chunk),block):
+                        payload=chunk[j:j+block]
+                        require(hashlib.sha256(payload+bytes(block-len(payload))).digest()==parent[index*32:index*32+32],f'IVFC level {level} block {index} failed')
+                        index+=1
+                    if captured is not None:captured.extend(chunk)
+                    else:image.write(chunk);digest.update(chunk)
+                counts.append(index)
+                if captured is not None:parent=bytes(captured)
+                print(f'IVFC level {level}: {index} blocks verified',flush=True)
+        return dict(section=i,ivfc_blocks=counts,romfs_size=levels[-1][1],romfs_sha256=digest.hexdigest())
     raise ValueError('No supported RomFS found')
 
 def index_romfs(path):
