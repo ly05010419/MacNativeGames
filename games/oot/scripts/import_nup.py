@@ -117,6 +117,7 @@ def import_package(source, output, version=131072):
                     last = time.monotonic()
         partial.replace(image)
         result = dict(status='pass',source=str(source),source_identity=source_identity,integrity='NUP TOC and every uncompressed file SHA256 verified',
+                      files_verified_by_source=True,   # romfs_pin.check: another retail package's files of the listed size pass (#2011)
                       romfs_size=offset,romfs_sha256=digest.hexdigest(),files=rows,directories=directories)
         previous.write_text(json.dumps(result)+'\n')
         print(f'Verified RomFS: {len(rows)} files, {offset/2**30:.2f} GiB, SHA256 {digest.hexdigest()}',flush=True)

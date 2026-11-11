@@ -61,19 +61,40 @@ def write_pin(romfs, out):
     return len(rows)
 
 
+def verified_by_source(romfs):
+    """Whether the importer checked every file against the source's own hashes: a NUP's table of contents records each
+    file's SHA-256, and import_nup.py stops at the first file that does not match (files_verified_by_source; an import
+    made before that flag says so in its integrity line). A dumped folder carries no hashes of its own."""
+    index = json.loads((Path(romfs) / 'index.json').read_text())
+    return bool(index.get('files_verified_by_source')) or str(index.get('integrity', '')).startswith('NUP TOC')
+
+
+def named(label, paths):
+    return f'{label} {len(paths)} ({", ".join(paths[:10])}{", …" if len(paths) > 10 else ""})'
+
+
 def check(romfs, pin=PIN):
-    """{'files': listed files found, 'extra': paths the list does not name}; ValueError naming the missing and differing
-    files (the first ten of each) when any listed file is not there as listed."""
+    """{'files': listed files found, 'extra': paths the list does not name, 'variant': listed files of the listed size with
+    other bytes}. Every listed file must be there at its listed size: a missing one or one of another size is a ValueError
+    (another version or an incomplete import). One of the listed size with other bytes is another retail package of
+    131072 when the source verified it (#2011, 2026-11-11: a NUP with 9 such files, each matching its own table of
+    contents, whose game plays): it passes and is named. From a dumped folder, which carries no hashes, it cannot be told
+    from a damaged file, so it is a ValueError that says so."""
     want = load_pin(pin)
     have = {row['path']: (row['size'], row['sha256'][:SHORT]) for row in file_hashes(romfs)}
     missing = sorted(p for p in want if p not in have)
-    different = sorted(p for p in want if p in have and have[p] != want[p])
-    if missing or different:
+    resized = sorted(p for p in want if p in have and have[p][0] != want[p][0])
+    different = sorted(p for p in want if p in have and have[p][0] == want[p][0] and have[p][1] != want[p][1])
+    if missing or resized:
         raise ValueError('RomFS is not update 131072: '
-                         + '; '.join(f'{name} {len(paths)} ({", ".join(paths[:10])}{", …" if len(paths) > 10 else ""})'
-                                     for name, paths in (('missing', missing), ('different', different)) if paths)
-                         + ' — dump the game again (docs/install.md)')
-    return dict(files=len(want), extra=sorted(p for p in have if p not in want))
+                         + '; '.join(named(label, paths) for label, paths in (('missing', missing), ('other size', resized),
+                                                                              ('different', different)) if paths)
+                         + ' — the dump is incomplete or of another version: dump the game again (docs/install.md)')
+    if different and not verified_by_source(romfs):
+        raise ValueError('RomFS is not update 131072 as listed: ' + named('different', different)
+                         + ' — a dumped folder has no hashes of its own, so these cannot be told from damaged files: '
+                         'build from the game\'s .nup instead, whose own hashes are checked (docs/install.md)')
+    return dict(files=len(want), extra=sorted(p for p in have if p not in want), variant=different)
 
 
 def main():

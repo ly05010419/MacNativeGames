@@ -501,7 +501,8 @@ def build(args, source):
     for name,digest in expected['exefs_sha256'].items():
         if sha(code/name)!=digest:raise ValueError('unsupported or damaged original ExeFS: '+name)
     check=romfs_pin.check(extracted/'romfs')   # every file of update 131072 by size and hash (#2009, #2011); ValueError names what differs
-    print(f"RomFS: the {check['files']} files of update 131072 verified"+(f"; {len(check['extra'])} more files the list does not name: {', '.join(check['extra'][:20])}" if check['extra'] else ''),flush=True)
+    print(f"RomFS: the {check['files']} files of update 131072 verified"+(f"; {len(check['extra'])} more files the list does not name: {', '.join(check['extra'][:20])}" if check['extra'] else '')
+          +(f"; {len(check['variant'])} of another retail package (listed size, other bytes, checked against the package's own hashes): {', '.join(check['variant'][:20])}" if check['variant'] else ''),flush=True)
     rom=json.loads(index.read_text())
     if 'directories' not in rom:
         folder=source/'updates/131072/romfs'
