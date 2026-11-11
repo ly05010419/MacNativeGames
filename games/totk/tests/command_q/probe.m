@@ -157,6 +157,9 @@ int fps_overlay_hud_mode(void){return 1;}
 void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
 void dm_gfx_aniso_start(int n){(void)n;} int dm_gfx_aniso_locked(void){return 0;} int dm_gfx_aniso(void){return 0;} void dm_gfx_aniso_set(int n){(void)n;}   /* the display page's anisotropy row (nvn_mtl.m) */
 void dm_gfx_keepalive_start(int on){(void)on;} int dm_gfx_keepalive_locked(void){return 0;} int dm_gfx_keepalive(void){return 1;} void dm_gfx_keepalive_set(int on){(void)on;}   /* the display page's GPU keep-alive row (nvn_mtl.m, PR #2049) */
+/* the leaderboard (board_upload.h): the graphics layer's frame record and picture settings, none here */
+void fps_board_start(void){} void fps_board_reset(void){} int fps_board_counting(void){return 0;} int fps_board_snapshot(fps_board_stats *s){(void)s;return 0;}
+void mtl_board_view(int *ow,int *oh,int *sw,int *sh,int *mfx){*ow=*oh=*sw=*sh=*mfx=0;} void nvn_board_pacing(int *lock,int *interp){*lock=*interp=0;} int mtl_display_hz(void){return 0;}
 int runtime_output_modes(void){return 0;}
 int runtime_output_mode(void){return 0;}
 int runtime_output_mode_set(int mode){(void)mode;return 0;}

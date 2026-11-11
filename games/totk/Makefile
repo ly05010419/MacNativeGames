@@ -227,6 +227,12 @@ probe-fps-overlay:
 	@mkdir -p build/tests
 	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn tests/fps_overlay/probe.c third_party/d2r_gfx/gfx/nvn/fps_overlay.c third_party/d2r_gfx/gfx/nvn/totk_sysload.c -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework CoreText -o build/tests/fps_overlay_probe
 	build/tests/fps_overlay_probe
+# The leaderboard's frame-rate record (fps_board.c): average, median, 1% low, highest, interpolated frames.
+.PHONY: probe-fps-board
+probe-fps-board:
+	@mkdir -p build/tests
+	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn tests/fps_board/probe.c third_party/d2r_gfx/gfx/nvn/fps_board.c -o build/tests/fps_board_probe
+	build/tests/fps_board_probe
 # VR (TOTK_VR_CONTROL): the BasaltVR control-socket client against a stand-in streamer; the same tool serves a running
 # game for tests without a headset (zeldaVR/tests/fake_headset.c: serve <control file> [seconds] [png prefix] [yaw deg/s]).
 .PHONY: probe-vr-link

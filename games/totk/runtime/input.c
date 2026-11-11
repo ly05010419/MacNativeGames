@@ -280,7 +280,10 @@ static void *input_file(void *arg) {
         }
         if (runtime_survey_command(line)) continue;
         unsigned code, ms; int used = 0;
-        if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
+        int page;
+        if (sscanf(line, "settings %d %n", &page, &used) == 1 && used && !line[used]) {   /* "settings <page>": the panel on that page, -1 closed (tests) */
+            fprintf(stderr, "[totk-input] file: settings page %d\n", page); runtime_settings_page(page);
+        } else if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
             fprintf(stderr,"[totk-input] file: key %u down\n",code);runtime_input_key_synthetic(code,1);
         } else if (sscanf(line, "up %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
             fprintf(stderr,"[totk-input] file: key %u up\n",code);runtime_input_key_synthetic(code,0);

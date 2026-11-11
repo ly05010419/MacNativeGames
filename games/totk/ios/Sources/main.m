@@ -110,6 +110,7 @@ static void cloud_folder_apply(void) {
 }
 /* Key 1's settings panel is Mac only (runtime/frontend.m). */
 void runtime_settings_toggle(void) {}
+void runtime_settings_page(int page) { (void)page; }
 #if !TARGET_OS_VISION
 static void apply_display_settings(void);   // below, next to the pane helpers it uses
 #endif
