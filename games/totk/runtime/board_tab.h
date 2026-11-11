@@ -1,9 +1,10 @@
-/* The settings panel's 排行榜 page (Mac; included by settings_panel.h; user 2026-11-11: a tab of its own, apart from the
-   shaders; the switch "我要上榜" off by default, never asked or announced; the tab shows the latest board; with the
+/* The settings panel's 性能排行榜 page (Mac; included by settings_panel.h; user 2026-11-11: a tab of its own, apart from
+   the shaders; the switch "我要上榜" off by default, never asked or announced; the tab shows the latest board; with the
    switch on the player's own place is green; anonymous). The board comes from the server (board_upload.h
-   totk_board_fetch), read when the page is shown and again at most once a minute while it stays open. One group of the
-   board at a time: players are only ranked against the same frame lock and interpolation (the pop-up picks the group;
-   it starts on the player's current one). A controller's A flips the switch. */
+   totk_board_fetch), read when the page is shown and again at most once a minute while it stays open. Only uncapped play
+   without interpolation is ranked (user: a frame lock says what the player chose, not how fast the Mac is; interpolation
+   holds the game at a set rate too), so only that group is shown, and nothing is kept while the game is locked or
+   interpolated (board_upload.h). A controller's A flips the switch. */
 #pragma once
 
 #define BOARD_TAB_REFETCH_S 60.0
@@ -11,12 +12,11 @@
 @interface TOTKBoardPage:NSView<NSTableViewDataSource,NSTableViewDelegate>
 @property(strong) NSSwitch *toggle;
 @property(strong) NSTextField *state, *status, *note;
-@property(strong) NSPopUpButton *groups;
+@property(strong) NSTextField *group;
 @property(strong) NSTableView *table;
-@property(strong) NSArray<NSDictionary *> *groupList;
 @property(strong) NSArray<NSDictionary *> *entries;
 @property double fetchedAt;
-@property BOOL fetching, pickedByHand;
+@property BOOL fetching, loaded;
 -(void)refresh;
 @end
 
@@ -25,38 +25,28 @@ static NSTextField *board_tab_label(NSString *text, CGFloat size, CGFloat white,
  NSTextField *l=[NSTextField labelWithString:text];l.font=[NSFont systemFontOfSize:size];l.alignment=align;
  l.textColor=[NSColor colorWithCalibratedWhite:white alpha:1];l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
-/* "不锁帧", "锁 60 帧", "插帧 30+30", "插帧（不锁）" */
-static NSString *board_tab_group_name(NSDictionary *g) {
- int lock=[g[@"lock"] intValue],interp=[g[@"interp"] intValue];
- NSString *name=interp==1?settings_text("插帧（不锁）","Interpolated (uncapped)")
-  :interp?[NSString stringWithFormat:settings_text("插帧 %d+%d","Interpolated %d+%d"),interp,interp]
-  :lock?[NSString stringWithFormat:settings_text("锁 %d 帧","Locked at %d"),lock]:settings_text("不锁帧","Uncapped");
- return [NSString stringWithFormat:settings_text("%@ · %d 人","%@ · %d players"),name,[g[@"players"] intValue]];
-}
 static NSString *board_tab_fps(id v) { return [v isKindOfClass:NSNumber.class]?[NSString stringWithFormat:@"%.1f",[v doubleValue]]:@"–"; }
 
 /* The columns: identifier, title, width. Measured (2026-11-11): each is wider than its title and its widest value
-   ("M4 Max · 40 核", "2560×1440 MFX", "144.0"), and with the 2 pt spacing the last ends at 550 of the 555 the table
-   shows beside its scroller. */
+   ("M4 Max · 40 核", "2560×1440 MFX", "144.0"); with the 2 pt spacing they end well inside the 555 the table shows
+   beside its scroller. No interpolation column: interpolated play is not ranked. */
 static NSArray<NSArray *> *board_tab_columns(void) {
- return @[@[@"rank",settings_text("名次","#"),@28],@[@"name",settings_text("玩家","Player"),@54],@[@"chip",settings_text("芯片","Chip"),@94],
-          @[@"memory",settings_text("内存","Memory"),@48],@[@"out",settings_text("分辨率","Resolution"),@106],@[@"avg",settings_text("平均","Avg"),@40],
-          @[@"median",settings_text("中位数","Median"),@40],@[@"low1",settings_text("1%最低","1% low"),@44],@[@"max",settings_text("最高","Max"),@40],
-          @[@"interp",settings_text("插帧","Interp."),@36]];
+ return @[@[@"rank",settings_text("名次","#"),@28],@[@"name",settings_text("玩家","Player"),@54],@[@"chip",settings_text("芯片","Chip"),@104],
+          @[@"memory",settings_text("内存","Memory"),@48],@[@"out",settings_text("分辨率","Resolution"),@112],@[@"avg",settings_text("平均","Avg"),@40],
+          @[@"median",settings_text("中位数","Median"),@40],@[@"low1",settings_text("1%最低","1% low"),@44],@[@"max",settings_text("最高","Max"),@40]];
 }
 
 -(instancetype)initWithFrame:(NSRect)frame{
  if(!(self=[super initWithFrame:frame]))return nil;
  CGFloat W=frame.size.width,H=frame.size.height,top=H-12;
- /* the switch, its title and state on the left; the group on the right */
+ /* the switch, its title and state on the left; the group (uncapped, and how many players) on the right */
  NSSwitch *toggle=[NSSwitch new];[toggle sizeToFit];NSSize s=toggle.frame.size;
  toggle.frame=NSMakeRect(18,top-s.height,s.width,s.height);toggle.target=self;toggle.action=@selector(toggled:);toggle.refusesFirstResponder=YES;
  [self addSubview:toggle];self.toggle=toggle;
  NSTextField *title=board_tab_label(settings_text("我要上榜","Join the board"),15,1.0,NSTextAlignmentLeft);title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
  title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,120,22);[self addSubview:title];
- NSPopUpButton *groups=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(W-18-210,top-26,210,26) pullsDown:NO];
- groups.target=self;groups.action=@selector(groupPicked:);groups.refusesFirstResponder=YES;[self addSubview:groups];self.groups=groups;
- NSTextField *state=board_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36-220,16);[self addSubview:state];self.state=state;
+ NSTextField *group=board_tab_label(settings_text("不锁帧","Uncapped"),12,0.7,NSTextAlignmentRight);group.frame=NSMakeRect(W-18-200,top-s.height+3,200,18);[self addSubview:group];self.group=group;
+ NSTextField *state=board_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);[self addSubview:state];self.state=state;
  /* the board */
  CGFloat noteH=30,tableTop=NSMinY(state.frame)-8,tableBottom=8+noteH+4;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,tableBottom,W-28,tableTop-tableBottom)];
@@ -69,8 +59,8 @@ static NSArray<NSArray *> *board_tab_columns(void) {
  table.columnAutoresizingStyle=NSTableViewNoColumnAutoresizing;table.refusesFirstResponder=YES;table.selectionHighlightStyle=NSTableViewSelectionHighlightStyleNone;
  scroll.documentView=table;[self addSubview:scroll];self.table=table;
  NSTextField *status=board_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);[self addSubview:status];self.status=status;
- NSTextField *note=board_tab_label(settings_text("匿名：只上传配置、画面设置、帧数和一个随机编号。帧数只算进入世界后的游玩，暂停和切到后台不算；同一锁帧和插帧设置的玩家放在一组比较。",
-  "Anonymous: only the hardware, picture settings, frame rates and a random id are sent. Only play in the world counts, not pauses or time in the background; players are ranked against the same frame lock and interpolation."),
+ NSTextField *note=board_tab_label(settings_text("匿名：只上传配置、画面设置、帧数和一个随机编号。只算不锁帧、不补帧时进入世界后的游玩，暂停和切到后台不算；锁帧或补帧时不记录。",
+  "Anonymous: only the hardware, picture settings, frame rates and a random id are sent. Only uncapped play in the world without interpolation counts, not pauses or the background; nothing is kept while the frame rate is locked or interpolated."),
   10.5,0.6,NSTextAlignmentCenter);
  note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);[self addSubview:note];self.note=note;
  [self refresh];
@@ -78,10 +68,11 @@ static NSArray<NSArray *> *board_tab_columns(void) {
 }
 
 -(BOOL)usable{return totk_board_dir()!=nil;}
-/* The state line is short (the group pop-up shares its row); the whole rule is its tooltip. */
+-(BOOL)locked{int lock=0,interp=0;nvn_board_pacing(&lock,&interp);return lock||interp;}
+/* The state line is short; the whole rule is its tooltip. */
 static NSString *board_tab_rule(void) {
- return [NSString stringWithFormat:settings_text("玩满 %d 分钟后，每 5 分钟在本机记一次这局的成绩，只在开机时（连同上次没传的）和每 30 分钟上传；关掉开关会清掉本机没传的记录。",
-  "After %d minutes of play the session is kept on this Mac every 5 minutes and sent only at start (with what the last session kept) and every 30 minutes; turning the switch off drops what is kept."),TOTK_BOARD_MIN_SECONDS/60];
+ return [NSString stringWithFormat:settings_text("只算不锁帧、不补帧的游玩。玩满 %d 分钟后，每 5 分钟在本机记一次这局的成绩，只在开机时（连同上次没传的）和每 30 分钟上传；关掉开关会清掉本机没传的记录。",
+  "Only uncapped play without interpolation counts. After %d minutes of play the session is kept on this Mac every 5 minutes and sent only at start (with what the last session kept) and every 30 minutes; turning the switch off drops what is kept."),TOTK_BOARD_MIN_SECONDS/60];
 }
 
 /* The switch and its state (twice a second with the panel's tick); the board again when it is a minute old. */
@@ -89,6 +80,7 @@ static NSString *board_tab_rule(void) {
  BOOL usable=[self usable],on=usable&&totk_board_on();
  self.toggle.enabled=usable;self.toggle.state=on?NSControlStateValueOn:NSControlStateValueOff;
  self.state.stringValue=!usable?settings_text("这次运行不参加排行榜","This run takes no part in the board")
+  :on&&[self locked]?settings_text("已开启：锁帧或补帧中，这局不计入","On: the frame rate is locked or interpolated, this play does not count")
   :on?settings_text("已开启：每 5 分钟本机记录，开机和每 30 分钟上传","On: kept every 5 min, sent at start and every 30 min")
   :settings_text("已关闭：不上传任何东西","Off: nothing is sent");
  self.state.toolTip=board_tab_rule();
@@ -96,39 +88,26 @@ static NSString *board_tab_rule(void) {
  if(!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>BOARD_TAB_REFETCH_S))[self fetch];
 }
 -(void)fetch{
- self.fetching=YES;if(!self.groupList)self.status.stringValue=settings_text("正在读取榜单…","Reading the board…");
+ self.fetching=YES;if(!self.loaded)self.status.stringValue=settings_text("正在读取榜单…","Reading the board…");
  __weak TOTKBoardPage *weakSelf=self;
  totk_board_fetch(^(NSDictionary *board,NSString *error){
   TOTKBoardPage *page=weakSelf;if(!page)return;
   page.fetching=NO;page.fetchedAt=CACurrentMediaTime();
-  if(!board){if(!page.groupList)page.status.stringValue=[NSString stringWithFormat:settings_text("读不到榜单（%@），一分钟后再试","The board could not be read (%@); trying again in a minute"),error];return;}
+  if(!board){if(!page.loaded)page.status.stringValue=[NSString stringWithFormat:settings_text("读不到榜单（%@），一分钟后再试","The board could not be read (%@); trying again in a minute"),error];return;}
   [page show:board[@"groups"]];
  });
 }
-/* The group shown: the one picked by hand, else the player's current pacing, else the biggest. */
+/* The uncapped group without interpolation, the only one ranked. */
 -(void)show:(NSArray *)groups{
- NSMutableArray<NSDictionary *> *list=[NSMutableArray array];
- for(id g in groups)if([g isKindOfClass:NSDictionary.class]&&[g[@"entries"] isKindOfClass:NSArray.class])[list addObject:g];
- NSInteger keep=self.pickedByHand?self.groups.indexOfSelectedItem:-1;NSDictionary *was=keep>=0&&keep<(NSInteger)self.groupList.count?self.groupList[keep]:nil;
- self.groupList=list;[self.groups removeAllItems];
- for(NSDictionary *g in list)[self.groups addItemWithTitle:board_tab_group_name(g)];
- NSInteger pick=list.count?0:-1;int lock=0,interp=0;nvn_board_pacing(&lock,&interp);
- for(NSUInteger i=0;i<list.count;i++){
-  BOOL same=was?[list[i][@"lock"] isEqual:was[@"lock"]]&&[list[i][@"interp"] isEqual:was[@"interp"]]:[list[i][@"lock"] intValue]==lock&&[list[i][@"interp"] intValue]==interp;
-  if(same){pick=(NSInteger)i;break;}
- }
- if(pick>=0)[self.groups selectItemAtIndex:pick];
- self.groups.enabled=list.count>1;
- [self showGroup:pick];
-}
--(void)showGroup:(NSInteger)i{
+ NSDictionary *uncapped=nil;
+ for(id g in groups)if([g isKindOfClass:NSDictionary.class]&&[g[@"lock"] intValue]==0&&[g[@"interp"] intValue]==0&&[g[@"entries"] isKindOfClass:NSArray.class])uncapped=g;
  NSMutableArray *rows=[NSMutableArray array];
- if(i>=0&&i<(NSInteger)self.groupList.count)for(id e in self.groupList[i][@"entries"])if([e isKindOfClass:NSDictionary.class])[rows addObject:e];
- self.entries=rows;[self.table reloadData];
+ for(id e in uncapped[@"entries"])if([e isKindOfClass:NSDictionary.class])[rows addObject:e];
+ self.loaded=YES;self.entries=rows;[self.table reloadData];
+ self.group.stringValue=uncapped?[NSString stringWithFormat:settings_text("不锁帧 · %d 人","Uncapped · %d players"),[uncapped[@"players"] intValue]]:settings_text("不锁帧","Uncapped");
  self.status.stringValue=rows.count?@"":settings_text("还没有人上榜","No one is on the board yet");
  for(NSUInteger k=0;k<rows.count;k++)if([rows[k][@"me"] boolValue]){[self.table scrollRowToVisible:(NSInteger)k];break;}
 }
--(void)groupPicked:(NSPopUpButton *)p{self.pickedByHand=YES;[self showGroup:p.indexOfSelectedItem];}
 -(void)toggled:(NSSwitch *)toggle{
  if(![self usable]){[self refresh];return;}
  if(totk_board_set(toggle.state==NSControlStateValueOn))self.fetchedAt=0;   /* the board again: with or without the player's row */

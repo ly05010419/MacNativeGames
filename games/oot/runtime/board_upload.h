@@ -14,7 +14,8 @@
    version, the pacing (frame lock, interpolation), the resolutions, MetalFX, the display's refresh rate, the frame
    numbers, and a random id of its own, one for every game of this Mac (MacNativeGames/leaderboard-id.txt, not the
    shader inbox's; user: one player is one player, so the three Zelda games share it). The server returns no id to
-   anyone: it marks the caller's row and shows each player by an anonymous name made from the id. */
+   anyone: it marks the caller's row and shows each player by an anonymous name made from the id. Only uncapped play
+   without interpolation is kept (user 2026-11-11: a frame lock says what the player chose, not how fast the Mac is). */
 #pragma once
 #import <Foundation/Foundation.h>
 #include <IOKit/IOKitLib.h>
@@ -198,9 +199,13 @@ static inline void totk_board_write_pending(NSDictionary *pending) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:pending options:0 error:nil];
     if (!data || ![data writeToFile:file atomically:YES]) fprintf(stderr, "[board] the session was not kept: %s\n", file.UTF8String);
 }
-/* Keeps the session so far (with the switch on and enough play), replacing the record of its lock and interpolation. */
+/* Only uncapped play without interpolation is ranked, so only it is kept and sent. */
+static inline BOOL totk_board_ranked(NSDictionary *settings) {
+    return [settings[@"lock"] intValue] == 0 && [settings[@"interp"] intValue] == 0;
+}
+/* Keeps the session so far (with the switch on, uncapped, and enough play), replacing the record kept before. */
 static inline void totk_board_keep(NSDictionary *settings) {
-    if (!settings || !totk_board_on()) return;
+    if (!settings || !totk_board_on() || !totk_board_ranked(settings)) return;
     NSDictionary *body = totk_board_body(totk_board_id(YES), settings);
     if (!body) return;
     NSMutableDictionary *pending = totk_board_pending();
@@ -212,8 +217,11 @@ static inline void totk_board_keep(NSDictionary *settings) {
 static inline void totk_board_send_kept(void) {
     if (!totk_board_on()) return;
     NSMutableDictionary *pending = totk_board_pending();
-    for (NSString *key in pending.allKeys)
-        if ([pending[key] isKindOfClass:NSDictionary.class] && totk_board_post(pending[key])) [pending removeObjectForKey:key];
+    for (NSString *key in pending.allKeys) {
+        NSDictionary *record = [pending[key] isKindOfClass:NSDictionary.class] ? pending[key] : nil;
+        if (!record || !totk_board_ranked(record[@"settings"])) [pending removeObjectForKey:key];   /* an earlier build kept locked play */
+        else if (totk_board_post(record)) [pending removeObjectForKey:key];
+    }
     totk_board_write_pending(pending);
 }
 
