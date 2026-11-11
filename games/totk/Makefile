@@ -299,9 +299,8 @@ shader-tools:
 
 .PHONY: shader-service
 # The runtime shader translation service as one native program (2026-10-17): the patched translator of make shader-tools
-# plus tools/totk_xlate/Service.cs (the port of scripts/shader_service.py), published with NativeAOT. The runtime uses
-# build/shader-service/totk_xlate when it is there (no Python, no .NET runtime; TOTK_SHADER_SERVICE=python for the old
-# path).
+# plus tools/totk_xlate/Service.cs, published with NativeAOT. The runtime uses build/shader-service/totk_xlate, the only
+# translation service (no Python, no .NET runtime; TOTK_SHADER_XLATE=<program> runs another build of it).
 shader-service:
 	@test -d build/ryujinx-src || { echo "make shader-tools first (it prepares the patched translator sources)"; exit 1; }
 	tooling/dotnet/dotnet publish tools/totk_xlate/totk_xlate.csproj -c Release -r osx-arm64 -p:PublishAot=true \
