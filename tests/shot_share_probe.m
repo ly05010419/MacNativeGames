@@ -2,8 +2,10 @@
    (MacNativeGamesWeb/shader-inbox test/local-server.js), driven by tests/test_shot_share.py. TOTK_BOARD_DIR is a temporary
    folder, TOTK_SHOT_URL the local server. The picture is a 2560x1440 frame of its own (a colour and a gradient). Modes:
      up     the switch off shares nothing; a body the server refuses (400) leaves the folder; on, a picture is shared
-            (1920x1080, marked "me", its full JPEG and its thumbnail read back), deleted again, and nothing waits;
-     down   no server (TOTK_SHOT_URL at a closed port): the picture waits in shot-pending with the exact upload body;
+            (1920x1080, marked "me", its full JPEG and its thumbnail read back; TOTK_SHOT_SHARED_NOTE posted once, on the
+            main queue, for the 截图分享 page), deleted again, and nothing waits;
+     down   no server (TOTK_SHOT_URL at a closed port): the picture waits in shot-pending with the exact upload body, and
+            no note is posted;
      start  what the down run left is sent by totk_shot_start (TOTK_SHOT_TEST=1: 2 s after start) and the server lists it;
      off    turning the switch off drops what waits.
    Prints one JSON line: {"status": "pass", ...}; any failure exits 1 with the reason on stderr. */
@@ -66,6 +68,19 @@ static NSDictionary *probe_list(void) {
     return list;
 }
 static NSArray<NSString *> *probe_pending(void) { return totk_shot_pending_files(); }
+/* TOTK_SHOT_SHARED_NOTE as the 截图分享 page hears it: counted, and each on the main thread. */
+static int probe_announced;
+static void probe_listen(void) {
+    [NSNotificationCenter.defaultCenter addObserverForName:TOTK_SHOT_SHARED_NOTE object:nil queue:nil usingBlock:^(NSNotification *n) {
+        (void)n; expect(NSThread.isMainThread, @"the shared note is not on the main thread"); probe_announced++;
+    }];
+}
+/* The main queue's blocks so far, run. */
+static void probe_main_queue(void) {
+    __block BOOL ran = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ ran = YES; });
+    probe_wait(&ran, 10);
+}
 
 /* A JPEG's pixel size; {0, 0} when it is not one. */
 static CGSize probe_jpeg_size(NSData *data) {
@@ -102,8 +117,10 @@ static NSDictionary *probe_up(CGImageRef frame) {
     /* (2) on: shared at 1920x1080 and marked as the player's own */
     expect(totk_shot_queue(frame) == 1, @"not queued with the switch on");
     probe_drain();
-    /* (4) nothing waits once the server took it */
+    /* (4) nothing waits once the server took it; the page heard of it once (not of the refused body) */
     expect(probe_pending().count == 0, [NSString stringWithFormat:@"pictures still wait: %@", probe_pending()]);
+    probe_main_queue();
+    expect(probe_announced == 1, [NSString stringWithFormat:@"the shared note came %d times, not once", probe_announced]);
     NSArray *shots = probe_list()[@"shots"];
     expect(shots.count == 1, [NSString stringWithFormat:@"the server lists %lu pictures, not 1", (unsigned long)shots.count]);
     NSDictionary *shot = shots.firstObject;
@@ -137,7 +154,7 @@ static NSDictionary *probe_up(CGImageRef frame) {
     expect(deleted, @"the picture was not deleted");
     expect([probe_list()[@"shots"] count] == 0, @"the server still lists the deleted picture");
     expect([totk_shot_thumbs() objectForKey:shotId] == nil, @"the deleted picture's thumbnail is still kept");
-    return @{@"shared": shotId, @"full_bytes": @(jpeg.length)};
+    return @{@"shared": shotId, @"full_bytes": @(jpeg.length), @"announced": @(probe_announced)};
 }
 
 static NSDictionary *probe_down(CGImageRef frame) {
@@ -161,7 +178,9 @@ static NSDictionary *probe_down(CGImageRef frame) {
     totk_shot_send_pending();
     probe_drain();
     expect(probe_pending().count == 1, @"the picture left the folder without a server");
-    return @{@"pending": files[0].lastPathComponent, @"image_bytes": @(image.length), @"thumb_bytes": @(thumb.length),
+    probe_main_queue();
+    expect(probe_announced == 0, @"the shared note came although nothing was shared");
+    return @{@"announced": @(probe_announced), @"pending": files[0].lastPathComponent, @"image_bytes": @(image.length), @"thumb_bytes": @(thumb.length),
              @"board_id": body[@"board_id"]};
 }
 
@@ -189,6 +208,7 @@ int main(int argc, char **argv) {
         if (argc != 2) fail(@"usage: shot_share_probe up|down|start|off");
         expect(totk_board_dir() != nil, @"TOTK_BOARD_DIR is not set");
         NSString *mode = @(argv[1]);
+        probe_listen();
         CGImageRef frame = probe_frame();
         expect(CGImageGetWidth(frame) == 2560 && CGImageGetHeight(frame) == 1440, @"the probe's frame was not made");
         NSDictionary *result = [mode isEqualToString:@"up"] ? probe_up(frame) : [mode isEqualToString:@"down"] ? probe_down(frame)

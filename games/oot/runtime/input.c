@@ -75,7 +75,11 @@ static void input_trace_set(int on) {
  atomic_store(&inputTrace,0);atomic_store(&inputTraceSequence,0);atomic_store(&inputTrace,on!=0);
  fprintf(stderr,"[oot-input-trace] enabled=%d row_limit=16384 (diagnostic only)\n",on!=0);
 }
+/* runtime/game_slot.c: an agent's test game closes itself after a while with neither an input-file command nor real user
+   input (agent_slot_limit.h). This default answers where game_slot.c is not linked (input probes, iOS). */
+__attribute__((weak)) void runtime_slot_activity(int user){(void)user;}
 static void user_input(const char *what){
+ runtime_slot_activity(1);
  runtime_survey_cancel_user();
  runtime_autoload_user_input();
  static _Atomic uint64_t last;uint64_t now=runtime_now_ns(),prev=atomic_load(&last);
@@ -99,21 +103,33 @@ static void vr_view_key(void){if(!vr_on()||!vr_first_person||!vr_set_first_perso
 /* O (Mac key code 31) recentres VR (user 2026-11-01: "添加一个键 o把 摆正 重置 vr 镜头"): straight ahead becomes where the head
    looks now and the head's position starts from here, as both stick clicks do (gfx/nvn/totk_vr.m vr_recenter). */
 static void vr_recenter_key(void){if(vr_on()&&vr_recenter){vr_recenter();fprintf(stderr,"[totk-input] O: VR recentred\n");}}
+/* The screenshot action (keyboard_map.h KEYMAP_SCREENSHOT, P by default; user 2026-11-11): a press of one of its inputs takes
+   the capture button's picture (gamepad.m runtime_capture_press -> screenshot.h). Its inputs drive nothing in the game
+   (keymap_apply). With VR on, P and O keep their VR use above and take no picture. */
+static int screenshot_input_locked(int input){return keymap_action_of(&keyMap,input,NULL)==KEYMAP_SCREENSHOT;}
+static void screenshot_input(int input){
+ if(input==KEY_VR_VIEW||input==KEY_VR_RECENTER){if(vr_on())return;}
+ const char *name=keymap_input_name(input);fprintf(stderr,"[totk-input] screenshot: %s\n",name?name:"?");
+ if(runtime_capture_press)runtime_capture_press();
+}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;held_buttons_locked();pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
  if(press&&code==KEY_VR_VIEW)vr_view_key();
  if(press&&code==KEY_VR_RECENTER)vr_recenter_key();}
 void runtime_input_key(unsigned code,int down){
  if(code>=128||ignore_user())return;if(down)user_input("keyboard");
- pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int shot=press&&screenshot_input_locked((int)code);pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
  if(press&&code==KEY_VR_VIEW)vr_view_key();
  if(press&&code==KEY_VR_RECENTER)vr_recenter_key();
+ if(shot)screenshot_input((int)code);
 }
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
  if(button<0||button>=KEYMAP_MOUSE_BUTTONS||ignore_user())return;if(down)user_input("mouse");
- pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[KEYMAP_MOUSE_FIRST+button];held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();
+ int shot=press&&screenshot_input_locked(KEYMAP_MOUSE_FIRST+button);pthread_mutex_unlock(&inputLock);
+ if(shot)screenshot_input(KEYMAP_MOUSE_FIRST+button);
 }
 void runtime_input_clear_window(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;held_buttons_locked();pthread_mutex_unlock(&inputLock);}
 void runtime_input_clear(void){runtime_input_clear_window();runtime_gamepad_clear();}
@@ -284,6 +300,7 @@ static void *input_file(void *arg) {
             }
             continue;
         }
+        runtime_slot_activity(0);   /* any command keeps an agent's game open (a line the reader refuses ends the game) */
         if (runtime_survey_command(line)) continue;
         unsigned code, ms; int used = 0;
         int page;

@@ -178,6 +178,12 @@ static inline NSInteger totk_shot_post(NSData *json) {
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);   /* the task's own timeout ends it */
     return status;
 }
+/* Posted on the main queue each time the server took one of the player's pictures, so the 截图分享 page (shot_tab.h) reads
+   its list at once instead of at its next minute. */
+#define TOTK_SHOT_SHARED_NOTE @"TOTKShotShared"
+static inline void totk_shot_announce(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ [NSNotificationCenter.defaultCenter postNotificationName:TOTK_SHOT_SHARED_NOTE object:nil]; });
+}
 /* Sends what waits, oldest first (on the shots' queue): taken (200) or refused for good (400 a body out of shape, 403 a
    banned player) leaves the folder; the day's limit (429), the month's pause (503), any other answer or none stops the
    round and keeps the rest for a later one. */
@@ -193,7 +199,10 @@ static inline void totk_shot_send_now(void) {
         NSInteger status = totk_shot_post(json);
         if (status == 200 || status == 400 || status == 403) {
             [NSFileManager.defaultManager removeItemAtPath:file error:nil];
-            if (status == 200) fprintf(stderr, "[shots] shared %s\n", file.lastPathComponent.UTF8String);
+            if (status == 200) {
+                fprintf(stderr, "[shots] shared %s\n", file.lastPathComponent.UTF8String);
+                totk_shot_announce();   /* the 截图分享 page, if open, reads the list now */
+            }
             else fprintf(stderr, "[shots] dropped %s: %s\n", file.lastPathComponent.UTF8String,
                          status == 403 ? "this player may not share" : "the server refused the picture");
             continue;

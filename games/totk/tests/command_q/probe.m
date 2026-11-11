@@ -57,6 +57,8 @@ int runtime_gamepad_settings_requested(void){return 0;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_settings_button(void){return -1;}
 void runtime_gamepad_settings_button_set(int physical){(void)physical;}
+int runtime_gamepad_screenshot_button(void){return CONTROLLER_SCREENSHOT_DEFAULT;}
+void runtime_gamepad_screenshot_button_set(int physical){(void)physical;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 static int textCaptureFixture;

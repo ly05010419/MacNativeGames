@@ -186,6 +186,14 @@ void runtime_controller_map_reset(void) { controller_map_default(fakeMap, fakeMo
 static int fakeSettingsButton = -1;   /* gamepad.m's settings panel button (-1 L3 + R3) */
 int runtime_gamepad_settings_button(void) { return fakeSettingsButton; }
 void runtime_gamepad_settings_button_set(int physical) { fakeSettingsButton = physical < 0 ? -1 : physical; }
+static int fakeShotButton = CONTROLLER_SCREENSHOT_DEFAULT;   /* gamepad.m's screenshot button (held 3 s; -1 none) */
+int runtime_gamepad_screenshot_button(void) { return fakeShotButton; }
+void runtime_gamepad_screenshot_button_set(int physical) { fakeShotButton = physical < 0 ? -1 : physical; }
+/* The capture button's request: runtime/input.c's screenshot key (gamepad.m runtime_capture_press), and the 截图分享
+   page's 截屏 button (shot_tab.h shot_tab_take, pointed here by the probe). */
+static int capturePresses, shotTabTakes;
+void runtime_capture_press(void) { capturePresses++; }
+static void probe_shot_tab_take(void) { shotTabTakes++; }
 static int fakeSettingsShortcut = 1;   /* off while a controller button is being bound */
 void runtime_gamepad_settings_enable(int on) { fakeSettingsShortcut = on; }
 static int fakeSettingsCapture;
@@ -654,6 +662,16 @@ static void shots_probe(void) {
     assert(settingsPanel.tabs.segmentCount == settings_pages() && settings_pages() - 1 == (vr_enabled() ? SETTINGS_PAGE_VR : SETTINGS_PAGE_SHOTS));
     assert(!page.toggle.enabled && [page.state.stringValue isEqualToString:@"This run shares no screenshots"] && ![settingsPanel.controllerTargets containsObject:page.toggle]);
     for (NSInteger p = 0; p < (NSInteger)settingsPanel.pages.count; p++) assert(settingsPanel.pages[(NSUInteger)p].hidden == (p != SETTINGS_PAGE_SHOTS));
+    /* 截屏 (user 2026-11-11): the capture button's request (screenshot.h screenshot_request is what it calls in the game), by a
+       click or a controller's A, with or without sharing; the panel stays open. */
+    assert(shot_tab_take == screenshot_request && [page.takeButton.title isEqualToString:@"Take screenshot"] && page.takeButton.enabled && !page.takeButton.hidden);
+    assert(NSMaxX(page.takeButton.frame) <= NSWidth(page.bounds) - 10 && NSMinY(page.takeButton.frame) >= NSMinY(page.toggle.frame) - 4 &&
+           NSMaxX(page.toggle.frame) < NSMinX(page.takeButton.frame));   /* the switch's line, at its right */
+    assert([settingsPanel.controllerTargets isEqualToArray:@[page.takeButton]]);
+    shot_tab_take = probe_shot_tab_take;
+    [page.takeButton performClick:nil]; assert(shotTabTakes == 1 && settingsOpen && !page.hidden);
+    pad_press(PAD_A); pad_press(PAD_A);   /* the first shows where the controller is */
+    assert(shotTabTakes == 2 && settingsOpen);
     settings_show(0);
 
     setenv("TOTK_BOARD_DIR", game.UTF8String, 1);
@@ -661,7 +679,8 @@ static void shots_probe(void) {
     if (server) for (int n = 0; n < 6; n++) shots_share(n, n % 2 ? other : nil);   /* the newest (5) another player's */
     settings_show(1); page = shots_page();
     assert(page.toggle.enabled && page.toggle.state == NSControlStateValueOff && !totk_shot_on());
-    assert([page.state.stringValue isEqualToString:@"Off: nothing is sent"] && settingsPanel.controllerTargets.firstObject == page.toggle);
+    assert([page.state.stringValue isEqualToString:@"Off: nothing is sent"] && settingsPanel.controllerTargets.firstObject == page.toggle && settingsPanel.controllerTargets[1] == page.takeButton);
+    assert(settingsPanel.controllerTargets[2] == page.nick.button && [page.nick.button.title isEqualToString:@"Change"]);   /* the nickname's 修改 (nick_row.h) */
     if (!server) {
         /* No server: the read fails and says it tries again; A on the switch turns sharing on and off. */
         shots_wait("failed read", ^BOOL{ return [page.status.stringValue hasPrefix:@"The screenshots could not be read ("]; });
@@ -680,13 +699,14 @@ static void shots_probe(void) {
     shots_wait("own pictures", ^BOOL{ return shots_own() == 3; });
     NSArray<TOTKShotCell *> *cells = page.cells; NSArray *targets = settingsPanel.controllerTargets;
     assert(!cells[0].mine && cells[1].mine && !cells[2].mine && cells[3].mine && !cells[0].deleteButton);
-    assert(targets.count == 1 + 6 + 3 && targets[0] == page.toggle && targets[1] == cells[0] && targets[2] == cells[1] && targets[3] == cells[1].deleteButton);
+    assert(targets.count == 3 + 6 + 3 && targets[0] == page.toggle && targets[1] == page.takeButton && targets[2] == page.nick.button && targets[3] == cells[0] && targets[4] == cells[1] && targets[5] == cells[1].deleteButton);
+    assert(NSMaxY(page.scroll.frame) <= NSMinY(page.nick.frame) && NSMinY(page.nick.frame) >= 0 && NSMaxY(page.nick.frame) <= NSMinY(page.state.frame));   /* the row between the state line and the grid */
     assert(NSWidth(cells[0].frame) * 4 + 3 * SHOT_TAB_GAP <= NSWidth(page.grid.frame) && NSMinX(cells[3].frame) > NSMinX(cells[2].frame));   /* four to a row */
     assert(NSMinY(cells[4].frame) > NSMinY(cells[0].frame));
     shots_wait("thumbnails", ^BOOL{ for (TOTKShotCell *c in page.cells) if (!c.thumb.image) return NO; return YES; });
     shots_png(@"-grid");
     /* A on a picture: the whole of it over the page; B closes it and the panel stays open. */
-    settingsPanel.controllerIndex = 2; [settingsPanel controllerHighlight]; pad_press(PAD_A);
+    settingsPanel.controllerIndex = 4; [settingsPanel controllerHighlight]; pad_press(PAD_A);
     assert(page.viewer && page.viewer.superview == page && NSEqualRects(page.viewer.frame, page.bounds));
     shots_wait("whole picture", ^BOOL{ return page.viewer.image.image != nil; });
     assert(page.viewer.image.image.size.width == 1920 && page.viewer.status.hidden);
@@ -706,14 +726,22 @@ static void shots_probe(void) {
     pad_press(SHOTS_PAD_B); assert(!page.viewer && settingsOpen);
     /* Delete (A on the button): gone from the grid, and from the server's list read again. */
     NSString *gone = cells[1].shotId;
-    settingsPanel.controllerIndex = 3; [settingsPanel controllerHighlight]; pad_press(PAD_A);
+    settingsPanel.controllerIndex = 5; [settingsPanel controllerHighlight]; pad_press(PAD_A);
     shots_wait("delete", ^BOOL{ return page.cells.count == 5 && shots_own() == 2; });
     for (NSDictionary *s in page.shots) assert(![s[@"id"] isEqual:gone]);
     shots_wait("list read again", ^BOOL{ return !page.fetching && page.fetchedAt > 0; });
-    assert(page.cells.count == 5 && settingsPanel.controllerTargets.count == 1 + 5 + 2);
+    assert(page.cells.count == 5 && settingsPanel.controllerTargets.count == 3 + 5 + 2);
+    /* A picture of the player's just shared (shot_upload.h posts TOTK_SHOT_SHARED_NOTE once the server took it): the list is
+       read at once, not at the next minute. Without the note nothing reads it in the next second and a half. */
+    shots_share(2, other);
+    NSDate *still = [NSDate dateWithTimeIntervalSinceNow:1.5];
+    while (still.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    assert(page.cells.count == 5 && !page.fetching);
+    totk_shot_announce();
+    shots_wait("list read on the note", ^BOOL{ return page.cells.count == 6; });
     /* Off again: the marks go. */
     settingsPanel.controllerIndex = 0; [settingsPanel controllerHighlight]; pad_press(PAD_A); assert(!totk_shot_on());
-    shots_wait("marks gone", ^BOOL{ return shots_own() == 0 && page.cells.count == 5; });
+    shots_wait("marks gone", ^BOOL{ return shots_own() == 0 && page.cells.count == 6; });
     /* The end of the list: a full page with "next" (made up here: the server holds 5), scrolled to its end, reads the
        older ones with before= and puts them below. */
     NSMutableArray *made = [NSMutableArray array];
@@ -722,22 +750,224 @@ static void shots_probe(void) {
     [page takeNewest:@{@"shots": made, @"next": @"941"}];
     assert(page.cells.count == 60 && [page.next isEqualToString:@"941"] && !page.fetchingMore);
     [page.grid scrollPoint:NSMakePoint(0, NSHeight(page.grid.frame))];
-    shots_wait("older pictures", ^BOOL{ return page.cells.count == 65 && !page.next; });
+    shots_wait("older pictures", ^BOOL{ return page.cells.count == 66 && !page.next; });
     assert([page.shots[60][@"id"] longLongValue] < 941);
     settings_show(0);
     /* In Chinese, for the picture. */
     setenv("TOTK_UI_LANG", "zh", 1); g_settings_page = SETTINGS_PAGE_SHOTS; settings_show(1); page = shots_page();
     pad_press(PAD_A); pad_press(PAD_A); assert(totk_shot_on());
-    shots_wait("list", ^BOOL{ return page.cells.count == 5 && shots_own() == 2; });
+    shots_wait("list", ^BOOL{ return page.cells.count == 6 && shots_own() == 2; });
     shots_wait("thumbnails", ^BOOL{ for (TOTKShotCell *c in page.cells) if (!c.thumb.image) return NO; return YES; });
     assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_SHOTS] isEqualToString:@"截图分享"] && [page.state.stringValue isEqualToString:@"已开启：每张截图自动分享，每天最多 20 张"]);
     shots_png(@"-zh");
     settings_show(0); setenv("TOTK_UI_LANG", "en", 1);
 }
 
+/* The player's nickname (nick_row.h): one row on the 排行榜 and 截图分享 pages. Without NICK_TEST_URL: the row in a run
+   without the launcher's folder (greyed, out of the controller's way), "not set" before any id (nothing read), and 修改
+   through the text bar to a send that gets no answer (network error, orange). With NICK_TEST_URL (the root of the inbox's
+   test/local-server.js) and NICK_TEST_TAKEN (a nickname another player holds, set over HTTP by the test): a board record
+   and a picture of this Mac's id; from the board page by the controller, 修改 → "Link": GET /v1/name answers it, the board
+   and the pictures list it, and no upload switch went on; the 截图分享 row shows it without another read; NICK_TEST_TAKEN
+   is refused as taken (orange) and "Link" stays; an empty entry clears it. NICK_TEST_PNG=<path prefix>: pictures of both
+   pages with a nickname and with a refusal, in English and Chinese, and in a 600 pt panel. */
+static TOTKBoardPage *nick_board(void) { return (TOTKBoardPage *)settingsPanel.pages[SETTINGS_PAGE_BOARD]; }
+static void nick_wait(const char *what, BOOL (^ready)(void)) {
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:25];
+    while (!ready() && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    if (!ready()) { fprintf(stderr, "nickname: no %s in 25 s (state \"%s\", row \"%s\")\n", what, nick_board().state.stringValue.UTF8String, nick_board().nick.label.stringValue.UTF8String); abort(); }
+}
+static void nick_png(NSString *name) {
+    const char *png = getenv("NICK_TEST_PNG"); if (!png) return;
+    /* the panel's layers as Core Animation composes them (as the VR capture does); cacheDisplayInRect: sometimes left the
+       panel's own layer background out */
+    [settingsPanel layoutSubtreeIfNeeded]; [settingsPanel displayIfNeeded]; [CATransaction flush];
+    NSSize z = settingsPanel.bounds.size; const CGFloat k = 2;
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)(z.width * k) pixelsHigh:(NSInteger)(z.height * k)
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+    NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    CGContextScaleCTM(context.CGContext, k, k); [settingsPanel.layer renderInContext:context.CGContext]; [context flushGraphics];
+    NSString *path = [NSString stringWithFormat:@"%s-%s-%@.png", png, getenv("TOTK_UI_LANG"), name];
+    assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]);
+    printf("picture: %s\n", path.UTF8String);
+}
+/* The text bar after 修改: up (the panel closed), filled with `initial`; `text` typed in its place and confirmed; the
+   panel back on the same page. */
+static void nick_enter(TOTKNickRow *row, NSString *initial, NSString *text) {
+    if (row) [row.button performClick:nil];
+    nick_wait("text bar", ^BOOL{ return openBar != nil && !settingsOpen; });
+    if (![openBar.field.stringValue isEqualToString:initial]) { fprintf(stderr, "nickname: the bar has \"%s\"\n", openBar.field.stringValue.UTF8String); abort(); }
+    assert(openBar.maxUnits == NICK_ROW_MAX && openBar.minUnits == 0 && ![openBar allowed:'/'] && [openBar allowed:' ']);
+    openBar.field.stringValue = @""; [openBar refilter];
+    if (text.length) runtime_front_text_test("type", text.UTF8String);
+    tick();
+    runtime_front_text_test("enter", "");
+    nick_wait("panel back", ^BOOL{ return settingsOpen && openBar == nil; });
+}
+static BOOL nick_state(NSTextField *state, NSString *text, NSColor *color) {
+    return [state.stringValue isEqualToString:text] && [state.textColor isEqual:color];
+}
+static NSString *nick_read(void) {
+    __block NSString *got = nil, *why = nil; __block BOOL came = NO;
+    totk_name_fetch(^(NSString *name, NSString *error) { got = name; why = error; came = YES; });
+    nick_wait("nickname read", ^BOOL{ return came; });
+    assert(!why);
+    return got;
+}
+static NSDictionary *nick_board_entry(NSString *name) {
+    for (NSDictionary *e in nick_board().entries) if ([e[@"name"] isEqual:name]) return e;
+    return nil;
+}
+static NSArray *nick_shots(void) {
+    __block NSDictionary *list = nil; __block BOOL came = NO;
+    totk_shot_fetch(nil, ^(NSDictionary *data, NSString *error) { (void)error; list = data; came = YES; });
+    nick_wait("pictures read", ^BOOL{ return came; });
+    assert(list);
+    return list[@"shots"];
+}
+/* The row's place on a page: under the state line, above the list, the button after the name and inside the page. */
+static void nick_fits(NSView *page, TOTKNickRow *row, NSTextField *state, NSView *list) {
+    assert(NSMaxY(row.frame) <= NSMinY(state.frame) && NSMinY(row.frame) >= NSMaxY(list.frame) && NSMaxX(row.frame) <= NSWidth(page.bounds) - 10);
+    assert(NSMaxX(row.label.frame) <= NSMinX(row.button.frame) && NSMaxX(row.button.frame) <= NSWidth(row.bounds) && row.label.frame.size.width > 40);
+    assert(row.label.frame.size.width >= ceil([row.label.stringValue sizeWithAttributes:@{NSFontAttributeName: row.label.font}].width));   /* the name whole */
+}
+static void nick_probe(void) {
+    const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("NICK_TEST_URL"), *taken = getenv("NICK_TEST_TAKEN"); assert(dir);
+    NSString *game = [@(dir) stringByAppendingPathComponent:@"nick/TOTK"];   /* the board id lives in the folder above */
+    assert([NSFileManager.defaultManager createDirectoryAtPath:game withIntermediateDirectories:YES attributes:nil error:nil]);
+    if (server) {
+        setenv("TOTK_NAME_URL", [@(server) stringByAppendingString:@"/v1/name"].UTF8String, 1);
+        setenv("TOTK_BOARD_URL", [@(server) stringByAppendingString:@"/v1/board"].UTF8String, 1);
+        setenv("TOTK_SHOT_URL", [@(server) stringByAppendingString:@"/v1/shots"].UTF8String, 1);
+    }
+    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
+    settings_test_output_init();
+    window = probe_window();
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+
+    /* No folder from the launcher: no nickname here, and 修改 greyed and out of the controller's way, on both pages. */
+    unsetenv("TOTK_BOARD_DIR"); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1);
+    TOTKBoardPage *board = nick_board();
+    assert(settingsOpen && [board.nick.label.stringValue isEqualToString:@"Nickname: not available in this run"] && !board.nick.button.enabled);
+    assert([board.nick.button.title isEqualToString:@"Change"] && settingsPanel.controllerTargets.count == 0);
+    [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; assert(![settingsPanel.controllerTargets containsObject:shots_page().nick.button] && !shots_page().nick.button.enabled);
+    settings_show(0);
+
+    /* A folder but no id yet: "not set", and nothing is read (no id is made to read). */
+    setenv("TOTK_BOARD_DIR", game.UTF8String, 1);
+    assert(!totk_board_id(NO));
+    g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
+    nick_wait("row without an id", ^BOOL{ return [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
+    assert(board.nick.button.enabled && [settingsPanel.controllerTargets isEqualToArray:(@[board.toggle, board.nick.button])]);
+    nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
+    assert(!totk_board_id(NO));
+    if (!server) {
+        /* 修改, then a send nobody answers: the panel back on the page, the refusal in orange, the row as it was. */
+        nick_enter(board.nick, @"", @"Link");
+        board = nick_board();
+        assert(settingsPanel.page == SETTINGS_PAGE_BOARD);
+        nick_wait("network error", ^BOOL{ return nick_state(nick_board().state, @"Nickname not changed: network error, try again later", NSColor.systemOrangeColor); });
+        board = nick_board();
+        assert([board.nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"] && board.nick.button.enabled);
+        assert(!totk_board_on() && !totk_shot_on());
+        settings_show(0); return;
+    }
+    assert(taken && *taken);
+
+    /* This Mac's player on the board and with a picture, under the anonymous code. */
+    NSString *me = totk_board_id(YES); assert(me);
+    NSDictionary *record = @{@"schema": @1, @"game": @GAME_INBOX_ID, @"board_id": me, @"game_version": @"1.0.0", @"app_build": @"test", @"platform": @"mac",
+        @"os": @"macOS 26.0", @"chip": @"Apple M4", @"gpu_cores": @10, @"memory_gb": @16,
+        @"settings": @{@"lock": @0, @"interp": @0, @"out_w": @1920, @"out_h": @1080, @"scene_w": @1920, @"scene_h": @1080, @"metalfx": @NO, @"display_hz": @60},
+        @"stats": @{@"seconds": @600, @"frames": @36000, @"avg": @60.0, @"median": @60.0, @"low1": @50.0, @"max": @61.0, @"interp_fps": @0}};
+    assert(totk_board_post(record));
+    shots_share(0, nil);
+    settings_show(0); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
+    nick_wait("board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
+    NSString *code = board.entries[0][@"name"];
+    assert(code.length == 6 && ![board.entries[0][@"nick"] boolValue]);
+
+    /* The controller reaches 修改 after the switch; A opens the bar, empty; "Link" is set. */
+    pad_press(PAD_DOWN); assert(g_settings_controller_active);
+    for (int n = 0; n < 4 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != board.nick.button; n++) pad_press(PAD_DOWN);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == board.nick.button);
+    pad_press(PAD_A);
+    nick_enter(nil, @"", @"Link");
+    assert(settingsPanel.page == SETTINGS_PAGE_BOARD);
+    nick_wait("nickname set", ^BOOL{ return nick_state(nick_board().state, @"Nickname set to \"Link\"", NSColor.systemGreenColor); });
+    board = nick_board();
+    assert([board.nick.label.stringValue isEqualToString:@"Nickname: Link"] && board.nick.button.enabled);
+    assert(!totk_board_on() && !totk_shot_on());   /* a nickname turns on no upload switch */
+    assert([nick_read() isEqualToString:@"Link"]);
+    nick_wait("board read again", ^BOOL{ NSDictionary *e = nick_board_entry(@"Link"); return e && [e[@"nick"] boolValue]; });
+    assert(!nick_board_entry(code));
+    NSArray *shots = nick_shots(); assert(shots.count == 1 && [shots[0][@"name"] isEqual:@"Link"] && [shots[0][@"nick"] boolValue]);
+
+    /* The 截图分享 page: the same nickname, at once (read once per opening), its 修改 after 截屏 for the controller. */
+    [settingsPanel selectPage:SETTINGS_PAGE_SHOTS];
+    TOTKShotsPage *page = shots_page();
+    assert([page.nick.label.stringValue isEqualToString:@"Nickname: Link"] && settingsPanel.controllerTargets[2] == page.nick.button);
+    nick_fits(page, page.nick, page.state, page.scroll);
+    shots_wait("pictures with the nickname", ^BOOL{ return page.shots.count == 1 && [page.shots[0][@"name"] isEqual:@"Link"]; });
+
+    /* A nickname another player holds: refused as taken, in orange; "Link" stays. */
+    nick_enter(page.nick, @"Link", @(taken));
+    assert(settingsPanel.page == SETTINGS_PAGE_SHOTS);
+    nick_wait("taken", ^BOOL{ return nick_state(shots_page().state, @"Nickname not changed: this nickname is taken", NSColor.systemOrangeColor); });
+    page = shots_page();
+    assert([page.nick.label.stringValue isEqualToString:@"Nickname: Link"] && [nick_read() isEqualToString:@"Link"]);
+    [settingsPanel selectPage:SETTINGS_PAGE_BOARD]; tick();
+    assert(nick_state(nick_board().state, @"Nickname not changed: this nickname is taken", NSColor.systemOrangeColor));   /* the same line on the other page */
+
+    /* Empty clears it, no question asked: the anonymous code again everywhere. */
+    nick_enter(nick_board().nick, @"Link", @"");
+    nick_wait("cleared", ^BOOL{ return nick_state(nick_board().state, @"Nickname cleared: the anonymous code shows", NSColor.systemGreenColor); });
+    assert([nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"] && nick_read() == nil);
+    nick_wait("board with the code", ^BOOL{ return nick_board_entry(code) != nil; });
+    shots = nick_shots(); assert([shots[0][@"name"] isEqual:code] && ![shots[0][@"nick"] boolValue]);
+
+    /* Pictures: both pages with a nickname and with a refusal, in English and Chinese, then in a 600 pt panel. */
+    if (getenv("NICK_TEST_PNG")) {
+        for (int zh = 0; zh < 2; zh++) {
+            setenv("TOTK_UI_LANG", zh ? "zh" : "en", 1);
+            NSString *name = zh ? @"海拉鲁的林克" : @"Link";
+            settings_show(0); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1);
+            nick_enter(nick_board().nick, zh ? @"Link" : @"", name);   /* the English pass's is there */
+            nick_wait("board with the nickname", ^BOOL{ return nick_board_entry(name) != nil && [nick_board().nick.label.stringValue hasSuffix:name]; });
+            nick_png(@"board-nick");
+            [settingsPanel selectPage:SETTINGS_PAGE_SHOTS];
+            shots_wait("pictures with the nickname", ^BOOL{ TOTKShotsPage *p = shots_page();
+                return p.cells.count == 1 && [p.shots[0][@"name"] isEqual:name] && p.cells[0].thumb.image; });
+            nick_png(@"shots-nick");
+            nick_enter(shots_page().nick, name, @(taken));
+            nick_wait("taken", ^BOOL{ return [shots_page().state.textColor isEqual:NSColor.systemOrangeColor]; });
+            shots_wait("thumbnails", ^BOOL{ TOTKShotsPage *p = shots_page(); return p.cells.count == 1 && p.cells[0].thumb.image; });
+            nick_png(@"shots-error");
+            [settingsPanel selectPage:SETTINGS_PAGE_BOARD];
+            nick_wait("board", ^BOOL{ return nick_board_entry(name) != nil; });
+            nick_png(@"board-error");
+        }
+    }
+    /* A window 604 pt wide: the panel's narrowest (600 pt); the row still between the state line and the list, whole. */
+    settings_show(0); setenv("TOTK_UI_LANG", "en", 1); nick_row_flash = nil;   /* the Chinese pass's refusal */
+    NSSize was = window.contentView.bounds.size; [window setContentSize:NSMakeSize(604, 720)];
+    g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1);
+    assert(NSWidth(settingsPanel.frame) == SETTINGS_NARROW_W);
+    board = nick_board();
+    nick_wait("narrow board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue hasPrefix:@"Nickname: "]; });
+    nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
+    nick_png(@"board-narrow");
+    [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; page = shots_page();
+    nick_fits(page, page.nick, page.state, page.scroll);
+    shots_wait("narrow pictures", ^BOOL{ TOTKShotsPage *p = shots_page(); return p.cells.count == 1 && p.cells[0].thumb.image; });
+    nick_png(@"shots-narrow");
+    settings_show(0); [window setContentSize:was];
+}
+
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
+    setenv("TOTK_NAME_URL", "http://127.0.0.1:9/v1/name", 1);     /* nor a real nickname */
     if (argc==2 && !strcmp(argv[1],"vr-rows")) {
         /* Exercise production row construction without NSApplication, a game,
            a window, or GPU work. Unsupported settings must not be offered. */
@@ -786,6 +1016,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     for (int i = 0; i < 2; i++) { arc4random_buf(&fakeUsers[i].lo, sizeof fakeUsers[i].lo); arc4random_buf(&fakeUsers[i].hi, sizeof fakeUsers[i].hi); }
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1283,7 +1514,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
        swaps places), key 1 cancels, Command keys pass, a right-click clears, the two resets. */
     g_settings_bindings_list = YES; [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
     assert(!settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W);
-    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 20 && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
+    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 21 && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
            [settingsPanel.listToggle.title isEqualToString:@"Show drawings"] && settingsPanel.listToggle.enabled);
     fakePadDetected = -1; fakePadType = GAMEPAD_TYPE_AUTO; [settingsPanel refreshBindings];
     assert(titled(box(KEYMAP_X, 0), @"Space") && titled(box(KEYMAP_X, 1), @"—") && titled(box(KEYMAP_X, 2), @"Y"));   /* Xbox names: Switch X sits where Xbox Y is */
@@ -1304,6 +1535,37 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel beginCapture:box(SETTINGS_BIND_PANEL, 2)]; [settingsPanel bindPad:10]; assert(fakeSettingsButton == 10);
     [settingsPanel beginCapture:box(KEYMAP_PLUS, 2)]; [settingsPanel bindPad:10]; assert(fakeSettingsButton == -1);
     [settingsPanel beginCapture:box(SETTINGS_BIND_PANEL, 2)]; [settingsPanel bindPad:16]; [settingsPanel resetController:nil]; assert(fakeSettingsButton == -1);
+    /* The screenshot row (user 2026-11-11), the last: P and a free second box on the keyboard, the touchpad held 3 s on a
+       controller; each box changes, saves and clears like the others; a controller button taken for it keeps its game
+       action (the hold is added); the resets bring back P and the touchpad. */
+    {
+        int count; const SettingsAction *all = settings_actions(&count);
+        assert(all[count - 1].action == KEYMAP_SCREENSHOT && !strcmp(all[count - 1].en, "Screenshot") && !strcmp(all[count - 1].zh, "截图"));
+        assert(settingsPanel.controllerTargets[17] == box(KEYMAP_SCREENSHOT, 0).superview);   /* the last row a controller reaches */
+    }
+    assert(titled(box(KEYMAP_SCREENSHOT, 0), @"P") && titled(box(KEYMAP_SCREENSHOT, 1), @"—") && titled(box(KEYMAP_SCREENSHOT, 2), @"Touchpad held 3 s"));
+    assert(box(KEYMAP_SCREENSHOT, 0).enabled && box(KEYMAP_SCREENSHOT, 1).enabled && box(KEYMAP_SCREENSHOT, 2).enabled);
+    {
+        KeyMap shotKeys; runtime_keymap_get(&shotKeys); char text[8192]; assert(keymap_format(&shotKeys, text, sizeof text) > 0 && strstr(text, "\nscreenshot = p\n"));
+        [settingsPanel beginCapture:box(KEYMAP_SCREENSHOT, 1)]; assert([settingsPanel captured:key_down(105, 0)] == nil);   /* F13: not a layout key, waits */
+        assert(settingsPanel.capturing && [settingsPanel captured:key_down(31, 0)] == nil && !settingsPanel.capturing);   /* O */
+        runtime_keymap_get(&shotKeys); assert(shotKeys.slot[KEYMAP_SCREENSHOT][0] == 35 && shotKeys.slot[KEYMAP_SCREENSHOT][1] == 31 && !strcmp(savedName, "keyboard.txt"));
+        assert(titled(box(KEYMAP_SCREENSHOT, 1), @"O"));
+        assert(keymap_format(&shotKeys, text, sizeof text) > 0 && strstr(text, "\nscreenshot = p o\n"));
+        KeyMap back; keymap_default(&back); const char *error = NULL; assert(!keymap_parse(text, &back, &error) && !memcmp(&back, &shotKeys, sizeof back));
+        [settingsPanel clearBinding:box(KEYMAP_SCREENSHOT, 1)]; runtime_keymap_get(&shotKeys); assert(shotKeys.slot[KEYMAP_SCREENSHOT][1] == KEYMAP_NONE);
+    }
+    [settingsPanel beginCapture:box(KEYMAP_SCREENSHOT, 2)]; assert(!fakeSettingsShortcut); [settingsPanel bindPad:10];
+    assert(fakeSettingsShortcut && fakeShotButton == 10 && fakeMap[10] == 1u << KEYMAP_PLUS && fakeSettingsButton == -1 && titled(box(KEYMAP_SCREENSHOT, 2), @"Menu held 3 s"));
+    assert(titled(box(KEYMAP_PLUS, 2), @"Menu"));   /* the menu button still opens the game's menu */
+    [settingsPanel clearBinding:box(KEYMAP_SCREENSHOT, 2)]; assert(fakeShotButton == -1 && titled(box(KEYMAP_SCREENSHOT, 2), @"—") && fakeMap[10] == 1u << KEYMAP_PLUS);
+    [settingsPanel resetController:nil]; assert(fakeShotButton == CONTROLLER_SCREENSHOT_DEFAULT && titled(box(KEYMAP_SCREENSHOT, 2), @"Touchpad held 3 s"));
+    /* P takes the screenshot and nothing of it reaches the game; while the panel is open keys other than 1 and Esc do nothing. */
+    press(18); assert(!settingsOpen);
+    capturePresses = 0; key_event(35, YES); assert(capturePresses == 1 && heldOut.buttons == 0 && !heldOut.lx && !heldOut.ly && !heldOut.rx && !heldOut.ry);
+    key_event(35, YES); assert(capturePresses == 1);   /* held: one picture */
+    key_event(35, NO); assert(capturePresses == 1);
+    press(18); assert(settingsOpen); key_event(35, YES); key_event(35, NO); assert(capturePresses == 1);
     [settingsPanel beginCapture:box(KEYMAP_X, 0)]; assert(settingsPanel.capturing && titled(box(KEYMAP_X, 0), @"Press a key…"));
     assert([settingsPanel captured:key_down(12, 0)] == nil);   /* Q locked on: it jumps now, lock on takes Space */
     KeyMap keysNow; runtime_keymap_get(&keysNow);
@@ -1397,8 +1659,21 @@ int main(int argc, const char **argv) { @autoreleasepool {
     TOTKControllerDiagram *pd = settingsPanel.padDiagram; NSRect north = [pd rectOfPhysical:3];
     assert([pd physicalAt:NSMakePoint(NSMidX(north), NSMidY(north)) rect:NULL] == 3 && [pd order].count == 16 && [pd order][0].intValue == 8);
     actions = [settingsPanel menuForInput:3 pad:YES]; int choices = 0; ticked = nil;
-    for (NSMenuItem *i in actions.itemArray) if (i.action) { choices++; assert(i.tag < KEYMAP_SWITCH_BUTTONS || i.tag == SETTINGS_BIND_PANEL); if (i.state == NSControlStateValueOn) ticked = i; }
-    assert(choices == 18 && ticked.tag == KEYMAP_X);   /* 16 buttons, the settings panel and none: no stick directions */
+    for (NSMenuItem *i in actions.itemArray) if (i.action) { choices++; assert(i.tag < KEYMAP_SWITCH_BUTTONS || i.tag == SETTINGS_BIND_PANEL || i.tag == KEYMAP_SCREENSHOT); if (i.state == NSControlStateValueOn) ticked = i; }
+    assert(choices == 19 && ticked.tag == KEYMAP_X);   /* 16 buttons, the settings panel, the screenshot hold and none: no stick directions */
+    /* The screenshot hold on the top button: its own tick beside Jump, which the button keeps; None takes both away. */
+    for (NSMenuItem *i in actions.itemArray) if (i.tag == KEYMAP_SCREENSHOT) { assert([i.title isEqualToString:@"Screenshot (hold 3 s)"] && i.state == NSControlStateValueOff); [settingsPanel menuPicked:i]; }
+    assert(fakeShotButton == 3 && fakeMap[3] == 1u << KEYMAP_X);
+    actions = [settingsPanel menuForInput:3 pad:YES]; int on = 0;
+    for (NSMenuItem *i in actions.itemArray) if (i.state == NSControlStateValueOn) { on++; assert(i.tag == KEYMAP_X || i.tag == KEYMAP_SCREENSHOT); }
+    assert(on == 2);
+    for (NSMenuItem *i in actions.itemArray) if (i.action && i.tag == -1) [settingsPanel menuPicked:i];
+    assert(fakeShotButton == -1 && fakeMap[3] == 0);
+    [settingsPanel.resetButtons[1] performClick:nil]; assert(fakeShotButton == CONTROLLER_SCREENSHOT_DEFAULT && fakeMap[3] == 1u << KEYMAP_X);
+    actions = [settingsPanel menuForInput:16 pad:YES]; on = 0;   /* the touchpad: drives nothing, takes the screenshot */
+    for (NSMenuItem *i in actions.itemArray) if (i.state == NSControlStateValueOn) { on++; assert(i.tag == KEYMAP_SCREENSHOT); }
+    assert(on == 1);
+    actions = [settingsPanel menuForInput:3 pad:YES];
     for (NSMenuItem *i in actions.itemArray) if (i.tag == SETTINGS_BIND_PANEL) [settingsPanel menuPicked:i];
     assert(fakeSettingsButton == 3); [settingsPanel assignPad:3 action:KEYMAP_X]; assert(fakeSettingsButton == -1 && fakeMap[3] == 1u << KEYMAP_X);
     [settingsPanel assignPad:3 action:KEYMAP_ZR]; assert(fakeMap[3] == 1u << KEYMAP_ZR && fakeMap[9] == 1u << KEYMAP_ZR && [diagram_missing(1) isEqualToString:@"No button: Jump"]);

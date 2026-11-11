@@ -192,6 +192,8 @@ void runtime_gamepad_settings_enable(int enabled);
 int runtime_gamepad_settings_requested(void);
 int runtime_gamepad_settings_button(void);               /* -1: L3 + R3 together; else the physical button (controller_map.h) */
 void runtime_gamepad_settings_button_set(int physical);   /* the key bindings; saved in controller-settings.txt, -1 the default */
+int runtime_gamepad_screenshot_button(void);               /* the button held 3 s for a screenshot (controller_map.h), -1 none */
+void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; saved in controller-screenshot.txt (none: "none"), the touchpad the default */
 /* Forget held buttons and sticks: macOS stops delivering controller events (including releases) while the app is in
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);

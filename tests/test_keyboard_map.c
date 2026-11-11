@@ -8,7 +8,7 @@ static void expect(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL:
 
 enum { KEY_A = 0, KEY_S = 1, KEY_D = 2, KEY_F = 3, KEY_G = 5, KEY_C = 8, KEY_V = 9, KEY_Q = 12, KEY_W = 13, KEY_E = 14,
        KEY_R = 15, KEY_1 = 18, KEY_2 = 19, KEY_3 = 20, KEY_4 = 21, KEY_5 = 23, KEY_RETURN = 36, KEY_J = 38, KEY_K = 40,
-       KEY_M = 46, KEY_TAB = 48, KEY_SPACE = 49, KEY_BACKSPACE = 51, KEY_ESCAPE = 53, KEY_SHIFT = 56, KEY_OPTION = 58,
+       KEY_M = 46, KEY_O = 31, KEY_P = 35, KEY_TAB = 48, KEY_SPACE = 49, KEY_BACKSPACE = 51, KEY_ESCAPE = 53, KEY_SHIFT = 56, KEY_OPTION = 58,
        KEY_CONTROL = 59, KEY_LEFT = 123, KEY_RIGHT = 124, KEY_DOWN = 125, KEY_UP = 126,
        MOUSE_LEFT = KEYMAP_MOUSE_FIRST, MOUSE_RIGHT, MOUSE_MIDDLE };
 
@@ -44,6 +44,18 @@ int main(void) {
     expect(buttons_of(&d, KEY_2) == 1u << KEYMAP_DLEFT && buttons_of(&d, KEY_3) == 1u << KEYMAP_DUP && buttons_of(&d, KEY_4) == 1u << KEYMAP_DRIGHT &&
            buttons_of(&d, KEY_5) == 1u << KEYMAP_DDOWN, "2 3 4 5: the d-pad");
     expect(!buttons_of(&d, KEY_J) && !buttons_of(&d, KEY_K) && !buttons_of(&d, KEY_1), "J, K and key 1 drive nothing");
+    /* The screenshot (user 2026-11-11): P by default, and nothing of it reaches the game. */
+    expect(d.slot[KEYMAP_SCREENSHOT][0] == KEY_P && d.slot[KEYMAP_SCREENSHOT][1] == KEYMAP_NONE && keymap_action_of(&d, KEY_P, NULL) == KEYMAP_SCREENSHOT,
+           "P takes the screenshot");
+    expect(KEYMAP_SCREENSHOT == KEYMAP_ACTIONS - 1 && KEYMAP_SCREENSHOT > KEYMAP_CAMERA_RIGHT && !strcmp(keymap_action_name(KEYMAP_SCREENSHOT), "screenshot"),
+           "the last action, named screenshot");
+    {
+        KeyMapOutput o = hold(&d, (int[]){KEY_P}, 1);
+        expect(!o.buttons && !o.lx && !o.ly && !o.rx && !o.ry, "P drives no button and no stick");
+        m = d; keymap_bind(&m, KEYMAP_SCREENSHOT, 1, MOUSE_MIDDLE);
+        o = hold(&m, (int[]){MOUSE_MIDDLE, KEY_SPACE}, 2);
+        expect(o.buttons == 1u << KEYMAP_X && m.slot[KEYMAP_ZL][1] == KEYMAP_NONE, "a mouse button for the screenshot drives nothing either");
+    }
     {
         int wd[] = {KEY_W, KEY_D, KEY_LEFT, KEY_DOWN}; KeyMapOutput o = hold(&d, wd, 4);
         expect(!o.buttons && o.lx == 32767 && o.ly == 32767 && o.rx == -32767 && o.ry == -32767, "W A S D move, the arrows turn the camera");
@@ -103,6 +115,15 @@ int main(void) {
     expect(parse("a =\n", &m, &line) && line == 1, "missing input");
     expect(parse("a e\n", &m, &line) && line == 1, "missing equals sign");
     expect(parse("a = e\na = q\n", &m, &line) && line == 2, "an action twice");
+    /* The screenshot in a layout file: a file from before it keeps P; a line names its inputs, or none; P given to an
+       action leaves the screenshot without it. */
+    expect(!parse("a = e\nb = shift\n", &m, &line) && m.slot[KEYMAP_SCREENSHOT][0] == KEY_P, "a file without the screenshot line keeps P");
+    expect(!parse("screenshot = o mouse4\n", &m, &line) && m.slot[KEYMAP_SCREENSHOT][0] == KEY_O && m.slot[KEYMAP_SCREENSHOT][1] == MOUSE_MIDDLE + 1,
+           "screenshot = o mouse4");
+    expect(!parse("Screenshot = none\n", &m, &line) && m.slot[KEYMAP_SCREENSHOT][0] == KEYMAP_NONE && keymap_action_of(&m, KEY_P, NULL) < 0, "screenshot = none");
+    expect(!parse("x = p\n", &m, &line) && m.slot[KEYMAP_X][0] == KEY_P && m.slot[KEYMAP_SCREENSHOT][0] == KEYMAP_NONE, "P given to jump: no screenshot key");
+    expect(parse("x = p\nscreenshot = p\n", &m, &line) && line == 2, "P for jump and the screenshot: refused");
+    expect(parse("screenshot = 1\n", &m, &line) && line == 1, "key 1 is no screenshot key");
 
     /* Writing: every action, read back the same. */
     {
@@ -112,6 +133,14 @@ int main(void) {
         KeyMap back; keymap_default(&back);
         expect(n > 0 && !keymap_parse(text, &back, &error) && !memcmp(&back, &m, sizeof m), "written and read back");
         expect(strstr(text, "x = space j\n") && strstr(text, "b = shift\n") && strstr(text, "y = mouse_left g\n") && strstr(text, "move_up = w\n"), "line forms");
+        expect(strstr(text, "\nscreenshot = p\n") != NULL, "the screenshot's line");
+        m = d; keymap_bind(&m, KEYMAP_SCREENSHOT, 0, KEY_O); keymap_bind(&m, KEYMAP_SCREENSHOT, 1, KEY_P);
+        n = keymap_format(&m, text, sizeof text); keymap_default(&back);
+        expect(n > 0 && strstr(text, "\nscreenshot = o p\n") && !keymap_parse(text, &back, &error) && !memcmp(&back, &m, sizeof m), "O and P for the screenshot: written and read back");
+        m = d; keymap_bind(&m, KEYMAP_SCREENSHOT, 0, KEYMAP_NONE);
+        n = keymap_format(&m, text, sizeof text); keymap_default(&back);
+        expect(n > 0 && strstr(text, "\nscreenshot = none\n") && !keymap_parse(text, &back, &error) && back.slot[KEYMAP_SCREENSHOT][0] == KEYMAP_NONE,
+               "no screenshot key: written and read back");
         KeyMap empty; memset(&empty, KEYMAP_NONE, sizeof empty);
         n = keymap_format(&empty, text, sizeof text); keymap_default(&back);
         expect(n > 0 && !keymap_parse(text, &back, &error) && !memcmp(&back, &empty, sizeof empty), "an empty layout too");
@@ -140,6 +169,11 @@ int main(void) {
     expect(keymap_assign(&m, MOUSE_MIDDLE, KEYMAP_MOVE_UP) && m.slot[KEYMAP_MOVE_UP][1] == MOUSE_MIDDLE && m.slot[KEYMAP_ZL][0] == KEY_Q &&
            m.slot[KEYMAP_ZL][1] == KEYMAP_NONE, "a mouse button to a direction");
     expect(!keymap_assign(&m, KEY_1, KEYMAP_A) && !keymap_assign(&m, KEY_E, KEYMAP_ACTIONS) && !keymap_assign(&m, KEY_E, -2), "refused");
+    m = d;
+    expect(keymap_assign(&m, KEY_E, KEYMAP_SCREENSHOT) && m.slot[KEYMAP_SCREENSHOT][0] == KEY_P && m.slot[KEYMAP_SCREENSHOT][1] == KEY_E &&
+           m.slot[KEYMAP_A][0] == KEY_RETURN && !buttons_of(&m, KEY_E), "the drawing: E takes screenshots too, and no longer confirms");
+    expect(keymap_assign(&m, KEY_P, KEYMAP_X) && m.slot[KEYMAP_SCREENSHOT][0] == KEY_E && m.slot[KEYMAP_SCREENSHOT][1] == KEYMAP_NONE &&
+           buttons_of(&m, KEY_P) == 1u << KEYMAP_X, "P to jump: the screenshot keeps E");
 
     if (failures) return 1;
     printf("PASS: keyboard layout cases\n");

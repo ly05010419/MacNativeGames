@@ -17,12 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# The 24 actions, in the order the runtime's header lists them (games/totk/runtime/keyboard_map.h).
+# The 25 actions, in the order the runtime's header lists them (games/totk/runtime/keyboard_map.h); the last, the
+# screenshot, is no Switch button (P takes a picture of the game).
 ACTIONS = (
     'a', 'b', 'x', 'y', 'lstick', 'rstick', 'l', 'r', 'zl', 'zr', 'plus', 'minus',
     'left', 'up', 'right', 'down',
     'move_up', 'move_down', 'move_left', 'move_right',
     'camera_up', 'camera_down', 'camera_left', 'camera_right',
+    'screenshot',
 )
 
 # What the pad calls each action, for the "this key is bound to ..." line. The names are the ones
@@ -35,6 +37,7 @@ TITLES = {
     'move_up': 'Move up', 'move_down': 'Move down', 'move_left': 'Move left',
     'move_right': 'Move right', 'camera_up': 'Camera up', 'camera_down': 'Camera down',
     'camera_left': 'Camera left', 'camera_right': 'Camera right',
+    'screenshot': 'Screenshot',
 }
 
 # Every input name keyboard.txt accepts, with what a person calls it. A key event maps into this
@@ -73,6 +76,7 @@ DEFAULT = {
     'move_up': ('w',), 'move_down': ('s',), 'move_left': ('a',), 'move_right': ('d',),
     'camera_up': ('arrow_up',), 'camera_down': ('arrow_down',),
     'camera_left': ('arrow_left',), 'camera_right': ('arrow_right',),
+    'screenshot': ('p',),
 }
 
 # Tk reports X11 keysyms; these are the ones keyboard.txt names. A key Tk spells differently under

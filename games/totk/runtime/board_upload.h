@@ -22,6 +22,7 @@
 #include <sys/sysctl.h>
 #include "../third_party/d2r_gfx/gfx/nvn/fps_board.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* totk_inbox_build / _os / _device, GAME_INBOX_ID */
+#include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"   /* totk_ui_zh: a refused nickname's text */
 
 #ifndef TOTK_BOARD_URL
 #define TOTK_BOARD_URL "https://mac-native-games.com/v1/board"
@@ -285,4 +286,89 @@ static inline void totk_board_fetch(void (^done)(NSDictionary *board, NSString *
         if (why) fprintf(stderr, "[board] the board was not read: %s\n", why.UTF8String);
         dispatch_async(dispatch_get_main_queue(), ^{ done(board, why); });
     }] resume];
+}
+
+/* ---- The player's nickname (user 2026-11-11) ----
+   One optional nickname per player, bound to the board's random id above (so the three games share it), unique on the
+   site and changeable at any time; the board and the shared screenshots show it instead of the anonymous code. Setting
+   one turns on no upload switch: only the id and the name are sent (PUT /v1/name {board_id, name}; an empty name clears
+   it). The 性能排行榜 and 截图分享 pages show and change it (nick_row.h). Tests only: TOTK_NAME_URL names a local server. */
+#ifndef TOTK_NAME_URL
+#define TOTK_NAME_URL "https://mac-native-games.com/v1/name"
+#endif
+#define TOTK_NAME_TIMEOUT 30.0
+static inline NSURL *totk_name_url(void) {
+    const char *e = getenv("TOTK_NAME_URL");
+    return [NSURL URLWithString:e && *e ? @(e) : @TOTK_NAME_URL];
+}
+/* The server's answer: {"success": true, "data": {"name": ...}} or {"success": false, "error": "<reason>"}. */
+static inline NSDictionary *totk_name_answer(NSData *data) {
+    id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [json isKindOfClass:NSDictionary.class] ? json : nil;
+}
+static inline NSString *totk_name_of(NSDictionary *answer) {
+    id payload = answer[@"data"];
+    id name = [payload isKindOfClass:NSDictionary.class] ? payload[@"name"] : nil;
+    return [name isKindOfClass:NSString.class] && [name length] ? name : nil;
+}
+
+/* The player's nickname (nil: none). No id yet means no nickname: nothing is read and none is made. error: why it could
+   not be read. On the main queue. */
+static inline void totk_name_fetch(void (^done)(NSString *name, NSString *error)) {
+    NSString *me = totk_board_id(NO);
+    if (!me) { dispatch_async(dispatch_get_main_queue(), ^{ done(nil, nil); }); return; }
+    NSURLComponents *url = [NSURLComponents componentsWithURL:totk_name_url() resolvingAgainstBaseURL:NO];
+    url.queryItems = @[[NSURLQueryItem queryItemWithName:@"me" value:me]];
+    NSURLRequest *request = [NSURLRequest requestWithURL:url.URL cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:TOTK_NAME_TIMEOUT];
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = error ? 0 : [(NSHTTPURLResponse *)response statusCode];
+        NSDictionary *answer = status == 200 ? totk_name_answer(data) : nil;
+        BOOL read = [answer[@"data"] isKindOfClass:NSDictionary.class];
+        NSString *name = read ? totk_name_of(answer) : nil;
+        NSString *why = read ? nil : error ? error.localizedDescription : [NSString stringWithFormat:@"HTTP %ld", (long)status];
+        if (why) fprintf(stderr, "[name] the nickname was not read: %s\n", why.UTF8String);
+        dispatch_async(dispatch_get_main_queue(), ^{ done(name, why); });
+    }] resume];
+}
+
+/* Sets the player's nickname, or clears it (nil or empty). stored: the server's form of it (trimmed, nil once cleared);
+   error: the server's reason (400 / 403 / 409 / 429) or why no answer came; status: the HTTP status, 0 without an
+   answer, -1 without an id (no data folder). Makes the id when there is none yet. On the main queue. */
+static inline void totk_name_set(NSString *name, void (^done)(NSString *stored, NSString *error, NSInteger status)) {
+    NSString *board_id = totk_board_id(YES);
+    if (!board_id) { dispatch_async(dispatch_get_main_queue(), ^{ done(nil, @"no board id", -1); }); return; }
+    NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"board_id": board_id, @"name": name.length ? name : NSNull.null} options:0 error:nil];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:totk_name_url() cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:TOTK_NAME_TIMEOUT];
+    request.HTTPMethod = @"PUT";
+    request.HTTPBody = json;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = error ? 0 : [(NSHTTPURLResponse *)response statusCode];
+        NSDictionary *answer = totk_name_answer(data);
+        NSString *stored = status == 200 ? totk_name_of(answer) : nil;
+        NSString *why = status == 200 ? nil : error ? error.localizedDescription
+                      : [answer[@"error"] isKindOfClass:NSString.class] ? answer[@"error"] : [NSString stringWithFormat:@"HTTP %ld", (long)status];
+        if (why) fprintf(stderr, "[name] the nickname was not set (%ld): %s\n", (long)status, why.UTF8String);
+        else fprintf(stderr, "[name] nickname %s\n", stored ? "set" : "cleared");
+        dispatch_async(dispatch_get_main_queue(), ^{ done(stored, why, status); });
+    }] resume];
+}
+
+/* A refused change as the player reads it (the server's reasons, lib/name-validate.js and lib/names.js). */
+static inline NSString *totk_name_problem(NSInteger status, NSString *reason) {
+    BOOL zh = totk_ui_zh();
+#define TOTK_NAME_TEXT(z, e) (zh ? @z : @e)
+    if (status == 409) return TOTK_NAME_TEXT("这个昵称已被占用", "this nickname is taken");
+    if (status == 429) return TOTK_NAME_TEXT("改得太频繁，请稍后再试", "too many changes, try again later");
+    if (status == 403) return TOTK_NAME_TEXT("这个玩家不能设置昵称", "this player may not set a nickname");
+    if (status == 0) return TOTK_NAME_TEXT("网络错误，请稍后再试", "network error, try again later");
+    if (status < 0) return TOTK_NAME_TEXT("这次运行不能设置昵称", "this run cannot set a nickname");
+    if (status == 400 && [reason containsString:@"2 to 16"]) return TOTK_NAME_TEXT("长度要 2 到 16 个字", "it must be 2 to 16 characters");
+    if (status == 400 && [reason containsString:@"characters that are not allowed"])
+        return TOTK_NAME_TEXT("只能用字母、汉字、数字、空格和 _ - ·", "only letters, digits, spaces and _ - · are allowed");
+    if (status == 400 && [reason containsString:@"anonymous code"]) return TOTK_NAME_TEXT("不能像匿名代号（6 位 0-9 a-f）", "it must not look like an anonymous code");
+    if (status == 400 && [reason containsString:@"not allowed"]) return TOTK_NAME_TEXT("这个昵称不允许使用", "this nickname is not allowed");
+    return [NSString stringWithFormat:TOTK_NAME_TEXT("服务器拒绝（HTTP %ld），请稍后再试", "refused (HTTP %ld), try again later"), (long)status];
+#undef TOTK_NAME_TEXT
 }

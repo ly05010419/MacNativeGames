@@ -19,7 +19,7 @@ class ShotShareSourceTests(unittest.TestCase):
     """The three Zelda games share the code: games/oot keeps byte-identical copies, and only the Mac front ends share."""
 
     def test_oot_copies_are_identical(self):
-        for name in ('shot_upload.h', 'shot_tab.h', 'screenshot.h', 'board_upload.h'):
+        for name in ('shot_upload.h', 'shot_tab.h', 'screenshot.h', 'board_upload.h', 'board_tab.h', 'nick_row.h'):
             with self.subTest(name=name):
                 self.assertEqual((GAMES / 'totk/runtime' / name).read_bytes(), (GAMES / 'oot/runtime' / name).read_bytes())
 
@@ -35,6 +35,16 @@ class ShotShareSourceTests(unittest.TestCase):
                     self.assertNotIn('shot_upload.h', ios.read_text(encoding='utf-8'))
         upload = (GAMES / 'totk/runtime/shot_upload.h').read_text(encoding='utf-8')
         self.assertIn('#if !TARGET_OS_IPHONE', upload)
+
+    def test_the_page_reads_again_when_a_picture_was_shared(self):
+        # shot_upload.h posts the note on a 200 (ShotShareUploadTests: once per picture taken, none without a server); the
+        # page reads its list at once on it (tests/settings_panel_probe.m shots, against the local inbox).
+        upload = (GAMES / 'totk/runtime/shot_upload.h').read_text(encoding='utf-8')
+        sent = upload.index('if (status == 200) {')
+        self.assertLess(upload.index('totk_shot_announce();', sent), upload.index('continue;', sent))
+        page = (GAMES / 'totk/runtime/shot_tab.h').read_text(encoding='utf-8')
+        self.assertIn('selector:@selector(shared:) name:TOTK_SHOT_SHARED_NOTE', page)
+        self.assertIn('-(void)shared:(NSNotification *)n{(void)n;[self reset:NO];if(!self.hiddenOrHasHiddenAncestor)[self refresh];}', page)
 
     def test_the_hook_runs_after_a_save_and_before_the_release(self):
         text = (GAMES / 'totk/runtime/screenshot.h').read_text(encoding='utf-8')
@@ -92,6 +102,7 @@ class ShotShareUploadTests(unittest.TestCase):
         url, board = self.server(), self.board()
         result, log = self.run_probe('up', board, url)
         self.assertEqual(result['game'], 'totk')
+        self.assertEqual(result['announced'], 1, 'the 截图分享 page hears of the shared picture once')
         self.assertIn('[shots] dropped 1.json: the server refused the picture', log)
         self.assertIn('[shots] deleted ', log)
         self.assertEqual(list((board / 'shot-pending').iterdir()), [], 'nothing waits once the server took it')
@@ -102,6 +113,7 @@ class ShotShareUploadTests(unittest.TestCase):
         board = self.board()
         down, log = self.run_probe('down', board, 'http://127.0.0.1:9/v1/shots')   # the discard port: nothing listens
         self.assertIn('kept for a later try (no answer)', log)
+        self.assertEqual(down['announced'], 0)
         self.assertLessEqual(down['image_bytes'], 2_500_000)
         self.assertLessEqual(down['thumb_bytes'], 80_000)
         self.assertEqual(down['board_id'], (board.parent / 'leaderboard-id.txt').read_text().strip())

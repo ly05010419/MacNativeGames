@@ -1,7 +1,8 @@
 /* The key bindings drawings of the settings panel (Mac; included by settings_panel.h). PR #1210: instead of a list,
    line drawings of a Mac keyboard with the mouse, and of a controller, with what each key or button does written on it.
    Keys and buttons in use are coloured by kind (moving and camera, combat, actions, menus and d-pad); key 1, which opens
-   the panel, has its own colour; unused ones stay grey outlines. The controller drawing follows the controller type:
+   the panel, and the screenshot's inputs (P, and the controller button held 3 s) have their own colour; unused ones stay
+   grey outlines. The controller drawing follows the controller type:
    Xbox and Switch put the left stick above the d-pad, PlayStation the d-pad above it and a touchpad between them; the
    button names follow it too (settings_pad_button). Each view reads the layout in force when it draws
    (runtime_keymap_get, runtime_controller_map_get), so it always shows what is in force. A click on a key, a mouse button,
@@ -23,6 +24,7 @@ static NSColor *diagram_color(int kind) {
 }
 static int diagram_kind(int action) {
  if(action<0)return DIAGRAM_NONE;
+ if(action==KEYMAP_SCREENSHOT)return DIAGRAM_SYSTEM;
  if(action>=KEYMAP_MOVE_UP)return DIAGRAM_MOVE;
  if(action==KEYMAP_Y||action==KEYMAP_ZR||action==KEYMAP_ZL)return DIAGRAM_COMBAT;
  if(action==KEYMAP_PLUS||action==KEYMAP_MINUS||(action>=KEYMAP_DLEFT&&action<=KEYMAP_DDOWN))return DIAGRAM_MENU;
@@ -59,6 +61,7 @@ static NSString *diagram_action_short(int action) {
   case KEYMAP_CAMERA_DOWN:return settings_text("视角 ↓","Cam ↓");
   case KEYMAP_CAMERA_LEFT:return settings_text("视角 ←","Cam ←");
   case KEYMAP_CAMERA_RIGHT:return settings_text("视角 →","Cam →");
+  case KEYMAP_SCREENSHOT:return settings_text("截图","Screen\nshot");
  }
  return @"";
 }
@@ -101,7 +104,7 @@ static void diagram_shape(NSBezierPath *p, int action, BOOL selected, CGFloat fi
 }
 static void diagram_legend(CGFloat x, CGFloat y) {
  NSString *names[]={settings_text("移动和视角","Moving & camera"),settings_text("战斗","Combat"),settings_text("动作","Actions"),
-  settings_text("菜单和十字键","Menus & d-pad"),settings_text("设置面板","Settings panel"),settings_text("未使用","Not used")};
+  settings_text("菜单和十字键","Menus & d-pad"),settings_text("设置面板和截图","Panel & screenshot"),settings_text("未使用","Not used")};
  int kinds[]={DIAGRAM_MOVE,DIAGRAM_COMBAT,DIAGRAM_ACTION,DIAGRAM_MENU,DIAGRAM_SYSTEM,DIAGRAM_NONE};
  NSFont *font=[NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
  for(int i=0;i<6;i++){
@@ -358,7 +361,10 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
  NSColor *line=[NSColor colorWithCalibratedWhite:1 alpha:0.55];
  int sel=self.selected;
 #define TARGET(p) controller_map_target(map[p])
- for(int p=6;p<=9;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:p>=8?12:10 yRadius:p>=8?12:10],TARGET(p),sel==p,0.25);
+ /* a button that drives nothing but takes the screenshot when held is coloured as the screenshot */
+ int shot=runtime_gamepad_screenshot_button();
+#define SHAPE(p) (TARGET(p)>=0?TARGET(p):(p)==shot?KEYMAP_SCREENSHOT:-1)
+ for(int p=6;p<=9;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:p>=8?12:10 yRadius:p>=8?12:10],SHAPE(p),sel==p,0.25);
  /* the body: one outline with two grips */
  NSBezierPath *b=[NSBezierPath bezierPath];
  [b moveToPoint:NSMakePoint(cx-120,y0)];[b lineToPoint:NSMakePoint(cx+120,y0)];
@@ -372,22 +378,23 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
  [b closePath];
  [[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:1] setFill];[b fill];[[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[b fill];
  [line setStroke];b.lineWidth=1.5;[b stroke];
- if(ps)diagram_shape([NSBezierPath bezierPathWithRoundedRect:d.touchpad xRadius:8 yRadius:8],TARGET(16),sel==16,0.18);
+ if(ps)diagram_shape([NSBezierPath bezierPathWithRoundedRect:d.touchpad xRadius:8 yRadius:8],SHAPE(16),sel==16,0.18);
  NSPoint sticks[2]={d.ls,d.rs};
  for(int i=0;i<2;i++){
   NSBezierPath *ring=[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(sticks[i].x-24,sticks[i].y-24,48,48)];[diagram_color(DIAGRAM_MOVE) setStroke];ring.lineWidth=1.3;[ring stroke];
-  diagram_shape([NSBezierPath bezierPathWithOvalInRect:[self shapeOf:4+i pad:&d]],TARGET(4+i),sel==4+i,0.25);
+  diagram_shape([NSBezierPath bezierPathWithOvalInRect:[self shapeOf:4+i pad:&d]],SHAPE(4+i),sel==4+i,0.25);
  }
- for(int p=12;p<=15;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:3 yRadius:3],TARGET(p),sel==p,0.3);
- for(int p=0;p<4;p++){NSRect r=[self shapeOf:p pad:&d];diagram_shape([NSBezierPath bezierPathWithOvalInRect:r],TARGET(p),sel==p,0.3);
+ for(int p=12;p<=15;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:3 yRadius:3],SHAPE(p),sel==p,0.3);
+ for(int p=0;p<4;p++){NSRect r=[self shapeOf:p pad:&d];diagram_shape([NSBezierPath bezierPathWithOvalInRect:r],SHAPE(p),sel==p,0.3);
   diagram_text(settings_pad_button(p,family),r,10,NSFontWeightBold,NSColor.whiteColor,NSTextAlignmentCenter);}
- for(int p=10;p<=11;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:6 yRadius:6],TARGET(p),sel==p,0.3);
+ for(int p=10;p<=11;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:6 yRadius:6],SHAPE(p),sel==p,0.3);
  /* callouts */
  NSColor *dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
  for(int s=0;s<2;s++)for(int i=0;i<d.count[s];i++){
   DiagramCall c=d.calls[s][i];NSRect row=diagram_call_row(&d,s,i);int a=c.stick?KEYMAP_MOVE_UP:TARGET(c.physical);
   BOOL panel=!c.stick&&c.physical>=0&&c.physical==runtime_gamepad_settings_button();   /* the settings panel's button */
-  NSColor *col=panel?diagram_color(DIAGRAM_SYSTEM):a>=0?diagram_color(diagram_kind(a)):[NSColor colorWithCalibratedWhite:0.6 alpha:1];
+  BOOL held=!c.stick&&!panel&&a<0&&c.physical>=0&&c.physical==shot;   /* drives nothing else: the screenshot hold names it */
+  NSColor *col=panel||held?diagram_color(DIAGRAM_SYSTEM):a>=0?diagram_color(diagram_kind(a)):[NSColor colorWithCalibratedWhite:0.6 alpha:1];
   CGFloat edge=s?row.origin.x-8:NSMaxX(row)+8,elbow=s?edge-18:edge+18;
   NSBezierPath *leader=[NSBezierPath bezierPath];[leader moveToPoint:c.at];
   [leader lineToPoint:NSMakePoint(elbow,row.origin.y+13)];[leader lineToPoint:NSMakePoint(edge,row.origin.y+13)];
@@ -395,17 +402,23 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
   [col setFill];[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.at.x-2.5,c.at.y-2.5,5,5)] fill];
   NSString *button=c.stick?(c.stick==1?settings_text("左摇杆","Left stick"):settings_text("右摇杆","Right stick")):
    c.physical==4||c.physical==5?[settings_pad_button(c.physical,family) stringByAppendingString:settings_text("（按下）"," (press)")]:settings_pad_button(c.physical,family);
-  NSString *what=panel?settings_text("设置面板","Settings panel"):c.stick?(c.stick==1?settings_text("移动","Move"):settings_text("视角","Camera")):a>=0?diagram_action_name(a):@"—";
+  NSString *what=panel?settings_text("设置面板","Settings panel"):held?[NSString stringWithFormat:@(TOTK_UI("截图（长按 %d 秒）","Screenshot (hold %d s)")),CONTROLLER_SCREENSHOT_HOLD_MS/1000]:
+   c.stick?(c.stick==1?settings_text("移动","Move"):settings_text("视角","Camera")):a>=0?diagram_action_name(a):@"—";
   NSTextAlignment al=s?NSTextAlignmentLeft:NSTextAlignmentRight;
   if(c.physical==sel&&sel>=0){NSBezierPath *hl=[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(row,-4,-1) xRadius:5 yRadius:5];
    [[NSColor colorWithCalibratedWhite:1 alpha:0.10] setFill];[hl fill];[[NSColor whiteColor] setStroke];hl.lineWidth=1.5;[hl stroke];}
   diagram_text(button,NSMakeRect(row.origin.x,row.origin.y,row.size.width,12),9.5,NSFontWeightMedium,dim,al);
   diagram_text(what,NSMakeRect(row.origin.x,row.origin.y+12,row.size.width,14),11,NSFontWeightSemibold,col,al);
  }
+#undef SHAPE
 #undef TARGET
  static const char *const families[GAMEPAD_TYPE_COUNT]={"","Xbox","PlayStation","Switch"};
  diagram_text([NSString stringWithFormat:@(TOTK_UI("手柄（%s） · 设置面板：%@","Controller (%s) · settings panel: %@")),families[family],settings_panel_pad_text(family)],
   NSMakeRect(cx-150,y0+226,300,16),11,NSFontWeightSemibold,dim,NSTextAlignmentCenter);
- diagram_missing_line(1,NSMakeRect(8,y0+252,self.bounds.size.width-16,16));
+ /* the screenshot hold, whichever button has it (a button the drawing does not show, such as the touchpad of an Xbox
+    layout, is named here too) */
+ diagram_text([NSString stringWithFormat:@(TOTK_UI("截图：%@","Screenshot: %@")),settings_shot_pad_text(family)],
+  NSMakeRect(cx-150,y0+242,300,16),11,NSFontWeightSemibold,dim,NSTextAlignmentCenter);
+ diagram_missing_line(1,NSMakeRect(8,y0+264,self.bounds.size.width-16,16));
 }
 @end
