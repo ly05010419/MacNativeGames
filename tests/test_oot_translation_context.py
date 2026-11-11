@@ -1,8 +1,9 @@
-"""Ocarina of Time's translation cache belongs only to the code that decides a translation (games/oot/scripts/prepare_ns2_seed.py
-request_sources; user 2026-11-10): a change elsewhere in totk_shader_rt.m or nvn_mtl.m keeps the translations, a change to
-a request function makes them again."""
+"""Ocarina of Time's translation cache (games/oot/scripts/prepare_ns2_seed.py; user 2026-11-11: "如何让 快速更新 不要这么容易
+失效"): the cache folder belongs to what decides every translation at once (chain, depth mode, translator), never to the
+runtime's source; each translation keeps the request it was made from, a seed run checks it against its runtime's requests
+(totk_shader_rt.m seed_verified), and only what that run checked or made goes into the seed."""
 import importlib.util
-import shutil
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,52 +19,81 @@ def load_seed():
     return module
 
 
-class RequestSources(unittest.TestCase):
+class TranslationContext(unittest.TestCase):
     def setUp(self):
         self.seed = load_seed()
         self.tmp = tempfile.TemporaryDirectory()
-        self.nvn = Path(self.tmp.name)
-        for name in ('totk_shader_rt.m', 'nvn_mtl.m', 'nvn_ctl.h'):
-            shutil.copy2(NVN / name, self.nvn / name)
-        self.base = self.seed.request_sources(self.nvn)
+        self.translator = Path(self.tmp.name) / 'totk_xlate'
+        self.translator.write_bytes(b'translator-v1')
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def edit(self, name, old, new):
-        path = self.nvn / name
-        text = path.read_text(errors='replace')
-        self.assertEqual(text.count(old), 1, old)
-        path.write_text(text.replace(old, new))
+    def test_the_translator_and_the_depth_mode_decide(self):
+        base = self.seed.translation_context(self.translator, 'minus-w')
+        self.assertEqual(base, self.seed.translation_context(self.translator, 'minus-w'))
+        self.assertNotEqual(base, self.seed.translation_context(self.translator, 'zero'))
+        self.translator.write_bytes(b'translator-v2')
+        self.assertNotEqual(base, self.seed.translation_context(self.translator, 'minus-w'))
 
-    def test_the_checked_out_files_give_the_same(self):
-        self.assertEqual(self.base, self.seed.request_sources())
+    def test_the_runtime_source_does_not(self):
+        # 4b308d25 changed how the translator is started and every translation of the 15:19 build was made again
+        self.assertFalse(hasattr(self.seed, 'request_sources'))
+        body = Path(self.seed.__file__).read_text().split('def translation_context')[1].split('\n\n\n')[0]
+        inputs = [line for line in body.splitlines() if line.strip().startswith('inputs = ')]
+        self.assertEqual(inputs, ['    inputs = dict(schema=3, chain=CHAIN, depth_mode=depth_mode, translator_sha256=sha256(translator))'])
 
-    def test_other_code_keeps_the_translations(self):
-        # the cache folder's setup (main 0d4e68ec released its import temporaries there) and a function no request reaches
-        self.edit('totk_shader_rt.m', 'NSString *totk_rt_dir(void) {', 'NSString *totk_rt_dir(void) {   // changed')
-        self.edit('totk_shader_rt.m', 'static int rt_bg_workers(void) {', 'static int rt_bg_workers(void) {   // changed')
-        self.edit('nvn_mtl.m', 'static inline int registry_lock(void) {', 'static inline int registry_lock(void) {   // changed')
-        self.assertEqual(self.seed.request_sources(self.nvn), self.base)
 
-    def test_each_request_function_counts(self):
-        for name, heads in self.seed.REQUEST_FUNCTIONS.items():
-            for head in heads:
-                with self.subTest(head=head):
-                    text = (self.nvn / name).read_text(errors='replace')
-                    body = self.seed.function_text(text, head, name)
-                    last = body.rstrip().splitlines()[-1]
-                    self.edit(name, last, last + '   // changed')
-                    self.assertNotEqual(self.seed.request_sources(self.nvn), self.base)
-                    self.edit(name, last + '   // changed', last)
-        path = self.nvn / 'nvn_ctl.h'
-        path.write_bytes(path.read_bytes() + b'\n// changed\n')
-        self.assertNotEqual(self.seed.request_sources(self.nvn), self.base)
+class SeedFiles(unittest.TestCase):
+    """Only the variants the run checked or made: a cached one no request of this runtime reached stays out of the seed."""
 
-    def test_a_missing_function_is_an_error(self):
-        self.edit('totk_shader_rt.m', 'static NSMutableDictionary *variant_request(', 'static NSMutableDictionary *variant_request_renamed(')
-        with self.assertRaises(ValueError):
-            self.seed.request_sources(self.nvn)
+    def setUp(self):
+        self.seed = load_seed()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self.tmp.name)
+        self.shader = 'ab' * 32
+        self.names = [f'{self.shader}-{s * 12}' for s in 'cde']
+        entries = []
+        for name in self.names:
+            (self.cache / f'{name}_b.metal').write_text('// metal\n' * 10)
+            (self.cache / f'{name}_b.json').write_text(json.dumps({'chain': self.seed.CHAIN, 'key': name + '_b', 'entry': 'main0'}))
+            entries.append({'variant': name, 'deps': {}, 'request': '0' * 64, 'answers': {}})
+        (self.cache / f'{self.shader}.variants').write_text(json.dumps(entries))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_without_a_list_every_cached_variant(self):
+        files = self.seed.seed_files(self.cache)
+        self.assertEqual(sum(n.endswith('_b.metal') for n in files), 3)
+
+    def test_with_the_run_s_list_only_those(self):
+        files, indexes = self.seed.seed_files(self.cache, {self.names[0], self.names[2]})
+        self.assertEqual(sorted(n for n in files if n.endswith('_b.metal')), [f'{self.names[0]}_b.metal', f'{self.names[2]}_b.metal'])
+        self.assertEqual([e['variant'] for e in indexes[f'{self.shader}.variants']], [self.names[0], self.names[2]])
+
+    def test_all_of_an_index_checked_links_it_as_it_is(self):
+        files, indexes = self.seed.seed_files(self.cache, set(self.names))
+        self.assertIn(f'{self.shader}.variants', files)
+        self.assertEqual(indexes, {})
+
+    def test_none_of_a_shader_checked_leaves_it_out(self):
+        files, indexes = self.seed.seed_files(self.cache, set())
+        self.assertEqual(files, {})
+        self.assertEqual(indexes, {})
+
+
+class RuntimeKeepsTheRequest(unittest.TestCase):
+    """The runtime side, in its source: the request's digest goes into the index entry and never to the translator."""
+
+    def test_the_parts(self):
+        rt = (NVN / 'totk_shader_rt.m').read_text(errors='replace')
+        self.assertIn('rq[@"_request"] = hex(rd, 32); rq[@"_answers"] = answers;', rt)
+        self.assertIn('entry[@"request"] = rq[@"_request"]', rt)
+        self.assertIn('if (seed_verify()) found = seed_verified(shader, stage, control, code, local, answers, found);', rt)
+        # every place a request leaves the runtime sends it without the "_" keys
+        self.assertNotIn('json_string(rq)', rt)
+        self.assertIn('TOTK_SEED_VERIFIED_OUT', (NVN / 'nvn_mtl.m').read_text(errors='replace'))
 
 
 if __name__ == '__main__':

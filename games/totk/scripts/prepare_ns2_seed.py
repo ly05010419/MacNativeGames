@@ -42,14 +42,19 @@ def sha256(path):
     return h.hexdigest()
 
 
-def translation_context(binary, translator, depth_mode):
-    """A cache belongs to the executable making requests and the translator answering them.
+def translation_context(translator, depth_mode, spirv_cross=None):
+    """The cache folder: what decides every translation at once, the chain, the device depth mode, the translator and the
+    spirv-cross it runs (build/spirv-cross/spirv-cross; the runtime passes its path, totk_shader_rt.m service_start). Not the
+    runtime that makes the requests: each translation keeps the request it was made from (totk_shader_rt.m variant_request,
+    its index entry's "request"), and a seed run of another runtime keeps those it would ask for the same way and makes only
+    the others again (TOTK_SEED_VERIFY, seed_verified; user 2026-11-11: "如何让 快速更新 不要这么容易失效"). Until then the
+    whole runtime binary counted, and every runtime change translated every shader again.
 
     The shader/bind-state key alone does not describe device depth mode. The old unversioned seed cache kept vertex
     shaders made with near=0 after the runtime was corrected to NVN's near=-w default.
     """
-    inputs = dict(schema=1, chain=CHAIN, depth_mode=depth_mode,
-                  runtime_sha256=sha256(binary), translator_sha256=sha256(translator))
+    inputs = dict(schema=2, chain=CHAIN, depth_mode=depth_mode, translator_sha256=sha256(translator),
+                  spirv_cross_sha256=sha256(spirv_cross) if spirv_cross and Path(spirv_cross).is_file() else None)
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -60,9 +65,11 @@ def run(cmd, log, env=None):
         raise SystemExit(f'{Path(str(cmd[0])).name} failed ({r.returncode}); see {log}')
 
 
-def seed_files(cache):
-    """name -> path for the translations of the seed cache: each shader's index and the variants it lists."""
-    files = {}
+def seed_files(cache, verified=None):
+    """name -> path for the translations of the seed cache: each shader's index and the variants it lists; with verified
+    (the variants the seed run checked against its runtime's requests or made), only those, and indexes -> the entries left
+    of each shader's index (written into the seed in place of the cache's file)."""
+    files, indexes = {}, {}
     for index in sorted(cache.glob('*.variants')):
         if not VARIANTS.match(index.name):
             continue
@@ -70,18 +77,22 @@ def seed_files(cache):
             entries = json.loads(index.read_text())
         except (OSError, ValueError):
             continue
-        kept = False
+        kept = []
         for entry in entries if isinstance(entries, list) else []:
             name = entry.get('variant') if isinstance(entry, dict) else None
             if not isinstance(name, str) or not VARIANT.match(name):
                 continue
+            if verified is not None and name not in verified:
+                continue
             metal, refl = cache / f'{name}_b.metal', cache / f'{name}_b.json'
             if metal.is_file() and refl.is_file():
                 files[metal.name], files[refl.name] = metal, refl
-                kept = True
+                kept.append(entry)
         if kept:
             files[index.name] = index
-    return files
+            if verified is not None and len(kept) != len(entries):
+                indexes[index.name] = kept
+    return (files, indexes) if verified is not None else files
 
 
 def main():
@@ -118,26 +129,38 @@ def main():
         # program overwritten in place is then killed at launch (SIGKILL, Code Signature Invalid; 2026-11-03).
         service.unlink(missing_ok=True)
         shutil.copy2(prebuilt, service)
-    context = translation_context(a.binary, prebuilt, a.depth_mode)
+    spirv_cross = Path('build/spirv-cross/spirv-cross')   # the one the runtime passes to the translator
+    context = translation_context(prebuilt, a.depth_mode, spirv_cross)
     cache = cache / context
     cache.mkdir(parents=True, exist_ok=True)
     log = a.logs / f'ns2-seed-{v}.log'
+    verified_list = (cache / 'verified.txt').resolve()   # what this run checked or made (runtime_shader_seed)
+    verified_list.unlink(missing_ok=True)
     run([a.binary, f'rewritten/{v}', 'seed-shaders', corpus, a.list], log,
         env=dict(os.environ, TOTK_SHADER_CACHE=str(cache.resolve()), TOTK_SEED_DEPTH_MODE=a.depth_mode,
-                 TOTK_RT_BG_WORKERS=str(os.cpu_count() or 8)))
+                 TOTK_RT_BG_WORKERS=str(os.cpu_count() or 8), TOTK_SEED_VERIFY='1', TOTK_SEED_VERIFIED_OUT=str(verified_list)))
     text = log.read_text(errors='replace')
     done = re.search(r'\[seed\] done in \d+ s: (\d+) of (\d+) shaders', text)
     listed = re.search(r"the shader list's bind states: (\d+) of (\d+) translated", text)
     if not done:
         raise SystemExit(f'the seed did not finish; see {log}')
 
-    files = seed_files(cache)
+    if not verified_list.is_file():
+        raise SystemExit(f'the seed run wrote no {verified_list.name}; see {log}')
+    checked = re.search(r'\[seed\] requests checked: (\d+) variants for this runtime, (\d+) cached ones kept, (\d+) made again', text)
+    if checked:
+        print(f'translations: {checked.group(2)} kept for this runtime\'s requests, {checked.group(3)} made again '
+              f'(another request), {int(checked.group(1)) - int(checked.group(2))} made in all', flush=True)
+    files, indexes = seed_files(cache, set(verified_list.read_text().split()))
     keys = sorted(n[:-len('.variants')] for n in files if n.endswith('.variants'))
     shaders = sum(n.endswith('_b.metal') for n in files)
     staging = out.with_name(out.name + '.partial')
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     for name, src in files.items():
+        if name in indexes:   # only the variants this run checked or made
+            (staging / name).write_text(json.dumps(indexes[name], sort_keys=True, separators=(',', ':'), ensure_ascii=False))
+            continue
         os.link(src, staging / name) if src.stat().st_dev == staging.stat().st_dev else shutil.copy2(src, staging / name)
     scope = shader_key_scope(keys, v, romfs_sha)
     (staging / 'shader-keys.json').write_text(json.dumps(scope, separators=(',', ':')) + '\n')

@@ -247,13 +247,14 @@ def compute_pipeline_archive(work, tree, lists):
     chain=json.loads((seed/'seed-manifest.json').read_text())['chain']
     # The runtime's archive metadata also checks GPU, OS and chain before reuse.
     cache=folder/chain
-    # The tool keeps what its list keys name without looking at the descriptors, so an archive of another runtime must not be reused.
-    target_record=tree/'build/pipelines/compute-manifest.json'
-    if cache.exists() and target_record.is_file() and json.loads(target_record.read_text()).get('runtime_sha256')!=sha(work/'build/oot-native'):shutil.rmtree(cache)
+    # Kept from one package to the next, also when the runtime changed: with TOTK_PAR_RECHECK=1 the tool makes every listed
+    # pipeline against the archive (Metal compares the functions and state), so one this runtime describes otherwise is
+    # compiled and written again and the rest come from their files (nvn_mtl.m mtl_pipeline_archive_tool, par_stale; user
+    # 2026-11-11: "如何让 快速更新 不要这么容易失效"). Until then any runtime change threw it away: 17 min for 21,330 pipelines.
     logs=work/'logs';logs.mkdir(exist_ok=True)
     log=logs/'compute-pipelines.log'
     env=dict(os.environ,TOTK_NATIVE_DIR=str(tree/'build'),TOTK_SHADER_CACHE=str(cache),
-             TOTK_SHADER_SEED_DIR=str(seed),TOTK_PIPELINE_ARCHIVE_HOST='1',TOTK_DEBUG_LOG='1')
+             TOTK_SHADER_SEED_DIR=str(seed),TOTK_PIPELINE_ARCHIVE_HOST='1',TOTK_DEBUG_LOG='1',TOTK_PAR_RECHECK='1')
     lists_sha256={p.name:sha(p) for p in lists}   # check_archive_lists compares them with the files the App carries
     lists=[p for p in lists if p.is_file() and any(l and not l.startswith('#') for l in p.read_text().splitlines())]
     render_rows=sum(1 for p in lists for l in p.read_text().splitlines() if l.startswith(RENDER_ROWS))
@@ -433,19 +434,39 @@ def update_runtime(app,work=None):
     from prepare_ns2_seed import translation_context
     metadata=json.loads(manifest.read_text())
     if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
-        raise ValueError('the translation chain, translator or request code changed: the shaders need the full build')
+        raise ValueError('the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build')
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
     for name,want in expected['rewritten_sha256'].items():
         if sha(tree/'rewritten/oot'/name)!=want:raise ValueError('rewritten module differs from this repository: run the full build: '+name)
     logs=work/'logs';logs.mkdir(exist_ok=True)
     print('building the runtime',flush=True)
+    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
     with (logs/'native-runtime.log').open('w') as f:
-        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,
-                       env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0'))
+        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,env=env)
+    def run(cmd,name,cwd=tree):
+        print(name,flush=True)
+        with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+    # The new runtime asks for every translation again: the ones whose request is the same are kept, the others made again
+    # (prepare_ns2_seed.py, totk_shader_rt.m seed_verified), and only the libraries whose source changed are compiled.
+    shader_steps(work,tree,logs,run)
     os.environ['OOT_BUNDLE_SHADERS']='1'
     folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
     package_app(work,tree,app,'library' if folder else 'app',folder)
     print(f'updated {app} in {time.monotonic()-start:.0f} s',flush=True)
+
+def shader_steps(work,tree,logs,run,device=False):
+    """The seed of the full build and of a runtime update: every translation the runtime asks for, a cached one kept when
+    the runtime's request for it is the one it was made from (prepare_ns2_seed.py; user 2026-11-11: "如何让 快速更新 不要这么
+    容易失效"), and on the Mac the Metal libraries, compiled only where the translation changed (build_shader_libs.py)."""
+    py=work/'venv/bin/python'
+    shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
+    run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
+        '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
+        *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
+    if not device:
+        only=shader_subset(tree,shared)
+        run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
+            '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only else [])],'compile-shader-libraries')
 
 def shader_jobs():
     """Translation workers and Metal compiles at once: the cores minus two (the runtime's own threads and the Metal
@@ -539,14 +560,7 @@ def build(args, source):
     if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
     if not device and not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=0): translated at first use',flush=True)
     else:
-     shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
-     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
-         '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
-         *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
-     if not device:
-      only=shader_subset(tree,shared)
-      run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
-         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only else [])],'compile-shader-libraries')
+     shader_steps(work,tree,logs,run,device)
     if device:
      # The phone's own Metal libraries and pipeline archive: the seed above is compiled for the device in ios/tools/build_ipa.py.
      run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',

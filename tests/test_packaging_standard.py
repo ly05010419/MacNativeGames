@@ -47,8 +47,7 @@ GFX = 'games/{}/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m'
 PATHS = {
     'totk': (['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_shader_seed.py', GFX.format('totk')], {}),
     'switch 2 dumps (Bananza, Pokopia)': (
-        ['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_ns2_seed.py', GFX.format('totk')],
-        {'a runtime change keeps the translations': 'games/totk/scripts/prepare_ns2_seed.py still hashes the runtime binary; to do, as games/oot does'}),
+        ['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_ns2_seed.py', GFX.format('totk')], {}),
     'oot': (['games/oot/build.py', 'update_runtime.py', 'games/oot/scripts/prepare_ns2_seed.py', GFX.format('oot')], {}),
     'dread': (['games/dread/build.py'], {
         'shader data in its own signed bundle': 'not done for this game yet',
