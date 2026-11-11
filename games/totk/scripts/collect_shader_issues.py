@@ -556,6 +556,10 @@ def main():
         print(line)
         if per_game is not None:   # all default or nothing new: still thanked and closed
             merged.append((issue, per_game))
+    for game, s in lists.items():   # a later source may bring the bind state an earlier one's warm rows name (OoT's own merge)
+        took = s.retry_refused() if hasattr(s, 'retry_refused') else 0
+        if took:
+            print(f'{game}: {took} refused warm rows went in once every source was merged')
     for game, s in lists.items():
         print(f'{game} shared shader list: {before[game][0]} -> {len(s.variants)} variants, '
               f'{before[game][1]} -> {sum(1 for row in s.warm if row[0] in "RBT")} render pipeline rows')
