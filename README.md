@@ -133,6 +133,7 @@ The [shared shader list](docs/shader-list.md) now holds **17,335 shader variants
 
 ## What's new
 
+- **2026-11-11: targeted TOTK 1.0.0 Mac fix for the Zora-area renderer heap crash.** Guarded 32 → 64 KiB heap adjustment; [evidence, scope and tests](games/totk/docs/area-merge-heap.md).
 - **2026-11-11: Rankings, an anonymous frame-rate board (Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Mac).**
   A settings tab of its own (key 1) shows the latest board, one group per frame lock and interpolation setting. **Join the
   board** is off by default and never asked; once on, the session is kept on your Mac every 5 minutes and sent at start and

@@ -756,6 +756,44 @@ static void patch_pool_offset(Module *m) {
             (unsigned long long)words[0].site, (unsigned long long)words[1].site);
 }
 
+/* 1.0.0 creates AreaMergeTarRenderer with a private 32 KiB sead heap. Near Zora's Domain it can no longer fit a
+   0x8d8-byte allocation: main+0x855550 returns NULL, then main+0x855560 writes to NULL+0x537. Enlarge this heap at
+   creation, rather than skipping the failed object's initialization. The additional 32 KiB comes from its parent.
+   Heap investigation and size recommendation: lili2029, issue #1742, comment 6730940890. Independently reproduced
+   with the same crash stack and creation sequence. These offsets are verified for 1.0.0 only; 1.2.1 and the separately
+   built 1.4.3 are unchanged. Mac only: neither the iOS export nor the embedded runtime changes this heap.
+   TOTK_AREA_MERGE_HEAP=0 keeps the original heap for diagnostic comparisons. */
+static void patch_area_merge_heap(Module *m) {
+#if defined(TOTK_GAME_V121) || TARGET_OS_IPHONE
+    (void)m;
+#else
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    const char *e = getenv("TOTK_AREA_MERGE_HEAP");
+    if (e && !strcmp(e, "0")) {
+        fprintf(stderr, "[totk] AreaMergeTarRenderer heap: as shipped (TOTK_AREA_MERGE_HEAP=0)\n");
+        return;
+    }
+    static const uint64_t sites[] = {
+        0xec1f60, 0xec1f64, 0xec1f68, 0xec1f6c, 0xec1f70, 0xec1f74,
+        0xec1f78, 0xec1f7c, 0xec1f80, 0xec1f84, 0xec1f88, 0xec1f8c,
+    };  /* also reserves every checked instruction in scripts/patch_sites.py */
+    static const uint32_t creation[] = {
+        0xaa0103e2, 0xaa0003f3, 0xf0014268, 0x91281508, 0xf9000fa8, 0x910063a1,
+        0x52900000, 0x52800103, 0x52800024, 0x2a1f03e5, 0x97e8b3e2, 0xf9000660,
+    };  /* main+0xec1f60: parent, name, size, alignment, Heap::create, store result */
+    static const char name[] = "AreaMergeTarRenderer";
+    const uint64_t start = sites[0], site = sites[6], name_off = 0x3710a05;
+    if (strcmp(m->name, "main") || sites[11] + 4 > m->text_end ||
+        name_off + sizeof name > m->file_size)
+        runtime_fail("AreaMergeTarRenderer heap: wrong module or truncated image");
+    if (memcmp(m->base + start, creation, sizeof creation) ||
+        memcmp(m->base + name_off, name, sizeof name))
+        runtime_fail("AreaMergeTarRenderer heap: original creation sequence/name mismatch");
+    put_word(m, site, 0x52a00020, "AreaMergeTarRenderer heap size");  /* mov w0, #0x10000 */
+    fprintf(stderr, "[totk] 1.0.0 AreaMergeTarRenderer heap: 32 -> 64 KiB at main+%#llx\n", (unsigned long long)site);
+#endif
+}
+
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
@@ -788,6 +826,7 @@ void runtime_game_patches(Module *m) {
     patch_cursor_speed(m);
 #endif
     patch_pool_offset(m);
+    patch_area_merge_heap(m);
     patch_trap(m);
 #if defined(TOTK_GAME_V121)
     { static const uint64_t sites[] = {0xcb4b10, 0x12521cc, 0x19b36f0, 0x1ecdf68};   /* camera x2, viewport x2 (aspect_patch.h) */
