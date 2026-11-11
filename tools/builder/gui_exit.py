@@ -32,6 +32,22 @@ def exit_signals(view):
             signal.signal(s, handler)
 
 
+def leave(view, question):
+    """R6 / B1 (moved out of gui.py in E14 S14.1): closing while busy, once. question: put to the player (the close
+    box, Cmd-Q), or None for a quit signal (no question; the problems line says it). Once agreed, a running build is
+    cancelled through its panel (closing audit 2: the panel shows the cancel and its retry), any other work through the
+    controller; the pump closes the window once the controller is idle."""
+    if view._close_pending or (question is not None and not view.confirm(question)):
+        return
+    view._close_pending = True
+    if question is None:
+        view.problems.configure(text=text('gui.exit_requested'))
+    if view._building:
+        view.build.cancel()
+    else:
+        view.controller.cancel()
+
+
 def wire_quit(root, view):
     """B1: Cmd-Q and the app menu's Quit go through close() (which asks while busy) instead of ending Tk at once."""
     root.createcommand('::tk::mac::Quit', view.close)

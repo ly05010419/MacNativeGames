@@ -7,7 +7,6 @@ controls are enabled; it always reschedules itself. Quit signals (SIGINT, SIGHUP
 SIGTERM) only set exit_requested (S3.4, B1), wherever they land; the pump then cancels a running build and closes once
 it has stopped (no time limit)."""
 import os
-import subprocess
 import sys
 import time
 import tkinter as tk
@@ -16,26 +15,26 @@ from pathlib import Path
 from tools.builder.gui_background import BackgroundPanel
 from tools.builder.gui_build import BuildPanel, DonePanel
 from tools.builder.gui_checks import ChecksPanel
-from tools.builder.gui_confirm import confirm
 from tools.builder.gui_controls import ControlsPanel
-from tools.builder.gui_exit import _tell, exit_signals, settle, wire_quit      # noqa: F401  re-exported
+from tools.builder.gui_exit import _tell, exit_signals, leave, settle, wire_quit      # noqa: F401  re-exported
 from tools.builder.gui_files import FilesPanel
 from tools.builder.gui_mods import ModsPanel
+from tools.builder.gui_play import PlayBar
 from tools.builder.gui_saves import SavesPanel
 from tools.builder.gui_settings import SettingsPanel
 from tools.builder.gui_storage import StoragePanel
-from tools.builder.gui_layout import IMAGE_TYPES, ScrollArea, TabBar, dialog_chooser, zones  # noqa: F401
+from tools.builder.gui_layout import IMAGE_TYPES, ScrollArea, TabBar, zones  # noqa: F401
 from tools.builder.gui_style import PAD, apply, muted
 from tools.builder.gui_details import DetailsPanel
-from tools.builder.session import (BackgroundChanged, BuildStarted, CancelStuck, CheckResultReady, ChecksDone,
-                                   ChecksInvalidated, Finished, GpuProbed, Heartbeat, LogLine, ModsApplied,
+from tools.builder.session import (AppAge, BackgroundChanged, BuildStarted, CancelStuck, CheckResultReady,
+                                   ChecksDone, ChecksInvalidated, Finished, GpuProbed, Heartbeat, LogLine, ModsApplied,
                                    ModsStateReady, PathsIncomplete, PathsSaved, PlayDone, ProcessError,
                                    SettingsLoaded, SettingsNotSaved, StageChanged, StartStateReady)
 from tools.builder.strings import text
 
 PUMP_MS = 200
 LOAD_WAIT_S = 10.0             # then the window goes on without the saved settings (S3.4, f4)
-CHECK_EVENTS = (PathsIncomplete, CheckResultReady, ChecksDone, ChecksInvalidated)
+CHECK_EVENTS = (PathsIncomplete, CheckResultReady, ChecksDone, ChecksInvalidated, AppAge)
 SETTINGS_EVENTS = (StartStateReady, PlayDone, GpuProbed)
 MODS_EVENTS = (ModsStateReady, ModsApplied)
 BUILD_EVENTS = (BuildStarted, StageChanged, Heartbeat, LogLine, CancelStuck, SettingsNotSaved, ProcessError)
@@ -64,7 +63,8 @@ class GuiView:
         root.event_add('<<Commit>>', '<Return>', '<FocusOut>')
         form, picture_column = zones(root)
         self.form = form
-        tk.Label(form, text=text('gui.title'), font=self.fonts['title']).pack(anchor='w', padx=PAD, pady=(22, 6))
+        self.play = PlayBar.under_title(form, controller, self.fonts, self._rebuild,     # E13 S13.3, E14 S14.1
+                                        lambda: self.mods.apply())
         top = tk.Frame(form)
         top.pack(fill='x', padx=PAD)
         self.details = DetailsPanel(top, controller, self.fonts)  # discreet, at the top
@@ -77,7 +77,7 @@ class GuiView:
         self.area.frame.pack(fill='both', expand=True, padx=(PAD, 8), pady=(10, 0))
         self.body, self._reveal, self._await_result = self.area.inner, None, False
         self.problems = muted(tk.Label(self.body, text=text('gui.loading'), anchor='w', justify='left'))
-        self.settings = SettingsPanel(self.body, self.footer, controller, self.fonts, copy)  # S5.1
+        self.settings = SettingsPanel(self.body, self.footer, controller, self.fonts, copy, self.play)  # S5.1
         self.mods = ModsPanel(self.body, self.footer, controller, self.fonts, choose, confirm,
                               lambda line: self.done.note(line), lambda line: self.checks.show_code(line))  # S5.4
         self.controls = ControlsPanel(self.body, self.footer, controller, self.fonts, confirm,
@@ -89,7 +89,8 @@ class GuiView:
         self.files = FilesPanel(self.body, controller, choose, self._paths_changed, self.fonts, self.area.sync)
         self.checks = ChecksPanel(self.body, self.footer, controller, copy, self.files.commit_all, self.start_build,
                                   self._checking, self.fonts, home=self.home, choose=choose, now=time.time)
-        self.build = BuildPanel(self.body, self.footer, controller, monotonic, self._show_log)
+        self.build = BuildPanel(self.body, self.footer, controller, monotonic,
+                                lambda: self.area.reveal(self.build.log))             # N1: Show log, into sight
         self.done = DonePanel(self.body, self.footer, controller, opener, copy, self.new_build)
         self.background = BackgroundPanel(root, controller, choose, self.details.details, self.fonts)   # S4.3
         self.background.frame.pack(fill='x')
@@ -137,10 +138,6 @@ class GuiView:
         self._reveal_later(self.checks.frame)
         self._await_result = True
 
-    def _show_log(self):
-        """N1: Show log brings the log into sight."""
-        self.area.reveal(self.build.log)
-
     def _show_problems(self):
         """The problems line, at the top of the body, only while it says something (S4.4: no empty label)."""
         if self.problems.cget('text') and not self.problems.winfo_manager():
@@ -172,6 +169,12 @@ class GuiView:
         self.checks.clear()
         self._show(self.files, self.checks)
         self.refresh()
+
+    def _rebuild(self):
+        """E14 S14.1: the Play bar's Build / Rebuild: the Build tab's checks, run now; Build stays there."""
+        self.tabs.select('build')
+        self.new_build()
+        self.checks.check()
 
     def _schedule(self):
         if self._after is not None:
@@ -208,6 +211,7 @@ class GuiView:
 
     def on_event(self, event):
         where = event.where if isinstance(event, ProcessError) else None
+        self.play.heard(event)                          # E14 S14.1: the Mods answers and a build's end
         for panel, kinds, wheres in ((self.background, (BackgroundChanged,), ('background',)),
                                      (self.settings, SETTINGS_EVENTS, ('settings', 'play')),
                                      (self.mods, MODS_EVENTS, ('mods',)),
@@ -225,7 +229,7 @@ class GuiView:
             self._settings_in()
         elif isinstance(event, CHECK_EVENTS) or (isinstance(event, ProcessError) and event.where == 'checks'):
             self.checks.on_event(event)
-            if self._await_result and not isinstance(event, ChecksInvalidated):
+            if self._await_result and not isinstance(event, (ChecksInvalidated, AppAge)):
                 self._await_result = False              # N2: the first answer after Check
                 self._reveal_later(self.checks.frame)
             if isinstance(event, ChecksDone) and self.checks.first_problem is not None:
@@ -248,6 +252,7 @@ class GuiView:
         idle = self.controller.idle
         self.files.set_busy(not idle)
         self.background.refresh()
+        self.play.refresh(idle)
         for tab in (self.settings, self.mods, self.controls, self.storage, self.saves):
             tab.refresh(idle)
         self._show_problems()
@@ -273,26 +278,15 @@ class GuiView:
         following it as long as it takes."""
         if self.controller.idle:
             self.close()
-        elif not self._close_pending:
-            self._close_pending = True
-            self.problems.configure(text=text('gui.exit_requested'))
-            if self._building:
-                self.build.cancel()
-            else:
-                self.controller.cancel()
+        else:
+            leave(self, None)
 
     def close(self):
         """WM_DELETE_WINDOW. While busy (R6): ask once; on yes, cancel and close when idle. Idempotent."""
         if self._closed:
             return
         if not self.controller.idle:
-            if not self._close_pending and self.confirm(text('gui.confirm_close')):
-                self._close_pending = True
-                if self._building:
-                    self.build.cancel()                 # closing audit 2: the panel shows the cancel and its retry
-                else:
-                    self.controller.cancel()
-            return
+            return leave(self, text('gui.confirm_close'))
         self._closed = self.files.closed = True
         self.storage.close()
         self.saves.close()
@@ -303,20 +297,3 @@ class GuiView:
         self.controller.close()
         self.root.destroy()
 
-
-def open_window(controller, game=None, paths=None):
-    """W1: the window until it is closed; 0. The real effects are built here and only here."""
-    root = tk.Tk()
-    def copy(value):
-        root.clipboard_clear()
-        root.clipboard_append(value)
-    view = GuiView(root, controller, dialog_chooser(root), copy, lambda argv: subprocess.run(argv, check=False),
-                   lambda question: confirm(root, text('gui.title'), question), time.monotonic)
-    view.preselect(game, paths)
-    wire_quit(root, view)
-    with exit_signals(view):
-        try:
-            root.mainloop()
-        finally:
-            settle(view, root.update, time.monotonic, time.sleep)
-    return 0

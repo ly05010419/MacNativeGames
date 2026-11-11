@@ -5,7 +5,9 @@ key raises KeyError: that is a bug, caught by the drift test (tests/test_builder
 Another language would be another table, not added now. cancel_report() is T7, shared by the text mode and the window
 (moved here from cli.py in S2.3)."""
 from tools.builder.session import SIGNAL_NAMES
+from tools.builder.strings_mods import MODS
 from tools.builder.strings_tabs import TABS
+from tools.builder.strings_textures import TEXTURES
 
 EN = {
     # check labels, one per check id
@@ -141,6 +143,7 @@ EN = {
     'gui.checks_ready': 'Ready to build.',
     'gui.checks_blocked': 'Blocked: fix the lines above, then check again.',
     'gui.checks_stale': 'A path changed: check again.',
+    'gui.app_older': 'Your app is older than the code: build it again to play with the changes.',
     'gui.process_error': '{where}: {error}',
     'gui.log_path': 'Log: {log}',
     'gui.stage': '{index}/{total} {name}: {text}',
@@ -193,8 +196,22 @@ EN = {
                          'version, as toggles before the game starts.',
     'gui.not_stopped': 'The build has not stopped after {seconds} s; the builder keeps waiting for it.',
     'gui.exit_requested': 'Asked to quit: stopping the build first, then closing.',
+    'gui.play.build': 'Build',                      # E14 S14.1: what the Play bar's button does instead of Play
+    'gui.play.rebuild': 'Rebuild',
+    'gui.play.apply': 'Apply mods',
+    'gui.play.reading': 'Reading the mods...',
+    'gui.play.why.apply': 'The game does not hold the mods switched on: apply them before playing.',
+    'gui.play.why.heap_off': 'The app still has the texture pack\'s bigger memory heaps: build it again without them.',
+    'gui.play.why.picture_4k': 'Native 4K is chosen in Settings, and this app was built without it: build it again.',
+    'gui.play.why.native_4k_8gb': 'This app is native 4K and has the texture pack\'s memory heaps, which do not start '
+                                  'together yet: build it again (it is built without native 4K now).',
+    'gui.settings.choice.native-4k': 'Native 4K',  # E17 S17.1
+    'gui.settings.play_failed.native_4k_8gb': 'Not started: native 4K and the texture pack\'s 8 GB mode do not start '
+                                              'together yet. Build the app again.',
 }
-EN.update(TABS)                 # the Settings and Mods tabs' texts (S5.1, S5.2), in their own table
+EN.update(TABS)                 # the other tabs' texts (S5.1, E6), in their own table
+EN.update(MODS)                 # the Mods tab's (S5.2)
+EN.update(TEXTURES)             # the Textures tab's (S9.2)
 
 
 def text(key, **values):

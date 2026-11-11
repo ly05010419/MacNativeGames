@@ -104,6 +104,12 @@ class CancelStuck:
 
 
 @dataclass(frozen=True)
+class AppAge:
+    game: str
+    older: bool | None      # S8.1: the chosen game's app is older than the code (app_age.older); None: unknown
+
+
+@dataclass(frozen=True)
 class BackgroundChanged:
     background: object      # tools.builder.background.Background (S4.3)
 

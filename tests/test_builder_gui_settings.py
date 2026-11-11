@@ -1,12 +1,13 @@
 """tools/builder/gui_settings.py (S5.1): the Settings tab on a real withdrawn Tk root (builder_tk_base.py) against the
 scripted FakeController and its FakeStart. States are made with the model's own StartState and OPTIONS, so every
-option and choice the model can send is rendered here (a missing text would raise)."""
+option and choice the model can send is rendered here (a missing text would raise). E13 S13.3: Play is the window's
+Play bar now; its cases are in test_builder_gui_play.py."""
 from pathlib import Path
 import unittest
 
 from builder_tk_base import Base, tk
-from tools.builder.session import GpuProbed, PlayDone, ProcessError, StartStateReady
-from tools.builder.start_options import OPTIONS, PlayResult, StartState
+from tools.builder.session import GpuProbed, StartStateReady
+from tools.builder.start_options import OPTIONS, StartState
 from tools.builder.strings import text
 
 APP = Path('/Games/Tears of the Kingdom.app')
@@ -46,7 +47,9 @@ class Settings(Base):
 
     def test_opening_asks_for_the_state_and_probes_once(self):
         self.opened()
-        self.assertEqual(self.ctl.start.calls, [('probe',), ('state',)])
+        self.assertEqual(self.ctl.start.calls, [('state',), ('probe',)])   # the Play bar's read of the chosen game
+        self.view.pump()
+        self.assertEqual(self.ctl.start.calls, [('state',), ('probe',)])   # serves this tab too: no second read
         self.assertEqual((self.view.settings.foot.winfo_manager(), self.view.checks.foot.winfo_manager()), ('pack', ''))
 
     def test_every_option_and_choice_of_both_versions_renders(self):
@@ -64,7 +67,7 @@ class Settings(Base):
         for reason in ('no_game_file', 'no_app', 'unknown_version'):
             self.deliver(StartStateReady(state('v121', reason)))
             self.assertEqual(panel.title.cget('text'), text(f'gui.settings.reason.{reason}', app=APP))
-            self.assertEqual(panel.play_button.cget('state'), 'disabled')
+            self.assertEqual(self.view.play.button.cget('state'), 'disabled')
 
     def test_a_choice_goes_to_the_controller_once(self):
         panel = self.opened()
@@ -103,37 +106,6 @@ class Settings(Base):
         self.deliver(GpuProbed('unknown'))
         self.assertIn(text('gui.settings.gpu.unknown'), self.labels(panel.rows))
 
-    def test_play(self):
-        panel = self.opened()
-        self.deliver(StartStateReady(state()))
-        self.assertEqual(panel.play_button.cget('state'), 'normal')
-        panel.play_button.invoke()
-        panel.play_button.invoke()                                        # one click, one command
-        self.assertEqual(self.ctl.start.calls.count(('play',)), 1)
-        self.deliver(PlayDone(PlayResult(False, 'running')))
-        self.assertEqual(panel.status.cget('text'), text('gui.settings.play_failed.running'))
-        self.deliver(PlayDone(PlayResult(True)))
-        self.assertEqual(panel.status.cget('text'), text('gui.settings.played'))
-        self.deliver(ProcessError('play', "OSError('x')"))
-        self.assertEqual(panel.status.cget('text'), text('gui.settings.error', error="OSError('x')"))
-
-    def test_a_held_interpolation_is_said(self):
-        panel = self.opened()
-        self.deliver(PlayDone(PlayResult(True, held=('interpolation',))))
-        self.assertEqual(panel.status.cget('text'),
-                         text('gui.settings.played') + '\n' + text('gui.settings.held.interpolation'))
-
-    def test_opened_while_a_job_runs_reads_again_after_it(self):
-        self.start()
-        self.loaded('totk')
-        self.view.pump()
-        self.ctl.start.pending = True                                     # a Play is running
-        self.view.tabs.select('settings')
-        self.assertNotIn(('state',), self.ctl.start.calls)
-        self.ctl.start.pending = False
-        self.deliver(PlayDone(PlayResult(True)))
-        self.assertEqual(self.ctl.start.calls[-1], ('state',))
-
     def test_the_game_and_version_on_top_and_one_play_note(self):
         panel = self.opened()
         self.deliver(StartStateReady(state()))
@@ -148,25 +120,6 @@ class Settings(Base):
         files = sum(o.how == 'file' for o in OPTIONS['v143'])
         self.assertEqual((found.count(text('gui.settings.also_finder')), found.count(text('gui.settings.play_only'))),
                          (files, len(OPTIONS['v143']) - files))
-
-    def test_play_is_the_primary_button_and_says_why_it_cannot(self):
-        panel = self.opened()
-        self.deliver(StartStateReady(state('v121', 'unknown_version')))
-        self.assertEqual((panel.play_button.cget('state'), panel.reason.cget('text')),
-                         ('disabled', text('gui.settings.why_not.app')))
-        self.deliver(StartStateReady(state()))
-        self.assertEqual((panel.play_button.cget('state'), panel.reason.cget('text')), ('normal', ''))
-        self.assertEqual(panel.play_button.cget('text'), text('gui.settings.play'))
-        self.ctl.busy = True
-        self.view.refresh()
-        self.assertEqual(panel.reason.cget('text'), text('gui.settings.why_not.build'))
-
-    def test_play_waits_while_a_build_runs(self):
-        panel = self.opened()
-        self.deliver(StartStateReady(state()))
-        self.ctl.busy = True
-        self.view.refresh()                                               # the fake ends a build on its next tick
-        self.assertEqual(panel.play_button.cget('state'), 'disabled')
 
     def test_notes_show_and_the_running_note_has_its_text(self):
         panel = self.opened()

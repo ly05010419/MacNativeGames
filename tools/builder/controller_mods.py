@@ -17,7 +17,8 @@ from pathlib import Path
 import shutil
 import threading
 
-from tools.builder import game_state, icons_mod, mod_add, mod_applied, mod_code, mod_find, mod_library, mod_tools
+from tools.builder import (controller_textures, game_state, icons_mod, mod_add, mod_applied, mod_code, mod_find,
+                           mod_library, mod_tools, textures)
 from tools.builder.games import GAMES
 from tools.builder.build_run import collect
 from tools.builder.session import IconsDone, ModsApplied, ModsStateReady, ProcessError
@@ -44,6 +45,13 @@ class ModsState:
     switched_off: tuple = ()        # S5.5 C1b: (name, versions) of enabled mods the new rules made not valid
     outdated: tuple = ()            # E6 S6.3: the icons mod, when it no longer matches the layout or the size tables
     not_applied: bool = False       # S7.3 N2: the game holds other mods than the library (Apply again; mod_applied)
+    textures: object = None         # S9.2: textures.TexturesState, for the games that take a pack
+
+
+def mods_key(selection):
+    """What a Mods job reads from the selection (E14 S14.1): the game, its game file and its app."""
+    game, fields = selection
+    return game, fields.get('game'), fields.get('out')
 
 
 def _label(spec, version):
@@ -78,6 +86,7 @@ def read_state(repo, spec, app, data_dir, full=True):
                      player_backups=tuple(p.name for p in theirs), imported=imported, checked=full,
                      code_next=names, code_pending=mod_code.pending(library, app), switched_off=switched_off,
                      outdated=_outdated(repo, spec, app, version, library, data_dir),
+                     textures=textures.tab_state(library, app) if spec.id in textures.GAMES else None,
                      not_applied=mod_applied.not_applied(library))
 
 
@@ -145,16 +154,17 @@ def _build_library(repo, data_dir, snapshot):
     return library, mod_code.planned(library, spec.id, bool(fields.get('update')))
 
 
-def _compose(library, mod_ids):
+def _compose(library, mod_ids, heap=None):
     """At the build's start, on the worker: (the --mod folder, the record, its writer for a success, which BuildRun
-    calls with the app the build made). mod_ids are the toggles as they were at Build (O3)."""
-    folder, record = mod_code.compose(library, mod_ids)
+    calls with the app the build made). mod_ids are the toggles as they were at Build (O3); heap, S9.2: None or the
+    callable that fits the texture pack's heap table (controller_textures.heap_for_build)."""
+    folder, record = mod_code.compose(library, mod_ids, heap() if heap else None)
     return folder, record, partial(mod_code.write_record, library.root, record)
 
 
-def apply(repo, spec, app, data_dir):
+def apply(repo, spec, app, data_dir, cancel=None):
     library = _library(repo, spec, LATEST[spec.id], data_dir)
-    return mod_applied.apply_and_record(repo, spec, app, LATEST[spec.id], library, data_dir)
+    return mod_applied.apply_and_record(repo, spec, app, LATEST[spec.id], library, data_dir, cancel=cancel)
 
 
 @dataclass(frozen=True)
@@ -165,7 +175,7 @@ class IconsResult:
     applied: object = None          # mod_library.ApplyResult
 
 
-def install_icons(repo, spec, app, data_dir, work, made_from, switch_off):
+def install_icons(repo, spec, app, data_dir, work, made_from, switch_off, cancel=None):
     """E6 S6.3 B5: the made icons mod into the library (this part's job is the only writer), then Apply."""
     if game_state.game_running(Path(data_dir) / spec.data_folder):
         shutil.rmtree(work, ignore_errors=True)
@@ -174,14 +184,14 @@ def install_icons(repo, spec, app, data_dir, work, made_from, switch_off):
     v = icons_mod.install(repo, app, LATEST[spec.id], library, Path(work), made_from, switch_off)
     if not v.valid:
         return IconsResult(False, 'invalid', v.reason)
-    r = mod_applied.apply_and_record(repo, spec, app, LATEST[spec.id], library, data_dir)
+    r = mod_applied.apply_and_record(repo, spec, app, LATEST[spec.id], library, data_dir, cancel=cancel)
     return IconsResult(r.ok, r.reason, '', r)
 
 
 class ModsController:
     def __init__(self, owner):
         self.owner = owner
-        self._job = self._kind = None
+        self._job = self._kind = self._asked = self.answered = None   # answered: (kind, mods_key) of the last ended job
         self._cancel = threading.Event()
 
     @property
@@ -194,13 +204,16 @@ class ModsController:
 
     @property
     def holds(self):
-        """Apply or an Add runs: the controller is not idle, so closing asks and waits (S5.5 B2; a folder's copy too,
-        or a cp across volumes would outlive the window)."""
-        return self._kind in ('apply', 'add', 'icons')
+        """A job that may write runs: the controller is not idle, so closing asks and waits (S5.5 B2; a folder's copy
+        too, or a cp across volumes would outlive the window). The jobs run on daemon threads, and a removal cut off
+        between its rmtree and the library's save would leave them apart (E11 G3), so every change holds, the Textures
+        part's too, and a full read (it imports and re-checks); only a quick read does not."""
+        return self._kind not in (None, 'read')
 
     def cancel(self):
-        """Stops an archive's extraction (its tar group is killed); the copy and the validation after it run on."""
-        if self._kind == 'add':
+        """Stops an archive's extraction (its tar group is killed; the copy and the validation after it run on) and,
+        S19.1, a texture pack's fit at Apply or at the icons' Apply (its process group is killed: not applied)."""
+        if self._kind in ('add', 'apply', 'icons'):
             self._cancel.set()
 
     def _submit(self, kind, fn, *args):
@@ -209,15 +222,20 @@ class ModsController:
             raise RuntimeError('a mods change is still running')
         spec, app = self.owner.start._context()
         self._job = self.owner.load_jobs.submit(fn, self.owner.repo_root, spec, app, self.owner.start.paths.data, *args)
-        self._kind = kind
+        self._kind, self._asked = kind, mods_key(self.owner.selection())
+
+    def _submit_cancellable(self, kind, fn, *args):
+        """_submit with a fresh cancel Event as the job's last argument, kept only once submitted: a refused call
+        leaves the running job's."""
+        cancel = threading.Event()
+        self._submit(kind, fn, *args, cancel)
+        self._cancel = cancel
 
     def state(self, full=True):
-        self._submit('state', read_state, full)
+        self._submit('state' if full else 'read', read_state, full)
 
     def add(self, folder):
-        cancel = threading.Event()          # kept only once submitted: a refused call leaves the running one's
-        self._submit('add', change, 'add', self.owner.runner, Path(folder), cancel)
-        self._cancel = cancel
+        self._submit_cancellable('add', change, 'add', self.owner.runner, Path(folder))
 
     def remove(self, mod_id):
         self._submit('change', change, 'remove', mod_id)
@@ -234,30 +252,33 @@ class ModsController:
     def code(self, mod_id, on):
         self._submit('change', change, 'code', mod_id, on)
 
-    def code_for_build(self, snapshot):
+    def code_for_build(self, snapshot, cancel=None):
         """S5.4: None, or a callable prepare_request runs at the build's start to compose the included code mods
-        (possibly none: its record is then empty)."""
+        (possibly none: its record is then empty); cancel, S19.1: the build's, which stops the texture pack's fit."""
         library, mod_ids = _build_library(self.owner.repo_root, self.owner.start.paths.data, snapshot)
-        return partial(_compose, library, mod_ids) if library is not None else None
+        heap = controller_textures.heap_for_build(self.owner.repo_root, library, snapshot, cancel) if library else None
+        return partial(_compose, library, mod_ids, heap) if library is not None else None
 
     def code_folder(self, snapshot):
         """The --mod path a build of snapshot would get (for --dry-run), or None; nothing is written."""
         library, mod_ids = _build_library(self.owner.repo_root, self.owner.start.paths.data, snapshot)
-        return mod_code.folder(library) if mod_ids else None
+        heap = controller_textures.heap_for_build(self.owner.repo_root, library, snapshot) if library else None
+        return mod_code.folder(library) if mod_ids or heap else None
 
     def apply(self):
         if not self.owner.idle or self.owner.start.busy:
             raise RuntimeError('a build, an update or Play is running')
-        self._submit('apply', apply)
+        self._submit_cancellable('apply', apply)
 
     def install_icons(self, work, made_from, switch_off=()):
         """Called by the Controls part once its icons are made; holds the controller until Apply ends."""
-        self._submit('icons', install_icons, Path(work), made_from, tuple(switch_off))
+        self._submit_cancellable('icons', install_icons, Path(work), made_from, tuple(switch_off))
 
     def tick(self):
         if self._job is None or not self._job.done():
             return
         job, kind, self._job, self._kind = self._job, self._kind, None, None
+        self.answered = (kind, self._asked)             # E14 S14.1: before its event, so a late answer is told apart
         value, error = collect(job)
         if error is not None:
             self.owner._emit(ProcessError('mods', repr(error)))

@@ -190,10 +190,10 @@ class StartBuild(ControllerBase):
         self.ctl.run_checks()
         drain(self.jobs, self.ctl.tick)
         folder = str(mod_code.folder(self.library))
-        self.assertEqual(self.ctl.planned_command()[-2:], ['--mod', folder])
+        self.assertEqual(self.ctl.planned_command()[-3:], ['--mod', folder, '--no-native-4k'])    # E17: picture auto
         self.assertFalse(Path(folder).exists())
         argv = self.build(change=lambda: self.switch(False))             # after Build: no effect on this run
-        self.assertEqual((argv[-2:], self.recorded()), (['--mod', folder], ['a']))
+        self.assertEqual((argv[-3:], self.recorded()), (['--mod', folder, '--no-native-4k'], ['a']))
 
     def test_switched_off_then_built_clears_the_record(self):              # O2, the audit's B1
         self.build()

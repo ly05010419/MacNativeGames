@@ -1,13 +1,14 @@
 """The build command: the only place in the builder that knows build_app.py's command-line flags (S1.3).
 
 The flags mirror build_app.py's parse_args. The builder always passes --work and -o from the same effective paths the
-preflight checked, and never passes --platform (Mac only) or the mod flags (not in this builder yet)."""
+preflight checked, and never passes --platform (Mac only) or the mod flags (not in this builder yet). E17 S17.1:
+--native-4k / --no-native-4k as the Settings tab's picture says (start_options.build_native_4k)."""
 from pathlib import Path
 
 from tools.builder.paths import effective_paths
 
 
-def build_argv(spec, paths, repo_root, python, code_mod=None) -> list[str]:
+def build_argv(spec, paths, repo_root, python, code_mod=None, native_4k=None) -> list[str]:
     """[python, build_app.py, game, -k keys, --work work, -o out, (--update u), (--firmware f | --shared-fonts s),
     (--mod code_mod)]. code_mod (S5.4) is the builder's composed code-mod folder (exefs/ only, so build_app.py merges
     its patches and leaves the RomFS mod folder alone); the caller passes it only for TOTK with an update.
@@ -26,4 +27,6 @@ def build_argv(spec, paths, repo_root, python, code_mod=None) -> list[str]:
         argv += ['--shared-fonts', p.shared_fonts]
     if code_mod is not None:
         argv += ['--mod', code_mod]
+    if native_4k is not None:
+        argv.append('--native-4k' if native_4k else '--no-native-4k')
     return [str(a) for a in argv]

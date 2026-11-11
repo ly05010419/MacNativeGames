@@ -20,11 +20,15 @@ line is right before the tab is opened. A failed build stopped by a patch for an
 done panel. S5.5: Add archive... takes .zip, .7z and .rar; a pack of several mods is added as one mod each and the
 status says how many; a mod made for another version says which and points to TKMM; the enabled mods a newer check
 switched off are named until the next full read. Closing the window while an archive is extracted asks first, and its
-cancel stops the extraction. S7.5b: every toggle is gui_widgets.Toggle, an on/off switch."""
+cancel stops the extraction. S7.5b: every toggle is gui_widgets.Toggle, an on/off switch. S9.2, E11 G3: the texture
+pack is a section at the end of this tab (gui_textures), shown for a game that takes one; it hears every Mods event
+first, and this tab's one state read and its Apply serve both."""
 import tkinter as tk
 
+from tools.builder.controller_mods import mods_key
 from tools.builder.gui_settings import short_path
 from tools.builder.gui_style import BAD, GOOD, LINE, MUTED, WRAP, muted
+from tools.builder.gui_textures import TexturesPanel, shown
 from tools.builder.gui_widgets import INDENT, FlatButton, Toggle
 from tools.builder.session import ModsApplied, ModsStateReady, ProcessError
 from tools.builder.strings import text, version_span
@@ -54,6 +58,7 @@ class ModsPanel:
         self.switched = tk.Label(self.frame, text='', anchor='w', justify='left', foreground=BAD, wraplength=WRAP)
         self.not_applied = tk.Label(self.frame, text=text('gui.mods.not_applied'), anchor='w', justify='left',
                                     foreground=BAD, wraplength=WRAP)   # S7.3 N2
+        self.textures = TexturesPanel(self.frame, controller, fonts, choose, confirm)   # S9.2: a section, at the end
         self.rows = tk.Frame(self.frame)
         self.rows.pack(fill='x')
         self.backups = tk.Frame(self.frame)
@@ -69,6 +74,7 @@ class ModsPanel:
         self.status.pack(side='left')
 
     def opened(self):
+        self.textures.opened()
         if self.controller.selection()[0] is None:
             self._clear()
             self.state = None
@@ -93,6 +99,7 @@ class ModsPanel:
             self.controller.mods.state()
 
     def on_event(self, event):
+        self.textures.on_event(event)
         if isinstance(event, ModsStateReady):
             if self._after_build and event.state.checked:
                 self._after_build = False
@@ -118,7 +125,7 @@ class ModsPanel:
                 child.destroy()
         self.toggles = {}
         for widget in (self.note, self.changed, self.pending, self.switched, self.not_applied, self.backups,
-                       self.add_button, self.zip_button):
+                       self.add_button, self.zip_button, self.textures.frame):
             widget.pack_forget()
 
     def render(self, state):
@@ -160,6 +167,8 @@ class ModsPanel:
                            wraplength=WRAP - 150, justify='left'), self.fonts['small']).pack(side='left')
             FlatButton(self.backups, text('gui.mods.remove_backups'), self.remove_backups,
                        font=self.fonts['small']).pack(side='right')
+        if shown(state):
+            self.textures.frame.pack(fill='x', pady=(28, 0))
 
     def _row(self, mod, index, count):
         v = mod.validation
@@ -257,7 +266,7 @@ class ModsPanel:
 
     def refresh(self, idle):
         game, fields = self.controller.selection()
-        key = (game, fields.get('game'), fields.get('out'))
+        key = mods_key((game, fields))                  # E14 S14.1: the Play bar uses the same key
         if game is not None and key != self._primed and not self.controller.mods.busy:
             self._primed = key                          # S5.4: the Build tab's code line, before the tab is opened
             self.controller.mods.state(full=False)

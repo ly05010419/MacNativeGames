@@ -5,7 +5,8 @@ Check and Build commit the path rows first (aqua gives no focus out on a click).
 ChecksDone and disabled again by Check, ChecksInvalidated or a commit that changed a path; the controller decides
 readiness, the panel only shows it. When enabled, Build is the primary (blue) button; disabled, it has the disabled look
 like every other button (no aqua button in the window). S4.4b: the footer (`foot`) lives in the form's fixed footer; the
-results are rows in the scrolling body, and Check asks the view to bring them into sight (on_check).
+results are rows in the scrolling body, and Check asks the view to bring them into sight (on_check). S8.1: a line
+above the results says when the chosen game's app is older than the code (AppAge); Check and a changed path leave it.
 
 S2.3: under the results, the logs (the builder's own and the game's) and Export report, which writes the same report
 the CLI's --check-only prints its log lines from (check_report.py, one data source for both)."""
@@ -16,7 +17,8 @@ from tools.builder import check_report
 from tools.builder.games import GAMES
 from tools.builder.gui_style import BAD, GOOD, LINE, MUTED, TEXT, WRAP
 from tools.builder.gui_widgets import FlatButton
-from tools.builder.session import CheckResultReady, ChecksDone, ChecksInvalidated, PathsIncomplete, ProcessError
+from tools.builder.session import (AppAge, CheckResultReady, ChecksDone, ChecksInvalidated, PathsIncomplete,
+                                   ProcessError)
 from tools.builder.strings import check_sentence, text
 
 COLOURS = {'OK': GOOD, 'BLOCK': BAD}
@@ -43,6 +45,8 @@ class ChecksPanel:
                                justify='left')
         self.status.pack(side='left')
         self.code = tk.Label(self.frame, text='', anchor='w', justify='left', foreground=MUTED, wraplength=WRAP)
+        self.older = tk.Label(self.frame, text=text('gui.app_older'), anchor='w', justify='left', foreground=BAD,
+                              wraplength=WRAP)
         self.rows = tk.Frame(self.frame)
         self.rows.pack(fill='x', pady=(8, 0))
         self.logs_title = tk.Label(self.frame, text=text('gui.checks.logs'), anchor='w', foreground=MUTED,
@@ -94,7 +98,12 @@ class ChecksPanel:
         self.on_build()
 
     def on_event(self, event):
-        if isinstance(event, PathsIncomplete):
+        if isinstance(event, AppAge):
+            if event.older:
+                self.older.pack(anchor='w', pady=(6, 0), before=self.rows)
+            else:
+                self.older.pack_forget()
+        elif isinstance(event, PathsIncomplete):
             fields = ', '.join(text(f'gui.field.{f}') for f in event.missing)
             self.status.configure(text=text('gui.paths_missing', fields=fields), foreground=BAD)
         elif isinstance(event, CheckResultReady):
