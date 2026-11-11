@@ -53,6 +53,10 @@ static inline NSMutableSet<NSString *> *totk_contrib_read(NSString *path) {
 static inline NSString *totk_contrib_side(NSString *path, NSString *ext) {
     return [path.stringByDeletingLastPathComponent stringByAppendingPathComponent:[NSString stringWithFormat:@".%@.%@", path.lastPathComponent, ext]];
 }
+/* The older reminder's state, "never" after "Don't remind me again" (games/totk's totk_shader_contrib.h): the shader
+   inbox's question reads it (totk_contrib_upload.h totk_inbox_should_ask). This game never had that reminder, so the
+   file is absent and nothing changes; without the function the upload header did not compile here (9e212f52). */
+static inline NSString *totk_contrib_state(NSString *path) { return totk_contrib_side(path, @"reminded"); }
 /* The file opened with these flags and locked (flock, exclusive), or -1. totk_contrib_retire replaces the file by a rename,
    so a descriptor opened before it names the old one: then the file is opened again. */
 static inline int totk_contrib_lock(NSString *path, int flags) {

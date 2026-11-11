@@ -266,18 +266,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
     assert(settingsPanel.rows.count == 12 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);
-    /* The display page's bottom right: contribute shaders and star the project, after the rows for a controller; the
-       version stays clear of them; a result shows for a moment where the version is. */
-    NSButton *contribute = settingsPanel.displayButtons[1], *starButton = settingsPanel.displayButtons[0];
-    assert([contribute.title isEqualToString:@"Contribute shaders and pipelines"] && [starButton.title isEqualToString:@"⭐ Star the project"]);
-    assert(!contribute.hidden && !starButton.hidden && NSMaxX(contribute.frame) < NSMinX(starButton.frame) && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
-    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(contribute.frame) && contribute.frame.origin.y < 34 && starButton.frame.origin.y < 34);
-    assert(settingsPanel.controllerTargets.count == 14 && settingsPanel.controllerTargets[12] == contribute && settingsPanel.controllerTargets[13] == starButton);
+    /* The display page's bottom right: star the project, after the rows for a controller (contributing is the shader
+       tab's switch since 585d0734, as games/totk's probe after PR #2069); the version stays clear of it; a result shows
+       for a moment where the version is. */
+    NSButton *starButton = settingsPanel.displayButtons[0];
+    assert(settingsPanel.displayButtons.count == 1 && [starButton.title isEqualToString:@"⭐ Star the project"]);
+    assert(!starButton.hidden && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
+    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(starButton.frame) && starButton.frame.origin.y < 34);
+    assert(settingsPanel.controllerTargets.count == settingsPanel.rows.count + 1 && settingsPanel.controllerTargets.lastObject == starButton);
     NSString *versionText = settingsPanel.versionLabel.stringValue;
     [settingsPanel note:@"Thank you!"]; assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Thank you!"]);
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
-    assert(contribute.hidden && starButton.hidden);   /* the first page only */
+    assert(starButton.hidden);   /* the first page only */
     assert(settingsPanel.rows.count == 6 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
@@ -377,9 +378,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel endCapture];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.1 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
+    assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB);   /* the shader tab follows the bindings (585d0734) */
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102.2 active:YES];
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.3 active:YES];
+    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);   /* R1 past the last tab wraps to the first */
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.1 active:YES];
+    assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB);   /* L1 from the first wraps to the last */
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103.2 active:YES];
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.3 active:YES];
     assert(settingsPanel.page == SETTINGS_PAGE_BINDINGS);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
 
