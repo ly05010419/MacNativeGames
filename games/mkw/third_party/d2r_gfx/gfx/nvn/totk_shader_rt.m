@@ -173,49 +173,39 @@ static void service_start(rt_svc *svc) {
     posix_spawnattr_t sa; posix_spawnattr_init(&sa); sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&sa, &none);
     posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
-    // TOTK_SHADER_XLATE=<totk_xlate.dll> runs a trial translator build (e.g. build/totk_xlate-opt) without replacing the
-    // shared one (through shader_service.py); TOTK_SHADER_DEBUGMODE=0|1 reaches either service through the environment.
-    // TOTK_SHADER_SERVICE=python | native picks the service (default: native when build/shader-service/totk_xlate is there).
+    // The translator is the native program build/shader-service/totk_xlate (MKW: the Ampere service below).
+    // TOTK_SHADER_XLATE=<program> runs another build of that program instead (a trial translator, same arguments);
+    // TOTK_SHADER_DEBUGMODE=0|1 reaches it through the environment. The Python + .NET service (scripts/shader_service.py)
+    // is gone, so TOTK_SHADER_SERVICE takes only "native" (scripts still set it) and a missing program stops here.
     const char *xe = getenv("TOTK_SHADER_XLATE"), *want = getenv("TOTK_SHADER_SERVICE"), *dm = getenv("TOTK_SHADER_DEBUGMODE");
-    NSString *native = [r stringByAppendingString:@"/build/shader-service/totk_xlate"];
+    if (want && *want && strcmp(want, "native")) die("TOTK_SHADER_SERVICE=%s: only the native translator exists (the Python service was removed); unset it", want);
+    NSString *native = xe && *xe ? @(xe) : [r stringByAppendingString:@"/build/shader-service/totk_xlate"];
 #ifdef GAME_MKW
     /* MKW: the Ampere service (tools/ampere_service) and the nxnative frontend it runs (third_party/nxnative), both built
        by make shader-tools with SPIRV-Cross, at fixed paths in this folder; the mesh wrapper is tools/wrap_mesh_stage.py. */
+    if (xe && *xe) die("MKW translates only with the Ampere service (TOTK_SHADER_XLATE is TOTK's)");
     native = [r stringByAppendingString:@"/build/shader-service/ampere_service"];
     NSString *mkw_xlate = [r stringByAppendingString:@"/build/dmsh_xlate/dmsh_xlate"], *mkw_wrap = [r stringByAppendingString:@"/tools/wrap_mesh_stage.py"];
     for (NSString *need in @[native, mkw_xlate, sc])
         if (access(need.fileSystemRepresentation, X_OK)) die("shader translator %s is missing: run make shader-tools", need.UTF8String);
     if (access(mkw_wrap.fileSystemRepresentation, R_OK)) die("%s is missing", mkw_wrap.UTF8String);
-    if ((xe && *xe) || (want && !strcmp(want, "python"))) die("MKW translates only with the Ampere service (TOTK_SHADER_XLATE / TOTK_SHADER_SERVICE=python are TOTK's)");
 #endif
-    int have_native = access(native.fileSystemRepresentation, X_OK) == 0;
-    int use_native = have_native && !(xe && *xe) && !(want && !strcmp(want, "python"));
-    if (want && !strcmp(want, "native") && !use_native) die("TOTK_SHADER_SERVICE=native but %s is not there (make shader-service)", native.UTF8String);
+    if (access(native.fileSystemRepresentation, X_OK)) die("shader translator %s is missing (make shader-service, or build the app again)", native.UTF8String);
     pid_t pid;
-    if (use_native) {
 #ifdef GAME_MKW
-        const char *argv[] = {native.UTF8String, "--service", "--spirv-cross", sc.UTF8String, "--xlate", mkw_xlate.UTF8String,
-                              "--mesh-wrapper", mkw_wrap.UTF8String, "--out", totk_rt_dir().UTF8String, "--chain", DMSH_CHAIN, NULL};
+    const char *argv[] = {native.UTF8String, "--service", "--spirv-cross", sc.UTF8String, "--xlate", mkw_xlate.UTF8String,
+                          "--mesh-wrapper", mkw_wrap.UTF8String, "--out", totk_rt_dir().UTF8String, "--chain", DMSH_CHAIN, NULL};
 #else
-        const char *argv[] = {native.UTF8String, "--service", "--spirv-cross", sc.UTF8String, "--out", totk_rt_dir().UTF8String,
-                              "--chain", DMSH_CHAIN, NULL};
+    const char *argv[] = {native.UTF8String, "--service", "--spirv-cross", sc.UTF8String, "--out", totk_rt_dir().UTF8String,
+                          "--chain", DMSH_CHAIN, NULL};
 #endif
-        if (posix_spawn(&pid, argv[0], &fa, &sa, (char *const *)argv, environ)) die("start shader service %s", argv[0]);
-        if (dm) LOG("[shader] native translator, DebugMode %s", dm);
-    } else {
-        NSString *script = [r stringByAppendingString:@"/scripts/shader_service.py"], *dotnet = [r stringByAppendingString:@"/tooling/dotnet/dotnet"];
-        NSString *xlate = xe && *xe ? @(xe) : [r stringByAppendingString:@"/build/totk_xlate/totk_xlate.dll"];
-        const char *argv[] = {"python3", "-I", script.UTF8String, "--dotnet", dotnet.UTF8String, "--xlate", xlate.UTF8String,
-                              "--spirv-cross", sc.UTF8String, "--out", totk_rt_dir().UTF8String, "--chain", DMSH_CHAIN, NULL};
-        if (posix_spawnp(&pid, "python3", &fa, &sa, (char *const *)argv, environ)) die("start shader service");
-        if (xe || dm) LOG("[shader] translator %s, DebugMode %s", xlate.UTF8String, dm ? dm : "default");
-    }
+    if (posix_spawn(&pid, argv[0], &fa, &sa, (char *const *)argv, environ)) die("start shader service %s", argv[0]);
+    if ((xe && *xe) || dm) LOG("[shader] translator %s, DebugMode %s", native.UTF8String, dm ? dm : "default");
     posix_spawn_file_actions_destroy(&fa); posix_spawnattr_destroy(&sa);
     close(to[0]); close(from[1]);
     svc->in = fdopen(to[1], "w"); svc->out = fdopen(from[0], "r");
     if (!svc->in || !svc->out) die("shader service streams");
-    LOG("[shader] runtime translation service started (pid %d, %s), cache %s", pid,
-        use_native ? native.UTF8String : "python3 scripts/shader_service.py + .NET", totk_rt_dir().UTF8String);
+    LOG("[shader] runtime translation service started (pid %d, %s), cache %s", pid, native.UTF8String, totk_rt_dir().UTF8String);
     pthread_mutex_unlock(&g_svc_start_lock);
 }
 
