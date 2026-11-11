@@ -4,6 +4,9 @@
    did not; docked 42.1 -> 45.2 fps in the same-run switch of 145ee444). OOT_NET_BYPASS=0 or "flag net_bypass 0" (or the
    settings panel, saved in graphics-net-bypass.txt) keeps the game's network. The flicker on the network path is not
    fixed by this, only not shown; its cause (the network fed by the fixed resolution) is still to be found.
+   The title and opening movies' own network and upscale are replaced too, always, not under this switch (2026-11-11,
+   netbp_movie below, oot_movie_bypass.h): 28 of the movie frame's 29 ms on an M4, which played the movies slowed down
+   and out of sync.
 
    What the frame does (TOTK_BIND_TRACE and dispatch timings, claude/oot-net-bypass c2 / c3 / d1, by storage and serial):
      fragment            writes T, the tonemapped picture, in a 1536x864 texture (NVN format 0x3f); its viewport is the
@@ -103,8 +106,95 @@ static void netbp_note_ui(NvShader *cs) {
     int to = netbp_tid(o_slot, 1); uint64_t canvas = to ? netbp_serial(to) : 0; if (canvas) { g_ui_canvas = canvas; g_ui_frame = f; }
     g_ui_mix_frame = ~0ull;
 }
+/* The title and opening movies (2026-11-11, #2037 / #2039 / #2042): the movie's own network and upscale, replaced by
+   MetalFX from the movie picture T to the canvas O. Always on, whatever the settings panel's upscaler (the user: "影片网络
+   被换成 MetalFX，默认开，不用设置控制"); OOT_MOVIE_BYPASS=0 keeps the game's network, for comparisons only. Recognition
+   and the data behind it: oot_movie_bypass.h. Measured on the M4 (10 GPU cores), same run: the movie frame 29 ms on the
+   GPU with the network, 1.3-1.7 ms with MetalFX; frame time 25.3 -> 8.6 ms; the same picture and brightness. */
+#include "oot_movie_bypass.h"
+static mvbp g_mv; static int g_mv_init, g_mv_own, g_mv_tries, g_mv_gave_up; static uint64_t g_mv_done, g_mv_fail;   // replay thread only
+static mvbp *netbp_mv(void) { if (!g_mv_init) { mvbp_init(&g_mv); g_mv_init = 1; } return &g_mv; }
+/* copy_b2t: a buffer copy filled this texture in this frame (the decoded planes of a movie picture). */
+static void netbp_note_upload(uint64_t serial) {
+    if (!serial) return;
+    mvbp_note_upload(netbp_mv(), atomic_load(&g_cur_frame), serial);
+    { static int on = -1, left = 12; if (on < 0) on = getenv("OOT_MOVIE_LOG") != NULL;   // OOT_MOVIE_LOG=1 (diagnostic): the first uploads
+      if (on && left > 0) { left--; MLOG("[movie-log] f%llu buffer copy into texture serial %llu", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)serial); } }
+}
+static void netbp_size(int tid, uint32_t *w, uint32_t *h) {
+    registry_lock(); if (tid > 0 && tid < g_ntreg) { *w = g_treg[tid].t.d.width; *h = g_treg[tid].t.d.height; } else *w = *h = 0; registry_unlock();
+}
+static int netbp_movie_upscale(NvShader *cs, mvbp *m, int o_slot, uint64_t f) {
+    int t_tid = mvbp_t_tid(m);   // T: the conversion's image, read here as a texture (the same descriptor id)
+    prepare_shader_images(cs, 5);   // O as the game's image binding would have it (created / given write usage)
+    id<MTLTexture> t = netbp_tex(t_tid, 0), o = netbp_tex(netbp_tid(o_slot, 1), 1);
+    const char *bad = !t ? "no T" : !o ? "no O" : t.textureType != MTLTextureType2D || o.textureType != MTLTextureType2D ? "not 2D" : NULL;
+    if (!mvbp_ready(m)) {   // this frame ran the network: get a scaler ready, then skip its sequence from the next movie frame
+        if (bad || g_mv_gave_up) { static int said; if (bad && !said++) MLOG("[net-bypass] movie upscale %.16s: not replaced: %s", cs->key, bad); return 0; }
+        int ok = mfxup_prepare(MFXUP_DOCKED, t, g_mv_own ? nil : o, o.width, o.height, MFXUP_PERCEPTUAL);
+        if (!ok && ++g_mv_tries > NB_DIRECT_TRIES) {
+            g_mv_tries = 0;
+            if (!g_mv_own) { g_mv_own = 1; MLOG("[net-bypass] movie: MetalFX cannot write O directly; trying its own texture and a copy"); }
+            else { g_mv_gave_up = 1; MLOG("【红】[net-bypass] movie: no MetalFX scaler for T fmt %lu -> O fmt %lu: the movie's network stays", (unsigned long)t.pixelFormat, (unsigned long)o.pixelFormat); }
+        }
+        if (ok) {
+            mvbp_learned(m);
+            if (!mvbp_ready(m)) { static int said; if (!said++) MLOG("【红】[net-bypass] movie: more than %d dispatches between the conversion and the upscale: the movie's network stays", MV_CHAIN); return 0; }
+            MLOG("[net-bypass] movie: a network of %d dispatches before the upscale %.16s; T %lux%lu fmt %lu -> O %lux%lu fmt %lu usage %#lx (%s): MetalFX from the next movie frame",
+                 m->nchain, cs->key, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, (unsigned long)o.width, (unsigned long)o.height,
+                 (unsigned long)o.pixelFormat, (unsigned long)o.usage, g_mv_own ? "own texture + copy" : "direct");
+            for (int i = 0; i < m->nchain; i++) MLOG("[net-bypass] movie: network dispatch %d: %s", i, m->chain[i]);
+        }
+        return 0;
+    }
+    if (bad) { mvbp_failed(m); g_mv_fail++; MLOG("【红】[net-bypass] movie frame %llu: %s after skipping the network; the game's upscale ran on its previous output", (unsigned long long)f, bad); return 0; }
+    rp_end(); blit_close(); rs_sync();   // MetalFX encodes on the command buffer itself
+    pt_mark(g_cb, 'X', nil);
+    id<MTLTexture> w = mfxup_encode_ex(MFXUP_DOCKED, g_cb, t, t.width, t.height, g_mv_own ? nil : o, o.width, o.height, MFXUP_PERCEPTUAL);
+    if (w && g_mv_own) {
+        if (w.pixelFormat != o.pixelFormat) { MLOG("【红】[net-bypass] movie: MetalFX's own texture is format %lu, O is %lu: no copy; the movie's network stays", (unsigned long)w.pixelFormat, (unsigned long)o.pixelFormat); g_mv_gave_up = 1; w = nil; }
+        else enc_b_copy_texture(blit(), w, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(o.width, o.height, 1), o, 0, 0, MTLOriginMake(0, 0, 0));
+    }
+    mfxup_queue_residency();
+    if (!w) { mvbp_failed(m); g_mv_fail++; MLOG("【红】[net-bypass] movie: MetalFX encode failed in frame %llu: the game's upscale ran on the network's previous output", (unsigned long long)f); return 0; }
+    if (++g_mv_done == 1 || g_mv_done % 300 == 0)
+        MLOG("[net-bypass] movie: replaced %llu frames; network dispatches skipped %llu, frames whose sequence differed %llu, failed %llu", (unsigned long long)g_mv_done,
+             (unsigned long long)m->skipped, (unsigned long long)m->mismatched, (unsigned long long)g_mv_fail);
+    return 1;
+}
+static int netbp_movie_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("OOT_MOVIE_BYPASS"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("[net-bypass] OOT_MOVIE_BYPASS=0: the movies keep the game's own network"); }
+    return v;
+}
+/* -1: not the movie's (the end-of-frame network's checks follow); 0: run it; 1: skipped or replaced. */
+static int netbp_movie(NvShader *cs) {
+    mvbp *m = netbp_mv(); uint64_t f = atomic_load(&g_cur_frame);
+    if (!netbp_movie_on()) { mvbp_off(m); return -1; }
+    if (m->up_frame != f && m->frame != f) return -1;   // no movie picture in this frame
+    int img_slot = -1;
+    mv_disp d = {cs->key, 0, 0, 0, 0, 0};
+    for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
+        if (b->kind == NVN_RB_TEX) { int tid = netbp_tid(b->reg, 0); if (tid && mvbp_uploaded(m, f, netbp_serial(tid))) d.reads_upload = 1; }
+        else if (b->kind == NVN_RB_IMG && img_slot < 0) img_slot = b->reg; }
+    int o_tid = img_slot >= 0 ? netbp_tid(img_slot, 1) : 0;
+    if (o_tid) { d.image_serial = netbp_serial(o_tid); d.image_tid = o_tid; netbp_size(o_tid, &d.img_w, &d.img_h); }
+    int r = mvbp_step(m, f, &d);
+    { static int on = -1, left = 120; if (on < 0) on = getenv("OOT_MOVIE_LOG") != NULL;   // OOT_MOVIE_LOG=1 (diagnostic): the first 120 dispatches of movie frames, as recognised
+      if (on && left > 0) { left--; char tex[160] = ""; size_t n = 0;
+          for (int i = 0; i < cs->rf.nb && n + 24 < sizeof tex; i++) { const nvn_rbind *b = &cs->rf.b[i];
+              if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_IMG) { int tid = netbp_tid(b->reg, b->kind == NVN_RB_IMG);
+                  n += (size_t)snprintf(tex + n, sizeof tex - n, " %s%d=%llu", b->kind == NVN_RB_IMG ? "i" : "t", b->reg, (unsigned long long)(tid ? netbp_serial(tid) : 0)); }
+              else if (b->kind == NVN_RB_TEXP) n += (size_t)snprintf(tex + n, sizeof tex - n, " p%d", b->reg); }
+          MLOG("[movie-log] f%llu %.16s ->%d up_frame %llu uploads %d (%llu %llu) T %llu frame %llu ready %d idx %d img %llu %ux%u%s", (unsigned long long)f, cs->key, r,
+               (unsigned long long)m->up_frame, m->nup, (unsigned long long)(m->nup > 0 ? m->up[0] : 0), (unsigned long long)(m->nup > 1 ? m->up[1] : 0), (unsigned long long)m->t,
+               (unsigned long long)m->frame, m->ready, m->idx, (unsigned long long)d.image_serial, d.img_w, d.img_h, tex); } }
+    if (r == MV_NONE) return -1;
+    return r == MV_UPSCALE ? netbp_movie_upscale(cs, m, img_slot, f) : r;
+}
 static int netbp_dispatch(NvShader *cs) {
     netbp_note_ui(cs);
+    { int mv = netbp_movie(cs); if (mv >= 0) return mv; }
     if (!strncmp(cs->key, NB_MIX_KEY, 16)) netbp_publish_internal();
     int scale_on = netbp_on(), copy_on = netbp_copy_on();   // MetalFX in place of the network when it upscales / a copy when it runs 1:1: two switches
     if (!scale_on && !copy_on) { g_nb_ready = g_nb_ready_copy = 0; return 0; }
