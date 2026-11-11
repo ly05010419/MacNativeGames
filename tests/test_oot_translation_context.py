@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import sys
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'games/oot/scripts'))
 NVN = ROOT / 'games/oot/third_party/d2r_gfx/gfx/nvn'
 
 
@@ -81,6 +83,75 @@ class SeedFiles(unittest.TestCase):
         files, indexes = self.seed.seed_files(self.cache, set())
         self.assertEqual(files, {})
         self.assertEqual(indexes, {})
+
+
+class PublishDigests(unittest.TestCase):
+    """极速更新 (user 2026-11-11): a seed file that is still the cache file the last seed had keeps its recorded digest."""
+
+    def test_unchanged_files_keep_their_digests(self):
+        seed_mod = load_seed()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            cache, out = tmp / 'cache', tmp / 'seed'
+            cache.mkdir(); out.mkdir()
+            names = ['a_b.metal', 'b_b.metal', 'c.variants']
+            for n in names:
+                (cache / n).write_text(n * 50)
+                (out / n).hardlink_to(cache / n)
+            files = {n: seed_mod.sha256(out / n) for n in names}
+            from prepare_shader_seed import record_verified
+            record_verified(out, files)
+            # the next publish: the same cache files linked again, one translation made again, one index written anew
+            staging = tmp / 'seed.partial'; staging.mkdir()
+            (cache / 'b_b.metal').unlink(); (cache / 'b_b.metal').write_text('made again')
+            for n in names[:2]:
+                (staging / n).hardlink_to(cache / n)
+            (staging / 'c.variants').write_text('[]')
+            read = []
+            got, count = seed_mod.publish_digests(sorted(staging.iterdir()), out,
+                                                   lambda paths: (read.extend(p.name for p in paths) or {p.name: seed_mod.sha256(p) for p in paths}))
+            self.assertEqual(count, 2)
+            self.assertEqual(sorted(read), ['b_b.metal', 'c.variants'])
+            self.assertEqual(got['a_b.metal'], files['a_b.metal'])
+            self.assertEqual(got['b_b.metal'], seed_mod.sha256(staging / 'b_b.metal'))
+
+
+class SeedUnchanged(unittest.TestCase):
+    """极速更新: a seed whose files are all the published ones, from the same inputs, is kept without publishing again."""
+
+    def setUp(self):
+        self.seed = load_seed()
+        self.tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self.tmp.name)
+        self.cache, self.out = tmp / 'cache', tmp / 'seed'
+        self.cache.mkdir(); self.out.mkdir()
+        self.files = {}
+        for n in ('a_b.metal', 'a_b.json', 'a.variants'):
+            (self.cache / n).write_text(n)
+            (self.out / n).hardlink_to(self.cache / n)
+            self.files[n] = self.cache / n
+        (self.out / 'shader-keys.json').write_text('{}')
+        self.inputs = {'chain': 'x', 'translator_sha256': '1'}
+        (self.out / 'seed-manifest.json').write_text(json.dumps({'inputs': self.inputs, 'files': {n: '0' for n in [*self.files, 'shader-keys.json']}}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_same_files_and_inputs_are_kept(self):
+        self.assertTrue(self.seed.seed_unchanged(self.out, self.files, self.inputs))
+
+    def test_a_translation_made_again_is_published(self):
+        (self.cache / 'a_b.metal').unlink(); (self.cache / 'a_b.metal').write_text('again')
+        self.assertFalse(self.seed.seed_unchanged(self.out, self.files, self.inputs))
+
+    def test_other_inputs_or_another_file_are_published(self):
+        self.assertFalse(self.seed.seed_unchanged(self.out, self.files, {**self.inputs, 'translator_sha256': '2'}))
+        (self.cache / 'b_b.metal').write_text('new')
+        self.assertFalse(self.seed.seed_unchanged(self.out, {**self.files, 'b_b.metal': self.cache / 'b_b.metal'}, self.inputs))
+
+    def test_a_seed_without_inputs_is_published(self):
+        (self.out / 'seed-manifest.json').write_text(json.dumps({'files': {n: '0' for n in self.files}}))
+        self.assertFalse(self.seed.seed_unchanged(self.out, self.files, self.inputs))
 
 
 class RuntimeKeepsTheRequest(unittest.TestCase):
