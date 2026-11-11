@@ -212,8 +212,12 @@ class ShaderList(unittest.TestCase):
         self.assertIn('Breath of the Wild shader list', shader_list.header_for(ROOT/'games/botw/assets/shader_list.tsv'))
         self.assertIn('TOTK shader list', shader_list.header_for('/tmp/anywhere/list.tsv'))
 
-    def test_the_repository_list_is_valid(self):
-        self.assertIn('variants', self.run_tool('stats', ROOT/'games/totk/assets/shader_list.tsv'))
+    def test_the_repository_lists_are_valid(self):
+        # Every list resolve reads (shader_list.py OUR_RUNTIME): a warm row naming a bind state without an A row made
+        # packaging stop with a KeyError (#2020, Pokopia).
+        for game in [g for g in self.load_module().OUR_RUNTIME if g]:
+            with self.subTest(game):
+                self.assertIn('variants', self.run_tool('stats', ROOT/f'games/{game}/assets/shader_list.tsv'))
 
     def load_module(self):
         import importlib.util
