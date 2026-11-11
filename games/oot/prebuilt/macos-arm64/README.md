@@ -30,3 +30,10 @@ Chain `oot-native-v23-txd-derivative-order` (patch `0032`) reorders Ampere TXD's
 Chain `oot-native-v24-depth-register` (patch `0033`) reads a pixel shader's depth from R(4 x enabled colour targets + 1), as the colours are read four registers per enabled target; counting enabled components read R6 instead of R9 for OmapTargets 0x10f, and Ocarina of Time's half-resolution depth downsample wrote the constant 0. `games/oot/tests/ampere_depth_register.py` checks the register.
 
 Chain `oot-native-v25-z-snap-early-tests-gather-offsets` takes three fixes from seedds/nxnative (MIT, commit 0cae4830): `FragZSnap.cs` (a pixel shader's `gl_FragCoord.z` compared with a texture value takes that value when it lies within one ulp and a fraction of the pixel's depth step under z: Apple's GPU stores a depth up to that much under the z the fragment reads, NVIDIA stores exactly it; Ocarina of Time's ground mist lost scattered pixels of its own surface), `GatherOffsets.cs` (`textureGatherOffsets` with its four offsets written out, one gather for a 2x2 square, instead of spirv-cross's loop over an offset Metal takes only as a constant), and the Switch 2 early fragment tests flag (control byte +0x5b, `totk_shader_rt.m`: no NVN2 pixel shader got `[[early_fragment_tests]]` before). The Metal libraries are also compiled with `-fwrapv` now (`scripts/build_shader_libs.py`). Checks: `games/oot/tests/frag_z_snap.py`, `frag_z_snap_gpu.m`, `gather_offsets.py`, `gather_offsets_gpu.m`, `ampere_early_fragment_tests.py`.
+
+## Licences of what is compiled in
+
+`totk_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
+
+- SPIRV-Cross (Apache-2.0): `SPIRV-Cross.LICENSE` in this folder.
+- The .NET runtime of the NativeAOT build (MIT): `dotnet-runtime.LICENSE` in this folder.

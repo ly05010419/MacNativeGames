@@ -12,7 +12,7 @@ because seedds/nxnative (MIT) already runs it there and every step can be compar
 
 ## Reference
 
-- nxnative at `e52afc48`, local clone `/Volumes/mac-APFS/工具/nxnative`. Its Switch 2 work, in order: `8dd0c98a` (boot into
+- nxnative at `e52afc48`, local clone `<local nxnative clone>`. Its Switch 2 work, in order: `8dd0c98a` (boot into
   the frame loop, dump packing), `d3995ca4` (Ampere shaders translated natively, menu renders), `a7bd05f4` (tensor
   instructions for agl's upscaler, NVN2 compute c0 and push constants, mip chains), `fdb3710d` (Switch 2 GOB order),
   `5b2d4606` (`nn::codec` video decoder, sync point events), `5251763d` (jump tables, BRXU, REDUX), `c4b0618c` (plays:
@@ -25,8 +25,8 @@ because seedds/nxnative (MIT) already runs it there and every step can be compar
 - Our `vendor/ryujinx` is Ryujinx 1.3.2 unmodified; nxnative's copy before its Switch 2 work (`8dd0c98a^`) has 166 of the
   190 shader translator files identical to ours, the other 24 carry its own earlier fixes. Our translator changes stay in
   `games/totk/tools/totk_xlate/patches/*.patch`, applied by `publish_native.sh`.
-- The game: the dump `/Volumes/工作/SW2-dumpster/DonkeyKongBananza` (`base/`, `updates/458752/`, `dlc/`). nxnative's
-  build of it, with every translated shader for comparison: `/Volumes/mac-APFS/SW2-dumpster/040074A01BF12000_build`.
+- The game: the dump `<dump folder>/DonkeyKongBananza` (`base/`, `updates/458752/`, `dlc/`). nxnative's
+  build of it, with every translated shader for comparison: `<nxnative build folder>/040074A01BF12000_build`.
 
 ## Phases
 

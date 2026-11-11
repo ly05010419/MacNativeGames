@@ -28,3 +28,10 @@ so no process is started per shader (`TOTK_XLATE_SPIRV_CROSS=process` still runs
 by preparing the whole 1.4.3 seed with both builds from the same inputs: all 95,227 files (MSL, reflection, variant
 indexes) byte-identical; the translation took as long (268 s / 270 s: the preparing script's 8 workers wait on each
 reply) for about half the CPU (508 s instead of 961 s, system time 90 s instead of 294 s).
+
+## Licences of what is compiled in
+
+`totk_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
+
+- SPIRV-Cross (Apache-2.0): `SPIRV-Cross.LICENSE` in this folder.
+- The .NET runtime of the NativeAOT build (MIT): `dotnet-runtime.LICENSE` in this folder.

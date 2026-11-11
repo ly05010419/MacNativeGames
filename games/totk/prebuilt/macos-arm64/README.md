@@ -35,3 +35,10 @@ indexes) byte-identical; the translation took as long (268 s / 270 s: the prepar
 reply) for about half the CPU (508 s instead of 961 s, system time 90 s instead of 294 s).
 
 Patches `0008`-`0016` come from Ocarina of Time's translator (`0031`, `0018`, `0011`, the generic half of `0012`, `0013`-`0016`, `0020`): predicated Ampere deferred writes land only when executed, predicated block-tail instructions keep pending commits, and fixes to uniform bit reverse, the UP2UR predicate mask, F2IP, compare-and-swap, surface reduction and dead-code removal around multi-result producers. Float atomics (`0028`/`0029`) are not included: no RED.F32 occurs in the 749 Bananza and Pokopia shaders checked. Replay against the previous build (2026-11-09): 3,472 TotK shaders byte-identical; 191 of 597 Bananza and 54 of 107 Pokopia shaders changed. Not run in a game. Switch 2 seeds pick up a new cache folder through the translator's hash in `translation_context`; the chain name is unchanged so TotK and BotW caches stay valid.
+
+## Licences of what is compiled in
+
+`totk_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
+
+- SPIRV-Cross (Apache-2.0): `SPIRV-Cross.LICENSE` in this folder.
+- The .NET runtime of the NativeAOT build (MIT): `dotnet-runtime.LICENSE` in this folder.

@@ -241,7 +241,7 @@ save/reload, final packaging and performance acceptance remain open.**
 - Foundation: nxnative `7861e7c1a9913e020600b1cc7f65132427e9cc50` through the pinned
   Jamboree copy. Copy and target profile manifests in `third_party/`.
 - Hardware: Apple M5, arm64, 16 GiB RAM, 10 CPU cores; macOS 27.0.1 (26A434).
-- External workspace: `/Users/jansantiago/MacNativeGames-work/aoc-1.3.0`.
+- External workspace: `<work folder>/aoc-1.3.0`.
   GPU probes: sibling `aoc-probes`; settings tests: sibling `aoc-settings`.
 - Xcode-selected SDK/Metal compiler: macOS 27.0, Metal 32023.921. .NET SDK
   10.0.403 installed privately under WORK/dependencies/dotnet from Microsoft's
@@ -253,7 +253,7 @@ save/reload, final packaging and performance acceptance remain open.**
 
 ## Input verification — passed for extracted-file scope
 
-Supplied root: `/Users/jansantiago/Downloads/RYUJINX/GameRoms/_Files AOC`.
+Supplied root: `<the game files folder>`.
 No original file was changed. The key file was neither read nor copied: these
 steps need no keys, containers or LibHac. Separate APFS clones are in
 `WORK/build/extract/v327680`.

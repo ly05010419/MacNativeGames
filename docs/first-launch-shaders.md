@@ -79,7 +79,7 @@ iPhone 14 实测（同一存档，进游戏后）：
 ## 测试与本地证据
 
 - 根目录 37 项测试包括容器/更新/重定位、工作目录隔离、打包/桌面迁移、BNSH 的实际 stage 偏移与运行时哈希、损坏范围拒绝、原生导入/复用及用户变体保留、错误翻译链/文件哈希/路径拒绝。另验证旧 App 仍运行时，打包器等待其正常关闭后才替换。
-- 全量准备、实际导入复用、最终 App 和真实启动证据已归档至项目外 `/Volumes/mac-APFS/MacNativeGames-artifacts/2026-10-18/analysis/v143-port/shader-first-launch-8k`。项目内只保留本说明和测试代码，不保留这些原始运行记录。
+- 全量准备、实际导入复用、最终 App 和真实启动证据已归档至项目外 `<artifacts folder>/2026-10-18/analysis/v143-port/shader-first-launch-8k`。项目内只保留本说明和测试代码，不保留这些原始运行记录。
 - 第一轮只含 86 个的中间构建 `bd005120...` 已证明空缓存下导入 259 文件、约 4.8 秒后 86 个 shader 就绪，早于首帧；这不能算作八千个的最终验证。其原始中断记录在 `shader-first-launch-35/36`，保持不改。
 
 ## 最终 App 实测（2026-10-18 白天，整批种子在第一帧前预热的版本）
@@ -202,7 +202,7 @@ Metal 编过的库存在这个用户的系统缓存里：每个 App 按 bundle I
 
 ```sh
 python3.14 games/totk/scripts/verify_first_launch_shaders.py \
-  --app '/Volumes/mac-APFS/MacNativeGames-artifacts/apps/Tears of the Kingdom.app' \
+  --app '<artifacts folder>/apps/Tears of the Kingdom.app' \
   --output "$HOME/Library/Application Support/MacNativeGames/TOTK/tests/first-shader-check-new"
 ```
 
@@ -216,6 +216,6 @@ python3.14 games/totk/scripts/verify_first_launch_shaders.py \
 
 完整构建工作区应放在游戏镜像旁的 `TOTK_build` 或源码树外通过 `--work` 指定的位置；项目内的文档仅保存重要结论、测试方法和外部证据位置，原始分析及运行记录放在项目外。最初只读调查明细保存在 `shader-first-launch-8k/disk-usage-comparison.json`。用户随后要求清理不属于项目的残留：已删除重复的 `full-build-work`、旧根目录 `TOTK_build`、多轮测试的 profile 副本、可重新生成的二进制诊断样本和工具临时构建缓存；按清理前 `du` 统计合计约 35 GiB，不能等同于 APFS 新释放的独占空间。`v143-port` 从约 36 GiB 降至约 753 MiB。保留复现步骤、报告、日志、截图、运行时布局、主开发目录的解包/构建产物、当前 App 及着色器缓存；正式 profile 与升级前备份前后哈希一致，未删除任何跟踪文件。Finder 可能即时重建 `.DS_Store`，不反复清理。精确删除清单及校验在 `analysis/v143-port/cleanup-2026-10-18.json`。所有这些生成目录均被 Git 忽略，提交只含源码、测试和文档。
 
-2026-10-18 后续整理：此前保留在项目内的整个 `games/totk/analysis`（约 823 MiB，含截图中的测试目录及 1.1.2/1.4.3 历史分析）已整体移至项目外 `/Volumes/mac-APFS/MacNativeGames-artifacts/2026-10-18/analysis`；原位置不留目录或符号链接。迁移前后文件哈希和链接目标一致，清单在归档旁 `analysis-relocation.json`。历史日志中的原始路径保持原样。上文证据文件的相对路径以该外部归档为准，重新生成诊断数据应使用外部工作区。
+2026-10-18 后续整理：此前保留在项目内的整个 `games/totk/analysis`（约 823 MiB，含截图中的测试目录及 1.1.2/1.4.3 历史分析）已整体移至项目外 `<artifacts folder>/2026-10-18/analysis`；原位置不留目录或符号链接。迁移前后文件哈希和链接目标一致，清单在归档旁 `analysis-relocation.json`。历史日志中的原始路径保持原样。上文证据文件的相对路径以该外部归档为准，重新生成诊断数据应使用外部工作区。
 
-2026-10-18 最终源码目录整理：旧 `games/totk/build`、`extracted`、`rewritten` 和临时环境/工具链接已移至 `/Volumes/mac-APFS/MacNativeGames-artifacts/development/totk`；生成 App 移至 `/Volumes/mac-APFS/MacNativeGames-artifacts/apps/Tears of the Kingdom.app`。原桌面唯一入口已直接指向该外部 App。源码内不留对应大目录或链接；所有跟踪文件在迁移前后哈希一致，App 运行时哈希不变。项目总占用约 31 MiB（含约 14 MiB 的 `.git`），游戏数据仍保存在项目外，不声称这次迁移释放了磁盘空间。迁移明细为外部 `2026-10-18/source-tree-cleanup.json`。使用生产打包器的外部工作目录进行后续构建和测试，不在源码树直接生成诊断数据。
+2026-10-18 最终源码目录整理：旧 `games/totk/build`、`extracted`、`rewritten` 和临时环境/工具链接已移至 `<artifacts folder>/development/totk`；生成 App 移至 `<artifacts folder>/apps/Tears of the Kingdom.app`。原桌面唯一入口已直接指向该外部 App。源码内不留对应大目录或链接；所有跟踪文件在迁移前后哈希一致，App 运行时哈希不变。项目总占用约 31 MiB（含约 14 MiB 的 `.git`），游戏数据仍保存在项目外，不声称这次迁移释放了磁盘空间。迁移明细为外部 `2026-10-18/source-tree-cleanup.json`。使用生产打包器的外部工作目录进行后续构建和测试，不在源码树直接生成诊断数据。
