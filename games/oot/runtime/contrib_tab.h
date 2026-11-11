@@ -4,9 +4,12 @@
    choice (totk_contrib_upload.h): on starts the uploads at once, off stops them (each round checks it). Contributed is the count the uploads keep (totk_inbox_sent); found is the
    rows still in the contribution file, read again only when the file changes (its size or time), so the panel's tick twice
    a second costs a stat. A run without a contribution file (a development run) shows why the switch is off. A
-   controller's A flips the switch. */
+   controller's A flips the switch.
+   查看排名 at the page's top right (user 2026-11-11) opens the site's contributors for this game with the player's
+   pseudonym, so the site marks their row (contrib_tab_site_url). */
 #pragma once
 #include <sys/stat.h>
+#include <CommonCrypto/CommonDigest.h>
 
 /* The rows still to send; the file is read again only when its size or modification time changed. */
 static NSUInteger contrib_tab_rows(NSString *path) {
@@ -18,10 +21,30 @@ static NSUInteger contrib_tab_rows(NSString *path) {
  return seenRows;
 }
 
+/* The site's contributors for this game, with the player's pseudonym when this contribution file has an install id: the
+   first 8 hex of SHA-256("player:" + id), as the server names a contributor (MacNativeGamesWeb lib/admin.js pseudonym).
+   The pseudonym is public and only marks that row; the id itself, which counts the rows sent, never goes into the
+   address, and none is made here (nothing sent yet: no player). nil without an inbox (TOTK_CONTRIB_INBOX empty). */
+static NSURL *contrib_tab_site_url(NSString *path) {
+ if(!totk_inbox_configured())return nil;
+ NSURLComponents *u=[NSURLComponents componentsWithString:@TOTK_CONTRIB_INBOX];
+ if(!u.host)return nil;
+ u.path=@"/";
+ NSMutableArray *q=[NSMutableArray arrayWithObjects:[NSURLQueryItem queryItemWithName:@"view" value:@"contrib"],[NSURLQueryItem queryItemWithName:@"game" value:@GAME_INBOX_ID],nil];
+ NSString *install=path?[[NSString stringWithContentsOfFile:totk_contrib_side(path,@"install") encoding:NSUTF8StringEncoding error:nil]
+  stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]:nil;
+ if(install.length==36){NSData *d=[[@"player:" stringByAppendingString:install] dataUsingEncoding:NSUTF8StringEncoding];unsigned char h[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(d.bytes,(CC_LONG)d.length,h);[q addObject:[NSURLQueryItem queryItemWithName:@"player" value:[NSString stringWithFormat:@"%02x%02x%02x%02x",h[0],h[1],h[2],h[3]]]];}
+ u.queryItems=q;return u.URL;
+}
+static void contrib_tab_open_default(NSURL *url){if(url)[NSWorkspace.sharedWorkspace openURL:url];}
+static void (*contrib_tab_open)(NSURL *) = contrib_tab_open_default;   /* the probe points it elsewhere: no browser in a test */
+
 @interface TOTKContribPage:NSView
 @property(copy) NSString *path;
 @property(strong) NSTextField *sent, *found, *foundCaption, *state, *note;
 @property(strong) NSSwitch *toggle;
+@property(strong) NSButton *siteButton;   /* 查看排名 */
 -(void)refresh;
 @end
 
@@ -66,6 +89,12 @@ static NSString *contrib_tab_number(NSUInteger n) {
   "Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are sent: no game data, saves or personal information."),
   [NSFont systemFontOfSize:11],0.6);
  note.frame=NSMakeRect(40,8,W-80,34);[self addSubview:note];self.note=note;
+ /* 查看排名 at the top right */
+ NSButton *site=[NSButton buttonWithTitle:settings_text("查看排名","View ranking") target:self action:@selector(openSite:)];
+ site.refusesFirstResponder=YES;[site sizeToFit];NSSize b=site.frame.size;site.frame=NSMakeRect(W-18-b.width,H-12-b.height,b.width,b.height);
+ site.enabled=totk_inbox_configured();
+ site.toolTip=settings_text("在浏览器里打开网站上的贡献榜，标出你自己（只带匿名代号）","Opens the site's contributors in the browser with you marked (only the anonymous code is sent)");
+ [self addSubview:site];self.siteButton=site;
  [self refresh];
  return self;
 }
@@ -83,6 +112,7 @@ static NSString *contrib_tab_number(NSUInteger n) {
  self.state.stringValue=!usable?@"":on?settings_text("已开启：游戏会在后台自动贡献，不打扰游玩","On: the game contributes them in the background, without interrupting play")
   :settings_text("已关闭：不会上传任何东西","Off: nothing is uploaded");
 }
+-(void)openSite:(NSButton *)button{(void)button;NSURL *u=contrib_tab_site_url(self.path);fprintf(stderr,"[settings] 查看排名 (contributions) %s\n",u.absoluteString.UTF8String?:"(no address)");if(contrib_tab_open)contrib_tab_open(u);}
 -(void)toggled:(NSSwitch *)toggle{
  if(![self usable]){[self refresh];return;}
  BOOL on=toggle.state==NSControlStateValueOn;
@@ -100,6 +130,7 @@ static NSString *contrib_tab_number(NSUInteger n) {
 @implementation TOTKSettingsPanel (ContribTab)
 -(NSView *)contribPageWithFrame:(NSRect)frame{return [[TOTKContribPage alloc] initWithFrame:frame];}
 -(void)refreshContribPage{[(TOTKContribPage *)self.pages[SETTINGS_PAGE_CONTRIB] refresh];}
-/* what a controller reaches on the page: the switch (A flips it) */
--(NSArray<NSView *> *)contribPageTargets{TOTKContribPage *page=(TOTKContribPage *)self.pages[SETTINGS_PAGE_CONTRIB];return page.toggle.enabled?@[page.toggle]:@[];}
+/* what a controller reaches on the page: the switch (A flips it), then 查看排名 */
+-(NSArray<NSView *> *)contribPageTargets{TOTKContribPage *page=(TOTKContribPage *)self.pages[SETTINGS_PAGE_CONTRIB];
+ NSMutableArray *t=[NSMutableArray array];if(page.toggle.enabled)[t addObject:page.toggle];if(page.siteButton.enabled)[t addObject:page.siteButton];return t;}
 @end

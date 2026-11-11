@@ -1002,6 +1002,63 @@ static void nick_probe(void) {
     settings_show(0); [window setContentSize:was];
 }
 
+/* 着色器贡献 (contrib_tab.h): 查看排名 at the page's top right (user 2026-11-11) opens the site's contributors for this game
+   with the player's 8-hex pseudonym, sha256("player:" + install id) as the server names them (MacNativeGamesWeb lib/admin.js
+   pseudonym); with no install id yet (nothing sent) no player and none is made; never the id itself. */
+static int contribOpens; static NSURL *contribOpened;
+static void probe_contrib_open(NSURL *url) { contribOpens++; contribOpened = url; }
+static NSDictionary *contrib_site_query(NSString *install) {
+    NSURLComponents *site = [NSURLComponents componentsWithURL:contrib_tab_site_url(totk_contrib_path()) resolvingAgainstBaseURL:NO];
+    assert(site && [site.scheme isEqualToString:@"https"] && [site.host isEqualToString:@"mac-native-games.com"] && [site.path isEqualToString:@"/"]);
+    assert(!install || ![site.URL.absoluteString containsString:install]);
+    NSMutableDictionary *items = [NSMutableDictionary dictionary];
+    for (NSURLQueryItem *i in site.queryItems) items[i.name] = i.value;
+    assert([items[@"view"] isEqual:@"contrib"] && [items[@"game"] isEqual:@GAME_INBOX_ID]);
+    return items;
+}
+static void contrib_site_fits(TOTKContribPage *page) {
+    assert([page.siteButton.title isEqualToString:@"View ranking"] && page.siteButton.enabled && !page.siteButton.hidden);
+    assert(NSMaxX(page.siteButton.frame) <= NSWidth(page.bounds) - 10 && NSMaxY(page.siteButton.frame) <= NSHeight(page.bounds) - 4);
+    for (NSView *v in @[page.sent, page.found, page.toggle.superview, page.state, page.note]) assert(!NSIntersectsRect(page.siteButton.frame, v.frame));
+}
+static void contrib_probe(void) {
+    const char *dir = getenv("SETTINGS_TEST_DIR"); assert(dir);
+    NSString *folder = [@(dir) stringByAppendingPathComponent:@"contrib"];
+    assert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]);
+    NSString *file = [folder stringByAppendingPathComponent:@"shader-list-contribution-test.txt"];
+    assert([@"" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    setenv("TOTK_SHADER_CONTRIB", file.UTF8String, 1); unsetenv("TOTK_SHADER_SEED");
+    NSString *side = totk_contrib_side(file, @"install");
+    settings_test_output_init();
+    window = probe_window();
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+    contrib_tab_open = probe_contrib_open;
+    /* No install id yet: the contributors without a player, and no id made by asking. */
+    g_settings_page = SETTINGS_PAGE_CONTRIB; settings_show(1);
+    TOTKContribPage *page = (TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB];
+    contrib_site_fits(page);
+    assert([settingsPanel.controllerTargets isEqualToArray:(@[page.toggle, page.siteButton])]);
+    assert(contrib_site_query(nil).count == 2 && ![NSFileManager.defaultManager fileExistsAtPath:side]);
+    [page.siteButton performClick:nil]; assert(contribOpens == 1 && [contribOpened isEqual:contrib_tab_site_url(file)] && settingsOpen);
+    /* An install id: its pseudonym, the one the server lists; a controller's A opens it too. */
+    NSString *install = @"0f0f0f0f-0000-4000-8000-000000001234";
+    assert([[install stringByAppendingString:@"\n"] writeToFile:side atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    NSData *d = [[@"player:" stringByAppendingString:install] dataUsingEncoding:NSUTF8StringEncoding]; unsigned char h[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(d.bytes, (CC_LONG)d.length, h);
+    NSString *expected = [NSString stringWithFormat:@"%02x%02x%02x%02x", h[0], h[1], h[2], h[3]];
+    NSDictionary *items = contrib_site_query(install); assert(items.count == 3 && [items[@"player"] isEqual:expected]);
+    pad_press(PAD_DOWN);
+    for (int n = 0; n < 3 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != page.siteButton; n++) pad_press(PAD_DOWN);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == page.siteButton);
+    pad_press(PAD_A); assert(contribOpens == 2 && [contribOpened.absoluteString hasSuffix:[@"player=" stringByAppendingString:expected]]);
+    /* The panel's narrowest (600 pt): still at the top right, clear of the numbers and the switch. */
+    settings_show(0); [window setContentSize:NSMakeSize(604, 720)];
+    g_settings_page = SETTINGS_PAGE_CONTRIB; settings_show(1);
+    assert(NSWidth(settingsPanel.frame) == SETTINGS_NARROW_W);
+    contrib_site_fits((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]);
+    contrib_tab_open = contrib_tab_open_default;
+    settings_show(0);
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
@@ -1055,6 +1112,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts("pass: contribution page"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */

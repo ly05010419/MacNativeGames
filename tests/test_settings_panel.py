@@ -213,6 +213,9 @@ class SettingsPanel(unittest.TestCase):
                 run = subprocess.run([str(executable), 'nick'], env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: nickname', run.stdout)
+                run = subprocess.run([str(executable), 'contrib'], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: contribution page', run.stdout)   # 查看排名 on the 着色器贡献 page (user 2026-11-11)
                 for action in ('save', 'restore', 'override'):
                     current = dict(env)
                     if action == 'override':
