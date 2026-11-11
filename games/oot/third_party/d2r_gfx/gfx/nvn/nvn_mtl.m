@@ -10912,17 +10912,9 @@ static void warm_start(void) {
        own list, the rest behind it (before 2026-10-23). */
     const char *bt = getenv("TOTK_WARM_BEFORE_TITLE");
     int before = !(bt && !atoi(bt));
-#if !TARGET_OS_IPHONE
-    /* Mac with a valid archive (user 2026-10-29: "桌面 王国 每次打开 都预热"): nothing is left to compile or save, the wait
-       only read 19,908 libraries and 30,642 pipelines back from disk, 16.7-18.6 s before the title on every start. The
-       title comes now and that goes on behind the menu; the first world frame still waits for all of it (hle_nvn.c,
-       mtl_warm_wait without a limit on the Mac), so play starts with every listed pipeline ready, as before.
-       TOTK_WARM_BEFORE_TITLE=1: wait before the title anyway. */
-    if (!bt && g_par_valid && !g_par_fill_lists && !g_shared_fill) {
-        before = 0;
-        MLOG("预热：管线存档齐全，标题不等预热读完，剩下的在菜单后面读，进世界前等它做完");
-    }
-#endif
+    /* Ocarina of Time waits before the title on the Mac too, archive complete or not (user 2026-11-11: "改回去 必须在 标题前
+       预热", for every game: "所有游戏都是"). From 2026-10-29 the Mac skipped the wait when the archive was complete and read it behind the menu; with the
+       merged list (17,620 pipelines) the title then stood for 67-83 s while the warm-up still ran. */
     if (before) {
         uint64_t t1 = bp_now();
         while (atomic_load(&g_warm_running)) usleep(5000);

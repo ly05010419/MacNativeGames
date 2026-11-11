@@ -24,7 +24,9 @@ def seed_identity_ignores_runtime(text):
 STANDARDS = {
     'shader data in its own signed bundle': lambda t: 'ShaderData-' in t,
     'pipeline archive built while packaging': lambda t: 'pipeline-archive' in t or 'mac_pipelines' in t,
-    'title does not wait for the warm-up': lambda t: 'TOTK_WARM_BEFORE_TITLE' in t,
+    # every game comes to the title once the warm-up is done, archive complete or not (user 2026-11-11: "所有塞尔达 都是 预热玩
+    # 进标题！", "所有游戏都是"); the Mac shortcut that skipped the wait with a complete archive (2026-10-29) is gone
+    'title after the warm-up': lambda t: 'TOTK_WARM_BEFORE_TITLE' in t and '标题不等预热读完' not in t,
     'no program runs inside a new app': lambda t: re.search(r"run_outside_bundle|work/'build/oot-native'", t) is not None,
     'seed and library digests are reused': lambda t: 'seed_digests' in t or 'record_verified' in t,
     'repackaging keeps the .app folder': lambda t: 'install_app(' in t and re.search(r'(partial|temporary)\.rename\(out\)', t) is None,
@@ -51,7 +53,7 @@ PATHS = {
     'dread': (['games/dread/build.py'], {
         'shader data in its own signed bundle': 'not done for this game yet',
         'pipeline archive built while packaging': 'not done for this game yet',
-        'title does not wait for the warm-up': 'not done for this game yet',
+        'title after the warm-up': 'not done for this game yet',
         'no program runs inside a new app': 'not done for this game yet',
         'seed and library digests are reused': 'not done for this game yet',
         'repackaging keeps the .app folder': 'not done for this game yet',
