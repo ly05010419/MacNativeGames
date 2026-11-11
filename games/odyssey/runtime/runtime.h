@@ -140,6 +140,10 @@ void runtime_gamepad_start(void);
 void runtime_gamepad_switch_left(void *controller, int x, int y);
 void runtime_gamepad_switch_right(void *controller, int x, int y);
 void runtime_gamepad_read(RuntimeGamepadState *out);
+int runtime_gamepad_set_players(int count);    /* controller support: two only when both physical seats are occupied */
+int runtime_gamepad_second_connected(void);
+void runtime_gamepad_read_player(int player, RuntimeGamepadState *out);
+void runtime_gamepad_clear_player(int player);
 /* Mac software keyboard: exclusive controller capture; UI reads physical positions (controller_map.h),
    independent of gameplay remaps. Main-thread only. Closing waits for release before gameplay resumes. */
 void runtime_gamepad_text_capture(int on);

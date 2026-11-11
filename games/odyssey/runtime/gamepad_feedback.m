@@ -43,6 +43,7 @@
 enum { RUMBLE_TICK_MS = 10, RUMBLE_SLOW_MS = 1000, RUMBLE_STALE_MS = 250, RUMBLE_HOLD_MS = 150, RUMBLE_EVENT_S = 30, RUMBLE_RENEW_MS = 25000 };
 static dispatch_queue_t rumbleQueue;
 static dispatch_source_t rumbleTimer;
+static GCController *rumbleOwner;                   /* main queue: first eligible pad with a usable rumble backend */
 static GCController *rumblePad;                     /* rumbleQueue */
 static CHHapticEngine *engines[2];                  /* rumbleQueue */
 static id<CHHapticPatternPlayer> players[2];        /* rumbleQueue */
@@ -218,7 +219,6 @@ static int hidProfileCount = 1;
 static IOHIDManagerRef hidRumbleManager;   /* main queue */
 static IOHIDDeviceRef hidRumbleDevice;     /* set on rumbleQueue, opened on the main queue */
 static HidRumbleProfile hidRumbleProfile;  /* the profile of hidRumbleDevice */
-static GCController *padRumblePad;         /* main queue */
 static uint8_t padSent[2], padHeld[2];
 static uint64_t padSentAt, padHeldUntil[2];
 static int hidFloor = 110, hidHoldMs = 120, padQuietSent = HID_QUIET_REPEATS;
@@ -282,7 +282,7 @@ static void hid_rumble_quiet_at_exit(void) {   /* the controller keeps the last 
 }
 static void hid_rumble_attach(GCController *c) {   /* main queue: c has no haptics */
     const char *off = getenv("TOTK_RUMBLE_HID");
-    if (hidRumbleDevice || (off && !strcmp(off, "0"))) return;
+    if (hidRumbleManager || (off && !strcmp(off, "0"))) return;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         hid_profiles_load();
@@ -308,15 +308,17 @@ static void hid_rumble_attach(GCController *c) {   /* main queue: c has no hapti
     if (!found) { CFRelease(m); return; }
     IOReturn r = IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone);
     if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] HID device %04x:%04x found but did not open (0x%x): no rumble from it\n", vendor, product, r); CFRelease(m); return; }
-    hidRumbleManager = m; padRumblePad = c; hidRumbleFailed = NO;
+    hidRumbleManager = m; rumbleOwner = c; hidRumbleFailed = NO;
     HidRumbleProfile pr = *found;
     IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
-    dispatch_async(rumbleQueue, ^{ padSent[0] = padSent[1] = 0; padSentAt = 0; padQuietSent = HID_QUIET_REPEATS; hidRumbleProfile = pr; hidRumbleDevice = held; });
+    dispatch_async(rumbleQueue, ^{
+        padSent[0] = padSent[1] = 0; padHeldUntil[0] = padHeldUntil[1] = 0;
+        padSentAt = 0; padQuietSent = HID_QUIET_REPEATS; hidRumbleProfile = pr; hidRumbleDevice = held;
+    });
     fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (%04x:%04x, report 0x%02x)\n", (c.vendorName ?: @"controller").UTF8String, vendor, product, pr.reportId);
 }
-static void hid_rumble_detach(GCController *c) {   /* main queue */
-    if (padRumblePad != c) return;
-    padRumblePad = nil;
+static void hid_rumble_detach(void) {   /* main queue */
+    if (!hidRumbleManager) return;
     IOHIDManagerRef m = hidRumbleManager; hidRumbleManager = NULL;
     dispatch_async(rumbleQueue, ^{
         IOHIDDeviceRef d = hidRumbleDevice; hidRumbleDevice = NULL;
@@ -327,7 +329,7 @@ static void hid_rumble_detach(GCController *c) {   /* main queue */
 static BOOL hid_rumble_active(void) { return rumbleHid || hidRumbleDevice; }   /* a HID path, not Core Haptics */
 #else
 static void hid_rumble_attach(GCController *c) { (void)c; }
-static void hid_rumble_detach(GCController *c) { (void)c; }
+static void hid_rumble_detach(void) {}
 static BOOL hid_rumble_active(void) { return NO; }
 #endif
 static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
@@ -418,12 +420,13 @@ static void rumble_start(void) {
 }
 
 /* ---- motion: the math is in runtime/motion_fusion.c ---- */
-static GCController *motionPad;  /* main queue */
-static void hid_motion_start(void);
+static GCController *motionPad;  /* main queue: first eligible pad with a native gyro or an open HID motion device */
+static void hid_motion_start(GCController *controller);
 static void hid_motion_stop(void);
 static uint64_t zeroSince;          /* the controller's handler queue */
 static BOOL motionSeen, hidAsked;   /* the controller's handler queue; reset on attach */
 static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
+    if (m != motionPad.motion) return;   /* a queued callback from a pad that no longer owns motion */
     GCAcceleration a = m.acceleration;
     if (m.hasGravityAndUserAcceleration) { a.x = m.gravity.x + m.userAcceleration.x; a.y = m.gravity.y + m.userAcceleration.y; a.z = m.gravity.z + m.userAcceleration.z; }
     const double acc[3] = {a.x, a.y, a.z}, gyro[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
@@ -431,7 +434,10 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
         if (!acc[0] && !acc[1] && !acc[2] && !gyro[0] && !gyro[1] && !gyro[2]) {
             uint64_t now = runtime_now_ns();
             if (!zeroSince) zeroSince = now;
-            else if (!hidAsked && now - zeroSince > 1000000000ull) { hidAsked = YES; dispatch_async(dispatch_get_main_queue(), ^{ hid_motion_start(); }); }
+            else if (!hidAsked && now - zeroSince > 1000000000ull) {
+                hidAsked = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{ if (m == motionPad.motion) hid_motion_start(motionPad); });
+            }
             return;
         }
         motionSeen = YES;
@@ -455,7 +461,6 @@ static IOHIDManagerRef hidManager;   /* main queue */
 static IOHIDDeviceRef hidDevice;     /* main queue: open while motion or rumble uses it */
 static BOOL hidMotion, hidRumble;    /* main queue: which of them does (motion: a Switch pad's IMU, or hid_imu_start's pad) */
 static const HidImuProfile *imuProfile;   /* main run loop: the pad hid_imu_start reads (PR #309), else NULL */
-static GCController *hidRumblePad;   /* main queue */
 static dispatch_queue_t hidOut;      /* every output report, in order; the packet counter is its own */
 static uint8_t hidPacket;            /* hidOut */
 static uint8_t hidReport[64];
@@ -512,8 +517,8 @@ static void hid_calibration(const uint8_t *c, const char *which) {
     fprintf(stderr, "[gyro] %s HID calibration: acc %.6f G, gyro %.4f deg/s per step\n", which, hidAccScale[0], hidGyroScale[0]);
 }
 static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
-    (void)ctx; (void)sender; (void)type;
-    if (result != kIOReturnSuccess || len < 49 || !hidMotion) return;
+    (void)sender; (void)type;
+    if (result != kIOReturnSuccess || ctx != hidDevice || len < 49 || !hidMotion) return;
     if (id == 0x21 && (p[13] & 0x80) && p[14] == 0x10) {   /* an SPI read's reply: address at 15, size at 19, data at 20 */
         uint32_t at = p[15] | p[16] << 8 | p[17] << 16 | (uint32_t)p[18] << 24;
         if (at == 0x8026 && p[19] >= 26 && p[20] == 0xB2 && p[21] == 0xA1) { hidUserCalibration = YES; hid_calibration(p + 22, "user"); }
@@ -554,9 +559,14 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         runtime_motion_feed(acc, gyro, now - (uint64_t)(2 - k) * step);
     }
 }
+static void hid_close_now(void);
 /* product: 0x2009 a Switch Pro Controller (motion or rumble), 0x2007 the right Joy-Con of a paired set (motion, PR #889) */
-static IOReturn hid_open(int product) {   /* main queue */
-    if (hidDevice) return kIOReturnSuccess;
+static IOReturn hid_open(GCController *controller, int product) {   /* main queue */
+    if (hidDevice && !hidRumble && !hidMotion) hid_close_now();
+    if (hidDevice) {   /* rumble and motion may belong to different controllers */
+        if ((hidRumble && rumbleOwner != controller) || (hidMotion && motionPad != controller)) return kIOReturnExclusiveAccess;
+        return kIOReturnSuccess;
+    }
     static dispatch_once_t once;
     dispatch_once(&once, ^{ hidOut = dispatch_queue_create("totk.hid-out", DISPATCH_QUEUE_SERIAL); atexit(hid_quiet_at_exit); });
     hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
@@ -567,7 +577,7 @@ static IOReturn hid_open(int product) {   /* main queue */
     if (r != kIOReturnSuccess) { CFRelease(hidManager); hidManager = NULL; return r; }
     hidDevice = (IOHIDDeviceRef)CFRetain(d);
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, NULL);
+    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, hidDevice);
     return kIOReturnSuccess;
 }
 static void hid_close_now(void) {   /* main queue */
@@ -583,18 +593,20 @@ static void hid_close_now(void) {   /* main queue */
    goes rumbleQueue, then hidOut, and a device closed before it would keep its last rumble. */
 static void hid_close_unused(void) {   /* main queue */
     if (!hidDevice || hidMotion || hidRumble) return;
+    if (!hidOut) { hid_close_now(); return; }   /* a generic IMU with no Switch output reports to drain */
     dispatch_async(rumbleQueue ?: hidOut, ^{ dispatch_async(hidOut, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_close_now(); }); }); });
 }
-static void hid_motion_start(void) {   /* main queue */
-    if (!motionPad || hidMotion) return;
-    const char *name = (motionPad.vendorName ?: @"controller").UTF8String;
-    hidJoyConRight = [motionPad.productCategory containsString:@"Joy-Con"];
-    if (hidDevice && !hidRumble) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
-    IOReturn r = hid_open(hidJoyConRight ? 0x2007 : 0x2009);
+static void hid_motion_start(GCController *controller) {   /* main queue */
+    if (hidMotion) return;
+    const char *name = (controller.vendorName ?: @"controller").UTF8String;
+    BOOL joyConRight = [controller.productCategory containsString:@"Joy-Con"];
+    if (!joyConRight && ![controller.productCategory isEqualToString:@"Switch Pro Controller"]) return;
+    IOReturn r = hid_open(controller, joyConRight ? 0x2007 : 0x2009);
     if (r != kIOReturnSuccess) {
         fprintf(stderr, "[gyro] %s: no usable GameController motion and no matching Switch HID device could be opened (0x%x): no motion from it\n", name, r);
         return;
     }
+    motionPad = controller; hidJoyConRight = joyConRight;
     hidMotion = YES; hidLast = 0; hidUserCalibration = NO;
     hidZeroSince = hidImuTriedAt = 0; hidImuRetries = 0; hidImuLive = NO;
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
@@ -603,9 +615,9 @@ static void hid_motion_start(void) {   /* main queue */
     /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back */
     static const uint8_t imuOn[1] = {0x01}, factory[5] = {0x20, 0x60, 0, 0, 24}, user[5] = {0x26, 0x80, 0, 0, 26};
     hid_subcommand(0x40, imuOn, sizeof imuOn);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, factory, sizeof factory); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, user, sizeof user); });
-    if (hidJoyConRight) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ const uint8_t mode = 0x30; if (hidMotion) hid_subcommand(0x03, &mode, 1); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion && motionPad == controller) hid_subcommand(0x10, factory, sizeof factory); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion && motionPad == controller) hid_subcommand(0x10, user, sizeof user); });
+    if (hidJoyConRight) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ const uint8_t mode = 0x30; if (hidMotion && motionPad == controller) hid_subcommand(0x03, &mode, 1); });
 }
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidMotion) return;
@@ -615,11 +627,11 @@ static void hid_motion_stop(void) {   /* main queue */
 }
 static BOOL hid_rumble_start(GCController *c) {   /* main queue, rumbleQueue made */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
-    IOReturn r = hid_open(0x2009);
+    IOReturn r = hid_open(c, 0x2009);
     if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] %s: no Switch Pro HID device could be opened (0x%x): Core Haptics kept\n", name, r); return NO; }
     static const uint8_t on[1] = {0x01};
     hid_subcommand(0x48, on, sizeof on);
-    hidRumble = YES; hidRumblePad = c;
+    hidRumble = YES;
     IOHIDDeviceRef d = (IOHIDDeviceRef)CFRetain(hidDevice);
     dispatch_async(rumbleQueue, ^{ if (rumbleHid) CFRelease(rumbleHid); rumbleHid = d; hidSentAt = 0; hidQuietSent = 0; memset(hidHeld, 0, sizeof hidHeld); });
     fprintf(stderr, "[rumble] %s: HD rumble written to its HID reports\n", name);
@@ -627,7 +639,7 @@ static BOOL hid_rumble_start(GCController *c) {   /* main queue, rumbleQueue mad
 }
 static void hid_rumble_stop(void) {   /* main queue */
     if (!hidRumble) return;
-    hidRumble = NO; hidRumblePad = nil;
+    hidRumble = NO;
     dispatch_async(rumbleQueue, ^{   /* after the timer's last report: leave the controller neutral */
         static const uint8_t neutral[8] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
         if (rumbleHid) { hid_write(rumbleHid, 0x10, neutral, sizeof neutral); CFRelease(rumbleHid); } rumbleHid = NULL;
@@ -635,7 +647,8 @@ static void hid_rumble_stop(void) {   /* main queue */
     hid_close_unused();
 }
 #else
-static void hid_motion_start(void) {
+static void hid_motion_start(GCController *controller) {
+    (void)controller;
     static int logged;
     if (!logged) { logged = 1; fprintf(stderr, "[gyro] GameController reports no motion for this controller; the raw HID fallback is macOS only\n"); }
 }
@@ -655,9 +668,9 @@ void runtime_triggers_release(void) {}
 #if TARGET_OS_OSX
 static uint64_t imuLast;   /* main run loop: the time of the last sample */
 static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len, uint64_t stamp) {   /* main run loop */
-    (void)ctx; (void)sender; (void)type;
+    (void)sender; (void)type;
     const HidImuProfile *pr = imuProfile;
-    if (result != kIOReturnSuccess || !pr || id != pr->reportId) return;
+    if (result != kIOReturnSuccess || ctx != hidDevice || !hidMotion || !pr || id != pr->reportId) return;
     if (len < pr->length) {
         static BOOL said;
         if (!said) { said = YES; fprintf(stderr, "[gyro] %04x:%04x sends %ld-byte reports and the sensor needs %d (old firmware?): no motion from it\n", pr->vendor, pr->product, (long)len, pr->length); }
@@ -696,7 +709,7 @@ static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion 
     hidManager = m; hidDevice = (IOHIDDeviceRef)CFRetain(d); imuProfile = found; hidMotion = YES;
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     imuLast = 0;
-    IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, NULL);
+    IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, hidDevice);
     motionPad = c; runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
     fprintf(stderr, "[gyro] %s: no motion from GameController; reading the six-axis sensor from its HID reports (%04x:%04x)\n", name, vendor, product);
     return YES;
@@ -711,20 +724,18 @@ static BOOL hid_imu_start(GCController *c) {   /* the raw HID fallback is macOS 
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
-    if (runtime_rumble_enabled()) {
+    if (!rumbleOwner && runtime_rumble_enabled()) {
         rumble_start();
         BOOL tookHid = NO;
 #if TARGET_OS_OSX
-        hid_rumble_stop();
         const char *viaHid = getenv("TOTK_RUMBLE_HID");
         tookHid = [c.productCategory isEqualToString:@"Switch Pro Controller"] && !(viaHid && !strcmp(viaHid, "0")) && hid_rumble_start(c);
-        if (tookHid)
-            dispatch_async(rumbleQueue, ^{ for (int s = 0; s < 2; s++) { if (players[s]) [players[s] stopAtTime:CHHapticTimeImmediate error:nil]; forget_side(s); } rumblePad = nil; });
 #endif
         if (tookHid) {
-            /* nothing further: hid_rumble_start writes the game's rumble to the pad itself */
+            rumbleOwner = c;
         } else if (c.haptics) {
-            dispatch_async(rumbleQueue, ^{ for (int s = 0; s < 2; s++) { if (players[s]) [players[s] stopAtTime:CHHapticTimeImmediate error:nil]; forget_side(s); retryAt[s] = 0; } rumblePad = c; });
+            rumbleOwner = c;
+            dispatch_async(rumbleQueue, ^{ retryAt[0] = retryAt[1] = 0; rumblePad = c; });
             NSMutableArray *where = [NSMutableArray array]; for (NSString *l in c.haptics.supportedLocalities) [where addObject:l];
             fprintf(stderr, "[rumble] %s: haptics (%s)\n", name, [where componentsJoinedByString:@", "].UTF8String);
         } else {
@@ -732,7 +743,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             hid_rumble_attach(c);
         }
     }
-    if (runtime_gyro_enabled()) {
+    if (!motionPad && runtime_gyro_enabled()) {
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             const char *axes = getenv("TOTK_GYRO_AXES"); int r = runtime_motion_axes(axes);
@@ -741,34 +752,38 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
         });
         GCMotion *m = c.motion;
         if (!m || !m.hasRotationRate) {
-            if ([c.productCategory containsString:@"Joy-Con"]) {   /* PR #889: a paired Joy-Con's right HID sensor */
-                hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO;
-                motionPad = c; hid_motion_start();
-            } else if (!hid_imu_start(c)) fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name);   /* PR #309: IMU in its HID reports (8BitDo Ultimate 2) */
+            if ([c.productCategory containsString:@"Joy-Con"] || [c.productCategory isEqualToString:@"Switch Pro Controller"])
+                hid_motion_start(c);   /* claims motion only if the raw sensor opens */
+            else if (!hid_imu_start(c)) fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name);
             return;
         }
-        if (motionPad && motionPad != c) {   /* one motion feed only: two controllers would be mixed into one fusion */
-            motionPad.motion.valueChangedHandler = nil;
-            /* A controller that needed manual activation keeps its sensors powered until told otherwise. */
-            if (motionPad.motion.sensorsRequireManualActivation) motionPad.motion.sensorsActive = NO;
-            runtime_motion_live(0);
-        }
+        motionPad = c;
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
-        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
+        zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
-        motionPad = c; runtime_motion_live(1);
+        runtime_motion_live(1);
         fprintf(stderr, "[gyro] %s: motion sensors on (gyro%s)\n", name, m.hasGravityAndUserAcceleration ? ", gravity" : ", acceleration");
     }
 }
 void runtime_feedback_detach(GCController *c) {   /* main queue */
-    hid_rumble_detach(c);
-    if (runtime_rumble_enabled() && rumbleQueue)
-        dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
+    if (rumbleOwner == c) {
+        rumbleOwner = nil;
+        runtime_feedback_quiet();   /* do not replay this pad's last pulse on its replacement */
+        hid_rumble_detach();
 #if TARGET_OS_OSX
-    if (hidRumblePad == c) hid_rumble_stop();
+        hid_rumble_stop();
 #endif
+        dispatch_async(rumbleQueue, ^{
+            if (rumblePad != c) return;
+            for (int s = 0; s < 2; s++) { [players[s] stopAtTime:CHHapticTimeImmediate error:nil]; forget_side(s); }
+            rumblePad = nil;
+        });
+    }
     if (motionPad == c) {
-        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
+        GCMotion *m = c.motion;
+        m.valueChangedHandler = nil;
+        if (m.sensorsRequireManualActivation) m.sensorsActive = NO;
+        hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
 }
 /* iOS deactivates a manual-activation controller's sensors while the app is in the background (Settings, Control
