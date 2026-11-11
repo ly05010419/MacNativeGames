@@ -15,6 +15,8 @@ You are helping a player turn **their own** game dump into an app. Done right, t
 - The app the build makes contains the game. It is for this player only; do not upload it or offer to share it.
 - Speak the player's language. Find what you can yourself; ask only for what you cannot find (where the files are, which device).
 - Commands that need `sudo`, a password or a click in a macOS dialog: ask the player to run them (in Claude Code, typing `! <command>` runs it in this session).
+- **Folders (`docs/install.md` › Folders).** Keep the app and saves apart from the work folder: the work folder can be deleted and made again, the app and saves cannot. One work folder per game, outside the `MacNativeGames` checkout and outside the folder that holds the apps, on the app's APFS volume; give the same `--work` to every build of that game.
+- **An existing install: check it first, and adapt it.** If the player already has the app, read `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"` (and `MNGBuildPython`) before building or updating, and use that folder and that Python. If the key is missing (an app from before 31 October 2026), names a folder that is gone, or names one inside the apps folder (an update before 11 November 2026 without `--work` made one there), choose the work folder as above, `mv` the old one there when it holds the build, and run `update_runtime.py "<the app>" --work "<that folder>"` once: the app records it from then on. Tell the player what you moved.
 
 ## 1. Check the Mac (about 2 minutes)
 
@@ -132,6 +134,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `is … add-on content (DLC), not the game`, `pass it as …`, `use the files of one game` | A file is on the wrong option; the message names the right one. |
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | Another game: build it with its own `games/<name>/README.md`. |
 | `needs about N GB free` | Free space, or `--work` (and `-o`) on an APFS volume with room. |
+| `the work folder … records, …, cannot be found, nor the folder it was in` | The app remembers a work folder on a disk that is not connected or a folder that was moved. Ask the player whether that disk can be connected; if yes, run the same command again; if not, choose a work folder by the Folders rule and add `--work "<it>"` (the app records it). A deleted work folder alone is made again by the update itself. |
 | `BKTR verification failed`, an update merge or key error | `git pull` first. If it persists, the keys may be older than the update: the player dumps `prod.keys` again from a console on current firmware. |
 | `make failed` / `xcrun failed` (`… .log`) | Read the named log; usually incomplete developer tools or Homebrew outside `/opt/homebrew`. |
 | `the app does not start: …` | Read the message; rerun once; otherwise report it (below). |
@@ -141,6 +144,6 @@ If it is still stuck, help the player open an issue at <https://github.com/ly050
 
 ## 7. Later
 
-- Updating the Mac app: the settings panel (key 1) › **Update** shows the version and each newer commit; its **Update** button pulls the code, updates the app and opens it again. When it cannot (another branch, local changes, no access to the folder), it says why: then `git pull` and `python3.14 update_runtime.py "<the app>"` (about a minute; if it says the startup shaders no longer fit, add `--seed`).
+- Updating the Mac app: the settings panel (key 1) › **Update** shows the version and each newer commit; its **Update** button pulls the code, updates the app and opens it again. When it cannot (another branch, local changes, no access to the folder), it says why: then `git pull` and `python3.14 update_runtime.py "<the app>"` (about a minute; if it says the startup shaders no longer fit, add `--seed`). It uses the work folder the app records and prints it; check that line names the folder you expect.
 - Another game version or a mod: run `build_app.py` again with the same `-o`; it replaces the app and keeps the saves (it backs them up before the first start on a new version).
 - Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile` (`BotW` for Breath of the Wild). The game log is off by default: `defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES` (`org.macnativegames.botw`), then `~/Library/Logs/MacNativeGames/totk.log` from the next start.

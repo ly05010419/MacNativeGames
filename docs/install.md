@@ -6,7 +6,7 @@ This page only covers turning **your own** game files into an app on your Mac, i
 
 **Ocarina of Time** (Switch 2) has its own page: [games/oot/docs/install.md](../games/oot/docs/install.md).
 
-Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
+Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [Folders](#folders) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
 
 Ground rules: use only files from your own Switch and your own game. Nothing is downloaded for you, and nothing from the game is in this repository. Never edit `games/totk/assets/expected-*.json` or the scripts to get past a check: the error message says what is wrong. The app you build contains the game: it is for you only.
 
@@ -193,13 +193,38 @@ With `--update`, use that version's folder (`v121` or `v143`) instead of `v0`.
 
 ## Update the app
 
-- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` updates it in about a minute, without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`.
+- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` updates it in about a minute, without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`. It works in the work folder the app records (see [Folders](#folders)) and prints which one; pass `--work` only to move it.
 - **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
   Installation waits for actual game processes to exit, not the update window that shares their executable.
 - **Back to the version you had** (when a new version plays worse): quit the game, find the commit your checkout was on before `git pull` with `git reflog` (the line just below the `pull` line), `git checkout <that commit>` (git calls this a "detached HEAD"; that is expected) and run `python3.14 update_runtime.py "<the app>"` again, with `--seed` if it asks for it. Then `git checkout main`: the app keeps the older runtime until you update it again. This works for commits from 685f940 (26 October 2026) on; your saves and settings are not changed.
 - **Another game version:** run `build_app.py` again with the new `--update` and the same `-o`. It replaces the app. Before the first start on the new version, the app backs up your saves next to them as `profile-before-<version>`; keep that backup if you may go back.
 - **Mods:** `--mod "<mod folder>" --install-mod-romfs` builds the app with a mod's code patches and installs its data. See [mods.md](mods.md), [merged-mod-pack.md](merged-mod-pack.md) and [translation-mods.md](translation-mods.md).
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.
+
+## Folders
+
+Keep two kinds of folders apart, for every game (Tears of the Kingdom, Breath of the Wild, Ocarina of Time and the others):
+
+| Kind | What is in it | Can it be deleted? |
+|---|---|---|
+| **Keep** | the app (`-o`), your saves and settings (`~/Library/Application Support/MacNativeGames/<game>`), the game data folder of `--mac-game-data library` | No: these are what you play and what you cannot make again. |
+| **Work** | the work folder (`--work`): extracted game files, translated shaders, pipeline caches, logs | Yes, at any time. The next build makes it again (it then needs the game file and keys again); a runtime update needs it, so delete it only when you would rebuild anyway. |
+
+- Choose one work folder per game and version, outside the `MacNativeGames` checkout (the build refuses one inside it) and outside the folder that holds your apps, on the same APFS volume as the app (the game data is then cloned, not copied). For example `<disk>/MacNativeGames-work/<game>` next to `<disk>/Applications`. Give it to every build of that game with `--work`.
+- The app records its work folder (`MNGWorkFolder`) and the Python that built it (`MNGBuildPython`) in its `Info.plist`; `update_runtime.py` and the Update page use them. Read them with `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"`. Never point two builds of different games at one work folder while they run.
+- **An existing install (for an AI helping you: check this before any build or update).** Read `MNGWorkFolder` of the app:
+  - it names an existing folder that is not inside the checkout or the apps folder: nothing to do;
+  - it fails (an app built before 31 October 2026), or names one inside the apps folder (an update before 11 November 2026 run without `--work` made a second work folder next to the app): pick the work folder as above, move the old one there if it holds the build (`mv` on the same volume is instant), then run `update_runtime.py "<the app>" --work "<that folder>"` once. The app records it from then on. A second copy left in the apps folder can then be deleted.
+- **What an update does with old files**, so an older install keeps updating:
+
+  | The app records | `update_runtime.py "<the app>"` (and the Update page) |
+  |---|---|
+  | no work folder (built before 31 October 2026) | uses `TOTK_build` / `BotW_build` / `OcarinaOfTime_build` next to the app, as before; move it as above when you like |
+  | a folder that exists | uses it |
+  | a folder that was deleted (its parent is still there) | makes it again there and goes on: the app carries its game data and needs none of the old files |
+  | a folder on a disk that is not connected, or whose parent is gone too | stops with `… cannot be found, nor the folder it was in …`: connect that disk and run it again, or add `--work "<a folder of your choice>"` (the app then records it) |
+
+  An app so old that it still needs files from its build (it says `does not hold the files the build of this app extracted`), or an update with `--seed`, needs the work folder of that build: pass it with `--work`, or build the app again with `build_app.py`.
 
 ## When the build stops
 
@@ -217,6 +242,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `… add-on content (DLC), not the game`, `pass it as …`, `use the files of one game` | A file is on the wrong option; the message names the right one. |
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | Another game: build it with its own `games/<name>/README.md`. |
 | `needs about N GB free` | Free space, or `--work` and `-o` on an APFS volume with room. |
+| `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](#folders)). |
 | `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update: dump `prod.keys` again on current firmware. |
 | `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools or Homebrew outside `/opt/homebrew`. |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |

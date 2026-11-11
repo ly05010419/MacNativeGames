@@ -427,7 +427,8 @@ def replace_native_5k(res, action, made, version='v143'):
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
-    ap.add_argument('--work', type=Path, help='work folder to build in (default: TOTK_build or BotW_build next to the app); an '
+    ap.add_argument('--work', type=Path, help='work folder to build in (default: the one the app records, MNGWorkFolder; an app '
+                                              'that records none: TOTK_build, BotW_build or OcarinaOfTime_build next to it); an '
                                               'app made before the game data folder existed, and --seed, need the one of its build')
     ap.add_argument('--vr', action='store_true', help='prepare TotK 1.4.3 exact VR render targets from its verified build inputs')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
@@ -440,7 +441,9 @@ def main(argv):
     if ocarina_app(app):
         if args.seed or args.native_5k:
             raise BuildError('Ocarina of Time: --seed and --native-5k are not supported; run build_app.py for new shaders')
-        return update_ocarina(app, args.work)
+        work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.recorded_work_folder(app, 'OcarinaOfTime_build')
+        say(f'work folder {work} ({why})')
+        return update_ocarina(app, work)
     game, version = app_identity(app)
     if args.native_5k and version not in ('v143', 'botw160', 'botw190'):
         raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 or Breath of the Wild 1.6.0 / 1.9.0 on Mac')
@@ -449,14 +452,15 @@ def main(argv):
     if preference is not None and type(preference) is not bool:
         raise BuildError('MNGNative5K must be a boolean (or absent for automatic selection)')
     stale = check_seed_chain(app / 'Contents/Resources/totk', runtime_chain(), remake=args.seed)
-    work = args.work.expanduser().resolve() if args.work else app.parent / ('BotW_build' if game == 'botw' else 'TOTK_build')
+    work, why = ((args.work.expanduser().resolve(), 'given with --work') if args.work
+                 else build_app.recorded_work_folder(app, 'BotW_build' if game == 'botw' else 'TOTK_build'))
     py = build_app.prerequisites(args)
     logs = work / 'logs'
     env = dict(os.environ, PATH=os.pathsep.join(build_app.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
     if game == 'botw':   # the game's own shared shader list (build_app.py main)
         env['SHADER_LIST'] = '../botw/assets/shader_list.tsv'
     t0 = time.time()
-    say(f'{APPS[game][0]} {VERSIONS[version]["display_version"]}: {app}; work folder {work}')
+    say(f'{APPS[game][0]} {VERSIONS[version]["display_version"]}: {app}; work folder {work} ({why})')
     tree = build_app.prepare_work(work, py, logs)
     res = app / 'Contents/Resources/totk'
     data = game_data(tree, res, version, logs, env)
