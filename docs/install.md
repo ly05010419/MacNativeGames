@@ -193,7 +193,17 @@ With `--update`, use that version's folder (`v121` or `v143`) instead of `v0`.
 
 ## Update the app
 
-- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` is the express update (below), without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`. It works in the work folder the app records (see [Folders](#folders)) and prints which one; pass `--work` only to move it.
+Which update, always in this order (quit the game first). Start with the express update; it says when you need the next one.
+
+| Update | When | Command | Needs |
+|---|---|---|---|
+| **Express update (极速更新)** | every new version of this repository (`git pull`); the Update page runs it | `python3.14 update_runtime.py "<the app>"` | the work folder the app records; no game files or keys |
+| **Fast update (快速更新)** | the express update says the startup shaders no longer fit (Tears of the Kingdom, Breath of the Wild: another translation chain). Ocarina of Time has none: its express update checks its shaders itself | `python3.14 update_runtime.py "<the app>" --seed` | the work folder's game files; no game container or keys |
+| **Normal update (普通更新)**, the full build | either of them says a full build is needed: another game version, DLC or game files, other code rewrite rules or picture-size overlays, another translator or translation chain for Ocarina of Time, an Ocarina of Time app whose shaders were prepared before 11 November 2026, a missing or deleted work folder | `build_app.py` as for the first build, with the same `-o "<the app>"` and the app's `--work` | the game file and keys |
+
+Bananza and Pokopia have only the normal update (`build_app.py`); it keeps their unchanged translations and pipelines in the same way.
+
+- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"`, the express update (below), without the game files or keys. If it says the startup shaders no longer fit, add `--seed` (the fast update). It works in the work folder the app records (see [Folders](#folders)) and prints which one; pass `--work` only to move it.
 - **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
   Installation waits for actual game processes to exit, not the update window that shares their executable.
 - **Express update (极速更新)**: `update_runtime.py` on a Tears of the Kingdom, Breath of the Wild or Ocarina of Time app rebuilds the runtime and keeps everything whose inputs did not change. It checks rather than assumes:
