@@ -396,12 +396,14 @@ def merge_texts(label, texts, problems, titled, named, lists, keys, seeds, drop_
         new = (g_rows - builtin) - shared.variants
         for key, deps in g_rows - builtin:
             shared.add_variant(key, deps)
-        refused = []
-        if game in SEEDED:   # the list keeps the bind state of every variant its pipelines name (shader_list.py A rows)
+        if game in SEEDED:   # the bind states of the variants a seed serves (no V row): the list keeps them as A rows
             for _, deps in builtin:
                 answers = listed_answers(deps)
                 shared.answers[answers_suffix(answers)] = answers
-            refused = [row for row in g_pipes if not shared.knows(row)]
+        # Every game's list keeps the bind state of every variant its pipelines name (shader_list.py A rows): a row naming
+        # one no file gave stops packaging in resolve (2026-11-11, #2020: two such rows in Pokopia's list, when only the
+        # seeded games were checked).
+        refused = [row for row in g_pipes if not shared.knows(row)]
         new_pipes = [row for row in g_pipes if row not in shared.warm and row not in refused]
         for row in new_pipes:
             shared.add_warm(row, 'm')
