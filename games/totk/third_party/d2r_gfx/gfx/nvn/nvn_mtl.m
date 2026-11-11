@@ -297,7 +297,8 @@ typedef struct { const void *mem; uint8_t dirty, read, unsafe, run; int16_t by; 
 static eye_seg g_eseg[EYE_SEGS]; static int g_eseg_n, g_eseg_cur = -1, g_eseg_cnt0, g_eseg_r, g_eye_skip, g_eseg_bad;
 static eye_mem g_emem[EYE_MEMS]; static int g_emem_n;
 static uint64_t g_epatch[EYE_PATCHES]; static int g_epatch_n;
-static _Atomic int g_eye_share; static uint64_t g_eshare_stat[6];   // submissions, segments, left out, draws and clears left out, order mismatches
+static _Atomic int g_eye_share = 2;   /* on by default (user 2026-11-11: "默认打开"); "flag eye_share 0" turns it off */
+static uint64_t g_eshare_stat[6];   // submissions, segments, left out, draws and clears left out, order mismatches
 static eye_mem *emem_get(const void *mem, int add) {
     if (!mem) return NULL;
     unsigned i = (unsigned)((uintptr_t)mem * 2654435761u >> 16) & (EYE_MEMS - 1);
