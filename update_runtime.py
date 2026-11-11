@@ -52,8 +52,11 @@ def ocarina_app(app):
 
 
 def update_ocarina(app, work):
-    """Ocarina of Time carries its own build, like build_app.build_oot."""
+    """Ocarina of Time carries its own build, like build_app.build_oot. It gets the tool PATH main() gives the other games:
+    an update started from the app inherits the Finder's PATH, which has no /opt/homebrew/bin, so the build's
+    make_opening_overlay.py found no ffmpeg (#2074)."""
     import importlib.util
+    os.environ['PATH'] = os.pathsep.join(build_app.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')])
     spec = importlib.util.spec_from_file_location('oot_build', build_app.REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
