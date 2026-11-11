@@ -1597,7 +1597,6 @@ static inline void enc_r_draw_indexed_indirect(id<MTL4RenderCommandEncoder> e, M
 static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDEXED,.u={p,n,t,gpu,len,i,(uint64_t)bv,bi}},1); else [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
 static inline void enc_r_store(id<MTL4RenderCommandEncoder> e, int depth, MTLStoreAction action, NSUInteger index) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_STORE,.u={(uint64_t)depth,action,index}},0); else if (depth == 1) [e setDepthStoreAction:action]; else if (depth == 2) [e setStencilStoreAction:action]; else [e setColorStoreAction:action atIndex:index]; }
 static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor *d) { (void)d; blit_close(); rs_sync(); pt_mark(g_cb, 'C', nil); id<MTL4ComputeCommandEncoder> e = [g_cb computeCommandEncoder]; if (bar_start_on()) [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; [e setArgumentTable:g_ct]; return e; }
-static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
 static inline void enc_c_end(id e) { m4_end(e); }
 static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
 static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; [g_ct setAddress:gpu atIndex:i]; }
@@ -1637,7 +1636,6 @@ static id<MTL4ComputeCommandEncoder> blit_buffer(id<MTLBuffer> src, NSUInteger s
 static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf);
 static size_t arena_alloc_u(size_t n, __unsafe_unretained id<MTLBuffer> *buf, uint8_t **cpu, uint64_t *gpu);
 static void pend_materialize(uint64_t a, uint8_t *out, size_t n, int depth);
-static void pend_overlay(uint64_t a, uint8_t *out, size_t n, int depth);
 static void pend_materialize_x(uint64_t a, uint8_t *out, size_t n, int depth, int wait);
 static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wait);
 typedef struct { uint64_t lo, hi; } usnap_rng;
@@ -2206,7 +2204,6 @@ static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wa
         else memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
     }
 }
-static void pend_overlay(uint64_t a, uint8_t *out, size_t n, int depth) { pend_overlay_x(a, out, n, depth, 1); }
 // Write the logged updates into memory on the GPU timeline (ends a render pass if one is open).
 static void upd_flush(void) {
     if (!g_nupd) return;
@@ -2712,7 +2709,6 @@ static int tex_need_pfv(MTLPixelFormat base, MTLPixelFormat view) {
 }
 // 回放热路径的缓存表一律用 nvn_hmap（C 哈希，键不装箱）；表里存 CFBridgingRetain 过的对象，替换 / 删除时 CFRelease
 // Cache tables on the replay hot path always use nvn_hmap (C hash, keys not boxed); the table stores CFBridgingRetain'ed objects, CFRelease'd on replace / delete
-static void hm_rel(void *v) { CFRelease(v); }
 static __unsafe_unretained id hm_get_id(const nvn_hmap *m, const void *k) { return (__bridge id)nvn_hm_get(m, k); }
 static void hm_put_id(nvn_hmap *m, const void *k, id o) { void *old = nvn_hm_put(m, k, (void *)CFBridgingRetain(o)); if (old) CFRelease(old); }
 static void hm_del_id(nvn_hmap *m, const void *k) { void *old = nvn_hm_del(m, k); if (old) CFRelease(old); }
@@ -6373,10 +6369,6 @@ static NvShader *shader_load(NSString *pc, int stage) {
     return o;
 }
 
-static int stage_of(NSString *zh) {
-    if ([zh isEqualToString:@"顶点"]) return 0; if ([zh isEqualToString:@"像素"]) return 1; if ([zh isEqualToString:@"计算"]) return 5;
-    if ([zh isEqualToString:@"外壳"]) return 3; if ([zh isEqualToString:@"域"]) return 4; return -1;
-}
 #define NVN_RT_RANGE_RO_IMPL 1
 // 私有续用只接受明确RO的B反射，sbuf缺rw不把默认0当证明；不改变既有反射/翻译链。
 // Private continuation accepts only B reflection that is explicitly RO; a missing rw on sbuf does not let the default 0 count as proof; does not change the existing reflection / translation chain.
@@ -10813,7 +10805,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu mem=%p sz=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial, (void *)g_treg[tid].t.mem, (unsigned long long)g_treg[tid].t.L.size);
             if (t && tid < g_ntreg) tp_note_fs(sh->key, g_treg[tid].t.serial, &g_treg[tid].t);   // TOTK: DM_NVN_TEXPNG_FS
             if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu nvnfmt=%#x vfmt=%#x fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0,
-                       tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg && g_treg[tid].has_v && g_treg[tid].v.set_format ? g_treg[tid].v.format : 0ull,
+                       tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg && g_treg[tid].has_v && g_treg[tid].v.set_format ? g_treg[tid].v.format : 0u,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
                        (unsigned long)(t.parentTexture ? t.parentRelativeLevel : 0), (unsigned long)t.mipmapLevelCount,
                        (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType);
@@ -12340,14 +12332,8 @@ static int defer_take(const p_draw *dw, const p_draw_idx *di) {
     defer_snap *z = &g_defer.snap[g_defer.n++]; z->idx = di != NULL; if (dw) z->dw = *dw; if (di) z->di = *di;
     z->sc = R.sc; z->has_sc = R.has_sc; z->S_ = malloc(sizeof S); memcpy(z->S_, &S, sizeof S); for (int k = 0; k < 8; k++) z->pm[k] = (uint8_t)k; g_defer_draws++; return 1;
 }
-static void defer_release(void) { defer_release_one(&g_defer); }
 static void defer_env(void);
 static void defer_reset(void) { defer_clear_all(); g_defer_replaying = 0; defer_env(); }
-static void defer_apply_p_clear(void) {
-    memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
-    for (int j = 0; j < g_defer.q_rt.n; j++) { int i = g_defer.lmap[j]; if (i >= 0 && g_defer.clear_c[i]) { R.clear_c[j] = 1; R.cc[j] = g_defer.cc[i]; } }
-    if (g_defer.clear_d) { R.clear_d = 1; R.cd = g_defer.cd; } if (g_defer.clear_s) { R.clear_s = 1; R.cs = g_defer.cs; }
-}
 static int defer_begin_q(const uint8_t *op) {
     int found = 0, first = -1;
     for (int i = 0; i < 4; i++) if (g_defer_slots[i].active && !g_defer_slots[i].at_q && g_defer_slots[i].q_op == op) { found = 1; if (first < 0) first = i; }
@@ -13308,25 +13294,6 @@ static void vr_palscan(const char *vs) {
    Returns the mesh's number among the player's meshes of this frame's G-buffer pass, or -1. */
 long g_vr_hidemesh; _Atomic long g_vr_meshlog;
 long g_vr_skip_lo, g_vr_skip_hi;   // diagnostic "flag vr_skip_lo / vr_skip_hi": G-buffer draws lo..hi-1 of each frame are left out
-/* diagnostic (vr_meshlog): a draw that is not a skinned mesh of the player, with a vertex uniform block holding a rotation
-   whose translation is within 2.5 m of the player (modulo 10 m): rigid pieces on the player (earrings, eyebrows?) */
-static void vr_rigid_log(const char *vs, uint32_t count, const float p[3]) {
-    static int lines; if (lines > 300) return;
-    static float b[1024];
-    for (int sl = 0; sl < 16; sl++) {
-        const p_bind_buf *u = &S.ubo[0][sl]; if (!u->addr || u->size < 48) continue;
-        size_t n = u->size < sizeof b ? u->size : sizeof b; pend_materialize(u->addr, (uint8_t *)b, n, 0);
-        for (size_t o = 0; o + 12 <= n / 4; o += 4) {
-            const float *f = b + o; float r[3] = {f[3] - p[0], f[7] - p[1], f[11] - p[2]}; int ok = 1;
-            for (int i = 0; i < 3 && ok; i++) { r[i] -= 10 * roundf(r[i] / 10); ok = fabsf(r[i]) < 2.5f; }
-            for (int i = 0; i < 3 && ok; i++) { float l = f[i * 4] * f[i * 4] + f[i * 4 + 1] * f[i * 4 + 1] + f[i * 4 + 2] * f[i * 4 + 2]; ok = l > 0.8f && l < 1.25f; }
-            if (!ok) continue;
-            MLOG("[vr] rigid F%llu pass %llu vs %.16s count %u ubo %d +%zu size %llu at %.2f %.2f %.2f", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, vs, count,
-                 sl, o * 4, (unsigned long long)u->size, r[0], r[1], r[2]);
-            lines++; return;
-        }
-    }
-}
 /* diagnostic TOTK_VR_MESHDUMP=<vertex shader key prefix> (with vr_meshlog): that shader's draws in the G-buffer pass, every
    vertex-stage uniform / storage block with its first floats */
 static void vr_mesh_dump(NvShader *v, uint32_t count) {

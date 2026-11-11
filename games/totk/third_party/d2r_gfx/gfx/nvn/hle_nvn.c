@@ -153,7 +153,6 @@ void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
 // ---------- Device ----------
 // TOTK translation thread (see "translation thread" below)
 static uint64_t fence_now(int *token);
-static int fence_wait(uint64_t k, uint64_t timeout_ns);
 static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns);
 static void x_drain(void);
 static void replay_enter(void), replay_leave(void);   // the replay section (below)
@@ -723,7 +722,7 @@ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
-// TOTK: with the translation thread a fence is a submit count (bit 2 of fenced), see fence_now / fence_wait.
+// TOTK: with the translation thread a fence is a submit count (bit 2 of fenced), see fence_now / fence_wait_to.
 /* TOTK_SYNC_CHAIN=<n>[:<from frame>] (diagnostic): guest call chains of the first n fence placements and of the first n waits that block,
    to find the game code that makes frame N+1 wait for frame N on the GPU (see the 2026-10-15 timeline). */
 static void guest_chain(const char *what);
@@ -922,7 +921,6 @@ void runtime_describe_address(uint64_t a, char *out, size_t n);
 NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb;
     if (ctl_log_left()) { char w[96] = ""; runtime_describe_address((uint64_t)(uintptr_t)cb, w, sizeof w); LOG("[ctl] SetMemoryCallback cb=%p fn=%s", (void *)c, w); } }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
-static uint8_t *align8(uint8_t *p) { return (uint8_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7); }
 // 诊断 DM_NVN_CMDSTAT=1：每 300 帧记一行命令录制的用量——每帧录了多少字节 / 多少条、游戏每次给多大一段命令内存、每帧补内存回调几次、宿主补段几次、
 // 各类命令的条数与字节（找「我们的记录比真机命令大多少」）。只计数，不改录制 / 回放
 // Diagnostic DM_NVN_CMDSTAT=1: every 300 frames log one line of command recording usage -- how many bytes / records were recorded per frame, how large a command memory segment the game gives each time, how many out-of-memory callbacks per frame, how many host-supplied segments,
@@ -2390,7 +2388,6 @@ NVN(nvnVertexStreamStateSetDivisor, void, NVNvertexStreamState *s, int d) { ST(v
 static _Atomic uint64_t g_sub_wall_ns, g_sub_cpu_ns, g_sub_instr;   // 提交（不含出图）的墙钟 / 本线程 CPU 时间 / 本线程退休指令数（逐帧取走） | Wall clock / this thread's CPU time / this thread's retired instruction count for submit (excluding present) (taken away per frame)
 static _Atomic uint64_t g_cum_sub_instr, g_cum_sub_cpu_ns;   // 同上累计（每 300 帧汇总「翻译」行取差，真机经日志口读：每次绘制指令数 / 每帧提交 CPU） | Cumulative versions of the above (the 「翻译」(translation) summary row every 300 frames takes the difference; on a real device read through the log port: instructions per draw / submit CPU per frame)
 extern int thread_selfcounts(int type, void *buf, size_t nbytes);   // 本线程累计 {指令, 周期}（libSystem 私有接口，Mac / iOS 都有） | This thread's cumulative {instructions, cycles} (libSystem private interface, present on both Mac and iOS)
-static uint64_t thr_instr(void) { uint64_t c[2] = {0, 0}; thread_selfcounts(1, c, sizeof c); return c[0]; }
 // 提交路径的补充读数（真机 Metal 4 指令数 −18% 而提交 CPU 时间 +49%，要分清是内核态、执行效率还是被降频）：
 // 本线程周期数（同一接口的第二项）、内核态 CPU 时间（THREAD_BASIC_INFO）、墙钟
 // Supplementary readings for the submit path (on a real device Metal 4 instruction count is -18% while submit CPU time is +49%; need to tell apart kernel mode, execution efficiency, or frequency throttling):
@@ -2544,7 +2541,6 @@ static uint64_t fence_now(int *token) {
     pthread_mutex_lock(&g_xq_mu); uint64_t k = g_xsub_in; pthread_mutex_unlock(&g_xq_mu); *token = 1; return k;
 }
 // Waits for a token: the submit has been translated, then the Metal fence it ended with. 1 = reached.
-static int fence_wait(uint64_t k, uint64_t timeout_ns) { return fence_wait_to(k, k, timeout_ns); }
 // Submit k must be translated; the GPU wait is for the fence of submit kg <= k (TOTK_SYNC_LAG).
 static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
     uint64_t t0 = now_ns();
