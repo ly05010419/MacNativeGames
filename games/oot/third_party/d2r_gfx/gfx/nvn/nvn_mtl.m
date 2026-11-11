@@ -8677,7 +8677,18 @@ static inline void *pso_lookup(const void *pr, const pso_key *k) {
 }
 // TOTK: stages are translated separately, so a fragment shader may read user varyings the vertex shader never writes
 // (undefined values on the Switch GPU). Metal rejects such pairs; the vertex function gets the missing outputs added
-// (left zero) in a patched copy of its MSL, cached per missing set.
+// in a patched copy of its MSL, cached per missing set.
+/* Their value is (0, 0, 0, 1), not zero (2026-11-10): that is what the translator's own InitializeOutput stores in every
+   output it declares (Ryujinx Translator.cs: c == 3 ? 1 : 0, for the
+   attributes the next stage reads -- which a stage translated alone cannot know, so these are the ones it missed). The
+   game relies on it: the cut-bush leaf particles (Vfx3 emitter set Plnt_Foliage_Break_00, vertex 02c1c3cde920812b /
+   6e5d9db6b8ba581b, fragment 00bb92fbb2b7b666 / 060253b42b2ddcc0) test alpha = clamp(4 * (noise.w * locn16.w -
+   dissolve)) and the vertex shader leaves locn 16 unwritten; with w = 0 every fragment was discarded in the depth
+   pre-pass, the shadow maps and the colour pass, so a cut bush showed no leaves. OOT_UNWRITTEN_VARYING_W=0: zero again. */
+static int unwritten_varying_w_one(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("OOT_UNWRITTEN_VARYING_W"); on = !(e && !strcmp(e, "0")); }
+    return on;
+}
 static NSDictionary<NSNumber *, NSString *> *msl_varyings(NvShader *sh) {
     if (sh->io || !sh_has_src(sh)) return sh->io;
     NSString *src0 = sh_src(sh);
@@ -9140,6 +9151,11 @@ static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NS
         NSRange r = [vsrc0 rangeOfString:head];
         if (r.location == NSNotFound) MDIE("vertex shader %s: no main0_out to extend", vs->key);
         NSString *src = [vsrc0 stringByReplacingCharactersInRange:r withString:[head stringByAppendingString:add]];
+        if (miss.count && unwritten_varying_w_one()) {   // the added outputs are (0, 0, 0, 1), as the translator initialises the declared ones
+            NSMutableString *init = [NSMutableString stringWithString:@"main0_out out = {};"];
+            for (NSNumber *l in miss) if ([in[l] isEqualToString:@"float4"]) [init appendFormat:@" out.totk_unwritten_locn%@.w = 1.0;", l];
+            src = [src stringByReplacingOccurrencesOfString:@"main0_out out = {};" withString:init];
+        }
         if (layered) {
             NSRegularExpression *psz = [NSRegularExpression regularExpressionWithPattern:@"\\n\\s*float\\s+(\\w+)\\s*\\[\\[point_size\\]\\];" options:0 error:nil];
             NSTextCheckingResult *m = [psz firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
@@ -9161,7 +9177,7 @@ static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NS
         if (!vs->vpatch[key]) {
             vs->vpatch[key] = g;
             static int once, lonce;
-            if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as zero outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
+            if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as %s outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String, unwritten_varying_w_one() ? "(0, 0, 0, 1)" : "zero");
             if (layered && !lonce++) MLOG("[totk] layered pass: vertex shader %s writes the render target array index", vs->key);
             static unsigned vonce; if (vin && (vonce++ < 8 || vonce % 1000 == 0)) MLOG("[vin] vertex shader %s: inputs %s redeclared with their bound formats' types (%u so far)", vs->key, vin.UTF8String, vonce);
         }
