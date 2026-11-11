@@ -335,10 +335,14 @@ static void settings_pointer_used(void);
 @property(copy) int (^get)(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
+@property(copy) NSString *(^text)(void);         /* a fixed text value beside a button, no picker (the screenshot folder) */
+@property(copy) NSString *buttonTitle;           /* the button at the row's end (with text) */
+@property(copy) void (^buttonAction)(void);
 @property int sliderMin, sliderMax;              /* a slider when sliderMax > sliderMin */
 @property NSInteger page;                        /* SETTINGS_PAGE_DISPLAY, _INPUT, _EFFECTS or _VR */
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
+@property(strong) NSTextField *textLabel;        /* the field showing text() */
 -(BOOL)slider;
 -(void)changed:(id)sender;
 -(void)refresh;
@@ -346,6 +350,7 @@ static void settings_pointer_used(void);
 @implementation TOTKSettingRow
 -(BOOL)slider{return self.sliderMax>self.sliderMin;}
 -(void)changed:(id)sender{
+ if(self.buttonAction){self.buttonAction();return;}   /* the text row's button: it acts itself, no value comes back */
  int v=[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
   self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
@@ -354,6 +359,9 @@ static void settings_pointer_used(void);
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
 -(void)refresh{
+ if(self.text){NSString *t=self.text();
+  if(![self.textLabel.stringValue isEqualToString:t]){self.textLabel.stringValue=t;self.textLabel.toolTip=t;}
+  return;}
  int v=self.get?self.get():0;
  if(self.slider){NSSlider *s=(NSSlider *)self.control;if(s.intValue!=v)s.intValue=v;self.valueLabel.stringValue=[NSString stringWithFormat:@"%d",v];return;}
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
@@ -787,20 +795,19 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 @class TOTKSettingsPanel;
 static TOTKSettingsPanel *settingsPanel;
 static void settings_footer_note(NSString *text, BOOL bad);
-/* Where the capture button's pictures go (runtime/screenshot.h): a folder. The row opens the system's own folder chooser
-   (the panel the launcher opens for its game data), not a text field, and the chosen folder is checked before it is kept
-   (screenshot_problem), so a read-only disk or another account's folder is refused here with its reason instead of failing
-   at the next capture. The choice is saved next to controls.txt (runtime_setting_save), not in the working folder. An
-   iPhone and an iPad have no panel here: their pictures go into the photo library, in the album named after the game. */
+/* Where the capture button's pictures go (runtime/screenshot.h): a folder. The row shows the folder in force, and its
+   button opens the system's own folder chooser (the panel the launcher opens for its game data); the chosen folder is
+   checked before it is kept (screenshot_problem), so a read-only disk or another account's folder is refused here with
+   its reason instead of failing at the next capture. The choice is saved next to controls.txt (runtime_setting_save),
+   not in the working folder. An iPhone and an iPad have no panel here: their pictures go into the photo library, in the
+   album named after the game. */
 static void settings_choose_screenshot_folder(void);
 static TOTKSettingRow *settings_screenshot_row(void) {
  TOTKSettingRow *r=[TOTKSettingRow new];
- char folder[PATH_MAX];screenshot_directory(folder,sizeof folder);
- NSString *shown=@(folder);   /* kept as the object the block captures: an array cannot cross into one */
  r.title=settings_text("截图保存目录","Screenshot folder");
- r.choices=@[shown];   /* shown by the button, refreshed when the choice changes */
- r.get=^int{char now[PATH_MAX];screenshot_directory(now,sizeof now);return (int)strcmp(now,shown.UTF8String);};
- r.set=^(int v){(void)v;settings_choose_screenshot_folder();};
+ r.text=^NSString *{char now[PATH_MAX];screenshot_directory(now,sizeof now);return @(now);};
+ r.buttonTitle=settings_text("更改文件夹…","Change Folder…");
+ r.buttonAction=^{settings_choose_screenshot_folder();};
  return r;
 }
 static void settings_choose_screenshot_folder(void) {
@@ -822,7 +829,7 @@ static void settings_choose_screenshot_folder(void) {
  char kept[PATH_MAX];screenshot_directory(kept,sizeof kept);
  settings_footer_note([NSString stringWithFormat:@(TOTK_UI("截图保存目录：%@","Screenshots: %@")),@(kept)],NO);
  fprintf(stderr,"[totk] settings: screenshot folder %s\n",kept);
- settings_refresh_all();   /* the button shows the folder in force (settings_refresh_all, below) */
+ settings_refresh_all();   /* the row shows the folder in force (settings_refresh_all, below) */
 }
 
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
@@ -1197,6 +1204,14 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
     s.continuous=YES;s.frame=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-20)/2),SETTINGS_POP_W-44,20);r.control=s;
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
+   }else if(r.text){   /* a fixed value with the button that changes it at the row's end (the screenshot folder) */
+    NSButton *b=[NSButton buttonWithTitle:r.buttonTitle target:nil action:nil];
+    b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];[b sizeToFit];
+    b.frame=NSMakeRect(rw-8-b.frame.size.width,floor((rowH-b.frame.size.height)/2),b.frame.size.width,b.frame.size.height);
+    NSTextField *t=[NSTextField labelWithString:r.text()];t.font=[NSFont systemFontOfSize:11];t.textColor=label.textColor;
+    t.lineBreakMode=NSLineBreakByTruncatingMiddle;   /* a long path keeps both of its ends */
+    t.frame=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-18)/2),SETTINGS_POP_W-b.frame.size.width-14,18);
+    t.toolTip=t.stringValue;[band addSubview:t];r.textLabel=t;r.control=b;
    }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
@@ -1575,7 +1590,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 -(BOOL)controllerEnabled:(NSInteger)i{
  if(i<0||i>=(NSInteger)self.controllerTargets.count)return NO;
  if(self.page==SETTINGS_PAGE_BINDINGS)return YES;
- if(i<(NSInteger)self.rows.count){TOTKSettingRow *r=self.rows[i];return r.set!=nil&&r.control.enabled;}
+ if(i<(NSInteger)self.rows.count){TOTKSettingRow *r=self.rows[i];return (r.set||r.buttonAction)&&r.control.enabled;}
  return ((NSControl *)self.controllerTargets[i]).enabled;   /* a button after the rows */
 }
 /* The controller's place: drawn only once a controller has moved in the panel (g_settings_controller_active). On the
@@ -1634,6 +1649,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   return;
  }
  TOTKSettingRow *r=self.rows[i];
+ if(r.buttonAction){if(select)[r changed:r.control];[self controllerHighlight];return;}   /* the text row: A is its button */
  if(r.slider){if(select)return;NSSlider *s=(NSSlider *)r.control;s.intValue=MAX(r.sliderMin,MIN(r.sliderMax,s.intValue+step*5));}
  else if(r.choices){
   NSPopUpButton *p=(NSPopUpButton *)r.control;NSInteger n=p.numberOfItems;if(n<2)return;
