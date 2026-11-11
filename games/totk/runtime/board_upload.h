@@ -3,12 +3,18 @@
    is green; anonymous). Mac only: the launcher names the folder (TOTK_BOARD_DIR), the game's frontend starts the rounds
    once its window is up (totk_board_start), the 排行榜 page (board_tab.h) turns it on and off and reads the board.
 
-   What a round does, every TOTK_BOARD_TICK seconds: when the pacing or picture settings changed, the frame record
-   (fps_board.c) starts again, so a record never mixes settings; every TOTK_BOARD_SEND_EVERY rounds, with the switch on
-   and at least TOTK_BOARD_MIN_SECONDS of play counted, the session so far is sent. What is sent: the game and its
-   version, the app's build, the device model, chip, GPU cores, memory, system version, the pacing (frame lock,
-   interpolation), the resolutions, MetalFX, the display's refresh rate, the frame numbers, and a random id of its
-   own (leaderboard-id.txt, not the shader inbox's). The server returns no id to anyone; it marks the caller's row. */
+   With the switch on, the session is kept on this Mac every five minutes and sent only at start and every half hour
+   (user 2026-11-11: "只本地每五分钟记录一次，上传只是开机上传和每半小时上传"). A round, every TOTK_BOARD_TICK seconds:
+   when the pacing or picture settings changed, the session so far is kept and the frame record (fps_board.c) starts
+   again, so a record never mixes settings; every TOTK_BOARD_SAVE_EVERY rounds the session is kept
+   (leaderboard-pending.json beside the switch, one record per frame lock and interpolation mode, once it has
+   TOTK_BOARD_MIN_SECONDS of play); every TOTK_BOARD_SEND_EVERY rounds, and TOTK_BOARD_FIRST seconds after start (what
+   the last session left), the kept records are sent and the ones taken leave the file. Turning the switch off drops
+   them. What is sent: the game and its version, the app's build, the device model, chip, GPU cores, memory, system
+   version, the pacing (frame lock, interpolation), the resolutions, MetalFX, the display's refresh rate, the frame
+   numbers, and a random id of its own, one for every game of this Mac (MacNativeGames/leaderboard-id.txt, not the
+   shader inbox's; user: one player is one player, so the three Zelda games share it). The server returns no id to
+   anyone: it marks the caller's row and shows each player by an anonymous name made from the id. */
 #pragma once
 #import <Foundation/Foundation.h>
 #include <IOKit/IOKitLib.h>
@@ -20,19 +26,23 @@
 #define TOTK_BOARD_URL "https://mac-native-games.com/v1/board"
 #endif
 #define TOTK_BOARD_TICK 60          /* seconds between rounds */
-#define TOTK_BOARD_SEND_EVERY 5     /* rounds between sends: every five minutes */
+#define TOTK_BOARD_SAVE_EVERY 5     /* rounds between keeping the session on this Mac: five minutes */
+#define TOTK_BOARD_SEND_EVERY 30    /* rounds between sends: half an hour */
+#define TOTK_BOARD_FIRST 20         /* seconds after start: what the last session kept is sent */
 #define TOTK_BOARD_MIN_SECONDS 120  /* counted play a record needs (the server lists no shorter one) */
 #define TOTK_BOARD_TIMEOUT 30.0
 
-/* Tests only: TOTK_BOARD_URL points the board at a local server; TOTK_BOARD_TEST=1 makes a round every 10 s, sends every
-   round and needs 20 s of play. */
+/* Tests only: TOTK_BOARD_URL points the board at a local server; TOTK_BOARD_TEST=1 makes a round every 10 s, keeps the
+   session every round, sends every third round and 10 s after start, and needs 20 s of play. */
 static inline NSURL *totk_board_url(void) {
     const char *e = getenv("TOTK_BOARD_URL");
     return [NSURL URLWithString:e && *e ? @(e) : @TOTK_BOARD_URL];
 }
 static inline BOOL totk_board_test(void) { const char *e = getenv("TOTK_BOARD_TEST"); return e && atoi(e) > 0; }
 static inline int totk_board_tick(void) { return totk_board_test() ? 10 : TOTK_BOARD_TICK; }
-static inline unsigned totk_board_send_every(void) { return totk_board_test() ? 1 : TOTK_BOARD_SEND_EVERY; }
+static inline unsigned totk_board_save_every(void) { return totk_board_test() ? 1 : TOTK_BOARD_SAVE_EVERY; }
+static inline unsigned totk_board_send_every(void) { return totk_board_test() ? 3 : TOTK_BOARD_SEND_EVERY; }
+static inline int totk_board_first(void) { return totk_board_test() ? 10 : TOTK_BOARD_FIRST; }
 static inline double totk_board_min_seconds(void) { return totk_board_test() ? 20 : TOTK_BOARD_MIN_SECONDS; }
 
 void nvn_board_pacing(int *lock, int *interp);                                       /* hle_nvn.c */
@@ -61,18 +71,30 @@ static inline BOOL totk_board_set(BOOL on) {
         fprintf(stderr, "[board] the choice was not saved: %s\n", error ? error.localizedDescription.UTF8String : "no data folder");
         return NO;
     }
+    if (!on) [NSFileManager.defaultManager removeItemAtPath:totk_board_file(@"leaderboard-pending.json") error:nil];   /* off: nothing kept is sent later */
     fprintf(stderr, "[board] 我要上榜 %s\n", on ? "on" : "off");
     return YES;
 }
 
-/* The board's own random id, made once (lowercase, as the server takes it). */
-static inline NSString *totk_board_id(BOOL make) {
-    NSString *file = totk_board_file(@"leaderboard-id.txt");
-    if (!file) return nil;
+static inline NSString *totk_board_read_id(NSString *file) {
     NSString *v = [[NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil]
                    stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (v.length == 36) return v;
-    if (!make) return nil;
+    return v.length == 36 ? v : nil;
+}
+/* The board's own random id, one for every game of this Mac, made once (lowercase, as the server takes it), in the
+   folder above the game's (MacNativeGames/leaderboard-id.txt). An id an earlier build made in the game's own folder is
+   moved up and kept, so the player's name does not change. */
+static inline NSString *totk_board_id(BOOL create) {
+    NSString *dir = totk_board_dir();
+    if (!dir) return nil;
+    NSString *file = [dir.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"leaderboard-id.txt"];
+    NSString *v = totk_board_read_id(file), *old = [dir stringByAppendingPathComponent:@"leaderboard-id.txt"];
+    if (v) return v;
+    if ((v = totk_board_read_id(old)) && [v writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]) {
+        [NSFileManager.defaultManager removeItemAtPath:old error:nil];
+        return v;
+    }
+    if (!create) return v;
     NSString *id_ = NSUUID.UUID.UUIDString.lowercaseString;
     return [id_ writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil] ? id_ : nil;
 }
@@ -139,21 +161,60 @@ static inline NSDictionary *totk_board_body(NSString *board_id, NSDictionary *se
     return body;
 }
 
-static inline void totk_board_post(NSDictionary *body) {
+/* One post, waited for (on the board's own queue): YES when the server took it. */
+static inline BOOL totk_board_post(NSDictionary *body) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!json) return;
+    if (!json) return NO;
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:totk_board_url()
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:TOTK_BOARD_TIMEOUT];
     request.HTTPMethod = @"POST";
     request.HTTPBody = json;
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    __block NSInteger status = 0;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
     [[NSURLSession.sharedSession dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSInteger status = error ? 0 : [(NSHTTPURLResponse *)response statusCode];
+        status = error ? 0 : [(NSHTTPURLResponse *)response statusCode];
         if (error) fprintf(stderr, "[board] not sent: %s\n", error.localizedDescription.UTF8String);
         else if (status != 200) fprintf(stderr, "[board] HTTP %ld: %.*s\n", (long)status, (int)MIN(data.length, (NSUInteger)300), (const char *)data.bytes);
         else fprintf(stderr, "[board] sent %.0f s of play\n", [body[@"stats"][@"seconds"] doubleValue]);
+        dispatch_semaphore_signal(done);
     }] resume];
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);   /* the task's own timeout ends it */
+    return status == 200;
+}
+
+/* The records kept on this Mac (leaderboard-pending.json): {"<lock>/<interp>": record}. */
+static inline NSMutableDictionary *totk_board_pending(void) {
+    NSString *file = totk_board_file(@"leaderboard-pending.json");
+    NSData *data = file ? [NSData dataWithContentsOfFile:file] : nil;
+    id json = data ? [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil] : nil;
+    return [json isKindOfClass:NSMutableDictionary.class] ? json : [NSMutableDictionary dictionary];
+}
+static inline void totk_board_write_pending(NSDictionary *pending) {
+    NSString *file = totk_board_file(@"leaderboard-pending.json");
+    if (!file) return;
+    if (!pending.count) { [NSFileManager.defaultManager removeItemAtPath:file error:nil]; return; }
+    NSData *data = [NSJSONSerialization dataWithJSONObject:pending options:0 error:nil];
+    if (!data || ![data writeToFile:file atomically:YES]) fprintf(stderr, "[board] the session was not kept: %s\n", file.UTF8String);
+}
+/* Keeps the session so far (with the switch on and enough play), replacing the record of its lock and interpolation. */
+static inline void totk_board_keep(NSDictionary *settings) {
+    if (!settings || !totk_board_on()) return;
+    NSDictionary *body = totk_board_body(totk_board_id(YES), settings);
+    if (!body) return;
+    NSMutableDictionary *pending = totk_board_pending();
+    pending[[NSString stringWithFormat:@"%@/%@", settings[@"lock"], settings[@"interp"]]] = body;
+    totk_board_write_pending(pending);
+    fprintf(stderr, "[board] kept %.0f s of play\n", [body[@"stats"][@"seconds"] doubleValue]);
+}
+/* Sends what is kept; the records the server took leave the file. */
+static inline void totk_board_send_kept(void) {
+    if (!totk_board_on()) return;
+    NSMutableDictionary *pending = totk_board_pending();
+    for (NSString *key in pending.allKeys)
+        if ([pending[key] isKindOfClass:NSDictionary.class] && totk_board_post(pending[key])) [pending removeObjectForKey:key];
+    totk_board_write_pending(pending);
 }
 
 /* The settings a record must not mix: the internal size is left out, since the game may scale it in play (it is sent as
@@ -166,23 +227,25 @@ static inline NSDictionary *totk_board_fixed(NSDictionary *settings) {
 
 /* One round (on the board's own queue). */
 static inline void totk_board_round(void) {
-    static NSDictionary *session;
+    static NSDictionary *session, *sessionSettings;
     static unsigned rounds;
     NSDictionary *settings = totk_board_settings(), *now = totk_board_fixed(settings);
     if (session && ![session isEqualToDictionary:now]) {
+        totk_board_keep(sessionSettings);   /* the session of the old settings is kept before the record starts again */
         BOOL counting = fps_board_counting();
         fps_board_reset();
         if (counting) fps_board_start();
         fprintf(stderr, "[board] settings changed: the frame record starts again\n");
     }
-    session = now;
-    if (++rounds % totk_board_send_every() || !totk_board_on()) return;
-    NSDictionary *body = totk_board_body(totk_board_id(YES), settings);
-    if (body) totk_board_post(body);
+    session = now; sessionSettings = settings;
+    ++rounds;
+    if (rounds % totk_board_save_every() == 0) totk_board_keep(settings);
+    if (rounds % totk_board_send_every() == 0) totk_board_send_kept();
 }
 
-/* Starts the rounds once per process (frontend.m, once the window is up), when the launcher named a folder. Runs with the
-   switch off too: the record follows the settings, so turning the switch on sends a clean record at the next send. */
+/* Starts the rounds once per process (frontend.m, once the window is up), when the launcher named a folder, and sends
+   what the last session kept TOTK_BOARD_FIRST seconds later. Runs with the switch off too: the record follows the
+   settings, so turning the switch on keeps a clean record at the next keep. */
 static dispatch_source_t totk_board_timer;
 static inline void totk_board_start(void) {
     if (totk_board_timer || !totk_board_dir()) return;
@@ -190,6 +253,7 @@ static inline void totk_board_start(void) {
                                                    dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
     dispatch_source_set_event_handler(timer, ^{ @autoreleasepool { totk_board_round(); } });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)totk_board_first() * NSEC_PER_SEC), queue, ^{ @autoreleasepool { totk_board_send_kept(); } });
     int tick = totk_board_tick();
     dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)tick * NSEC_PER_SEC), (uint64_t)tick * NSEC_PER_SEC, NSEC_PER_SEC);
     totk_board_timer = timer;

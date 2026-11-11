@@ -132,6 +132,11 @@ The [shared shader list](docs/shader-list.md) now holds **17,039 shader variants
 
 ## What's new
 
+- **2026-11-11: Rankings, an anonymous frame-rate board (Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Mac).**
+  A settings tab of its own (key 1) shows the latest board, one group per frame lock and interpolation setting. **Join the
+  board** is off by default and never asked; once on, the session is kept on your Mac every 5 minutes and sent at start and
+  every 30 minutes; your own row is green and everyone shows as an anonymous name ([controls](docs/controls.md)).
+  Shader contributions are now sent at start and every 30 minutes as well.
 - **2026-11-10: The Legend of Zelda: Ocarina of Time (Switch 2) on the Mac.** Build it from your own dump (a `.nup` file or a
   dump folder with update 131072) with `build_app.py`; no keys needed. On an M4 it plays from the title into Kokiri Forest and the
   village, about 81–83 fps standing in the village at 720p or 1080p (from 720p); 720p is the default. The settings panel (key 1) has the resolution,
@@ -312,6 +317,9 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 
 ## 更新说明
 
+- **2026-11-11：排行榜，匿名的帧率榜单（王国之泪、旷野之息、时之笛，Mac）。** 设置面板（按 1）里单独一个标签页显示最新榜单，
+  按锁帧和补帧设置分组。**我要上榜**默认关，不弹窗询问；打开后每 5 分钟在本机记一次这局的成绩，开机时和每 30 分钟上传；
+  你自己那一行是绿色，所有人都只显示匿名玩家名（[操作与设置](docs/controls.zh-CN.md)）。着色器贡献也改为开机时和每 30 分钟上传。
 - **2026-11-10：塞尔达传说 时之笛（Switch 2）登陆 Mac。** 用你自己导出的游戏（`.nup` 文件，或带更新 131072 的导出目录）
   通过 `build_app.py` 打包，不需要 keys。在 M4 上从标题玩进科奇里森林和村子，默认 1080p（720p 放大）站在村子里约 81–83 fps。
   设置面板（按 1）里有分辨率、放大方式（MetalFX 或游戏自带）、锁帧和 MetalFX 补帧（[games/oot](games/oot/README.md)、

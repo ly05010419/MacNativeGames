@@ -192,6 +192,8 @@ static int fakeSettingsCapture;
 void runtime_gamepad_text_capture(int on) { fakeSettingsCapture = !!on; }
 /* The text bar's controller timer (the User page's add opens the bar here): a controller that is never connected. */
 void runtime_gamepad_text_read(RuntimeGamepadState *out) { *out = (RuntimeGamepadState){0}; }
+/* The 排行榜 page (board_tab.h) picks the group of the game's pacing: none here. */
+void nvn_board_pacing(int *lock, int *interp) { *lock = 0; *interp = 0; }
 /* runtime/hid_feedback.c's and gamepad_feedback.m's rumble, strength and gyro switches without a controller. */
 static int fakeFeedback[2] = {1, 1}, fakeFeedbackLocked[2], fakeFeedbackPresent[2] = {1, 1}, fakeGainLocked;
 static float fakeGain = 1;
@@ -577,6 +579,7 @@ static void update_probe(void) {
 }
 
 int main(int argc, const char **argv) { @autoreleasepool {
+    setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     if (argc==2 && !strcmp(argv[1],"vr-rows")) {
         /* Exercise production row construction without NSApplication, a game,
            a window, or GPU work. Unsupported settings must not be offered. */

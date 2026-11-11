@@ -23,6 +23,14 @@ $(OUT)/oot-native: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJE
 	xcrun clang -std=c11 $(NATIVE_OPT) $(GAME_INFO) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_OOT=1 -DGAME_NS2=1 -I$(OUT) -I/opt/homebrew/opt/dav1d/include -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches_ns2.c runtime/ns2_host.c runtime/ns2_codec.c runtime/hle_movie_av1.c runtime/ns2_audio_out.c runtime/ns2_opus_ms.c runtime/offline_host.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c app/launcher.m runtime/cloud_save.m $(GFX_OBJECTS) /opt/homebrew/opt/dav1d/lib/libdav1d.dylib /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework VideoToolbox -framework CoreMedia -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -framework IOSurface -o "$(OUT)/oot-native"
 runtime: $(OUT)/oot-native
 
+# The leaderboard's frame-rate record (fps_board.c): average, median, 1% low, highest, interpolated frames.
+$(OUT)/fps-board: tests/fps_board/probe.c third_party/d2r_gfx/gfx/nvn/fps_board.c third_party/d2r_gfx/gfx/nvn/fps_board.h
+	@mkdir -p "$(OUT)"
+	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn tests/fps_board/probe.c third_party/d2r_gfx/gfx/nvn/fps_board.c -o "$@"
+.PHONY: probe-fps-board
+probe-fps-board: $(OUT)/fps-board
+	"$(OUT)/fps-board"
+
 $(OUT)/address-wait64: tests/address_wait64.c runtime/threads.c runtime/thread_enter.S
 	@mkdir -p "$(OUT)"
 	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -DGAME_NS2=1 -DGAME_OOT=1 -Ithird_party/d2r_gfx/gfx/nvn/include $^ -o "$@"

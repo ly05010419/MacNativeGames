@@ -27,7 +27,7 @@
 #endif
 #define TOTK_INBOX_CHUNK 2000           /* rows per request (the inbox takes 5,000; a row is about 1.2 KB at most) */
 #define TOTK_INBOX_FIRST 20             /* seconds after start: the game's own start-up goes first */
-#define TOTK_INBOX_EVERY (60 * 60)      /* then every hour, for the rows play adds (user 2026-11-10) */
+#define TOTK_INBOX_EVERY (30 * 60)      /* then every half hour, for the rows play adds (user 2026-11-11: "开机和半小时间隔") */
 #define TOTK_INBOX_TIMEOUT 60.0
 
 static inline BOOL totk_inbox_configured(void) { return TOTK_CONTRIB_INBOX[0] != 0; }

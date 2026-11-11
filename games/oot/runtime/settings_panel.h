@@ -107,6 +107,8 @@
    big switch, "Contribute shaders automatically", the start-up question's choice (totk_contrib_upload.h). On the display
    page, at the right of the bottom line, a button stars the project (its GitHub page); its note shows for a few seconds
    where the version is.
+   排行榜 (user 2026-11-11, board_tab.h): the latest frame-rate board of this game, and the switch "我要上榜", off by
+   default and never asked; on, the play's frame numbers are sent and the player's own row is green (board_upload.h).
    A setting this game or start cannot change shows its one value, greyed out. While the panel is open the game gets no
    keyboard, mouse or controller input (TOTKInputView, front_mouse_update and gamepad capture). The controls read their
    values again twice a second, so they always show what is in force. */
@@ -114,6 +116,7 @@
 #include "totk_fps_limit.h"   /* totk_fps_limits: the frame lock choices */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the 着色器贡献 page (contrib_tab.h) */
+#include "board_upload.h"   /* the leaderboard: the 排行榜 page (board_tab.h) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
@@ -330,7 +333,7 @@ static void settings_restore_start(void) {
 
 /* The pages, in tab order. A page added here is counted in perPage (the panel height), given its tab, and its rows a
    SETTINGS_PAGE_* below. VR (zeldaVR) is last and only there while VR is on (settings_pages). */
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_VR, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_VR, SETTINGS_PAGES };
 int vr_enabled(void);   /* zeldaVR/gfx/totk_vr.m: a headset link was asked for (TOTK_VR_CONTROL) */
 static int settings_pages(void){return vr_enabled()?SETTINGS_PAGES:SETTINGS_PAGE_VR;}
 static void settings_refresh_all(void);
@@ -1132,6 +1135,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 
 #include "update_tab.h"   /* the 更新 page */
 #include "contrib_tab.h"   /* the 着色器贡献 page */
+#include "board_tab.h"   /* the 排行榜 page */
 
 /* Where the player dragged the panel (user 2026-10-25: it can be moved), as the fraction of the free room left and below
    it, so a new opening and a resized window keep the spot; -1 = centred. The page shown last opens again. */
@@ -1185,7 +1189,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update"),settings_text("着色器贡献","Shaders")];
+ NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update"),settings_text("着色器贡献","Shaders"),settings_text("排行榜","Rankings")];
  if(vr_enabled())tabNames=[tabNames arrayByAddingObject:@"VR"];
  NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
@@ -1226,6 +1230,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSView *bindings=drawings?[self drawingsPageWithFrame:bindingsFrame]:[self bindingsPageWithFrame:bindingsFrame];[self addSubview:bindings];[pages addObject:bindings];
  NSView *update=[self updatePageWithFrame:bindingsFrame];[self addSubview:update];[pages addObject:update];
  NSView *contrib=[self contribPageWithFrame:bindingsFrame];[self addSubview:contrib];[pages addObject:contrib];   /* contrib_tab.h */
+ NSView *board=[self boardPageWithFrame:bindingsFrame];[self addSubview:board];[pages addObject:board];   /* board_tab.h */
  if(vr_enabled())[pages addObject:rowPage(SETTINGS_PAGE_VR)];
  self.pages=pages;
  /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, user 2026-10-25); the reset buttons on the right
@@ -1325,6 +1330,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  self.rows=rows;self.controllerIndex=0;
  if(page==SETTINGS_PAGE_UPDATE)[self showUpdatePage];   /* a check (update_tab.h) */
  if(page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];   /* the number now, not at the next tick */
+ if(page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];   /* the board now (read again at most once a minute) */
  [self layoutFooter];[self updateTargets];[self refreshBindings];
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
  [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
@@ -1380,6 +1386,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  [self.controllerTargets removeAllObjects];self.padOrder=@[];
  if(self.page==SETTINGS_PAGE_UPDATE)[self.controllerTargets addObjectsFromArray:self.updatePageTargets];
  else if(self.page==SETTINGS_PAGE_CONTRIB)[self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
+ else if(self.page==SETTINGS_PAGE_BOARD)[self.controllerTargets addObjectsFromArray:[self boardPageTargets]];
  else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
   NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
   for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];
@@ -1488,7 +1495,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   self.aaMethod=dm_gfx_aa_method();dispatch_async(dispatch_get_main_queue(),^{settings_aa_rebuild();});
  }
 #endif
- for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_UPDATE)[self refreshUpdateTargets];if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];
+ for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_UPDATE)[self refreshUpdateTargets];if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];if(self.page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];
 }
 -(void)refreshBindings{
  if(self.page!=SETTINGS_PAGE_BINDINGS)return;
@@ -1813,3 +1820,8 @@ static void settings_controller_start(void){
  [NSRunLoop.mainRunLoop addTimer:settingsControllerTimer forMode:NSRunLoopCommonModes];
 }
 void runtime_settings_toggle(void){dispatch_async(dispatch_get_main_queue(), ^{settings_show(!settingsOpen);});}
+/* Tests (input file "settings <page>", runtime/input.c): the panel opened on that page (SETTINGS_PAGE_*), or closed (-1). */
+void runtime_settings_page(int page){dispatch_async(dispatch_get_main_queue(), ^{
+ if(page<0||page>=settings_pages()){settings_show(NO);return;}
+ g_settings_page=page;settings_show(NO);settings_show(YES);
+});}

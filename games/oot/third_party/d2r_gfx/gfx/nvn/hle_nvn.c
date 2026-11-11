@@ -3089,6 +3089,13 @@ static int game_hold_fps(void) {
     int m = mfx_hold_fps(mfx_enabled());
     return m ? m : atomic_load(&g_fps_lock);
 }
+/* The leaderboard's pacing (runtime/board_upload.h): interp is the interpolation mode as the game's held rate (1: on
+   without a held rate, 0: off); lock is the rate the game is held at without interpolation (0: not held). */
+void nvn_board_pacing(int *lock, int *interp) {
+    int m = mfx_enabled(), hold = mfx_hold_fps(m);
+    *interp = m == MFX_OFF ? 0 : hold ? hold : 1;
+    *lock = m == MFX_OFF ? game_hold_fps() : 0;
+}
 static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_hold_fps() && (m == MFX_OFF || m == MFX_MAX); }
 /* A held rate on a display whose rate is not a multiple of it (30 on the user's 100 Hz): the game is paced by our own clock
    at exactly that rate instead of by the display link (3 refreshes would be 33 fps); the display link still shows each
