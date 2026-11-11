@@ -194,6 +194,9 @@ void runtime_gamepad_screenshot_button_set(int physical) { fakeShotButton = phys
 static int capturePresses, shotTabTakes;
 void runtime_capture_press(void) { capturePresses++; }
 static void probe_shot_tab_take(void) { shotTabTakes++; }
+/* The 排行榜 page's 查看排名 (board_tab.h board_tab_open, pointed here by the probe): the address it would open. */
+static int boardOpens; static NSURL *boardOpened;
+static void probe_board_open(NSURL *url) { boardOpens++; boardOpened = url; }
 static int fakeSettingsShortcut = 1;   /* off while a controller button is being bound */
 void runtime_gamepad_settings_enable(int on) { fakeSettingsShortcut = on; }
 static int fakeSettingsCapture;
@@ -831,6 +834,23 @@ static void nick_fits(NSView *page, TOTKNickRow *row, NSTextField *state, NSView
     assert(NSMaxX(row.label.frame) <= NSMinX(row.button.frame) && NSMaxX(row.button.frame) <= NSWidth(row.bounds) && row.label.frame.size.width > 40);
     assert(row.label.frame.size.width >= ceil([row.label.stringValue sizeWithAttributes:@{NSFontAttributeName: row.label.font}].width));   /* the name whole */
 }
+/* 查看排名 (user 2026-11-11): at the right of the switch's line inside the page, the group's label between the switch and it;
+   its address the site's board for this game, with the anonymous code when this Mac has an id, never the id. */
+static NSDictionary *board_site_query(void) {
+    NSURLComponents *site = [NSURLComponents componentsWithURL:board_tab_site_url() resolvingAgainstBaseURL:NO];
+    assert(site && [site.path isEqualToString:@"/"] && [site.host isEqualToString:totk_board_url().host] && [(site.port ?: @0) isEqual:(totk_board_url().port ?: @0)]);
+    NSMutableDictionary *items = [NSMutableDictionary dictionary];
+    for (NSURLQueryItem *i in site.queryItems) items[i.name] = i.value;
+    assert([items[@"view"] isEqual:@"board"] && [items[@"game"] isEqual:@GAME_INBOX_ID]);
+    NSString *bid = totk_board_id(NO);
+    assert(!bid || ![site.URL.absoluteString containsString:bid]);
+    return items;
+}
+static void board_site_fits(TOTKBoardPage *page) {
+    assert([page.siteButton.title isEqualToString:@"View ranking"] && page.siteButton.enabled && !page.siteButton.hidden);
+    assert(NSMaxX(page.siteButton.frame) <= NSWidth(page.bounds) - 10 && NSMinY(page.siteButton.frame) >= NSMinY(page.toggle.frame) - 4 &&
+           NSMaxX(page.toggle.frame) < NSMinX(page.group.frame) && NSMaxX(page.group.frame) <= NSMinX(page.siteButton.frame));
+}
 static void nick_probe(void) {
     const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("NICK_TEST_URL"), *taken = getenv("NICK_TEST_TAKEN"); assert(dir);
     NSString *game = [@(dir) stringByAppendingPathComponent:@"nick/TOTK"];   /* the board id lives in the folder above */
@@ -849,7 +869,8 @@ static void nick_probe(void) {
     unsetenv("TOTK_BOARD_DIR"); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1);
     TOTKBoardPage *board = nick_board();
     assert(settingsOpen && [board.nick.label.stringValue isEqualToString:@"Nickname: not available in this run"] && !board.nick.button.enabled);
-    assert([board.nick.button.title isEqualToString:@"Change"] && settingsPanel.controllerTargets.count == 0);
+    assert([board.nick.button.title isEqualToString:@"Change"] && [settingsPanel.controllerTargets isEqualToArray:@[board.siteButton]]);
+    board_site_fits(board); assert(board_site_query().count == 2);   /* no id: no code */
     [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; assert(![settingsPanel.controllerTargets containsObject:shots_page().nick.button] && !shots_page().nick.button.enabled);
     settings_show(0);
 
@@ -858,7 +879,7 @@ static void nick_probe(void) {
     assert(!totk_board_id(NO));
     g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
     nick_wait("row without an id", ^BOOL{ return [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
-    assert(board.nick.button.enabled && [settingsPanel.controllerTargets isEqualToArray:(@[board.toggle, board.nick.button])]);
+    assert(board.nick.button.enabled && [settingsPanel.controllerTargets isEqualToArray:(@[board.toggle, board.siteButton, board.nick.button])]);
     nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
     assert(!totk_board_id(NO));
     if (!server) {
@@ -886,6 +907,22 @@ static void nick_probe(void) {
     nick_wait("board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
     NSString *code = board.entries[0][@"name"];
     assert(code.length == 6 && ![board.entries[0][@"nick"] boolValue]);
+    /* 查看排名: the address carries the code the server names this player by, and the board read with it marks their row;
+       a click and a controller's A open it (here: kept, no browser). */
+    board_site_fits(board);
+    NSDictionary *site = board_site_query(); assert(site.count == 3 && [site[@"code"] isEqual:code]);
+    NSURL *marked = [NSURL URLWithString:[NSString stringWithFormat:@"%s/v1/board?game=%s&code=%@", server, GAME_INBOX_ID, code]];
+    NSDictionary *listing = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:marked] options:0 error:nil];
+    NSDictionary *mine = nil; for (NSDictionary *g in listing[@"data"][@"groups"]) for (NSDictionary *e in g[@"entries"]) if ([e[@"me"] boolValue]) mine = e;
+    assert(mine && [mine[@"name"] isEqual:code]);
+    board_tab_open = probe_board_open;
+    [board.siteButton performClick:nil]; assert(boardOpens == 1 && [boardOpened isEqual:board_tab_site_url()] && settingsOpen);
+    pad_press(PAD_DOWN);
+    for (int n = 0; n < 4 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != board.siteButton; n++) pad_press(PAD_DOWN);
+    pad_press(PAD_A); assert(boardOpens == 2 && settingsOpen);
+    board_tab_open = board_tab_open_default;
+    settings_show(0); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
+    nick_wait("board again", ^BOOL{ return nick_board().entries.count == 1; });
 
     /* The controller reaches 修改 after the switch; A opens the bar, empty; "Link" is set. */
     pad_press(PAD_DOWN); assert(g_settings_controller_active);
@@ -956,6 +993,7 @@ static void nick_probe(void) {
     board = nick_board();
     nick_wait("narrow board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue hasPrefix:@"Nickname: "]; });
     nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
+    board_site_fits(board);
     nick_png(@"board-narrow");
     [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; page = shots_page();
     nick_fits(page, page.nick, page.state, page.scroll);
