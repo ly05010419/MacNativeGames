@@ -640,6 +640,9 @@ static void screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_p
 #endif
 #include "screenshot.h"
 #include "settings_panel.h"
+#if defined(TOTK_SCREENSHOT_WINDOW)
+#include "shot_upload.h"   /* 截图分享: with its switch on, each saved screenshot is shared (screenshot.h totk_screenshot_shared) */
+#endif
 void runtime_front_resize_output(unsigned w,unsigned h) {
  dispatch_async(dispatch_get_main_queue(),^{settings_window_size(w,h,h?(double)w/h:0);});
 }
@@ -957,6 +960,9 @@ void runtime_front_run(void(*callback)(void)){
   front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   totk_board_start();   /* the leaderboard's rounds (board_upload.h): nothing is sent unless the player turned 我要上榜 on */
+#if defined(TOTK_SCREENSHOT_WINDOW)
+  totk_screenshot_shared=totk_shot_queue;totk_shot_start();   /* 截图分享 (shot_upload.h): off unless the player turned it on */
+#endif
   front_sr_view();
   [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});

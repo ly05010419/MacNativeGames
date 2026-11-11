@@ -109,6 +109,8 @@
    where the version is.
    排行榜 (user 2026-11-11, board_tab.h): the latest frame-rate board of this game, and the switch "我要上榜", off by
    default and never asked; on, the play's frame numbers are sent and the player's own row is green (board_upload.h).
+   截图分享 (user 2026-11-11, shot_tab.h): the game's shared screenshots, and the switch "分享我的截图", off by default and
+   never asked; on, every saved screenshot is shared (shot_upload.h); the player's own are marked green and can be deleted.
    A setting this game or start cannot change shows its one value, greyed out. While the panel is open the game gets no
    keyboard, mouse or controller input (TOTKInputView, front_mouse_update and gamepad capture). The controls read their
    values again twice a second, so they always show what is in force. */
@@ -117,6 +119,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the 着色器贡献 page (contrib_tab.h) */
 #include "board_upload.h"   /* the leaderboard: the 排行榜 page (board_tab.h) */
+#include "shot_upload.h"    /* screenshot sharing: the 截图分享 page (shot_tab.h) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
@@ -333,7 +336,7 @@ static void settings_restore_start(void) {
 
 /* The pages, in tab order. A page added here is counted in perPage (the panel height), given its tab, and its rows a
    SETTINGS_PAGE_* below. VR (zeldaVR) is last and only there while VR is on (settings_pages). */
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_VR, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_VR, SETTINGS_PAGES };
 int vr_enabled(void);   /* zeldaVR/gfx/totk_vr.m: a headset link was asked for (TOTK_VR_CONTROL) */
 static int settings_pages(void){return vr_enabled()?SETTINGS_PAGES:SETTINGS_PAGE_VR;}
 static void settings_refresh_all(void);
@@ -1136,6 +1139,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 #include "update_tab.h"   /* the 更新 page */
 #include "contrib_tab.h"   /* the 着色器贡献 page */
 #include "board_tab.h"   /* the 排行榜 page */
+#include "shot_tab.h"   /* the 截图分享 page */
 
 /* Where the player dragged the panel (user 2026-10-25: it can be moved), as the fraction of the free room left and below
    it, so a new opening and a resized window keep the spot; -1 = centred. The page shown last opens again. */
@@ -1160,8 +1164,12 @@ static NSString *settings_version_text(void) {
  return [NSString stringWithFormat:@(TOTK_UI("版本 %s","Ver. %s")),TOTK_GAME_VERSION];
 }
 @implementation TOTKSettingsPanel
-enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 90, SETTINGS_BOTTOM = 34, SETTINGS_POP_W = 260,
-       SETTINGS_CELL_W = 118, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
+/* SETTINGS_W: every tab whole in both languages, with VR's too (measured 2026-11-11, macOS 26, the real NSSegmentedControl:
+   the English tabs with VR need about 700 pt and stay inside the bar's 14 pt margins from a 728 pt panel; narrower, the bar
+   spills over its margins, and under about 708 pt labels are cut to "…"). A window too narrow for it gets a narrower panel,
+   down to SETTINGS_NARROW_W (the width before the 截图分享 tab). */
+enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 90, SETTINGS_BOTTOM = 34, SETTINGS_POP_W = 260, SETTINGS_POP_MAX_W = 304, SETTINGS_LABEL_W = 350,
+       SETTINGS_CELL_W = 118, SETTINGS_CELL_MAX_W = 140, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
@@ -1173,7 +1181,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
  /* The key bindings drawings need a wider, taller panel (PR #1210); it is made at that size while they are shown. */
  BOOL drawings=settings_drawings_for(g_settings_page);
- CGFloat body=n*(rowH+gap)-gap,h=SETTINGS_TOP+body+SETTINGS_BOTTOM,W=SETTINGS_W;
+ CGFloat roomW=window?window.contentView.bounds.size.width-8:CGFLOAT_MAX;   /* a narrower window: a narrower panel, kept inside */
+ CGFloat body=n*(rowH+gap)-gap,h=SETTINGS_TOP+body+SETTINGS_BOTTOM,W=fmax(SETTINGS_NARROW_W,fmin(SETTINGS_W,roomW));
  if(!drawings&&h>room){h=room;body=fmax(0,h-SETTINGS_TOP-SETTINGS_BOTTOM);}   /* more controls: scroll rather than grow past the window */
  if(drawings){W=SETTINGS_WIDE_W;h=fmax(h,SETTINGS_WIDE_H);body=h-SETTINGS_TOP-SETTINGS_BOTTOM;}
  if(!(self=[super initWithFrame:NSMakeRect(0,0,W,h)]))return nil;
@@ -1189,12 +1198,15 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance")];
+ NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots")];
  if(vr_enabled())tabNames=[tabNames arrayByAddingObject:@"VR"];
  NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
+ /* the menus widen with the panel up to 304 pt ("Handheld (less vegetation, faster, default)" whole) while the titles keep
+    350 ("GPU keep-alive (holds the clock up; hotter, more power)" is 348); 260 in a narrower panel */
+ CGFloat popW=fmax(SETTINGS_POP_W,fmin(SETTINGS_POP_MAX_W,W-28-24-SETTINGS_LABEL_W));
  NSView *(^rowPage)(NSInteger)=^NSView *(NSInteger p){   /* the pages of rows: display, input, effects and (zeldaVR) VR */
   NSUInteger count=0;for(TOTKSettingRow *r in rows)if(r.page==p)count++;
   CGFloat docH=fmax(body,count*(rowH+gap)-gap);
@@ -1205,14 +1217,14 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
    NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
    band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-   label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-SETTINGS_POP_W-24,18);[band addSubview:label];
+   label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-popW-24,18);[band addSubview:label];
    if(r.slider){
     NSSlider *s=[NSSlider sliderWithValue:r.get?r.get():r.sliderMin minValue:r.sliderMin maxValue:r.sliderMax target:nil action:nil];
-    s.continuous=YES;s.frame=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-20)/2),SETTINGS_POP_W-44,20);r.control=s;
+    s.continuous=YES;s.frame=NSMakeRect(rw-popW-8,floor((rowH-20)/2),popW-44,20);r.control=s;
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
    }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
-   else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
+   else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
   }
@@ -1231,6 +1243,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSView *update=[self updatePageWithFrame:bindingsFrame];[self addSubview:update];[pages addObject:update];
  NSView *contrib=[self contribPageWithFrame:bindingsFrame];[self addSubview:contrib];[pages addObject:contrib];   /* contrib_tab.h */
  NSView *board=[self boardPageWithFrame:bindingsFrame];[self addSubview:board];[pages addObject:board];   /* board_tab.h */
+ NSView *shots=[self shotsPageWithFrame:bindingsFrame];[self addSubview:shots];[pages addObject:shots];   /* shot_tab.h */
  if(vr_enabled())[pages addObject:rowPage(SETTINGS_PAGE_VR)];
  self.pages=pages;
  /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, user 2026-10-25); the reset buttons on the right
@@ -1275,14 +1288,16 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 /* The key bindings page: a line of help, the column titles, and the actions in a scrolling list. */
 -(NSView *)bindingsPageWithFrame:(NSRect)frame{
  NSView *page=[[NSView alloc] initWithFrame:frame];CGFloat w=frame.size.width,h=frame.size.height,bw=w-28;
- CGFloat cx2=bw-6-SETTINGS_CELL_W,cx1=cx2-SETTINGS_CELL_GAP-SETTINGS_CELL_W,cx0=cx1-SETTINGS_CELL_GAP-SETTINGS_CELL_W;
+ /* the boxes widen with the panel up to 140 pt ("Controller (PlayStation)" whole above them), the actions keep 200 */
+ CGFloat cell=fmax(SETTINGS_CELL_W,fmin(SETTINGS_CELL_MAX_W,floor((bw-6-2*SETTINGS_CELL_GAP-200)/3)));
+ CGFloat cx2=bw-6-cell,cx1=cx2-SETTINGS_CELL_GAP-cell,cx0=cx1-SETTINGS_CELL_GAP-cell;
  NSColor *dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
  NSTextField *help=[NSTextField wrappingLabelWithString:settings_text(
   "点一个格子，再按键盘按键、鼠标按键或手柄按钮（按 1 取消）；右键点格子清除。已被占用的按键会互换。手柄：选中一行按 A，再按新按钮。",
   "Click a box, then press a key, a mouse button or a controller button (1 cancels); right-click clears it. An input in use swaps places. With a controller: pick a row, press A, then the new button.")];
  help.font=[NSFont systemFontOfSize:11];help.textColor=dim;help.frame=NSMakeRect(18,h-30,w-36,30);[page addSubview:help];
  NSString *titles[4]={settings_text("操作","Action"),settings_text("按键 1","Key 1"),settings_text("按键 2","Key 2"),@""};
- CGFloat xs[4]={24,14+cx0,14+cx1,14+cx2},ws[4]={cx0-16,SETTINGS_CELL_W,SETTINGS_CELL_W,SETTINGS_CELL_W};
+ CGFloat xs[4]={24,14+cx0,14+cx1,14+cx2},ws[4]={cx0-16,cell,cell,cell};
  for(int i=0;i<4;i++){NSTextField *t=[NSTextField labelWithString:titles[i]];t.font=[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];t.textColor=dim;
   t.alignment=i?NSTextAlignmentCenter:NSTextAlignmentLeft;t.lineBreakMode=NSLineBreakByTruncatingTail;t.frame=NSMakeRect(xs[i],h-50,ws[i],16);[page addSubview:t];if(i==3)self.padHeader=t;}
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,w,fmax(0,h-54))];
@@ -1305,7 +1320,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   for(int slot=0;slot<3;slot++){
    TOTKBindingButton *box=[TOTKBindingButton buttonWithTitle:@"" target:self action:@selector(boxClicked:)];
    box.bordered=NO;box.wantsLayer=YES;box.layer.cornerRadius=5;box.refusesFirstResponder=YES;
-   box.frame=NSMakeRect(cx[slot],3,SETTINGS_CELL_W,SETTINGS_BIND_ROW_H-8);
+   box.frame=NSMakeRect(cx[slot],3,cell,SETTINGS_BIND_ROW_H-8);
    box.panel=self;box.gameAction=a->action;box.slot=slot;
    box.enabled=a->action==SETTINGS_BIND_PANEL?slot==2:slot<2||a->action<KEYMAP_SWITCH_BUTTONS;
    [band addSubview:box];[self.bindingButtons addObject:box];
@@ -1331,6 +1346,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  if(page==SETTINGS_PAGE_UPDATE)[self showUpdatePage];   /* a check (update_tab.h) */
  if(page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];   /* the number now, not at the next tick */
  if(page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];   /* the board now (read again at most once a minute) */
+ if(page==SETTINGS_PAGE_SHOTS)[self refreshShotsPage];   /* the pictures now (read again at most once a minute) */
  [self layoutFooter];[self updateTargets];[self refreshBindings];
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
  [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
@@ -1387,6 +1403,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  if(self.page==SETTINGS_PAGE_UPDATE)[self.controllerTargets addObjectsFromArray:self.updatePageTargets];
  else if(self.page==SETTINGS_PAGE_CONTRIB)[self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
  else if(self.page==SETTINGS_PAGE_BOARD)[self.controllerTargets addObjectsFromArray:[self boardPageTargets]];
+ else if(self.page==SETTINGS_PAGE_SHOTS)[self.controllerTargets addObjectsFromArray:[self shotsPageTargets]];
  else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
   NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
   for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];
@@ -1496,6 +1513,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  }
 #endif
  for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_UPDATE)[self refreshUpdateTargets];if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];if(self.page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];
+ if(self.page==SETTINGS_PAGE_SHOTS)[self refreshShotsPage];
 }
 -(void)refreshBindings{
  if(self.page!=SETTINGS_PAGE_BINDINGS)return;
@@ -1675,6 +1693,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  }
  int detected=-1,type=runtime_gamepad_type(&detected);if(!type)type=detected;
  const uint64_t confirm=type==GAMEPAD_TYPE_SWITCH?2u:1u,cancel=type==GAMEPAD_TYPE_SWITCH?1u:2u;
+ if((edges&(confirm|cancel))&&self.page==SETTINGS_PAGE_SHOTS&&[self shotsPageCloseViewer])return;   /* the whole picture over the 截图分享 page: A or B closes it */
  if(!g_settings_controller_active&&!(edges&cancel)&&(direction||(edges&confirm))){   /* the first move or A shows where the controller is, nothing more */
   g_settings_controller_active=YES;[self controllerHighlight];
   self.previousDirection=direction;self.repeatAt=now+0.4;return;

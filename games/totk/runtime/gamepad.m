@@ -60,6 +60,8 @@ static void gamepad_gestures_changed(void);
    flag, and the refresh that follows calls the hook once per press. A macOS shortcut already bound to the button keeps
    it (System Settings > Game Center): the button then takes no picture. */
 void runtime_capture_set_hook(void (*hook)(void)) { captureHook = hook; }
+/* The input file's "capture" (runtime/input.c): the capture button pressed once, for automated tests of screenshots. */
+void runtime_capture_press(void) { if (captureHook) captureHook(); }
 /* A Switch 0x30 report: 1 while its button 5 is down, which arrives every few milliseconds while it is held. */
 void runtime_gamepad_switch_capture(void *controller, int pressed) {
     if (!controller) captureDown = 0;

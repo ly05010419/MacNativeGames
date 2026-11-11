@@ -485,7 +485,8 @@ static void update_probe(void) {
     window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     settings_show(1); assert(settingsOpen);
-    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE < settings_pages() && settings_pages() - 1 == (vr_enabled() ? SETTINGS_PAGE_VR : SETTINGS_PAGE_BOARD) && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"] && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_BOARD] isEqualToString:@"Performance"]);
+    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE < settings_pages() && settings_pages() - 1 == (vr_enabled() ? SETTINGS_PAGE_VR : SETTINGS_PAGE_SHOTS) && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"] && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_BOARD] isEqualToString:@"Performance"]);
+    assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_SHOTS] isEqualToString:@"Screenshots"] && [settingsPanel.pages[SETTINGS_PAGE_SHOTS] isKindOfClass:TOTKShotsPage.class]);
     for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
     assert(!spawned[0]);   /* nothing is asked before the page opens */
 
@@ -578,8 +579,165 @@ static void update_probe(void) {
     settings_show(0); setenv("TOTK_UI_LANG", "en", 1); spawn_ok = 1;
 }
 
+/* The 截图分享 page (shot_tab.h): its tab and place, the switch greyed out without the launcher's folder and flipped by A
+   with it. TOTK_SHOT_URL is a closed port unless SHOTS_TEST_URL names the inbox's test/local-server.js: then six pictures
+   are shared (three this Mac's, three another player's) and the grid, the player's own (green, Delete), the whole picture
+   (A, then B; a click, then Esc), a delete, the switch's marks and reading on at the end of the list are checked.
+   SHOTS_TEST_PNG: where pictures of the panel go (-grid, -picture, -zh before the extension). */
+@interface TOTKShotsPage (Probe)
+-(void)takeNewest:(NSDictionary *)data;
+-(void)showShots:(NSArray<NSDictionary *> *)all;
+@end
+enum { SHOTS_PAD_B = 1u << 1 };
+static TOTKShotsPage *shots_page(void) { return (TOTKShotsPage *)settingsPanel.pages[SETTINGS_PAGE_SHOTS]; }
+static void shots_wait(const char *what, BOOL (^ready)(void)) {
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:25];
+    while (!ready() && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
+    if (!ready()) { fprintf(stderr, "screenshots page: no %s in 25 s (status \"%s\")\n", what, shots_page().status.stringValue.UTF8String); abort(); }
+}
+/* Esc as typed: through the application's event queue (where local monitors see it), then sent on. */
+static void shots_escape(void) {
+    NSEvent *esc = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:window.windowNumber
+                                     context:nil characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53];
+    [NSApp postEvent:esc atStart:YES];
+    NSEvent *got = [NSApp nextEventMatchingMask:NSEventMaskKeyDown untilDate:[NSDate dateWithTimeIntervalSinceNow:0.3] inMode:NSDefaultRunLoopMode dequeue:YES];
+    if (got) [NSApp sendEvent:got];
+    tick(); tick();
+}
+static NSUInteger shots_own(void) { NSUInteger n = 0; for (TOTKShotCell *c in shots_page().cells) n += c.mine && c.deleteButton; return n; }
+static void shots_png(NSString *suffix) {
+    const char *png = getenv("SHOTS_TEST_PNG"); if (!png) return;
+    NSView *v = settingsPanel; [v displayIfNeeded];
+    NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds]; [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+    NSString *path = [[@(png) stringByDeletingPathExtension] stringByAppendingFormat:@"%@.png", suffix];
+    assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]);
+    printf("picture: %s\n", path.UTF8String);
+}
+/* A made-up game picture: sky, ground and a sun, in colours of its own (w x h: one is 4:3, the box stays 16:9). */
+static CGImageRef shots_picture(int n, size_t w, size_t h) {
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef c = CGBitmapContextCreate(NULL, w, h, 8, 0, space, (CGBitmapInfo)kCGImageAlphaNoneSkipLast);
+    CGColorSpaceRelease(space); assert(c);
+    CGContextSetFillColorWithColor(c, [NSColor colorWithHue:n / 6.0 saturation:0.45 brightness:0.92 alpha:1].CGColor);
+    CGContextFillRect(c, CGRectMake(0, 0, w, h));
+    CGContextSetFillColorWithColor(c, [NSColor colorWithHue:fmod(n / 6.0 + 0.3, 1) saturation:0.6 brightness:0.45 alpha:1].CGColor);
+    CGContextFillRect(c, CGRectMake(0, 0, w, h * (0.25 + 0.08 * n)));
+    CGContextSetFillColorWithColor(c, NSColor.whiteColor.CGColor);
+    CGContextFillEllipseInRect(c, CGRectMake(w * (0.75 - 0.1 * n), h * 0.65, h * 0.18, h * 0.18));
+    CGImageRef img = CGBitmapContextCreateImage(c); CGContextRelease(c); return img;
+}
+/* Shared as player `board` (nil: this Mac's own id), with shot_upload.h's own body and post. */
+static void shots_share(int n, NSString *board) {
+    CGImageRef img = shots_picture(n, n == 3 ? 1024 : 1920, n == 3 ? 768 : 1080);
+    NSMutableDictionary *body = [totk_shot_body(img) mutableCopy]; CGImageRelease(img); assert(body);
+    if (board) body[@"board_id"] = board;
+    NSData *json = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    __block NSInteger status = 0;
+    dispatch_sync(totk_shot_worker(), ^{ status = totk_shot_post(json); });
+    if (status != 200) { fprintf(stderr, "screenshots page: sharing picture %d answered %ld\n", n, (long)status); abort(); }
+}
+static void shots_probe(void) {
+    const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("SHOTS_TEST_URL"); assert(dir);
+    NSString *game = [@(dir) stringByAppendingPathComponent:@"shots/TOTK"];   /* the board id lives in the folder above */
+    assert([NSFileManager.defaultManager createDirectoryAtPath:game withIntermediateDirectories:YES attributes:nil error:nil]);
+    if (server) setenv("TOTK_SHOT_URL", server, 1);
+    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
+    settings_test_output_init();
+    window = probe_window();
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+
+    /* A run the launcher named no folder for: the switch greyed out and out of the controller's way. */
+    unsetenv("TOTK_BOARD_DIR"); g_settings_page = SETTINGS_PAGE_SHOTS; settings_show(1);
+    TOTKShotsPage *page = shots_page();
+    assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_SHOTS && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_SHOTS && !page.hidden);
+    assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_SHOTS] isEqualToString:@"Screenshots"] && SETTINGS_PAGE_SHOTS == SETTINGS_PAGE_BOARD + 1);
+    assert(settingsPanel.tabs.segmentCount == settings_pages() && settings_pages() - 1 == (vr_enabled() ? SETTINGS_PAGE_VR : SETTINGS_PAGE_SHOTS));
+    assert(!page.toggle.enabled && [page.state.stringValue isEqualToString:@"This run shares no screenshots"] && ![settingsPanel.controllerTargets containsObject:page.toggle]);
+    for (NSInteger p = 0; p < (NSInteger)settingsPanel.pages.count; p++) assert(settingsPanel.pages[(NSUInteger)p].hidden == (p != SETTINGS_PAGE_SHOTS));
+    settings_show(0);
+
+    setenv("TOTK_BOARD_DIR", game.UTF8String, 1);
+    NSString *other = NSUUID.UUID.UUIDString.lowercaseString;
+    if (server) for (int n = 0; n < 6; n++) shots_share(n, n % 2 ? other : nil);   /* the newest (5) another player's */
+    settings_show(1); page = shots_page();
+    assert(page.toggle.enabled && page.toggle.state == NSControlStateValueOff && !totk_shot_on());
+    assert([page.state.stringValue isEqualToString:@"Off: nothing is sent"] && settingsPanel.controllerTargets.firstObject == page.toggle);
+    if (!server) {
+        /* No server: the read fails and says it tries again; A on the switch turns sharing on and off. */
+        shots_wait("failed read", ^BOOL{ return [page.status.stringValue hasPrefix:@"The screenshots could not be read ("]; });
+        assert([page.status.stringValue hasSuffix:@"); trying again in a minute"] && page.cells.count == 0);
+        pad_press(PAD_A); pad_press(PAD_A);   /* the first shows where the controller is */
+        assert(totk_shot_on() && page.toggle.state == NSControlStateValueOn && [page.state.stringValue isEqualToString:@"On: every screenshot is shared, up to 20 a day"]);
+        pad_press(PAD_A); assert(!totk_shot_on() && [page.state.stringValue isEqualToString:@"Off: nothing is sent"]);
+        settings_show(0); return;
+    }
+    /* Off: everyone's pictures, none marked as the player's (no id is sent). */
+    shots_wait("list", ^BOOL{ return page.cells.count == 6; });
+    assert(shots_own() == 0 && page.status.stringValue.length == 0 && !page.next);
+    for (NSUInteger i = 1; i < page.shots.count; i++) assert([page.shots[i - 1][@"id"] longLongValue] > [page.shots[i][@"id"] longLongValue]);   /* newest first */
+    /* On (A): read again at once, the player's own three marked, each with its Delete after it for the controller. */
+    pad_press(PAD_A); pad_press(PAD_A); assert(totk_shot_on());
+    shots_wait("own pictures", ^BOOL{ return shots_own() == 3; });
+    NSArray<TOTKShotCell *> *cells = page.cells; NSArray *targets = settingsPanel.controllerTargets;
+    assert(!cells[0].mine && cells[1].mine && !cells[2].mine && cells[3].mine && !cells[0].deleteButton);
+    assert(targets.count == 1 + 6 + 3 && targets[0] == page.toggle && targets[1] == cells[0] && targets[2] == cells[1] && targets[3] == cells[1].deleteButton);
+    assert(NSWidth(cells[0].frame) * 4 + 3 * SHOT_TAB_GAP <= NSWidth(page.grid.frame) && NSMinX(cells[3].frame) > NSMinX(cells[2].frame));   /* four to a row */
+    assert(NSMinY(cells[4].frame) > NSMinY(cells[0].frame));
+    shots_wait("thumbnails", ^BOOL{ for (TOTKShotCell *c in page.cells) if (!c.thumb.image) return NO; return YES; });
+    shots_png(@"-grid");
+    /* A on a picture: the whole of it over the page; B closes it and the panel stays open. */
+    settingsPanel.controllerIndex = 2; [settingsPanel controllerHighlight]; pad_press(PAD_A);
+    assert(page.viewer && page.viewer.superview == page && NSEqualRects(page.viewer.frame, page.bounds));
+    shots_wait("whole picture", ^BOOL{ return page.viewer.image.image != nil; });
+    assert(page.viewer.image.image.size.width == 1920 && page.viewer.status.hidden);
+    shots_png(@"-picture");
+    pad_press(SHOTS_PAD_B); assert(!page.viewer && settingsOpen);
+    /* A click on a thumbnail shows it too; Esc (through the event queue, as typed) closes the picture, not the panel. */
+    NSPoint at = [cells[3] convertPoint:NSMakePoint(NSMidX(cells[3].bounds), NSMidY(cells[3].bounds)) toView:nil];
+    NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:at modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
+    assert([cells[3] hitTest:[cells[3].superview convertPoint:at fromView:nil]] == cells[3]);
+    [cells[3] mouseUp:up]; assert(page.viewer);
+    shots_escape(); assert(!page.viewer && settingsOpen);
+    /* ... and it is the picture's own key monitor that does it: without it the same Esc leaves the picture (this hidden
+       window is never the key one, so the game view's Esc, which closes the panel, is not reached here). */
+    [cells[3] mouseUp:up]; assert(page.viewer && page.viewer.keyMonitor);
+    [NSEvent removeMonitor:page.viewer.keyMonitor]; page.viewer.keyMonitor = nil;
+    shots_escape(); assert(page.viewer && settingsOpen);
+    pad_press(SHOTS_PAD_B); assert(!page.viewer && settingsOpen);
+    /* Delete (A on the button): gone from the grid, and from the server's list read again. */
+    NSString *gone = cells[1].shotId;
+    settingsPanel.controllerIndex = 3; [settingsPanel controllerHighlight]; pad_press(PAD_A);
+    shots_wait("delete", ^BOOL{ return page.cells.count == 5 && shots_own() == 2; });
+    for (NSDictionary *s in page.shots) assert(![s[@"id"] isEqual:gone]);
+    shots_wait("list read again", ^BOOL{ return !page.fetching && page.fetchedAt > 0; });
+    assert(page.cells.count == 5 && settingsPanel.controllerTargets.count == 1 + 5 + 2);
+    /* Off again: the marks go. */
+    settingsPanel.controllerIndex = 0; [settingsPanel controllerHighlight]; pad_press(PAD_A); assert(!totk_shot_on());
+    shots_wait("marks gone", ^BOOL{ return shots_own() == 0 && page.cells.count == 5; });
+    /* The end of the list: a full page with "next" (made up here: the server holds 5), scrolled to its end, reads the
+       older ones with before= and puts them below. */
+    NSMutableArray *made = [NSMutableArray array];
+    for (int i = 0; i < 60; i++) [made addObject:@{@"id": [NSString stringWithFormat:@"%d", 1000 - i], @"name": @"Test", @"at": @"2026-11-11T00:00:00.000Z", @"w": @1920, @"h": @1080, @"me": @NO}];
+    [page showShots:@[]]; page.fetchedAt = CACurrentMediaTime();   /* no minute's read in between */
+    [page takeNewest:@{@"shots": made, @"next": @"941"}];
+    assert(page.cells.count == 60 && [page.next isEqualToString:@"941"] && !page.fetchingMore);
+    [page.grid scrollPoint:NSMakePoint(0, NSHeight(page.grid.frame))];
+    shots_wait("older pictures", ^BOOL{ return page.cells.count == 65 && !page.next; });
+    assert([page.shots[60][@"id"] longLongValue] < 941);
+    settings_show(0);
+    /* In Chinese, for the picture. */
+    setenv("TOTK_UI_LANG", "zh", 1); g_settings_page = SETTINGS_PAGE_SHOTS; settings_show(1); page = shots_page();
+    pad_press(PAD_A); pad_press(PAD_A); assert(totk_shot_on());
+    shots_wait("list", ^BOOL{ return page.cells.count == 5 && shots_own() == 2; });
+    shots_wait("thumbnails", ^BOOL{ for (TOTKShotCell *c in page.cells) if (!c.thumb.image) return NO; return YES; });
+    assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_SHOTS] isEqualToString:@"截图分享"] && [page.state.stringValue isEqualToString:@"已开启：每张截图自动分享，每天最多 20 张"]);
+    shots_png(@"-zh");
+    settings_show(0); setenv("TOTK_UI_LANG", "en", 1);
+}
+
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
+    setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
     if (argc==2 && !strcmp(argv[1],"vr-rows")) {
         /* Exercise production row construction without NSApplication, a game,
            a window, or GPU work. Unsupported settings must not be offered. */
@@ -627,6 +785,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     snprintf(fakeUsers[1].name, sizeof fakeUsers[1].name, "Zelda");
     for (int i = 0; i < 2; i++) { arc4random_buf(&fakeUsers[i].lo, sizeof fakeUsers[i].lo); arc4random_buf(&fakeUsers[i].hi, sizeof fakeUsers[i].hi); }
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1258,6 +1417,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; tick(); assert(!settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W);
     press(18); [window setContentSize:NSMakeSize(900, 600)]; g_settings_page = SETTINGS_PAGE_BINDINGS; press(18);
     assert(settingsOpen && !settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W && !settingsPanel.listToggle.enabled);   /* too small: the list */
+    press(18); [window setContentSize:NSMakeSize(700, 600)]; press(18);   /* narrower than the panel: it narrows to stay inside */
+    assert(settingsOpen && settingsPanel.frame.size.width == 692 && NSContainsRect(window.contentView.bounds, settingsPanel.frame));
+    press(18); [window setContentSize:NSMakeSize(500, 400)]; press(18);   /* never below the old 600 pt */
+    assert(settingsOpen && settingsPanel.frame.size.width == SETTINGS_NARROW_W);
     press(18); [window setContentSize:NSMakeSize(1280, 720)]; g_settings_page = SETTINGS_PAGE_DISPLAY; press(18); assert(settingsOpen);
 
     press(18); assert(!settingsOpen);

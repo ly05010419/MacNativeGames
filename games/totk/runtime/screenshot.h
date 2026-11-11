@@ -258,6 +258,10 @@ enum { SHOT_PENDING_MS = 3000, SHOT_NOTE_MS = 3000 };
 #define TOTK_SCREENSHOT_PICTURE NULL
 #endif
 void (*totk_screenshot_picture)(void (^cb)(CGImageRef img)) __attribute__((weak)) = TOTK_SCREENSHOT_PICTURE;
+/* Screenshot sharing (shot_upload.h, Mac only): the Mac front end points this at totk_shot_queue. Called on the screenshot
+   queue with a picture just saved, before it is released; 1 when it will be shared (the 截图分享 switch is on), which the
+   note then says. NULL -- the iPhone app, a probe -- shares nothing. Weak, so a build without it links. */
+int (*totk_screenshot_shared)(CGImageRef img) __attribute__((weak)) = NULL;
 /* A program without ImageIO (a probe) or with another place to save (the iPhone app's photo library) defines
    TOTK_SCREENSHOT_WRITE 0 and offers its own screenshot_save. */
 #ifndef TOTK_SCREENSHOT_WRITE
@@ -427,10 +431,12 @@ static void screenshot_take(void) {
                 const char *why = NULL;
                 int problem = SHOT_OK;
                 int ok = TOTK_SCREENSHOT_SAVE(taken, GAME_NAME, written, sizeof written, &why, &problem, album, sizeof album);
+                int shared = ok && taken && totk_screenshot_shared ? totk_screenshot_shared(taken) : 0;   /* 截图分享 (shot_upload.h) */
                 NSString *text = ok
                     ? (album[0] ? [NSString stringWithFormat:@(TOTK_UI("截图已存入「照片」：%@", "Screenshot saved to Photos: %@")), @(album)]
                                 : [NSString stringWithFormat:@(TOTK_UI("截图已保存：%@", "Screenshot saved: %@")), @(written)])
                     : [NSString stringWithFormat:@(TOTK_UI("未保存截图：%@（%@）", "Screenshot not saved: %@ (%@)")), @(why ?: "?"), place];
+                if (shared) text = [text stringByAppendingString:@(TOTK_UI("，已分享", ", shared"))];
                 if (taken) CGImageRelease(taken);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     fprintf(stderr, "[totk] screenshot: %s\n", text.UTF8String);

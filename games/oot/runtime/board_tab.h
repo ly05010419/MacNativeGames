@@ -28,12 +28,13 @@ static NSTextField *board_tab_label(NSString *text, CGFloat size, CGFloat white,
 static NSString *board_tab_fps(id v) { return [v isKindOfClass:NSNumber.class]?[NSString stringWithFormat:@"%.1f",[v doubleValue]]:@"–"; }
 
 /* The columns: identifier, title, width. Measured (2026-11-11): each is wider than its title and its widest value
-   ("M4 Max · 40 核", "2560×1440 MFX", "144.0"); with the 2 pt spacing they end well inside the 555 the table shows
-   beside its scroller. No interpolation column: interpolated play is not ranked. */
+   ("M4 Max · 40 核", "2560×1440 MFX", "144.0"; the Median title needs 48); with the 2 pt spacing they end inside the
+   555 the table shows beside its scroller in a 600 pt panel. The chip column takes more where the page has it
+   (initWithFrame). No interpolation column: interpolated play is not ranked. */
 static NSArray<NSArray *> *board_tab_columns(void) {
  return @[@[@"rank",settings_text("名次","#"),@28],@[@"name",settings_text("玩家","Player"),@54],@[@"chip",settings_text("芯片","Chip"),@104],
           @[@"memory",settings_text("内存","Memory"),@48],@[@"out",settings_text("分辨率","Resolution"),@112],@[@"avg",settings_text("平均","Avg"),@40],
-          @[@"median",settings_text("中位数","Median"),@40],@[@"low1",settings_text("1%最低","1% low"),@44],@[@"max",settings_text("最高","Max"),@40]];
+          @[@"median",settings_text("中位数","Median"),@48],@[@"low1",settings_text("1%最低","1% low"),@44],@[@"max",settings_text("最高","Max"),@40]];
 }
 
 -(instancetype)initWithFrame:(NSRect)frame{
@@ -57,6 +58,10 @@ static NSArray<NSArray *> *board_tab_columns(void) {
  table.dataSource=self;table.delegate=self;table.rowHeight=20;table.intercellSpacing=NSMakeSize(2,2);
  table.style=NSTableViewStylePlain;   /* the default (inset) style shrinks the first column to 10 pt: the 名次 title was cut */table.backgroundColor=NSColor.clearColor;table.allowsColumnSelection=NO;
  table.columnAutoresizingStyle=NSTableViewNoColumnAutoresizing;table.refusesFirstResponder=YES;table.selectionHighlightStyle=NSTableViewSelectionHighlightStyleNone;
+ /* the panel's 740 pt (settings_panel.h SETTINGS_W; narrower in a small window): the chip column up to 36 pt wider (the
+    player's own row, bold: "M3 Ultra · 80 GPU" is 110 pt), what is left falls to the right of the numbers */
+ CGFloat used=0;for(NSTableColumn *col in table.tableColumns)used+=col.width+table.intercellSpacing.width;
+ [table tableColumnWithIdentifier:@"chip"].width+=fmax(0,fmin(36,scroll.contentSize.width-used-4));
  scroll.documentView=table;[self addSubview:scroll];self.table=table;
  NSTextField *status=board_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);[self addSubview:status];self.status=status;
  NSTextField *note=board_tab_label(settings_text("匿名：只上传配置、画面设置、帧数和一个随机编号。只算不锁帧、不补帧时进入世界后的游玩，暂停和切到后台不算；锁帧或补帧时不记录。",

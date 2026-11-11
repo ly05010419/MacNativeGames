@@ -326,6 +326,8 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "shot ", 5)) {
             line[strcspn(line, "\r\n")] = 0; if (!line[5]) runtime_fail("diagnostic screenshot path");
             dm_gfx_shot_at(2, line + 5);
+        } else if (!strncmp(line, "capture", 7) && (!line[7] || line[7] == '\n' || line[7] == '\r')) {   /* "capture": the capture button once (screenshot.h; screenshot sharing tests) */
+            if (runtime_capture_press) runtime_capture_press();
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);

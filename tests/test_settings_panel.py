@@ -9,6 +9,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+# The shader inbox (its own project, beside this one; tests/test_shot_share.py): the 截图分享 page's pictures.
+INBOX = Path(os.environ.get('SHADER_INBOX_DIR') or ROOT.parent / 'MacNativeGamesWeb/shader-inbox')
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'AppKit requires macOS')
@@ -38,6 +40,41 @@ class SettingsPanel(unittest.TestCase):
                 result = subprocess.run([str(executable), 'vr-rows'], capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('pass: supported VR settings rows', result.stdout)
+
+    @unittest.skipUnless(shutil.which('node') and (INBOX / 'node_modules/@electric-sql/pglite').is_dir(),
+                         'needs node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+    def test_screenshots_page_with_pictures(self):
+        """The 截图分享 page against the inbox's test/local-server.js: pictures shared, listed, shown, deleted.
+        SHOTS_TEST_PNG=<path.png> keeps pictures of the panel (-grid, -picture, -zh)."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'settings-panel-shots'
+            build = subprocess.run([compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-declarations',
+                                    '-I' + str(gfx / 'include'), '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
+                                    str(ROOT / 'tests/settings_panel_probe.m'), str(ROOT / 'games/totk/runtime/input_prompts.m'),
+                                    '-framework', 'CoreText', '-framework', 'CoreGraphics', str(ROOT / 'tests/settings_output_fixture.c'),
+                                    *[str(gfx / f) for f in ('totk_mfx.m', 'totk_mfx_up.m', 'totk_taa.m', 'fps_overlay.c')],
+                                    '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'MetalFX', '-framework', 'QuartzCore',
+                                    '-framework', 'CoreVideo', '-framework', 'ImageIO', '-o', str(executable)],
+                                   capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            server = subprocess.Popen(['node', str(INBOX / 'test/local-server.js')], cwd=INBOX, stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, text=True)
+            try:
+                url = f'http://127.0.0.1:{int(server.stdout.readline().split()[1])}/v1/shots'
+                settings = Path(directory) / 'saved'
+                settings.mkdir()
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), SHOTS_TEST_URL=url)
+                run = subprocess.run([str(executable), 'shots'], env=env, capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
+                self.assertIn('pass: screenshots page with pictures', run.stdout)
+            finally:
+                server.stdin.close()
+                server.wait(timeout=30)
+                server.stdout.close()
 
     def test_update_page_never_forks(self):
         self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
@@ -116,6 +153,9 @@ class SettingsPanel(unittest.TestCase):
                 run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: update page', run.stdout)
+                run = subprocess.run([str(executable), 'shots'], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: screenshots page', run.stdout)
                 for action in ('save', 'restore', 'override'):
                     current = dict(env)
                     if action == 'override':
