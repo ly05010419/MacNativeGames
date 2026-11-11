@@ -2329,7 +2329,7 @@ def main_ns2(args, dump):
     out = args.out.expanduser().resolve() if args.out else dump.parent / f'{app_name}.app'
     work = args.work.expanduser().resolve() if args.work else dump.parent / f'{executable}_build'
     if out.suffix.lower() not in (('.app', '.ipa') if device_app else ('.app',)):
-        raise BuildError(f'the output must end in .app' + (' or .ipa' if device_app else '') + f': {out}')
+        raise BuildError('the output must end in .app' + (' or .ipa' if device_app else '') + f': {out}')
     shared_fonts = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
     py = prerequisites(args)
     logs = work / 'logs'
@@ -2719,7 +2719,7 @@ def parse_args(argv):
                          'on another disk; the app remembers the folder, and the launcher falls back to the default one '
                          '(on another Mac, say) when FOLDER has no complete image')
     ap.add_argument('-k', '--keys', type=Path, help='your prod.keys (an XCI or NSP; a Switch 2 dump folder needs none)')
-    ap.add_argument('-o', '--out', type=Path, help=f'the app or IPA to write (default depends on --platform; next to the game file)')
+    ap.add_argument('-o', '--out', type=Path, help='the app or IPA to write (default depends on --platform; next to the game file)')
     ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file)')
     ap.add_argument('--mod', type=Path, metavar='FOLDER',
                     help='a mod folder prepared before the build: its exefs/ IPS / IPS32 / pchtxt patches for the main '

@@ -182,7 +182,7 @@ def backup(source_path, root, label, game, now, title_id='', with_hash=True):
         directory.mkdir(parents=True)
     except OSError as error:
         return None, error.strerror or str(error)
-    files, copied, failures = [], [], []
+    files = []
     try:
         for entry in list(os.scandir(source_path)):
             target = directory / entry.name

@@ -4,7 +4,6 @@ import ast
 from pathlib import Path
 import re
 import struct
-import sys
 import unittest
 
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM

@@ -6,7 +6,7 @@ E9 S9.1 C5: only the games in ICONS are offered; for the others the tab says so,
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.builder import controls_file, game_state, icons_env, icons_mod, icons_plan
+from tools.builder import game_state, icons_env, icons_mod, icons_plan
 from tools.builder import controller_controls      # read_state, at call time (it imports this module)
 from tools.builder.controller_mods import LATEST, _library
 

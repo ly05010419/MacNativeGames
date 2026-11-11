@@ -6,13 +6,12 @@ A work folder can hold tens of thousands of files, so measuring, cleaning and mo
 fills self._done; the panel's own timer (POLL_MS) reads it -- never the window's pump, which the view owns. Closing the
 window stops the timer without waiting for the thread."""
 import threading
-import time
 import tkinter as tk
 from pathlib import Path
 
 from tools.builder import saves, storage
 from tools.builder.games import GAMES
-from tools.builder.gui_style import BAD, BUTTON, GOOD, LINE, MUTED, TEXT, WRAP, muted
+from tools.builder.gui_style import BAD, GOOD, MUTED, TEXT, WRAP, muted
 from tools.builder.gui_widgets import FlatButton
 from tools.builder.session import PathsSaved
 from tools.builder.strings import text

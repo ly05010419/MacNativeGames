@@ -5,7 +5,6 @@ that holds the apps (the one for what must be kept), and the updated app then re
 work folder of its build. The in-app hint tells players to run `update_runtime.py "<app>"` without --work, so this is the
 path players take too. Every build and update records the folder (build_app.record_update_source).
 """
-import importlib.util
 import plistlib
 import sys
 import tempfile

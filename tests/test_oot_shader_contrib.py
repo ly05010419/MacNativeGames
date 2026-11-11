@@ -7,7 +7,6 @@ build_app.py resolve_lists writes them for every game it packages: every pipelin
 file (3,091 rows, 3,040 of them in the list). Its contributions also named Tears of the Kingdom's form and title, Breath of
 the Wild's file, and its iPhone / iPad reminder looked for Tears of the Kingdom on the device.
 """
-import importlib.util
 import re
 import json
 import shutil

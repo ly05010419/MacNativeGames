@@ -189,7 +189,7 @@ int main(void) {
    subprocess.run([compiler,'-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'games/totk/runtime'),str(c),'-o',str(exe)],check=True,capture_output=True)
    p=subprocess.run([str(exe)],capture_output=True,text=True);self.assertEqual(p.returncode,0,p.stdout+p.stderr)
  def test_phone_pane_uses_engine_parameter(self):
-  import importlib.util, plistlib
+  import plistlib
   path=ROOT/'games/totk/ios/tools';sys.path.insert(0,str(path))
   import build_ipa
   root=build_ipa.bananza_pane(plistlib.loads((ROOT/'games/totk/ios/Settings.bundle/Root.plist').read_bytes()))

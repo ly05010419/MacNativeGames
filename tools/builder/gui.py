@@ -29,7 +29,7 @@ from tools.builder.gui_style import PAD, apply, muted
 from tools.builder.gui_details import DetailsPanel
 from tools.builder.session import (BackgroundChanged, BuildStarted, CancelStuck, CheckResultReady, ChecksDone,
                                    ChecksInvalidated, Finished, GpuProbed, Heartbeat, LogLine, ModsApplied,
-                                   ModsStateReady, PathsIncomplete, PathsSaved, PlayDone, ProcessError,
+                                   ModsStateReady, PathsIncomplete, PlayDone, ProcessError,
                                    SettingsLoaded, SettingsNotSaved, StageChanged, StartStateReady)
 from tools.builder.strings import text
 

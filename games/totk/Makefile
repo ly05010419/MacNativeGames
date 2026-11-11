@@ -15,9 +15,9 @@ GAME_SLOT_RUN = python3 scripts/dev/game_slot.py run --no-retry --purpose "make 
 ROM ?= ../TOTK [0100F2C0115B6000][v0].xci
 KEYS ?= $(HOME)/Library/Application Support/Ryujinx/system/prod.keys
 
-.PHONY: help dependencies extract modules probe probe-call rea-rtld rewrite-sdk rewrite-main verify test-call-window
+.PHONY: help dependencies extract modules probe probe-call rewrite-sdk rewrite-main verify test-call-window
 help:
-	@echo 'targets: dependencies extract modules probe probe-call rea-rtld rewrite-sdk rewrite-main verify test-call-window'
+	@echo 'targets: dependencies extract modules probe probe-call rewrite-sdk rewrite-main verify test-call-window'
 	@echo 'probe executes two original leaf functions; no game entry is executed.'
 
 dependencies:
@@ -38,9 +38,6 @@ build/native_leaf_probe: scripts/native_leaf_probe.c
 probe: build/native_leaf_probe
 	build/native_leaf_probe extracted/v0/elf/main.elf > analysis/native-leaf-probe.json
 	@cat analysis/native-leaf-probe.json
-
-rea-rtld:
-	bash scripts/rea.sh function "$(CURDIR)/extracted/v0/elf/rtld.elf" 0x1014f0 --provider ghidra --snapshot "$(CURDIR)/analysis/rtld-clear-snapshot.json" --json > analysis/rtld-clear-function.json
 
 rewrite-sdk:
 	@mkdir -p rewritten/v0
@@ -156,14 +153,7 @@ build/gfx/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-.PHONY: graphics-assets shader-inventory verify-shaders probe-thread probe-system-event
-graphics-assets:
-	"$(PY)" scripts/prepare_graphics_assets.py
-
-shader-inventory: graphics-assets
-	tooling/dotnet/dotnet run --project scripts/shader_inventory -- extracted/v0/graphics extracted/v0/shaders-v2
-	"$(PY)" scripts/verify_shader_inventory.py
-
+.PHONY: verify-shaders probe-thread probe-system-event
 verify-shaders:
 	"$(PY)" scripts/verify_shader_compilation.py
 
@@ -194,12 +184,7 @@ probe-gfx: runtime
 probe-gpu-vr-ui-layout probe-gpu-visibility probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-pipeline-archive probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: runtime
 	MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert TOTK_HEADLESS=1 build/totk-native rewritten/v0 $@ > analysis/native-$@.json
 	cat analysis/native-$@.json
-.PHONY: probe-game-slot desktop-launcher
-# One game at a time: queue order, the user's game going first and stopping an agent's game, the slot passed down
-# by a wrapper, refusals of a wrong descriptor, games outside the slot, wait limit; dry runs only (no game boots).
-probe-game-slot: runtime
-	python3 scripts/dev/test_game_slot.py build/totk-native | tee analysis/game-slot-probe.log
-# The Finder launcher (tools/desktop_launcher.m) starts the game as the user: it goes ahead of agents' tests.
+.PHONY: desktop-launcher
 # One desktop alias opens the packaged app, with its standard user-data folder.
 DESKTOP_APP ?= $(HOME)/Desktop/Tears of the Kingdom  Mac.app
 DESKTOP_TARGET ?= ../../out/Tears of the Kingdom.app
@@ -217,11 +202,10 @@ probe-fp64-fallback:
 probe-vertex-i2f:
 	xcrun clang -fobjc-arc tests/vertex_i2f/probe.m -framework Metal -framework Foundation -o build/vertex-i2f-probe
 	$(GAME_SLOT_RUN) build/vertex-i2f-probe
-.PHONY: clock-ocr-tool probe-game-clock
+.PHONY: clock-ocr-tool
+# build/read-game-clock reads the in-game clock from a screenshot (scripts/verify_running_clock.py runs it).
 clock-ocr-tool:
 	xcrun clang -fobjc-arc scripts/diag/read_game_clock.m -framework Foundation -framework Vision -framework ImageIO -framework CoreGraphics -o build/read-game-clock
-probe-game-clock: clock-ocr-tool
-	python3 scripts/diag/check_game_clock.py
 # On-screen FPS counter: glyph pixels, bounds and present-rate measurement (CPU only).
 probe-fps-overlay:
 	@mkdir -p build/tests
@@ -317,7 +301,7 @@ shader-tools:
 # The runtime shader translation service as one native program (2026-10-17): the patched translator of make shader-tools
 # plus tools/totk_xlate/Service.cs (the port of scripts/shader_service.py), published with NativeAOT. The runtime uses
 # build/shader-service/totk_xlate when it is there (no Python, no .NET runtime; TOTK_SHADER_SERVICE=python for the old
-# path). Check a change: scripts/diag/retranslate_cache.py --service build/shader-service/totk_xlate --compare <cache>.
+# path).
 shader-service:
 	@test -d build/ryujinx-src || { echo "make shader-tools first (it prepares the patched translator sources)"; exit 1; }
 	tooling/dotnet/dotnet publish tools/totk_xlate/totk_xlate.csproj -c Release -r osx-arm64 -p:PublishAot=true \

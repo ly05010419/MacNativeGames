@@ -5,13 +5,12 @@ import os
 import shutil
 from pathlib import Path
 import plistlib
-import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from test_game_containers import (HEADER, AREA, TITLEKEK, CONTENT, SCRIPTS, TITLE,
+from test_game_containers import (HEADER, AREA, TITLEKEK, SCRIPTS, TITLE,
                                   encrypt, nca, partition, ticket, game_image, romfs)
 from cryptography.hazmat.primitives.ciphers import modes
 from extract_exefs import decrypt, common_tickets, container_entries

@@ -1,7 +1,6 @@
 """Tears of the Kingdom VR: one picture for both eyes, camera ownership, picture order."""
 from pathlib import Path
 import platform
-import re
 import subprocess
 import tempfile
 import unittest

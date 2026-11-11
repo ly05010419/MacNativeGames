@@ -1,7 +1,7 @@
 # Astral Chain native runtime. Self-contained: the Horizon host (runtime/), the rewriter (third_party/d2r), the NVN-on-Metal
 # layer (third_party/d2r_gfx), the shader translator (prebuilt/) and the scripts are this folder's own copies, forked from
 # games/totk; nothing here reads games/totk. Everything generated goes to the work folder.
-# Inputs come from scripts/extract_code.py, scripts/merge_romfs.py and the rewrite (see README.md), then:
+# Inputs come from scripts/extract_exefs.py, scripts/merge_romfs.py and the rewrite (see README.md), then:
 #   make prepare   # scripts/prepare_runtime.py: tables, RomFS index, fonts config
 #   make runtime   # AC_build/build/alc-native
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)

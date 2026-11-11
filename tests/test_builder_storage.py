@@ -1,6 +1,5 @@
 """tools/builder/storage.py (S2.2): where each cache is, what it holds, and the guards that keep a clean or a move
 away from a root, the home folder, a system folder and the game, save or app a caller protects."""
-import os
 import tempfile
 import unittest
 from pathlib import Path
