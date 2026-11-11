@@ -3075,10 +3075,10 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] 渲染通道 至帧 %llu：每帧 %.1f 个，其中分层通道 %.2f 个，并入的设目标 %.2f 次，因绘制不能写层号退回 %.2f 次", frame,
                 (v[0] - pl[0]) / nf, (v[1] - pl[1]) / nf, (v[2] - pl[2]) / nf, (v[3] - pl[3]) / nf); }
           memcpy(pl, v, sizeof pl); }
-        { static uint64_t pr[6]; uint64_t v[6]; void mtl_ren_stats(uint64_t[6]); mtl_ren_stats(v);
+        { static uint64_t pr[7]; uint64_t v[7]; void mtl_ren_stats(uint64_t[7]); mtl_ren_stats(v);
           if (pf && frame > pf) { double nf = (double)(frame - pf);
-            LOG("[nvn] uniform 换副本 至帧 %llu：每帧更新 %.1f 次，新副本 %.1f 个 / %.1f KB，提前写回 %.2f 次，开编码器后才发现重叠 %.2f 次，表满回退 %.2f 次", frame,
-                (v[0] - pr[0]) / nf, (v[1] - pr[1]) / nf, (v[2] - pr[2]) / nf / 1024, (v[3] - pr[3]) / nf, (v[4] - pr[4]) / nf, (v[5] - pr[5]) / nf); }
+            LOG("[nvn] uniform 换副本 至帧 %llu：每帧更新 %.1f 次（内容未变跳过 %.1f 次），新副本 %.1f 个 / %.1f KB，提前写回 %.2f 次，开编码器后才发现重叠 %.2f 次，表满回退 %.2f 次", frame,
+                (v[0] - pr[0]) / nf, (v[6] - pr[6]) / nf, (v[1] - pr[1]) / nf, (v[2] - pr[2]) / nf / 1024, (v[3] - pr[3]) / nf, (v[4] - pr[4]) / nf, (v[5] - pr[5]) / nf); }
           memcpy(pr, v, sizeof pr); }
         if (frame % 300 == 0) { unsigned wn = 0; uint32_t wq = dm_guest_work_qos(&wn); thread_extended_info_data_t xi; mach_msg_type_number_t xc = THREAD_EXTENDED_INFO_COUNT; int okx = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_EXTENDED_INFO, (thread_info_t)&xi, &xc) == KERN_SUCCESS;
             thread_time_constraint_policy_data_t tp; mach_msg_type_number_t tc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0; int rt_live = thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tp, &tc, &def) == KERN_SUCCESS && !def;   // def = 1：实时策略没在生效（没设上 / 被撤） | def = 1: the real-time policy is not in effect (never set / revoked)
