@@ -23,7 +23,7 @@ Measured: BotW 1.6.0, 13,760 pipelines; metal-tt takes about 0.4 s per pipeline 
 """
 import argparse, concurrent.futures, ctypes, errno, hashlib, json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
-from compile_seed import METAL_FLAGS
+from compile_seed import METAL_FLAGS, target_flags
 
 SCHEMA = 6   # totk_pipeline_archive.h PAR_SCHEMA
 
@@ -132,12 +132,12 @@ def variants(folder, seed, cache, sdk, env):
     compiler = subprocess.run(['xcrun', '-sdk', sdk, 'metal', '--version'], env=env, check=True, capture_output=True, text=True).stdout
     kept_dir = cache / 'variant-libs'; kept_dir.mkdir(parents=True, exist_ok=True)
     def compile_one(src):
-        kept = kept_dir / (hashlib.sha256('\0'.join([src.stem, sdk, compiler, *METAL_FLAGS]).encode()).hexdigest() + '.metallib')
+        kept = kept_dir / (hashlib.sha256('\0'.join([src.stem, sdk, compiler, *METAL_FLAGS, *target_flags(sdk)]).encode()).hexdigest() + '.metallib')
         how = 'kept'
         if not kept.is_file():
             with tempfile.TemporaryDirectory(dir=kept_dir) as d:
                 air, lib = Path(d) / 'v.air', Path(d) / 'v.metallib'
-                r = subprocess.run(['xcrun', '-sdk', sdk, 'metal', *METAL_FLAGS, '-c', str(src), '-o', str(air)], env=env, capture_output=True, text=True)
+                r = subprocess.run(['xcrun', '-sdk', sdk, 'metal', *METAL_FLAGS, *target_flags(sdk), '-c', str(src), '-o', str(air)], env=env, capture_output=True, text=True)
                 if not r.returncode: r = subprocess.run(['xcrun', '-sdk', sdk, 'metallib', str(air), '-o', str(lib)], env=env, capture_output=True, text=True)
                 if r.returncode or not lib.is_file(): return 'failed'
                 os.replace(lib, kept)

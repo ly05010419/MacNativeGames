@@ -15,7 +15,15 @@ TOOLS = IOS / 'tools'
 sys.path.insert(0, str(TOOLS))
 spec = importlib.util.spec_from_file_location('oot_build_ipa_picture', TOOLS / 'build_ipa.py')
 build_ipa = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(build_ipa)
+# build_ipa.py imports compile_seed by name: load this game's copy, not one another game's tests imported first,
+# and leave sys.modules as it was for them.
+_shared = sys.modules.pop('compile_seed', None)
+try:
+    spec.loader.exec_module(build_ipa)
+finally:
+    sys.modules.pop('compile_seed', None)
+    if _shared is not None:
+        sys.modules['compile_seed'] = _shared
 
 HARNESS = r'''
 #include "settings_map.h"
