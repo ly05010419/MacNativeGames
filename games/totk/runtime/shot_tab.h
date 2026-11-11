@@ -14,7 +14,10 @@
    Below the state line, the player's nickname and its 修改 button (nick_row.h, the same row as on the 排行榜 page; the
    pictures carry the nickname instead of the anonymous code): the state line says how a change went, and once the server
    took one the list is read again. When one of the player's own pictures has just been shared (shot_upload.h
-   TOTK_SHOT_SHARED_NOTE), the list is read at once too, not at the next minute. */
+   TOTK_SHOT_SHARED_NOTE), the list is read at once too, not at the next minute.
+   Under the nickname, where the capture button's pictures are saved and its 更改文件夹… (user 2026-11-11: moved here from
+   the input page; settings_choose_screenshot_folder in settings_panel.h checks and keeps the choice). The site's photo
+   wall is the panel's 访问主页, opened on it from this page (settings_home_url). */
 #pragma once
 
 #define SHOT_TAB_REFETCH_S 60.0
@@ -63,6 +66,8 @@ static void (*shot_tab_take)(void) = screenshot_request;
 @property(strong) NSButton *takeButton;              /* 截屏 */
 @property(strong) NSTextField *state, *status, *note;
 @property(strong) TOTKNickRow *nick;
+@property(strong) NSTextField *folderLabel;           /* 截图保存目录 */
+@property(strong) NSButton *folderButton;             /* 更改文件夹… */
 @property(strong) NSScrollView *scroll;
 @property(strong) TOTKShotsGrid *grid;
 @property(strong) NSArray<NSDictionary *> *shots;   /* {id, name, at, w, h, me}, newest first */
@@ -207,8 +212,16 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
  TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];[self addSubview:nick];self.nick=nick;
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nickChanged:) name:TOTK_NICK_CHANGED_NOTE object:nil];
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shared:) name:TOTK_SHOT_SHARED_NOTE object:nil];
+ /* where the pictures are saved, and the button that changes it */
+ NSButton *folderButton=[NSButton buttonWithTitle:settings_text("更改文件夹…","Change Folder…") target:self action:@selector(changeFolder:)];
+ folderButton.refusesFirstResponder=YES;[folderButton sizeToFit];NSSize fb=folderButton.frame.size;
+ CGFloat folderY=NSMinY(nick.frame)-6-fb.height;
+ folderButton.frame=NSMakeRect(W-18-fb.width,folderY,fb.width,fb.height);[self addSubview:folderButton];self.folderButton=folderButton;
+ NSTextField *folderLabel=shot_tab_label(@"",12,0.85,NSTextAlignmentLeft);folderLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
+ folderLabel.frame=NSMakeRect(18,folderY+floor((fb.height-17)/2),NSMinX(folderButton.frame)-18-10,17);[self addSubview:folderLabel];self.folderLabel=folderLabel;
+ [self showFolder];
  /* the pictures */
- CGFloat noteH=30,gridTop=NSMinY(nick.frame)-6,gridBottom=8+noteH+4;
+ CGFloat noteH=30,gridTop=folderY-6,gridBottom=8+noteH+4;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,gridBottom,W-28,fmax(0,gridTop-gridBottom))];
  scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.scrollerStyle=NSScrollerStyleOverlay;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
  TOTKShotsGrid *grid=[[TOTKShotsGrid alloc] initWithFrame:NSMakeRect(0,0,scroll.contentSize.width,scroll.contentSize.height)];
@@ -226,6 +239,11 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
 -(void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];}
 
 -(BOOL)usable{return totk_board_dir()!=nil;}
+-(void)showFolder{
+ char now[PATH_MAX];screenshot_directory(now,sizeof now);
+ self.folderLabel.stringValue=[NSString stringWithFormat:settings_text("截图保存目录：%@","Screenshot folder: %@"),@(now)];self.folderLabel.toolTip=@(now);
+}
+-(void)changeFolder:(NSButton *)button{(void)button;settings_choose_screenshot_folder();[self showFolder];}
 -(void)showState{
  BOOL usable=[self usable],on=usable&&totk_shot_on();double now=CACurrentMediaTime();
  self.toggle.enabled=usable;self.toggle.state=on?NSControlStateValueOn:NSControlStateValueOff;
@@ -245,7 +263,7 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
 /* The switch and its state (twice a second with the panel's tick, while the page is shown); the newest pictures again
    when the list is a minute old; the older ones when the end is in view. */
 -(void)refresh{
- [self showState];[self.nick refresh];
+ [self showState];[self.nick refresh];[self showFolder];
  double now=CACurrentMediaTime();
  if(!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>SHOT_TAB_REFETCH_S))[self fetch];
  else [self moreIfAtEnd];
@@ -350,13 +368,14 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
 }
 -(BOOL)closeViewer{if(!self.viewer)return NO;[self.viewer removeFromSuperview];self.viewer=nil;return YES;}
 
-/* What a controller reaches: the switch, 截屏, the nickname's 修改, then each picture and, after the player's own, its
+/* What a controller reaches: the switch, 截屏, the nickname's 修改, 更改文件夹…, then each picture and, after the player's own, its
    Delete button (a run without the launcher's folder has no switch and no 修改). */
 -(NSArray<NSView *> *)targets{
  NSMutableArray<NSView *> *targets=[NSMutableArray array];
  if(self.toggle.enabled)[targets addObject:self.toggle];
  [targets addObject:self.takeButton];
  if(self.toggle.enabled)[targets addObject:self.nick.button];
+ [targets addObject:self.folderButton];
  for(TOTKShotCell *c in self.cells){[targets addObject:c];if(c.deleteButton)[targets addObject:c.deleteButton];}
  return targets;
 }

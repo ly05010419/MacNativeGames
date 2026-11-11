@@ -130,6 +130,35 @@ class SettingsPanel(unittest.TestCase):
                 for switch in ('leaderboard.txt', 'screenshot-share.txt'):   # a nickname turns on no upload switch
                     self.assertFalse((settings / 'nick/TOTK' / switch).exists(), switch)
 
+    @unittest.skipUnless(HAS_INBOX, 'needs node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+    def test_contribution_list_with_the_server(self):
+        """The 着色器贡献 page's list against the inbox's test/local-server.js (user 2026-11-11): two players' rows sent,
+        this Mac's under the install id the probe writes, the other with more; both listed, most first, this Mac's
+        marked. CONTRIB_TEST_PNG=<path> keeps a picture of the page."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'settings-panel-contrib'
+            build = build_probe(compiler, executable)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            with LocalInbox() as inbox:
+                mine, other = '0f0f0f0f-0000-4000-8000-000000001234', str(uuid.uuid4())
+                for install, count in ((mine, 3), (other, 7)):
+                    rows = [f'V\t{(install[:8] + str(k)).ljust(64, "0")}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}' for k in range(count)]
+                    body = {'schema': 1, 'game': 'totk', 'game_version': '1.2.1', 'app_build': 'test', 'rows': rows,
+                            'install': install, 'platform': 'mac', 'device': 'Mac16,1', 'os': 'macOS 26.0'}
+                    request = urllib.request.Request(f'{inbox.base}/v1/contrib', method='POST', headers={'content-type': 'application/json'},
+                                                     data=json.dumps(body).encode())
+                    with urllib.request.urlopen(request, timeout=30) as answer:
+                        self.assertEqual(answer.status, 200)
+                settings = Path(directory) / 'saved'
+                settings.mkdir()
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), CONTRIB_TEST_URL=inbox.base)
+                run = subprocess.run([str(executable), 'contrib'], env=env, capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
+                self.assertIn('pass: contribution page with the server', run.stdout)
+
     def test_update_page_never_forks(self):
         self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
 

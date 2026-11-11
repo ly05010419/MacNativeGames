@@ -93,10 +93,10 @@ int main(int argc,char **argv){@autoreleasepool{
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+(settingsPanel.page==SETTINGS_PAGE_DISPLAY?settingsPanel.displayButtons.count:0));   /* the display page: its buttons after the rows */
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+1&&settingsPanel.controllerTargets.lastObject==settingsPanel.homeButton);   /* every page: 访问主页 after the rows */
  /* The input page: a menu first (controller type) and switches after row 1 (the display page's switches went to the
     effects page, 2026-10-30). */
- [settingsPanel selectPage:SETTINGS_PAGE_INPUT];CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count);
+ [settingsPanel selectPage:SETTINGS_PAGE_INPUT];CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+1);
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
  TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};

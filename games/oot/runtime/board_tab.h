@@ -8,8 +8,8 @@
    Below the state line, the player's nickname and its 修改 button (nick_row.h, the same row as on the 截图分享 page; the
    board shows the nickname instead of the anonymous code): the state line says how a change went, and once the server
    took one the board is read again.
-   查看排名 at the right of the switch's line (user 2026-11-11) opens the site's board for this game with the player's
-   anonymous code, so the site marks their row (board_tab_site_url). */
+   The site is reached from the panel's 访问主页 (user 2026-11-11, settings_home_url), which carries the player's
+   anonymous code (board_tab_code) so the site marks their row. */
 #pragma once
 #include <CommonCrypto/CommonDigest.h>
 
@@ -19,7 +19,6 @@
 @property(strong) NSSwitch *toggle;
 @property(strong) NSTextField *state, *status, *note;
 @property(strong) NSTextField *group;
-@property(strong) NSButton *siteButton;   /* 查看排名 */
 @property(strong) TOTKNickRow *nick;
 @property(strong) NSTableView *table;
 @property(strong) NSArray<NSDictionary *> *entries;
@@ -33,21 +32,15 @@ static NSTextField *board_tab_label(NSString *text, CGFloat size, CGFloat white,
  NSTextField *l=[NSTextField labelWithString:text];l.font=[NSFont systemFontOfSize:size];l.alignment=align;
  l.textColor=[NSColor colorWithCalibratedWhite:white alpha:1];l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
-/* The site's board for this game, with the player's anonymous code when this Mac has a board id: the first 6 hex of
-   SHA-256(id) in capitals, as the server names a player (its lib/name-store.js shownName). The code is public and the
-   site only marks that row with it; never the id itself, the player's key to their results and nickname. */
-static NSURL *board_tab_site_url(void) {
- NSURLComponents *u=[NSURLComponents componentsWithURL:totk_board_url() resolvingAgainstBaseURL:NO];
- if(!u)return nil;
- u.path=@"/";
- NSMutableArray *q=[NSMutableArray arrayWithObjects:[NSURLQueryItem queryItemWithName:@"view" value:@"board"],[NSURLQueryItem queryItemWithName:@"game" value:@GAME_INBOX_ID],nil];
+/* The player's anonymous code on the board: the first 6 hex of SHA-256(board id) in capitals, as the server names a
+   player (its lib/name-store.js shownName); nil while this Mac has no id. The code is public and the site only marks
+   that row with it; never the id itself, the player's key to their results and nickname. */
+static NSString *board_tab_code(void) {
  NSString *bid=totk_board_id(NO);
- if(bid){NSData *d=[bid dataUsingEncoding:NSUTF8StringEncoding];unsigned char h[CC_SHA256_DIGEST_LENGTH];CC_SHA256(d.bytes,(CC_LONG)d.length,h);
-  [q addObject:[NSURLQueryItem queryItemWithName:@"code" value:[NSString stringWithFormat:@"%02X%02X%02X",h[0],h[1],h[2]]]];}
- u.queryItems=q;return u.URL;
+ if(!bid)return nil;
+ NSData *d=[bid dataUsingEncoding:NSUTF8StringEncoding];unsigned char h[CC_SHA256_DIGEST_LENGTH];CC_SHA256(d.bytes,(CC_LONG)d.length,h);
+ return [NSString stringWithFormat:@"%02X%02X%02X",h[0],h[1],h[2]];
 }
-static void board_tab_open_default(NSURL *url){if(url)[NSWorkspace.sharedWorkspace openURL:url];}
-static void (*board_tab_open)(NSURL *) = board_tab_open_default;   /* the probe points it elsewhere: no browser in a test */
 static NSString *board_tab_fps(id v) { return [v isKindOfClass:NSNumber.class]?[NSString stringWithFormat:@"%.1f",[v doubleValue]]:@"–"; }
 
 /* The columns: identifier, title, width. Measured (2026-11-11): each is wider than its title and its widest value
@@ -69,13 +62,7 @@ static NSArray<NSArray *> *board_tab_columns(void) {
  [self addSubview:toggle];self.toggle=toggle;
  NSTextField *title=board_tab_label(settings_text("我要上榜","Join the board"),15,1.0,NSTextAlignmentLeft);title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
  title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,120,22);[self addSubview:title];
- /* 查看排名 at the right of the switch's line, the group (uncapped, and how many players) before it */
- NSButton *site=[NSButton buttonWithTitle:settings_text("查看排名","View ranking") target:self action:@selector(openSite:)];
- site.refusesFirstResponder=YES;[site sizeToFit];NSSize b=site.frame.size;
- site.frame=NSMakeRect(W-18-b.width,top-s.height+floor((s.height-b.height)/2),b.width,b.height);
- site.toolTip=settings_text("在浏览器里打开网站上的排行榜，标出你自己的成绩（只带匿名代号）","Opens the site's ranking in the browser with your own result marked (only the anonymous code is sent)");
- [self addSubview:site];self.siteButton=site;
- NSTextField *group=board_tab_label(settings_text("不锁帧","Uncapped"),12,0.7,NSTextAlignmentRight);group.frame=NSMakeRect(NSMinX(site.frame)-10-200,top-s.height+3,200,18);[self addSubview:group];self.group=group;
+ NSTextField *group=board_tab_label(settings_text("不锁帧","Uncapped"),12,0.7,NSTextAlignmentRight);group.frame=NSMakeRect(W-18-200,top-s.height+3,200,18);[self addSubview:group];self.group=group;
  NSTextField *state=board_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);[self addSubview:state];self.state=state;
  /* the nickname (nick_row.h) */
  TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];[self addSubview:nick];self.nick=nick;
@@ -158,7 +145,6 @@ static NSString *board_tab_rule(void) {
  if([n.userInfo[@"listed"] boolValue]){if(self.fetching)self.stale=YES;else self.fetchedAt=0;}
  if(!self.hiddenOrHasHiddenAncestor)[self refresh];
 }
--(void)openSite:(NSButton *)button{(void)button;NSURL *u=board_tab_site_url();fprintf(stderr,"[totk] settings: 查看排名 %s\n",u.absoluteString.UTF8String?:"(no address)");if(board_tab_open)board_tab_open(u);}
 -(void)toggled:(NSSwitch *)toggle{
  if(![self usable]){[self refresh];return;}
  if(totk_board_set(toggle.state==NSControlStateValueOn))self.fetchedAt=0;   /* the board again: with or without the player's row */
@@ -200,7 +186,7 @@ static NSString *board_tab_rule(void) {
 @implementation TOTKSettingsPanel (BoardTab)
 -(NSView *)boardPageWithFrame:(NSRect)frame{return [[TOTKBoardPage alloc] initWithFrame:frame];}
 -(void)refreshBoardPage{[(TOTKBoardPage *)self.pages[SETTINGS_PAGE_BOARD] refresh];}
-/* what a controller reaches on the page: the switch (A flips it), 查看排名, then the nickname's 修改 (a run without the
-   launcher's folder has no switch and no 修改, only 查看排名) */
--(NSArray<NSView *> *)boardPageTargets{TOTKBoardPage *page=(TOTKBoardPage *)self.pages[SETTINGS_PAGE_BOARD];return page.toggle.enabled?@[page.toggle,page.siteButton,page.nick.button]:@[page.siteButton];}
+/* what a controller reaches on the page: the switch (A flips it), then the nickname's 修改 (a run without the launcher's
+   folder has neither) */
+-(NSArray<NSView *> *)boardPageTargets{TOTKBoardPage *page=(TOTKBoardPage *)self.pages[SETTINGS_PAGE_BOARD];return page.toggle.enabled?@[page.toggle,page.nick.button]:@[];}
 @end

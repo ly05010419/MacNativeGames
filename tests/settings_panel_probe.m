@@ -194,9 +194,9 @@ void runtime_gamepad_screenshot_button_set(int physical) { fakeShotButton = phys
 static int capturePresses, shotTabTakes;
 void runtime_capture_press(void) { capturePresses++; }
 static void probe_shot_tab_take(void) { shotTabTakes++; }
-/* The 排行榜 page's 查看排名 (board_tab.h board_tab_open, pointed here by the probe): the address it would open. */
-static int boardOpens; static NSURL *boardOpened;
-static void probe_board_open(NSURL *url) { boardOpens++; boardOpened = url; }
+/* The panel's 访问主页 (settings_panel.h settings_home_open, pointed here by the probe): the address it would open. */
+static int homeOpens; static NSURL *homeOpened;
+static void probe_home_open(NSURL *url) { homeOpens++; homeOpened = url; }
 static int fakeSettingsShortcut = 1;   /* off while a controller button is being bound */
 void runtime_gamepad_settings_enable(int on) { fakeSettingsShortcut = on; }
 static int fakeSettingsCapture;
@@ -501,26 +501,27 @@ static void update_probe(void) {
     for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
     assert(!spawned[0]);   /* nothing is asked before the page opens */
 
-    /* The display page: the controller past the last row (it used to raise here), the star button clicks. Its real
-       action opens a web page, so the button is pointed at the probe. (Contributing is the shader tab's switch since 585d0734.) */
+    /* The display page: the controller past the last row (it used to raise here), 访问主页 clicks (every page's last since
+       2026-11-11, was the star). Its real action opens a web page, so the button is pointed at the probe. */
     assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
-    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *star = settingsPanel.displayButtons[0];
+    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *star = settingsPanel.homeButton;
     star.target = clicks; star.action = @selector(hit:);
     pad_press(PAD_DOWN); assert(g_settings_controller_active);
     for (int n = 0; n < 20 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != star; n++) pad_press(PAD_DOWN);
     assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == star && star.layer.borderWidth == 2);
     pad_press(PAD_A); assert(clicks.hits == 1);
+    star.target = settingsPanel; star.action = @selector(visitHome:);
 
     /* L1 / R1: back from the first tab past the tabs after it (shaders, VR); only opening the page asks the launcher for a check. */
     for (int n = 0; n < SETTINGS_PAGES && settingsPanel.page != SETTINGS_PAGE_UPDATE; n++) { assert(!spawned[0]); pad_press(PAD_L1); }
     assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_UPDATE);
     assert(!strcmp(spawned, "--update-check ") && settingsPanel.rows.count == 0);
-    for (NSButton *b in settingsPanel.displayButtons) assert(b.hidden);
+    assert(!settingsPanel.homeButton.hidden);   /* 访问主页 on every page */
     for (NSButton *b in settingsPanel.effectsButtons) assert(b.hidden);
     for (NSButton *b in settingsPanel.resetButtons) assert(b.hidden);
     TOTKUpdatePage *page = update_page(); NSButton *button = page.updateButton;
     assert(!page.text.selectable && page.text.refusesFirstResponder && button.refusesFirstResponder);
-    status_is(@"Checking…"); assert([update_text() isEqualToString:@"Version ab6ebe8"] && button.hidden && settingsPanel.controllerTargets.count == 0);
+    status_is(@"Checking…"); assert([update_text() isEqualToString:@"Version ab6ebe8"] && button.hidden && [settingsPanel.controllerTargets isEqualToArray:@[settingsPanel.homeButton]]);
     /* Again within ten minutes: no second check. */
     spawned[0] = 0; pad_press(PAD_R1); pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && !spawned[0]);
 
@@ -529,7 +530,7 @@ static void update_probe(void) {
     update_status(@{});
     assert([update_text() isEqualToString:@"Version ab6ebe8\nThe newest, f0cfa3f, adds:\n•  fix: 一个修复\n•  feat: 一个功能"]);
     assert(!button.hidden && [button.title isEqualToString:@"Update (closes the game, opens it again when done)"]);
-    assert(settingsPanel.controllerTargets.count == 1 && settingsPanel.controllerTargets[0] == button && NSMaxX(button.frame) <= page.frame.size.width);
+    assert(settingsPanel.controllerTargets.count == 2 && settingsPanel.controllerTargets[0] == button && settingsPanel.controllerTargets[1] == settingsPanel.homeButton && NSMaxX(button.frame) <= page.frame.size.width);
     update_status(@{@"total": @45}); says(@"The newest, f0cfa3f, has 45 more commits (the newest 2 below):");
     /* What cannot be updated: why, and how to do it by hand; no button. */
     update_status(@{@"state": @"blocked", @"reason": @"local_changes", @"detail": @"M runtime/loader.c"});
@@ -571,7 +572,7 @@ static void update_probe(void) {
     char expect[64]; snprintf(expect, sizeof expect, "--update-install %d", (int)getpid());
     assert(!strcmp(spawned, expect) && window.firstResponder == window.contentView);
     status_is(@"Closing the game to update…"); spawned[0] = 0; pad_press(PAD_A); assert(!spawned[0]);   /* once */
-    [settingsPanel.timer fire]; assert(button.hidden && settingsPanel.controllerTargets.count == 0);
+    [settingsPanel.timer fire]; assert(button.hidden && [settingsPanel.controllerTargets isEqualToArray:@[settingsPanel.homeButton]]);
     /* An agent's test session: no check, no button. */
     settings_show(0); page.pressed = NO; page.checkedAt = 0; spawned[0] = 0; setenv("TOTK_SLOT_OWNER", "claude", 1); settings_show(1);
     assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && !spawned[0]); status_is(@"A test run: no check, no update"); assert(update_page().updateButton.hidden);
@@ -670,7 +671,11 @@ static void shots_probe(void) {
     assert(shot_tab_take == screenshot_request && [page.takeButton.title isEqualToString:@"Take screenshot"] && page.takeButton.enabled && !page.takeButton.hidden);
     assert(NSMaxX(page.takeButton.frame) <= NSWidth(page.bounds) - 10 && NSMinY(page.takeButton.frame) >= NSMinY(page.toggle.frame) - 4 &&
            NSMaxX(page.toggle.frame) < NSMinX(page.takeButton.frame));   /* the switch's line, at its right */
-    assert([settingsPanel.controllerTargets isEqualToArray:@[page.takeButton]]);
+    assert([settingsPanel.controllerTargets isEqualToArray:(@[page.takeButton, page.folderButton, settingsPanel.homeButton])]);
+    /* 截图保存目录 (user 2026-11-11: moved here from the input page): the folder in force and 更改文件夹…, under the nickname. */
+    assert([page.folderButton.title isEqualToString:@"Change Folder…"] && [page.folderLabel.stringValue hasPrefix:@"Screenshot folder: /"]);
+    assert(NSMaxY(page.folderButton.frame) <= NSMinY(page.nick.frame) && NSMaxY(page.scroll.frame) <= NSMinY(page.folderButton.frame) && NSMaxX(page.folderButton.frame) <= NSWidth(page.bounds) - 10);
+    assert(NSMaxX(page.folderLabel.frame) <= NSMinX(page.folderButton.frame));
     shot_tab_take = probe_shot_tab_take;
     [page.takeButton performClick:nil]; assert(shotTabTakes == 1 && settingsOpen && !page.hidden);
     pad_press(PAD_A); pad_press(PAD_A);   /* the first shows where the controller is */
@@ -702,7 +707,7 @@ static void shots_probe(void) {
     shots_wait("own pictures", ^BOOL{ return shots_own() == 3; });
     NSArray<TOTKShotCell *> *cells = page.cells; NSArray *targets = settingsPanel.controllerTargets;
     assert(!cells[0].mine && cells[1].mine && !cells[2].mine && cells[3].mine && !cells[0].deleteButton);
-    assert(targets.count == 3 + 6 + 3 && targets[0] == page.toggle && targets[1] == page.takeButton && targets[2] == page.nick.button && targets[3] == cells[0] && targets[4] == cells[1] && targets[5] == cells[1].deleteButton);
+    assert(targets.count == 4 + 6 + 3 + 1 && targets[0] == page.toggle && targets[1] == page.takeButton && targets[2] == page.nick.button && targets[3] == page.folderButton && targets[4] == cells[0] && targets[5] == cells[1] && targets[6] == cells[1].deleteButton && targets.lastObject == settingsPanel.homeButton);
     assert(NSMaxY(page.scroll.frame) <= NSMinY(page.nick.frame) && NSMinY(page.nick.frame) >= 0 && NSMaxY(page.nick.frame) <= NSMinY(page.state.frame));   /* the row between the state line and the grid */
     assert(NSWidth(cells[0].frame) * 4 + 3 * SHOT_TAB_GAP <= NSWidth(page.grid.frame) && NSMinX(cells[3].frame) > NSMinX(cells[2].frame));   /* four to a row */
     assert(NSMinY(cells[4].frame) > NSMinY(cells[0].frame));
@@ -729,11 +734,11 @@ static void shots_probe(void) {
     pad_press(SHOTS_PAD_B); assert(!page.viewer && settingsOpen);
     /* Delete (A on the button): gone from the grid, and from the server's list read again. */
     NSString *gone = cells[1].shotId;
-    settingsPanel.controllerIndex = 5; [settingsPanel controllerHighlight]; pad_press(PAD_A);
+    settingsPanel.controllerIndex = 6; [settingsPanel controllerHighlight]; pad_press(PAD_A);
     shots_wait("delete", ^BOOL{ return page.cells.count == 5 && shots_own() == 2; });
     for (NSDictionary *s in page.shots) assert(![s[@"id"] isEqual:gone]);
     shots_wait("list read again", ^BOOL{ return !page.fetching && page.fetchedAt > 0; });
-    assert(page.cells.count == 5 && settingsPanel.controllerTargets.count == 3 + 5 + 2);
+    assert(page.cells.count == 5 && settingsPanel.controllerTargets.count == 4 + 5 + 2 + 1);
     /* A picture of the player's just shared (shot_upload.h posts TOTK_SHOT_SHARED_NOTE once the server took it): the list is
        read at once, not at the next minute. Without the note nothing reads it in the next second and a half. */
     shots_share(2, other);
@@ -834,22 +839,23 @@ static void nick_fits(NSView *page, TOTKNickRow *row, NSTextField *state, NSView
     assert(NSMaxX(row.label.frame) <= NSMinX(row.button.frame) && NSMaxX(row.button.frame) <= NSWidth(row.bounds) && row.label.frame.size.width > 40);
     assert(row.label.frame.size.width >= ceil([row.label.stringValue sizeWithAttributes:@{NSFontAttributeName: row.label.font}].width));   /* the name whole */
 }
-/* 查看排名 (user 2026-11-11): at the right of the switch's line inside the page, the group's label between the switch and it;
-   its address the site's board for this game, with the anonymous code when this Mac has an id, never the id. */
-static NSDictionary *board_site_query(void) {
-    NSURLComponents *site = [NSURLComponents componentsWithURL:board_tab_site_url() resolvingAgainstBaseURL:NO];
-    assert(site && [site.path isEqualToString:@"/"] && [site.host isEqualToString:totk_board_url().host] && [(site.port ?: @0) isEqual:(totk_board_url().port ?: @0)]);
+/* 访问主页 (user 2026-11-11): the site's home on its root (the inbox's), with this game, the view of the page shown
+   (board / contrib, the photo wall's #wall from the 截图分享 page) and the player's public codes when this Mac has their
+   ids; never an id itself. Returns the query items; the fragment is checked here. */
+static NSDictionary *home_query(NSInteger page) {
+    NSURLComponents *site = [NSURLComponents componentsWithURL:settings_home_url(page) resolvingAgainstBaseURL:NO];
+    NSURLComponents *root = contrib_tab_root();
+    assert(site && root && [site.host isEqualToString:root.host] && [(site.port ?: @0) isEqual:(root.port ?: @0)] && [site.path isEqualToString:@"/"]);
     NSMutableDictionary *items = [NSMutableDictionary dictionary];
     for (NSURLQueryItem *i in site.queryItems) items[i.name] = i.value;
-    assert([items[@"view"] isEqual:@"board"] && [items[@"game"] isEqual:@GAME_INBOX_ID]);
+    assert([items[@"game"] isEqual:@GAME_INBOX_ID]);
+    assert(page == SETTINGS_PAGE_BOARD ? [items[@"view"] isEqual:@"board"] : page == SETTINGS_PAGE_CONTRIB ? [items[@"view"] isEqual:@"contrib"] : !items[@"view"]);
+    assert(page == SETTINGS_PAGE_SHOTS ? [site.fragment isEqual:@"wall"] : !site.fragment);
     NSString *bid = totk_board_id(NO);
+    NSString *path = totk_contrib_path(), *install = path ? [NSString stringWithContentsOfFile:totk_contrib_side(path, @"install") encoding:NSUTF8StringEncoding error:nil] : nil;
     assert(!bid || ![site.URL.absoluteString containsString:bid]);
+    assert(!install.length || ![site.URL.absoluteString containsString:[install stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]]);
     return items;
-}
-static void board_site_fits(TOTKBoardPage *page) {
-    assert([page.siteButton.title isEqualToString:@"View ranking"] && page.siteButton.enabled && !page.siteButton.hidden);
-    assert(NSMaxX(page.siteButton.frame) <= NSWidth(page.bounds) - 10 && NSMinY(page.siteButton.frame) >= NSMinY(page.toggle.frame) - 4 &&
-           NSMaxX(page.toggle.frame) < NSMinX(page.group.frame) && NSMaxX(page.group.frame) <= NSMinX(page.siteButton.frame));
 }
 static void nick_probe(void) {
     const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("NICK_TEST_URL"), *taken = getenv("NICK_TEST_TAKEN"); assert(dir);
@@ -869,8 +875,8 @@ static void nick_probe(void) {
     unsetenv("TOTK_BOARD_DIR"); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1);
     TOTKBoardPage *board = nick_board();
     assert(settingsOpen && [board.nick.label.stringValue isEqualToString:@"Nickname: not available in this run"] && !board.nick.button.enabled);
-    assert([board.nick.button.title isEqualToString:@"Change"] && [settingsPanel.controllerTargets isEqualToArray:@[board.siteButton]]);
-    board_site_fits(board); assert(board_site_query().count == 2);   /* no id: no code */
+    assert([board.nick.button.title isEqualToString:@"Change"] && [settingsPanel.controllerTargets isEqualToArray:@[settingsPanel.homeButton]]);
+    assert(!home_query(SETTINGS_PAGE_BOARD)[@"code"]);   /* no id: no code */
     [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; assert(![settingsPanel.controllerTargets containsObject:shots_page().nick.button] && !shots_page().nick.button.enabled);
     settings_show(0);
 
@@ -879,7 +885,7 @@ static void nick_probe(void) {
     assert(!totk_board_id(NO));
     g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
     nick_wait("row without an id", ^BOOL{ return [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
-    assert(board.nick.button.enabled && [settingsPanel.controllerTargets isEqualToArray:(@[board.toggle, board.siteButton, board.nick.button])]);
+    assert(board.nick.button.enabled && [settingsPanel.controllerTargets isEqualToArray:(@[board.toggle, board.nick.button, settingsPanel.homeButton])]);
     nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
     assert(!totk_board_id(NO));
     if (!server) {
@@ -907,20 +913,19 @@ static void nick_probe(void) {
     nick_wait("board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue isEqualToString:@"Nickname: not set (the anonymous code shows)"]; });
     NSString *code = board.entries[0][@"name"];
     assert(code.length == 6 && ![board.entries[0][@"nick"] boolValue]);
-    /* 查看排名: the address carries the code the server names this player by, and the board read with it marks their row;
-       a click and a controller's A open it (here: kept, no browser). */
-    board_site_fits(board);
-    NSDictionary *site = board_site_query(); assert(site.count == 3 && [site[@"code"] isEqual:code]);
+    /* 访问主页 from this page: the board, with the code the server names this player by, and the board read with it marks
+       their row; a click and a controller's A open it (here: kept, no browser). */
+    NSDictionary *site = home_query(SETTINGS_PAGE_BOARD); assert([site[@"code"] isEqual:code]);
     NSURL *marked = [NSURL URLWithString:[NSString stringWithFormat:@"%s/v1/board?game=%s&code=%@", server, GAME_INBOX_ID, code]];
     NSDictionary *listing = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfURL:marked] options:0 error:nil];
     NSDictionary *mine = nil; for (NSDictionary *g in listing[@"data"][@"groups"]) for (NSDictionary *e in g[@"entries"]) if ([e[@"me"] boolValue]) mine = e;
     assert(mine && [mine[@"name"] isEqual:code]);
-    board_tab_open = probe_board_open;
-    [board.siteButton performClick:nil]; assert(boardOpens == 1 && [boardOpened isEqual:board_tab_site_url()] && settingsOpen);
+    settings_home_open = probe_home_open;
+    [settingsPanel.homeButton performClick:nil]; assert(homeOpens == 1 && [homeOpened isEqual:settings_home_url(SETTINGS_PAGE_BOARD)] && settingsOpen);
     pad_press(PAD_DOWN);
-    for (int n = 0; n < 4 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != board.siteButton; n++) pad_press(PAD_DOWN);
-    pad_press(PAD_A); assert(boardOpens == 2 && settingsOpen);
-    board_tab_open = board_tab_open_default;
+    for (int n = 0; n < 4 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != settingsPanel.homeButton; n++) pad_press(PAD_DOWN);
+    pad_press(PAD_A); assert(homeOpens == 2 && settingsOpen);
+    settings_home_open = settings_home_open_default;
     settings_show(0); g_settings_page = SETTINGS_PAGE_BOARD; settings_show(1); board = nick_board();
     nick_wait("board again", ^BOOL{ return nick_board().entries.count == 1; });
 
@@ -993,7 +998,6 @@ static void nick_probe(void) {
     board = nick_board();
     nick_wait("narrow board", ^BOOL{ return nick_board().entries.count == 1 && [nick_board().nick.label.stringValue hasPrefix:@"Nickname: "]; });
     nick_fits(board, board.nick, board.state, board.table.enclosingScrollView);
-    board_site_fits(board);
     nick_png(@"board-narrow");
     [settingsPanel selectPage:SETTINGS_PAGE_SHOTS]; page = shots_page();
     nick_fits(page, page.nick, page.state, page.scroll);
@@ -1002,27 +1006,25 @@ static void nick_probe(void) {
     settings_show(0); [window setContentSize:was];
 }
 
-/* 着色器贡献 (contrib_tab.h): 查看排名 at the page's top right (user 2026-11-11) opens the site's contributors for this game
-   with the player's 8-hex pseudonym, sha256("player:" + install id) as the server names them (MacNativeGamesWeb lib/admin.js
-   pseudonym); with no install id yet (nothing sent) no player and none is made; never the id itself. */
-static int contribOpens; static NSURL *contribOpened;
-static void probe_contrib_open(NSURL *url) { contribOpens++; contribOpened = url; }
-static NSDictionary *contrib_site_query(NSString *install) {
-    NSURLComponents *site = [NSURLComponents componentsWithURL:contrib_tab_site_url(totk_contrib_path()) resolvingAgainstBaseURL:NO];
-    assert(site && [site.scheme isEqualToString:@"https"] && [site.host isEqualToString:@"mac-native-games.com"] && [site.path isEqualToString:@"/"]);
-    assert(!install || ![site.URL.absoluteString containsString:install]);
-    NSMutableDictionary *items = [NSMutableDictionary dictionary];
-    for (NSURLQueryItem *i in site.queryItems) items[i.name] = i.value;
-    assert([items[@"view"] isEqual:@"contrib"] && [items[@"game"] isEqual:@GAME_INBOX_ID]);
-    return items;
-}
+/* 着色器贡献 (contrib_tab.h, user 2026-11-11): laid out as the 排行榜 page. The panel's 访问主页 from it opens the site's
+   contributors for this game with the player's 8-hex pseudonym, sha256("player:" + install id) as the server names them
+   (MacNativeGamesWeb lib/admin.js pseudonym); with no install id yet (nothing sent) no player and none is made; never the
+   id itself. The list is the site's (GET /v1/stats): with CONTRIB_TEST_URL (a local inbox where the Python test
+   sent two players' rows, this Mac's with its install id below, the other with more) both are listed, most first, and
+   this Mac's row is marked once its id is there; without, the read fails and says so. */
 static void contrib_site_fits(TOTKContribPage *page) {
-    assert([page.siteButton.title isEqualToString:@"View ranking"] && page.siteButton.enabled && !page.siteButton.hidden);
-    assert(NSMaxX(page.siteButton.frame) <= NSWidth(page.bounds) - 10 && NSMaxY(page.siteButton.frame) <= NSHeight(page.bounds) - 4);
-    for (NSView *v in @[page.sent, page.found, page.toggle.superview, page.state, page.note]) assert(!NSIntersectsRect(page.siteButton.frame, v.frame));
+    assert(NSMaxY(page.counts.frame) <= NSMinY(page.state.frame) && NSMaxY(page.state.frame) <= NSMinY(page.toggle.frame) + 4);
+    assert(NSMaxY(page.table.enclosingScrollView.frame) <= NSMinY(page.counts.frame) && NSMinY(page.table.enclosingScrollView.frame) >= NSMaxY(page.note.frame));
+    CGFloat used = 0; for (NSTableColumn *c in page.table.tableColumns) used += c.width + page.table.intercellSpacing.width;
+    assert(used <= page.table.enclosingScrollView.contentSize.width);   /* every column shows without scrolling sideways */
+}
+static void contrib_wait(const char *what, BOOL (^ready)(void)) {
+    for (int i = 0; i < 250 && !ready(); i++) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]]; [settingsPanel refreshContribPage]; }
+    if (!ready()) { fprintf(stderr, "contributions: no %s in 25 s (status \"%s\")\n", what, ((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]).status.stringValue.UTF8String); abort(); }
 }
 static void contrib_probe(void) {
-    const char *dir = getenv("SETTINGS_TEST_DIR"); assert(dir);
+    const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("CONTRIB_TEST_URL"); assert(dir);
+    setenv("TOTK_STATS_URL", server ? server : "http://127.0.0.1:9", 1);
     NSString *folder = [@(dir) stringByAppendingPathComponent:@"contrib"];
     assert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]);
     NSString *file = [folder stringByAppendingPathComponent:@"shader-list-contribution-test.txt"];
@@ -1032,37 +1034,61 @@ static void contrib_probe(void) {
     settings_test_output_init();
     window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
-    contrib_tab_open = probe_contrib_open;
+    settings_home_open = probe_home_open; homeOpens = 0;
     /* No install id yet: the contributors without a player, and no id made by asking. */
     g_settings_page = SETTINGS_PAGE_CONTRIB; settings_show(1);
     TOTKContribPage *page = (TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB];
     contrib_site_fits(page);
-    assert([settingsPanel.controllerTargets isEqualToArray:(@[page.toggle, page.siteButton])]);
-    assert(contrib_site_query(nil).count == 2 && ![NSFileManager.defaultManager fileExistsAtPath:side]);
-    [page.siteButton performClick:nil]; assert(contribOpens == 1 && [contribOpened isEqual:contrib_tab_site_url(file)] && settingsOpen);
-    /* An install id: its pseudonym, the one the server lists; a controller's A opens it too. */
+    assert([settingsPanel.controllerTargets isEqualToArray:(@[page.toggle, settingsPanel.homeButton])]);
+    assert([page.counts.stringValue isEqualToString:@"0 shaders and pipelines contributed · nothing new found yet"]);
+    assert(!home_query(SETTINGS_PAGE_CONTRIB)[@"player"] && ![NSFileManager.defaultManager fileExistsAtPath:side] && !page.me);
+    if (server) {
+        contrib_wait("list", ^BOOL{ return ((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]).players.count == 2; });
+        assert(page.status.stringValue.length == 0 && [page.table numberOfRows] == 2);
+    } else {
+        contrib_wait("failed read", ^BOOL{ return [((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]).status.stringValue hasPrefix:@"The contributors could not be read ("]; });
+        assert(page.players.count == 0);
+    }
+    [settingsPanel.homeButton performClick:nil]; assert(homeOpens == 1 && [homeOpened isEqual:settings_home_url(SETTINGS_PAGE_CONTRIB)] && settingsOpen);
+    /* An install id: its pseudonym, the one the server lists; the row marked; a controller's A opens the site too. */
     NSString *install = @"0f0f0f0f-0000-4000-8000-000000001234";
     assert([[install stringByAppendingString:@"\n"] writeToFile:side atomically:YES encoding:NSUTF8StringEncoding error:nil]);
     NSData *d = [[@"player:" stringByAppendingString:install] dataUsingEncoding:NSUTF8StringEncoding]; unsigned char h[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256(d.bytes, (CC_LONG)d.length, h);
     NSString *expected = [NSString stringWithFormat:@"%02x%02x%02x%02x", h[0], h[1], h[2], h[3]];
-    NSDictionary *items = contrib_site_query(install); assert(items.count == 3 && [items[@"player"] isEqual:expected]);
+    [settingsPanel refreshContribPage]; assert([page.me isEqualToString:expected]);
+    NSDictionary *items = home_query(SETTINGS_PAGE_CONTRIB); assert([items[@"player"] isEqual:expected]);
+    assert([home_query(SETTINGS_PAGE_SHOTS)[@"player"] isEqual:expected] && [home_query(SETTINGS_PAGE_DISPLAY)[@"player"] isEqual:expected]);   /* every page carries it */
+    if (server) {
+        /* the other player sent more, so this Mac's is second, in green and bold */
+        assert(![page.players[0][@"player"] isEqual:expected] && [page.players[1][@"player"] isEqual:expected]);
+        assert([page.players[0][@"shaders"] integerValue] > [page.players[1][@"shaders"] integerValue]);
+        NSTextField *mine = (NSTextField *)[page.table viewAtColumn:1 row:1 makeIfNecessary:YES], *other = (NSTextField *)[page.table viewAtColumn:1 row:0 makeIfNecessary:YES];
+        assert([mine.stringValue isEqualToString:expected] && [mine.textColor isEqual:NSColor.systemGreenColor] && ![other.textColor isEqual:NSColor.systemGreenColor]);
+        assert([((NSTextField *)[page.table viewAtColumn:0 row:1 makeIfNecessary:YES]).stringValue isEqualToString:@"2"]);
+    }
     pad_press(PAD_DOWN);
-    for (int n = 0; n < 3 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != page.siteButton; n++) pad_press(PAD_DOWN);
-    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == page.siteButton);
-    pad_press(PAD_A); assert(contribOpens == 2 && [contribOpened.absoluteString hasSuffix:[@"player=" stringByAppendingString:expected]]);
-    /* The panel's narrowest (600 pt): still at the top right, clear of the numbers and the switch. */
+    for (int n = 0; n < 3 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != settingsPanel.homeButton; n++) pad_press(PAD_DOWN);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == settingsPanel.homeButton);
+    pad_press(PAD_A); assert(homeOpens == 2 && [homeOpened.absoluteString containsString:[@"player=" stringByAppendingString:expected]]);
+    /* The panel's narrowest (600 pt): the same layout, every column in view. */
     settings_show(0); [window setContentSize:NSMakeSize(604, 720)];
     g_settings_page = SETTINGS_PAGE_CONTRIB; settings_show(1);
     assert(NSWidth(settingsPanel.frame) == SETTINGS_NARROW_W);
     contrib_site_fits((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]);
-    contrib_tab_open = contrib_tab_open_default;
+    if (server && getenv("CONTRIB_TEST_PNG")) {   /* a picture of the page, for a look */
+        contrib_wait("list again", ^BOOL{ return ((TOTKContribPage *)settingsPanel.pages[SETTINGS_PAGE_CONTRIB]).players.count > 0; });
+        NSView *v = settingsPanel; NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds]; [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+        [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(getenv("CONTRIB_TEST_PNG")) atomically:YES];
+    }
+    settings_home_open = settings_home_open_default;
     settings_show(0);
 }
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
     setenv("TOTK_NAME_URL", "http://127.0.0.1:9/v1/name", 1);     /* nor a real nickname */
+    setenv("TOTK_STATS_URL", "http://127.0.0.1:9", 1);            /* nor the 着色器贡献 page the real contributors */
     if (argc==2 && !strcmp(argv[1],"vr-rows")) {
         /* Exercise production row construction without NSApplication, a game,
            a window, or GPU work. Unsupported settings must not be offered. */
@@ -1112,7 +1138,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
-    if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts("pass: contribution page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts(getenv("CONTRIB_TEST_URL") ? "pass: contribution page with the server" : "pass: contribution page"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1127,7 +1153,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 29 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1466,7 +1492,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsPanel.rows.count == 2 && !row(@"User this run").control.enabled &&
            [menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);
     shows(@"User (from the next launch)", @"Local");
-    assert(settingsPanel.controllerTargets.count == 3);
+    assert(settingsPanel.controllerTargets.count == 4 && settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton);   /* the rows, 添加用户…, 访问主页 */
     {   /* All pages fit, including the user page's two rows. */
         NSUInteger perPage[SETTINGS_PAGES] = {0};
         for (TOTKSettingRow *r in settingsPanel.allRows) perPage[r.page]++;
@@ -1560,10 +1586,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
     assert(settingsPanel.rows.count == 7 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
-    /* The display page's bottom right: star the project, after the rows for a controller (contributing is the shader
-       tab's switch since 585d0734); the version stays clear of it; a result shows for a moment where the version is. */
-    NSButton *starButton = settingsPanel.displayButtons[0];
-    assert(settingsPanel.displayButtons.count == 1 && [starButton.title isEqualToString:@"⭐ Star the project"]);
+    /* Every page's bottom right: 访问主页 (user 2026-11-11, was the display page's star), after the rows for a controller;
+       the version stays clear of it; a result shows for a moment where the version is. */
+    NSButton *starButton = settingsPanel.homeButton;
+    assert(settingsPanel.displayButtons.count == 0 && [starButton.title isEqualToString:@"Visit homepage"]);
     assert(!starButton.hidden && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
     assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(starButton.frame) && starButton.frame.origin.y < 34);
     assert(settingsPanel.controllerTargets.count == settingsPanel.rows.count + 1 && settingsPanel.controllerTargets.lastObject == starButton);
@@ -1572,8 +1598,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel note:@"Thank you!"]; assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Thank you!"]);
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
-    assert(starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 9 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
+    assert(!starButton.hidden && settingsPanel.controllerTargets.lastObject == starButton);   /* every page */
+    assert(settingsPanel.rows.count == 8 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
@@ -1600,8 +1626,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSRect version = settingsPanel.versionLabel.frame;
     assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
     for (NSView *view in settingsPanel.subviews)
-        if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only the effects page's reset */
-            assert(view.hidden || [settingsPanel.effectsButtons containsObject:(NSButton *)view]);
+        if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only the effects page's reset and 访问主页 */
+            assert(view.hidden || [settingsPanel.effectsButtons containsObject:(NSButton *)view] || view == settingsPanel.homeButton);
+    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(settingsPanel.effectsButtons[0].frame) && NSMaxX(settingsPanel.effectsButtons[0].frame) <= NSMinX(settingsPanel.homeButton.frame));   /* the reset, then 访问主页 at the far right */
     for (NSView *view in settingsPanel.subviews)
         if ([view isKindOfClass:NSTextField.class] && view != settingsPanel.versionLabel) assert(NSMinY(view.frame) > NSMinY(lastBand));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
@@ -1610,7 +1637,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
        swaps places), key 1 cancels, Command keys pass, a right-click clears, the two resets. */
     g_settings_bindings_list = YES; [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
     assert(!settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W);
-    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 21 && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
+    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 22 && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
            [settingsPanel.listToggle.title isEqualToString:@"Show drawings"] && settingsPanel.listToggle.enabled);
     fakePadDetected = -1; fakePadType = GAMEPAD_TYPE_AUTO; [settingsPanel refreshBindings];
     assert(titled(box(KEYMAP_X, 0), @"Space") && titled(box(KEYMAP_X, 1), @"—") && titled(box(KEYMAP_X, 2), @"Y"));   /* Xbox names: Switch X sits where Xbox Y is */
@@ -1773,7 +1800,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     for (NSMenuItem *i in actions.itemArray) if (i.tag == SETTINGS_BIND_PANEL) [settingsPanel menuPicked:i];
     assert(fakeSettingsButton == 3); [settingsPanel assignPad:3 action:KEYMAP_X]; assert(fakeSettingsButton == -1 && fakeMap[3] == 1u << KEYMAP_X);
     [settingsPanel assignPad:3 action:KEYMAP_ZR]; assert(fakeMap[3] == 1u << KEYMAP_ZR && fakeMap[9] == 1u << KEYMAP_ZR && [diagram_missing(1) isEqualToString:@"No button: Jump"]);
-    assert(settingsPanel.controllerTargets.count == 19 && pd.selected == -1);
+    assert(settingsPanel.controllerTargets.count == 20 && pd.selected == -1);
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:200 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 15} time:200.1 active:YES];   /* shows where it is */
     assert(settingsPanel.controllerIndex == 0 && settingsPanel.deviceTabs.layer.borderWidth == 2 && pd.selected == -1);
