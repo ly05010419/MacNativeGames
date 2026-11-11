@@ -23,6 +23,14 @@ class LoweringTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return result.stdout
 
+    def test_an_interrupted_compiler_is_tried_again(self):
+        # #2070: on a cold build the one crash of the compiler service made four other threads' archive adds fail
+        # (write_failed 4) and packaging stopped; the add is retried as library compiles already were.
+        out = self.run_built([GAME / 'tests/compiler_retry_test.m'], '-fobjc-arc', '-framework', 'Foundation')
+        self.assertIn('all checks pass', out)
+        archive = (NVN / 'totk_pipeline_archive.h').read_text()
+        self.assertIn('compiler_retry(&e', archive)
+
     def test_text(self):
         self.assertIn('all checks pass', self.run_built([GAME / 'tests/float_rmw_lower_test.c'], '-std=c11'))
 

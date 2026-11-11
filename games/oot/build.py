@@ -40,6 +40,10 @@ def imported_romfs(tree):
     index=json.loads((Path(tree)/'extracted/oot/romfs/index.json').read_text())
     return dict(sha256=index['romfs_sha256'],size=index['romfs_size'])
 
+def missing_tools(names):
+    """The command-line tools of names the build cannot find on PATH (build_app.py puts Homebrew's folders on it)."""
+    return [name for name in names if not shutil.which(name)]
+
 def make_path(work):
     """The work folder as make can name it (#2045): make splits target and prerequisite names at spaces, and the default
     work folder sits next to the dump, named after the game. A path with spaces gets a fixed alias in the temporary
@@ -423,6 +427,8 @@ def build(args, source):
     llvm=next((folder for folder in llvm_candidates if all(os.access(Path(folder)/tool,os.X_OK)
                for tool in ('llvm-objcopy','llvm-objdump'))),None)
     if llvm is None:raise ValueError('OoT needs llvm-objcopy and llvm-objdump for rewrite verification; install llvm or set LLVM_BIN')
+    missing=missing_tools(('ffmpeg','ffprobe'))   # the opening overlay, the build's last step (#2070: a traceback after minutes)
+    if missing:raise ValueError(f"OoT needs {' and '.join(missing)} for the opening overlay; brew install ffmpeg")
     # Close this title normally before changing its resource workspace or App.
     # The input command follows the same save-safe window close as normal play.
     executable=out/'Contents/MacOS/OcarinaOfTime'

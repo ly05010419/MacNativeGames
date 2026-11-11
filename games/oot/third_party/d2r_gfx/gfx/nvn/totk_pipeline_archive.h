@@ -41,6 +41,7 @@
 #include <stdatomic.h>
 #include "dmsh_chain.h"
 #include "totk_shader_rt.h"
+#include "nvn_compiler_retry.h"   /* #2070: an add the compiler service dropped is tried again */
 
 #ifndef PAR_BATCH_MAC
 #define PAR_BATCH_MAC 8
@@ -312,8 +313,13 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch
     }
-    BOOL ok = b->archive && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [b->archive addRenderPipelineFunctionsWithDescriptor:desc error:&e]
-                                                                                  : [b->archive addComputePipelineFunctionsWithDescriptor:desc error:&e]);
+    /* Adding compiles through the compiler service: when it went away (another thread's shader crashed it, #2070), the
+       add is tried again once it is back, instead of losing the batch (nvn_compiler_retry.h). */
+    id<MTLBinaryArchive> archive = b->archive;
+    BOOL ok = archive && compiler_retry(&e, 100, ^BOOL(NSError **err) {
+        return [desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [archive addRenderPipelineFunctionsWithDescriptor:desc error:err]
+                                                                      : [archive addComputePipelineFunctionsWithDescriptor:desc error:err];
+    });
     atomic_fetch_add(&g_par_add_ns, bp_now() - t0);
     if (ok) [b->keys addObject:key];
     else {

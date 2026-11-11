@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 GAME = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('oot_build_paths', GAME / 'build.py')
@@ -58,6 +59,20 @@ class AppRunningTests(unittest.TestCase):
         self.assertTrue(self.running(''))
         self.assertTrue(self.running('--update-check', ''))
         self.assertTrue(self.running('--update-install x'))   # not the helper's form: treated as the game
+
+
+class ToolCheckTests(unittest.TestCase):
+    """#2070 (the reporter's M5 build): without ffmpeg the build ran for minutes and stopped at the opening overlay, the
+    last step, in a traceback; the build checks it first, as it checks LLVM (PR #2060)."""
+    SOURCE = (GAME / 'build.py').read_text()
+
+    def test_ffmpeg_is_checked_before_the_game_is_imported(self):
+        body = self.SOURCE[self.SOURCE.index('def build(args, source):'):]
+        self.assertLess(body.index("missing_tools(('ffmpeg','ffprobe'))"), body.index("'import-original-nup'"))
+
+    def test_missing_tools_names_what_is_absent(self):
+        with mock.patch.object(build.shutil, 'which', lambda name, path=None: None if name == 'ffprobe' else '/x/' + name):
+            self.assertEqual(build.missing_tools(('ffmpeg', 'ffprobe')), ['ffprobe'])
 
 
 class UpdateInfoTests(unittest.TestCase):
