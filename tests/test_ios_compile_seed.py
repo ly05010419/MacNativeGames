@@ -46,6 +46,36 @@ class CompileSeed(unittest.TestCase):
                 compiler.main()
                 self.assertEqual(calls, [])
 
+    def test_libraries_target_the_apps_lowest_os_on_each_platform(self):
+        # #1845: without a target the compiler builds for its own SDK (Xcode 27.2: Metal 4.1), which iOS 26 cannot load
+        self.assertEqual(compiler.target_flags('iphoneos'), ['-mtargetos=ios26.0'])
+        self.assertEqual(compiler.target_flags('xros'), ['-mtargetos=xros26.0'])
+        with self.assertRaises(KeyError):
+            compiler.target_flags('macosx')
+        project = (TOOLS.parent / 'project.yml').read_text()
+        self.assertIn(f'iOS: "{compiler.MIN_OS}"', project)
+        self.assertIn(f'IPHONEOS_DEPLOYMENT_TARGET: "{compiler.MIN_OS}"', project)
+        for sdk in ('iphoneos', 'xros'):
+            with self.subTest(sdk=sdk), tempfile.TemporaryDirectory() as tmp:
+                seed = Path(tmp) / 'seed'; seed.mkdir()
+                (seed / ('0' * 64 + '_b.metal')).write_bytes(b'one shader')
+                (seed / 'seed-manifest.json').write_text(json.dumps({'chain': 'test', 'files': {'0' * 64 + '_b.metal': 'x'}}))
+                compiles = []
+                def run(args, **kwargs):
+                    if '--version' in args:
+                        return SimpleNamespace(stdout='test Metal compiler')
+                    if '-c' in args:
+                        compiles.append(args)
+                    Path(args[args.index('-o') + 1]).write_bytes(b'compiled library')
+                    return SimpleNamespace(returncode=0)
+                with patch.object(sys, 'argv', ['compile_seed.py', str(seed), sdk]), patch.object(compiler.subprocess, 'run', side_effect=run):
+                    compiler.main()
+                self.assertEqual(len(compiles), 1)
+                self.assertIn(compiler.target_flags(sdk)[0], compiles[0])
+                manifest = json.loads((seed / 'seed-manifest.json').read_text())
+                self.assertEqual(manifest['ios_metal_flags'], compiler.seed_flags(sdk))
+                self.assertIn(compiler.target_flags(sdk)[0], manifest['ios_metal_flags'].split())
+
 
 if __name__ == '__main__':
     unittest.main()
