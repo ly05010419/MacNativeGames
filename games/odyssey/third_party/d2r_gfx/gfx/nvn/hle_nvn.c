@@ -261,7 +261,9 @@ NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const voi
 #ifdef GAME_BOTW
  if(v->magic!=MAGIC('P','O','O','L')||(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)||!v->mem){static int n;if(n++<12)LOG("【红】nvnMemoryPoolMap(%p) -> NULL: magic %#x flags %#x mem %p size %#llx",(void *)p,v->magic,v->flags,(void *)v->mem,(unsigned long long)v->size);}
 #endif
- if(v->magic!=MAGIC('P','O','O','L'))return NULL;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
+ if(v->magic!=MAGIC('P','O','O','L'))return NULL;if(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)return NULL;
+ if(v->mem){void mtl_pool_map(const pool_t *p);mtl_pool_map(v);}   /* GPU renderings into the pool reach the CPU's view (nvn_mtl.m, #1901) */
+ return v->mem;}
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *r) {
     return (NVNboolean)totk_vpool_map((pool_t *)p, n, (const totk_mapping_request *)(const void *)r);
 }

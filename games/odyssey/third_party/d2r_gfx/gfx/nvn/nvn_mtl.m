@@ -2800,6 +2800,22 @@ void mtl_wb_eager(void) {
     pthread_mutex_unlock(&g_smu);
     wb_write_list(list, nl, 1);
 }
+/* Odyssey (#1901): the game can read a texture the GPU rendered into without invalidating first. The Luncheon Kingdom
+   poison maps (four 256x256 RGBA8 linear textures, each in its own CPU_CACHED | GPU_CACHED pool) are re-rendered by the
+   GPU every frame, and the CPU reads two of them every frame through nvnMemoryPoolMap: on hardware the GPU's writes are
+   in that memory, here they stay in the MTLTexture until a write-back, so the CPU counted the old bytes of another
+   texture as poison on clean ground. A map of a CPU-visible pool now writes its pending renderings back first, as an
+   invalidate of the whole pool would. Not at Flush, as games/totk does: the game never invalidates these pools and does
+   not flush between the rendering and the read (only rare whole-pool flushes cover a pending rendering), so a
+   Flush-only write-back left Mario poisoned (#1904). */
+void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n);
+void mtl_pool_map(const pool_t *p) {
+    static _Atomic uint64_t logged;
+    uint64_t before = g_wb_done;
+    mtl_pool_invalidate(p, 0, p->size);
+    if (g_wb_done != before && atomic_fetch_add(&logged, 1) < 8)
+        MLOG("[writeback] at nvnMemoryPoolMap: pool flags %#x size %#llx, %llu written back", p->flags, (unsigned long long)p->size, (unsigned long long)(g_wb_done - before));
+}
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
     if (!p || !p->mem || !atomic_load(&g_wb_on)) return;
     pthread_mutex_lock(&g_smu);

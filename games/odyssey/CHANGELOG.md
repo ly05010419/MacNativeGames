@@ -17,6 +17,31 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 ## Log
 
+### 2026-11-08: Luncheon Kingdom: no poison on clean sand in the Spewart fight (#1901)
+
+Mario was poisoned on clean sand within ~2 s of every Spewart fight, before any goo was spat, and the fight could not
+be won. The goo's actor counts the cells under Mario's sensor whose alpha is 128 or more in a 256x256 RGBA8 map
+(`main+0x2a12a0`) and sends the poison message above a threshold. There are four such maps, each in a
+`CPU_CACHED | GPU_CACHED` pool of its own (0x40000 bytes). Once the goo simulation runs, the GPU re-renders all four
+every frame, and the game reads two of them through `nvnMemoryPoolMap` every frame without invalidating. The runtime
+only wrote GPU renderings back to memory at an invalidate, so the CPU read the old bytes of another texture (about half
+of each row above alpha 128). `nvnMemoryPoolMap` now writes back the pool's pending renderings first (`mtl_pool_map`,
+nvn_mtl.m), as an invalidate of the whole pool would.
+
+Not at `nvnMemoryPoolFlushMappedRange`, as games/totk does. The game flushes these pools (mostly 0x200-byte stripes,
+now and then the whole pool) but not between the GPU's rendering and the CPU's read. In one logged window, the first
+map after a rendering found it still pending 118 times, while only 4 flushes covered a pending rendering. A Flush-only
+write-back left Mario poisoned in both runs (#1904).
+
+Found with a memory scan and hardware watchpoints: health write `main+0x4e4a80`, the player's message receiver
+`main+0x3cb4e0`, the goo actor's counting loop `main+0x2a0e30`, which maps the pool through NVN entry 103
+(`nvnMemoryPoolMap`). `TOTK_WB_EAGER=256x256` fixed it too, which confirmed the cause before the change.
+
+Played on macOS (Apple M5, macOS 26.6.2) with Odyssey 1.4.1: Mario starts the fight unpoisoned and stays so on clean
+sand, and Spewart's real goo still poisons him. Frame time in the fight is unchanged (p50 16.66 ms, p95 17.16 ms; before
+17.78 ms); about 218 pool maps a frame, each a lock and a scan of the few pending renderings. `tests/test_pool_map_writeback.py`
+checks the map path. No Odyssey iOS build exists to test.
+
 ### 2026-11-01: Complete in-game settings and FPS history
 
 Port the complete three-tab Mac panel and its graph/persistence/controller/remapping revisions to Odyssey. Key 1
