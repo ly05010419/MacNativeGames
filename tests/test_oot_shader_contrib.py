@@ -177,12 +177,13 @@ class PruneKeepsNamedBindStates(unittest.TestCase):
     the bind state behind that name (2026-11-11: 79 OoT rows were refused, naming bind states no upload carried)."""
     SHADER = 'cd' * 32
     DEPS = '{"tex":{"0":"2d"}}'
+    GAME = OOT
 
     def run_case(self, with_pipeline):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / 'probe.m').write_text(NAME_PROBE)
-            built = subprocess.run(['xcrun', 'clang', '-fobjc-arc', f'-I{OOT}/third_party/d2r_gfx/gfx/nvn', str(tmp / 'probe.m'),
+            built = subprocess.run(['xcrun', 'clang', '-fobjc-arc', f'-I{self.GAME}/third_party/d2r_gfx/gfx/nvn', str(tmp / 'probe.m'),
                                     '-framework', 'Foundation', '-o', str(tmp / 'probe')], capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr[-600:])
             name = subprocess.run([str(tmp / 'probe'), 'name', self.SHADER, self.DEPS], capture_output=True, text=True, check=True).stdout.strip()
@@ -202,6 +203,11 @@ class PruneKeepsNamedBindStates(unittest.TestCase):
 
     def test_an_unnamed_one_the_seed_serves_leaves(self):
         self.assertEqual(self.run_case(with_pipeline=False), (1, False))
+
+
+class TotkPruneKeepsNamedBindStates(PruneKeepsNamedBindStates):
+    """games/totk's copy (TotK, BotW and the other games built from it) prunes the same way."""
+    GAME = ROOT / 'games/totk'
 
 
 if __name__ == '__main__':
