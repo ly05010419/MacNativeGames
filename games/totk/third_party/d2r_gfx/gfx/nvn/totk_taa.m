@@ -15,6 +15,15 @@
 //    depth there is not the depth that surface should have had (nearest of 3x3, so edges and jitter still pass), something
 //    moved in or out of that pixel, and MetalFX is told to take the current frame there instead of the history.
 //  - Reset: the first frame, a size change and a camera cut (more than 8 units or 25 degrees in one frame).
+//  - Fast resolve (TOTK_TAA_FAST=1, flag taa_fast, graphics-taa-mode.txt "fast"): on macOS 27 the 1:1 temporal scaler is a
+//    neural network (BRNet) that cost an M3 Pro about 4 ms of GPU a frame at 1920x1080 (Breath of the Wild 1.9.0, a
+//    shrine: 98.6 FPS with key 5 against 144 without), part of it on the Neural Engine with ~1 ms of CPU at each commit.
+//    The fast mode keeps the same jitter, motion vectors and reactive mask and resolves them with one compute pass
+//    (taa_resolve below): the current frame's 3x3 neighbourhood in YCoCg of a tone-mapped colour (c / (1 + max(c))), the
+//    history (our previous output, ping-pong) fetched at the reprojected position with a 5-tap Catmull-Rom filter and
+//    clipped toward the neighbourhood's mean within gamma standard deviations (variance clipping), then blended with
+//    alpha 0.1 (TOTK_TAA_FAST_ALPHA), raised by the reactive mask, by fast motion and to 1 off screen or on a reset. The
+//    jittered sample is not moved back: its Halton offsets average over the pixel, which is the anti-aliasing.
 // Temporal upscaling (TOTK_MFX_TEMPORAL=1 or flag mfx_temporal; experimental, off by default): the same jitter, camera,
 // motion vectors and reactive mask, but the scaler goes from the scene size to the canvas, at the game's own upscale draw
 // (EASU ac58fc18, the draw MetalFX spatial upscaling replaces, nvn_mtl.m tup_dock) instead of the compose draw:
@@ -44,6 +53,8 @@
 #if TARGET_OS_VISION
 /* visionOS has no MetalFX temporal scaler: anti-aliasing stays off there (it is off by default everywhere, key 5). */
 int taa_enabled(void) { return 0; }
+int taa_fast_enabled(void) { return 0; }
+void taa_set_fast(int on) { (void)on; }
 int taa_active(void) { return 0; }
 int taa_ready(void) { return 0; }
 void taa_set(int on) { (void)on; }
@@ -88,8 +99,12 @@ static struct {
     unsigned jit_i, phases; double jx, jy;   // phases: of the Halton jitter, 16 for key 5, ceil(8 x scale^2) when upscaling
     __unsafe_unretained id<MTLTexture> last_src; uint64_t frame, encoded_frame;
     uint64_t done, resets, missing;
-    /* Each size change retires the scaler and five textures. Keep every one alive for the in-flight frames. */
-    struct { id obj; uint64_t frame; } old[TAA_OLD * 6]; int nold;
+    /* The fast resolve (see the header): its pipeline and argument tables, its two outputs (each frame reads the other as
+       its history), the size they have, and the output of the frame encoded last (the compose shader may come twice). */
+    int fast, fast_failed; id<MTLComputePipelineState> rs_ps; id<MTL4ArgumentTable> rargs[TAA_SLOTS];
+    id<MTLTexture> fo[2], last_out; int fo_i; NSUInteger fw, fh; uint64_t fast_done;
+    /* Each size change retires the scaler and seven textures. Keep every one alive for the in-flight frames. */
+    struct { id obj; uint64_t frame; } old[TAA_OLD * 8]; int nold;
 } g;
 static void keep_old(id obj) {   // released (and dropped from the residency set) TAA_OLD frames later, when the GPU is done with it
     if (!obj) return;
@@ -124,6 +139,33 @@ void taa_set(int on) {
     atomic_store(&g_on, on);
     TLOG("settings: temporal anti-aliasing %s", on ? "on" : "off");
 }
+/* The resolve key 5 uses: MetalFX (0, default) or the fast one (1). Taken by the replay at the next frame end, which
+   starts the other one's history afresh. */
+static _Atomic int g_fast_on = -1;
+int taa_fast_enabled(void) {
+    int on = atomic_load_explicit(&g_fast_on, memory_order_relaxed);
+    if (on < 0) {
+        const char *e = getenv("TOTK_TAA_FAST"); on = e && *e && strcmp(e, "0");
+        atomic_store(&g_fast_on, on);
+        if (on) TLOG("edge smoothing resolve: fast (TOTK_TAA_FAST)");
+    }
+    return on;
+}
+void taa_set_fast(int on) {
+    on = !!on;
+    if (on == taa_fast_enabled()) return;
+    atomic_store(&g_fast_on, on);
+    TLOG("edge smoothing resolve: %s", on ? "fast" : "MetalFX");
+}
+static float env_float(const char *name, float def, float lo, float hi) {
+    const char *e = getenv(name); if (!e || !*e) return def;
+    char *end; float v = strtof(e, &end);
+    return end != e && !*end && v >= lo && v <= hi ? v : def;
+}
+/* The fast resolve's history weight (TOTK_TAA_FAST_ALPHA, the current frame's share, default 0.1) and clip width
+   (TOTK_TAA_FAST_GAMMA, standard deviations of the neighbourhood, default 1.25), read once. */
+static float fast_alpha(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_FAST_ALPHA", 0.1f, 0.02f, 1.0f); return v; }
+static float fast_gamma(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_FAST_GAMMA", 1.25f, 0.5f, 4.0f); return v; }
 int taa_active(void) { return g.active; }
 int taa_ready(void) { return g.active && !g.up && !g.failed && g.frame >= g.retry_at && g.depth && g.cam_ok; }
 static double halton(unsigned i, unsigned b) { double f = 1, r = 0; while (i) { f /= b; r += f * (i % b); i /= b; } return r; }
@@ -258,6 +300,94 @@ static int ensure_scaler(id<MTLTexture> src) {
          reactive_on() ? "on" : "off (TOTK_TAA_REACTIVE=0)");
     return 1;
 }
+/* ---- The fast resolve (TOTK_TAA_FAST; see the header) ---- */
+static const char *g_resolve_src =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct R { float2 size; float2 inv_size; float alpha; float reset; float gamma; float motion; };\n"
+    "static float mx3(float3 c) { return max(c.r, max(c.g, c.b)); }\n"
+    // a tone-mapped colour for the clip and the blend, so a bright outlier weighs no more than a white one; and back
+    "static float3 tm(float3 c) { return c / (1.0 + mx3(c)); }\n"
+    "static float3 itm(float3 c) { return c / max(1.0 - mx3(c), 1e-3); }\n"
+    "static float3 ycocg(float3 c) { return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0.0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25))); }\n"
+    "static float3 rgb(float3 c) { return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z); }\n"
+    "static float3 fin(float3 c) { return select(float3(0.0), c, isfinite(c)); }\n"
+    // the history at a reprojected position: Catmull-Rom over 4x4 texels in five bilinear fetches (corners left out)
+    "static float3 catmull(texture2d<float, access::sample> t, float2 uv, float2 size, float2 inv) {\n"
+    "  constexpr sampler s(coord::normalized, filter::linear, address::clamp_to_edge);\n"
+    "  float2 pos = uv * size, t1 = floor(pos - 0.5) + 0.5, f = pos - t1;\n"
+    "  float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f)), w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "  float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);\n"
+    "  float2 w12 = w1 + w2, t0 = (t1 - 1.0) * inv, t3 = (t1 + 2.0) * inv, t12 = (t1 + w2 / w12) * inv;\n"
+    "  float3 r = t.sample(s, float2(t12.x, t0.y)).rgb * (w12.x * w0.y) + t.sample(s, float2(t0.x, t12.y)).rgb * (w0.x * w12.y)\n"
+    "           + t.sample(s, t12).rgb * (w12.x * w12.y) + t.sample(s, float2(t3.x, t12.y)).rgb * (w3.x * w12.y)\n"
+    "           + t.sample(s, float2(t12.x, t3.y)).rgb * (w12.x * w3.y);\n"
+    "  float w = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;\n"
+    "  return max(r / max(w, 1e-4), 0.0);\n"
+    "}\n"
+    "kernel void taa_resolve(texture2d<float, access::read> cur [[texture(0)]], texture2d<float, access::read> mv [[texture(1)]],\n"
+    "                        texture2d<float, access::read> rm [[texture(2)]], texture2d<float, access::sample> hist [[texture(3)]],\n"
+    "                        texture2d<float, access::write> out [[texture(4)]], constant R &p [[buffer(0)]],\n"
+    "                        uint2 g [[thread_position_in_grid]]) {\n"
+    "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
+    "  int2 hi = int2(p.size) - 1; float3 m1 = 0.0, m2 = 0.0, c0 = 0.0;\n"
+    "  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {\n"
+    "    float3 c = ycocg(tm(max(fin(cur.read(uint2(clamp(int2(g) + int2(x, y), int2(0), hi))).rgb), 0.0)));\n"
+    "    m1 += c; m2 += c * c; if (x == 0 && y == 0) c0 = c;\n"
+    "  }\n"
+    "  float3 mean = m1 / 9.0, sd = sqrt(max(m2 / 9.0 - mean * mean, 0.0));\n"
+    // the taa_mv kernel's motion: pixels from here to where this surface was in the previous frame
+    "  float2 v = fin(float3(mv.read(g).xy, 0.0)).xy, puv = (float2(g) + 0.5 + v) * p.inv_size;\n"
+    "  float3 o = c0;\n"
+    "  if (p.reset < 0.5 && all(puv >= 0.0) && all(puv <= 1.0)) {\n"
+    "    float3 h = ycocg(tm(fin(catmull(hist, puv, p.size, p.inv_size))));\n"
+    // variance clipping: the history keeps its colour only as far as this frame's neighbourhood spreads, toward the mean
+    "    float3 e = p.gamma * sd + 1e-4, d = h - mean, a = abs(d / e); float k = max(a.x, max(a.y, a.z));\n"
+    "    if (k > 1.0) h = mean + d / k;\n"
+    "    float alpha = max(p.alpha, saturate(rm.read(g).x));\n"   // something moved in or out of this pixel: the current frame
+    "    alpha = max(alpha, saturate(length(v) * p.motion));\n"    // fast motion: less history, less smear
+    "    o = mix(h, c0, alpha);\n"
+    "  }\n"
+    "  out.write(float4(fin(itm(saturate(rgb(o)))), 1.0), g);\n"
+    "}\n";
+static int ensure_fast(id<MTLTexture> src) {
+    NSUInteger w = src.width, h = src.height;
+    if (g.fast_failed) return 0;
+    if (!g.rs_ps) {   // compiled once, the first time the fast mode runs (tens of milliseconds on the replay thread)
+        NSError *e = nil;
+        MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
+        id<MTLLibrary> lib = [g.dev newLibraryWithSource:@(g_resolve_src) options:o error:&e];
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"taa_resolve"] : nil;
+        g.rs_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
+        for (int i = 0; i < TAA_SLOTS && g.rs_ps; i++) g.rargs[i] = [g.dev newArgumentTableWithDescriptor:ad error:&e];
+        if (!g.rs_ps || !g.rargs[TAA_SLOTS - 1]) {
+            g.fast_failed = 1; g.rs_ps = nil;
+            TLOG("fast resolve not available (%s): edge smoothing stays with MetalFX", e ? e.localizedDescription.UTF8String : "pipeline");
+            return 0;
+        }
+    }
+    int inputs = g.mv && g.mv.width == w && g.mv.height == h;
+    if (inputs && g.fo[0] && g.fw == w && g.fh == h) return 1;
+    if (!inputs) {   // motion, mask and depth history at this size; a MetalFX scaler of the old size is built again when needed
+        keep_old(g.mv); keep_old(g.react); keep_old(g.dh[0]); keep_old(g.dh[1]); keep_old(g.out); keep_old(g.sc);
+        g.sc = nil; g.out = nil;
+        MTLTextureUsage rw = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        g.mv = mk(MTLPixelFormatRG16Float, w, h, rw); g.react = mk(MTLPixelFormatR16Float, w, h, rw);
+        for (int i = 0; i < 2; i++) g.dh[i] = mk(MTLPixelFormatR32Float, w, h, rw);
+    }
+    keep_old(g.fo[0]); keep_old(g.fo[1]);
+    for (int i = 0; i < 2; i++) g.fo[i] = mk(MTLPixelFormatRGBA16Float, w, h, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    [g.rs commit];
+    if (!g.mv || !g.react || !g.dh[0] || !g.dh[1] || !g.fo[0] || !g.fo[1]) {
+        g.fo[0] = g.fo[1] = nil; g.fw = g.fh = 0; g.retry_at = g.frame + 300;
+        TLOG("fast resolve: textures for %lux%lu not created; trying again in 300 frames", (unsigned long)w, (unsigned long)h);
+        return 0;
+    }
+    g.fw = w; g.fh = h; g.prev_ok = 0;
+    TLOG("fast resolve %lux%lu: one compute pass, alpha %.2f, gamma %.2f, reactive mask from depth %s", (unsigned long)w, (unsigned long)h,
+         fast_alpha(), fast_gamma(), reactive_on() ? "on" : "off");
+    return 1;
+}
 // 4x4 inverse (Gauss-Jordan, partial pivoting) and product, row-major, in double (world coordinates in the thousands).
 static int inv4(const double a_[16], double r[16]) {
     double a[16]; memcpy(a, a_, sizeof a);
@@ -283,10 +413,11 @@ static int camera_cut(void) {
 
 id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     if (!g.active || g.up || g.frame < g.retry_at || !cb || !src || src.textureType != MTLTextureType2D) return nil;
-    if (g.encoded_frame == g.frame + 1 && src == g.last_src) return g.out;   // the compose shader again in the same frame
+    if (g.encoded_frame == g.frame + 1 && src == g.last_src) return g.last_out;   // the compose shader again in the same frame
     id<MTLTexture> depth = g.depth;
     if (!depth || !g.cam_ok || depth.width != src.width || depth.height != src.height) { g.missing++; g.prev_ok = 0; return nil; }
-    if (!setup(src.device) || !ensure_scaler(src)) return nil;
+    int fast = g.fast && !g.fast_failed;
+    if (!setup(src.device) || !(fast ? ensure_fast(src) : ensure_scaler(src))) return nil;
     int reset = !g.prev_ok || g.encoded_frame != g.frame || camera_cut();   // also after a frame without anti-aliasing (menus, loading)
     double vc[16], vp[16], ic[16], m[16];
     for (int i = 0; i < 16; i++) { vc[i] = g.cam[12 + i]; vp[i] = reset ? g.cam[12 + i] : g.prev[12 + i]; }
@@ -305,18 +436,34 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // the scene and depth are done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.args[s]];
     [e dispatchThreads:MTLSizeMake(src.width, src.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    id<MTLTexture> out = g.out;
+    if (fast) {   // the resolve reads the motion and mask just written, and last frame's output as its history
+        id<MTLTexture> hist = g.fo[g.fo_i]; out = g.fo[g.fo_i ^ 1]; g.fo_i ^= 1;
+        float *rp = (float *)((char *)g.par[s].contents + 128);   // after taa_mv's parameters (96 bytes)
+        rp[0] = (float)src.width; rp[1] = (float)src.height; rp[2] = 1.0f / src.width; rp[3] = 1.0f / src.height;
+        rp[4] = fast_alpha(); rp[5] = reset ? 1.0f : 0.0f;
+        rp[6] = fast_gamma(); rp[7] = 1.0f / 64.0f;   // 64 px a frame: the current frame only
+        id<MTL4ArgumentTable> ra = g.rargs[s];
+        [ra setTexture:src.gpuResourceID atIndex:0]; [ra setTexture:g.mv.gpuResourceID atIndex:1]; [ra setTexture:g.react.gpuResourceID atIndex:2];
+        [ra setTexture:hist.gpuResourceID atIndex:3]; [ra setTexture:out.gpuResourceID atIndex:4]; [ra setAddress:g.par[s].gpuAddress + 128 atIndex:0];
+        [e barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+        [e setComputePipelineState:g.rs_ps]; [e setArgumentTable:ra];
+        [e dispatchThreads:MTLSizeMake(src.width, src.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    }
     [e updateFence:g.fence afterEncoderStages:MTLStageDispatch];
     [e endEncoding];
-    g.sc.colorTexture = src; g.sc.depthTexture = depth; g.sc.motionTexture = g.mv; g.sc.outputTexture = g.out; g.sc.reactiveMaskTexture = g.react;
-    g.sc.inputContentWidth = src.width; g.sc.inputContentHeight = src.height;
-    g.sc.jitterOffsetX = g.jit_used ? (float)g.jx : 0; g.sc.jitterOffsetY = g.jit_used ? (float)g.jy : 0;   // what the geometry got
-    g.sc.motionVectorScaleX = 1; g.sc.motionVectorScaleY = 1; g.sc.depthReversed = NO; g.sc.reset = reset; g.sc.fence = g.fence;
-    [g.sc encodeToCommandBuffer:cb];
-    g.sc.colorTexture = nil; g.sc.depthTexture = nil; g.sc.motionTexture = nil; g.sc.outputTexture = nil; g.sc.reactiveMaskTexture = nil;
+    if (!fast) {
+        g.sc.colorTexture = src; g.sc.depthTexture = depth; g.sc.motionTexture = g.mv; g.sc.outputTexture = g.out; g.sc.reactiveMaskTexture = g.react;
+        g.sc.inputContentWidth = src.width; g.sc.inputContentHeight = src.height;
+        g.sc.jitterOffsetX = g.jit_used ? (float)g.jx : 0; g.sc.jitterOffsetY = g.jit_used ? (float)g.jy : 0;   // what the geometry got
+        g.sc.motionVectorScaleX = 1; g.sc.motionVectorScaleY = 1; g.sc.depthReversed = NO; g.sc.reset = reset; g.sc.fence = g.fence;
+        [g.sc encodeToCommandBuffer:cb];
+        g.sc.colorTexture = nil; g.sc.depthTexture = nil; g.sc.motionTexture = nil; g.sc.outputTexture = nil; g.sc.reactiveMaskTexture = nil;
+    } else g.fast_done++;
     memcpy(g.prev, g.cam, sizeof g.cam); g.prev_ok = 1;
     g.resets += reset; g.done++;
-    g.last_src = src; g.encoded_frame = g.frame + 1;
-    return g.out;
+    g.last_src = src; g.last_out = out; g.encoded_frame = g.frame + 1;
+    return out;
 }
 /* ---- Temporal upscaling (TOTK_MFX_TEMPORAL; see the header) ---- */
 #define UP_CACHE 3   // scalers kept with their outputs, by size: a dynamic-resolution level that comes back needs no build
@@ -739,6 +886,8 @@ void tup_stats(char *out, size_t n) {
 void taa_frame_end(void) {
     int up = tup_enabled() && u.site_seen && g.frame - u.site_frame < 120, want = taa_enabled() || up, sw = want != g.active || up != g.up;
     if (sw) { g.active = want; g.up = up; g.prev_ok = 0; u.reset_why = "switched on"; }
+    int fast = taa_fast_enabled();
+    if (fast != g.fast) { g.fast = fast; g.prev_ok = 0; }   // the other resolve starts its history afresh
     g.frame++; g.depth = nil; g.cam_ok = 0; g.jit_pass = 0; g.jit_used = 0;
     /* The geometry is jittered only after a frame MetalFX took: when it cannot run (no Metal 4 temporal scaler, a scaler
        not built yet, no camera), a moved picture with nothing to smooth it would shake. */
@@ -748,8 +897,9 @@ void taa_frame_end(void) {
     if (g.frame % 1800 == 0 && (taa_enabled() || g.up)) { char b[300]; if (g.up) tup_stats(b, sizeof b); else taa_stats(b, sizeof b); TLOG("%s", b); }
 }
 void taa_stats(char *out, size_t n) {
-    snprintf(out, n, "frame %llu: anti-aliased %llu, history resets %llu, without depth or camera %llu",
-             (unsigned long long)g.frame, (unsigned long long)g.done, (unsigned long long)g.resets, (unsigned long long)g.missing);
+    snprintf(out, n, "frame %llu: anti-aliased %llu (fast resolve %llu, now %s), history resets %llu, without depth or camera %llu",
+             (unsigned long long)g.frame, (unsigned long long)g.done, (unsigned long long)g.fast_done, g.fast && !g.fast_failed ? "fast" : "MetalFX",
+             (unsigned long long)g.resets, (unsigned long long)g.missing);
 }
 
 #endif   // TARGET_OS_VISION

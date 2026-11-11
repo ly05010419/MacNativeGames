@@ -7,6 +7,11 @@ int taa_effective(void);                       // a frame has been anti-aliased
 int taa_active(void);                          // the replay's state, latched from it at frame end
 int taa_ready(void);                           // this frame has the depth and camera to anti-alias (cheap check before taa_encode)
 void taa_set(int on);                          // the settings panel (key 1, runtime/frontend.m)
+/* Edge smoothing's resolve: 0 the MetalFX temporal scaler (default), 1 a classic TAA resolve in one compute pass (about a
+   tenth of the GPU time on an M3 Pro). TOTK_TAA_FAST=1 starts with it, flag taa_fast switches it while playing, the
+   settings file graphics-taa-mode.txt ("fast" / "metalfx") keeps it (runtime/settings_panel.h). */
+int taa_fast_enabled(void);
+void taa_set_fast(int on);
 /* Per render pass (before its encoder opens): finds this frame's G-buffer pass (D32F depth of the colour size, three or
    more colour attachments) and returns 1 for the passes that draw into its depth, which get this frame's jitter. */
 int taa_pass(MTL4RenderPassDescriptor *pd);

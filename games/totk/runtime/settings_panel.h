@@ -283,6 +283,12 @@ static void settings_restore_begin(void) {
  if(!dm_gfx_aniso_locked()&&settings_read_int("graphics-aniso.txt",&v)&&v<=16)dm_gfx_aniso_start(v);
  if(!dm_gfx_keepalive_locked()&&runtime_shared_setting_word("gpu-keepalive.txt",word,sizeof word))dm_gfx_keepalive_start(!strncmp(word,"on",2));
  settings_effects_restore();
+ /* Edge smoothing's resolve, kept in graphics-taa-mode.txt: "fast" (one compute pass) or "metalfx" (the default);
+    TOTK_TAA_FAST decides first. The display page's edge smoothing row (off / fast / MetalFX) writes it. */
+ if(!getenv("TOTK_TAA_FAST")&&runtime_setting_word("graphics-taa-mode.txt",word,sizeof word)){
+  word[strcspn(word," \t\r\n")]=0;
+  if(!strcmp(word,"fast"))taa_set_fast(1);else if(!strcmp(word,"metalfx"))taa_set_fast(0);
+ }
  const char *output=getenv("TOTK_OUTPUT_RES");
  if(
 #if defined(GAME_BOTW160)
@@ -966,8 +972,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});})];
  NSUInteger users=rows.count;
  /* Effects (user 2026-10-30: edge smoothing, stronger AO and anisotropy moved here from the display page) */
- [rows addObject:settings_row(settings_text("边缘平滑（MetalFX 时间性）","Edge smoothing (MetalFX Temporal)"),nil,nil,
-  ^int{return taa_enabled();},^(int v){taa_set(v);settings_save_int("graphics-taa.txt",v,"edge smoothing");})];
+ /* Edge smoothing: off, fast (a classic TAA resolve in one compute pass) or MetalFX (its temporal network; on macOS 27 about
+    4 ms of GPU a frame at 1080p on an M3 Pro, the fast one well under half of that). graphics-taa.txt keeps on / off and
+    graphics-taa-mode.txt the resolve. After ishaanzee's fork (94f13c98). */
+ [rows addObject:settings_row(settings_text("边缘平滑","Edge smoothing"),
+  @[settings_on_off(0),settings_text("快速","Fast"),@"MetalFX"],@[@0,@1,@2],
+  ^int{return taa_enabled()?(taa_fast_enabled()?1:2):0;},
+  ^(int v){if(v)taa_set_fast(v==1);taa_set(v!=0);settings_save_int("graphics-taa.txt",v!=0,"edge smoothing");
+           if(v)runtime_setting_save("graphics-taa-mode.txt",v==1?"fast":"metalfx","edge smoothing mode");})];
  [rows addObject:settings_ssao_row()];
  [rows addObject:settings_aniso_row()];
  [rows addObjectsFromArray:settings_effect_rows()];

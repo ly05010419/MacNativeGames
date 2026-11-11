@@ -339,7 +339,7 @@ static void persistence_probe(const char *action) {
     if (!strcmp(action, "save")) {
         settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settings_show(1);
         pick(@"Overlay", @"FPS + playtime"); pick(@"Frame interpolation", @"40+40");
-        pick(@"Resolution", outputChoice); pick(@"Aspect ratio", @"21:9"); flip(@"Edge smoothing", YES);
+        pick(@"Resolution", outputChoice); pick(@"Aspect ratio", @"21:9"); pick(@"Edge smoothing", @"MetalFX");
 #ifdef TOTK_GAME_V143
         pick(@"Anti-aliasing method",@"FXAA");pick(@"Anti-aliasing quality",@"Quality");
         pick(@"Anti-aliasing method",@"SMAA");tick();pick(@"Anti-aliasing quality",@"Ultra");
@@ -928,8 +928,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Resolution", @"1080p"); assert(runtime_output_size_current() == SIZE(1920, 1080)); window_is(1080);
 
     /* Switches. */
-    assert(!switched(@"Edge smoothing")); flip(@"Edge smoothing", YES); assert(taa_enabled() && switched(@"Edge smoothing"));
-    flip(@"Edge smoothing", NO); assert(!taa_enabled());
+    /* Edge smoothing: off / fast (one compute pass) / MetalFX (after ishaanzee's fork, 94f13c98). */
+    shows(@"Edge smoothing", @"Off"); pick(@"Edge smoothing", @"Fast"); assert(taa_enabled() && taa_fast_enabled()); shows(@"Edge smoothing", @"Fast");
+    pick(@"Edge smoothing", @"MetalFX"); assert(taa_enabled() && !taa_fast_enabled()); shows(@"Edge smoothing", @"MetalFX");
+    pick(@"Edge smoothing", @"Off"); assert(!taa_enabled()); shows(@"Edge smoothing", @"Off");
     /* Stronger ambient occlusion (PR #1316): off by default; every level acts at once (the Mac's shaders always carry the
        parameters) and is saved; a run without them (TOTK_SSAO=0) shows off, greyed out (rows are made at each opening). */
 #if defined(TOTK_GAME_V143) || defined(GAME_BOTW190) || defined(TOTK_GAME_V121)

@@ -152,6 +152,8 @@ void runtime_aspect_view(double w,double h){(void)w;(void)h;}
 int taa_enabled(void){return 0;}
 /* The settings panel (runtime/settings_panel.h) is not opened here. */
 void taa_set(int on){(void)on;}
+int taa_fast_enabled(void){return 0;}   /* edge smoothing's fast resolve (totk_taa.m) */
+void taa_set_fast(int on){(void)on;}
 int mfx_requested(void){return 0;}
 int fps_overlay_hud_mode(void){return 1;}
 void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}

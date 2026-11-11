@@ -132,6 +132,8 @@ static int textEntryOpen;
 static void front_mouse_update(void);
 int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: edge smoothing in the settings panel */
 void taa_set(int on);
+void taa_set_fast(int on);   /* totk_taa.m: edge smoothing's resolve, MetalFX (0) or fast (1); graphics-taa-mode.txt */
+int taa_fast_enabled(void);   /* totk_taa.m: the resolve in use (the settings panel shows it) */
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
