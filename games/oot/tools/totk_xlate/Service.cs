@@ -378,10 +378,13 @@ static partial class ShaderService
         if (Get(rq, "arch") is JsonValue arch) job["arch"] = arch.DeepClone();   // "sm86": Ampere code (NVN2, Switch 2); absent: Maxwell
         if (Get(rq, "nvn2_cs") is JsonArray cs) job["nvn2_cs"] = cs.DeepClone();   // an NVN2 compute shader's c[0] layout (Program.cs)
         if (Get(rq, "shared") is JsonValue sh) job["shared"] = sh.DeepClone();   // compute shared memory bytes when the request knows them (Program.cs)
-        // Mesh shaders read structures word by word through loaded addresses; coalescing the words of one LDG into one raw
-        // read (patch 0026) is the default for them since 2026-11-07 (8 of OOT's 39 mesh shaders change, GPU-oracle and in-game
-        // verified by the opt-in experiment, +4.5% village fps); a request may still say raw_read_span=false.
-        if (Get(rq,"raw_read_span") is JsonNode spanNode ? Truthy(spanNode) : GetStr(rq, "stage", "") == "ms") job["raw_read_span"]=true;   // the job's stage is "cs" for mesh: ask the request
+        // Shaders read structures word by word through loaded addresses; coalescing the words of one LDG into one raw
+        // read (patch 0026) is the default: for mesh shaders since 2026-11-07 (8 of OOT's 39 change, GPU-oracle and in-game
+        // verified, +4.5% village fps), for every stage since 2026-11-11 (chain v26). In one frame of the Kokiri forest the
+        // unmerged reads were 1,488 call sites in 18 compute shaders, 1,121 in 5 vertex shaders and 218 in the half-resolution
+        // fog fragment shader 5ad65c0e; merged, its 218 address translations a pixel become 119. A request may still say
+        // raw_read_span=false.
+        if (Get(rq,"raw_read_span") is JsonNode spanNode ? Truthy(spanNode) : true) job["raw_read_span"]=true;
         if (Truthy(Get(rq,"raw_read_same_high_cache"))) job["raw_read_same_high_cache"]=true;
         return job;
     }
