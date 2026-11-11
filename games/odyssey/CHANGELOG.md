@@ -21,11 +21,17 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 Mario was poisoned on clean sand within ~2 s of every Spewart fight, before any goo was spat, and the fight could not
 be won. The goo's actor counts the cells under Mario's sensor whose alpha is 128 or more in a 256x256 RGBA8 map
-(`main+0x2a12a0`) and sends the poison message above a threshold. The GPU renders that map into a
-`CPU_CACHED | GPU_CACHED` pool of its own (0x40000 bytes), and the game reads it through `nvnMemoryPoolMap` every
-frame without invalidating. The runtime only wrote GPU renderings back to memory at an invalidate, so the CPU read the
-old bytes of another texture (about half of each row above alpha 128). `nvnMemoryPoolMap` now writes back the pool's
-pending renderings first (`mtl_pool_map`, nvn_mtl.m), as an invalidate of the whole pool would.
+(`main+0x2a12a0`) and sends the poison message above a threshold. There are four such maps, each in a
+`CPU_CACHED | GPU_CACHED` pool of its own (0x40000 bytes). Once the goo simulation runs, the GPU re-renders all four
+every frame, and the game reads two of them through `nvnMemoryPoolMap` every frame without invalidating. The runtime
+only wrote GPU renderings back to memory at an invalidate, so the CPU read the old bytes of another texture (about half
+of each row above alpha 128). `nvnMemoryPoolMap` now writes back the pool's pending renderings first (`mtl_pool_map`,
+nvn_mtl.m), as an invalidate of the whole pool would.
+
+Not at `nvnMemoryPoolFlushMappedRange`, as games/totk does. The game flushes these pools (mostly 0x200-byte stripes,
+now and then the whole pool) but not between the GPU's rendering and the CPU's read. In one logged window, the first
+map after a rendering found it still pending 118 times, while only 4 flushes covered a pending rendering. A Flush-only
+write-back left Mario poisoned in both runs (#1904).
 
 Found with a memory scan and hardware watchpoints: health write `main+0x4e4a80`, the player's message receiver
 `main+0x3cb4e0`, the goo actor's counting loop `main+0x2a0e30`, which maps the pool through NVN entry 103
