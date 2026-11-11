@@ -1,0 +1,8 @@
+# ThreadSanitizer suppressions (TSAN_OPTIONS=suppressions=...), used by the tsan-threads target of dm/host/tests.
+# Each exception names its reason. Real host races are fixed rather than added here.
+# Not a finding: aout.pos (hle_audio.c:95, :97, :106 in pull) passes from the AudioUnit's render thread to the silent sink (null_sink, started by dm_audio_suspend) or to the closing
+#   thread (au_release_pending, hle_audio.c:375) across AudioOutputUnitStop, which returns after the render callback; TSan cannot see that wait (CoreAudio is not instrumented). t_audio
+race:^null_sink$
+race:^au_release_pending$
+# Not a finding: t_condvar ends with _exit and does not join its waiter and reader (in the old-order variant the waiter is never woken)
+thread:t_condvar.c

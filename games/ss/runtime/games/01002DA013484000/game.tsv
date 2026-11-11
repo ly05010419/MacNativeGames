@@ -1,0 +1,38 @@
+# The Legend of Zelda: Skyward Sword HD, SDK 11.4.0, NVN: README.md beside this file
+
+# ---- Identity ----
+title_id	01002DA013484000
+program_id	01002DA013484000
+
+# ---- App ----
+name	The Legend of Zelda: Skyward Sword HD
+ipa	TheLegendOfZeldaSkywardSwordHd.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.0.1	main=5441af3c89f97e1d25a8ccf14c742bf8	subsdk0=4dd097b435891c5e0e15a65dbe47124f	subsdk1=535249a546887cac875a099e9c8ef367	sdk=b39add63421be525d352e576dab438d3
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	Sound/WZSound.brsar
+zip_store	.brfna:.brfnt:.brsar:.gz:.lz:.webm:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 696 MB of bss (counted as used memory): a 2560 MB heap region
+mem_reserve	0xd0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Stage/=stage /Sound/=sound /EU/=eu /Layout/=layout /Shaders/=shaders /US/=us /CN/=cn /JP/=jp /KR/=kr /RU/=ru /TW/=tw /Object/=object /SKB/=skb /Font/=font /THP/=thp /HomeButton2/=homebutton2
+shader_note	The Legend of Zelda: Skyward Sword HD shaders
+
+# ---- Graphics ----
+# the game's last nvnDeviceSetDepthMode at boot is near = 0
+depth_mode	zero

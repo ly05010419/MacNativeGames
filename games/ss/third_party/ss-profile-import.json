@@ -1,0 +1,22 @@
+[
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/b1dee89c2114b89154a659b5af231fa98c1c6a1f/dm/games/01002DA013484000/game.tsv",
+    "destination": "runtime/games/01002DA013484000/game.tsv",
+    "sha256": "06c455ef94c485858a10d32dc9f2055b3e823a07b3542ad62b05ede4486dcfe7"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/b1dee89c2114b89154a659b5af231fa98c1c6a1f/dm/games/01002DA013484000/dual_want.tsv",
+    "destination": "runtime/games/01002DA013484000/dual_want.tsv",
+    "sha256": "e87f5bd312e5a3fb2a28f2b6eb3eaeb37415892c8bef80c1a46e71a43e0565d5"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/b1dee89c2114b89154a659b5af231fa98c1c6a1f/dm/games/01002DA013484000/bf_want.tsv",
+    "destination": "runtime/games/01002DA013484000/bf_want.tsv",
+    "sha256": "8e91845e3b2e8793a97b7a0e7c33c58ad92761e7d2ed7ffe60f8fb0e196649cf"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/b1dee89c2114b89154a659b5af231fa98c1c6a1f/dm/games/01002DA013484000/pso_manifest.tsv",
+    "destination": "runtime/games/01002DA013484000/pso_manifest.tsv",
+    "sha256": "32ac70bcbc4f535c3a2781f44697459832551ab51d948309e0b54e5a3fc94e4f"
+  }
+]
