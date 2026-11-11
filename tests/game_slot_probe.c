@@ -1,6 +1,7 @@
-/* Ocarina of Time's runtime/game_slot.c, its pure parts: which processes are games, and the slot folder used when
-   TOTK_GAME_SLOT_DIR is unset (the one the App's launcher passes). Built and run by tests/test_oot_game_slot.py. */
-#include "../games/oot/runtime/game_slot.c"
+/* A game's runtime/game_slot.c, its pure parts: which processes are games, and the slot folder used when
+   TOTK_GAME_SLOT_DIR is unset (the one Tears of the Kingdom's and Ocarina of Time's launchers pass). Built with
+   -DGAME_SLOT_C='"../games/<game>/runtime/game_slot.c"' and run by tests/test_game_slot.py. */
+#include GAME_SLOT_C
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "runtime_fail: %s\n", message); exit(3); }
 
@@ -8,9 +9,9 @@ static int failures;
 static void expect(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); failures++; } }
 
 int main(int argc, char **argv) {
-    if (argc != 2) { fprintf(stderr, "usage: oot-game-slot-probe <home>\n"); return 2; }
-    expect(slot_path_is_game("/Applications/Ocarina of Time.app/Contents/MacOS/OcarinaOfTime"), "the App's game");
-    expect(slot_path_is_game("/w/scratch/build/oot/build/oot-native"), "the built runtime");
+    if (argc != 2) { fprintf(stderr, "usage: game-slot-probe <home>\n"); return 2; }
+    expect(slot_path_is_game("/Applications/Ocarina of Time.app/Contents/MacOS/OcarinaOfTime"), "Ocarina of Time's App");
+    expect(slot_path_is_game("/w/scratch/build/oot/build/oot-native"), "the built Ocarina of Time runtime");
     expect(slot_path_is_game("/w/build/totk-native.base"), "a renamed totk-native copy");
     expect(slot_path_is_game("/A/Tears of the Kingdom.app/Contents/MacOS/TOTK"), "Tears of the Kingdom's App");
     expect(slot_path_is_game("/A/Breath of the Wild.app/Contents/MacOS/BotW"), "Breath of the Wild's App");

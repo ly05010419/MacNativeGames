@@ -16,8 +16,9 @@
      user-request       the user's game while it waits for the slot
      preempted/<token>  written just before a holder is stopped for the user
      history.log        one line per acquire / start / preempt / exit
-   The slot directory is TOTK_GAME_SLOT_DIR, else analysis/game-slot next to this binary's build/ directory; every
-   worktree links analysis/ to the main checkout (scripts/dev/new_worktree.sh), so all checkouts share one slot. */
+   The slot directory is TOTK_GAME_SLOT_DIR, else ~/Library/Application Support/MacNativeGames/TOTK/game-slot, the
+   folder the Tears of the Kingdom App's launcher passes (app/launcher.m), so a binary run directly, the scripts and the
+   App's game share one slot. Until 2026-11-11 the default was analysis/game-slot next to this binary's build/ directory. */
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
 #include "runtime.h"
@@ -109,12 +110,17 @@ static uint64_t pid_start(pid_t pid) {
     return bi.pbi_start_tvsec;
 }
 static int pid_same(pid_t pid, uint64_t start) { return start && pid_start(pid) == start; }
+/* Same rule as scripts/dev/game_slot.py is_game_path. */
+static int slot_path_is_game(const char *path) {
+    const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
+    if (b - path >= 16 && !strncmp(b - 16, "/Contents/MacOS/", 16) &&
+        (!strcmp(b, "TOTK") || !strcmp(b, "BotW") || !strcmp(b, "OcarinaOfTime"))) return 1;   /* the Mac apps' games */
+    return !strncmp(b, "totk-native", 11) || !strncmp(b, "oot-native", 10);   /* also renamed copies such as totk-native.base */
+}
 static int pid_is_game(pid_t pid) {
     char path[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pid, path, sizeof path) <= 0) return 0;
-    const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
-    if (b - path >= 16 && !strncmp(b - 16, "/Contents/MacOS/", 16) && (!strcmp(b, "TOTK") || !strcmp(b, "BotW"))) return 1;   /* the Mac app (build_app.py APPS) */
-    return !strncmp(b, "totk-native", 11);   /* also renamed copies such as totk-native.base */
+    return slot_path_is_game(path);
 }
 
 /* Live waiters in the queue (dead ones are removed). Returns how many; *head gets the oldest one's file name. */
@@ -204,23 +210,30 @@ static void preempt_holder(void) {
     }
 }
 
-static void slot_dir_init(void) {
-    char def[PATH_MAX] = "", exe[PROC_PIDPATHINFO_MAXSIZE];
-    const char *env = getenv("TOTK_GAME_SLOT_DIR");
-    /* Packaged launchers always supply an external slot. Do not create even
-       an empty analysis directory inside a sealed or read-only app bundle. */
-    if ((!env || !*env) && proc_pidpath(getpid(), exe, sizeof exe) > 0) {   /* <native-port>/build/totk-native -> <native-port>/analysis */
-        char *s = strrchr(exe, '/'); if (s) *s = 0;
-        s = strrchr(exe, '/'); if (s) *s = 0;
-        char analysis[PATH_MAX], real[PATH_MAX];
-        snprintf(analysis, sizeof analysis, "%s/analysis", exe);
-        if (mkdir(analysis, 0755) && errno != EEXIST) slot_fail("cannot create", analysis);
-        if (!realpath(analysis, real)) slot_fail("cannot resolve", analysis);
-        snprintf(def, sizeof def, "%s/game-slot", real);
+/* The folder app/launcher.m passes to its game (and scripts/dev/game_slot.py default_slot_dir); 0 without HOME. */
+static int slot_default_dir(char *out, size_t n) {
+    const char *home = getenv("HOME");
+    if (!home || !*home) return 0;
+    return snprintf(out, n, "%s/Library/Application Support/MacNativeGames/TOTK/game-slot", home) < (int)n;
+}
+static void mkdir_parents(const char *path) {   /* mkdir -p: MacNativeGames/TOTK may not exist yet */
+    char p[PATH_MAX]; snprintf(p, sizeof p, "%s", path);
+    for (char *s = p + 1; *s; s++) {
+        if (*s != '/') continue;
+        *s = 0;
+        if (mkdir(p, 0755) && errno != EEXIST) slot_fail("cannot create", p);
+        *s = '/';
     }
+    if (mkdir(p, 0755) && errno != EEXIST) slot_fail("cannot create", p);
+}
+
+static void slot_dir_init(void) {
+    char def[PATH_MAX] = "";
+    const char *env = getenv("TOTK_GAME_SLOT_DIR");
+    if ((!env || !*env) && !slot_default_dir(def, sizeof def)) def[0] = 0;
     const char *want = env && *env ? env : def;
     if (!*want) runtime_fail("game slot: no slot directory (set TOTK_GAME_SLOT_DIR)");
-    if (mkdir(want, 0755) && errno != EEXIST) slot_fail("cannot create", want);
+    mkdir_parents(want);
     if (!realpath(want, slot_dir)) slot_fail("cannot resolve", want);
     char sub[PATH_MAX];
     path_in(sub, "queue"); if (mkdir(sub, 0755) && errno != EEXIST) slot_fail("cannot create", sub);
@@ -231,7 +244,9 @@ static void slot_dir_init(void) {
 static int test_ignores_legacy(void) {   /* tests use their own slot directory; never the shared one */
     const char *e = getenv("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY"), *d = getenv("TOTK_GAME_SLOT_DIR");
     if (!e || strcmp(e, "1")) return 0;
-    if (!d || !*d || strstr(slot_dir, "/analysis/game-slot")) runtime_fail("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY needs a test TOTK_GAME_SLOT_DIR");
+    char shared[PATH_MAX], real[PATH_MAX];
+    int is_shared = slot_default_dir(shared, sizeof shared) && !strcmp(slot_dir, realpath(shared, real) ? real : shared);
+    if (!d || !*d || is_shared) runtime_fail("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY needs a test TOTK_GAME_SLOT_DIR");
     return 1;
 }
 
