@@ -3,7 +3,7 @@
    result is accepted through raw_write_domain_match, including all word guards. */
 static int raw_write_auto_on(void) {
     int v=atomic_load(&g_raw_write_auto);
-    if(v<0){const char *s=getenv("OOT_RAW_WRITE_AUTO");v=!TARGET_OS_IPHONE&&s&&atoi(s)!=0;atomic_store(&g_raw_write_auto,v);}
+    if(v<0){const char *s=getenv("OOT_RAW_WRITE_AUTO");v=!TARGET_OS_IPHONE&&!(s&&!atoi(s));atomic_store(&g_raw_write_auto,v); /* Mac default on since 2026-11-08; OOT_RAW_WRITE_AUTO=0 turns it off */ }
     return !TARGET_OS_IPHONE&&v;
 }
 static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t *slots,int resolved) {

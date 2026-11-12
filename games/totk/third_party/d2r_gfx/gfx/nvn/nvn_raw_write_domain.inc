@@ -9,13 +9,8 @@ static int raw_write_domain_on(void) {
     if(v<0){const char *s=getenv("OOT_RAW_WRITE_DOMAIN");v=!TARGET_OS_IPHONE&&s&&atoi(s)!=0;atomic_store(&g_raw_write_domain,v);}
     return !TARGET_OS_IPHONE&&v;
 }
-static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved) {
-    if(stage!=5||!g_dispatch_domain_direct||g_dispatch_domain_simd!=[d[@"simd_width"] intValue])return 0;
-    if(![d[@"simd_width"] isKindOfClass:NSNumber.class])return 0;
-    NSArray *grid=d[@"grid"],*local=d[@"local"],*guards=d[@"guards"],*ranges=d[@"high_intervals"];
-    if(![grid isKindOfClass:NSArray.class]||grid.count!=3||![local isKindOfClass:NSArray.class]||local.count!=3||
-       ![guards isKindOfClass:NSArray.class]||!guards.count||guards.count>256||![ranges isKindOfClass:NSArray.class]||!ranges.count||ranges.count>64)return 0;
-    for(int k=0;k<3;k++)if(![grid[k] isKindOfClass:NSNumber.class]||![local[k] isKindOfClass:NSNumber.class]||[grid[k] unsignedLongLongValue]!=g_dispatch_grid[k]||[local[k] unsignedLongLongValue]!=sh->rf.tg[k])return 0;
+/* Every guard word equals the immutable uniform bytes bound to this dispatch. */
+static int raw_write_guards_match(NvShader *sh,NSArray *guards,int stage,const uint64_t *slots,int resolved) {
     for(NSDictionary *g in guards){
         if(![g isKindOfClass:NSDictionary.class]||![g[@"reg"] isKindOfClass:NSNumber.class]||![g[@"offset"] isKindOfClass:NSNumber.class]||![g[@"word"] isKindOfClass:NSNumber.class])return 0;
         uint64_t reg=[g[@"reg"] unsignedLongLongValue],off=[g[@"offset"] unsignedLongLongValue],word=[g[@"word"] unsignedLongLongValue];
@@ -33,6 +28,16 @@ static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const u
         }
         if(!matched)return 0;
     }
+    return 1;
+}
+static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved) {
+    if(stage!=5||!g_dispatch_domain_direct||g_dispatch_domain_simd!=[d[@"simd_width"] intValue])return 0;
+    if(![d[@"simd_width"] isKindOfClass:NSNumber.class])return 0;
+    NSArray *grid=d[@"grid"],*local=d[@"local"],*guards=d[@"guards"],*ranges=d[@"high_intervals"];
+    if(![grid isKindOfClass:NSArray.class]||grid.count!=3||![local isKindOfClass:NSArray.class]||local.count!=3||
+       ![guards isKindOfClass:NSArray.class]||!guards.count||guards.count>256||![ranges isKindOfClass:NSArray.class]||!ranges.count||ranges.count>64)return 0;
+    for(int k=0;k<3;k++)if(![grid[k] isKindOfClass:NSNumber.class]||![local[k] isKindOfClass:NSNumber.class]||[grid[k] unsignedLongLongValue]!=g_dispatch_grid[k]||[local[k] unsignedLongLongValue]!=sh->rf.tg[k])return 0;
+    if(!raw_write_guards_match(sh,guards,stage,slots,resolved))return 0;
     uint64_t last=0;int first=1;
     for(NSArray *r in ranges){
         if(![r isKindOfClass:NSArray.class]||r.count!=2||![r[0] isKindOfClass:NSNumber.class]||![r[1] isKindOfClass:NSNumber.class])return 0;
@@ -42,6 +47,7 @@ static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const u
     return 1;
 }
 #include "nvn_raw_write_auto.inc"
+static NSArray *raw_write_domain_bytes(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved);
 /* The GPU oracle consumes the same frozen uniform whose guard was checked.
    This tests the binding/guard gate, not the offline address analyzer. */
 static int raw_write_domain_probe(void) {
@@ -87,12 +93,49 @@ static int raw_write_domain_probe(void) {
         g_dispatch_domain_direct=1;g_dispatch_grid[0]++;if(raw_write_domain_match(sh,proof,5,slots,1))MDIE("write-domain accepted changed grid");checked++;
         g_dispatch_grid[0]--;g_dispatch_domain_simd=64;if(raw_write_domain_match(sh,proof,5,slots,1))MDIE("write-domain accepted different simd width");checked++;
         g_dispatch_domain_simd=32;if(raw_write_domain_match(sh,proof,1,slots,1)||raw_write_domain_match(sh,proof,5,slots,0))MDIE("write-domain accepted unknown stage/input");checked++;
+        {   // exact byte refinement: accepted only with its own guards, inside a proved stripe, ordered
+            uint64_t s14=UINT64_C(14)<<32;
+            NSMutableDictionary *exact=[proof mutableCopy];
+            exact[@"byte_intervals"]=@[@[@(s14+0x100),@(s14+0x204)],@[@(s14+0x1000),@(s14+0x1004)]];
+            exact[@"byte_guards"]=@[@{@"reg":@0,@"offset":@0,@"word":@0x12345678},@{@"reg":@0,@"offset":@4,@"word":@(17u+(uint32_t)step)}];
+            if(!raw_write_domain_match(sh,exact,5,slots,1)||!raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain rejected exact bytes");checked++;
+            ((uint32_t *)cpu)[1]^=1;
+            if(!raw_write_domain_match(sh,exact,5,slots,1))MDIE("write-domain stripe guard depends on the low word");checked++;
+            if(raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain accepted bytes with a changed low-word guard");checked++;
+            ((uint32_t *)cpu)[1]^=1;
+            exact[@"byte_intervals"]=@[@[@((UINT64_C(20)<<32)+0x100),@((UINT64_C(20)<<32)+0x104)]];
+            if(raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain accepted bytes outside the stripes");checked++;
+            exact[@"byte_intervals"]=@[@[@(s14+0x1000),@(s14+0x1004)],@[@(s14+0x100),@(s14+0x104)]];
+            if(raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain accepted unordered bytes");checked++;
+            exact[@"byte_intervals"]=@[@[@(s14+0x104),@(s14+0x104)]];
+            if(raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain accepted an empty byte range");checked++;
+            [exact removeObjectForKey:@"byte_guards"];exact[@"byte_intervals"]=@[@[@(s14+0x100),@(s14+0x104)]];
+            if(raw_write_domain_bytes(sh,exact,5,slots,1))MDIE("write-domain accepted bytes without guards");checked++;
+        }
         id<MTL4ComputeCommandEncoder> ce=enc_c_begin(NULL);enc_c_pso(ce,ps);enc_c_args(ce,negative?live.gpuAddress:gpu,0);enc_c_args(ce,out.gpuAddress,1);
         [ce dispatchThreads:MTLSizeMake(4,1,1) threadsPerThreadgroup:MTLSizeMake(4,1,1)];enc_c_end(ce);mtl_sub_commit();mtl_finish();
         for(int k=0;k<4;k++){if(((uint32_t *)out.contents)[k]!=(expected[k]^0xa5a5a5a5u))MDIE("write-domain GPU did not consume proved input step%d word%d",step,k);checked++;}
     }
     S.ubo[5][0]=old_ubo;g_dispatch_domain_direct=old_direct;g_dispatch_domain_simd=old_simd;memcpy(g_dispatch_grid,old_grid,sizeof old_grid);
     MLOG("[probe-gpu-write-domain] pass %d checks; frozen guard/input gate only",checked);return checked;
+}
+/* Exact byte refinement of a matched proof (analyzer 2026-11-08): the low address
+   word's range narrows each 4-GiB stripe to the bytes actually written. It has its
+   own guards (the extra uniform words the low analysis read); when they do not
+   match this dispatch, the stripes stand. Each range must lie in a proved stripe. */
+static uint64_t g_write_domain_exact,g_write_domain_stripe;
+static NSArray *raw_write_domain_bytes(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved) {
+    NSArray *bytes=d[@"byte_intervals"],*guards=d[@"byte_guards"],*stripes=d[@"high_intervals"];
+    if(![bytes isKindOfClass:NSArray.class]||!bytes.count||bytes.count>64||![guards isKindOfClass:NSArray.class]||!guards.count||guards.count>256)return nil;
+    uint64_t last=0;
+    for(NSArray *r in bytes){
+        if(![r isKindOfClass:NSArray.class]||r.count!=2||![r[0] isKindOfClass:NSNumber.class]||![r[1] isKindOfClass:NSNumber.class])return nil;
+        uint64_t a=[r[0] unsignedLongLongValue],b=[r[1] unsignedLongLongValue];int inside=0;
+        if(a>=b||a<last)return nil;last=b;
+        for(NSArray *s in stripes)if((a>>32)>=[s[0] unsignedLongLongValue]&&((b-1)>>32)<=[s[1] unsignedLongLongValue]){inside=1;break;}
+        if(!inside)return nil;
+    }
+    return raw_write_guards_match(sh,guards,stage,slots,resolved)?bytes:nil;
 }
 static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,int resolved,id<MTLBuffer> log,size_t offset) {
     if((!raw_write_domain_on()&&!raw_write_auto_on())||stage!=5||totk_vpool_aliases_used())return 0;
@@ -117,10 +160,17 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
     if(!match&&raw_write_auto_on())for(NSDictionary *d in sh->raw_write_auto_domains)if(raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
     if(!match)match=raw_write_auto_prove(sh,stage,slots,resolved);
     if(!match){g_write_domain_misses++;if(g_write_domain_misses<=4)MLOG("[write-domain] fallback %.16s direct=%d simd=%d variants=%lu",sh->key,g_dispatch_domain_direct,g_dispatch_domain_simd,(unsigned long)sh->raw_write_domains.count);return 0;}
-    NSArray *ranges=match[@"high_intervals"];
-    for(NSArray *r in ranges){uint64_t a=[r[0] unsignedLongLongValue]<<32,b=([r[1] unsignedLongLongValue]+1)<<32;usnap_drop(a,b-a);}
+    NSArray *ranges=match[@"high_intervals"],*bytes=raw_write_domain_bytes(sh,match,stage,slots,resolved);
+    if(!bytes&&match[@"byte_intervals"]&&raw_write_auto_on()){
+        // Same stripes, different low-word inputs: one bounded new proof (the shader's input-identity budget applies).
+        NSDictionary *fresh=raw_write_auto_prove(sh,stage,slots,resolved);
+        NSArray *fb=fresh?raw_write_domain_bytes(sh,fresh,stage,slots,resolved):nil;
+        if(fb){match=fresh;ranges=fresh[@"high_intervals"];bytes=fb;}
+    }
+    if(bytes){for(NSArray *r in bytes){uint64_t a=[r[0] unsignedLongLongValue],b=[r[1] unsignedLongLongValue];usnap_drop(a,b-a);}g_write_domain_exact++;}
+    else {for(NSArray *r in ranges){uint64_t a=[r[0] unsignedLongLongValue]<<32,b=([r[1] unsignedLongLongValue]+1)<<32;usnap_drop(a,b-a);}g_write_domain_stripe++;}
     g_write_domain_hits++;
-    if(g_write_domain_hits<=4||atomic_load(&g_cur_frame)%300==0)MLOG("[write-domain] matched %.16s hits=%llu fallback=%llu verified=%llu",sh->key,g_write_domain_hits,g_write_domain_misses,g_write_domain_verified);
+    if(g_write_domain_hits<=4||atomic_load(&g_cur_frame)%300==0)MLOG("[write-domain] matched %.16s hits=%llu fallback=%llu verified=%llu exact=%llu stripe=%llu",sh->key,g_write_domain_hits,g_write_domain_misses,g_write_domain_verified,g_write_domain_exact,g_write_domain_stripe);
     const char *check=getenv("OOT_RAW_WRITE_DOMAIN_CHECK");
     if((check&&atoi(check))||raw_write_log_on()){
         ((uint32_t *)((uint8_t *)log.contents+offset))[GML_CONTROL_WORD]=1;
@@ -128,8 +178,9 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
             const uint32_t *p=(const uint32_t *)((const uint8_t *)log.contents+offset);
             if(p[0])MDIE("write-domain GPU page log overflow");
             for(int k=1;k<=1024;k++)if(p[k]){
-                uint32_t high=p[k]>>20;int covered=0;
-                for(NSArray *r in ranges)if(high>=[r[0] unsignedLongLongValue]&&high<=[r[1] unsignedLongLongValue]){covered=1;break;}
+                uint32_t high=p[k]>>20;int covered=0;uint64_t page=(uint64_t)p[k]<<12;
+                if(bytes){for(NSArray *r in bytes)if(page<[r[1] unsignedLongLongValue]&&page+4096>[r[0] unsignedLongLongValue]){covered=1;break;}}
+                else for(NSArray *r in ranges)if(high>=[r[0] unsignedLongLongValue]&&high<=[r[1] unsignedLongLongValue]){covered=1;break;}
                 if(!covered)MDIE("write-domain GPU wrote outside proof: page=%#x",p[k]);
             }
             g_write_domain_verified++;if(g_write_domain_verified<=2||g_write_domain_verified%60==0)MLOG("[write-domain-check] GPU verified %llu dispatches",g_write_domain_verified);
