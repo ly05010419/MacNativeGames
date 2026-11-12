@@ -21,13 +21,17 @@ static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const u
         uint64_t reg=[g[@"reg"] unsignedLongLongValue],off=[g[@"offset"] unsignedLongLongValue],word=[g[@"word"] unsignedLongLongValue];
         if(reg>=16||off>65532||off%4||word>UINT32_MAX)return 0;
         const p_bind_buf *u=&S.ubo[stage][reg];if(u->size<off+4||u->size>65536)return 0;
-        const uint8_t *bytes=NULL;
+        int matched=0;NSNumber *arg=g[@"arg_id"];
+        if(arg&&(![arg isKindOfClass:NSNumber.class]||arg.unsignedLongLongValue>=NVN_REFL_MAXB))return 0;
         for(int i=0;i<resolved;i++){
             const nvn_rbind *b=&sh->rf.b[i];
-            if((b->kind==NVN_RB_CBUF||b->kind==NVN_RB_UBOP)&&b->reg==reg&&b->aid<NVN_REFL_MAXB)
-                bytes=bound_uniform_bytes(slots[b->aid],(size_t)u->size,nil);
+            if(b->reg!=reg||b->aid>=NVN_REFL_MAXB)continue;
+            if(arg){if(b->kind!=NVN_RB_CBUF||b->aid!=arg.unsignedLongLongValue)continue;}
+            else if(b->kind!=NVN_RB_CBUF&&b->kind!=NVN_RB_UBOP)continue;
+            const uint8_t *bytes=bound_uniform_bytes(slots[b->aid],(size_t)u->size,nil);
+            uint32_t actual=0;if(!bytes)return 0;memcpy(&actual,bytes+off,4);if(actual!=word)return 0;matched=1;
         }
-        uint32_t actual=0;if(!bytes)return 0;memcpy(&actual,bytes+off,4);if(actual!=word)return 0;
+        if(!matched)return 0;
     }
     uint64_t last=0;int first=1;
     for(NSArray *r in ranges){
@@ -37,6 +41,7 @@ static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const u
     }
     return 1;
 }
+#include "nvn_raw_write_auto.inc"
 /* The GPU oracle consumes the same frozen uniform whose guard was checked.
    This tests the binding/guard gate, not the offline address analyzer. */
 static int raw_write_domain_probe(void) {
@@ -62,6 +67,17 @@ static int raw_write_domain_probe(void) {
         if(!raw_write_domain_match(sh,proof,5,slots,1))MDIE("write-domain frozen gate rejected");checked++;
         ((uint32_t *)live.contents)[0]^=1;
         if(!raw_write_domain_match(sh,proof,5,slots,1))MDIE("write-domain used changed live input");checked++;
+        sh->rf.nb=2;sh->rf.b[1]=(nvn_rbind){.kind=NVN_RB_CBUF,.reg=0,.aid=1};
+        uint64_t alias_slots[NVN_REFL_MAXB]={gpu,live.gpuAddress};
+        NSMutableDictionary *typed=[proof mutableCopy];
+        typed[@"guards"]=@[@{@"reg":@0,@"arg_id":@0,@"offset":@0,@"word":@0x12345678}];
+        if(!raw_write_domain_match(sh,typed,5,alias_slots,2))MDIE("write-domain lost exact argument identity");checked++;
+        typed[@"guards"]=@[@{@"reg":@0,@"arg_id":@1,@"offset":@0,@"word":@0x12345678}];
+        if(raw_write_domain_match(sh,typed,5,alias_slots,2))MDIE("write-domain accepted a different argument");checked++;
+        typed[@"guards"]=@[@{@"reg":@0,@"arg_id":@0,@"offset":@0,@"word":@0x12345678}];
+        alias_slots[0]=live.gpuAddress;alias_slots[1]=gpu;
+        if(raw_write_domain_match(sh,typed,5,alias_slots,2))MDIE("write-domain matched another slot's equal word");checked++;
+        sh->rf.nb=1;
         uint64_t badslots[NVN_REFL_MAXB]={live.gpuAddress};
         if(raw_write_domain_match(sh,proof,5,badslots,1))MDIE("write-domain accepted live binding");checked++;
         ((uint32_t *)cpu)[0]^=1;
@@ -79,7 +95,7 @@ static int raw_write_domain_probe(void) {
     MLOG("[probe-gpu-write-domain] pass %d checks; frozen guard/input gate only",checked);return checked;
 }
 static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,int resolved,id<MTLBuffer> log,size_t offset) {
-    if(!raw_write_domain_on()||stage!=5)return 0;
+    if((!raw_write_domain_on()&&!raw_write_auto_on())||stage!=5||totk_vpool_aliases_used())return 0;
     if(!sh->raw_write_domains_loaded){
         sh->raw_write_domains_loaded=1;
         const char *dir=getenv("OOT_RAW_WRITE_DOMAIN_DIR");
@@ -97,7 +113,9 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
         }
     }
     NSDictionary *match=nil;
-    for(NSDictionary *d in sh->raw_write_domains)if([d isKindOfClass:NSDictionary.class]&&raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
+    for(NSDictionary *d in (raw_write_domain_on()?sh->raw_write_domains:nil))if([d isKindOfClass:NSDictionary.class]&&raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
+    if(!match&&raw_write_auto_on())for(NSDictionary *d in sh->raw_write_auto_domains)if(raw_write_domain_match(sh,d,stage,slots,resolved)){match=d;break;}
+    if(!match)match=raw_write_auto_prove(sh,stage,slots,resolved);
     if(!match){g_write_domain_misses++;if(g_write_domain_misses<=4)MLOG("[write-domain] fallback %.16s direct=%d simd=%d variants=%lu",sh->key,g_dispatch_domain_direct,g_dispatch_domain_simd,(unsigned long)sh->raw_write_domains.count);return 0;}
     NSArray *ranges=match[@"high_intervals"];
     for(NSArray *r in ranges){uint64_t a=[r[0] unsignedLongLongValue]<<32,b=([r[1] unsignedLongLongValue]+1)<<32;usnap_drop(a,b-a);}

@@ -29,11 +29,13 @@ static _Atomic int g_raw_index = -1;
 static _Atomic int g_raw_range_cache = -1;
 static _Atomic int g_raw_write_log = -1;
 static _Atomic int g_raw_write_domain = -1;
+static _Atomic int g_raw_write_auto = -1;
 static _Atomic int g_raw_write_capture;
 static _Atomic int g_mesh_batch = -1,g_mesh_batch_dump,g_mesh_batch_check;
 static _Atomic int g_writer_boundary = -1;
 static int writer_boundary_on(void);
 static _Atomic int g_mesh_empty_export = -1;
+static _Atomic int g_mesh_translation = -1;
 static _Atomic int g_mesh_reuse_check;
 static _Atomic int g_mesh_trace_frames;
 #include "nvn_impl.h"   // NVN_BLOCKING: release the guest core only while a write-back waits
@@ -3331,6 +3333,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"mesh_batch")) { atomic_store(&g_mesh_batch,v!=0&&!TARGET_OS_IPHONE);atomic_store(&g_mesh_batch_dump,1);MLOG("[flag] mesh_batch = %d (requires draw_barriers 1)",v!=0);return; }
     if (!strcmp(name,"mesh_batch_stats")) { atomic_store(&g_mesh_batch_dump,1);return; }
     if (!strcmp(name,"mesh_batch_check")) { atomic_store(&g_mesh_batch_check,v!=0);MLOG("[flag] mesh_batch_check = %d (GPU validation, exclude from FPS)",v!=0);return; }
+    if (!strcmp(name,"raw_write_auto")) { atomic_store(&g_raw_write_auto,v!=0); MLOG("[flag] raw_write_auto = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_domain")) { atomic_store(&g_raw_write_domain,v!=0); MLOG("[flag] raw_write_domain = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_capture")) { atomic_store(&g_raw_write_capture,MAX(0,MIN(v,16))); MLOG("[flag] raw_write_capture = %d",atomic_load(&g_raw_write_capture)); return; }
@@ -3340,6 +3343,9 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"descriptor_profile")) { descriptor_profile_set(v!=0); return; }
     if (!strcmp(name,"pool_validate_once")) { atomic_store(&g_pool_validate_once,v!=0); MLOG("[flag] pool_validate_once = %d",v!=0); return; }
     if (!strcmp(name,"mesh_empty_export")) { atomic_store(&g_mesh_empty_export,v!=0); MLOG("[flag] mesh_empty_export = %d",v!=0); return; }
+    if (!strcmp(name,"mesh_translation")) { atomic_store(&g_mesh_translation,v>=0&&v<=2?v:0); MLOG("[flag] mesh_translation = %d",v); return; }
+    if (!strcmp(name,"pool_issue_once")) { extern void nvn_pool_issue_once_set(int); nvn_pool_issue_once_set(v); MLOG("[flag] pool_issue_once = %d",v!=0); return; }
+    if (!strcmp(name,"pool_issue_stats")) { extern void nvn_pool_issue_statistics(uint64_t[3],int); uint64_t n[3]; nvn_pool_issue_statistics(n,v); MLOG("[pool-issue] stats=%d calls=%llu skipped=%llu registered=%llu",v!=0,n[0],n[1],n[2]); return; }
     if (!strcmp(name,"mesh_reuse_check")) { atomic_store(&g_mesh_reuse_check,v!=0); MLOG("[flag] mesh_reuse_check = %d",v!=0); return; }
     if (!strcmp(name,"mesh_trace")) { if(v>=0&&v<=4)atomic_store(&g_mesh_trace_frames,v); return; }
     if (!strcmp(name, "chunk_first") || !strcmp(name, "chunk_draws")) {
@@ -6170,6 +6176,8 @@ static void shmap_load(void) {
     const uint8_t *pool_capture_cpu[NVN_REFL_MAXB];
     NSDictionary *pool_reads;
     NSArray *raw_write_domains; int raw_write_domains_loaded;
+    NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts;
+    NSMutableArray *raw_write_auto_domains; NSMutableSet *raw_write_attempted;
     uint8_t mesh_kind, mesh_notask, raw_range_cache_abi; uint16_t mesh_threads, mesh_payload;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     uint8_t guard_idx[NVN_REFL_MAXB], guard_count, guard_plan_ready;   // TOTK: the bindings upd_guard_stage looks at (storage / typed buffers), from the reflection once
@@ -6732,6 +6740,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
     NvShader *o = [NvShader new];
     char err[160];
+    if([j[@"raw_write_proof"] isKindOfClass:NSDictionary.class])o->raw_write_capsule=j[@"raw_write_proof"];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->raw_range_cache_abi=[j[@"raw_read_range_cache_abi"] intValue]==1;

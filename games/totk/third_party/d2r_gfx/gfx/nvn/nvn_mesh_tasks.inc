@@ -5,6 +5,7 @@ static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count;
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
 #include "nvn_mesh_capture.inc"
+#include "nvn_mesh_translation.inc"
 /* Diagnostic only: copy the selected draw's storage inputs on the same GPU
  * timeline, after their producers and before this draw. A CPU memcpy while
  * encoding observes older contents when an earlier dispatch has not run yet.
@@ -49,20 +50,20 @@ static void mtk_capture_storage(NvProg *pr) {
 /* Match the actual mesh vertex/primitive outputs to fragment inputs. Unwritten
  * varyings follow the existing raster path's zero initialization, but a mesh
  * function must be extended through dm_vertex_t and set_vertex, never main0_out. */
-static id<MTLFunction> mtk_mesh_fn(NvShader *ms,NvShader *fs) {
-    if(!fs||!sh_has_src(fs))return ms->fn;
+static id<MTLFunction> mtk_mesh_fn_base(NvShader *ms,NvShader *fs,id<MTLFunction> base) {
+    if(!fs||!sh_has_src(fs))return base;
     os_unfair_lock_lock(&g_vpatch_lock); // io is shared with background raster pipeline compilation
     NSDictionary *inputs=msl_varyings(fs),*outputs=msl_varyings(ms);
-    NSMutableString *recipe=[NSMutableString stringWithString:@"mesh;"];
+    NSMutableString *recipe=[NSMutableString stringWithFormat:@"mesh;%p;",(__bridge void*)base];
     NSMutableString *fields=[NSMutableString string];
     for(NSNumber *location in [inputs.allKeys sortedArrayUsingSelector:@selector(compare:)])if(!outputs[location]) {
         [recipe appendFormat:@"%@:%@;",location,inputs[location]];
         [fields appendFormat:@"    %@ oot_unwritten_%@ [[user(locn%@)]];\n",inputs[location],location,location];
     }
-    if(!fields.length){os_unfair_lock_unlock(&g_vpatch_lock);return ms->fn;}
+    if(!fields.length){os_unfair_lock_unlock(&g_vpatch_lock);return base;}
     id<MTLFunction> function=ms->vpatch[recipe];os_unfair_lock_unlock(&g_vpatch_lock);
     if(function)return function;
-    NSString *source=sh_src(ms),*head=@"struct dm_vertex_t {";
+    NSString *source=fn_src(base)?:sh_src(ms),*head=@"struct dm_vertex_t {";
     NSRange declaration=[source rangeOfString:head];
     if(declaration.location==NSNotFound||[source rangeOfString:@"dm_vertex_t v;"].location==NSNotFound)MDIE("mesh shader %s has no vertex output declaration",ms->key);
     source=[source stringByReplacingCharactersInRange:declaration withString:[head stringByAppendingFormat:@"\n%@",fields]];
@@ -76,6 +77,7 @@ static id<MTLFunction> mtk_mesh_fn(NvShader *ms,NvShader *fs) {
     if(!ms->vpatch[recipe])ms->vpatch[recipe]=function;function=ms->vpatch[recipe];
     os_unfair_lock_unlock(&g_vpatch_lock);return function;
 }
+static id<MTLFunction> mtk_mesh_fn(NvShader *ms,NvShader *fs) { return mtk_mesh_fn_base(ms,fs,ms->fn); }
 static int mtk_empty_export_on(void) {
     int v=atomic_load_explicit(&g_mesh_empty_export,memory_order_relaxed);
     if(v<0){const char *e=getenv("OOT_MESH_EMPTY_EXPORT");v=e?atoi(e)!=0:0;atomic_store(&g_mesh_empty_export,v);}
@@ -102,16 +104,19 @@ static id<MTLFunction> mtk_empty_export_fn(id<MTLFunction> base,NvShader *ms) {
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms,*fs=raster->sh[1];
+    int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);g_mesh_translation_hits[selected]++;
+    static int stats=-1;if(stats<0){const char*s=getenv("OOT_MESH_TRANSLATION_STATS");stats=s&&atoi(s);}
+    if(stats&&g_mesh_translation_hits[selected]%600==1)MLOG("[mesh-translation] selected mode=%d draws=%llu loaded=%llu",selected,g_mesh_translation_hits[selected],g_mesh_translation_loaded[selected]);
     mtk_pso_key key; memset(&key,0,sizeof key);
     pso_key_fill(&key.p,ms,fs,g_pass.cfmt,g_pass.dfmt,g_pass.sfmt,g_pass.samples,0);
     memset(key.p.attr,0,sizeof key.p.attr);memset(key.p.stream,0,sizeof key.p.stream);
     key.task=(__bridge void *)(ts?ts->fn:nil);
-    key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u);
+    key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|((uint64_t)selected<<2);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,nil,0);
     MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
     m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
-    id<MTLFunction> mesh=mtk_mesh_fn(ms,fs);if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
+    id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base);if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
     m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
     if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
