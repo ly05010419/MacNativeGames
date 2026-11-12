@@ -42,7 +42,7 @@ update_runtime.py "<the app>". Mac saves, shader cache and logs go to the user's
 and the writable shader cache in the app's Documents container.
 
 Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
-    brew install opus libvpx python@3.14
+    brew install python@3.14       (opus and libvpx are built from pinned sources by the build itself)
 For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and Ninja.
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
@@ -325,16 +325,93 @@ def prerequisites(args):
                          'With Xcode: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer; with the command line '
                          'tools only: sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install '
                          f'(xcode-select -p and xcrun --show-sdk-path show what is used). clang++ said: {cxx.stderr.strip()[:300]}')
-    brew = Path('/opt/homebrew')
-    missing = [p for p in ('opus', 'libvpx') if not (brew / 'opt' / p / 'lib').is_dir()]
-    if missing:
-        raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
     if not shutil.which('git', path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
         raise BuildError('git not found: xcode-select --install')
     py = next((p for p in (shutil.which(n, path=os.pathsep.join(TOOL_PATHS)) for n in ('python3.14', 'python3.15')) if p), None)
     if not py:
         raise BuildError('Python 3.14 not found (the build reads zstd with the standard library): brew install python@3.14')
+    codec_libraries()
     return Path(py)
+
+
+# The runtime links opus (the games' audio) and libvpx (VP8 / VP9 videos) statically. Both are built here from pinned
+# sources, once per Mac, so a build needs no Homebrew (user 2026-11-12: "玩家完全不用装 Homebrew"): the versions Homebrew
+# gave this repository's builds until then (opus 1.6.1, libvpx 1.16.0) and Homebrew's configure options for them.
+OPUS = ('1.6.1', 'https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz',
+        '6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1')
+LIBVPX = ('1.16.0', 'https://github.com/webmproject/libvpx.git', '1024874c5919305883187e2953de8fcb4c3d7fa6')
+DEPS = Path(os.environ.get('MNG_DEPS_CACHE') or Path.home() / 'Library/Caches/MacNativeGames/deps')
+
+
+def codec_libraries():
+    """OPUS_PREFIX and VPX_PREFIX (installed static libraries and headers) in this process's environment, where every
+    make of the build and of update_runtime.py reads them (games/totk/Makefile, games/oot/Makefile). Built into DEPS
+    the first time (about two minutes), under a lock so two builds do not build them at once."""
+    import fcntl
+    DEPS.mkdir(parents=True, exist_ok=True)
+    opus, vpx = DEPS / f'opus-{OPUS[0]}', DEPS / f'libvpx-{LIBVPX[0]}-{LIBVPX[2][:12]}'
+    if not ((opus / 'lib/libopus.a').is_file() and (vpx / 'lib/libvpx.a').is_file()):
+        with open(DEPS / '.lock', 'w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            logs = DEPS / 'logs'
+            if not (opus / 'lib/libopus.a').is_file():
+                say(f'building opus {OPUS[0]} from its pinned source, once for this Mac (no Homebrew needed)')
+                build_opus(opus, logs)
+            if not (vpx / 'lib/libvpx.a').is_file():
+                say(f'building libvpx {LIBVPX[0]} from its pinned source, once for this Mac (a minute or two)')
+                build_libvpx(vpx, logs)
+    os.environ['OPUS_PREFIX'], os.environ['VPX_PREFIX'] = str(opus), str(vpx)
+    return opus, vpx
+
+
+def build_opus(prefix, logs):
+    import tarfile, urllib.request
+    version, url, want = OPUS
+    archive = DEPS / f'src/opus-{version}.tar.gz'
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.is_file() or sha256(archive) != want:
+        partial = archive.with_name(archive.name + '.partial')
+        with urllib.request.urlopen(url) as r, open(partial, 'wb') as f:
+            shutil.copyfileobj(r, f)
+        if sha256(partial) != want:
+            partial.unlink()
+            raise BuildError(f'the opus {version} source from {url} does not match its pinned SHA-256')
+        partial.replace(archive)
+    src = DEPS / f'src/opus-{version}'
+    if src.exists():
+        shutil.rmtree(src)
+    with tarfile.open(archive) as t:
+        t.extractall(src.parent, filter='data')
+    install(prefix, lambda stage: (
+        run(['./configure', '--disable-dependency-tracking', '--disable-doc', '--disable-shared', '--enable-static',
+             '--disable-extra-programs', f'--prefix={stage}', 'CC=clang'], logs / 'opus-configure.log', cwd=src),
+        run(['make', f'-j{os.cpu_count() or 4}', 'install'], logs / 'opus-make.log', cwd=src)))
+
+
+def build_libvpx(prefix, logs):
+    version, url, commit = LIBVPX
+    src = DEPS / 'src/libvpx'
+    git_fetch(url, commit, src, logs / 'libvpx-fetch.log')
+    build = DEPS / 'src/libvpx-build'
+    if build.exists():
+        shutil.rmtree(build)
+    build.mkdir(parents=True)
+    install(prefix, lambda stage: (
+        run([src / 'configure', '--disable-dependency-tracking', '--disable-examples', '--disable-tools', '--disable-docs',
+             '--disable-unit-tests', '--enable-pic', '--disable-shared', '--enable-static', '--enable-vp9-highbitdepth',
+             f'--prefix={stage}'], logs / 'libvpx-configure.log', cwd=build),
+        run(['make', f'-j{os.cpu_count() or 4}', 'install'], logs / 'libvpx-make.log', cwd=build)))
+
+
+def install(prefix, steps):
+    """steps(stage) installs into a staging folder, which becomes prefix only when it finished."""
+    stage = prefix.with_name(prefix.name + '.partial')
+    if stage.exists():
+        shutil.rmtree(stage)
+    steps(stage)
+    if prefix.exists():
+        shutil.rmtree(prefix)
+    stage.rename(prefix)
 
 
 # ---- work folder ----
@@ -2872,6 +2949,7 @@ def parse_args(argv):
 def build_oot(args, source):
     # OOT carries its own runtime, GPU backend, rewriter and build inputs.
     import importlib.util
+    codec_libraries()   # its Makefile links opus and libvpx as Tears of the Kingdom's does
     spec = importlib.util.spec_from_file_location('oot_build', REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

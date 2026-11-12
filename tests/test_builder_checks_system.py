@@ -1,4 +1,4 @@
-"""tools/builder/checks_system.py (S1.2a): apple_silicon, macos_version, homebrew, brew_packages, git, build_python.
+"""tools/builder/checks_system.py (S1.2a): apple_silicon, macos_version, homebrew, git, build_python.
 The developer-folder checks are in test_builder_checks_developer.py. A fake runner answers commands; temporary
 folders stand in for the tool paths and the Homebrew prefix."""
 import os
@@ -10,7 +10,7 @@ from unittest.mock import patch
 from builder_fakes import FakeRunner, fail, ok
 from tools.builder import checks_system
 from tools.builder.checks import CheckContext, Status
-from tools.builder.checks_system import (BREW_INSTALL, AppleSilicon, BrewPackages, BuildPython, Git, Homebrew,
+from tools.builder.checks_system import (BREW_INSTALL, AppleSilicon, BuildPython, Git, Homebrew,
                                          MacosVersion)
 from tools.builder.ports import Outcome
 
@@ -75,18 +75,6 @@ class HomebrewChecks(Base):
         (self.brew / 'bin').mkdir(parents=True)
         (self.brew / 'bin/brew').write_text('')
         self.assertEqual(self.check(Homebrew()), (Status.OK, 'ok', None))
-
-    def test_packages(self):
-        self.assertEqual(self.check(BrewPackages()), (Status.BLOCK, 'brew_packages_missing', 'brew install opus libvpx'))
-        (self.brew / 'opt/opus/lib').mkdir(parents=True)
-        self.assertEqual(self.check(BrewPackages()), (Status.BLOCK, 'brew_packages_missing', 'brew install libvpx'))
-        (self.brew / 'opt/libvpx/lib').mkdir(parents=True)
-        self.assertEqual(self.check(BrewPackages()), (Status.OK, 'ok', None))
-
-    def test_a_package_without_lib_folder_is_missing(self):
-        (self.brew / 'opt/opus').mkdir(parents=True)
-        (self.brew / 'opt/libvpx/lib').mkdir(parents=True)
-        self.assertEqual(self.check(BrewPackages())[2], 'brew install opus')
 
 
 class GitCheck(Base):

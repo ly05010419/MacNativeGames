@@ -58,13 +58,13 @@ class Checks(Base):
 
     def test_a_block_with_a_fix_and_a_skip(self):
         block = CheckResult('homebrew', Status.BLOCK, 'homebrew_missing', '/opt/homebrew/bin/brew', 'install-brew')
-        skip = CheckResult('brew_packages', Status.SKIP, 'skipped', 'requires homebrew')
+        skip = CheckResult('build_python', Status.SKIP, 'skipped', 'requires homebrew')
         ctl = FakeController(checks=[[CheckResultReady(block), CheckResultReady(skip)], [ChecksDone(False)]])
         self.assertEqual(self.run_cli(ctl), 2)
         self.assertEqual(self.lines, ['  BLOCK Homebrew: Homebrew is not installed '
                                       '(/opt/homebrew/bin/brew is missing).',
                                       '        fix: install-brew',
-                                      '  SKIP  Homebrew packages (opus, libvpx): Not checked (requires homebrew).',
+                                      '  SKIP  Python 3.14 for the build: Not checked (requires homebrew).',
                                       'Checks: blocked. Nothing was started.'])
 
     def test_paths_incomplete(self):

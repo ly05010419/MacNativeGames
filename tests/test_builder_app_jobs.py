@@ -143,13 +143,15 @@ class History(unittest.TestCase):
 
 
 class Checks(unittest.TestCase):
-    def test_build_app_prerequisites_are_restated(self):
+    def test_no_homebrew_package_is_needed_but_ocarina_s_tools(self):
         source = repo.BUILD_APP.read_text()
         start = source.index('def prerequisites(')
-        body = source[start:source.index('\ndef ', start + 1)]
-        for package in checks.BREW_PACKAGES:
-            self.assertIn(f"'{package}'", body)
-        self.assertIn("('opus', 'libvpx')", body, 'build_app.py needs other Homebrew packages: update checks.BREW_PACKAGES')
+        body = source[start:source.index('\n\n\n', start)]   # the function alone, not the comment after it
+        self.assertNotIn('libvpx', body)          # built from pinned sources (codec_libraries), not checked in Homebrew
+        self.assertIn('codec_libraries()', body)
+        oot = (repo.REPO / 'games/oot/Makefile').read_text() + (repo.REPO / 'games/oot/build.py').read_text()
+        for name, _ in checks.OOT_TOOLS:
+            self.assertIn(name, oot, f'Ocarina of Time no longer uses Homebrew {name}: update checks.OOT_TOOLS')
 
     def test_every_check_has_text(self):
         for c in checks.checks(tempfile.gettempdir()):

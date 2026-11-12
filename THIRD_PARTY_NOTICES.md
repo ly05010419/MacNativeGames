@@ -35,8 +35,8 @@ Fetched or linked at build time (not in this repository):
 |---|---|---|
 | [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) at `aa217ae`, built from source when the build makes the translator itself (the prebuilt programs listed above carry it compiled in) | SPIR-V to Metal Shading Language | Apache-2.0 |
 | [hactool](https://github.com/SciresM/hactool) at `1d64a83` (with explicit private title-key-file hook), including its bundled mbedTLS | Base + update BKTR merge at build time only | ISC (hactool), Apache-2.0 (mbedTLS); see fetched source LICENSE files |
-| libopus (Homebrew), linked statically | Opus audio | BSD-3-Clause |
-| libvpx (Homebrew), linked statically | VP9 movies | BSD-3-Clause |
+| [libopus](https://opus-codec.org) 1.6.1, release tarball (SHA-256 pinned) built from source by `build_app.codec_libraries`, linked statically | Opus audio | BSD-3-Clause |
+| [libvpx](https://chromium.googlesource.com/webm/libvpx) 1.16.0 at `1024874`, built from source by `build_app.codec_libraries`, linked statically | VP9 movies | BSD-3-Clause |
 | [Berkeley SoftFloat 3](https://github.com/ucb-bar/berkeley-softfloat-3) at `5c06db3`, fetched by `windows_games/ra2/third_party/x86recomp/cmake/softfloat.cmake` | exact x87 arithmetic in windows_games | BSD-3-Clause |
 | [CORE-MATH](https://gitlab.inria.fr/core-math/core-math) at `74fcd10`, fetched by `windows_games/ra2/third_party/x86recomp/cmake/coremath.cmake` | correctly rounded math functions in windows_games | MIT |
 | SDL3 3.4.14, glslang, SPIRV-Cross, ffmpeg 8.1 (decoders only), built by `windows_games/ra2/scripts/ios/build_deps.sh` | windows_games on iOS | zlib, BSD-3-Clause / Apache-2.0, Apache-2.0, LGPL-2.1 |

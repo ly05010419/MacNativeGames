@@ -124,18 +124,6 @@ class Homebrew:
         return CheckResult(self.id, Status.BLOCK, 'homebrew_missing', str(brew), BREW_INSTALL)
 
 
-class BrewPackages:
-    id, requires = 'brew_packages', ('homebrew',)
-    PACKAGES = ('opus', 'libvpx')
-
-    def run(self, ctx):
-        missing = [p for p in self.PACKAGES if not (ctx.brew_prefix / 'opt' / p / 'lib').is_dir()]
-        if missing:
-            return CheckResult(self.id, Status.BLOCK, 'brew_packages_missing', ' '.join(missing),
-                               'brew install ' + ' '.join(missing))
-        return _ok(self.id, ' '.join(self.PACKAGES))
-
-
 class Git:
     id, requires = 'git', ()
 
@@ -192,5 +180,6 @@ class MetalToolchain:
         return list(dict.fromkeys(f for f in found if f))
 
 
-SYSTEM_CHECKS = (AppleSilicon(), MacosVersion(), CommandLineTools(), CxxHeaders(), Homebrew(), BrewPackages(),
+# No check for Homebrew's opus and libvpx: build_app.py builds them from pinned sources (codec_libraries, 2026-11-12).
+SYSTEM_CHECKS = (AppleSilicon(), MacosVersion(), CommandLineTools(), CxxHeaders(), Homebrew(),
                  Git(), BuildPython(), MetalToolchain())

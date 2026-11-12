@@ -13,7 +13,9 @@ import sys
 from tools.builder_jobs.text import t
 
 BREW = Path('/opt/homebrew')
-BREW_PACKAGES = ('opus', 'libvpx')      # build_app.py prerequisites(): linked into the runtime
+# Ocarina of Time's build still takes these from Homebrew (games/oot/build.py, games/oot/Makefile); opus and libvpx are
+# built from pinned sources by build_app.py for every game (codec_libraries), so nothing else needs Homebrew.
+OOT_TOOLS = (('llvm', 'opt/llvm/bin/llvm-objcopy'), ('ffmpeg', 'bin/ffmpeg'), ('dav1d', 'opt/dav1d/lib/libdav1d.dylib'))
 FREE_GB = 60                            # warn below this; the measured sizes are in docs/builder-app.md
 
 
@@ -34,6 +36,11 @@ def _free_gb(path):
         return None
 
 
+def oot_tools_missing():
+    """The Homebrew packages Ocarina of Time's build needs that this Mac lacks (classify.plan blocks on them)."""
+    return [name for name, path in OOT_TOOLS if not (BREW / path).exists()]
+
+
 def checks(work_root):
     out = []
     add = lambda id, ok, text, fix=None, action=None: out.append(dict(id=id, ok=bool(ok), text=text, fix=fix, action=action))
@@ -46,11 +53,6 @@ def checks(work_root):
     cxx = clang and _ok(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input=b'#include <string>\n')
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
-    brew = (BREW / 'bin/brew').is_file()
-    add('brew', brew, t('Homebrew', 'Homebrew（软件包管理器）'), '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"')
-    missing = [p for p in BREW_PACKAGES if not (BREW / 'opt' / p / 'lib').is_dir()]
-    add('brew-packages', not missing, t('Homebrew packages ', 'Homebrew 软件包 ') + ' + '.join(BREW_PACKAGES),
-        f'brew install {" ".join(missing or BREW_PACKAGES)}', 'brew-install' if brew else None)
     add('git', shutil.which('git', path=os.pathsep.join(['/opt/homebrew/bin', '/usr/bin'])), 'git', 'xcode-select --install')
     add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), 'brew install python@3.14')
     free = _free_gb(work_root)

@@ -104,14 +104,11 @@ final class Model: ObservableObject {
         }
     }
 
-    /// The fix of a check that a click can start: the developer tools' installer, or Homebrew's packages (whose
-    /// output goes to the log). Others show their command to copy.
+    /// The fix of a check that a click can start: the developer tools' installer. Others show their command to copy.
     func fix(_ check: ChecksReport.Check) {
         switch check.action {
         case "install-clt":
             run("/usr/bin/xcode-select", ["--install"])
-        case "brew-install":
-            run("/opt/homebrew/bin/brew", ["install", "opus", "libvpx"])
         default:
             if let fix = check.fix { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(fix, forType: .string) }
         }

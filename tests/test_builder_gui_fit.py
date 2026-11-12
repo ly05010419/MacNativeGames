@@ -214,7 +214,7 @@ class Fit(Base):
         self.assertTrue(rows and self.visible(rows[0]))
 
     def test_the_first_problem_is_shown_when_the_checks_end(self):
-        ids = ('apple_silicon', 'macos_version', 'command_line_tools', 'cxx_headers', 'homebrew', 'brew_packages',
+        ids = ('apple_silicon', 'macos_version', 'command_line_tools', 'cxx_headers', 'homebrew',
                'git', 'build_python', 'metal_toolchain', 'repository', 'input_files', 'input_rules')
         oks = [[CheckResultReady(CheckResult(i, Status.OK, 'ok', ''))] for i in ids]
         block = [[CheckResultReady(CheckResult('disk_space', Status.BLOCK, 'disk_space', '31 GB'))],

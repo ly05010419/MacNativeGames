@@ -25,7 +25,7 @@ From the repository folder:
 ```sh
 sw_vers -productVersion; uname -m
 xcode-select -p; xcrun --show-sdk-path
-ls -d /opt/homebrew/opt/opus /opt/homebrew/opt/libvpx; command -v python3.14
+command -v python3.14
 git log -1 --oneline; git status -sb | head -1
 df -h .
 ```
@@ -35,7 +35,7 @@ df -h .
 | `arm64` and macOS **26** or later (Metal 4) | Stop. macOS 15 is not supported here; a community fork has a Metal 3 backend: <https://github.com/1918662410-ship-it/MacNativeGames> (not tested by this repository). |
 | Xcode command line tools, with a working SDK | `xcode-select --install` (the player clicks the dialog). |
 | Homebrew in `/opt/homebrew` (the build looks only there) | Install from <https://brew.sh> (the player runs it; it asks for the password). |
-| `brew install opus libvpx python@3.14` | Run it. Instead of Homebrew Python, `uv run --python 3.14 build_app.py …` works too. |
+| Python 3.14: `brew install python@3.14` | Run it. Instead of Homebrew Python, `uv run --python 3.14 build_app.py …` works too. opus and libvpx are not installed: the build compiles them from pinned sources (once per Mac, under `~/Library/Caches/MacNativeGames/deps`). |
 | The repository is current | `git pull` (or download a fresh ZIP). Many old build errors are fixed on `main`. |
 
 Recommended when the full Xcode app is installed: `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so it can be moved later and rebuilds are faster. Without it the build still works.

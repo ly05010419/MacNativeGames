@@ -81,7 +81,7 @@ How the builder is made, for anyone changing it (people or AI assistants): [buil
 ```sh
 xcode-select --install
 # Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
-brew install opus libvpx python@3.14
+brew install python@3.14       # opus and libvpx: the build compiles them from pinned sources itself
 brew install python-tk@3.14   # only for the builder window (Build with a window, above)
 ```
 

@@ -78,7 +78,7 @@ python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --key
 ```sh
 xcode-select --install
 # 没有 Homebrew 的话，按 https://brew.sh 安装（必须装在 /opt/homebrew）
-brew install opus libvpx python@3.14
+brew install python@3.14       # opus 和 libvpx 不用装：打包时从固定版本的源码自己编
 brew install python-tk@3.14   # 只有打包窗口需要（见上面“用窗口打包”）
 ```
 
