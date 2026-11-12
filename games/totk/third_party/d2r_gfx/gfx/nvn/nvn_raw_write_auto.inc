@@ -6,6 +6,26 @@ static int raw_write_auto_on(void) {
     if(v<0){const char *s=getenv("OOT_RAW_WRITE_AUTO");v=!TARGET_OS_IPHONE&&!(s&&!atoi(s));atomic_store(&g_raw_write_auto,v); /* Mac default on since 2026-11-08; OOT_RAW_WRITE_AUTO=0 turns it off */ }
     return !TARGET_OS_IPHONE&&v;
 }
+static os_unfair_lock g_raw_write_auto_lock=OS_UNFAIR_LOCK_INIT;static NSMutableArray *g_raw_write_auto_done;static _Atomic int g_raw_write_auto_ready;
+static dispatch_queue_t raw_write_auto_queue(void) {
+    static dispatch_queue_t q;static dispatch_once_t once;
+    dispatch_once(&once,^{q=dispatch_queue_create("oot.raw-write-proof",dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,QOS_CLASS_UTILITY,0));});
+    return q;
+}
+/* On the thread that replays dispatches: take the analyses the background queue finished. A proved result joins its
+   shader's domains (matched per dispatch, word guards included); a failed one is only logged. */
+static void raw_write_auto_collect(void) {
+    if(!atomic_exchange(&g_raw_write_auto_ready,0))return;
+    os_unfair_lock_lock(&g_raw_write_auto_lock);NSArray *done=g_raw_write_auto_done;g_raw_write_auto_done=nil;os_unfair_lock_unlock(&g_raw_write_auto_lock);
+    for(NSArray *e in done){
+        NvShader *sh=e[0];NSDictionary *result=e[1]==(id)NSNull.null?nil:e[1];double ms=[e[3] unsignedLongLongValue]*41.6667/1e6;
+        if(![result[@"ok"] boolValue]){
+            MLOG("[write-domain-auto] fallback %.16s attempt=%d reason=%s (background, %.0f ms)",sh->key,[e[2] intValue],[result[@"error"] description].UTF8String?:"invalid result",ms);continue;
+        }
+        if(!sh->raw_write_auto_domains)sh->raw_write_auto_domains=[NSMutableArray array];[sh->raw_write_auto_domains addObject:result];
+        MLOG("[write-domain-auto] proved %.16s attempt=%d calls=%lu guards=%lu ranges=%s (background, %.0f ms)",sh->key,[e[2] intValue],(unsigned long)[result[@"calls"] count],(unsigned long)[result[@"guards"] count],[result[@"high_intervals"] description].UTF8String,ms);
+    }
+}
 static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t *slots,int resolved) {
     if(!raw_write_auto_on()||stage!=5||!g_dispatch_domain_direct||g_dispatch_domain_simd!=32||totk_vpool_aliases_used())return nil;
     // Known storage-buffer bindings invalidate their declared ranges below.
@@ -49,15 +69,27 @@ static NSDictionary *raw_write_auto_prove(NvShader *sh,int stage,const uint64_t 
     if(!sh->raw_write_attempted)sh->raw_write_attempted=[NSMutableSet set];[sh->raw_write_attempted addObject:identity];sh->raw_write_auto_attempts++;
     NSDictionary *request=@{@"abi":@1,@"spirv":cap[@"spirv"],@"grid":@[@(g_dispatch_grid[0]),@(g_dispatch_grid[1]),@(g_dispatch_grid[2])],
         @"local":@[@(sh->rf.tg[0]),@(sh->rf.tg[1]),@(sh->rf.tg[2])],@"simd_width":@32,@"bindings":inputs};
-    NSData *json=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];if(!json||json.length>4194304)return nil;
-    NSMutableData *terminated=[json mutableCopy];uint8_t zero=0;[terminated appendBytes:&zero length:1];
-    char *reply=calloc(1,131072);if(!reply)return nil;uint64_t t=mach_absolute_time();
-    int n=prove(terminated.bytes,reply,131072);NSDictionary *result=nil;
-    if(n>0&&n<131072)result=[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:reply length:(size_t)n] options:0 error:nil];free(reply);
-    if(![result isKindOfClass:NSDictionary.class]||![result[@"ok"] boolValue]||!raw_write_domain_match(sh,result,stage,slots,resolved)){
-        MLOG("[write-domain-auto] fallback %.16s attempt=%d reason=%s",sh->key,sh->raw_write_auto_attempts,[result[@"error"] description].UTF8String?:"invalid result/input changed");return nil;
-    }
-    if(!sh->raw_write_auto_domains)sh->raw_write_auto_domains=[NSMutableArray array];[sh->raw_write_auto_domains addObject:result];
-    MLOG("[write-domain-auto] proved %.16s calls=%lu guards=%lu ranges=%s analysis-ticks=%llu",sh->key,(unsigned long)[result[@"calls"] count],(unsigned long)[result[@"guards"] count],[result[@"high_intervals"] description].UTF8String,(unsigned long long)(mach_absolute_time()-t));
-    return result;
+    /* The analysis takes 0.2-0.3 s (2026-11-10: 256-308 ms per proof in the game log, one long frame each when it ran
+       here). It runs on a serial background queue; this dispatch falls back, and raw_write_auto_collect() adds the
+       result on a later dispatch, where raw_write_domain_match accepts it against the bindings of that dispatch. */
+    int attempt=sh->raw_write_auto_attempts;
+    dispatch_async(raw_write_auto_queue(),^{
+        uint64_t t=mach_absolute_time();NSDictionary *result=nil;
+        NSData *json=[NSJSONSerialization dataWithJSONObject:request options:0 error:nil];
+        if(json&&json.length<=4194304){
+            NSMutableData *terminated=[json mutableCopy];uint8_t zero=0;[terminated appendBytes:&zero length:1];
+            char *reply=calloc(1,131072);
+            if(reply){
+                int n=prove(terminated.bytes,reply,131072);
+                if(n>0&&n<131072)result=[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:reply length:(size_t)n] options:0 error:nil];
+                free(reply);
+            }
+        }
+        id done=[result isKindOfClass:NSDictionary.class]?result:(id)NSNull.null;
+        os_unfair_lock_lock(&g_raw_write_auto_lock);
+        if(!g_raw_write_auto_done)g_raw_write_auto_done=[NSMutableArray array];
+        [g_raw_write_auto_done addObject:@[sh,done,@(attempt),@(mach_absolute_time()-t)]];
+        os_unfair_lock_unlock(&g_raw_write_auto_lock);atomic_store(&g_raw_write_auto_ready,1);
+    });
+    return nil;
 }
