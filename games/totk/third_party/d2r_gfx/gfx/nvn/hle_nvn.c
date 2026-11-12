@@ -548,6 +548,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     o->has_layout = s->has_layout; memcpy(o->layout, s->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
     o->mem = s->pool && s->pool->mem ? s->pool->mem + s->off : NULL;
+    { extern void mtl_wb_storage_reused(const uint8_t *mem, uint64_t n); if (o->mem && !s->pkg_data) mtl_wb_storage_reused(o->mem, o->L.size); }
     if (s->pkg_data) {
         if (!o->mem) die("packaged texture data without CPU-visible storage");
         dm_guest_write_prepare(o->mem, (size_t)o->L.size);
