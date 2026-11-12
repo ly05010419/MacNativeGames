@@ -4,12 +4,13 @@ code: what the files are (classify), what this Mac needs (checks), the games ins
 a build or update as the Mac's one job (build_job.start, so the window shows its progress and can stop it), and the
 pages (tabs). Nothing here decides anything the window does not.
 
+  migrate [--apply]            is this Mac migrated to MNG Launcher and the folder rule? --apply does what is left
   status                       the games on this Mac and the update each needs
   check [FILES…]               what this Mac still needs; with files, what they are and the build they make
   build FILES… [--keys K]      build or update the game of these files the fastest way that fits
   update GAME|APP [--work W]   update an installed game without files (express, else fast)
   page TAB ACTION --game GAME|--app APP [--args JSON]   one page action (settings, mods, controls, storage, saves)
-  open [FILES…]                open MNG Launcher, with these files filled in
+  open [FILES…]                open MNG Launcher, with these files filled in (only once migrate says done)
 Add --json for the raw JSON the window reads."""
 import argparse
 import json
@@ -172,7 +173,46 @@ def cmd_page(a):
     return 0 if answer.get('ok') else 1
 
 
+STATES = {'ok': t('ok', '已迁移'), 'move': t('to move', '要搬移'), 'record': t('to record', '要记录'),
+          'later': t('at its next full build', '下次完整打包时'), 'unreachable': t('disk missing', '盘没接上'),
+          'make': t('to make', '要生成')}
+
+
+def print_migration(report):
+    for i in report['apps']:
+        print(f'[{STATES.get(i["state"], i["state"])}] {i["name"]}: {i["reason"]}\n    {i["app"]}'
+              + (f'\n    work: {i["work"]}' if i['work'] else '')
+              + (f'\n    -> {i["target"]}' if i['state'] in ('move', 'record') else ''))
+    l = report['launcher']
+    print(f'[{STATES.get(l["state"], l["state"])}] MNG Launcher: {l["reason"]}')
+    print(t('Migrated: MNG Launcher can be opened.', '迁移完成：可以打开 MNG Launcher。') if report['done'] else
+          t('Not migrated yet: python3 tools/mng.py migrate --apply', '还没迁移完：运行 python3 tools/mng.py migrate --apply'))
+
+
+def cmd_migrate(a):
+    from tools.builder_jobs import migrate
+    report = migrate.check(installed(a.apps_dir))
+    if a.json and not a.apply:
+        return show(report, True) or (0 if report['done'] else 1)
+    print_migration(report)
+    if not a.apply or report['done']:
+        return 0 if report['done'] else 1
+    def run_update(app, work):
+        print(t(f'== recording {work} in {app} (express update)', f'== 把 {work} 记进 {app}（极速更新）'), flush=True)
+        return build_job.start({'update': app, 'work': work}, Words(a.json), HISTORY, source=a.source)
+    for what, result in migrate.apply(report, run_update, migrate.make_launcher):
+        print(f'{what}: {result}')
+    after = migrate.check(installed(a.apps_dir))
+    print_migration(after)
+    return 0 if after['done'] else 1
+
+
 def cmd_open(a):
+    from tools.builder_jobs import migrate
+    report = migrate.check(installed(a.apps_dir))
+    if not report['done']:   # an AI opens the Launcher only on a migrated Mac (user 2026-11-12)
+        print_migration(report)
+        return 1
     app = Path.home() / 'Applications/MNG Launcher.app'
     if not app.is_dir():
         raise SystemExit(t('MNG Launcher is not made yet: python3 tools/builder_app/make_app.py',
@@ -188,6 +228,7 @@ def main(argv):
                     help='who starts the job, as MNG Launcher shows it')
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('status')
+    m = sub.add_parser('migrate'); m.add_argument('--apply', action='store_true', help='do what is left')
     c = sub.add_parser('check'); c.add_argument('files', nargs='*'); c.add_argument('--keys')
     b = sub.add_parser('build'); b.add_argument('files', nargs='+'); b.add_argument('--keys')
     b.add_argument('--app', help='build into this app (default: the installed app of that game, else the apps folder)')
@@ -200,7 +241,7 @@ def main(argv):
     a = ap.parse_args(argv)
     if a.cmd == 'page' and not (a.game or a.app):
         ap.error('page needs --game or --app')
-    return {'status': cmd_status, 'check': cmd_check, 'build': cmd_build, 'update': cmd_update, 'page': cmd_page,
+    return {'migrate': cmd_migrate, 'status': cmd_status, 'check': cmd_check, 'build': cmd_build, 'update': cmd_update, 'page': cmd_page,
             'open': cmd_open}[a.cmd](a)
 
 

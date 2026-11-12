@@ -59,16 +59,17 @@ One engine builds every game, whoever drives it: MNG Launcher's window, or `tool
 
 ### With an AI or a terminal: `tools/mng.py`
 
-Any `python3` starts it (it runs with MNG Launcher's own Python, else a Python 3.14). An AI building for you should use it rather than writing `build_app.py` commands itself.
+Any `python3` starts it (it runs with MNG Launcher's own Python, else a Python 3.14). An AI building for you should use it rather than writing `build_app.py` commands itself, and **its first step is always `mng migrate`**: MNG Launcher is opened only on a migrated Mac (`mng open` refuses until then).
 
 | Command | What it does |
 |---|---|
+| `python3 tools/mng.py migrate` | is this Mac migrated? (`--apply` does what is left; see [Moving an older install](#moving-an-older-install-to-mng-launcher)) |
 | `python3 tools/mng.py status` | the games on this Mac and the update each needs |
 | `python3 tools/mng.py check "<base>" "<update>" --keys "<prod.keys>"` | what the files are, the build they make, what this Mac still needs |
 | `python3 tools/mng.py build "<base>" "<update>" --keys "<prod.keys>"` | build that game (or update it, when it is installed and the version is the same) |
 | `python3 tools/mng.py update totk` | update an installed game without files (`botw`, `oot`, a name or the app's path work too) |
 | `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <action> --game totk` | what the window's pages do |
-| `python3 tools/mng.py open "<files>" "<prod.keys>"` | open MNG Launcher with them filled in |
+| `python3 tools/mng.py open "<files>" "<prod.keys>"` | open MNG Launcher with them filled in (only on a migrated Mac) |
 
 It prints each stage, step and log line, the progress once a minute and the end (`--json`: what the window reads). For what `mng` does not do (iPhone and iPad, `--mod`, `--vr`) use the `build_app.py` commands under [Build the app](#build-the-app).
 
@@ -79,6 +80,7 @@ It prints each stage, step and log line, the progress once a minute and the end 
 3. **One build or update at a time on a Mac**, whoever starts it. A second one is refused and says which is running and who started it. The window shows a job started elsewhere ("Started from …") and can stop it; it starts the game only after a job it started itself.
 4. **Your files stay where they are**: game files and keys are read in place, never copied; nothing is uploaded. Logs: `~/Library/Logs/MacNativeGames/`; the running job: `~/Library/Application Support/MacNativeGames/Builder/jobs/`.
 5. **No Homebrew**: the build fetches its own pinned tools and libraries ([What you need](#what-you-need)).
+6. **Migrated first**: an AI checks the migration before anything else and opens MNG Launcher only once it is done.
 
 Coming from an older install: [Moving an older install to MNG Launcher](#moving-an-older-install-to-mng-launcher).
 
@@ -233,6 +235,8 @@ Bananza and Pokopia have only the normal update (`build_app.py`); it keeps their
 ## Moving an older install to MNG Launcher
 
 For players who built a game before 12 November 2026 with `build_app.py` or the old window (`Build Game.command`). Nothing is rebuilt and no game files or keys are needed, unless a step says so. Quit the game first.
+
+**With an AI (or in a terminal), the migration is one command, and it comes first:** `python3 tools/mng.py migrate` lists each game app and MNG Launcher with what is left; `python3 tools/mng.py migrate --apply` does it (renames each work folder that breaks the rule into `MacNativeGames-work/<game>` on the same disk, records it with one express update per game, makes or remakes MNG Launcher). A Mac is migrated when every app records a work folder that obeys the [Folders](#folders) rule (outside the checkout and the apps folder, on the app's disk) and MNG Launcher is made from this checkout; a game whose next update is a full build anyway (Bananza, Pokopia, another version) does not hold it up. Only then is MNG Launcher opened: `python3 tools/mng.py open` refuses before. The steps below are the same by hand.
 
 1. **Get the new code.** In the `MacNativeGames` folder: `git pull` (a ZIP download: download it again). `Build Game.command` is gone; MNG Launcher has its pages.
 2. **Python.** Keep the Python 3.14 you have. A new Mac only needs the installer from <https://www.python.org/downloads/macos/>; Homebrew is not needed any more (opus, libvpx, dav1d, XcodeGen, CMake and the other build tools come with the build).

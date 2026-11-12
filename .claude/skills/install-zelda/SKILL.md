@@ -75,7 +75,10 @@ Other things the build needs:
 
 **Use `tools/mng.py` (MNG Launcher's engine in a terminal), not `build_app.py` by hand.** It is what the Launcher runs: it tells the files apart, checks the Mac, puts the app and its work folder where the one folder rule says, takes the fastest update when the game is already installed, and runs as the Mac's one job, so the player's Launcher window shows its progress and can stop it. Any `python3` starts it (it then uses MNG Launcher's own Python, or Python 3.14).
 
+**First, always: `python3 tools/mng.py migrate`.** It says whether this Mac is migrated to MNG Launcher and the folder rule; when it is not, run `python3 tools/mng.py migrate --apply` (it moves work folders on the same disk, records them with express updates, makes the Launcher), tell the player what it did, and only then go on. Open MNG Launcher only on a migrated Mac (`mng open` refuses before).
+
 ```sh
+python3 tools/mng.py migrate [--apply]                        # first: is this Mac migrated? --apply finishes it
 python3 tools/mng.py status                                   # the games on this Mac and the update each needs
 python3 tools/mng.py check "<base>" "<update>" --keys "<prod.keys>"   # what the files are, what the Mac still needs
 python3 tools/mng.py build "<base>" "<update>" --keys "<prod.keys>"   # build (or update) that game

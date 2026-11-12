@@ -62,16 +62,17 @@
 
 ### 用 AI 或终端：`tools/mng.py`
 
-任何 `python3` 都能启动它（实际用 MNG Launcher 自带的 Python，没有就用 Python 3.14）。帮你打包的 AI 应该用它，不要自己拼 `build_app.py` 命令。
+任何 `python3` 都能启动它（实际用 MNG Launcher 自带的 Python，没有就用 Python 3.14）。帮你打包的 AI 应该用它，不要自己拼 `build_app.py` 命令，而且**第一步永远是 `mng migrate`**：只有迁移完成的 Mac 才打开 MNG Launcher（在那之前 `mng open` 会拒绝）。
 
 | 命令 | 做什么 |
 |---|---|
+| `python3 tools/mng.py migrate` | 这台 Mac 迁移完了吗？（`--apply` 把剩下的做完；见[老用户迁移](#老用户迁移到-mng-launcher)） |
 | `python3 tools/mng.py status` | 这台 Mac 上已装的游戏，以及各自要哪种更新 |
 | `python3 tools/mng.py check "<本体>" "<更新>" --keys "<prod.keys>"` | 文件分别是什么、会打出什么、这台 Mac 还缺什么 |
 | `python3 tools/mng.py build "<本体>" "<更新>" --keys "<prod.keys>"` | 打包这个游戏（已装过且版本相同时，就走更新） |
 | `python3 tools/mng.py update totk` | 不用文件更新已装的游戏（`botw`、`oot`、名字或 App 路径也行） |
 | `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <动作> --game totk` | 窗口里各页面的功能 |
-| `python3 tools/mng.py open "<文件>" "<prod.keys>"` | 打开 MNG Launcher 并填好这些文件 |
+| `python3 tools/mng.py open "<文件>" "<prod.keys>"` | 打开 MNG Launcher 并填好这些文件（只在迁移完成后） |
 
 它会把每个阶段、步骤和日志行打印出来，每分钟报一次进度，最后报结果（加 `--json` 输出窗口读的原始数据）。`mng` 不做的事（iPhone 和 iPad、`--mod`、`--vr`）用[打包 App](#打包-app) 一节里的 `build_app.py` 命令。
 
@@ -82,6 +83,7 @@
 3. **一台 Mac 同时只跑一个打包或更新**，不管是谁开始的。第二个会被拒绝，并说明正在跑的是哪个、谁开始的。窗口会显示在别处开始的任务（“从 … 开始的”）并能停止它；只有自己开始的任务结束后才会自动开游戏。
 4. **你的文件留在原处**：游戏文件和密钥都在原位置读取，不复制，也不上传任何东西。日志在 `~/Library/Logs/MacNativeGames/`；正在跑的任务在 `~/Library/Application Support/MacNativeGames/Builder/jobs/`。
 5. **不用 Homebrew**：打包需要的工具和库都由打包自己下载固定版本（见[需要准备](#需要准备)）。
+6. **先迁移**：AI 做任何事之前先检查迁移情况，迁移完才打开 MNG Launcher。
 
 老用户从旧安装迁移：见[老用户迁移到 MNG Launcher](#老用户迁移到-mng-launcher)。
 
@@ -252,6 +254,8 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 ## 老用户迁移到 MNG Launcher
 
 适用于 2026 年 11 月 12 日以前用 `build_app.py` 或旧窗口（`Build Game.command`）打过游戏的玩家。下面的步骤不用重新打包，也不用游戏文件和密钥，除非某一步写明要。先关掉游戏。
+
+**用 AI（或在终端里）迁移只要一条命令，而且必须最先做：** `python3 tools/mng.py migrate` 列出每个游戏 App 和 MNG Launcher 还差什么；`python3 tools/mng.py migrate --apply` 把它做完（把不符合规则的工作目录在同一个盘上改名到 `MacNativeGames-work/<游戏>`，每个游戏用一次极速更新记下来，生成或重新生成 MNG Launcher）。迁移完成指：每个 App 都记录了符合规则的工作目录（不在源码目录和放 App 的文件夹里、和 App 在同一个盘上），并且 MNG Launcher 是由这份源码生成的；下次本来就要完整打包的游戏（大金刚、Pokopia、换版本的）不卡这一步。迁移完成后才打开 MNG Launcher：在那之前 `python3 tools/mng.py open` 会拒绝。下面是手动做的同样步骤。
 
 1. **更新代码。** 在 `MacNativeGames` 文件夹里运行 `git pull`（ZIP 下载的就重新下载）。`Build Game.command` 已经删掉，它的几页都搬进了 MNG Launcher。
 2. **Python。** 已经装了 Python 3.14 的照旧用。新 Mac 只要装 <https://www.python.org/downloads/macos/> 的安装包；不再需要 Homebrew（opus、libvpx、dav1d、XcodeGen、CMake 等编译工具由打包自己下载固定版本）。
