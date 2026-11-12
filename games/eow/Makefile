@@ -67,10 +67,31 @@ $(OUT)/spirv-cross/spirv-cross:
 	  -c "$(WORK)/src/SPIRV-Cross/$$f" -o "$(dir $@)obj/$$f.o" & done; wait
 	xcrun clang++ -arch arm64 $(addprefix $(dir $@)obj/,$(addsuffix .o,$(SPIRV_CROSS_SOURCES))) -o "$@"
 
+# The prepared shaders, from the player's own game files: every shader translated (<work>/build/shader-seed, which the
+# runtime imports at its next start) and compiled (<work>/build/shader-libs), published together only when both are
+# complete (scripts/prepare_shader_seed.py). The Metal compiler comes from Xcode (DEVELOPER_DIR).
+.PHONY: shader-seed test
+shader-seed: shader-tools
+	"$(PY)" scripts/prepare_shader_seed.py --work "$(WORK)"
+
+# The tests (no game data, no Metal compiler): the scripts', and the movie decoder's Stop with a frame still held
+# (tests/movie_stop, AddressSanitizer; the crash when the intro movie stops).
+test: $(OUT)/test-movie-stop
+	"$(PY)" -m unittest discover -s tests
+	"$(OUT)/test-movie-stop"
+$(OUT)/test-movie-stop: tests/movie_stop/test.c runtime/movie_host.c runtime/movie_host.h Makefile
+	@mkdir -p "$(dir $@)"
+	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
+	  -I/opt/homebrew/opt/libvpx/include -Ithird_party/d2r_gfx/gfx/nvn/include \
+	  runtime/movie_host.c tests/movie_stop/test.c /opt/homebrew/opt/libvpx/lib/libvpx.a -o "$@"
+
 # EOW_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 EOW_LOG ?= $(WORK)/logs/boot.log
 boot: runtime
 	@mkdir -p "$(dir $(EOW_LOG))"
+	@if [ -f "$(WORK)/build/shader-seed/seed-manifest.json" ]; then \
+	  "$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --check || \
+	  echo "warning: the shader libraries do not serve the prepared seed (make shader-seed); play compiles the rest"; fi
 	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/eow-native rewritten/v110 boot 2> "$(abspath $(EOW_LOG))"; echo "exit $$?; log: $(EOW_LOG)"
 
 # The player's mods, made into checked tables: exefs patches (mods/1.1.0/<name>/exefs/*.pchtxt) -> <work>/patches,
