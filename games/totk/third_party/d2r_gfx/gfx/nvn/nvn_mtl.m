@@ -6217,6 +6217,15 @@ static void shmap_load(void) {
     id peer[4]; NSString *key[4]; id<MTLFunction> fn[4]; int mode[4]; unsigned next;
 } @end
 @implementation NvFunctionCache @end
+// Only bindings that actually prepare demand allocate a memo. Keeping the
+// 496-byte records inline would reserve 31 KiB in every shader object.
+@interface NvPoolMemo : NSObject { @public
+    int valid, nid; uint64_t n, submission;
+    NSDictionary *reads; NSData *uniforms;
+    struct pool_memo_src { uint64_t lo, size, gpu, stamp, poolgen, hostwrite; } src[8];
+    uint64_t capture[8]; NSMutableData *need;
+} @end
+@implementation NvPoolMemo @end
 @interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn;   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
@@ -6225,6 +6234,11 @@ static void shmap_load(void) {
     NSMutableDictionary<NSNumber *, NSMutableData *> *pool_demand;
     uint64_t pool_capture_mask, pool_capture_gpu[NVN_REFL_MAXB];
     const uint8_t *pool_capture_cpu[NVN_REFL_MAXB];
+    /* pool_demand_prepare's answer per pool binding (indexed like rf.b), kept with the identity of the inputs it was computed
+       from: the need bitmap is a pure function of the shader, the binding, the pool size and the immutable input captures
+       (pool_input: address, size, capture, dirty stamp, pool and host-write generations), so the same captures give the same
+       bitmap without evaluating the index programs again. Uniform loads are revalidated and rebound on every hit; submission identity prevents arena-address reuse (eval_index was 15% of the submit thread, 2026-11-07). */
+    NvPoolMemo *pool_memo[NVN_REFL_MAXB];
     NSDictionary *pool_reads;
     NSArray *raw_write_domains; int raw_write_domains_loaded;
     NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts;
@@ -11441,7 +11455,7 @@ static pool_input *pool_input_get(const p_bind_buf *u,int n) {
     }
     return p;
 }
-static uint64_t g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded;
+static uint64_t g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo;
 static uint64_t g_pool_wait_prior,g_pool_wait_current,g_pool_wait_ns;
 static int pool_wait_precise_on(void) {
     int v=atomic_load(&g_pool_wait_precise);
@@ -11539,6 +11553,26 @@ static int pool_uniform_read(void *context,int binding,uint32_t offset,uint32_t 
     memcpy(value,cpu+offset,4);sh->pool_capture_cpu[binding]=cpu;sh->pool_capture_gpu[binding]=gpu;sh->pool_capture_mask|=UINT64_C(1)<<binding;
     return 1;
 }
+typedef struct { int binding; uint32_t offset, value; } pool_memo_uniform;
+typedef struct { __unsafe_unretained NvShader *shader; __unsafe_unretained NSMutableData *reads; int valid; } pool_memo_reader;
+static int pool_memo_read(void *context,int binding,uint32_t offset,uint32_t *value) {
+    pool_memo_reader *r=context;
+    int ok=pool_uniform_read((__bridge void *)r->shader,binding,offset,value);
+    if(!ok){r->valid=0;return 0;}
+    if(r->reads.length>=64*sizeof(pool_memo_uniform)){r->valid=0;return 1;}
+    pool_memo_uniform u={binding,offset,*value};[r->reads appendBytes:&u length:sizeof u];return 1;
+}
+static int pool_memo_uniforms_match(NvShader *sh,NSData *data) {
+    const pool_memo_uniform *u=data.bytes;
+    for(size_t i=0;i<data.length/sizeof *u;i++){
+        uint32_t value;
+        if(!pool_uniform_read((__bridge void *)sh,u[i].binding,u[i].offset,&value)||value!=u[i].value)return 0;
+    }
+    return 1;
+}
+static int pool_memo_on(void) {
+    static int on=-1;if(on<0){const char *v=getenv("OOT_POOL_DEMAND_MEMO");on=!(v&&!atoi(v));}return on;
+}
 static void pool_demand_prepare(NvShader *sh) {
     if(atomic_exchange(&g_pool_wait_dump,0))MLOG("[pool-wait-stats] precise=%d prior=%llu current=%llu wait-ms=%.3f capture-new=%llu",pool_wait_precise_on(),(unsigned long long)g_pool_wait_prior,(unsigned long long)g_pool_wait_current,(double)g_pool_wait_ns/1e6,(unsigned long long)g_pool_input_misses);
     if(!sh->pool_demand)sh->pool_demand=[NSMutableDictionary dictionary];
@@ -11568,10 +11602,32 @@ static void pool_demand_prepare(NvShader *sh) {
             // retains the submission's arena, pending updates and allocator.
             for(uint64_t bits=sources;bits;bits&=bits-1){const nvn_rbind *sb=&sh->rf.b[__builtin_ctzll(bits)];pool_inputs_wait_range(&S.ssbo[sh->stage][sb->reg]);}
         }
+        // The inputs' identity first: the same immutable captures as last time give the same bitmap (memo above).
+        int memo_ok=pool_memo_on()&&__builtin_popcountll(sources)<=8;
+        NvPoolMemo *memo=sh->pool_memo[k];
+        if(memo_ok&&!memo)sh->pool_memo[k]=memo=[NvPoolMemo new];
+        struct pool_memo_src ident[8];uint64_t capture[8];int nid=0;uint64_t submission=g_sub_serial;
+        for(uint64_t bits=memo_ok?sources:0;bits;bits&=bits-1){
+            int i=__builtin_ctzll(bits);const p_bind_buf *u=&S.ssbo[sh->stage][sh->rf.b[i].reg];
+            if(nid>=8){memo_ok=0;break;}
+            pool_input *in=pool_input_get(u,0);ident[nid]=(struct pool_memo_src){in->lo,in->size,in->gpu,in->stamp,in->poolgen,in->hostwrite};capture[nid++]=in->gpu;
+        }
+        int hit=memo_ok&&memo->valid&&memo->need&&memo->n==(uint64_t)n&&memo->nid==nid&&memo->submission==submission&&memo->reads==sh->pool_reads&&!memcmp(memo->src,ident,(size_t)nid*sizeof ident[0])&&pool_memo_uniforms_match(sh,memo->uniforms)&&g_sub_serial==submission;
+        // Uniform synchronization may also land writes to a storage source.
+        int source_index=0;
+        for(uint64_t bits=hit?sources:0;bits;bits&=bits-1){
+            int i=__builtin_ctzll(bits);pool_input *current=pool_input_find(&S.ssbo[sh->stage][sh->rf.b[i].reg]);
+            if(!current||current->gpu!=capture[source_index++]){hit=0;break;}
+        }
+        if(hit){
+            int j=0;for(uint64_t bits=sources;bits;bits&=bits-1){int i=__builtin_ctzll(bits);sh->pool_capture_gpu[i]=memo->capture[j++];sh->pool_capture_mask|=UINT64_C(1)<<i;}
+            sh->pool_demand[@(b->aid)]=memo->need;g_pool_demand_proved++;g_pool_demand_memo++;continue;
+        }
+        NSMutableData *uniforms=memo_ok?[NSMutableData data]:nil;pool_memo_reader reader={sh,uniforms,1};
         NSMutableData *data=[NSMutableData dataWithLength:words*8];uint64_t *need=data.mutableBytes;need[0]|=1; // proved constant-zero branch
         for(uint64_t bits=sources;bits;bits&=bits-1){
             int i=__builtin_ctzll(bits);const p_bind_buf *u=&S.ssbo[sh->stage][sh->rf.b[i].reg];
-            NSArray *programs=sh->pool_reads[@(b->aid)][@(i)];uint32_t indices[64];int count=nvn_pool_index_values(programs,pool_uniform_read,(__bridge void *)sh,indices,64);
+            NSArray *programs=sh->pool_reads[@(b->aid)][@(i)];uint32_t indices[64];int count=nvn_pool_index_values(programs,pool_memo_read,&reader,indices,64);
             for(int k=0;k<count;k++)if(indices[k]>=u->size/4){count=-1;break;}
             if(count<0){static unsigned reports;if(reports++<4)MLOG("[descriptor-index-whole] shader=%s source=%d programs=%lu bytes=%llu",sh->key,i,(unsigned long)programs.count,u->size);}
             pool_input *input=pool_input_get(u,count>=0?0:n);
@@ -11580,6 +11636,13 @@ static void pool_demand_prepare(NvShader *sh) {
             else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];g_pool_demand_whole++;}
         }
         sh->pool_demand[@(b->aid)]=data;g_pool_demand_proved++;
+        // Uniform evaluation can wait/split, or a concurrent CPU write can
+        // replace a capture. Only publish identities of the bytes actually used.
+        for(int i=0,j=0;memo_ok&&i<sh->rf.nb;i++)if(sources&(UINT64_C(1)<<i)){
+            if(sh->pool_capture_gpu[i]!=capture[j++])memo_ok=0;
+        }
+        if(memo)memo->valid=0;
+        if(memo_ok&&reader.valid&&submission==g_sub_serial){memo->valid=1;memo->submission=submission;memo->reads=sh->pool_reads;memo->uniforms=uniforms;memo->n=(uint64_t)n;memo->nid=nid;memcpy(memo->src,ident,(size_t)nid*sizeof ident[0]);memcpy(memo->capture,capture,(size_t)nid*sizeof capture[0]);memo->need=data;}
     }
 }
 static const uint64_t *pool_demand_for(NvShader *sh,const nvn_rbind *b) { return [sh->pool_demand objectForKey:@(b->aid)].bytes; }
@@ -11598,7 +11661,7 @@ static void prepare_shader_pools(NvShader *sh) {
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips);
-    if(frame>=last+300){MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
+    if(frame>=last+300){MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
 static int arg_epoch_safe(NvShader *sh) {
     if (!sh->ab_epoch_ok) {
