@@ -29,6 +29,7 @@ enum Paths {
 
 /// One running job: its output lines come back on the main thread, one call per line, then `ended` with the exit code.
 final class Job {
+    static let source = "MNG Launcher"
     private let process = Process()
     private var buffer = Data()
 
@@ -41,6 +42,7 @@ final class Job {
         env["PYTHONPATH"] = repo.path
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["MNG_LANG"] = T.zh ? "zh" : "en"
+        env["MNG_JOB_SOURCE"] = Job.source   // tools/builder_jobs/shared.py: who started the Mac's one job
         process.environment = env
         let pipe = Pipe()
         process.standardOutput = pipe

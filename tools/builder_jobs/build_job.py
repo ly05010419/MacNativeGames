@@ -16,7 +16,7 @@ import threading
 import time
 
 from tools.builder import progress as parse
-from tools.builder_jobs import history, repo
+from tools.builder_jobs import history, repo, shared
 from tools.builder_jobs.events import Emitter
 from tools.builder_jobs.text import t
 
@@ -142,8 +142,10 @@ class Steps:
         return None
 
 
-def run(request, emit, history_dir, python=sys.executable, script=None):
+def run(request, emit, history_dir, python=sys.executable, script=None, record=None):
     chosen, argv, work, out, kind, game = command(request, python)
+    if record is not None:   # the shared record names the job for a window that did not start it (shared.py)
+        shared.describe(record, game=game, app=str(out), kind=kind)
     home = Path(os.environ.get('MNG_HOME') or Path.home())
     record_mods = None
     if kind == 'full' and script is None:   # a real build (tests pass a script of their own): the Mods page's code patches
@@ -260,11 +262,26 @@ def mods_note(game, app, ok, error):
     return (answer.get('result') or {}).get('note', '') if answer.get('ok') else ''
 
 
+def start(request, stream, history_dir, source=None):
+    """Run one request as the Mac's one job (shared.claim), its events into stream and current.ndjson; the exit code.
+    source says who started it, for whoever else looks (MNG_JOB_SOURCE: the window sets launcher:<pid>)."""
+    source = source or os.environ.get('MNG_JOB_SOURCE') or 'the command line'
+    try:
+        with shared.claim(stream, source) as (tee, record):
+            try:
+                return run(request, Emitter(tee), history_dir, record=record)
+            except (Refused, OSError, ValueError, KeyError) as e:
+                Emitter(tee)('done', ok=False, cancelled=False, message=str(e), detail='', step_log=None, log=None, elapsed=0)
+                return 2
+    except shared.Busy as e:
+        Emitter(stream)('done', ok=False, cancelled=False, message=str(e), detail='', step_log=None, log=None, elapsed=0, busy=True)
+        return 3
+
+
 def main(request_path, history_dir):
-    emit = Emitter(sys.stdout)
     try:
         request = json.loads(Path(request_path).read_text())
-        return run(request, emit, history_dir)
-    except (Refused, OSError, ValueError, KeyError) as e:
-        emit('done', ok=False, cancelled=False, message=str(e), detail='', step_log=None, log=None, elapsed=0)
+    except (OSError, ValueError) as e:
+        Emitter(sys.stdout)('done', ok=False, cancelled=False, message=str(e), detail='', step_log=None, log=None, elapsed=0)
         return 2
+    return start(request, sys.stdout, history_dir)

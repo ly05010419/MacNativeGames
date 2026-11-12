@@ -14,6 +14,7 @@ struct ActionSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if !updateOnly { buttons }
+            if let from = model.externalSource, mine { Label(T.startedBy(from), systemImage: "terminal").font(.callout).foregroundStyle(.secondary) }
             if model.phase != .idle && mine { progress }
             if let f = model.failure, model.phase == .failed, mine { failure(f) }
             if !model.note.isEmpty && mine { Label(model.note, systemImage: "puzzlepiece.extension").foregroundStyle(.orange) }
@@ -75,7 +76,7 @@ struct ActionSection: View {
 
     private var headline: String {
         switch model.phase {
-        case .done: return model.kind == "full" ? T.doneOK : T.updatedOK
+        case .done: return !model.startedHere ? T.doneElsewhere : (model.kind == "full" ? T.doneOK : T.updatedOK)
         case .failed: return T.failed
         case .cancelling: return T.cancelling
         case .cancelled: return T.cancel

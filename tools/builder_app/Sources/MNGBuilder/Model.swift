@@ -33,6 +33,15 @@ final class Model: ObservableObject {
     @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
 
     private var job: Job?
+    // A build or update started elsewhere (tools/mng.py in a terminal, an AI): followed through tools/builder_jobs/shared.py
+    @Published var externalSource: String?
+    @Published var startedHere = true   // false for a job another program started: its end starts no game
+    private var externalPid: pid_t = 0
+    private var eventsPath: String?
+    private var offset: UInt64 = 0
+    private var pending = Data()
+    private var watcher: Timer?
+    private var follower: Timer?
     private let defaults = UserDefaults.standard
 
     init() {
@@ -49,6 +58,9 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.open(urls) }
         }
         let pending = Delegate.pending; Delegate.pending = []
+        watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.lookForExternal() }
+        }
         Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
     }
 
@@ -190,6 +202,7 @@ final class Model: ObservableObject {
     }
 
     private func start(_ request: BuildRequest) {
+        startedHere = true
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("mng-build-request.json")
         do {
             try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
@@ -206,7 +219,55 @@ final class Model: ObservableObject {
         }
     }
 
-    func cancel() { job?.cancel(); phase = .cancelling }
+    func cancel() {
+        if externalSource != nil, externalPid > 0 { kill(externalPid, SIGINT) } else { job?.cancel() }
+        phase = .cancelling
+    }
+
+    /// The Mac's one job, when another program started it: its record (Builder/jobs/current.json) names its pid and its
+    /// events file, which is read from the start and followed, so the window shows it as its own and can stop it.
+    func lookForExternal() {
+        guard job == nil, externalSource == nil, phase != .building, phase != .cancelling else { return }
+        let jobs = Paths.support.appendingPathComponent("jobs")
+        guard let data = try? Data(contentsOf: jobs.appendingPathComponent("current.json")),
+              let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = r["pid"] as? Int, kill(pid_t(pid), 0) == 0,
+              (r["source"] as? String) != Job.source else { return }
+        externalPid = pid_t(pid); externalSource = r["source"] as? String ?? "?"; startedHere = false
+        eventsPath = r["events"] as? String; offset = 0; pending = Data()
+        updating = r["app"] as? String ?? externalSource
+        phase = .building; stage = ""; stageText = ""; step = ""; fraction = 0; left = nil; elapsed = 0; lines = []
+        failure = nil; note = ""
+        follower = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.readExternal() }
+        }
+    }
+
+    private func readExternal() {
+        guard let path = eventsPath else { return endExternal() }
+        // the file becomes last.ndjson when the job ends: read what is left from there
+        let last = (path as NSString).deletingLastPathComponent + "/last.ndjson"
+        if let h = FileHandle(forReadingAtPath: path) ?? FileHandle(forReadingAtPath: last) {
+            try? h.seek(toOffset: offset)
+            let data = h.readDataToEndOfFile(); try? h.close()
+            offset += UInt64(data.count); pending.append(data)
+            while let nl = pending.firstIndex(of: 0x0A) {
+                let line = String(decoding: pending[pending.startIndex..<nl], as: UTF8.self)
+                pending.removeSubrange(pending.startIndex...nl)
+                handle(line)
+            }
+        }
+        if phase != .building && phase != .cancelling { return endExternal() }
+        if kill(externalPid, 0) != 0 && !FileManager.default.fileExists(atPath: path) {
+            phase = .failed; endExternal()   // gone without its done line
+        }
+    }
+
+    private func endExternal() {
+        follower?.invalidate(); follower = nil
+        externalSource = nil; externalPid = 0; eventsPath = nil
+        Task { await loadInstalled() }
+    }
 
     private func handle(_ line: String) {
         guard let data = line.data(using: .utf8), let e = try? JSONDecoder().decode(BuildEvent.self, from: data) else {
@@ -224,7 +285,8 @@ final class Model: ObservableObject {
         case "done":
             note = e.note ?? ""
             if e.ok == true {
-                phase = .done; fraction = 1; appPath = e.app ?? appPath; play()
+                phase = .done; fraction = 1; appPath = e.app ?? appPath
+                if startedHere { play() }   // a job started elsewhere ends without starting the game
             } else {
                 failure = e; phase = (e.cancelled ?? false) ? .cancelled : .failed
             }

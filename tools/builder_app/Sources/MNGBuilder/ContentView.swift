@@ -35,7 +35,7 @@ struct BuildPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if !model.installed.isEmpty { InstalledBox() }
+                if !model.installed.isEmpty || model.externalSource != nil { InstalledBox() }
                 StepBox(number: 1, title: T.step1, done: model.gameReady, enabled: true) { GameStep() }
                 StepBox(number: 2, title: T.step2, done: model.gameReady && model.keysReady, enabled: model.gameReady) { KeysStep() }
                 StepBox(number: 3, title: T.step3, done: model.phase == .done,

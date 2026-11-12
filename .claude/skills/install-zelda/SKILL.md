@@ -73,6 +73,18 @@ Other things the build needs:
 
 ## 3. Pick the command
 
+**Use `tools/mng.py` (MNG Launcher's engine in a terminal), not `build_app.py` by hand.** It is what the Launcher runs: it tells the files apart, checks the Mac, puts the app and its work folder where the one folder rule says, takes the fastest update when the game is already installed, and runs as the Mac's one job, so the player's Launcher window shows its progress and can stop it. Any `python3` starts it (it then uses MNG Launcher's own Python, or Python 3.14).
+
+```sh
+python3 tools/mng.py status                                   # the games on this Mac and the update each needs
+python3 tools/mng.py check "<base>" "<update>" --keys "<prod.keys>"   # what the files are, what the Mac still needs
+python3 tools/mng.py build "<base>" "<update>" --keys "<prod.keys>"   # build (or update) that game
+python3 tools/mng.py update totk                              # an installed game, no files: express, else fast
+python3 tools/mng.py open "<base>" "<prod.keys>"              # or let the player press the button in MNG Launcher
+```
+
+Add `--firmware`-type inputs as more files (a firmware or shared-fonts folder is recognised like in the window). `--json` prints what the window reads. The `build_app.py` commands below are what `mng` runs; use them directly only for what `mng` does not do (iPhone / iPad, `--mod`, `--vr`, other options).
+
 Run from the repository folder. Quote every path (file names often contain spaces and brackets). Choose the final place of the app now with `-o` into an existing folder: moving a Mac app later makes its first start compile the shaders again (unless the Metal toolchain was installed).
 
 ```sh
@@ -146,6 +158,6 @@ If it is still stuck, help the player open an issue at <https://github.com/ly050
 
 ## 7. Later
 
-- Updating the Mac app: the settings panel (key 1) › **Update** shows the version and each newer commit; its **Update** button pulls the code, updates the app and opens it again. When it cannot (another branch, local changes, no access to the folder), it says why: then `git pull` and `python3.14 update_runtime.py "<the app>"`. `python3.14 update_runtime.py "<the app>" --plan` says which update fits (JSON: express, fast or full, and why); MNG Launcher's **Update** runs it for the player. Follow docs/install.md "Update the app" in its fixed order: the express update (`update_runtime.py`) first; the fast update (`--seed`) when it says the startup shaders no longer fit; the normal update (`build_app.py` with the same `-o` and the recorded `--work`) when it says a full build is needed. It uses the work folder the app records and prints it; check that line names the folder you expect.
+- Updating the Mac app: `python3 tools/mng.py update <game>` (or **Update** in MNG Launcher) runs the fastest update that fits. Also: the settings panel (key 1) › **Update** shows the version and each newer commit; its **Update** button pulls the code, updates the app and opens it again. When it cannot (another branch, local changes, no access to the folder), it says why: then `git pull` and `python3.14 update_runtime.py "<the app>"`. `python3.14 update_runtime.py "<the app>" --plan` says which update fits (JSON: express, fast or full, and why); MNG Launcher's **Update** runs it for the player. Follow docs/install.md "Update the app" in its fixed order: the express update (`update_runtime.py`) first; the fast update (`--seed`) when it says the startup shaders no longer fit; the normal update (`build_app.py` with the same `-o` and the recorded `--work`) when it says a full build is needed. It uses the work folder the app records and prints it; check that line names the folder you expect.
 - Another game version or a mod: run `build_app.py` again with the same `-o`; it replaces the app and keeps the saves (it backs them up before the first start on a new version).
 - Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile` (`BotW` for Breath of the Wild). The game log is off by default: `defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES` (`org.macnativegames.botw`), then `~/Library/Logs/MacNativeGames/totk.log` from the next start.

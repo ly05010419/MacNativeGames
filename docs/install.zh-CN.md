@@ -51,7 +51,7 @@
 
 ## 用窗口打包
 
-**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开（帮你的 AI 就这样做），第一、二步会自动填好。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。**打包和更新请用 MNG Launcher。**
+**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，第一、二步会自动填好。不开窗口也行：`python3 tools/mng.py status | build | update` 在终端里做同样的事（帮你的 AI 用的就是它），窗口会显示这种打包的进度，也能停止它。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。**打包和更新请用 MNG Launcher。**
 
 旧窗口已经去掉（不再有 **Build Game.command** 和 `python3.14 -m tools.builder`），它的几页都在 MNG Launcher 里：**打包**、**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置和**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装进游戏；不带任何模组）、**按键**（`controls.txt` 里的手柄布局、按键图标和按键测试）、**存储**（工作目录和着色器缓存）、**存档**（备份和恢复）。每页都写着它做什么；细节见 [builder-app.md](builder-app.md)。这几页背后的模型怎么写（给改代码的人和 AI）：[builder.md](builder.md)。
 

@@ -44,6 +44,7 @@ enum T {
                                             ("mods", s("Mods", "模组")), ("controls", s("Controls", "按键")),
                                             ("storage", s("Storage", "存储")), ("saves", s("Saves", "存档"))]
     static let game = s("Game", "游戏")
+    static func startedBy(_ who: String) -> String { s("Started from \(who); Cancel stops it.", "从 \(who) 开始的；“停止”可以停掉它。") }
     static let noPageGame = s("No Tears of the Kingdom or Breath of the Wild app on this Mac yet: build one first.",
                               "这台 Mac 上还没有王国之泪或旷野之息的 App：先打包。")
     static let notYet = s("This page is being moved here from the old window.", "这一页正在从旧窗口搬过来。")
@@ -65,6 +66,7 @@ enum T {
                                  "不用游戏文件就能更新：自动选能用的最快的一种。")
     static let update = s("Update", "更新")
     static let updatedOK = s("Updated. Starting the game…", "更新完成，正在启动游戏…")
+    static let doneElsewhere = s("Done (started elsewhere; the game is not started from here).", "完成（这个任务是在别处开始的，这里不替它开游戏）。")
     static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",
                             "自动：App 文件夹旁的 MacNativeGames-work（App 记录了工作目录就用它记录的）")
     static let automatic = s("Automatic", "自动")

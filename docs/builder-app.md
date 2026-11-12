@@ -58,6 +58,18 @@ records, else `MacNativeGames-work/<game>` beside the apps folder (`build_app.de
 installed game of the same version (known from the update's `[vNNN]`), the build is the express or fast update when that
 fits; another or an unknown version is the full build into the same app and work folder, which reuses what it can.
 
+## Without the window: `tools/mng.py`
+
+The same engine in a terminal, for a player or the AI helping them (user 2026-11-12: "纯用ai打包 也和launcher 能统一使用方法"):
+`status`, `check`, `build`, `update`, `page <tab> <action>`, `open` (`python3 tools/mng.py --help`). It runs
+`tools/builder_jobs` exactly as the window does and prints the job's events as lines. Any `python3` starts it; it runs
+with MNG Launcher's own Python (or a Python 3.14).
+
+**One job at a time on a Mac, whoever starts it** (`tools/builder_jobs/shared.py`): a build or update holds
+`Builder/jobs/build.lock` and writes its events to `Builder/jobs/current.ndjson` and its record (pid, game, app, kind,
+who started it) to `current.json`. A second one is refused with who holds the slot. A Launcher window that did not start
+the running job follows its events and shows it as its own ("Started from …"), and its Cancel sends that job SIGINT.
+
 ## How it is made
 
 | Part | Where | Rule |
