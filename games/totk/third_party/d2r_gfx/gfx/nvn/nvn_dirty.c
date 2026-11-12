@@ -33,9 +33,9 @@ enum { PG_NONE = 0, PG_PROT = 1, PG_BUSY = 2 };
 #ifndef BUSY_WAIT_MS
 #define BUSY_WAIT_MS 2000
 #endif
-enum { BUSY_SITE_FAULT = 0, BUSY_SITE_PREP, BUSY_SITE_GPU, BUSY_SITE_PROTECT, BUSY_SITE_PROTECT_SEG, BUSY_SITE_N };
+enum { BUSY_SITE_FAULT = 0, BUSY_SITE_PREP, BUSY_SITE_GPU, BUSY_SITE_PROTECT, BUSY_SITE_PROTECT_SEG, BUSY_SITE_NOREAD, BUSY_SITE_N };
 static const char *const g_busy_site_name[BUSY_SITE_N] = {
-    "on_fault", "prep_write", "gpu_write_begin", "nvn_dirty_protect", "protect_seg",
+    "on_fault", "prep_write", "gpu_write_begin", "nvn_dirty_protect", "protect_seg", "noread_probe",
 };
 // 跟踪区间 = 各内存池（MemoryPoolInitialize 登记）。池销毁后复用 live=0 的槽，信号处理里无锁扫描。
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
@@ -226,7 +226,7 @@ static int on_fault(void *addr, int is_write, void *uc) {
     uint64_t pc = uc ? ((ucontext_t *)uc)->uc_mcontext->__ss.__pc : 0;
     if (r->nr && g_nr_active) {   // OOT_NOREAD_PROBE: a page the GPU wrote last frame is inaccessible until its first CPU access
         int was = atomic_exchange(&r->nr[p], 0);   // 1: this is that first access (record it); 0: another thread took it (or an ordinary write fault)
-        uint8_t st = atomic_load(&r->state[p]); if (st == PG_BUSY) { busy_wait(r, p); st = atomic_load(&r->state[p]); }
+        uint8_t st = atomic_load(&r->state[p]); if (st == PG_BUSY) { busy_wait(r, p, BUSY_SITE_NOREAD); st = atomic_load(&r->state[p]); }
         if (was || !is_write || st != PG_PROT) {   // tracked pages are never inaccessible otherwise: restore the state's protection (idempotent) and re-execute
             mp(r->base + (p << g_shift), g_pg, st == PG_PROT ? PROT_READ : PROT_READ | PROT_WRITE);
             if (was) nr_record((uintptr_t)addr, pc, is_write);
@@ -401,7 +401,7 @@ void nvn_dirty_noread_mark(const void *addr, size_t len) {
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     for (uintptr_t i = p; i <= q; i++) {
         if (atomic_exchange(&r->nr[i], 1)) continue;
-        if (atomic_load(&r->state[i]) == PG_BUSY) busy_wait(r, i);
+        if (atomic_load(&r->state[i]) == PG_BUSY) busy_wait(r, i, BUSY_SITE_NOREAD);
         mp(r->base + (i << g_shift), g_pg, PROT_NONE);   // the state machine's protection comes back on the first access (on_fault)
     }
 }

@@ -65,7 +65,9 @@ static void mesh_batch_shader_writes(NvShader *sh,int st,uint64_t *why) {
         if(b->kind==NVN_RB_GMEML){mesh_batch_whole(why);return;}   // raw stores through pointers the shader loaded: anywhere
         if(!b->rw)continue;
         if(b->kind==NVN_RB_SBUFP&&b->reg<16){const p_bind_buf *u=&S.ssbo[st][b->reg];if(u->addr&&u->size){g_mb_wr_sbuf++;mesh_batch_write_why(u->addr,u->size,NULL,why);continue;}}
-        if(b->kind==NVN_RB_IMG&&b->reg<32){int tid=(int)(S.img[st][b->reg]&0xfffff);uint64_t lo,n;if(tid&&tid<g_ntreg&&mesh_batch_tex_range(&g_treg[tid].t,&lo,&n)){g_mb_wr_img++;mesh_batch_write_why(lo,n,NULL,why);continue;}}
+        if(b->kind==NVN_RB_IMG&&b->reg<32){int tid=(int)(S.img[st][b->reg]&0xfffff);uint64_t lo,n;tex_t t;int have=0;
+            registry_lock();if(tid&&tid<g_ntreg){t=g_treg[tid].t;have=1;}registry_unlock();   // the table moves when it grows (9280ef3f): a copy under the lock
+            if(have&&mesh_batch_tex_range(&t,&lo,&n)){g_mb_wr_img++;mesh_batch_write_why(lo,n,NULL,why);continue;}}
         mesh_batch_whole(why);return;   // storage through a uniform-held pointer, an unbound slot or an unknown image: no range
     }
 }
@@ -90,7 +92,8 @@ static mesh_batch_entry *mesh_batch_find(uint64_t source) {
         if(e->grid&&e->hostwrite==atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire)&&nvn_dirty_tracked((void *)(uintptr_t)source,8)&&!nvn_dirty_since((void *)(uintptr_t)source,8,e->stamp))return e;
         if(e->grid)g_mb_inv_dirty++;
         e->grid=0;e->next_applied=NULL;return NULL;
-    }return NULL;
+    }
+    return NULL;
 }
 static int mesh_batch_eligible(uint64_t source) {
     return source&&source<=UINT64_MAX-8&&!totk_vpool_aliases_used()&&nvn_dirty_tracked((void *)(uintptr_t)source,8)&&mtl_addr_known(source,8);

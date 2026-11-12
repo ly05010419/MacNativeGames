@@ -1386,7 +1386,7 @@ static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) wi
         for (int j = g_ngw - 1; j >= 0 && j >= g_ngw - 8; j--) if (g_gw[j].lo == a && g_gw[j].hi == a + n && g_gw[j].fence == g_fence + 1) { g_gw[j].ready_ticket=0; dup = 1; break; }
         if (!dup) {
             if (g_ngw == g_capgw) { g_capgw = g_capgw ? g_capgw * 2 : 4096; g_gw = realloc(g_gw, g_capgw * sizeof *g_gw); if (!g_gw) MDIE("GPU write ranges"); }
-            g_gw[g_ngw++] = (gw_t){a, a + n, g_fence + 1, __builtin_return_address(0)};
+            g_gw[g_ngw++] = (gw_t){a, a + n, g_fence + 1, __builtin_return_address(0), 0};
         }
     }
     if (!g_nusnap || g_usnap_drop_off) return;
@@ -1679,7 +1679,10 @@ static void pt_apply_request(void) {
 #include <dlfcn.h>
 static __attribute__((noinline)) void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
     if (!pt_active()) return;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wframe-address"
     void *caller = __builtin_return_address(1);   /* the encoder helper's caller (arm64 keeps frame pointers) */
+#pragma clang diagnostic pop
     if (!g_pt_heap) {
         MTL4CounterHeapDescriptor *hd = [MTL4CounterHeapDescriptor new]; hd.type = MTL4CounterHeapTypeTimestamp; hd.count = PT_MAX;
         NSError *e = nil; g_pt_heap = [g_dev newCounterHeapWithDescriptor:hd error:&e];
@@ -6827,7 +6830,7 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
     id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
-    NSMutableDictionary<NSNumber *, NSMutableData *> *pool_demand;
+    NSMutableDictionary<NSNumber *, NSData *> *pool_demand;   /* read only (pool_demand_for): a memo's NSData or a fresh bitmap */
     uint64_t pool_capture_mask, pool_capture_gpu[NVN_REFL_MAXB];
     const uint8_t *pool_capture_cpu[NVN_REFL_MAXB];
     /* pool_demand_prepare's answer per pool binding (indexed like rf.b), kept with the identity of the inputs it was computed
@@ -11696,7 +11699,6 @@ static void gpu_read_input(uint64_t addr, uint64_t size, const char *key, char k
 static void snaptrace(const char *key, int reg, uint64_t addr, uint64_t size, const uint8_t *snap) {
     static const char *pfx; static int init, lines; if (!init) { init = 1; pfx = getenv("OOT_SNAPTRACE"); }
     if (!pfx || !key || strncmp(key, pfx, strlen(pfx)) || !snap || size > 65536 || lines >= 200) return;
-    static uint64_t checked; checked++;
     if (atomic_load(&g_cur_frame) < 1100) return;
     { static uint64_t ls, la; if (ls == g_sub_serial && la == addr) return; ls = g_sub_serial; la = addr; }
     int at_encode = memcmp(snap, (const void *)(uintptr_t)addr, (size_t)size) != 0;
@@ -12850,7 +12852,7 @@ static uint64_t arg_epoch_pool(NvShader *sh) {
 }
 static arg_epoch_key arg_epoch_current(int stage) {
     return (arg_epoch_key){g_pass.serial, g_arena_epoch, g_args_epoch[stage], g_reg_gen,
-        g_ser_gen, nvn_dirty_now(), g_usnap_drops, (uint64_t)stage | ((uint64_t)drvfill_on() << 8) | ((uint64_t)usnap_on() << 9)};
+        g_ser_gen, nvn_dirty_now(), g_usnap_drops, (uint64_t)stage | ((uint64_t)drvfill_on() << 8) | ((uint64_t)usnap_on() << 9), 0};   /* pool: set by the caller for descriptor-pool shaders */
 }
 static int tex_slot_binding(const nvn_rbind *b) {
     return b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF ||
@@ -17026,7 +17028,8 @@ static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsign
                 int tid=(int)(S.tex[1][b->reg]&0xfffff);
                 if(tid>0&&tid<g_ntreg&&g_treg[tid].ok&&
                    vr_projection_graph_stereo_get(vr_native_image(&g_treg[tid].t,&g_treg[tid].v,g_treg[tid].has_v),&background_pixels)){background=1;break;}
-            }registry_unlock();
+            }
+            registry_unlock();
         }
     }
     if(background){
@@ -22724,7 +22727,7 @@ static uint8_t *lp_rt(uint8_t *w, const tex_t *t, int level, int layer) {
     r.cview[0].min_layer = (uint16_t)layer; r.cview[0].nlayers = 1;
     return lp_rec(w, OP_SET_RT, &r, sizeof r);
 }
-static uint8_t *lp_draw(uint8_t *w, int k) { p_draw d = {4, 3 * k, 3, 0, 0}; return lp_rec(w, OP_DRAW, &d, sizeof d); }
+static uint8_t *lp_draw(uint8_t *w, int k) { p_draw d = {.prim = 4, .first = 3 * k, .count = 3}; return lp_rec(w, OP_DRAW, &d, sizeof d); }
 static uint8_t *lp_sc(uint8_t *w, int x, int y, int sw, int sh) { p_scissor s = {x, y, sw, sh}; return lp_rec(w, OP_SCISSOR, &s, sizeof s); }
 static uint8_t *lp_prog(uint8_t *w, const prog_t *p) { p_bind_program b = {p, 0x1f}; return lp_rec(w, OP_BIND_PROGRAM, &b, sizeof b); }
 static uint8_t *lp_clear(uint8_t *w, float r, float g, float b, float a) { p_clear_color c = {0, 0xf, {r, g, b, a}}; return lp_rec(w, OP_CLEAR_COLOR, &c, sizeof c); }
@@ -23181,7 +23184,7 @@ static void ashot_take(id<MTLTexture> src, const char *path, long frame) { @auto
         CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
         CGImageRef img = dp ? CGImageCreate(w, h, 8, 32, row, cs, bi, dp, NULL, false, kCGRenderingIntentDefault) : NULL;
         size_t ow = ashot_width(), oh = h * ow / (w ? w : 1);
-        CGContextRef small = img ? CGBitmapContextCreate(NULL, ow, oh, 8, 0, cs, kCGImageAlphaNoneSkipLast) : NULL;
+        CGContextRef small = img ? CGBitmapContextCreate(NULL, ow, oh, 8, 0, cs, (CGBitmapInfo)kCGImageAlphaNoneSkipLast) : NULL;
         CGImageRef out = NULL;
         if (small) { CGContextSetInterpolationQuality(small, kCGInterpolationMedium); CGContextDrawImage(small, CGRectMake(0, 0, ow, oh), img); out = CGBitmapContextCreateImage(small); }
         static _Atomic unsigned ashot_seq;

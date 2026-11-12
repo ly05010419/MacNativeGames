@@ -12,7 +12,7 @@ int mtl_probe_mesh_batch(void) {
     MTL4ArgumentTableDescriptor *d=[MTL4ArgumentTableDescriptor new];d.maxBufferBindCount=3;id<MTL4ArgumentTable> table=[g_dev newArgumentTableWithDescriptor:d error:&error];
     int old=atomic_exchange(&g_mesh_batch,1),bar=atomic_exchange(&g_oot_bar_request,1);const uint8_t *saved_next=g_exec_next;
     int negative=getenv("OOT_MESH_BATCH_NEGATIVE")?atoi(getenv("OOT_MESH_BATCH_NEGATIVE")):0;g_mb_negative=negative;
-    op_hdr end={OP_END,8};struct {op_hdr h;p_draw draw;op_hdr end;} next={.h={OP_DRAW,8+sizeof(p_draw)},.draw={.prim=0x40,.ind=(uintptr_t)(guest+2),.count=1},.end={OP_END,8}};
+    struct {op_hdr h;p_draw draw;op_hdr end;} next={.h={OP_DRAW,8+sizeof(p_draw)},.draw={.prim=0x40,.ind=(uintptr_t)(guest+2),.count=1},.end={OP_END,8}};
     uint32_t expected[16][4];uint32_t (*want)[4]=expected;__block unsigned n=0;
     void (^consume)(uint64_t,uint64_t,uint32_t,uint32_t)=^(uint64_t grid,uint64_t first,uint32_t count,uint32_t start){
         rp_end();blit_close();id<MTL4ComputeCommandEncoder> encoder=enc_c_begin(NULL);[encoder setComputePipelineState:pipeline];
