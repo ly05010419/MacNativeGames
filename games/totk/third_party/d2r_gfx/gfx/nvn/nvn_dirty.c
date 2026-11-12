@@ -318,6 +318,29 @@ void nvn_dirty_protect(const void *addr, size_t len) {
 #endif
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
 #if !defined(GAME_BOTW)
+/* OOT (2026-11-08): the byte ranges of [addr, addr+len) on pages written after stamp, for an incremental rescan.
+   Calls fn(lo, hi) for each run of such pages, clipped to the range. Returns 0 when the range is not tracked (the
+   caller rescans everything), 1 otherwise. Same generations as nvn_dirty_since. */
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) {
+    if (!len || !nvn_dirty_tracked(addr, len)) return 0;
+    range_t *r = find((uintptr_t)addr);
+    if (atomic_load(&r->latest) <= stamp) return 1;
+    uintptr_t a = (uintptr_t)addr, e = a + len, p = (a - r->base) >> g_shift, q = (e - 1 - r->base) >> g_shift;
+    uintptr_t run = 0; int open = 0;
+    for (uintptr_t i = p; i <= q + 1; i++) {
+        int dirty = 0;
+        if (i <= q) {
+            if (g_dirty_fast && !(i & (BLK_PAGES - 1)) && i + BLK_PAGES - 1 <= q && atomic_load(&r->blk[i >> BLK_SHIFT]) <= stamp) {
+                if (open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+                i += BLK_PAGES - 1; continue;
+            }
+            dirty = atomic_load(&r->gen[i]) > stamp;
+        }
+        if (dirty && !open) { run = i; open = 1; }
+        if (!dirty && open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+    }
+    return 1;
+}
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) {
     if (!len) return 0;
     if (!nvn_dirty_tracked(addr, len)) return 1;   // 未跟踪时保守视为脏，宁可多传也不显示旧内容 | When untracked, conservatively treat as dirty: better to upload more than to show stale content
@@ -489,3 +512,6 @@ void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;
 }
+#if defined(GAME_BOTW)
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) { (void)addr; (void)len; (void)stamp; (void)fn; (void)ctx; return 0; }   // pools span ranges there: rescan all
+#endif

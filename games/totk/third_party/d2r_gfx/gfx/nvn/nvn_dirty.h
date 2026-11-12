@@ -11,6 +11,7 @@ int nvn_dirty_tracked(const void *addr, size_t len);
 void nvn_dirty_protect(const void *addr, size_t len);              // 覆盖页设只读 | Set the covered pages read-only
 uint64_t nvn_dirty_now(void);                                      // 当前代号：上传前取，作为该份内容的戳 | Current generation: taken before upload, as the stamp of that content
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp);
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx);   // OOT: runs of pages written after stamp (0: untracked)
 void *nvn_dirty_gpu_write_begin(void *addr, size_t len);   // write guest memory on behalf of the GPU: not counted as a CPU write
 void nvn_dirty_gpu_write_end(void *tok);
 typedef struct { uintptr_t page; uint64_t pc, lr; uint32_t src; } nvn_dirty_rec;   // src 0: guest write (fault), 1: host write

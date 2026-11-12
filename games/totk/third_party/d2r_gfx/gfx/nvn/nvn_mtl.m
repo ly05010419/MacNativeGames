@@ -168,7 +168,10 @@ static id<MTLCommandQueue> g_q;
 static id<MTL4CommandQueue> g_q4;
 static dispatch_queue_t g_feedback_q;
 static _Atomic uint32_t g_present_qos;
-#define ALLOC_MAX 8
+/* OOT (2026-11-08): queue ordering commits each parked / resumed part separately, about 18 command buffers a frame; with 8
+   the replay could run less than half a frame ahead and waited for the GPU about twice a frame (allocator waits), so GPU
+   and replay took turns. How far ahead it runs stays bounded by the game's swapchain acquire. */
+#define ALLOC_MAX 64
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // 主提交的命令分配器池：开工时挑一个 GPU 已用完的，没有就新建（到上限才等） | Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
 static id<MTL4CommandAllocator> g_up_alloc4[3];
 static id<MTL4CommandAllocator> g_present_alloc4[3];
@@ -11856,6 +11859,31 @@ static pool_input *pool_input_find(const p_bind_buf *u) {
     }
     return NULL;
 }
+/* OOT (2026-11-08): the texture IDs a handle table may name, kept per table across captures. Every new capture of the
+   table (about 3.5 a frame in the village, 4 MiB each) rescanned all of it: 3.6 M words a frame, 17 % of the replay
+   thread. The game rewrites part of the table each frame; pages it did not write since the last scan hold the words that
+   scan saw, so only written pages (dirty-page generations, the capture's stamp) are scanned into the set. The set is a
+   union: an ID no longer named stays in it, which only prepares one more descriptor, as the whole-table path would.
+   A change of pool memory generation or a host write-back (which marks no page) starts the set again.
+   OOT_POOL_IDS_INCREMENTAL=0: full scan of every capture. */
+typedef struct { uint64_t lo,size,poolgen,hostwrite,stamp,used; int n; NSMutableData *ids; } pool_ids_memo;
+static pool_ids_memo g_pool_ids_memo[16]; static uint64_t g_pool_ids_use,g_pool_ids_words_inc,g_pool_ids_full;
+static int pool_ids_incremental_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_IDS_INCREMENTAL");on=!(e&&!atoi(e));}return on;}
+static void pool_ids_scan(const uint32_t *w,size_t nw,uint64_t *ids,uint32_t n){for(size_t i=0;i<nw;i++){uint32_t id_=w[i]&1048575u;if(id_<n)ids[id_/64]|=UINT64_C(1)<<(id_%64);}g_pool_demand_words+=nw;}
+typedef struct { const pool_input *p; uint64_t *ids; uint32_t n; } pool_ids_ctx;
+static void pool_ids_run(void *c,uintptr_t lo,uintptr_t hi){pool_ids_ctx *x=c;size_t a=(size_t)(lo-x->p->lo)/4,b=(size_t)(hi-x->p->lo+3)/4;if(b>x->p->size/4)b=x->p->size/4;if(a<b){pool_ids_scan(x->p->cpu+a,b-a,x->ids,x->n);g_pool_ids_words_inc+=b-a;}}
+static void pool_input_ids(pool_input *p,const p_bind_buf *u,int n) {
+    size_t words=((size_t)n+63)/64;
+    pool_ids_memo *m=NULL,*victim=&g_pool_ids_memo[0];
+    if(pool_ids_incremental_on())for(int i=0;i<16;i++){pool_ids_memo *e=&g_pool_ids_memo[i];if(e->ids&&e->lo==u->addr&&e->size==u->size&&e->n==n){m=e;break;}if(e->used<victim->used)victim=e;}
+    if(m&&m->poolgen==p->poolgen&&m->hostwrite==p->hostwrite&&m->stamp<=p->stamp){
+        pool_ids_ctx c={p,m->ids.mutableBytes,(uint32_t)n};
+        if(nvn_dirty_runs_since((const void *)(uintptr_t)u->addr,(size_t)u->size,m->stamp,pool_ids_run,&c)){m->stamp=p->stamp;m->used=++g_pool_ids_use;p->ids=m->ids;p->n=n;return;}
+    }
+    NSMutableData *d=[NSMutableData dataWithLength:words*8];pool_ids_scan(p->cpu,u->size/4,d.mutableBytes,(uint32_t)n);g_pool_ids_full++;
+    p->ids=d;p->n=n;
+    if(pool_ids_incremental_on()){if(!m)m=victim;*m=(pool_ids_memo){u->addr,u->size,p->poolgen,p->hostwrite,p->stamp,++g_pool_ids_use,n,[d mutableCopy]};p->ids=m->ids;}
+}
 static pool_input *pool_input_get(const p_bind_buf *u,int n) {
     pool_input *p=pool_input_find(u);if(p)g_pool_input_hits++;
     if(!p){
@@ -11873,11 +11901,7 @@ static pool_input *pool_input_get(const p_bind_buf *u,int n) {
         pthread_mutex_unlock(&g_mu);
         p->lo=u->addr;p->size=u->size;p->gpu=gpu;p->cpu=(const uint32_t *)cpu;p->stamp=stamp;p->poolgen=poolgen;p->hostwrite=hostwrite;p->ids=nil;p->n=0;g_pool_input_misses++;
     }
-    if(n&&(p->n!=n||!p->ids)){
-        size_t words=((size_t)n+63)/64;p->ids=[NSMutableData dataWithLength:words*8];uint64_t *ids=p->ids.mutableBytes;
-        for(size_t w=0;w<u->size/4;w++){uint32_t id_=p->cpu[w]&1048575u;if(id_<(uint32_t)n)ids[id_/64]|=UINT64_C(1)<<(id_%64);}
-        p->n=n;g_pool_demand_words+=u->size/4;
-    }
+    if(n&&(p->n!=n||!p->ids))pool_input_ids(p,u,n);
     return p;
 }
 static uint64_t g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo;
@@ -12086,7 +12110,7 @@ static void prepare_shader_pools(NvShader *sh) {
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips);
-    if(frame>=last+300){MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
+    if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
 static int arg_epoch_safe(NvShader *sh) {
     if (!sh->ab_epoch_ok) {

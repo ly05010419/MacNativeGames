@@ -1,6 +1,32 @@
 /* Included after the production backend: first-use pixels, not just masks. */
+/* The texture-ID set of a handle table across captures (pool_input_ids): the first capture scans the table, a later one
+   only the pages written since, unchanged tables are not scanned, and a host write-back starts the set again. */
+static int pool_ids_probe(void) {
+    int checked=0;size_t page=(size_t)getpagesize(),span=page*4;void *m=NULL;
+    if(posix_memalign(&m,page,span))MDIE("pool ids probe allocation");
+    uint32_t *w=m;for(size_t i=0;i<span/4;i++)w[i]=0xfffffu;   // ID 1048575: past the pool, not a handle
+    w[0]=5;w[page/4]=9;
+    mtl_pool_add(m,span);nvn_dirty_add_range(m,span);
+    p_bind_buf u={.addr=(uintptr_t)m,.size=(uint32_t)span};
+    op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+    uint64_t full0=g_pool_ids_full,inc0=g_pool_ids_words_inc;
+    pool_input *p=pool_input_get(&u,64);const uint64_t *ids=p->ids.bytes;
+    if(g_pool_ids_full!=full0+1||!(ids[0]>>5&1)||!(ids[0]>>9&1)||ids[0]>>17&1)MDIE("pool ids: first capture %#llx",(unsigned long long)ids[0]);checked++;
+    ((volatile uint32_t *)w)[2*page/4]=17;   // the game writes one page (write fault: its generation)
+    p=pool_input_get(&u,64);ids=p->ids.bytes;
+    if(g_pool_ids_full!=full0+1)MDIE("pool ids: the rescan after one written page was not incremental");checked++;
+    if(g_pool_ids_words_inc-inc0!=page/4)MDIE("pool ids: scanned %llu words, wanted the written page (%zu)",(unsigned long long)(g_pool_ids_words_inc-inc0),page/4);checked++;
+    if(!(ids[0]>>17&1)||!(ids[0]>>5&1)||!(ids[0]>>9&1))MDIE("pool ids: the set lost or missed an ID: %#llx",(unsigned long long)ids[0]);checked++;
+    uint64_t inc1=g_pool_ids_words_inc;p=pool_input_get(&u,64);
+    if(g_pool_ids_words_inc!=inc1||g_pool_ids_full!=full0+1)MDIE("pool ids: an unchanged table was scanned again");checked++;
+    atomic_fetch_add(&g_pool_input_hostwrite,1);   // a host write-back marks no page
+    p=pool_input_get(&u,64);
+    if(g_pool_ids_full!=full0+2)MDIE("pool ids: a host write-back did not rescan the whole table");checked++;
+    mtl_sub_commit();mtl_finish();nvn_dirty_remove_range(m);mtl_pool_del(m);free(m);
+    return checked;
+}
 int mtl_probe_memory_demand(void) {
-    mtl_init();int checked=raw_write_domain_probe()+upstream_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
+    mtl_init();int checked=raw_write_domain_probe()+upstream_probe()+pool_ids_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
     size_t page=(size_t)getpagesize();void *raw=NULL;
     if(posix_memalign(&raw,page,page*2))MDIE("memory demand probe allocation");memset(raw,0,page*2);
     int owner_a=0,owner_b=0;mtl_pool_add(raw,page);mtl_pool_add((char *)raw+page,page);
