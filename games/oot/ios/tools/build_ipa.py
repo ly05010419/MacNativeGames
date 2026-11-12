@@ -7,7 +7,6 @@ from pathlib import Path
 from compile_seed import METAL_FLAGS, seed_flags
 from device_pipelines import SCHEMA, connected_gpus, seed_check
 from xcode_dir import developer_dir
-from xcodegen_tool import xcodegen
 import settings_strings
 
 def settings_without_totk(root):
@@ -221,7 +220,10 @@ def main():
     if vision and a.version.startswith('botw'): raise RuntimeError('native visionOS builds currently support Tears of the Kingdom only')
     sdk=subprocess.check_output(['xcrun','--sdk',sdk_name,'--show-sdk-path'],env=env,text=True).strip()
     subprocess.run(['xcodebuild','-version'],env=env,check=True,stdout=subprocess.DEVNULL)
-    generator=xcodegen()   # pinned XcodeGen, downloaded once per Mac (no Homebrew)
+    # the repository's tools/deps: pinned XcodeGen (no Homebrew); build_app.py runs this from its copy in the work folder
+    sys.path.insert(0,os.environ.get('MNG_REPO') or str(Path(__file__).resolve().parents[4]))
+    from tools.deps import program
+    generator=program('xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
     ns2=a.version in ('dkb','pkp','oot')

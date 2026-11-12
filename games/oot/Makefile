@@ -1,9 +1,8 @@
-# opus and libvpx: build_app.py builds them from pinned sources (codec_libraries) and passes these; a make by hand
-# takes Homebrew's.
-OPUS_PREFIX ?= /opt/homebrew/opt/opus
-VPX_PREFIX ?= /opt/homebrew/opt/libvpx
-# dav1d (the AV1 fallback) is linked statically from build_app.py's build of it; a make by hand takes that cached build.
-DAV1D_PREFIX ?= $(HOME)/Library/Caches/MacNativeGames/deps/dav1d-1.5.3
+# opus, libvpx and dav1d (the AV1 fallback): build_app.py passes these (codec_libraries); a make by hand asks the
+# repository's tools/deps, which makes them once per Mac from pinned sources (no Homebrew).
+OPUS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+VPX_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
+DAV1D_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix dav1d),$(error tools/deps could not make dav1d))
 # Isolated copy of our native Switch 2 runtime. Build artifacts stay in the caller's external workspace.
 WORK ?=
 ifeq ($(strip $(WORK)),)

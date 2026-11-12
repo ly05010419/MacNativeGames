@@ -335,150 +335,27 @@ def prerequisites(args):
     return Path(py)
 
 
-# The runtime links opus (the games' audio) and libvpx (VP8 / VP9 videos) statically. Both are built here from pinned
-# sources, once per Mac, so a build needs no Homebrew (user 2026-11-12: "玩家完全不用装 Homebrew"): the versions Homebrew
-# gave this repository's builds until then (opus 1.6.1, libvpx 1.16.0) and Homebrew's configure options for them.
-OPUS = ('1.6.1', 'https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz',
-        '6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1')
-LIBVPX = ('1.16.0', 'https://github.com/webmproject/libvpx.git', '1024874c5919305883187e2953de8fcb4c3d7fa6')
-# Ocarina of Time's AV1 fallback decoder (games/oot/runtime/hle_movie_av1.c), linked statically: the VideoLAN release.
-DAV1D = ('1.5.3', 'https://downloads.videolan.org/pub/videolan/dav1d/1.5.3/dav1d-1.5.3.tar.xz',
-         '732010aa5ef461fa93355ed2c6c5fedb48ddc4b74e697eaabe8907eaeb943011')
-# meson and ninja build dav1d; the iPhone / iPad libraries also need cmake (games/*/ios/tools/build_deps.py). PyPI wheels,
-# each pinned by its SHA-256 (pure Python / universal2), in a virtual environment under DEPS: the player installs none.
-BUILD_TOOLS = {'meson': ('1.12.1', '930bc7542cbd9f57009e182fd014eba48cf1a0180a7b9006d2d32d8f168d8b02'),
-               'ninja': ('1.13.2', 'fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b'),
-               'cmake': ('4.4.4', '883962a72b1b3a16ff445427f24c8caca9797dd9e563bbe208cbcd89e877f9d3')}
-DEPS = Path(os.environ.get('MNG_DEPS_CACHE') or Path.home() / 'Library/Caches/MacNativeGames/deps')
+# The runtime links opus (the games' audio), libvpx (VP8 / VP9 videos) and, for Ocarina of Time, dav1d statically. The
+# repository's tools/deps makes them from pinned sources once per Mac (pins in tools/deps/pins.py), the same for every
+# game, so a build needs no Homebrew (user 2026-11-12: "玩家完全不用装 Homebrew", "全部 24 款，用共用的 tools/deps").
+sys.path.insert(0, str(REPO))
+import tools.deps as deps  # noqa: E402
 
 
 def codec_libraries(target='macos'):
     """OPUS_PREFIX, VPX_PREFIX and DAV1D_PREFIX (installed static libraries and headers) in this process's environment,
     where every make of the build and of update_runtime.py reads them (games/totk/Makefile, games/oot/Makefile), and the
-    pinned build tools first on its PATH (cmake too for an iPhone / iPad build, whose build_deps.py runs them). Built into
-    DEPS the first time (about two minutes), under a lock so two builds do not build them at once."""
-    import fcntl
-    DEPS.mkdir(parents=True, exist_ok=True)
-    opus, vpx = DEPS / f'opus-{OPUS[0]}', DEPS / f'libvpx-{LIBVPX[0]}-{LIBVPX[2][:12]}'
-    dav1d = DEPS / f'dav1d-{DAV1D[0]}'
-    names = ('meson', 'ninja') if target == 'macos' else ('meson', 'ninja', 'cmake')
-    with open(DEPS / '.lock', 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        logs = DEPS / 'logs'
-        tools = build_tools(names, logs)
-        if not (opus / 'lib/libopus.a').is_file():
-            say(f'building opus {OPUS[0]} from its pinned source, once for this Mac (no Homebrew needed)')
-            build_opus(opus, logs)
-        if not (vpx / 'lib/libvpx.a').is_file():
-            say(f'building libvpx {LIBVPX[0]} from its pinned source, once for this Mac (a minute or two)')
-            build_libvpx(vpx, logs)
-        if not (dav1d / 'lib/libdav1d.a').is_file():
-            say(f'building dav1d {DAV1D[0]} from its pinned source, once for this Mac (seconds)')
-            build_dav1d(dav1d, logs, tools)
-    os.environ['OPUS_PREFIX'], os.environ['VPX_PREFIX'], os.environ['DAV1D_PREFIX'] = str(opus), str(vpx), str(dav1d)
+    pinned build tools first on its PATH (cmake too for an iPhone / iPad build, whose build_deps.py runs them). Made by
+    tools/deps the first time (about two minutes), under its lock so two builds do not make them at once."""
+    try:
+        with deps.locked():
+            tools = deps.build_tools(('meson', 'ninja') if target == 'macos' else ('meson', 'ninja', 'cmake'))
+            os.environ.update(deps.env('opus', 'libvpx', 'dav1d'))
+    except deps.DepsError as e:
+        raise BuildError(str(e)) from None
     path = os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin').split(os.pathsep)
     os.environ['PATH'] = os.pathsep.join([str(tools)] + [part for part in path if part != str(tools)])
-    return opus, vpx
-
-
-def build_tools(names, logs):
-    """A folder that holds only the named tools (links, no python), so putting it first on PATH changes nothing else. The
-    virtual environment is made where it stays (its scripts name its own python); .done marks it complete, and one left
-    half-made is made again. Each set of tools has its own folder, named by the pins."""
-    pins = {name: BUILD_TOOLS[name] for name in sorted(names)}
-    venv = DEPS / f'build-tools-{hashlib.sha256(repr(pins).encode()).hexdigest()[:12]}'
-    tools, done = venv / 'tools', venv / '.done'
-    if done.is_file():
-        return tools
-    say(f'installing {", ".join(f"{n} {v}" for n, (v, _) in pins.items())} from pinned wheels, once for this Mac')
-    if venv.exists():
-        shutil.rmtree(venv)
-    run([sys.executable, '-m', 'venv', venv], logs / 'build-tools-venv.log')
-    wanted = venv / 'requirements.txt'
-    wanted.write_text(''.join(f'{n}=={v} --hash=sha256:{h}\n' for n, (v, h) in pins.items()))
-    run([venv / 'bin/python', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--require-hashes',
-         '--only-binary=:all:', '--no-deps', '-r', wanted], logs / 'build-tools-pip.log')
-    tools.mkdir()
-    for name in pins:
-        (tools / name).symlink_to(venv / 'bin' / name)
-    done.touch()
-    return tools
-
-
-def fetch_pinned(url, want, archive, what):
-    """archive, downloaded from url once and kept only when its SHA-256 is want. With the system's curl, not urllib:
-    python.org's Python has no certificates until the player runs its "Install Certificates.command", and urllib then
-    fails with CERTIFICATE_VERIFY_FAILED; curl uses the system's (7b, tested with python.org 3.14.9)."""
-    if archive.is_file() and sha256(archive) == want:
-        return archive
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    partial = archive.with_name(archive.name + '.partial')
-    run(['/usr/bin/curl', '-fL', '--retry', '2', '-o', partial, url], DEPS / 'logs' / f'download-{archive.name}.log')
-    if sha256(partial) != want:
-        partial.unlink()
-        raise BuildError(f'the {what} source from {url} does not match its pinned SHA-256')
-    partial.replace(archive)
-    return archive
-
-
-def build_opus(prefix, logs):
-    import tarfile
-    version, url, want = OPUS
-    archive = fetch_pinned(url, want, DEPS / f'src/opus-{version}.tar.gz', f'opus {version}')
-    src = DEPS / f'src/opus-{version}'
-    if src.exists():
-        shutil.rmtree(src)
-    with tarfile.open(archive) as t:
-        t.extractall(src.parent, filter='data')
-    install(prefix, lambda stage: (
-        run(['./configure', '--disable-dependency-tracking', '--disable-doc', '--disable-shared', '--enable-static',
-             '--disable-extra-programs', f'--prefix={stage}', 'CC=clang'], logs / 'opus-configure.log', cwd=src),
-        run(['make', f'-j{os.cpu_count() or 4}', 'install'], logs / 'opus-make.log', cwd=src)))
-
-
-def build_libvpx(prefix, logs):
-    version, url, commit = LIBVPX
-    src = DEPS / 'src/libvpx'
-    git_fetch(url, commit, src, logs / 'libvpx-fetch.log')
-    build = DEPS / 'src/libvpx-build'
-    if build.exists():
-        shutil.rmtree(build)
-    build.mkdir(parents=True)
-    install(prefix, lambda stage: (
-        run([src / 'configure', '--disable-dependency-tracking', '--disable-examples', '--disable-tools', '--disable-docs',
-             '--disable-unit-tests', '--enable-pic', '--disable-shared', '--enable-static', '--enable-vp9-highbitdepth',
-             f'--prefix={stage}'], logs / 'libvpx-configure.log', cwd=build),
-        run(['make', f'-j{os.cpu_count() or 4}', 'install'], logs / 'libvpx-make.log', cwd=build)))
-
-
-def build_dav1d(prefix, logs, tools):
-    """dav1d as a static library with its arm64 assembly, the options Homebrew's build used (release, no tools/tests)."""
-    import tarfile
-    version, url, want = DAV1D
-    archive = fetch_pinned(url, want, DEPS / f'src/dav1d-{version}.tar.xz', f'dav1d {version}')
-    src, build = DEPS / f'src/dav1d-{version}', DEPS / 'src/dav1d-build'
-    for old in (src, build):
-        if old.exists():
-            shutil.rmtree(old)
-    with tarfile.open(archive) as t:
-        t.extractall(src.parent, filter='data')
-    env = dict(os.environ, PATH=f'{tools}{os.pathsep}{os.environ.get("PATH", "")}', CC='clang')
-    install(prefix, lambda stage: (
-        run([tools / 'meson', 'setup', build, src, f'--prefix={stage}', '--libdir=lib', '--buildtype=release',
-             '--default-library=static', '-Db_ndebug=true', '-Denable_tools=false', '-Denable_tests=false',
-             '-Denable_examples=false', '-Denable_docs=false'], logs / 'dav1d-meson.log', env=env),
-        run([tools / 'ninja', '-C', build, 'install'], logs / 'dav1d-ninja.log', env=env)))
-
-
-def install(prefix, steps):
-    """steps(stage) installs into a staging folder, which becomes prefix only when it finished."""
-    stage = prefix.with_name(prefix.name + '.partial')
-    if stage.exists():
-        shutil.rmtree(stage)
-    steps(stage)
-    if prefix.exists():
-        shutil.rmtree(prefix)
-    stage.rename(prefix)
+    return Path(os.environ['OPUS_PREFIX']), Path(os.environ['VPX_PREFIX'])
 
 
 # ---- work folder ----

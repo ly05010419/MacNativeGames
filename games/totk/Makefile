@@ -8,10 +8,10 @@ NATIVE_OPT ?= -O2
 GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
 GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
 
-# opus and libvpx: build_app.py builds them from pinned sources (codec_libraries) and passes these; a make by hand
-# takes Homebrew's.
-OPUS_PREFIX ?= /opt/homebrew/opt/opus
-VPX_PREFIX ?= /opt/homebrew/opt/libvpx
+# opus and libvpx: build_app.py passes these (codec_libraries); a make by hand asks the repository's tools/deps, which
+# makes them once per Mac from pinned sources (no Homebrew).
+OPUS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+VPX_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
 
 PY := .venv/bin/python
 # GPU work outside build/totk-native waits for the game slot too (the game binary takes it itself): one game or GPU

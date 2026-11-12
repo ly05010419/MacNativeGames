@@ -127,7 +127,9 @@ def main():
     ios = work/('build/ios-sim' if sim else 'build/ios'); gen = ios/'Gen'; logs = work/('logs/ios-sim' if sim else 'logs/ios'); gen.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, DEVELOPER_DIR=developer_dir())
     subprocess.run(['xcodebuild', '-version'], env=env, check=True, stdout=subprocess.DEVNULL)
-    if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
+    sys.path.insert(0, str(GAME.parents[1]))   # the repository's tools/deps: pinned xcodegen, cmake and ninja (no Homebrew)
+    from tools.deps import path as deps_path
+    env['PATH'] = os.pathsep.join(deps_path('xcodegen', 'cmake', 'ninja') + [env.get('PATH', '')])
     host, rewritten, romfs = work/'build/dread-native', work/f'rewritten/{VERSION}', work/f'extracted/{VERSION}/romfs'
     for need in (host, romfs/'romfs.bin', work/'build/runtime_tables.h'):
         if not need.exists(): raise RuntimeError(f'missing {need}: build the Mac app first (games/dread/build.py, or make prepare runtime)')
@@ -138,7 +140,7 @@ def main():
     flags = subprocess.check_output([sys.executable, GAME/'ios/tools/gen_embed.py', rewritten, gen/'embed.S', '--text-dir', modules,
                                      'main', 'subsdk0', 'sdk'], text=True, env=env).strip()
 
-    # Opus and libvpx for the device: Homebrew's Mac archives cannot be linked into an iOS app.
+    # Opus and libvpx for the device: the Mac archives (tools/deps) cannot be linked into an iOS app.
     deps = work/('build/ios-sim-deps' if sim else 'build/ios-deps')
     if not ((deps/'lib/libopus.a').is_file() and (deps/'lib/libvpx.a').is_file()):
         run([sys.executable, GAME/'ios/tools/build_deps.py', deps, sdk], work, logs/'dependencies.log', env)

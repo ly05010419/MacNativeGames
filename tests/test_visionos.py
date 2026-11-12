@@ -65,7 +65,8 @@ class VisionOS(unittest.TestCase):
 
     def test_native_profile_uses_visionos_product_and_separate_cache(self):
         with tempfile.TemporaryDirectory() as d, patch.object(install_device, 'CACHE', Path(d)), \
-                patch.object(install_device, 'run'), patch.object(install_device.subprocess, 'run') as run:
+                patch.object(install_device, 'run'), patch.object(install_device, 'xcodegen', return_value='xcodegen'), \
+                patch.object(install_device.subprocess, 'run') as run:
             run.return_value.returncode = 0
             for platform, sdk in [('ios', 'iphoneos'), ('visionos', 'xros')]:
                 prov, app = install_device.profile('TEAM', 'org.macnativegames.totk', 'DEVICE', platform)
