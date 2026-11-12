@@ -89,7 +89,7 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
             *enc = e; atomic_fetch_add_explicit(&g_rs_b_passes, 1, memory_order_relaxed);
             break; }
         case RS_END:
-            if (u[0] == 3) [e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:(MTL4VisibilityOptions)u[1]]; /* OOT: native draw dependencies; same policy as the direct encoder. */
+            if (u[0] == 3) [e barrierAfterStages:MTLStageVertex | MTLStageObject | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:(MTL4VisibilityOptions)u[1]]; /* OOT: native draw dependencies; same policy as the direct encoder. */
             else if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
             else if (u[0]) [e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:(MTL4VisibilityOptions)u[1]];
             [e endEncoding]; *enc = nil; break;
