@@ -40,6 +40,27 @@ enum T {
                           "这个 App 不知道 MacNativeGames 源码在哪：用 tools/builder_app/make_app.py 重新生成它。")
     static let existing = s("Already built", "已经打包过")
     static let installed = s("Games on this Mac", "这台 Mac 上已装的游戏")
+    static let pages: [(String, String)] = [("build", s("Build", "打包")), ("settings", s("Settings", "设置")),
+                                            ("mods", s("Mods", "模组")), ("controls", s("Controls", "按键")),
+                                            ("storage", s("Storage", "存储")), ("saves", s("Saves", "存档"))]
+    static let game = s("Game", "游戏")
+    static let noPageGame = s("No Tears of the Kingdom or Breath of the Wild app on this Mac yet: build one first.",
+                              "这台 Mac 上还没有王国之泪或旷野之息的 App：先打包。")
+    static let notYet = s("This page is being moved here from the old window.", "这一页正在从旧窗口搬过来。")
+    static let starting = s("Starting the game…", "正在启动游戏…")
+    static let started = s("Started with these settings.", "已按这些设置启动。")
+    static func startedWithout(_ held: [String]) -> String {
+        s("Started, without: ", "已启动，但这次没用：") + held.joined(separator: ", ")
+    }
+    static func gpu(_ g: String) -> String {
+        switch g {
+        case "checking": return s("Checking the GPU for MetalFX frame interpolation…", "正在检查显卡是否支持 MetalFX 补帧…")
+        case "yes": return s("This GPU has MetalFX frame interpolation.", "这块显卡支持 MetalFX 补帧。")
+        case "no": return s("This GPU has no MetalFX frame interpolation: Play starts the game without it.",
+                            "这块显卡不支持 MetalFX 补帧：点游玩时这次不用补帧。")
+        default: return s("The GPU could not be checked: frame interpolation is used as chosen.", "没能检查显卡：补帧按所选的用。")
+        }
+    }
     static let installedHint = s("Update one without its game files: the fastest update that fits is chosen for you.",
                                  "不用游戏文件就能更新：自动选能用的最快的一种。")
     static let update = s("Update", "更新")

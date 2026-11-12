@@ -27,6 +27,7 @@ final class Model: ObservableObject {
     @Published var installed: [InstalledReport.App] = []
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     @Published var kind = "full"         // express, fast or full: what the running job does
+    @Published var pageApp: String?      // the app the pages besides building show (Settings, Mods, …)
     @Published var outputDir: String { didSet { save() } }
     @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
 
@@ -60,6 +61,13 @@ final class Model: ObservableObject {
         if !rest.isEmpty { paths = rest.map { $0.path } }
         save()
         Task { await classify() }
+    }
+
+    /// The installed apps the pages besides building serve (Tears of the Kingdom, Breath of the Wild: tools/builder's games).
+    var pageApps: [InstalledReport.App] { installed.filter { $0.game == "totk" || $0.game == "botw" } }
+    var currentPageApp: String? {
+        if let a = pageApp, pageApps.contains(where: { $0.app == a }) { return a }
+        return pageApps.first?.app
     }
 
     func loadInstalled() async {

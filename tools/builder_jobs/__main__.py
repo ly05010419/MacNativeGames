@@ -17,6 +17,11 @@ def main(argv):
     k.add_argument('--work', default=str(Path.home()))
     i = sub.add_parser('apps', help='the game apps on this Mac and the update each needs (one JSON object)')
     i.add_argument('--apps-dir', help="the Launcher's apps folder, looked in besides what macOS knows")
+    tb = sub.add_parser('tab', help='a page besides building (settings, mods, controls, storage, saves); one JSON object')
+    tb.add_argument('tab')
+    tb.add_argument('action')
+    tb.add_argument('--app', required=True)
+    tb.add_argument('--args', default='')
     b = sub.add_parser('build', help='build; one JSON event per line')
     b.add_argument('request', type=Path)
     b.add_argument('--history', type=Path, default=HISTORY)
@@ -29,6 +34,9 @@ def main(argv):
         from tools.builder_jobs.checks import checks
         print(json.dumps({'checks': checks(a.work)}, ensure_ascii=False))
         return 0
+    if a.job == 'tab':
+        from tools.builder_jobs.tabs import main as tab
+        return tab(a.tab, a.action, a.app, a.args)
     if a.job == 'apps':
         from tools.builder_jobs.installed import apps
         print(json.dumps({'apps': apps(a.apps_dir)}, ensure_ascii=False))

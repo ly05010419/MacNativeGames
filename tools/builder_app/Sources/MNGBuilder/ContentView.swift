@@ -5,6 +5,31 @@ import UniformTypeIdentifiers
 /// Three numbered groups from top to bottom: 1 the game, 2 the keys, 3 this Mac and the build. A step whose earlier
 /// step is not done is dimmed; a done step shows a check mark.
 struct ContentView: View {
+    @State private var page = "build"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $page) {
+                ForEach(T.pages, id: \.0) { id, label in Text(label).tag(id) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+            Divider()
+            switch page {
+            case "settings": SettingsTab()
+            case "mods": ModsTab()
+            case "controls": ControlsTab()
+            case "storage": StorageTab()
+            case "saves": SavesTab()
+            default: BuildPage()
+            }
+        }
+    }
+}
+
+/// Building and updating: the installed games, then the three steps.
+struct BuildPage: View {
     @EnvironmentObject var model: Model
 
     var body: some View {
