@@ -272,10 +272,12 @@ static void bg_gate(void) {
     pthread_mutex_lock(&g_bg_mu); while (atomic_load(&g_app_inactive)) pthread_cond_wait(&g_bg_cv, &g_bg_mu); pthread_mutex_unlock(&g_bg_mu);
     MLOG("App 不在前台：GPU 提交暂停了 %.1f s，现在继续", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
 }
+static inline void ka_stop_now(void);   // keep-alive spin kernel: leave now, game work is coming (below, keepalive_start)
 static void q4_commit(id<MTL4CommandBuffer> cb, TotkCommitOptions *o) {
     bg_gate();
     gpu_budget_check("提交命令缓冲");
     atomic_fetch_add(&g_q4_inflight, 1);
+    ka_stop_now();
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; if (atomic_fetch_sub(&g_q4_inflight, 1) == 1 && g_ka_idle) dispatch_semaphore_signal(g_ka_idle); }];
     if (!nogpu()) { id<MTL4CommandBuffer> buffers[] = {cb}; [g_q4 commit:buffers count:1 options:o]; return; }
     for (MTL4CommitFeedbackHandler h in o->handlers) h(nil);
@@ -783,6 +785,14 @@ static _Atomic uint64_t g_last_sub_ns;
 // The private spin buffer never supplies game data.
 static _Atomic int g_ka_target_us = 1000;
 static _Atomic uint64_t g_ka_n, g_ka_us, g_ka_max_us;   // spin kernels completed, their summed / longest GPU time (us)
+/* OOT (2026-11-08): the spin kernel leaves as soon as the game commits a command buffer. Before, a submission arriving while
+   a kernel ran waited for it (up to ~1 ms: ct2's frame start showed 0.8 ms of pre-submitted compute, a 0.98 ms spinner and
+   two gaps before the frame's rendering began at 2.99 ms). The kernel polls a shared stop word every 1024 iterations (about
+   25 us); q4_commit sets it before committing, the spinner thread clears it before each launch. OOT_KEEPALIVE_YIELD=0 or
+   "flag keepalive_yield 0": the old behaviour (A/B in one game). g_ka_stopped: kernels that left early. */
+static id<MTLBuffer> g_ka_stop; static _Atomic int g_ka_yield = -1; static _Atomic uint64_t g_ka_stopped;
+static int ka_yield_on(void) { int v = atomic_load(&g_ka_yield); if (v < 0) { const char *e = getenv("OOT_KEEPALIVE_YIELD"); v = !(e && !atoi(e)); atomic_store(&g_ka_yield, v); if (!v) MLOG("OOT_KEEPALIVE_YIELD=0: the keep-alive spin kernel runs to its end even when the game commits (A/B)"); } return v; }
+static inline void ka_stop_now(void) { if (g_ka_stop && ka_yield_on()) __atomic_store_n((uint32_t *)g_ka_stop.contents, 1u, __ATOMIC_RELEASE); }
 void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = atomic_load(&g_ka_us); v[2] = atomic_exchange(&g_ka_max_us, 0); }
 /* On or off: TOTK_GPU_KEEPALIVE decides first; otherwise, on the Mac, the settings panel's switch (gpu-keepalive.txt, read
    before the guest starts: dm_gfx_keepalive_start) or, in play, dm_gfx_keepalive_set. Switched off in play, the thread stays
@@ -815,10 +825,12 @@ static void keepalive_start(void) {
     if (!dm_gfx_keepalive() || nogpu() || getenv("TOTK_HEADLESS")) return;   // not in standalone probes
     if (atomic_exchange(&g_ka_started, 1)) return;
     NSError *err = nil;
-    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
+    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], device atomic_uint *stop [[buffer(2)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) { x = fma(x, 1.0000001f, 0.5f); if ((j & 1023u) == 1023u && atomic_load_explicit(stop, memory_order_relaxed)) break; } a[i] = x; }\n" options:nil error:&err];
     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
-    if (!ps || !q || !buf) { MLOG("【红】TOTK_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
+    id<MTLBuffer> stop = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared];
+    if (!ps || !q || !buf || !stop) { MLOG("【红】TOTK_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
+    memset(stop.contents, 0, 4096); g_ka_stop = stop;
     { const char *us = getenv("TOTK_GPU_KEEPALIVE_US"); int v = us ? atoi(us) : 0; if (v >= 100 && v <= 1000) atomic_store(&g_ka_target_us, v); }   /* like flag keepalive_us, from the start */
     MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（设置面板或 TOTK_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
     g_ka_idle = dispatch_semaphore_create(0);
@@ -832,14 +844,17 @@ static void keepalive_start(void) {
             if (!last || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_wait(g_ka_idle, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC)); continue; }   // the game's own GPU work keeps the clock up
             dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            __atomic_store_n((uint32_t *)stop.contents, 0u, __ATOMIC_RELEASE);   // cleared before the in-flight check: a commit after this point stops the kernel
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_signal(sem); continue; }
             uint32_t iters = n;
             id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
-            [ce setComputePipelineState:ps]; [ce setBuffer:buf offset:0 atIndex:0]; [ce setBytes:&iters length:4 atIndex:1];
+            [ce setComputePipelineState:ps]; [ce setBuffer:buf offset:0 atIndex:0]; [ce setBytes:&iters length:4 atIndex:1]; [ce setBuffer:stop offset:0 atIndex:2];
             [ce dispatchThreads:MTLSizeMake(32, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [ce endEncoding];
             [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { double ms = (c.GPUEndTime - c.GPUStartTime) * 1e3; static int said; if (said++ < 3) MLOG("TOTK_GPU_KEEPALIVE：自旋核一次 %.3f ms", ms);
                 uint64_t us = (uint64_t)(ms * 1e3); atomic_fetch_add(&g_ka_n, 1); atomic_fetch_add(&g_ka_us, us); uint64_t mx = atomic_load(&g_ka_max_us); while (us > mx && !atomic_compare_exchange_weak(&g_ka_max_us, &mx, us)) {}
-                if (ms > 0.01) { double k = (target_us * .001) / ms; if (k > 2) k = 2; if (k < 0.5) k = 0.5; double m = n * k; n = m < 2000 ? 2000 : m > 400000 ? 400000 : (uint32_t)m; }
+                int stopped = __atomic_load_n((uint32_t *)stop.contents, __ATOMIC_ACQUIRE) != 0;   // the game committed while it ran: its time says nothing about the full length
+                if (stopped) { uint64_t s = atomic_fetch_add(&g_ka_stopped, 1) + 1; if (s == 1 || s % 2000 == 0) MLOG("[keepalive] 自旋核被游戏提交打断 %llu 次（共 %llu 次，这次跑了 %.3f ms）", (unsigned long long)s, (unsigned long long)atomic_load(&g_ka_n), ms); }
+                else if (ms > 0.01) { double k = (target_us * .001) / ms; if (k > 2) k = 2; if (k < 0.5) k = 0.5; double m = n * k; n = m < 2000 ? 2000 : m > 400000 ? 400000 : (uint32_t)m; }
                 dispatch_semaphore_signal(sem); }];
             bg_gate();
             [cb commit];
@@ -3637,6 +3652,7 @@ void dm_gfx_set_flag(const char *name, int v) {
         if (v && (v < 100 || v > 1000)) { MLOG("[flag] keepalive_us requires 0 or 100..1000"); return; }
         atomic_store(&g_ka_target_us, v); MLOG("[flag] keepalive_us = %d", v); return;
     }
+    if (!strcmp(name, "keepalive_yield")) { atomic_store(&g_ka_yield, v ? 1 : 0); MLOG("[flag] keepalive_yield = %d（自旋核被打断 %llu 次 / 共 %llu 次）", v ? 1 : 0, (unsigned long long)atomic_load(&g_ka_stopped), (unsigned long long)atomic_load(&g_ka_n)); return; }
     if (!strcmp(name,"mesh_reuse")) { if(v<0||v>2)return;atomic_store(&g_mesh_reuse,v); MLOG("[flag] mesh_reuse = %d",v); return; }
     if (!strcmp(name,"mesh_batch")) { atomic_store(&g_mesh_batch,v!=0&&!TARGET_OS_IPHONE);atomic_store(&g_mesh_batch_dump,1);MLOG("[flag] mesh_batch = %d (requires draw_barriers 1)",v!=0);return; }
     if (!strcmp(name,"mesh_batch_stats")) { atomic_store(&g_mesh_batch_dump,1);return; }

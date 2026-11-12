@@ -1,6 +1,9 @@
 /* OOT (2026-11-08; the user allows lower picture quality for Ocarina of Time on the Mac): the game's spatial upscaling
-   network at the end of each frame, replaced by a MetalFX spatial upscale. OOT_NET_BYPASS=1 or "flag net_bypass 1";
-   default off (the user decides the default after comparing pictures).
+   network at the end of each frame, replaced by a MetalFX spatial upscale. Default on since 2026-11-08 evening (the user,
+   after comparing: with the game's network thin branches flickered continuously at the fixed 1536x864, with MetalFX they
+   did not; docked 42.1 -> 45.2 fps in the same-run switch of 145ee444). OOT_NET_BYPASS=0 or "flag net_bypass 0" (or the
+   settings panel, saved in graphics-net-bypass.txt) keeps the game's network. The flicker on the network path is not
+   fixed by this, only not shown; its cause (the network fed by the fixed resolution) is still to be found.
 
    What the frame does (TOTK_BIND_TRACE and dispatch timings, claude/oot-net-bypass c2 / c3 / d1, by storage and serial):
      fragment            writes T, the tonemapped picture, in a 1536x864 texture (NVN format 0x3f); its viewport is the
@@ -29,7 +32,9 @@ static __strong id<MTLTexture> g_nb_t; static const void *g_nb_t_mem;
 static struct { const void *mem; float w, h; uint64_t frame; } g_nb_vp[NB_VP]; static int g_nb_vp_next;
 static int netbp_on(void) {
     int v = atomic_load_explicit(&g_nb_on, memory_order_relaxed);
-    if (v < 0) { const char *e = getenv("OOT_NET_BYPASS"); v = e && strcmp(e, "0") != 0; atomic_store(&g_nb_on, v); if (v) MLOG("[net-bypass] OOT_NET_BYPASS=1: the end-of-frame network is replaced by MetalFX once a scaler is ready"); }
+    if (v < 0) { const char *e = getenv("OOT_NET_BYPASS"); v = e ? strcmp(e, "0") != 0 : 1; atomic_store(&g_nb_on, v);
+        if (!v) MLOG("[net-bypass] OOT_NET_BYPASS=0: the game's own end-of-frame network stays (MetalFX is the default)");
+        else MLOG("[net-bypass] %s: the end-of-frame network is replaced by MetalFX once a scaler is ready", e ? "OOT_NET_BYPASS=1" : "default"); }
     return v;
 }
 static void netbp_set(int on) { atomic_store(&g_nb_on, on != 0); MLOG("[flag] net_bypass = %d", on != 0); }
