@@ -156,6 +156,10 @@ static uint64_t fence_now(int *token);
 static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns);
 static void x_drain(void);
 static void replay_enter(void), replay_leave(void);   // the replay section (below)
+/* guest queue ordering (nvn_queue_order.inc) */
+static int qo_on(void); static void qo_init(void); static void qo_submit(const NVNqueue *q, int n, const uint64_t *h);
+static int qo_fence_sync(const NVNqueue *q, sync_t *s); static int qo_sync_wait(const sync_t *s, uint64_t timeout);
+static void qo_queue_wait_sync(const NVNqueue *q, const sync_t *s); static void qo_drain(const NVNqueue *q); static void qo_cpu_signal(volatile uint32_t *val); static void qo_queue_flush(const NVNqueue *q);
 static int async_replay(void);
 static int call_stats_on(void);
 static void call_stats_end(const void *cb, const uint8_t *copy);
@@ -819,7 +823,7 @@ static int sync_chain_left(int k) {
     if (lim == -2) { const char *e = getenv("TOTK_SYNC_CHAIN"); lim = e ? atoi(e) : 0; from = e && strchr(e, ':') ? strtoull(strchr(e, ':') + 1, NULL, 10) : 0; }
     return lim > 0 && g_frame >= from && atomic_fetch_add(&used[k], 1) < lim;
 }
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { qtrace("fence", q, (long)(uintptr_t)s, 0); (void)c; (void)f; int tok; uint64_t v = fence_now(&tok); ((sync_t *)s)->fenced = tok ? 5 : 1; ((sync_t *)s)->fence = v;
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { qtrace("fence", q, (long)(uintptr_t)s, 0); (void)c; (void)f; if (!async_replay() && qo_fence_sync(q, (sync_t *)s)) return; int tok; uint64_t v = fence_now(&tok); ((sync_t *)s)->fenced = tok ? 5 : 1; ((sync_t *)s)->fence = v;
     if (sync_chain_left(0)) { char w[96]; snprintf(w, sizeof w, "FenceSync sync=%p fence=%llu cond=%d flags=%d", (void *)s, (unsigned long long)v, (int)c, f); guest_chain(w); } }
 // 没围栏过的同步对象按真机行为等到超时；已围栏的只在 GPU 真正完成到该栅栏值后放行
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
@@ -854,6 +858,9 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
         if (sync_chain_left(1)) { char w[96]; snprintf(w, sizeof w, "SyncWait on an unfenced sync=%p timeout=%llu", (const void *)s, (unsigned long long)timeout); guest_chain(w); }
         return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     }
+    if (o->fenced & 8) {   // fenced on a guest queue whose work is still parked (nvn_queue_order.inc)
+        if (!qo_sync_wait(o, timeout)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    }
     int k = (o->fenced & 2) != 0, lg = synclog_env();
     if (lg) { atomic_fetch_add(&g_sw_calls[k], 1); if (o->fence == mtl_last_fence()) atomic_fetch_add(&g_sw_newest[k], 1); }
     int tok = (o->fenced & 4) != 0;
@@ -884,7 +891,7 @@ NVN(nvnEventInitialize, NVNboolean, NVNevent *e, const NVNeventBuilder *b) {
 NVN(nvnEventFinalize, void, NVNevent *e) { ((ev_t *)e)->magic = 0; }
 NVN(nvnEventGetValue, uint32_t, const NVNevent *e) { return *((const ev_t *)e)->val; }
 static void ev_signal(const ev_t *e, int mode, uint32_t v) { if (mode == NVN_EVENT_SIGNAL_MODE_ADD) *e->val += v; else *e->val = v; }
-NVN(nvnEventSignal, void, NVNevent *e, NVNeventSignalMode m, uint32_t v) { ev_signal((const ev_t *)e, m, v); }
+NVN(nvnEventSignal, void, NVNevent *e, NVNeventSignalMode m, uint32_t v) { ev_signal((const ev_t *)e, m, v); qo_cpu_signal(((const ev_t *)e)->val); }
 
 // ---------- 队列 ----------
 // ---------- Queue ----------
@@ -914,8 +921,8 @@ NVN(nvnQueueFinalize, void, NVNqueue *q) { ((queue_t *)q)->magic = 0; }
 NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *info) {
     (void)q; if (info) memset(info, 0, sizeof *info); return NVN_QUEUE_GET_ERROR_RESULT_GPU_NO_ERROR;
 }
-NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; }
-NVN(nvnQueueFinish, void, NVNqueue *q) { NVN_BLOCKING(); (void)q; totk_tl(TL_FINISH_IN, 0, 0); replay_enter(); mtl_finish(); mtl_wb_fence_done(); replay_leave(); totk_tl(TL_FINISH_OUT, 0, 0); }
+NVN(nvnQueueFlush, void, NVNqueue *q) { if (!async_replay()) qo_queue_flush(q); }
+NVN(nvnQueueFinish, void, NVNqueue *q) { NVN_BLOCKING(); if (!async_replay()) qo_drain(q); totk_tl(TL_FINISH_IN, 0, 0); replay_enter(); mtl_finish(); mtl_wb_fence_done(); replay_leave(); totk_tl(TL_FINISH_OUT, 0, 0); }
 
 // ---------- 命令缓冲：录进游戏的命令内存，提交时执行 CPU 可见副作用 ----------
 // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
@@ -1557,6 +1564,14 @@ NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, N
     (void)loc; (void)flags;
     uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_SIGNAL_EVENT, 24);
     const ev_t *ev = (const ev_t *)e; volatile uint32_t *val = ev->val; uint32_t mm = m;
+    memcpy(p + 8, &val, 8); memcpy(p + 16, &mm, 4); memcpy(p + 20, &v, 4);
+}
+/* Recorded (2026-11-08): another guest queue's SignalEvent must run first. The replay counts waits whose event value is
+   not yet reached when it meets them (nvn_mtl.m qwait_*): with every queue replayed in submit order on one Metal queue, a
+   consumer submitted before its producer would read the previous frame's data (nxnative #1245 / #1703). */
+NVN(nvnCommandBufferWaitEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventWaitMode m, uint32_t v) {
+    uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_WAIT_EVENT, 24);
+    volatile uint32_t *val = ((const ev_t *)e)->val; uint32_t mm = (uint32_t)m;
     memcpy(p + 8, &val, 8); memcpy(p + 16, &mm, 4); memcpy(p + 20, &v, 4);
 }
 NVN(nvnCommandBufferResetCounter, void, NVNcommandBuffer *c, NVNcounterType t) {
@@ -2690,7 +2705,7 @@ NVN(nvnCommandBufferFenceSync, void, NVNcommandBuffer *c, NVNsync *s, NVNsyncCon
 /* Recorded into a command buffer and replayed in order on the single Metal queue (as nvnCommandBufferWaitEvent): nothing to do
    at the record but the queue trace */
 NVN(nvnCommandBufferWaitSync, void, NVNcommandBuffer *c, const NVNsync *s) { qtrace("cb-wait", c, (long)(uintptr_t)s, 0); }
-NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { qtrace("queue-wait", q, (long)(uintptr_t)s, 0); return 1; }
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { qtrace("queue-wait", q, (long)(uintptr_t)s, 0); qo_queue_wait_sync(q, (const sync_t *)s); return 1; }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     NVN_BLOCKING(); qtrace("submit", q, n, 0);
     if (runtime_frametrace_event) runtime_frametrace_event(8);
@@ -2728,9 +2743,14 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
 #endif
         return;
     }
-    replay_enter(); submit_exec(n, (const uint64_t *)h, NULL); replay_leave();
+    { extern _Atomic uint64_t g_pf3_fence; uint64_t f = atomic_exchange(&g_pf3_fence, 0); if (f) mtl_wait(f, UINT64_MAX); }
+    if (qo_on()) {   // guest queue ordering: cross-queue waits honoured; fences and fenced syncs follow the committed work
+        replay_enter(); qo_init(); qo_submit(q, n, (const uint64_t *)h); replay_leave();
+    } else {
+    replay_enter(); { extern uint64_t g_qwait_queue; g_qwait_queue = (uint64_t)(uintptr_t)q; } submit_exec(n, (const uint64_t *)h, NULL); replay_leave();
     if (atomic_load(&g_fence_sync_used)) for (int i = 0; i < n; i++) fence_syncs((const uint8_t *)h[i], 0, mtl_last_fence(), 0);   /* without the translation thread: the fence the submit ended with */
     atomic_store(&g_sub_fence_prev, atomic_load(&g_sub_fence_last)); atomic_store(&g_sub_fence_last, mtl_last_fence());
+    }
     totk_tl(TL_SUB_OUT, 0, 0);
 #ifdef GAME_BOTW
     free(heap);
@@ -2785,6 +2805,10 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
     gfx_leave();
 }
 
+_Atomic uint64_t g_pf3_fence;   // TOTK_PRESENT_FINISH=3
+static void g_qwait_queue_set(uint64_t v) { extern uint64_t g_qwait_queue; g_qwait_queue = v; }
+#include "nvn_queue_order.inc"
+
 // 只影响 GPU 状态 / 只在 GPU 上执行的命令：空设备只计数（跳板已计）
 // Commands that only affect GPU state / only execute on the GPU: the null device only counts them (the thunk has already counted)
 static void nvn_nop(void) {}
@@ -2793,7 +2817,6 @@ static void nvn_nop(void) {}
 static const char *const g_nops[] = {
     "nvnCommandBufferSetPatchSize",
     "nvnCommandBufferSetShaderScratchMemory",
-    "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
 };
 #ifndef NVN_POOL_ISSUE_PROBE
@@ -3502,9 +3525,13 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         j.frame = g_frame + 1;   // dump_frame below advances g_frame before mtl_set_frame
         uint64_t no = x_push(&j);
         if (idx >= 0 && idx < 4) { g_xp_win = o; g_xp_job[idx] = no; }
-    } else { replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); }
-    { static int fin = -1; if (fin < 0) { fin = getenv("TOTK_PRESENT_FINISH") != NULL; if (fin) LOG("[nvn] TOTK_PRESENT_FINISH: each present waits until its frame has run on the GPU (diagnostic)"); }
-      if (fin) { if (async_replay() && idx >= 0 && idx < 4) x_wait_job(g_xp_job[idx]); void mtl_finish(void); mtl_finish(); } }
+    } else { qo_drain(q); replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); }
+    { static int fin = -1; if (fin < 0) { { const char *e = getenv("TOTK_PRESENT_FINISH"); fin = e ? (atoi(e) >= 2 && atoi(e) <= 3 ? atoi(e) : 1) : 0; } if (fin) LOG("[nvn] TOTK_PRESENT_FINISH: each present waits until its frame has run on the GPU (diagnostic)"); }
+      if (fin == 1) { if (async_replay() && idx >= 0 && idx < 4) x_wait_job(g_xp_job[idx]); void mtl_finish(void); mtl_finish(); }
+      /* TOTK_PRESENT_FINISH=2 (diagnostic): each present waits until the previous frame has run on the GPU: at most one frame in flight */
+      if (fin == 2) { static uint64_t prev; uint64_t cur = mtl_last_fence(); if (prev) mtl_wait(prev, UINT64_MAX); prev = cur; }
+      /* TOTK_PRESENT_FINISH=3 (diagnostic): the game's CPU runs on, but the next submission's replay waits until this frame has run on the GPU */
+      if (fin == 3) atomic_store(&g_pf3_fence, mtl_last_fence()); }
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
     trow(f, "@present_guest_ticks", o->interval);
