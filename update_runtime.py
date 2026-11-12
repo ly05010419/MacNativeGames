@@ -86,7 +86,7 @@ def app_identity(app):
 def runtime_chain():
     """The translation chain of this repository's runtime (DMSH_CHAIN)."""
     text = (build_app.GAME / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text()
-    return re.search(r'#define DMSH_CHAIN "([^"]+)"', text).group(1)
+    return re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: totk\b', text).group(1)   # the shared layer's line for the games built with games/totk
 
 
 def runtime_key_rule():

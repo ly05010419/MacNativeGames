@@ -538,6 +538,10 @@ class ContributionOwnerTests(unittest.TestCase):
     PROBE = TOTK / 'tests/shader_contrib/owner_probe.m'
     ROW = f'V\t{7:064x}\t{{}}'
 
+    # A game that builds the shared layer (games/<game>/third_party/d2r_gfx links to games/totk's) compiles it with its
+    # own macros, as its Makefile does (图形层统一).
+    GAME_DEFINES = {'oot': ['-DGAME_OOT=1', '-DGAME_NS2=1']}
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -547,7 +551,7 @@ class ContributionOwnerTests(unittest.TestCase):
             out = Path(cls.tmp.name) / f'probe-{game}'
             build = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
                                     '-DTOTK_CONTRIB_INBOX="http://127.0.0.1:9/v1/contrib"', '-DTOTK_GAME_VERSION="1.0.0"',
-                                    f'-I{copy.parent}', str(cls.PROBE),
+                                    *cls.GAME_DEFINES.get(game, []), f'-I{copy.parent}', str(cls.PROBE),
                                     '-framework', 'Foundation', '-o', str(out)], capture_output=True, text=True)
             cls.probes[game] = out if build.returncode == 0 else build.stderr[-800:]
 

@@ -199,7 +199,11 @@ static inline NSDictionary *totk_contrib_answers(NSDictionary *deps) {
     NSMutableDictionary *tex = [NSMutableDictionary dictionary];
     for (NSString *slot in answers[@"tex"]) {
         id kind = answers[@"tex"][slot];
+#ifdef GAME_OOT   /* Ocarina of Time: one translation per 2D slot (cdd24414); "*2d" is its list rows' wildcard */
         tex[slot] = [kind isEqual:@"*"] || [kind isEqual:@"*2d"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
+#else
+        tex[slot] = [kind isEqual:@"*"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
+#endif
     }
     answers[@"tex"] = tex;
     return answers;
@@ -229,6 +233,7 @@ static inline int totk_deps_match(NSDictionary *deps, NSDictionary *ans) {
         for (NSString *slot in want) {
             id w = want[slot], h = have[slot];
             if (!h) h = defaults[kind];
+#ifdef GAME_OOT   /* Ocarina of Time: a depth texture is no separate translation (cdd24414) */
             if ([kind isEqual:@"tex"] && [h isKindOfClass:NSString.class] && [h hasSuffix:@"_depth"]) h = [h substringToIndex:[h length] - 6];   // a list row from before 2026-11-09
             if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
                 if (![h isKindOfClass:NSString.class]) return 0;
@@ -238,6 +243,12 @@ static inline int totk_deps_match(NSDictionary *deps, NSDictionary *ans) {
                 if (![h isEqual:@"2d"] && ![h isEqual:@"2darray"]) return 0;
                 continue;
             }
+#else
+            if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
+                if (![h isKindOfClass:NSString.class] || [h hasSuffix:@"_depth"] != [w isEqual:@"*_depth"]) return 0;
+                continue;
+            }
+#endif
             if (![h isEqual:w]) return 0;
         }
     }
