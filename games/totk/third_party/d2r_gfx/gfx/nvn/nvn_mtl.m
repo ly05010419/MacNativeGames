@@ -6816,6 +6816,7 @@ static void pool_memo_index(NvPoolMemo *m) {   // rebuild the uhash -> way index
 }
 static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo_wdiff, g_pmemo_whole_diff, g_pmemo_split, g_pmemo_evict, g_pmemo_fill;   // [descriptor-demand-memo]
 @interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn;   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
+    int frmw;   /* #2070: fn is the lowered build of this compute shader (nvn_float_rmw.h, frmw_use_lowered) */
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
@@ -9824,11 +9825,79 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
    the kernels as built without it. (Checked while looking for Pokemon Pokopia's GPU hang, 2026-11-03: its 32 x 32 kernel
    70ab27e1 fits as built; the hang was a translator bug, patch 0006 AHalfSecond.) */
 #include "nvn_compute_trace.inc"
+/* #2070: a compute shader whose float adds on device memory this Mac's Metal compiler cannot build (Apple M5, macOS
+   26.6.2: the compiler service crashes, "XPC_ERROR_CONNECTION_INTERRUPTED") is built again from its MSL with those adds
+   lowered (nvn_float_rmw.h). Only such a shader, only after its native pipeline failed: on the same M5, 33 of Ocarina of
+   Time's 34 shaders with float adds build natively, and the lowered form costs more (18-29 ms against 0.11 ms on an M4
+   with 1536x864 threads adding to one word). The shaders lowered on this GPU are remembered, so the native attempt does
+   not crash the compiler service again: this Mac's list (pipelines/float-rmw-lowered.txt, "<arch>\t<key>"), and the
+   app's (build/pipelines/pipelines-<arch>-lowered.txt, written by packaging from the same list, build_app.py
+   mac_pipeline_files). OOT_FLOAT_RMW_LOWER=1 (tests) lowers every compute shader that has such adds. */
+#include "nvn_float_rmw.h"
+static NSMutableSet<NSString *> *g_frmw_keys;
+static os_unfair_lock g_frmw_lock = OS_UNFAIR_LOCK_INIT;
+static NSString *frmw_own_file(void) { return [par_dir() stringByAppendingPathComponent:@"float-rmw-lowered.txt"]; }
+static void frmw_load(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableSet *keys = [NSMutableSet set]; NSString *arch = g_dev.architecture.name ?: @"";
+        NSString *own = [NSString stringWithContentsOfFile:frmw_own_file() encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *line in [own componentsSeparatedByString:@"\n"]) {
+            NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+            if (c.count == 2 && [c[0] isEqualToString:arch] && c[1].length) [keys addObject:c[1]];
+        }
+#if !TARGET_OS_IPHONE
+        NSString *app = [exe_rel("pipelines") stringByAppendingFormat:@"/pipelines-%@-lowered.txt", arch];
+        for (NSString *key in [[NSString stringWithContentsOfFile:app encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"])
+            if (key.length) [keys addObject:key];
+#endif
+        if (keys.count) MLOG("[shader] %lu compute shaders take lowered float adds on this GPU (%s, #2070)", (unsigned long)keys.count, arch.UTF8String);
+        g_frmw_keys = keys;
+    });
+}
+static int frmw_force(void) { static int f = -1; if (f < 0) { const char *e = getenv("OOT_FLOAT_RMW_LOWER"); f = e && !strcmp(e, "1"); } return f; }
+static int frmw_listed(NvShader *cs) {
+    if (cs->frmw) return 0;
+    frmw_load(); os_unfair_lock_lock(&g_frmw_lock); int in = [g_frmw_keys containsObject:@(cs->key)]; os_unfair_lock_unlock(&g_frmw_lock);
+    return in || frmw_force();
+}
+/* cs->fn from the shader's MSL with its device float adds lowered; 0 (fn unchanged) when it has none or cannot be built. */
+static int frmw_use_lowered(NvShader *cs) {
+    if (cs->frmw || !cs->key[0]) return 0;
+    NSString *msl = [NSString stringWithContentsOfFile:totk_rt_file([@(cs->key) stringByAppendingString:@".metal"]) encoding:NSUTF8StringEncoding error:nil];
+    if (!frmw_has_device_float_rmw(msl.UTF8String)) return 0;
+    int n = 0; char *lowered = frmw_lower(msl.UTF8String, &n);
+    if (!lowered) { MLOG("[RED] compute shader %s: its float adds are not in the form nvn_float_rmw.h lowers (#2070)", cs->key); return 0; }
+    NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(@(lowered), &e); free(lowered);
+    id<MTLFunction> fn = lib ? [lib newFunctionWithName:cs->fn.name] : nil;
+    if (!fn) { MLOG("[RED] compute shader %s: the lowered float adds do not compile: %s", cs->key, e.localizedDescription.UTF8String); return 0; }
+    fn.label = cs->fn.label; cs->fn = fn; cs->frmw = 1;
+    MLOG("[shader] compute shader %s: %d float adds on device memory lowered (#2070)", cs->key, n);
+    return 1;
+}
+/* After a native compute pipeline failed: lower and remember when the compiler service went away on it (#2070). */
+static int frmw_retry(NvShader *cs, NSError *e) {
+    if (cs->frmw || !e || ![e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"] || !frmw_use_lowered(cs)) return 0;
+    NSString *key = @(cs->key), *arch = g_dev.architecture.name ?: @"";
+    frmw_load(); os_unfair_lock_lock(&g_frmw_lock);
+    int fresh = ![g_frmw_keys containsObject:key]; if (fresh) [g_frmw_keys addObject:key];
+    if (fresh) {
+        [NSFileManager.defaultManager createDirectoryAtPath:par_dir() withIntermediateDirectories:YES attributes:nil error:nil];
+        NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:frmw_own_file()];
+        if (!h) { [@"" writeToFile:frmw_own_file() atomically:NO encoding:NSUTF8StringEncoding error:nil]; h = [NSFileHandle fileHandleForWritingAtPath:frmw_own_file()]; }
+        [h seekToEndOfFile]; [h writeData:[[NSString stringWithFormat:@"%@\t%@\n", arch, key] dataUsingEncoding:NSUTF8StringEncoding]]; [h closeFile];
+    }
+    os_unfair_lock_unlock(&g_frmw_lock);
+    MLOG("[RED] compute shader %s: this GPU's compiler cannot build its float adds (%s); built with them lowered and remembered (#2070)", cs->key, arch.UTF8String);
+    return 1;
+}
 static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
     if (!cs || !cs->fn) return nil;
+    if (frmw_listed(cs)) frmw_use_lowered(cs);   // #2070: lowered on this GPU before (or OOT_FLOAT_RMW_LOWER=1)
     cs_trace_function(cs);
     MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn;
     id<MTLComputePipelineState> ps = cs_new_(cs, d, e);
+    if (!ps && frmw_retry(cs, e ? *e : nil)) { d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn; ps = cs_new_(cs, d, e); }
     NSUInteger group = (NSUInteger)cs->rf.tg[0] * cs->rf.tg[1] * cs->rf.tg[2];
     if (!ps || group <= ps.maxTotalThreadsPerThreadgroup) return ps;
     NSUInteger had = ps.maxTotalThreadsPerThreadgroup;
