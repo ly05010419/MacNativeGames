@@ -9382,7 +9382,7 @@ void mtl_prog_prefetch(const prog_t *p) {
         uint32_t length = ctl_code_len(control); if (!length || length > 16 * 1024 * 1024) continue;
         char key[65]; shader_key_of(control, code, length, key);
         if (prog_timing_on()) prog_timing("set", p, i, ctl_stage(control, code), key);
-        if (note) totk_rt_note_set(@(key));
+        if (note) { NSString *k = @(key); totk_rt_note_set(k); totk_rt_dump_unseeded(control, code, length, k); }
     }
     if (!prefetch_on() || !p || !p->nstage) return;
     static NSMutableSet<NSString *> *seen; static dispatch_queue_t q; static dispatch_semaphore_t slots; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;

@@ -360,6 +360,45 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     return nil;
 }
 #include "nvn_ctl.h"
+/* Diagnostic, off unless TOTK_SHADER_DUMP_UNSEEDED names a folder (2026-11-12, Pokopia): a shader the game sets whose key is
+   not among the game's shaders (the seed's game-shader-keys.json, prepare_ns2_seed.py) is written there once, its control
+   section (0xe0 bytes NVN2, 0x880 NVN) as <key>.ctl and its code area as <key>.code, with a line in index.tsv (key, stage,
+   control +0x30 / +0x38 / +0x40 / +0x44, the addresses). Of the 80 such shaders this Mac's Pokopia met in play, 20 have
+   the instructions and c1 of a shader in the game files: what differs is in the control section or the padding, which
+   these bytes show; the other 60 are in no game file. */
+void totk_rt_dump_unseeded(const uint8_t *control, const void *code, uint32_t length, NSString *key) {
+    static NSString *dir; static NSSet<NSString *> *game; static NSMutableSet<NSString *> *done;
+    static dispatch_once_t once; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    dispatch_once(&once, ^{
+        const char *e = getenv("TOTK_SHADER_DUMP_UNSEEDED");
+        if (!e || !*e) return;
+        NSData *data = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"game-shader-keys.json"]];
+        NSDictionary *ident = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSArray *keys = [ident isKindOfClass:NSDictionary.class] ? ident[@"keys"] : nil;
+        if (![keys isKindOfClass:NSArray.class]) { LOG("[shader-dump] no game-shader-keys.json in the seed: nothing is dumped"); return; }
+        if (![NSFileManager.defaultManager createDirectoryAtPath:@(e) withIntermediateDirectories:YES attributes:nil error:nil]) {
+            LOG("[shader-dump] cannot make %s: nothing is dumped", e); return; }
+        game = [NSSet setWithArray:keys]; done = [NSMutableSet set]; dir = @(e);
+        LOG("[shader-dump] shaders outside the game's %lu go to %s", (unsigned long)game.count, e);
+    });
+    if (!dir || !control || !code || !key || [game containsObject:key]) return;
+    pthread_mutex_lock(&mu);
+    BOOL fresh = ![done containsObject:key];
+    if (fresh) [done addObject:key];
+    pthread_mutex_unlock(&mu);
+    if (!fresh) return;
+    size_t clen = nvn2_ctl(control) ? 0xe0 : 0x880;
+    [[NSData dataWithBytes:control length:clen] writeToFile:[dir stringByAppendingFormat:@"/%@.ctl", key] atomically:YES];
+    [[NSData dataWithBytes:code length:length] writeToFile:[dir stringByAppendingFormat:@"/%@.code", key] atomically:YES];
+    uint32_t w[4];   /* control +0x30 (its size), +0x38 (instructions), +0x40 (c1 start), +0x44 (code area) */
+    memcpy(&w[0], control + 0x30, 4); memcpy(&w[1], control + 0x38, 4); memcpy(&w[2], control + 0x40, 4); memcpy(&w[3], control + 0x44, 4);
+    NSString *line = [NSString stringWithFormat:@"%@\t%d\t%#x\t%#x\t%#x\t%#x\t%p\t%p\n", key, ctl_stage(control, code), w[0], w[1], w[2], w[3],
+                      (const void *)control, code];
+    pthread_mutex_lock(&mu);
+    FILE *f = fopen([dir stringByAppendingPathComponent:@"index.tsv"].fileSystemRepresentation, "a");
+    if (f) { fputs(line.UTF8String, f); fclose(f); }
+    pthread_mutex_unlock(&mu);
+}
 static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 5 ? @"cs" : nil; }   // gs: run as compute (nvn_geometry_rt.inc)
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
