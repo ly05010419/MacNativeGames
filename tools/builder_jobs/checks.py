@@ -54,7 +54,7 @@ def checks(work_root):
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
     add('git', shutil.which('git', path=os.pathsep.join(['/opt/homebrew/bin', '/usr/bin'])), 'git', 'xcode-select --install')
-    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), 'brew install python@3.14')
+    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))
     free = _free_gb(work_root)
     add('disk', free is not None and free >= FREE_GB,
         t(f'{FREE_GB} GB free for the work folder ({"unknown" if free is None else f"{free:.0f} GB"} free at {work_root})',

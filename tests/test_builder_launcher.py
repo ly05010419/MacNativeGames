@@ -47,7 +47,7 @@ class Launcher(unittest.TestCase):
     def test_without_tk_a_double_click_says_how_to_get_it(self):
         done = self.run_script(tk=False)
         self.assertEqual((done.returncode, self.recorded()), (1, None))
-        self.assertIn('The window needs Tk: brew install python-tk@3.14', done.stdout)
+        self.assertIn("The window needs Tk: python.org's Python 3.14 has it", done.stdout)
         self.assertIn(f'"{self.python}" -m tools.builder --cli --game totk', done.stdout)
 
     def test_without_tk_arguments_still_reach_the_text_mode(self):        # audit point 1

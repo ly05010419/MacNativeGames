@@ -119,7 +119,7 @@ EN = {
     'gui.load_late': 'The saved settings arrived late: they fill the next game you choose; nothing you chose changed.',
     'gui.settings_problem': 'Saved settings: {problem}',
     'gui.load_error': 'The saved settings could not be read: {error}',
-    'gui.no_tk': 'Tk is not available in this Python (brew install python-tk@3.14); using the text mode.',
+    'gui.no_tk': 'Tk is not available in this Python (python.org\'s Python 3.14 has it; for Homebrew\'s, brew install python-tk@3.14); using the text mode.',
     'gui.choose': 'Choose...',
     'gui.hint.default_next_to_game': 'Empty: next to the game file.',
     'gui.field.game': 'Game file (XCI or NSP)',

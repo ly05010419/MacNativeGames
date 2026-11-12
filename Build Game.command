@@ -31,14 +31,14 @@ else
     done
 fi
 if [ -z "$PY" ]; then
-    echo "Python 3.14 is needed: brew install python@3.14"
+    echo "Python 3.14 is needed: install it from https://www.python.org/downloads/macos/ (it includes Tk), or brew install python@3.14"
     wait_and_exit
 fi
 
 cd "$(dirname "$0")" || wait_and_exit
 
 if [ "$#" -eq 0 ] && ! "$PY" -c 'import tkinter' 2>/dev/null; then
-    echo "The window needs Tk: brew install python-tk@3.14"
+    echo "The window needs Tk: python.org's Python 3.14 has it (https://www.python.org/downloads/macos/); for Homebrew's, brew install python-tk@3.14"
     echo "Or use the text mode from a terminal, for example:"
     echo "  \"$PY\" -m tools.builder --cli --game totk --game-file <game.xci> --keys <prod.keys>"
     wait_and_exit

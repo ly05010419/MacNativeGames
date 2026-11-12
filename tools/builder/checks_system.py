@@ -134,6 +134,10 @@ class Git:
         return CheckResult(self.id, Status.BLOCK, 'git_missing', '', 'xcode-select --install')
 
 
+# python.org's installer links python3.14 into /usr/local/bin and carries Tk and no Homebrew; Homebrew's works too.
+PYTHON_FIX = 'install Python 3.14 from https://www.python.org/downloads/macos/ (or brew install python@3.14)'
+
+
 class BuildPython:
     id, requires = 'build_python', ()
 
@@ -141,7 +145,7 @@ class BuildPython:
         path = os.pathsep.join(ctx.tool_paths)
         python = next((p for p in (shutil.which(n, path=path) for n in ('python3.14', 'python3.15')) if p), None)
         if not python:
-            return CheckResult(self.id, Status.BLOCK, 'build_python_missing', path, 'brew install python@3.14')
+            return CheckResult(self.id, Status.BLOCK, 'build_python_missing', path, PYTHON_FIX)
         r = _run(ctx, [python, '-c', 'import platform; print(platform.machine())'])
         if r.outcome is not Outcome.OK:
             return _failed(self.id, r)

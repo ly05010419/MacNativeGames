@@ -93,7 +93,7 @@ class BuildPythonCheck(Base):
         return FakeRunner({(str(python), '-c', 'import platform; print(platform.machine())'): answer})
 
     def test_missing(self):
-        self.assertEqual(self.check(BuildPython()), (Status.BLOCK, 'build_python_missing', 'brew install python@3.14'))
+        self.assertEqual(self.check(BuildPython()), (Status.BLOCK, 'build_python_missing', 'install Python 3.14 from https://www.python.org/downloads/macos/ (or brew install python@3.14)'))
 
     def test_arm64(self):
         python = self.executable('python3.14')

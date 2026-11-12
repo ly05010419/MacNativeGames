@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -64,8 +63,8 @@ def python_archive(cache):
     cache.mkdir(parents=True, exist_ok=True)
     partial = archive.with_name(archive.name + '.partial')
     say(f'downloading {PYTHON_URL}')
-    with urllib.request.urlopen(PYTHON_URL) as r, open(partial, 'wb') as f:
-        shutil.copyfileobj(r, f)
+    # macOS's curl, not urllib: python.org's Python has no CA certificates until its Install Certificates step
+    subprocess.run(['/usr/bin/curl', '-fL', '--retry', '3', '-o', partial, PYTHON_URL], check=True)
     got = sha256(partial)
     if got != PYTHON_SHA256:
         partial.unlink()
