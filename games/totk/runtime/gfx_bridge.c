@@ -1,5 +1,6 @@
 /* Bind the donor graphics interface to this native runtime, without donor game hooks. */
 #include "runtime.h"
+#include "game_version.h"
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <stdio.h>
@@ -8,6 +9,15 @@
 #include "../third_party/d2r_gfx/gfx/nvn/nvn_mtl.h"
 typedef struct{const char *name;void *fn;const char *why;} GfxEntry;
 uint64_t g_t0_ns;
+
+/* TOTK 1.0.0/1.2.1 share the verified NVN 55 SDK; keep other profiles unchanged. */
+int runtime_nvn_call_commands_reference_only(void) {
+#if defined(GAME_TOTK) && !defined(TOTK_GAME_V143)
+    return 1;
+#else
+    return 0;
+#endif
+}
 
 uint64_t now_ns(void){return runtime_now_ns();}
 uint64_t guest_ns(void){return runtime_now_ns();}

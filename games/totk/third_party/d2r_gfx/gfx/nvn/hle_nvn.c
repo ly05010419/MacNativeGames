@@ -1380,7 +1380,8 @@ static NVNcommandHandle botw_handle_copy(NVNcommandHandle h) {
 NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->recording != 0; }
 // TOTK: the referenced recording is copied into the caller at this point (it is complete and valid now). The game
 // recycles command memory in small steps, so a handle may be gone by the time the caller is submitted; inlining
-// keeps the caller self-contained. Copying at the call position is the observable behaviour of both entry points.
+// keeps the caller self-contained. Both entry points inline the host body for replay, but the verified SDK's
+// CallCommands adds control references, not new GPU command bytes. CopyCommands retains copy accounting.
 /* TOTK_CALL_STATS=1: how much of a frame comes from called command lists and how much of that repeats unchanged
    (same handle, same bytes as the previous frame): the measure of what caching translated lists could save. Printed
    every 300 frames by nvnQueuePresentTexture. */
@@ -1470,13 +1471,24 @@ NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcom
     for (int i = 0; i < n; i++) inline_recording(c, h[i]);
 #endif
 }
+extern int runtime_nvn_call_commands_reference_only(void) __attribute__((weak_import));
+static void inline_call_recording(NVNcommandBuffer *c, NVNcommandHandle h) {
+    if (!runtime_nvn_call_commands_reference_only || !runtime_nvn_call_commands_reference_only()) {
+        inline_recording(c, h);
+        return;
+    }
+    cmd_t *o = CB(c); size_t before = o->hw_used, last = o->last_rec;
+    inline_recording(c, h);
+    /* Keep the host replay copy, but preserve the parent's GPU-byte charge cursor. */
+    o->hw_used = before; o->last_rec = last;
+}
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     if (cmdlog_env()) for (int i = 0; i < n; i++) LOG("[cmd] CallCommands cb=%p handle=%#llx", (void *)c, (unsigned long long)h[i]);
     life_call(c, n, h, "call");
 #ifdef GAME_BOTW
-    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
+    for (int i = 0; i < n; i++) inline_call_recording(c, botw_handle_copy(h[i]));
 #else
-    for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+    for (int i = 0; i < n; i++) inline_call_recording(c, h[i]);
 #endif
 }
 NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
