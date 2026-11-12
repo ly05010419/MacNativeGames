@@ -2587,21 +2587,51 @@ typedef struct { uint64_t addr, fence, val; int known; } cpend_ent;
 #define CPEND_N 4096
 static cpend_ent g_cpend[CPEND_N]; static unsigned g_cpend_head, g_cpend_tail; static pthread_mutex_t g_cpend_mu = PTHREAD_MUTEX_INITIALIZER;   // TOTK: [tail, head) may still be pending (fences rise with the index, so completions clear a prefix)
 static uint64_t g_crep_addr[1024], g_crep_frame[1024]; static uint32_t g_crep_type[1024]; static unsigned g_crep_n;   // diagnostic: recent counter report addresses
+/* Index (2026-11-08): address -> the ring index + 1 of its newest record, under g_cpend_mu. Records of one address enter in
+   order and complete in fence order, so the newest one answers exactly as the backward scan did (cond_eval ran that scan
+   twice per conditional over up to 4,096 records: 0.7 ms a frame). An address without a slot falls back to the scan. */
+#define CPEND_IDX 8192
+static struct { uint64_t addr; unsigned idx; } g_cpend_idx[CPEND_IDX];
+static uint64_t g_cpend_index_ok, g_cpend_index_bad;   // OOT_POOL_MEMO_CHECK: index answers compared with the scan
+static int g_cpend_idx_lossy;   // an address lost its slot to a full probe window: until the ring drains, an absent address must be scanned for
+static int pool_memo_check_on(void);
+static unsigned *cpend_slot(uint64_t addr, int insert) {
+    unsigned h = (unsigned)(((addr >> 3) * 0x9e3779b97f4a7c15ull) >> 40) & (CPEND_IDX - 1);
+    for (int k = 0; k < 16; k++, h = (h + 1) & (CPEND_IDX - 1)) {
+        if (g_cpend_idx[h].addr == addr) return &g_cpend_idx[h].idx;
+        if (!g_cpend_idx[h].addr) { if (!insert) return NULL; g_cpend_idx[h].addr = addr; return &g_cpend_idx[h].idx; }
+    }
+    if (!insert) return NULL;
+    g_cpend_idx[h].addr = addr; g_cpend_idx_lossy = 1; return &g_cpend_idx[h].idx;   // the probe window is full: this slot's old address loses its index
+}
 static void cpend_push(uint64_t addr, uint64_t fence, uint64_t val, int known) {
-    pthread_mutex_lock(&g_cpend_mu); g_cpend[g_cpend_head % CPEND_N] = (cpend_ent){addr, fence, val, known}; g_cpend_head++; pthread_mutex_unlock(&g_cpend_mu);
+    pthread_mutex_lock(&g_cpend_mu); g_cpend[g_cpend_head % CPEND_N] = (cpend_ent){addr, fence, val, known}; *cpend_slot(addr, 1) = g_cpend_head + 1; g_cpend_head++; pthread_mutex_unlock(&g_cpend_mu);
 }
 static void cpend_done(uint64_t fence) {   // the records of this submit are now in memory
     pthread_mutex_lock(&g_cpend_mu);
     if (g_cpend_head - g_cpend_tail > CPEND_N) g_cpend_tail = g_cpend_head - CPEND_N;
     for (unsigned i = g_cpend_tail; i != g_cpend_head; i++) if (g_cpend[i % CPEND_N].addr && g_cpend[i % CPEND_N].fence <= fence) g_cpend[i % CPEND_N].addr = 0;
     while (g_cpend_tail != g_cpend_head && !g_cpend[g_cpend_tail % CPEND_N].addr) g_cpend_tail++;
+    if (g_cpend_tail == g_cpend_head && g_cpend_idx_lossy) { memset(g_cpend_idx, 0, sizeof g_cpend_idx); g_cpend_idx_lossy = 0; }   // nothing pending: the index starts over complete
     pthread_mutex_unlock(&g_cpend_mu);
 }
 // 1 = value known (written to *val), 0 = pending but unknown, -1 = no pending write (read memory)
 static int cpend_lookup(uint64_t addr, uint64_t *val) {
     int r = -1; pthread_mutex_lock(&g_cpend_mu);
-    unsigned n = g_cpend_head - g_cpend_tail; if (n > CPEND_N) n = CPEND_N;   // only the part that may still be pending (it was all 4,096 slots twice per conditional)
-    for (unsigned k = 0; k < n; k++) { const cpend_ent *e = &g_cpend[(g_cpend_head - 1 - k) % CPEND_N]; if (e->addr == addr) { r = e->known; *val = e->val; break; } }
+    unsigned n = g_cpend_head - g_cpend_tail; if (n > CPEND_N) n = CPEND_N;   // only the part that may still be pending
+    const unsigned *s = cpend_slot(addr, 0);
+    if (s) {   // the newest record of this address, if it is still in the pending window and not completed (addr cleared)
+        unsigned i = *s ? *s - 1 : 0;
+        if (*s && g_cpend_head - i <= n) { const cpend_ent *e = &g_cpend[i % CPEND_N]; if (e->addr == addr) { r = e->known; *val = e->val; } }
+        if (pool_memo_check_on()) {   // OOT_POOL_MEMO_CHECK=1: the index against the scan it replaces
+            int r2 = -1; uint64_t v2 = 0;
+            for (unsigned k = 0; k < n; k++) { const cpend_ent *e = &g_cpend[(g_cpend_head - 1 - k) % CPEND_N]; if (e->addr == addr) { r2 = e->known; v2 = e->val; break; } }
+            if (r2 != r || (r == 1 && v2 != *val)) g_cpend_index_bad++; else g_cpend_index_ok++;
+        }
+    } else if (g_cpend_idx_lossy || pool_memo_check_on()) {   // no slot: nothing was ever pushed for this address (unless an index entry was lost)
+        for (unsigned k = 0; k < n; k++) { const cpend_ent *e = &g_cpend[(g_cpend_head - 1 - k) % CPEND_N]; if (e->addr == addr) { r = e->known; *val = e->val; break; } }
+        if (!g_cpend_idx_lossy) { if (r != -1) g_cpend_index_bad++; else g_cpend_index_ok++; }
+    }
     pthread_mutex_unlock(&g_cpend_mu); return r;
 }
 extern uint64_t g_draw_skip[16];
@@ -6467,9 +6497,20 @@ static void shmap_load(void) {
 enum { POOL_MEMO_WAYS = 256, POOL_MEMO_SLOTS = 512 };   // 8 ways answered 23 % (mm1), 64 ways 54 % with evictions ~ fills (mm2): a shader drawn with more objects than ways cycles through them every frame
 struct pool_memo_src { uint64_t lo, size, gpu, stamp, poolgen, hostwrite; };
 typedef struct { uint32_t src, idx, val; } pool_memo_word;   // an input word an exact proof read: source binding, word index, value
+/* What descriptor_pool_gpu_need needs to know about a demand bitmap besides its bits (2026-11-08): the words that are nonzero
+   (an exact proof sets a few bits of a ~212-word bitmap; nnz = -1 when more than POOL_HINT_W words or a whole proof, then every
+   word is checked) and the table slot plus mask epoch under which it was last found covered (a repeat skips the check). */
+enum { POOL_HINT_W = 24 };
+typedef struct { int nnz; uint16_t w[POOL_HINT_W]; const void *cover_slot; uint64_t cover_epoch; } pool_need_hint;
+static inline void pool_hint_add(pool_need_hint *h, uint32_t w) {
+    if (h->nnz < 0) return;
+    for (int k = 0; k < h->nnz; k++) if (h->w[k] == w) return;
+    if (h->nnz < POOL_HINT_W) h->w[h->nnz++] = (uint16_t)w; else h->nnz = -1;
+}
 typedef struct {
     int valid, nid, nwords; uint64_t n, use, whole, uhash;   // use: fill / hit order (the LRU victim has the smallest); whole: sources proved whole (bit = rf.b index); uhash: of the uniform list
     pool_memo_word *words; struct pool_memo_src src[8];   // src: identity of each source in srcidx order, checked for whole sources
+    pool_need_hint hint;   // descriptor_pool_gpu_need: the bitmap's nonzero words and the table slot / mask epoch it was last found covered under
 } pool_memo_ent;
 @interface NvPoolMemo : NSObject { @public
     pool_memo_ent ent[POOL_MEMO_WAYS]; uint16_t slot[POOL_MEMO_SLOTS]; int mru; uint64_t clock;   // slot: open-addressing index by uhash, way + 1 (0 = empty); mru: the way last filled or hit
@@ -6497,6 +6538,8 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
        (pool_input: address, size, capture, dirty stamp, pool and host-write generations), so the same captures give the same
        bitmap without evaluating the index programs again. Uniform loads are revalidated and rebound on every hit; submission identity prevents arena-address reuse (eval_index was 15% of the submit thread, 2026-11-07). */
     NvPoolMemo *pool_memo[NVN_REFL_MAXB];
+    pool_need_hint *pool_hint[NVN_REFL_MAXB];   /* per binding aid: the hint of the bitmap pool_demand holds (a memo entry's, or the scratch below), or NULL */
+    pool_need_hint pool_hint_scratch[NVN_REFL_MAXB];
     NSDictionary *pool_reads;
     NSArray *raw_write_domains; int raw_write_domains_loaded;
     NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts;
@@ -11703,7 +11746,8 @@ static void raw_write_capture(NvShader *sh,int stage,const uint64_t *slots,int r
    shader memory. Each immutable snapshot owns resource IDs for the bound pool,
    with one zero descriptor after its end. It never truncates IDs to 32 slots. */
 typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask,*dead_mask,*trans_mask; int base,n,kind,tt,pf,partial;
-    uint64_t *valid_mask;   /* entries checked under the generation tuple above: a draw whose proved demand set lies inside it needs no revalidation (2026-11-08) */ } oot_pool_snapshot;
+    uint64_t *valid_mask;   /* entries checked under the generation tuple above: a draw whose proved demand set lies inside it needs no revalidation (2026-11-08) */
+    uint64_t cover_epoch;   /* bumped whenever valid_mask starts over (new slot, tuple change); it only grows in between, so a bitmap once inside it stays inside (pool_memo_ent cover) */ } oot_pool_snapshot;
 static oot_pool_snapshot g_descriptor_pools[16];static unsigned g_descriptor_pool_next;
 static uint64_t g_descriptor_pool_hits,g_descriptor_pool_misses,g_descriptor_pool_scanned,g_descriptor_pool_splits,g_descriptor_pool_need_hits;
 static uint64_t g_descriptor_pool_type_skips,g_descriptor_pool_uncreated_skips;
@@ -11752,7 +11796,13 @@ static int shader_uses_pool(NvShader *sh) {
     return 0;
 }
 /* Caller holds registry lock. Returned table and all resources survive submission. */
-static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t *need) {
+static uint64_t g_descriptor_pool_cover_hits,g_descriptor_pool_cover_bad;
+static int pool_memo_check_on(void);   // below (OOT_POOL_MEMO_CHECK)
+static uint64_t descriptor_pool_gpu_need_c(const nvn_rbind *binding,const uint64_t *need,pool_need_hint *h);
+static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t *need) { return descriptor_pool_gpu_need_c(binding,need,NULL); }
+/* h (2026-11-08): the hint of `need` (pool_need_hint): its nonzero words, so the coverage check touches those instead of all
+   n/64 words (2,100 checks of ~212 words a frame, 1.3 ms), and the slot / mask epoch it was last found covered under. */
+static uint64_t descriptor_pool_gpu_need_c(const nvn_rbind *binding,const uint64_t *need,pool_need_hint *h) {
     int samp=binding->kind==NVN_RB_SAMPP,base=samp?S.samp_base:S.tex_base;
     int n=samp?S.samp_pool_n:S.tex_pool_n-base;if(n<1)n=1;
     if(n>(samp?4096:1048576))MDIE("descriptor pool exceeds NVN handle range");
@@ -11764,9 +11814,17 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
        textures, pools, serials or dirty pages changed since) reads the same table: skip the per-draw revalidation.
        Time Profiler 2026-11-08: that revalidation was 1.05 ms of a 19 ms frame on the replay threads. */
     if(need&&slot&&slot->valid_mask&&descriptor_pool_valid(slot)){
-        size_t words=((size_t)n+63)/64;int covered=1;
-        for(size_t w=0;covered&&w<words;w++)if(need[w]&~slot->valid_mask[w])covered=0;
-        if(covered){g_descriptor_pool_need_hits++;return slot->buffer.gpuAddress;}
+        size_t words=((size_t)n+63)/64;
+        if(h&&h->cover_slot==slot&&h->cover_epoch==slot->cover_epoch){
+            if(pool_memo_check_on()){int covered=1;for(size_t w=0;covered&&w<words;w++)if(need[w]&~slot->valid_mask[w])covered=0;if(!covered)g_descriptor_pool_cover_bad++;}
+            g_descriptor_pool_need_hits++;g_descriptor_pool_cover_hits++;return slot->buffer.gpuAddress;
+        }
+        int covered=1;
+        if(h&&h->nnz>=0){   // only the words the proof set (word 0 is always among them)
+            for(int k=0;covered&&k<h->nnz;k++){size_t w=h->w[k];if(w>=words||(need[w]&~slot->valid_mask[w]))covered=0;}
+            if(covered&&pool_memo_check_on()){for(size_t w=0;covered&&w<words;w++)if(need[w]&~slot->valid_mask[w])covered=0;if(!covered)g_descriptor_pool_cover_bad++;}
+        } else for(size_t w=0;covered&&w<words;w++)if(need[w]&~slot->valid_mask[w])covered=0;
+        if(covered){g_descriptor_pool_need_hits++;if(h){h->cover_slot=slot;h->cover_epoch=slot->cover_epoch;}return slot->buffer.gpuAddress;}
     }
     int replace=slot==NULL;if(replace)slot=&g_descriptor_pools[g_descriptor_pool_next++%16];
     uint64_t reg=g_reg_gen,ser=g_ser_gen,dirty=nvn_dirty_now(),revision=g_descriptor_revision,memory=atomic_load_explicit(&g_pool_gen,memory_order_acquire);
@@ -11864,7 +11922,7 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
         descriptor_profile_pool(&dp,full,checked,buffer!=nil,2,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
         if(replace){free(cpu_mask);free(dead_mask);free(trans_mask);}else slot->ser=0;
         free(changed);
-        return descriptor_pool_gpu_need(binding,need);
+        return descriptor_pool_gpu_need_c(binding,need,h);
     }
     if(buffer){
         res_add(buffer);if(slot->buffer)defer_obj_release(slot->buffer);
@@ -11875,11 +11933,12 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     /* The validated mask: entries checked under the generation tuple stored below. A tuple change (or a new slot) starts
        it over; a complete or incremental pass (no demand set) leaves the whole table current. */
     { int same=!replace&&slot->reg==reg&&slot->ser==ser&&slot->dirty==dirty&&slot->sub==g_sub_serial&&slot->revision==revision&&slot->memory==memory;
-      if(replace){free(slot->valid_mask);slot->valid_mask=calloc(words,sizeof *slot->valid_mask);if(!slot->valid_mask)MDIE("descriptor pool validated mask");}
-      else if(!same)memset(slot->valid_mask,0,words*sizeof *slot->valid_mask);
+      if(replace){free(slot->valid_mask);slot->valid_mask=calloc(words,sizeof *slot->valid_mask);if(!slot->valid_mask)MDIE("descriptor pool validated mask");slot->cover_epoch++;}
+      else if(!same){memset(slot->valid_mask,0,words*sizeof *slot->valid_mask);slot->cover_epoch++;}
       if(need)for(size_t w=0;w<words;w++)slot->valid_mask[w]|=changed[w];
       else{for(size_t w=0;w<words;w++)slot->valid_mask[w]=UINT64_MAX;if(n%64)slot->valid_mask[words-1]=(UINT64_C(1)<<(n%64))-1;} }
     free(changed);
+    if(h&&need){h->cover_slot=slot;h->cover_epoch=slot->cover_epoch;}   // the mask now holds this bitmap (changed ⊇ need)
     slot->reg=reg;slot->ser=ser;slot->dirty=dirty;slot->sub=g_sub_serial;
     slot->partial=need!=NULL;slot->revision=revision;slot->memory=memory;slot->cpu_mask=cpu_mask;slot->dead_mask=dead_mask;slot->trans_mask=trans_mask;slot->base=base;slot->n=n;slot->kind=binding->kind;slot->tt=binding->dtt;slot->pf=binding->dpf;
     return slot->buffer.gpuAddress;
@@ -12107,7 +12166,7 @@ static int pool_memo_lookup(NvShader *sh,NvPoolMemo *m,uint64_t n,const int *src
 static void pool_demand_prepare(NvShader *sh) {
     if(atomic_exchange(&g_pool_wait_dump,0))MLOG("[pool-wait-stats] precise=%d prior=%llu current=%llu wait-ms=%.3f capture-new=%llu",pool_wait_precise_on(),(unsigned long long)g_pool_wait_prior,(unsigned long long)g_pool_wait_current,(double)g_pool_wait_ns/1e6,(unsigned long long)g_pool_input_misses);
     if(!sh->pool_demand)sh->pool_demand=[NSMutableDictionary dictionary];
-    [sh->pool_demand removeAllObjects];sh->pool_capture_mask=0;
+    [sh->pool_demand removeAllObjects];sh->pool_capture_mask=0;memset(sh->pool_hint,0,sizeof sh->pool_hint);
     int gate=!pool_demand_on()?1:!usnap_on()?2:totk_vpool_aliases_used()?3:pool_draw_writes(sh)?4:0;
     if(gate){static unsigned reports[5];g_pool_demand_excluded++;if(reports[gate]++<2)MLOG("[descriptor-demand-excluded] shader=%s stage=%d reason=%d",sh->key,sh->stage,gate);return;}
     int n=S.tex_pool_n-S.tex_base;if(n<=0||n>1048576)return;
@@ -12144,11 +12203,12 @@ static void pool_demand_prepare(NvShader *sh) {
         int check=hitw>=0&&pool_memo_check_on();
         if(hitw>=0){
             memo->ent[hitw].use=++memo->clock;memo->mru=hitw;
-            if(!check){sh->pool_demand[@(b->aid)]=memo->need[hitw];g_pool_demand_proved++;g_pool_demand_memo++;continue;}
+            if(!check){sh->pool_demand[@(b->aid)]=memo->need[hitw];sh->pool_hint[b->aid]=&memo->ent[hitw].hint;g_pool_demand_proved++;g_pool_demand_memo++;continue;}
         }
         NSMutableData *uniforms=memo_ok?[NSMutableData data]:nil;pool_memo_reader reader={sh,uniforms,1};
         NSMutableData *data=[NSMutableData dataWithLength:words*8];uint64_t *need=data.mutableBytes;need[0]|=1; // proved constant-zero branch
         pool_memo_word wbuf[8*64];int nw=0,nid=0;uint64_t whole=0;struct pool_memo_src ident[8];
+        pool_need_hint hint={.nnz=1,.w={0}};   // word 0: the constant-zero branch bit set above
         for(uint64_t bits=sources;bits;bits&=bits-1){
             int i=__builtin_ctzll(bits);const p_bind_buf *u=&S.ssbo[sh->stage][sh->rf.b[i].reg];
             NSArray *programs=sh->pool_reads[@(b->aid)][@(i)];uint32_t indices[64];int count=nvn_pool_index_values(programs,pool_memo_read,&reader,indices,64);
@@ -12156,8 +12216,8 @@ static void pool_demand_prepare(NvShader *sh) {
             if(count<0){static unsigned reports;if(reports++<4)MLOG("[descriptor-index-whole] shader=%s source=%d programs=%lu bytes=%llu",sh->key,i,(unsigned long)programs.count,u->size);}
             pool_input *input=pool_input_get(u,count>=0?0:n);
             sh->pool_capture_gpu[i]=input->gpu;sh->pool_capture_mask|=UINT64_C(1)<<i;
-            if(count>=0){for(int k=0;k<count;k++){uint32_t v=input->cpu[indices[k]],id_=v&1048575u;if(id_<(uint32_t)n)need[id_/64]|=UINT64_C(1)<<(id_%64);if(nw<(int)(sizeof wbuf/sizeof *wbuf))wbuf[nw++]=(pool_memo_word){(uint32_t)i,indices[k],v};}g_pool_demand_exact++;}
-            else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];whole|=UINT64_C(1)<<i;g_pool_demand_whole++;}
+            if(count>=0){for(int k=0;k<count;k++){uint32_t v=input->cpu[indices[k]],id_=v&1048575u;if(id_<(uint32_t)n){need[id_/64]|=UINT64_C(1)<<(id_%64);pool_hint_add(&hint,id_/64);}if(nw<(int)(sizeof wbuf/sizeof *wbuf))wbuf[nw++]=(pool_memo_word){(uint32_t)i,indices[k],v};}g_pool_demand_exact++;}
+            else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];whole|=UINT64_C(1)<<i;hint.nnz=-1;g_pool_demand_whole++;}
             if(nid<8)ident[nid++]=(struct pool_memo_src){input->lo,input->size,input->gpu,input->stamp,input->poolgen,input->hostwrite};
         }
         if(check){   // OOT_POOL_MEMO_CHECK=1: the memo's answer against the proof just made
@@ -12165,6 +12225,7 @@ static void pool_demand_prepare(NvShader *sh) {
             else{g_pool_memo_check_bad++;if(g_pool_memo_check_bad<=8)MLOG("【红】[descriptor-demand-check] shader=%s binding=%d: the memo's bitmap (way %d) differs from a fresh proof, n=%d",sh->key,b->aid,hitw,n);}
         }
         sh->pool_demand[@(b->aid)]=data;g_pool_demand_proved++;
+        sh->pool_hint_scratch[b->aid]=hint;sh->pool_hint[b->aid]=&sh->pool_hint_scratch[b->aid];   // until a memo entry keeps it (below)
         if(check)continue;
         // Record the proof: only when every uniform read succeeded, no wait split the submission and every source was captured.
         // A whole proof is not kept: its answer depends on the input copy's identity, which changes every frame, so it could
@@ -12175,14 +12236,14 @@ static void pool_demand_prepare(NvShader *sh) {
         *e=(pool_memo_ent){.valid=1,.nid=nid,.nwords=nw,.n=(uint64_t)n,.use=++memo->clock,.whole=whole,.uhash=pool_memo_hash(uniforms.bytes,uniforms.length),.words=nw?malloc((size_t)nw*sizeof *wbuf):NULL};
         if(nw&&!e->words){e->valid=0;pool_memo_index(memo);continue;}
         if(nw)memcpy(e->words,wbuf,(size_t)nw*sizeof *wbuf);memcpy(e->src,ident,(size_t)nid*sizeof ident[0]);
-        memo->reads[w]=sh->pool_reads;memo->uniforms[w]=uniforms;memo->need[w]=data;memo->mru=w;g_pmemo_fill++;
+        memo->reads[w]=sh->pool_reads;memo->uniforms[w]=uniforms;memo->need[w]=data;memo->mru=w;g_pmemo_fill++;e->hint=hint;sh->pool_hint[b->aid]=&e->hint;
         if(evict){g_pmemo_evict++;pool_memo_index(memo);}
         else{unsigned s=(unsigned)(e->uhash%POOL_MEMO_SLOTS);while(memo->slot[s])s=(s+1)%POOL_MEMO_SLOTS;memo->slot[s]=(uint16_t)(w+1);}
     }
 }
 static const uint64_t *pool_demand_for(NvShader *sh,const nvn_rbind *b) { return [sh->pool_demand objectForKey:@(b->aid)].bytes; }
 static uint64_t descriptor_pool_for_shader(NvShader *sh,const nvn_rbind *b,int bound){
- (void)bound; return descriptor_pool_gpu_need(b,pool_demand_for(sh,b));
+ (void)bound; return descriptor_pool_gpu_need_c(b,pool_demand_for(sh,b),sh->pool_hint[b->aid]);
 }
 static void prepare_shader_pools(NvShader *sh) {
     if(!shader_uses_pool(sh))return;
@@ -12195,7 +12256,7 @@ static void prepare_shader_pools(NvShader *sh) {
         g_tex_prepare_split=0;g_descriptor_pool_splits+=g_enc!=nil;rp_end();
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
-    if(frame>=last+300&&pool_memo_check_on())MLOG("[descriptor-demand-check] memo answers verified against a fresh proof: same=%llu different=%llu",(unsigned long long)g_pool_memo_check_ok,(unsigned long long)g_pool_memo_check_bad);
+    if(frame>=last+300&&pool_memo_check_on())MLOG("[descriptor-demand-check] memo answers verified against a fresh proof: same=%llu different=%llu; table coverage memo hits=%llu wrong=%llu; conditional-render index ok=%llu wrong=%llu",(unsigned long long)g_pool_memo_check_ok,(unsigned long long)g_pool_memo_check_bad,(unsigned long long)g_descriptor_pool_cover_hits,(unsigned long long)g_descriptor_pool_cover_bad,(unsigned long long)g_cpend_index_ok,(unsigned long long)g_cpend_index_bad);
     if(frame>=last+300)MLOG("[descriptor-demand-memo] hits=%llu fills=%llu evictions=%llu misses: no-entry=%llu uniform-read=%llu uniforms-differ=%llu words-differ=%llu whole-differ=%llu split=%llu",(unsigned long long)g_pmemo_hit,(unsigned long long)g_pmemo_fill,(unsigned long long)g_pmemo_evict,(unsigned long long)g_pmemo_none,(unsigned long long)g_pmemo_uread,(unsigned long long)g_pmemo_udiff,(unsigned long long)g_pmemo_wdiff,(unsigned long long)g_pmemo_whole_diff,(unsigned long long)g_pmemo_split);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu need-hits=%llu hits=%llu misses=%llu scanned=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips,(unsigned long long)g_descriptor_pool_need_hits,(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned);
     if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
