@@ -1,10 +1,11 @@
-"""The Controls tab's table (E6 S6.2): the game's inputs with their names, and the labels of an Xbox controller's
-buttons. A view's helper (texts and order); the layout itself is controls_file's.
+"""The Controls page's table (E6 S6.2): the game's inputs with their names, and the labels of an Xbox controller's
+buttons. A view's helper (texts and order) that MNG Launcher's Controls page reads (tools/builder_jobs/tab_controls.py);
+the layout itself is controls_file's.
 
 The layout: actions on the left (one row per Switch input, named after its main use in the game; an input whose use is
 not confirmed yet is shown as "<button> - to confirm"), a drawn Xbox controller on the right whose every button can be
 clicked. The names are runtime/controller_map.h's (controller_switch_names, controller_physical_names;
-tests/test_builder_gui_controls.py reads the header). The drawn buttons are named by where they sit on an Xbox
+tests/test_builder_controls_file.py reads the header). The drawn buttons are named by where they sit on an Xbox
 controller (south is the bottom one). E9 S9.1 C2: one table of names per game, every one in the same order of Switch
 inputs; Breath of the Wild's names are provisional until they are confirmed in play."""
 
@@ -32,8 +33,3 @@ def button_for(mapping, switch_input):
     """The physical button that drives switch_input in mapping (physical -> input), or None."""
     return next((p for p, s in mapping.items() if s == switch_input), None)
 
-
-def input_name(game, switch_input):
-    """(the row's name, confirmed): 'Jump', or 'ZR' for an input whose use is not confirmed."""
-    name = NAMES[game][switch_input]
-    return (name, True) if name else (SWITCH_LABELS[switch_input], False)

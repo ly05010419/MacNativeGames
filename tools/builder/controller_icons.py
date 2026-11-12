@@ -1,13 +1,13 @@
-"""The Controls tab's icons jobs (E6 S6.3): what the tab needs to offer "Update the game's button icons", and making
-the icons mod (the venv first when the player agreed). Run on load_jobs by controller.controls; the made mod goes to
-the Mods part, the only writer of library.json (controller_mods.install_icons).
+"""The Controls page's icons (E6 S6.3): what the page needs to offer "Update the game's button icons", and making
+the icons mod (the venv first when the player agreed). MNG Launcher's Controls page (tools/builder_jobs/tab_controls.py)
+calls these; the made mod goes into the library through controller_mods.install_icons, under the Mods page's lock.
 
-E9 S9.1 C5: only the games in ICONS are offered; for the others the tab says so, with no button."""
+E9 S9.1 C5: only the games in ICONS are offered; for the others the page says so, with no button."""
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from tools.builder import game_state, icons_env, icons_mod, icons_plan
-from tools.builder import controller_controls      # read_state, at call time (it imports this module)
+from tools.builder import controller_controls
 from tools.builder.controller_mods import LATEST, _library
 
 ICONS = ('totk', 'botw')            # the games whose button icons the builder can make (make_button_icons.py, and

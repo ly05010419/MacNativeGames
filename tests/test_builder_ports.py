@@ -1,4 +1,4 @@
-"""tools/builder/ports.py (S1.1b): CommandRunner (cases 1-9 of the mini plan), DiskInfo, Clock.
+"""tools/builder/ports.py (S1.1b): CommandRunner (cases 1-9 of the mini plan), Clock.
 
 Every test that starts a process registers a cleanup that SIGKILLs its group and reaps the leader, before any
 assertion, so a failing assertion leaves no process behind. No test synchronises on a PID file, and none asserts a
@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.builder import ports
-from tools.builder.ports import CommandRunner, DiskInfo, Outcome, RealClock
+from tools.builder.ports import CommandRunner, Outcome, RealClock
 
 REAL_KILLPG = os.killpg
 
@@ -156,50 +156,6 @@ class SimulatedKill(unittest.TestCase):
     def test_elapsed_comes_from_the_injected_clock(self):
         clock = SimpleNamespace(monotonic=iter([10.0, 12.5]).__next__, wall=time.time)
         self.assertEqual(CommandRunner(clock).run(['/usr/bin/true']).elapsed_s, 2.5)
-
-
-class Disk(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name).resolve()
-        self.disk = DiskInfo()
-
-    def test_missing_path_probes_its_nearest_existing_ancestor(self):
-        info = self.disk.probe(self.tmp / 'a/b/c')
-        self.assertEqual((info.asked, info.probed), (self.tmp / 'a/b/c', self.tmp))
-        self.assertGreater(info.free_bytes, 0)
-
-    def test_file_probes_itself(self):
-        (self.tmp / 'f').write_text('x')
-        self.assertEqual(self.disk.probe(self.tmp / 'f').probed, self.tmp / 'f')
-
-    def test_relative_path_is_resolved_against_the_current_folder(self):
-        old = os.getcwd()
-        self.addCleanup(os.chdir, old)
-        os.chdir(self.tmp)
-        self.assertEqual(self.disk.probe('not/yet').probed, self.tmp)
-
-    def test_symlink_probes_its_target(self):
-        (self.tmp / 'target').mkdir()
-        (self.tmp / 'link').symlink_to(self.tmp / 'target')
-        self.assertEqual(self.disk.probe(self.tmp / 'link/new').probed, self.tmp / 'target')
-
-    def test_same_volume_for_a_missing_folder_inside_tmp(self):
-        self.assertTrue(self.disk.same_volume(self.tmp / 'a/b', self.tmp))
-
-    def test_devices_compared_simulated(self):
-        (self.tmp / 'x').mkdir()
-        devices = {self.tmp / 'x': 1, self.tmp: 2}
-        with patch.object(ports, '_stat', side_effect=lambda p: SimpleNamespace(st_dev=devices[p])):
-            self.assertFalse(self.disk.same_volume(self.tmp / 'x', self.tmp))
-            self.assertTrue(self.disk.same_volume(self.tmp / 'x', self.tmp / 'x/new'))
-
-    def test_errors_on_the_existing_ancestor_propagate(self):
-        with patch.object(ports, '_stat', side_effect=PermissionError('denied')):
-            self.assertRaises(PermissionError, self.disk.probe, self.tmp)
-        with patch.object(ports, '_disk_usage', side_effect=OSError('I/O error')):
-            self.assertRaises(OSError, self.disk.probe, self.tmp)
 
 
 class Clock(unittest.TestCase):

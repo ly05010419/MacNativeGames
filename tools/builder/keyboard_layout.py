@@ -1,15 +1,15 @@
-"""The keyboard layout a game's keyboard.txt describes, and the key names its tests show.
+"""The keyboard layout a game's keyboard.txt describes, and the names the key test shows.
 
 The game's runtime reads ``keyboard.txt`` beside ``controls.txt`` (docs/controls.md) and, for every
 action it writes there, accepts one or two Mac keys; an action it does not list keeps the
-runtime's default binding (games/totk/runtime/keyboard_map.h, keymap_default). The builder's
-keyboard test needs the same binding table the test result is compared with, so this module
+runtime's default binding (games/totk/runtime/keyboard_map.h, keymap_default). The Controls
+page's key test needs the same binding table the test result is compared with, so this module
 mirrors that default table and parses the file the same way the runtime does: comments, ``none``
 for an empty slot, conflicting explicit inputs rejected, and a bad line
 leaving the whole file ignored with the problem reported.
 
-Like the other pure builder models (settings.py, paths.py, checks.py) this module has no Tk and no
-process: the GUI calls it, the tests call it, and nothing here touches a game.
+Like the other models in tools/builder this module has no window and no process: MNG Launcher's Controls page
+(tools/builder_jobs/tab_controls.py) and the button icons script call it, and nothing here touches a game.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ TITLES = {
     'screenshot': 'Screenshot',
 }
 
-# Every input name keyboard.txt accepts, with what a person calls it. A key event maps into this
-# vocabulary through key_name() before it is looked up, so the two sides agree on spelling.
+# Every input name keyboard.txt accepts, with what a person calls it. The Controls page's key test maps a key code
+# into this vocabulary (tools/builder_jobs/tab_controls.key_codes, from the runtime's keyboard_map.h).
 INPUTS = {
     **{c: c.upper() for c in 'abcdefghijklmnopqrstuvwxyz'},
     **{c: c for c in '0123456789'},
@@ -78,52 +78,6 @@ DEFAULT = {
     'camera_left': ('arrow_left',), 'camera_right': ('arrow_right',),
     'screenshot': ('p',),
 }
-
-# Tk reports X11 keysyms; these are the ones keyboard.txt names. A key Tk spells differently under
-# Shift (Shift+1 is 'exclam') is folded back to the key the layout knows.
-_KEYSYMS = {
-    **{c: c for c in 'abcdefghijklmnopqrstuvwxyz'},
-    **{c.upper(): c for c in 'abcdefghijklmnopqrstuvwxyz'},
-    **{c: c for c in '0123456789'},
-    'space': 'space', 'Return': 'return', 'KP_Enter': 'keypad_enter', 'Escape': 'escape',
-    'Tab': 'tab', 'ISO_Left_Tab': 'tab', 'BackSpace': 'backspace', 'Delete': 'forward_delete',
-    'Shift_L': 'shift', 'Shift_R': 'right_shift',
-    'Control_L': 'control', 'Control_R': 'right_control',
-    'Option_L': 'option', 'Option_R': 'right_option',
-    'Alt_L': 'option', 'Alt_R': 'right_option',
-    'Up': 'arrow_up', 'Down': 'arrow_down', 'Left': 'arrow_left', 'Right': 'arrow_right',
-    'Home': 'home', 'End': 'end', 'Prior': 'page_up', 'Next': 'page_down',
-    'grave': 'grave', 'minus': 'minus', 'equal': 'equal',
-    'bracketleft': 'left_bracket', 'bracketright': 'right_bracket', 'backslash': 'backslash',
-    'semicolon': 'semicolon', 'apostrophe': 'quote', 'comma': 'comma', 'period': 'period',
-    'slash': 'slash',
-    'KP_0': 'keypad_0', 'KP_1': 'keypad_1', 'KP_2': 'keypad_2', 'KP_3': 'keypad_3',
-    'KP_4': 'keypad_4', 'KP_5': 'keypad_5', 'KP_6': 'keypad_6', 'KP_7': 'keypad_7',
-    'KP_8': 'keypad_8', 'KP_9': 'keypad_9',
-    'KP_Decimal': 'keypad_period', 'KP_Add': 'keypad_plus', 'KP_Subtract': 'keypad_minus',
-    'KP_Multiply': 'keypad_multiply', 'KP_Divide': 'keypad_divide',
-    **{f'F{n}': f'f{n}' for n in range(1, 13)},
-}
-
-# Shifted punctuation arrives as its own keysym on X11; the layout names the key itself.
-_SHIFTED = {
-    'exclam': '1', 'at': '2', 'numbersign': '3', 'dollar': '4', 'percent': '5',
-    'asciicircum': '6', 'ampersand': '7', 'asterisk': '8', 'parenleft': '9', 'parenright': '0',
-    'underscore': 'minus', 'plus': 'equal', 'braceleft': 'left_bracket',
-    'braceright': 'right_bracket', 'bar': 'backslash', 'colon': 'semicolon',
-    'quotedbl': 'quote', 'less': 'comma', 'greater': 'period', 'question': 'slash',
-    'asciitilde': 'grave',
-}
-
-# Modifier keys the layout does not bind, but the test still names. The system's own shortcuts use
-# them, so the test shows them without ever claiming to act on them.
-UNBOUND_MODIFIERS = {'Command_L': 'Command', 'Command_R': 'Command', 'Meta_L': 'Meta',
-                     'Meta_R': 'Meta', 'Super_L': 'Super', 'Super_R': 'Super',
-                     'Caps_Lock': 'Caps Lock', 'fn': 'fn'}
-
-_LABELS = {**INPUTS, 'KP_Enter': 'Keypad Enter', 'ISO_Left_Tab': 'Tab'}
-_LABELS.update(UNBOUND_MODIFIERS)
-
 
 @dataclass(frozen=True)
 class Layout:
@@ -236,46 +190,3 @@ def owner(layout: Layout, name: str) -> tuple:
         if found:
             return found
     return ()
-
-
-def key_name(keysym: str) -> str | None:
-    """The keyboard.txt input a Tk keysym means, or None for a key the layout cannot bind."""
-    keysym = keysym or ''
-    if keysym in _KEYSYMS:
-        return _KEYSYMS[keysym]
-    if keysym in _SHIFTED:
-        return _SHIFTED[keysym]
-    return None
-
-
-def label(keysym: str) -> str:
-    """What the test shows for a key: the layout's name when it has one, else the sensor's."""
-    name = key_name(keysym)
-    if name is not None:
-        return INPUTS.get(name, name)
-    if keysym in _LABELS:
-        return _LABELS[keysym]
-    return keysym or '?'
-
-
-def modifiers(state: int, pressed: frozenset) -> tuple:
-    """The modifiers a press carries, as labels. ``state`` is Tk's bit mask (Shift 0x1, Control
-    0x4, Option 0x8, Command 0x10 on macOS), ``pressed`` the modifier keys still held; either can
-    report a modifier the other misses, and naming it is better than hiding it."""
-    found = []
-    if state & 0x1 or 'Shift_L' in pressed or 'Shift_R' in pressed:
-        found.append('Shift')
-    if state & 0x4 or 'Control_L' in pressed or 'Control_R' in pressed:
-        found.append('Control')
-    if state & 0x8 and 'Option_L' not in pressed and 'Option_R' not in pressed \
-            and 'Alt_L' not in pressed and 'Alt_R' not in pressed:
-        found.append('Command')         # macOS reports Option as 0x10 too; a bare 0x8 is Command
-    elif state & 0x10 or {'Option_L', 'Option_R', 'Alt_L', 'Alt_R'} & pressed:
-        found.append('Option')
-    return tuple(found)
-
-
-def is_modifier(keysym: str) -> bool:
-    return keysym in ('Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Option_L', 'Option_R',
-                      'Alt_L', 'Alt_R', 'Command_L', 'Command_R', 'Meta_L', 'Meta_R',
-                      'Super_L', 'Super_R', 'Caps_Lock', 'fn')

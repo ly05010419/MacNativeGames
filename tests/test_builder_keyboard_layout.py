@@ -1,5 +1,5 @@
 """tools/builder/keyboard_layout.py (S2.1): the key names and the default table against runtime/keyboard_map.h itself,
-the layout file's rules (as its header comment states them), and the Tk keysym to input mapping the key test uses."""
+the layout file's rules (as its header comment states them), and which actions a key drives (the key test's owner)."""
 import re
 import tempfile
 import unittest
@@ -92,34 +92,6 @@ class Layouts(unittest.TestCase):
 
 
 class Names(unittest.TestCase):
-    def test_a_key_a_person_presses_becomes_the_input_name(self):
-        self.assertEqual(kl.key_name('a'), 'a')
-        self.assertEqual(kl.key_name('Return'), 'return')
-        self.assertEqual(kl.key_name('Shift_L'), 'shift')
-        self.assertEqual(kl.key_name('Right'), 'arrow_right')
-        self.assertEqual(kl.key_name('F5'), 'f5')
-        self.assertEqual(kl.key_name('KP_Multiply'), 'keypad_multiply')
-        self.assertIsNone(kl.key_name('Command_L'))               # the system's key, never bound
-
-    def test_shifted_punctuation_is_the_number_key_underneath(self):
-        self.assertEqual(kl.key_name('exclam'), '1')
-        self.assertEqual(kl.key_name('plus'), 'equal')
-        self.assertEqual(kl.key_name('asterisk'), '8')
-
-    def test_labels_are_what_the_window_shows(self):
-        self.assertEqual(kl.label('Return'), 'Return')
-        self.assertEqual(kl.label('exclam'), '1')
-        self.assertEqual(kl.label('Prior'), 'Page Up')
-        self.assertEqual(kl.label('a'), 'A')
-
-    def test_modifiers_come_from_the_state_bits_and_the_held_keys(self):
-        self.assertEqual(kl.modifiers(0x1, set()), ('Shift',))
-        self.assertEqual(kl.modifiers(0x1 | 0x4, set()), ('Shift', 'Control'))
-        self.assertEqual(kl.modifiers(0, {'Option_L'}), ('Option',))
-        self.assertEqual(kl.modifiers(0, {'Shift_L'}), ('Shift',))
-        self.assertTrue(kl.is_modifier('Command_L'))
-        self.assertFalse(kl.is_modifier('a'))
-
     def test_owner_names_the_default_actions_and_nothing_else(self):
         layout = kl.default_layout()
         self.assertEqual(kl.owner(layout, 'e'), ('a',))

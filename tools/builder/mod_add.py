@@ -15,10 +15,6 @@ from tools.builder import mod_archive, mod_find, mod_library, mod_tools
 UNZIP = '.unzip'
 
 
-def is_archive(path):
-    return Path(path).is_file()
-
-
 def add(runner, repo, app, version, library, source, name=None, cancel=None):
     """The ids added, in order; mod_find.Refused says why when nothing usable is there."""
     source, unzip = Path(source), library.root / UNZIP

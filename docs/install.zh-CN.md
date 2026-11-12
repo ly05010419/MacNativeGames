@@ -51,25 +51,9 @@
 
 ## 用窗口打包
 
-**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开（帮你的 AI 就这样做），第一、二步会自动填好。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。**打包和更新请用 MNG Launcher。** 下面的旧窗口在模组、按键、存档和设置几页搬进 MNG Launcher 之前继续用；它的打包页也还能用，目录规则相同。
+**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开（帮你的 AI 就这样做），第一、二步会自动填好。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。**打包和更新请用 MNG Launcher。**
 
-旧窗口（管模组、按键、存档和设置）：装好下面第 1 步的工具（窗口要 Tk：python.org 的 Python 自带；用 Homebrew 的 Python 要再 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
-
-- **Build**（打包）：选游戏，再选游戏文件、更新、`prod.keys`，游戏需要时再选固件或系统字体文件夹（工作目录和输出的 App 在 **Advanced** 里）。**Check files** 会检查这台 Mac 和你的文件，有问题就列出来，能修的附上修复命令。**Build app** 用这些路径运行 `build_app.py`，显示四个阶段、用时和日志；打完一键 **Open app** 或 **Show in Finder**。**Cancel** 会中断打包，下次用同一个工作目录再打会接着做。窗口只记住你选的路径，不复制文件；日志在 `~/Library/Logs/MacNativeGames/builder-<游戏>-<日期>-<时间>.log`。打包时别关掉跟着打开的终端窗口。
-- **Settings**（设置；王国之泪 1.4.3、旷野之息 1.9.0）：开局画面、补帧（这台 Mac 的显卡支持 Metal 4 MetalFX 补帧时才有）、边缘平滑、远处地面更清晰，1.4.3 还有画面比例。**▶ Play** 启动游戏。画面、补帧、边缘平滑、画面比例就是游戏里设置面板（1 键）存的那份设置，从访达打开也生效，在哪边改都一样；只有“远处地面更清晰”面板里没有，只在用 **▶ Play** 启动时生效。游戏开着时不改设置，先关掉游戏。
-- **Mods**（模组；王国之泪 1.4.3、旷野之息 1.9.0）：**Add mod...** 选你自己的模组文件夹（带 `romfs/`；王国之泪的代码补丁放 `exefs/`），窗口不带任何模组。每个模组都会对照打好的 App 检查，路径对得上这个版本才能打开；**Apply mods** 按顺序（下面的优先）装进游戏的模组文件夹，原来的文件夹留作备份，下次启动游戏生效。TKMM、BCML 的包不收，请用它们自己的管理器装。
-- **Controls**（按键）：在手柄图上改键位，存进 `controls.txt`；王国之泪还能顺带把游戏里的按键图标换成对应的样子。
-- **更新**：用 `git clone` 下载的，窗口打开时会看 MacNativeGames 的 `main` 有没有新提交；在 `main` 上点 **Update** 只做快进，本地改过文件或有自己的提交时不动、告诉你。更新后关掉窗口重新打开，再打包一次。用 ZIP 下载的不能自己更新，请重新下载。
-
-没有 Tk 时 **Build Game.command** 会提示。同样的检查和打包也能在终端里用文字模式跑：
-
-```sh
-python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
-```
-
-`--dry-run` 只打印要运行的 `build_app.py` 命令；`python3.14 -m tools.builder --help` 列出全部选项。
-
-**下载 ZIP 后第一次双击**：macOS 会拦下没打开过的下载脚本。在**系统设置 › 隐私与安全性**里对 `Build Game.command` 点**仍要打开**，或在这个文件夹里运行一次 `xattr -d com.apple.quarantine "Build Game.command"`。用 `git clone` 下载的不受影响。
+旧窗口已经去掉（不再有 **Build Game.command** 和 `python3.14 -m tools.builder`），它的几页都在 MNG Launcher 里：**打包**、**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置和**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装进游戏；不带任何模组）、**按键**（`controls.txt` 里的手柄布局、按键图标和按键测试）、**存储**（工作目录和着色器缓存）、**存档**（备份和恢复）。每页都写着它做什么；细节见 [builder-app.md](builder-app.md)。这几页背后的模型怎么写（给改代码的人和 AI）：[builder.md](builder.md)。
 
 ## 打包 App
 
@@ -77,8 +61,8 @@ python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --key
 
 ```sh
 xcode-select --install
-# Python 3.14：从 https://www.python.org/downloads/macos/ 下载安装包（自带 Tk，打包窗口要用）
-#   或者用 Homebrew：brew install python@3.14 python-tk@3.14
+# Python 3.14：从 https://www.python.org/downloads/macos/ 下载安装包
+#   或者用 Homebrew：brew install python@3.14
 # opus、libvpx、dav1d 不用装：打包时从固定版本的源码自己编
 ```
 

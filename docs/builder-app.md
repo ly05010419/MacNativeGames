@@ -5,7 +5,9 @@
 and `update_runtime.py` as the command line, with the same folder rule; it adds no build step of its own. Mac apps of every game `build_app.py` builds (Tears of the
 Kingdom, Breath of the Wild, Ocarina of Time, Donkey Kong Bananza, Pokémon Pokopia) for now; iPhone and iPad come next.
 
-The older Tk window (`tools/builder`, [builder.md](builder.md)) stays for its Mods, Controls and Saves tabs.
+Its Settings, Mods, Controls, Storage and Saves pages took over the older Tk window's tabs, which is gone; the rules
+behind them stay in `tools/builder`, the models the pages call through `tools/builder_jobs/tab_*.py`
+([builder.md](builder.md)).
 
 ## Make it
 

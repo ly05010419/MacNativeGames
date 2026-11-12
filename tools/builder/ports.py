@@ -1,13 +1,11 @@
-"""The small interfaces the builder's core depends on, and their real adapters (S1.1b).
+"""The small interfaces the models depend on, and their real adapters (S1.1b): a clock and a command runner.
 
-The core receives these objects; only the composition root creates the real ones, and tests pass fakes with the same
-methods."""
+The models receive these objects; the caller (tools/builder_jobs/tab_*.py) creates the real ones, and tests pass fakes
+with the same methods."""
 from dataclasses import dataclass
 from enum import Enum
 import errno
 import os
-from pathlib import Path
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -108,36 +106,3 @@ class CommandRunner:
 def _read(file):
     file.seek(0)
     return file.read().decode('utf-8', errors='replace')
-
-
-@dataclass(frozen=True)
-class VolumeInfo:
-    asked: Path
-    probed: Path         # the nearest existing ancestor of asked (asked itself when it exists)
-    free_bytes: int
-    device: int
-
-
-def _stat(path):
-    """os.stat; patched by tests to simulate other devices and errors."""
-    return os.stat(path)
-
-
-def _disk_usage(path):
-    """shutil.disk_usage; patched by tests to simulate errors."""
-    return shutil.disk_usage(path)
-
-
-class DiskInfo:
-    """Free space and volume of a path that may not exist yet, like build_app.py's existing_volume_path."""
-
-    def probe(self, path) -> VolumeInfo:
-        asked = Path(path)
-        probed = asked.resolve()        # relative to the current folder; existing symlinks are followed
-        while not probed.exists():
-            probed = probed.parent
-        device = _stat(probed).st_dev   # an OSError here propagates
-        return VolumeInfo(asked, probed, _disk_usage(probed).free, device)
-
-    def same_volume(self, a, b) -> bool:
-        return self.probe(a).device == self.probe(b).device
