@@ -5,6 +5,7 @@ the runtime binds a point-sampling sampler for them, and only a slot the transla
 """
 import importlib.util
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -59,8 +60,13 @@ class Sources(unittest.TestCase):
         self.assertIn('"*2d"', service)
 
     def test_the_runtime_answers_without_a_depth_suffix(self):
-        source = (GAME / 'third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text(errors='replace')
-        answers = re.search(r'static NSDictionary \*rt_answers\(int st\) \{.*?\n\}', source, re.S).group(0)
+        # The shared layer (games/oot/third_party/d2r_gfx links to games/totk's) keeps TOTK's _depth answers under
+        # #else: read the source as Ocarina of Time's build compiles it.
+        nvn = GAME / 'third_party/d2r_gfx/gfx/nvn'
+        run = subprocess.run(['xcrun', 'clang', '-E', '-P', '-fobjc-arc', '-DGAME_OOT=1', '-DGAME_NS2=1', f'-I{nvn / "include"}',
+                              str(nvn / 'nvn_mtl.m')], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+        answers = re.search(r'static NSDictionary \*rt_answers\(int st\) \{.*?\n\}', run.stdout, re.S).group(0)
         self.assertNotIn('_depth', answers)
 
     def test_depth_formats_read_as_d001(self):
