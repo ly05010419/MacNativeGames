@@ -107,6 +107,22 @@ static id<MTLFunction> mtk_empty_export_fn(id<MTLFunction> base,NvShader *ms) {
     if(!fn)MDIE("mesh empty export %s: %s",ms->key,error.localizedDescription.UTF8String);
     fn_note_src(fn,source);cache[key]=fn;return fn;
 }
+/* The mesh pipeline for a filled key, on any thread (the first draw, or the warm-up); nil and *error when Metal refuses it. */
+static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error) {
+    id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
+    if(pack)mesh=mtk_pack_varyings(ms,fs,mesh,key->p.dfmt==0,&packedFs);   // nvn_mesh_pack.inc: fewer declared vec4 slots, same values
+    MTLRenderPipelineDescriptor *d=pso_desc(&key->p,ms,fs,packedFs,0);
+    MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
+    m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
+    if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
+    m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
+    if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
+    if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
+    m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
+    for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
+    m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
+    return [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
+}
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms,*fs=raster->sh[1];
     int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);g_mesh_translation_hits[selected]++;
@@ -119,21 +135,34 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     int pack=mtk_pack_on()&&!g_mtk_geometry&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);   // the geometry capture diagnostic and the HDR twin read the unpacked layout
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
-    id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
-    if(pack)mesh=mtk_pack_varyings(ms,fs,mesh,key.p.dfmt==0,&packedFs);   // nvn_mesh_pack.inc: fewer declared vec4 slots, same values
-    MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,packedFs,0);
-    MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
-    m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
-    if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
-    m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
-    if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
-    if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
-    m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
-    for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
-    m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
-    NSError *error=nil;ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:&error];
+    uint64_t build_t0=bp_now();NSError *error=nil;ps=mtk_build(ts,ms,fs,&key,base,pack,&error);
     if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
-    hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] compiled task %s mesh %s fragment %s",ts?ts->key:"-",ms->key,fs?fs->key:"-");return ps;
+    hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] compiled task %s mesh %s fragment %s in %.1f ms at the draw",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
+    if(!g_mtk_geometry){   // the next start builds it ahead (mtk_warm_row); the geometry diagnostic's variant is not a pipeline of the game
+        pso_skey sk;char hex[sizeof sk*2+1];pso_skey_from(&key.p,ms,fs,0,NULL,&sk);pso_skey_hex(&sk,hex);
+        pso_user_record("M\t%s\t%s\n",ts?ts->key:"-",hex);
+    }
+    return ps;
+}
+/* An M row of a warm list: the pipeline a first draw would build (mtk_pso), on a warm-up thread. A first draw of one took the
+   submit thread seconds on a cold Metal cache, 49-50 of them in a run (OOT 2026-11-09). Rows naming a diagnostic's variant are
+   not built: those paths keep a static table without a lock. The claim (warm_claim) files it under the live shader objects. */
+static void mtk_warm_row(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict) {
+    if(g_mtk_geometry||mtk_empty_export_on()||mtk_translation_mode())return;
+    pso_skey sk;if(pso_skey_parse(c[2].UTF8String,&sk)||sk.fz||sk.merged)return;
+    NSString *mkey=warm_key(sk.vs,sizeof sk.vs),*fkey=warm_key(sk.fs,sizeof sk.fs),*tkey=[c[1] isEqualToString:@"-"]?nil:c[1];
+    NvShader *ms=mkey.length?warm_shader(dict,mkey,sk.vs_stage):nil,*fs=fkey.length?warm_shader(dict,fkey,sk.fs_stage):nil,*ts=tkey?warm_shader(dict,tkey,3):nil;
+    if(!ms||ms->mesh_kind!=2||(fkey.length&&!fs)||(tkey&&!ts)){atomic_fetch_add(&g_warm_mesh_failed,1);return;}
+    mtk_pso_key key;memset(&key,0,sizeof key);key.p=sk.k;key.p.vs=(__bridge void *)ms;key.p.fs=(__bridge void *)fs;key.p.fsfn=NULL;
+    key.task=(__bridge void *)(ts?ts->fn:nil);
+    int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);
+    int pack=mtk_pack_on()&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);
+    key.variant=(pack?4u:0u)|((uint64_t)selected<<3);
+    NSError *error=nil;uint64_t started=bp_now();id<MTLRenderPipelineState> ps=mtk_build(ts,ms,fs,&key,base,pack,&error);
+    atomic_fetch_add(&g_warm_pipeline_ns,bp_now()-started);atomic_fetch_add(&g_warm_pipeline_count,1);
+    if(!ps){atomic_fetch_add(&g_warm_mesh_failed,1);MLOG("【红】预热：网格管线没建成（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return;}
+    WarmItem *item=[WarmItem new];item->kind=3;item->key=tkey;item->vs_key=mkey;item->fs_key=fkey;item->shader=ts;item->vs=ms;item->fs=fs;item->pso=key.p;item->mesh_variant=key.variant;item->object=ps;
+    warm_enqueue(item);__atomic_fetch_add(&g_warm_rps,1,__ATOMIC_RELAXED);atomic_fetch_add(&g_warm_mesh,1);
 }
 /* Device stage memory for mesh shaders (translator MeshStage.cs, 2026-11-08; the constants are the same there): header
    word 0 a counter, 1 the slot mask, 2 the slot stride in words; one in-use flag a slot from word 4; the slots from word
