@@ -855,7 +855,14 @@ void nvn_set_sync_lag(int on) { atomic_store(&g_sync_lag, on != 0); LOG("[flag] 
 #else
 #define SYNC_LAG_DEFAULT 0
 #endif
-static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e ? atoi(e) > 0 : SYNC_LAG_DEFAULT; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
+/* TOTK_SYNC_LAG=2 (OOT experiment 2026-11-08, default off): the game's main thread waits at the start of frame N+1 for the
+   fence that ended frame N's rendering (3 submissions before the newest, so mode 1 never applies): its CPU frame (game
+   logic + inline replay, ~10 ms) and the GPU frame never overlap -- 1536x864: 20.2 ms = GPU 18.8 + the serial part;
+   handheld 1280x720: 16-25 ms bimodal. Mode 2 records the newest fence at every present (the end of that frame) and
+   settles a wait that falls inside frame i for the end of frame i-1, so the CPU runs one frame ahead of the GPU. */
+static uint64_t g_pf_fence[16]; static unsigned g_pf_n; static uint64_t g_sw_frame_lagged;
+static int sync_lag_frame_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e && atoi(e) == 2; if (v) LOG("[nvn] TOTK_SYNC_LAG=2：等上一帧渲染栅栏时放宽到再上一帧末（实验）| a wait inside frame i settles for the end of frame i-1"); } return v; }
+static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e ? atoi(e) == 1 : SYNC_LAG_DEFAULT; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     NVN_BLOCKING();
     const sync_t *o = (const sync_t *)s;
@@ -875,6 +882,12 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
         if (tok) { if (fence_now(&t) == want) want--; }
         else if (last && want >= last && prev < last) want = prev;
         else if (want == mtl_last_fence()) want--;
+    }
+    if (want > 1 && !tok && sync_lag_frame_on()) {   // TOTK_SYNC_LAG=2: the wait falls inside frame i -> the end of frame i-1
+        uint64_t end_i = 0, end_prev = 0;
+        for (unsigned i = 0; i < 16; i++) { uint64_t f = g_pf_fence[i]; if (f >= want && (!end_i || f < end_i)) end_i = f; }
+        for (unsigned i = 0; i < 16; i++) { uint64_t f = g_pf_fence[i]; if (end_i && f < end_i && f > end_prev) end_prev = f; }
+        if (end_i && end_prev && end_prev < want) { want = end_prev; if (++g_sw_frame_lagged % 600 == 1) LOG("[nvn] 按帧放宽栅栏等待：第 %llu 次（等 %llu → %llu）", (unsigned long long)g_sw_frame_lagged, (unsigned long long)o->fence, (unsigned long long)want); }
     }
     if (tok ? fence_wait_to(o->fence, want, 0) : mtl_wait(want, 0)) { survey_after_wait(s); mtl_wb_fence_done(); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = lg ? now_ns() : 0;
@@ -3684,6 +3697,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
     prev_in = t0; prev_pass = ps; prev_draw = dr;
     dump_frame();
+    if (sync_lag_frame_on()) { int tk; uint64_t fz = fence_now(&tk); if (!tk && fz) g_pf_fence[g_pf_n++ & 15] = fz; }   // the fence that ends this frame (TOTK_SYNC_LAG=2)
     if (g_frame % TWIN == 0) tsummary(g_frame);
     if (call_stats_on() && g_frame % 300 == 0) {
         static uint64_t pd; uint64_t ps2, dr2; mtl_stats(&ps2, &dr2); uint64_t all = dr2 - pd; pd = dr2;
