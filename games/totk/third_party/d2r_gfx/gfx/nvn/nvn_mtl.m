@@ -6967,6 +6967,8 @@ static uint64_t g_warm_rps, g_warm_cps, g_warm_skip_fz;
 static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps, g_warm_claim_mesh;
 static _Atomic uint64_t g_warm_mesh, g_warm_mesh_failed;   // mesh pipelines (M rows) built on the warm-up threads / not built
 static void mtk_warm_row(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict);   // nvn_mesh_tasks.inc
+static int mtk_fill_row(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict);    // nvn_mesh_tasks.inc
+static _Atomic uint64_t g_mtk_archive_hits, g_mtk_archive_misses;   // mesh pipelines taken from the archive / compiled (mtk_build)
 static id<MTLFunction> bf_fn(NvShader *fs, const int *fx, uint8_t fbmask, const uint8_t *lmap);
 static int rt_range_bindings_ro(NSDictionary *j);
 static FILE *g_pso_record; static int g_pso_record_checked;
@@ -10927,6 +10929,9 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         MLOG("管线预热完成：着色器 %llu 个 / 渲染管线 %llu 个（跳过特化片元 %llu）/ 计算管线 %llu 个，后台用时 %.1f ms（着色器库 %d 个线程%s）",
              (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, warm_threads(),
              atomic_load(&g_warm_in_play) && warm_threads() > 2 ? "，进世界后 2 个" : "");
+        MLOG("网格管线：预热建了 %llu 条（失败 %llu）；到现在从管线存档取 %llu 条，现编 %llu 条",
+             (unsigned long long)atomic_load(&g_warm_mesh), (unsigned long long)atomic_load(&g_warm_mesh_failed),
+             (unsigned long long)atomic_load(&g_mtk_archive_hits), (unsigned long long)atomic_load(&g_mtk_archive_misses));
         if (atomic_load(&g_warm_mesh) || atomic_load(&g_warm_mesh_failed)) MLOG("[mesh] warm-up: %llu mesh pipelines built, %llu not built", (unsigned long long)atomic_load(&g_warm_mesh), (unsigned long long)atomic_load(&g_warm_mesh_failed));
         MLOG("预热分段：着色器库 %llu 次 / %.1f ms（各线程用时相加），Metal 管线 %llu 次 / %.1f ms（%d 个线程；其中写进管线存档：加入 %.1f ms，写文件 %llu 个 %.1f ms）",
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
@@ -11034,8 +11039,8 @@ static void warm_light(void) {
 // done: signalled at the end; the start waits for it before the title (warm_before_title), so it runs at a higher priority
 // and shows its progress on the start-up screen.
 static NSArray<NSString *> *g_shared_fill;   // warm_shared(): lists written into the archive only, before the title
-static struct { uint64_t render, compute, have, failed; double seconds; } g_fill_last;   // the last fill (mtl_pipeline_archive_tool)
-typedef struct { _Atomic uint64_t nr, nc, nfail, nhave; } fill_counts;
+static struct { uint64_t render, compute, mesh, have, failed; double seconds; } g_fill_last;   // the last fill (mtl_pipeline_archive_tool)
+typedef struct { _Atomic uint64_t nr, nc, nm, nfail, nhave; } fill_counts;
 /* One row of a pipeline list into the archive (warm_fill_archive): made from its shaders, written, dropped. Thread-safe:
    warm_shader locks the dictionary and par_add batches per thread. */
 static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *> *dict, fill_counts *fc) {
@@ -11067,6 +11072,12 @@ static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *>
         if (r == 2) { atomic_fetch_add(&fc->nhave, 1); return; }
         ps = r ? @YES : nil;
         if (ps) atomic_fetch_add(&fc->nr, 1);
+    } else if ([c[0] isEqualToString:@"M"]) {   // mesh pipelines (nvn_mesh_tasks.inc; archived since 2026-11-11)
+        int r = mtk_fill_row(c, dict);
+        if (r < 0) return;
+        if (r == 2) { atomic_fetch_add(&fc->nhave, 1); return; }
+        ps = r ? @YES : nil;
+        if (ps) atomic_fetch_add(&fc->nm, 1);
     } else return;
     if (!ps) atomic_fetch_add(&fc->nfail, 1);
 }
@@ -11079,7 +11090,7 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
             for (NSString *line in [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"]) {
                 if (line.length < 2 || [line characterAtIndex:1] != '\t' || [seen containsObject:line]) continue;
                 unichar t = [line characterAtIndex:0];
-                if (t != 'R' && t != 'C' && t != 'B' && t != 'T') continue;
+                if (t != 'R' && t != 'C' && t != 'B' && t != 'T' && t != 'M') continue;
                 [seen addObject:line]; [todo addObject:line];
             }
         }
@@ -11118,11 +11129,11 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         }
         [dict removeAllObjects];
         par_flush_thread(); atomic_store(&par_filling, 0); par_write_in_place = 0;
-        uint64_t nr = atomic_load(&fc->nr), nc = atomic_load(&fc->nc), nhave = atomic_load(&fc->nhave), nfail = atomic_load(&fc->nfail);
+        uint64_t nr = atomic_load(&fc->nr), nc = atomic_load(&fc->nc), nm = atomic_load(&fc->nm), nhave = atomic_load(&fc->nhave), nfail = atomic_load(&fc->nfail);
         free(fc);
-        g_fill_last.render = nr; g_fill_last.compute = nc; g_fill_last.have = nhave; g_fill_last.failed = nfail; g_fill_last.seconds = (bp_now() - t0) / 1e9;
-        MLOG("管线存档：填充完成，新建渲染管线 %llu 条、计算管线 %llu 条，存档里已有 %llu 条，失败 / 缺着色器 %llu，用时 %.1f s；下次启动从存档取",
-             nr, nc, nhave, nfail, (bp_now() - t0) / 1e9);
+        g_fill_last.render = nr; g_fill_last.compute = nc; g_fill_last.mesh = nm; g_fill_last.have = nhave; g_fill_last.failed = nfail; g_fill_last.seconds = (bp_now() - t0) / 1e9;
+        MLOG("管线存档：填充完成，新建渲染管线 %llu 条、计算管线 %llu 条、网格管线 %llu 条，存档里已有 %llu 条，失败 / 缺着色器 %llu，用时 %.1f s；下次启动从存档取",
+             nr, nc, nm, nhave, nfail, (bp_now() - t0) / 1e9);
         if (done) dispatch_semaphore_signal(done);   // after the line: the packaging tool's JSON report follows it on its own line
     });
 }
@@ -11175,8 +11186,8 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
         MLOG("管线存档：按这个运行时核对，%llu 条和存档里的不一样，重新编进新文件；删掉被完全取代的旧文件 %lu 个",
              (unsigned long long)atomic_load(&g_par_stale), (unsigned long)pruned);
     }
-    printf("{\"render\": %llu, \"compute\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\"}\n",
-           g_fill_last.render, g_fill_last.compute, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed),
+    printf("{\"render\": %llu, \"compute\": %llu, \"mesh\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\"}\n",
+           g_fill_last.render, g_fill_last.compute, g_fill_last.mesh, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed),
            g_dev.architecture.name.UTF8String ?: "");
     fflush(stdout);
     return atomic_load(&g_par_write_failed) || g_fill_last.failed ? 1 : 0;
@@ -23809,6 +23820,47 @@ static int par_probe_startup_cleanup(NSString *dir) {
     g_par_probe_ga_dirs = nil;   // all fixture workers joined; real Metal batches use the normal cache folders
     return 7;
 }
+/* Mesh pipelines in the archive (2026-11-11: OOT's 124 listed mesh pipelines were compiled at every start, none archived).
+   A mesh pipeline is written as the warm-up writes one (par_add from a warm-up thread); then its functions are compiled from
+   the source again, as the next start compiles the game's mesh functions, and the pipeline must come from its file without
+   compiling (MTLPipelineOptionFailOnBinaryArchiveMiss). Another mesh function with that file must not be found there. */
+static int par_probe_mesh(void) {
+    MTLMeshRenderPipelineDescriptor *(^desc)(float) = ^MTLMeshRenderPipelineDescriptor *(float y) {
+        NSString *src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 p [[position]]; };\n"
+            "using M = metal::mesh<V, void, 3, 1, topology::triangle>;\n"
+            "[[mesh]] void mmain(M m, uint t [[thread_index_in_threadgroup]]) {\n"
+            "  if (t < 3) m.set_vertex(t, V{float4(float(t & 1), float(t >> 1) * %.2f, 0, 1)});\n"
+            "  if (t == 0) { m.set_primitive_count(1); m.set_index(0, 0); m.set_index(1, 1); m.set_index(2, 2); }\n}\n"
+            "fragment float4 fmain(V in [[stage_in]]) { return float4(0.25, 0.5, 0.75, 1); }\n", y];
+        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:nil error:&e];
+        if (!lib) MDIE("pipeline archive probe: mesh library: %s", e.localizedDescription.UTF8String);
+        MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
+        m.meshFunction = [lib newFunctionWithName:@"mmain"]; m.fragmentFunction = [lib newFunctionWithName:@"fmain"];
+        m.maxTotalThreadsPerMeshThreadgroup = 32; m.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+        return m;
+    };
+    NSString *key = [@"m" stringByAppendingString:par_hash("probe-mesh", 10)];
+    MTLMeshRenderPipelineDescriptor *first = desc(1.0f);
+    NSError *e = nil;
+    if (![g_dev newRenderPipelineStateWithMeshDescriptor:first options:MTLPipelineOptionNone reflection:nil error:&e])
+        MDIE("pipeline archive probe: mesh pipeline: %s", e.localizedDescription.UTF8String);
+    int owip = par_write_in_place; par_write_in_place = 1;
+    uint64_t failed_before = atomic_load(&g_par_write_failed);
+    par_add(g_dev, key, first); par_flush_thread(); par_write_in_place = owip;
+    if (atomic_load(&g_par_write_failed) != failed_before) MDIE("pipeline archive probe: the mesh pipeline was not added to the archive");
+    pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key]; pthread_mutex_unlock(&g_par_mu);
+    if (!have) MDIE("pipeline archive probe: no file holds the mesh pipeline");
+    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
+    if (!a) MDIE("pipeline archive probe: the mesh pipeline's file did not open");
+    MTLMeshRenderPipelineDescriptor *again = desc(1.0f); again.binaryArchives = @[a];   // compiled from the source again
+    if (![g_dev newRenderPipelineStateWithMeshDescriptor:again options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&e])
+        MDIE("pipeline archive probe: the mesh pipeline is not taken from its file: %s", e.localizedDescription.UTF8String);
+    MTLMeshRenderPipelineDescriptor *other = desc(0.5f); other.binaryArchives = @[a];
+    if ([g_dev newRenderPipelineStateWithMeshDescriptor:other options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil])
+        MDIE("pipeline archive probe: another mesh function was found in the file: the lookup proves nothing");
+    MLOG("pipeline archive probe: a mesh pipeline written, taken from its file after compiling its functions again, another one refused");
+    return 3;
+}
 int mtl_probe_pipeline_archive(void) {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingFormat:@"totk-probe-pipeline-archive-%d", getpid()];
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
@@ -23923,8 +23975,9 @@ int mtl_probe_pipeline_archive(void) {
     if (pre || g_par_have.count) MDIE("pipeline archive probe: files stamped for another GPU were taken (%lu)", (unsigned long)pre);
     unsetenv("TOTK_SHADER_SEED_DIR"); atomic_store(&g_par_pre_hit, 0); atomic_store(&g_par_pre_miss, 0);
     int identity_checks = par_probe_identity_lock();
+    int mesh_checks = par_probe_mesh();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks;
+    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks + mesh_checks;
 }
 
 /* seed-shaders <corpus> (loader.c; docs/ns2-port.md): every shader a Switch 2 game ships, as

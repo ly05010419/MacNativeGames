@@ -126,8 +126,22 @@ static void mtk_note_skip(NvShader *ms) {
     static _Atomic uint64_t skipped;uint64_t k=atomic_fetch_add(&skipped,1)+1;
     if(k<=4||k%1000==0)MLOG("【红】手机不现编网格管线：跳过这次网格绘制（mesh %s，第 %llu 次）",ms?ms->key:"-",(unsigned long long)k);
 }
-/* The mesh pipeline for a filled key, on any thread (the first draw, or the warm-up); nil and *error when Metal refuses it. */
-static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error) {
+/* The pipeline archive's key of a mesh pipeline: the M row's pipeline key (as pso_user_record writes it), its task shader and
+   the variant bits; nil for a diagnostic's pipeline. Until 2026-11-11 mesh pipelines were never archived: OOT's 124 listed
+   ones were compiled at every start. The key only finds the file; Metal checks the functions and state. */
+static NSString *mtk_archive_key(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key) {
+    if(g_mtk_geometry||oot_umul_diagnostic_on())return nil;
+    pso_skey sk;pso_skey_from(&key->p,ms,fs,0,NULL,&sk);memset(&sk.fz_desc,0,sizeof sk.fz_desc);
+    NSMutableData *b=[NSMutableData dataWithBytes:&sk length:sizeof sk];
+    const char *task=ts?ts->key:"-";[b appendBytes:task length:strlen(task)+1];
+    uint64_t variant=key->variant;[b appendBytes:&variant length:sizeof variant];
+    return [@"m" stringByAppendingString:par_hash(b.bytes,b.length)];
+}
+/* The mesh pipeline for a filled key, on any thread (the first draw, the warm-up, or the packaging fill); nil and *error when
+   Metal refuses it. Taken from the pipeline archive when its file holds it (*from_archive = 1); otherwise compiled, and a
+   warm-up or fill thread writes it to the archive (par_add), as pso_new does for render pipelines. */
+static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error,int *from_archive) {
+    if(from_archive)*from_archive=0;
     id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
     if(pack)mesh=mtk_pack_varyings(ms,fs,mesh,key->p.dfmt==0,&packedFs);   // nvn_mesh_pack.inc: fewer declared vec4 slots, same values
     MTLRenderPipelineDescriptor *d=pso_desc(&key->p,ms,fs,packedFs,0);
@@ -140,7 +154,18 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
     m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
-    return [g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
+    NSString *akey=mtk_archive_key(ts,ms,fs,key);
+    id<MTLBinaryArchive> a=akey?par_archive_for(g_dev,akey):nil;
+    if(a){
+        m.binaryArchives=@[a];
+        id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
+        par_pre_note(ps!=nil);m.binaryArchives=nil;
+        if(ps){par_count(1);atomic_fetch_add(&g_mtk_archive_hits,1);if(from_archive)*from_archive=1;return ps;}
+    }
+    if(akey&&g_par_on){par_count(0);atomic_fetch_add(&g_mtk_archive_misses,1);}
+    id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
+    if(ps&&akey)par_add(g_dev,akey,m);
+    return ps;
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms,*fs=raster->sh[1];
@@ -154,12 +179,12 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     int pack=mtk_pack_on()&&!g_mtk_geometry&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);   // the geometry capture diagnostic and the HDR twin read the unpacked layout
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
-    uint64_t build_t0=bp_now();NSError *error=nil;ps=mtk_build(ts,ms,fs,&key,base,pack,&error);
+    uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived);
 #if TARGET_OS_IPHONE
     if(!ps){MLOG("【红】网格管线没建成，跳过这次绘制（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return nil;}   // the fallback: never an exit on the phone
 #endif
     if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
-    hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] compiled task %s mesh %s fragment %s in %.1f ms at the draw",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
+    hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] %s task %s mesh %s fragment %s in %.1f ms at the draw",archived?"from the archive":"compiled",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
     if(!g_mtk_geometry){   // the next start builds it ahead (mtk_warm_row); the geometry diagnostic's variant is not a pipeline of the game
         pso_skey sk;char hex[sizeof sk*2+1];pso_skey_from(&key.p,ms,fs,0,NULL,&sk);pso_skey_hex(&sk,hex);
         pso_user_record("M\t%s\t%s\n",ts?ts->key:"-",hex);
@@ -169,26 +194,52 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
 /* An M row of a warm list: the pipeline a first draw would build (mtk_pso), on a warm-up thread. A first draw of one took the
    submit thread seconds on a cold Metal cache, 49-50 of them in a run (OOT 2026-11-09). Rows naming a diagnostic's variant are
    not built: those paths keep a static table without a lock. The claim (warm_claim) files it under the live shader objects. */
+typedef struct { NvShader *ts,*ms,*fs; NSString *tkey,*mkey,*fkey; mtk_pso_key key; } mtk_row;
+/* An M row's shaders and pipeline key, as the first draw makes them (mtk_pso): 1 filled, 0 its shaders are missing (counted
+   as failed), -1 a row left alone (a diagnostic's variant, or no pipeline key). */
+static int mtk_row_parse(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict,mtk_row *r) {
+    if(c.count<3||g_mtk_geometry||mtk_empty_export_on()||mtk_translation_mode())return -1;
+    pso_skey sk;if(pso_skey_parse(c[2].UTF8String,&sk)||sk.fz||sk.merged)return -1;
+    r->mkey=warm_key(sk.vs,sizeof sk.vs);r->fkey=warm_key(sk.fs,sizeof sk.fs);r->tkey=[c[1] isEqualToString:@"-"]?nil:c[1];
+    r->ms=r->mkey.length?warm_shader(dict,r->mkey,sk.vs_stage):nil;r->fs=r->fkey.length?warm_shader(dict,r->fkey,sk.fs_stage):nil;
+    r->ts=r->tkey?warm_shader(dict,r->tkey,3):nil;
+    if(!r->ms||r->ms->mesh_kind!=2||(r->fkey.length&&!r->fs)||(r->tkey&&!r->ts))return 0;
+    memset(&r->key,0,sizeof r->key);r->key.p=sk.k;r->key.p.vs=(__bridge void *)r->ms;r->key.p.fs=(__bridge void *)r->fs;r->key.p.fsfn=NULL;
+    r->key.task=(__bridge void *)(r->ts?r->ts->fn:nil);
+    return 1;
+}
+/* The pipeline of a parsed M row, with the variant bits a draw gives it (mtk_pso). */
+static id<MTLRenderPipelineState> mtk_row_build(mtk_row *r,NSError **error,int *from_archive) {
+    int selected=0;id<MTLFunction> base=mtk_translation_function(r->ms,&selected);
+    int pack=mtk_pack_on()&&!((r->key.p.a2c&PSO_HDR)&&r->fs&&r->fs->hdr_fn);
+    r->key.variant=(pack?4u:0u)|((uint64_t)selected<<3);
+    return mtk_build(r->ts,r->ms,r->fs,&r->key,base,pack,error,from_archive);
+}
 static void mtk_warm_row(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict) {
     if(!mtk_device_compiles()){   // the phone's fallback: its M rows are not compiled there
         static _Atomic int said;if(!atomic_exchange(&said,1))MLOG("预热：手机不现编网格管线，清单里的 M 行都跳过（兜底；OOT_IOS_MESH_COMPILE=1 才现编）");
         return;
     }
-    if(g_mtk_geometry||mtk_empty_export_on()||mtk_translation_mode())return;
-    pso_skey sk;if(pso_skey_parse(c[2].UTF8String,&sk)||sk.fz||sk.merged)return;
-    NSString *mkey=warm_key(sk.vs,sizeof sk.vs),*fkey=warm_key(sk.fs,sizeof sk.fs),*tkey=[c[1] isEqualToString:@"-"]?nil:c[1];
-    NvShader *ms=mkey.length?warm_shader(dict,mkey,sk.vs_stage):nil,*fs=fkey.length?warm_shader(dict,fkey,sk.fs_stage):nil,*ts=tkey?warm_shader(dict,tkey,3):nil;
-    if(!ms||ms->mesh_kind!=2||(fkey.length&&!fs)||(tkey&&!ts)){atomic_fetch_add(&g_warm_mesh_failed,1);return;}
-    mtk_pso_key key;memset(&key,0,sizeof key);key.p=sk.k;key.p.vs=(__bridge void *)ms;key.p.fs=(__bridge void *)fs;key.p.fsfn=NULL;
-    key.task=(__bridge void *)(ts?ts->fn:nil);
-    int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);
-    int pack=mtk_pack_on()&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);
-    key.variant=(pack?4u:0u)|((uint64_t)selected<<3);
-    NSError *error=nil;uint64_t started=bp_now();id<MTLRenderPipelineState> ps=mtk_build(ts,ms,fs,&key,base,pack,&error);
+    mtk_row r={0};int parsed=mtk_row_parse(c,dict,&r);
+    if(parsed<0)return;
+    if(!parsed){atomic_fetch_add(&g_warm_mesh_failed,1);return;}
+    NSError *error=nil;uint64_t started=bp_now();id<MTLRenderPipelineState> ps=mtk_row_build(&r,&error,NULL);
     atomic_fetch_add(&g_warm_pipeline_ns,bp_now()-started);atomic_fetch_add(&g_warm_pipeline_count,1);
-    if(!ps){atomic_fetch_add(&g_warm_mesh_failed,1);MLOG("【红】预热：网格管线没建成（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return;}
-    WarmItem *item=[WarmItem new];item->kind=3;item->key=tkey;item->vs_key=mkey;item->fs_key=fkey;item->shader=ts;item->vs=ms;item->fs=fs;item->pso=key.p;item->mesh_variant=key.variant;item->object=ps;
+    if(!ps){atomic_fetch_add(&g_warm_mesh_failed,1);MLOG("【红】预热：网格管线没建成（mesh %s）：%s",r.ms->key,error.localizedDescription.UTF8String);return;}
+    WarmItem *item=[WarmItem new];item->kind=3;item->key=r.tkey;item->vs_key=r.mkey;item->fs_key=r.fkey;item->shader=r.ts;item->vs=r.ms;item->fs=r.fs;
+    item->pso=r.key.p;item->mesh_variant=r.key.variant;item->object=ps;
     warm_enqueue(item);__atomic_fetch_add(&g_warm_rps,1,__ATOMIC_RELAXED);atomic_fetch_add(&g_warm_mesh,1);
+}
+/* An M row of a pipeline list into the archive (fill_row: the packaging tool, a first start's fill): 1 compiled and written,
+   2 already in the archive, 0 failed, -1 a row the archive does not take here: the phone compiles no mesh pipeline, and the
+   iOS packaging's device libraries (TOTK_SHADER_DEVICE_LIBS) carry none yet. */
+static int mtk_fill_row(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict) {
+    if(!mtk_device_compiles()||getenv("TOTK_SHADER_DEVICE_LIBS"))return -1;
+    mtk_row r={0};int parsed=mtk_row_parse(c,dict,&r);
+    if(parsed<=0)return parsed;
+    NSError *error=nil;int archived=0;id<MTLRenderPipelineState> ps=mtk_row_build(&r,&error,&archived);
+    if(!ps){MLOG("【红】管线存档：网格管线没建成（mesh %s）：%s",r.ms->key,error.localizedDescription.UTF8String);return 0;}
+    return archived?2:1;
 }
 /* Device stage memory for mesh shaders (translator MeshStage.cs, 2026-11-08; the constants are the same there): header
    word 0 a counter, 1 the slot mask, 2 the slot stride in words; one in-use flag a slot from word 4; the slots from word

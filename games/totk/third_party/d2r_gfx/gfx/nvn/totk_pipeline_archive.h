@@ -319,12 +319,14 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch
     }
+    // a mesh pipeline too (OOT 2026-11-11: its 124 listed mesh pipelines were compiled at every start, none archived)
     /* Adding compiles through the compiler service: when it went away (another thread's shader crashed it, #2070), the
        add is tried again once it is back, instead of losing the batch (nvn_compiler_retry.h). */
     id<MTLBinaryArchive> archive = b->archive;
     BOOL ok = archive && compiler_retry(&e, 100, ^BOOL(NSError **err) {
         return [desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [archive addRenderPipelineFunctionsWithDescriptor:desc error:err]
-                                                                      : [archive addComputePipelineFunctionsWithDescriptor:desc error:err];
+             : [desc isKindOfClass:MTLMeshRenderPipelineDescriptor.class] ? [archive addMeshRenderPipelineFunctionsWithDescriptor:desc error:err]
+                                                                        : [archive addComputePipelineFunctionsWithDescriptor:desc error:err];
     });
     atomic_fetch_add(&g_par_add_ns, bp_now() - t0);
     if (ok) [b->keys addObject:key];
