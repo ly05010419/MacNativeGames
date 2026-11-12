@@ -3087,7 +3087,12 @@ int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
 static int game_hold_fps(void) {
     if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
     int m = mfx_hold_fps(mfx_enabled());
-    return m ? m : atomic_load(&g_fps_lock);
+    int lock = atomic_load(&g_fps_lock);
+#if !TARGET_OS_IPHONE
+    extern int mtl_oot_movie_fast_active(void);
+    if (!m && lock == 30 && mtl_oot_movie_fast_active()) return 60;
+#endif
+    return m ? m : lock;
 }
 /* The leaderboard's pacing (runtime/board_upload.h): interp is the interpolation mode as the game's held rate (1: on
    without a held rate, 0: off); lock is the rate the game is held at without interpolation (0: not held). */

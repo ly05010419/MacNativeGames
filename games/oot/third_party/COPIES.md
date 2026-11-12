@@ -10,6 +10,8 @@ NUP reader: a55uka/nup at d40d9cfa50792ba8021d2967d994d1b1c25d62b0, MIT, third_p
 
 The bounded AV1 platform decoder hle_movie_av1.c/.h is adapted from seedds/nxnative ee9b7765 (MIT) into our existing ns2_codec.c protocol; the rest of that project's host/runtime is not used. dav1d is a separate BSD-licensed decoder dependency.
 
+The experimental AV1 picture clock in `runtime/ns2_codec.c` and the movie-only reconstruction matcher in `oot_movie_direct.inc` port our earlier `games/totk` patches e6516bd0 and 05ef7bd0. The original timestamp and matching strategies are from nxnative PRs #1379 and #1331 respectively (MIT, notice in `third_party/nxnative-LICENSE.txt`).
+
 GPU shader stages and matrix operations: bounded MIT adaptations from ChiefSZ13/nxnative ee9b7765d579c46e45a7297493565e098f3bda33, `dmsh_meshstage.py`, `InstEmitAmpereMem.cs` task/mesh instructions and `dmsh_build.py` HMMA lowering. MeshStage.cs / TensorMsl.cs run inside our NativeAOT GPU shader service. The native Metal draw is integrated into our existing encoder FIFO; pipelines compile synchronously. No reference CPU/runtime backend is used.
 
 The original MIT Ryujinx shader-only sources are vendored under `third_party/ryujinx`; project patches are applied only to an external build copy. SPIRV-Cross is built from the pinned official Khronos source declared in `tools/shader_pins.py`.

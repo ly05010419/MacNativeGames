@@ -1351,7 +1351,16 @@ void mtl_eye_done(int left, int last) {   // after an eye pass's commit (hle_nvn
         else MLOG("[vr] b2shot: this eye pass drew no presented texture"); }
 }
 void mtl_eye_capture(int eye) { g_b2_capture = eye; }
+static id<MTLTexture> g_oot_movie_decoded;
+static const uint8_t *g_oot_movie_skip_end;
+static _Atomic uint64_t g_oot_movie_ns;
+int mtl_oot_movie_fast_active(void) {
+    uint64_t when = atomic_load_explicit(&g_oot_movie_ns, memory_order_relaxed);
+    return when && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - when < 250000000ull;
+}
 void mtl_sub_begin(void) {
+    g_oot_movie_decoded = nil;
+    g_oot_movie_skip_end = NULL;
     g_eye_region = 3;   // stereo B2: a submission starts outside eye marks
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
@@ -2546,6 +2555,7 @@ static int cpend_lookup(uint64_t addr, uint64_t *val) {
 }
 extern uint64_t g_draw_skip[16];
 static _Atomic uint64_t g_cur_frame;
+uint64_t mtl_oot_movie_frame(void) { return atomic_load_explicit(&g_cur_frame, memory_order_relaxed); }
 static _Atomic int g_skipvc_any, g_skipvc_color, g_skipvc_depth;   // flag skipvc / skipvc_color / skipvc_depth (diagnostic)
 static struct { int kx, ky, cached; uint64_t x, y; } g_cond_last;   // passdump: what the last cond_eval read (replay thread)
 typedef struct { const void *op; uint64_t frame; int result; } cond_cache_ent;
@@ -15004,23 +15014,12 @@ static void clear_ds_quad(const p_clear_ds *c) {
 /* Image bindings establish write intent even when the descriptor was registered
  * through the ordinary texture API (SDK 22 NDVE). Upgrade the shared backing
  * before opening an encoder; keep all slices, mips and GPU contents. */
-static void prepare_shader_images(NvShader *sh,int stage) {
- if(!sh)return;
- for(int j=0;j<sh->rf.nb;j++) {
-  const nvn_rbind *b=&sh->rf.b[j];if(b->kind!=NVN_RB_IMG||b->reg>=32)continue;
-  int tid=(int)(S.img[stage][b->reg]&0xfffff);if(tid<=0)continue;
-  registry_lock();
-  if(tid>=g_ntreg||!g_treg[tid].ok){registry_unlock();continue;}
-  treg_t *registered=&g_treg[tid];
-  if(tex_view_valid(tid)&&registered->image_view&&registered->image_source==registered->view){
-   if(b->rw)gpu_owned_mark(registered->t.serial);registry_unlock();continue;
-  }
-  registry_unlock();
-  /* Resolving a format/image view can itself upgrade shared storage. Do it
-     before an encoder is retained: stor_recreate deliberately refuses a copy
-     inside an active render pass, which would leave a detached blank image. */
-  rp_end();registry_lock();
-  if(tid>=g_ntreg||!g_treg[tid].ok){registry_unlock();continue;}
+/* Registry held, render pass closed. For an experimental caller a missing image falls back. */
+static bool prepare_shader_image_locked(int tid, NvShader *sh, int stage, unsigned slot) {
+  if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return false;
+  treg_t *registered = &g_treg[tid];
+  if (tex_view_valid(tid) && registered->image_view && registered->image_source == registered->view)
+    return true;
   (void)tex_fast(tid); // follow the descriptor to the live storage owner first
   g_treg[tid].t.d.flags|=NVN_TEXTURE_FLAGS_IMAGE;
   tex_t image=g_treg[tid].t;
@@ -15033,11 +15032,32 @@ static void prepare_shader_images(NvShader *sh,int stage) {
      the current allocation before deriving the raw image view. */
   treg_clear_view_locked(tid);args_dirty_all();
   void *raw=NULL;uint64_t resource=image_fast_rid(tid,&raw);id<MTLTexture> writable=(__bridge id<MTLTexture>)raw;
-  if(!writable)MDIE("registered image preparation failed: shader %s stage %d slot %d descriptor %d serial %llu base usage %#lx view usage %#lx split %d flags %#x",sh->key,stage,b->reg,tid,image.serial,(unsigned long)base.usage,(unsigned long)((__bridge id<MTLTexture>)g_treg[tid].view).usage,g_tex_prepare_split,image.d.flags);
-  if(b->rw)gpu_owned_mark(image.serial);
-  if(passdump())PD("IMAGE ready shader %.16s slot %d descriptor %d resource %llu %lux%lu usage %#lx",sh->key,b->reg,tid,resource,(unsigned long)writable.width,(unsigned long)writable.height,(unsigned long)writable.usage);
-  registry_unlock();
- }
+  if (writable && passdump()) PD("IMAGE ready shader %.16s slot %u descriptor %d resource %llu %lux%lu usage %#lx",
+                                  sh ? sh->key : "oot-movie", slot, tid, resource,
+                                  (unsigned long)writable.width, (unsigned long)writable.height, (unsigned long)writable.usage);
+  return writable != nil;
+}
+static void prepare_shader_images(NvShader *sh, int stage) {
+  if (!sh) return;
+  for (int j = 0; j < sh->rf.nb; j++) {
+    const nvn_rbind *b = &sh->rf.b[j];
+    if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
+    int tid = (int)(S.img[stage][b->reg] & 0xfffff);
+    if (tid <= 0) continue;
+    registry_lock();
+    if (tid >= g_ntreg || !g_treg[tid].ok) { registry_unlock(); continue; }
+    treg_t *r = &g_treg[tid];
+    if (!tex_view_valid(tid) || !r->image_view || r->image_source != r->view) {
+      registry_unlock();
+      rp_end();
+      registry_lock();
+      if (tid >= g_ntreg || !g_treg[tid].ok) { registry_unlock(); continue; }
+      if (!prepare_shader_image_locked(tid, sh, stage, b->reg))
+        MDIE("registered image preparation failed: shader %s stage %d slot %d descriptor %d", sh->key, stage, b->reg, tid);
+    }
+    if (b->rw) gpu_owned_mark(g_treg[tid].t.serial);
+    registry_unlock();
+  }
 }
 static void prepare_draw_textures(NvProg *pr) {
     if (!pr) return;
@@ -17385,7 +17405,8 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
 }
-static void dispatch(const p_dispatch *dp) {
+#include "oot_movie_direct.inc"
+static void dispatch_at(const p_dispatch *dp, const uint8_t *next) {
     zskip_clear();
     void *indirect_buffer = NULL; uint64_t indirect_offset = 0, indirect_gpu = 0;
     if (dp->indirect) {
@@ -17404,6 +17425,9 @@ static void dispatch(const p_dispatch *dp) {
     if (cpr->missing) { static uint64_t n; if (!n++) MLOG("[shader-miss] 计算着色器还没翻译：跳过这个派发（以后同类不再提示）"); return; }
     NvShader *cs = cpr->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+    const bool movie_convert = next && !g_defer_replaying && !dp->indirect &&
+        dp->x > 0 && dp->y > 0 && dp->z == 1 && oot_movie_enabled() &&
+        oot_movie_key_is(cs->key, oot_movie_convert_key);
     if (!g_defer_replaying && netbp_dispatch(cs)) return;   // OOT_NET_BYPASS (oot_net_bypass.inc)
     /* TOTK_SKIP_CS=all | <key prefix>[,<key prefix>...] (diagnostic): those compute dispatches are not run (bisecting a
        GPU hang to its shader); TOTK_SKIP_CS_LOG=1 names each compute shader once as it is first dispatched. */
@@ -17499,6 +17523,11 @@ static void dispatch(const p_dispatch *dp) {
     g_dispatch_indirect.buffer = nil;g_dispatch_domain_direct=0;
     if (!reuse) enc_c_end(ce);
     writer_boundary_seal();
+    if (movie_convert) {
+        oot_movie_remember(cs);
+        g_oot_movie_skip_end = oot_movie_try_network(next);
+        g_oot_movie_decoded = nil;
+    }
     cs_capture(cs,"after");
     td_compute(cs);
     bright_lut(cs);   // 3D 画面加亮：游戏算完调色表之后重写 | 3D picture brightening: rewrite after the game finishes computing the color lookup table
@@ -17516,6 +17545,7 @@ static void dispatch(const p_dispatch *dp) {
           }
       } }
 }
+static void dispatch(const p_dispatch *dp) { dispatch_at(dp, NULL); }
 // GPU：贴图 → 缓冲（行距取 SetCopyRowStride，0 = 紧排）
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, 0 = tightly packed)
 static void copy_t2b(const p_copy_b2t *c) {
@@ -18315,7 +18345,11 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_T2B: copy_t2b(a); break;
             case OP_COPY_T2T: copy_t2t(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
-            case OP_DISPATCH: dispatch(a); break;
+            case OP_DISPATCH:
+                if (g_oot_movie_skip_end) {
+                    if (p == g_oot_movie_skip_end) g_oot_movie_skip_end = NULL;
+                } else dispatch_at(a, p + h.size);
+                break;
             case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
                                     S.tex_base = tp ? nvn_tex_pool_base(tp) : 0; S.tex_pool_n = tp ? S.tex_base + tp->n : 0; args_dirty_all(); break; }
             case OP_SET_SAMP_POOL: { const dpool_t *sp = ((const p_set_pool *)a)->pool; extern int nvn_samp_pool_base(const void *pool); S.samp_base = sp ? nvn_samp_pool_base(sp) : 0; S.samp_pool_n = sp ? sp->n : 0; args_dirty_all(); break; }
