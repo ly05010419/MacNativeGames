@@ -3324,6 +3324,7 @@ static int arg_epoch_on(void) {
 }
 typedef struct {
     uint64_t pass, arena, bindings, registry, serial, dirty, snapshot_drops, config;
+    uint64_t pool;   /* descriptor-pool shaders (2026-11-08): signature of the pool table addresses and captured pool inputs the block holds */
 } arg_epoch_key;
 /* Texture/sampler slots can remain identical when only uniform bindings change.
    Keep the publication lock, resource generations and pass lifetime. On by default (TOTK_TEX_SLOTS=0 turns it off). */
@@ -12148,11 +12149,27 @@ static int arg_epoch_safe(NvShader *sh) {
         sh->ab_epoch_ok = 1;
         for (int i = 0; i < sh->rf.nb; i++) {
             const nvn_rbind *b = &sh->rf.b[i];
-            // Indirect pointers and writable bindings have replay-time side effects.
-            if (b->rw || b->kind == NVN_RB_IMG || b->kind == NVN_RB_SBUFU || b->kind == NVN_RB_TEXP || b->kind == NVN_RB_SAMPP) { sh->ab_epoch_ok = -1; break; }
+            // Writable bindings and image/unsized storage have replay-time side effects. Descriptor pools (TEXP / SAMPP) are
+            // allowed since 2026-11-08: their table addresses and captured inputs enter the epoch key (arg_epoch_pool).
+            if (b->rw || b->kind == NVN_RB_IMG || b->kind == NVN_RB_SBUFU) { sh->ab_epoch_ok = -1; break; }
         }
     }
     return sh->ab_epoch_ok > 0;
+}
+/* Descriptor-pool shaders (2026-11-08): the argument block of such a shader also holds its pool table addresses
+   (descriptor_pool_for_shader: stable while the tables' generation tuple holds, a replaced table has a new buffer) and the
+   GPU addresses of the pool inputs prepare_shader_pools captured for this draw. Both go into the epoch key, so the block is
+   reused only while they are the same. Caller holds the registry lock (descriptor_pool_gpu_need's contract). */
+static uint64_t arg_epoch_pool(NvShader *sh) {
+    uint64_t h = 0x9e3779b97f4a7c15ull ^ sh->pool_capture_mask;
+    for (int i = 0; i < sh->rf.nb; i++) {
+        const nvn_rbind *b = &sh->rf.b[i]; uint64_t v = 0;
+        if (b->kind == NVN_RB_TEXP || b->kind == NVN_RB_SAMPP) v = descriptor_pool_for_shader(sh, b, 1);
+        else if ((b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_CBUF) && (sh->pool_capture_mask & (UINT64_C(1) << i))) v = sh->pool_capture_gpu[i];
+        else continue;
+        h ^= (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)) * 0x100000001b3ull;
+    }
+    return h | 1;
 }
 static arg_epoch_key arg_epoch_current(int stage) {
     return (arg_epoch_key){g_pass.serial, g_arena_epoch, g_args_epoch[stage], g_reg_gen,
@@ -12251,11 +12268,12 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         // Serialize with descriptor publication, as the full builder does. The
         // key precedes resource lookup: later changes cannot validate old bytes.
         registry_lock(); epoch = arg_epoch_current(nvn_stage);
+        if (shader_uses_pool(sh)) epoch.pool = arg_epoch_pool(sh);   // the pool tables and captured inputs this block would hold
         if (g_arg_epoch_negative && sh->ab_buf) epoch.bindings = sh->ab_epoch.bindings;
         epoch_hit = sh->ab_buf && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
         registry_unlock();
     }
-    int reuse = !shader_uses_pool(sh) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
         !((g_vr_collapse_draw || g_vr_ui_ray_draw) && nvn_stage == 0) &&   // Per-draw palette/HUD projection copies must be bound anew.
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
