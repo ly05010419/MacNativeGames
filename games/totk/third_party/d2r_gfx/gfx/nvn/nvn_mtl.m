@@ -2404,6 +2404,19 @@ static uint64_t gpu_ticks(void) { static mach_timebase_info_data_t tb; if (!tb.d
 // ---------- 启动埋点（DM_BOOTPROF=1）：metallib 载入、管线创建（均在提交线程回放中同步发生）、贴图上传、首帧出图 ----------
 // ---------- Boot instrumentation (DM_BOOTPROF=1): metallib loading, pipeline creation (both happen synchronously during replay on the submit thread), texture upload, first-frame present ----------
 static uint64_t bp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
+static int enc_label_on(void);
+/* Metal command-buffer objects (including present/upload buffers) are reused.
+   Label each committed instance, not just the object, so Instruments can join
+   the CPU commit, GPU encoders and our timeline without crossing submissions.
+   Present callers pass the queued frame rather than the current game frame. */
+static void cb_submit_label(id<MTL4CommandBuffer> cb, uint64_t frame, const char *role, uint64_t fence, uint64_t tlid) {
+    if (!enc_label_on()) return;
+    static _Atomic uint64_t sequence;
+    uint64_t id_ = atomic_fetch_add_explicit(&sequence, 1, memory_order_relaxed) + 1;
+    cb.label = [NSString stringWithFormat:@"F%llu CB%llu %s fence%llu tl%llu",
+        (unsigned long long)frame, (unsigned long long)id_, role,
+        (unsigned long long)fence, (unsigned long long)tlid];
+}
 static int survey_shader_log(void) { static int on = -1; if (on < 0) on = getenv("TOTK_SURVEY_SHADER_LOG") != NULL; return on; }
 static uint64_t g_bp_t0;   // 进程启动（本模块装入）时刻 | Time of process start (when this module is loaded)
 __attribute__((constructor)) static void bp_t0(void) { g_bp_t0 = bp_now(); }
@@ -2583,10 +2596,12 @@ static void mtl_sub_split(void) {
         gpu_tag_done(gpu_f, f.GPUStartTime, f.GPUEndTime);
         if (f.error) { atomic_store(&g_last_commit_error, 1); static int n; if (n++ < 8) MLOG("【红】分段命令缓冲错误 fence=%llu：%s", (unsigned long long)fence_next, f.error.description.UTF8String); }
     }];
-    if (totk_tl_on()) { uint64_t tlid = totk_tl_commit_id(); totk_tl(TL_COMMIT, tlid, 0);
-        [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
+    uint64_t tlid = totk_tl_on() ? totk_tl_commit_id() : 0;
+    if (tlid) { totk_tl_at_frame(TL_COMMIT, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), gpu_f, tlid, 0);
+        [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at_frame(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), gpu_f, tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
     id<MTL4CommandBuffer> next = [g_dev newCommandBuffer];
     if (early) { w0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); rs_sync(); fc1 = fc0 + (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w0); }   // fc1 - fc0: the wait, as before
+    cb_submit_label(g_cb, gpu_f, "main-mid", fence_next, tlid);
     [g_cb endCommandBuffer];
     q4_commit(g_cb, o);
     g_cb = next;
@@ -2689,13 +2704,15 @@ uint64_t mtl_sub_commit(void) {
     pt_finish(g_cb, o, gpu_f, fence);
     dp_time_finish(o, fence);
     res_commit();
-    if (totk_tl_on()) { uint64_t tlid = totk_tl_commit_id(); totk_tl(TL_COMMIT, tlid, 1); totk_tl(TL_FENCE, tlid, fence);
-        [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
+    uint64_t tlid = totk_tl_on() ? totk_tl_commit_id() : 0;
+    if (tlid) { totk_tl_at_frame(TL_COMMIT, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), gpu_f, tlid, 1); totk_tl_at_frame(TL_FENCE, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), gpu_f, tlid, fence);
+        [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at_frame(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), gpu_f, tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
     for (NSNumber *entry in g_vr_native_slots) {
         const int slot = entry.intValue;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { vr_source_done(slot, !f.error); }];
     }
     g_vr_native_slots = nil;
+    cb_submit_label(g_cb, gpu_f, "main-final", fence, tlid);
     [g_cb endCommandBuffer];
     q4_commit(g_cb, o);
     if (nogpu()) g_ev.signaledValue = fence; else [g_q4 signalEvent:g_ev value:fence];
@@ -2778,6 +2795,7 @@ static uint64_t g_treg_same, g_treg_changed;   // TOTK: identical / changed text
    look again). A texture-ID view cache whose own serial is not among the steps since it was validated stays valid: the
    ~34 per-frame re-uploads of small CPU-written textures used to send every bound texture of every following draw down
    the slow path (about 13% of the replay). Written under g_smu before the generation is published. */
+#include "nvn_descriptor_profile.h"
 #define SER_CHG_N 1024
 static _Atomic uint64_t g_ser_chg[SER_CHG_N];
 /* TOTK: the newest generation step per hashed serial (and for "everything"), written with the step under g_smu before the
@@ -2788,6 +2806,7 @@ static _Atomic uint64_t g_ser_chg[SER_CHG_N];
 static _Atomic uint64_t g_ser_last[SER_LAST_N], g_ser_last_all;
 static inline unsigned ser_last_slot(uint64_t serial) { return (unsigned)((serial * UINT64_C(0x9E3779B97F4A7C15)) >> 52) & (SER_LAST_N - 1); }
 static void ser_bump_locked(uint64_t serial) {
+    dp_add(serial ? DP_SERIAL : DP_ALL, 1);
     uint64_t g = atomic_load_explicit(&g_ser_gen, memory_order_relaxed) + 1;
     atomic_store_explicit(&g_ser_chg[g % SER_CHG_N], serial, memory_order_relaxed);
     atomic_store_explicit(serial ? &g_ser_last[ser_last_slot(serial)] : &g_ser_last_all, g, memory_order_relaxed);
@@ -3153,6 +3172,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
     if (!strcmp(name,"raw_range_cache")) { atomic_store(&g_raw_range_cache,v!=0); MLOG("[flag] raw_range_cache = %d",v!=0); return; }
+    if (!strcmp(name,"descriptor_profile")) { descriptor_profile_set(v!=0); return; }
     if (!strcmp(name,"pool_validate_once")) { atomic_store(&g_pool_validate_once,v!=0); MLOG("[flag] pool_validate_once = %d",v!=0); return; }
     if (!strcmp(name,"mesh_empty_export")) { atomic_store(&g_mesh_empty_export,v!=0); MLOG("[flag] mesh_empty_export = %d",v!=0); return; }
     if (!strcmp(name,"mesh_reuse_check")) { atomic_store(&g_mesh_reuse_check,v!=0); MLOG("[flag] mesh_reuse_check = %d",v!=0); return; }
@@ -3711,20 +3731,22 @@ static int stor_key_lookup(id o, stor_key *k) {
 }
 /* g_smu held. Serials still holding the entry lose their table entries (they re-resolve on next use); the base is
    retired once the submissions using it complete. */
-static void stor_release_holders_locked(stor_ent *e) {
+static void stor_release_holders_locked(stor_ent *e, const char *why) {
+    int removed=0;
     if(e->views){
         for(id view in ((__bridge NSDictionary *)e->views).allValues)defer_obj_unref(view);
         CFRelease(e->views);e->views=NULL;
     }
     for (int i = 0; i < e->nser; i++) {
-        uint64_t s = e->ser[i]; id o = hm_get_id(&g_by_serial, &s); if (!o) continue;
+        uint64_t s = e->ser[i]; id o = hm_get_id(&g_by_serial, &s); if (!o) continue; removed++;
         uint64_t ok = obj_key(o); if (ok != (uint64_t)(uintptr_t)e->tex) nvn_hm_del(&g_stor_of_obj, &ok);
         defer_obj_unref(o); hm_del_id(&g_by_serial, &s); BOTW_SERIAL_NOTE(s, "storage entry dropped")
     }
+    descriptor_profile_storage(why,e,e->k.mem,e->k.size,e->k.w,e->k.h,e->k.d,e->k.levels,e->k.target,e->tex,e->ser,e->nser,removed,atomic_load_explicit(&g_ser_gen,memory_order_relaxed));
     e->nser = 0; ser_bump_locked(0);
 }
 static void stor_drop_locked(stor_ent *e) {
-    stor_release_holders_locked(e);
+    stor_release_holders_locked(e,"drop");
     uint64_t bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_del(&g_stor_of_obj, &bk); nvn_hm_del(&g_by_storage, &e->k);
     defer_obj_release((__bridge id)e->tex); CFRelease(e->tex);
     free(e->ser); free(e);
@@ -3763,7 +3785,7 @@ static id<MTLTexture> stor_recreate(const stor_key *k, id<MTLTexture> expected, 
     pthread_mutex_lock(&g_smu);
     e = nvn_hm_get(&g_stor_of_obj, &base_key);
     if (!e || (__bridge void *)base != e->tex) { pthread_mutex_unlock(&g_smu); defer_obj_release(nt); return nil; }   // the entry went away meanwhile (pool finalised)
-    stor_release_holders_locked(e);
+    stor_release_holders_locked(e,"recreate");
     uint64_t bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_del(&g_stor_of_obj, &bk);
     defer_obj_release(base); CFRelease(e->tex);
     e->tex = (void *)CFBridgingRetain(nt); bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_put(&g_stor_of_obj, &bk, e);
@@ -3802,7 +3824,7 @@ static stor_ent *stor_det_take_locked(const stor_key *k, MTLPixelFormat pf) {
 }
 /* g_smu held: like stor_drop_locked, for an entry that is no longer in g_by_storage (its key may belong to another entry). */
 static void stor_det_drop_locked(stor_ent *e) {
-    stor_release_holders_locked(e);
+    stor_release_holders_locked(e,"detached-drop");
     uint64_t bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_del(&g_stor_of_obj, &bk);
     defer_obj_release((__bridge id)e->tex); CFRelease(e->tex);
     free(e->ser); free(e);
@@ -4165,6 +4187,7 @@ static void up_flush(void) {
         atomic_fetch_sub(&g_up_pending, 1);
     }];
     res_commit();
+    cb_submit_label(cb, atomic_load(&g_cur_frame), "upload", 0, 0);
     [cb endCommandBuffer];
     q4_commit(cb, o);
     g_up_cb = nil; g_up_block = nil; g_up_block_off = g_up_block_size = 0; g_up_batch_bytes = 0; g_up_block_pooled = 0; g_up_batch_pool = 0;
@@ -10932,6 +10955,15 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
     uint64_t *changed=calloc(words,sizeof *changed),*cpu_mask=replace?calloc(words,sizeof *cpu_mask):slot->cpu_mask;
     if(!changed||!cpu_mask)MDIE("descriptor pool validation mask");
     int full=replace||revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&(slot->memory!=memory||ser-slot->ser>=SER_CHG_N));
+    dp_pool_event dp={0};
+    if(descriptor_profile_on()){
+        dp=(dp_pool_event){.start=bp_now(),.slot=(int)(slot-g_descriptor_pools),.kind=binding->kind,.base=base,.n=n,
+            .ser_old=slot->ser,.ser_start=ser,.rev_old=slot->revision,.rev_start=revision,
+            .dirty_old=slot->dirty,.dirty_start=dirty,.sub_old=slot->sub,.memory_old=slot->memory,.memory_now=memory,
+            .reasons=(replace?1:0)|(!replace&&revision-slot->revision>=DESCRIPTOR_CHANGE_N?2:0)|
+                (!replace&&!samp&&ser-slot->ser>=SER_CHG_N?4:0)|(!replace&&!samp&&slot->memory!=memory?8:0),
+            .cpu_refresh=!samp&&(slot->sub!=g_sub_serial||(!descriptor_pool_once()&&slot->dirty!=dirty))};
+    }
     g_descriptor_pool_reasons[0]+=replace;
     g_descriptor_pool_reasons[1]+=!replace&&(revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&ser-slot->ser>=SER_CHG_N));
     g_descriptor_pool_reasons[2]+=!replace&&!samp&&slot->memory!=memory;
@@ -10946,7 +10978,7 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
         }
         for(uint64_t v=slot->ser+1;!samp&&v<=ser;v++){
             uint64_t serial=atomic_load_explicit(&g_ser_chg[v%SER_CHG_N],memory_order_relaxed);
-            if(!serial){full=1;break;}
+            if(!serial){full=1;dp.reasons|=16;break;}
             int head=(int)(uintptr_t)nvn_hm_get(&g_view_heads,&serial);
             for(;head;head=g_treg[head-1].view_next){int ix=head-1-base;if(ix>=0&&ix<n)changed[(unsigned)ix/64]|=UINT64_C(1)<<((unsigned)ix%64);}
         }
@@ -10970,7 +11002,7 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
             if(tex_mirrored(&r->t))cpu_mask[w]|=bit;
             if(r->view||mtl_addr((uint64_t)r->t.mem,r->t.L.size?r->t.L.size:1,&mapped,&offset)){
                 void *view=NULL;uint64_t rid=tex_fast_rid(id_,&view);
-                if(g_tex_prepare_split){free(changed);if(replace)free(cpu_mask);return 0;}
+                if(g_tex_prepare_split){descriptor_profile_pool(&dp,full,checked,buffer!=nil,1,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);free(changed);if(replace)free(cpu_mask);return 0;}
                 if(view&&((__bridge id<MTLTexture>)view).textureType==binding->dtt)value=rid;
             }
         }
@@ -10986,6 +11018,7 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
     /* Creating an alias/usage view can replace the shared backing of earlier
        entries. Validate the complete pool again before publishing that table. */
     if(atomic_load_explicit(&g_ser_last_all,memory_order_relaxed)>ser){
+        descriptor_profile_pool(&dp,full,checked,buffer!=nil,2,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
         if(replace)free(cpu_mask);else slot->ser=0;
         return descriptor_pool_gpu(binding);
     }
@@ -10994,6 +11027,7 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
         if(replace)free(slot->cpu_mask);
         slot->buffer=buffer;g_descriptor_pool_misses++;
     }else g_descriptor_pool_hits++;
+    descriptor_profile_pool(&dp,full,checked,buffer!=nil,0,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
     slot->reg=reg;slot->ser=ser;slot->dirty=dirty;slot->sub=g_sub_serial;
     slot->revision=revision;slot->memory=memory;slot->cpu_mask=cpu_mask;slot->base=base;slot->n=n;slot->kind=binding->kind;slot->tt=binding->dtt;slot->pf=binding->dpf;
     return slot->buffer.gpuAddress;
@@ -18036,7 +18070,7 @@ static void anom_present(id<MTLTexture> src, uint64_t frame) {
         [be copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, (NSUInteger)(ys[r] * H), 0) sourceSize:MTLSizeMake(W, ROWS, 1)
                    toBuffer:g_anom_strip destinationOffset:(NSUInteger)r * W * ROWS * 4 destinationBytesPerRow:W * 4 destinationBytesPerImage:W * ROWS * 4];
     [be copyFromTexture:src toTexture:g_anom_img[slot]];
-    m4_end(be); [g_anom_cb endCommandBuffer];
+    m4_end(be); cb_submit_label(g_anom_cb, atomic_load(&g_cur_frame), "anomaly-probe", 0, 0); [g_anom_cb endCommandBuffer];
     dispatch_semaphore_t done = dispatch_semaphore_create(0); __block int failed = 0;
     TotkCommitOptions *o = [TotkCommitOptions new]; [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) {
         failed = fb.error != nil; if (failed) MLOG("【红】[anom] GPU readback failed: %s", fb.error.localizedDescription.UTF8String);
@@ -18208,7 +18242,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         [be barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
         [be copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(src.width/2-64, src.height/2-64, 0)
             sourceSize:MTLSizeMake(128, 128, 1) toBuffer:g_flash_guard_sample destinationOffset:0 destinationBytesPerRow:512 destinationBytesPerImage:65536];
-        m4_end(be); [g_flash_guard_cb endCommandBuffer];
+        m4_end(be); cb_submit_label(g_flash_guard_cb, atomic_load(&g_cur_frame), "flash-probe", 0, 0); [g_flash_guard_cb endCommandBuffer];
         dispatch_semaphore_t done = dispatch_semaphore_create(0); __block int failed = 0;
         TotkCommitOptions *o = [TotkCommitOptions new]; [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             failed = f.error != nil; dispatch_semaphore_signal(done); }];
@@ -18419,6 +18453,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             sourceSize:MTLSizeMake(128, 128, 1) toBuffer:g_present_probe_dst[alloc_i] destinationOffset:0 destinationBytesPerRow:512 destinationBytesPerImage:65536];
         m4_end(b);
     }
+    cb_submit_label(cb, frame, interp < 0 ? "present" : "present-interpolated", 0, 0);
     [cb endCommandBuffer];
     TotkCommitOptions *o = [TotkCommitOptions new];
     { int timed = alloc_i >= 0 && alloc_i < 3 && g_outup_timed[alloc_i], slot = alloc_i;
@@ -18761,6 +18796,7 @@ static int mfx_present_frame_body(const tex_t *t, double period, int discard) {
             if (!heap) { MTL4CounterHeapDescriptor *hd = [MTL4CounterHeapDescriptor new]; hd.type = MTL4CounterHeapTypeTimestamp; hd.count = 6;
                          NSError *e = nil; heap = [g_dev newCounterHeapWithDescriptor:hd error:&e]; hz = (double)[g_dev queryTimestampFrequency]; }
             NSArray *frame_resources = mfx_frame_encode(cb, slot, heap, (NSUInteger)a * 2);
+            cb_submit_label(cb, atomic_load(&g_cur_frame), "interpolation", 0, 0);
             [cb endCommandBuffer];
             atomic_store(&g_mfx_busy[a], 1);
             TotkCommitOptions *o = [TotkCommitOptions new];
