@@ -1084,7 +1084,7 @@ static pthread_mutex_t g_copy_mu = PTHREAD_MUTEX_INITIALIZER;
 #ifdef GAME_BOTW
 typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
 #else
-typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; } copy_prefix;
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size, hw_bytes, pad_; } copy_prefix;   // hw_bytes: the recording's command memory on hardware (EndRecording)
 #endif
 static _Atomic uint64_t g_copy_bytes;   /* live recording-copy bytes (logged with the copy count) */
 static copy_prefix *copy_of(NVNcommandHandle h) { copy_prefix *c = (copy_prefix *)(uintptr_t)h - 1; return c; }
@@ -1116,6 +1116,8 @@ static uint8_t *flatten_recording(const uint8_t *p) {
     copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits;
 #ifdef GAME_BOTW
     c->used = 0;
+#else
+    c->hw_bytes = 0;
 #endif
     size_t body = n >= sizeof(copy_prefix) + 16 ? n - sizeof(copy_prefix) - 16 : 0;
     c->body_bytes = bulk_ok && end_size == 8 && body <= UINT32_MAX ? (uint32_t)body : 0;
@@ -1309,6 +1311,9 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
         for (unsigned i = 1; i < OP_COUNT_ && n < sizeof line - 24; i++) if (t_rec_hist[i]) n += snprintf(line + n, sizeof line - n, " op%u×%u", i, t_rec_hist[i]);
         LOG("[rec] #%u cb=%p ours=%zu hw=%zu%s", t_rec_n, (void *)c, o->cmd_used - o->rec_start - 16, hw_before - o->hw_start, line); }
     uint8_t *copy = flatten_recording(o->seg);
+#ifndef GAME_BOTW
+    copy_of((NVNcommandHandle)(uintptr_t)copy)->hw_bytes = (uint32_t)(hw_before - o->hw_start);   /* what CopyCommands of it adds (inline_recording) */
+#endif
     if (call_stats_on()) call_stats_end(c, copy);
     /* Finalizing the recorder does not retire its handle; only reusing the backing control region does. */
 #ifdef GAME_BOTW
@@ -1433,7 +1438,27 @@ void dm_nvn_inline_bulk_set(int v) {
     atomic_store_explicit(&g_inline_bulk_on, v != 0, memory_order_relaxed);
     LOG("[flag] inline_bulk = %d", v != 0);
 }
-static void inline_recording(NVNcommandBuffer *c, NVNcommandHandle hd) {
+/* The command memory a call or copy of a recording takes, as nvnCommandBufferGetCommandMemoryUsed reports it: the game
+   measures it. Tears of the Kingdom records small command sets at start (main+0x219a770: AddCommandMemory of its own
+   buffer, BeginRecording, ..., GetCommandMemoryUsed at main+0x8dd9e8) and lays every renderer's GPU memory out from those
+   sizes (main+0x7189a0 -> +0xb10 -> main+0x710ff4 +0x40c -> the memory pool request at main+0x9ede94). The bodies were
+   copied in at our record size; the original driver (Ryujinx, 1.0.0, NVN 55) reports 40 bytes where we reported 88 for
+   two uniform buffer binds (2 x 20) and one CallCommands: a call adds nothing to command memory (the driver puts it in
+   control memory) and a copy adds the copied commands' hardware size. With our sizes every request was larger by 48
+   bytes per inlined recording; the AreaMergeTarRenderer's 4,152-byte pool went past 4 KiB to 8 KiB and its private
+   32 KiB heap ran out near Zora's Domain (#1742: main+0x855560 writes through a NULL allocation). Breath of the Wild and
+   the Switch 2 games are not measured and keep the old accounting. */
+static void inline_recording_body(NVNcommandBuffer *c, NVNcommandHandle hd);
+static void inline_recording(NVNcommandBuffer *c, NVNcommandHandle hd, int call) {
+#if defined(GAME_BOTW) || defined(GAME_NS2)
+    (void)call; inline_recording_body(c, hd);
+#else
+    cmd_t *o = CB(c); size_t hw0 = o->hw_used;
+    inline_recording_body(c, hd);
+    o->hw_used = hw0 + (call ? 0 : copy_of(hd)->hw_bytes);
+#endif
+}
+static void inline_recording_body(NVNcommandBuffer *c, NVNcommandHandle hd) {
     const uint8_t *p = (const uint8_t *)(uintptr_t)hd;
     if (!p) die("CallCommands/CopyCommands with a null handle");
     copy_touch(hd, g_submits);
@@ -1465,18 +1490,18 @@ static void life_call(NVNcommandBuffer *c, int n, const NVNcommandHandle *h, con
 NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     life_call(c, n, h, "copy");
 #ifdef GAME_BOTW
-    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
+    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]), 0);
 #else
-    for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+    for (int i = 0; i < n; i++) inline_recording(c, h[i], 0);
 #endif
 }
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     if (cmdlog_env()) for (int i = 0; i < n; i++) LOG("[cmd] CallCommands cb=%p handle=%#llx", (void *)c, (unsigned long long)h[i]);
     life_call(c, n, h, "call");
 #ifdef GAME_BOTW
-    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
+    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]), 1);
 #else
-    for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+    for (int i = 0; i < n; i++) inline_recording(c, h[i], 1);
 #endif
 }
 NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
