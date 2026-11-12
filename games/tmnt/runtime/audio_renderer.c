@@ -174,9 +174,12 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     need(in.p == in.end, "unconsumed update input");
 
     for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
-        need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
-        r->channels[chans[i].id] = chans[i];
+        /* Channel resources are indexed by their position in the update table.
+           Unused entries may retain a stale ID, including one belonging to a
+           live channel, so they must not replace its mix matrix. */
+        if (chans[i].in_use) r->channels[i] = chans[i];
     }
+    uint8_t active_ids[1024] = {0}; /* renderer_new bounds voice_count */
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
@@ -184,17 +187,25 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
             memcpy(&v2,voices+i*voice_stride,sizeof v2);memset(&v,0,sizeof v);
             memcpy(&v,v2.prefix,sizeof v2.prefix);
             memcpy((uint8_t *)&v+0x3c,v2.tail,sizeof v2.tail);
-            for(unsigned f=0;f<2;f++){
-                v.biquads[f].enable=v2.biquads[f].enable;
-                if(v.biquads[f].enable){
-                    for(unsigned c=0;c<3;c++)need(isfinite(v2.biquads[f].numerator[c]),"nonfinite voice biquad numerator");
-                    for(unsigned c=0;c<2;c++)need(isfinite(v2.biquads[f].denominator[c]),"nonfinite voice biquad denominator");
-                }
-            }
         }else memcpy(&v,voices+i*voice_stride,sizeof v);
+        /* Unused table entries can also carry a stale ID. Resolve only active
+           entries, then retire voices no longer named by any active entry. */
+        if (!v.in_use) continue;
+        if (float_voices) for (unsigned f = 0; f < 2; f++) {
+            v.biquads[f].enable = v2.biquads[f].enable;
+            if (v.biquads[f].enable) {
+                for (unsigned c = 0; c < 3; c++) need(isfinite(v2.biquads[f].numerator[c]), "nonfinite voice biquad numerator");
+                for (unsigned c = 0; c < 2; c++) need(isfinite(v2.biquads[f].denominator[c]), "nonfinite voice biquad denominator");
+            }
+        }
         update_voice(r,&v);
+        active_ids[v.id] = 1;
         ServerVoice *server=&r->voices[v.id];server->use_float_biquads=float_voices;
         if(float_voices)memcpy(server->float_biquads,v2.biquads,sizeof v2.biquads);
+    }
+    for (int i = 0; i < vc; i++) if (!active_ids[i] && r->voices[i].in.in_use) {
+        AudrenVoiceIn unused = {.id = (uint32_t)i};
+        update_voice(r, &unused);
     }
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     if (getenv("TOTK_AUDIO_DUMP")) { static unsigned dumped; unsigned active = 0; for (int i=0;i<ec;i++) if (effects[i].enabled && effects[i].type) active++;
@@ -380,6 +391,55 @@ __attribute__((constructor)) static void register_audio(void) { runtime_audio_re
 /* ---------- make probe-audio: mixer checks on constructed renderer state (no game, no audio device) ---------- */
 int audio_mixer_read(AudioRenderer *r, float *lr, int frames);
 static int near(float a, float b) { return fabsf(a - b) <= 1e-4f; }
+/* A full REV8 update may contain unused entries whose IDs still refer to a
+   live voice or channel. Exercise the wire parser, not just update_voice(). */
+static int probe_unused_audio_records(void) {
+    AudrenParameter p = {.sample_rate = 48000, .sample_count = 240,
+        .mix_buffer_count = 2, .voice_count = 2, .sink_count = 1, .revision = REV(8)};
+    AudioRenderer *r = renderer_new(&p);
+    AudrenHeader h = {.revision = REV(8), .behavior = 0x10,
+        .memory_pools = 8 * sizeof(AudrenPoolIn),
+        .voice_resources = 2 * sizeof(AudrenChannelIn),
+        .voices = 2 * sizeof(AudrenVoiceIn), .mixes = sizeof(AudrenMixIn),
+        .sinks = sizeof(AudrenSinkIn), .performance = 0x10};
+    h.total = sizeof h + h.behavior + h.memory_pools + h.voice_resources +
+        h.voices + h.mixes + h.sinks + h.performance;
+    uint8_t *input = calloc(1, h.total), output[1024];
+    need(input != NULL, "unused audio records probe allocation");
+    memcpy(input, &h, sizeof h);
+    uint8_t *at = input + sizeof h + h.behavior + h.memory_pools;
+    AudrenChannelIn *chans = (AudrenChannelIn *)at;
+    chans[0].in_use = 1; chans[0].mix[0] = 1;
+    chans[1].id = 0; /* stale ID must not clear channel 0 */
+    at += h.voice_resources;
+    AudrenVoiceIn *voices = (AudrenVoiceIn *)at;
+    voices[0] = (AudrenVoiceIn){.id = 0, .in_use = 1, .is_new = 1,
+        .play_state = PLAY_STARTED, .sample_rate = 48000};
+    voices[1].id = 0; /* unused slot with the live voice's ID */
+    at += h.voices;
+    AudrenMixIn mix = {.in_use = 1, .volume = 1, .buffer_count = 2};
+    memcpy(at, &mix, sizeof mix);
+    request_update(r, input, h.total, output, sizeof output, 0);
+    need(r->voices[0].in.in_use && r->voices[0].state == SV_STARTED &&
+         r->channels[0].mix[0] == 1, "unused audio records reset active entry");
+
+    /* The old active voice disappears; an unused channel record must leave
+       the previous gain intact while another active channel is installed. */
+    chans[0].in_use = 0; chans[0].mix[0] = 0;
+    chans[1].id = 1; chans[1].in_use = 1; chans[1].mix[0] = 0.75f;
+    voices[0].in_use = 0;
+    voices[1] = (AudrenVoiceIn){.id = 1, .in_use = 1, .is_new = 1,
+        .play_state = PLAY_STARTED, .sample_rate = 48000};
+    request_update(r, input, h.total, output, sizeof output, 0);
+    need(!r->voices[0].in.in_use && r->voices[0].state == SV_STOPPED &&
+         r->voices[1].in.in_use && r->voices[1].state == SV_STARTED &&
+         r->channels[0].mix[0] == 1 && r->channels[1].mix[0] == 0.75f,
+         "audio record retirement or positional channel update");
+    free(input);
+    free(r->voices); free(r->pools); free(r->mixes); free(r->sinks);
+    free(r->effects); free(r->channels); free(r);
+    return 5;
+}
 /* Complete REV15 wire request -> parser -> float voice/splitter filters -> sink.
  * Expected samples use separate double-precision recurrences, including state
  * across two requests. Coefficients deliberately cannot be represented in Q14. */
@@ -426,7 +486,7 @@ void runtime_audio_probe(void) {
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
-    int checked = probe_rev15();
+    int checked = probe_unused_audio_records() + probe_rev15();
     /* final mix 0: buffers 0-1; submix 1: buffers 2-3 -> mix 0 with a swap matrix at volume 0.5 */
     r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
     r->mixes[1] = (AudrenMixIn){.volume = 0.5f, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 1, .dest_mix_id = 0, .dest_splitter_id = 0xffffffffu};
@@ -663,5 +723,5 @@ void runtime_audio_probe(void) {
         checked += 5;
         y.in_use = 0; update_voice(r, &y);
     }
-    printf("{\"status\":\"pass\",\"probe\":\"probe-audio\",\"checked\":%d,\"scope\":\"REV15 wire parsing, native float voice/splitter biquads and consecutive request state; PCM16 channel mix, pitch interpolation, DSP-ADPCM decode, splitter to submix to final mix, device sink, stereo cascaded biquads, ordered submix reverb, auxiliary ring exchange, output limiter, bypass, frame continuity and reset\"}\n", checked);
+    printf("{\"status\":\"pass\",\"probe\":\"probe-audio\",\"checked\":%d,\"scope\":\"REV8 unused voice and positional channel records; REV15 wire parsing, native float voice/splitter biquads and consecutive request state; PCM16 channel mix, pitch interpolation, DSP-ADPCM decode, splitter to submix to final mix, device sink, stereo cascaded biquads, ordered submix reverb, auxiliary ring exchange, output limiter, bypass, frame continuity and reset\"}\n", checked);
 }

@@ -20,7 +20,7 @@ class AppEntryTests(unittest.TestCase):
             (game / 'rewritten').mkdir()
             stub = game / 'build/tmnt-native'
             stub.write_text('#!/bin/sh\nprintf "%s\\n" "$PWD" "$TOTK_PROFILE_DIR" '
-                            '"$TMNT_STRICT_FRAME_DEPENDENCIES" "$1" "$2"\n')
+                            '"$TOTK_GAME_SLOT_DIR" "$TMNT_STRICT_FRAME_DEPENDENCIES" "$1" "$2"\n')
             stub.chmod(0o755)
             write_app_entry(app, 'a' * 64)
             entry = app / 'Contents/MacOS/PlayTMNT'
@@ -32,6 +32,7 @@ class AppEntryTests(unittest.TestCase):
                                     text=True, capture_output=True, check=True)
             self.assertEqual(result.stdout.splitlines(), [
                 str(game), str(root / 'Library/Application Support/MacNativeGames/TMNT-aaaaaaaaaaaa'),
+                str(root / 'Library/Application Support/MacNativeGames/game-slot'),
                 '1', str(game / 'rewritten'), 'boot'])
 
 

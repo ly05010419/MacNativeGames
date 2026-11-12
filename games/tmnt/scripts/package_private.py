@@ -45,6 +45,7 @@ def write_app_entry(app, runtime_sha256):
         'cd "$ROOT"\n'
         'export TOTK_ROMFS="$ROOT/romfs"\n'
         'export TOTK_PROFILE_DIR="$PROFILE"\n'
+        'export TOTK_GAME_SLOT_DIR="$HOME/Library/Application Support/MacNativeGames/game-slot"\n'
         'export TOTK_SHARED_FONTS="$ROOT/shared-fonts"\n'
         'export TOTK_SHADER_CACHE="$PROFILE/shader-cache"\n'
         'export TOTK_SHADER_SEED=off TOTK_SHADER_SERVICE=native\n'
