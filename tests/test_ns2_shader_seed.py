@@ -52,5 +52,38 @@ class SeedFiles(unittest.TestCase):
             self.assertEqual([e['variant'] for e in indexes[f'{shader}.variants']], [names[1]])
 
 
+
+class GameShaderKeys(unittest.TestCase):
+    """Every shader the game ships (game-shader-keys.json, from the corpus): beside the seed, never in its manifest, and
+    written only when it changed (user 2026-11-12: every game's shaders apart; the shader merge reads it)."""
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_written_once_and_kept_while_it_holds_the_same_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            identity = seed.shader_key_scope(['b' * 64, 'a' * 64], 'pkp', 'c' * 64)
+            seed.write_identity(folder, identity)
+            path = folder / seed.IDENTITY
+            self.assertEqual(json.loads(path.read_text())['keys'], ['a' * 64, 'b' * 64])
+            before = path.stat().st_mtime_ns
+            seed.write_identity(folder, identity)
+            self.assertEqual(path.stat().st_mtime_ns, before, 'the same keys: not written again (the bundle stays signed)')
+            seed.write_identity(folder, seed.shader_key_scope(['a' * 64], 'pkp', 'c' * 64))
+            self.assertEqual(json.loads(path.read_text())['keys'], ['a' * 64])
+
+    def test_never_one_of_the_manifests_files(self):
+        # the runtime takes a manifest's files only by its own names and refuses the seed for any other one
+        guard = (self.ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/totk_shader_seed.h').read_text()
+        self.assertNotIn('game-shader-keys', guard)
+        text = (SCRIPTS / 'prepare_ns2_seed.py').read_text()
+        self.assertLess(text.index("report['files'], read = publish_digests("), text.index('write_identity(staging, identity)'),
+                        'written after the manifest takes its digests')
+        self.assertIn("'--all-keys', all_keys", text)
+
+    def test_a_translated_shader_outside_the_game_stops_the_seed(self):
+        text = (SCRIPTS / 'prepare_ns2_seed.py').read_text()
+        self.assertIn("if not set(keys) <= set(identity['keys']):", text)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -55,7 +55,14 @@ SEEDED = ('totk', 'botw')
 # theirs. 2026-11-12: all 5,784 rows Ocarina of Time installs sent in a round were inside its seed. Not Tears of the Kingdom
 # or Breath of the Wild: 4,851 of 14,554 rows from 1.4.3 and 756 of 1,028 from 1.9.0 named shaders outside their seeds,
 # of no other game either, so their seeds miss shaders the games play.
-COMPLETE = ('oot',)
+# Switch 2 games (prepare_ns2_seed.py): their shader-keys.json names only the shaders the seed translated; their
+# game-shader-keys.json names every shader the corpus finds in the game's files (user 2026-11-12: "做a"). That makes
+# Bananza COMPLETE: all 213 shader keys its installs sent were among its 22,854. Not Pokopia yet: of the 333 keys its
+# installs sent (2026-11-11) only 24 were among the 131,090 its corpus finds, in no other game's either, and its game
+# files are pinned (expected-v2.0.1.json), so the corpus misses shaders the game uses; its keys still name its rows.
+NS2_VERSIONS = {'dkb': 'dkb', 'pkp': 'pokopia'}
+COMPLETE = ('oot', 'dkb')
+IDENTITY = 'game-shader-keys.json'
 SEED_GAMES = SEEDED + COMPLETE   # the games --seed and --keys can name
 # Games whose own shader_list.py merges a file into their list (its "merge"): Ocarina of Time's list has rows this script does
 # not know (M, mesh pipelines) and keeps the bind state (A row) of every pipeline it names, which only a whole file gives.
@@ -106,28 +113,38 @@ def contribution_items(text):
 
 
 def key_source(spec):
-    """(game, shader keys) from a prepared seed folder (its shader-keys.json, which names the version) or from
-    "<game>=<file>" (a JSON list of keys, or a shader-keys.json). A seed without shader-keys.json (made before
-    2026-10-22, its variants are the startup shaders only) cannot tell a key's game: ValueError."""
+    """(game, shader keys, complete) from a prepared seed folder or from "<game>=<file>" (a JSON list of keys, or a
+    shader-keys.json). complete: the keys are every shader the game ships. A seed folder's game-shader-keys.json (a Switch 2
+    game's, prepare_ns2_seed.py) is that, checked against its shader-keys.json (the same version and game files); a
+    shader-keys.json is that for the games whose prepare_shader_seed.py scans the whole RomFS, not for a Switch 2 game's,
+    which names only what its seed translated. A seed without shader-keys.json (made before 2026-10-22, its variants are
+    the startup shaders only) cannot tell a key's game: ValueError."""
     game, _, path = spec.partition('=') if '=' in spec else ('', '', spec)
     if game and game not in SEED_GAMES:
         raise ValueError(f'{spec}: the game is one of {", ".join(SEED_GAMES)}')
-    p = Path(path)
+    p, identity = Path(path), None
     if p.is_dir():
+        if (p / IDENTITY).is_file():
+            identity = json.loads((p / IDENTITY).read_text())
         p = p / 'shader-keys.json'
         if not p.is_file():
             raise ValueError(f'{path}: no shader-keys.json (a seed made before 2026-10-22); prepare the seed again')
     data = json.loads(p.read_text())
+    if identity is not None:
+        same = ('version', 'source_romfs_sha256')
+        if not isinstance(data, dict) or any(identity.get(k) != data.get(k) for k in same):
+            raise ValueError(f'{path}: {IDENTITY} is of other game files than its shader-keys.json')
+        data = identity
     keys = data['keys'] if isinstance(data, dict) else data
+    version = data.get('version', '') if isinstance(data, dict) else ''
     if not game:
-        version = data.get('version', '') if isinstance(data, dict) else ''
-        game = ('botw' if version.startswith('botw') else 'oot' if version == 'oot'
-                else 'totk' if version.startswith('v') else '')
+        game = ('botw' if version.startswith('botw') else 'oot' if version == 'oot' else NS2_VERSIONS.get(version)
+                or ('totk' if version.startswith('v') else ''))
         if not game:
             raise ValueError(f'{path}: the version does not say which game; give it as <game>=<file>')
     if not all(isinstance(k, str) and KEY.match(k) for k in keys):
         raise ValueError(f'{path}: not a list of shader keys')
-    return game, set(keys)
+    return game, set(keys), identity is not None or game not in NS2_VERSIONS.values()
 
 
 def pipeline_shaders(row):
@@ -378,7 +395,10 @@ def main():
     keys, seeds, complete = {game: set() for game in GAMES}, {}, {game: set() for game in COMPLETE}
     try:
         for spec in args.seed + args.keys:
-            game, found = key_source(spec)
+            game, found, whole = key_source(spec)
+            if game in COMPLETE and not whole:   # a Switch 2 seed packaged before it named every shader
+                ap.error(f'{spec}: names only the shaders its seed translated, not every shader of the game '
+                         f'(no {IDENTITY}): package {game} again')
             keys[game] |= found
             if game in COMPLETE:
                 complete[game] |= found

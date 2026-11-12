@@ -326,6 +326,8 @@ def main():
     p.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
     p.add_argument('--listed', type=Path, help="the game's shared shader list: of the RDB data files' shaders (130,904 in "
                    "Pokopia, most of them never loaded) only those its V rows name; the modules' and LINKDATA's all")
+    p.add_argument('--all-keys', type=Path, help='write the key of every shader found here, kept or not (a JSON list): '
+                   'which shaders are this game\'s (prepare_ns2_seed.py game-shader-keys.json; user 2026-11-12)')
     a = p.parse_args()
     listed = None
     if a.listed:
@@ -358,6 +360,10 @@ def main():
     if failed:
         sys.exit('[RED] ' + '\n'.join(failed))
     found = len(shaders)
+    if a.all_keys:   # every shader the game ships, before the list narrows what is translated (a failed file stopped above)
+        a.all_keys.parent.mkdir(parents=True, exist_ok=True)
+        a.all_keys.write_text(json.dumps(sorted(shaders), separators=(',', ':')) + '\n')
+        print(f'{found} shader keys -> {a.all_keys}')
     if listed is not None:
         shaders = {k: v for k, v in shaders.items() if k in startup or k in listed}
         print(f'{found} distinct shaders found; kept {len(shaders)}: {len(startup)} of the modules and LINKDATA and '

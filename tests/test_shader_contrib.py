@@ -105,14 +105,59 @@ class ContributionRowsTests(unittest.TestCase):
             for folder, version, game in (('botw160', 'botw160', 'botw'), ('oot', 'oot', 'oot'), ('v143', 'v143', 'totk')):
                 seed = Path(tmp) / folder; seed.mkdir()
                 (seed / 'shader-keys.json').write_text(json.dumps({'version': version, 'keys': [self.KEY_B]}))
-                self.assertEqual(key_source(str(seed)), (game, {self.KEY_B}))
+                self.assertEqual(key_source(str(seed)), (game, {self.KEY_B}, True))
             listed = Path(tmp) / 'v121-keys.json'; listed.write_text(json.dumps([self.KEY_A]))
-            self.assertEqual(key_source(f'totk={listed}'), ('totk', {self.KEY_A}))
+            self.assertEqual(key_source(f'totk={listed}'), ('totk', {self.KEY_A}, True))
             old = Path(tmp) / 'v0'; old.mkdir(); (old / f'{self.KEY_A}.variants').write_text('')
             with self.assertRaises(ValueError):   # an old seed names only its startup shaders: not every key of the game
                 key_source(str(old))
             with self.assertRaises(ValueError):
                 key_source(f'odyssey={listed}')
+
+
+class SwitchTwoSeedTests(unittest.TestCase):
+    """A Switch 2 game's seed (prepare_ns2_seed.py) names in shader-keys.json only the shaders it translated, in
+    game-shader-keys.json every shader the game ships: only the second makes the game COMPLETE (user 2026-11-12: "做a")."""
+    TRANSLATED, OTHER = 'a' * 64, 'b' * 64
+    ROMFS = 'c' * 64
+
+    def seed(self, tmp, version='pkp', identity=True, romfs=None):
+        folder = Path(tmp) / version; folder.mkdir()
+        (folder / 'shader-keys.json').write_text(json.dumps({'version': version, 'source_romfs_sha256': self.ROMFS,
+                                                             'keys': [self.TRANSLATED]}))
+        if identity:
+            (folder / 'game-shader-keys.json').write_text(json.dumps({'version': version, 'source_romfs_sha256': romfs or self.ROMFS,
+                                                                      'keys': [self.TRANSLATED, self.OTHER]}))
+        return folder
+
+    def test_every_shader_of_the_game_from_its_own_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(key_source(str(self.seed(tmp))), ('pokopia', {self.TRANSLATED, self.OTHER}, True))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(key_source(str(self.seed(tmp, 'dkb'))), ('dkb', {self.TRANSLATED, self.OTHER}, True))
+
+    def test_a_seed_without_it_is_not_every_shader(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(key_source(str(self.seed(tmp, identity=False))), ('pokopia', {self.TRANSLATED}, False))
+
+    def test_it_must_be_of_the_same_game_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, 'other game files'):
+                key_source(str(self.seed(tmp, romfs='d' * 64)))
+
+    def test_the_merge_will_not_run_with_a_seed_that_names_only_what_it_translated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = subprocess.run([sys.executable, str(TOTK / 'scripts/collect_shaders.py'), '--inbox', 'https://inbox.test',
+                                  '--seed', str(self.seed(tmp, 'dkb', identity=False))],
+                                 capture_output=True, text=True, env={**os.environ, 'SHADER_INBOX_TOKEN': 't'})
+            self.assertEqual(run.returncode, 2)
+            self.assertIn('package dkb again', run.stderr)
+
+    def test_bananza_is_complete_and_pokopia_not_yet(self):
+        # Bananza: all 213 shader keys its installs sent were among its corpus's 22,854. Pokopia: 24 of 333 among its
+        # 131,090 (2026-11-12): its corpus misses shaders the game uses, so its rows are not refused by it
+        self.assertIn('dkb', collect_shaders.COMPLETE)
+        self.assertNotIn('pokopia', collect_shaders.COMPLETE)
 
 
 class OwnerTests(unittest.TestCase):
