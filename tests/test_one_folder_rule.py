@@ -62,11 +62,45 @@ class Plan(unittest.TestCase):
             p = update_runtime.plan(out)
         self.assertEqual((p['kind'], p['game'], p['work']), ('express', 'oot', str(work.resolve())))
 
-    def test_a_switch_2_app_has_only_the_full_build(self):
+    def switch_2_app(self, tmp, version, *, data=True):
+        """A Switch 2 app as build_app.py lays it out (rewritten/<version>, build/game-data/<version>), its work folder recorded."""
+        work = Path(tmp) / f'work/{version}'
+        work.mkdir(parents=True)
+        out = app(tmp, f'{build_app.APPS[version][0]}.app', CFBundleExecutable=build_app.APPS[version][2], MNGWorkFolder=str(work))
+        res = out / 'Contents/Resources/totk'
+        (res / f'rewritten/{version}').mkdir(parents=True)
+        if data:
+            for name in build_app.game_data_files(version):
+                (res / f'build/game-data/{version}').mkdir(parents=True, exist_ok=True)
+                (res / f'build/game-data/{version}' / name).write_text('x')
+        return out, work
+
+    def test_a_switch_2_app_takes_the_express_update_like_the_others(self):
+        # Bananza and Pokopia were told "only the normal update" without a look (user 2026-11-12: "为什么要完整打包？"); they
+        # are judged by the same checks as Tears of the Kingdom: their game data, modules and seed
+        for version in ('dkb', 'pkp'):
+            with tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(update_runtime, 'check_game_data'), mock.patch.object(update_runtime, 'check_rewriter'), \
+                    mock.patch.object(update_runtime, 'check_seed_chain', return_value=False):
+                out, work = self.switch_2_app(tmp, version)
+                p = update_runtime.plan(out)
+            self.assertEqual((p['kind'], p['game'], p['work']), ('express', version, str(work.resolve())), version)
+
+    def test_a_switch_2_app_whose_seed_is_of_another_chain_takes_the_fast_update(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(update_runtime, 'check_game_data'), mock.patch.object(update_runtime, 'check_rewriter'), \
+                mock.patch.object(update_runtime, 'check_seed_chain', return_value=True), \
+                mock.patch.object(update_runtime, 'check_work_files'):
+            out, _ = self.switch_2_app(tmp, 'dkb')
+            self.assertEqual(update_runtime.plan(out)['kind'], 'fast')
+
+    def test_a_switch_2_app_without_its_game_data_says_what_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            out = app(tmp, 'Pokémon Pokopia.app', CFBundleExecutable=build_app.APPS['pkp'][2])
+            out, _ = self.switch_2_app(tmp, 'pkp', data=False)
             p = update_runtime.plan(out)
         self.assertEqual((p['kind'], p['game']), ('full', 'pkp'))
+        self.assertIn('no game data folder', p['reason'])
+        self.assertNotIn('only the normal update', p['reason'])
 
     def test_a_work_folder_on_a_disk_that_is_gone_is_an_error_naming_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +119,20 @@ class Plan(unittest.TestCase):
             self.assertEqual(json.loads(printed.getvalue())['kind'], 'full')
             self.assertEqual(sorted((p.name, p.stat().st_mtime_ns) for p in Path(tmp).rglob('*')), before)
 
+
+
+class SwitchTwoSeed(unittest.TestCase):
+    def test_a_new_seed_is_made_by_the_switch_2_steps_after_the_runtime(self):
+        # prepare_ns2_seed.py translates with the game binary (build/totk-native-<version>): make runs first
+        calls = []
+        with mock.patch.object(build_app, 'step_shaders_ns2', side_effect=lambda *a, **k: calls.append('ns2')), \
+                mock.patch.object(build_app, 'step_shaders', side_effect=lambda *a, **k: calls.append('totk')), \
+                mock.patch.object(build_app, 'step_shader_libs', side_effect=lambda *a, **k: calls.append('libs')), \
+                mock.patch.object(build_app, 'build_warm_tool', side_effect=lambda *a, **k: calls.append('warm')):
+            update_runtime.make_seed(Path('/tree'), Path('/work'), 'dkb', 'dkb', Path('/logs'), {})
+        self.assertEqual(calls, ['ns2', 'libs', 'warm'])
+        self.assertTrue(update_runtime.seed_after_runtime('pkp'))
+        self.assertFalse(update_runtime.seed_after_runtime('totk') or update_runtime.seed_after_runtime('botw'))
 
 
 class ExpressUpdateArguments(unittest.TestCase):

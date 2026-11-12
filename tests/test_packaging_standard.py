@@ -84,6 +84,34 @@ class PackagingStandard(unittest.TestCase):
                     else:
                         self.assertTrue(met, f'{name} does not meet this standard; meet it, or list it in the gaps with the reason')
 
+    def test_every_switch_2_game_is_planned_for_the_express_update(self):
+        # "a runtime change can update quickly" passed for Bananza and Pokopia by its word in update_runtime.py (Tears of the
+        # Kingdom's place_runtime) while update_runtime.plan answered "only the normal update" for both (user 2026-11-12:
+        # "为什么要完整打包？"); asked of the plan itself, for each game, with its checks passing
+        import plistlib
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(ROOT))
+        import build_app
+        import update_runtime
+        for g in build_app.NS2.values():
+            version = g['version']
+            with self.subTest(game=version), tempfile.TemporaryDirectory() as tmp, \
+                    mock.patch.object(update_runtime, 'check_game_data'), mock.patch.object(update_runtime, 'check_rewriter'), \
+                    mock.patch.object(update_runtime, 'check_seed_chain', return_value=False):
+                work = Path(tmp) / 'work'
+                work.mkdir()
+                app = Path(tmp) / f'{build_app.APPS[version][0]}.app'
+                (app / f'Contents/Resources/totk/rewritten/{version}').mkdir(parents=True)
+                (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(
+                    {'CFBundleExecutable': build_app.APPS[version][2], 'MNGWorkFolder': str(work)}))
+                data = app / f'Contents/Resources/totk/build/game-data/{version}'
+                data.mkdir(parents=True)
+                for name in build_app.game_data_files(version):
+                    (data / name).write_text('x')
+                self.assertEqual(update_runtime.plan(app)['kind'], 'express')
+
     def test_gaps_name_real_standards_and_reasons(self):
         for name, (_, gaps) in PATHS.items():
             for standard, why in gaps.items():
