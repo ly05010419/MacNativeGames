@@ -24,7 +24,7 @@
 #define GAME_CONTRIB_TEMPLATE "shader-list.yml"
 #define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
 #endif
-#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
+#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the project, for the form and the star button
 #define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
 #define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
 

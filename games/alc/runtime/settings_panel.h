@@ -54,7 +54,6 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "gamepad_layout.h"   /* GAMEPAD_TYPE_* for the controller row */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx.h"   /* mfx_requested / mfx_set */
-#include "contrib_submit.h"   /* gh_path, contrib_submit (shared with app/launcher.m) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
@@ -635,24 +634,14 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   panel.versionLabel.stringValue=settings_version_text();panel.versionLabel.frame=NSMakeRect(18,9,230,16);});
 }
 -(CGFloat)footerButtonsWidth{CGFloat w=0;for(NSButton *b in self.displayButtons)if(!b.hidden)w+=b.frame.size.width+6;return w;}
-/* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
-   thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
--(void)contribute:(NSButton *)button{
+/* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): the GitHub form opens and
+   Finder shows the file to drag in. Players install nothing for it (no GitHub CLI since 2026-11-12). */
+-(void)contribute:(NSButton *)button{(void)button;
  NSString *path=totk_contrib_path();NSUInteger rows=path?totk_contrib_read(path).count:0;
  if(!rows){[self note:settings_text("现在没有要贡献的着色器和管线：公共清单里都有了","Nothing to contribute now: the shared list has them all")];return;}
- button.enabled=NO;[self note:[NSString stringWithFormat:@(TOTK_UI("正在提交 %lu 条着色器和管线…","Sending %lu shaders and pipelines…")),(unsigned long)rows]];
- __weak TOTKSettingsPanel *weak=self;
- dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-  NSString *gh=gh_path(),*issue=gh?contrib_submit(gh,path,rows):nil;
-  dispatch_async(dispatch_get_main_queue(),^{
-   button.enabled=YES;
-   if(issue){totk_contrib_reminded(path,rows);   /* the launcher's reminder counts from here */
-    [weak note:[NSString stringWithFormat:@(TOTK_UI("已提交 %lu 条，谢谢你的贡献！","Sent %lu, thank you for contributing!")),(unsigned long)rows]];
-    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:issue]];fprintf(stderr,"[totk] settings: contribution sent, %s\n",issue.UTF8String);return;}
-   [weak note:gh?settings_text("自动提交没成功：已打开提交页面，把访达里的文件拖进去","Sending did not work: drag the file Finder shows into the form")
-                           :settings_text("已打开提交页面：把访达里的文件拖进去","The form is open: drag the file Finder shows into it")];
-   [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_CONTRIB_ISSUE_URL]];
-   [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];});});
+ [self note:settings_text("已打开提交页面：把访达里的文件拖进去","The form is open: drag the file Finder shows into it")];
+ [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_CONTRIB_ISSUE_URL]];
+ [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
 }
 /* The project's GitHub page, where the player stars it (as the launcher's star button). */
 -(void)star:(id)sender{(void)sender;[NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_REPO_URL]];
