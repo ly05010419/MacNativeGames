@@ -12,12 +12,16 @@ Actions: state() -> both folders without sizes (instant); measure(folder) -> one
 to a minute for a big work folder); clean(folder) -> what was removed; move(target, confirmed) -> the question to ask
 first (confirmed false), then what was moved and how the app records the new folder."""
 import fcntl
+import json
 import os
 from pathlib import Path
 import plistlib
 import re
 import shlex
 import subprocess
+import tempfile
+import time
+from types import SimpleNamespace
 
 from tools.builder import saves, storage
 from tools.builder_jobs import repo
@@ -143,14 +147,17 @@ def folder_view(ctx, folder):
         raise TabError(t(f'no folder {folder!r}: one of {", ".join(FOLDERS)}', f'没有 {folder!r} 这个文件夹：只有 {", ".join(FOLDERS)}'))
     return {'id': folder, 'label': label, 'path': str(path), 'kind': kind, 'where': where, 'note': note,
             'exists': path.is_dir(), 'movable': folder == 'work' and kind != 'unreachable',
-            'size': None, 'detail': '', 'confirm': ''}
+            'size': None, 'detail': '', 'confirm': confirm_work() if folder == 'work' else ''}
 
 
-def work_warning():
-    return t('\n\nAn update needs what is in it: afterwards the next update makes it again (slower), and a fast update '
-             '(--seed) or an app that still needs its build\'s files needs the game files and keys again.',
-             '\n\n更新要用里面的东西：清理后下次更新会重新生成（更慢）；快速更新（--seed）或还需要打包文件的旧 App 要重新提供'
-             '游戏文件和密钥。')
+def confirm_work():
+    """The work folder's question (user 2026-11-12: say what cleaning costs, then ask). update_runtime.plan: the app holds
+    its game data, so the next update is still the express one, but it makes the work folder's files again first; only
+    one that must also make the startup shaders again (fast update) needs the game files and keys."""
+    return t('After cleaning, the next update first makes these files again, which takes much longer than usual; if that '
+             'update must also make the startup shaders again, it needs the game files and keys (a full build). Clean it?',
+             '清理之后，下次更新要先重新生成这些文件，比平时慢很多；如果那次更新还要重做启动着色器，就得用游戏文件和密钥'
+             '完整打包。是否清理？')
 
 
 def confirm_clean(path, size):
@@ -170,20 +177,68 @@ def size_line(path, size):
     return line
 
 
+def sizes_file(ctx):
+    """The sizes measured before, by folder path: the page shows them until asked to measure again (user 2026-11-12)."""
+    return ctx.builder_dir / 'storage-sizes.json'
+
+
+def read_sizes(ctx):
+    try:
+        data = json.loads(sizes_file(ctx).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_sizes(ctx, sizes):
+    path = sizes_file(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix='.storage-sizes.', delete=False) as f:
+        json.dump(sizes, f, indent=1)
+    os.replace(f.name, path)
+
+
+def size_json(size):
+    return {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes), 'errors': list(size.errors[:5])}
+
+
+def with_size(view, size, measured_at=None):
+    """The folder's view with a size; measured_at (seconds) when the size is a remembered one."""
+    detail = size_line(view['path'], size)
+    if measured_at is not None:
+        when = time.strftime('%Y-%m-%d %H:%M', time.localtime(measured_at))
+        detail += t(f' (measured {when})', f'（{when} 计算）')
+    return {**view, 'size': size_json(size), 'detail': detail,
+            'confirm': confirm_work() if view['id'] == 'work' else confirm_clean(view['path'], size)}
+
+
+def remembered(ctx, view):
+    """The view with its last measured size, when there is one for this path and the folder is still there."""
+    record = read_sizes(ctx).get(view['path'])
+    if not isinstance(record, dict) or not view['exists']:
+        return view
+    try:
+        size = SimpleNamespace(bytes=int(record['bytes']), files=int(record['files']), errors=list(record.get('errors', [])))
+        return with_size(view, size, float(record['at']))
+    except (KeyError, TypeError, ValueError):
+        return view
+
+
 def state(ctx):
     return {'title': t('Caches', '缓存'),
             'note': t('Two folders the builds and the game write. Cleaning removes only what is inside them; the game or '
                       'the next build makes it again. Saves and the app are not touched.',
                       '打包和游戏写的两个文件夹。清理只删除里面的内容，游戏或下次打包会重新生成；存档和 App 不受影响。'),
-            'folders': [folder_view(ctx, f) for f in FOLDERS]}
+            'folders': [remembered(ctx, folder_view(ctx, f)) for f in FOLDERS]}
 
 
 def measure(ctx, folder):
     view = folder_view(ctx, folder)
     size = storage.measure(view['path'])
-    return {**view, 'size': {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes),
-                             'errors': list(size.errors[:5])},
-            'detail': size_line(view['path'], size), 'confirm': confirm_clean(view['path'], size) + (work_warning() if folder == 'work' else '')}
+    if view['exists']:
+        at = time.time()
+        write_sizes(ctx, {**read_sizes(ctx), view['path']: {**size_json(size), 'at': at}})
+    return with_size(view, size)   # measured just now: the time shows when the page opens on it later
 
 
 def busy_reason(ctx, folder):
@@ -206,6 +261,9 @@ def clean(ctx, folder):
     removed, reason = storage.clean(view['path'], ctx.home, protected(ctx))
     if reason is not None:
         raise TabError(t('Could not clean: ', '没能清理：') + refusal(reason))
+    sizes = read_sizes(ctx)
+    if view['path'] in sizes:   # the size measured before went with the files
+        write_sizes(ctx, {k: v for k, v in sizes.items() if k != view['path']})
     return {'folder': folder, 'path': view['path'], 'bytes': removed.bytes, 'files': removed.files,
             'message': t(f'Removed {storage.human(removed.bytes)} in {removed.files} files.',
                          f'删除了 {removed.files} 个文件，共 {storage.human(removed.bytes)}。')}

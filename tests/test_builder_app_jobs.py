@@ -180,6 +180,14 @@ class Installed(unittest.TestCase):
             self.assertEqual([n for n in ('A.app', 'A.app.partial', 'A.app.replaced-12', '.Trash/A.app')
                               if installed.usable(str(Path(tmp) / n))], ['A.app'])
 
+    def test_apps_are_asked_for_by_bundle_id_quickly(self):
+        # LaunchServices by bundle ID, not a dump of every app this Mac knows (that took 4.9 s, user 2026-11-12)
+        start = time.monotonic()
+        found = installed.registered({'com.apple.finder'})
+        self.assertIn('/System/Library/CoreServices/Finder.app', found)
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertEqual(installed.registered({'org.macnativegames.nothing-has-this'}), [])
+
     def test_every_game_s_bundle_is_looked_for(self):
         ids = installed.bundle_ids()
         for bundle in ('org.macnativegames.totk', 'org.macnativegames.botw', 'org.macnativegames.oot'):

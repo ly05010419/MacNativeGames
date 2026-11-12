@@ -88,14 +88,36 @@ class StorageTab(unittest.TestCase):
         work = self.ok('state')['folders'][0]
         self.assertEqual((work['kind'], work['path']), ('unrecorded', str(self.apps / 'TOTK_build')))
 
+    def test_state_asks_the_work_folder_question_without_measuring(self):
+        # the window measures only when asked (user 2026-11-12), so Clean must have its question before any size
+        work, shader = self.ok('state')['folders']
+        self.assertIsNone(work['size'])
+        self.assertTrue(work['confirm'].endswith('Clean it?'))
+        self.assertEqual(shader['confirm'], '')
+
+    def test_a_measured_size_shows_again_until_the_folder_is_cleaned(self):
+        # once measured, the page shows that size when it opens, with when it was measured (user 2026-11-12)
+        self.assertIsNone(self.ok('state')['folders'][0]['size'])
+        self.ok('measure', folder='work')
+        work = self.ok('state')['folders'][0]
+        self.assertEqual((work['size']['bytes'], work['size']['files']), (6, 2))
+        self.assertIn('6 B in 2 files', work['detail'])
+        self.assertIn('measured', work['detail'])
+        self.assertTrue((self.home / 'Library/Application Support/MacNativeGames/Builder/storage-sizes.json').is_file())
+        self.ok('clean', folder='work')
+        self.assertIsNone(self.ok('state')['folders'][0]['size'])         # the old size is gone with the files
+
     # --- measure ---
     def test_measure_counts_one_folder_and_writes_the_question_to_ask(self):
         work = self.ok('measure', folder='work')
         self.assertEqual((work['size']['bytes'], work['size']['files']), (6, 2))
         self.assertEqual(work['detail'], '6 B in 2 files')
-        self.assertIn(str(self.work), work['confirm'])
-        self.assertIn('2 files', work['confirm'])
-        self.assertIn('game files and keys again', work['confirm'])      # what cleaning costs an update
+        # the work folder's question says what cleaning costs the next update and asks (user 2026-11-12)
+        self.assertIn('the next update first makes these files again', work['confirm'])
+        self.assertIn('game files and keys (a full build)', work['confirm'])
+        self.assertTrue(work['confirm'].endswith('Clean it?'))
+        shader = self.ok('measure', folder='shader')
+        self.assertIn('1 files', shader['confirm'])                     # the shader cache keeps the plain question
         self.assertEqual(self.ok('measure', folder='shader')['size']['files'], 1)
         self.assertIn('work', self.refused('measure', folder='saves'))
 

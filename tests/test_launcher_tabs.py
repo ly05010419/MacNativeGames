@@ -53,6 +53,23 @@ class Bridge(unittest.TestCase):
         self.assertEqual([p.name for p in written], ['graphics-taa.txt'])
         self.assertFalse(tabs.call('settings', 'choose', self.app, {'option': 'smoothing', 'choice': 'nope'}, home=self.home)['ok'])
 
+    def test_settings_show_the_game_default_or_the_players_setting_never_automatic(self):
+        # user 2026-11-12: what the game uses, by name; the defaults are the runtime's own (start_options.DEFAULTS)
+        options = {o['id']: o for o in tabs.call('settings', 'state', self.app, home=self.home)['result']['options']}
+        label = lambda o: next(c['label'] for c in options[o]['choices'] if c['id'] == options[o]['chosen'])
+        self.assertEqual({o: label(o) for o in options},
+                         {'picture': 'Game default: 1080p', 'interpolation': 'Game default: Off', 'smoothing': 'Game default: Off',
+                          'ground': "Game default: the game's own", 'aspect': 'Game default: 16:9'})
+        data = self.home / 'Library/Application Support/MacNativeGames/TOTK'
+        data.mkdir(parents=True)
+        for name, word in (('graphics-output.txt', '0'), ('graphics-aspect.txt', '1.7777778'), ('graphics-frame.txt', 'lock-30')):
+            (data / name).write_text(word + '\n')
+        answer = tabs.call('settings', 'state', self.app, home=self.home)['result']
+        options = {o['id']: o for o in answer['options']}
+        self.assertEqual((label('picture'), label('aspect'), label('interpolation')), ('1080p', '16:9', 'Frame lock 30 fps'))
+        self.assertEqual(answer['notes'], [])                            # no "kept" notes: the value itself shows
+        self.assertIn('50+50', [c['label'] for c in options['interpolation']['choices']])   # interp-3 is 50+50 (MFX_50)
+
     def test_the_command_line_answers_one_json_object(self):
         env = dict(os.environ, MNG_HOME=str(self.home), PYTHONPATH=str(REPO))
         done = subprocess.run([sys.executable, '-m', 'tools.builder_jobs', 'tab', 'settings', 'state', '--app', str(self.app)],

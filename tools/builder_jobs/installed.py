@@ -5,6 +5,7 @@ game is updated in place, with the work folder it records, by the fastest update
 
 Contract: apps(apps_dir) returns a list of dicts {app, name, game, version, kind, reason, work, commit}; it never raises.
 kind is express, fast, full or error (update_runtime.plan)."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import plistlib
@@ -24,7 +25,32 @@ def bundle_ids():
     return {bundle for _, bundle, _ in repo.build_app().APPS.values()} | {OOT_BUNDLE}
 
 
+# LaunchServices asked by bundle ID (NSWorkspace URLsForApplicationsWithBundleIdentifier, macOS 12+) through osascript's
+# Objective-C bridge: about 0.05 s, where `lsregister -dump` writes out every app this Mac knows (4.9 s, 2026-11-12).
+BY_BUNDLE_ID = """ObjC.import("AppKit");
+function run(argv) {
+  var out = [];
+  argv.forEach(function (id) {
+    var urls = $.NSWorkspace.sharedWorkspace.URLsForApplicationsWithBundleIdentifier(id);
+    for (var i = 0; i < urls.count; i++) out.push(ObjC.unwrap(urls.objectAtIndex(i).path));
+  });
+  return out.join("\\n");
+}"""
+
+
 def registered(ids):
+    """Paths LaunchServices has for these bundle IDs; the full dump only when the quick question cannot be asked."""
+    try:
+        done = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', BY_BUNDLE_ID, *sorted(ids)],
+                              capture_output=True, text=True, errors='replace', timeout=30)
+        if done.returncode == 0:
+            return [line for line in done.stdout.splitlines() if line]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return dumped(ids)
+
+
+def dumped(ids):
     """Paths LaunchServices has for these bundle IDs (lsregister -dump), as it lists them."""
     try:
         dump = subprocess.run([LSREGISTER, '-dump'], capture_output=True, text=True, errors='replace', timeout=60).stdout
@@ -63,7 +89,7 @@ def apps(apps_dir=None, python=sys.executable):
     candidates = registered(ids)
     if apps_dir and Path(apps_dir).expanduser().is_dir():
         candidates += [str(p) for p in sorted(Path(apps_dir).expanduser().glob('*.app'))]
-    seen, out = set(), []
+    found = {}   # real path: Info.plist, each app once
     for path in candidates:
         if not usable(path):
             continue
@@ -72,12 +98,14 @@ def apps(apps_dir=None, python=sys.executable):
             info = plistlib.loads((Path(real) / 'Contents/Info.plist').read_bytes())
         except Exception:   # unreadable or not a property list (plistlib raises expat's errors too)
             continue
-        if real in seen or info.get('CFBundleIdentifier') not in ids:
-            continue
-        seen.add(real)
-        p = plan(real, python)
-        out.append({'app': real, 'name': info.get('CFBundleDisplayName') or info.get('CFBundleName') or Path(real).stem,
-                    'game': p.get('game'), 'version': p.get('display_version') or info.get('CFBundleShortVersionString'),
-                    'kind': p.get('kind', 'error'), 'reason': p.get('reason', ''), 'work': p.get('work'),
-                    'commit': info.get('MNGSourceCommit')})
+        if real not in found and info.get('CFBundleIdentifier') in ids:
+            found[real] = info
+    # each app's plan is its own process and reads only its own app: asked at the same time
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(found)))) as pool:
+        plans = dict(zip(found, pool.map(lambda real: plan(real, python), found)))
+    out = [{'app': real, 'name': info.get('CFBundleDisplayName') or info.get('CFBundleName') or Path(real).stem,
+            'game': plans[real].get('game'),
+            'version': plans[real].get('display_version') or info.get('CFBundleShortVersionString'),
+            'kind': plans[real].get('kind', 'error'), 'reason': plans[real].get('reason', ''), 'work': plans[real].get('work'),
+            'commit': info.get('MNGSourceCommit')} for real, info in found.items()]
     return sorted(out, key=lambda a: (a['name'], a['app']))

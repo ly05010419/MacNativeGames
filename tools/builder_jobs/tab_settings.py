@@ -10,17 +10,58 @@ from tools.builder_jobs.text import t
 # What the old window showed (its gui.settings.* texts, removed with the Tk window 2026-11-12), and in Chinese.
 OPTIONS = {
     'picture': (t('Picture at start', '开局画面'),
-                t('Automatic starts at 1920x1080 without MetalFX; MetalFX 2K sharpens it to 1440p; Native 2K renders 2K.',
-                  '自动：1920x1080，不用 MetalFX；MetalFX 2K：放大到 1440p；原生 2K：直接渲染 2K。')),
+                t('The game starts at 1080p without MetalFX; MetalFX 2K sharpens it to 1440p; Native 2K renders 2K.',
+                  '游戏默认 1080p，不用 MetalFX；MetalFX 2K：放大到 1440p；原生 2K：直接渲染 2K。')),
     'interpolation': (t('Frame interpolation', '补帧'), t("MetalFX adds frames between the game's own.", 'MetalFX 在游戏自己的帧之间插帧。')),
     'smoothing': (t('Edge smoothing', '边缘平滑'), t('MetalFX smooths the stair-stepped edges of the 3D scene.', 'MetalFX 抹平 3D 画面的锯齿。')),
     'ground': (t('Sharper ground at a distance', '远处地面更清晰'),
                t('Sharper ground, walls and foliage far away (16x anisotropic filtering).', '远处的地面、墙和植物更清晰（16 倍各向异性过滤）。')),
     'aspect': (t('Picture shape', '画面比例'), t('21:9, or the shape of the window, instead of 16:9.', '21:9 或窗口的形状，代替 16:9。')),
 }
-CHOICES = {'auto': t('Automatic', '自动'), 'metalfx': 'MetalFX 2K', 'native-2k': t('Native 2K', '原生 2K'),
-           'interp30': '30+30', 'interp': t('Half the refresh rate', '屏幕刷新率的一半'), 'interpmax': t('Uncapped', '不限'),
+CHOICES = {'metalfx': 'MetalFX 2K', 'native-2k': t('Native 2K', '原生 2K'),
+           'interp30': '30+30', 'interp': '50+50', 'interpmax': t('Uncapped', '不限帧'),   # interp-3 is MFX_50 (totk_mfx_mode.h)
            'on': t('On', '开'), '16': '16x', '21:9': '21:9'}
+OFF = t('Off', '关')
+# The panel's words by name, as the game's settings panel shows them (runtime/settings_panel.h): graphics-output.txt the
+# OUTPUT_MODE_* number (runtime.h), graphics-frame.txt off / lock-<fps> / interp-<MFX_*>, graphics-taa.txt 0 / 1.
+PICTURE = {'0': '1080p', '1': t('1080p + MetalFX upscaling', '1080p + MetalFX 放大'), '2': t('Native 2K', '原生 2K'),
+           '3': t('2K + MetalFX upscaling (4K screens)', '2K + MetalFX 放大（4K 屏）'), '4': '720p',
+           '5': t('Native 4K (3840×2160)', '原生 4K（3840×2160）'), '6': t('Native 5K (5120×2880)', '原生 5K（5120×2880）'),
+           '7': '4K + MetalFX 8K', '8': t('Native 6K', '原生 6K'), '9': t('720p + MetalFX upscaling', '720p + MetalFX 放大')}
+INTERP = {'1': '30+30', '2': '40+40', '3': '50+50', '4': t('Uncapped', '不限帧'), '5': '60+60'}
+ASPECTS = (('16:9', 16 / 9), ('16:10', 16 / 10), ('21:9', 21 / 9), ('32:9', 32 / 9))
+
+
+def word_label(option, word):
+    """A panel word by name; the word itself when it is none the panel offers."""
+    if word is None:
+        return t("the game's own", '游戏原样')
+    if option == 'picture':
+        return PICTURE.get(word, word)
+    if option == 'interpolation':
+        if word == 'off':
+            return OFF
+        kind, _, n = word.partition('-')
+        if kind == 'lock' and n.isdigit():
+            return t(f'Frame lock {n} fps', f'锁 {n} 帧')
+        return INTERP.get(n, word) if kind == 'interp' else word
+    if option == 'smoothing':
+        return {'0': OFF, '1': t('On', '开')}.get(word, word)
+    if option == 'aspect':
+        try:
+            ratio = float(word)
+        except ValueError:
+            return word
+        return next((name for name, r in ASPECTS if abs(ratio - r) < 0.01), f'{ratio:.2f}:1')
+    return word
+
+
+def choice_label(option, choice):
+    if choice == 'auto':
+        return t('Game default: ', '游戏默认：') + word_label(option, start_options.DEFAULTS.get(option))
+    if choice.startswith(start_options.PANEL_CHOICE):
+        return word_label(option, choice[len(start_options.PANEL_CHOICE):])
+    return CHOICES.get(choice, choice)
 REASONS = {'no_game_file': t('No app chosen.', '没有选 App。'),
            'no_app': t('No built app here: build it first.', '这里没有打好的 App：先打包。'),
            'unknown_version': t('These settings are for Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0.',
@@ -43,10 +84,16 @@ def note(text):
     return REASONS.get(text, text)
 
 
+def choices(option, state):
+    """The window's choices, and the panel's own value when it is none of them (so it shows as what it is)."""
+    chosen = state.choices.get(option.id, 'auto')
+    return option.choices + ((chosen,) if chosen not in option.choices else ())
+
+
 def view(state):
     return {'name': state.name, 'version': state.version_label, 'reason': REASONS.get(state.reason, state.reason),
             'options': [{'id': o.id, 'label': OPTIONS[o.id][0], 'description': OPTIONS[o.id][1], 'where': WHERE[o.how],
-                         'choices': [{'id': c, 'label': CHOICES.get(c, c)} for c in o.choices],
+                         'choices': [{'id': c, 'label': choice_label(o.id, c)} for c in choices(o, state)],
                          'chosen': state.choices.get(o.id, 'auto')} for o in state.options],
             'notes': [note(n) for n in state.notes]}
 
