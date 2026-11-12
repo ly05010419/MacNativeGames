@@ -107,6 +107,25 @@ static id<MTLFunction> mtk_empty_export_fn(id<MTLFunction> base,NvShader *ms) {
     if(!fn)MDIE("mesh empty export %s: %s",ms->key,error.localizedDescription.UTF8String);
     fn_note_src(fn,source);cache[key]=fn;return fn;
 }
+/* The phone's fallback (user 2026-11-10: "这个是兜底 必须有", "不允许奔溃"): the phone never compiles a mesh pipeline. Its
+   pipeline archive has no mesh pipelines (mtk_build makes them with none, from functions written at run time), and compiling
+   them there took about 100 s of warm-up and once crashed MTLCompilerService (SIGBUS in AGX code generation, 2026-11-10).
+   So on the phone a mesh draw is skipped and counted (draw_skipped), the warm-up leaves the M rows, and a pipeline Metal
+   refuses is a skip too, never an exit. OOT_IOS_MESH_COMPILE=1 compiles them on the phone as before, to compare. */
+static int mtk_device_compiles(void) {
+#if TARGET_OS_IPHONE
+    static _Atomic int on=-1;int v=atomic_load_explicit(&on,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_IOS_MESH_COMPILE");v=e&&atoi(e)!=0;
+        if(atomic_exchange(&on,v)<0)MLOG("[mesh] the phone %s mesh pipelines (OOT_IOS_MESH_COMPILE=%s)",v?"compiles":"skips the draws of",e?e:"0");}
+    return v;
+#else
+    return 1;
+#endif
+}
+static void mtk_note_skip(NvShader *ms) {
+    static _Atomic uint64_t skipped;uint64_t k=atomic_fetch_add(&skipped,1)+1;
+    if(k<=4||k%1000==0)MLOG("【红】手机不现编网格管线：跳过这次网格绘制（mesh %s，第 %llu 次）",ms?ms->key:"-",(unsigned long long)k);
+}
 /* The mesh pipeline for a filled key, on any thread (the first draw, or the warm-up); nil and *error when Metal refuses it. */
 static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error) {
     id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
@@ -136,6 +155,9 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     uint64_t build_t0=bp_now();NSError *error=nil;ps=mtk_build(ts,ms,fs,&key,base,pack,&error);
+#if TARGET_OS_IPHONE
+    if(!ps){MLOG("【红】网格管线没建成，跳过这次绘制（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return nil;}   // the fallback: never an exit on the phone
+#endif
     if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
     hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] compiled task %s mesh %s fragment %s in %.1f ms at the draw",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
     if(!g_mtk_geometry){   // the next start builds it ahead (mtk_warm_row); the geometry diagnostic's variant is not a pipeline of the game
@@ -148,6 +170,10 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
    submit thread seconds on a cold Metal cache, 49-50 of them in a run (OOT 2026-11-09). Rows naming a diagnostic's variant are
    not built: those paths keep a static table without a lock. The claim (warm_claim) files it under the live shader objects. */
 static void mtk_warm_row(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict) {
+    if(!mtk_device_compiles()){   // the phone's fallback: its M rows are not compiled there
+        static _Atomic int said;if(!atomic_exchange(&said,1))MLOG("预热：手机不现编网格管线，清单里的 M 行都跳过（兜底；OOT_IOS_MESH_COMPILE=1 才现编）");
+        return;
+    }
     if(g_mtk_geometry||mtk_empty_export_on()||mtk_translation_mode())return;
     pso_skey sk;if(pso_skey_parse(c[2].UTF8String,&sk)||sk.fz||sk.merged)return;
     NSString *mkey=warm_key(sk.vs,sizeof sk.vs),*fkey=warm_key(sk.fs,sizeof sk.fs),*tkey=[c[1] isEqualToString:@"-"]?nil:c[1];
@@ -232,6 +258,7 @@ static void mesh_tasks_draw(const p_draw *dw) {
     if(ts&&ts->mesh_kind!=1)MDIE("task stage is not a task shader");
 #if TARGET_OS_IPHONE
     if(!ms||!ms->fn||(ts&&!ts->fn)){draw_skipped();return;}
+    if(!mtk_device_compiles()){mtk_note_skip(ms);draw_skipped();return;}   // the fallback: no mesh pipeline is made on the phone
 #endif
     if(!ms||ms->mesh_kind!=2||!ms->fn||(ts?!ts->fn:!ms->mesh_notask))MDIE("DrawMeshTasks without complete task/mesh stages");
     upd_guard_stage(ts,3);upd_guard_stage(ms,4);
