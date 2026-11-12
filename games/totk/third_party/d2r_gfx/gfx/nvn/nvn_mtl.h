@@ -78,6 +78,7 @@ int mtl_probe_draw_barriers(void);
 int mtl_probe_depth_output(void);
 int mtl_probe_tile(void);
 
+void mtl_noread_mark_frame(void);                    // OOT_NOREAD_PROBE: at the present, make the pages the GPU may have written this frame inaccessible (CPU reads of GPU results get recorded)
 uint64_t mtl_last_fence(void);                       // 最近一次提交的栅栏值（0 = 从未提交） | Fence value of the most recent submit (0 = never submitted)
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);   // GPU 完成到 fence 返回 1，超时 0 | Returns 1 when the GPU has completed up to fence, 0 on timeout
 void mtl_finish(void);                               // 等所有已提交的命令完成 | Wait for all submitted commands to complete

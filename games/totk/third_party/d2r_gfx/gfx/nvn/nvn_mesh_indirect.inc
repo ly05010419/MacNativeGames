@@ -153,8 +153,11 @@ static uint64_t mesh_indirect_grid(uint64_t source,id<MTLBuffer> src,uint64_t of
     if(eligible)nvn_dirty_protect((void *)(uintptr_t)source,8);else g_mic_untracked++;
     id<MTLBuffer> grid;size_t at=arena_alloc(16,&grid);
     uint32_t initial[4]={0,1,1,0};memcpy((uint8_t *)grid.contents+at,initial,sizeof initial);
-    if(g_enc && g_enc_mode!=1)g_mic_splits++;
-    enc_b_copy_buffer(blit(),src,offset,grid,at,4);g_mic_copies++;
+    p_bind_buf pb={0};pb.addr=source;pb.size=8;
+    if(mesh_src_cpu_on()&&!pool_range_write_fence(&pb)){memcpy((uint8_t *)grid.contents+at,(const void *)(uintptr_t)source,4);g_mb_srccpu++;}   // OOT_MESH_SRC_CPU: the count as of the encode (upd_guard above landed renamed updates)
+    else{if(g_enc && g_enc_mode!=1)g_mic_splits++;
+        gpu_read_input(source,8,"mesh-count-src",'m');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the blit reads the source on the GPU
+        enc_b_copy_buffer(blit(),src,offset,grid,at,4);g_mic_copies++;}
     uint64_t result=grid.gpuAddress+at;
     if(eligible && !nvn_dirty_since((void *)(uintptr_t)source,8,stamp)){
         if(hit>=0)g_mic[hit]=(mesh_indirect_entry){source,result,stamp};
