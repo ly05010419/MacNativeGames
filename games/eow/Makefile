@@ -82,8 +82,8 @@ test: $(OUT)/test-movie-stop
 $(OUT)/test-movie-stop: tests/movie_stop/test.c runtime/movie_host.c runtime/movie_host.h Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
-	  -I/opt/homebrew/opt/libvpx/include -Ithird_party/d2r_gfx/gfx/nvn/include \
-	  runtime/movie_host.c tests/movie_stop/test.c /opt/homebrew/opt/libvpx/lib/libvpx.a -o "$@"
+	  -I$(VPX_PREFIX)/include -Ithird_party/d2r_gfx/gfx/nvn/include \
+	  runtime/movie_host.c tests/movie_stop/test.c $(VPX_PREFIX)/lib/libvpx.a -o "$@"
 
 # EOW_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 EOW_LOG ?= $(WORK)/logs/boot.log
