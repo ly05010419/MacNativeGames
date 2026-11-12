@@ -350,7 +350,7 @@ def prepare_vr_render_overlay(tree, res, data, version, logs, env):
         valid = False
     if not valid:
         raise BuildError('--vr needs the matching verified RomFS index and image in the work folder; use the original build workspace')
-    run([env.get('PY', sys.executable), 'scripts/make_output_res_overlay.py', '4096x4416',
+    run([env.get('PY', tree / '.venv/bin/python'), 'scripts/make_output_res_overlay.py', '4096x4416',   # Python 3.14 (#2099)
          '--scene', '4096x4416', '--version', version], logs / 'vr-render-overlay.log', cwd=tree, env=env)
     return tree / 'extracted/v143/romfs-patches-out/4096x4416-scene-4096x4416'
 
