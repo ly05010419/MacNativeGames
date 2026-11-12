@@ -500,6 +500,9 @@ def redraw_hud(bntx, icons):
         name = bntx[name_at + 2:name_at + 2 + length].decode().split('^')[0]
         if name not in HUD_TEXTURES:
             continue
+        if HUD_TEXTURES[name] not in icons:   # a glyph the style keeps (the stick-movement ones of the builder's
+            done.append(name)                 # layout style): its HUD texture keeps the game's drawing, as the font does
+            continue
         mips, fmt, (w, h), layout = (struct.unpack_from('<H', bntx, i + 0x16)[0], struct.unpack_from('<I', bntx, i + 0x1C)[0],
                                      struct.unpack_from('<II', bntx, i + 0x24), struct.unpack_from('<I', bntx, i + 0x34)[0])
         assert fmt == R8_UNORM and w == h and mips == 1, f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'   # 72x72 to 1.2.1, 108x108 in 1.4.3
