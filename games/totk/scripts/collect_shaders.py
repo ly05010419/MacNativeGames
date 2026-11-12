@@ -33,6 +33,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,7 @@ TOTK = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOTK / 'scripts'))
 from shader_list import KEY, NAME, ShaderList, answers_suffix, canonical, listed_answers, warm_row  # noqa: E402
 from prepare_shader_seed import builtin_serves  # noqa: E402
+from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, list_key_rule  # noqa: E402
 
 TITLES = {'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
           'ssbu': 'Super Smash Bros. Ultimate', 'wonder': 'Super Mario Bros. Wonder', 'mvdk': 'Mario vs. Donkey Kong',
@@ -126,6 +128,10 @@ def key_source(spec):
     if p.is_dir():
         if (p / IDENTITY).is_file():
             identity = json.loads((p / IDENTITY).read_text())
+            rule = json.loads((p / 'seed-manifest.json').read_text()).get('shader_key_rule')
+            if rule != KEY_RULE:   # its keys and the lists' would name no shader in common
+                raise ValueError(f'{path}: a seed of shader key rule {rule or "(none recorded)"}, the lists use {KEY_RULE}: '
+                                 'make the seed again (update_runtime.py --seed)')
         p = p / 'shader-keys.json'
         if not p.is_file():
             raise ValueError(f'{path}: no shader-keys.json (a seed made before 2026-10-22); prepare the seed again')
@@ -334,6 +340,43 @@ def inbox_pending(base, token, game):
         after = data['next']
 
 
+NVN_CTL = TOTK / 'third_party/d2r_gfx/gfx/nvn/nvn_ctl.h'
+_BUILD_RULE = {}
+
+
+def key_rule_commit():
+    """The commit that made KEY_RULE the runtime's Switch 2 shader key rule (nvn_ctl.h NVN2_KEY_RULE), or None while it is
+    not committed."""
+    out = subprocess.run(['git', '-C', str(TOTK), 'log', '--format=%H', '-S', f'#define NVN2_KEY_RULE "{KEY_RULE}"', '--',
+                          str(NVN_CTL)], capture_output=True, text=True)
+    commits = out.stdout.split() if out.returncode == 0 else []
+    return commits[-1] if commits else None
+
+
+def build_rule(build, since):
+    """Whether an app made from source commit `build` (its MNGSourceCommit, the inbox's app_build) names Switch 2 shaders
+    by KEY_RULE: 'yes' (`since` is among its commits), 'no' (a commit of this repository without it) or 'unknown' (not a
+    commit here: a fork, a build outside git, or the rule not committed yet)."""
+    if (build, since) not in _BUILD_RULE:
+        found = 128
+        if since and re.fullmatch(r'[0-9a-f]{7,40}', build or ''):
+            found = subprocess.run(['git', '-C', str(TOTK), 'merge-base', '--is-ancestor', since, build],
+                                   capture_output=True).returncode
+        _BUILD_RULE[build, since] = {0: 'yes', 1: 'no'}.get(found, 'unknown')
+    return _BUILD_RULE[build, since]
+
+
+def split_by_key_rule(pending, since):
+    """A Switch 2 game's inbox rows as (taken, old, unknown): sent by an app of the current key rule, only by apps of an
+    older one (their keys name no shader of the lists and seeds: marked done unmerged, never merged), or by apps this
+    repository cannot place (left in the inbox). An export without builds (an inbox before 2026-11-12) places none."""
+    taken, old, unknown = [], [], []
+    for row in pending:
+        rules = {build_rule(b, since) for b in row.get('builds') or []}
+        (taken if 'yes' in rules else old if rules == {'no'} else unknown).append(row)
+    return taken, old, unknown
+
+
 def merge_inbox(base, token, lists, keys, seeds):
     """The inbox's rows of every game here: [(report line, game, ids of the rows taken)]. A row left where it is (outside a
     full seed and no game's) is not taken, so it stays in the inbox; a game whose export failed takes none."""
@@ -345,12 +388,17 @@ def merge_inbox(base, token, lists, keys, seeds):
         except (OSError, ValueError) as error:
             done.append((f'inbox {game}: {error}', game, []))
             continue
-        if not pending:
+        old, unknown = [], []
+        if game in NS2_VERSIONS.values():   # rows of apps with other shader keys (nvn_ctl.h NVN2_KEY_RULE) never merge
+            pending, old, unknown = split_by_key_rule(pending, key_rule_commit())
+        if not pending and not old and not unknown:
             continue
-        players = max(r['players'] for r in pending)
-        label = f"inbox {game}: {len(pending)} rows (most-sent row from {players} installs)"
+        players = max((r['players'] for r in pending), default=0)
+        label = (f"inbox {game}: {len(pending)} rows (most-sent row from {players} installs)"
+                 + (f', {len(old)} only from apps of an older shader key rule (marked done, not merged)' if old else '')
+                 + (f', {len(unknown)} from app builds not in this repository (left in the inbox)' if unknown else ''))
         line, left = merge_text(label, ''.join(r['body'] + '\n' for r in pending), game, lists, keys, seeds)
-        done.append((line, game, [r['id'] for r in pending if r['body'] not in left]))
+        done.append((line, game, [r['id'] for r in pending if r['body'] not in left] + [r['id'] for r in old]))
     return done
 
 
@@ -364,7 +412,8 @@ def save_list(game, shared):
     old = path.read_text().splitlines(keepends=True) if path.exists() else []
     header = ''.join(line for line in old[:next((i for i, line in enumerate(old) if not line.startswith('#')), len(old))])
     header = header or (f'# {TITLES[game]} shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md).\n'
-                        '# Identifiers and pipeline descriptors only, no game data. Merged from the shader inbox.\n')
+                        '# Identifiers and pipeline descriptors only, no game data. Merged from the shader inbox.\n'
+                        + (f'{KEY_RULE_HEADER}{KEY_RULE}\n' if game in NS2_VERSIONS.values() else ''))
     path.parent.mkdir(parents=True, exist_ok=True)
     shared.save(path)
     body = [line for line in path.read_text().splitlines(keepends=True) if not line.startswith('#')]
@@ -409,6 +458,10 @@ def main():
     missing = [g for g in COMPLETE if not complete[g]]
     if missing:   # without its seed the game's rows cannot be told from another game's
         ap.error(f'no seed of {", ".join(missing)} (--seed): its full seed decides which rows are its own')
+    for game in NS2_VERSIONS.values():   # a list of another key rule would lose every row to the full seed's check
+        if GAMES[game].exists() and list_key_rule(GAMES[game]) != KEY_RULE:
+            ap.error(f'{GAMES[game]}: names its shaders by key rule {list_key_rule(GAMES[game]) or "(none said)"}, not '
+                     f'{KEY_RULE}: move it with ns2_rekey.py --apply first')
     lists = {game: load_list(game, path) for game, path in GAMES.items()}
     for game in GAMES:   # a full seed is all a COMPLETE game holds; the others hold what their lists name too
         if game not in COMPLETE:

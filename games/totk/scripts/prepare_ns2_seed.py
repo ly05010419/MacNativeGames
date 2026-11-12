@@ -29,6 +29,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from prepare_shader_seed import CHAIN, shader_key_scope, record_verified   # noqa: E402
+from ns2_shader_corpus import KEY_RULE, list_key_rule   # noqa: E402  (the key rule the seed's keys are made with; update_runtime.py checks it)
 
 VARIANTS = re.compile(r'^[0-9a-f]{64}\.variants$')
 VARIANT = re.compile(r'^[0-9a-f]{64}-[0-9a-f]{12}$')
@@ -187,6 +188,9 @@ def main():
     a.logs.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     romfs_sha = json.loads((romfs / 'index.json').read_text())['romfs_sha256']
+    if list_key_rule(a.list) != KEY_RULE:   # its rows would name no shader of this seed
+        raise SystemExit(f'{a.list}: names its shaders by key rule {list_key_rule(a.list) or "(none said)"}, the seed by {KEY_RULE}: '
+                         'move it with ns2_rekey.py --apply first')
 
     stamp = corpus.with_suffix('.json')   # the corpus is made again only for other game files
     all_keys = corpus.with_suffix('.keys.json')   # every shader the game ships (IDENTITY)
@@ -233,7 +237,7 @@ def main():
     keys = sorted(n[:-len('.variants')] for n in files if n.endswith('.variants'))
     shaders = sum(n.endswith('_b.metal') for n in files)
     here = Path(__file__).resolve().parent
-    inputs = dict(chain=CHAIN, version=v, source_romfs_sha256=romfs_sha, translation_context_sha256=context,
+    inputs = dict(chain=CHAIN, shader_key_rule=KEY_RULE, version=v, source_romfs_sha256=romfs_sha, translation_context_sha256=context,
                   nvn_depth_mode=a.depth_mode, translator_sha256=sha256(prebuilt), shader_list_sha256=sha256(a.list),
                   corpus_sha256=sha256(corpus), scripts_sha256={n: sha256(here / n) for n in ('prepare_ns2_seed.py', 'prepare_shader_seed.py')})
     identity = shader_key_scope(json.loads(all_keys.read_text()), v, romfs_sha)
@@ -257,7 +261,7 @@ def main():
     # Unlike the shaders, a complete render-pipeline description needs the game's bind state. NS2 starts without
     # recorded pipeline rows; the shared list adds real rows as the game is played (never invent descriptors).
     (staging / 'pso_manifest.tsv').write_text('# NS2 startup shaders; render pipelines come from the shared list.\n')
-    report = dict(schema=1, chain=CHAIN, version=v, game=v, source_romfs_sha256=romfs_sha,
+    report = dict(schema=1, chain=CHAIN, shader_key_rule=KEY_RULE, version=v, game=v, source_romfs_sha256=romfs_sha,
                   translation_context_sha256=context,
                   nvn_depth_mode=a.depth_mode,
                   translator_sha256=sha256(prebuilt), shader_list_sha256=sha256(a.list),

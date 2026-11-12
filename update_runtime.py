@@ -89,13 +89,23 @@ def runtime_chain():
     return re.search(r'#define DMSH_CHAIN "([^"]+)"', text).group(1)
 
 
-def check_seed_chain(res, chain, *, remake=False):
+def runtime_key_rule():
+    """The Switch 2 shader key rule of this repository's runtime (nvn_ctl.h NVN2_KEY_RULE)."""
+    text = (build_app.GAME / 'third_party/d2r_gfx/gfx/nvn/nvn_ctl.h').read_text()
+    return re.search(r'#define NVN2_KEY_RULE "([^"]+)"', text).group(1)
+
+
+def check_seed_chain(res, chain, *, remake=False, key_rule=None):
     """The runtime warms up from the app's startup shader seed only when the seed is of its own translation chain
     (totk_shader_rt.m, nvn_mtl.m); with another, the first start would translate every shader as it is met. A new chain
     changes the seed's shaders, so the app needs a new seed: --seed makes it from the work folder (remake=True), or
-    build_app.py does. Returns whether the seed is of another chain."""
+    build_app.py does. A Switch 2 game's seed also names its shaders by the runtime's key rule (nvn_ctl.h NVN2_KEY_RULE,
+    recorded as shader_key_rule by prepare_ns2_seed.py): under another rule (or none recorded, a seed before 2026-11-12)
+    its keys name no shader the runtime asks for, so it is made again as for another chain. Returns whether the seed must
+    be made again."""
     try:
-        found = json.loads((res / 'build/shader-seed/seed-manifest.json').read_text())['chain']
+        manifest = json.loads((res / 'build/shader-seed/seed-manifest.json').read_text())
+        found = manifest['chain']
     except (OSError, ValueError, KeyError, TypeError):
         if remake:
             return True
@@ -106,7 +116,15 @@ def check_seed_chain(res, chain, *, remake=False):
                          f'{chain}: the shaders changed, so the app needs a new seed. Pass --seed to make it from the work '
                          f'folder of the app\'s build (a few minutes, no game file or keys), or do a full rebuild with '
                          f'build_app.py; the app was not changed')
-    return found != chain
+    rule = None
+    if build_app.ns2_game(str(manifest.get('version'))):
+        rule = key_rule or runtime_key_rule()
+        if manifest.get('shader_key_rule') != rule and not remake:
+            raise BuildError(f'the app\'s startup shaders are named by shader key rule {manifest.get("shader_key_rule") or "(none recorded)"}, '
+                             f'the runtime of this repository uses {rule}: their keys would name no shader the game sets. '
+                             f'Pass --seed to make them again from the work folder of the app\'s build (no game file or '
+                             f'keys), or do a full rebuild with build_app.py; the app was not changed')
+    return found != chain or (rule is not None and manifest.get('shader_key_rule') != rule)
 
 
 def check_work_files(tree, data, version):
@@ -491,7 +509,7 @@ def plan(app, work=None):
             check_work_files(folder / 'totk', data, version)
         except BuildError as e:
             return result('full', f'the startup shaders must be made again and the work folder cannot: {e}', **shown)
-        return result('fast', 'the startup shaders are of another translation chain: they are made again from the work folder', **shown)
+        return result('fast', 'the startup shaders are of another translation chain or shader key rule: they are made again from the work folder', **shown)
     return result('express', 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt', **shown)
 
 
@@ -558,7 +576,7 @@ def main(argv):
     if args.seed:
         check_work_files(tree, data, version)
         if not stale:
-            say('   the app\'s startup shaders are of this runtime\'s translation chain; making them again as asked (--seed)')
+            say('   the app\'s startup shaders are of this runtime\'s translation chain and key rule; making them again as asked (--seed)')
         if not seed_after_runtime(game):
             make_seed(tree, work, game, version, logs, env)
     say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')

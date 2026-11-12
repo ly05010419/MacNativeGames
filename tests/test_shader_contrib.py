@@ -121,8 +121,9 @@ class SwitchTwoSeedTests(unittest.TestCase):
     TRANSLATED, OTHER = 'a' * 64, 'b' * 64
     ROMFS = 'c' * 64
 
-    def seed(self, tmp, version='pkp', identity=True, romfs=None):
+    def seed(self, tmp, version='pkp', identity=True, romfs=None, rule=collect_shaders.KEY_RULE):
         folder = Path(tmp) / version; folder.mkdir()
+        (folder / 'seed-manifest.json').write_text(json.dumps({'shader_key_rule': rule} if rule else {}))
         (folder / 'shader-keys.json').write_text(json.dumps({'version': version, 'source_romfs_sha256': self.ROMFS,
                                                              'keys': [self.TRANSLATED]}))
         if identity:
@@ -139,6 +140,14 @@ class SwitchTwoSeedTests(unittest.TestCase):
     def test_a_seed_without_it_is_not_every_shader(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(key_source(str(self.seed(tmp, identity=False))), ('pokopia', {self.TRANSLATED}, False))
+
+    def test_it_must_name_the_shaders_by_the_lists_key_rule(self):
+        # 2026-11-12: the Switch 2 key rule changed; a seed of the old one names no shader the lists name, and a full
+        # seed's check would then take every row out of the game's list
+        for rule in (None, 'nvn2-an-older-rule'):
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, 'shader key rule'):
+                    key_source(str(self.seed(tmp, 'dkb', rule=rule)))
 
     def test_it_must_be_of_the_same_game_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,6 +251,40 @@ class ShaderInboxTests(unittest.TestCase):
         self.assertEqual(lists['wonder'].variants, {('e' * 64, '{}')})
         self.assertIn('e' * 64, keys['wonder'], 'what it merged names its shaders for later rows')
         self.assertEqual(done['botw'][1], ['1', '2'])
+
+    def test_switch_2_rows_only_from_apps_of_the_current_key_rule(self):
+        # an app made before the key rule (nvn_ctl.h NVN2_KEY_RULE) sends keys no list or seed names: never merged, marked
+        # done; one this repository cannot place (a fork, a build outside git, an export without builds) stays in the inbox
+        rows = self.pending([f'V\t{"1" * 64}\t{{}}', f'V\t{"2" * 64}\t{{}}', f'V\t{"3" * 64}\t{{}}', f'V\t{"4" * 64}\t{{}}'])
+        for row, builds in zip(rows, (['old1', 'new1'], ['old1', 'old2'], ['fork1'], None)):
+            if builds:
+                row['builds'] = builds
+        rule = {'new1': 'yes', 'old1': 'no', 'old2': 'no', 'fork1': 'unknown'}
+        with mock.patch.object(collect_shaders, 'key_rule_commit', lambda: 'k' * 40), \
+                mock.patch.object(collect_shaders, 'build_rule', lambda build, since: rule[build]):
+            lists, _, done = self.merge({'pokopia': rows})
+        self.assertEqual(lists['pokopia'].variants, {('1' * 64, '{}')})
+        self.assertEqual(done['pokopia'][1], ['1', '2'])
+        self.assertIn('1 only from apps of an older shader key rule (marked done, not merged)', done['pokopia'][0])
+        self.assertIn('2 from app builds not in this repository (left in the inbox)', done['pokopia'][0])
+
+    def test_without_the_rules_commit_no_switch_2_row_is_placed(self):
+        rows = self.pending([f'V\t{"1" * 64}\t{{}}'])
+        rows[0]['builds'] = ['0123abc']
+        with mock.patch.object(collect_shaders, 'key_rule_commit', lambda: None):
+            lists, _, done = self.merge({'pokopia': rows})
+        self.assertEqual(lists['pokopia'].variants, set())
+        self.assertEqual(done['pokopia'][1], [])
+
+    def test_a_build_is_placed_by_git(self):
+        head = subprocess.run(['git', '-C', str(TOTK), 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+        first = subprocess.run(['git', '-C', str(TOTK), 'rev-list', '--max-parents=0', 'HEAD'], capture_output=True,
+                               text=True).stdout.split()[0]
+        self.assertEqual(collect_shaders.build_rule(head[:7], first), 'yes')
+        self.assertEqual(collect_shaders.build_rule(first[:7], head), 'no' if first != head else 'yes')
+        self.assertEqual(collect_shaders.build_rule('dev', head), 'unknown')
+        self.assertEqual(collect_shaders.build_rule('0' * 12, head), 'unknown')
+        self.assertEqual(collect_shaders.build_rule(head[:7], None), 'unknown')
 
     def test_a_failed_export_takes_nothing(self):
         def broken(base, token, game):

@@ -210,7 +210,7 @@ Which update, always in this order (quit the game first). Start with the express
 | Update | When | Command | Needs |
 |---|---|---|---|
 | **Express update (极速更新)** | every new version of this repository (`git pull`); the Update page runs it | `python3.14 update_runtime.py "<the app>"` | the work folder the app records; no game files or keys |
-| **Fast update (快速更新)** | the express update says the startup shaders no longer fit (Tears of the Kingdom, Breath of the Wild, Bananza, Pokopia: another translation chain). Ocarina of Time has none: its express update checks its shaders itself | `python3.14 update_runtime.py "<the app>" --seed` | the work folder's game files; no game container or keys |
+| **Fast update (快速更新)** | the express update says the startup shaders no longer fit (Tears of the Kingdom, Breath of the Wild, Bananza, Pokopia: another translation chain; Bananza, Pokopia also another shader key rule). Ocarina of Time has none: its express update checks its shaders itself | `python3.14 update_runtime.py "<the app>" --seed` | the work folder's game files; no game container or keys |
 | **Normal update (普通更新)**, the full build | either of them says a full build is needed: another game version, DLC or game files, other code rewrite rules or picture-size overlays, another translator or translation chain for Ocarina of Time, an Ocarina of Time app whose shaders were prepared before 11 November 2026, a missing or deleted work folder | `build_app.py` as for the first build, with the same `-o "<the app>"` and the app's `--work` | the game file and keys |
 
 Bananza and Pokopia have the same three updates since 12 November 2026 (until then only the normal update); every update keeps the unchanged translations and pipelines.
