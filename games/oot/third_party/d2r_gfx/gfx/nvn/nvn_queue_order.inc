@@ -98,7 +98,18 @@ static pthread_cond_t g_qo_kick_cv = PTHREAD_COND_INITIALIZER; static int g_qo_k
    frame (SyncWait), so the frame chain stays GPU done -> CPU signal -> replay the rest -> GPU: 38.0 fps queued against
    39.5 fps in place. Kept for A/B; its lifetime rules (command copies and texture releases after the submissions made
    before them) are needed whenever it is on. */
-static int qo_async(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_QO_ASYNC"); on = e && atoi(e); LOG("[nvn] queue replay %s", on ? "on the queue-order thread (OOT_QO_ASYNC)" : "on the guest thread that flushes / signals (OOT_QO_ASYNC=0)"); } return on; }
+static int g_qo_async_on = -1;
+/* The settings file's row (graphics-async-replay.txt), read once at startup before the guest runs; the
+   environment variable still wins, and a runtime "flag qo_async" reaches the same place. */
+void runtime_qo_async_set(int on) {
+    g_qo_async_on = on != 0;
+    LOG("[nvn] queue replay %s (settings)", on ? "on the queue-order thread" : "on the guest thread that flushes / signals");
+}
+static int qo_async(void) {
+    if (g_qo_async_on < 0) { const char *e = getenv("OOT_QO_ASYNC"); g_qo_async_on = e && atoi(e);
+        LOG("[nvn] queue replay %s", g_qo_async_on ? "on the queue-order thread (OOT_QO_ASYNC)" : "on the guest thread that flushes / signals (OOT_QO_ASYNC=0)"); }
+    return g_qo_async_on;
+}
 static void qo_kick_locked(void) { g_qo_kick = 1; pthread_cond_signal(&g_qo_kick_cv); }
 static int qo_defer_to_flush(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_REPLAY_AT_FLUSH"); on = !(e && !atoi(e)); LOG("[nvn] submissions replay %s", on ? "at nvnQueueFlush (NVN semantics)" : "inside the submit call (OOT_REPLAY_AT_FLUSH=0)"); } return on; }
 static int qo_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_QUEUE_ORDER"); on = !(e && !atoi(e)); LOG("[nvn] guest queue ordering %s", on ? "on: cross-queue waits are honoured" : "off (OOT_QUEUE_ORDER=0)"); } return on; }
