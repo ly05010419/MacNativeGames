@@ -6802,7 +6802,7 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
     pool_need_hint pool_hint_scratch[NVN_REFL_MAXB];
     NSDictionary *pool_reads;
     NSArray *raw_write_domains; int raw_write_domains_loaded;
-    NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts;
+    NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts,raw_write_auto_pending;
     NSMutableArray *raw_write_auto_domains; NSMutableSet *raw_write_attempted;
     uint8_t mesh_kind, mesh_notask, raw_range_cache_abi, mesh_device; uint16_t mesh_threads, mesh_payload;   // mesh_device: its stage memory is in the device scratch (MeshStage.cs)
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
