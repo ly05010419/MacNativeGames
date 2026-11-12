@@ -29,7 +29,7 @@ class Context:
     home: Path
     repo: Path            # this checkout
     data_dir: Path        # ~/Library/Application Support/MacNativeGames/<TOTK|BotW>, which the game reads
-    builder_dir: Path     # ~/Library/Application Support/MacNativeGames/Builder, the old window's own files
+    builder_dir: Path     # ~/Library/Application Support/MacNativeGames/Builder, the Launcher's own files (start options, the Mods page's lock, icons venv)
 
 
 class TabError(Exception):

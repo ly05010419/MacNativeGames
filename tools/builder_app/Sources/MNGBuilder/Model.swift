@@ -24,6 +24,7 @@ final class Model: ObservableObject {
     @Published var lines: [String] = []
     @Published var failure: BuildEvent?
     @Published var appPath: String?
+    @Published var note = ""            // the Mods page's line after a build (a code patch, mods to apply again)
     @Published var installed: [InstalledReport.App] = []
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     @Published var kind = "full"         // express, fast or full: what the running job does
@@ -179,10 +180,13 @@ final class Model: ObservableObject {
     }
 
     /// An installed app, without files: the fastest update that fits (express, else fast; the job refuses a full one).
-    func update(_ app: InstalledReport.App) {
+    func update(_ app: InstalledReport.App) { update(path: app.app) }
+
+    /// work: a folder the Storage page moved the work folder to; the update records it in the app.
+    func update(path: String, work: String? = nil) {
         guard phase != .building && phase != .cancelling else { return }
-        updating = app.app
-        start(BuildRequest(update: app.app))
+        updating = path
+        start(BuildRequest(update: path, work: work))
     }
 
     private func start(_ request: BuildRequest) {
@@ -218,6 +222,7 @@ final class Model: ObservableObject {
         case "log": append(e.text ?? "")
         case "cancelling": phase = .cancelling
         case "done":
+            note = e.note ?? ""
             if e.ok == true {
                 phase = .done; fraction = 1; appPath = e.app ?? appPath; play()
             } else {

@@ -68,6 +68,7 @@ struct BuildRequest: Codable {
     var platform: String? = nil
     var app: String? = nil
     var update: String? = nil
+    var work: String? = nil       // with update: a work folder moved on the Storage page, which the app records from then on
 }
 
 /// One line `build` prints (tools/builder_jobs/events.py); fields a kind does not have are nil.
@@ -81,5 +82,5 @@ struct BuildEvent: Decodable {
     // progress
     let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?
     // done
-    let ok: Bool?, cancelled: Bool?, message: String?, detail: String?, step_log: String?
+    let ok: Bool?, cancelled: Bool?, message: String?, detail: String?, step_log: String?, note: String?
 }

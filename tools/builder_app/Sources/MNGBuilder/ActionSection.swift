@@ -16,6 +16,7 @@ struct ActionSection: View {
             if !updateOnly { buttons }
             if model.phase != .idle && mine { progress }
             if let f = model.failure, model.phase == .failed, mine { failure(f) }
+            if !model.note.isEmpty && mine { Label(model.note, systemImage: "puzzlepiece.extension").foregroundStyle(.orange) }
             if !model.lines.isEmpty && mine {
                 DisclosureGroup(T.log, isExpanded: $showLog) { logView }
             }

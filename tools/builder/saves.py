@@ -95,7 +95,8 @@ def nxnative_root(home):
 
 def nxnative_dirs(home, titles=()):
     """The title folders nxnative has actually written, as (title id, path), newest first; a name
-    that is not a 16-digit hex title id is not a title folder and is skipped."""
+    that is not a 16-digit hex title id is not a title folder and is skipped. With titles, only those (the
+    filter was accepted and ignored until 2026-11-12, so a game's page listed other games' saves too)."""
     root = nxnative_root(home)
     titles = {t.upper() for t in titles}
     found = []
@@ -106,6 +107,8 @@ def nxnative_dirs(home, titles=()):
     for entry in entries:
         name = entry.name.upper()
         if len(name) != 16 or any(c not in '0123456789ABCDEF' for c in name):
+            continue
+        if titles and name not in titles:
             continue
         if entry.is_dir(follow_symlinks=False):
             found.append((name, Path(entry.path)))
@@ -142,7 +145,8 @@ def source(spec, home, environ=None):
 
 
 def nxnative_sources(home, titles=('0100F2C0115B6000', '01007EF00011E000')):
-    """Every nxnative title folder found, the two the games use marked with their game id."""
+    """The nxnative title folders found of these titles (the two games' by default; () for every one), each
+    marked with its game id when it is one of the two."""
     known = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw'}
     found = []
     for title_id, path in nxnative_dirs(home, titles):

@@ -47,10 +47,11 @@ def usable(path):
             and (p / 'Contents/Info.plist').is_file())
 
 
-def plan(app, python=sys.executable):
-    """update_runtime.py --plan for one app, or an 'error' plan saying why it could not be asked."""
+def plan(app, python=sys.executable, work=None):
+    """update_runtime.py --plan for one app (with --work when given), or an 'error' plan saying why it could not be asked."""
     try:
-        done = subprocess.run([python, str(repo.UPDATE_RUNTIME), str(app), '--plan'], cwd=repo.REPO, capture_output=True,
+        done = subprocess.run([python, str(repo.UPDATE_RUNTIME), str(app), '--plan'] + (['--work', str(work)] if work else []),
+                              cwd=repo.REPO, capture_output=True,
                               text=True, timeout=300)
         return json.loads(done.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as e:

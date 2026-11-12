@@ -29,10 +29,10 @@ class Refused(Exception):
     pass
 
 
-def express_plan(app, python=sys.executable):
+def express_plan(app, python=sys.executable, work=None):
     """update_runtime.py --plan for an installed app (tools/builder_jobs/installed.py asks the same)."""
     from tools.builder_jobs.installed import plan
-    return plan(app, python)
+    return plan(app, python, work) if work else plan(app, python)
 
 
 def same_version(plan, update_plan):
@@ -50,7 +50,9 @@ def same_version(plan, update_plan):
 def command(request, python=sys.executable):
     """(script, arguments, work folder, app path, kind, game) for a request, kind being express, fast or full (the three updates
     of docs/install.md, the fastest that fits; user 2026-11-12: "不要用最慢的形式打包"):
-      {update: <app>}                                 an installed app, without files: update_runtime.py [--seed]
+      {update: <app>, work?}                          an installed app, without files: update_runtime.py [--seed]
+                                                      [--work <work>] (a work folder moved on the Storage page;
+                                                      the app records it from then on)
       {plan, output_dir, work_root, platform, app?}   dropped files: into app (an installed one of that game) or
                                                       <output_dir>/<name>.app; an update when that app is there, of the
                                                       same version, and an update fits; else build_app.py
@@ -59,13 +61,14 @@ def command(request, python=sys.executable):
     b = repo.build_app()
     if request.get('update'):
         app = Path(request['update']).expanduser()
-        up = express_plan(app, python)
+        given = request.get('work')
+        up = express_plan(app, python, given)
         if up['kind'] == 'full':
             raise Refused(t(f'this app needs a full build: {up["reason"]}. Drop its game files in step 1',
                             f'这个 App 要完整打包：{up["reason"]}。请在第一步拖入它的游戏文件'))
         if up['kind'] not in ('express', 'fast'):
             raise Refused(up['reason'])
-        argv = [str(app)] + (['--seed'] if up['kind'] == 'fast' else [])
+        argv = [str(app)] + (['--seed'] if up['kind'] == 'fast' else []) + (['--work', str(given)] if given else [])
         return repo.UPDATE_RUNTIME, argv, Path(up['work']), app, up['kind'], up.get('game')
     plan = request['plan']
     if plan.get('blocks'):
@@ -141,6 +144,14 @@ class Steps:
 
 def run(request, emit, history_dir, python=sys.executable, script=None):
     chosen, argv, work, out, kind, game = command(request, python)
+    home = Path(os.environ.get('MNG_HOME') or Path.home())
+    record_mods = None
+    if kind == 'full' and script is None:   # a real build (tests pass a script of their own): the Mods page's code patches
+        from tools.builder_jobs import code_mods
+        extra, record_mods = code_mods.compose(request.get('plan') or {}, home)
+        if extra:
+            at = argv.index('--work')
+            argv = argv[:at] + extra + argv[at:]
     # each kind of update has its own measured history: an express update takes minutes, a full build much longer
     record = history.record_path(history_dir, game, 'macos' if kind == 'full' else f'macos-{kind}')
     estimator = history.Estimator(history.load(record))
@@ -225,15 +236,28 @@ def run(request, emit, history_dir, python=sys.executable, script=None):
     end = time.time()
     if code == 0:
         history.record(record, steps.poll(end), end)
+        if record_mods:
+            record_mods(out)
         emit('progress', fraction=1.0, left=0, elapsed=round(end - start), measured=True)
-        emit('done', ok=True, app=str(out), elapsed=round(end - start))
+        emit('done', ok=True, app=str(out), elapsed=round(end - start), note=mods_note(game, out, True, ''))
         return 0
     message = error[0] if error else (t(f'the build was cancelled (exit {code})', f'打包已停止（退出码 {code}）')
                                       if cancelled.is_set() else
                                       t(f'{Path(script).name} stopped (exit {code})', f'{Path(script).name} 停下了（退出码 {code}）'))
     emit('done', ok=False, cancelled=cancelled.is_set(), message=message, detail='\n'.join(error[1:])[-6000:],
-         step_log=failed_log, log=str(keep), elapsed=round(end - start))
+         step_log=failed_log, log=str(keep), elapsed=round(end - start),
+         note=mods_note(game, out, False, '\n'.join(error)) if kind == 'full' else '')
     return code or 1
+
+
+def mods_note(game, app, ok, error):
+    """The Mods page's line after a build of this app (tab_mods.after_build): a code patch for another build stopped it,
+    or the applied mods no longer fit the new app; '' for other games or when there is nothing to say."""
+    if game not in ('totk', 'botw') or not Path(app).is_dir():
+        return ''
+    from tools.builder_jobs.tabs import call
+    answer = call('mods', 'after_build', app, {'ok': ok, 'error': error}, os.environ.get('MNG_HOME'))
+    return (answer.get('result') or {}).get('note', '') if answer.get('ok') else ''
 
 
 def main(request_path, history_dir):

@@ -7,7 +7,7 @@ from tools.builder import game_state, start_options
 from tools.builder.ports import CommandRunner, RealClock
 from tools.builder_jobs.text import t
 
-# What the old window showed (tools/builder/strings_tabs.py gui.settings.*), and in Chinese.
+# What the old window showed (its gui.settings.* texts, removed with the Tk window 2026-11-12), and in Chinese.
 OPTIONS = {
     'picture': (t('Picture at start', '开局画面'),
                 t('Automatic starts at 1920x1080 without MetalFX; MetalFX 2K sharpens it to 1440p; Native 2K renders 2K.',
