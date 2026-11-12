@@ -2726,11 +2726,17 @@ static void gpu_tag_begin(uint64_t f) {
 }
 static void gpu_tag_done(uint64_t f, double g0, double g1) {
     atomic_store(&g_cbw_last_done_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); atomic_fetch_add(&g_cbw_completed, 1);
-    sysload_note_gpu(g0, g1);   // the load line's game GPU share
+    double d = g1 - g0;
+    /* A command buffer can complete with no start time (GPUStartTime exactly 0, twice in a two-minute Ocarina of Time
+       pass on an M5 Pro, 2026-11-12), and its span is then measured from the start of the clock: one such sample took
+       a frame's @gpu_ms to 588279960.72 ms, the machine's whole uptime. games/mk8d guards the same way. Only the
+       sample is dropped: the watchdog's counters and the frame's pending count move either way, so a dropped sample
+       never stalls a frame. */
+    int usable = d > 0 && g0 > 0;
+    if (usable) sysload_note_gpu(g0, g1);   // the load line's game GPU share
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
-    double d = g1 - g0;
-    if (d > 0) {
+    if (usable) {
         atomic_fetch_add(&g_gpu[k].ns, (uint64_t)(d * 1e9));
         uint64_t s0 = (uint64_t)(g0 * 1e9), s1 = (uint64_t)(g1 * 1e9), v;
         for (v = atomic_load(&g_gpu[k].t0); s0 < v && !atomic_compare_exchange_weak(&g_gpu[k].t0, &v, s0);) {}
