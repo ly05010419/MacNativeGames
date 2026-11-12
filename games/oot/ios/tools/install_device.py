@@ -67,7 +67,8 @@ targets:
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_ENTITLEMENTS: TOTK.entitlements
 ''')
-    run(['xcodegen','generate','--quiet'], cwd=proj)
+    from xcodegen_tool import xcodegen   # pinned XcodeGen, downloaded once per Mac (no Homebrew)
+    run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
     with log.open('w') as f:
