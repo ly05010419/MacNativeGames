@@ -44,6 +44,19 @@ int mtl_probe_mesh_batch(void) {
     struct {op_hdr h;uint64_t dst,size;uint32_t words[2];op_hdr end;} update={.h={OP_UPDATE_UB,32},.dst=(uintptr_t)(guest+4),.size=8,.words={11,131},.end={OP_END,8}};
     (void)mesh_batch_grid((uintptr_t)(guest+4),&first);mtl_exec((const uint8_t *)&update);
     uint64_t updated=mesh_batch_grid((uintptr_t)(guest+4),&first);consume(updated,first,11,131);
+    // An inline update seen in the look-ahead, then a mesh draw of its target (2026-11-08): the grid takes the update's
+    // own bytes on the CPU (no GPU read of a value not written yet), and the update's replay keeps the entry, so that
+    // draw does not re-batch inside its render pass. The current source (guest+8, zeros) is still a GPU job.
+    struct {op_hdr h;uint64_t dst,size;uint32_t words[2];op_hdr dh;p_draw draw;op_hdr end;} ahead={.h={OP_UPDATE_UB,32},.dst=(uintptr_t)(guest+6),.size=8,.words={13,151},.dh={OP_DRAW,8+sizeof(p_draw)},.draw={.prim=0x40,.ind=(uintptr_t)(guest+6),.count=1},.end={OP_END,8}};
+    g_exec_next=(const uint8_t *)&ahead;runs=g_mb_runs;uint64_t cpu_jobs=g_mb_cpu;
+    uint64_t base=mesh_batch_grid((uintptr_t)(guest+8),&first);if(!base||g_mb_runs!=runs+1||g_mb_cpu!=cpu_jobs+1)MDIE("mesh batch did not pre-apply the look-ahead update (runs %llu/%llu cpu %llu/%llu)",(unsigned long long)g_mb_runs,(unsigned long long)runs,(unsigned long long)g_mb_cpu,(unsigned long long)cpu_jobs);checked++;
+    g_exec_next=NULL;consume(base,first,0,0);
+    mesh_batch_op(OP_UPDATE_UB,&ahead.dst);   // the update's replay: the pre-applied entry stays
+    uint64_t pre=mesh_batch_grid((uintptr_t)(guest+6),&first);if(!pre||g_mb_runs!=runs+1)MDIE("pre-applied entry lost at the update's replay");checked++;
+    consume(pre,first,13,151);
+    // A second update of the same source that was not seen ahead invalidates it as before.
+    struct {op_hdr h;uint64_t dst,size;uint32_t words[2];op_hdr end;} again={.h={OP_UPDATE_UB,32},.dst=(uintptr_t)(guest+6),.size=8,.words={2,3},.end={OP_END,8}};
+    mesh_batch_op(OP_UPDATE_UB,&again.dst);if(mesh_batch_find((uintptr_t)(guest+6)))MDIE("an unseen update kept a pre-applied entry");checked++;
     // The native barrier implementation must see the true mesh owner, even
     // though draw_inner is handed a raster-only program for these draws.
     NvShader *writing=[NvShader new];writing->rf.nb=1;writing->rf.b[0]=(nvn_rbind){.kind=NVN_RB_SBUFP,.rw=1};

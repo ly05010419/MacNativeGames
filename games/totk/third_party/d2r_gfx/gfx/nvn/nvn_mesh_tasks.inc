@@ -2,6 +2,7 @@
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
 static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
+static int mtk_owners(NvShader **ts,NvShader **ms){if(!g_mtk.on)return 0;*ts=g_mtk.ts;*ms=g_mtk.ms;return 1;}   // nvn_mesh_batch.inc: the mesh draw's real task / mesh owners (draw_inner sees a raster-only program)
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
 #include "nvn_mesh_capture.inc"
