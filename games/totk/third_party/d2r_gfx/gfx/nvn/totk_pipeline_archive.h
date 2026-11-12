@@ -85,7 +85,15 @@ static int par_fill_light(void) {
 #if TARGET_OS_IPHONE
     return 1;
 #else
-    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL"); return e && !strcmp(e, "1");
+    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL");
+#ifdef GAME_OOT
+    /* The complete OOT seed has over 42,000 shaders. On a fresh install, keep
+       its precompiled libraries on disk and fill only recorded pipelines;
+       loading every library defeats the seed's bounded memory use. */
+    return !e || !strcmp(e, "1");
+#else
+    return e && !strcmp(e, "1");
+#endif
 #endif
 }
 static NSString *par_dir(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines"]; }

@@ -21853,7 +21853,9 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
         const uint8_t *ctl = p + ln, *code = ctl + cn; p = code + kn;
         if (cn < 0x60 || !nvn2_ctl(ctl) || ctl_code_len(ctl) != kn) { if (bad++ < 4) MLOG("[seed] [RED] shader %u (%.*s): not an NVN2 control section with its code area; left out", i, (int)ln, (const char *)ctl - ln); continue; }
         int stage = ctl_stage(ctl, code);
-        if (stage != 0 && stage != 1 && stage != 5) { other_stage++; continue; }   // geometry / tessellation: no translation chain yet (prog_get)
+        /* NVN2 stages 3/4 are task/mesh, not the NVN1 tessellation stages.
+           Use the same translator entry points as prog_get, including mesh_ctl. */
+        if (stage < 0 || stage > 5) { other_stage++; continue; }
         char key[65]; shader_key_of(ctl, code, kn, key);
         totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
         [keys addObject:@(key)];
