@@ -331,7 +331,9 @@ def prerequisites(args):
     if not py:
         raise BuildError('Python 3.14 not found (the build reads zstd with the standard library): install it from '
                          'https://www.python.org/downloads/macos/ (or brew install python@3.14)')
-    codec_libraries(args.platform)
+    # update_runtime.py passes its own arguments, which have no --platform: a Mac update (fa394da8 read args.platform and
+    # every express update of Tears of the Kingdom and Breath of the Wild stopped with AttributeError)
+    codec_libraries(getattr(args, 'platform', 'macos'))
     return Path(py)
 
 
