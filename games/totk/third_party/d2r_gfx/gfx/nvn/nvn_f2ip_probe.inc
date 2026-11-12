@@ -19,6 +19,9 @@ int mtl_probe_f2ip(void) {
     }
     NSMutableArray *shaders=[NSMutableArray array];prog_t program={.serial=0xfffffc01};
     for(NSDictionary *fixture in cases){@autoreleasepool{
+        g_gml_probe_on=fixture[@"raw_log"]!=nil;g_gml_probe_buffer=nil;
+        if(fixture[@"raw_log"])atomic_store(&g_raw_write_log,[fixture[@"raw_log"]boolValue]);
+        if(fixture[@"raw_index"])atomic_store(&g_raw_index,[fixture[@"raw_index"]boolValue]);
         NSString *source=[NSString stringWithContentsOfFile:fixture[@"source"] encoding:NSUTF8StringEncoding error:&error];
         NSData *raw=[NSData dataWithContentsOfFile:fixture[@"reflection"]];
         NSDictionary *reflection=raw?[NSJSONSerialization JSONObjectWithData:raw options:0 error:&error]:nil;
@@ -32,16 +35,35 @@ int mtl_probe_f2ip(void) {
         [shaders addObject:cs];NvProg *pr=[NvProg new];pr->sh[5]=cs;serial_put(program.serial,pr);
         if(fixture[@"raw_pool_index"]){
             unsigned idx=[fixture[@"raw_pool_index"]unsignedIntValue];if(idx>=raw_count)MDIE("raw fixture index");
-            uint8_t *target=raw_pools+(size_t)idx*16384+([fixture[@"raw_unmapped"]boolValue]?8192:128);
-            *(uint32_t *)target=0x12345678;((uint64_t *)memory)[1]=(uintptr_t)target;
+            unsigned offset=fixture[@"raw_offset"]?[fixture[@"raw_offset"]unsignedIntValue]:([fixture[@"raw_unmapped"]boolValue]?8192:128);
+            if(offset>16380)MDIE("raw fixture offset");
+            uint8_t *target=raw_pools+(size_t)idx*16384+offset;
+            *(uint32_t *)target=[fixture[@"raw_store"]boolValue]?0x11223344:0x12345678;
+            ((uint64_t *)memory)[1]=(uintptr_t)target;((uint32_t *)memory)[4]=0x12345678;
         }
         *(uint32_t *)memory=0xdeadbeef;op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
         S.prog=S.cprog=&program;S.ssbo[5][0]=(p_bind_buf){5,0,(uint64_t)memory,16384};
         p_dispatch dp={.x=1,.y=1,.z=1};dispatch(&dp);mtl_sub_commit();mtl_finish();
+        if([fixture[@"raw_index"]boolValue] && (!g_gmem_buf || !((uint32_t *)g_gmem_buf.contents)[5]))MDIE("raw index fixture did not exercise the directory");
         uint32_t actual=*(uint32_t *)memory,expected=[fixture[@"expected"]unsignedIntValue];
         if(actual!=expected)MDIE("F2IP %s: GPU %#x expected %#x",[fixture[@"label"]UTF8String],actual,expected);
+        if([fixture[@"raw_store"]boolValue]) {
+            if(g_gml_probe_on){
+                if(!g_gml_probe_buffer)MDIE("raw write lost GMEML reflection/invalidation");
+                const uint32_t *words=(const uint32_t *)((uint8_t *)g_gml_probe_buffer.contents+g_gml_probe_offset);
+                uint32_t any=0;for(unsigned i=0;i<GML_CONTROL_WORD;i++)any|=words[i];
+                int expected_log=[fixture[@"raw_log"]boolValue]&&![fixture[@"raw_unmapped"]boolValue];
+                if((any!=0)!=expected_log)MDIE("raw bookkeeping mode %d: unexpected GPU log %#x",[fixture[@"raw_log"]boolValue],any);
+                checked++;
+            }
+            uint32_t written=*(uint32_t *)(uintptr_t)((uint64_t *)memory)[1];
+            uint32_t want=[fixture[@"raw_unmapped"]boolValue]?0x11223344:0x12345678;
+            if(written!=want)MDIE("raw store mapping changed wrong bytes: GPU %#x expected %#x",written,want);
+            checked++;
+        }
         checked++;
     }}
+    g_gml_probe_on=0;g_gml_probe_buffer=nil;
     S.prog=S.cprog=NULL;memset(S.ssbo,0,sizeof S.ssbo);serial_del(program.serial);mtl_pool_del(memory);free(memory);
     for(unsigned i=0;i<raw_count;i++)mtl_pool_del(raw_pools+(size_t)i*16384);
     if(raw_pools)munmap(raw_pools,raw_bytes);
