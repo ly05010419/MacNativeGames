@@ -82,6 +82,20 @@ def binary(scratch):
     return Path(out) / 'MNGBuilder'
 
 
+def icon(resources):
+    """Resources/AppIcon.icns from tools/builder_app/Resources/AppIcon.png (the project's own artwork, 1024 px, the shape
+    on the macOS icon grid), every size iconutil wants, made with sips."""
+    art = HERE / 'Resources/AppIcon.png'
+    iconset = resources / 'AppIcon.iconset'
+    iconset.mkdir()
+    for size in (16, 32, 128, 256, 512):
+        for scale in (1, 2):
+            name = f'icon_{size}x{size}{"@2x" if scale == 2 else ""}.png'
+            run(['sips', '-z', str(size * scale), str(size * scale), art, '--out', iconset / name], stdout=subprocess.DEVNULL)
+    run(['iconutil', '-c', 'icns', iconset, '-o', resources / 'AppIcon.icns'])
+    shutil.rmtree(iconset)
+
+
 def info(repo):
     commit = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
     return {
@@ -89,7 +103,7 @@ def info(repo):
         'CFBundleExecutable': EXECUTABLE, 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0',
         'CFBundleVersion': '1', 'LSMinimumSystemVersion': '26.0', 'NSHighResolutionCapable': True,
         'LSApplicationCategoryType': 'public.app-category.developer-tools',
-        'MNGRepo': str(repo), 'MNGSourceCommit': commit,
+        'MNGRepo': str(repo), 'MNGSourceCommit': commit, 'CFBundleIconFile': 'AppIcon',
     }
 
 
@@ -108,6 +122,7 @@ def main(argv):
     (stage / 'Contents/MacOS').mkdir(parents=True)
     (stage / 'Contents/Resources').mkdir()
     shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
+    icon(stage / 'Contents/Resources')
     plist = info(REPO)
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:

@@ -26,9 +26,12 @@ final class Model: ObservableObject {
     @Published var appPath: String?
     @Published var note = ""            // the Mods page's line after a build (a code patch, mods to apply again)
     @Published var installed: [InstalledReport.App] = []
+    @Published var installedLoaded = false   // the first scan finished: until then no game is shown as missing
+    @Published var installedError: String?   // why the last scan failed (the home page shows it)
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     @Published var kind = "full"         // express, fast or full: what the running job does
-    @Published var pageApp: String?      // the app the pages besides building show (Settings, Mods, …)
+    @Published var page = "home"         // the page shown: home (the games) or build
+    @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)
     @Published var outputDir: String { didSet { save() } }
     @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
 
@@ -61,6 +64,7 @@ final class Model: ObservableObject {
         watcher = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.lookForExternal() }
         }
+        loadRememberedInstalled()   // the games of the last look at once; the look below brings them up to date
         Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
     }
 
@@ -72,24 +76,36 @@ final class Model: ObservableObject {
         if let k = keys.last { keysPath = k.path }
         let rest = urls.filter { $0.pathExtension.lowercased() != "keys" }
         if !rest.isEmpty { paths = rest.map { $0.path } }
+        page = "build"   // files given to the app (open -a, the Dock): the steps they fill in
         save()
         Task { await classify() }
     }
 
     /// The installed apps the pages besides building serve (Tears of the Kingdom, Breath of the Wild: tools/builder's games).
     var pageApps: [InstalledReport.App] { installed.filter { $0.game == "totk" || $0.game == "botw" } }
-    var currentPageApp: String? {
-        if let a = pageApp, pageApps.contains(where: { $0.app == a }) { return a }
-        return pageApps.first?.app
+
+    /// Where the last look at the installed games is kept, so the games page shows them at once (user 2026-11-12).
+    private static let rememberedInstalled = Paths.support.appendingPathComponent("installed.json")
+
+    /// The games of the last look that are still there; nothing when there was none (the page then waits for the look).
+    private func loadRememberedInstalled() {
+        guard let data = try? Data(contentsOf: Self.rememberedInstalled),
+              let report = try? JSONDecoder().decode(InstalledReport.self, from: data) else { return }
+        installed = report.apps.filter { FileManager.default.fileExists(atPath: $0.app) }
+        installedLoaded = true
     }
 
     func loadInstalled() async {
         do {
             let data = try await Job.collect(["apps", "--apps-dir", outputDir])
             installed = try JSONDecoder().decode(InstalledReport.self, from: data).apps
+            installedError = nil
+            try? FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true)
+            try? data.write(to: Self.rememberedInstalled, options: .atomic)
         } catch {
-            installed = []
+            installedError = error.localizedDescription   // the games of the last look stay; the page says why this failed
         }
+        installedLoaded = true
     }
 
     private func save() {

@@ -5,37 +5,23 @@ import UniformTypeIdentifiers
 /// Three numbered groups from top to bottom: 1 the game, 2 the keys, 3 this Mac and the build. A step whose earlier
 /// step is not done is dimmed; a done step shows a check mark.
 struct ContentView: View {
-    @State private var page = "build"
+    @EnvironmentObject var model: Model
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $page) {
-                ForEach(T.pages, id: \.0) { id, label in Text(label).tag(id) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
-            Divider()
-            switch page {
-            case "settings": SettingsTab()
-            case "mods": ModsTab()
-            case "controls": ControlsTab()
-            case "storage": StorageTab()
-            case "saves": SavesTab()
-            default: BuildPage()
-            }
-        }
+        // No bar on top (user 2026-11-12): the games are the first page; building opens from a card's plus and has
+        // its own way back; a game's settings, mods, controls, storage and saves open under its card.
+        if model.page == "build" { BuildPage() } else { HomePage() }
     }
 }
 
-/// Building and updating: the installed games, then the three steps.
+/// Building a game from its files: back to the games, then the three steps (updating lives on the games page).
 struct BuildPage: View {
     @EnvironmentObject var model: Model
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if !model.installed.isEmpty || model.externalSource != nil { InstalledBox() }
+                Button { model.page = "home" } label: { Label(T.backToGames, systemImage: "chevron.left") }
                 StepBox(number: 1, title: T.step1, done: model.gameReady, enabled: true) { GameStep() }
                 StepBox(number: 2, title: T.step2, done: model.gameReady && model.keysReady, enabled: model.gameReady) { KeysStep() }
                 StepBox(number: 3, title: T.step3, done: model.phase == .done,
@@ -121,6 +107,17 @@ struct GameStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let game = model.buildFor {   // chosen with a card's plus on the first page
+                HStack(alignment: .firstTextBaseline) {
+                    Label(T.buildingFor(T.gameName(game)), systemImage: "plus.circle.fill").font(.headline)
+                    Spacer()
+                    Button(T.anyGame) { model.buildFor = nil }
+                }
+                Text(T.filesFor(game)).font(.callout).foregroundStyle(.secondary)
+                if let other = model.plan?.game, other != game {
+                    Label(T.otherGameDropped(T.gameName(other)), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
             DropZone(hint: T.step1Hint, button: T.chooseGame, directories: true, busy: busy) { model.add($0) }
             if let error = model.classifyError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             let items = (model.report?.items ?? []).filter { $0.role != "keys" }
@@ -198,38 +195,6 @@ struct FileRow: View {
     }
 }
 
-/// The game apps already on this Mac: each updates in place, without files, by the fastest update that fits.
-struct InstalledBox: View {
-    @EnvironmentObject var model: Model
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(T.installedHint).font(.callout).foregroundStyle(.secondary)
-                ForEach(model.installed) { app in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("\(app.name) \(app.version ?? "")").font(.body.weight(.medium))
-                            Text(T.kind(app.kind)).font(.caption).foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
-                            if app.kind != "express" {
-                                Text(app.reason).font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
-                            }
-                        }
-                        Spacer()
-                        Button(T.update) { model.update(app) }
-                            .disabled(!(app.kind == "express" || app.kind == "fast") || model.phase == .building || model.phase == .cancelling)
-                        Button(T.play) { NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.app), configuration: .init()) }
-                    }
-                }
-                if model.updating != nil { ActionSection(updateOnly: true) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-        } label: {
-            Text(T.installed).font(.headline)
-        }
-    }
-}
 
 struct BuildStep: View {
     @EnvironmentObject var model: Model

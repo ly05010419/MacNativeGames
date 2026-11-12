@@ -57,8 +57,8 @@
 
 运行 `python3 tools/builder_app/make_app.py` 生成 `~/Applications/MNG Launcher.app`。它自带 Python，运行的是这个文件夹里的代码，所以 `git pull` 之后不用重新生成，除非窗口本身改了。
 
-- **打包**页：这台 Mac 上已装的游戏列在最上面，每个都有**更新**（不用游戏文件，自动选能用的最快的更新）。下面是三步：第一步拖入游戏文件，第二步选 `prod.keys`，第三步点**打包并游玩**，全程显示进度。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，第一、二步会自动填好。
-- **设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置，和游戏里的设置面板是同一份；还有**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装；不带任何模组）、**按键**（手柄布局、按键图标、按键测试）、**存储**（工作目录和着色器缓存：大小、清理、搬移）、**存档**（备份和恢复）。旧窗口（`Build Game.command`）已经去掉，由这几页代替。细节见 [builder-app.md](builder-app.md)；改代码的人看 [builder.md](builder.md)。
+- **游戏**（第一页，顶部没有标签栏）：每个游戏一张卡片。打包过的游戏显示它自己 App 的图片；点它出现更新按钮，按能用的最快的一种命名：**极速更新**或**快速更新**（不用游戏文件），或**完整打包**（进入打包步骤，要游戏文件）；还有它的各页（点按钮就在下面展开）。没打包的游戏显示加号：点它进入打包三步，第一步拖入游戏文件，第二步选 `prod.keys`，第三步点**打包并游玩**，全程显示进度。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，会直接进入打包三步，第一、二步自动填好。
+- 打包过的游戏在卡片下面展开的各页：**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置，和游戏里的设置面板是同一份：每项显示你的设置，没设过的显示游戏默认值；还有**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装；不带任何模组）、**按键**（手柄布局、按键图标、按键测试）、**存储**（工作目录：大小和清理；着色器缓存：位置和大小；点**计算空间占用大小**才计算，之前显示上次算的结果）、**存档**（备份和恢复）。旧窗口（`Build Game.command`）已经去掉，由这几页代替。细节见 [builder-app.md](builder-app.md)；改代码的人看 [builder.md](builder.md)。
 
 ### 用 AI 或终端：`tools/mng.py`
 
@@ -260,7 +260,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 1. **更新代码。** 在 `MacNativeGames` 文件夹里运行 `git pull`（ZIP 下载的就重新下载）。`Build Game.command` 已经删掉，它的几页都搬进了 MNG Launcher。
 2. **Python。** 已经装了 Python 3.14 的照旧用。新 Mac 只要装 <https://www.python.org/downloads/macos/> 的安装包；不再需要 Homebrew（opus、libvpx、dav1d、XcodeGen、CMake 等编译工具由打包自己下载固定版本）。
 3. **生成 MNG Launcher：** `python3 tools/builder_app/make_app.py`，然后打开 `~/Applications/MNG Launcher.app`。它运行的是这个文件夹里的代码，以后 `git pull` 就够了；只有窗口本身有改动时才要重新生成。
-4. **你的游戏会自动列出来**：在“这台 Mac 上已装的游戏”里（macOS 知道的所有王国之泪、旷野之息、时之笛、大金刚、Pokopia 的 App），每个都写着它需要哪种更新。点**更新**：这是极速更新，不用游戏文件。
+4. **你的游戏会自动列出来**：第一页的卡片就是它们，带各自的图片（macOS 知道的所有王国之泪、旷野之息、时之笛、大金刚、Pokopia 的 App）。点卡片，按钮写着它能用的更新，比如**极速更新**：不用游戏文件。
 5. **把每个游戏的工作目录放到规定的位置**（规则见英文版 [install.md 的 Folders 一节](install.md#folders)）：放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`，比如 App 在 `~/Applications`，就是 `~/MacNativeGames-work/totk`。打开**存储**页，选游戏，看它的工作目录：
 
    | 页面上写着 | 怎么做 |

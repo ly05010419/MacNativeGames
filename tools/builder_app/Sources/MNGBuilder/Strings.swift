@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// Every visible text, in Chinese when the Mac's first language is Chinese, else English.
 enum T {
@@ -39,14 +40,61 @@ enum T {
     static let noRepo = s("This app does not know its MacNativeGames folder: make it again with tools/builder_app/make_app.py.",
                           "这个 App 不知道 MacNativeGames 源码在哪：用 tools/builder_app/make_app.py 重新生成它。")
     static let existing = s("Already built", "已经打包过")
-    static let installed = s("Games on this Mac", "这台 Mac 上已装的游戏")
-    static let pages: [(String, String)] = [("build", s("Build", "打包")), ("settings", s("Settings", "设置")),
-                                            ("mods", s("Mods", "模组")), ("controls", s("Controls", "按键")),
-                                            ("storage", s("Storage", "存储")), ("saves", s("Saves", "存档"))]
-    static let game = s("Game", "游戏")
+    /// A built game's own pages, opened under its card (Tears of the Kingdom and Breath of the Wild: tools/builder's games).
+    static let gamePages: [(String, String)] = [("settings", s("Settings", "设置")), ("mods", s("Mods", "模组")),
+                                                ("controls", s("Controls", "按键")), ("storage", s("Storage", "存储")),
+                                                ("saves", s("Saves", "存档"))]
+    static let backToGames = s("Games", "游戏")
+    static let homeSubtitle = s("Your games, built from your own files and running natively on this Mac.", "你的游戏，用你自己的文件打包，直接在这台 Mac 上原生运行。")
+    static let findingApps = s("Looking for your built games…", "正在查找已打包的游戏…")
+    static func appsScanFailed(_ e: String) -> String { s("Could not look for built games: \(e)", "查找已打包的游戏失败：\(e)") }
+    /// A game's version as people write it: Switch 2 games record only the update number (Ocarina of Time: 131072,
+    /// the "[v131072]" of its update package), so a number alone is shown as "v131072"; "1.4.3" stays as it is.
+    static func version(_ v: String?) -> String {
+        guard let v, !v.isEmpty else { return "" }
+        return v.allSatisfy(\.isNumber) ? "v\(v)" : v
+    }
+    static let addGame = s("Add this game", "添加这个游戏")
+    static func addGameHelp(_ name: String) -> String { s("Build \(name) from your own files", "用你自己的文件打包\(name)") }
+    static let anyGame = s("Any game", "不限游戏")
+    static func buildingFor(_ name: String) -> String { s("Build \(name)", "打包\(name)") }
+    static func otherGameDropped(_ name: String) -> String { s("These files are \(name), not the game chosen on the first page.", "这些文件是\(name)，不是首页选的那个游戏。") }
+    static func gameName(_ g: String) -> String {
+        switch g {
+        case "oot": return s("Zelda: Ocarina of Time", "塞尔达传说 时之笛")
+        case "totk": return s("Zelda: Tears of the Kingdom", "塞尔达传说 王国之泪")
+        case "botw": return s("Zelda: Breath of the Wild", "塞尔达传说 旷野之息")
+        case "dkb": return s("Donkey Kong Bananza", "大金刚 Bananza")
+        case "pkp": return s("Pokémon Pokopia", "宝可梦 Pokopia")
+        default: return g
+        }
+    }
+    static func gamePlatforms(_ g: String) -> String {
+        switch g {
+        case "totk": return "Mac · iPhone · iPad · Vision Pro"
+        case "botw": return "Mac · iPhone · iPad"
+        case "oot": return "Switch 2 · Mac"
+        default: return s("Switch 2 · Mac · early", "Switch 2 · Mac · 早期")
+        }
+    }
+    static func gameColors(_ g: String) -> [Color] {
+        switch g {
+        case "oot": return [Color(red: 0.16, green: 0.42, blue: 0.30), Color(red: 0.05, green: 0.18, blue: 0.14)]
+        case "totk": return [Color(red: 0.20, green: 0.55, blue: 0.62), Color(red: 0.06, green: 0.20, blue: 0.30)]
+        case "botw": return [Color(red: 0.35, green: 0.45, blue: 0.62), Color(red: 0.10, green: 0.14, blue: 0.24)]
+        case "dkb": return [Color(red: 0.85, green: 0.42, blue: 0.12), Color(red: 0.40, green: 0.12, blue: 0.08)]
+        default: return [Color(red: 0.45, green: 0.70, blue: 0.35), Color(red: 0.14, green: 0.32, blue: 0.16)]
+        }
+    }
+    static func filesFor(_ g: String) -> String {
+        switch g {
+        case "totk": return s("Drop the base game (XCI or NSP) and the 1.4.3 update (NSP); an NSP base also needs your unpacked firmware folder.", "拖入游戏本体（XCI 或 NSP）和 1.4.3 更新（NSP）；本体是 NSP 时还要解开的固件文件夹。")
+        case "botw": return s("Drop the 1.6.0 card image (XCI), or the base NSP with the 1.9.0 update and its DLC, and a firmware or shared-fonts folder.", "拖入 1.6.0 卡带（XCI），或本体 NSP 加 1.9.0 更新和 DLC，再加固件或系统字体文件夹。")
+        case "oot": return s("Drop the Switch 2 dump folder (or the .nup package) and a shared-fonts folder.", "拖入 Switch 2 的游戏文件夹（或 .nup 包）和系统字体文件夹。")
+        default: return s("Drop the Switch 2 dump folder with its updates/ folder.", "拖入带 updates/ 文件夹的 Switch 2 游戏文件夹。")
+        }
+    }
     static func startedBy(_ who: String) -> String { s("Started from \(who); Cancel stops it.", "从 \(who) 开始的；“停止”可以停掉它。") }
-    static let noPageGame = s("No Tears of the Kingdom or Breath of the Wild app on this Mac yet: build one first.",
-                              "这台 Mac 上还没有王国之泪或旷野之息的 App：先打包。")
     static let notYet = s("This page is being moved here from the old window.", "这一页正在从旧窗口搬过来。")
     static let starting = s("Starting the game…", "正在启动游戏…")
     static let started = s("Started with these settings.", "已按这些设置启动。")
@@ -62,9 +110,13 @@ enum T {
         default: return s("The GPU could not be checked: frame interpolation is used as chosen.", "没能检查显卡：补帧按所选的用。")
         }
     }
-    static let installedHint = s("Update one without its game files: the fastest update that fits is chosen for you.",
-                                 "不用游戏文件就能更新：自动选能用的最快的一种。")
-    static let update = s("Update", "更新")
+    static func updateButton(_ kind: String) -> String {
+        switch kind {
+        case "express": return s("Express update", "极速更新")
+        case "fast": return s("Fast update", "快速更新")
+        default: return s("Full build", "完整打包")
+        }
+    }
     static let updatedOK = s("Updated. Starting the game…", "更新完成，正在启动游戏…")
     static let doneElsewhere = s("Done (started elsewhere; the game is not started from here).", "完成（这个任务是在别处开始的，这里不替它开游戏）。")
     static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",
@@ -72,9 +124,9 @@ enum T {
     static let automatic = s("Automatic", "自动")
     static func kind(_ k: String) -> String {
         switch k {
-        case "express": return s("Express update (minutes, no game files)", "极速更新（几分钟，不用游戏文件）")
-        case "fast": return s("Fast update (new startup shaders, no game files)", "快速更新（重做启动着色器，不用游戏文件）")
-        case "full": return s("Needs a full build: drop its game files below", "要完整打包：在下面拖入它的游戏文件")
+        case "express": return s("Express update (minutes)", "极速更新（几分钟）")
+        case "fast": return s("Fast update (new startup shaders)", "快速更新（重做启动着色器）")
+        case "full": return s("Needs a full build with its game files", "要用游戏文件完整打包")
         default: return s("Cannot be updated now", "现在不能更新")
         }
     }

@@ -24,37 +24,3 @@ enum TabClient {
         try JSONDecoder().decode(type, from: try await call(tab, action, app: app, args: args))
     }
 }
-
-/// The installed apps the pages serve (Tears of the Kingdom, Breath of the Wild), and the one chosen.
-struct GamePicker: View {
-    @EnvironmentObject var model: Model
-
-    var body: some View {
-        let apps = model.pageApps
-        if apps.isEmpty {
-            Text(T.noPageGame).foregroundStyle(.secondary)
-        } else {
-            Picker(T.game, selection: Binding(get: { model.pageApp ?? apps[0].app }, set: { model.pageApp = $0 })) {
-                ForEach(apps) { a in Text("\(a.name) \(a.version ?? "")").tag(a.app) }
-            }
-            .frame(maxWidth: 360)
-        }
-    }
-}
-
-/// A page's frame: the game picker, then its content for the chosen app (or why there is none).
-struct PageFrame<Content: View>: View {
-    @EnvironmentObject var model: Model
-    @ViewBuilder let content: (String) -> Content
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                GamePicker()
-                if let app = model.currentPageApp { content(app).id(app) }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}

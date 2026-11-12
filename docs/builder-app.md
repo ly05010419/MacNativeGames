@@ -5,7 +5,7 @@
 and `update_runtime.py` as the command line, with the same folder rule; it adds no build step of its own. Mac apps of every game `build_app.py` builds (Tears of the
 Kingdom, Breath of the Wild, Ocarina of Time, Donkey Kong Bananza, Pokémon Pokopia) for now; iPhone and iPad come next.
 
-Its Settings, Mods, Controls, Storage and Saves pages took over the older Tk window's tabs, which is gone; the rules
+Its Settings, Mods, Controls, Storage and Saves pages (opened under a game's card) took over the older Tk window's tabs, which is gone; the rules
 behind them stay in `tools/builder`, the models the pages call through `tools/builder_jobs/tab_*.py`
 ([builder.md](builder.md)).
 
@@ -24,12 +24,23 @@ after `git pull`, the next build uses the new code; make the app again only when
 
 ## What the player does
 
-**Games on this Mac** (at the top, when there are any): every app of these games macOS knows (LaunchServices) and that is
-still there, plus those in the apps folder, with the update each needs (`update_runtime.py --plan`). **Update** needs no
+The window opens on **the games**, one card each, with no bar on top. A game built already shows its own app's picture
+(made by its build from the player's files; the Launcher ships no game art); a game
+not built yet shows a plus that opens the build steps with that game chosen. The built games are every app of these
+games macOS knows (LaunchServices) and that is still there, plus those in the apps folder, with the update each needs
+(`update_runtime.py --plan`). They are asked for by bundle ID (LaunchServices, about 0.05 s) and planned at the same
+time, so a look takes well under a second; the window shows the last look (`Builder/installed.json`) at once and brings
+it up to date, and only the very first look has the cards waiting. A card opens its actions:
+one update button named after the fastest update that fits (**Express update**, **Fast update**, or **Full build**,
+which opens the build steps with that game chosen), and for Tears
+of the Kingdom and Breath of the Wild their pages (Settings, Mods, Controls, Storage, Saves), which open under those
+buttons (pressed again, they close). An
+update running, or one another program started, shows its progress there. **Update** needs no
 game files or keys: it runs the express update, or the fast one (`--seed`) when the startup shaders must be made again,
 in place, with the work folder the app records. When only a full build fits, it says why and asks for the game files.
 
-The window is three numbered steps, top to bottom; a step is dimmed until the one above it is done.
+The build steps (a card's plus; or files given to the app, `open -a` or the Dock) are three numbered steps, top to
+bottom; a step is dimmed until the one above it is done.
 
 1. **Choose the game**: drop the game files (or the folder that holds them) on the window, or **Choose Game…**. What
    each file is comes from the file itself: a package's ticket, a Switch 2 dump's `main.npdm`, a `.nup`, or a

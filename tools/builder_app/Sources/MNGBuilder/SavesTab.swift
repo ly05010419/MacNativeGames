@@ -1,12 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Where the game keeps its save, backups (plain folders plus backup.json) and restore (tab_saves.py over
-/// tools/builder/saves.py). A restore shows its plan and asks first; Python refuses it while the game runs.
-struct SavesTab: View {
-    var body: some View { PageFrame { app in SavesPage(app: app) } }
-}
-
 struct SavesState: Decodable {
     struct Source: Decodable, Identifiable {
         let kind, title_id, game, path, name, line: String
@@ -67,6 +61,8 @@ private enum ST {
     }
 }
 
+/// Where the game keeps its save, backups (plain folders plus backup.json) and restore (tab_saves.py over
+/// tools/builder/saves.py). A restore shows its plan and asks first; Python refuses it while the game runs.
 struct SavesPage: View {
     let app: String
     @State private var state: SavesState?

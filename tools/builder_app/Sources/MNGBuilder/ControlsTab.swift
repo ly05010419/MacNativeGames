@@ -1,13 +1,5 @@
 import SwiftUI
 
-/// The old window's Controls tab (tab_controls.py over tools/builder's controller_controls, controls_file,
-/// controller_icons and keyboard_layout): which controller, each input's button (a list and a drawn pad), the Xbox
-/// letters preset, Save, Cancel changes, Restore defaults, the button icons, and the keyboard layout with its key test.
-/// The page keeps only the last answer: its token and the pending layout go back with every call.
-struct ControlsTab: View {
-    var body: some View { PageFrame { app in ControlsPage(app: app) } }
-}
-
 struct ControlsView: Decodable {
     struct Answer: Decodable, Hashable { let id, label: String }
     struct Row: Decodable, Identifiable {
@@ -45,6 +37,10 @@ enum CT {
     static let minutes = T.s("This can take a few minutes; the page waits for it.", "可能要几分钟，这一页会等它做完。")
 }
 
+/// The old window's Controls tab (tab_controls.py over tools/builder's controller_controls, controls_file,
+/// controller_icons and keyboard_layout): which controller, each input's button (a list and a drawn pad), the Xbox
+/// letters preset, Save, Cancel changes, Restore defaults, the button icons, and the keyboard layout with its key test.
+/// The page keeps only the last answer: its token and the pending layout go back with every call.
 struct ControlsPage: View {
     let app: String
     @State private var view: ControlsView?

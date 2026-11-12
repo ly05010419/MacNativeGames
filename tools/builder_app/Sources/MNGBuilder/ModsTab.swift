@@ -2,13 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The player's own mods (tab_mods.py over tools/builder's mod models): add a folder or an archive, switch on, order,
-/// remove, Apply, the player's own backups. Every text of the old window's Mods tab comes from Python, in the Mac's
-/// language; the page holds no rule.
-struct ModsTab: View {
-    var body: some View { PageFrame { app in ModsPage(app: app) } }
-}
-
 struct ModsState: Decodable {
     struct Mod: Decodable, Identifiable {
         let id, name: String
@@ -35,6 +28,9 @@ private enum ModsText {
     static let cancel = T.s("Cancel", "取消")
 }
 
+/// The player's own mods (tab_mods.py over tools/builder's mod models): add a folder or an archive, switch on, order,
+/// remove, Apply, the player's own backups. Every text of the old window's Mods tab comes from Python, in the Mac's
+/// language; the page holds no rule.
 struct ModsPage: View {
     let app: String
     @State private var state: ModsState?

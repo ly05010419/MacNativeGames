@@ -1,10 +1,5 @@
 import SwiftUI
 
-/// The game's start options (tab_settings.py over tools/builder/start_options.py), the GPU check and Play.
-struct SettingsTab: View {
-    var body: some View { PageFrame { app in SettingsPage(app: app) } }
-}
-
 struct SettingsState: Decodable {
     struct Choice: Decodable, Hashable { let id: String; let label: String }
     struct Option: Decodable, Identifiable { let id, label, description, `where`: String; let choices: [Choice]; let chosen: String }
@@ -15,6 +10,7 @@ struct SettingsState: Decodable {
     let notes: [String]
 }
 
+/// The game's start options (tab_settings.py over tools/builder/start_options.py), the GPU check and Play.
 struct SettingsPage: View {
     let app: String
     @State private var state: SettingsState?
