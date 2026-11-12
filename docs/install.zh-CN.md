@@ -53,7 +53,7 @@
 
 **新：拖放打包器。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MacNativeGames Builder.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
 
-不想敲命令的话：装好下面第 1 步的工具（窗口还要 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
+不想敲命令的话：装好下面第 1 步的工具（窗口要 Tk：python.org 的 Python 自带；用 Homebrew 的 Python 要再 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
 
 - **Build**（打包）：选游戏，再选游戏文件、更新、`prod.keys`，游戏需要时再选固件或系统字体文件夹（工作目录和输出的 App 在 **Advanced** 里）。**Check files** 会检查这台 Mac 和你的文件，有问题就列出来，能修的附上修复命令。**Build app** 用这些路径运行 `build_app.py`，显示四个阶段、用时和日志；打完一键 **Open app** 或 **Show in Finder**。**Cancel** 会中断打包，下次用同一个工作目录再打会接着做。窗口只记住你选的路径，不复制文件；日志在 `~/Library/Logs/MacNativeGames/builder-<游戏>-<日期>-<时间>.log`。打包时别关掉跟着打开的终端窗口。
 - **Settings**（设置；王国之泪 1.4.3、旷野之息 1.9.0）：开局画面、补帧（这台 Mac 的显卡支持 Metal 4 MetalFX 补帧时才有）、边缘平滑、远处地面更清晰，1.4.3 还有画面比例。**▶ Play** 启动游戏。画面、补帧、边缘平滑、画面比例就是游戏里设置面板（1 键）存的那份设置，从访达打开也生效，在哪边改都一样；只有“远处地面更清晰”面板里没有，只在用 **▶ Play** 启动时生效。游戏开着时不改设置，先关掉游戏。
@@ -77,12 +77,12 @@ python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --key
 
 ```sh
 xcode-select --install
-# 没有 Homebrew 的话，按 https://brew.sh 安装（必须装在 /opt/homebrew）
-brew install python@3.14       # opus 和 libvpx 不用装：打包时从固定版本的源码自己编
-brew install python-tk@3.14   # 只有打包窗口需要（见上面“用窗口打包”）
+# Python 3.14：从 https://www.python.org/downloads/macos/ 下载安装包（自带 Tk，打包窗口要用）
+#   或者用 Homebrew：brew install python@3.14 python-tk@3.14
+# opus、libvpx、dav1d 不用装：打包时从固定版本的源码自己编
 ```
 
-也可以不用 Homebrew 的 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
+也可以不装 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
 
 可选（装了完整 Xcode 时）：`xcodebuild -downloadComponent MetalToolchain`。
 - 装了它，打包时会把启动着色器直接编进 App：App 之后可以随意挪动，重新打包也更快。
@@ -148,7 +148,7 @@ python3.14 build_app.py "<旷野之息本体.nsp>" -k "<prod.keys>" --update "<1
 
 **需要：**
 - iOS / iPadOS 26，iPhone 14 或更新的机型。
-- Mac 上装好完整的 **Xcode 26** 或更高版本（含 iOS 平台），再 `brew install xcodegen cmake ninja`。
+- Mac 上装好完整的 **Xcode 26** 或更高版本（含 iOS 平台）。不用 Homebrew：XcodeGen、CMake、Ninja 由打包自己下载固定版本。
 - 在 Xcode › Settings › Accounts 里登录你的 Apple ID（免费账号也行）。
 - 设备上打开开发者模式。
 

@@ -40,10 +40,6 @@ def imported_romfs(tree):
     index=json.loads((Path(tree)/'extracted/oot/romfs/index.json').read_text())
     return dict(sha256=index['romfs_sha256'],size=index['romfs_size'])
 
-def missing_tools(names):
-    """The command-line tools of names the build cannot find on PATH (build_app.py puts Homebrew's folders on it)."""
-    return [name for name in names if not shutil.which(name)]
-
 def make_path(work):
     """The work folder as make can name it (#2045): make splits target and prerequisite names at spaces, and the default
     work folder sits next to the dump, named after the game. A path with spaces gets a fixed alias in the temporary
@@ -359,14 +355,8 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     title,manifest=lists   # the archive's lists, beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     clone_file(title,data/'build/pso_title.tsv');clone_file(manifest,data/'build/pso_manifest.tsv')
     if pipelines:check_archive_lists(data/'build')   # never an App whose archive was built from other lists
-    # VideoToolbox is the primary AV1 decoder; the same bounded dav1d fallback
-    # used by the native host is bundled, independent of a Homebrew installation.
-    dependencies=subprocess.check_output(['otool','-L',mac/'OcarinaOfTime'],text=True)
-    dav1d=next(line.strip().split(' (')[0]for line in dependencies.splitlines()if '/libdav1d.'in line)
-    framework=temporary/'Contents/Frameworks'/Path(dav1d).name
-    clone_file(Path(dav1d).resolve(),framework)
-    subprocess.run(['install_name_tool','-change',dav1d,'@executable_path/../Frameworks/'+framework.name,mac/'OcarinaOfTime'],check=True)
-    subprocess.run(['codesign','--force','--sign','-',framework],check=True)
+    # VideoToolbox is the primary AV1 decoder; the bounded dav1d fallback is linked statically (build_app.codec_libraries
+    # builds it from its pinned source), so the App carries no dylib for it, only its license.
     clone_file(GAME/'third_party/dav1d-COPYING',res/'licenses/dav1d-COPYING')
     info=dict(CFBundleDevelopmentRegion='en',CFBundleExecutable='OcarinaOfTime',CFBundleIdentifier='org.macnativegames.oot',CFBundleName='Ocarina of Time',CFBundleDisplayName='Ocarina of Time',CFBundlePackageType='APPL',CFBundleShortVersionString='131072',CFBundleVersion='131072',LSMinimumSystemVersion='26.0',NSHighResolutionCapable=True,LSSupportsGameMode=True,GCSupportsControllerUserInteraction=True)
     icon=tree/'build/AppIcon.icns'   # the game's icon (assets/app-icon.json, made by build), as build_app.py puts it in the app
@@ -496,13 +486,8 @@ def build(args, source):
     if out.suffix!='.app' and not (device and out.suffix=='.ipa'):raise ValueError('output must end in .app'+(' or .ipa' if device else ''))
     if out==repo or repo in out.parents:raise ValueError('App must remain outside the source checkout')
     if args.vr or args.native_4k or args.native_5k:raise ValueError('this title currently uses its original rendering options')
-    configured_llvm=os.environ.get('LLVM_BIN')
-    llvm_candidates=[configured_llvm] if configured_llvm else ['/opt/homebrew/opt/llvm@23/bin','/opt/homebrew/opt/llvm/bin']
-    llvm=next((folder for folder in llvm_candidates if all(os.access(Path(folder)/tool,os.X_OK)
-               for tool in ('llvm-objcopy','llvm-objdump'))),None)
-    if llvm is None:raise ValueError('OoT needs llvm-objcopy and llvm-objdump for rewrite verification; install llvm or set LLVM_BIN')
-    missing=missing_tools(('ffmpeg','ffprobe'))   # the opening overlay, the build's last step (#2070: a traceback after minutes)
-    if missing:raise ValueError(f"OoT needs {' and '.join(missing)} for the opening overlay; brew install ffmpeg")
+    # Nothing to install from Homebrew (2026-11-12): the rewrite check disassembles with Xcode's llvm-objdump
+    # (third_party/d2r/structck.py) and the opening overlay cuts its clip in Python (scripts/webm_one_frame.py).
     # Close this title normally before changing its resource workspace or App.
     # The input command follows the same save-safe window close as normal play.
     executable=out/'Contents/MacOS/OcarinaOfTime'
@@ -518,7 +503,7 @@ def build(args, source):
             time.sleep(1)
     work.mkdir(parents=True,exist_ok=True);tree=work/'oot';logs=work/'logs';logs.mkdir(exist_ok=True)
     shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
-    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0',LLVM_BIN=llvm)
+    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)

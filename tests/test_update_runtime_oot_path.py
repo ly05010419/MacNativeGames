@@ -1,6 +1,7 @@
 """update_runtime.py update_ocarina (#2074): the Ocarina of Time update runs its build with the Homebrew tool folders on
 PATH, as main() does for Tears of the Kingdom and Breath of the Wild. Started from the app's Update button, the update
-inherits the Finder's PATH, and make_opening_overlay.py then found no ffmpeg or ffprobe."""
+inherits the Finder's PATH, and make_opening_overlay.py then found no ffmpeg or ffprobe. Since 2026-11-12 it also sets up
+build_app.codec_libraries (opus, libvpx, dav1d) first, as build_app.py does: without it the make found no static dav1d."""
 import os
 from pathlib import Path
 import sys
@@ -18,10 +19,12 @@ class OcarinaToolPath(unittest.TestCase):
         module = mock.Mock()
         module.update_runtime.side_effect = lambda app, work: seen.update(path=os.environ['PATH'])
         with mock.patch.dict(os.environ, {'PATH': path}), \
+             mock.patch.object(update_runtime.build_app, 'codec_libraries') as codecs, \
              mock.patch('importlib.util.spec_from_file_location'), \
              mock.patch('importlib.util.module_from_spec', return_value=module):
             update_runtime.update_ocarina(Path('/Applications/Ocarina of Time.app'), None)
         module.update_runtime.assert_called_once()
+        codecs.assert_called_once_with()
         return seen['path'].split(os.pathsep)
 
     def test_finder_path_gains_the_tool_folders(self):

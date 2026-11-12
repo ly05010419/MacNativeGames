@@ -12,10 +12,8 @@ import sys
 
 from tools.builder_jobs.text import t
 
-BREW = Path('/opt/homebrew')
-# Ocarina of Time's build still takes these from Homebrew (games/oot/build.py, games/oot/Makefile); opus and libvpx are
-# built from pinned sources by build_app.py for every game (codec_libraries), so nothing else needs Homebrew.
-OOT_TOOLS = (('llvm', 'opt/llvm/bin/llvm-objcopy'), ('ffmpeg', 'bin/ffmpeg'), ('dav1d', 'opt/dav1d/lib/libdav1d.dylib'))
+# No game's build takes a library or tool from Homebrew: opus, libvpx and dav1d are built from pinned sources by
+# build_app.py (codec_libraries), and Ocarina of Time needs no llvm or ffmpeg since 2026-11-12.
 FREE_GB = 60                            # warn below this; the measured sizes are in docs/builder-app.md
 
 
@@ -34,11 +32,6 @@ def _free_gb(path):
         return shutil.disk_usage(path).free / 2**30
     except OSError:
         return None
-
-
-def oot_tools_missing():
-    """The Homebrew packages Ocarina of Time's build needs that this Mac lacks (classify.plan blocks on them)."""
-    return [name for name, path in OOT_TOOLS if not (BREW / path).exists()]
 
 
 def checks(work_root):

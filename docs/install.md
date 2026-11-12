@@ -62,7 +62,7 @@ Rather not type the command? With the tools of step 1 below installed, double-cl
 
 **Updates:** in a `git clone`, the window checks when it opens whether MacNativeGames has new commits on its `main`, and lists them. It looks only at the remote whose URL is github.com/ly05010419/MacNativeGames (in a fork, usually `upstream`): other remotes, such as your fork, are never fetched. On `main`, **Update** then fetches and fast-forwards it: it never merges, rebases or discards anything, and when files were changed here or `main` has commits of its own it says so and leaves the update to you. On any other branch it only says how many commits are waiting, to merge by hand. After an update, close and reopen the builder and build again; your saved paths, and the saves of the game, stay where they are. A ZIP download cannot update itself: download the new version.
 
-The window needs Tk (`brew install python-tk@3.14`); without it, **Build Game.command** says so. The same checks and build run in Terminal too:
+The window needs Tk, which python.org's Python has (Homebrew's needs `brew install python-tk@3.14`); without it, **Build Game.command** says so. The same checks and build run in Terminal too:
 
 ```sh
 python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
@@ -80,12 +80,12 @@ How the builder is made, for anyone changing it (people or AI assistants): [buil
 
 ```sh
 xcode-select --install
-# Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
-brew install python@3.14       # opus and libvpx: the build compiles them from pinned sources itself
-brew install python-tk@3.14   # only for the builder window (Build with a window, above)
+# Python 3.14: the installer from https://www.python.org/downloads/macos/ (it includes Tk, for the builder window)
+#   or Homebrew's: brew install python@3.14 python-tk@3.14
+# opus, libvpx and dav1d are not installed: the build compiles them from pinned sources itself
 ```
 
-Instead of Homebrew's Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
+Instead of an installed Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
 
 Optional, if the full Xcode app is installed: `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so the app can be moved and rebuilds are faster. Without it the build still works, and the shaders go into macOS's Metal cache for the app's location.
 
@@ -149,7 +149,7 @@ With a separate update the app holds only the DLC packs you give with `--dlc`. A
 
 **Needed:**
 - iOS / iPadOS 26 and an iPhone 14 or newer.
-- On the Mac: the full **Xcode 26** or later with the iOS platform, plus `brew install xcodegen cmake ninja`.
+- On the Mac: the full **Xcode 26** or later with the iOS platform. Nothing from Homebrew: the build downloads pinned XcodeGen, CMake and Ninja itself.
 - Your Apple ID in Xcode › Settings › Accounts. A free one works.
 - Developer Mode on the device.
 

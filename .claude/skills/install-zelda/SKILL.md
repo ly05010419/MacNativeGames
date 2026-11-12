@@ -34,13 +34,13 @@ df -h .
 |---|---|
 | `arm64` and macOS **26** or later (Metal 4) | Stop. macOS 15 is not supported here; a community fork has a Metal 3 backend: <https://github.com/1918662410-ship-it/MacNativeGames> (not tested by this repository). |
 | Xcode command line tools, with a working SDK | `xcode-select --install` (the player clicks the dialog). |
-| Homebrew in `/opt/homebrew` (the build looks only there) | Install from <https://brew.sh> (the player runs it; it asks for the password). |
-| Python 3.14: `brew install python@3.14` | Run it. Instead of Homebrew Python, `uv run --python 3.14 build_app.py …` works too. opus and libvpx are not installed: the build compiles them from pinned sources (once per Mac, under `~/Library/Caches/MacNativeGames/deps`). |
+| Homebrew | Not needed, for Mac or for iPhone / iPad. |
+| Python 3.14 (`python3.14 --version`) | The player installs it from <https://www.python.org/downloads/macos/> (the .pkg includes Tk and puts `python3.14` in /usr/local/bin, where the build looks). `brew install python@3.14` (plus `python-tk@3.14` for the window) or `uv run --python 3.14 build_app.py …` work too. opus, libvpx and dav1d are not installed: the build compiles them from pinned sources (once per Mac, under `~/Library/Caches/MacNativeGames/deps`). |
 | The repository is current | `git pull` (or download a fresh ZIP). Many old build errors are fixed on `main`. |
 
 Recommended when the full Xcode app is installed: `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so it can be moved later and rebuilds are faster. Without it the build still works.
 
-iPhone / iPad builds also need: full **Xcode 26+** with the iOS platform, `brew install xcodegen cmake ninja`, the player's Apple ID in Xcode › Settings › Accounts (a free one works), and the device on iOS / iPadOS 26, iPhone 14 or newer, with Developer Mode on.
+iPhone / iPad builds also need: full **Xcode 26+** with the iOS platform (XcodeGen, CMake and Ninja come with the build, pinned), the player's Apple ID in Xcode › Settings › Accounts (a free one works), and the device on iOS / iPadOS 26, iPhone 14 or newer, with Developer Mode on.
 
 ## 2. Find and identify the player's files
 

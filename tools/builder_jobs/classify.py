@@ -195,11 +195,6 @@ def plan(items, work=None):
     if base.role in ('ns2_dump', 'nup'):
         p.needs_keys = False
         p.fonts = (by_role('fonts') or [Item('', '')])[-1].path or None
-        from tools.builder_jobs.checks import oot_tools_missing
-        missing = oot_tools_missing() if base.game == 'oot' else []
-        if missing:
-            p.blocks.append(t(f'Ocarina of Time\'s build needs Homebrew\'s {", ".join(missing)}: brew install {" ".join(missing)}',
-                              f'时之笛的打包还要 Homebrew 的 {", ".join(missing)}：brew install {" ".join(missing)}'))
         if base.game == 'oot' and not p.fonts:
             p.notes.append(t('Ocarina of Time needs the six shared-font files of a Switch 2 firmware unless your work folder '
                              'already has them: drop their folder too',

@@ -54,9 +54,11 @@ def ocarina_app(app):
 def update_ocarina(app, work):
     """Ocarina of Time carries its own build, like build_app.build_oot. It gets the tool PATH main() gives the other games:
     an update started from the app inherits the Finder's PATH, which has no /opt/homebrew/bin, so the build's
-    make_opening_overlay.py found no ffmpeg (#2074)."""
+    make_opening_overlay.py found no ffmpeg (#2074). It needs no ffmpeg since 2026-11-12 (webm_one_frame.py), and dav1d,
+    opus, libvpx and dav1d come from build_app.codec_libraries, which sets the prefixes its Makefile links them from."""
     import importlib.util
     os.environ['PATH'] = os.pathsep.join(build_app.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')])
+    build_app.codec_libraries()   # without it the make took Homebrew's opus and libvpx, and found no static dav1d
     spec = importlib.util.spec_from_file_location('oot_build', build_app.REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
