@@ -17017,6 +17017,7 @@ frz_plain:;
     /* TOTK: unretained: g_enc holds the encoder (the encode-stage sentinel when streamed) until rp_end, and every path below
        that ends the pass returns without touching en again; as a strong local it was a retain + release on every draw.
        defer_replay draws whole replayed draws, which may end the pass: en_keep holds the encoder over it as before. */
+    if (!g_enc) mesh_batch_prefetch();   // OOT: grids for the mesh draws of the pass about to open, before it opens (nvn_mesh_batch.inc)
     __unsafe_unretained id<MTLRenderCommandEncoder> en = g_enc ? g_enc : rp_begin_ex(mode);
     NS_VALID_UNTIL_END_OF_SCOPE id en_keep = nil;
     g_fd_dw = NULL; g_fd_di = NULL;
