@@ -1,0 +1,6 @@
+# Keep verbatim third-party source and inherited translator patches unchanged.
+third_party/ryujinx/** -whitespace
+third_party/spirv-cross/** -whitespace
+tools/totk_xlate/patches/** -whitespace
+runtime/gate.S whitespace=-blank-at-eof
+third_party/d2r_gfx/gfx/nvn/fps_overlay.c whitespace=-blank-at-eof

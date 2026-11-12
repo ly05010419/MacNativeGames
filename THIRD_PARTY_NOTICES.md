@@ -5,6 +5,13 @@ Code in this repository that comes from other projects keeps its license; the li
 | Code | From | License | File |
 |---|---|---|---|
 | `games/totk/third_party/d2r` (NSO rewriter, verification tools) | [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile), adapted | MIT | `games/totk/third_party/d2r/LICENSE` |
+| `games/tmnt/third_party/d2r` (NSO rewriter, adapted via `games/dread` as recorded in `games/tmnt/third_party/COPIES.md`) | [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile), adapted | MIT | `games/tmnt/third_party/d2r/LICENSE` |
+| `games/tmnt/third_party/d2r_gfx` (NVN on Metal, texture tools and host headers; adapted via `games/ssbu`) | d2r-mobile, extended for TMNT | MIT; texture layout from deko3d under zlib; bcdec under MIT or public domain | `games/tmnt/third_party/d2r_gfx/LICENSE`, `LICENSE.deko3d`, `third_party/bcdec/LICENSE` |
+| `games/tmnt/tools/totk_xlate` (shader translator front end; adapted via `games/ssbu`) | d2r-mobile; uses TMNT's bundled Ryujinx source at build time | MIT | `games/tmnt/tools/totk_xlate/LICENSE`, `games/tmnt/third_party/ryujinx/LICENSE.txt` |
+| `games/tmnt/third_party/ryujinx` (shader translator dependencies) | Ryujinx, copied from this repository's `vendor/ryujinx` as recorded in `games/tmnt/third_party/COPIES.md` | MIT | `games/tmnt/third_party/ryujinx/LICENSE.txt` |
+| `games/tmnt/third_party/spirv-cross` (bundled CLI source at `aa217aeb6c9f0ace7a0ab233b28807edf45eb165`) | [KhronosGroup/SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) via `games/unicorn`; see `games/tmnt/third_party/COPIES.md` | Apache-2.0 or MIT; bundled headers retain their own notices | `games/tmnt/third_party/spirv-cross/LICENSE`, `LICENSES/` |
+| `games/tmnt/runtime/stb_vorbis.inc` (Vorbis decoder) | stb_vorbis via `games/jamboree`; see `games/tmnt/third_party/COPIES.md` | MIT or public domain | `games/tmnt/third_party/stb_vorbis/LICENSE` |
+| TMNT audio effects, reverb and mixer in `games/tmnt/runtime` | Ryujinx.Audio via the repository's runtime | MIT | `games/tmnt/third_party/licenses/Ryujinx-Audio.txt` |
 | `games/totk/third_party/d2r_gfx` (NVN on Metal, texture tools, host headers) | d2r-mobile, extended for this game | MIT | `games/totk/third_party/d2r_gfx/LICENSE` |
 | `games/oot/third_party/nup` (NUP reader) | [a55uka/nup](https://github.com/a55uka/nup) at `d40d9cf` | MIT | `games/oot/third_party/nup/LICENSE` |
 | `games/oot` AV1 movie decoder, mesh / task stages, HMMA lowering, typed pool arrays (adapted; each marked in its source) | [seedds/nxnative](https://github.com/seedds/nxnative), [ChiefSZ13/nxnative](https://github.com/ChiefSZ13/nxnative) at `ee9b776` | MIT | listed in `games/oot/third_party/COPIES.md` |
