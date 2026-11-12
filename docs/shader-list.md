@@ -97,8 +97,16 @@ hour, and never asks again; "Don't contribute" sends nothing and never asks agai
 Settings (the Mac's settings panel, display page; the iPhone / iPad Settings app) turns it on or off at any time. Only
 shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are
 sent. On the Mac the file is `shader-list-contribution/shader-list-contribution.txt` in your clone (Breath of the
-Wild's `shader-list-contribution-botw.txt`). The upload is the only way in: since 2026-11-12 no file is taken from a
-GitHub issue.
+Wild's `shader-list-contribution-botw.txt`, Bananza's `-dkb`, Pokopia's `-pkp`). The upload is the only way in: since
+2026-11-12 no file is taken from a GitHub issue.
+
+Each file belongs to one game (2026-11-12): every game's shaders stay apart from writing to sending. The launcher claims
+the file before the game starts (`totk_contrib_upload.h totk_inbox_claim`): its line `# Inbox game: <id>` names the game
+(the inbox's id, `GAME_INBOX_ID`). The game writes only to a file of its own id, and the upload sends only such a file.
+A file of another game, or one from before this check (no such line), moves aside as `<file>.of-<game>-<time>` or
+`<file>.unclaimed-<time>` and is never sent; the game starts a new one. Before, one file could hold several games' rows
+(Breath of the Wild, Bananza and Pokopia shared `-botw` until 2026-11-12) and the app that sent it named its own game for
+all of them.
 
 The file holds only what still has to be sent (2026-11-01; before, every issue carried the whole file, and of one
 day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipeline rows were already in the list):
@@ -220,6 +228,7 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - 只有标识，不含游戏数据。
 - **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行，从 tile 读附件的再加 `T` 行；普通管线清单里已有时，`B` / `T` 行也照记；变体名换成别人打包时也会有的名字）。着色器和管线合计攒够 100 条时，Mac 和 iPhone / iPad 都会在游戏开始前问一次：“贡献着色器”还是“不贡献”。选“贡献着色器”，游戏会自己通过 HTTPS 上传到项目的着色器收件箱（https://mac-native-games.com）：开始后约 20 秒一次，之后每半小时一次，以后不再问；选“不贡献”就什么都不发，也不再问。之后随时可以在“设置”里用“自动贡献着色器”开关打开或关闭（Mac 在游戏内设置面板的画面页，iPhone / iPad 在系统“设置”App）。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号。上传是唯一的途径：从 2026-11-12 起不再收 GitHub Issue 里的文件。
 - **维护者合并**：玩家的贡献全在着色器收件箱里，不再看 GitHub Issue（2026-11-12 起）。`SHADER_INBOX_TOKEN=<收件箱管理口令> python3 games/totk/scripts/collect_shaders.py --inbox https://mac-native-games.com --seed <打包目录>/totk/build/shader-seed/v143 --seed <旷野之息打包目录>/totk/build/shader-seed/botw160` 先看每个游戏能加多少；加 `--apply` 写进清单；清单提交后再加 `--mark-inbox <提交号>`，收件箱把这些行记为已处理。只取 `V` 行和管线的 `R` / `B` / `T` 行，种子自带的默认变体能用的 `V` 行丢掉。每一行按它的着色器键归到所属游戏，不看 App 报的游戏；谁都认不出的行留在收件箱里。每个 `--seed` 提供该版本的键（`shader-keys.json`，2026-10-22 以前的旧种子没有，会被拒绝），`--keys <游戏>=<文件>` 可再加键清单。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
+- **每个贡献文件只属于一个游戏**（2026-11-12）：启动器在游戏开始前认领文件（`totk_inbox_claim`），文件里的 `# Inbox game: <id>` 行写明是哪个游戏（收件箱里的 id，`GAME_INBOX_ID`）；游戏只往写着自己 id 的文件里写，上传也只发这样的文件。别的游戏的文件、或这项检查之前留下的没有这一行的文件，挪到 `<文件>.of-<游戏>-<时间>` / `<文件>.unclaimed-<时间>`，永远不发，游戏另起一个新文件。以前一个文件里可能有几个游戏的行（旷野之息、大金刚、Pokopia 到 2026-11-12 共用 `-botw`），哪个 App 上传就全标成自己的游戏。
 - **其他游戏**（2026-10-28）：记贡献文件的其他游戏各有自己的清单 `games/<游戏>/assets/shader_list.tsv`，不混进王国之泪的：奥德赛（`odyssey`）、大乱斗（`ssbu`）、惊奇（`wonder`）、马力欧 vs. 大金刚（`mvdk`）。每个游戏自己的 `totk_shader_contrib.h` 写明它的贡献文件名 `shader-list-contribution-<游戏>.txt`（惊奇和大金刚在项目的 `shader-list-contribution/` 文件夹里；奥德赛和大乱斗写在各自数据文件夹的 `shader-list-contribution.txt`），它自己的 `totk_contrib_upload.h` 写明它在着色器收件箱里的游戏 id（`GAME_INBOX_ID`）。以前惊奇和大金刚的文件叫 `shader-list-contribution-botw.txt`，和旷野之息一样。`collect_shaders.py` 把一行归给着色器键包含它的着色器的那个游戏；只有别的游戏都没有这些键时，才按 App 报的游戏归（规则见脚本开头的说明）。这些游戏这里没有种子，所以靠清单里已有的键区分，也不去掉默认变体。奥德赛和大乱斗打包时读自己的清单；惊奇和大金刚的打包还不读，清单目前只是先收着。
 - **用 git 贡献**：
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。

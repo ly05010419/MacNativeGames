@@ -50,7 +50,7 @@ static void settings_restore_start(void) {
  [NSRunLoop.mainRunLoop addTimer:settingsRestoreTimer forMode:NSRunLoopCommonModes];
  /* The shader contribution (totk_contrib_upload.h): this game asks no question at start (its launcher is a plain C
     program); the settings panel's switch decides, and when it is on the rows go in the background while playing. */
- totk_inbox_start(totk_contrib_path(),@"mac");
+ totk_inbox_start(totk_inbox_claim(totk_contrib_path()),@"mac");   /* this game's file only: claimed before the game writes to it */
 }
 
 enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGES };

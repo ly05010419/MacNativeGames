@@ -424,7 +424,109 @@ class OneContributionFilePerGameTests(unittest.TestCase):
         self.assertIn('!strcmp(GAME_FOLDER, "BotW") ? @"shader-list-contribution-botw.txt"', body)
         self.assertIn('@"shader-list-contribution-%s.txt", TOTK_GAME_DIR', body)
 
+    def test_every_place_that_starts_the_upload_claims_the_file_first(self):
+        # the game gets its id from the claim and writes only to a file of it (ContributionOwnerTests); a launcher or app that
+        # set the file without claiming it would leave the game writing without the check
+        starts = [p for p in sorted(TOTK.parent.glob('*/**/*.[mhc]'))
+                  if 'third_party' not in p.parts and 'tests' not in p.parts and 'setenv("TOTK_SHADER_CONTRIB"' in p.read_text(errors='replace')
+                  and 'totk_inbox_start' in p.read_text(errors='replace')]
+        self.assertGreaterEqual(len(starts), 8)
+        for path in starts:
+            self.assertIn('totk_inbox_claim(', path.read_text(), f'{path}: sets the contribution file without claiming it')
+        odyssey = (TOTK.parent / 'odyssey/runtime/settings_panel.h').read_text()   # its launcher is C: the panel claims it
+        self.assertIn('totk_inbox_start(totk_inbox_claim(totk_contrib_path())', odyssey)
+
     def test_no_launcher_gives_every_other_game_one_file(self):
         shared = re.compile(r'strcmp\(GAME_FOLDER, "\w+"\) \? @"shader-list-contribution[^"]*"\s*: @"shader-list-contribution')
         for launcher in sorted(TOTK.parent.glob('*/app/launcher.m')):
             self.assertIsNone(shared.search(launcher.read_text()), f'{launcher}: one contribution file for several games')
+
+
+@unittest.skipUnless(shutil.which('xcrun'), 'needs the Xcode command line tools')
+class ContributionOwnerTests(unittest.TestCase):
+    """Every game writes and sends only a contribution file of its own (user 2026-11-12: "每个游戏的着色器都独立 … 上传独立"):
+    the launcher claims the file (totk_inbox_claim), the game writes only to a file of its id, the upload sends only such a
+    file. Each copy of the upload is built and run (games/<game>/tests/... has none of its own: one probe, every copy)."""
+    PROBE = TOTK / 'tests/shader_contrib/owner_probe.m'
+    ROW = f'V\t{7:064x}\t{{}}'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.probes = {}
+        for copy in sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h')):
+            game = copy.relative_to(TOTK.parent).parts[0]
+            out = Path(cls.tmp.name) / f'probe-{game}'
+            build = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
+                                    '-DTOTK_CONTRIB_INBOX="http://127.0.0.1:9/v1/contrib"', '-DTOTK_GAME_VERSION="1.0.0"',
+                                    f'-I{copy.parent}', str(cls.PROBE),
+                                    '-framework', 'Foundation', '-o', str(out)], capture_output=True, text=True)
+            cls.probes[game] = out if build.returncode == 0 else build.stderr[-800:]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_probe(self, game, *args, env=None):
+        probe = self.probes[game]
+        self.assertIsInstance(probe, Path, f'{game}: the probe did not build:\n{probe}')
+        return subprocess.run([str(probe), *args], capture_output=True, text=True, timeout=120,
+                              env={**{k: v for k, v in os.environ.items() if not k.startswith('TOTK_')}, **(env or {})})
+
+    def test_every_copy_with_an_upload_is_checked(self):
+        self.assertGreaterEqual(len(self.probes), 7)
+        for game in self.probes:
+            with self.subTest(game=game):
+                self.assertEqual(self.run_probe(game, 'id').stdout.strip(), game)   # each copy's GAME_INBOX_ID is its folder's
+
+    def test_a_new_file_names_its_game(self):
+        for game in self.probes:
+            with self.subTest(game=game), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'shader-list-contribution.txt'
+                run = self.run_probe(game, 'claim-write', str(path))
+                self.assertEqual(run.returncode, 0, run.stderr)
+                lines = path.read_text().splitlines()
+                self.assertIn(f'# Inbox game: {self.run_probe(game, "id").stdout.strip()}', lines)
+                self.assertIn(self.ROW, lines)
+
+    def test_another_games_file_and_an_unnamed_one_move_aside_unsent(self):
+        for game in self.probes:
+            for owner in ('someothergame', None):
+                with self.subTest(game=game, owner=owner), tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'shader-list-contribution.txt'
+                    path.write_text('# header\n' + (f'# Inbox game: {owner}\n' if owner else '') + f'V\t{"a" * 64}\t{{}}\n')
+                    done = Path(tmp) / '.shader-list-contribution.txt.done'; done.write_text(f'V\t{"b" * 64}\t{{}}\n')
+                    run = self.run_probe(game, 'claim-write', str(path))
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    aside = [p for p in Path(tmp).iterdir() if p.name.startswith('shader-list-contribution.txt.')]
+                    self.assertEqual(len(aside), 1, sorted(p.name for p in Path(tmp).iterdir()))
+                    self.assertIn(f'of-{owner}-' if owner else 'unclaimed-', aside[0].name)
+                    self.assertIn('a' * 64, aside[0].read_text())
+                    self.assertTrue((Path(tmp) / f'.{aside[0].name}.done').is_file(), 'its done file goes with it')
+                    self.assertNotIn('a' * 64, path.read_text(), 'the new file holds only this game\'s rows')
+                    self.assertFalse(done.exists())
+
+    def test_the_game_writes_nothing_to_another_games_file(self):
+        for game in self.probes:
+            with self.subTest(game=game), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / 'shader-list-contribution.txt'
+                text = '# Inbox game: someothergame\n'
+                path.write_text(text)
+                own = self.run_probe(game, 'id').stdout.strip()
+                run = self.run_probe(game, 'write', str(path), env={'TOTK_CONTRIB_GAME_ID': own})
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(path.read_text(), text)
+                self.assertIn('nothing is written', run.stderr)
+
+    def test_the_upload_sends_no_other_games_file(self):
+        for game in self.probes:
+            for owner in ('someothergame', None):
+                with self.subTest(game=game, owner=owner), tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'shader-list-contribution.txt'
+                    text = (f'# Inbox game: {owner}\n' if owner else '') + f'V\t{"a" * 64}\t{{}}\n'
+                    path.write_text(text)
+                    run = self.run_probe(game, 'send', str(path))
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertEqual(run.stdout.strip(), '0')
+                    self.assertIn('not sent', run.stderr)
+                    self.assertEqual(path.read_text(), text)

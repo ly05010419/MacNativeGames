@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
           setenv("TOTK_GPU_BUDGET_MB", budget, 0); }
         setenv("TOTK_SLOT_OWNER", "user", 0);
         setenv("TOTK_SLOT_PURPOSE", "player", 0);
-        NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
+        NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         contrib_ask(contrib);
         totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing
