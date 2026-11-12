@@ -3440,6 +3440,8 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
+    if (!strcmp(name, "qo_dump")) { extern void qo_ring_dump(void) __attribute__((weak)); if (qo_ring_dump) qo_ring_dump(); return; }   /* diagnostic: the guest queue event ring (nvn_queue_order.inc), e.g. when a run hangs */
+    if (!strcmp(name, "skip_ms")) { extern _Atomic uint32_t g_skip_ms; atomic_store(&g_skip_ms, (uint32_t)v); MLOG("[flag] skip_ms: mesh draws with mesh shader %07x left out (diagnostic)", (uint32_t)v); return; }
     if (!strcmp(name, "never_fs")) { extern _Atomic uint32_t g_never_fs; atomic_store(&g_never_fs, (uint32_t)v); MLOG("[flag] never_fs: draws with fragment shader %07x fail the depth test (diagnostic)", (uint32_t)v); return; }
     if (!strcmp(name, "skip_fs")) { extern _Atomic uint32_t g_skip_fs; atomic_store(&g_skip_fs, (uint32_t)v); MLOG("[flag] skip_fs: draws with fragment shader %07x left out (diagnostic)", (uint32_t)v); return; }
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // TOTK_MFX_UPSCALE at run time (manual key 3 picture mode)
@@ -6476,7 +6478,7 @@ static void shmap_load(void) {
     NSArray *raw_write_domains; int raw_write_domains_loaded;
     NSDictionary *raw_write_capsule; int raw_write_capsule_checked,raw_write_auto_attempts;
     NSMutableArray *raw_write_auto_domains; NSMutableSet *raw_write_attempted;
-    uint8_t mesh_kind, mesh_notask, raw_range_cache_abi; uint16_t mesh_threads, mesh_payload;
+    uint8_t mesh_kind, mesh_notask, raw_range_cache_abi, mesh_device; uint16_t mesh_threads, mesh_payload;   // mesh_device: its stage memory is in the device scratch (MeshStage.cs)
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     uint8_t guard_idx[NVN_REFL_MAXB], guard_count, guard_plan_ready;   // TOTK: the bindings upd_guard_stage looks at (storage / typed buffers), from the reflection once
     // 上次编好的参数缓冲
@@ -7098,7 +7100,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->raw_range_cache_abi=[j[@"raw_read_range_cache_abi"] intValue]==1;
     NSDictionary *mi=j[@"mesh_stage"];
-    if ([mi isKindOfClass:NSDictionary.class]) { o->mesh_kind=[mi[@"kind"] isEqual:@"ts"]?1:2; o->mesh_notask=![mi[@"task"] boolValue]; o->mesh_threads=[mi[@"threads"] intValue]; o->mesh_payload=[mi[@"payload"] intValue]; }
+    if ([mi isKindOfClass:NSDictionary.class]) { o->mesh_kind=[mi[@"kind"] isEqual:@"ts"]?1:2; o->mesh_notask=![mi[@"task"] boolValue]; o->mesh_threads=[mi[@"threads"] intValue]; o->mesh_payload=[mi[@"payload"] intValue]; o->mesh_device=[mi[@"device"] boolValue]; }
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->fn.label=pc; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     {   // geometry as compute (nvn_geometry_rt.inc): the kernel's output layout, a vertex variant's capture entry
         NSDictionary *g = j[@"geometry"];
@@ -14917,6 +14919,7 @@ _Atomic uint32_t g_skip_fs;
 /* Diagnostic "flag never_fs <same key form>": that shader's draws keep everything but a depth test that never passes, so
    pass_gpu shows the cost of rasterizing and rejecting them; equal to skip_fs means early depth rejection works. */
 _Atomic uint32_t g_never_fs;
+_Atomic uint32_t g_skip_ms;   /* diagnostic "flag skip_ms <key form of skip_fs>": mesh draws with that mesh shader are left out */
 long g_vr_skip_lo, g_vr_skip_hi;   // diagnostic "flag vr_skip_lo / vr_skip_hi": G-buffer draws lo..hi-1 of each frame are left out
 /* diagnostic TOTK_VR_MESHDUMP=<vertex shader key prefix> (with vr_meshlog): that shader's draws in the G-buffer pass, every
    vertex-stage uniform / storage block with its first floats */
@@ -16897,10 +16900,11 @@ frz_plain:;
              (unsigned)S.blend[0].src_rgb, (unsigned)S.blend[0].dst_rgb, (unsigned)S.blend[0].eq_rgb, (unsigned)S.blend[0].src_a, (unsigned)S.blend[0].dst_a, (unsigned)S.blend[0].eq_a,
              S.chmask.mask, dw ? dw->prim : di ? di->prim : -1);
     if (atomic_load(&g_draw_log) > 0)   /* depth / stencil state of the draw (2026-11-08): which pixels a full-screen pass may skip */
-        MLOG("[uw-ds] F%llu pass %llu fs %.16s depth %d/%d/f%d stencil %d f%d/%d ops %d,%d,%d ref %u read %#x write %#x rt-depth %d",
+        MLOG("[uw-ds] F%llu pass %llu fs %.16s depth %d/%d/f%d stencil %d f%d/%d ops %d,%d,%d ref %u read %#x write %#x rt-depth %d mesh %d task %.16s ms %.16s grid %u+%u",
              (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, pr && pr->sh[1] ? pr->sh[1]->key : "-",
              (int)S.ds.dt, (int)S.ds.dw, (int)S.ds.df, (int)S.ds.st, (int)S.ds.sf_f, (int)S.ds.sf_b, (int)S.ds.fail_f, (int)S.ds.zfail_f, (int)S.ds.zpass_f,
-             S.st_ref[0], S.st_vmask[0], S.st_wmask[0], R.rt.depth ? (int)R.rt.depth->d.format : 0);
+             S.st_ref[0], S.st_vmask[0], S.st_wmask[0], R.rt.depth ? (int)R.rt.depth->d.format : 0,
+             g_mtk.on, g_mtk.on && g_mtk.ts ? g_mtk.ts->key : "-", g_mtk.on && g_mtk.ms ? g_mtk.ms->key : "-", g_mtk.first, g_mtk.count);
     if (atomic_load(&g_draw_log) > 0 && pr && pr->sh[0]) {   // TOTK_DRAW_LOG_UBO=<vertex shader key prefix>:<cbuf reg>[:<stage>]: also log the first words of that uniform buffer and the fragment stage's texture 0 / sampler
         static const char *spec; static int init; if (!init++) spec = getenv("TOTK_DRAW_LOG_UBO");
         const char *colon = spec ? strchr(spec, ':') : NULL;

@@ -106,7 +106,7 @@ static int mesh_empty_export_probe(void) {
         "struct dm_vertex_t { float4 position [[position]];\nfloat4 a1 [[user(locn1)]];\n};\n"
         "using dm_mesh_t=metal::mesh<dm_vertex_t,void,3,1,metal::topology::triangle>;\n"
         "static inline void dm_stage_body(device uint *p,uint tg){p[tg]=0x12340000u+tg;}\n"
-        "[[mesh]] void main0(dm_mesh_t dm_out,device uint *oot_results [[buffer(28)]],constant uint *dm_first [[buffer(29)]],uint dm_lid [[thread_position_in_threadgroup]],uint dm_tg [[threadgroup_position_in_grid]]){\n"
+        "[[mesh]] void main0(dm_mesh_t dm_out,device uint *oot_results [[buffer(27)]],constant uint *dm_first [[buffer(29)]],uint dm_lid [[thread_position_in_threadgroup]],uint dm_tg [[threadgroup_position_in_grid]]){\n"
         "if(dm_lid==0u)dm_stage_body(oot_results,dm_tg);\nthreadgroup_barrier(mem_flags::mem_threadgroup);\n"
         "uint np=min(dm_first[0]?(dm_tg&1u):0u,1u);\nif(dm_lid==0u)dm_out.set_primitive_count(np);\n"
         "for(uint n=dm_lid;n<3u;n+=32u){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};dm_vertex_t v;v.position=float4(p[n],0.5,1);v.a1=float4(.25,.5,.75,1);dm_out.set_vertex(n,v);}\n"
@@ -128,12 +128,61 @@ static int mesh_empty_export_probe(void) {
         id<MTLRenderPipelineState> ps=mtk_pso(raster);
         mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.renderTargetWidth=rp.renderTargetHeight=16;
         if(getenv("OOT_MESH_GPU_FILE"))pt_mark(g_cb,'R',rp);
-        id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,ps);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});enc_r_vbuf(en,28,side.gpuAddress);mtk_encode(en);enc_r_end(en);
+        id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,ps);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});enc_r_vbuf(en,27,side.gpuAddress);mtk_encode(en);enc_r_end(en);
         enc_b_copy_texture_buffer(blit(),color,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,16,1),rb,0,64,1024);mtl_sub_commit();mtl_finish();
         for(int i=0;i<32;i++){if(((uint32_t *)side.contents)[i]!=(0x12340000u+i))MDIE("empty mesh lost guest side effect group%d",i);checked++;}
         const int rgba[4]={64,128,191,255};for(int i=0;i<1024;i++){int want=mixed?rgba[i%4]:0;if(abs(((uint8_t *)rb.contents)[i]-want)>1)MDIE("empty mesh mode%d mixed%d pixel byte%d: %u != %d",mode,mixed,i,((uint8_t *)rb.contents)[i],want);checked++;}
     }
     g_mtk.on=0;atomic_store(&g_mesh_empty_export,saved);defer_obj_release(color);defer_obj_release(rb);defer_obj_release(side);return checked;
+}
+/* Device stage memory (MeshStage.cs, mtk_scratch_gpu): a threadgroup's slot stays its own while it runs, however many
+   threadgroups the GPU keeps alive and however few slots there are. 20,000 threadgroups share 16 slots of 64 words: each
+   fills its slice with its own mark, re-reads it eight times (time for a neighbour to overlap) and counts foreign words;
+   the slot is released as the generated wrapper does (barrier, then lane 0 clears the flag), and every flag must be clear
+   at the end. OOT_MESH_SLOT_PROBE_NEGATIVE=1 takes slots by the counter alone, as a ring without flags would: overlaps
+   must be counted, so the probe must fail. */
+static int mesh_device_stage_probe(void) {
+    int checked=0;NSError *error=nil;const unsigned slots=16,words=64,groups=20000;int negative=getenv("OOT_MESH_SLOT_PROBE_NEGATIVE")!=NULL;
+    NSString *take=negative?@"true":[NSString stringWithFormat:@"atomic_exchange_explicit((device atomic_uint*)(dm_scratch+%du+s),1u,memory_order_relaxed)==0u",MTK_SCRATCH_FLAGS];
+    NSString *give=negative?@"":[NSString stringWithFormat:@"atomic_store_explicit((device atomic_uint*)(dm_scratch+%du+dm_slot_tg),0u,memory_order_relaxed);",MTK_SCRATCH_FLAGS];
+    NSString *src=[NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct dm_vertex_t { float4 position [[position]]; };\nusing dm_mesh_t=metal::mesh<dm_vertex_t,void,3,1,metal::topology::triangle>;\n"
+        "[[mesh]] void main0(dm_mesh_t dm_out,device atomic_uint *oot_results [[buffer(27)]],device uint* dm_scratch [[buffer(%d)]],uint dm_lid [[thread_position_in_threadgroup]],uint dm_tg [[threadgroup_position_in_grid]]){\n"
+        "threadgroup uint dm_slot_tg;\n"
+        "if(dm_lid==0u){ uint s; for(;;){ s=atomic_fetch_add_explicit((device atomic_uint*)dm_scratch,1u,memory_order_relaxed)&dm_scratch[1]; if(%@)break; } dm_slot_tg=s; }\n"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+        "device uint* mem=dm_scratch+%du+dm_slot_tg*dm_scratch[2];\nuint mark=0x5a000000u|dm_tg;\n"
+        "for(uint i=dm_lid;i<%uu;i+=32u)mem[i]=mark;\nthreadgroup_barrier(mem_flags::mem_threadgroup|mem_flags::mem_device);\n"
+        "uint bad=0u;for(uint k=0u;k<8u;k++){for(uint i=dm_lid;i<%uu;i+=32u)bad+=mem[i]!=mark;threadgroup_barrier(mem_flags::mem_threadgroup|mem_flags::mem_device);}\n"
+        "if(bad)atomic_fetch_add_explicit(oot_results,bad,memory_order_relaxed);\n"
+        "threadgroup_barrier(mem_flags::mem_threadgroup|mem_flags::mem_device);\n"
+        "if(dm_lid==0u){atomic_fetch_add_explicit(oot_results+1,1u,memory_order_relaxed);%@}\n"
+        "if(dm_lid==0u)dm_out.set_primitive_count(0u);}\n",MTK_SCRATCH_BUFFER,take,MTK_SCRATCH_SLOTS,words,words,give];
+    id<MTLLibrary> lib=totk_msl_library(src,&error);if(!lib)MDIE("device stage fixture: %s",error.localizedDescription.UTF8String);
+    NSString *fsrc=@"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main0(){return float4(1.0);}\n";
+    id<MTLLibrary> fl=totk_msl_library(fsrc,&error);if(!fl)MDIE("device stage fragment: %s",error.localizedDescription.UTF8String);
+    MTLMeshRenderPipelineDescriptor *d=[MTLMeshRenderPipelineDescriptor new];d.meshFunction=[lib newFunctionWithName:@"main0"];d.fragmentFunction=[fl newFunctionWithName:@"main0"];
+    d.maxTotalThreadsPerMeshThreadgroup=32;d.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA8Unorm;
+    id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:d options:MTLPipelineOptionNone reflection:nil error:&error];
+    if(!ps)MDIE("device stage pipeline: %s",error.localizedDescription.UTF8String);
+    MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO];td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget;
+    id<MTLTexture> color=[g_dev newTextureWithDescriptor:td];res_add(color);
+    id<MTLBuffer> results=probe_buf(16),scratch=probe_buf(((NSUInteger)MTK_SCRATCH_SLOTS+(NSUInteger)slots*words)*4);
+    for(int round=0;round<3;round++){
+        memset(results.contents,0,16);uint32_t *h=scratch.contents;memset(h,0,(size_t)MTK_SCRATCH_SLOTS*4);h[1]=slots-1;h[2]=words;
+        mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionDontCare;rp.renderTargetWidth=rp.renderTargetHeight=16;
+        id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,ps);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});
+        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={0}},0);else [en setArgumentTable:g_vt atStages:MTLRenderStageMesh];   // the mesh stage's buffer table, as mtk_encode binds it
+        enc_r_vbuf(en,27,results.gpuAddress);enc_r_vbuf(en,MTK_SCRATCH_BUFFER,scratch.gpuAddress);
+        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={groups,1,32}},1);else [en drawMeshThreadgroups:MTLSizeMake(groups,1,1) threadsPerObjectThreadgroup:MTLSizeMake(1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(32,1,1)];
+        enc_r_end(en);mtl_sub_commit();mtl_finish();
+        const uint32_t *r=results.contents;
+        if(r[1]!=groups)MDIE("device stage probe round %d: %u of %u threadgroups finished",round,r[1],groups);checked++;
+        if(r[0])MDIE("device stage probe round %d: %u words overwritten by another live threadgroup (%u slots for %u threadgroups)",round,r[0],slots,groups);checked++;
+        for(unsigned s=0;s<slots;s++)if(h[MTK_SCRATCH_FLAGS+s])MDIE("device stage probe round %d: slot %u left in use",round,s);checked++;
+    }
+    MLOG("[mesh] device stage memory probe: %u threadgroups through %u slots, 3 rounds, no overlap, every slot released",groups,slots);
+    defer_obj_release(color);defer_obj_release(results);defer_obj_release(scratch);return checked;
 }
 int mtl_probe_mesh(void) {
     mtl_init();NSError *error=nil;int checked=0;
@@ -170,6 +219,7 @@ int mtl_probe_mesh(void) {
     }
     g_mtk.on=0;defer_obj_release(color);defer_obj_release(readback);
     checked+=mesh_empty_export_probe();
+    checked+=mesh_device_stage_probe();
     // Optional original-program corpus, supplied externally. This exercises the
     // production linkage/pipeline builder without replaying an opening movie.
     const char *manifest=getenv("OOT_MESH_PIPELINE_CASES");
