@@ -1,5 +1,5 @@
 // swift-tools-version:6.0
-// The drag-and-drop builder window (docs/builder-app.md). make_app.py builds it into "MacNativeGames Builder.app".
+// The drag-and-drop builder window (docs/builder-app.md). make_app.py builds it into "MNG Launcher.app".
 import PackageDescription
 
 let package = Package(

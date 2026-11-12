@@ -51,7 +51,7 @@
 
 ## 用窗口打包
 
-**新：拖放打包器。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MacNativeGames Builder.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
+**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
 
 不想敲命令的话：装好下面第 1 步的工具（窗口要 Tk：python.org 的 Python 自带；用 Homebrew 的 Python 要再 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
 

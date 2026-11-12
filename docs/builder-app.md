@@ -1,6 +1,6 @@
 # The drag-and-drop builder app
 
-`MacNativeGames Builder.app` turns a player's own game files into a game app in one window: drop the files, press
+`MNG Launcher.app` (the drag-and-drop builder) turns a player's own game files into a game app in one window: drop the files, press
 **Build and Play**, watch the progress, and the game starts when the build is done. It runs the same `build_app.py`
 as the command line; it adds no build step of its own. Mac apps of every game `build_app.py` builds (Tears of the
 Kingdom, Breath of the Wild, Ocarina of Time, Donkey Kong Bananza, Pokémon Pokopia) for now; iPhone and iPad come next.
@@ -12,7 +12,7 @@ The older Tk window (`tools/builder`, [builder.md](builder.md)) stays for its Mo
 With the Xcode command line tools (`xcode-select --install`) and this checkout:
 
 ```sh
-python3 tools/builder_app/make_app.py            # -> ~/Applications/MacNativeGames Builder.app
+python3 tools/builder_app/make_app.py            # -> ~/Applications/MNG Launcher.app
 ```
 
 It builds the window with `swift build`, puts a Python 3.14 inside the app (python-build-standalone 20261021, checked

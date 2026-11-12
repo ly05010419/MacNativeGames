@@ -5,7 +5,7 @@ enum T {
     static let zh = (Locale.preferredLanguages.first ?? "en").hasPrefix("zh")
     static func s(_ en: String, _ cn: String) -> String { zh ? cn : en }
 
-    static let title = s("MacNativeGames Builder", "MacNativeGames 打包器")
+    static let title = "MNG Launcher"
     static let dropHere = s("Drop your game files here", "把游戏文件拖到这里")
     static let dropHint = s("The game (XCI, NSP or a Switch 2 dump folder), its update, prod.keys and, for an NSP, your firmware folder. A whole folder works too. Nothing is copied.",
                             "游戏本体（XCI、NSP 或 Switch 2 的游戏文件夹）、更新、prod.keys；NSP 还要固件文件夹。整个文件夹拖进来也行。文件不会被复制。")

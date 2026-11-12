@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Make "MacNativeGames Builder.app": the SwiftUI window of tools/builder_app, with a Python of its own inside, so a
+"""Make "MNG Launcher.app": the SwiftUI window of tools/builder_app, with a Python of its own inside, so a
 player needs only the developer tools (xcode-select --install) and this checkout.
 
-  python3 tools/builder_app/make_app.py [-o "~/Applications/MacNativeGames Builder.app"] [--no-python]
+  python3 tools/builder_app/make_app.py [-o "~/Applications/MNG Launcher.app"] [--no-python]
 
 Steps: swift build (release); the pinned Python of python-build-standalone (PSF licence), downloaded once into the
 cache and checked against its SHA-256; the one package the window's job layer needs before a build (cryptography, to
@@ -21,8 +21,9 @@ import tarfile
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-NAME = 'MacNativeGames Builder'
-BUNDLE_ID = 'org.macnativegames.builder'
+NAME = 'MNG Launcher'   # the app's name (user 2026-11-12: "这个打包工具叫 MNG Launcher")
+BUNDLE_ID = 'org.macnativegames.launcher'
+EXECUTABLE = 'MNGLauncher'   # Contents/MacOS (swift build names its product MNGBuilder, after the target)
 # python-build-standalone release 20261021 (three weeks old when pinned), CPython 3.14.9; digest from the release asset
 PYTHON_URL = ('https://github.com/astral-sh/python-build-standalone/releases/download/20261021/'
               'cpython-3.14.9%2B20261021-aarch64-apple-darwin-install_only.tar.gz')
@@ -85,7 +86,7 @@ def info(repo):
     commit = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True).stdout.strip()
     return {
         'CFBundleName': NAME, 'CFBundleDisplayName': NAME, 'CFBundleIdentifier': BUNDLE_ID,
-        'CFBundleExecutable': 'MNGBuilder', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0',
+        'CFBundleExecutable': EXECUTABLE, 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0',
         'CFBundleVersion': '1', 'LSMinimumSystemVersion': '26.0', 'NSHighResolutionCapable': True,
         'LSApplicationCategoryType': 'public.app-category.developer-tools',
         'MNGRepo': str(repo), 'MNGSourceCommit': commit,
@@ -106,7 +107,7 @@ def main(argv):
     shutil.rmtree(stage, ignore_errors=True)
     (stage / 'Contents/MacOS').mkdir(parents=True)
     (stage / 'Contents/Resources').mkdir()
-    shutil.copy2(exe, stage / 'Contents/MacOS/MNGBuilder')
+    shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
     plist = info(REPO)
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:
