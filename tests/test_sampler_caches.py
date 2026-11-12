@@ -98,6 +98,8 @@ int main(int argc,char **argv) { @autoreleasepool {
             binary = Path(folder) / "probe"
             path.write_text(probe)
             build = subprocess.run(["xcrun", "clang", "-std=gnu11", "-O1", "-g", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
+                                    # the production slices carry helpers this probe does not call (the descriptor-pool memo between the classes)
+                                    "-Wno-unused-function", "-Wno-unused-variable",
                                     "-I" + str(NVN), "-I" + str(NVN / "include"), str(path),
                                     "-framework", "Foundation", "-framework", "Metal", "-o", str(binary)],
                                    capture_output=True, text=True, timeout=60)

@@ -9,10 +9,13 @@
 #include "../tex/nvn_deswizzle.h"
 #include "../../../../runtime/input_prompts.h"
 
-extern uint64_t runtime_prompt_generation(void) __attribute__((weak_import));
-extern uint64_t runtime_prompt_snapshot(PromptBindings *) __attribute__((weak_import));
-extern int runtime_prompt_off(void) __attribute__((weak_import));
-extern int runtime_prompt_draw(const PromptBindings *, unsigned, uint8_t *, unsigned, unsigned, size_t) __attribute__((weak_import));
+/* The game's runtime draws the prompts (games/totk/runtime/input_prompts.m) and its definitions replace these weak ones
+   at link time. A game whose runtime has none (Ocarina of Time) gets prompts off: the font's glyphs stay the game's. */
+__attribute__((weak)) uint64_t runtime_prompt_generation(void) { return 0; }
+__attribute__((weak)) uint64_t runtime_prompt_snapshot(PromptBindings *out) { (void)out; return 0; }
+__attribute__((weak)) int runtime_prompt_off(void) { return 1; }
+__attribute__((weak)) int runtime_prompt_draw(const PromptBindings *b, unsigned cp, uint8_t *px, unsigned w, unsigned h, size_t stride) {
+    (void)b; (void)cp; (void)px; (void)w; (void)h; (void)stride; return 0; }
 
 enum { MAX_ATLASES = 8, MAX_REGIONS = 512, MAX_TEXTURES = 64 };
 typedef struct {

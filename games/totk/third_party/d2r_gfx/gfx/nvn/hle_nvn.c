@@ -2887,7 +2887,8 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
 }
 
 _Atomic uint64_t g_pf3_fence;   // TOTK_PRESENT_FINISH=3
-static void g_qwait_queue_set(uint64_t v) { extern uint64_t g_qwait_queue; g_qwait_queue = v; }
+uint64_t g_qwait_queue;   // the guest queue (NVNqueue address) of the submission being replayed; nvn_mtl.m reads it with each event wait
+static void g_qwait_queue_set(uint64_t v) { g_qwait_queue = v; }
 #include "nvn_queue_order.inc"
 
 // 只影响 GPU 状态 / 只在 GPU 上执行的命令：空设备只计数（跳板已计）

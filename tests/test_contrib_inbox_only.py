@@ -24,7 +24,8 @@ class InboxOnly(unittest.TestCase):
     def test_no_game_names_an_issue_route(self):
         files = tracked('games/*/third_party/d2r_gfx/gfx/nvn/*_shader_contrib.h', 'games/*/runtime/game_version.h',
                         'games/*/runtime/settings_panel.h', 'games/*/app/launcher.m', 'games/*/ios/tools/fill_shaders.py')
-        self.assertGreaterEqual(len([f for f in files if f.name.endswith('_shader_contrib.h')]), 21)
+        # 20 copies: Ocarina of Time builds the shared layer (games/oot/third_party/d2r_gfx links to games/totk's, 图形层统一)
+        self.assertGreaterEqual(len([f for f in files if f.name.endswith('_shader_contrib.h')]), 20)
         found = [f'{f.relative_to(REPO)}:{n}' for f in files for n, line in enumerate(f.read_text().splitlines(), 1)
                  if ISSUE_ROUTE.search(line)]
         self.assertEqual(found, [], 'contributions go to the shader inbox only')

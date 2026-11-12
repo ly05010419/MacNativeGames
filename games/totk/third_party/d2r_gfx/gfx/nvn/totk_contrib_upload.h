@@ -22,6 +22,9 @@
 #ifndef TOTK_CONTRIB_INBOX
 #define TOTK_CONTRIB_INBOX "https://mac-native-games.com/v1/contrib"   /* empty: nothing is sent and nothing is asked */
 #endif
+#if !defined(GAME_INBOX_ID) && defined(GAME_OOT)
+#define GAME_INBOX_ID "oot"     /* Ocarina of Time builds this shared layer with GAME_OOT */
+#endif
 #ifndef GAME_INBOX_ID
 #define GAME_INBOX_ID "totk"    /* the game's id in the inbox (its lib/validate.js GAMES); game_version.h sets the others' */
 #endif

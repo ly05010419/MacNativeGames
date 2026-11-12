@@ -26,7 +26,7 @@ extern int mtl_qo_cursor(const uint8_t **out, int max);
 extern void mtl_qo_set_callers(const uint8_t *const *outer_first, int n);
 extern void *mtl_qo_state_save(void);
 extern void mtl_qo_state_restore(void *p);
-extern int (*g_qo_signal_releases)(volatile uint32_t *val);
+int (*g_qo_signal_releases)(volatile uint32_t *val);   // set by qo_init, read by the replay (nvn_mtl.m) when a signal may release a parked queue
 extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
 extern void mtl_ucap_free(void *c);
 extern void *mtl_ucap_overlay(const void *base, const void *over);   // over NULL: a copy (the snapshot takes ownership of what it is given)

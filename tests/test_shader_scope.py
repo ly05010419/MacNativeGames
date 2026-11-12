@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDE = ROOT/'games/totk/third_party/d2r_gfx/gfx/nvn'
-CHAIN = re.search(r'#define DMSH_CHAIN "([^"]+)"', (INCLUDE/'dmsh_chain.h').read_text())[1]
+CHAIN = re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: totk\b', (INCLUDE/'dmsh_chain.h').read_text())[1]
 KEY = 'a'*64
 VARIANT = KEY+'-'+'b'*12+'_b'
 

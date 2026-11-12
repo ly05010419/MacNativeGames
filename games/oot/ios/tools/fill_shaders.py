@@ -64,7 +64,7 @@ def append_contribution(contrib, rows):
 
 def chain():
     for line in (TOTK/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().splitlines():
-        if line.startswith('#define DMSH_CHAIN'): return line.split('"')[1]
+        if line.startswith('#define DMSH_CHAIN') and '/* game: oot' in line: return line.split('"')[1]
     raise RuntimeError('DMSH_CHAIN not found')
 
 

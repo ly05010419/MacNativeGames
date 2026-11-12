@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import platform
 import subprocess
@@ -72,7 +73,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 for name, data in payloads.items():
                     (source/name).write_bytes(data)
                     files[name] = hashlib.sha256(data).hexdigest()
-            chain = (NVN/'dmsh_chain.h').read_text().split('#define DMSH_CHAIN "')[1].split('"')[0]
+            chain = re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: totk\b', (NVN/'dmsh_chain.h').read_text())[1]
             (source/'seed-manifest.json').write_text(json.dumps(dict(schema=1, chain=chain,
                 shaders=2048, all_default=True, files=files)))
             path = root/'probe.m'

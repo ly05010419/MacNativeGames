@@ -2065,6 +2065,9 @@ void *mtl_ucap_dup(const void *basev) {
     if (total) memcpy(c->bytes, base->bytes, total);
     return c;
 }
+/* The main scene camera's constant block (games/totk/runtime/game_patches_v143.c, by the game's own data), whose
+   definition replaces this weak one; 0 (no block) in a game without it. */
+__attribute__((weak)) uint64_t runtime_vr_camera_block(void) { return 0; }
 /* Stereo replay, the eye's projection (vr开发.md section 23). The game renders with one camera whose frustum covers both
    eyes; a replay for one eye uses that camera's view matrix unchanged and, wherever a uniform of this submission holds
    the camera's projection P, its inverse, P*V or (P*V)^-1 (row-major or transposed), the eye's: P * T, T the shift of half the eye distance in view space (the frustum
@@ -2089,7 +2092,6 @@ static void m4_mul(const double *a, const double *b, double *o) {
 }
 static _Atomic uint64_t g_eye_fix[6];   // submissions patched, matrices replaced, submissions without a camera, nanoseconds, bytes scanned, ranges with a replacement
 int mtl_ucap_eye(void *capv, int eye) {
-    extern uint64_t runtime_vr_camera_block(void);
     usnap_cap *c = capv; vr_views hv; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (eye == 0 || eye == 1) g_eye_have[eye] = 0;   // set again below once this replay has the eye's projection
     /* one address for both eyes of a submission: the game flips the scene's camera blocks at its next frame's start, and
@@ -2712,7 +2714,7 @@ static void post(post_op o) {
 /* Cross-queue event ordering probe (2026-11-08). Signals are replayed into the single Metal queue in submit order; the
    value each event will hold once they execute is projected here (by replay order, not completion). A wait whose target
    neither the projection nor the CPU-visible value reaches was replayed before its producer: its work reads stale data. */
-uint64_t g_qwait_queue;   // guest queue (NVNqueue address) of the submission being replayed (hle_nvn.c)
+extern uint64_t g_qwait_queue;   // guest queue (NVNqueue address) of the submission being replayed (set by hle_nvn.c)
 typedef struct { volatile uint32_t *val; uint32_t projected, hist[8]; unsigned nhist; uint64_t queue, frame, fence; } qwait_ev;
 static qwait_ev g_qwait_ev[512]; static uint64_t g_qwait_waits, g_qwait_unready, g_qwait_signals, g_qwait_last_report;
 static qwait_ev *qwait_find(volatile uint32_t *val, int add) {
@@ -19015,7 +19017,7 @@ static uint64_t g_cpu_wait_drops;
 static int cpu_wait_live_on(void) { int v = g_cpu_wait_live; if (v < 0) { const char *e = getenv("OOT_CPU_WAIT_LIVE"); v = e && atoi(e); g_cpu_wait_live = v; } return v; }   // off by default (OOT_CPU_WAIT_LIVE=1): no measured effect
 static void usnap_drop_snapshots_only(void) { for (int i = 0; i < g_nusnap; i++) if (atomic_exchange(&g_usnap[i].st, US_DROPPED) != US_DROPPED) g_usnap_drops++; }
 static const uint8_t *g_qo_cur[40];
-int (*g_qo_signal_releases)(volatile uint32_t *val);   // hle_nvn.c: a parked queue's wait is now ready
+extern int (*g_qo_signal_releases)(volatile uint32_t *val);   // hle_nvn.c (nvn_queue_order.inc): a parked queue's wait is now ready
 static void qo_push(const uint8_t *p) { if (g_qo_ncur >= 40) MDIE("guest queue cursor deeper than 40 calls"); g_qo_cur[g_qo_ncur++] = p; }
 void mtl_qo_arm(int on) { g_qo_armed = on; g_qo_stopped = 0; g_qo_ncur = 0; }
 int mtl_qo_stopped(void) { return g_qo_stopped; }
