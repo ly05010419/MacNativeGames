@@ -3884,6 +3884,46 @@ static void stor_sweep(uint64_t fence) {
     stor_collect_drop(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_IDLE_SUBMITS; }, &g_stor_swept);
     stor_det_sweep(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_IDLE_SUBMITS; }, &g_stor_swept);
 }
+/* Opt-in exact ownership inventory for GPU memory failures. A memory total
+   cannot distinguish live guest storage from the no-holder retention window.
+   Keep the actual storage/layout and serial identities for offline overlap
+   analysis. Diagnostic file I/O occurs only at the existing low-rate report. */
+static void stor_memory_report(uint64_t frame) {
+    totk_texture_lifetime_flush();
+    static int init; static const char *path;
+    if (!init) { init = 1; path = getenv("OOT_STORAGE_MEMORY_FILE"); }
+    if (!path || !*path) return;
+    FILE *file = fopen(path, "a");
+    if (!file) { MLOG("[storage-memory] cannot open diagnostic output"); return; }
+    uint64_t bytes[2] = {0}, count[2] = {0}, detached_bytes = 0;
+    pthread_mutex_lock(&g_smu);
+    for (int detached = 0; detached < 2; detached++) {
+        uint32_t n = detached ? (uint32_t)g_stor_ndet : g_by_storage.cap;
+        for (uint32_t i = 0; i < n; i++) {
+            stor_ent *e = detached ? g_stor_det[i] : g_by_storage.vals[i];
+            if (!e) continue;
+            id<MTLTexture> texture = (__bridge id)e->tex;
+            uint64_t size = texture.allocatedSize; int held = e->nser != 0;
+            bytes[held] += size; count[held]++; if (detached) detached_bytes += size;
+            fprintf(file, "%llu\t%llu\t%llu\t%llu\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%lu\t%llu\t%d\t%llu\t%d\t",
+                    (unsigned long long)frame, (unsigned long long)g_fence, (unsigned long long)obj_key(texture),
+                    (unsigned long long)e->k.mem, (unsigned long long)e->k.size, e->k.w, e->k.h, e->k.d, e->k.levels,
+                    e->k.target, e->k.samples, (unsigned long)texture.pixelFormat, (unsigned long long)size, e->nser,
+                    (unsigned long long)e->idle_fence, detached);
+            for (int s = 0; s < e->nser; s++) fprintf(file, "%s%llu", s ? "," : "", (unsigned long long)e->ser[s]);
+            /* A serial held during encoding can already be finalized. Report
+               that identity explicitly; nser alone does not prove a live owner. */
+            fputc('\t', file);
+            for (int s = 0; s < e->nser; s++) fprintf(file, "%s%d", s ? "," : "", totk_serial_has(&g_dead_serial, e->ser[s]));
+            fputc('\n', file);
+        }
+    }
+    pthread_mutex_unlock(&g_smu);
+    fclose(file);
+    MLOG("[storage-memory] F%llu held=%llu/%lluMiB no-holders=%llu/%lluMiB detached=%lluMiB",
+         (unsigned long long)frame, (unsigned long long)count[1], (unsigned long long)(bytes[1] >> 20),
+         (unsigned long long)count[0], (unsigned long long)(bytes[0] >> 20), (unsigned long long)(detached_bytes >> 20));
+}
 /* A memory pool is finalised: its storage entries go with it. */
 static void stor_drop_range(uintptr_t lo, uintptr_t hi) {
     stor_collect_drop(^int(const stor_ent *e) { return e->k.mem >= lo && e->k.mem < hi; }, &g_stor_dropped);
@@ -4719,6 +4759,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     MLOG("内存 至帧 %llu：常驻 %llu MB，显卡已分配 %llu MB，延迟释放队列 %lu，驻留集 %lu 个，内存池 %d 个（峰值 %d / 跟踪表容量 %d），贴图重传累计 %llu 次", frame, rss_mb, gpu, nd, nr, live, peak, cap, (unsigned long long)g_pkg_reuploads);
+    stor_memory_report(frame);
     MLOG("已死序号纹理累计 %llu 张（替换前即为泄漏来源）", (unsigned long long)g_dead_put_total);
     /* Exact-writeback snapshots are host allocations, absent from Metal's allocatedSize. Include them in the existing
        diagnostic so an iPhone run can attribute the cost of the larger terrain-normal snapshots (PR #188). */
@@ -4766,6 +4807,7 @@ void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads) { *uploads = g_pkg_up
 uint64_t mtl_pkg_miss(void) { return g_pkg_miss; }
 void mtl_tex_release(tex_t *t) {
     if (!t->serial) return;
+    totk_texture_lifetime("host_release", NULL, t);
     BOTW_SERIAL_NOTE(t->serial, "nvnTextureFinalize") BOTW_TEX_RELEASE_KEEP(t->serial) serial_del(t->serial);
     pthread_mutex_lock(&g_smu); totk_serial_add(&g_dead_serial, t->serial); ser_bump_locked(t->serial); pthread_mutex_unlock(&g_smu);   // view caches of this serial look again (dead-serial follow)
     treg_drop_serial(t->serial);

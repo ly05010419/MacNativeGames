@@ -502,6 +502,7 @@ static void live_put(const tex_t *o);
 NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b) {
     const tex_builder_t *s = (const tex_builder_t *)b; tex_t *o = TX(t);
     if (o->magic == MAGIC('T', 'E', 'X', 0) && o->serial) {   // re-initialised without Finalize: release the previous serial's host texture, else it leaks
+        totk_texture_lifetime("reinitialize", t, o);
         static _Atomic unsigned n; if (atomic_fetch_add(&n, 1) < 3) LOG("[nvn] texture %p re-initialised without Finalize (serial %llu released)", (void *)t, (unsigned long long)o->serial);
         mtl_tex_release(o);
     }
@@ -517,7 +518,9 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     }
     o->serial = nvn_new_serial();
     live_put(o);
-    if (totk_life_match(o)) totk_life_log("init tex=%p ser=%llu mem=%p", (void *)t, (unsigned long long)o->serial, (void *)o->mem);
+    totk_texture_lifetime("initialize", t, o);
+    if (totk_life_match(o)) totk_life_log("init tex=%p ser=%llu mem=%p %ux%ux%u lv%u fmt=%#x flags=%#x pool=%p pool_flags=%#x bytes=%llu", (void *)t, (unsigned long long)o->serial, (void *)o->mem,
+        o->d.width, o->d.height, o->d.depth, o->d.levels, o->d.format, o->d.flags, (void *)o->pool, o->pool ? o->pool->flags : 0, (unsigned long long)o->L.size);
     OLOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)t, o->d.width, o->d.height, o->d.depth,
          o->d.levels, o->d.format, o->d.target, o->d.flags, o->L.size);
     return 1;
@@ -546,6 +549,7 @@ int nvn_tex_live_at(const void *mem, tex_t *out) {
 // TOTK translation thread: the release runs in queue order on a copy (only the serial and storage address are used), so
 // a texture finalized right after a submit stays usable by that submit's replay, without waiting for the queue.
 NVN(nvnTextureFinalize, void, NVNtexture *t) {
+    totk_texture_lifetime("finalize", t, TX(t));
     if (totk_life_match(TX(t))) totk_life_log("fin tex=%p ser=%llu mem=%p", (void *)t, (unsigned long long)TX(t)->serial, (void *)TX(t)->mem);
     if (async_replay()) { void x_texrel(const tex_t *o); x_texrel(TX(t)); TX(t)->magic = 0; return; }
     live_del(TX(t)); mtl_tex_release(TX(t)); TX(t)->magic = 0;
