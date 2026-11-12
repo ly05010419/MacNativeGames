@@ -54,11 +54,13 @@ class Base(unittest.TestCase):
 
 class EffectivePaths(Base):
     def test_defaults_for_each_game(self):
-        game = write_xci(self.tmp / 'g.xci')
-        for spec, work, app in ((TOTK, 'TOTK_build', 'Tears of the Kingdom.app'), (BOTW, 'BotW_build', 'Breath of the Wild.app')):
+        (self.tmp / 'Games').mkdir()
+        game = write_xci(self.tmp / 'Games/g.xci')
+        for spec, work, app in ((TOTK, 'totk', 'Tears of the Kingdom.app'), (BOTW, 'botw', 'Breath of the Wild.app')):
             with self.subTest(spec=spec.id):
                 p = effective_paths(spec, BuildPaths(game, self.keys))
-                self.assertEqual((p.work, p.out), (self.tmp / work, self.tmp / app))
+                # build_app.default_work: MacNativeGames-work/<game> beside the folder of the app
+                self.assertEqual((p.work, p.out), (self.tmp / 'MacNativeGames-work' / work, self.tmp / 'Games' / app))
                 self.assertEqual(effective_paths(spec, p), p)       # idempotent
 
     def test_given_paths_are_kept_and_home_is_expanded(self):

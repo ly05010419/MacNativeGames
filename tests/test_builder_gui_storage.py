@@ -34,7 +34,9 @@ class StorageTests(Base):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        self.game = self.home / 'Tears.xci'
+        (self.home / 'Games').mkdir()
+        self.game = self.home / 'Games/Tears.xci'
+        self.work = self.home / 'MacNativeGames-work/totk'   # build_app.default_work for the app beside it
         self.game.write_bytes(b'game')
         self.start(home=self.home)
         self.ctl.saved = {'totk': {'game': str(self.game), 'keys': '/k'}}
@@ -46,22 +48,22 @@ class StorageTests(Base):
     def row(self, key):
         return self.view.storage.rows[key]
 
-    def test_the_tab_shows_the_build_cache_beside_the_game_and_the_shader_cache_in_application_support(self):
+    def test_the_tab_shows_the_build_cache_and_the_shader_cache_in_application_support(self):
         self.open_tab()
-        self.assertEqual(self.row('work')['path'].cget('text'), str(self.home / 'TOTK_build'))
+        self.assertEqual(self.row('work')['path'].cget('text'), str(self.work))
         self.assertEqual(self.row('shader')['path'].cget('text'),
                          str(self.home / 'Library/Application Support/MacNativeGames/TOTK/shader-cache'))
         self.assertTrue(wait(self, lambda: text('gui.storage.missing') in self.row('work')['detail'].cget('text')))
 
     def test_a_cache_that_exists_is_measured(self):
-        cache = self.home / 'TOTK_build/rt-x'
+        cache = self.work / 'rt-x'
         cache.mkdir(parents=True)
         (cache / 'pipeline.bin').write_bytes(b'12345')
         self.open_tab()
         self.assertTrue(wait(self, lambda: '5 B' in self.row('work')['detail'].cget('text')))
 
     def test_cleaning_asks_first_then_empties_the_folder(self):
-        cache = self.home / 'TOTK_build/rt-x'
+        cache = self.work / 'rt-x'
         cache.mkdir(parents=True)
         (cache / 'pipeline.bin').write_bytes(b'12345')
         self.open_tab()
@@ -69,11 +71,11 @@ class StorageTests(Base):
         self.confirm_answer = True
         self.row('work')['clean'].invoke()
         self.assertTrue(self.asked, 'cleaning must ask before deleting anything')
-        self.assertIn(str(self.home / 'TOTK_build'), self.asked[0])
+        self.assertIn(str(self.work), self.asked[0])
         self.assertTrue(wait(self, lambda: 'Removed' in self.view.storage.status.cget('text')),
                         self.view.storage.status.cget('text'))
-        self.assertTrue((self.home / 'TOTK_build').is_dir())
-        self.assertEqual(list((self.home / 'TOTK_build').iterdir()), [])
+        self.assertTrue((self.work).is_dir())
+        self.assertEqual(list((self.work).iterdir()), [])
 
     def test_a_refused_folder_is_reported_and_not_cleaned(self):
         keep = self.home / 'keep.bin'
@@ -87,8 +89,8 @@ class StorageTests(Base):
         self.assertTrue(keep.is_file())
 
     def test_choosing_a_folder_saves_it_and_moves_the_old_cache(self):
-        cache = self.home / 'TOTK_build'
-        cache.mkdir()
+        cache = self.work
+        cache.mkdir(parents=True)
         (cache / 'pipeline.bin').write_bytes(b'12345')
         self.open_tab()
         self.assertTrue(wait(self, lambda: '5 B' in self.row('work')['detail'].cget('text')))

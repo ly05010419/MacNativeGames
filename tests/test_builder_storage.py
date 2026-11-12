@@ -19,11 +19,12 @@ class WorkFolder(unittest.TestCase):
         folder = storage.work_dir(GAMES['totk'], '/games/Tears.xci', '/elsewhere/TOTK_build')
         self.assertEqual(folder, Path('/elsewhere/TOTK_build'))
 
-    def test_without_a_saved_path_it_sits_beside_the_game_file(self):
-        folder = storage.work_dir(GAMES['totk'], '/games/Tears.xci', None)
-        self.assertEqual(folder, Path('/games/TOTK_build'))
-        self.assertEqual(storage.work_dir(GAMES['botw'], '/games/BotW.wux', ''),
-                         Path('/games/BotW_build'))
+    def test_without_a_saved_path_it_is_build_app_s_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            games = Path(tmp) / 'Games'
+            games.mkdir()
+            self.assertEqual(storage.work_dir(GAMES['totk'], str(games / 'Tears.xci'), None), Path(tmp) / 'MacNativeGames-work/totk')
+            self.assertEqual(storage.work_dir(GAMES['botw'], str(games / 'BotW.wux'), ''), Path(tmp) / 'MacNativeGames-work/botw')
 
     def test_without_a_game_file_there_is_no_work_folder(self):
         self.assertIsNone(storage.work_dir(GAMES['totk'], None, None))

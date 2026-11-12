@@ -4,6 +4,7 @@ import errno
 from pathlib import Path
 import tempfile
 import unittest
+from tools.builder.paths import default_work
 
 from tools.builder import checks_inputs
 from tools.builder.checks import BuildPaths, CheckContext, Status, run_checks
@@ -112,21 +113,23 @@ class FullRunWithDefaultPaths(Base):
         # and a BotW card image (BotW always needs fonts; a BotW NSP would also need an update).
         nsp = self.games / 'g.nsp'
         nsp.write_bytes(b'PFS0' + bytes(16))
-        for spec, game, work_name, app in ((TOTK, nsp, 'TOTK_build', 'Tears of the Kingdom.app'),
-                                           (BOTW, self.game, 'BotW_build', 'Breath of the Wild.app')):
+        for spec, game, app in ((TOTK, nsp, 'Tears of the Kingdom.app'), (BOTW, self.game, 'Breath of the Wild.app')):
             with self.subTest(spec=spec.id):
                 self.game = game
-                fonts = self.games / work_name / checks_inputs.FONT_CACHE
+                work = default_work(spec, self.games / app)   # MacNativeGames-work/<game> beside Games, in tmp
+                fonts = work / checks_inputs.FONT_CACHE
                 fonts.mkdir(parents=True, exist_ok=True)
                 for name in (*checks_inputs.font_file_names(REPO), 'manifest.json'):
                     (fonts / name).write_bytes(b'f')
                 default_disk, explicit_disk = RecordingDisk(), RecordingDisk()
                 default = run_checks(INPUT_CHECKS, self.ctx(default_disk, spec))
-                explicit = run_checks(INPUT_CHECKS, self.ctx(explicit_disk, spec, work=self.games / work_name,
+                explicit = run_checks(INPUT_CHECKS, self.ctx(explicit_disk, spec, work=work,
                                                              out=self.games / app))
                 self.assertEqual(default, explicit)
                 self.assertEqual(default_disk.probed, explicit_disk.probed)
-                self.assertEqual(default_disk.probed, [self.games, self.games, self.games])
+                # the work folder's volume is probed where it is (beside Games), the app's in Games
+                self.assertEqual(default_disk.probed[-1], self.games)
+                self.assertTrue(all(work.is_relative_to(p) for p in default_disk.probed[:-1]), default_disk.probed)
                 rules = {r.id: r for r in default}['input_rules']
                 self.assertEqual((rules.status, rules.detail), (Status.OK, 'fonts_cached'))   # the default work's cache
 

@@ -79,12 +79,13 @@ class ReadmeExamples(Base):
 
 class Defaults(Base):
     def test_work_and_out_default_next_to_the_game(self):
-        for spec, work, app in ((TOTK, 'TOTK_build', 'Tears of the Kingdom.app'), (BOTW, 'BotW_build', 'Breath of the Wild.app')):
+        for spec, app in ((TOTK, 'Tears of the Kingdom.app'), (BOTW, 'Breath of the Wild.app')):
             with self.subTest(spec=spec.id):
+                work = paths.default_work(spec, self.games / app)   # MacNativeGames-work/<game> beside Games
                 argv = self.assertParsesTo(spec, BuildPaths(self.g('game.xci'), self.keys))
-                self.assertEqual(argv[argv.index('--work') + 1], str(self.games / work))
+                self.assertEqual(argv[argv.index('--work') + 1], str(work))
                 self.assertEqual(argv[argv.index('-o') + 1], str(self.games / app))
-                explicit = self.argv(spec, BuildPaths(self.g('game.xci'), self.keys, work=self.games / work,
+                explicit = self.argv(spec, BuildPaths(self.g('game.xci'), self.keys, work=work,
                                                       out=self.games / app))
                 self.assertEqual(explicit, argv)
 
@@ -93,7 +94,7 @@ class Shape(Base):
     def test_exact_list_for_the_simplest_case(self):
         argv = self.argv(TOTK, BuildPaths(self.g('totk.xci'), self.keys))
         self.assertEqual(argv, [PYTHON, str(REPO / 'build_app.py'), str(self.g('totk.xci')), '-k', str(self.keys),
-                                '--work', str(self.games / 'TOTK_build'), '-o', str(self.games / 'Tears of the Kingdom.app')])
+                                '--work', str(self.games.parent / 'MacNativeGames-work/totk'), '-o', str(self.games / 'Tears of the Kingdom.app')])
         self.assertTrue(all(type(a) is str for a in argv))
 
     def test_order_of_the_optional_flags(self):

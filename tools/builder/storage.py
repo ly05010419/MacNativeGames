@@ -1,7 +1,7 @@
 """The two caches the builder shows and cleans: the build's work folder and the game's shader cache.
 
-The work folder is build_app.py's: by default <game file's folder>/<work folder name> (TOTK_build,
-BotW_build), or the folder the build was given with --work; the builder remembers the last one in
+The work folder is build_app.py's: by default build_app.default_work (paths.default_work: the folder the app records,
+else MacNativeGames-work/<game> beside the folder of the app), or the folder the build was given with --work; the builder remembers the last one in
 settings.json (SavedPaths.work). The shader cache is the game launcher's: <Application Support>/
 MacNativeGames/<TOTK|BotW>/shader-cache, holding one rt-<chain> folder per Metal pipeline chain, and
 the launcher's TOTK_SHADER_CACHE environment variable moves it (games/totk/app/launcher.m; Breath of
@@ -63,14 +63,15 @@ def measure(path):
 
 
 def work_dir(spec, game_file, saved):
-    """The work folder a build uses: the saved --work path when there is one, else the game's
-    default next to its file (paths.effective_paths' rule)."""
+    """The work folder a build uses: the saved --work path when there is one, else build_app.default_work for the
+    app next to the game file (paths.effective_paths' rule)."""
     if saved:
         return Path(saved).expanduser()
     game = Path(game_file).expanduser() if game_file else None
     if game is None:
         return None
-    return game.parent / spec.work_folder_name
+    from tools.builder.paths import default_work
+    return default_work(spec, game.parent / f'{spec.app_name}.app')
 
 
 def default_shader_dir(spec, home):
