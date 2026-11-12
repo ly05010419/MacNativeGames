@@ -136,6 +136,58 @@ class GameProcesses(unittest.TestCase):
                 self.assertIn('pass: game processes and the default slot folder', run.stdout)
 
 
+class UpdateWindow(unittest.TestCase):
+    """#2115: the App's Update window runs the game's own executable as --update-install <pid> (or --update-check) and
+    waits for the update's build. The slot counted it as a game outside the slot, so the build's prepare-shader-seed step
+    waited for it to exit: neither ever finished. Same rule as build_app.py and games/oot/build.py app_running (#1784)."""
+    ARGS = {'': True, '--update-check': False, '--update-install 4242': False, '--update-install x': True,
+            '--update-install 0': True, '--update-check y': True, '--update-install 007': False,
+            '--update-install ' + '9' * 5000: False}   # longer than int() converts: no exception, the C rule
+
+    def test_the_rule(self):
+        for game in GAMES:
+            slot = load_slot(game)
+            for args, is_game in self.ARGS.items():
+                self.assertEqual(slot.is_update_window(['g'] + args.split()), not is_game, f'{game}: {args!r}')
+
+    def test_real_processes(self):
+        """Programs named like the App's game, started with each set of arguments: the scripts and the runtimes read
+        their arguments from the kernel and agree."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            macos = work / 'Ocarina of Time.app/Contents/MacOS'
+            macos.mkdir(parents=True)
+            sleeper = work / 'sleeper.c'
+            sleeper.write_text('#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n', encoding='utf-8')
+            exe = macos / 'OcarinaOfTime'
+            build = subprocess.run([compiler, str(sleeper), '-o', str(exe)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            probes = {}
+            for game in GAMES:
+                probes[game] = work / f'probe-{game}'
+                built = subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
+                                        f'-DGAME_SLOT_C="../games/{game}/runtime/game_slot.c"',
+                                        str(ROOT / 'tests/game_slot_probe.c'), '-o', str(probes[game])],
+                                       capture_output=True, text=True, timeout=120)
+                self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            processes = {args: subprocess.Popen([str(exe)] + args.split()) for args in self.ARGS}
+            try:
+                for game in GAMES:
+                    slot = load_slot(game)
+                    for args, process in processes.items():
+                        self.assertEqual(slot.is_game(process.pid), self.ARGS[args], f'{game} script: {args!r}')
+                        run = subprocess.run([str(probes[game]), 'is-game', str(process.pid)], capture_output=True,
+                                             text=True, timeout=30)
+                        self.assertEqual(run.stdout.strip(), str(int(self.ARGS[args])), f'{game} runtime: {args!r}')
+            finally:
+                for process in processes.values():
+                    process.kill()
+                    process.wait()
+
+
 class AgentGameWatch(unittest.TestCase):
     """An agent's test game closes itself when nobody uses it (runtime/agent_slot_limit.h; user 2026-11-11: "你这样开着游戏
     别的session 无法使用 … 必须用代码保证"): the real runtime/game_slot.c in tests/game_slot_probe.c, a test slot folder, short

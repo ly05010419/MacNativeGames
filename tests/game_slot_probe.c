@@ -43,6 +43,7 @@ static void expect(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL:
 
 int main(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "watch")) return watch(argc, argv);
+    if (argc == 3 && !strcmp(argv[1], "is-game")) { printf("%d\n", pid_is_game((pid_t)atoi(argv[2]))); return 0; }
     if (argc != 2) { fprintf(stderr, "usage: game-slot-probe <home>\n"); return 2; }
     expect(slot_path_is_game("/Applications/Ocarina of Time.app/Contents/MacOS/OcarinaOfTime"), "Ocarina of Time's App");
     expect(slot_path_is_game("/w/scratch/build/oot/build/oot-native"), "the built Ocarina of Time runtime");
@@ -55,6 +56,15 @@ int main(int argc, char **argv) {
     expect(!slot_path_is_game("/A/X.app/Contents/MacOS/OcarinaOfTimeHelper"), "another program in an App");
     expect(!slot_path_is_game("/usr/bin/python3"), "a script");
     expect(!slot_path_is_game(""), "no path");
+    char *update_check[] = {"g", "--update-check"}, *update_install[] = {"g", "--update-install", "4242"};
+    char *install_word[] = {"g", "--update-install", "x"}, *install_zero[] = {"g", "--update-install", "0"};
+    char *game[] = {"g"}, *check_more[] = {"g", "--update-check", "y"};
+    expect(slot_args_are_update_window(2, update_check), "the Update page's check");
+    expect(slot_args_are_update_window(3, update_install), "the Update window's install");
+    expect(!slot_args_are_update_window(3, install_word), "--update-install without a pid");
+    expect(!slot_args_are_update_window(3, install_zero), "--update-install 0");
+    expect(!slot_args_are_update_window(1, game), "the game");
+    expect(!slot_args_are_update_window(3, check_more), "--update-check with more arguments");
 
     char want[PATH_MAX], got[PATH_MAX] = "";
     snprintf(want, sizeof want, "%s/Library/Application Support/MacNativeGames/TOTK/game-slot", argv[1]);

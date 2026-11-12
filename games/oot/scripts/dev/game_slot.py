@@ -46,6 +46,10 @@ _libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, c
 _libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
 _libproc.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE, _SZOMB = 3, 136, 5   # struct proc_bsdinfo: status at 4, pbi_start_tvsec at 120
+_libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+_libc.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                         ctypes.c_void_p, ctypes.c_size_t]
+_CTL_KERN, _KERN_ARGMAX, _KERN_PROCARGS2 = 1, 8, 49   # <sys/sysctl.h>
 
 
 class Preempted(Exception):
@@ -86,8 +90,36 @@ def is_game_path(path):
     return p.name.startswith(("totk-native", "oot-native"))
 
 
+def pid_args(pid):
+    """The process's arguments (argv), or [] when they cannot be read (gone, or another user's process)."""
+    mib = (ctypes.c_int * 3)(_CTL_KERN, _KERN_ARGMAX, 0)
+    argmax, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
+    if _libc.sysctl(mib, 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0 or argmax.value <= 0:
+        return []
+    buf = ctypes.create_string_buffer(argmax.value)
+    mib[1], mib[2], size.value = _KERN_PROCARGS2, pid, argmax.value
+    if _libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0 or size.value <= 4:
+        return []
+    raw = buf.raw[:size.value]   # argc, the executable path, padding, argv, environment
+    argc, nul = int.from_bytes(raw[:4], "little"), raw.find(b"\0", 4)
+    if nul < 0:
+        return []
+    parts = raw[nul:].lstrip(b"\0").split(b"\0")
+    return [p.decode(errors="replace") for p in parts[:argc]] if len(parts) > argc else []
+
+
+def is_update_window(argv):
+    """The App's Update window runs the game's own executable as "--update-check" or "--update-install <pid>" and waits
+    for the build it started, so it is not a game: counted as one, it made that build wait for it for ever (#2115). Same
+    rule as build_app.py wait_until_closed and games/oot/build.py app_running; runtime/game_slot.c
+    slot_args_are_update_window."""
+    options = list(argv[1:])
+    return options == ["--update-check"] or (len(options) == 2 and options[0] == "--update-install"
+                                             and options[1].isascii() and options[1].isdigit() and options[1].strip("0") != "")
+
+
 def is_game(pid):
-    return is_game_path(pid_path(pid))
+    return is_game_path(pid_path(pid)) and not is_update_window(pid_args(pid))
 
 
 def all_pids():

@@ -42,6 +42,7 @@ void runtime_game_slot_acquire(const char *mode) { (void)mode; }
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -122,10 +123,45 @@ static int slot_path_is_game(const char *path) {
          !strcmp(b, "OcarinaOfTime"))) return 1;   /* the Mac apps' games (build_app.py APPS; games/oot/build.py) */
     return !strncmp(b, "totk-native", 11) || !strncmp(b, "oot-native", 10);   /* also renamed copies such as totk-native.base */
 }
+/* The App's Update window runs the game's own executable as "--update-check" or "--update-install <pid>" and waits for
+   the build it started, so it is not a game: counted as one, it made that build wait for it for ever (#2115). Same rule
+   as build_app.py wait_until_closed and games/oot/build.py app_running; scripts/dev/game_slot.py is_update_window. */
+static int slot_args_are_update_window(int argc, char *const *argv) {
+    if (argc == 2 && !strcmp(argv[1], "--update-check")) return 1;
+    if (argc != 3 || strcmp(argv[1], "--update-install") || !argv[2][0]) return 0;
+    int nonzero = 0;
+    for (const char *c = argv[2]; *c; c++) {
+        if (*c < '0' || *c > '9') return 0;
+        nonzero |= *c != '0';
+    }
+    return nonzero;
+}
+/* The process's arguments (KERN_PROCARGS2: argc, the executable path, padding, argv, environment). 0 when they cannot
+   be read (gone, or another user's process): the process then counts as a game, as before. */
+static int pid_is_update_window(pid_t pid) {
+    int mib[3] = {CTL_KERN, KERN_ARGMAX, 0}, argmax = 0, argc = 0, result = 0;
+    size_t size = sizeof argmax;
+    if (sysctl(mib, 2, &argmax, &size, NULL, 0) != 0 || argmax <= 0) return 0;
+    char *buf = malloc((size_t)argmax);
+    if (!buf) return 0;
+    mib[1] = KERN_PROCARGS2; mib[2] = pid; size = (size_t)argmax;
+    if (sysctl(mib, 3, buf, &size, NULL, 0) == 0 && size > sizeof argc) {
+        memcpy(&argc, buf, sizeof argc);
+        char *p = buf + sizeof argc, *end = buf + size, *argv[3] = {0};
+        char *nul = memchr(p, 0, (size_t)(end - p));   /* the executable path */
+        p = nul ? nul : end;
+        while (p < end && !*p) p++;                     /* its padding */
+        int n = 0;
+        while (n < argc && n < 3 && p < end && (nul = memchr(p, 0, (size_t)(end - p)))) { argv[n++] = p; p = nul + 1; }
+        result = (argc == 2 || argc == 3) && n == argc && slot_args_are_update_window(argc, argv);
+    }
+    free(buf);
+    return result;
+}
 static int pid_is_game(pid_t pid) {
     char path[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pid, path, sizeof path) <= 0) return 0;
-    return slot_path_is_game(path);
+    return slot_path_is_game(path) && !pid_is_update_window(pid);
 }
 
 /* Live waiters in the queue (dead ones are removed). Returns how many; *head gets the oldest one's file name. */
