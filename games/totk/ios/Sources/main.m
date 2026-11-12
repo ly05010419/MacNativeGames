@@ -693,7 +693,7 @@ static void apply_settings(void) {
     // The Settings switch turned while the game runs (the app comes back from Settings): on starts, off stops the sending.
     [NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil
         usingBlock:^(NSNotification *n) { (void)n; contrib_settings_sync(contrib); totk_inbox_start(contrib, @"ios"); }];
-    // ... with the game and version it came from, so a file sent by hand in an issue names them
+    // ... with the game and version it came from, so the file names them
     setenv("TOTK_CONTRIB_GAME",GAME_FOLDER " " TOTK_GAME_VERSION,1);
     setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);
     setenv("DM_MSL_DIR",seedDir.fileSystemRepresentation,1);

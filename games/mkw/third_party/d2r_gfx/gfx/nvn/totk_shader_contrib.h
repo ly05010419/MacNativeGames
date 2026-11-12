@@ -8,7 +8,7 @@
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
 // bind states and pipeline descriptors, no game data. Once the file holds TOTK_CONTRIB_STEP new rows, the
 // Mac launcher asks once, before the game starts, whether to contribute them automatically over HTTPS
-// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shader_issues.py --inbox merges what
+// (totk_contrib_upload.h; a switch in Settings changes it later); games/totk/scripts/collect_shaders.py --inbox merges what
 // arrives. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
@@ -27,14 +27,8 @@
 /* Mario Kart World has no shader list of its own yet (Wonder's inherited list was removed): no contribution file is
    written and no reminder is shown (totk_contrib_path returns nil under GAME_MKW). The names below only keep the shared
    code compiling. */
-#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
-#define GAME_CONTRIB_GAME "Mario Kart World"
-#define GAME_CONTRIB_TITLE "Shader list (Mario Kart World):"
 #define GAME_CONTRIB_FILE "shader-list-contribution-mkw.txt"
-#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
-    "&game=Mario+Kart+World&title=Shader+list+%28Mario+Kart+World%29%3A+"
-#define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
+#define TOTK_REPO_URL "https://github.com/ly05010419/MacNativeGames"   // the star button (launcher, settings panel): the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */
@@ -178,7 +172,7 @@ static inline void totk_contrib_add_line(NSString *line) {
     if (ftell(f) == 0)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
               "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
-              "# Send it in a GitHub issue: " TOTK_CONTRIB_ISSUE_URL "\n", f);
+              "# This game sends it to the shader inbox when contributing is on in Settings (docs/shader-list.md).\n", f);
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);
     [rows addObject:line];

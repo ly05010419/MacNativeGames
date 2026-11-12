@@ -2,10 +2,10 @@
 // The prepared seed holds every variant the list names, so a variant the Mac has to translate while playing, or that an
 // iPhone / iPad misses, is one the list does not have yet. Such a variant is written once to the player's contribution
 // file (PSV_SHADER_CONTRIB, set by app/launcher.m and ios/Sources/main.m; unset in development runs, which then write
-// nothing) as a shader-list V row: the shader key and the bind state, no game data. Every PSV_CONTRIB_STEP new rows the
-// Mac launcher asks the player, before the game starts, to send the file in a GitHub issue (an iPhone / iPad never asks
-// during play: while it is connected, ios/tools/shader_contrib_watch.py asks on the Mac); scripts/collect_shader_issues.py
-// merges what arrives. Header-only: the runtime and the Mac launcher share it.
+// nothing) as a shader-list V row: the shader key and the bind state, no game data. Contributions reach the
+// shared lists only through the shader inbox (totk_contrib_upload.h, collected with
+// games/totk/scripts/collect_shaders.py --inbox; the GitHub issue route ended 2026-11-12). This game does not
+// upload yet, so its file stays where it is. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <stdio.h>
@@ -13,12 +13,6 @@
 #include <string.h>
 
 #define PSV_CONTRIB_STEP 500
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets an earlier port's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
-#define PSV_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define PSV_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
 
 static inline NSString *psv_contrib_path(void) {
     const char *e = getenv("PSV_SHADER_CONTRIB");
@@ -98,8 +92,7 @@ static inline void psv_contrib_add(NSString *shader, NSDictionary *deps) {
     fseek(f, 0, SEEK_END);
     if (ftell(f) == 0)
         fputs("# Shaders this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
-              "# Only shader keys and bind states: no game data, saves or personal information.\n"
-              "# Send it in a GitHub issue: " PSV_CONTRIB_ISSUE_URL "\n", f);
+              "# Only shader keys and bind states: no game data, saves or personal information.\n", f);
     fprintf(f, "V\t%s\n", row.UTF8String);
     fclose(f);
     [rows addObject:row];

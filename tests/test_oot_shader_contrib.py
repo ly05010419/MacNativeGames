@@ -5,7 +5,8 @@ Its own build.py put the warm-up lists (pso_title.tsv, pso_manifest.tsv) only in
 (warm-up, the user list, the contribution filter) and the launcher's prune read them beside the shader map in build/, where
 build_app.py resolve_lists writes them for every game it packages: every pipeline the game drew went into the contribution
 file (3,091 rows, 3,040 of them in the list). Its contributions also named Tears of the Kingdom's form and title, Breath of
-the Wild's file, and its iPhone / iPad reminder looked for Tears of the Kingdom on the device.
+the Wild's file, and its iPhone / iPad reminder looked for Tears of the Kingdom on the device. Since 2026-11-12 contributions
+go only to the shader inbox (no GitHub issue form, no title prefix).
 """
 import re
 import json
@@ -18,8 +19,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OOT = ROOT / 'games/oot'
-sys.path.insert(0, str(ROOT / 'games/totk/scripts'))
-import collect_shader_issues  # noqa: E402
 
 
 def function(source, name):
@@ -80,12 +79,15 @@ class Packaging(unittest.TestCase):
 
 
 class Route(unittest.TestCase):
-    def test_game_version_names_the_other_games_form(self):
-        header = (OOT / 'runtime/game_version.h').read_text()
-        block = oot_block(header)
-        self.assertIn('#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"', block)
-        self.assertIn('#define GAME_CONTRIB_TITLE "Shader list (Ocarina of Time):"', block)
-        self.assertTrue((ROOT / '.github/ISSUE_TEMPLATE/shader-list-other.yml').is_file())
+    def test_no_issue_form_only_the_inbox(self):
+        # 2026-11-12: the GitHub issue route is gone; the game's rows reach its list only through the shader inbox
+        block = oot_block((OOT / 'runtime/game_version.h').read_text())
+        self.assertNotIn('GAME_CONTRIB_TEMPLATE', block)
+        self.assertNotIn('GAME_CONTRIB_TITLE', block)
+        self.assertFalse((ROOT / '.github/ISSUE_TEMPLATE/shader-list-other.yml').exists())
+        contrib = (OOT / 'third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h').read_text()
+        self.assertNotIn('issues/new', contrib)
+        self.assertIn('shader inbox', contrib)
         for path in (OOT / 'runtime/game_version.h', OOT / 'app/launcher.m'):   # the reminder is on, as for every game
             self.assertNotIn('GAME_SHADER_CONTRIB_SUPPORTED', path.read_text())
 
@@ -94,10 +96,13 @@ class Route(unittest.TestCase):
         self.assertIn('@"shader-list-contribution-%s.txt", TOTK_GAME_DIR', body)
         self.assertIn('!strcmp(GAME_FOLDER, "BotW") ? @"shader-list-contribution-botw.txt"', body)
 
-    def test_merge_tool_takes_its_titles(self):
-        titled = collect_shader_issues.titled_game
-        self.assertEqual(titled({'title': 'Shader list (Ocarina of Time): 32 shaders from Mac (OcarinaOfTime 131072)', 'body': ''}), 'oot')
-        self.assertEqual(titled({'title': 'Shader list: 3091 shaders from Mac (OcarinaOfTime 131072)', 'body': ''}), 'oot')   # an older build's
+    def test_merge_tool_knows_the_game(self):
+        # the inbox merge (games/totk/scripts/collect_shaders.py): Ocarina of Time has its own list, and its seed names
+        # every shader the game has, so a row outside it is never Ocarina of Time's
+        sys.path.insert(0, str(ROOT / 'games/totk/scripts'))
+        import collect_shaders  # noqa: E402
+        self.assertIn('oot', collect_shaders.GAMES)
+        self.assertIn('oot', collect_shaders.COMPLETE)
 
     def test_uploads_under_its_own_name(self):
         upload = (OOT / 'third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h').read_text()

@@ -41,7 +41,7 @@ Key **1** opens the settings panel. The first page:
 
 ## Shaders
 
-A full build translates every shader of the game, compiles all of them into Metal libraries and builds a pipeline archive from the [shader list](assets/shader_list.tsv) (bind states and pipelines players recorded), so the game starts warm. A pipeline no one has recorded yet is built the first time it is drawn, a short stutter; the game writes it to `shader-list-contribution.txt` and reminds you to send that file in a GitHub issue. Those issues are merged into the list.
+A full build translates every shader of the game, compiles all of them into Metal libraries and builds a pipeline archive from the [shader list](assets/shader_list.tsv) (bind states and pipelines players recorded), so the game starts warm. A pipeline no one has recorded yet is built the first time it is drawn, a short stutter; the game writes it to `shader-list-contribution.txt` and, once you answer "Contribute shaders" (asked once before the game starts; a switch in Settings), sends it to the shader inbox on its own. What the inbox collects is merged into the list.
 
 ## Known issues
 

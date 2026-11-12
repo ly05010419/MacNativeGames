@@ -1,5 +1,5 @@
 // TOTK: the contribution file sent over HTTPS to the shader inbox (a separate project, MacNativeGamesWeb/shader-inbox,
-// live at mac-native-games.com), instead of a GitHub issue. One question, the same on the Mac (app/launcher.m) and the
+// live at mac-native-games.com). One question, the same on the Mac (app/launcher.m) and the
 // iPhone / iPad (ios/Sources/main.m), asked before the game starts once the file holds TOTK_CONTRIB_STEP new rows and the
 // player has not chosen (user 2026-11-10: one dialog, not three; two answers): "Contribute shaders" / "Don't
 // contribute" (totk_inbox_prompt, totk_inbox_answer). The choice is kept beside the file (.<name>.upload: "auto" or

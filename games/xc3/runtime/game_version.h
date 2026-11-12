@@ -8,8 +8,6 @@
 #define GAME_NAME "Xenoblade Chronicles 3"
 #define GAME_FOLDER "XC3"   /* ~/Library/Application Support/MacNativeGames/XC3 */
 #define GAME_LOG "xc3"      /* ~/Library/Logs/MacNativeGames/xc3.log */
-#define GAME_CONTRIB_TEMPLATE ""   /* no shared shader list for this game: the panel's contribution button is hidden */
-#define GAME_CONTRIB_TITLE "Shader list (Xenoblade Chronicles 3)"
 /* Per-version addresses, on purpose none by default (as in games/dread): an address left over from another game must not
    compile. Each one is added here, per version, once it is found and checked in this game's own code. */
 #if defined(XC3_GAME_V100)
