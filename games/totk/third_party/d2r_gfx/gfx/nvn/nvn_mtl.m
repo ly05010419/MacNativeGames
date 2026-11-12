@@ -591,6 +591,12 @@ static void defer_obj_release_ex(id obj, int keep_resident) {
 }
 static void defer_obj_release(id obj) { defer_obj_release_ex(obj, 0); }
 static void defer_obj_unref(id obj) { defer_obj_release_ex(obj, 1); }
+static int g_upstream_negative;
+static void reup_forget(id object);
+static pthread_mutex_t g_smu;
+static int serial_resource_held(id object);
+static int storage_resource_owned(id object);
+static void retired_resource_wait(id object);
 static void defer_drain(void) { @autoreleasepool {   // also called from GPU completion handlers
     pthread_mutex_lock(&g_deferred_mu);
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
@@ -601,10 +607,25 @@ static void defer_drain(void) { @autoreleasepool {   // also called from GPU com
     for (NvDeferredRelease *d in ready.reverseObjectEnumerator) {
         id obj = d->object;
         if (!d->keep_resident && [obj conformsToProtocol:@protocol(MTLResource)]) {
+            if (pthread_mutex_trylock(&g_smu)) {
+                pthread_mutex_lock(&g_deferred_mu);
+                [g_deferred addObject:d];
+                if (d->fence < g_deferred_min) g_deferred_min = d->fence;
+                pthread_mutex_unlock(&g_deferred_mu);
+                continue;
+            }
+            if (g_upstream_negative!=2 && (serial_resource_held(obj) || storage_resource_owned(obj))) {
+                if (serial_resource_held(obj)) retired_resource_wait(obj);
+                pthread_mutex_unlock(&g_smu);
+                d->object = nil;
+                continue;
+            }
+            reup_forget(obj); // a retired allocation cannot remain a recyclable spare
             pthread_mutex_lock(&g_res_mu);
             int registered = [g_res_objects containsObject:obj];
             pthread_mutex_unlock(&g_res_mu);
             if (registered) res_remove((id<MTLResource>)obj);
+            pthread_mutex_unlock(&g_smu);
         }
         d->object = nil;
     }
@@ -2991,6 +3012,10 @@ static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;
 // 序号表代号：表项增删、预排布贴图换新时 +1。下游缓存（贴图视图、程序）记下取用时的代号，代号未变即可直接用、不必再查表
 // Serial table generation: +1 when entries are added / removed or a packaged texture is replaced. Downstream caches (texture views, programs) record the generation at fetch time; if it is unchanged they can be used directly without another table lookup
 static _Atomic uint64_t g_ser_gen = 1;
+static _Atomic uint64_t g_storage_revision; // storage replacements while a table is being built
+static int pool_incremental(void) {
+    static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_INCREMENTAL");on=!(e&&!atoi(e));}return on;
+}
 static uint64_t g_treg_same, g_treg_changed;   // TOTK: identical / changed texture registrations (memory readout line)
 /* TOTK: which serial each generation step was for (g_ser_chg[gen % SER_CHG_N]; 0 = not one serial, every cache must
    look again). A texture-ID view cache whose own serial is not among the steps since it was validated stays valid: the
@@ -3073,6 +3098,27 @@ static int stor_unref_locked(id o, uint64_t serial) {
     if ((__bridge void *)o != e->tex) nvn_hm_del(&g_stor_of_obj, &ok);
     return 1;
 }
+/* Every serial reference counts, including parent textures of views. A pending
+   retirement waits for the last holder, then starts a new GPU fence retirement.
+   These maps are protected by g_smu; no age/size heuristic decides ownership. */
+static nvn_hmap g_serial_resource_refs = {.klen = 8}, g_retired_held = {.klen = 8};
+static int serial_resource_held(id o) { uint64_t k=obj_key(o); return nvn_hm_get(&g_serial_resource_refs,&k)!=NULL; }
+static int storage_resource_owned(id o) { uint64_t k=obj_key(o); return nvn_hm_get(&g_stor_of_obj,&k)!=NULL; }
+static void retired_resource_wait(id o) { uint64_t k=obj_key(o); if(!nvn_hm_get(&g_retired_held,&k))hm_put_id(&g_retired_held,&k,o); }
+static void serial_resource_ref(id o,int delta) {
+    while(o) {
+        uint64_t k=obj_key(o); uintptr_t count=(uintptr_t)nvn_hm_get(&g_serial_resource_refs,&k);
+        if(delta>0)nvn_hm_put(&g_serial_resource_refs,&k,(void *)(count+1));
+        else if(count>1)nvn_hm_put(&g_serial_resource_refs,&k,(void *)(count-1));
+        else if(count) {
+            nvn_hm_del(&g_serial_resource_refs,&k);
+            id waiting=hm_get_id(&g_retired_held,&k);
+            if(waiting) { if(!storage_resource_owned(waiting))defer_obj_release(waiting); hm_del_id(&g_retired_held,&k); }
+        }
+        if(![o conformsToProtocol:@protocol(MTLTexture)])break;
+        serial_resource_ref(((id<MTLTexture>)o).parentTexture,delta);break;
+    }
+}
 static int stor_key_lookup(id o, stor_key *k);
 static id<MTLTexture> stor_recreate(const stor_key *k, id<MTLTexture> expected, MTLTextureUsage usage);
 /* TOTK: plain pointer (the macro bridges it), as prog_get_p / tex_by_id_p: every texture returned is held by the serial
@@ -3100,8 +3146,8 @@ static int rp_active(void);
 static inline void *hm_get_ptr(const nvn_hmap *m, const void *k) { return nvn_hm_get(m, k); }
 static void *serial_ptr(uint64_t k) { pthread_mutex_lock(&g_smu); void *o = nvn_hm_get(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
 static __unsafe_unretained id serial_get(uint64_t k) { pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
-static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); stor_ref_locked(o, k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); }
-static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_del_id(&g_by_serial, &k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); BOTW_SERIAL_NOTE(k, "serial_del") }
+static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { serial_resource_ref(old,-1); if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); serial_resource_ref(o,1); stor_ref_locked(o, k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); }
+static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { serial_resource_ref(old,-1); if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_del_id(&g_by_serial, &k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); BOTW_SERIAL_NOTE(k, "serial_del") }
 static void ser_bump(uint64_t serial) { pthread_mutex_lock(&g_smu); ser_bump_locked(serial); pthread_mutex_unlock(&g_smu); }
 /* Dead serials (TOTK): the game finalizes temporary NVNtexture objects after recording and before the submission runs,
    so a replay may meet a serial that was already finalized. Previously the replay created a Metal texture for it and
@@ -3233,7 +3279,7 @@ static void pkg_owned_locked(uint64_t k) {
     // with the same descriptor key as a re-upload, retaining residency. The next
     // owner overwrites every mip/layer; cached views are retired by the normal path.
     if (!owned && pkg_final_cache_on() && reup_offer(tex, &key)) atomic_fetch_add(&g_pkg_final_kept, 1);
-    else res_remove(tex);
+    else defer_obj_release(tex);
 }
 @end
 /* TOTK: GPU renderings into CPU-visible memory pools reach that memory when the CPU invalidates it.
@@ -3962,10 +4008,10 @@ static void stor_release_holders_locked(stor_ent *e, const char *why) {
     for (int i = 0; i < e->nser; i++) {
         uint64_t s = e->ser[i]; id o = hm_get_id(&g_by_serial, &s); if (!o) continue; removed++;
         uint64_t ok = obj_key(o); if (ok != (uint64_t)(uintptr_t)e->tex) nvn_hm_del(&g_stor_of_obj, &ok);
-        defer_obj_unref(o); hm_del_id(&g_by_serial, &s); BOTW_SERIAL_NOTE(s, "storage entry dropped")
+        serial_resource_ref(o,-1); defer_obj_unref(o); hm_del_id(&g_by_serial, &s); ser_bump_locked(s); BOTW_SERIAL_NOTE(s, "storage entry dropped")
     }
     descriptor_profile_storage(why,e,e->k.mem,e->k.size,e->k.w,e->k.h,e->k.d,e->k.levels,e->k.target,e->tex,e->ser,e->nser,removed,atomic_load_explicit(&g_ser_gen,memory_order_relaxed));
-    e->nser = 0; ser_bump_locked(0);
+    e->nser = 0; if(!pool_incremental())ser_bump_locked(0); atomic_fetch_add_explicit(&g_storage_revision,1,memory_order_release);
 }
 static void stor_drop_locked(stor_ent *e) {
     stor_release_holders_locked(e,"drop");
@@ -4622,6 +4668,12 @@ uint64_t mtl_upload_bytes(void) { return g_bp_up_bytes; }   // 贴图上传累�
 typedef struct { void *tex; uint64_t fence; reup_key k; } reup_ent;   // tex: CFBridgingRetain'd MTLTexture
 static reup_ent g_reup[REUP_MAX]; static int g_nreup; static os_unfair_lock g_reup_lk = OS_UNFAIR_LOCK_INIT;
 static uint64_t g_reup_reused, g_reup_kept;
+/* g_smu -> g_reup_lk, the same order as reuse. */
+static void reup_forget(id object) {
+    os_unfair_lock_lock(&g_reup_lk);
+    for(int i=0;i<g_nreup;i++)if(g_reup[i].tex==(__bridge void *)object){CFRelease(g_reup[i].tex);g_reup[i--]=g_reup[--g_nreup];}
+    os_unfair_lock_unlock(&g_reup_lk);
+}
 static int reup_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_REUP_RECYCLE"); on = !e || atoi(e); } return on; }
 static reup_key reup_key_of(MTLTextureDescriptor *d) {
     reup_key k; memset(&k, 0, sizeof k); MTLTextureSwizzleChannels z = d.swizzle;
@@ -4648,13 +4700,15 @@ static int reup_holds(id t) {   // probe-gpu-texture-retire: t sits in the recyc
 static id<MTLTexture> reup_take(const reup_key *k) {
     if (!g_nreup) return nil;
     id<MTLTexture> hit = nil; uint64_t done = g_done;
+    pthread_mutex_lock(&g_smu);
     os_unfair_lock_lock(&g_reup_lk);
     for (int i = 0; i < g_nreup; i++) {
         if (g_reup[i].fence > done) continue;
-        if (!hit && !memcmp(&g_reup[i].k, k, sizeof *k)) { hit = CFBridgingRelease(g_reup[i].tex); g_reup[i--] = g_reup[--g_nreup]; continue; }
+        if (!hit && !serial_resource_held((__bridge id)g_reup[i].tex) && !storage_resource_owned((__bridge id)g_reup[i].tex) && !memcmp(&g_reup[i].k, k, sizeof *k)) { hit = CFBridgingRelease(g_reup[i].tex); g_reup[i--] = g_reup[--g_nreup]; continue; }
         if (g_reup[i].fence + REUP_IDLE < done) { defer_obj_release(CFBridgingRelease(g_reup[i].tex)); g_reup[i--] = g_reup[--g_nreup]; }
     }
     os_unfair_lock_unlock(&g_reup_lk);
+    pthread_mutex_unlock(&g_smu);
     if (hit) g_reup_reused++;
     return hit;
 }
@@ -6509,6 +6563,7 @@ static MTLCompileOptions *totk_precise_opts(void) {
     static MTLCompileOptions *o; static dispatch_once_t once;
     dispatch_once(&once, ^{
         MTLCompileOptions *x = [MTLCompileOptions new];
+        x.preserveInvariance = YES; // both depth pre-pass and EQUAL color pass must agree
         if (@available(macOS 15.0, *)) x.mathMode = MTLMathModeSafe; else x.fastMathEnabled = NO;
         /* TOTK_FAST_MATH=1 (measurement only): fast math for every translated shader. Known to break the tile-light vertex
            shader's integer-division idiom, so pictures from such runs are not evidence of correctness. */
@@ -6596,7 +6651,7 @@ static id<MTLLibrary> variant_library_seed(NSData *raw) {
     if (!lib) MLOG("【红】预编译的补丁变体加载失败 %s：%s（改为现编）", name, e.localizedDescription.UTF8String);
     return lib;
 }
-static id<MTLLibrary> variant_library(NSString *src, NSError **err) {
+static id<MTLLibrary> variant_library_build(NSString *src, NSError **err) {
     NSData *raw = [src dataUsingEncoding:NSUTF8StringEncoding];
     id<MTLLibrary> pre = shader_device_libs() ? variant_library_seed(raw) : nil;
 #if !TARGET_OS_IPHONE
@@ -6613,6 +6668,37 @@ static id<MTLLibrary> variant_library(NSString *src, NSError **err) {
     if (lib && raw && ![src hasPrefix:@SSAO_MARK]) variant_record(raw);   // TOTK_SSAO variants stay out of the packaged shader-libs
 #endif
     return lib;
+}
+/* Several pipeline workers can ask for one fragment variant at once. Only the
+   owner loads/compiles that exact MSL; waiters share its result and error. Entries
+   live only until completion, so this does not add a permanent library cache.
+   Unlike nxnative's copied main0_u/main0_m bodies, our variants are separate
+   source units; source identity is the safe common compilation boundary. */
+@interface NvVariantBuild : NSObject { @public dispatch_group_t done; id<MTLLibrary> library; NSError *error; } @end
+@implementation NvVariantBuild @end
+static NSMutableDictionary<NSData *,NvVariantBuild *> *g_variant_builds;
+static pthread_mutex_t g_variant_build_mu=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_variant_shared;
+static dispatch_semaphore_t g_variant_probe_gate;
+static _Atomic unsigned g_variant_probe_entered;
+static id<MTLLibrary> variant_library(NSString *src,NSError **err) {
+    if(!src)return nil;
+    NSData *key=[src dataUsingEncoding:NSUTF8StringEncoding];
+    pthread_mutex_lock(&g_variant_build_mu);
+    if(!g_variant_builds)g_variant_builds=[NSMutableDictionary dictionary];
+    NvVariantBuild *job=g_variant_builds[key];BOOL owner=job==nil;
+    if(owner){job=[NvVariantBuild new];job->done=dispatch_group_create();dispatch_group_enter(job->done);g_variant_builds[key]=job;}
+    pthread_mutex_unlock(&g_variant_build_mu);
+    if(g_variant_probe_gate)atomic_fetch_add(&g_variant_probe_entered,1);
+    if(owner){
+        if(g_variant_probe_gate)dispatch_semaphore_wait(g_variant_probe_gate,DISPATCH_TIME_FOREVER);
+        NSError *error=nil;job->library=variant_library_build(src,&error);job->error=error;
+        pthread_mutex_lock(&g_variant_build_mu);
+        dispatch_group_leave(job->done);[g_variant_builds removeObjectForKey:key];
+        pthread_mutex_unlock(&g_variant_build_mu);
+    }else{atomic_fetch_add(&g_variant_shared,1);dispatch_group_wait(job->done,DISPATCH_TIME_FOREVER);}
+    if(err)*err=job->error;
+    return job->library;
 }
 void mtl_variant_stats(uint64_t *n, uint64_t *ns, uint64_t *pre, uint64_t *bg, uint64_t *plain) {
     *n = atomic_load(&g_stat_variant_n); *ns = atomic_load(&g_stat_variant_ns); *pre = atomic_load(&g_stat_variant_pre);
@@ -6771,7 +6857,29 @@ static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
     return lib;
 }
 #endif
-static NvShader *shader_load(NSString *pc, int stage) {
+/* Offline compute archives need the Metal function and threadgroup dimensions,
+   not the game's argument-binding interpreter. Keep this mode exclusive to the
+   archive CLI: compiling an archive never establishes runtime binding support. */
+static int g_compute_archive_tool;
+static NvShader *compute_archive_shader(id<MTLLibrary> lib,NSDictionary *j,NSString *key) {
+    if(![j[@"chain"] isEqual:@DMSH_CHAIN]||![j[@"key"] isEqual:key]||
+       ![j[@"stage"] isEqual:@"cs"]||![j[@"msl_entry_kind"] isEqual:@"kernel"]||
+       ![j[@"entry"] isKindOfClass:NSString.class])return nil;
+    NSArray *tg=j[@"threadgroup_size"];
+    if(![tg isKindOfClass:NSArray.class]||tg.count!=3)return nil;
+    NvShader *o=[NvShader new];NSUInteger group=1;
+    for(int i=0;i<3;i++){
+        if(![tg[i] isKindOfClass:NSNumber.class])return nil;
+        double x=[tg[i] doubleValue];if(x<1||x>1024||x!=(int)x)return nil;
+        o->rf.tg[i]=(uint16_t)x;group*=o->rf.tg[i];
+    }
+    if(group>1024)return nil;
+    o->fn=[lib newFunctionWithName:j[@"entry"]];
+    if(!o->fn||o->fn.functionType!=MTLFunctionTypeKernel)return nil;
+    o->fn.label=key;o->stage=5;strlcpy(o->key,key.UTF8String,sizeof o->key);
+    return o;
+}
+static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) {
     NSError *e = nil;
     // TOTK: runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
     NSString *rt_src = totk_rt_file([pc stringByAppendingString:@".metal"]);
@@ -6803,6 +6911,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (!lib || !j) { MLOG("【红】加载着色器失败 %s：%s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "无反射 json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
+    if(archive_compute)return compute_archive_shader(lib,j,pc);
     NvShader *o = [NvShader new];
     char err[160];
     if([j[@"raw_write_proof"] isKindOfClass:NSDictionary.class])o->raw_write_capsule=j[@"raw_write_proof"];
@@ -6878,6 +6987,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     return o;
 }
 
+static NvShader *shader_load(NSString *pc,int stage) { return shader_load_mode(pc,stage,0); }
 #define NVN_RT_RANGE_RO_IMPL 1
 // 私有续用只接受明确RO的B反射，sbuf缺rw不把默认0当证明；不改变既有反射/翻译链。
 // Private continuation accepts only B reflection that is explicitly RO; a missing rw on sbuf does not let the default 0 count as proof; does not change the existing reflection / translation chain.
@@ -7520,7 +7630,7 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     if (rp->view) {   // 序号表或客体内存有过变动：核基贴图是否被重传换新，换了则视图作废 | The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
         __unsafe_unretained id<MTLTexture> cur = tex_mtl(&rp->t);   // held by the serial table / its NvPkg
         if (g_tex_prepare_split) return NULL;
-        if ((__bridge void *)cur == rp->view || (__bridge void *)cur == rp->view_parent) { rp->view_ser = sg; rp->view_pkg = treg_kind(&rp->t); rp->view_dirty = rp->view_pkg == 2 || (rp->view_pkg == 1 && tex_check_once()) ? g_sub_serial : dg; return rp->view; }
+        if ((cur || g_upstream_negative==1) && ((__bridge void *)cur == rp->view || (__bridge void *)cur == rp->view_parent)) { rp->view_ser = sg; rp->view_pkg = treg_kind(&rp->t); rp->view_dirty = rp->view_pkg == 2 || (rp->view_pkg == 1 && tex_check_once()) ? g_sub_serial : dg; return rp->view; }
         treg_clear_view_locked(tid);
     }
     id<MTLTexture> v = nil;
@@ -9141,8 +9251,11 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     if (ps) par_add(g_dev, key, d);
     return ps;
 }
+static _Atomic uint64_t g_compute_bundle_hits,g_compute_device_hits,g_compute_misses;
 static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescriptor *d, NSError **e) {
     NSString *key = cs_archive_key(cs);
+    // A constrained threadgroup is a different Metal descriptor and archive key.
+    if(key&&d.maxTotalThreadsPerThreadgroup)key=[key stringByAppendingFormat:@"-tg%lu",(unsigned long)d.maxTotalThreadsPerThreadgroup];
     d.label = cs->key[0] ? @(cs->key) : cs->builtin ? @(cs->builtin) : @"builtin compute";
     id<MTLComputePipelineState> ps = nil;
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
@@ -9150,10 +9263,11 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
         d.binaryArchives = @[a];
         ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
         par_pre_note(ps != nil);
-        if (ps) { par_count(1); return ps; }
+        if (ps) { atomic_fetch_add(par_last_pre?&g_compute_bundle_hits:&g_compute_device_hits,1); par_count(1); return ps; }
         d.binaryArchives = nil;
         par_stale(key);
     }
+    atomic_fetch_add(&g_compute_misses,1);
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
     if (ps) par_add(g_dev, key, d);
@@ -9728,7 +9842,7 @@ static NvShader *warm_shader_load(NSString *key, int stage) {
     }
     if (msl && ([msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) return nil;
     uint64_t started = bp_now();
-    NvShader *sh = shader_load(key, stage);
+    NvShader *sh = shader_load_mode(key, stage, g_compute_archive_tool && stage==5);
     atomic_fetch_add(&g_warm_library_ns, bp_now() - started);
     atomic_fetch_add(&g_warm_library_count, 1);
     return sh;
@@ -10400,6 +10514,7 @@ static void offline_depth_mode(const char *depth) {
    itself (shader-libs, shader_lib_prebuilt) in files of the Mac's size; they are this Mac's GPU code already, so they go
    into the app as they are. The JSON names the GPU architecture the files are for. */
 int mtl_pipeline_archive_tool(int argc, char **argv) {
+    g_compute_archive_tool=1;
     if (argc < 1 || !getenv("TOTK_SHADER_CACHE") || !getenv("TOTK_SHADER_SEED_DIR"))
         MDIE("pipeline-archive: TOTK_SHADER_CACHE=<folder> TOTK_SHADER_SEED_DIR=<device seed> totk-native <rewritten> pipeline-archive <list>...");
     NSData *seedManifest = [NSData dataWithContentsOfFile:[@(getenv("TOTK_SHADER_SEED_DIR")) stringByAppendingPathComponent:@"seed-manifest.json"]];
@@ -10435,7 +10550,7 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
            g_fill_last.render, g_fill_last.compute, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed),
            g_dev.architecture.name.UTF8String ?: "");
     fflush(stdout);
-    return atomic_load(&g_par_write_failed) ? 1 : 0;
+    return atomic_load(&g_par_write_failed) || g_fill_last.failed ? 1 : 0;
 }
 #endif
 static void warm_start(void) {
@@ -11258,7 +11373,7 @@ static void raw_write_capture(NvShader *sh,int stage,const uint64_t *slots,int r
 /* Full, typed NVN descriptor pools stay GPU-indexed when a handle comes from
    shader memory. Each immutable snapshot owns resource IDs for the bound pool,
    with one zero descriptor after its end. It never truncates IDs to 32 slots. */
-typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask; int base,n,kind,tt,pf,partial; } oot_pool_snapshot;
+typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask,*dead_mask,*trans_mask; int base,n,kind,tt,pf,partial; } oot_pool_snapshot;
 static oot_pool_snapshot g_descriptor_pools[16];static unsigned g_descriptor_pool_next;
 static uint64_t g_descriptor_pool_hits,g_descriptor_pool_misses,g_descriptor_pool_scanned,g_descriptor_pool_splits;
 static uint64_t g_descriptor_pool_type_skips,g_descriptor_pool_uncreated_skips;
@@ -11296,7 +11411,7 @@ static int descriptor_pool_matches(const oot_pool_snapshot *p,const nvn_rbind *b
     return p->buffer&&p->base==base&&p->n==n&&p->kind==b->kind&&p->tt==b->dtt&&p->pf==b->dpf;
 }
 static int descriptor_pool_valid(const oot_pool_snapshot *p) {
-    return p->reg==g_reg_gen&&p->ser==g_ser_gen&&(descriptor_pool_once()||p->dirty==nvn_dirty_now())&&p->sub==g_sub_serial&&p->revision==g_descriptor_revision;
+    return p->reg==g_reg_gen&&p->ser==g_ser_gen&&(descriptor_pool_once()||p->dirty==nvn_dirty_now())&&p->sub==g_sub_serial&&p->revision==g_descriptor_revision&&p->memory==atomic_load_explicit(&g_pool_gen,memory_order_acquire);
 }
 static int descriptor_pool_ready(const nvn_rbind *b) {
     for(int i=0;i<16;i++)if(descriptor_pool_matches(&g_descriptor_pools[i],b)&&descriptor_pool_valid(&g_descriptor_pools[i]))return 1;
@@ -11317,10 +11432,13 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     }
     int replace=slot==NULL;if(replace)slot=&g_descriptor_pools[g_descriptor_pool_next++%16];
     uint64_t reg=g_reg_gen,ser=g_ser_gen,dirty=nvn_dirty_now(),revision=g_descriptor_revision,memory=atomic_load_explicit(&g_pool_gen,memory_order_acquire);
+    uint64_t storage_revision=atomic_load_explicit(&g_storage_revision,memory_order_acquire);
     size_t words=((size_t)n+63)/64;
+    uint64_t *dead_mask=replace?calloc(words,sizeof *dead_mask):slot->dead_mask;
+    uint64_t *trans_mask=replace?calloc(words,sizeof *trans_mask):slot->trans_mask;
     uint64_t *changed=calloc(words,sizeof *changed),*cpu_mask=replace?calloc(words,sizeof *cpu_mask):slot->cpu_mask;
-    if(!changed||!cpu_mask)MDIE("descriptor pool validation mask");
-    int full=replace||(!need&&slot->partial)||revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&(slot->memory!=memory||ser-slot->ser>=SER_CHG_N));
+    if(!changed||!cpu_mask||!dead_mask||!trans_mask)MDIE("descriptor pool validation mask");
+    int full=replace||(!need&&slot->partial)||revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&(ser-slot->ser>=SER_CHG_N||(!pool_incremental()&&slot->memory!=memory)));
     dp_pool_event dp={0};
     if(descriptor_profile_on()){
         dp=(dp_pool_event){.start=bp_now(),.slot=(int)(slot-g_descriptor_pools),.kind=binding->kind,.base=base,.n=n,
@@ -11342,13 +11460,22 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
             int ix=(samp?-change-1:change)-base;
             if(ix>=0&&ix<n)changed[(unsigned)ix/64]|=UINT64_C(1)<<((unsigned)ix%64);
         }
-        for(uint64_t v=slot->ser+1;!samp&&v<=ser;v++){
+        /* The writer publishes serial IDs under g_smu. Hold it while reading
+           the ring, including the wrap check, so overwritten slots cannot tear. */
+        pthread_mutex_lock(&g_smu);
+        if(!samp&&atomic_load(&g_ser_gen)-slot->ser>=SER_CHG_N)full=1;
+        for(uint64_t v=slot->ser+1;!full&&!samp&&v<=ser;v++){
             uint64_t serial=atomic_load_explicit(&g_ser_chg[v%SER_CHG_N],memory_order_relaxed);
             if(!serial){full=1;dp.reasons|=16;break;}
             int head=(int)(uintptr_t)nvn_hm_get(&g_view_heads,&serial);
             for(;head;head=g_treg[head-1].view_next){int ix=head-1-base;if(ix>=0&&ix<n)changed[(unsigned)ix/64]|=UINT64_C(1)<<((unsigned)ix%64);}
         }
-        if(!samp&&(slot->sub!=g_sub_serial||(!descriptor_pool_once()&&slot->dirty!=dirty)))for(size_t w=0;w<words;w++)changed[w]|=cpu_mask[w];
+        pthread_mutex_unlock(&g_smu);
+        for(size_t w=0;!samp&&w<words;w++){
+            if(g_upstream_negative!=3&&(slot->memory!=memory||slot->ser!=ser))changed[w]|=dead_mask[w];
+            if(slot->sub!=g_sub_serial)changed[w]|=trans_mask[w];
+            if(slot->sub!=g_sub_serial||(!descriptor_pool_once()&&slot->dirty!=dirty))changed[w]|=cpu_mask[w];
+        }
     }
     if(full){for(size_t w=0;w<words;w++)changed[w]=UINT64_MAX;if(n%64)changed[words-1]=(UINT64_C(1)<<(n%64))-1;}
     // A proved demand set is revalidated at every draw. Unselected entries may
@@ -11365,7 +11492,7 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     uint64_t checked=0;
     for(size_t w=0;w<words;w++)for(uint64_t bits=changed[w];bits;bits&=bits-1){
         int i=(int)(w*64+__builtin_ctzll(bits)),id_=base+i;uint64_t value=0;checked++;
-        uint64_t bit=UINT64_C(1)<<(i%64);cpu_mask[w]&=~bit;
+        uint64_t bit=UINT64_C(1)<<(i%64);cpu_mask[w]&=~bit;dead_mask[w]&=~bit;trans_mask[w]&=~bit;
         if(samp){if(id_>0&&id_<g_nsreg&&g_sreg_ok[id_]&&samp_fast(id_))value=g_srid[id_];}
         else if(id_>0&&id_<g_ntreg&&g_treg[id_].ok){
             treg_t *r=&g_treg[id_];
@@ -11375,9 +11502,11 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
                 if(!r->view&&!serial_ptr(r->t.serial))g_descriptor_pool_uncreated_skips++;
             }else if(r->view||mtl_addr_known((uint64_t)r->t.mem,r->t.L.size?r->t.L.size:1)){
                 void *view=NULL;uint64_t rid=tex_fast_rid(id_,&view);
-                if(g_tex_prepare_split){descriptor_profile_pool(&dp,full,checked,buffer!=nil,1,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);free(changed);if(replace)free(cpu_mask);return 0;}
+                if(g_tex_prepare_split){descriptor_profile_pool(&dp,full,checked,buffer!=nil,1,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);free(changed);if(replace){free(cpu_mask);free(dead_mask);free(trans_mask);}return 0;}
                 if(view&&((__bridge id<MTLTexture>)view).textureType==binding->dtt)value=rid;
-            }
+                if(!view)dead_mask[w]|=bit;
+                if(r->dead_pending)trans_mask[w]|=bit;
+            }else dead_mask[w]|=bit;
         }
         if(!value)value=dummy;
         if(!buffer&&old[i]!=value){
@@ -11390,19 +11519,19 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     free(changed);g_descriptor_pool_scanned+=checked;
     /* Creating an alias/usage view can replace the shared backing of earlier
        entries. Validate the complete pool again before publishing that table. */
-    if(atomic_load_explicit(&g_ser_last_all,memory_order_relaxed)>ser){
+    if(atomic_load_explicit(&g_ser_last_all,memory_order_relaxed)>ser||atomic_load_explicit(&g_storage_revision,memory_order_acquire)!=storage_revision){
         descriptor_profile_pool(&dp,full,checked,buffer!=nil,2,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
-        if(replace)free(cpu_mask);else slot->ser=0;
+        if(replace){free(cpu_mask);free(dead_mask);free(trans_mask);}else slot->ser=0;
         return descriptor_pool_gpu_need(binding,need);
     }
     if(buffer){
         res_add(buffer);if(slot->buffer)defer_obj_release(slot->buffer);
-        if(replace)free(slot->cpu_mask);
+        if(replace){free(slot->cpu_mask);free(slot->dead_mask);free(slot->trans_mask);}
         slot->buffer=buffer;g_descriptor_pool_misses++;
     }else g_descriptor_pool_hits++;
     descriptor_profile_pool(&dp,full,checked,buffer!=nil,0,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
     slot->reg=reg;slot->ser=ser;slot->dirty=dirty;slot->sub=g_sub_serial;
-    slot->partial=need!=NULL;slot->revision=revision;slot->memory=memory;slot->cpu_mask=cpu_mask;slot->base=base;slot->n=n;slot->kind=binding->kind;slot->tt=binding->dtt;slot->pf=binding->dpf;
+    slot->partial=need!=NULL;slot->revision=revision;slot->memory=memory;slot->cpu_mask=cpu_mask;slot->dead_mask=dead_mask;slot->trans_mask=trans_mask;slot->base=base;slot->n=n;slot->kind=binding->kind;slot->tt=binding->dtt;slot->pf=binding->dpf;
     return slot->buffer.gpuAddress;
 }
 static uint64_t descriptor_pool_gpu(const nvn_rbind *b) { return descriptor_pool_gpu_need(b,NULL); }
@@ -17776,6 +17905,9 @@ void mtl_res_snapshot(mtl_res_count *out) {
     out->c1_bufs = (uint32_t)(g_c1_banks.count + g_c1_exclusive); out->c1_alloc = g_c1_alloc_bytes; out->c1_data = g_c1_data_bytes;
     os_unfair_lock_unlock(&g_c1_lock);
     pthread_mutex_lock(&g_smu);
+    if(getenv("OOT_UPSTREAM_STATS"))MLOG("[upstream] held-retired=%u compile-shared=%llu compute-bundle=%llu compute-device=%llu compute-built=%llu pool-scanned=%llu",
+        g_retired_held.n,(unsigned long long)atomic_load(&g_variant_shared),(unsigned long long)atomic_load(&g_compute_bundle_hits),
+        (unsigned long long)atomic_load(&g_compute_device_hits),(unsigned long long)atomic_load(&g_compute_misses),(unsigned long long)g_descriptor_pool_scanned);
     out->live_tex = g_by_serial.n;
     pthread_mutex_unlock(&g_smu);
     pthread_mutex_lock(&g_mu);
@@ -21717,6 +21849,7 @@ int mtl_probe_arg_epoch(void) {
 #include "nvn_copy_alias_probe.h"
 
 #include "nvn_pool_retire_probe.h"
+#include "nvn_upstream_probe.h"
 #include "nvn_memory_demand_probe.h"
 #include "nvn_stor_alias_probe.h"
 #include "nvn_arena_trim_probe.h"
