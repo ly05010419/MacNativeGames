@@ -399,7 +399,7 @@ void totk_rt_dump_unseeded(const uint8_t *control, const void *code, uint32_t le
     if (f) { fputs(line.UTF8String, f); fclose(f); }
     pthread_mutex_unlock(&mu);
 }
-static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 5 ? @"cs" : nil; }   // gs: run as compute (nvn_geometry_rt.inc)
+static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 3 ? @"ts" : stage == 4 ? @"ms" : stage == 5 ? @"cs" : nil; }   // gs: run as compute (nvn_geometry_rt.inc)
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
@@ -425,6 +425,7 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     if (local) rq[@"local"] = local;
     if (nvn2) {
         rq[@"arch"] = @"sm86";
+        if (stage == 3 || stage == 4) rq[@"mesh_ctl"] = hex(control, 0xe0);
         /* Compute lays out its driver constants in c[0] per shader: its push-constant words (+0xa9), its uniform buffer,
            storage buffer and texture entry counts (+0xb1..+0xb3) and its c[0] size (+0xba); the translator maps them
            (InstEmitAmpere.cs AMapC0). Shared memory at +0x64. From seedds/nxnative dmsh_build.py job_for (MIT). */
@@ -536,7 +537,7 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
    Breath of the Wild, whose every shader translates. A Switch 2 game (GAME_NS2), whose Ampere coverage is still growing,
    and a seed (seed-shaders) name the shader in red instead: no variant is returned, so its draws are skipped
    (nvn_mtl.m prog_get), and it is not asked for again in this run. */
-#ifdef GAME_NS2
+#if defined(GAME_NS2) && !defined(GAME_OOT)
 static int g_rt_fail_soft = 1;
 #else
 static int g_rt_fail_soft;
@@ -547,6 +548,17 @@ static void rt_failed(NSString *shader) { if (!g_rt_failed) g_rt_failed = [NSMut
 /* One request through a translator service; the reflection of the new variant (nil: refused, with g_rt_fail_soft). */
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
+    // One capture point covers synchronous and background translation alike.
+    // Explicit diagnostics only: ordinary player starts do not collect requests.
+    if (getenv("OOT_SHADER_REQUEST_DUMP")) {
+        NSData *code=[NSData dataWithContentsOfFile:rq[@"code"]];
+        if (!code) die("read shader request evidence %s",[rq[@"code"]UTF8String]);
+        NSMutableDictionary *evidence=[rq mutableCopy];
+        unsigned char digest[32];CC_SHA256(code.bytes,(CC_LONG)code.length,digest);evidence[@"code_sha256"]=hex(digest,32);
+        NSData *request=[NSJSONSerialization dataWithJSONObject:evidence options:NSJSONWritingSortedKeys error:nil];
+        NSString *path=[totk_rt_dir() stringByAppendingFormat:@"/%@.request.json",variant];
+        if(![request writeToFile:path atomically:YES])die("write shader request %s",path.UTF8String);
+    }
     service_start(svc);
     char line[2048];
 #ifdef DEVICE_XLATE

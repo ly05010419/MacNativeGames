@@ -25,6 +25,8 @@ static inline uint32_t ctl_code_len(const uint8_t *c) { uint32_t n; memcpy(&n, c
 static inline int ctl_stage(const uint8_t *c, const uint8_t *code) {
     if (!nvn2_ctl(c)) { uint32_t st; memcpy(&st, c + 0x714, 4); return st <= 5 ? (int)st : -1; }
     if (c[0x56] == 5) return 5;
+    if (c[0x56] == 6) return 3;
+    if (c[0x56] == 7) return 4;
     uint32_t w0; memcpy(&w0, code, 4);
     static const int from_sph[6] = {0, 0, 3, 4, 2, 1};
     unsigned type = (w0 >> 10) & 0xf;

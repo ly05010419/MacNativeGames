@@ -24,3 +24,5 @@ int totk_vpool_fini(pool_t *pool);
 int totk_vpool_map(pool_t *virtual_pool, int count, const totk_mapping_request *requests);
 // TOTK diagnostics: CPU address of the physical backing of a virtual-pool range (1 = mapped, *cpu set).
 int totk_vpool_backing(uintptr_t va, uint64_t len, uintptr_t *cpu);
+// Once virtual aliases have existed, address-only write tracking is insufficient.
+int totk_vpool_aliases_used(void);

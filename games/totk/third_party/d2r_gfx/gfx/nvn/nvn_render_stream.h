@@ -22,6 +22,7 @@
 enum {
     RS_PSO, RS_DSS, RS_VIEWPORT, RS_SCISSOR, RS_CULL, RS_WINDING, RS_FILL,
     RS_BIAS, RS_CLIP, RS_STENCIL, RS_BLEND, RS_VISIBILITY, RS_ADDRESS,
+    RS_MESH_TABLES, RS_OBJECT_ADDRESS, RS_DRAW_MESH, RS_DRAW_MESH_INDIRECT,
     RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE,
     RS_BEGIN,   /* u[0] = retained MTL4RenderPassDescriptor, u[1] = vertex table, u[2] = fragment table, u[3] = command buffer, u[4] = barrier at start, u[5] = visibility options */
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
@@ -92,6 +93,10 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_BLEND: { float v[4]; memcpy(v, u, sizeof v); [e setBlendColorRed:v[0] green:v[1] blue:v[2] alpha:v[3]]; break; }
         case RS_VISIBILITY: [e setVisibilityResultMode:(MTLVisibilityResultMode)u[0] offset:(NSUInteger)u[1]]; break;
         case RS_ADDRESS: [(u[0] ? *ft : *vt) setAddress:u[2] atIndex:(NSUInteger)u[1]]; break;
+        case RS_MESH_TABLES: [e setArgumentTable:g_vt atStages:MTLRenderStageMesh]; if(u[0]) [e setArgumentTable:g_ot atStages:MTLRenderStageObject]; break;
+        case RS_OBJECT_ADDRESS: [g_ot setAddress:u[1] atIndex:(NSUInteger)u[0]]; break;
+        case RS_DRAW_MESH_INDIRECT: [e drawMeshThreadgroupsWithIndirectBuffer:u[0] threadsPerObjectThreadgroup:MTLSizeMake(u[1],1,1) threadsPerMeshThreadgroup:MTLSizeMake(u[2],1,1)]; break;
+        case RS_DRAW_MESH: [e drawMeshThreadgroups:MTLSizeMake(u[0],1,1) threadsPerObjectThreadgroup:MTLSizeMake(u[1],1,1) threadsPerMeshThreadgroup:MTLSizeMake(u[2],1,1)]; break;
         case RS_DRAW: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2]]; break;
         case RS_INSTANCED: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2] instanceCount:(NSUInteger)u[3] baseInstance:(NSUInteger)u[4]]; break;
         case RS_INDEXED_INDIRECT: [e drawIndexedPrimitives:(MTLPrimitiveType)u[0] indexType:(MTLIndexType)u[1] indexBuffer:u[2] indexBufferLength:(NSUInteger)u[3] indirectBuffer:u[4]]; break;

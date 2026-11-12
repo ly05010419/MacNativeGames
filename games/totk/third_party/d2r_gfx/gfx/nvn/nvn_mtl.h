@@ -84,3 +84,6 @@ int mtl_probe_upload_batch(void);
 int mtl_probe_visibility(void); /* Count / clear / resume / reset in one encoder. */
 
 int mtl_probe_vr_ui_layout(void); /* Native UI square-pixel and scissor GPU readback. */
+int mtl_probe_f2ip(void);
+int mtl_probe_mesh(void);
+int mtl_probe_sured(void);

@@ -31,6 +31,7 @@ CONFIGS = {
     'botw190': ['-DGAME_BOTW=1', '-DGAME_BOTW190=1'],
     'dkb': ['-DGAME_DKB=1', '-DGAME_NS2=1'],
     'pokopia': ['-DGAME_POKOPIA=1', '-DGAME_NS2=1'],
+    'oot': ['-DGAME_OOT=1', '-DGAME_NS2=1'],   # games/oot/Makefile GFX_FLAGS (Ocarina of Time moves onto this layer)
 }
 FLAGS = ['-std=gnu11', '-Wall', '-Wextra', '-Wno-error', '-Wno-unused-function', '-Wno-unused-parameter', '-fobjc-arc']
 TARGETS = {
