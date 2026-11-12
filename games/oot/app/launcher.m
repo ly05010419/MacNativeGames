@@ -437,6 +437,7 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
         NSString *preferred = NSLocale.preferredLanguages.firstObject;
         if (preferred) setenv("TOTK_LOCALE", preferred.UTF8String, 1);
+        if (!getenv("TOTK_SKIP_CS")) setenv("TOTK_SKIP_CS", "93b8cf2a4840b5f2", 0); /* local trial workaround; not a correctness fix */
         setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1);
         setenv("TOTK_GPU_WIDEN", "1", 1);
         setenv("TOTK_GPU_BLOCKRT", "1", 1);
