@@ -1521,7 +1521,9 @@ void mtl_sub_begin(void) {
     g_fc_t[0] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - g_fc_begin0;
 }
 
-static void rp_end(void);
+static void rp_end_from(const char *file, int line);
+#define rp_end() rp_end_from(__FILE__, __LINE__)   // passdump records which call site ended a render pass
+static void mesh_batch_prefetch(void);   // nvn_mesh_batch.inc: mesh indirect-argument batches for the pass about to open
 extern int g_frz_on; static int g_frz_state;   // 世界冻结：本帧锁存的状态（0 正常 / 1 完整帧 / 2 冻结帧），见 frz_op 上方的说明 | World freeze: the state latched for this frame (0 normal / 1 full frame / 2 frozen frame), see the note above frz_op
 // DM_NVN_PASSGPU_SERIAL=1（测量用）：主命令缓冲上每建一个编码器前编「发信号 n+1 → 等信号 n+1」——信号要等此前全部工作完成才发出，
 // 后面的编码器因此等前一个彻底跑完才开始；TBDR 上通道不再流水重叠，DM_NVN_PASSGPU 的逐通道起止跨度即该通道独占耗时（整帧总时长偏大，只看相对开销）
@@ -5987,7 +5989,8 @@ static void watch_tex_flush(void) {
     }
     g_wt_nreq = 0;
 }
-static void rp_end(void) { if (g_enc) {
+static void rp_end_from(const char *rp_file, int rp_line) { if (g_enc) {
+    PD("Z %llu pass_end draws=%llu at=%s:%d", g_stat_pass, (unsigned long long)(g_stat_draw - g_pass_draw0), strrchr(rp_file, '/') ? strrchr(rp_file, '/') + 1 : rp_file, rp_line);   // passdump: the call site that ended this pass
     ghost_flush();
     if (enc_label_on() && !g_rs_active) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // 帧内序号：同一趟每帧同名，表里才能按名归并 | Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
         [(id)g_enc setLabel:[NSString stringWithFormat:@"p%02llu %dx%d %s d%d", (unsigned long long)(g_stat_pass - base), g_el_w, g_el_h, g_el_key[0] ? g_el_key : "-", g_el_draws]]; }
@@ -6280,6 +6283,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
     g_enc_mode = clear_only;
     if (!R.has_rt) { RED_ONCE(3, "绘制前没有设置渲染目标"); return nil; }
+    /* OOT: the mesh indirect-argument batches for the mesh draws of this pass are made before it opens, whichever path opens
+       it (2026-11-08: only draw_inner's opening did this; passes opened after a target change or a landed clear got their
+       first mesh batch mid-pass, which split the pass: 2 splits of the 1536x864 pass a frame, each a store + load of its
+       attachments). The compute dispatch it may encode goes before the render encoder. */
+    if (!clear_only) mesh_batch_prefetch();
     int lay_first = 0, lay_n = lay_decide(clear_only, &lay_first);   // TOTK: layered pass over lay_n layers from lay_first (see g_lay)
     if (!lay_n && !clear_only && g_cg_force_layers) { lay_n = g_cg_force_layers; lay_first = 0; }   // TOTK: the merged cube-face-set pass (nvn_cube_group.h): six temps, one layer per member
     // 附件范围候选的版本在捕获任何附件之前取；建立途中有变化则不续用。
@@ -12885,7 +12893,7 @@ static uint64_t g_stat_s_only, g_stat_d_only;   // 其中只挂模板 / 只挂�
 #define HOIST_MAX 40   // 最多 4 组 ×（1 条设目标 + 8 条清除） | At most 4 groups × (1 set-target op + 8 clears)
 static const uint8_t *g_hoist_skip[HOIST_MAX]; static int g_hoist_n; static uint64_t g_hoist_groups;
 static int hoist_skipped(const uint8_t *p) { for (int i = 0; i < g_hoist_n; i++) if (g_hoist_skip[i] == p) return 1; return 0; }
-typedef struct { const uint8_t *p, *ret[8]; int ret_n, rest_i, bad; } fz_cursor;
+typedef struct { const uint8_t *p, *ret[8]; int ret_n, rest_i, bad, thru_waits; } fz_cursor;   // thru_waits: pass an event wait whose producer is already replayed (bad = 2 when one is not)
 static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **oa) {
     for (int guard = 0; guard < 1000000; guard++) {
         if (!c->p) return 0;
@@ -12899,7 +12907,12 @@ static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **o
             case OP_JUMP: memcpy(&c->p, a, 8); continue;
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8); if (c->ret_n >= 8) { c->bad = 1; return 0; }
                 c->ret[c->ret_n++] = c->p + h.size; c->p = (const uint8_t *)t; continue; }
-            case OP_WAIT_EVENT: c->p = NULL; return 0;   // another guest queue's work may come first: nothing is decided across it
+            case OP_WAIT_EVENT: {   // another guest queue's work may come first: nothing is decided across it ...
+                if (c->thru_waits) {   // ... unless the producer is already replayed (the same test the replay uses to not stop here)
+                    volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
+                    if (mtl_qo_event_ready(val, m, v)) { c->p += h.size; continue; }
+                    c->bad = 2; }
+                c->p = NULL; return 0; }
             default: break;
         }
         const uint8_t *p = c->p; c->p += h.size;
@@ -16766,6 +16779,34 @@ static void vis_count_begin(id<MTL4RenderCommandEncoder> en) {
 #include "nvn_mesh_indirect.inc"
 #include "nvn_mesh_batch.inc"
 #include "nvn_mesh_tasks.inc"
+/* Pending clears across a SetRenderTargets to the same targets (2026-11-08). The game clears its targets, sets the same
+   targets again and draws; the replay used to land the clears in a clear-only render pass at that SetRenderTargets and
+   the draws' pass then loaded the attachments again: on the M4 a store + load of the 1536x864 colour + depth
+   (~22 MB) twice a frame, plus two 384x216 ones. rp_begin_ex turns pending clears into Clear load actions, so when the
+   next operation that could touch the targets' memory is a draw (it opens the pass on these targets), the clears may
+   simply stay pending. Anything else first -- a dispatch, a copy, a texture clear, other targets, an event wait or
+   signal, a fence, the end of the stream -- keeps the old behaviour (the clears land now), so no consumer can see an
+   attachment before its clear. A draw that samples the cleared attachment is already handled by att_unstored_read
+   (rp_flush before it). OOT_KEEP_CLEARS=0 restores the flush. */
+static uint64_t g_rt_clear_kept;
+static int keep_clears_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_KEEP_CLEARS"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("OOT_KEEP_CLEARS=0：同目标重设时挂起的清除照旧刷成单独通道"); } return v; }
+static int clears_wait_for_draw(const uint8_t *next, const p_set_rt *r, int *stop) {   // stop: the op that decided (-1 stream end / wait, -2 depth, -3 guard)
+    if (g_ret_n > 8) { *stop = -2; return 0; }   // the cursor keeps 8 return addresses
+    fz_cursor c = {.p = next, .ret_n = g_ret_n}; memcpy(c.ret, g_ret, (size_t)g_ret_n * sizeof *g_ret);
+    for (int guard = 0; guard < 256; guard++) {
+        const uint8_t *q; op_hdr h; const void *a; if (!fz_next(&c, &q, &h, &a)) { *stop = -1; return 0; }   // stream end or an event wait
+        if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_) { *stop = -4; return 0; }
+        *stop = h.op;
+        switch (h.op) {
+            case OP_DRAW: case OP_DRAW_IDX: return 1;
+            case OP_SET_RT: if (!rt_same(r, (const p_set_rt *)a)) return 0; break;   // the same targets once more: keep looking
+            case OP_DISPATCH: case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_CLEAR_BUF:
+            case OP_WAIT_EVENT: case OP_SIGNAL_EVENT: case OP_FENCE_SYNC: return 0;
+            default: break;   // state and bindings, further clears (they join the pending set), barriers and uniform updates (nothing drawn yet)
+        }
+    }
+    *stop = -3; return 0;
+}
 static int g_oot_bar_probe_negative; /* Probe-only negative controls, never set by gameplay. */
 static void oot_bar_native(uint32_t bits) {
     oot_bar_sync();
@@ -17037,7 +17078,7 @@ frz_plain:;
     /* TOTK: unretained: g_enc holds the encoder (the encode-stage sentinel when streamed) until rp_end, and every path below
        that ends the pass returns without touching en again; as a strong local it was a retain + release on every draw.
        defer_replay draws whole replayed draws, which may end the pass: en_keep holds the encoder over it as before. */
-    if (!g_enc) mesh_batch_prefetch();   // OOT: grids for the mesh draws of the pass about to open, before it opens (nvn_mesh_batch.inc)
+    // OOT: the mesh batches for the pass about to open are made in rp_begin_ex (every opening path), not only here.
     __unsafe_unretained id<MTLRenderCommandEncoder> en = g_enc ? g_enc : rp_begin_ex(mode);
     NS_VALID_UNTIL_END_OF_SCOPE id en_keep = nil;
     g_fd_dw = NULL; g_fd_di = NULL;
@@ -18572,6 +18613,13 @@ void mtl_exec(const uint8_t *p) {
                    attachment) and in the clear ops still end the continued pass where needed. TOTK_RT_CONTINUE=0 turns it off. */
                 static int rt_cont = -1; if (rt_cont < 0) { const char *e = getenv("TOTK_RT_CONTINUE"); rt_cont = !(e && !strcmp(e, "0")); }
                 if (g_enc && g_enc_mode != 1 && !pend && R.has_rt && (tbdr_on() || rt_cont) && rt_same(&R.rt, r)) { g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); R.rt = *r; break; }
+                if (pend && !g_enc && R.has_rt && (tbdr_on() || rt_cont) && keep_clears_on() && rt_same(&R.rt, r)) {
+                    int stop = 0;
+                    if (clears_wait_for_draw(p + h.size, r, &stop)) {
+                        if (!g_rt_clear_kept++) MLOG("同目标重设：挂起的清除继续挂到下一通道的 load action（首例 通道 %llu）", g_stat_pass + 1);
+                        PD("M %llu 同目标重设，清除继续挂起", g_stat_pass + 1); R.rt = *r; break; }
+                    PD("M %llu 同目标重设但清除先落地：前瞻停在 op %d", g_stat_pass + 1, stop);
+                }
                 rp_flush(); R.rt = *r; R.has_rt = 1; break;
             }
             case OP_CLEAR_COLOR: {

@@ -53,7 +53,8 @@ static void mesh_batch_write(uint64_t lo,uint64_t size){mesh_batch_write_why(lo,
    never invalidate. The same rules as the native draw barriers' write test (oot_bar_shader_writes: rw), by range. */
 static uint64_t g_mb_wr_rt,g_mb_wr_sbuf,g_mb_wr_img,g_mb_wr_whole,g_mb_op_dispatch,g_mb_op_tex,g_mb_op_buf,g_mb_op_fence;
 static uint64_t g_mb_prefetch,g_mb_split_inval,g_mb_split_miss;   // batches made before a pass opened; splits whose source had been invalidated / had never been collected
-static uint64_t g_mb_end[8];   // why a look-ahead window ended: 0 stream end, 1 call depth, 2 corrupt op, 3 dispatch / copy / clear op, 4 update of a collected source, 5 update table full, 6 source cap or guard, 7 no look-ahead (g_exec_next unset or call depth)
+static uint64_t g_mb_end[9];   // why a look-ahead window ended: 0 stream end, 1 call depth, 2 corrupt op, 3 dispatch / copy / clear op, 4 update of a collected source, 5 update table full, 6 source cap or guard, 7 no look-ahead (g_exec_next unset or call depth), 8 an event wait not yet ready
+static int g_mb_last_why = -1; static uint64_t g_mb_last_pass;   // passdump: the latest window's end reason and the pass it ran in (why a later draw's source was never collected)
 static int mtk_owners(NvShader **ts,NvShader **ms);   // nvn_mesh_tasks.inc (included later): the current mesh draw's task / mesh shaders, 0 for other draws
 static int mesh_batch_tex_range(const tex_t *t,uint64_t *lo,uint64_t *n){if(!t||!t->mem||!t->L.size)return 0;*lo=(uintptr_t)t->mem;*n=t->L.size;return 1;}
 static void mesh_batch_whole(uint64_t *why){g_mb_wr_whole++;mesh_batch_write_why(0,UINT64_MAX,NULL,why);}
@@ -78,10 +79,10 @@ static void mesh_batch_context(void) {
         (unsigned long long)g_mb_inv_upd,(unsigned long long)g_mb_inv_op,(unsigned long long)g_mb_inv_post,(unsigned long long)g_mb_inv_written,(unsigned long long)g_mb_inv_dirty,(unsigned long long)g_mb_fallback,g_mb_n,(unsigned long long)atomic_load(&g_mb_verified),
         (unsigned long long)g_mb_cpu,(unsigned long long)g_mb_promoted,(unsigned long long)g_mb_kept_upd,(unsigned long long)g_mb_partial,(unsigned long long)g_mb_second,(unsigned long long)g_mb_updfull);
     if(atomic_load(&g_mesh_batch_dump)==0&&g_mb_runs&&g_mb_runs%2000==0&&g_mb_runs!=g_mb_last_report){g_mb_last_report=g_mb_runs;
-        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu); windows ended: stream-end %llu depth %llu corrupt %llu op %llu overlap %llu updates-full %llu cap %llu none %llu",
+        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu); windows ended: stream-end %llu depth %llu corrupt %llu op %llu overlap %llu updates-full %llu cap %llu none %llu wait %llu",
         (unsigned long long)g_mb_wr_rt,(unsigned long long)g_mb_wr_sbuf,(unsigned long long)g_mb_wr_img,(unsigned long long)g_mb_wr_whole,(unsigned long long)g_mb_op_dispatch,(unsigned long long)g_mb_op_tex,(unsigned long long)g_mb_op_buf,(unsigned long long)g_mb_op_fence,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_splits,
         (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch,
-        (unsigned long long)g_mb_end[0],(unsigned long long)g_mb_end[1],(unsigned long long)g_mb_end[2],(unsigned long long)g_mb_end[3],(unsigned long long)g_mb_end[4],(unsigned long long)g_mb_end[5],(unsigned long long)g_mb_end[6],(unsigned long long)g_mb_end[7]);}
+        (unsigned long long)g_mb_end[0],(unsigned long long)g_mb_end[1],(unsigned long long)g_mb_end[2],(unsigned long long)g_mb_end[3],(unsigned long long)g_mb_end[4],(unsigned long long)g_mb_end[5],(unsigned long long)g_mb_end[6],(unsigned long long)g_mb_end[7],(unsigned long long)g_mb_end[8]);}
 }
 static mesh_batch_entry *mesh_batch_find(uint64_t source) {
     for(unsigned i=0;i<g_mb_n;i++)if(g_mb[i].source==source){
@@ -137,7 +138,10 @@ typedef struct {uint64_t lo,n;const void *a;} mb_upd;                       // a
 typedef struct {const void *a;uint32_t cnt,first;uint8_t cpu,next;} mb_fill;   // per collected source: the update that supplies its value (cpu), or a GPU read (cpu 0); next: an older value is still valid
 /* Collects one mesh draw's source for this batch. Returns 0 when the window must end here. */
 static int mesh_batch_collect(uint64_t source,uint64_t *sources,mb_fill *fill,unsigned *n,const mb_upd *upd,unsigned nu) {
-    if(*n==MESH_BATCH_CAP||!mesh_batch_eligible(source))return 1;
+    if(*n==MESH_BATCH_CAP||!mesh_batch_eligible(source)){
+        PD("Z %llu mb-collect reject src=%#llx cap=%d tracked=%d known=%d aliases=%d",g_stat_pass,(unsigned long long)source,*n==MESH_BATCH_CAP,
+           source?nvn_dirty_tracked((void *)(uintptr_t)source,8):-1,source?mtl_addr_known(source,8):-1,totk_vpool_aliases_used());
+        return 1;}
     for(unsigned i=0;i<*n;i++)if(sources[i]==source)return 1;
     const mb_upd *u=NULL;int partial=0;   // the last update seen that writes this source
     for(unsigned i=0;i<nu;i++){const mb_upd *x=&upd[i];if(x->lo<source+8&&source<x->lo+x->n){if(x->lo<=source&&source+8<=x->lo+x->n){u=x;partial=0;}else{u=NULL;partial=1;}}}
@@ -149,23 +153,26 @@ static int mesh_batch_collect(uint64_t source,uint64_t *sources,mb_fill *fill,un
     sources[*n]=source;fill[*n]=(mb_fill){u->a,w[0],w[1],1,e!=NULL};(*n)++;return 1;
 }
 static void mesh_batch_prepare(uint64_t current) {
+    int prev_why=g_mb_last_why;uint64_t prev_pass=g_mb_last_pass;   // the window before this one (passdump: why a split's source was never collected)
     uint64_t sources[MESH_BATCH_CAP];mb_fill fill[MESH_BATCH_CAP];unsigned n=0;
     mb_upd upd[MESH_BATCH_UPD_CAP];unsigned nu=0;
     if(mesh_batch_eligible(current)&&!mesh_batch_find(current)){sources[n]=current;fill[n]=(mb_fill){0};n++;}
-    if(g_exec_next&&g_ret_n<=8){fz_cursor c={.p=g_exec_next,.ret_n=g_ret_n};memcpy(c.ret,g_ret,(size_t)g_ret_n*sizeof *g_ret);int why=6;
+    if(g_exec_next&&g_ret_n<=8){fz_cursor c={.p=g_exec_next,.ret_n=g_ret_n,.thru_waits=1};memcpy(c.ret,g_ret,(size_t)g_ret_n*sizeof *g_ret);int why=6;   // thru_waits: an event wait whose producer is already replayed does not end the window (the replay does not stop there either)
         for(unsigned guard=0;guard<200000&&n<MESH_BATCH_CAP;guard++){
-            const uint8_t *p;op_hdr h;const void *a;if(!fz_next(&c,&p,&h,&a)){why=c.bad?1:0;break;}
+            const uint8_t *p;op_hdr h;const void *a;if(!fz_next(&c,&p,&h,&a)){why=c.bad==2?8:c.bad?1:0;break;}
             if(h.size<8||(h.size&7)||h.op>=OP_COUNT_){why=2;break;}
             if(h.op==OP_DISPATCH||h.op==OP_COPY_B2B||h.op==OP_CLEAR_BUF||h.op==OP_COPY_T2B||h.op==OP_COPY_B2T||h.op==OP_COPY_T2T||h.op==OP_CLEAR_TEX||h.op==OP_FENCE_SYNC){why=3;break;}
             if(h.op==OP_UPDATE_UB){uint64_t lo,size;memcpy(&lo,a,8);memcpy(&size,(const uint8_t *)a+8,8);int overlap=!size||size>UINT64_MAX-lo;for(unsigned k=0;k<n&&!overlap;k++)overlap=sources[k]<lo+size&&lo<sources[k]+8;if(overlap){why=4;break;}
                 if(h.size<16+size||nu==MESH_BATCH_UPD_CAP){g_mb_updfull++;why=5;break;}upd[nu++]=(mb_upd){lo,size,a};}
             if(h.op==OP_DRAW&&h.size>=8+sizeof(p_draw)){const p_draw *draw=a;if(draw->prim==0x40&&draw->ind&&!mesh_batch_collect(draw->ind,sources,fill,&n,upd,nu)){why=4;break;}}
         }
-        g_mb_end[why]++;
-    } else g_mb_end[7]++;
+        g_mb_end[why]++;g_mb_last_why=why;g_mb_last_pass=g_stat_pass;
+    } else {g_mb_end[7]++;g_mb_last_why=7;g_mb_last_pass=g_stat_pass;}
     if(!n)return;mesh_batch_pipeline();
     if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;if(!current)return;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
-    if(g_enc){int had=0;for(unsigned j=0;j<g_mb_n&&!had;j++)had=g_mb[j].source==current;if(had)g_mb_split_inval++;else g_mb_split_miss++;g_mb_splits++;rp_end();}blit_close();
+    if(g_enc){int had=0;for(unsigned j=0;j<g_mb_n&&!had;j++)had=g_mb[j].source==current;if(had)g_mb_split_inval++;else g_mb_split_miss++;g_mb_splits++;
+        PD("Z %llu mesh-batch split src=%#llx %s table=%u prev-window: pass=%llu end=%d (0 stream 3 op 7 none) this-window: end=%d new=%u",g_stat_pass,(unsigned long long)current,had?"invalidated":"never-collected",g_mb_n,(unsigned long long)prev_pass,prev_why,g_mb_last_why,n);
+        rp_end();}blit_close();
     typedef struct {uint64_t source,output;} job;
     unsigned padded=(n+63u)&~63u;id<MTLBuffer> buffer;size_t at=arena_alloc((size_t)padded*sizeof(job)+(size_t)n*16,&buffer);
     job *jobs=(job *)((uint8_t *)buffer.contents+at);memset(jobs,0,(size_t)padded*sizeof(job));uint64_t out=buffer.gpuAddress+at+(uint64_t)padded*sizeof(job);unsigned issued=0,gpu_jobs=0;

@@ -755,7 +755,10 @@ NVN_NOPROTO(nvnCommandBufferSetComputeWorkloadPriority, void, NVNcommandBuffer *
  (void)c;static _Atomic int once;if(!atomic_exchange(&once,1))LOG("[nvn] compute workload priority %d: native Metal scheduling, submission order preserved",priority);
 }
 NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) {
-    (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetComputeOverlapMode %d: the host runs compute in submission order", mode); }
+    /* 2026-11-08 diagnostic: the first calls with their value and command buffer (the game calls this once a frame; the value
+       decides whether consecutive dispatches may overlap on NVN, i.e. whether the host's per-dispatch barrier is needed). */
+    static _Atomic int n; int k = atomic_fetch_add(&n, 1);
+    if (k < 48) LOG("[nvn] nvnCommandBufferSetComputeOverlapMode %d (call %d, cmdbuf %p): the host runs compute in submission order", mode, k, (void *)c); }
 #endif
 
 // TOTK: NVNshaderDataExt = {data, control, reserved}, 0x18 bytes (runtime dump of main's call; reserved observed 0).
