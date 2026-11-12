@@ -53,10 +53,12 @@ static int netbp_region(const void *mem, uint64_t f, NSUInteger *w, NSUInteger *
 static int netbp_tid(int slot, int image) { return image ? (slot < 32 ? (int)(S.img[5][slot] & 0xfffff) : 0) : (slot < 128 ? (int)(S.tex[5][slot] & 0xfffff) : 0); }
 static id<MTLTexture> netbp_tex(int tid, int image) { void *tv = NULL; if (tid) (void)(image ? image_fast_rid(tid, &tv) : tex_fast_rid(tid, &tv)); return (__bridge id<MTLTexture>)tv; }
 /* The network: a dispatch that samples C in the frame a335c1db wrote it. Its image binding is O. */
-static int netbp_is_network(NvShader *cs, int *o_slot) {
+static int netbp_is_network_c(NvShader *cs, int *o_slot, uint64_t c_serial);
+static int netbp_is_network(NvShader *cs, int *o_slot) { return netbp_is_network_c(cs, o_slot, g_nb_c_serial); }
+static int netbp_is_network_c(NvShader *cs, int *o_slot, uint64_t c_serial) {
     int reads_c = 0; *o_slot = -1;
     for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
-        if (b->kind == NVN_RB_TEX) { int tid = netbp_tid(b->reg, 0); if (tid && tid < g_ntreg && g_treg[tid].t.serial == g_nb_c_serial) reads_c = 1; }
+        if (b->kind == NVN_RB_TEX) { int tid = netbp_tid(b->reg, 0); if (tid && tid < g_ntreg && g_treg[tid].t.serial == c_serial) reads_c = 1; }
         else if (b->kind == NVN_RB_IMG && *o_slot < 0) *o_slot = b->reg; }
     return reads_c && *o_slot >= 0;
 }
@@ -67,7 +69,22 @@ static void netbp_publish_internal(void) {
     if (tt && tt < g_ntreg && netbp_region((const void *)g_treg[tt].t.mem, atomic_load(&g_cur_frame), &w, &h)) { atomic_store(&g_scene_w, (uint32_t)w); atomic_store(&g_scene_h, (uint32_t)h); }
 }
 /* 1: this dispatch is skipped or replaced; 0: it runs as usual. Called on the replay thread before the dispatch. */
+/* The UI of a frame (2026-11-09, the aspect ratio's UI squeeze): the draws into O, the canvas the network writes, after the
+   network in the same frame (nh1's frame log: every draw on the canvas after it is a HUD quad). Recorded whether or not
+   the bypass is on. */
+static uint64_t g_ui_mix_frame = ~0ull, g_ui_c_serial, g_ui_frame = ~0ull, g_ui_canvas;
+static int oot_ui_draw(void) {
+    return g_ui_canvas && atomic_load(&g_cur_frame) == g_ui_frame && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_ui_canvas;
+}
+static void netbp_note_ui(NvShader *cs) {
+    uint64_t f = atomic_load(&g_cur_frame);
+    if (!strncmp(cs->key, NB_MIX_KEY, 16)) { int tc = netbp_tid(NB_C_SLOT, 1); g_ui_c_serial = tc && tc < g_ntreg ? g_treg[tc].t.serial : 0; g_ui_mix_frame = f; return; }
+    int o_slot; if (g_ui_mix_frame != f || !g_ui_c_serial || !netbp_is_network_c(cs, &o_slot, g_ui_c_serial)) return;
+    int to = netbp_tid(o_slot, 1); if (to && to < g_ntreg) { g_ui_canvas = g_treg[to].t.serial; g_ui_frame = f; }
+    g_ui_mix_frame = ~0ull;
+}
 static int netbp_dispatch(NvShader *cs) {
+    netbp_note_ui(cs);
     if (!strncmp(cs->key, NB_MIX_KEY, 16)) netbp_publish_internal();
     if (!netbp_on()) { g_nb_ready = 0; return 0; }
     uint64_t f = atomic_load(&g_cur_frame);
