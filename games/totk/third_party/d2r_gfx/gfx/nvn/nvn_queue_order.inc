@@ -31,6 +31,7 @@ extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
 extern void mtl_ucap_free(void *c);
 extern void *mtl_ucap_overlay(const void *base, const void *over);   // over NULL: a copy (the snapshot takes ownership of what it is given)
 extern void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *cap);
+extern void mtl_sub_snapshot_ubos_rest(const uint64_t *h, int n, int ncur, uint64_t top, void *cap);
 extern void mtl_sub_index(const uint64_t *h, int n);
 
 typedef struct qo_q qo_q;
@@ -207,7 +208,7 @@ static int qo_run(qo_item *it) {
         for (int k = 0; k < it->ncur; k++) rp[k] = (uint64_t)(uintptr_t)it->cur[k];
         for (int i = it->next_h; i < n; i++) rp[it->ncur + i - it->next_h] = h[i];
         qo_check_rest(it, rp, nr);
-        mtl_sub_snapshot_ubos_cap(rp, nr, it->ucap ? mtl_ucap_overlay(it->ucap, NULL) : NULL);
+        mtl_sub_snapshot_ubos_rest(rp, nr, it->ncur, it->ncur && it->next_h > 0 ? h[it->next_h - 1] : 0, it->ucap ? mtl_ucap_overlay(it->ucap, NULL) : NULL);   /* the rest from the copies' sorted lists, by the cursors' places in them */
         if (rp != rest) free(rp);
     } else { qo_check_rest(it, h, n); mtl_sub_snapshot_ubos_cap(h, n, it->ucap ? mtl_ucap_overlay(it->ucap, NULL) : NULL);   /* uniforms as of the submit call (a copy: the snapshot owns it) */ }
     mtl_sub_index(h + it->next_h, n - it->next_h);
