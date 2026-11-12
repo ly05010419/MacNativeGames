@@ -479,10 +479,13 @@ def build(args, source):
     if args.platform not in ('macos','ios'):raise ValueError('Ocarina of Time has macOS and iOS build paths only')
     device=args.platform=='ios'
     if args.update or args.dlc or args.mod:raise ValueError('use the complete original update 131072 in the dump/NUP')
-    source=Path(source).resolve();work=args.work.expanduser().resolve() if args.work else source.parent/'OcarinaOfTime_build'
+    source=Path(source).resolve()
+    out=args.out.expanduser().resolve() if args.out else source.parent/'Ocarina of Time.app'
+    # without --work: the folder the app records, else MacNativeGames-work/oot beside the apps folder (build_app.default_work)
+    work,why=(args.work.expanduser().resolve(),'given with --work') if args.work else build_helpers().default_work(out,'oot')
+    print(f'work folder {work} ({why})',flush=True)
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
-    out=args.out.expanduser().resolve() if args.out else source.parent/'Ocarina of Time.app'
     if out.suffix!='.app' and not (device and out.suffix=='.ipa'):raise ValueError('output must end in .app'+(' or .ipa' if device else ''))
     if out==repo or repo in out.parents:raise ValueError('App must remain outside the source checkout')
     if args.vr or args.native_4k or args.native_5k:raise ValueError('this title currently uses its original rendering options')

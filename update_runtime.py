@@ -426,12 +426,71 @@ def replace_native_5k(res, action, made, version='v143'):
             build_app.copy_tree(folder, target)
 
 
+def plan(app, work=None):
+    """Which of the three updates the app needs, found by the checks main() makes before it touches anything, and nothing
+    is changed (--plan; MNG Launcher runs the fastest that fits, user 2026-11-12: "不要用最慢的形式打包"):
+      express  update_runtime.py "<app>"         no game files or keys
+      fast     update_runtime.py "<app>" --seed  new startup shaders from the work folder's files
+      full     build_app.py with the game files and keys
+      error    the app records a work folder on a disk that is not connected (reason says what to do)
+    with the reason in words, the game, its version and the work folder."""
+    app = Path(app).expanduser().resolve()
+    def result(kind, reason, **extra):
+        return {'app': str(app), 'kind': kind, 'reason': reason, **extra}
+    try:
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    except (OSError, ValueError):
+        return result('full', f'{app.name} is not a Mac app (no readable Contents/Info.plist)')
+    def work_folder(name):
+        return (Path(work).expanduser().resolve(), 'given') if work else build_app.recorded_work_folder(app, name)
+    if ocarina_app(app):
+        try:
+            folder, why = work_folder('OcarinaOfTime_build')
+        except BuildError as e:
+            return result('error', str(e), game='oot')
+        return result('express', 'Ocarina of Time: the express update checks its own shaders and says when a full build is needed',
+                      game='oot', work=str(folder), work_why=why)
+    ns2 = next((v for v, (_, _, executable) in APPS.items() if v in ('dkb', 'pkp') and executable == info.get('CFBundleExecutable')), None)
+    if ns2:
+        return result('full', f'{APPS[ns2][0]} has only the normal update (build_app.py with its dump folder)', game=ns2)
+    try:
+        game, version = app_identity(app)
+    except BuildError as e:
+        return result('full', str(e))
+    shown = dict(game=game, version=version, display_version=VERSIONS[version]['display_version'])
+    try:
+        folder, why = work_folder('BotW_build' if game == 'botw' else 'TOTK_build')
+    except BuildError as e:
+        return result('error', str(e), **shown)
+    shown.update(work=str(folder), work_why=why)
+    res = app / 'Contents/Resources/totk'
+    data = res / f'build/game-data/{version}'
+    if not all((data / name).is_file() for name in build_app.game_data_files(version)):
+        if not (folder / f'totk/extracted/{version}').is_dir():
+            return result('full', 'the app has no game data folder and its work folder holds no files of its build to make one', **shown)
+        return result('express', 'the app has no game data folder yet: the express update makes it once from the work folder', **shown)
+    try:
+        check_game_data(data, res, version)
+        check_rewriter(data, res, version, rewriter_sha256())
+    except BuildError as e:
+        return result('full', str(e), **shown)
+    if check_seed_chain(res, runtime_chain(), remake=True):
+        try:
+            check_work_files(folder / 'totk', data, version)
+        except BuildError as e:
+            return result('full', f'the startup shaders must be made again and the work folder cannot: {e}', **shown)
+        return result('fast', 'the startup shaders are of another translation chain: they are made again from the work folder', **shown)
+    return result('express', 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt', **shown)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
     ap.add_argument('--work', type=Path, help='work folder to build in (default: the one the app records, MNGWorkFolder; an app '
                                               'that records none: TOTK_build, BotW_build or OcarinaOfTime_build next to it); an '
                                               'app made before the game data folder existed, and --seed, need the one of its build')
+    ap.add_argument('--plan', action='store_true', help='print which update the app needs (express, fast or full) as JSON, '
+                                                        'and change nothing')
     ap.add_argument('--vr', action='store_true', help='prepare TotK 1.4.3 exact VR render targets from its verified build inputs')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
@@ -439,6 +498,9 @@ def main(argv):
                     help='Mac TOTK 1.4.3 / BotW 1.6.0 and 1.9.0: include/omit 5K; without a recorded choice, include it on 32 GB-plus Macs '
                          'when the matching verified build cache is available. Saved resolution is not changed')
     args = ap.parse_args(argv)
+    if args.plan:
+        print(json.dumps(plan(args.app, args.work), ensure_ascii=False))
+        return
     app = args.app.expanduser().resolve()
     if ocarina_app(app):
         if args.seed or args.native_5k:

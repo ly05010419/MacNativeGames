@@ -94,7 +94,9 @@ class GameSelectionTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
+        # the game files one folder down, so the default work folder (beside the folder of the app) stays in here
+        self.root = Path(self._tmp.name) / 'games'
+        self.root.mkdir()
 
     def test_ticket_title_ids_and_kinds(self):
         for title_id in (BOTW_BASE, BOTW_UPDATE, BOTW_DLC):
@@ -190,7 +192,8 @@ class GameSelectionTests(unittest.TestCase):
         error, started = self.run_main(self.card_image())
         self.assertIsInstance(error, Stop)
         self.assertEqual(started['step_code_botw'].call_args.kwargs['version'], 'botw160')
-        self.assertEqual(started['prepare_work'].call_args[0][0], self.root.resolve() / 'BotW_build')
+        # without --work: build_app.default_work, MacNativeGames-work/botw beside the folder of the app (one rule with MNG Launcher)
+        self.assertEqual(started['prepare_work'].call_args[0][0], build_app.default_work(self.root.resolve() / 'Breath of the Wild.app', 'botw')[0])
 
     def test_botw_card_image_with_the_1_9_0_update_is_1_9_0(self):
         # a card image that holds the 1.9.0 update has the same base + update + add-on-content structure:
@@ -254,9 +257,9 @@ class GameSelectionTests(unittest.TestCase):
         started['step_code_botw'].assert_not_called()
 
     def test_botw_build_fonts_serve_botw_only(self):
-        # valid fonts in BotW_build next to the game file pass the early NSP font check; a TOTK NSP stops right after
-        # identify_game, before any long step, as without them
-        botw_fonts = lambda folder: 'BotW_build' in str(folder)
+        # valid fonts in Breath of the Wild's default work folder pass the early NSP font check; a TOTK NSP stops right
+        # after identify_game, before any long step, as without them
+        botw_fonts = lambda folder: 'MacNativeGames-work/botw' in str(folder)
         with mock.patch.object(build_app, 'fonts_valid', side_effect=botw_fonts):
             base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
             error, started = self.run_main(base, update, fonts=False)
@@ -277,7 +280,7 @@ class GameSelectionTests(unittest.TestCase):
         self.assertIsInstance(error, Stop)
         started['step_code'].assert_called_once()
         started['step_code_botw'].assert_not_called()
-        self.assertEqual(started['prepare_work'].call_args[0][0], self.root.resolve() / 'TOTK_build')
+        self.assertEqual(started['prepare_work'].call_args[0][0], build_app.default_work(self.root.resolve() / 'Tears of the Kingdom.app', 'totk')[0])
 
 
 if __name__ == '__main__':

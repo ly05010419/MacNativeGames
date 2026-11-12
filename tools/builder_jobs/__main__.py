@@ -1,4 +1,4 @@
-"""python -m tools.builder_jobs classify|checks|build ... (see __init__.py)."""
+"""python -m tools.builder_jobs classify|checks|apps|build ... (see __init__.py)."""
 import argparse
 import json
 from pathlib import Path
@@ -15,6 +15,8 @@ def main(argv):
     c.add_argument('--work', help='the work folder the build will use (its extracted fonts count)')
     k = sub.add_parser('checks', help="what this Mac still needs (one JSON object)")
     k.add_argument('--work', default=str(Path.home()))
+    i = sub.add_parser('apps', help='the game apps on this Mac and the update each needs (one JSON object)')
+    i.add_argument('--apps-dir', help="the Launcher's apps folder, looked in besides what macOS knows")
     b = sub.add_parser('build', help='build; one JSON event per line')
     b.add_argument('request', type=Path)
     b.add_argument('--history', type=Path, default=HISTORY)
@@ -26,6 +28,10 @@ def main(argv):
     if a.job == 'checks':
         from tools.builder_jobs.checks import checks
         print(json.dumps({'checks': checks(a.work)}, ensure_ascii=False))
+        return 0
+    if a.job == 'apps':
+        from tools.builder_jobs.installed import apps
+        print(json.dumps({'apps': apps(a.apps_dir)}, ensure_ascii=False))
         return 0
     from tools.builder_jobs.build_job import main as build
     return build(a.request, a.history)

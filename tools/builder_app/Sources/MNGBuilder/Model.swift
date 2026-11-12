@@ -24,6 +24,9 @@ final class Model: ObservableObject {
     @Published var lines: [String] = []
     @Published var failure: BuildEvent?
     @Published var appPath: String?
+    @Published var installed: [InstalledReport.App] = []
+    @Published var updating: String?     // the installed app being updated (its progress shows in its list)
+    @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var outputDir: String { didSet { save() } }
     @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
 
@@ -33,10 +36,39 @@ final class Model: ObservableObject {
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         outputDir = defaults.string(forKey: "outputDir") ?? home + "/Applications"
-        workRoot = defaults.string(forKey: "workRoot") ?? Paths.support.appendingPathComponent("work").path
+        // Empty: the one folder rule (build_app.default_work, MacNativeGames-work beside the apps folder). The window's
+        // first default (Application Support/…/Builder/work) counts as empty, so its apps keep the folder they record.
+        let saved = defaults.string(forKey: "workRoot") ?? ""
+        workRoot = saved == Paths.support.appendingPathComponent("work").path ? "" : saved
         paths = defaults.stringArray(forKey: "paths") ?? []
         keysPath = defaults.string(forKey: "keys")
-        Task { await runChecks(); if !paths.isEmpty { await classify() } }
+        NotificationCenter.default.addObserver(forName: .mngOpenFiles, object: nil, queue: .main) { [weak self] note in
+            let urls = note.object as? [URL] ?? []
+            Task { @MainActor in self?.open(urls) }
+        }
+        let pending = Delegate.pending; Delegate.pending = []
+        Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
+    }
+
+    /// Files given to the app (open -a "MNG Launcher" <files>, or dropped on its icon): keys go to step 2, the rest to
+    /// step 1, so a player's AI can start the Launcher with everything filled in.
+    func open(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let keys = urls.filter { $0.pathExtension.lowercased() == "keys" }
+        if let k = keys.last { keysPath = k.path }
+        let rest = urls.filter { $0.pathExtension.lowercased() != "keys" }
+        if !rest.isEmpty { paths = rest.map { $0.path } }
+        save()
+        Task { await classify() }
+    }
+
+    func loadInstalled() async {
+        do {
+            let data = try await Job.collect(["apps", "--apps-dir", outputDir])
+            installed = try JSONDecoder().decode(InstalledReport.self, from: data).apps
+        } catch {
+            installed = []
+        }
     }
 
     private func save() {
@@ -55,6 +87,7 @@ final class Model: ObservableObject {
     /// The app a build of the current plan writes, when it is already there.
     var existingApp: String? {
         guard let name = plan?.app_name else { return nil }
+        if let game = plan?.game, let app = installed.first(where: { $0.game == game })?.app { return app }
         let path = (outputDir as NSString).appendingPathComponent(name + ".app")
         return FileManager.default.fileExists(atPath: path) ? path : nil
     }
@@ -131,7 +164,20 @@ final class Model: ObservableObject {
 
     func build() {
         guard let plan, canBuild else { return }
-        let request = BuildRequest(plan: plan, output_dir: outputDir, work_root: workRoot, platform: "macos")
+        // an installed app of this game is built into where it is, with the work folder it records
+        let installedApp = plan.game.flatMap { g in installed.first(where: { $0.game == g })?.app }
+        updating = nil
+        start(BuildRequest(plan: plan, output_dir: outputDir, work_root: workRoot, platform: "macos", app: installedApp))
+    }
+
+    /// An installed app, without files: the fastest update that fits (express, else fast; the job refuses a full one).
+    func update(_ app: InstalledReport.App) {
+        guard phase != .building && phase != .cancelling else { return }
+        updating = app.app
+        start(BuildRequest(update: app.app))
+    }
+
+    private func start(_ request: BuildRequest) {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("mng-build-request.json")
         do {
             try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
@@ -155,7 +201,7 @@ final class Model: ObservableObject {
             append(line); return
         }
         switch e.event {
-        case "plan": measured = e.measured ?? false; appPath = e.app
+        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"
         case "stage": stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
         case "step": step = e.name ?? ""; stepCount = nil
         case "progress":
@@ -183,6 +229,7 @@ final class Model: ObservableObject {
         if phase == .building || phase == .cancelling {   // the job ended without its 'done' line
             phase = code == 0 ? .done : .failed
         }
+        Task { await loadInstalled() }   // an app was made or updated: what it needs now
     }
 
     func play() {

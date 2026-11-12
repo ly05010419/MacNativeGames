@@ -36,7 +36,7 @@
 
 **系统字体**：本体是 **NSP** 时需要，**旷野之息**一律需要。二选一：
 - `--firmware <文件夹>`：你导出的固件，一个装着 `.nca` 文件的文件夹（压缩包先解开），或已安装固件的 `registered` 文件夹。
-- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `TOTK_build/totk/extracted/firmware/shared-fonts`。
+- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `<work folder>/totk/extracted/firmware/shared-fonts` (by default `~/MacNativeGames-work/totk/…`)。
 
 王国之泪的 XCI 自带字体，不用另给。
 
@@ -47,11 +47,11 @@
 | 只有本体 | 25 GB | 45 GB |
 | 加更新 | 40 GB | 60 GB |
 
-工作目录默认建在游戏文件旁边（`TOTK_build`；旷野之息是 `BotW_build`）。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
+不带 `--work` 时，工作目录用 `-o` 那个 App 记录的；没有记录就用放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`（App 在 `~/Applications` 或 `/Applications` 时都是 `~/MacNativeGames-work/totk`）。MNG Launcher 用同一条规则。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
 
 ## 用窗口打包
 
-**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
+**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开（帮你的 AI 就这样做），第一、二步会自动填好。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
 
 不想敲命令的话：装好下面第 1 步的工具（窗口要 Tk：python.org 的 Python 自带；用 Homebrew 的 Python 要再 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
 
@@ -136,7 +136,7 @@ Mac 上的王国之泪 1.4.3、旷野之息 1.6.0 / 1.9.0 在构建机器有 **3
 
 ```sh
 # 1.6.0，卡带镜像（本体、更新、DLC 在同一个 XCI 里）
-python3.14 build_app.py "<旷野之息 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
+python3.14 build_app.py "<旷野之息 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/MacNativeGames-work/totk/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
 
 # 1.9.0（或 1.6.0），用 NSP：本体加更新，DLC 包都可选
 python3.14 build_app.py "<旷野之息本体.nsp>" -k "<prod.keys>" --update "<1.9.0 更新.nsp>" --dlc "<DLC 1.nsp>" --dlc "<DLC 2.nsp>" --firmware "<固件文件夹>" -o "/Applications/Breath of the Wild.app"

@@ -33,7 +33,7 @@ On macOS 15, use the community fork by [1918662410-ship-it](https://github.com/1
 
 **System fonts**, needed when the base game is an **NSP** and always for **Breath of the Wild**. Give one of:
 - `--firmware <folder>`: your firmware dump as a folder of `.nca` files (unzip it first), or an installed firmware `registered` folder.
-- `--shared-fonts <folder>`: the six `.bfttf` files an earlier Tears of the Kingdom build extracted, in `TOTK_build/totk/extracted/firmware/shared-fonts`.
+- `--shared-fonts <folder>`: the six `.bfttf` files an earlier Tears of the Kingdom build extracted, in `<work folder>/totk/extracted/firmware/shared-fonts` (by default `~/MacNativeGames-work/totk/…`).
 
 A Tears of the Kingdom XCI carries the fonts itself.
 
@@ -44,11 +44,11 @@ A Tears of the Kingdom XCI carries the fonts itself.
 | base game only | 25 GB | 45 GB |
 | with an update | 40 GB | 60 GB |
 
-The work folder is created next to the game file (`TOTK_build`, or `BotW_build` for Breath of the Wild). Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
+Without `--work`, the work folder is the one the app at `-o` records, else `MacNativeGames-work/<game>` beside the folder that holds the app (for `~/Applications`: `~/MacNativeGames-work/totk`; for `/Applications`: `~/MacNativeGames-work/totk` too). MNG Launcher uses the same rule. Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
 
 ## Build with a window
 
-**New: MNG Launcher, the drag-and-drop builder.** `python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app` (it carries its own Python): step 1 drop the game, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress shown the whole way. Mac apps of every game for now; details in [builder-app.md](builder-app.md). The older window below keeps the Mods, Controls and Saves tabs.
+**New: MNG Launcher, the drag-and-drop builder.** `python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app` (it carries its own Python): step 1 drop the game, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress shown the whole way. Games already on this Mac are listed at the top with an **Update** button: it needs no game files and runs the fastest update that fits (express, else fast; a full build only when it must). Started as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"` (what an AI helping you does), it opens with steps 1 and 2 filled in. Mac apps of every game for now; details in [builder-app.md](builder-app.md). The older window below keeps the Mods, Controls and Saves tabs.
 
 Rather not type the command? With the tools of step 1 below installed, double-click **Build Game.command** in this folder (or run `python3.14 -m tools.builder`). A window opens: choose the game, then your game file, update, `prod.keys` and, when the game needs them, a firmware or shared-fonts folder (the work folder and the output app are under **Advanced**). **Check files** checks this Mac and your files and shows each problem, with the exact command that fixes it when there is one. **Build app** then runs `build_app.py` with those paths, and shows its four stages, the elapsed time and the log. When it is done, **Open app** and **Show in Finder** are one click away. Nothing is copied: the window saves the paths you chose, and the game, version, app and commit of the last successful build, in `~/Library/Application Support/MacNativeGames/Builder/settings.json`. Each run's output is also saved as `~/Library/Logs/MacNativeGames/builder-<game>-<date>-<time>.log`.
 
@@ -137,7 +137,7 @@ The same script builds Breath of the Wild. It always needs fonts (see [What you 
 
 ```sh
 # 1.6.0 from the card image (base + update + DLC in one XCI)
-python3.14 build_app.py "<botw 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
+python3.14 build_app.py "<botw 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/MacNativeGames-work/totk/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
 
 # 1.9.0 (or 1.6.0) from NSPs: base + update, each DLC pack optional
 python3.14 build_app.py "<botw base.nsp>" -k "<prod.keys>" --update "<1.9.0 update.nsp>" --dlc "<dlc 1.nsp>" --dlc "<dlc 2.nsp>" --firmware "<firmware folder>" -o "/Applications/Breath of the Wild.app"
@@ -231,7 +231,7 @@ Keep two kinds of folders apart, for every game (Tears of the Kingdom, Breath of
 | **Keep** | the app (`-o`), your saves and settings (`~/Library/Application Support/MacNativeGames/<game>`), the game data folder of `--mac-game-data library` | No: these are what you play and what you cannot make again. |
 | **Work** | the work folder (`--work`): extracted game files, translated shaders, pipeline caches, logs | Yes, at any time. The next build makes it again (it then needs the game file and keys again); a runtime update needs it, so delete it only when you would rebuild anyway. |
 
-- Choose one work folder per game and version, outside the `MacNativeGames` checkout (the build refuses one inside it) and outside the folder that holds your apps, on the same APFS volume as the app (the game data is then cloned, not copied). For example `<disk>/MacNativeGames-work/<game>` next to `<disk>/Applications`. Give it to every build of that game with `--work`.
+- One work folder per game, outside the `MacNativeGames` checkout (the build refuses one inside it) and outside the folder that holds your apps, on the same APFS volume as the app (the game data is then cloned, not copied): `<disk>/MacNativeGames-work/<game>` next to `<disk>/Applications`. That is the default of `build_app.py` without `--work` (after the folder the app records) and of MNG Launcher (`build_app.default_work`, one rule for both), so builds and updates from either find the same files and can be fast.
 - The app records its work folder (`MNGWorkFolder`) and the Python that built it (`MNGBuildPython`) in its `Info.plist`; `update_runtime.py` and the Update page use them. Read them with `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"`. Never point two builds of different games at one work folder while they run.
 - **An existing install (for an AI helping you: check this before any build or update).** Read `MNGWorkFolder` of the app:
   - it names an existing folder that is not inside the checkout or the apps folder: nothing to do;

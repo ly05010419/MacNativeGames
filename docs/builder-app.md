@@ -2,7 +2,7 @@
 
 `MNG Launcher.app` (the drag-and-drop builder) turns a player's own game files into a game app in one window: drop the files, press
 **Build and Play**, watch the progress, and the game starts when the build is done. It runs the same `build_app.py`
-as the command line; it adds no build step of its own. Mac apps of every game `build_app.py` builds (Tears of the
+and `update_runtime.py` as the command line, with the same folder rule; it adds no build step of its own. Mac apps of every game `build_app.py` builds (Tears of the
 Kingdom, Breath of the Wild, Ocarina of Time, Donkey Kong Bananza, Pokémon Pokopia) for now; iPhone and iPad come next.
 
 The older Tk window (`tools/builder`, [builder.md](builder.md)) stays for its Mods, Controls and Saves tabs.
@@ -21,6 +21,11 @@ against its pinned SHA-256, plus `cryptography` at the build's own pin), records
 after `git pull`, the next build uses the new code; make the app again only when `tools/builder_app` changed.
 
 ## What the player does
+
+**Games on this Mac** (at the top, when there are any): every app of these games macOS knows (LaunchServices) and that is
+still there, plus those in the apps folder, with the update each needs (`update_runtime.py --plan`). **Update** needs no
+game files or keys: it runs the express update, or the fast one (`--seed`) when the startup shaders must be made again,
+in place, with the work folder the app records. When only a full build fits, it says why and asks for the game files.
 
 The window is three numbered steps, top to bottom; a step is dimmed until the one above it is done.
 
@@ -41,8 +46,15 @@ The window is three numbered steps, top to bottom; a step is dimmed until the on
 
 Texts are Chinese when the Mac's first language is Chinese (the jobs too: `MNG_LANG`), else English.
 
-Apps go to `~/Applications` and work folders to `~/Library/Application Support/MacNativeGames/Builder/work/<game>`
-(**Folders** changes both). An app that is already there is built again with the work folder it records.
+**Opened with files** (`open -a "MNG Launcher" "<base>" "<update>" "<prod.keys>"`, or files dropped on its icon): a
+`.keys` file goes to step 2, the rest to step 1. An AI helping a player starts it this way (install-zelda skill).
+
+**Folders, one rule with the command line** (user 2026-11-12: "目录规范要和 launcher 统一"): apps go to `~/Applications`
+(**Folders** changes it); a game already installed anywhere is built into that app. The work folder is the one the app
+records, else `MacNativeGames-work/<game>` beside the apps folder (`build_app.default_work`, also the default of
+`build_app.py` without `--work`); **Folders** can name another root, **Automatic** goes back. With files dropped for an
+installed game of the same version (known from the update's `[vNNN]`), the build is the express or fast update when that
+fits; another or an unknown version is the full build into the same app and work folder, which reuses what it can.
 
 ## How it is made
 

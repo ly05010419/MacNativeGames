@@ -39,6 +39,22 @@ enum T {
     static let noRepo = s("This app does not know its MacNativeGames folder: make it again with tools/builder_app/make_app.py.",
                           "这个 App 不知道 MacNativeGames 源码在哪：用 tools/builder_app/make_app.py 重新生成它。")
     static let existing = s("Already built", "已经打包过")
+    static let installed = s("Games on this Mac", "这台 Mac 上已装的游戏")
+    static let installedHint = s("Update one without its game files: the fastest update that fits is chosen for you.",
+                                 "不用游戏文件就能更新：自动选能用的最快的一种。")
+    static let update = s("Update", "更新")
+    static let updatedOK = s("Updated. Starting the game…", "更新完成，正在启动游戏…")
+    static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",
+                            "自动：App 文件夹旁的 MacNativeGames-work（App 记录了工作目录就用它记录的）")
+    static let automatic = s("Automatic", "自动")
+    static func kind(_ k: String) -> String {
+        switch k {
+        case "express": return s("Express update (minutes, no game files)", "极速更新（几分钟，不用游戏文件）")
+        case "fast": return s("Fast update (new startup shaders, no game files)", "快速更新（重做启动着色器，不用游戏文件）")
+        case "full": return s("Needs a full build: drop its game files below", "要完整打包：在下面拖入它的游戏文件")
+        default: return s("Cannot be updated now", "现在不能更新")
+        }
+    }
 
     static func stepTitle(_ n: Int) -> String { zh ? "第\(["一", "二", "三"][n - 1])步" : "Step \(n)" }
     static let step1 = s("Choose the game", "选择游戏")

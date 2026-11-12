@@ -10,6 +10,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                if !model.installed.isEmpty { InstalledBox() }
                 StepBox(number: 1, title: T.step1, done: model.gameReady, enabled: true) { GameStep() }
                 StepBox(number: 2, title: T.step2, done: model.gameReady && model.keysReady, enabled: model.gameReady) { KeysStep() }
                 StepBox(number: 3, title: T.step3, done: model.phase == .done,
@@ -172,6 +173,39 @@ struct FileRow: View {
     }
 }
 
+/// The game apps already on this Mac: each updates in place, without files, by the fastest update that fits.
+struct InstalledBox: View {
+    @EnvironmentObject var model: Model
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(T.installedHint).font(.callout).foregroundStyle(.secondary)
+                ForEach(model.installed) { app in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(app.name) \(app.version ?? "")").font(.body.weight(.medium))
+                            Text(T.kind(app.kind)).font(.caption).foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
+                            if app.kind != "express" {
+                                Text(app.reason).font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                            }
+                        }
+                        Spacer()
+                        Button(T.update) { model.update(app) }
+                            .disabled(!(app.kind == "express" || app.kind == "fast") || model.phase == .building || model.phase == .cancelling)
+                        Button(T.play) { NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.app), configuration: .init()) }
+                    }
+                }
+                if model.updating != nil { ActionSection(updateOnly: true) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        } label: {
+            Text(T.installed).font(.headline)
+        }
+    }
+}
+
 struct BuildStep: View {
     @EnvironmentObject var model: Model
 
@@ -219,18 +253,19 @@ struct FoldersSection: View {
         DisclosureGroup(T.settings) {
             VStack(alignment: .leading, spacing: 6) {
                 row(T.output, $model.outputDir)
-                row(T.work, $model.workRoot)
+                row(T.work, $model.workRoot, empty: T.workAuto)
             }
             .padding(.top, 4)
         }
         .disabled(model.phase == .building)
     }
 
-    private func row(_ label: String, _ value: Binding<String>) -> some View {
+    private func row(_ label: String, _ value: Binding<String>, empty: String? = nil) -> some View {
         HStack {
             Text(label).frame(width: 110, alignment: .leading).foregroundStyle(.secondary)
-            Text(value.wrappedValue).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            Text(value.wrappedValue.isEmpty ? (empty ?? "") : value.wrappedValue).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             Spacer()
+            if empty != nil && !value.wrappedValue.isEmpty { Button(T.automatic) { value.wrappedValue = "" } }
             Button(T.change) {
                 let panel = NSOpenPanel()
                 panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true

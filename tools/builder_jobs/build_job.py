@@ -29,8 +29,44 @@ class Refused(Exception):
     pass
 
 
-def command(request):
-    """(build_app.py arguments, work folder, app path) for a request {plan, output_dir, work_root, platform}."""
+def express_plan(app, python=sys.executable):
+    """update_runtime.py --plan for an installed app (tools/builder_jobs/installed.py asks the same)."""
+    from tools.builder_jobs.installed import plan
+    return plan(app, python)
+
+
+def same_version(plan, update_plan):
+    """Whether the dropped files are of the installed app's game version, so an update of the app is the same build. Only
+    when it is known: a card image without [vNNN] in its name, or files of another version, take the full build."""
+    if update_plan.get('game') != plan.get('game'):
+        return False
+    if plan['game'] == 'oot':   # one version is built (131072), checked by the build itself
+        return True
+    app_version = repo.build_app().VERSIONS.get(update_plan.get('version') or '', {}).get('version')
+    dropped = plan.get('update_version') if plan.get('update') else 0
+    return dropped is not None and app_version is not None and str(app_version) == str(dropped)
+
+
+def command(request, python=sys.executable):
+    """(script, arguments, work folder, app path, kind, game) for a request, kind being express, fast or full (the three updates
+    of docs/install.md, the fastest that fits; user 2026-11-12: "不要用最慢的形式打包"):
+      {update: <app>}                                 an installed app, without files: update_runtime.py [--seed]
+      {plan, output_dir, work_root, platform, app?}   dropped files: into app (an installed one of that game) or
+                                                      <output_dir>/<name>.app; an update when that app is there, of the
+                                                      same version, and an update fits; else build_app.py
+    The work folder is the one the app records, else work_root/<game>, else build_app.default_work (the one rule of
+    build_app.py, update_runtime.py and the Launcher)."""
+    b = repo.build_app()
+    if request.get('update'):
+        app = Path(request['update']).expanduser()
+        up = express_plan(app, python)
+        if up['kind'] == 'full':
+            raise Refused(t(f'this app needs a full build: {up["reason"]}. Drop its game files in step 1',
+                            f'这个 App 要完整打包：{up["reason"]}。请在第一步拖入它的游戏文件'))
+        if up['kind'] not in ('express', 'fast'):
+            raise Refused(up['reason'])
+        argv = [str(app)] + (['--seed'] if up['kind'] == 'fast' else [])
+        return repo.UPDATE_RUNTIME, argv, Path(up['work']), app, up['kind'], up.get('game')
     plan = request['plan']
     if plan.get('blocks'):
         raise Refused(plan['blocks'][0])
@@ -39,13 +75,15 @@ def command(request):
     platform = request.get('platform', 'macos')
     if platform != 'macos':
         raise Refused(t('this builder makes Mac apps so far', '这个打包器目前只打 Mac 包'))
-    out = Path(request['output_dir']).expanduser() / f'{repo.GAMES[plan["game"]]}.app'
-    work = Path(request['work_root']).expanduser() / plan['game']
-    if out.is_dir():   # an app built before: its own work folder, so the build reuses its files (express update rule)
-        try:
-            work, _ = repo.build_app().recorded_work_folder(out, plan['game'])
-        except repo.build_app().BuildError:
-            pass
+    out = Path(request['app']).expanduser() if request.get('app') else \
+        Path(request['output_dir']).expanduser() / f'{repo.GAMES[plan["game"]]}.app'
+    work_root = (request.get('work_root') or '').strip()
+    work = b.default_work(out, plan['game'])[0] if out.is_dir() or not work_root else Path(work_root).expanduser() / plan['game']
+    if out.is_dir():
+        up = express_plan(out, python)
+        if up['kind'] in ('express', 'fast') and same_version(plan, up):
+            return (repo.UPDATE_RUNTIME, [str(out)] + (['--seed'] if up['kind'] == 'fast' else []), Path(up['work']), out,
+                    up['kind'], plan['game'])
     argv = [plan['base']]
     if plan.get('keys') and plan['game'] in ('totk', 'botw'):
         argv += ['-k', plan['keys']]
@@ -58,7 +96,7 @@ def command(request):
     elif plan.get('fonts'):
         argv += ['--shared-fonts', plan['fonts']]
     argv += ['--work', str(work), '-o', str(out)]
-    return argv, work, out
+    return repo.BUILD_APP, argv, work, out, 'full', plan['game']
 
 
 class Steps:
@@ -102,16 +140,16 @@ class Steps:
 
 
 def run(request, emit, history_dir, python=sys.executable, script=None):
-    argv, work, out = command(request)
-    game = request['plan']['game']
-    record = history.record_path(history_dir, game, 'macos')
+    chosen, argv, work, out, kind, game = command(request, python)
+    # each kind of update has its own measured history: an express update takes minutes, a full build much longer
+    record = history.record_path(history_dir, game, 'macos' if kind == 'full' else f'macos-{kind}')
     estimator = history.Estimator(history.load(record))
     start = time.time()
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
-    script = script or repo.BUILD_APP
+    script = script or chosen
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
-         command=[str(script), *argv])
+         command=[str(script), *argv], kind=kind)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True)
     cancelled = threading.Event()
@@ -192,7 +230,7 @@ def run(request, emit, history_dir, python=sys.executable, script=None):
         return 0
     message = error[0] if error else (t(f'the build was cancelled (exit {code})', f'打包已停止（退出码 {code}）')
                                       if cancelled.is_set() else
-                                      t(f'build_app.py stopped (exit {code})', f'build_app.py 停下了（退出码 {code}）'))
+                                      t(f'{Path(script).name} stopped (exit {code})', f'{Path(script).name} 停下了（退出码 {code}）'))
     emit('done', ok=False, cancelled=cancelled.is_set(), message=message, detail='\n'.join(error[1:])[-6000:],
          step_log=failed_log, log=str(keep), elapsed=round(end - start))
     return code or 1

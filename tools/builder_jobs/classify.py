@@ -36,6 +36,7 @@ class Plan:
     app_name: str | None = None
     base: str | None = None
     update: str | None = None
+    update_version: int | None = None   # the chosen update's title version, to tell an installed app of the same version
     dlc: list = field(default_factory=list)
     keys: str | None = None
     firmware: str | None = None
@@ -219,7 +220,8 @@ def plan(items, work=None):
     if updates:
         supported = _supported(p.game)
         usable = [u for u in updates if u.version in supported] or updates
-        p.update = _newest(usable).path
+        newest = _newest(usable)
+        p.update, p.update_version = newest.path, newest.version
         skipped = [Path(u.path).name for u in updates if u not in usable]
         if skipped:
             p.notes.append(t('not a version this repository builds, left out: ', '本项目不支持的版本，不用：') + ', '.join(skipped))

@@ -36,7 +36,8 @@ signature, or signed again by a dump tool once all four code modules match, shar
      it stands - the flag is required because that folder may hold files of the player's own (they are kept next to it
      as <version>.backup-<date>-<time>)
 
-Every intermediate file is in the work folder (default: "<game file folder>/TOTK_build"); a second run reuses
+Every intermediate file is in the work folder (default: the one the app at -o records, else
+<the folder above the apps folder>/MacNativeGames-work/<game>, as MNG Launcher uses; default_work); a second run reuses
 what is already done and correct. A newer runtime from this repository goes into an app this script made without its game files:
 update_runtime.py "<the app>". Mac saves, shader cache and logs go to the user's Library folders; iOS keeps saves
 and the writable shader cache in the app's Documents container.
@@ -2039,6 +2040,29 @@ def record_update_source(info, work):
     info['MNGBuildPython'] = sys.executable
 
 
+WORK_FOLDERS = 'MacNativeGames-work'   # docs/install.md, Folders; MNG Launcher (tools/builder_jobs) uses the same
+
+
+def default_work(out, game):
+    """The work folder of a build run without --work, and why, one rule for build_app.py, update_runtime.py and MNG Launcher
+    (user 2026-11-12: "目录规范要和 launcher 统一"): the one the app at out records, when there is one (a rebuild then
+    reuses that build's files, and an express update finds them); else <the folder above the apps folder>/MacNativeGames-work/
+    <game>, on the app's volume (the game data is cloned, not copied) and outside the folder that holds the apps; with the
+    apps in a folder whose parent cannot be written (/Applications), ~/MacNativeGames-work/<game>. Until then the default
+    was a TOTK_build next to the game file, and the Launcher used a third place."""
+    out = Path(out)
+    try:
+        recorded = plistlib.loads((out / 'Contents/Info.plist').read_bytes()).get('MNGWorkFolder')
+    except (OSError, ValueError, plistlib.InvalidFileException, AttributeError):
+        recorded = None
+    if isinstance(recorded, str) and recorded and Path(recorded).parent.is_dir():
+        return Path(recorded), f'recorded by {out.name}'
+    base = out.parent.parent
+    if base == Path(base.anchor) or not os.access(base, os.W_OK):
+        base = Path.home()
+    return base / WORK_FOLDERS / game, f'{WORK_FOLDERS}/{game} beside the folder of the app'
+
+
 def recorded_work_folder(app, name):
     """The work folder of an update run without --work, and why: the one the app records (record_update_source), so the
     update reuses the files of the build that made the app. Only an app that records none (built before 31 October 2026)
@@ -2479,7 +2503,7 @@ def main_ns2(args, dump):
                          + ', '.join(p.name for p in sorted((dump / 'updates').glob('*'))) if (dump / 'updates').is_dir() else 'no updates/')
     v = g['version']; app_name, bundle_id, executable = APPS[v]
     out = args.out.expanduser().resolve() if args.out else dump.parent / f'{app_name}.app'
-    work = args.work.expanduser().resolve() if args.work else dump.parent / f'{executable}_build'
+    work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else default_work(out, v)
     if out.suffix.lower() not in (('.app', '.ipa') if device_app else ('.app',)):
         raise BuildError('the output must end in .app' + (' or .ipa' if device_app else '') + f': {out}')
     shared_fonts = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
@@ -2488,7 +2512,7 @@ def main_ns2(args, dump):
     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
     t0 = time.time()
     tree = prepare_work(work, py, logs)
-    say(f'{app_name} {VERSIONS[v]["display_version"]} from {dump}; work folder {work}')
+    say(f'{app_name} {VERSIONS[v]["display_version"]} from {dump}; work folder {work} ({why})')
     fonts = tree / 'extracted/firmware/shared-fonts'
     if not fonts_valid(fonts):
         if not shared_fonts:
@@ -2865,7 +2889,8 @@ def parse_args(argv):
                          '(on another Mac, say) when FOLDER has no complete image')
     ap.add_argument('-k', '--keys', type=Path, help='your prod.keys (an XCI or NSP; a Switch 2 dump folder needs none)')
     ap.add_argument('-o', '--out', type=Path, help='the app or IPA to write (default depends on --platform; next to the game file)')
-    ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file)')
+    ap.add_argument('--work', type=Path, help='work folder (default: the one the app at -o records, else '
+                    '<the folder above the apps folder>/MacNativeGames-work/<game>; docs/install.md, Folders)')
     ap.add_argument('--mod', type=Path, metavar='FOLDER',
                     help='a mod folder prepared before the build: its exefs/ IPS / IPS32 / pchtxt patches for the main '
                          'module are merged into the code before it is rewritten (its romfs/ goes in with '
@@ -2924,7 +2949,7 @@ def main(argv):
     if not keys.is_file():
         raise BuildError(f'no such file: {keys}')
     out = (args.out.expanduser().resolve() if args.out else game.parent / (f'{APP_NAME}.ipa' if device_app else f'{APP_NAME}.app'))
-    work = (args.work.expanduser().resolve() if args.work else game.parent / 'TOTK_build')
+    work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else default_work(out, 'totk')
     if out.suffix.lower() not in (('.ipa', '.app') if device_app else ('.app',)):   # iOS .app: unsigned folder for install_device.py
         raise BuildError(f'the {args.platform} output must end in {".ipa or .app" if device_app else ".app"}: {out}')
     kind = input_kind(game)
@@ -2962,7 +2987,7 @@ def main(argv):
     no_fonts = BuildError('NSP files do not include system shared fonts. Supply --firmware <unpacked firmware NCA directory> '
                           'or --shared-fonts <previously extracted font directory>; valid fonts in --work are also reused.')
     fonts_given = firmware or shared_fonts or fonts_valid(work / 'totk/extracted/firmware/shared-fonts')
-    if kind == 'nsp' and not (fonts_given or (not args.work and fonts_valid(game.parent / 'BotW_build/totk/extracted/firmware/shared-fonts'))):   # Breath of the Wild's default work folder
+    if kind == 'nsp' and not (fonts_given or (not args.work and fonts_valid(default_work(out if args.out else game.parent / f'{APPS["botw"][0]}.app', 'botw')[0] / 'totk/extracted/firmware/shared-fonts'))):   # Breath of the Wild's default work folder
         raise no_fonts
     py = prerequisites(args)
     def existing_volume_path(path):
@@ -2987,18 +3012,18 @@ def main(argv):
             raise BuildError('--vr needs a Mac build')
         if args.platform == 'visionos':
             raise BuildError('Breath of the Wild has no native Vision Pro build yet: use --platform macos or ios')
-        if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build
+        if not args.out:
+            out = game.parent / f'{APPS["botw"][0]}.{"ipa" if args.platform == "ios" else "app"}'
+        if fresh_work and not args.work:   # the default work folder of Breath of the Wild, not of Tears of the Kingdom
             shutil.rmtree(work)
         if args.install_mod_romfs:
             raise BuildError('--install-mod-romfs is only wired for Tears of the Kingdom so far: copy a Breath of the Wild mod\'s '
                              'RomFS files into ~/Library/Application Support/MacNativeGames/BotW/mods/botw190 (botw160 for 1.6.0) and write its '
                              'manifest.tsv (docs/mods.md)')
         if not args.work:
-            work = game.parent / 'BotW_build'
+            work, why = default_work(out, 'botw')
             logs = work / 'logs'
             tree = prepare_work(work, py, logs)
-        if not args.out:
-            out = game.parent / f'{APPS["botw"][0]}.{"ipa" if args.platform == "ios" else "app"}'
         check_package(game, 'botw', 'base')
         if update:
             check_package(update, 'botw', 'update')
@@ -3076,7 +3101,7 @@ def main(argv):
     output_free=shutil.disk_usage(output_volume).free/2**30
     same_volume=os.stat(work_volume).st_dev==os.stat(output_volume).st_dev
     base_cached=(work/'totk/extracted/v0/romfs/romfs.bin').exists()
-    say(f'work folder {work} ({free:.0f} GB free on its volume)')
+    say(f'work folder {work} ({why}; {free:.0f} GB free on its volume)')
     if device_app:
         if same_volume:
             required=(60 if update else 45) if not base_cached else (40 if update else 18)

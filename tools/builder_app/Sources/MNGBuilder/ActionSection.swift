@@ -5,14 +5,18 @@ import SwiftUI
 /// error with its log.
 struct ActionSection: View {
     @EnvironmentObject var model: Model
+    var updateOnly = false   // in the installed apps' list: the progress of an update, no build button
     @State private var showLog = false
+
+    /// The job's progress shows where it was started: an update in the list, a build in step 3.
+    private var mine: Bool { updateOnly == (model.updating != nil) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            buttons
-            if model.phase != .idle { progress }
-            if let f = model.failure, model.phase == .failed { failure(f) }
-            if !model.lines.isEmpty {
+            if !updateOnly { buttons }
+            if model.phase != .idle && mine { progress }
+            if let f = model.failure, model.phase == .failed, mine { failure(f) }
+            if !model.lines.isEmpty && mine {
                 DisclosureGroup(T.log, isExpanded: $showLog) { logView }
             }
         }
@@ -70,11 +74,11 @@ struct ActionSection: View {
 
     private var headline: String {
         switch model.phase {
-        case .done: return T.doneOK
+        case .done: return model.kind == "full" ? T.doneOK : T.updatedOK
         case .failed: return T.failed
         case .cancelling: return T.cancelling
         case .cancelled: return T.cancel
-        default: return model.stage.isEmpty ? T.building : model.stage
+        default: return model.kind == "full" ? (model.stage.isEmpty ? T.building : model.stage) : T.kind(model.kind)
         }
     }
 
