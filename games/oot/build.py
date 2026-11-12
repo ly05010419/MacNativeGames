@@ -473,6 +473,18 @@ def shader_jobs():
     compiler service), 8 on this 10-core M4; 4 left most of the machine idle for 9 minutes of translation."""
     return max(4, min(8, (os.cpu_count() or 4) - 2))
 
+def library_image(args,out):
+    """The RomFS image an earlier build put in the game library (package_app 'library': <folder>/oot/romfs.bin), to take
+    instead of packing the dump's 26 GB again (import_dump.py adopt_image; 2026-11-12): the folder --mac-game-data-folder
+    names, else the one the app being replaced records (MNGGameDataFolder), else the default one. None when there is none."""
+    folders=[args.mac_game_data_folder]
+    try:folders.append(plistlib.loads((out/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder'))
+    except (OSError,ValueError):pass
+    folders.append(Path.home()/'Library/Application Support/MacNativeGames/OcarinaOfTime/GameData')
+    for folder in folders:
+        if folder and (Path(folder).expanduser()/'oot/romfs.bin').is_file():return Path(folder).expanduser()/'oot/romfs.bin'
+    return None
+
 def build(args, source):
     if args.platform not in ('macos','ios'):raise ValueError('Ocarina of Time has macOS and iOS build paths only')
     device=args.platform=='ios'
@@ -517,7 +529,18 @@ def build(args, source):
     extracted=tree/'extracted/oot';index=extracted/'romfs/index.json'
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
     if source.is_file():run([py,'scripts/import_nup.py',source,'--output',extracted],'import-original-nup')
-    elif not index.exists():run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072'],'import-original-dump')
+    elif not index.exists():
+        print('RomFS: there is no imported game data in this work folder',flush=True)   # a long step says why (2026-11-11)
+        library=library_image(args,out)
+        if library:
+            try:
+                run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072','--adopted-image',library],'import-original-dump')
+                romfs_pin.check(extracted/'romfs')
+                print(f'RomFS: taken from the game library ({library}), an earlier pack of this dump: not packed again',flush=True)
+            except (subprocess.CalledProcessError,ValueError) as e:
+                print(f'RomFS: the game library image {library} is not this dump\'s ({e}): packing the folder',flush=True)
+                shutil.rmtree(extracted,ignore_errors=True);library=None
+        if not library:run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072'],'import-original-dump')
     code=extracted/'exefs'
     for name,digest in expected['exefs_sha256'].items():
         if sha(code/name)!=digest:raise ValueError('unsupported or damaged original ExeFS: '+name)

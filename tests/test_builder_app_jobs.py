@@ -89,6 +89,13 @@ class Classify(unittest.TestCase):
         with mock.patch.dict(os.environ, {'MNG_LANG': 'en'}):
             self.assertIn('no game', classify.plan(classify.classify([u])).blocks[0])
 
+    def test_a_breath_of_the_wild_card_needs_fonts_too(self):
+        card = self.dir / 'BotW [01007EF00011E000][v786432].xci'
+        card.write_bytes(b'\0' * 0x100 + b'HEAD' + b'\0' * 60)
+        p = classify.plan(classify.classify([card]))
+        self.assertEqual(p.game, 'botw')
+        self.assertTrue(any('system fonts' in b or '系统字体' in b for b in p.blocks))
+
     def test_plan_refuses_two_games(self):
         a = pfs0(self.dir / 'a [0100F2C0115B6000].nsp')
         b = pfs0(self.dir / 'b [01007EF00011E000].nsp')

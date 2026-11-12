@@ -581,13 +581,16 @@ def app_game_data(app, version):
     return Path(app) / f'Contents/Helpers/GameData-{version}.bundle' if app else None
 
 
-def adopt_game_data(tree, app, version, folder, logs):
+def adopt_game_data(tree, app, version, folder, logs, *, index=None):
     """The verified RomFS image of version taken from the app this build replaces (-o), instead of extracting it from the
     game file again: the app carries it in Contents/Helpers/GameData-<version>.bundle. Taken only when its size and SHA-256
     are the verified ones (expected-<version>.json), so folder ends with the image an extraction makes; it is indexed by
     scripts/index_romfs.py, which records where it came from, so data_bundle can take the app's signed bundle too.
     Returns True when folder holds it. 2026-11-11: a work folder that had only seen express updates extracted 17 GB and
-    merged the update again (9.5 min on the external disk) although the app it replaced carried the same image."""
+    merged the update again (9.5 min on the external disk) although the app it replaced carried the same image.
+    index(image, digest, source): the command that writes the staged image's index.json in its game's format; by default
+    scripts/index_romfs.py (a RomFS: Tears of the Kingdom, Breath of the Wild); a Switch 2 dump's packed image is indexed
+    by import_dump.py from the dump folder's listing."""
     bundle = app_game_data(app, version)
     image = bundle / 'Contents/Resources/romfs.bin' if bundle else None
     want = VERSIONS[version]['romfs']
@@ -608,7 +611,8 @@ def adopt_game_data(tree, app, version, folder, logs):
     if staging.exists():
         shutil.rmtree(staging)
     clone(image, staging / 'romfs.bin')
-    run([tree / '.venv/bin/python', 'scripts/index_romfs.py', staging / 'romfs.bin', '--sha256', digest, '--source', image],
+    run(index(staging / 'romfs.bin', digest, image) if index else
+        [tree / '.venv/bin/python', 'scripts/index_romfs.py', staging / 'romfs.bin', '--sha256', digest, '--source', image],
         logs / f'adopt-romfs-{version}.log', cwd=tree)
     if folder.exists():
         shutil.rmtree(folder)
@@ -2399,7 +2403,7 @@ def ns2_dump_exefs(dump, update=None):
     return (found[-1] if found else dump / 'base') / 'exefs'
 
 
-def step_code_ns2(tree, dump, g, env, logs):
+def step_code_ns2(tree, dump, g, env, logs, app=None):
     """The dump's ExeFS and RomFS into the work folder (import_dump.py), checked against the verified values, and the code
     rewritten for Apple silicon as for Tears of the Kingdom, the result checked against the verified rewrite."""
     v = g['version']; expected = VERSIONS[v]
@@ -2413,8 +2417,12 @@ def step_code_ns2(tree, dump, g, env, logs):
         return (index.get('romfs_sha256') == expected['romfs']['sha256'] and (romfs / 'romfs.bin').is_file() and
                 (romfs / 'romfs.bin').stat().st_size == expected['romfs']['size'] and
                 all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in expected['exefs_sha256'].items()))
-    if not imported():
-        say(f'1/4 code: importing the dump (its code and the {expected["romfs"]["size"] / 2**30:.1f} GB of game data; a few minutes)')
+    if not imported() and not adopt_game_data(
+            tree, app, v, romfs, logs, index=lambda image, digest, source: [
+                py, 'scripts/import_dump.py', dump, '--output', tree / f'extracted/{v}', '--update', g['update'],
+                '--adopted-image', source, '--sha256', digest, '--romfs-output', image.parent]):
+        say(f'1/4 code: importing the dump (its code and the {expected["romfs"]["size"] / 2**30:.1f} GB of game data; a few minutes)'
+            + ('' if romfs_mismatch(romfs, expected) is None else f': {romfs_mismatch(romfs, expected)}'))
         run([py, 'scripts/import_dump.py', dump, '--output', tree / f'extracted/{v}', '--update', g['update']],
             logs / f'import_dump-{v}.log', cwd=tree)
     for n, h in expected['exefs_sha256'].items():
@@ -2542,7 +2550,7 @@ def main_ns2(args, dump):
                              'a Tears of the Kingdom or Breath of the Wild build extracted (TOTK_build/totk/extracted/firmware/shared-fonts)>')
         copy_shared_fonts(shared_fonts, fonts)
     validate_fonts(fonts)
-    step_code_ns2(tree, dump, g, env, logs)
+    step_code_ns2(tree, dump, g, env, logs, app=out if out.suffix == '.app' else None)
     if v == 'dkb':
         for size in ('2560x1440', '3840x2160'):
             run([py, 'scripts/make_output_res_overlay.py', size, '--version', v],
@@ -2785,7 +2793,7 @@ def step_code_botw(tree, botw, game, keys, env, logs, *, version='botw160', mod=
     report_path.write_text(json.dumps(report, indent=2) + '\n')
 
 
-def step_data_botw(tree, botw, game, keys, logs, *, version='botw160', update=None, dlc=(), firmware=None, shared_fonts=None):
+def step_data_botw(tree, botw, game, keys, logs, *, version='botw160', update=None, dlc=(), firmware=None, shared_fonts=None, app=None):
     """The base + update RomFS merged from the card image, or from a base game and its separate 1.6.0 or 1.9.0 update
     (games/botw/scripts/extract_romfs.py, hactool BKTR); the add-on content: the card image's volumes (extract_aoc_romfs.py),
     or with a separate 1.6.0 or 1.9.0 update the packs of the --dlc NSPs (extract_dlc.py; none is needed); and the shared fonts: neither the card's system update
@@ -2795,20 +2803,13 @@ def step_data_botw(tree, botw, game, keys, logs, *, version='botw160', update=No
     py = tree / '.venv/bin/python'
     folder = tree / f'extracted/{version}/romfs'
     index = folder / 'index.json'
-    valid = False
-    if index.is_file() and (folder / 'romfs.bin').is_file():
-        try:
-            report = json.loads(index.read_text())
-            valid = (report.get('status') == 'pass' and report['romfs_sha256'] == expected['romfs']['sha256']
-                     and (folder / 'romfs.bin').stat().st_size == expected['romfs']['size'])
-        except (ValueError, KeyError):
-            pass
+    why = romfs_mismatch(folder, expected, need_pass=True)
     hactool = None
-    if not valid:
+    if why and not adopt_game_data(tree, app, version, folder, logs):
         hactool = build_hactool(tree, logs)
         if folder.exists():
             shutil.rmtree(folder)
-        say(f'2/4 data: merging the base RomFS with the {expected["display_version"]} update and verifying all IVFC levels (15 GB, about 5 minutes)')
+        say(f'2/4 data: merging the base RomFS with the {expected["display_version"]} update and verifying all IVFC levels (15 GB, about 5 minutes): {why}')
         run([py, botw / 'scripts/extract_romfs.py', game, *(['--update', update] if update else []), '--keys', keys, '--hactool', hactool, '--output', folder], logs / 'botw-romfs.log', cwd=tree)
         report = json.loads(index.read_text())
         check(f'{expected["display_version"]} RomFS', report['romfs_sha256'], expected['romfs']['sha256'])
@@ -2948,8 +2949,8 @@ def parse_args(argv):
 
 def build_oot(args, source):
     # OOT carries its own runtime, GPU backend, rewriter and build inputs.
-    import importlib.util
     codec_libraries()   # its Makefile links opus and libvpx as Tears of the Kingdom's does
+    import importlib.util
     spec = importlib.util.spec_from_file_location('oot_build', REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -3088,7 +3089,8 @@ def main(argv):
                 ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
             say('native 5K: ' + ('on (5120x2880 canvas and scene)' if native_5k else 'off'))
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version, mod=code_mod)
-        step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
+        step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts,
+                       app=out if out.suffix == '.app' else None)
         step_shaders_botw(tree, botw, logs, version=version)
         if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own (6 of a 21-minute iPhone build, 2026-10-28)
             step_shader_libs(tree, logs, version=version)
