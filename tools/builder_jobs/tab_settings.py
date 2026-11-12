@@ -71,8 +71,8 @@ REASONS = {'no_game_file': t('No app chosen.', '没有选 App。'),
            'open_failed': t('The game could not be started.', '游戏没能启动。')}
 WHERE = {start_options.FILE: t("Kept in the game's settings panel (key 1): changing it in either place changes both.",
                                 '和游戏里的设置面板（按 1）是同一份：在哪边改都一样。'),
-         start_options.PLAY: t('Only when the game is started with Play here (the settings panel does not have it).',
-                               '只在这里点“游玩”启动时生效（游戏的设置面板里没有这一项）。')}
+         start_options.PLAY: t('Only when the game is started with Start game in MNG Launcher (the settings panel does not have it).',
+                               '只在 MNG Launcher 里点“启动游戏”启动时生效（游戏的设置面板里没有这一项）。')}
 
 
 def paths(ctx):

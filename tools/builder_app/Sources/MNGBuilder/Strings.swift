@@ -15,7 +15,6 @@ enum T {
     static let files = s("Files", "文件")
     static let build = s("Build and Play", "打包并游玩")
     static let rebuild = s("Build Again", "重新打包")
-    static let play = s("Play", "游玩")
     static let startGame = s("Start game", "启动游戏")
     static let startedApp = s("The game is starting.", "游戏已启动。")
     static let cancel = s("Cancel", "停止")

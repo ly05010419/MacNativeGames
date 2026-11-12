@@ -10,13 +10,12 @@ struct SettingsState: Decodable {
     let notes: [String]
 }
 
-/// The game's start options (tab_settings.py over tools/builder/start_options.py), the GPU check and Play.
+/// The game's start options (tab_settings.py over tools/builder/start_options.py) and the GPU check; the card's Start game starts it.
 struct SettingsPage: View {
     let app: String
     @State private var state: SettingsState?
     @State private var error: String?
     @State private var gpu = "checking"
-    @State private var status = ""
     @State private var busy = false
 
     var body: some View {
@@ -38,11 +37,9 @@ struct SettingsPage: View {
                     }
                 }
                 ForEach(s.notes, id: \.self) { n in Label(n, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
+                // the game starts with the card's Start game (GameActions), which passes these choices (user 2026-11-12:
+                // "设置里 去掉 游玩按钮 统一使用 启动游戏按钮")
                 Text(T.gpu(gpu)).font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(T.play) { play() }.buttonStyle(.borderedProminent).disabled(busy || !s.reason.isEmpty)
-                    if !status.isEmpty { Text(status).foregroundStyle(.secondary) }
-                }
             } else if error == nil {
                 ProgressView()
             }
@@ -66,18 +63,6 @@ struct SettingsPage: View {
             do { state = try await TabClient.decode(SettingsState.self, "settings", "choose", app: app,
                                                     args: ["option": option, "choice": choice]); error = nil }
             catch { self.error = error.localizedDescription }
-            busy = false
-        }
-    }
-
-    private func play() {
-        struct Played: Decodable { let ok: Bool; let reason: String; let detail: String; let held: [String] }
-        busy = true; status = T.starting
-        Task {
-            do {
-                let r = try await TabClient.decode(Played.self, "settings", "play", app: app, args: ["gpu": gpu])
-                status = r.ok ? (r.held.isEmpty ? T.started : T.startedWithout(r.held)) : [r.reason, r.detail].filter { !$0.isEmpty }.joined(separator: " ")
-            } catch { status = error.localizedDescription }
             busy = false
         }
     }

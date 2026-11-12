@@ -7,8 +7,17 @@ import SwiftUI
 struct HomePage: View {
     @EnvironmentObject var model: Model
     @State private var selected: String?
+    @State private var defaulted = false   // the first built game was chosen once; a card closed by hand stays closed
 
     static let games = ["oot", "totk", "botw", "dkb", "pkp"]
+
+    /// The first built game, in the cards' order, is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
+    private func chooseFirst() {
+        guard !defaulted, model.installedLoaded else { return }
+        guard let first = Self.games.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
+        selected = first
+        defaulted = true
+    }
 
     var body: some View {
         ScrollView {
@@ -46,6 +55,9 @@ struct HomePage: View {
             }
             .padding(24)
         }
+        .onAppear(perform: chooseFirst)
+        .onChange(of: model.installed) { chooseFirst() }
+        .onChange(of: model.installedLoaded) { chooseFirst() }
     }
 }
 

@@ -37,7 +37,7 @@ struct ActionSection: View {
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(!model.canBuild)
                 if model.existingApp != nil || model.phase == .done {
-                    Button(T.play, action: model.play).controlSize(.large)
+                    Button(T.startGame, action: model.play).buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
                     Button(T.showInFinder) { model.reveal(model.appPath ?? model.existingApp) }
                 }
             }

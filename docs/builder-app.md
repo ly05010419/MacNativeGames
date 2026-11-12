@@ -32,7 +32,7 @@ games macOS knows (LaunchServices) and that is still there, plus those in the ap
 time, so a look takes well under a second; the window shows the last look (`Builder/installed.json`) at once and brings
 it up to date, and only the very first look has the cards waiting. A card opens its actions:
 a big green Start game at the top right (Tears of the Kingdom and Breath of the Wild start through the
-Settings page's Play, with the choices only it passes; the others open as apps), one update button named after the
+start options (tab_settings.play), with the choices only it passes; the others open as apps), one update button named after the
 fastest update that fits (**Express update**, **Fast update**, or **Full build**,
 which opens the build steps with that game chosen), and for Tears
 of the Kingdom and Breath of the Wild their pages (Settings, Mods, Controls, Storage, Saves), which open under those
