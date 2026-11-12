@@ -199,7 +199,7 @@ static inline NSDictionary *totk_contrib_answers(NSDictionary *deps) {
     NSMutableDictionary *tex = [NSMutableDictionary dictionary];
     for (NSString *slot in answers[@"tex"]) {
         id kind = answers[@"tex"][slot];
-        tex[slot] = [kind isEqual:@"*"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
+        tex[slot] = [kind isEqual:@"*"] || [kind isEqual:@"*2d"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
     }
     answers[@"tex"] = tex;
     return answers;
@@ -229,8 +229,13 @@ static inline int totk_deps_match(NSDictionary *deps, NSDictionary *ans) {
         for (NSString *slot in want) {
             id w = want[slot], h = have[slot];
             if (!h) h = defaults[kind];
+            if ([kind isEqual:@"tex"] && [h isKindOfClass:NSString.class] && [h hasSuffix:@"_depth"]) h = [h substringToIndex:[h length] - 6];   // a list row from before 2026-11-09
             if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
-                if (![h isKindOfClass:NSString.class] || [h hasSuffix:@"_depth"] != [w isEqual:@"*_depth"]) return 0;
+                if (![h isKindOfClass:NSString.class]) return 0;
+                continue;
+            }
+            if ([w isEqual:@"*2d"]) {
+                if (![h isEqual:@"2d"] && ![h isEqual:@"2darray"]) return 0;
                 continue;
             }
             if (![h isEqual:w]) return 0;

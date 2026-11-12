@@ -81,6 +81,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;
         }
+        NSArray *cmp = j[@"compare_slots"];
+        if ([cmp isKindOfClass:[NSArray class]]) for (NSNumber *n in cmp) { int r = [n intValue]; if (r >= 0 && r < 128) o->compare[r >> 6] |= UINT64_C(1) << (r & 63); }
         NSDictionary *dr = j[@"drv_reads"];
         if ([dr isKindOfClass:[NSDictionary class]]) { o->drv_read[0] = dr[@"0"] != nil; o->drv_read[2] = dr[@"2"] != nil; }
         NSArray *uf = j[@"drv_unfillable"];

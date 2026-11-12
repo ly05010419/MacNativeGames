@@ -2436,7 +2436,7 @@ static uint64_t *g_upd_maxhi;
 #define UPD_GRAN_MAX 64
 static uint64_t g_upd_bits[UPD_BITS / 64]; static int g_upd_bits_any, g_upd_bits_all;
 static uint64_t g_upd_filter_q, g_upd_filter_skip;           // overlap queries past the hull test / answered by the filter
-static uint64_t g_sig_incr_n, g_sig_full_n, g_tex_ser_fast_n;  // stage_sig incremental / full walks; tex_view_valid steps taken inline
+static uint64_t g_tex_ser_fast_n;  // tex_view_valid steps taken inline
 static uint64_t g_cbc_hits, g_cbc_misses, g_cbc_verified; static int cbc_mode(void);   // TOTK_CBUF_CACHE (defined before encode_args)
 static uint64_t g_pso_memo_hits, g_pso_memo_misses; static int pso_memo_on(void);   // TOTK_PSO_MEMO (defined with g_pso)
 static uint64_t g_ab_same;   // TOTK_AB_SAME: argument blocks bound again because the new bytes equal the shader's previous block
@@ -5372,8 +5372,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
       MLOG("[pool-query-cache] enabled=%d hits=%llu misses=%llu checked=%llu",pool_query_on(),(unsigned long long)hits,(unsigned long long)misses,(unsigned long long)checked); }
     MLOG("[pool-tls] enabled=%d hits=%llu misses=%llu verified=%llu page-table=%d page-hits=%llu",pool_tls_on(),(unsigned long long)g_pool_tls_hits,(unsigned long long)g_pool_tls_misses,(unsigned long long)g_pool_tls_verified,pool_hash_on(),(unsigned long long)g_pool_hash_hits);
     MLOG("[shadow-index] enabled=%d hit=%llu miss=%llu verified=%llu",shadow_index_on(),(unsigned long long)g_shadow_index_hits,(unsigned long long)g_shadow_index_misses,(unsigned long long)g_shadow_index_verified);
-    MLOG("[replay-fast] upd-filter=%d queries=%llu skipped=%llu | sig incremental=%llu full=%llu | tex-ser-fast steps=%llu",upd_fast_on(),(unsigned long long)g_upd_filter_q,(unsigned long long)g_upd_filter_skip,
-         (unsigned long long)g_sig_incr_n,(unsigned long long)g_sig_full_n,(unsigned long long)g_tex_ser_fast_n);
+    MLOG("[replay-fast] upd-filter=%d queries=%llu skipped=%llu | tex-ser-fast steps=%llu",upd_fast_on(),(unsigned long long)g_upd_filter_q,(unsigned long long)g_upd_filter_skip,
+         (unsigned long long)g_tex_ser_fast_n);
     { int dfon; uint64_t dskip, dhash, dscan; nvn_dirty_fast_stats(&dfon, &dskip, &dhash, &dscan);
       MLOG("[replay-fast2] dirty-fast=%d blocks-skipped=%llu range-table=%llu range-scans=%llu | cbuf-cache=%d hits=%llu misses=%llu verified=%llu | ab-same=%llu | pso-memo=%d hits=%llu misses=%llu", dfon, (unsigned long long)dskip, (unsigned long long)dhash, (unsigned long long)dscan,
            cbc_mode(), (unsigned long long)g_cbc_hits, (unsigned long long)g_cbc_misses, (unsigned long long)g_cbc_verified, (unsigned long long)g_ab_same,
@@ -6957,28 +6957,10 @@ static MTLCompileOptions *totk_precise_opts(void) {
    memory pressure in the middle of a compile (iPad, 2026-10-18: "Compilation failed due to an interrupted connection:
    XPC_ERROR_CONNECTION_INTERRUPTED" while the shader warm-up was running); it restarts on the next request, so such a
    failure is retried instead of being taken as a broken shader. */
-/* SPIRV-Cross lowers textureGatherOffsets (four gathers at constant offsets) to spvGatherConstOffsets, which always passes a
-   component; Metal's depth2d::gather takes none, so a shader that does it on a depth texture did not compile and its draws
-   were never made (4 TotK shaders, 2026-10-20). Overloads for depth2d, with the generic helper's result (.w of each).
-   The source is patched only for Metal: libraries keep the name of the unpatched source (shader_lib_prebuilt). */
-static NSString *msl_fix_depth_gather(NSString *src) {
-    if (![src containsString:@"spvGatherConstOffsets"] || ![src containsString:@"depth2d<"]) return src;
-    static NSString *fix =
-        @"\n// TOTK: depth textures gather without a component\n"
-        "#define TOTK_DEPTH_GATHER(SPACE) \\\n"
-        "template<typename Toff, typename... Tp> inline float4 spvGatherConstOffsets(const SPACE depth2d<float>& t, sampler s, Toff coffsets, component, Tp... params) \\\n"
-        "{ return float4(t.gather(s, params..., coffsets[0]).w, t.gather(s, params..., coffsets[1]).w, t.gather(s, params..., coffsets[2]).w, t.gather(s, params..., coffsets[3]).w); }\n"
-        "TOTK_DEPTH_GATHER(device)\nTOTK_DEPTH_GATHER(constant)\nTOTK_DEPTH_GATHER(thread)\n#undef TOTK_DEPTH_GATHER\n\n";
-    for (NSString *entry in @[@"\nfragment ", @"\nvertex ", @"\nkernel "]) {
-        NSRange r = [src rangeOfString:entry];
-        if (r.location != NSNotFound) return [src stringByReplacingCharactersInRange:NSMakeRange(r.location, 0) withString:fix];
-    }
-    return src;
-}
 #include "nvn_umul_diagnostic.h"
 static id<MTLLibrary> totk_msl_library(NSString *source, NSError **err) {
     NSError *e = nil;
-    NSString *src = oot_umul_diagnostic_source(msl_fix_depth_gather(source));
+    NSString *src = oot_umul_diagnostic_source(source);
     for (int attempt = 1;; attempt++) {
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
         BOOL interrupted = !lib && [e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"];
@@ -7686,6 +7668,7 @@ static void treg_clear_view_locked(int tid) {
 // Lock-free copy of texture ID → serial (the replay hot path only needs the serial: store lookahead index, binding set of the clear-only hoist): texture IDs are 20 bits, fixed 1M entries (BSS, only touched pages are used),
 // release write at registration, relaxed atomic read on the reader side, without entering g_rmu (the former h_ser locked and unlocked on every lookup, thousands of times per frame in the camp)
 static _Atomic uint64_t g_tser[1 << 20];
+static void **g_sview_dr; static uint64_t *g_srid_dr;   // samp_depth_read: the same samplers for a depth texture read without a compare
 static samp_par *g_sreg; static uint8_t *g_sreg_ok; static void **g_sview; static uint64_t *g_srid; static int g_nsreg;   // g_sview：采样器号 → MTLSamplerState（持有） | g_sview: sampler ID → MTLSamplerState (retained)
 void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     int id_ = tid; if (id_ < 0) return;
@@ -7725,8 +7708,10 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     int id_ = sid; if (id_ < 0) return;
     registry_lock();
     if (id_ >= g_nsreg) { int n = id_ + 256; g_sreg = realloc(g_sreg, n * sizeof *g_sreg); g_sreg_ok = realloc(g_sreg_ok, n); g_sview = realloc(g_sview, n * sizeof *g_sview); g_srid = realloc(g_srid, n * sizeof *g_srid);
-        memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_sview + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sview); memset(g_srid + g_nsreg, 0, (n - g_nsreg) * sizeof *g_srid); g_nsreg = n; }
+        memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_sview + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sview); memset(g_srid + g_nsreg, 0, (n - g_nsreg) * sizeof *g_srid);
+        g_sview_dr = realloc(g_sview_dr, n * sizeof *g_sview_dr); g_srid_dr = realloc(g_srid_dr, n * sizeof *g_srid_dr); memset(g_sview_dr + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sview_dr); memset(g_srid_dr + g_nsreg, 0, (n - g_nsreg) * sizeof *g_srid_dr); g_nsreg = n; }
     if (g_sview[id_]) { defer_obj_unref((__bridge id)g_sview[id_]); CFRelease(g_sview[id_]); g_sview[id_] = NULL; g_srid[id_] = 0; }
+    if (g_sview_dr[id_]) { defer_obj_unref((__bridge id)g_sview_dr[id_]); CFRelease(g_sview_dr[id_]); g_sview_dr[id_] = NULL; g_srid_dr[id_] = 0; }
     g_reg_gen++;
     g_sreg[id_] = *sp; g_sreg_ok[id_] = 1;
     descriptor_slot_changed(-id_-1);
@@ -8178,6 +8163,7 @@ int dm_gfx_aniso(void) {
    ones released only after the GPU is done with them. Returns how many were dropped. */
 static int samp_cache_flush(void) {
     int dropped = 0;
+    for (int i = 0; i < g_nsreg; i++) if (g_sview_dr && g_sview_dr[i]) { defer_obj_release(CFBridgingRelease(g_sview_dr[i])); g_sview_dr[i] = NULL; g_srid_dr[i] = 0; }
     for (int i = 0; i < g_nsreg; i++) if (g_sview && g_sview[i]) { defer_obj_release(CFBridgingRelease(g_sview[i])); g_sview[i] = NULL; g_srid[i] = 0; descriptor_slot_changed(-i-1); dropped++; }
     g_reg_gen++;
     return dropped;
@@ -8204,10 +8190,7 @@ void dm_gfx_shadow_samplers_off(int off) {
     registry_unlock();
     MLOG("阴影%s：比较采样器%s（%d 个采样器重建）", off ? "关" : "开", off ? "一律“总是通过”" : "恢复游戏的比较方式", dropped);
 }
-static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Caller holds g_rmu
-    if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "采样器号 %d 未登记", sid); return nil; }
-    if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
-    samp_par p = g_sreg[sid];
+static MTLSamplerDescriptor *samp_desc(samp_par p) {
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
     d.magFilter = p.magf ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     d.minFilter = (p.minf == 1 || p.minf == 3 || p.minf == 5) ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -8238,13 +8221,45 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);
     d.reductionMode = (MTLSamplerReductionMode)p.reduction;   // TOTK: NVN AVERAGE/MIN/MAX = Metal WeightedAverage/Minimum/Maximum
     d.supportArgumentBuffers = YES;
-    id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];
+    return d;
+}
+static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Caller holds g_rmu
+    if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "采样器号 %d 未登记", sid); return nil; }
+    if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
+    id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:samp_desc(g_sreg[sid])];
     if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
     return s;
 }
 static inline __attribute__((always_inline)) void *samp_fast(int sid) {
     if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid] && g_sview[sid]) return g_sview[sid];
     return (__bridge void *)samp_by_id(sid);
+}
+/* A depth-format texture read without a compare lands on one texel on the Switch; Metal would blend neighbouring depths,
+   which puts reconstructed positions in mid-air at object edges (PR #104). The shader declares every such slot a plain
+   texture2d (one translation serves colour and depth), so the runtime gives the slot the game's sampler without filtering.
+   Called holding g_rmu, with a sampler samp_fast has made. */
+static uint64_t samp_depth_read(int sid, void **out) {
+    if (!g_sview_dr[sid]) {
+        MTLSamplerDescriptor *d = samp_desc(g_sreg[sid]);
+        d.minFilter = d.magFilter = MTLSamplerMinMagFilterNearest; d.mipFilter = MTLSamplerMipFilterNotMipmapped;
+        d.compareFunction = MTLCompareFunctionNever; d.maxAnisotropy = 1; d.lodBias = 0; d.reductionMode = MTLSamplerReductionModeWeightedAverage;
+        id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];
+        if (!s) return 0;
+        g_sview_dr[sid] = (void *)CFBridgingRetain(s); g_srid_dr[sid] = s.gpuResourceID._impl;
+    }
+    *out = g_sview_dr[sid];
+    return g_srid_dr[sid];
+}
+/* Whether this combined texture / sampler binding reads a depth-format texture without a compare (the reflection lists the
+   slots the shader compare-samples; no shader does both on one slot). Called holding g_rmu. */
+static inline int slot_reads_depth(const NvShader *sh, const nvn_rbind *b, uint64_t handle) {
+    int reg = b->reg, tid;
+    if (b->kind != NVN_RB_SAMPT || reg >= 128 || (sh->rf.compare[reg >> 6] >> (reg & 63) & 1)) return 0;
+    tid = (int)(handle & 0xfffff);
+    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
+    const treg_t *t = &g_treg[tid];
+    int f = t->has_v && t->v.set_format ? t->v.format : t->t.d.format;
+    return f >= 0x32 && f <= 0x36;
 }
 
 // ---------- 参数缓冲区块：每次提交一块，GPU 完成后回收 ----------
@@ -8383,7 +8398,6 @@ static void bind_program_stages(const p_bind_program *bp) {
    handles also after S is saved and restored. TOTK_TEX_GEN_CHECK=1 compares the handles as well and stops on a difference. */
 static uint64_t g_tex_gen_seq;
 #define TEX_CHANGED(st) (S.tex_gen[st] = ++g_tex_gen_seq)
-static int tex_gen_check(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TEX_GEN_CHECK"); v = e && atoi(e); } return v; }
 // No render target set: no colour target and no depth / stencil (a pass of rasterization only, see rp_begin_ex)
 static int rt_none(void) {
     if (!R.has_rt || R.rt.depth) return 0;
@@ -8460,11 +8474,7 @@ static NSDictionary *rt_answers(int st) {
     NSMutableDictionary *tex = [NSMutableDictionary dictionary], *img = [NSMutableDictionary dictionary], *attr = [NSMutableDictionary dictionary], *fout = [NSMutableDictionary dictionary];
     registry_lock();   /* nested on this thread or wait for a different owner */
     for (int r = 0; r < 128; r++) if (S.tex[st][r]) { const treg_t *t = bound_tex(S.tex[st][r]); if (!t) continue;
-        /* TOTK: a depth-format texture (NVN 0x32..0x36) sampled through a plain texture slot must be declared depth2d in MSL
-           (Metal gives no data for a depth texture read as texture2d, and depth formats cannot be viewed as colour);
-           the answer carries a _depth suffix so the translation is a separate variant and the MSL is rewritten. */
-        int f = t->has_v && t->v.set_format ? t->v.format : t->t.d.format; NSString *name = target_name(bound_target(t));
-        tex[@(r).stringValue] = f >= 0x32 && f <= 0x36 ? [name stringByAppendingString:@"_depth"] : name; }
+        tex[@(r).stringValue] = target_name(bound_target(t)); }
     for (int r = 0; r < 32; r++) if (S.img[st][r]) { const treg_t *t = bound_tex(S.img[st][r]); if (!t) continue;
         int f = t->has_v && t->v.set_format ? t->v.format : t->t.d.format; NSString *fn = image_format(f);
         img[@(r).stringValue] = fn ? @{@"type": target_name(bound_target(t)), @"fmt": fn} : @{@"type": target_name(bound_target(t))}; }
@@ -8479,57 +8489,11 @@ static int cls_of(int f) { switch (f) {
     case 0x04: case 0x09: case 0x0C: case 0x10: case 0x15: case 0x18: case 0x1C: case 0x21: case 0x24: case 0x28: case 0x2D: case 0x30: return 2;
     default: return 0; } }
 static const treg_t *bound_tex(uint64_t h);
-/* stage_sig (TOTK_SIG_INCR): take the registry lock; keep it and answer 1 when no registration happened since gen was read
-   (texture / sampler registrations bump g_reg_gen while holding it), so the per-slot answers kept for gen still hold. */
-static int g_sig_incr_locked;
-static int sig_incr_locked(uint64_t gen) {
-    g_sig_incr_locked = registry_lock();
-    if (g_reg_gen == gen) return 1;
-    registry_unlock(); return 0;
-}
 static uint64_t stage_sig(int st) {
     uint64_t sg = 0;
     if (st == 1 && R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i])
         sg |= (uint64_t)(1 + cls_of(R.rt.has_cview[i] && R.rt.cview[i].set_format ? R.rt.cview[i].format : R.rt.color[i]->d.format)) << (3 * i);
     if (st == 0) for (int i = 0; i < S.nattr && i < 16; i++) sg |= (uint64_t)cls_of(S.attr[i].fmt) << (2 * i);
-    /* TOTK: which texture slots hold depth-format textures is part of the signature too (the MSL declares them depth2d),
-       so a program first translated with other bindings is re-fitted at draw time. */
-    /* The depth-slot mask only changes with this stage's bound handles or a descriptor registration (g_reg_gen): it is
-       kept per stage and recomputed when either changed (it was a lookup per bound slot on every draw, about 7%). */
-    /* TOTK_SIG_INCR (default on): when only the handles changed (same registration generation), look up just the slots whose
-       handle differs from the last one seen; every other slot keeps its depth answer, which depends only on (handle,
-       generation). The mask is the XOR of the depth slots' constants, so it is the same value the full walk computes. Material
-       draws rebind a few textures each, and the full walk (a registry lookup per bound slot under the lock) ran on most draws
-       (stage_sig ~3% of the replay). Cached only when this call took the registry lock itself, as before. */
-    { static uint64_t last_tex[6][128], last_gen[6] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull}, last_tg[6] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull}, last_dm[6];
-      static uint64_t inc_dep[6][2]; static int inc_hi[6];   // depth slot bits of last_tex[st][0, inc_hi) for last_gen[st]; inc_hi 0 = none
-      static int incr = -1; if (incr < 0) { const char *e = getenv("TOTK_SIG_INCR"); incr = !(e && !atoi(e)); if (!incr) MLOG("TOTK_SIG_INCR=0: the depth-slot mask is recomputed over every bound slot"); }
-      uint64_t dm; uint64_t gen = g_reg_gen;
-      int hi = st >= 0 && st < 6 ? g_tex_hi[st] : 128;
-      if (st >= 0 && st < 6 && gen == last_gen[st] && S.tex_gen[st] == last_tg[st]) {
-          if (tex_gen_check() && memcmp(last_tex[st], S.tex[st], sizeof(uint64_t) * hi)) MDIE("texture slot generation %llu of stage %d kept, handles changed", (unsigned long long)S.tex_gen[st], st);
-          dm = last_dm[st]; }
-      else if (incr && st >= 0 && st < 6 && gen == last_gen[st] && inc_hi[st] >= hi && sig_incr_locked(gen)) {
-          int locked = g_sig_incr_locked; g_sig_incr_n++;   // the registry lock is held (taken by sig_incr_locked); registrations bump g_reg_gen under it
-          for (int r = 0; r < hi; r++) { uint64_t h = S.tex[st][r]; if (h == last_tex[st][r]) continue;
-              int d = 0; const treg_t *t = h ? bound_tex(h) : NULL;
-              if (t) { int f = t->has_v && t->v.set_format ? t->v.format : t->t.d.format; d = f >= 0x32 && f <= 0x36; }
-              if (d) inc_dep[st][r >> 6] |= UINT64_C(1) << (r & 63); else inc_dep[st][r >> 6] &= ~(UINT64_C(1) << (r & 63));
-              last_tex[st][r] = h; }
-          registry_unlock();
-          dm = 0; for (int w = 0; w < 2; w++) for (uint64_t m = inc_dep[st][w]; m; m &= m - 1) { int r = w * 64 + __builtin_ctzll(m); if (r < hi) dm ^= 0x9E3779B97F4A7C15ull * (uint64_t)(r + 1); }
-          if (locked) { last_tg[st] = S.tex_gen[st]; last_dm[st] = dm; } else inc_hi[st] = 0;
-      }
-      else {
-          dm = 0; int locked = registry_lock(); uint64_t dep[2] = {0, 0}; g_sig_full_n++;
-          for (int r = 0; r < hi; r++) if (S.tex[st][r]) { const treg_t *t = bound_tex(S.tex[st][r]); if (!t) continue;
-              int f = t->has_v && t->v.set_format ? t->v.format : t->t.d.format; if (f >= 0x32 && f <= 0x36) { dm ^= 0x9E3779B97F4A7C15ull * (uint64_t)(r + 1); dep[r >> 6] |= UINT64_C(1) << (r & 63); } }
-          registry_unlock();
-          if (st >= 0 && st < 6 && locked) { if (tex_gen_check() || incr) memcpy(last_tex[st], S.tex[st], sizeof(uint64_t) * hi); last_gen[st] = gen; last_tg[st] = S.tex_gen[st]; last_dm[st] = dm;
-              inc_dep[st][0] = dep[0]; inc_dep[st][1] = dep[1]; inc_hi[st] = hi; }
-          else if (st >= 0 && st < 6) inc_hi[st] = 0;
-      }
-      if (dm) sg ^= dm | 1ull << 63; }
     return sg;
 }
 // The same program can draw into float and integer targets or read differently typed attributes: pick (or translate)
@@ -12829,6 +12793,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             int sid = reg < 128 ? (int)((b->kind == NVN_RB_SAMPT ? S.tex[nvn_stage][reg] : S.samp[nvn_stage][reg]) >> 20) : 0;
             __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
             slots[aid] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+            if (ss && slot_reads_depth(sh, b, S.tex[nvn_stage][reg])) { void *dv = NULL; uint64_t drid = samp_depth_read(sid, &dv); if (drid) { slots[aid] = drid; ss = (__bridge id<MTLSamplerState>)dv; } }
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // 本段已持 g_rmu | g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d cmp=%d/%d wrap=%d,%d,%d lod=%g..%g（0 最近点 / 1 双线性；2–5 带 mip）", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf, (int)sp.cmp_mode, (int)sp.cmp_func, (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.lod_min, sp.lod_max); }
