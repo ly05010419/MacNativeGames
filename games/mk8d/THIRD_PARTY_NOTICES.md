@@ -24,4 +24,4 @@ These notices live inside the isolated game directory, as the repository's contr
 
 The exact translator dependency versions are recorded in `prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.deps.json`; binary checksums are in `prebuilt/macos-arm64/SHA256SUMS`. No emulator CPU backend, emulator service layer, game program, RomFS, original or translated game shader, firmware file or game asset is distributed with this contribution.
 
-Python packages, .NET, Xcode and LibHac are user-installed build tools and are not redistributed here. Generated fonts, shader tables and all other game-derived build outputs stay outside source control.
+Python packages, Xcode and LibHac are user-installed build tools; the .NET SDK and zstd are fetched by the build from their pinned upstream releases (the repository's `tools/deps`) into a per-Mac cache. None of them is redistributed here. Generated fonts, shader tables and all other game-derived build outputs stay outside source control.

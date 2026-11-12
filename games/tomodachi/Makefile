@@ -1,4 +1,9 @@
 # Self-contained Tomodachi runtime; all build output stays outside the checkout.
+# opus and libvpx come from the repository's tools/deps: made once per Mac from pinned sources (no Homebrew).
+# make runs here (games/<game>); set a *_PREFIX to use another build.
+OPUS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+VPX_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
+
 WORK ?= /tmp/Tomodachi_build/host
 OUT := $(WORK)/build
 BACKEND ?= metal4
@@ -12,7 +17,7 @@ GFX := third_party/d2r_gfx
 GFX_SRC := $(wildcard $(GFX)/gfx/nvn/*.c $(GFX)/gfx/nvn/*.m $(GFX)/gfx/nvn/*.S $(GFX)/gfx/tex/*.c $(GFX)/gfx/tex/*.m)
 GFX_OBJ := $(patsubst $(GFX)/%,$(GFX_OUT)/%.o,$(GFX_SRC))
 TITLE_RUNTIME := $(wildcard runtime/*.c runtime/*.m runtime/*.S)
-FLAGS := -O2 -g $(BACKEND_FLAGS) -DDM_NVN_SERIAL_REPLAY=1 -DNATIVE_GAME_TITLE='"Tomodachi Life: Living the Dream"' -DNATIVE_APPLICATION_ID=0x010051F0207B2000ULL -Iruntime -I$(GFX)/gfx/nvn -I$(GFX)/gfx/nvn/include -I$(OUT) -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include
+FLAGS := -O2 -g $(BACKEND_FLAGS) -DDM_NVN_SERIAL_REPLAY=1 -DNATIVE_GAME_TITLE='"Tomodachi Life: Living the Dream"' -DNATIVE_APPLICATION_ID=0x010051F0207B2000ULL -Iruntime -I$(GFX)/gfx/nvn -I$(GFX)/gfx/nvn/include -I$(OUT) -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include
 FRAMEWORKS := Metal MetalFX Foundation QuartzCore ImageIO CoreGraphics CoreText UniformTypeIdentifiers Cocoa CoreVideo CoreFoundation AudioToolbox GameController CoreHaptics IOKit
 .PHONY: all graphics check-toolchain
 all: $(BINARY)
@@ -21,7 +26,7 @@ $(GFX_OUT)/%.o: $(GFX)/% $(wildcard $(GFX)/gfx/nvn/*.h $(GFX)/gfx/nvn/include/*.
 	@mkdir -p "$(dir $@)"
 	xcrun clang -std=gnu11 $(FLAGS) -fobjc-arc -Wno-unused-function -c "$<" -o "$@"
 $(BINARY): $(TITLE_RUNTIME) $(wildcard runtime/*.h) $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_config.h $(OUT)/title_config.h $(GFX_OBJ) Makefile | check-toolchain
-	xcrun clang -std=c11 $(FLAGS) -Wno-deprecated-declarations -fobjc-arc $(TITLE_RUNTIME) $(GFX_OBJ) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a $(addprefix -framework ,$(FRAMEWORKS)) -o "$@"
+	xcrun clang -std=c11 $(FLAGS) -Wno-deprecated-declarations -fobjc-arc $(TITLE_RUNTIME) $(GFX_OBJ) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a $(addprefix -framework ,$(FRAMEWORKS)) -o "$@"
 
 check-toolchain:
 	@python3 -c 'from pathlib import Path; from tools.common import outside_repository; outside_repository(Path(__import__("sys").argv[1]), Path.cwd().parents[1])' "$(WORK)"

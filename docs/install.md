@@ -255,7 +255,8 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 |---|---|
 | `needs macOS 26 or later` | Not supported here; see the macOS 15 fork under [What you need](#what-you-need). |
 | `clang++ finds no C++ standard library headers` | With Xcode: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. Without: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`. |
-| `Homebrew packages missing`, `Python 3.14 not found`, `git not found` | Install what it names. |
+| `Python 3.14 not found`, `git not found` | Install what it names. |
+| `[deps] … failed` (opus, libvpx, dav1d, XcodeGen, …) | The build makes these itself from pinned sources; read the log it names under `~/Library/Caches/MacNativeGames/deps/logs`. A download that failed: run the build again. |
 | `NSP files do not include system shared fonts`, `needs --firmware or --shared-fonts` | Add `--firmware` or `--shared-fonts`. |
 | `SHA-256 … is not the expected …`, `ExeFS … is missing; not the supported version` | `git pull` first. Then check that the base is 1.0.0 and the update a supported version; otherwise dump the game again. |
 | `unsupported update module hashes` | That update version is not supported. |
@@ -265,7 +266,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `needs about N GB free` | Free space, or `--work` and `-o` on an APFS volume with room. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](#folders)). |
 | `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update: dump `prod.keys` again on current firmware. |
-| `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools or Homebrew outside `/opt/homebrew`. |
+| `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools. |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |
 
 Still stuck? Open an [issue](https://github.com/ly05010419/MacNativeGames/issues) with the command (paths shortened), Mac model, macOS version, `git log -1 --oneline`, the `ERROR:` line and the end of the log it names. Never attach keys, game files, firmware or the app.

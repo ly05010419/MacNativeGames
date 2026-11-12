@@ -55,12 +55,8 @@ def stage(work):
 
 
 def environment(work):
-    env = clean_environment(work, TITLE)
-    dotnet = work/'dependencies/dotnet'
-    if dotnet.is_dir():
-        env['DOTNET_ROOT'] = str(dotnet)
-        env['PATH'] = str(dotnet)+':'+env['PATH']
-    return env
+    """la_env's: zstd, spirv-cross and the .NET SDK from MacNativeGames' tools/deps first on PATH, DOTNET_ROOT that SDK."""
+    return clean_environment(work, TITLE)
 
 
 def main():

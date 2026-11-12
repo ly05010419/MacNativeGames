@@ -33,21 +33,24 @@ def say(text):
     print(text, flush=True)
 
 
-def run(cmd, log, cwd=GAME_DIR):
+def run(cmd, log, cwd=GAME_DIR, env=None):
     cmd = [str(c) for c in cmd]
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, 'w') as f:
-        p = subprocess.run(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT)
+        p = subprocess.run(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT)
     if p.returncode:
         tail = log.read_text(errors='replace').splitlines()[-30:]
         raise SystemExit(f'error: {" ".join(cmd[:3])} ... failed (exit {p.returncode}); {log}:\n' + '\n'.join(tail))
 
 
 def dotnet():
-    found = shutil.which('dotnet') or (str(Path.home() / '.dotnet/dotnet') if (Path.home() / '.dotnet/dotnet').is_file() else None)
-    if not found:
-        raise SystemExit('error: the .NET 10 SDK is needed to build the shader translator (https://dotnet.microsoft.com/download)')
-    return found
+    """The .NET 10 SDK of the repository's tools/deps (Microsoft's tarball, pinned; downloaded once per Mac)."""
+    sys.path.insert(0, os.environ.get('MNG_REPO') or str(GAME_DIR.parents[1]))   # the build runs this from a copy in its work folder
+    from tools.deps import DepsError, program
+    try:
+        return str(program('dotnet'))
+    except DepsError as e:
+        raise SystemExit(f'error: the .NET 10 SDK for the shader translator: {e}') from None
 
 
 def spirv_cross(build, logs, jobs=2):
@@ -82,8 +85,11 @@ def publish(step, project, out, name, logs):
     say(f'{step}. building {name} (dotnet publish, self-contained osx-arm64)')
     shutil.rmtree(out, ignore_errors=True)
     # --artifacts-path keeps every project's bin/ and obj/ under build/ (not beside the sources in third_party/ and tools/)
+    # MSBuild reads environment variables as properties: make's VERSION=mkw (the Makefile's game version, exported to this
+    # script) became the projects' Version and NuGet's restore failed with MSB4181 and no message. Leave it out.
+    env = {key: value for key, value in os.environ.items() if key.upper() != 'VERSION'}
     run([dotnet(), 'publish', project, '-c', 'Release', '-r', 'osx-arm64', '--self-contained', 'true', '-o', out,
-         '--artifacts-path', GAME_DIR / 'build/dotnet-artifacts', '-p:UseAppHost=true', '-nologo'], logs / f'{name}.log')
+         '--artifacts-path', GAME_DIR / 'build/dotnet-artifacts', '-p:UseAppHost=true', '-nologo'], logs / f'{name}.log', env=env)
     if not (out / name).is_file():
         raise SystemExit(f'error: dotnet publish did not write {out / name}')
 

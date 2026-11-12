@@ -51,11 +51,22 @@ MODULES = ('sdk', 'subsdk0', 'main')
 NRO_FILES = ('patched.bin', 'fixups.tsv', 'gates.tsv')   # what the host's nn::ro reads per module (runtime/ro_host.c)
 LIST = 'assets/shader_list.tsv'
 LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-HOMEBREW = ('opus', 'libvpx', 'libvorbis', 'libogg')   # linked statically by the Makefile
+DEPS = ('opus', 'libvpx', 'vorbis', 'ogg')   # linked statically by the Makefile (tools/deps)
 
 
 class BuildError(Exception):
     pass
+
+
+def pinned_deps(*names):
+    """OPUS_PREFIX, VPX_PREFIX, … in this process's environment, which the Makefile reads: the repository's tools/deps
+    makes them once per Mac from pinned sources, so no Homebrew is needed (2026-11-12)."""
+    sys.path.insert(0, str(GAME_DIR.parents[1]))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env(*names))
+    except DepsError as e:
+        raise BuildError(str(e)) from None
 
 
 def say(msg):
@@ -598,9 +609,7 @@ def main(argv):
     out = (a.out.expanduser().resolve() if a.out else game.parent / f'{APP_NAME}.app')
     if out.suffix != '.app':
         raise BuildError(f'the output must end in .app: {out}')
-    missing = [p for p in HOMEBREW if not (Path('/opt/homebrew/opt') / p / 'lib').is_dir()]
-    if missing:
-        raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
+    pinned_deps(*DEPS)
     work.mkdir(parents=True, exist_ok=True)
     logs = work / 'logs/build'
     say(f'{APP_NAME}; work folder {work}')

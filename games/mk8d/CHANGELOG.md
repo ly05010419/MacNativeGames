@@ -12,6 +12,10 @@ All measurements on 28 October 2026: MacBook Pro, Apple M1 Max (GPU `applegpu_g1
 
 ## Log
 
+### 2026-11-12: no Homebrew
+
+- **The .NET SDK and zstd come with the build.** `scripts/build_mk8d.py` takes them from the repository's `tools/deps`, which makes them once per Mac from pinned sources (.NET SDK 10.0.401 from Microsoft's tarball, SHA-512; zstd 1.5.7, SHA-256) into `~/Library/Caches/MacNativeGames/deps`, puts them first on `PATH` and names that SDK in `DOTNET_ROOT` (the shader translator and `nx_extract` are framework-dependent apphosts). `build_ipa_from_nsp.py` now puts the caller's `PATH` before its fallback folders (Homebrew's first before), drops the .NET folders from them, and its messages name `tools/deps` instead of Homebrew; SPIRV-Cross stays this target's own build (its `--revision` is in the lock). The local patch records the new lines.
+
 ### 2026-10-30: 2P and every library applet, the keyboard as a player
 
 - **Library applets take the game's focus** (upstream nxnative `137c2291`, GitHub issue #550, ported as it is). The host now holds the game out of focus while any applet stand-in runs (controller, keyboard, Mii, account, error, shop) and notifies the change both ways. It replaces this target's narrower fix of 2026-10-29, which sent the focus pair around the controller applet only.

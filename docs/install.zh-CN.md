@@ -246,7 +246,8 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 |---|---|
 | `needs macOS 26 or later` | 本仓库不支持，见[需要准备](#需要准备)里的 macOS 15 fork。 |
 | `clang++ finds no C++ standard library headers` | 装了 Xcode：`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`；没装：`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`。 |
-| `Homebrew packages missing`、`Python 3.14 not found`、`git not found` | 装上它点名的东西。 |
+| `Python 3.14 not found`、`git not found` | 装上它点名的东西。 |
+| `[deps] … failed`（opus、libvpx、dav1d、XcodeGen 等） | 这些由打包自己从固定版本源码做出来；看它点名的日志（`~/Library/Caches/MacNativeGames/deps/logs` 下）。下载失败的，再打一次包。 |
 | `NSP files do not include system shared fonts`、`needs --firmware or --shared-fonts` | 加上 `--firmware` 或 `--shared-fonts`。 |
 | `SHA-256 … is not the expected …`、`ExeFS … is missing; not the supported version` | 先 `git pull`；再确认本体是 1.0.0、更新是支持的版本；都对的话，重新导出游戏。 |
 | `unsupported update module hashes` | 这个更新版本不支持。 |
@@ -255,7 +256,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | 这是别的游戏：按它自己的 `games/<名字>/README.md` 打包。 |
 | `needs about N GB free` | 腾出空间，或用 `--work` 和 `-o` 放到有空间的 APFS 卷上。 |
 | `BKTR verification failed`、合并更新时出错 | 先 `git pull`。还不行的话，你的密钥可能比更新旧：在新固件上重新导出 `prod.keys`。 |
-| `make failed`、`xcrun failed` | 看它点名的日志；通常是开发工具不完整，或 Homebrew 不在 `/opt/homebrew`。 |
+| `make failed`、`xcrun failed` | 看它点名的日志；通常是开发工具不完整。 |
 | iOS 签名或安装出错 | 在 Xcode › Settings › Accounts 登录 Apple ID，设备解锁并信任这台 Mac，打开开发者模式，再装一次。 |
 
 还是不行，就开一个 [issue](https://github.com/ly05010419/MacNativeGames/issues)，附上：

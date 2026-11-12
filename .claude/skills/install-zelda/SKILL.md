@@ -126,7 +126,8 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 |---|---|
 | `needs macOS 26 or later` | Not supported here; see step 1 (the fork). |
 | `clang++ finds no C++ standard library headers` | Broken developer tools. With Xcode: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`; without: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`. |
-| `Homebrew packages missing`, `Python 3.14 not found`, `git not found` | Install what it names. |
+| `Python 3.14 not found`, `git not found` | Install what it names. |
+| `[deps] … failed` | tools/deps makes opus, libvpx, dav1d, XcodeGen, CMake… itself: read the log it names (`~/Library/Caches/MacNativeGames/deps/logs`); a failed download, run the build again. Never suggest Homebrew for these. |
 | `NSP files do not include system shared fonts`, `needs --firmware or --shared-fonts` | Add `--firmware` or `--shared-fonts` (step 2). |
 | `SHA-256 … is not the expected …`, `ExeFS … is missing; not the supported version` | Another version or an incomplete dump. `git pull` first; check that the base is 1.0.0 (Tears of the Kingdom) and the update a supported version; otherwise the player dumps the game again. Never edit `expected-*.json`. |
 | `unsupported update module hashes` | That update version is not supported; use one from step 2. |
@@ -136,7 +137,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `needs about N GB free` | Free space, or `--work` (and `-o`) on an APFS volume with room. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The app remembers a work folder on a disk that is not connected or a folder that was moved. Ask the player whether that disk can be connected; if yes, run the same command again; if not, choose a work folder by the Folders rule and add `--work "<it>"` (the app records it). A deleted work folder alone is made again by the update itself. |
 | `BKTR verification failed`, an update merge or key error | `git pull` first. If it persists, the keys may be older than the update: the player dumps `prod.keys` again from a console on current firmware. |
-| `make failed` / `xcrun failed` (`… .log`) | Read the named log; usually incomplete developer tools or Homebrew outside `/opt/homebrew`. |
+| `make failed` / `xcrun failed` (`… .log`) | Read the named log; usually incomplete developer tools. |
 | `the app does not start: …` | Read the message; rerun once; otherwise report it (below). |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |
 

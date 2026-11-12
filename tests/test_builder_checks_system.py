@@ -10,7 +10,7 @@ from unittest.mock import patch
 from builder_fakes import FakeRunner, fail, ok
 from tools.builder import checks_system
 from tools.builder.checks import CheckContext, Status
-from tools.builder.checks_system import (BREW_INSTALL, AppleSilicon, BuildPython, Git, Homebrew,
+from tools.builder.checks_system import (SYSTEM_CHECKS, AppleSilicon, BuildPython, Git,
                                          MacosVersion)
 from tools.builder.ports import Outcome
 
@@ -69,12 +69,9 @@ class MacosVersionCheck(Base):
                 self.assertEqual(r.status, Status.OK if message == 'ok' else Status.BLOCK)
 
 
-class HomebrewChecks(Base):
-    def test_homebrew(self):
-        self.assertEqual(self.check(Homebrew()), (Status.BLOCK, 'homebrew_missing', BREW_INSTALL))
-        (self.brew / 'bin').mkdir(parents=True)
-        (self.brew / 'bin/brew').write_text('')
-        self.assertEqual(self.check(Homebrew()), (Status.OK, 'ok', None))
+class NoHomebrew(Base):
+    def test_no_check_asks_for_homebrew(self):
+        self.assertNotIn('homebrew', [check.id for check in SYSTEM_CHECKS])   # tools/deps makes the build dependencies
 
 
 class GitCheck(Base):

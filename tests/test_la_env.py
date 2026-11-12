@@ -1,9 +1,12 @@
-"""games/la/scripts/la_env.py (#2073): the steps get DOTNET_ROOT for the dotnet on their PATH, so a published apphost
-(nx_extract) finds a Homebrew .NET. Without it extract_la.py failed with "You must install .NET to run this application"."""
+"""games/la/scripts/la_env.py: every build step gets zstd, spirv-cross and the .NET SDK from tools/deps (pinned, made once per
+Mac; no Homebrew) first on PATH, and DOTNET_ROOT naming that SDK, so a published apphost (nx_extract, the shader translator)
+finds its runtime (#2073: without DOTNET_ROOT, extract_la.py failed with "You must install .NET to run this application").
+The caller's PATH and DOTNET_ROOT never reach the steps. tools/deps is stubbed: nothing is downloaded here."""
 import importlib.util
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -14,66 +17,41 @@ la_env = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(la_env)
 
 
-class DotnetRoot(unittest.TestCase):
+class PinnedTools(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
-        self.bin = self.tmp / 'homebrew/bin'
-        self.bin.mkdir(parents=True)
+        self.folders = [str(self.tmp / 'deps/zstd-1.5.7/bin'), str(self.tmp / 'deps/spirv-cross/bin'), str(self.tmp / 'deps/dotnet-sdk-10.0.401')]
+        self.sdk = str(self.tmp / 'deps/dotnet-sdk-10.0.401')
+        self.pinned = mock.patch.object(la_env, 'pinned_tools', return_value=(self.folders, self.sdk))
+        self.pinned.start()
+        self.addCleanup(mock.patch.stopall)
 
-    def command(self, path, text=''):
-        path.write_text(text)
-        path.chmod(0o755)
-        return path
+    def test_the_pinned_tools_come_first_then_only_the_system(self):
+        env = la_env.environment(self.tmp / 'work', 'TEST')
+        self.assertEqual(env['PATH'].split(os.pathsep), [*self.folders, *la_env.PATH])
+        self.assertNotIn('/opt/homebrew/bin', env['PATH'])
 
-    def runtime(self, folder):
-        (folder / 'host/fxr/10.0.0').mkdir(parents=True)
-        return folder
-
-    def test_link_to_libexec_dotnet(self):
-        libexec = self.runtime(self.tmp / 'homebrew/Cellar/dotnet/10.0.103/libexec')
-        self.command(libexec / 'dotnet')
-        (self.bin / 'dotnet').symlink_to(libexec / 'dotnet')
-        self.assertEqual(la_env.dotnet_root(('/nonexistent', str(self.bin))), str(libexec.resolve()))
-
-    def test_script_beside_libexec(self):
-        keg = self.tmp / 'homebrew/Cellar/dotnet/10.0.103'
-        libexec = self.runtime(keg / 'libexec')
-        (keg / 'bin').mkdir()
-        self.command(keg / 'bin/dotnet', '#!/bin/bash\nexec "$DOTNET_ROOT/dotnet" "$@"\n')
-        (self.bin / 'dotnet').symlink_to(keg / 'bin/dotnet')
-        self.assertEqual(la_env.dotnet_root((str(self.bin),)), str(libexec.resolve()))
-
-    def test_microsoft_install(self):
-        share = self.runtime(self.tmp / 'share/dotnet')
-        self.command(share / 'dotnet')
-        self.assertEqual(la_env.dotnet_root((str(self.bin), str(share))), str(share.resolve()))
-
-    def test_no_dotnet_or_no_runtime(self):
-        self.assertIsNone(la_env.dotnet_root((str(self.bin),)))
-        self.command(self.bin / 'dotnet')
-        self.assertIsNone(la_env.dotnet_root((str(self.bin),)))
-
-    def test_only_the_dotnet_the_steps_would_run(self):
-        share = self.runtime(self.tmp / 'share/dotnet')
-        self.command(share / 'dotnet')
-        (self.bin / 'dotnet').write_text('')   # not executable: never run, so skipped
-        self.assertEqual(la_env.dotnet_root((str(self.bin), str(share))), str(share.resolve()))
-        self.command(self.bin / 'dotnet')      # executable without a runtime: it is the one run, so none is found
-        self.assertIsNone(la_env.dotnet_root((str(self.bin), str(share))))
+    def test_dotnet_root_names_the_pinned_sdk(self):
+        self.assertEqual(la_env.environment(self.tmp / 'work', 'TEST')['DOTNET_ROOT'], self.sdk)
 
     def test_the_callers_path_and_dotnet_root_are_not_used(self):
-        share = self.runtime(self.tmp / 'share/dotnet')
-        self.command(share / 'dotnet')
-        with mock.patch.dict(os.environ, {'PATH': str(share), 'DOTNET_ROOT': str(share)}), \
-             mock.patch.object(la_env.dotnet_root, '__defaults__', ((str(self.tmp / 'empty'),),)):
-            self.assertNotIn('DOTNET_ROOT', la_env.environment(self.tmp / 'work', 'TEST'))
+        with mock.patch.dict(os.environ, {'PATH': '/opt/homebrew/bin', 'DOTNET_ROOT': '/opt/homebrew/opt/dotnet/libexec'}):
+            env = la_env.environment(self.tmp / 'work', 'TEST')
+        self.assertEqual(env['DOTNET_ROOT'], self.sdk)
+        self.assertNotIn('/opt/homebrew', env['PATH'])
 
-    def test_environment_sets_it_only_when_found(self):
-        with mock.patch.object(la_env, 'dotnet_root', return_value='/opt/homebrew/opt/dotnet/libexec'):
-            self.assertEqual(la_env.environment(self.tmp / 'work', 'TEST')['DOTNET_ROOT'], '/opt/homebrew/opt/dotnet/libexec')
-        with mock.patch.object(la_env, 'dotnet_root', return_value=None):
-            self.assertNotIn('DOTNET_ROOT', la_env.environment(self.tmp / 'work', 'TEST'))
+    def test_a_tool_that_cannot_be_made_stops_the_build_with_the_reason(self):
+        self.pinned.stop()
+        sys.path.insert(0, str(ROOT))
+        import tools.deps as deps
+        with mock.patch.object(deps, 'path', side_effect=deps.DepsError('curl failed (exit 6)')), \
+             self.assertRaisesRegex(ValueError, 'pinned source: curl failed'):
+            la_env.environment(self.tmp / 'work', 'TEST')
+
+    def test_it_asks_tools_deps_for_the_tools_the_steps_run(self):
+        self.assertEqual(la_env.TOOLS, ('zstd', 'spirv-cross', 'dotnet'))
+
 
 if __name__ == '__main__':
     unittest.main()

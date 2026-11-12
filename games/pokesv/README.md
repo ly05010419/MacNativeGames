@@ -55,7 +55,7 @@ Tested on one Mac: Apple M3 Pro, macOS 27, game version 4.0.0 (base NSP 1.0.0 pl
 
 You need:
 - Xcode or its Command Line Tools, with the macOS 26 SDK or later. The game needs macOS 26 (`MACOS_MIN` in the Makefile); it has been tested on macOS 27 only.
-- From Homebrew: `python@3.14`, `opus`, `libvpx`, and `llvm@23` (for `make verify`).
+- Python 3.14 ([python.org](https://www.python.org/downloads/macos/)). opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`); `make verify` uses Xcode's `llvm-objdump`. No Homebrew.
 - git and internet access once: `make shader-tools` fetches SPIRV-Cross at a fixed commit.
 
 From `games/pokesv`:

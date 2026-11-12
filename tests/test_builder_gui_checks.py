@@ -44,16 +44,16 @@ class Checks(ChecksBase):
         self.assertEqual(self.ctl.calls[-2:], [('set_paths', {'keys': '/k'}), 'run_checks'])
 
     def test_a_block_with_a_fix_and_copy(self):
-        block = CheckResult('homebrew', Status.BLOCK, 'homebrew_missing', '/opt/homebrew/bin/brew', 'install-brew')
+        block = CheckResult('git', Status.BLOCK, 'git_missing', '', 'xcode-select --install')
         self.chosen(checks=[[CheckResultReady(block)], [ChecksDone(False)]])
         self.check()
-        self.assertIn('BLOCK  Homebrew: Homebrew is not installed (/opt/homebrew/bin/brew is missing).',
+        self.assertIn('BLOCK  git: git was not found.',
                       self.labels(self.view.checks.rows))
-        self.assertIn('Fix: install-brew', self.labels(self.view.checks.rows))
+        self.assertIn('Fix: xcode-select --install', self.labels(self.view.checks.rows))
         copy = next(w.button for row in self.view.checks.rows.winfo_children() for w in row.winfo_children()
                     if w.winfo_class() == 'FlatButton')
         copy.invoke()
-        self.assertEqual((self.copied, self.state('build')), (['install-brew'], 'disabled'))
+        self.assertEqual((self.copied, self.state('build')), (['xcode-select --install'], 'disabled'))
 
     def test_build_follows_a_ready_checks_done(self):
         self.chosen(checks=READY)

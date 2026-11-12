@@ -35,7 +35,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 import nsoimg
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # 工作区根目录（游戏文件、产物、运行现场都在它下面） | Workspace root (game files, build outputs and run artifacts are all under it)
 
-LLVM = os.environ.get('LLVM_BIN', '/opt/homebrew/opt/llvm@23/bin')
+def find_objdump():
+    """独立反汇编器：LLVM_OBJDUMP，或 LLVM_BIN 下的 llvm-objdump，否则用 Xcode 自带的（xcrun --find），不需要 Homebrew 的 llvm（2026-11-12）。 |
+    The independent disassembler: LLVM_OBJDUMP, or llvm-objdump in LLVM_BIN, else Xcode's own (xcrun --find); Homebrew's llvm is not needed (2026-11-12)."""
+    if os.environ.get('LLVM_OBJDUMP'): return os.environ['LLVM_OBJDUMP']
+    if os.environ.get('LLVM_BIN'): return os.path.join(os.environ['LLVM_BIN'], 'llvm-objdump')
+    return subprocess.run(['xcrun', '--find', 'llvm-objdump'], capture_output=True, text=True, check=True).stdout.strip()
+OBJDUMP = find_objdump()
+# 缓存键：反汇编器自报的版本（换版本另起键） | Cache key: the disassembler's own version line (a new version gets a new key)
+OBJDUMP_VERSION = re.sub(r'\W+', '-', next(l for l in subprocess.run([OBJDUMP, '--version'], capture_output=True, text=True, check=True).stdout.splitlines() if 'version' in l.lower()).strip())
 out_dir, mod, nso = sys.argv[1:4]
 orig = nsoimg.load(nso)
 h = nsoimg.header(out_dir, mod)
@@ -60,16 +68,24 @@ def bad(msg):
     fails.append(msg)
     if len(fails) <= 30: print('FAIL', msg)
 
+def code_elf(blob):
+    """原始字节包成只有 .text 的 AArch64 ELF（地址 0），给 llvm-objdump 读；代替 llvm-objcopy -I binary（Xcode 没有它）。 |
+    Raw bytes wrapped as an AArch64 ELF with only .text (address 0) for llvm-objdump; replaces llvm-objcopy -I binary (Xcode has none)."""
+    names = b'\0.text\0.shstrtab\0'
+    text_at = 64; names_at = text_at + len(blob); sections_at = (names_at + len(names) + 7) & ~7
+    header = struct.pack('<4sBBBBB7xHHIQQQIHHHHHH', b'\x7fELF', 2, 1, 1, 0, 0, 1, 183, 1, 0, 0, sections_at, 0, 64, 0, 0, 64, 3, 2)
+    section = lambda name, kind, flags, offset, size, align: struct.pack('<IIQQQQIIQQ', name, kind, flags, 0, offset, size, 0, 0, align, 0)
+    sections = section(0, 0, 0, 0, 0, 0) + section(1, 1, 6, text_at, len(blob), 4) + section(7, 3, 0, names_at, len(names), 1)
+    return header + blob + names + bytes(sections_at - names_at - len(names)) + sections
+
 def llvm_dis(blob, base):
     """按原始字节反汇编，返回相关行 {偏移: 小写指令文本}。 | Disassemble from raw bytes and return the relevant lines {offset: lowercase instruction text}."""
     with tempfile.TemporaryDirectory() as td:
-        b, e = os.path.join(td, 'x.bin'), os.path.join(td, 'x.elf')
-        open(b, 'wb').write(blob)
-        subprocess.run([f'{LLVM}/llvm-objcopy', '-I', 'binary', '-O', 'elf64-littleaarch64',
-                        '--rename-section', '.data=.text,code', b, e], check=True)
+        e = os.path.join(td, 'x.elf')
+        open(e, 'wb').write(code_elf(blob))
         # 只留可能相关的行（x18/w18、tpidr、svc、cnt?ct），几百万行的筛选交给 grep
         # Keep only potentially relevant lines (x18/w18, tpidr, svc, cnt?ct); filtering millions of lines is left to grep
-        od = subprocess.Popen([f'{LLVM}/llvm-objdump', '-d', '--no-show-raw-insn', e], stdout=subprocess.PIPE)
+        od = subprocess.Popen([OBJDUMP, '-d', '--no-show-raw-insn', e], stdout=subprocess.PIPE)
         r = subprocess.run(['/usr/bin/grep', '-iE', r'[xw]18|tpidr|svc|cnt[pv]ct'], stdin=od.stdout, capture_output=True, text=True)
         od.stdout.close(); assert od.wait() == 0
     out = {}
@@ -223,8 +239,7 @@ def cached_dis(blob):
     """原映像是固定数据：相关行按 sha 缓存（llvm 换版本另起键），只在首次付反汇编的十来秒。 | The original image is fixed data: relevant lines are cached by sha (a new llvm version gets a new key), so the ten-odd seconds of disassembly are paid only the first time."""
     import hashlib, json
     cd = os.environ.get('DM_VCACHE', os.path.join(DM_ROOT, 'build/cache/dm/verify'))
-    ver = os.path.basename(os.path.dirname(LLVM.rstrip('/')))
-    p = os.path.join(cd, f'{mod}.{hashlib.sha256(blob).hexdigest()[:16]}.{ver}.json')
+    p = os.path.join(cd, f'{mod}.{hashlib.sha256(blob).hexdigest()[:16]}.{OBJDUMP_VERSION}.json')
     if os.path.exists(p): return {int(k): v for k, v in json.load(open(p)).items()}
     d = llvm_dis(blob, 0)
     os.makedirs(cd, exist_ok=True); tmp = f'{p}.new.{os.getpid()}'; json.dump(d, open(tmp, 'w')); os.replace(tmp, p)

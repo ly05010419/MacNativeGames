@@ -57,14 +57,13 @@ class Checks(Base):
                          (0, ['  OK    git', 'Checks: ready.', f'  logs: builder: {log}']))
 
     def test_a_block_with_a_fix_and_a_skip(self):
-        block = CheckResult('homebrew', Status.BLOCK, 'homebrew_missing', '/opt/homebrew/bin/brew', 'install-brew')
-        skip = CheckResult('build_python', Status.SKIP, 'skipped', 'requires homebrew')
+        block = CheckResult('git', Status.BLOCK, 'git_missing', '', 'xcode-select --install')
+        skip = CheckResult('build_python', Status.SKIP, 'skipped', 'requires git')
         ctl = FakeController(checks=[[CheckResultReady(block), CheckResultReady(skip)], [ChecksDone(False)]])
         self.assertEqual(self.run_cli(ctl), 2)
-        self.assertEqual(self.lines, ['  BLOCK Homebrew: Homebrew is not installed '
-                                      '(/opt/homebrew/bin/brew is missing).',
-                                      '        fix: install-brew',
-                                      '  SKIP  Python 3.14 for the build: Not checked (requires homebrew).',
+        self.assertEqual(self.lines, ['  BLOCK git: git was not found.',
+                                      '        fix: xcode-select --install',
+                                      '  SKIP  Python 3.14 for the build: Not checked (requires git).',
                                       'Checks: blocked. Nothing was started.'])
 
     def test_paths_incomplete(self):

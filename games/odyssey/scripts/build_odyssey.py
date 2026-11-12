@@ -59,9 +59,13 @@ def preflight(args, py):
     for name in ("capstone", "cryptography", "lz4"):
         if subprocess.run([py, "-c", f"import {name}"], capture_output=True).returncode:
             problems.append(f"Python module {name} is missing ({py} -m pip install capstone cryptography lz4)")
-    for lib in ("/opt/homebrew/opt/opus/lib/libopus.a", "/opt/homebrew/opt/libvpx/lib/libvpx.a"):
-        if not Path(lib).exists():
-            problems.append(f"{lib} is missing (brew install opus libvpx)")
+    # opus and libvpx: the repository's tools/deps makes them once per Mac from pinned sources (no Homebrew)
+    sys.path.insert(0, str(GAME_DIR.parents[1]))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env("opus", "libvpx"))
+    except DepsError as e:
+        problems.append(str(e))
     if not Path(args.developer_dir, "usr/bin/xcodebuild").exists():
         # The one-command build itself only needs clang and the SDK, and the command line
         # tools have both. Without Xcode's metal compiler precompile_cached_shaders.py fails

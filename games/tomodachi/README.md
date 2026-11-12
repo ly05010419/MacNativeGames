@@ -15,8 +15,8 @@ interpreter, JIT, or emulator backend is used by the port.
 - Your own original game dump (XCI/NSP), your own `prod.keys`, and your own
   firmware/shared fonts. No game files, keys, fonts, shaders, saves, or app icons
   are included in this folder. The icon is extracted locally when packaging.
-- Apple silicon Mac, Xcode command-line tools, **Python 3.14**, and Homebrew
-  `opus` and `libvpx`. Metal 4 requires macOS 26+ and an SDK providing Metal 4.
+- Apple silicon Mac, Xcode command-line tools, **Python 3.14** ([python.org](https://www.python.org/downloads/macos/));
+  opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew). Metal 4 requires macOS 26+ and an SDK providing Metal 4.
 - Only Metal 4 on macOS 26 or newer is supported.
 - An externally built SPIRV-Cross executable. Use the pinned upstream revision
   `aa217ae` from <https://github.com/KhronosGroup/SPIRV-Cross> (Apache-2.0).

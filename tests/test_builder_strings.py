@@ -68,7 +68,7 @@ class Drift(unittest.TestCase):
         for source in real_sources():
             c, m = emitted_ids(source)
             checks, messages = checks | c, messages | m
-        self.assertEqual((len(checks), len(messages)), (14, 28))   # 2026-11-12: brew_packages went (opus, libvpx built by build_app.py)
+        self.assertEqual((len(checks), len(messages)), (13, 27))   # 2026-11-12: brew_packages and homebrew went (tools/deps makes the dependencies)
         self.assertLessEqual({'ok', 'skipped', 'check_crashed', 'command_failed', 'input_missing', 'disk_space'},
                              messages)
 

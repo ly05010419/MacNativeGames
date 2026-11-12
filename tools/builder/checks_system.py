@@ -1,6 +1,6 @@
 """The Mac's system checks, in build_app.py's order of prerequisites (S1.2a). Each rule mirrors build_app.py's own
 check, with these differences on purpose: apple_silicon asks the hardware (the Python that will run the build is checked
-by build_python); homebrew is a check of its own, so its fix can be the install command; the effective developer folder
+by build_python); there is no Homebrew check (tools/deps makes every build dependency, 2026-11-12); the effective developer folder
 is validated before any xcrun; metal_toolchain does not search /Volumes or Spotlight, which can be slow, and its WARN
 says build_app.py still looks there.
 
@@ -15,7 +15,6 @@ import tempfile
 from tools.builder.checks import CheckResult, Status
 from tools.builder.ports import Outcome
 
-BREW_INSTALL = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
 SELECTION_ARGV = ['/usr/bin/env', '-u', 'DEVELOPER_DIR', '/usr/bin/xcode-select', '-p']
 
 
@@ -114,16 +113,6 @@ class CxxHeaders:
         return _failed(self.id, r)
 
 
-class Homebrew:
-    id, requires = 'homebrew', ()
-
-    def run(self, ctx):
-        brew = ctx.brew_prefix / 'bin/brew'
-        if brew.exists():
-            return _ok(self.id, str(brew))
-        return CheckResult(self.id, Status.BLOCK, 'homebrew_missing', str(brew), BREW_INSTALL)
-
-
 class Git:
     id, requires = 'git', ()
 
@@ -184,6 +173,6 @@ class MetalToolchain:
         return list(dict.fromkeys(f for f in found if f))
 
 
-# No check for Homebrew's opus and libvpx: build_app.py builds them from pinned sources (codec_libraries, 2026-11-12).
-SYSTEM_CHECKS = (AppleSilicon(), MacosVersion(), CommandLineTools(), CxxHeaders(), Homebrew(),
+# No Homebrew check: tools/deps makes opus, libvpx, dav1d and the build tools from pinned sources (2026-11-12).
+SYSTEM_CHECKS = (AppleSilicon(), MacosVersion(), CommandLineTools(), CxxHeaders(),
                  Git(), BuildPython(), MetalToolchain())

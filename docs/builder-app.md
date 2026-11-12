@@ -32,7 +32,7 @@ The window is three numbered steps, top to bottom; a step is dimmed until the on
    opened with them right away, which tells its game and proves the keys can read it and are new enough, before a
    30-minute build. A Switch 2 game needs none and says so.
 3. **Build and play**: what this Mac still needs (developer tools and disk space), each
-   with its fix (a button for the developer tools' installer and the Homebrew packages, otherwise the command to
+   with its fix (a button for the developer tools' installer, otherwise the command to
    copy); then the one button. While it builds: the bar, the stage and what it is doing, the tool running now with its
    own counter (for example 16590 / 25787 shaders), the time used and, from the second build of a game on this Mac, the
    time left. **Cancel** stops the build (SIGINT, SIGKILL 10 s later); building again goes on where it stopped, since

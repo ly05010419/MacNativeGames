@@ -22,4 +22,4 @@ These notices live inside the isolated game directory to comply with the reposit
 
 The exact shader compiler dependency versions are recorded in `prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.deps.json`; binary checksums are in `prebuilt/macos-arm64/SHA256SUMS`. No emulator CPU backend, emulator service layer, game program, RomFS, original/translated game shader or game asset is distributed with this contribution.
 
-Python packages, .NET, Xcode and SPIRV-Cross are user-installed build tools and are not redistributed here. The generated icon font uses the user's installed macOS font locally; generated fonts and all game-derived build outputs stay outside source control.
+Python packages and Xcode are user-installed build tools; the .NET SDK, SPIRV-Cross and zstd are fetched by the build from their pinned upstream releases (the repository's `tools/deps`) into a per-Mac cache. None of them is redistributed here. The generated icon font uses the user's installed macOS font locally; generated fonts and all game-derived build outputs stay outside source control.
