@@ -11,9 +11,9 @@ REPO = Path(__file__).resolve().parents[1]
 # Code a player's build runs. Docs are checked separately (players read them).
 CODE = re.compile(r'(^|/)(Makefile|[^/]+\.(py|sh|command|c|m|h|mk|yml))$')
 FORBIDDEN = re.compile(r'/opt/homebrew/(opt|Cellar|lib|include)/|brew --prefix|\bbrew install (?!python@3\.1[45]|python-tk@3\.1[45])')
-# Not players' builds: maintainers' issue collectors (gh), movie probes against ffmpeg, the VR installer's adb, the Windows
+# Not players' builds: movie probes against ffmpeg, the VR installer's adb, the Windows
 # games (their own toolchain and skill), and the per-game history records.
-ALLOWED = re.compile(r'^(windows_games/|zeldaVR/|tests/)|/collect_shader_issues\.py$|/movie_probe_inputs\.py$|/CHANGELOG\.md$'
+ALLOWED = re.compile(r'^(windows_games/|zeldaVR/|tests/)|/movie_probe_inputs\.py$|/CHANGELOG\.md$'
                      r'|/local-changes\.patch$|/VALIDATION\.md$|/validation-history\.md$|^\.claude/skills/install-ra2/')
 
 
