@@ -200,6 +200,30 @@ Bananza and Pokopia have only the normal update (`build_app.py`); it keeps their
 - **Mods:** `--mod "<mod folder>" --install-mod-romfs` builds the app with a mod's code patches and installs its data. See [mods.md](mods.md), [merged-mod-pack.md](merged-mod-pack.md) and [translation-mods.md](translation-mods.md).
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.
 
+## Moving an older install to MNG Launcher
+
+For players who built a game before 12 November 2026 with `build_app.py` or the old window (`Build Game.command`). Nothing is rebuilt and no game files or keys are needed, unless a step says so. Quit the game first.
+
+1. **Get the new code.** In the `MacNativeGames` folder: `git pull` (a ZIP download: download it again). `Build Game.command` is gone; MNG Launcher has its pages.
+2. **Python.** Keep the Python 3.14 you have. A new Mac only needs the installer from <https://www.python.org/downloads/macos/>; Homebrew is not needed any more (opus, libvpx, dav1d, XcodeGen, CMake and the other build tools come with the build).
+3. **Make MNG Launcher:** `python3 tools/builder_app/make_app.py`, then open `~/Applications/MNG Launcher.app`. It runs this folder's code, so a later `git pull` is enough; make it again only when its window changed.
+4. **Your games appear by themselves** under **Games on this Mac** (every Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Bananza and Pokopia app macOS knows), each with the update it needs. Press **Update**: it is the express update, without game files.
+5. **Put each work folder where the rule says** (see [Folders](#folders)): `MacNativeGames-work/<game>` beside the folder that holds the app, for example `~/MacNativeGames-work/totk` for `~/Applications`. Open the **Storage** page, choose the game and look at its work folder:
+
+   | The page says | Do |
+   |---|---|
+   | recorded, and it is already `…/MacNativeGames-work/<game>` | nothing |
+   | recorded, somewhere else (a `TOTK_build` or `BotW_build` next to the game file, a folder of your choice) | it works as it is. To follow the rule: **Move…** to `MacNativeGames-work/<game>` (instant on the same disk), then **Update now**: the app records the new place |
+   | the app records none (built before 31 October 2026) | **Move…** the folder its build used (usually `TOTK_build` next to the app or the game file) to `MacNativeGames-work/<game>`, then **Update now** |
+   | on a disk that is not connected | connect it and open the page again, or rebuild (below) |
+
+   A second, older copy of a work folder (one the app does not record) can be deleted afterwards; **Storage** shows which one the app uses.
+6. **When Update says "needs a full build"** (another game version, a missing work folder, Bananza and Pokopia always): drop the game files in step 1 and the keys in step 2 and press **Build Again**. It builds into the same app, keeps the saves and the work folder it records, and reuses the verified game data of that app.
+7. **What the old window kept is still there**, and the pages read it in place: mods (`<game data>/mod-library`, the **Mods** page; press **Apply mods** once if it says they no longer fit), controller choices (**Controls**), start options (**Settings**), save backups (`~/Documents/MacNativeGames-Backups`, **Saves**). Only the old window's remembered file paths (`Builder/settings.json`) are no longer read: drop the files again when a full build needs them.
+8. **Optional clean-up.** Homebrew packages installed only for this project can go (`brew uninstall opus libvpx dav1d ffmpeg llvm xcodegen cmake ninja`, if nothing else of yours uses them). A Dock or desktop shortcut made while an app had no icon can stay blank: delete it and make it again.
+
+An AI helping you can do all of this: the install-zelda skill reads each app's `MNGWorkFolder`, runs `update_runtime.py "<app>" --plan` and opens the Launcher with `open -a "MNG Launcher" "<files>" "<prod.keys>"`.
+
 ## Folders
 
 Keep two kinds of folders apart, for every game (Tears of the Kingdom, Breath of the Wild, Ocarina of Time and the others):

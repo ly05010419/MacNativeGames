@@ -36,7 +36,7 @@
 
 **系统字体**：本体是 **NSP** 时需要，**旷野之息**一律需要。二选一：
 - `--firmware <文件夹>`：你导出的固件，一个装着 `.nca` 文件的文件夹（压缩包先解开），或已安装固件的 `registered` 文件夹。
-- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `<work folder>/totk/extracted/firmware/shared-fonts` (by default `~/MacNativeGames-work/totk/…`)。
+- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `<工作目录>/totk/extracted/firmware/shared-fonts`（默认是 `~/MacNativeGames-work/totk/…`）。
 
 王国之泪的 XCI 自带字体，不用另给。
 
@@ -218,6 +218,30 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
   - 新版本第一次启动前，App 会把存档完整备份到旁边的 `profile-before-<版本>`。以后可能要回到旧版本的话，留着这份备份。
 - **模组**：`--mod "<模组文件夹>" --install-mod-romfs` 会把模组的代码补丁打进 App，并装好它的数据。详见 [mods.md](mods.md)、[merged-mod-pack.md](merged-mod-pack.md) 和 [translation-mods.md](translation-mods.md)。
 - **只留一个桌面入口**（可选）：`python3.14 games/totk/tools/install_desktop_entry.py --app "<App 路径>"`。
+
+## 老用户迁移到 MNG Launcher
+
+适用于 2026 年 11 月 12 日以前用 `build_app.py` 或旧窗口（`Build Game.command`）打过游戏的玩家。下面的步骤不用重新打包，也不用游戏文件和密钥，除非某一步写明要。先关掉游戏。
+
+1. **更新代码。** 在 `MacNativeGames` 文件夹里运行 `git pull`（ZIP 下载的就重新下载）。`Build Game.command` 已经删掉，它的几页都搬进了 MNG Launcher。
+2. **Python。** 已经装了 Python 3.14 的照旧用。新 Mac 只要装 <https://www.python.org/downloads/macos/> 的安装包；不再需要 Homebrew（opus、libvpx、dav1d、XcodeGen、CMake 等编译工具由打包自己下载固定版本）。
+3. **生成 MNG Launcher：** `python3 tools/builder_app/make_app.py`，然后打开 `~/Applications/MNG Launcher.app`。它运行的是这个文件夹里的代码，以后 `git pull` 就够了；只有窗口本身有改动时才要重新生成。
+4. **你的游戏会自动列出来**：在“这台 Mac 上已装的游戏”里（macOS 知道的所有王国之泪、旷野之息、时之笛、大金刚、Pokopia 的 App），每个都写着它需要哪种更新。点**更新**：这是极速更新，不用游戏文件。
+5. **把每个游戏的工作目录放到规定的位置**（规则见英文版 [install.md 的 Folders 一节](install.md#folders)）：放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`，比如 App 在 `~/Applications`，就是 `~/MacNativeGames-work/totk`。打开**存储**页，选游戏，看它的工作目录：
+
+   | 页面上写着 | 怎么做 |
+   |---|---|
+   | 已记录，而且已经是 `…/MacNativeGames-work/<游戏>` | 不用动 |
+   | 已记录，但在别的地方（游戏文件旁边的 `TOTK_build`、`BotW_build`，或你自己选的文件夹） | 照现在这样也能用。要按规则放：点**移动…**选 `MacNativeGames-work/<游戏>`（同一个盘上瞬间完成），再点**现在更新**，App 就改记新位置 |
+   | App 没有记录（2026 年 10 月 31 日以前打的） | 把它打包时用的文件夹（一般是 App 或游戏文件旁边的 `TOTK_build`）**移动…**到 `MacNativeGames-work/<游戏>`，再点**现在更新** |
+   | 在一个没接上的盘上 | 接上那个盘再打开这一页，或者重新打包（见下一条） |
+
+   App 不记录的另一份旧工作目录，之后可以删掉；**存储**页会显示 App 实际用的是哪一个。
+6. **更新提示“要完整打包”时**（换了游戏版本、工作目录没了；大金刚和 Pokopia 一直如此）：在第一步拖入游戏文件、第二步选密钥，点**重新打包**。它会打进原来那个 App，保留存档和 App 记录的工作目录，并复用这个 App 里已经核对过的游戏数据。
+7. **旧窗口保存的东西都还在**，各页直接读原来的位置：模组（`<游戏数据目录>/mod-library`，**模组**页；如果提示模组和新 App 对不上，点一次**应用模组**）、手柄选择（**按键**页）、开局选项（**设置**页）、存档备份（`~/Documents/MacNativeGames-Backups`，**存档**页）。只有旧窗口记住的文件路径（`Builder/settings.json`）不再读取：需要完整打包时，重新拖一次文件就行。
+8. **可选的清理。** 只为这个项目装的 Homebrew 包可以卸掉（`brew uninstall opus libvpx dav1d ffmpeg llvm xcodegen cmake ninja`，前提是你别的东西不用它们）。在 App 还没有图标时建的程序坞或桌面快捷方式可能一直是空白图标：删掉重建即可。
+
+帮你的 AI 可以替你做完这些：install-zelda skill 会读每个 App 的 `MNGWorkFolder`，运行 `update_runtime.py "<App>" --plan`，并用 `open -a "MNG Launcher" "<文件>" "<prod.keys>"` 打开 Launcher。
 
 ## 打包报错
 
