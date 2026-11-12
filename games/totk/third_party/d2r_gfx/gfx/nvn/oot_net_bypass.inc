@@ -33,9 +33,9 @@ static int netbp_on(void) {
     return v;
 }
 static void netbp_set(int on) { atomic_store(&g_nb_on, on != 0); MLOG("[flag] net_bypass = %d", on != 0); }
-/* Every draw while the bypass is on: the viewport of the render target it draws into (the rendered region of T). */
+/* Every draw: the viewport of the render target it draws into (the rendered region of T, also the FPS panel's internal resolution). */
 static void netbp_note_draw(void) {
-    if (!netbp_on() || !R.has_rt || !R.rt.color[0] || !S.has_vp) return;
+    if (!R.has_rt || !R.rt.color[0] || !S.has_vp) return;
     const void *mem = (const void *)R.rt.color[0]->mem; uint64_t f = atomic_load(&g_cur_frame);
     for (int i = 0; i < NB_VP; i++) if (g_nb_vp[i].mem == mem) { g_nb_vp[i].w = S.vp[0][2]; g_nb_vp[i].h = S.vp[0][3]; g_nb_vp[i].frame = f; return; }
     int i = g_nb_vp_next++ % NB_VP; g_nb_vp[i].mem = mem; g_nb_vp[i].w = S.vp[0][2]; g_nb_vp[i].h = S.vp[0][3]; g_nb_vp[i].frame = f;
@@ -55,8 +55,15 @@ static int netbp_is_network(NvShader *cs, int *o_slot) {
         else if (b->kind == NVN_RB_IMG && *o_slot < 0) *o_slot = b->reg; }
     return reads_c && *o_slot >= 0;
 }
+static _Atomic uint32_t g_scene_w, g_scene_h;   // the FPS panel's internal resolution (defined with the compose hook below)
+/* a335c1db reads T, the frame's tonemapped picture: T's rendered region is the size the game rendered this frame. */
+static void netbp_publish_internal(void) {
+    int tt = netbp_tid(NB_T_SLOT, 0); NSUInteger w = 0, h = 0;
+    if (tt && tt < g_ntreg && netbp_region((const void *)g_treg[tt].t.mem, atomic_load(&g_cur_frame), &w, &h)) { atomic_store(&g_scene_w, (uint32_t)w); atomic_store(&g_scene_h, (uint32_t)h); }
+}
 /* 1: this dispatch is skipped or replaced; 0: it runs as usual. Called on the replay thread before the dispatch. */
 static int netbp_dispatch(NvShader *cs) {
+    if (!strncmp(cs->key, NB_MIX_KEY, 16)) netbp_publish_internal();
     if (!netbp_on()) { g_nb_ready = 0; return 0; }
     uint64_t f = atomic_load(&g_cur_frame);
     if (!strncmp(cs->key, NB_PREP_KEY, 16)) { if (g_nb_ready) { g_nb_skip_frame = f; return 1; } return 0; }
