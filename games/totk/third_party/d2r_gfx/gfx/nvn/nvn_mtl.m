@@ -3847,8 +3847,10 @@ void dm_gfx_set_flag(const char *name, int v) {
     }
     if (!strcmp(name, "dead_stats")) { dead_stat_print(atomic_load(&g_cur_frame)); return; }
     if (!strcmp(name, "dead_dummy")) { atomic_store(&g_dead_dummy, v); MLOG("[flag] dead_dummy = %d (1 bindings, 2 pool tables with a proved demand set, 4 whole pool tables)", v); return; }
+#ifdef GAME_OOT
     if (!strcmp(name, "net_bypass")) { extern void netbp_set_flag(int); netbp_set_flag(v); return; }
     if (!strcmp(name, "net_copy")) { extern void netbp_copy_set_flag(int); netbp_copy_set_flag(v); return; }   // OOT: the network at the canvas size replaced by a copy   // OOT: oot_net_bypass.inc
+#endif
     if (!strncmp(name, "skipcs_", 7)) {   // the same for the dispatches of a compute shader
         const char *p = name + 7;
         if (strlen(p) != 16 || strspn(p, "0123456789abcdefABCDEF") != 16) { MLOG("[flag] skipcs needs exactly 16 hex digits"); return; }
@@ -16780,7 +16782,13 @@ static int mfxup_dock(__unsafe_unretained NvShader *fs) {
     g_mfxup_dock_n++; atomic_store(&g_mfxup_last, atomic_load(&g_cur_frame));
     return 1;
 }
+#ifdef GAME_OOT
 #include "oot_net_bypass.inc"   // OOT_NET_BYPASS: the end-of-frame network replaced by MetalFX (lower quality allowed for OOT)
+#else   /* Ocarina of Time's end-of-frame network and movie handling (by its shader keys): nothing in the other games */
+static inline void netbp_note_draw(void) {}
+static inline int netbp_dispatch(NvShader *cs) { (void)cs; return 0; }
+static inline void netbp_note_upload(uint64_t serial) { (void)serial; }
+#endif
 static void taa_queue_residency(void) {   // key 5's and the temporal upscale's textures (totk_taa.m), once they exist
     static int added; if (added) return;
     id<MTLResidencySet> r = taa_residency(); if (r) { [g_q4 addResidencySet:r]; added = 1; }
