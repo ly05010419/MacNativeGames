@@ -16,6 +16,8 @@ enum T {
     static let build = s("Build and Play", "打包并游玩")
     static let rebuild = s("Build Again", "重新打包")
     static let play = s("Play", "游玩")
+    static let startGame = s("Start game", "启动游戏")
+    static let startedApp = s("The game is starting.", "游戏已启动。")
     static let cancel = s("Cancel", "停止")
     static let showInFinder = s("Show in Finder", "在访达中显示")
     static let openLog = s("Open Log", "打开日志")

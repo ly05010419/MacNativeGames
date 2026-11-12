@@ -81,7 +81,7 @@ struct GameCard: View {
                         Spacer() }
                     Spacer()
                     Text(T.addGame).font(.callout.weight(.medium)).foregroundStyle(.white)
-                } else if let app {
+                } else if app != nil {
                     HStack(alignment: .bottom) {
                         Spacer()
                         Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.black)
@@ -117,14 +117,40 @@ struct GameActions: View {
     @EnvironmentObject var model: Model
     let app: InstalledReport.App
     @State private var section: String?   // the game page open under the buttons (T.gamePages), none at first
+    @State private var gpu = "checking"   // MetalFX frame interpolation on this GPU (Tears of the Kingdom, Breath of the Wild)
+    @State private var starting = false
+    @State private var startStatus = ""
+
+    /// Tears of the Kingdom and Breath of the Wild start through the Settings page's Play (tab_settings.play): the choices
+    /// only Play passes (the 16x ground) go with it, and interpolation waits for the GPU check. The others open as apps.
+    private var startsWithSettings: Bool { model.pageApps.contains(where: { $0.app == app.app }) }
 
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 8) {
-                Text("\(app.name) \(T.version(app.version))").font(.title2.weight(.semibold))
-                Text(T.kind(app.kind)).foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
-                if app.kind != "express" { Text(app.reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                Text(app.app).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(app.name) \(T.version(app.version))").font(.title2.weight(.semibold))
+                        Text(T.kind(app.kind)).foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
+                        if app.kind != "express" { Text(app.reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                        Text(app.app).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    Spacer()
+                    // the big green start, top right (user 2026-11-12)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button(action: start) {
+                            Label(T.startGame, systemImage: "play.fill")
+                                .font(.title3.weight(.semibold))
+                                .padding(.horizontal, 18).padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
+                        .disabled(starting || model.updating == app.app)
+                        if !startStatus.isEmpty {
+                            Text(startStatus).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 260, alignment: .trailing)
+                        }
+                    }
+                }
                 // One button named after the update this app can have (user 2026-11-12): express, fast, or a full build
                 // from its game files (the build page, this game chosen).
                 let busy = model.phase == .building || model.phase == .cancelling
@@ -154,6 +180,30 @@ struct GameActions: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(6)
+        }
+        .task {
+            guard startsWithSettings else { return }
+            struct Probe: Decodable { let gpu: String }
+            gpu = (try? await TabClient.decode(Probe.self, "settings", "probe", app: app.app).gpu) ?? "unknown"
+        }
+    }
+
+    private func start() {
+        starting = true; startStatus = T.starting
+        if !startsWithSettings {
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.app), configuration: .init()) { _, error in
+                Task { @MainActor in startStatus = error?.localizedDescription ?? T.startedApp; starting = false }
+            }
+            return
+        }
+        struct Played: Decodable { let ok: Bool; let reason: String; let detail: String; let held: [String] }
+        Task {
+            do {
+                let r = try await TabClient.decode(Played.self, "settings", "play", app: app.app, args: ["gpu": gpu])
+                startStatus = r.ok ? (r.held.isEmpty ? T.started : T.startedWithout(r.held))
+                                   : [r.reason, r.detail].filter { !$0.isEmpty }.joined(separator: " ")
+            } catch { startStatus = error.localizedDescription }
+            starting = false
         }
     }
 }
