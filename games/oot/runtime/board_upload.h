@@ -89,7 +89,7 @@ static inline NSString *totk_board_read_id(NSString *file) {
 static inline NSString *totk_board_id(BOOL create) {
     NSString *dir = totk_board_dir();
     if (!dir) return nil;
-    NSString *file = [dir.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"leaderboard-id.txt"];
+    NSString *file = totk_leaderboard_id_file();   /* totk_contrib_upload.h: the uploads read the same file */
     NSString *v = totk_board_read_id(file), *old = [dir stringByAppendingPathComponent:@"leaderboard-id.txt"];
     if (v) return v;
     if ((v = totk_board_read_id(old)) && [v writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]) {

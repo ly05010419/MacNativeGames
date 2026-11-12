@@ -1066,6 +1066,8 @@ static void contrib_probe(void) {
         NSTextField *mine = (NSTextField *)[page.table viewAtColumn:1 row:1 makeIfNecessary:YES], *other = (NSTextField *)[page.table viewAtColumn:1 row:0 makeIfNecessary:YES];
         assert([mine.stringValue isEqualToString:expected] && [mine.textColor isEqual:NSColor.systemGreenColor] && ![other.textColor isEqual:NSColor.systemGreenColor]);
         assert([((NSTextField *)[page.table viewAtColumn:0 row:1 makeIfNecessary:YES]).stringValue isEqualToString:@"2"]);
+        const char *otherName = getenv("CONTRIB_TEST_OTHER_NAME");   /* the other player sent their board id and has a nickname: shown */
+        if (otherName) assert([other.stringValue isEqualToString:@(otherName)] && [page.players[0][@"nick"] boolValue] && ![page.players[1][@"nick"] boolValue]);
     }
     pad_press(PAD_DOWN);
     for (int n = 0; n < 3 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != settingsPanel.homeButton; n++) pad_press(PAD_DOWN);

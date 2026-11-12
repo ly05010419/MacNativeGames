@@ -53,8 +53,8 @@ static inline NSString *totk_inbox_prompt_title(void) {
 }
 static inline NSString *totk_inbox_prompt_text(void) {
     return @(TOTK_UI(
-        "选“贡献着色器”后，游戏会自动贡献着色器，不再打扰游玩体验。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号，不含游戏内容、存档或个人信息。随时可以在“设置”里关闭。",
-        "With \"Contribute shaders\" the game contributes new shaders on its own and never interrupts your play. Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are sent: no game data, saves or personal information. You can turn it off in Settings at any time."));
+        "选“贡献着色器”后，游戏会自动贡献着色器，不再打扰游玩体验。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号（Mac 上还有排行榜和昵称用的随机编号，用来在贡献榜上显示你的昵称），不含游戏内容、存档或个人信息。随时可以在“设置”里关闭。",
+        "With \"Contribute shaders\" the game contributes new shaders on its own and never interrupts your play. Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are sent (on a Mac also the random id of the board and the nickname, so the contributors show your nickname): no game data, saves or personal information. You can turn it off in Settings at any time."));
 }
 static inline NSArray<NSString *> *totk_inbox_prompt_answers(void) {
     return @[@(TOTK_UI("贡献着色器", "Contribute shaders")), @(TOTK_UI("不贡献", "Don't contribute"))];
@@ -74,6 +74,22 @@ static inline NSUInteger totk_inbox_should_ask(NSString *path) {
 static inline void totk_inbox_answer(NSString *path, totk_inbox_answer_t answer) {
     totk_inbox_choose(path, answer == TOTK_INBOX_AUTO);
     if (answer == TOTK_INBOX_NEVER) totk_contrib_never(path);
+}
+
+/* Where the board's random id is kept: MacNativeGames/leaderboard-id.txt, the folder above the game's (TOTK_BOARD_DIR, which
+   the launcher names; runtime/board_upload.h totk_board_id makes and moves it). nil without that folder (iOS, a
+   development run). */
+static inline NSString *totk_leaderboard_id_file(void) {
+    const char *e = getenv("TOTK_BOARD_DIR");
+    return e && *e ? [@(e).stringByDeletingLastPathComponent stringByAppendingPathComponent:@"leaderboard-id.txt"] : nil;
+}
+/* The board's id when this Mac has one, read only (none is made here): sent with the rows so the inbox shows the nickname
+   set for it on the contributors (user 2026-11-12); the id itself is never shown. */
+static inline NSString *totk_inbox_board_id(void) {
+    NSString *file = totk_leaderboard_id_file();
+    NSString *v = file ? [[NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil]
+                          stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : nil;
+    return v.length == 36 ? v.lowercaseString : nil;
 }
 
 /* A random id for this contribution file, made once: the inbox counts a row once per install. Nothing about the device. */
@@ -172,6 +188,8 @@ static inline NSUInteger totk_inbox_send(NSString *path, NSString *platform) {
                                        @"platform": platform, @"os": totk_inbox_os(), @"rows": chunk} mutableCopy];
         NSString *device = totk_inbox_device();
         if (device) body[@"device"] = device;
+        NSString *board = totk_inbox_board_id();   /* the nickname's id (Mac): the contributors show the nickname */
+        if (board) body[@"board_id"] = board;
         NSInteger status = totk_inbox_post(body);
         if (status != 200) break;
         taken += totk_contrib_retire(path, [NSSet setWithArray:chunk]);   // malformed rows too: the inbox never takes them
