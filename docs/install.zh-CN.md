@@ -49,11 +49,41 @@
 
 不带 `--work` 时，工作目录用 `-o` 那个 App 记录的；没有记录就用放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`（App 在 `~/Applications` 或 `/Applications` 时都是 `~/MacNativeGames-work/totk`）。MNG Launcher 用同一条规则。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
 
-## 用窗口打包
+## 用 MNG Launcher 或 AI 打包
 
-**新：拖放打包器 MNG Launcher。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MNG Launcher.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。这台 Mac 上已装的游戏列在最上面，点**更新**不用游戏文件，自动选能用的最快的更新（极速，不行再快速，只有必须时才完整打包）。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，第一、二步会自动填好。不开窗口也行：`python3 tools/mng.py status | build | update` 在终端里做同样的事（帮你的 AI 用的就是它），窗口会显示这种打包的进度，也能停止它。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。**打包和更新请用 MNG Launcher。**
+不管谁来操作，打包都用同一个引擎：MNG Launcher 的窗口，或终端里的 `tools/mng.py`（帮你的 AI 用的就是它）。两者都运行 `tools/builder_jobs`，遵守同一套规则（见下），所以用一种方式打的游戏，可以用另一种方式更新。
 
-旧窗口已经去掉（不再有 **Build Game.command** 和 `python3.14 -m tools.builder`），它的几页都在 MNG Launcher 里：**打包**、**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置和**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装进游戏；不带任何模组）、**按键**（`controls.txt` 里的手柄布局、按键图标和按键测试）、**存储**（工作目录和着色器缓存）、**存档**（备份和恢复）。每页都写着它做什么；细节见 [builder-app.md](builder-app.md)。这几页背后的模型怎么写（给改代码的人和 AI）：[builder.md](builder.md)。
+### MNG Launcher（窗口）
+
+运行 `python3 tools/builder_app/make_app.py` 生成 `~/Applications/MNG Launcher.app`。它自带 Python，运行的是这个文件夹里的代码，所以 `git pull` 之后不用重新生成，除非窗口本身改了。
+
+- **打包**页：这台 Mac 上已装的游戏列在最上面，每个都有**更新**（不用游戏文件，自动选能用的最快的更新）。下面是三步：第一步拖入游戏文件，第二步选 `prod.keys`，第三步点**打包并游玩**，全程显示进度。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，第一、二步会自动填好。
+- **设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置，和游戏里的设置面板是同一份；还有**游玩**）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装；不带任何模组）、**按键**（手柄布局、按键图标、按键测试）、**存储**（工作目录和着色器缓存：大小、清理、搬移）、**存档**（备份和恢复）。旧窗口（`Build Game.command`）已经去掉，由这几页代替。细节见 [builder-app.md](builder-app.md)；改代码的人看 [builder.md](builder.md)。
+
+### 用 AI 或终端：`tools/mng.py`
+
+任何 `python3` 都能启动它（实际用 MNG Launcher 自带的 Python，没有就用 Python 3.14）。帮你打包的 AI 应该用它，不要自己拼 `build_app.py` 命令。
+
+| 命令 | 做什么 |
+|---|---|
+| `python3 tools/mng.py status` | 这台 Mac 上已装的游戏，以及各自要哪种更新 |
+| `python3 tools/mng.py check "<本体>" "<更新>" --keys "<prod.keys>"` | 文件分别是什么、会打出什么、这台 Mac 还缺什么 |
+| `python3 tools/mng.py build "<本体>" "<更新>" --keys "<prod.keys>"` | 打包这个游戏（已装过且版本相同时，就走更新） |
+| `python3 tools/mng.py update totk` | 不用文件更新已装的游戏（`botw`、`oot`、名字或 App 路径也行） |
+| `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <动作> --game totk` | 窗口里各页面的功能 |
+| `python3 tools/mng.py open "<文件>" "<prod.keys>"` | 打开 MNG Launcher 并填好这些文件 |
+
+它会把每个阶段、步骤和日志行打印出来，每分钟报一次进度，最后报结果（加 `--json` 输出窗口读的原始数据）。`mng` 不做的事（iPhone 和 iPad、`--mod`、`--vr`）用[打包 App](#打包-app) 一节里的 `build_app.py` 命令。
+
+### 两者共同遵守的规则
+
+1. **目录规则只有一条。** App 放在你选的地方（MNG Launcher 默认 `~/Applications`）；工作目录用 App 已经记录的，没有就用放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`（App 在 `~/Applications` 时是 `~/MacNativeGames-work/totk`）。`build_app.py` 不带 `--work` 时也一样。
+2. **按顺序选能用的最快的更新：** 极速（`update_runtime.py`，几分钟，不用游戏文件）→ 快速（`--seed`，用工作目录重做启动着色器）→ 完整打包（`build_app.py`，要游戏文件和密钥）。`update_runtime.py "<App>" --plan` 会说该走哪种、为什么；窗口的**更新**和 `mng update` 就是按它走。给已装的游戏拖入同版本的文件也走更新；换了版本就完整打包到原来那个 App。
+3. **一台 Mac 同时只跑一个打包或更新**，不管是谁开始的。第二个会被拒绝，并说明正在跑的是哪个、谁开始的。窗口会显示在别处开始的任务（“从 … 开始的”）并能停止它；只有自己开始的任务结束后才会自动开游戏。
+4. **你的文件留在原处**：游戏文件和密钥都在原位置读取，不复制，也不上传任何东西。日志在 `~/Library/Logs/MacNativeGames/`；正在跑的任务在 `~/Library/Application Support/MacNativeGames/Builder/jobs/`。
+5. **不用 Homebrew**：打包需要的工具和库都由打包自己下载固定版本（见[需要准备](#需要准备)）。
+
+老用户从旧安装迁移：见[老用户迁移到 MNG Launcher](#老用户迁移到-mng-launcher)。
 
 ## 打包 App
 

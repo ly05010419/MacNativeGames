@@ -46,11 +46,41 @@ A Tears of the Kingdom XCI carries the fonts itself.
 
 Without `--work`, the work folder is the one the app at `-o` records, else `MacNativeGames-work/<game>` beside the folder that holds the app (for `~/Applications`: `~/MacNativeGames-work/totk`; for `/Applications`: `~/MacNativeGames-work/totk` too). MNG Launcher uses the same rule. Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
 
-## Build with a window
+## Build with MNG Launcher or an AI
 
-**New: MNG Launcher, the drag-and-drop builder.** `python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app` (it carries its own Python): step 1 drop the game, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress shown the whole way. Games already on this Mac are listed at the top with an **Update** button: it needs no game files and runs the fastest update that fits (express, else fast; a full build only when it must). Started as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"`, it opens with steps 1 and 2 filled in. Without the window, `python3 tools/mng.py status | build | update` does the same from a terminal (what an AI helping you uses), and the window shows such a build's progress and can stop it. Mac apps of every game for now; details in [builder-app.md](builder-app.md). **Build and update with MNG Launcher.**
+One engine builds every game, whoever drives it: MNG Launcher's window, or `tools/mng.py` in a terminal (what an AI helping you uses). Both run `tools/builder_jobs` and follow the same rules (below), so a game built one way is updated the other way.
 
-MNG Launcher also has the pages of the older window, which is gone (no more **Build Game.command** or `python3.14 -m tools.builder`): **Build**, **Settings** (how Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 start, and **Play**), **Mods** (your own mods, checked against your app and applied with the repository's installer; the builder ships none), **Controls** (the controller layout in `controls.txt`, the button icons and a key test), **Storage** (the work folder and the shader cache) and **Saves** (back up and restore). Each page tells you what it does; details in [builder-app.md](builder-app.md). How the pages' models are made, for anyone changing them (people or AI assistants): [builder.md](builder.md).
+### MNG Launcher (the window)
+
+`python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app`. It carries its own Python and runs this folder's code, so after a `git pull` it needs no remaking unless its window changed.
+
+- **Build** page: the games already on this Mac are at the top, each with **Update** (no game files: the fastest update that fits). Below, step 1 drop the game files, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress the whole way. Opened as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"`, steps 1 and 2 are filled in.
+- **Settings** (how Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 start, the same as the game's settings panel, and **Play**), **Mods** (your own mods, checked against your app and applied with the repository's installer; none ship), **Controls** (the controller layout, button icons, a key test), **Storage** (the work folder and the shader cache: size, clean, move), **Saves** (backups and restore). The old window (`Build Game.command`) is gone; these pages replaced it. Details: [builder-app.md](builder-app.md) and, for those changing the code, [builder.md](builder.md).
+
+### With an AI or a terminal: `tools/mng.py`
+
+Any `python3` starts it (it runs with MNG Launcher's own Python, else a Python 3.14). An AI building for you should use it rather than writing `build_app.py` commands itself.
+
+| Command | What it does |
+|---|---|
+| `python3 tools/mng.py status` | the games on this Mac and the update each needs |
+| `python3 tools/mng.py check "<base>" "<update>" --keys "<prod.keys>"` | what the files are, the build they make, what this Mac still needs |
+| `python3 tools/mng.py build "<base>" "<update>" --keys "<prod.keys>"` | build that game (or update it, when it is installed and the version is the same) |
+| `python3 tools/mng.py update totk` | update an installed game without files (`botw`, `oot`, a name or the app's path work too) |
+| `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <action> --game totk` | what the window's pages do |
+| `python3 tools/mng.py open "<files>" "<prod.keys>"` | open MNG Launcher with them filled in |
+
+It prints each stage, step and log line, the progress once a minute and the end (`--json`: what the window reads). For what `mng` does not do (iPhone and iPad, `--mod`, `--vr`) use the `build_app.py` commands under [Build the app](#build-the-app).
+
+### The rules both follow
+
+1. **One folder rule.** The app goes where you choose (MNG Launcher: `~/Applications`); its work folder is the one the app already records, else `MacNativeGames-work/<game>` beside the folder that holds the app (`~/MacNativeGames-work/totk` for `~/Applications`). `build_app.py` without `--work` takes the same. See [Folders](#folders).
+2. **The fastest update that fits, in this order:** express (`update_runtime.py`, minutes, no game files), fast (`--seed`, new startup shaders from the work folder), full (`build_app.py` with the game files and keys). `update_runtime.py "<app>" --plan` says which fits and why; the window's **Update** and `mng update` run it. Dropped files for an installed game of the same version also take the update; another version takes the full build into the same app.
+3. **One build or update at a time on a Mac**, whoever starts it. A second one is refused and says which is running and who started it. The window shows a job started elsewhere ("Started from …") and can stop it; it starts the game only after a job it started itself.
+4. **Your files stay where they are**: game files and keys are read in place, never copied; nothing is uploaded. Logs: `~/Library/Logs/MacNativeGames/`; the running job: `~/Library/Application Support/MacNativeGames/Builder/jobs/`.
+5. **No Homebrew**: the build fetches its own pinned tools and libraries ([What you need](#what-you-need)).
+
+Coming from an older install: [Moving an older install to MNG Launcher](#moving-an-older-install-to-mng-launcher).
 
 ## Build the app
 
