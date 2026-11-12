@@ -299,13 +299,24 @@ extern _Thread_local int botw_bra_attach;   /* tex_mtl for a render target: its 
 #define BOTW_PKG_RENDER_ALIAS(pk, t) if (pk && pk->tex && !pk->owned && !botw_bra_attach) { void *a_ = botw_render_alias(t, (__bridge const void *)pk->tex); if (a_) return a_; }
 #else
 #define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
+#ifdef GAME_OOT
+/* Ocarina of Time's frame interpolation (2026-11-10, run g44): the scene ends at the first draw into the canvas after the
+   frame's upscaler network (oot_net_bypass.inc oot_ui_draw: those are the HUD's), and the camera is the game's 13,568-byte
+   view block, TOTK's camera layout in its first 84 floats (nvn_mtl.m mfx_take_camera). */
+#define MFX_UI_DRAW(pr) ((void)(pr), oot_ui_draw())
+#else
 #define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
+#endif
 #define UW_UI_BEGINS(pr) mfx_ui_vs(pr->sh[0]->key)
 #define UW_NOT_UI_DRAW(vs, dw, di) !uw_ui_vs(vs) || (dw ? dw->count : di ? di->count : 0) != 6
 #define BOTW_MFX_FRAME_RESET()
 #define BOTW_MFX_NO_UI_SCENE()
 #define MFX_CAM_SLOT 1
+#ifdef GAME_OOT
+#define MFX_CAM_SIZE 13568
+#else
 #define MFX_CAM_SIZE 2368
+#endif
 #define BOTW_MFXUP_MASK_BAD (S.chmask.mask & 0xf) != 0xf
 #define BOTW_MFXUP_DOCK_KEY(fs)
 #define BOTW_AND_NOT_DOCK
