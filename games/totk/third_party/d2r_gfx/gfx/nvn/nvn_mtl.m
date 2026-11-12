@@ -11752,7 +11752,10 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     g_descriptor_pool_reasons[2]+=!replace&&!samp&&slot->memory!=memory;
     g_descriptor_pool_reasons[3]+=!replace&&!samp&&slot->sub!=g_sub_serial;
     g_descriptor_pool_reasons[4]+=!replace&&!samp&&slot->dirty!=dirty;
-    if(!full){
+    /* With a proved demand set (need) the entries to check are exactly need (memcpy below): the change rings and masks
+       only decide entries outside it, and the masks are not modified here. Skipping them for need (2026-11-08) leaves
+       the table identical; they were 12 % of the replay thread, run for every draw. */
+    if(!full&&!need){
         for(uint64_t v=slot->revision+1;v<=revision;v++){
             int change=g_descriptor_changes[v%DESCRIPTOR_CHANGE_N];
             if((change<0)!=samp)continue;
@@ -11776,7 +11779,7 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
             if(slot->sub!=g_sub_serial||(!descriptor_pool_once()&&slot->dirty!=dirty))changed[w]|=cpu_mask[w];
         }
     }
-    if(full){for(size_t w=0;w<words;w++)changed[w]=UINT64_MAX;if(n%64)changed[words-1]=(UINT64_C(1)<<(n%64))-1;}
+    if(full&&!need){for(size_t w=0;w<words;w++)changed[w]=UINT64_MAX;if(n%64)changed[words-1]=(UINT64_C(1)<<(n%64))-1;}
     // A proved demand set is revalidated at every draw. Unselected entries may
     // keep old IDs, but cannot be read by this draw. Unknown consumers force a
     // complete refresh before using the same table. Snapshots stay immutable.
