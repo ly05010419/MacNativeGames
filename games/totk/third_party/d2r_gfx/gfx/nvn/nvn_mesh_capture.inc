@@ -12,9 +12,9 @@ static NSString *mtk_geo_dir(void) {
     return dir;
 }
 static int mtk_geo_selected(NvShader *fs) {
-    static int init;static const char *prefixes;
-    if(!init){init=1;prefixes=getenv("OOT_MESH_INPUT_CAPTURE_FS");}
-    return mtk_geo_dir()&&fs&&diag_shader_prefix_csv_matches(fs->key,prefixes);
+    static int init;static const char *prefixes,*meshes;
+    if(!init){init=1;prefixes=getenv("OOT_MESH_INPUT_CAPTURE_FS");meshes=getenv("OOT_MESH_GEOMETRY_CAPTURE_MS");}
+    return mtk_geo_dir()&&fs&&((prefixes&&*prefixes)?diag_shader_prefix_csv_matches(fs->key,prefixes):(meshes&&*meshes));
 }
 static NSDictionary *mtk_geo_layout(NSString *source) {
     if(!source)return nil;
@@ -70,17 +70,22 @@ static id<MTLFunction> mtk_geo_function(NvShader *ms,NvShader *fs,id<MTLFunction
 }
 static void mtk_geo_prepare(NvShader *ms,NvShader *fs) {
     g_mtk_geometry=nil;if(!mtk_geo_selected(fs))return;
+    const char *meshes=getenv("OOT_MESH_GEOMETRY_CAPTURE_MS");
+    if(meshes&&*meshes&&!diag_shader_prefix_csv_matches(ms->key,meshes))return;
     static NSMutableDictionary<NSString *,NSNumber *> *done;if(!done)done=[NSMutableDictionary dictionary];
-    uint64_t frame=atomic_load(&g_cur_frame);NSString *key=@(fs->key);NSNumber *previous=done[key];
+    uint64_t frame=atomic_load(&g_cur_frame);NSString *key=@(fs->key),*identity=meshes&&*meshes?@(ms->key):key;NSNumber *previous=done[identity];
     if(previous&&(!passdump()||previous.unsignedLongLongValue==frame))return;
     id<MTLFunction> base=mtk_mesh_fn(ms,fs),function=mtk_geo_function(ms,fs,base);if(function==base)return;
     NSDictionary *layout=mtk_geo_layout(fn_src(base)?:sh_src(ms));if(!layout)return;
     unsigned nv=[layout[@"vertices"]unsignedIntValue],np=[layout[@"primitives"]unsignedIntValue],words=[layout[@"vertex_words"]unsignedIntValue],stride=[layout[@"record_words"]unsignedIntValue];
-    unsigned capacity=MIN(1024u,((64u<<20)/4-8)/stride);size_t bytes=((size_t)8+capacity*stride+np+1)*4;
+    const char *capacity_env=getenv("OOT_MESH_GEOMETRY_CAPACITY");
+    unsigned requested=capacity_env?(unsigned)MAX(1,MIN(4096,atoi(capacity_env))):1024u;
+    unsigned capacity=MIN(requested,((64u<<20)/4-8-np-1)/stride);size_t bytes=((size_t)8+capacity*stride+np+1)*4;
     id<MTLBuffer> buffer=[g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];if(!buffer)return;
     memset(buffer.contents,0,bytes);uint32_t header[8]={nv,np,words,0,capacity,stride,g_mtk.first,g_mtk.count};memcpy(buffer.contents,header,sizeof header);
-    res_add(buffer);g_mtk_geometry=buffer;done[key]=@(frame);
-    NSString *stem=[NSString stringWithFormat:@"%@-F%llu-mesh-output",key,frame],*directory=mtk_geo_dir();
+    res_add(buffer);g_mtk_geometry=buffer;done[identity]=@(frame);
+    NSString *stem=meshes&&*meshes?[NSString stringWithFormat:@"%@-F%llu-M%.16s-mesh-output",key,frame,ms->key]:[NSString stringWithFormat:@"%@-F%llu-mesh-output",key,frame];
+    NSString *directory=mtk_geo_dir();
     NSString *path=[directory stringByAppendingPathComponent:[stem stringByAppendingString:@".bin"]];
     [fn_src(function)writeToFile:[directory stringByAppendingPathComponent:[stem stringByAppendingString:@".metal"]]atomically:YES encoding:NSUTF8StringEncoding error:nil];
     NSMutableDictionary *metadata=[layout mutableCopy];metadata[@"mesh"]=@(ms->key);metadata[@"fragment"]=key;metadata[@"frame"]=@(frame);metadata[@"header_words"]=@8;metadata[@"capacity"]=@(capacity);metadata[@"file"]=[path lastPathComponent];

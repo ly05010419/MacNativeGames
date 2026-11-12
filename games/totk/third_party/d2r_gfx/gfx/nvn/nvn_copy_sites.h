@@ -6,7 +6,8 @@
    functions). Texture copies are counted as texels x the texture's allocated bytes per texel (an estimate; mips count). */
 enum { COPY_SITE_LINES = 32768 };
 static struct { _Atomic uint64_t calls, bytes; } g_copy_site[COPY_SITE_LINES];
-static int copy_sites_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_COPY_SITES"); v = e && atoi(e); } return v; }
+static _Atomic int g_copy_sites_enabled = -1;
+static int copy_sites_on(void) { int v=atomic_load_explicit(&g_copy_sites_enabled,memory_order_relaxed); if(v<0){const char *e=getenv("OOT_COPY_SITES");v=e&&atoi(e);atomic_store(&g_copy_sites_enabled,v);}return v; }
 static inline void copy_site_note(int line, uint64_t bytes) {
     if (__builtin_expect(!copy_sites_on(), 1) || line < 0 || line >= COPY_SITE_LINES) return;
     atomic_fetch_add_explicit(&g_copy_site[line].calls, 1, memory_order_relaxed);

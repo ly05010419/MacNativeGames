@@ -34,3 +34,6 @@ void totk_tl_at(int kind, uint64_t t_ns, uint64_t a, uint64_t b);
 void totk_tl_at_frame(int kind, uint64_t t_ns, uint64_t frame, uint64_t a, uint64_t b);
 void totk_tl_frame(uint64_t presents);                  /* the game presented: counts frames, opens / closes the window, writes the file */
 uint64_t totk_tl_commit_id(void);                       /* id for a command buffer about to be committed */
+/* TOTK_TIMELINE=<file>:trigger waits indefinitely. The submit thread starts
+   this one-shot window with the same first/count as its GPU counters. */
+int totk_tl_trigger(uint64_t first, uint64_t count);

@@ -6,6 +6,7 @@
 // happens only after the Metal command buffer has actually completed; CPU-side waits look only at the completed value of the MTLSharedEvent.
 #pragma once
 int mtl_probe_writeback(void);
+int mtl_probe_memory_demand(void);
 #include <stdint.h>
 #include <stddef.h>
 
@@ -16,6 +17,9 @@ void bf_want_note(const char *key);
 // Memory pool: [mem, mem+size) is expanded outward to page boundaries to build a zero-copy buffer; look up the buffer and offset by GPU address (= CPU address)
 void mtl_pool_add(const void *mem, uint64_t size);
 void mtl_pool_del(const void *mem);
+// Issued GPU addresses belong to the NVN pool lifetime, not its replaceable Metal wrapper.
+void mtl_pool_addressed(const void *owner, const void *mem, uint64_t size);
+void mtl_pool_forget_address(const void *owner);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 成功 1；buf 是 (__bridge) id<MTLBuffer> | 1 on success; buf is a (__bridge) id<MTLBuffer>
 
 typedef struct {
@@ -70,6 +74,7 @@ int mtl_probe_layer_merge(void);
 int mtl_probe_cube_merge(void);
 void mtl_cube_merge_stats(uint64_t v[4]);
 int mtl_probe_winding(void);
+int mtl_probe_draw_barriers(void);
 int mtl_probe_depth_output(void);
 int mtl_probe_tile(void);
 
@@ -88,4 +93,5 @@ int mtl_probe_visibility(void); /* Count / clear / resume / reset in one encoder
 int mtl_probe_vr_ui_layout(void); /* Native UI square-pixel and scissor GPU readback. */
 int mtl_probe_f2ip(void);
 int mtl_probe_mesh(void);
+int mtl_probe_mesh_batch(void);
 int mtl_probe_sured(void);

@@ -28,6 +28,7 @@ enum {
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
     RS_INDEXED_INDIRECT,   /* u[0] primitive, u[1] index type, u[2] index buffer, u[3] its length, u[4] the indirect record */
     RS_INDIRECT,           /* u[0] primitive, u[1] the indirect record (non-indexed) */
+    RS_MESH_TIMESTAMP,     /* bounded diagnostics: heap, entry, render stages */
 };
 enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
                                    for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
@@ -77,7 +78,8 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
             *enc = e; atomic_fetch_add_explicit(&g_rs_b_passes, 1, memory_order_relaxed);
             break; }
         case RS_END:
-            if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
+            if (u[0] == 3) [e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:(MTL4VisibilityOptions)u[1]]; /* OOT: native draw dependencies; same policy as the direct encoder. */
+            else if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
             else if (u[0]) [e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:(MTL4VisibilityOptions)u[1]];
             [e endEncoding]; *enc = nil; break;
         case RS_PSO: [e setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)(void *)(uintptr_t)u[0]]; if (u[0]) CFRelease((CFTypeRef)(uintptr_t)u[0]); break;
@@ -93,6 +95,7 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_BLEND: { float v[4]; memcpy(v, u, sizeof v); [e setBlendColorRed:v[0] green:v[1] blue:v[2] alpha:v[3]]; break; }
         case RS_VISIBILITY: [e setVisibilityResultMode:(MTLVisibilityResultMode)u[0] offset:(NSUInteger)u[1]]; break;
         case RS_ADDRESS: [(u[0] ? *ft : *vt) setAddress:u[2] atIndex:(NSUInteger)u[1]]; break;
+        case RS_MESH_TIMESTAMP: [e writeTimestampWithGranularity:MTL4TimestampGranularityPrecise afterStage:(MTLRenderStages)u[2] intoHeap:(__bridge id<MTL4CounterHeap>)(void *)u[0] atIndex:(NSUInteger)u[1]]; break;
         case RS_MESH_TABLES: [e setArgumentTable:g_vt atStages:MTLRenderStageMesh]; if(u[0]) [e setArgumentTable:g_ot atStages:MTLRenderStageObject]; break;
         case RS_OBJECT_ADDRESS: [g_ot setAddress:u[1] atIndex:(NSUInteger)u[0]]; break;
         case RS_DRAW_MESH_INDIRECT: [e drawMeshThreadgroupsWithIndirectBuffer:u[0] threadsPerObjectThreadgroup:MTLSizeMake(u[1],1,1) threadsPerMeshThreadgroup:MTLSizeMake(u[2],1,1)]; break;

@@ -1,7 +1,7 @@
 /* NVN2 task/mesh: original control metadata -> native Metal object/mesh stages.
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
-static struct { int on; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
+static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
 #include "nvn_mesh_capture.inc"
@@ -110,8 +110,10 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,nil,0);
     MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
+    m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
     id<MTLFunction> mesh=mtk_mesh_fn(ms,fs);if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
     m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
+    if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
     m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
@@ -130,12 +132,14 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={29,first}},0);else[g_ot setAddress:first atIndex:29];}
     g_args_dirty[4]=1;encode_args((id<MTLCommandEncoder>)en,ms,4,1);enc_r_vbuf(en,29,first);
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
+    int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
     if(g_mtk.indirect_gpu){
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH_INDIRECT,.u={g_mtk.indirect_gpu,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
         else [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.indirect_gpu threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
     }
     else if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={g_mtk.count,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
     else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count,1,1) threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+    ms_time_stamp(en,timing,1);
 }
 static void mesh_tasks_draw(const p_draw *dw) {
     if(!S.prog||dw->count<=0)return;
@@ -151,6 +155,7 @@ static void mesh_tasks_draw(const p_draw *dw) {
     if(!raster||raster->sh[1]!=pr->sh[1]||raster->sh[0]){raster=[NvProg new];raster->sh[1]=pr->sh[1];pr->geo_lean_ras=raster;}
     g_mtk.on=1;g_mtk.ts=ts;g_mtk.ms=ms;g_mtk.fs=pr->sh[1];g_mtk.first=(uint32_t)dw->first;g_mtk.count=(uint32_t)dw->count;
     g_mtk.first_gpu=g_mtk.indirect_gpu=0;
+    g_mtk.profile_grid=-1;
     if(dw->ind){
         /* NV_mesh_shader indirect ABI: taskCount, firstTask. Convert the one
            dimensional grid on the GPU timeline; the first-task field is bound
@@ -158,7 +163,9 @@ static void mesh_tasks_draw(const p_draw *dw) {
         void *src;uint64_t off,gpu;upd_guard(dw->ind,dw->ind+8);
         if(!mtl_gpu_addr(dw->ind,8,&src,&off,&gpu))MDIE("mesh indirect arguments are not mapped");
         use_rec("buf",dw->ind,8,0,NULL);
-        g_mtk.indirect_gpu=mesh_indirect_grid(dw->ind,(__bridge id<MTLBuffer>)src,off);g_mtk.first_gpu=gpu+4;
+        g_mtk.indirect_gpu=mesh_batch_grid(dw->ind,&g_mtk.first_gpu);
+        if(!g_mtk.indirect_gpu){g_mtk.indirect_gpu=mesh_indirect_grid(dw->ind,(__bridge id<MTLBuffer>)src,off);g_mtk.first_gpu=gpu+4;}
+        g_mtk.profile_grid=ms_grid_capture(g_mtk.indirect_gpu);
         static int read;static const char *dump;static int left=16;
         if(!read){read=1;dump=getenv("OOT_MESH_INDIRECT_DUMP");}
         if(dump&&left-->0){id<MTLBuffer> capture;size_t ca=arena_alloc(16,&capture);
@@ -172,5 +179,6 @@ static void mesh_tasks_draw(const p_draw *dw) {
     p_draw tri={.prim=4,.count=3,.instances=1};draw_inner(&tri,NULL);
     g_geo_ras.pr=nil;g_mtk.on=0;args_dirty_all();g_pso_dirty=1;
     mesh_indirect_written(pr);mesh_indirect_stats();
+    mesh_batch_written(pr);
     static int once;if(!once++)MLOG("[mesh] first native draw: %u workgroups from %u",g_mtk.count,g_mtk.first);
 }
