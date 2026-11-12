@@ -24,6 +24,7 @@
 static _Atomic int g_mesh_reuse = -1;
 static _Atomic int g_pool_validate_once = -1;
 static _Atomic int g_raw_index = -1;
+static _Atomic int g_raw_range_cache = -1;
 static _Atomic int g_raw_write_log = -1;
 static _Atomic int g_mesh_empty_export = -1;
 static _Atomic int g_mesh_reuse_check;
@@ -3151,6 +3152,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"mesh_reuse")) { if(v<0||v>2)return;atomic_store(&g_mesh_reuse,v); MLOG("[flag] mesh_reuse = %d",v); return; }
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
+    if (!strcmp(name,"raw_range_cache")) { atomic_store(&g_raw_range_cache,v!=0); MLOG("[flag] raw_range_cache = %d",v!=0); return; }
     if (!strcmp(name,"pool_validate_once")) { atomic_store(&g_pool_validate_once,v!=0); MLOG("[flag] pool_validate_once = %d",v!=0); return; }
     if (!strcmp(name,"mesh_empty_export")) { atomic_store(&g_mesh_empty_export,v!=0); MLOG("[flag] mesh_empty_export = %d",v!=0); return; }
     if (!strcmp(name,"mesh_reuse_check")) { atomic_store(&g_mesh_reuse_check,v!=0); MLOG("[flag] mesh_reuse_check = %d",v!=0); return; }
@@ -5963,7 +5965,7 @@ static void shmap_load(void) {
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
     id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
-    uint8_t mesh_kind, mesh_notask; uint16_t mesh_threads, mesh_payload;
+    uint8_t mesh_kind, mesh_notask, raw_range_cache_abi; uint16_t mesh_threads, mesh_payload;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     uint8_t guard_idx[NVN_REFL_MAXB], guard_count, guard_plan_ready;   // TOTK: the bindings upd_guard_stage looks at (storage / typed buffers), from the reflection once
     // 上次编好的参数缓冲
@@ -6525,6 +6527,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
+    o->raw_range_cache_abi=[j[@"raw_read_range_cache_abi"] intValue]==1;
     NSDictionary *mi=j[@"mesh_stage"];
     if ([mi isKindOfClass:NSDictionary.class]) { o->mesh_kind=[mi[@"kind"] isEqual:@"ts"]?1:2; o->mesh_notask=![mi[@"task"] boolValue]; o->mesh_threads=[mi[@"threads"] intValue]; o->mesh_payload=[mi[@"payload"] intValue]; }
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
@@ -10364,17 +10367,24 @@ static uint64_t g_geo_bind[5];   // GPU addresses of the geometry helper buffers
 #define GMEM_MAP_ENTRIES 4096
 #define GMEM_MAP_ENTRY 32
 #include "nvn_gmem_index.h"
-static id<MTLBuffer> g_gmem_buf; static uint64_t g_gmem_gen;
-static int g_gmem_index_mode = -1;
+/* Keep both immutable ABIs cached. Mixed old/new shaders must not rewrite
+   a table another encoded draw is using or rebuild it for every stage. */
+static id<MTLBuffer> g_gmem_buf[2]; static uint64_t g_gmem_gen[2];
+static int g_gmem_index_mode[2] = {-1,-1};
 static int raw_index_on(void) {
     int v=atomic_load_explicit(&g_raw_index,memory_order_relaxed);
     if(v<0){const char *e=getenv("OOT_RAW_INDEX");v=e?atoi(e)!=0:1;atomic_store(&g_raw_index,v);}
     return v;
 }
-static uint64_t gmem_map_gpu(void) {
+static int raw_range_cache_on(void) {
+    int v=atomic_load_explicit(&g_raw_range_cache,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_RAW_RANGE_CACHE");v=e?atoi(e)!=0:1;atomic_store(&g_raw_range_cache,v);}
+    return v;
+}
+static uint64_t gmem_map_gpu(int compatible) {
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
-    int indexed=raw_index_on();
-    if (g_gmem_buf && g_gmem_gen == gen && g_gmem_index_mode == indexed) return g_gmem_buf.gpuAddress;
+    int indexed=raw_index_on(),cached=compatible&&raw_range_cache_on();
+    if (g_gmem_buf[cached] && g_gmem_gen[cached] == gen && g_gmem_index_mode[cached] == indexed) return g_gmem_buf[cached].gpuAddress;
     pthread_mutex_lock(&g_mu);
     gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     size_t capacity=GMEM_MAP_ENTRIES;
@@ -10398,15 +10408,16 @@ static uint64_t gmem_map_gpu(void) {
         memcpy(t+(size_t)n++*GMEM_MAP_ENTRY,e,sizeof e);end=hi;
     }
     gmem_index_build((uint64_t *)t,(uint32_t)n,(uint32_t)capacity,buckets);
+    if(cached)((uint32_t *)t)[4]|=UINT32_C(0x80000000);
     pthread_mutex_unlock(&g_mu);
     res_add(b);res_commit();
-    if(g_gmem_buf)defer_obj_release(g_gmem_buf);
-    g_gmem_buf=b;g_gmem_gen=gen;g_gmem_index_mode=indexed;
-    {static size_t last;static unsigned reports;static int last_mode=-1;
-        if(last!=capacity || last_mode!=indexed || reports++<4)
-            MLOG("raw global memory: %d ranges, capacity %zu, pool generation %llu, index mode %d buckets %u span %#llx..%#llx",
-                 n-1,capacity,gen,indexed,buckets,(unsigned long long)((uint64_t *)t)[4],(unsigned long long)max_end);
-        last=capacity;last_mode=indexed;}
+    if(g_gmem_buf[cached])defer_obj_release(g_gmem_buf[cached]);
+    g_gmem_buf[cached]=b;g_gmem_gen[cached]=gen;g_gmem_index_mode[cached]=indexed;
+    {static size_t last[2];static unsigned reports[2];static int last_mode[2]={-1,-1};
+        if(last[cached]!=capacity || last_mode[cached]!=indexed || reports[cached]++<4)
+            MLOG("raw global memory: %d ranges, capacity %zu, pool generation %llu, index mode %d range cache %d buckets %u span %#llx..%#llx",
+                 n-1,capacity,gen,indexed,cached,buckets,(unsigned long long)((uint64_t *)t)[4],(unsigned long long)max_end);
+        last[cached]=capacity;last_mode[cached]=indexed;}
     return b.gpuAddress;
 }
 /* The host never consumes the per-page GPU log. Raw writes still carry
@@ -10494,7 +10505,7 @@ static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial, const
 }
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen, g_args_serial_seen, g_args_snapshot_seen;
-static int g_args_raw_index_seen = -2, g_args_raw_write_log_seen = -2;
+static int g_args_raw_index_seen = -2, g_args_raw_write_log_seen = -2, g_args_raw_range_cache_seen = -2;
 static uint64_t g_args_epoch[6] = {1, 1, 1, 1, 1, 1};
 static inline void args_dirty_stage(int stage) {
     g_args_dirty[stage] = 1;
@@ -10512,7 +10523,8 @@ static inline void args_sync_dirty(void) {
     // Replaced textures and retired uniform snapshots change argument addresses without a new binding.
     // 纹理替换和统一缓冲快照退休会改变参数地址，即使绑定本身未变。
     if (reg != g_args_reg_seen || dirty != g_args_dirty_seen ||
-        serial != g_args_serial_seen || snapshot != g_args_snapshot_seen || raw_index_on() != g_args_raw_index_seen || raw_write_log_on() != g_args_raw_write_log_seen) {
+        serial != g_args_serial_seen || snapshot != g_args_snapshot_seen || raw_index_on() != g_args_raw_index_seen || raw_write_log_on() != g_args_raw_write_log_seen || raw_range_cache_on() != g_args_raw_range_cache_seen) {
+        g_args_raw_range_cache_seen=raw_range_cache_on();
         g_args_raw_write_log_seen = raw_write_log_on();
         g_args_raw_index_seen = raw_index_on();
         g_args_reg_seen = reg; g_args_dirty_seen = dirty;
@@ -11344,7 +11356,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         } else if (b->kind == NVN_RB_GEO) {   // geometry-as-compute helper buffers of the current geometry draw (nvn_geometry_rt.inc)
             slots[aid] = b->reg < 5 && g_geo_bind[b->reg] ? g_geo_bind[b->reg] : dummy_buf_gpu();
         } else if (b->kind == NVN_RB_GMEM) {   // the memory pool table for addresses the shader loaded from memory (gmem_map_gpu)
-            slots[aid] = gmem_map_gpu();
+            slots[aid] = gmem_map_gpu(sh->raw_range_cache_abi);
         } else if (b->kind == NVN_RB_GMEML) {   // its write log (gml_take)
             slots[aid] = gml_take();
         } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer：缩放 1.0、BGRA 互换 0、视口变换未关闭（视口字段不读） | support_buffer: scale 1.0, BGRA swap 0, viewport transform not disabled (viewport fields are not read)
