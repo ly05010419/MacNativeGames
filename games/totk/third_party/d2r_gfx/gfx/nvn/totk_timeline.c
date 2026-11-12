@@ -13,12 +13,14 @@ static tl_ev *g_ev;
 static _Atomic uint64_t g_n, g_commit, g_frame;
 static _Atomic int g_state = -1;   /* -1 unread, 0 off, 1 waiting for the window, 2 recording, 3 written */
 static uint64_t g_first, g_count;
+static int g_gpu_only;
 static char g_path[1024];
 
 static void tl_init(void) {
     const char *e = getenv("TOTK_TIMELINE");
     int st = 0;
     if (e && *e) {
+        g_gpu_only = getenv("TOTK_TIMELINE_GPU_ONLY") && atoi(getenv("TOTK_TIMELINE_GPU_ONLY"));
         const char *c1 = strrchr(e, ':');
         const char *c0 = c1 ? c1 - 1 : NULL;
         while (c0 && c0 > e && *c0 != ':') c0--;
@@ -40,6 +42,7 @@ int totk_tl_on(void) {
 }
 void totk_tl_at(int kind, uint64_t t_ns, uint64_t a, uint64_t b) {
     if (!totk_tl_on()) return;
+    if (g_gpu_only && kind >= TL_GW_IN && kind <= TL_CW_OUT) return;
     uint64_t i = atomic_fetch_add_explicit(&g_n, 1, memory_order_relaxed);
     if (i >= TL_CAP) return;
     uint64_t tid; pthread_threadid_np(NULL, &tid);

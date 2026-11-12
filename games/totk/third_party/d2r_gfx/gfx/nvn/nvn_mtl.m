@@ -1450,9 +1450,9 @@ static inline void m4_end_render(id<MTL4RenderCommandEncoder> e) {   // end of a
    encoder starts with a queue barrier, so two consecutive stamps bracket one encoder. Mid-submission commits are skipped in
    those frames (a stamp at the top of a new command buffer would not wait for the previous one). The report is printed when
    the submission's GPU work has completed. */
-typedef struct { char kind; uint32_t w, h, fmt, nc, nload, nstore, depth; uint64_t draw0; char key[12]; } pt_ent;
+typedef struct { char kind; uint32_t w, h, fmt, nc, nload, nstore, depth, dispatches; uint64_t draw0, pass; char key[128]; } pt_ent;
 #define PT_MAX 2048
-static _Atomic uint64_t g_cur_frame; static uint64_t g_stat_draw;   // tentative declarations, defined further down
+static _Atomic uint64_t g_cur_frame; static uint64_t g_stat_draw, g_stat_pass;   // tentative declarations, defined further down
 static _Atomic uint64_t g_stat_views;   // texture views made for texture ids (mtl_view_stats; the long-frame log's detail)
 static id<MTL4CounterHeap> g_pt_heap; static pt_ent *g_pt; static int g_pt_n, g_pt_key_pending;
 static long g_pt_f0 = -2, g_pt_f1, g_pt_stride = 1;
@@ -1486,7 +1486,7 @@ static void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
     }
     if (g_pt_n >= PT_MAX - 1) return;
     [(id<MTL4CommandBuffer>)cb writeTimestampIntoHeap:g_pt_heap atIndex:(NSUInteger)g_pt_n];
-    pt_ent *p = &g_pt[g_pt_n++]; memset(p, 0, sizeof *p); p->kind = kind; p->draw0 = g_stat_draw; g_pt_key_pending = kind == 'R';
+    pt_ent *p = &g_pt[g_pt_n++]; memset(p, 0, sizeof *p); p->kind = kind; p->draw0 = g_stat_draw; p->pass = g_stat_pass; g_pt_key_pending = kind == 'R';
     if (!d) return;
     for (int i = 0; i < 8; i++) {
         MTLRenderPassColorAttachmentDescriptor *a = d.colorAttachments[i]; if (!a.texture) continue;
@@ -1497,9 +1497,20 @@ static void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
     if (dt) { p->depth = (uint32_t)dt.pixelFormat; if (!p->nc) { p->w = (uint32_t)dt.width; p->h = (uint32_t)dt.height; }
               p->nload += d.depthAttachment.texture && d.depthAttachment.loadAction == MTLLoadActionLoad; p->nstore += d.depthAttachment.texture && d.depthAttachment.storeAction == MTLStoreActionStore; }
 }
-static void pt_note_key(const char *key) { if (g_pt_key_pending && g_pt_n && key) { memcpy(g_pt[g_pt_n - 1].key, key, 8); g_pt[g_pt_n - 1].key[8] = 0; g_pt_key_pending = 0; } }
+static void pt_note_key(const char *key) { if (g_pt_key_pending && g_pt_n && key) { snprintf(g_pt[g_pt_n - 1].key, sizeof g_pt[0].key, "%s", key); g_pt_key_pending = 0; } }
+/* An encoder may contain several dispatches and copies. Log their real identity
+   separately; its total timestamp interval is not the cost of its first shader. */
+static void pt_note_dispatch(const char *key, const p_dispatch *dp, const uint16_t *tg) {
+    if (!g_pt_heap || !g_pt_n) return;
+    pt_ent *p = &g_pt[g_pt_n - 1]; p->dispatches++;
+    if (!p->key[0]) snprintf(p->key, sizeof p->key, "%s", key);
+    MLOG("[gpu-work] F%llu submit=%llu encoder=%d pass=%llu dispatch=%u key=%s grid=%dx%dx%d tg=%ux%ux%u indirect=%#llx",
+         (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_fence + 1), g_pt_n - 1,
+         (unsigned long long)g_stat_pass, p->dispatches, key, dp->x, dp->y, dp->z, tg[0], tg[1], tg[2], (unsigned long long)dp->indirect);
+}
+#include "nvn_dispatch_profile.inc"
 // Final stamp of a profiled submission and its report on completion (adds a feedback handler to o).
-static void pt_finish(id cb, TotkCommitOptions *o, uint64_t frame) {
+static void pt_finish(id cb, TotkCommitOptions *o, uint64_t frame, uint64_t fence) {
     if (!g_pt_heap || !g_pt_n) return;
     pt_mark(cb, 'E', nil);
     id<MTL4CounterHeap> heap = g_pt_heap; int n = g_pt_n; pt_ent *ents = malloc((size_t)n * sizeof *ents); memcpy(ents, g_pt, (size_t)n * sizeof *ents);
@@ -1512,14 +1523,16 @@ static void pt_finish(id cb, TotkCommitOptions *o, uint64_t frame) {
         for (int i = 0; i + 1 < n; i++) { ms[i] = ts[i + 1].timestamp >= ts[i].timestamp ? (ts[i + 1].timestamp - ts[i].timestamp) / hz * 1e3 : 0; ord[m++] = i; }
         for (int i = 1; i < m; i++) for (int j = i; j > 0 && ms[ord[j]] > ms[ord[j - 1]]; j--) { int t = ord[j]; ord[j] = ord[j - 1]; ord[j - 1] = t; }
         double by_kind[128] = {0}; int cnt_kind[128] = {0}; for (int i = 0; i + 1 < n; i++) { by_kind[(unsigned char)ents[i].kind & 127] += ms[i]; cnt_kind[(unsigned char)ents[i].kind & 127]++; }
-        MLOG("[pass-gpu] 帧 %llu：%d 个编码器，GPU 首尾 %.3f ms；渲染 %d 个 %.3f ms，计算 %d 个 %.3f ms，拷贝 %d 个 %.3f ms", (unsigned long long)frame, n - 1, total,
-             cnt_kind['R'], by_kind['R'], cnt_kind['C'], by_kind['C'], cnt_kind['B'], by_kind['B']);
+        MLOG("[pass-gpu] 帧 %llu：%d 个编码器，GPU 首尾 %.3f ms；渲染 %d 个 %.3f ms，计算 %d 个 %.3f ms，拷贝 %d 个 %.3f ms；submit=%llu", (unsigned long long)frame, n - 1, total,
+             cnt_kind['R'], by_kind['R'], cnt_kind['C'], by_kind['C'], cnt_kind['B'], by_kind['B'], (unsigned long long)fence);
         const char *fp = getenv("TOTK_PASS_GPU_FILE"); FILE *ff = fp ? fopen(fp, "a") : NULL;
         // with a file the per-encoder rows go only there (one summary line per frame stays in the log)
         for (int k = 0; k < m && k < 40 && !fp; k++) { int i = ord[k]; const pt_ent *p = &ents[i]; uint64_t dn = (i + 1 < n ? ents[i + 1].draw0 : draws_end) - p->draw0;
             MLOG("[pass-gpu]   #%d %c %.3f ms 绘制 %llu %ux%u fmt %u 色 %u 深 %u 读入 %u 写回 %u %s", i, p->kind, ms[i], (unsigned long long)dn, p->w, p->h, p->fmt, p->nc, p->depth, p->nload, p->nstore, p->key[0] ? p->key : "-"); }
         if (ff) { for (int i = 0; i + 1 < n; i++) { const pt_ent *p = &ents[i]; uint64_t dn = ents[i + 1].draw0 - p->draw0;
-                      fprintf(ff, "%llu\t%d\t%c\t%.4f\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%s\n", (unsigned long long)frame, i, p->kind, ms[i], (unsigned long long)dn, p->w, p->h, p->fmt, p->nc, p->depth, p->nload, p->key[0] ? p->key : "-"); }
+                      fprintf(ff, "%llu\t%d\t%c\t%.4f\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%llu\t%llu\t%llu\t%llu\t%u\n", (unsigned long long)frame, i, p->kind, ms[i], (unsigned long long)dn, p->w, p->h, p->fmt, p->nc, p->depth, p->nload, p->key[0] ? p->key : "-",
+                              (unsigned long long)fence, (unsigned long long)p->pass,
+                              (unsigned long long)(ts[i].timestamp / hz * 1e9), (unsigned long long)(ts[i + 1].timestamp / hz * 1e9), p->dispatches); }
                   fclose(ff); }
         free(ms); free(ord); free(ents);
     }];
@@ -2672,7 +2685,8 @@ uint64_t mtl_sub_commit(void) {
         defer_drain();
     }];
     void arena_commit(uint64_t fence); arena_commit(fence);
-    pt_finish(g_cb, o, gpu_f);
+    pt_finish(g_cb, o, gpu_f, fence);
+    dp_time_finish(o, fence);
     res_commit();
     if (totk_tl_on()) { uint64_t tlid = totk_tl_commit_id(); totk_tl(TL_COMMIT, tlid, 1); totk_tl(TL_FENCE, tlid, fence);
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
@@ -8779,6 +8793,7 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
 }
 static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescriptor *d, NSError **e) {
     NSString *key = cs_archive_key(cs);
+    d.label = cs->key[0] ? @(cs->key) : cs->builtin ? @(cs->builtin) : @"builtin compute";
     id<MTLComputePipelineState> ps = nil;
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
@@ -16182,9 +16197,13 @@ static void dispatch(const p_dispatch *dp) {
     enc_c_pso(ce, ps);
     if (!pre) encode_args(ce, cs, 5, 0);
     cs_trace_prepare(cs);
+    pt_note_dispatch(cs->key, dp, tg);
+    if (enc_label_on()) [(id<MTL4ComputeCommandEncoder>)ce setLabel:[NSString stringWithFormat:@"F%llu s%llu cs %s", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_fence + 1), cs->key]];
+    int dispatch_sample = dp_time_begin((id<MTL4ComputeCommandEncoder>)ce, cs->key, dp, tg, (__bridge id<MTLBuffer>)indirect_buffer, indirect_offset);
     if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.16s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
     if (dp->indirect) [(id<MTL4ComputeCommandEncoder>)ce dispatchThreadgroupsWithIndirectBuffer:indirect_gpu threadsPerThreadgroup:MTLSizeMake(tg[0], tg[1], tg[2])];
     else enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
+    dp_time_end((id<MTL4ComputeCommandEncoder>)ce, dispatch_sample);
     g_dispatch_indirect.buffer = nil;
     if (!reuse) enc_c_end(ce);
     /* Keep guest copies/readbacks coherent with compute writes, as for render-pass stores. */
