@@ -14,7 +14,7 @@
  * "next" and switches when the update replays). A partial overlap or a second update of one source keeps the old
  * behaviour (that source waits for its draw). */
 #define MESH_BATCH_CAP 256
-#define MESH_BATCH_UPD_CAP 128
+#define MESH_BATCH_UPD_CAP 1024   // inline updates a look-ahead window may pass (mb3: 477 windows a game ended at 128 before reaching the mesh draws behind them)
 typedef struct {uint64_t source,grid,stamp,hostwrite;const void *applied;uint64_t next_grid;const void *next_applied;uint32_t cnt,first,next_cnt,next_first;uint8_t cpu;} mesh_batch_entry;
 static mesh_batch_entry g_mb[MESH_BATCH_CAP];static unsigned g_mb_n;
 static uint64_t g_mb_arena,g_mb_pool,g_mb_runs,g_mb_jobs,g_mb_hits,g_mb_splits,g_mb_invalid,g_mb_fallback;
@@ -53,6 +53,7 @@ static void mesh_batch_write(uint64_t lo,uint64_t size){mesh_batch_write_why(lo,
    never invalidate. The same rules as the native draw barriers' write test (oot_bar_shader_writes: rw), by range. */
 static uint64_t g_mb_wr_rt,g_mb_wr_sbuf,g_mb_wr_img,g_mb_wr_whole,g_mb_op_dispatch,g_mb_op_tex,g_mb_op_buf,g_mb_op_fence;
 static uint64_t g_mb_prefetch,g_mb_split_inval,g_mb_split_miss;   // batches made before a pass opened; splits whose source had been invalidated / had never been collected
+static uint64_t g_mb_end[8];   // why a look-ahead window ended: 0 stream end, 1 call depth, 2 corrupt op, 3 dispatch / copy / clear op, 4 update of a collected source, 5 update table full, 6 source cap or guard, 7 no look-ahead (g_exec_next unset or call depth)
 static int mtk_owners(NvShader **ts,NvShader **ms);   // nvn_mesh_tasks.inc (included later): the current mesh draw's task / mesh shaders, 0 for other draws
 static int mesh_batch_tex_range(const tex_t *t,uint64_t *lo,uint64_t *n){if(!t||!t->mem||!t->L.size)return 0;*lo=(uintptr_t)t->mem;*n=t->L.size;return 1;}
 static void mesh_batch_whole(uint64_t *why){g_mb_wr_whole++;mesh_batch_write_why(0,UINT64_MAX,NULL,why);}
@@ -77,9 +78,10 @@ static void mesh_batch_context(void) {
         (unsigned long long)g_mb_inv_upd,(unsigned long long)g_mb_inv_op,(unsigned long long)g_mb_inv_post,(unsigned long long)g_mb_inv_written,(unsigned long long)g_mb_inv_dirty,(unsigned long long)g_mb_fallback,g_mb_n,(unsigned long long)atomic_load(&g_mb_verified),
         (unsigned long long)g_mb_cpu,(unsigned long long)g_mb_promoted,(unsigned long long)g_mb_kept_upd,(unsigned long long)g_mb_partial,(unsigned long long)g_mb_second,(unsigned long long)g_mb_updfull);
     if(atomic_load(&g_mesh_batch_dump)==0&&g_mb_runs&&g_mb_runs%2000==0&&g_mb_runs!=g_mb_last_report){g_mb_last_report=g_mb_runs;
-        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu)",
+        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu); windows ended: stream-end %llu depth %llu corrupt %llu op %llu overlap %llu updates-full %llu cap %llu none %llu",
         (unsigned long long)g_mb_wr_rt,(unsigned long long)g_mb_wr_sbuf,(unsigned long long)g_mb_wr_img,(unsigned long long)g_mb_wr_whole,(unsigned long long)g_mb_op_dispatch,(unsigned long long)g_mb_op_tex,(unsigned long long)g_mb_op_buf,(unsigned long long)g_mb_op_fence,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_splits,
-        (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch);}
+        (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch,
+        (unsigned long long)g_mb_end[0],(unsigned long long)g_mb_end[1],(unsigned long long)g_mb_end[2],(unsigned long long)g_mb_end[3],(unsigned long long)g_mb_end[4],(unsigned long long)g_mb_end[5],(unsigned long long)g_mb_end[6],(unsigned long long)g_mb_end[7]);}
 }
 static mesh_batch_entry *mesh_batch_find(uint64_t source) {
     for(unsigned i=0;i<g_mb_n;i++)if(g_mb[i].source==source){
@@ -150,16 +152,17 @@ static void mesh_batch_prepare(uint64_t current) {
     uint64_t sources[MESH_BATCH_CAP];mb_fill fill[MESH_BATCH_CAP];unsigned n=0;
     mb_upd upd[MESH_BATCH_UPD_CAP];unsigned nu=0;
     if(mesh_batch_eligible(current)&&!mesh_batch_find(current)){sources[n]=current;fill[n]=(mb_fill){0};n++;}
-    if(g_exec_next&&g_ret_n<=8){fz_cursor c={.p=g_exec_next,.ret_n=g_ret_n};memcpy(c.ret,g_ret,(size_t)g_ret_n*sizeof *g_ret);
+    if(g_exec_next&&g_ret_n<=8){fz_cursor c={.p=g_exec_next,.ret_n=g_ret_n};memcpy(c.ret,g_ret,(size_t)g_ret_n*sizeof *g_ret);int why=6;
         for(unsigned guard=0;guard<200000&&n<MESH_BATCH_CAP;guard++){
-            const uint8_t *p;op_hdr h;const void *a;if(!fz_next(&c,&p,&h,&a))break;
-            if(h.size<8||(h.size&7)||h.op>=OP_COUNT_)break;
-            if(h.op==OP_DISPATCH||h.op==OP_COPY_B2B||h.op==OP_CLEAR_BUF||h.op==OP_COPY_T2B||h.op==OP_COPY_B2T||h.op==OP_COPY_T2T||h.op==OP_CLEAR_TEX||h.op==OP_FENCE_SYNC)break;
-            if(h.op==OP_UPDATE_UB){uint64_t lo,size;memcpy(&lo,a,8);memcpy(&size,(const uint8_t *)a+8,8);int overlap=!size||size>UINT64_MAX-lo;for(unsigned k=0;k<n&&!overlap;k++)overlap=sources[k]<lo+size&&lo<sources[k]+8;if(overlap)break;
-                if(h.size<16+size||nu==MESH_BATCH_UPD_CAP){g_mb_updfull++;break;}upd[nu++]=(mb_upd){lo,size,a};}
-            if(h.op==OP_DRAW&&h.size>=8+sizeof(p_draw)){const p_draw *draw=a;if(draw->prim==0x40&&draw->ind&&!mesh_batch_collect(draw->ind,sources,fill,&n,upd,nu))break;}
+            const uint8_t *p;op_hdr h;const void *a;if(!fz_next(&c,&p,&h,&a)){why=c.bad?1:0;break;}
+            if(h.size<8||(h.size&7)||h.op>=OP_COUNT_){why=2;break;}
+            if(h.op==OP_DISPATCH||h.op==OP_COPY_B2B||h.op==OP_CLEAR_BUF||h.op==OP_COPY_T2B||h.op==OP_COPY_B2T||h.op==OP_COPY_T2T||h.op==OP_CLEAR_TEX||h.op==OP_FENCE_SYNC){why=3;break;}
+            if(h.op==OP_UPDATE_UB){uint64_t lo,size;memcpy(&lo,a,8);memcpy(&size,(const uint8_t *)a+8,8);int overlap=!size||size>UINT64_MAX-lo;for(unsigned k=0;k<n&&!overlap;k++)overlap=sources[k]<lo+size&&lo<sources[k]+8;if(overlap){why=4;break;}
+                if(h.size<16+size||nu==MESH_BATCH_UPD_CAP){g_mb_updfull++;why=5;break;}upd[nu++]=(mb_upd){lo,size,a};}
+            if(h.op==OP_DRAW&&h.size>=8+sizeof(p_draw)){const p_draw *draw=a;if(draw->prim==0x40&&draw->ind&&!mesh_batch_collect(draw->ind,sources,fill,&n,upd,nu)){why=4;break;}}
         }
-    }
+        g_mb_end[why]++;
+    } else g_mb_end[7]++;
     if(!n)return;mesh_batch_pipeline();
     if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;if(!current)return;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
     if(g_enc){int had=0;for(unsigned j=0;j<g_mb_n&&!had;j++)had=g_mb[j].source==current;if(had)g_mb_split_inval++;else g_mb_split_miss++;g_mb_splits++;rp_end();}blit_close();
