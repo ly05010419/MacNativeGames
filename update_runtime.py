@@ -459,6 +459,16 @@ def replace_native_5k(res, action, made, version='v143'):
             build_app.copy_tree(folder, target)
 
 
+def oot_update_blocker(folder):
+    """Why Ocarina of Time's update cannot run with this work folder ('' when it can): games/oot/build.py update_blocker,
+    the checks its update_runtime makes before it touches anything."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('oot_build_plan', build_app.REPO / 'games/oot/build.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.update_blocker(folder)
+
+
 def plan(app, work=None):
     """Which of the three updates the app needs, found by the checks main() makes before it touches anything, and nothing
     is changed (--plan; MNG Launcher runs the fastest that fits, user 2026-11-12: "不要用最慢的形式打包"):
@@ -481,11 +491,7 @@ def plan(app, work=None):
             folder, why = work_folder('OcarinaOfTime_build')
         except BuildError as e:
             return result('error', str(e), game='oot')
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('oot_build_plan', build_app.REPO / 'games/oot/build.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        blocker = module.update_blocker(folder)   # the checks its update makes before it touches anything
+        blocker = oot_update_blocker(folder)   # the checks its update makes before it touches anything
         if blocker:
             return result('full', f'Ocarina of Time: {blocker}', game='oot', work=str(folder), work_why=why)
         return result('express', 'Ocarina of Time: its shaders are of this repository\'s translation chain and its modules this repository\'s rewrites',

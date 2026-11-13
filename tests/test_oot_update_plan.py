@@ -2,7 +2,6 @@
 the checks update_runtime makes first): "full" when the work folder cannot take an express update. 2026-11-13: --plan said
 "express" for every OOT app, so after the chain moved to v27 MNG Launcher and tools/mng.py started an express update that
 stopped at once ("the shaders need the full build")."""
-import importlib.util
 from pathlib import Path
 import plistlib
 import sys
@@ -35,10 +34,8 @@ class OcarinaPlan(unittest.TestCase):
             root = Path(tmp); work = root / 'work'; work.mkdir()
             app = oot_app(root, work)
             for answer, kind in (('the translation chain or the translator changed', 'full'), ('', 'express')):
-                with self.subTest(answer=answer), mock.patch('importlib.util.module_from_spec') as made:
-                    made.return_value = mock.Mock(update_blocker=mock.Mock(return_value=answer))
-                    with mock.patch.object(importlib.machinery.SourceFileLoader, 'exec_module', lambda self, m: None):
-                        plan = update_runtime.plan(app)
+                with self.subTest(answer=answer), mock.patch.object(update_runtime, 'oot_update_blocker', return_value=answer):
+                    plan = update_runtime.plan(app)
                     self.assertEqual(plan['kind'], kind, plan)
 
     def test_the_update_refuses_with_the_same_check(self):

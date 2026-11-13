@@ -59,7 +59,9 @@ class Plan(unittest.TestCase):
             work = Path(tmp) / 'work/oot'
             work.mkdir(parents=True)
             out = app(tmp, 'Ocarina of Time.app', CFBundleExecutable='OcarinaOfTime', MNGWorkFolder=str(work))
-            p = update_runtime.plan(out)
+            with mock.patch.object(update_runtime, 'oot_update_blocker', return_value='') as blocker:   # its build files: tests/test_oot_update_plan.py
+                p = update_runtime.plan(out)
+            blocker.assert_called_once_with(work.resolve())
         self.assertEqual((p['kind'], p['game'], p['work']), ('express', 'oot', str(work.resolve())))
 
     def switch_2_app(self, tmp, version, *, data=True):
