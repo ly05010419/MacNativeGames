@@ -46,7 +46,7 @@ void movie_host_tick(void) {}
 #else
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
-#if __has_include(<vorbis/codec.h>)
+#if defined(TMNT_EXTERNAL_VORBIS)
 #include <vorbis/codec.h>
 #define HAVE_VORBIS 1
 #else

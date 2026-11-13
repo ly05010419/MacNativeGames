@@ -22,17 +22,17 @@ sections instead of attempting to execute anonymously generated code.
 Source build steps, using an existing verified private ExeFS/RomFS/NRO
 preparation from this game's scripts:
 
-1. Build the iOS shader translator and SPIRV-Cross from this game's sources:
+1. Build the iOS shader translator and SPIRV-Cross from the shared pin:
    `tools/totk_xlate/publish_ios_lib.sh /path/to/dotnet /private/shader` and
    `python3 ios/tools/build_spirv_cross.py --sdk /path/to/iPhoneOS.sdk --out /private/shader`.
 2. Build pinned iPad codec libraries with
    `python3 ios/tools/build_deps.py /private/codecs`. The source tags are
-   Opus 1.6.1, libvpx 1.16.0, Ogg 1.3.6, Vorbis 1.3.7.
+   Opus 1.6.1 and libvpx 1.16.0.
 3. Generate `ios/Gen` privately from verified rewrites using the two embed
    tools and the existing Mac `export-ios` mode. Place the generated
    `ios_embed.h`, `ios_nro_embed.h`, `embed.S`, `nro_embed.S`, runtime headers,
    dependency include paths, and a private `tmnt.xcconfig` there. The config
-   links the four codec archives, `libtmnt_xlate_bootstrap.o`,
+   links the two codec archives, `libtmnt_xlate_bootstrap.o`,
    `libtmnt_xlate.a`, `libtmnt_spirv_cross.a`, platform frameworks, C++, zlib
    and ICU. The source tree does not contain private game bytes or absolute
    machine paths.

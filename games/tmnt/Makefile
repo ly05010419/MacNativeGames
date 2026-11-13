@@ -5,7 +5,6 @@ WORK ?= /tmp/tmnt-port-build
 OUT := $(WORK)/build
 CLANG ?= clang
 PY ?= python3
-PKG_CONFIG ?= pkg-config
 EXEFS ?=
 REWRITTEN ?= $(WORK)/rewritten
 ROMFS ?=
@@ -13,9 +12,10 @@ FONTS ?=
 NRO_PREPARED ?= $(WORK)/nro-prepared
 NRO_REWRITTEN ?= $(WORK)/nro-rewritten
 NATIVE_OPT ?= -O2
-CODEC_PACKAGES := opus vpx vorbis ogg
-CODEC_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(CODEC_PACKAGES))
-CODEC_ARCHIVES := $(foreach p,$(CODEC_PACKAGES),$(shell $(PKG_CONFIG) --variable=libdir $(p))/lib$(p).a)
+OPUS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+VPX_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
+CODEC_CFLAGS := -I"$(OPUS_PREFIX)/include/opus" -I"$(VPX_PREFIX)/include"
+CODEC_ARCHIVES := "$(OPUS_PREFIX)/lib/libopus.a" "$(VPX_PREFIX)/lib/libvpx.a"
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
 GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h)
@@ -63,7 +63,6 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	$(CLANG) $(NATIVE_OPT) -g -Wall -Wextra -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include -c "$<" -o "$@"
 
 $(OUT)/tmnt-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	@$(PKG_CONFIG) --exists $(CODEC_PACKAGES) || { echo 'install the opus, libvpx, libvorbis and libogg development packages' >&2; exit 1; }
 	@for archive in $(CODEC_ARCHIVES); do test -f "$$archive" || { echo "missing static codec archive: $$archive" >&2; exit 1; }; done
 	$(CLANG) -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) $(CODEC_CFLAGS) \

@@ -2,6 +2,7 @@
 """Build TMNT's pinned SPIRV-Cross as an arm64 iPad static archive."""
 import argparse
 import subprocess
+import sys
 from pathlib import Path
 
 SOURCES = ('spirv_cfg.cpp', 'spirv_cpp.cpp', 'spirv_cross.cpp',
@@ -14,7 +15,9 @@ def build(sdk, output, cxx, ar):
     game = Path(__file__).resolve().parents[2]
     if output == game or game in output.parents:
         raise ValueError('build output must stay outside the repository')
-    source = game / 'third_party/spirv-cross'
+    sys.path.insert(0, str(game.parents[1]))
+    from tools.deps import spirv_cross_source
+    source = spirv_cross_source()
     wrapper = game / 'tools/totk_xlate/spirv_cross_inproc.cpp'
     if not sdk.is_dir() or not wrapper.is_file():
         raise ValueError('iPhoneOS SDK or in-process wrapper is missing')

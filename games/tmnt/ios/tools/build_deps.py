@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build TMNT's Opus, VP9, Ogg and Vorbis libraries for a physical iPad.
+"""Build TMNT's Opus and VP9 libraries for a physical iPad.
 
 Adapted from this repository's games/totk/ios/tools/build_deps.py. Outputs
 stay outside the checkout; sources come from pinned upstream release tags.
@@ -70,28 +70,4 @@ shutil.copytree(opus/'include',include,dirs_exist_ok=True)
 shutil.copytree(vpx/'vpx',include/'vpx',dirs_exist_ok=True)
 shutil.copy2(vpxout/'vpx_config.h',include/'vpx_config.h')
 
-# TMNT's movie decoder uses libvorbis/ogg as well as libvpx. Both are built
-# from Xiph's release tags with the same iPhoneOS SDK and install prefix.
-def cmake_static(name, source, depends=()):
-    folder = build/name
-    run(['cmake', '-G', 'Ninja', '-S', str(source), '-B', str(folder),
-         '-DCMAKE_SYSTEM_NAME=iOS', f'-DCMAKE_OSX_SYSROOT={sdklink}',
-         '-DCMAKE_OSX_ARCHITECTURES=arm64', '-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0',
-         '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_TESTING=OFF',
-         '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
-         '-DCMAKE_BUILD_TYPE=Release', f'-DCMAKE_INSTALL_PREFIX={out}',
-         f'-DCMAKE_PREFIX_PATH={out}', *depends])
-    run(['cmake', '--build', str(folder), '--config', 'Release', '-j'])
-    run(['cmake', '--install', str(folder), '--config', 'Release'])
-
-ogg = src/'ogg'; checkout('https://github.com/xiph/ogg.git', 'v1.3.6', ogg)
-cmake_static('ogg', ogg, ('-DOGG_BUILD_TESTS=OFF',))
-vorbis = src/'vorbis'; checkout('https://github.com/xiph/vorbis.git', 'v1.3.7', vorbis)
-cmake_static('vorbis', vorbis, (
-    '-DOGG_ROOT='+str(out),
-    '-DOGG_INCLUDE_DIR='+str(include),
-    '-DOGG_LIBRARY='+str(lib/'libogg.a'),
-))
-if not (lib/'libogg.a').is_file() or not (lib/'libvorbis.a').is_file():
-    raise RuntimeError('iOS Ogg/Vorbis static libraries missing after install')
 print(f'IOS_DEPS={out}')

@@ -22,12 +22,7 @@
   patches are applied to a temporary copy at build time; generated shader
   tools and shaders remain outside Git.
 
-- `third_party/spirv-cross/` is byte-identical to this repository's
-  `games/unicorn/third_party/spirv-cross/` at the current source baseline.
-  That tree records KhronosGroup/SPIRV-Cross commit
-  `aa217aeb6c9f0ace7a0ab233b28807edf45eb165` and retains its
-  Apache-2.0-or-MIT `LICENSE` and bundled header notices in `LICENSES/`.
-  The standalone CLI has a source build path in this game directory.
+- Mac and iPad use the SPIRV-Cross revision pinned in `tools/deps/pins.py`.
 
 - The movie decoder integration is port-specific and depends on public libvpx
   and Apple VideoToolbox. Its embedded
@@ -59,15 +54,14 @@
 - `tools/totk_xlate/LibExports.cs` and `tools/totk_xlate/spirv_cross_inproc.cpp`
   are copied from this repository's `games/totk/tools/totk_xlate/` at the
   local source base. They connect the same translation service to a statically
-  linked iPad app. The SPIRV-Cross sources and their license remain in this
-  game's `third_party/spirv-cross/` tree.
+  linked iPad app. SPIRV-Cross is obtained through the shared dependency pin.
 - `tools/totk_xlate/publish_ios_lib.sh` follows the corresponding TOTK
   NativeAOT build recipe but writes archives to a caller-selected private
   directory. `ios/tools/build_spirv_cross.py` builds this game's pinned
   SPIRV-Cross sources for iOS; neither script downloads or packages game data.
 - `ios/tools/build_deps.py` is adapted from this repository's
   `games/totk/ios/tools/build_deps.py`. It builds pinned source releases of
-  Opus 1.6.1, libvpx 1.16.0, Ogg 1.3.6 and Vorbis 1.3.7 into a caller-selected
+  Opus 1.6.1 and libvpx 1.16.0 into a caller-selected
   private directory. Their upstream license files remain in the downloaded
   source trees; no codec binaries or sources are committed here.
 
