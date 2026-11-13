@@ -7,7 +7,7 @@ import SwiftUI
 struct HomePage: View {
     @EnvironmentObject var model: Model
     @State private var selected: String?
-    @State private var defaulted = false   // the first built game was chosen once; a card closed by hand stays closed
+    @State private var defaulted = false   // the first built game was chosen once, when the page first showed
 
     static let games = ["oot", "totk", "botw", "dkb", "pkp"]
 
@@ -35,7 +35,7 @@ struct HomePage: View {
                             let app = model.installed.first { $0.game == game }
                             GameCard(game: game, app: app, loading: !model.installedLoaded, selected: selected == game) {
                                 if !model.installedLoaded { return }
-                                if app != nil { selected = selected == game ? nil : game }
+                                if app != nil { selected = game }   // a second click keeps it chosen (user 2026-11-13)
                                 else { model.buildFor = game; model.page = "build" }
                             }
                         }
