@@ -311,6 +311,17 @@ static int qo_pump_n(int one_item) {
     return runs;
 }
 static void qo_pump(void) { qo_pump_n(0); }
+/* Replays the runnable items on the calling guest thread, with its virtual core given back meanwhile: on the Switch the GPU
+   does this work, not the thread (nvnQueueSubmitCommands gives its core back for the same reason, NVN_BLOCKING). The core
+   is given up before the replay section is taken and taken again after it is left: a thread holding the replay section
+   must never wait for a core, as the threads holding the cores may be waiting for the replay section. Donkey Kong
+   Bananza on the shared layer: the replay moved into nvnQueueFlush and nvnEventSignal, which kept the core, and the
+   game's threads waited 18.7 ms a frame for one (1.1 ms with the ordering off; 2026-11-13). */
+static void qo_replay_now(void) {
+    int away = runtime_core_away();
+    replay_enter(); qo_pump(); replay_leave();
+    runtime_core_back(&away);
+}
 /* g_qo_mu held: every item with seq <= the result has finished (queues are FIFO: the oldest unfinished is a head). */
 static uint64_t qo_replayed_locked(void) {
     uint64_t m = g_qo_seq;
@@ -411,7 +422,7 @@ static void qo_submit(const NVNqueue *q, int n, const uint64_t *h) {
     qo_ev_add(QE_SUB, q, it->seq, n ? h[0] : 0, (uint64_t)n);
     if (it->flushed && qo_async()) qo_kick_locked();
     pthread_mutex_unlock(&g_qo_mu);
-    if (it->flushed && !qo_async()) { replay_enter(); qo_pump(); replay_leave(); }   // OOT_REPLAY_AT_FLUSH=0 / OOT_QO_ASYNC=0: inside the call
+    if (it->flushed && !qo_async()) { qo_replay_now(); }   // OOT_REPLAY_AT_FLUSH=0 / OOT_QO_ASYNC=0: inside the call
 }
 /* nvnQueueFlush (and what implies it): everything submitted on q so far may run. g_qo_mu held. */
 static void qo_flush_queue(const NVNqueue *q) {
@@ -531,12 +542,12 @@ static void qo_cpu_signal(volatile uint32_t *val) {
     int pend = qo_pending();
     if (pend && qo_async()) qo_kick_locked();
     pthread_mutex_unlock(&g_qo_mu);
-    if (pend && !qo_async()) { replay_enter(); qo_pump(); replay_leave(); }
+    if (pend && !qo_async()) { qo_replay_now(); }
 }
 extern void (*runtime_abort_hook)(void) __attribute__((weak));
 static void qo_init(void) { static int once; if (!once) { once = 1; g_qo_signal_releases = qo_signal_releases; if (&runtime_abort_hook) runtime_abort_hook = qo_ring_dump; } }
 static void qo_queue_flush(const NVNqueue *q) {
     if (!qo_on()) return;
     pthread_mutex_lock(&g_qo_mu); qo_ev_add(QE_FLUSH, q, 0, 0, 0); qo_flush_queue(q); if (qo_async()) qo_kick_locked(); pthread_mutex_unlock(&g_qo_mu);
-    if (!qo_async()) { replay_enter(); qo_pump(); replay_leave(); }
+    if (!qo_async()) { qo_replay_now(); }
 }
