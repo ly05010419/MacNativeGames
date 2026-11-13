@@ -34,15 +34,15 @@ def identify(path, keys):
     except (OSError, ValueError) as e:
         return None, t(f'the keys file cannot be read: {e}', f'keys 文件读不了：{e}')
     if 'header_key' not in loaded:
-        return None, t('the keys file has no header_key: dump prod.keys again from your Switch',
-                       'keys 文件没有 header_key：从 Switch 重新导出 prod.keys')
+        return None, t('the keys file has no header_key: not a complete keys file',
+                       'keys 文件没有 header_key：不是完整的 keys 文件')
     try:
         with path.open('rb') as f:
             _, entries = reader.container_entries(f, path.stat().st_size)
             records = reader.nca_inventory(f, entries, loaded)
     except Exception as e:   # the reader raises its own errors (require) as well as OSError and struct errors
-        return None, t(f'these keys cannot read {path.name} ({e}): dump prod.keys again from your Switch, with its '
-                       f'newest system version', f'这份 keys 读不了 {path.name}（{e}）：把 Switch 升到最新系统后重新导出 prod.keys')
+        return None, t(f'these keys cannot read {path.name} ({e}): they do not match these game files',
+                       f'这份 keys 读不了 {path.name}（{e}）：和这份游戏文件对不上')
     titles = sorted({r['title_id'] for r, _ in records})
     games = [title for title in titles if repo.game_of_title(title)]
     if not games:
@@ -51,8 +51,8 @@ def identify(path, keys):
     missing = missing_generation(records, loaded)
     if missing is not None:
         return games[0], t(f'these keys are older than {path.name}: it needs key generation {missing:02x} '
-                           f'(titlekek_{missing:02x}). Dump prod.keys again from a Switch with a newer system version',
-                           f'这份 keys 比 {path.name} 旧：它要第 {missing:02x} 代密钥（titlekek_{missing:02x}）。把 Switch 升级系统后重新导出 prod.keys')
+                           f'(titlekek_{missing:02x}), which this keys file does not have',
+                           f'这份 keys 比 {path.name} 旧：它要第 {missing:02x} 代密钥（titlekek_{missing:02x}），这份 keys 文件里没有')
     return games[0], None
 
 

@@ -18,9 +18,9 @@ from extract_exefs import (load_keys, container_entries, common_tickets, nca_inv
 from extract_romfs import index_romfs
 from xcx_artifact_paths import outside_source
 
-# Lockpick_RCM writes these as 17 bytes: the 16-byte source plus a trailing NUL.
+# Some keys files hold these as 17 bytes: the 16-byte source plus a trailing NUL.
 # hactool exits unless the value is exactly 16 bytes, before any BKTR check.
-_LOCKPICK_KEK_SOURCE = re.compile(r'(?:mariko_)?master_kek_source_[0-9a-f]{2}\Z')
+_NUL_PADDED_KEK_SOURCE = re.compile(r'(?:mariko_)?master_kek_source_[0-9a-f]{2}\Z')
 
 
 def copy_range(source, offset, size, target):
@@ -38,7 +38,7 @@ def hactool_prod_keys(source, target):
 
     hactool knows no comments: it reads the rest of a line as the value, so a trailing `# note` makes it exit. The copy
     keeps only the `name = value` lines, read the way load_keys reads them (comments dropped, spaces trimmed).
-    A Lockpick trailing NUL on master_kek_source / mariko_master_kek_source is dropped. Any other length is rejected
+    A trailing NUL on master_kek_source / mariko_master_kek_source is dropped. Any other length is rejected
     without recording the key bytes.
     """
     lines = []
@@ -47,7 +47,7 @@ def hactool_prod_keys(source, target):
         if '=' not in body:
             continue
         name, value = (part.strip() for part in body.split('=', 1))
-        if _LOCKPICK_KEK_SOURCE.fullmatch(name.lower()) is not None:
+        if _NUL_PADDED_KEK_SOURCE.fullmatch(name.lower()) is not None:
             require(re.fullmatch(r'[0-9a-fA-F]+', value) is not None, f'Invalid key encoding at line {number}')
             if len(value) == 34 and value[-2:].lower() == '00':
                 value = value[:32]

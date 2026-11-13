@@ -67,7 +67,7 @@ What is supported:
 - A compressed base game (NSZ / XCZ) is not accepted: decompress it with the player's own `nsz -D` first.
 
 Other things the build needs:
-- **`prod.keys`** from the same console (Lockpick_RCM). Keys dumped on an old firmware can be too old for a newer update.
+- **`prod.keys`** from the same console as the game files. A keys file older than the update cannot open it.
 - **System fonts** when the base is an **NSP**, and always for **Breath of the Wild**: `--firmware <folder of .nca files>` (the player's own firmware dump, unzipped), or `--shared-fonts <folder>` with the six `.bfttf` files an earlier Tears of the Kingdom build extracted (`<work folder>/totk/extracted/firmware/shared-fonts` (by default `~/MacNativeGames-work/totk/…`)). A Tears of the Kingdom XCI carries them itself.
 - **Disk:** the work folder is `MacNativeGames-work/<game>` beside the apps folder by default (or the one the app records). Free space needed: about 25 GB for a fresh Mac build, 40 GB with an update; for iPhone / iPad 45 GB, 60 GB with an update. Keep the work folder and the app on the **same APFS volume** (the 17 GB of game data is cloned, not copied). If the game files are on an exFAT / FAT disk or a full one, add `--work <folder on an APFS disk>` and put `-o` on that disk too.
 
@@ -152,7 +152,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | Another game: build it with its own `games/<name>/README.md`. |
 | `needs about N GB free` | Free space, or `--work` (and `-o`) on an APFS volume with room. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The app remembers a work folder on a disk that is not connected or a folder that was moved. Ask the player whether that disk can be connected; if yes, run the same command again; if not, choose a work folder by the Folders rule and add `--work "<it>"` (the app records it). A deleted work folder alone is made again by the update itself. |
-| `BKTR verification failed`, an update merge or key error | `git pull` first. If it persists, the keys may be older than the update: the player dumps `prod.keys` again from a console on current firmware. |
+| `BKTR verification failed`, an update merge or key error | `git pull` first. If it persists, the keys may be older than the update; tell the player so, and never explain how keys are obtained. |
 | `make failed` / `xcrun failed` (`… .log`) | Read the named log; usually incomplete developer tools. |
 | `the app does not start: …` | Read the message; rerun once; otherwise report it (below). |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |
