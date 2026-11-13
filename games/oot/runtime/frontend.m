@@ -631,11 +631,18 @@ static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole recta
 #define TOTK_SCREENSHOT_WINDOW 1
 #endif
 #if defined(TOTK_SCREENSHOT_WINDOW) && !defined(TOTK_SCREENSHOT_PICTURE)
-/* The renderer's next frame: mtl_grab_next_present (third_party/d2r_gfx/gfx/nvn/nvn_mtl.m) has the present thread draw the
-   frame it is about to show and hands the picture over when the GPU is done, so the capture button waits on no thread and
-   the main thread never spins. Weak: a probe links this file without the renderer and answers with no picture. */
+/* The renderer's next frame: mtl_grab_next_game_frame (third_party/d2r_gfx/gfx/nvn/nvn_mtl.m) has the present thread copy
+   the game's own frame -- the source texture before the output upscale, no letterbox bars -- and hands the picture over
+   when the GPU is done, so the capture button waits on no thread and the main thread never spins. A renderer that only
+   offers the window picture (mtl_grab_next_present) gets that instead; weak, so a probe links this file without the
+   renderer and answers with no picture. */
 extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
-static void screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+extern void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+static void screenshot_picture(void (^cb)(CGImageRef img)) {
+    if (mtl_grab_next_game_frame) mtl_grab_next_game_frame(cb);
+    else if (mtl_grab_next_present) mtl_grab_next_present(cb);
+    else cb(NULL);
+}
 #define TOTK_SCREENSHOT_PICTURE screenshot_picture
 #endif
 #include "screenshot.h"
