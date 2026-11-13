@@ -4645,7 +4645,7 @@ static void shmap_load(void) {
     tex_slot_cache tex_slots;
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; id<MTLFunction> no_depth_fn;
-    NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
+    NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch, *screen_patch; _Atomic unsigned screen_outputs; int border_seen; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
@@ -5579,7 +5579,8 @@ static void udc_note_draw(NvProg *pr) {
 static void state_reset(void) {
     memset(&S, 0, sizeof S);
     g_pso_dirty = g_dss_dirty = 1;
-    for (int i = 0; i < 8; i++) S.blend[i] = (blend_st){i, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD};
+    for (int i = 0; i < 8; i++) S.blend[i] = (blend_st){.target = i, .src_rgb = NVN_BLEND_FUNC_ONE, .dst_rgb = NVN_BLEND_FUNC_ZERO,
+        .src_a = NVN_BLEND_FUNC_ONE, .dst_a = NVN_BLEND_FUNC_ZERO, .eq_rgb = NVN_BLEND_EQUATION_ADD, .eq_a = NVN_BLEND_EQUATION_ADD};
     S.color = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; S.chmask.mask = 0xffffffffu;
     S.poly = (poly_st){NVN_FACE_NONE, NVN_FRONT_FACE_CCW, NVN_POLYGON_MODE_FILL, 0};
     S.ds = (ds_st){0, 1, NVN_DEPTH_FUNC_LESS, 0, NVN_STENCIL_FUNC_ALWAYS, NVN_STENCIL_FUNC_ALWAYS, 1, 1, 1, 1, 1, 1};
@@ -5854,18 +5855,159 @@ static NSString *border_src(NvShader *sh, NSString *src0, float colours[][4], co
                                               sh->key, colours[0][0], colours[0][1], colours[0][2], colours[0][3], patched);
     return [src stringByReplacingCharactersInRange:NSMakeRange(NSMaxRange(r), 0) withString:helper];
 }
+static int screen_diagnostics(void) {
+    static int enabled; static dispatch_once_t once;
+    dispatch_once(&once, ^{ const char *value = getenv("LM3_BLEND_DIAG"); enabled = value && !strcmp(value, "1"); });
+    return enabled;
+}
+/* Keep source offsets while hiding comments and literals from the small entry
+   point parser. Helper functions and commented-out returns must stay untouched. */
+static NSString *screen_source_code(NSString *src) {
+    NSUInteger n = src.length;
+    NSMutableData *data = [NSMutableData dataWithLength:n * sizeof(unichar)];
+    unichar *c = data.mutableBytes;
+    [src getCharacters:c range:NSMakeRange(0, n)];
+    for (NSUInteger i = 0; i < n;) {
+        if (c[i] == '/' && i + 1 < n && c[i + 1] == '/') {
+            c[i++] = ' '; c[i++] = ' ';
+            while (i < n && c[i] != '\n') c[i++] = ' ';
+        } else if (c[i] == '/' && i + 1 < n && c[i + 1] == '*') {
+            c[i++] = ' '; c[i++] = ' ';
+            while (i < n) {
+                if (c[i] == '*' && i + 1 < n && c[i + 1] == '/') { c[i++] = ' '; c[i++] = ' '; break; }
+                if (c[i] != '\n') c[i] = ' ';
+                i++;
+            }
+        } else if (c[i] == '"' || c[i] == '\'') {
+            unichar quote = c[i]; c[i++] = ' ';
+            while (i < n) {
+                unichar ch = c[i]; c[i++] = ' ';
+                if (ch == '\\' && i < n) { c[i++] = ' '; continue; }
+                if (ch == quote) break;
+            }
+        } else i++;
+    }
+    return [[NSString alloc] initWithCharacters:c length:n];
+}
+/* Locate the actual entry's returned structure, not another helper's output.
+   A void fragment exports no color, even when color attachments are bound. */
+static NSRange screen_source_fields(NvShader *fs, NSString *code, NSTextCheckingResult **entry_out) {
+    if (!code || !fs->fn.name.length) MDIE("LM3 SCREEN shader %s has no source/entry for non-premultiplied input", fs->key);
+    NSString *pattern = [NSString stringWithFormat:@"\\bfragment\\s+(\\w+)\\s+%@\\s*\\(",
+        [NSRegularExpression escapedPatternForString:fs->fn.name]];
+    NSRegularExpression *entry_re = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+    NSTextCheckingResult *entry = [entry_re firstMatchInString:code options:0 range:NSMakeRange(0, code.length)];
+    if (!entry) MDIE("LM3 SCREEN shader %s: fragment entry %s not recognized", fs->key, fs->fn.name.UTF8String);
+    if (entry_out) *entry_out = entry;
+    NSString *out_type = [code substringWithRange:[entry rangeAtIndex:1]];
+    if ([out_type isEqualToString:@"void"]) return NSMakeRange(NSNotFound, 0);
+    NSRegularExpression *struct_re = [NSRegularExpression regularExpressionWithPattern:
+        [NSString stringWithFormat:@"\\bstruct\\s+%@\\s*\\{", [NSRegularExpression escapedPatternForString:out_type]] options:0 error:nil];
+    NSTextCheckingResult *structure = [struct_re firstMatchInString:code options:0 range:NSMakeRange(0, entry.range.location)];
+    if (!structure) MDIE("LM3 SCREEN shader %s: unsupported fragment return type %s", fs->key, out_type.UTF8String);
+    NSRange struct_end = [code rangeOfString:@"};" options:0 range:NSMakeRange(NSMaxRange(structure.range), entry.range.location - NSMaxRange(structure.range))];
+    if (struct_end.location == NSNotFound) MDIE("LM3 SCREEN shader %s: missing output structure end", fs->key);
+    return NSMakeRange(NSMaxRange(structure.range), struct_end.location - NSMaxRange(structure.range));
+}
+static unsigned fs_screen_output_mask(NvShader *fs) {
+    if (!fs) return 0;
+    unsigned cached = atomic_load(&fs->screen_outputs);
+    if (cached & 0x100) return cached & 255;
+    NSString *code = screen_source_code(sh_src(fs));
+    NSRange fields = screen_source_fields(fs, code, NULL);
+    unsigned mask = 0;
+    if (fields.location != NSNotFound) {
+        /* Recognize indexed/extended color attributes too. If a selected field
+           is not the supported primary float4 form, conversion fails explicitly
+           rather than losing it from the mask and using the raw shader. */
+        NSRegularExpression *colors = [NSRegularExpression regularExpressionWithPattern:@"\\bcolor\\s*\\(\\s*(\\d+)\\s*\\)" options:0 error:nil];
+        for (NSTextCheckingResult *m in [colors matchesInString:code options:0 range:fields]) {
+            unsigned target = [[code substringWithRange:[m rangeAtIndex:1]] intValue];
+            if (target < 8) mask |= 1u << target;
+        }
+    }
+    atomic_store(&fs->screen_outputs, mask | 0x100); return mask;
+}
+/* Non-premultiplied SCREEN becomes the exact fixed-function SCREEN equation
+   after this conversion. Only selected fragment color outputs change; their
+   alpha, other outputs, depth, discard and resource side effects are preserved.
+   UNORM clamps the original input before blending, hence before multiplying. */
+static NSString *fs_src_screen_premultiply(NvShader *fs, NSString *src, unsigned mask, unsigned clamp_mask) {
+    if (!mask) return src;
+    NSString *code = screen_source_code(src);
+    NSTextCheckingResult *entry = nil;
+    NSRange fields = screen_source_fields(fs, code, &entry);
+    if (fields.location == NSNotFound) MDIE("LM3 SCREEN shader %s: void entry cannot export non-premultiplied color", fs->key);
+    NSRegularExpression *color_re = [NSRegularExpression regularExpressionWithPattern:
+        @"\\b(\\w+)\\s+(\\w+)\\s*\\[\\[color\\(\\s*(\\d+)\\s*\\)\\]\\]\\s*;" options:0 error:nil];
+    NSMutableString *convert = [NSMutableString string]; unsigned found = 0;
+    for (NSTextCheckingResult *field in [color_re matchesInString:code options:0 range:fields]) {
+        unsigned target = [[code substringWithRange:[field rangeAtIndex:3]] intValue];
+        if (target >= 8 || !(mask & (1u << target))) continue;
+        NSString *type = [code substringWithRange:[field rangeAtIndex:1]];
+        NSString *name = [code substringWithRange:[field rangeAtIndex:2]];
+        if ((found & (1u << target)) || (![type isEqualToString:@"float4"] && ![type isEqualToString:@"half4"]))
+            MDIE("LM3 SCREEN shader %s: unsupported or duplicate color(%u) type %s", fs->key, target, type.UTF8String);
+        found |= 1u << target;
+        if (clamp_mask & (1u << target))
+            [convert appendFormat:@"out.%@.rgb = %@3(clamp(float3(out.%@.rgb), float3(0.0), float3(1.0)) * clamp(float(out.%@.a), 0.0, 1.0)); ",
+                name, [type isEqualToString:@"half4"] ? @"half" : @"float", name, name];
+        else [convert appendFormat:@"out.%@.rgb *= out.%@.a; ", name, name];
+    }
+    if (found != mask) MDIE("LM3 SCREEN shader %s: missing float4 outputs for non-premultiplied mask %#x (found %#x)", fs->key, mask, found);
+    NSRange open = [code rangeOfString:@"{" options:0 range:NSMakeRange(NSMaxRange(entry.range), code.length - NSMaxRange(entry.range))];
+    if (open.location == NSNotFound) MDIE("LM3 SCREEN shader %s: missing fragment body", fs->key);
+    NSUInteger end = NSMaxRange(open); int depth = 1;
+    for (; end < code.length && depth; end++) { unichar ch = [code characterAtIndex:end]; if (ch == '{') depth++; else if (ch == '}') depth--; }
+    if (depth) MDIE("LM3 SCREEN shader %s: unterminated fragment body", fs->key);
+    NSRange body = NSMakeRange(NSMaxRange(open), end - NSMaxRange(open) - 1);
+    NSRegularExpression *return_re = [NSRegularExpression regularExpressionWithPattern:@"\\breturn\\s+out\\s*;" options:0 error:nil];
+    NSRegularExpression *any_return = [NSRegularExpression regularExpressionWithPattern:@"\\breturn\\b" options:0 error:nil];
+    NSArray<NSTextCheckingResult *> *returns = [return_re matchesInString:code options:0 range:body];
+    if (!returns.count || returns.count != [any_return numberOfMatchesInString:code options:0 range:body])
+        MDIE("LM3 SCREEN shader %s: unsupported fragment return expression", fs->key);
+    NSMutableString *patched = [src mutableCopy];
+    for (NSTextCheckingResult *ret in returns.reverseObjectEnumerator)
+        [patched replaceCharactersInRange:ret.range withString:[NSString stringWithFormat:@"{ %@return out; }", convert]];
+    return patched;
+}
+/* Plain variants are selected from pso_key inside pso_desc, including prediction
+   and disk warm-up. They do not use fsfn, which denotes specialized tile PSOs. */
+static id<MTLFunction> fs_fn_screen(NvShader *fs, int nodepth, unsigned mask, unsigned clamp_mask) {
+    if (!fs || !sh_has_src(fs)) MDIE("LM3 SCREEN non-premultiplied shader has no retained source");
+    NSString *key = [NSString stringWithFormat:@"%02x/%02x/%d", mask, clamp_mask, nodepth && fs->writes_depth];
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT; os_unfair_lock_lock(&lock);
+    id<MTLFunction> fn = fs->screen_patch[key];
+    if (!fn) {
+        NSString *src = nodepth && fs->writes_depth ? fs_src_without_depth(fs) : sh_src(fs);
+        src = fs_src_screen_premultiply(fs, src, mask, clamp_mask);
+        NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
+        fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
+        if (!fn) MDIE("LM3 SCREEN non-premultiplied shader %s (outputs %#x): %s", fs->key, mask, err.localizedDescription.UTF8String);
+        if (!fs->screen_patch) fs->screen_patch = [NSMutableDictionary dictionary];
+        fs->screen_patch[key] = fn;
+        static _Atomic unsigned noted;
+        if (screen_diagnostics() && atomic_fetch_add(&noted, 1) < 16)
+            MLOG("[lm3-blend] SCREEN shader %s: non-premultiplied RGB outputs=%#x UNORM-input-clamp=%#x nodepth=%d; alpha preserved",
+                fs->key, mask, clamp_mask, nodepth && fs->writes_depth);
+    }
+    os_unfair_lock_unlock(&lock); return fn;
+}
 /* The fragment function for the draw's samplers (border_key), nil when none needs the emulation. */
-static id<MTLFunction> fs_fn_border(NvShader *fs, int nodepth) {
+static id<MTLFunction> fs_fn_border(NvShader *fs, int nodepth, unsigned screen_mask, unsigned clamp_mask) {
     if (!fs || !sh_has_src(fs)) return nil;
     float colours[8][4]; int aids[8], n;
     NSString *key = border_key(fs, 1, colours, aids, &n);
     if (!key) return nil;
     if (nodepth && fs->writes_depth) key = [@"nodepth;" stringByAppendingString:key];
+    if (screen_mask) key = [[NSString stringWithFormat:@"screen:%02x/%02x;", screen_mask, clamp_mask] stringByAppendingString:key];
     static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT; os_unfair_lock_lock(&lock);
     id<MTLFunction> fn = fs->bpatch[key];
     if (!fn) {
         NSString *src = border_src(fs, nodepth && fs->writes_depth ? fs_src_without_depth(fs) : sh_src(fs), colours, aids, n);
+        if (!src && screen_mask) MDIE("LM3 SCREEN shader %s cannot compose its sampler border variant", fs->key);
         if (!src) { os_unfair_lock_unlock(&lock); return nil; }
+        if (screen_mask) src = fs_src_screen_premultiply(fs, src, screen_mask, clamp_mask);
         NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
         fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
         if (!fn) MDIE("fragment shader %s with emulated sampler border colour: %s", fs->key, err.localizedDescription.UTF8String);
@@ -6083,9 +6225,91 @@ static int pf_integer(MTLPixelFormat f) {
     default: return 0;
     }
 }
+/* Input clamping precedes the advanced blend on UNORM targets, including
+   sRGB (the multiplication itself remains linear). Floating-point targets
+   retain their input range. Other normalized encodings need a separate rule. */
+static int screen_input_clamp(MTLPixelFormat f) {
+    if (pf_is_float(f) || f == MTLPixelFormatRGB9E5Float) return 0;
+    switch (f) {
+    case MTLPixelFormatA8Unorm: case MTLPixelFormatR8Unorm: case MTLPixelFormatR16Unorm:
+    case MTLPixelFormatRG8Unorm: case MTLPixelFormatRG16Unorm:
+    case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB:
+    case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+    case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatBGR10A2Unorm:
+    case MTLPixelFormatRGBA16Unorm: return 1;
+    default: return -1;
+    }
+}
+/* The mask is derived solely from the recorded pipeline state and the shader
+   outputs. Prediction and warm-up must never inspect the live sampler state. */
+static unsigned pso_screen_requested_mask(const pso_key *k, int merged) {
+    unsigned wanted = 0;
+    for (int i = 0; i < 8; i++) {
+        int l = merged ? k->lmap[i] : i;
+        if (!k->cfmt[i] || l == 0xff || !(k->blend_en >> l & 1) ||
+            !((k->chmask >> (4*l)) & 7) || pf_integer((MTLPixelFormat)k->cfmt[i])) continue;
+        const blend_st *b = &k->blend[l];
+        if (b->adv == NVN_BLEND_ADVANCED_MODE_SCREEN && b->adv_npm && !b->adv_ovl && !b->adv_nnd) wanted |= 1u << i;
+    }
+    return wanted;
+}
+static void pso_screen_masks(const pso_key *k, NvShader *fs, int merged, unsigned *mask, unsigned *clamp_mask) {
+    unsigned wanted = pso_screen_requested_mask(k, merged); *mask = *clamp_mask = 0;
+    if (!wanted) return;
+    if (merged) MDIE("LM3 SCREEN non-premultiplied source cannot compose a merged fragment specialization");
+    *mask = wanted & fs_screen_output_mask(fs);
+    for (int i = 0; i < 8; i++) if (*mask & (1u << i)) {
+        int clamp = screen_input_clamp((MTLPixelFormat)k->cfmt[i]);
+        if (clamp < 0) MDIE("LM3 SCREEN non-premultiplied target %d has unsupported format %u", i, k->cfmt[i]);
+        if (clamp) *clamp_mask |= 1u << i;
+    }
+}
+/* Advanced state is recorded even when it is not used by a draw. Only active,
+   writable, non-integer attachments require a supported blend equation. */
+static int pso_advanced_blend_supported(const pso_key *k, int merged) {
+    for (int i = 0; i < 8; i++) {
+        int l = merged ? k->lmap[i] : i;
+        if (!k->cfmt[i] || l == 0xff || !(k->blend_en >> l & 1) ||
+            !((k->chmask >> (4 * l)) & 15) || pf_integer((MTLPixelFormat)k->cfmt[i])) continue;
+        const blend_st *b = &k->blend[l];
+        if (b->adv && (b->adv != NVN_BLEND_ADVANCED_MODE_SCREEN || b->adv_ovl || b->adv_nnd)) return 0;
+        if (b->adv == NVN_BLEND_ADVANCED_MODE_SCREEN && b->adv_npm &&
+            ((k->chmask >> (4*l)) & 7) && screen_input_clamp((MTLPixelFormat)k->cfmt[i]) < 0) return 0;
+    }
+    return 1;
+}
+static void attachment_blend(MTLRenderPipelineColorAttachmentDescriptor *c, const blend_st *b, int target) {
+    c.blendingEnabled = YES;
+    if (b->adv) {
+        if (b->adv != NVN_BLEND_ADVANCED_MODE_SCREEN || b->adv_ovl || b->adv_nnd)
+            MDIE("LM3 unsupported active advanced blend: mode=%u premultiplied=%u overlap=%u normalized-dst=%u target=%d format=%lu",
+                 (unsigned)b->adv, !b->adv_npm, (unsigned)b->adv_ovl, !b->adv_nnd, target, (unsigned long)c.pixelFormat);
+        /* NV_blend_equation_advanced, SCREEN + uncorrelated coverage:
+           premultiplied RGB = S + D - S*D; alpha = As + Ad - As*Ad.
+           Ordinary BlendFunc/Equation fields do not participate. */
+        c.sourceRGBBlendFactor = c.sourceAlphaBlendFactor = MTLBlendFactorOne;
+        c.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+        c.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        c.rgbBlendOperation = c.alphaBlendOperation = MTLBlendOperationAdd;
+        static _Atomic unsigned noted;
+        unsigned flag = b->adv_npm ? 2u : 1u;
+        if (screen_diagnostics() && !(atomic_fetch_or(&noted, flag) & flag))
+            MLOG("[lm3-blend] SCREEN active: premultiplied=%u overlap=uncorrelated normalized-dst=1 target=%d format=%lu; exact RGBA fixed-function blend%s",
+                !b->adv_npm, target, (unsigned long)c.pixelFormat, b->adv_npm ? " after shader RGB premultiplication" : "");
+        return;
+    }
+    c.sourceRGBBlendFactor = bfac(b->src_rgb); c.destinationRGBBlendFactor = bfac(b->dst_rgb);
+    c.sourceAlphaBlendFactor = bfac(b->src_a); c.destinationAlphaBlendFactor = bfac(b->dst_a);
+    c.rgbBlendOperation = bop(b->eq_rgb); c.alphaBlendOperation = bop(b->eq_a);
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
+    unsigned screen_mask, screen_clamp;
+    pso_screen_masks(k, fs, merged, &screen_mask, &screen_clamp);
+    if (screen_mask && (merged || ((k->a2c >> 2) & 3) || (fsfn && !k->fsfn) || nan_trace_match(fs)))
+        MDIE("LM3 SCREEN non-premultiplied shader %s cannot compose merged/MFX/trace fragment specialization", fs ? fs->key : "-");
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
-    d.vertexFunction = vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
+    d.vertexFunction = vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0);
+    d.fragmentFunction = fsfn ? fsfn : screen_mask ? fs_fn_screen(fs, k->dfmt == 0, screen_mask, screen_clamp) : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
     if (!fsfn && nan_trace_match(fs) && !fs->writes_depth) d.fragmentFunction = nan_trace_fn(fs);   // diagnostic TOTK_NAN_TRACE
     // 诊断 DM_NVN_HILITE=片元着色器键,…：这些绘制改用纯色片元（第 1–6 个键依次 品红 / 绿 / 青 / 黄 / 蓝 / 白），看几何落在哪里
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
@@ -6093,6 +6317,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (nk < 0) { nk = 0; const char *e = getenv("DM_NVN_HILITE");
             for (const char *q = e; q && *q && nk < 6; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 23) n = 23; memcpy(keys[nk], q, n); keys[nk++][n] = 0; } }
         for (int i = 0; i < nk; i++) if (!strncmp(fs->key, keys[i], strlen(keys[i]))) {
+            if (screen_mask) MDIE("LM3 SCREEN non-premultiplied shader %s cannot compose DM_NVN_HILITE replacement", fs->key);
             if (!hl) { NSError *e = nil; hl = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nstruct O { float4 c0 [[color(0)]]; float4 c1 [[color(1)]]; float4 c2 [[color(2)]]; };\n"
                 "fragment O hl0() { return {float4(1,0,1,1),float4(1,0,1,1),float4(1,0,1,1)}; } fragment O hl1() { return {float4(0,1,0,1),float4(0,1,0,1),float4(0,1,0,1)}; }\n"
                 "fragment O hl2() { return {float4(0,1,1,1),float4(0,1,1,1),float4(0,1,1,1)}; } fragment O hl3() { return {float4(1,1,0,1),float4(1,1,0,1),float4(1,1,0,1)}; }\n"
@@ -6107,6 +6332,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (nk < 0) { nk = 0; const char *e = getenv("TOTK_GPU_HILITE1");
             for (const char *q = e; q && *q && nk < 4; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 23) n = 23; memcpy(keys[nk], q, n); keys[nk++][n] = 0; } }
         for (int i = 0; i < nk; i++) if (keys[i][0] && !strncmp(fs->key, keys[i], strlen(keys[i]))) {
+            if (screen_mask) MDIE("LM3 SCREEN non-premultiplied shader %s cannot compose TOTK_GPU_HILITE1 replacement", fs->key);
             if (!hl) { NSError *e = nil; hl = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
                 "fragment float4 h0() { return float4(0,1,0,1); } fragment float4 h1() { return float4(0,1,1,1); }\n"
                 "fragment float4 h2() { return float4(1,1,0,1); } fragment float4 h3() { return float4(0,0,1,1); }\n" options:nil error:&e];
@@ -6130,11 +6356,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         int l = merged ? k->lmap[i] : i;
         uint32_t m = l == 0xff ? 0 : (k->chmask >> (4 * l)) & 0xf;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
-        if (l != 0xff && k->blend_en >> l & 1 && !pf_integer(c.pixelFormat) && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {   /* TOTK diagnostic: highlighted draws can be drawn without blending */
-            c.blendingEnabled = YES;
-            c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
-            c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
-            c.rgbBlendOperation = bop(k->blend[l].eq_rgb); c.alphaBlendOperation = bop(k->blend[l].eq_a);
+        if (l != 0xff && m && k->blend_en >> l & 1 && !pf_integer(c.pixelFormat) && !(hilited && getenv("TOTK_GPU_HILITE_NOBLEND"))) {   /* TOTK diagnostic: highlighted draws can be drawn without blending */
+            attachment_blend(c, &k->blend[l], l);
         }
     }
     int mr = (int)(k->a2c >> 2) & 3;   // TOTK_MFX role (see g_mfx): attachment 7 takes the UI layer
@@ -6215,6 +6438,13 @@ static void pso_pend_reclaim(uint64_t submit) {
     }
 }
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // 提交线程调：没在缓存、没在表里才丢 | Called by the submit thread: kick only if it is neither in the cache nor in the table
+    /* Prediction is speculative: unsupported state must be diagnosed only if
+       the corresponding effective draw actually reaches pipeline creation. */
+    if (!pso_advanced_blend_supported(k, 0)) return;
+    /* Source conversion can reject an unfamiliar fragment ABI. Prediction
+       must not abort on a state whose conditional draw may never execute.
+       The effective draw compiles it through the same pso_desc as disk warm-up. */
+    if (pso_screen_requested_mask(k, 0)) return;
     if (hm_get_id(&g_pso, k)) return;
     pthread_mutex_lock(&g_pp_mu);
     pso_pend_reclaim(g_sub_serial);
@@ -6248,7 +6478,9 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     if (g_pass.layered) k.a2c |= PSO_LAYERED;   // TOTK: layered pass (see g_lay)
     if (g_mfx.role) k.a2c |= (uint32_t)g_mfx.role << 2;   // TOTK_MFX: scene / UI copy variant (see pso_desc)
     if (g_pso_lmap) { memcpy(k.lmap, g_pso_lmap, 8); k.fsfn = (__bridge void *)g_pso_fsfn; }
-    __unsafe_unretained id<MTLFunction> bfn = !g_pso_lmap && !g_mfx.role ? fs_fn_border(fs, k.dfmt == 0) : nil;   // TOTK: sampler border colour emulation
+    unsigned screen_mask, screen_clamp;
+    pso_screen_masks(&k, fs, g_pso_lmap != NULL, &screen_mask, &screen_clamp);
+    __unsafe_unretained id<MTLFunction> bfn = !g_pso_lmap && !g_mfx.role ? fs_fn_border(fs, k.dfmt == 0, screen_mask, screen_clamp) : nil;   // sampler border and SCREEN source conversion share one derived source
     if (bfn) k.fsfn = (__bridge void *)bfn;
     { float bc[8][4]; int ba[8], bn; if (border_key(vs, 0, bc, ba, &bn)) k.a2c |= PSO_VBORDER; }
     __unsafe_unretained id<MTLRenderPipelineState> cached = (__bridge id<MTLRenderPipelineState>)hm_get_ptr(&g_pso, &k);
@@ -9985,6 +10217,20 @@ frz_plain:;
     if (pr && nan_trace_match(pr->sh[1]) && !pr->sh[1]->writes_depth) nan_trace_bind(en);   // diagnostic TOTK_NAN_TRACE
     g_nt_pass_draws++;
     g_stat_draw++;
+    if (screen_diagnostics()) { static unsigned screen_draw_noted;
+      if (screen_draw_noted != 3) for (int i = 0; i < 8; i++)
+        if (g_pass.cfmt[i] && !pf_integer((MTLPixelFormat)g_pass.cfmt[i]) &&
+            (S.color.blend_en >> i & 1) && ((S.chmask.mask >> (4*i)) & 15) &&
+            S.blend[i].adv == NVN_BLEND_ADVANCED_MODE_SCREEN) {
+            unsigned flag = S.blend[i].adv_npm ? 2u : 1u;
+            if (screen_draw_noted & flag) continue;
+            screen_draw_noted |= flag;
+            MLOG("[lm3-blend] SCREEN draw frame=%llu target=%d format=%u premultiplied=%u overlap=%u normalized-dst=%u fs=%s",
+                 (unsigned long long)atomic_load(&g_cur_frame), i, g_pass.cfmt[i],
+                 !S.blend[i].adv_npm, (unsigned)S.blend[i].adv_ovl, !S.blend[i].adv_nnd, pr->sh[1] ? pr->sh[1]->key : "-");
+            break;
+        }
+    }
     { static int tg; if (!tg) { tg = 1; const char *e = getenv("DM_TEST_GHOST"); float v[8];   // 测试开关 DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy（归一化；按下点、格网、跟手图中心）：不经前端直接开跟手图（Mac 宿主截图验证用） | Test switch DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy (normalized; press point, grid, center of the drag-follow image): turns on the drag-follow image directly without going through the front end (for Mac host screenshot verification)
         if (e && sscanf(e, "%f,%f,%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) == 8) mtl_ui_ghost(1, v[0], v[1], &v[2], v[6], v[7]); } }
     if (dw && atomic_load(&g_ghost_on)) ghost_note(dw);
@@ -12506,6 +12752,7 @@ void mtl_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_allo
 
 // ---------- TOTK standalone probes for the isolated GPU paths (runtime/gpu_path_probe.m) ----------
 static id<MTLBuffer> probe_buf(NSUInteger n) { id<MTLBuffer> b = [g_dev newBufferWithLength:n options:MTLResourceStorageModeShared]; if (!b) MDIE("probe buffer"); res_add(b); return b; }
+#include "nvn_screen_blend_probe.h"
 /* widen_u8_gpu over sources at several byte offsets; returns the number of checked values, dies on a mismatch. */
 int mtl_probe_widen(void) {
     mtl_init();

@@ -48,6 +48,7 @@ int mtl_probe_widen(void);     // TOTK: standalone probes of isolated GPU paths 
 int mtl_probe_blockrt(void);
 int mtl_probe_midclear(void);
 int mtl_probe_srgb_view(void);
+int mtl_probe_screen_blend(void);
 int mtl_probe_storage_view(void);
 int mtl_probe_compressed_alias(void);
 int mtl_probe_linear_rt_upload(void);
