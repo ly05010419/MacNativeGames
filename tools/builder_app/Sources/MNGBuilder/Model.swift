@@ -218,6 +218,15 @@ final class Model: ObservableObject {
     /// An installed app, without files: the fastest update that fits (express, else fast; the job refuses a full one).
     func update(_ app: InstalledReport.App) { update(path: app.app) }
 
+    /// Only the shaders and pipelines the game's newest shared list adds (shader_update.py; user 2026-11-13).
+    func updateShaders(_ app: InstalledReport.App) {
+        guard phase != .building && phase != .cancelling else { return }
+        updating = app.app
+        start(BuildRequest(update: app.app, shaders: true))
+    }
+    /// The games whose shaders the Check shaders button compares with their newest list (shader_update.py LISTS).
+    static let shaderGames: Set<String> = ["totk", "botw", "oot"]
+
     /// work: a folder the Storage page moved the work folder to; the update records it in the app.
     func update(path: String, work: String? = nil) {
         guard phase != .building && phase != .cancelling else { return }

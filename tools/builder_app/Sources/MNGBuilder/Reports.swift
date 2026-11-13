@@ -69,6 +69,7 @@ struct BuildRequest: Codable {
     var app: String? = nil
     var update: String? = nil
     var work: String? = nil       // with update: a work folder moved on the Storage page, which the app records from then on
+    var shaders: Bool? = nil      // with update: only its shaders and pipelines, from the game's newest list (shader_update.py)
 }
 
 /// One line `build` prints (tools/builder_jobs/events.py); fields a kind does not have are nil.

@@ -76,7 +76,7 @@ struct ActionSection: View {
 
     private var headline: String {
         switch model.phase {
-        case .done: return !model.startedHere ? T.doneElsewhere : (model.kind == "full" ? T.doneOK : T.updatedOK)
+        case .done: return !model.startedHere ? T.doneElsewhere : (model.kind == "full" ? T.doneOK : model.kind == "shaders" ? T.shadersDone : T.updatedOK)
         case .failed: return T.failed
         case .cancelling: return T.cancelling
         case .cancelled: return T.cancel

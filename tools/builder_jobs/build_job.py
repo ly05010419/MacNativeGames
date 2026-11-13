@@ -50,6 +50,7 @@ def same_version(plan, update_plan):
 def command(request, python=sys.executable):
     """(script, arguments, work folder, app path, kind, game) for a request, kind being express, fast or full (the three updates
     of docs/install.md, the fastest that fits; user 2026-11-12: "不要用最慢的形式打包"):
+      {update: <app>, shaders: true}                  only its shaders and pipelines, from the newest list: shader_update.py
       {update: <app>, work?}                          an installed app, without files: update_runtime.py [--seed]
                                                       [--work <work>] (a work folder moved on the Storage page;
                                                       the app records it from then on)
@@ -59,6 +60,12 @@ def command(request, python=sys.executable):
     The work folder is the one the app records, else work_root/<game>, else build_app.default_work (the one rule of
     build_app.py, update_runtime.py and the Launcher)."""
     b = repo.build_app()
+    if request.get('update') and request.get('shaders'):   # only the shaders and pipelines (shader_update.py)
+        app = Path(request['update']).expanduser()
+        up = express_plan(app, python)
+        if not up.get('work'):
+            raise Refused(up.get('reason') or t('the app records no work folder', '这个 App 没有记录工作文件夹'))
+        return repo.SHADER_UPDATE, [str(app)], Path(up['work']), app, 'shaders', up.get('game')
     if request.get('update'):
         app = Path(request['update']).expanduser()
         given = request.get('work')

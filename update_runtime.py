@@ -513,6 +513,26 @@ def plan(app, work=None):
     return result('express', 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt', **shown)
 
 
+def check_installed(app, game, logs, replaced):
+    """An app just put in place (build_app.install_app, the replaced folders in replaced): registered with macOS and
+    started with --check; when that fails the previous app is put back (shader_update.py uses it too)."""
+    t = time.time(); run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log'); say(f'   registered with macOS ({time.time() - t:.0f} s)')
+    t = time.time(); r = subprocess.run([app / f'Contents/MacOS/{APPS[game][2]}', '--check'], capture_output=True, text=True, timeout=1800)
+    say(f'   the app\'s own check ({time.time() - t:.0f} s)')
+    mine = app.with_name(f'{app.name}.replaced-{os.getpid()}')
+    if r.returncode and mine in replaced and mine.is_dir():
+        build_app.remove_in_background(restore_replaced(app, mine))
+        run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log')
+        for path in replaced:
+            if path != mine:
+                build_app.remove_in_background(path)
+        raise BuildError(f'the updated app does not start ({(r.stdout + r.stderr).strip()}); the previous app was put back')
+    for path in replaced:
+        build_app.remove_in_background(path)
+    if r.returncode:
+        raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
@@ -631,21 +651,7 @@ def main(argv):
         if tmp.exists():
             build_app.remove_tree(tmp)
     say(f'   installed, its seal checked ({time.time() - t:.0f} s)')
-    t = time.time(); run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log'); say(f'   registered with macOS ({time.time() - t:.0f} s)')
-    t = time.time(); r = subprocess.run([app / f'Contents/MacOS/{APPS[game][2]}', '--check'], capture_output=True, text=True, timeout=1800)
-    say(f'   the app\'s own check ({time.time() - t:.0f} s)')
-    mine = app.with_name(f'{app.name}.replaced-{os.getpid()}')
-    if r.returncode and mine in replaced and mine.is_dir():
-        build_app.remove_in_background(restore_replaced(app, mine))
-        run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log')
-        for path in replaced:
-            if path != mine:
-                build_app.remove_in_background(path)
-        raise BuildError(f'the updated app does not start ({(r.stdout + r.stderr).strip()}); the previous app was put back')
-    for path in replaced:
-        build_app.remove_in_background(path)
-    if r.returncode:
-        raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
+    check_installed(app, game, logs, replaced)
     if args.seed:
         build_app.step_warm_metal(tree, app, logs)
     say(f'done in {time.time() - t0:.0f} s: {app} has the runtime of this repository; '

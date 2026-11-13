@@ -22,6 +22,8 @@ def main(argv):
     tb.add_argument('action')
     tb.add_argument('--app', required=True)
     tb.add_argument('--args', default='')
+    s = sub.add_parser('shaders', help="what the game's newest shader list adds to an app, changing nothing (one JSON object)")
+    s.add_argument('--app', required=True)
     b = sub.add_parser('build', help='build; one JSON event per line')
     b.add_argument('request', type=Path)
     b.add_argument('--history', type=Path, default=HISTORY)
@@ -37,6 +39,9 @@ def main(argv):
     if a.job == 'tab':
         from tools.builder_jobs.tabs import main as tab
         return tab(a.tab, a.action, a.app, a.args)
+    if a.job == 'shaders':
+        from tools.builder_jobs.shaders import main as shaders
+        return shaders(a.app)
     if a.job == 'apps':
         from tools.builder_jobs.installed import apps
         print(json.dumps({'apps': apps(a.apps_dir)}, ensure_ascii=False))

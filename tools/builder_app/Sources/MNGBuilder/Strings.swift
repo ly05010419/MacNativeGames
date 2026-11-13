@@ -119,6 +119,10 @@ enum T {
         }
     }
     static let updatedOK = s("Updated. Starting the game…", "更新完成，正在启动游戏…")
+    static let shadersDone = s("Shaders and pipelines updated.", "着色器和管线更新完成。")
+    static let checkShaders = s("Check shaders", "检查着色器")
+    static let checkingShaders = s("Downloading the newest shader list…", "正在下载最新的着色器清单…")
+    static let updateShaders = s("Update shaders", "更新着色器")
     static let doneElsewhere = s("Done (started elsewhere; the game is not started from here).", "完成（这个任务是在别处开始的，这里不替它开游戏）。")
     static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",
                             "自动：App 文件夹旁的 MacNativeGames-work（App 记录了工作目录就用它记录的）")
@@ -128,6 +132,7 @@ enum T {
         case "express": return s("Express update (minutes)", "极速更新（几分钟）")
         case "fast": return s("Fast update (new startup shaders)", "快速更新（重做启动着色器）")
         case "full": return s("Needs a full build with its game files", "要用游戏文件完整打包")
+        case "shaders": return s("Updating the shaders and pipelines", "正在更新着色器和管线")
         default: return s("Cannot be updated now", "现在不能更新")
         }
     }

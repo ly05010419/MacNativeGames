@@ -1282,7 +1282,9 @@ def check_translator(tree):
     return translator
 
 
-def step_shaders(tree, logs, *, version='v0'):
+def step_shaders(tree, logs, *, version='v0', shader_list=None):
+    """shader_list: another shared list than the work folder's games/totk/assets copy (shader_update.py: the newest from
+    GitHub)."""
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         say('3/4 shaders: building SPIRV-Cross with clang')
         build_spirv_cross(tree, logs)
@@ -1291,7 +1293,8 @@ def step_shaders(tree, logs, *, version='v0'):
     run([tree/'.venv/bin/python', 'scripts/prepare_shader_seed.py',
          '--romfs', tree/f'extracted/{version}/romfs', '--output', tree/f'build/shader-seed/{version}',
          '--translator', translator, '--spirv-cross', tree/'build/spirv-cross/spirv-cross',
-         '--version', version, '--modules', tree/f'rewritten/{version}'], logs/'prepare-shader-seed.log', cwd=tree)
+         '--version', version, '--modules', tree/f'rewritten/{version}', *(['--shader-list', shader_list] if shader_list else [])],
+        logs/'prepare-shader-seed.log', cwd=tree)
 
 
 def xcodes_on_volumes(volumes):
@@ -2845,9 +2848,10 @@ def step_data_botw(tree, botw, game, keys, logs, *, version='botw160', update=No
         validate_fonts(fonts)
 
 
-def step_shaders_botw(tree, botw, logs, *, version='botw160'):
+def step_shaders_botw(tree, botw, logs, *, version='botw160', shader_list=None):
     """SPIRV-Cross and the translator as for Tears of the Kingdom; the startup seed from this game's archives and its
-    shared shader list (games/botw/scripts/prepare_shader_seed.py, games/botw/assets/shader_list.tsv)."""
+    shared shader list (games/botw/scripts/prepare_shader_seed.py, games/botw/assets/shader_list.tsv, or shader_list:
+    shader_update.py's download)."""
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         say('3/4 shaders: building SPIRV-Cross with clang')
         build_spirv_cross(tree, logs)
@@ -2860,7 +2864,7 @@ def step_shaders_botw(tree, botw, logs, *, version='botw160'):
     say('3/4 shaders: preparing the startup shaders from the game data and the shared shader list (a few minutes)')
     run([tree / '.venv/bin/python', botw / 'scripts/prepare_shader_seed.py', '--romfs', tree / f'extracted/{version}/romfs',
          '--output', seed, '--translator', translator, '--spirv-cross', tree / 'build/spirv-cross/spirv-cross',
-         '--version', version, '--modules', tree / f'rewritten/{version}', '--shader-list', BOTW_LIST],
+         '--version', version, '--modules', tree / f'rewritten/{version}', '--shader-list', shader_list or BOTW_LIST],
         logs / 'prepare-shader-seed-botw.log', cwd=tree)
 
 

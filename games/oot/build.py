@@ -123,7 +123,7 @@ def remove_device_reminder():
     agent.unlink(missing_ok=True)
     print('removed the old Mac reminder for iPhone / iPad shader contributions: the devices contribute on their own now',flush=True)
 
-def resolve_lists(tree, folder, logs):
+def resolve_lists(tree, folder, logs, shared=None):
     """The App's warm-up lists beside build/shader-map.tsv, build/pso_manifest.tsv and build/pso_title.tsv: the shared
     list's rows of this game, each variant named as the seed serves its bind state (scripts/shader_list.py resolve), as
     build_app.py resolve_lists makes them for every game it packages. The Mac runtime reads the lists in the shader map's
@@ -135,7 +135,7 @@ def resolve_lists(tree, folder, logs):
     from these same files and the App carries them (package_app). The seed's own copies are of the list the seed was
     translated with; a fast update keeps that seed, so on 2026-11-11 the archive had 2,957 listed render pipelines of the
     11-09 list while the App's lists named 7,516."""
-    seed=tree/'build/shader-seed/oot';shared=tree/'assets/shader_list.tsv'
+    seed=tree/'build/shader-seed/oot';shared=Path(shared) if shared else tree/'assets/shader_list.tsv'   # shared: shader_update.py's download
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     title,manifest=folder/'pso_title.tsv',folder/'pso_manifest.tsv'
     for path in (title,manifest):path.unlink(missing_ok=True)   # never an older package's file
@@ -326,10 +326,10 @@ def check_archive_lists(build):
         if report.get(field)!=rows:
             raise ValueError(f"the pipeline archive planned {report.get(field)} listed {what} pipelines, the App's lists name {rows}")
 
-def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
+def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=None):
     """Stage a sealed App containing its runtime data, then replace the closed App."""
     shader_record=verify_shader_resources(tree) if bundle_shaders() else None
-    lists=resolve_lists(tree,tree/'build/warm-lists',work/'logs')   # one resolve of the current list: the archive and the App's build/ use it
+    lists=resolve_lists(tree,tree/'build/warm-lists',work/'logs',shared)   # one resolve of the current list: the archive and the App's build/ use it
     pipelines=compute_pipeline_archive(work,tree,lists) if shader_record else None
     prepared=shader_bundle(tree,shader_record) if shader_record else None
     opening_overlay=tree/'extracted/oot/opening-patches'
@@ -463,12 +463,43 @@ def update_runtime(app,work=None):
     package_app(work,tree,app,'library' if folder else 'app',folder)
     print(f'updated {app} in {time.monotonic()-start:.0f} s',flush=True)
 
-def shader_steps(work,tree,logs,run,device=False):
+def update_shaders(app,listfile,work=None):
+    """Only the shaders and pipelines of an App this build made, from another shared list (shader_update.py: the newest
+    from GitHub; user 2026-11-13): the listed variants the seed lacks translated by the work folder's game binary (the
+    translations made before are kept), their libraries compiled, the warm-up lists resolved from that list and the
+    pipeline archive checked against them, then the App packaged as update_runtime does. The work folder is used as it
+    is: no source sync and no runtime build, so the shaders are of the runtime the App carries."""
+    app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]
+    tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
+    for needed in (manifest,tree/'build/shader-libs/libraries-manifest.json',tree/'extracted/oot/romfs/index.json',work/'build/oot-native'):
+        if not needed.exists():raise ValueError(f'{needed} is missing: the work folder cannot translate shaders (a full build makes it)')
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_ns2_seed import translation_context
+    metadata=json.loads(manifest.read_text())
+    if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
+        raise ValueError('this repository translates for another chain or translator than the App\'s shaders: update the App first')
+    told=False
+    while app_running(app):
+        if not told:print('waiting for the game to close',flush=True);told=True
+        time.sleep(5)
+    start=time.monotonic();logs=work/'logs';logs.mkdir(exist_ok=True)
+    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
+    def run(cmd,name,cwd=tree):
+        print(name,flush=True)
+        with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+    shader_steps(work,tree,logs,run,shared=listfile)
+    os.environ['OOT_BUNDLE_SHADERS']='1'
+    folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
+    package_app(work,tree,app,'library' if folder else 'app',folder,shared=listfile)
+    print(f'updated the shaders of {app} in {time.monotonic()-start:.0f} s',flush=True)
+
+def shader_steps(work,tree,logs,run,device=False,shared=None):
     """The seed of the full build and of a runtime update: every translation the runtime asks for, a cached one kept when
     the runtime's request for it is the one it was made from (prepare_ns2_seed.py; user 2026-11-11: "如何让 快速更新 不要这么
     容易失效"), and on the Mac the Metal libraries, compiled only where the translation changed (build_shader_libs.py)."""
     py=work/'venv/bin/python'
-    shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
+    shared=Path(shared) if shared else GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists; shader_update.py gives the newest from GitHub
     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
         '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
         *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')

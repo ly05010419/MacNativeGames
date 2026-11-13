@@ -6,6 +6,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 BUILD_APP = REPO / 'build_app.py'
 UPDATE_RUNTIME = REPO / 'update_runtime.py'
+SHADER_UPDATE = REPO / 'shader_update.py'
 
 _module = None
 
