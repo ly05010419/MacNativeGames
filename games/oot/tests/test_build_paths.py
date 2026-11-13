@@ -1,5 +1,6 @@
 """#2045: a work folder whose path has spaces (the default sits next to the dump, named after the game) still builds the
 runtime; #2055: the app records what the Update page needs (the checkout, the work folder, the Python, the commit)."""
+import re
 import importlib.util
 import os
 from pathlib import Path
@@ -62,17 +63,20 @@ class AppRunningTests(unittest.TestCase):
 
 
 class ToolCheckTests(unittest.TestCase):
-    """#2070 (the reporter's M5 build): without ffmpeg the build ran for minutes and stopped at the opening overlay, the
-    last step, in a traceback; the build checks it first, as it checks LLVM (PR #2060)."""
-    SOURCE = (GAME / 'build.py').read_text()
+    """#2070 (the reporter's M5 build): without ffmpeg the build ran for minutes and stopped at the opening overlay. Since
+    fa394da8 (2026-11-12) the overlay cuts its clip in Python (scripts/webm_one_frame.py, the same bytes as ffmpeg's
+    remux), so there is no tool to check: the build and the overlay must not run ffmpeg or ffprobe again."""
+    RUNS_FFMPEG = re.compile(r"""['"](ffmpeg|ffprobe)['"]""")
 
-    def test_ffmpeg_is_checked_before_the_game_is_imported(self):
-        body = self.SOURCE[self.SOURCE.index('def build(args, source):'):]
-        self.assertLess(body.index("missing_tools(('ffmpeg','ffprobe'))"), body.index("'import-original-nup'"))
+    def test_the_build_and_the_opening_overlay_run_no_ffmpeg(self):
+        for name in ('build.py', 'scripts/make_opening_overlay.py', 'scripts/webm_one_frame.py'):
+            with self.subTest(name=name):
+                self.assertIsNone(self.RUNS_FFMPEG.search((GAME / name).read_text()))
 
-    def test_missing_tools_names_what_is_absent(self):
-        with mock.patch.object(build.shutil, 'which', lambda name, path=None: None if name == 'ffprobe' else '/x/' + name):
-            self.assertEqual(build.missing_tools(('ffmpeg', 'ffprobe')), ['ffprobe'])
+    def test_the_opening_overlay_cuts_its_clip_in_python(self):
+        overlay = (GAME / 'scripts/make_opening_overlay.py').read_text()
+        self.assertIn('import webm_one_frame', overlay)
+        self.assertIn('webm_one_frame.one_frame(', overlay)
 
 
 class UpdateInfoTests(unittest.TestCase):
