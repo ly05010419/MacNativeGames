@@ -13,6 +13,7 @@
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
 #include "dmsh_chain.h"
+#include "nvn_blend_zero.h"
 #include "../../host/hle.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <mach-o/dyld.h>
@@ -552,6 +553,26 @@ static int g_rt_fail_soft;
 static NSMutableSet<NSString *> *g_rt_failed;   // shaders whose translation failed (g_rt_lock)
 void totk_rt_fail_soft(void) { g_rt_fail_soft = 1; }
 static void rt_failed(NSString *shader) { if (!g_rt_failed) g_rt_failed = [NSMutableSet set]; [g_rt_failed addObject:shader]; }   // g_rt_lock held
+#if defined(GAME_OOT)
+/* NVIDIA's "zero times anything is zero" blend (nvn_blend_zero.h): a translated pixel shader of Ocarina of Time gets the
+   guard in its MSL before anything reads it (the libraries are named by the MSL's SHA-256, so the seed, the Metal libraries
+   and the runtime all see the guarded source), and its reflection says so ("blend_zero": nvn_mtl.m binds the word for it).
+   A shader of another shape keeps its MSL and has no word (blend_zero_skipped counts them, logged at the seed's end). */
+static _Atomic uint64_t g_bz_guarded, g_bz_skipped;
+static NSDictionary *blend_zero_guard(NSString *variant, NSDictionary *refl) {
+    NSString *path = [totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", variant];
+    NSString *msl = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    int guarded = 0; NSString *out = msl_blend_zero(msl, &guarded);
+    if (!guarded) { if (msl && [msl containsString:@"[[color("]) atomic_fetch_add(&g_bz_skipped, 1); return refl; }
+    if (![out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) die("shader %s: cannot write the blend guard", variant.UTF8String);
+    NSMutableDictionary *r = [refl mutableCopy]; r[@"blend_zero"] = @YES;
+    NSData *jd = [NSJSONSerialization dataWithJSONObject:r options:NSJSONWritingSortedKeys error:nil];
+    if (!jd || ![jd writeToFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant] atomically:YES]) die("shader %s: cannot write its reflection", variant.UTF8String);
+    atomic_fetch_add(&g_bz_guarded, 1);
+    return r;
+}
+void totk_rt_blend_zero_counts(uint64_t *guarded, uint64_t *skipped) { *guarded = atomic_load(&g_bz_guarded); *skipped = atomic_load(&g_bz_skipped); }
+#endif
 /* One request through a translator service; the reflection of the new variant (nil: refused, with g_rt_fail_soft). */
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
@@ -585,6 +606,9 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
     NSDictionary *refl = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (![refl isKindOfClass:[NSDictionary class]]) die("shader %s: reflection missing", variant.UTF8String);
+#if defined(GAME_OOT)
+    if (!strcmp(stage, "ps")) refl = blend_zero_guard(variant, refl);
+#endif
     return refl;
 }
 /* A translated variant into the shader's index, the counters and the contribution file (g_rt_lock held). */

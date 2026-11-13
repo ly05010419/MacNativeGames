@@ -100,6 +100,7 @@ static _Atomic uint64_t g_taa_last;     // game frame of the last edge smoothing
 #include "fps_board.h"   /* the leaderboard's frame-rate record: game presents after the world started (present_now) */
 #include "nvn_cover.h"
 #include "totk_shader_scope.h"   // totk_shader_scope_contains: the warm-up scope (PR #84)
+#include "nvn_blend_zero.h"   // NVIDIA's "zero times anything is zero" blend: the word bz_bind gives a guarded pixel shader
 #include "dmsh_chain.h"   // DMSH_CHAIN：本源码树期望的 B 着色器库翻译链版本 | DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree
 #include "nvn_hmap.h"
 #include "totk_lifelog.h"
@@ -6968,6 +6969,7 @@ static void pool_memo_index(NvPoolMemo *m) {   // rebuild the uhash -> way index
 static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo_wdiff, g_pmemo_whole_diff, g_pmemo_split, g_pmemo_evict, g_pmemo_fill;   // [descriptor-demand-memo]
 @interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn;   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
     int frmw;   /* #2070: fn is the lowered build of this compute shader (nvn_float_rmw.h, frmw_use_lowered) */
+    int has_bz;   /* its MSL has the blend-zero guard and reads the word at fragment buffer BLEND_ZERO_BUFFER (nvn_blend_zero.h, bz_bind) */
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
@@ -7611,6 +7613,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->raw_range_cache_abi=[j[@"raw_read_range_cache_abi"] intValue]==1;
+    o->has_bz=[j[@"blend_zero"] boolValue];   // totk_shader_rt.m blend_zero_guard
     NSDictionary *mi=j[@"mesh_stage"];
     if ([mi isKindOfClass:NSDictionary.class]) { o->mesh_kind=[mi[@"kind"] isEqual:@"ts"]?1:2; o->mesh_notask=![mi[@"task"] boolValue]; o->mesh_threads=[mi[@"threads"] intValue]; o->mesh_payload=[mi[@"payload"] intValue]; o->mesh_device=[mi[@"device"] boolValue]; }
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->fn.label=pc; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
@@ -13187,8 +13190,36 @@ static void bind_trace(NvShader *sh, int nvn_stage) {
     if (nvn_stage == 1 && R.has_rt && R.rt.color[0]) o += snprintf(line + o, sizeof line - o, " rt0=ser%llu/mem%p/%ux%u", (unsigned long long)R.rt.color[0]->serial, (void *)R.rt.color[0]->mem, R.rt.color[0]->d.width, R.rt.color[0]->d.height);
     MLOG("%s", line);
 }
+/* The word a guarded pixel shader reads (nvn_blend_zero.h): for each colour attachment i of the pass, its output's bits from
+   the blend state of its target (lmap in a merged pass, as pso_desc takes it). OOT_BLEND_ZERO=0 gives 0 for every draw:
+   Apple's blender as it is, for A/B runs. */
+static int bz_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_BLEND_ZERO"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("OOT_BLEND_ZERO=0: a non-finite colour under a zero blend weight is blended as Apple's blender does (NaN kept)"); } return v; }
+static uint32_t bz_word(void) {
+    if (!S.color.blend_en || !bz_on()) return 0;
+    uint32_t w = 0;
+    for (int i = 0; i < 8; i++) {
+        if (!g_pass.cfmt[i]) continue;
+        unsigned l = g_pso_lmap ? g_pso_lmap[i] : (unsigned)i;
+        if (l >= 8) continue;
+        const blend_st *b = &S.blend[l];
+        w |= blend_zero_bits(S.color.blend_en >> l & 1, pf_is_float((MTLPixelFormat)g_pass.cfmt[i]), b->src_rgb, b->dst_rgb, b->eq_rgb) << (BLEND_ZERO_BITS * i);
+    }
+    return w;
+}
+/* The word at fragment buffer BLEND_ZERO_BUFFER for a draw of a guarded shader: a copy in the frame arena per value and pass. */
+static void bz_bind(id<MTLCommandEncoder> en) {
+    static uint64_t gpu, pass; static uint32_t last;
+    uint32_t v = bz_word();
+    if (!gpu || pass != g_pass.serial || v != last) {
+        __strong id<MTLBuffer> b; size_t off = arena_alloc(16, &b); memset((uint8_t *)b.contents + off, 0, 16); memcpy((uint8_t *)b.contents + off, &v, sizeof v);
+        gpu = b.gpuAddress + off; pass = g_pass.serial; last = v;
+        if (v) { static uint64_t n; if (++n <= 3 || !(n & (n - 1))) MLOG("blend: a zero source weight on a floating-point target (outputs %#x): a non-finite colour adds 0 there, as NVIDIA's blender does (%llu passes or states so far)", v, (unsigned long long)n); }
+    }
+    enc_r_args((id<MTL4RenderCommandEncoder>)en, MTLRenderStageFragment, gpu, BLEND_ZERO_BUFFER);
+}
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
     bind_trace(sh, nvn_stage);
+    if (nvn_stage == 1 && !metal_vertex && sh->has_bz) bz_bind(en);
     if(nvn_stage==1 && sh->hdr_fn && atomic_load(&g_hdr_frame_enabled)) {   /* the HDR twin's uniform, only with HDR on (PR #1129) */
         /* Immutable arena bytes survive queued rendering; never overwrite an in-flight mode. */
         id<MTLBuffer> b=nil;size_t off=arena_alloc(sizeof(TotkHDRUniform),&b);
