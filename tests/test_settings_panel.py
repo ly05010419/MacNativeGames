@@ -163,9 +163,6 @@ class SettingsPanel(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
                 self.assertIn('pass: contribution page with the server', run.stdout)
 
-    def test_update_page_never_forks(self):
-        self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
-
     def test_current_modes_and_refresh(self):
         compiler = shutil.which('clang')
         if not compiler:
@@ -237,9 +234,6 @@ class SettingsPanel(unittest.TestCase):
                             run = subprocess.run([str(executable), 'aa'], env=current, capture_output=True, text=True, timeout=10)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: AA preferences', run.stdout)
-                run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
-                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-                self.assertIn('pass: update page', run.stdout)
                 run = subprocess.run([str(executable), 'shots'], env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: screenshots page', run.stdout)

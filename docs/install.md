@@ -209,15 +209,14 @@ Which update, always in this order (quit the game first). Start with the express
 
 | Update | When | Command | Needs |
 |---|---|---|---|
-| **Express update (极速更新)** | every new version of this repository (`git pull`); the Update page runs it | `python3.14 update_runtime.py "<the app>"` | the work folder the app records; no game files or keys |
+| **Express update (极速更新)** | every new version of this repository (`git pull`); MNG Launcher runs it for an installed app | `python3.14 update_runtime.py "<the app>"` | the work folder the app records; no game files or keys |
 | **Fast update (快速更新)** | the express update says the startup shaders no longer fit (Tears of the Kingdom, Breath of the Wild, Bananza, Pokopia: another translation chain; Bananza, Pokopia also another shader key rule). Ocarina of Time has none: its express update checks its shaders itself | `python3.14 update_runtime.py "<the app>" --seed` | the work folder's game files; no game container or keys |
 | **Normal update (普通更新)**, the full build | either of them says a full build is needed: another game version, DLC or game files, other code rewrite rules or picture-size overlays, another translator or translation chain for Ocarina of Time, an Ocarina of Time app whose shaders were prepared before 11 November 2026, a missing or deleted work folder | `build_app.py` as for the first build, with the same `-o "<the app>"` and the app's `--work` | the game file and keys |
 
 Bananza and Pokopia have the same three updates since 12 November 2026 (until then only the normal update); every update keeps the unchanged translations and pipelines.
 
 - **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"`, the express update (below), without the game files or keys. If it says the startup shaders no longer fit, add `--seed` (the fast update). It works in the work folder the app records (see [Folders](#folders)) and prints which one; pass `--work` only to move it.
-- **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
-  Installation waits for actual game processes to exit, not the update window that shares their executable.
+- **MNG Launcher** updates an installed app with the fastest of the three that fits (`update_runtime.py --plan` decides). The settings panel in the game has no Update page since 13 November 2026: every update goes through MNG Launcher or the commands here.
 - **Express update (极速更新)**: `update_runtime.py` on a Tears of the Kingdom, Breath of the Wild or Ocarina of Time app rebuilds the runtime and keeps everything whose inputs did not change. It checks rather than assumes:
   - **Translated shaders** (Ocarina of Time): each translation keeps the request it was made from. The update asks the new runtime for every request again and keeps each translation whose request is the same; only the others are translated again. The startup shaders of Tears of the Kingdom and Breath of the Wild never depend on the runtime.
   - **Metal libraries**: compiled only for translations that changed.
@@ -268,13 +267,13 @@ Keep two kinds of folders apart, for every game (Tears of the Kingdom, Breath of
 | **Work** | the work folder (`--work`): extracted game files, translated shaders, pipeline caches, logs | Yes, at any time. The next build makes it again (it then needs the game file and keys again); a runtime update needs it, so delete it only when you would rebuild anyway. |
 
 - One work folder per game, outside the `MacNativeGames` checkout (the build refuses one inside it) and outside the folder that holds your apps, on the same APFS volume as the app (the game data is then cloned, not copied): `<disk>/MacNativeGames-work/<game>` next to `<disk>/Applications`. That is the default of `build_app.py` without `--work` (after the folder the app records) and of MNG Launcher (`build_app.default_work`, one rule for both), so builds and updates from either find the same files and can be fast.
-- The app records its work folder (`MNGWorkFolder`) and the Python that built it (`MNGBuildPython`) in its `Info.plist`; `update_runtime.py` and the Update page use them. Read them with `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"`. Never point two builds of different games at one work folder while they run.
+- The app records its work folder (`MNGWorkFolder`) and the Python that built it (`MNGBuildPython`) in its `Info.plist`; `update_runtime.py` and MNG Launcher use them. Read them with `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"`. Never point two builds of different games at one work folder while they run.
 - **An existing install (for an AI helping you: check this before any build or update).** Read `MNGWorkFolder` of the app:
   - it names an existing folder that is not inside the checkout or the apps folder: nothing to do;
   - it fails (an app built before 31 October 2026), or names one inside the apps folder (an update before 11 November 2026 run without `--work` made a second work folder next to the app): pick the work folder as above, move the old one there if it holds the build (`mv` on the same volume is instant), then run `update_runtime.py "<the app>" --work "<that folder>"` once. The app records it from then on. A second copy left in the apps folder can then be deleted.
 - **What an update does with old files**, so an older install keeps updating:
 
-  | The app records | `update_runtime.py "<the app>"` (and the Update page) |
+  | The app records | `update_runtime.py "<the app>"` (and MNG Launcher) |
   |---|---|
   | no work folder (built before 31 October 2026) | uses `TOTK_build` / `BotW_build` / `OcarinaOfTime_build` next to the app, as before; move it as above when you like |
   | a folder that exists | uses it |

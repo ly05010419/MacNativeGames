@@ -1801,8 +1801,8 @@ def sign_app(app, logs):
     # Seal the bundle, including Info.plist and game resources. Copied helper
     # executables keep their existing signatures and byte identity. Checked once by install_app.
     # The designated requirement is the bundle ID alone, not the ad-hoc default (this build's code hash): macOS keeps what
-    # the player allowed the app (Privacy & Security: a removable volume or Documents, where the Update page's
-    # checkout may be, app/auto_update.h) by that requirement, so a grant survives the next build or update instead of
+    # the player allowed the app (Privacy & Security: a removable volume or Documents, where the checkout may be) by
+    # that requirement, so a grant survives the next build or update instead of
     # being asked again (user 2026-10-31).
     bundle_id = plistlib.loads((Path(app) / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
     requirement = [f'-r=designated => identifier "{bundle_id}"'] if bundle_id else []
@@ -2029,7 +2029,8 @@ def wait_until_closed(out, prefix=''):
             args.check_returncode()
             command = args.stdout.strip()
             options = command[len(binary) + 1:].split() if command.startswith(binary + ' ') else []
-            # The update window uses the game's executable and waits for this installer.
+            # The update window of an app built before 13 November 2026 (the settings panel's Update page, removed
+            # since: updates go through MNG Launcher) uses the game's executable and waits for this installer.
             if options == ['--update-check'] or (len(options) == 2 and options[0] == '--update-install'
                                                 and options[1].isdigit() and int(options[1]) > 0):
                 continue
@@ -2044,8 +2045,8 @@ def wait_until_closed(out, prefix=''):
 
 
 def record_update_source(info, work):
-    """Where the Update page's update (games/totk/app/auto_update.h) finds what made it: this checkout (git pull), the
-    work folder (update_runtime.py --work) and the Python that runs update_runtime.py. update_runtime.py writes them again."""
+    """Where an update (MNG Launcher, update_runtime.py) finds what made the app: this checkout, the work folder
+    (update_runtime.py --work) and the Python that runs update_runtime.py. update_runtime.py writes them again."""
     info['MNGSourceRepo'] = str(REPO)
     info['MNGWorkFolder'] = str(Path(work).resolve())
     info['MNGBuildPython'] = sys.executable

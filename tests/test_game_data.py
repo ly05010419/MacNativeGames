@@ -328,7 +328,7 @@ class UpdateRuntime(unittest.TestCase):
             update_runtime.record_commit(app, work)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual((info['MNGSourceCommit'], info['CFBundleExecutable']), ('abc1234', 'TOTK'))
-        # what the Update page's update (app/auto_update.h) runs: this checkout, the work folder, this Python
+        # what MNG Launcher's update and update_runtime.py read: this checkout, the work folder, this Python
         self.assertEqual((info['MNGSourceRepo'], info['MNGWorkFolder'], info['MNGBuildPython']),
                          (str(build_app.REPO), str(work.resolve()), sys.executable))
         with patch.object(build_app, 'source_commit', return_value=''):   # not a git checkout: no stale commit

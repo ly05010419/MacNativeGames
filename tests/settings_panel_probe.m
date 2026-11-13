@@ -1,10 +1,6 @@
 /* The production Mac settings panel (key 1, runtime/settings_panel.h), its keyboard handling and the calls each row makes.
    No guest, save files, game data or GPU commands are used. */
 #import <Foundation/Foundation.h>
-static char spawned[256];   /* the Update page's last request to the launcher (update_tab.h), never a real one */
-static BOOL spawn_ok = 1;
-static BOOL probe_spawn(const char *mode, const char *arg) { if (!spawn_ok) return 0; snprintf(spawned, sizeof spawned, "%s %s", mode, arg ? arg : ""); return 1; }
-#define UPDATE_TAB_SPAWN probe_spawn
 #include "../games/totk/runtime/frontend.m"
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
@@ -445,150 +441,12 @@ static void frame_probe(void) {
     puts("pass: frame lock choices, shared persistence, interpolation, overrides, invalid/deleted files, key 9 inert");
 }
 
-/* The 更新 page (update_tab.h), on its own so it also runs where the window sizes in main do not fit the screen. */
-@interface UpdateProbeClicks:NSObject
-@property int hits;
-@end
-@implementation UpdateProbeClicks
--(void)hit:(id)sender{(void)sender;self.hits++;}
-@end
-static NSString *updateDir;
+/* A controller's press, as the pages' tests use it. */
 static double padAt = 1000;
 enum { PAD_A = 1u << 0, PAD_L1 = 1u << 6, PAD_R1 = 1u << 7, PAD_UP = 1u << 13, PAD_DOWN = 1u << 15 };
 static void pad_press(uint64_t buttons) {
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:padAt += 1 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = buttons} time:padAt += 0.1 active:YES];
-}
-static TOTKUpdatePage *update_page(void) { return (TOTKUpdatePage *)settingsPanel.pages[SETTINGS_PAGE_UPDATE]; }
-static NSString *update_text(void) { return update_page().text.stringValue; }
-static void update_bytes(NSData *bytes) {
-    NSString *path = [updateDir stringByAppendingPathComponent:@"status.json"];
-    if (bytes) assert([bytes writeToFile:path atomically:YES]); else [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-    [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets];
-}
-/* A check as app/auto_update.h writes it, with these fields changed. */
-static NSDictionary *update_doc(NSDictionary *fields) {
-    NSMutableDictionary *d = [@{@"version": @1, @"at": @1793000000.5, @"state": @"behind", @"from": @"ab6ebe8", @"to": @"f0cfa3f",
-        @"installed": @"ab6ebe8", @"commits": @[@"fix: 一个修复", @"feat: 一个功能"], @"total": @2} mutableCopy];
-    [d addEntriesFromDictionary:fields]; return d;
-}
-static void update_status(NSDictionary *fields) { update_bytes([NSJSONSerialization dataWithJSONObject:update_doc(fields) options:0 error:nil]); }
-static void says(NSString *part) {
-    if ([update_text() containsString:part]) return;
-    fprintf(stderr, "the page lacks %s:\n%s\n", part.UTF8String, update_text().UTF8String); abort();
-}
-static void lacks(NSString *part) {
-    if (![update_text() containsString:part]) return;
-    fprintf(stderr, "the page should not say %s:\n%s\n", part.UTF8String, update_text().UTF8String); abort();
-}
-static void status_is(NSString *text) {
-    if ([update_page().status.stringValue isEqualToString:text]) return;
-    fprintf(stderr, "status %s, expected %s\n", update_page().status.stringValue.UTF8String, text.UTF8String); abort();
-}
-static void update_probe(void) {
-    unsetenv("TOTK_SLOT_OWNER"); setenv("TOTK_SOURCE_COMMIT", "ab6ebe8", 1);
-    const char *dir = getenv("SETTINGS_TEST_DIR"); assert(dir);
-    updateDir = [@(dir) stringByAppendingPathComponent:@"update"];
-    assert([NSFileManager.defaultManager createDirectoryAtPath:updateDir withIntermediateDirectories:YES attributes:nil error:nil]);
-    [NSFileManager.defaultManager removeItemAtPath:[updateDir stringByAppendingPathComponent:@"status.json"] error:nil];
-    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
-    settings_test_output_init();
-    window = probe_window();
-    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
-    settings_show(1); assert(settingsOpen);
-    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE < settings_pages() && settings_pages() - 1 == (vr_enabled() ? SETTINGS_PAGE_VR : SETTINGS_PAGE_SHOTS) && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"] && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_BOARD] isEqualToString:@"Performance"]);
-    assert([[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_SHOTS] isEqualToString:@"Screenshots"] && [settingsPanel.pages[SETTINGS_PAGE_SHOTS] isKindOfClass:TOTKShotsPage.class]);
-    for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
-    assert(!spawned[0]);   /* nothing is asked before the page opens */
-
-    /* The display page: the controller past the last row (it used to raise here), 访问主页 clicks (every page's last since
-       2026-11-11, was the star). Its real action opens a web page, so the button is pointed at the probe. */
-    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
-    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *star = settingsPanel.homeButton;
-    star.target = clicks; star.action = @selector(hit:);
-    pad_press(PAD_DOWN); assert(g_settings_controller_active);
-    for (int n = 0; n < 20 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != star; n++) pad_press(PAD_DOWN);
-    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == star && star.layer.borderWidth == 2);
-    pad_press(PAD_A); assert(clicks.hits == 1);
-    star.target = settingsPanel; star.action = @selector(visitHome:);
-
-    /* L1 / R1: back from the first tab past the tabs after it (shaders, VR); only opening the page asks the launcher for a check. */
-    for (int n = 0; n < SETTINGS_PAGES && settingsPanel.page != SETTINGS_PAGE_UPDATE; n++) { assert(!spawned[0]); pad_press(PAD_L1); }
-    assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_UPDATE);
-    assert(!strcmp(spawned, "--update-check ") && settingsPanel.rows.count == 0);
-    assert(!settingsPanel.homeButton.hidden);   /* 访问主页 on every page */
-    for (NSButton *b in settingsPanel.effectsButtons) assert(b.hidden);
-    for (NSButton *b in settingsPanel.resetButtons) assert(b.hidden);
-    TOTKUpdatePage *page = update_page(); NSButton *button = page.updateButton;
-    assert(!page.text.selectable && page.text.refusesFirstResponder && button.refusesFirstResponder);
-    status_is(@"Checking…"); assert([update_text() isEqualToString:@"Version ab6ebe8"] && button.hidden && [settingsPanel.controllerTargets isEqualToArray:@[settingsPanel.homeButton]]);
-    /* Again within ten minutes: no second check. */
-    spawned[0] = 0; pad_press(PAD_R1); pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && !spawned[0]);
-
-    /* User 2026-10-31: the newest says just that; otherwise each newer commit's message and the Update button. */
-    update_status(@{@"state": @"latest", @"commits": @[]}); status_is(@""); assert([update_text() isEqualToString:@"Version ab6ebe8 · the newest"] && button.hidden);
-    update_status(@{});
-    assert([update_text() isEqualToString:@"Version ab6ebe8\nThe newest, f0cfa3f, adds:\n•  fix: 一个修复\n•  feat: 一个功能"]);
-    assert(!button.hidden && [button.title isEqualToString:@"Update (closes the game, opens it again when done)"]);
-    assert(settingsPanel.controllerTargets.count == 2 && settingsPanel.controllerTargets[0] == button && settingsPanel.controllerTargets[1] == settingsPanel.homeButton && NSMaxX(button.frame) <= page.frame.size.width);
-    update_status(@{@"total": @45}); says(@"The newest, f0cfa3f, has 45 more commits (the newest 2 below):");
-    /* What cannot be updated: why, and how to do it by hand; no button. */
-    update_status(@{@"state": @"blocked", @"reason": @"local_changes", @"detail": @"M runtime/loader.c"});
-    says(@"•  fix: 一个修复"); says(@"The checkout has uncommitted changes, so it cannot be updated for you."); says(@"M runtime/loader.c");
-    says(@"Please update the code and build again yourself: git pull in your checkout, then python3.14 update_runtime.py"); assert(button.hidden);
-    for (NSString *reason in @[@"no_repo", @"no_access", @"git_failed", @"fetch_failed", @"no_upstream", @"not_main", @"unpushed"]) {
-        update_status(@{@"state": @"error", @"reason": reason, @"detail": @"", @"commits": @[]}); lacks(reason); says(@"Please update the code and build again yourself"); assert(button.hidden);
-    }
-    update_status(@{@"state": @"failed", @"reason": @"update_failed", @"detail": @"ERROR: the build stopped"});
-    says(@"Updating the app did not work and it was left as it was"); says(@"ERROR: the build stopped"); says(@"Please update the code and build again yourself");
-    /* After an update this start runs it: the newest. Another launch's update: from the next start. */
-    update_status(@{@"state": @"updated", @"installed": @"f0cfa3f"}); status_is(@"Updated to f0cfa3f; from the next start"); lacks(@"adds:");
-    setenv("TOTK_SOURCE_COMMIT", "f0cfa3f", 1); page.shown = NO; [settingsPanel refreshUpdatePage];
-    status_is(@""); assert([update_text() isEqualToString:@"Version f0cfa3f · the newest"]);
-    setenv("TOTK_SOURCE_COMMIT", "ab6ebe8", 1);
-    update_status(@{@"state": @"updating"}); status_is(@"Updating…"); assert(button.hidden);
-    update_status(@{@"state": @"closing"}); status_is(@"Closing the game to update…"); assert(button.hidden);
-    for (NSString *word in @[@"Advice", @"worth updating", @"Copy", @"AI", @"Automatic"]) lacks(word);
-    /* Anything that is not a whole version 1 document: none, never a crash. */
-    NSData *whole = [NSJSONSerialization dataWithJSONObject:update_doc(@{}) options:0 error:nil];
-    for (NSData *bytes in @[[@"{ not json" dataUsingEncoding:NSUTF8StringEncoding], [whole subdataWithRange:NSMakeRange(0, whole.length / 2)], NSData.data,
-                            [@"[1]" dataUsingEncoding:NSUTF8StringEncoding], [NSData dataWithBytes:"\xff\xfe" length:2]]) {
-        update_bytes(bytes); assert([update_text() isEqualToString:@"Version ab6ebe8"] && button.hidden);
-    }
-    for (NSDictionary *fields in @[@{@"version": @2}, @{@"version": @"1"}, @{@"at": NSNull.null}, @{@"state": @"other"}, @{@"commits": @"一"},
-                                   @{@"commits": @[@1]}, @{@"total": @YES}, @{@"reason": @3}, @{@"to": @[]}]) {
-        update_status(fields); assert([update_text() isEqualToString:@"Version ab6ebe8"] && button.hidden);
-    }
-    /* Up / down scroll a long list; the button stays the place. */
-    NSMutableArray *many = [NSMutableArray array]; for (int i = 0; i < 30; i++) [many addObject:[NSString stringWithFormat:@"fix: 第 %d 个", i]];
-    update_status(@{@"commits": many, @"total": @30}); NSClipView *clip = page.scroll.contentView; assert(clip.bounds.origin.y == 0);
-    settingsPanel.controllerIndex = 0; g_settings_controller_active = YES; [settingsPanel controllerHighlight];
-    pad_press(PAD_DOWN); assert(clip.bounds.origin.y == UPDATE_TAB_SCROLL && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == button);
-    [settingsPanel.timer fire]; assert(clip.bounds.origin.y == UPDATE_TAB_SCROLL);   /* the same document keeps its place */
-    pad_press(PAD_UP); assert(clip.bounds.origin.y == 0);
-    /* The Update button (A on it): the launcher's install with this game's pid; the page says the game will close. */
-    update_status(@{}); spawned[0] = 0; [window makeFirstResponder:nil];
-    settingsPanel.controllerIndex = 0; [settingsPanel controllerHighlight]; pad_press(PAD_A);
-    char expect[64]; snprintf(expect, sizeof expect, "--update-install %d", (int)getpid());
-    assert(!strcmp(spawned, expect) && window.firstResponder == window.contentView);
-    status_is(@"Closing the game to update…"); spawned[0] = 0; pad_press(PAD_A); assert(!spawned[0]);   /* once */
-    [settingsPanel.timer fire]; assert(button.hidden && [settingsPanel.controllerTargets isEqualToArray:@[settingsPanel.homeButton]]);
-    /* An agent's test session: no check, no button. */
-    settings_show(0); page.pressed = NO; page.checkedAt = 0; spawned[0] = 0; setenv("TOTK_SLOT_OWNER", "claude", 1); settings_show(1);
-    assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && !spawned[0]); status_is(@"A test run: no check, no update"); assert(update_page().updateButton.hidden);
-    unsetenv("TOTK_SLOT_OWNER");
-    /* In Chinese. */
-    settings_show(0); setenv("TOTK_UI_LANG", "zh", 1); spawn_ok = 0; settings_show(1);
-    assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_UPDATE && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"更新"]);
-    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    update_page().pressed = NO; update_status(@{}); says(@"当前版本 ab6ebe8"); says(@"最新版 f0cfa3f 多了这些提交：");
-    assert([update_page().updateButton.title isEqualToString:@"更新（会关闭游戏，更新完自动重新打开）"]);
-    update_status(@{@"state": @"blocked", @"reason": @"unpushed"}); says(@"项目文件夹里有上游没有的提交，没法替你更新。"); says(@"请自己更新代码再重新编译");
-    /* A newer document appears by itself while the page shows. */
-    NSData *newer = [NSJSONSerialization dataWithJSONObject:update_doc(@{@"state": @"latest"}) options:0 error:nil];
-    assert([newer writeToFile:[updateDir stringByAppendingPathComponent:@"status.json"] atomically:YES]);
-    [settingsPanel.timer fire]; assert([update_text() isEqualToString:@"当前版本 ab6ebe8 · 已是最新版"]);
-    settings_show(0); setenv("TOTK_UI_LANG", "en", 1); spawn_ok = 1;
 }
 
 /* The 截图分享 page (shot_tab.h): its tab and place, the switch greyed out without the launcher's folder and flipped by A
@@ -1137,7 +995,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     snprintf(fakeUsers[0].name, sizeof fakeUsers[0].name, "Local");
     snprintf(fakeUsers[1].name, sizeof fakeUsers[1].name, "Zelda");
     for (int i = 0; i < 2; i++) { arc4random_buf(&fakeUsers[i].lo, sizeof fakeUsers[i].lo); arc4random_buf(&fakeUsers[i].hi, sizeof fakeUsers[i].hi); }
-    if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(); puts("pass: update page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts(getenv("CONTRIB_TEST_URL") ? "pass: contribution page with the server" : "pass: contribution page"); return 0; }
@@ -1539,7 +1396,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     wait_for(^BOOL{ return [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]; });
     assert(fakeUsersActive == 0 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]);
 
-    /* Key bindings and the Update page follow the user page in the tabs, so the checks below start on the input page again. */
+    /* Key bindings and the later pages follow the user page in the tabs, so the checks below start on the input page again. */
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; tick();
 
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
@@ -1734,7 +1591,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel endCapture];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.1 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_UPDATE);
+    assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB);
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.1 active:YES];
     assert(settingsPanel.page == SETTINGS_PAGE_BINDINGS);
