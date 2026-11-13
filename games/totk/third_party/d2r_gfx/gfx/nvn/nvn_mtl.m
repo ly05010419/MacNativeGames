@@ -18957,6 +18957,90 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
 }
 // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
+// Texture copies a blit cannot do: a scaled region or a format change between colour formats. Ocarina of Time's pause menu copies its
+// scene into a smaller texture for the blurred backdrop; that copy was dropped (RED_ONCE 33) and the menu stood on black. It is drawn as one
+// render pass per layer: the source region sampled into the destination region, nearest or (LINEAR_FILTER) bilinear. Float, unorm and sRGB
+// 2D / 2D-array colour textures only; anything else returns 0 and keeps the red line. Adapted from nxnative's copy_t2t_draw (MIT, dm/gfx/nvn).
+// TOTK_T2T_DRAW=0 turns it off for an A/B test.
+static int t2t_fmt_int_or_ds(MTLPixelFormat f) {
+    switch (f) {
+        case MTLPixelFormatR8Uint: case MTLPixelFormatR8Sint: case MTLPixelFormatR16Uint: case MTLPixelFormatR16Sint: case MTLPixelFormatRG8Uint: case MTLPixelFormatRG8Sint:
+        case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint: case MTLPixelFormatRG16Uint: case MTLPixelFormatRG16Sint: case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatRGB10A2Uint: case MTLPixelFormatRG32Uint: case MTLPixelFormatRG32Sint: case MTLPixelFormatRGBA16Uint: case MTLPixelFormatRGBA16Sint:
+        case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint: case MTLPixelFormatDepth16Unorm: case MTLPixelFormatDepth32Float: case MTLPixelFormatStencil8:
+        case MTLPixelFormatDepth32Float_Stencil8: case MTLPixelFormatX32_Stencil8: return 1;
+        default: return 0;
+    }
+}
+static int t2t_fmt_block(MTLPixelFormat f) {   // compressed formats: never a render target
+    return (f >= MTLPixelFormatBC1_RGBA && f <= MTLPixelFormatBC7_RGBAUnorm_sRGB) || (f >= MTLPixelFormatEAC_R11Unorm && f <= MTLPixelFormatETC2_RGB8A1_sRGB)
+        || (f >= MTLPixelFormatASTC_4x4_sRGB && f <= MTLPixelFormatASTC_12x12_HDR);
+}
+static int copy_t2t_draw(const tex_t *dt, id<MTLTexture> s, id<MTLTexture> d0, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear) {
+    id<MTLTexture> d = d0;   // the destination; replaced below when it gains render-target usage
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_T2T_DRAW"); on = !(e && !strcmp(e, "0")); if (!on) MLOG("TOTK_T2T_DRAW=0: scaled / format-changing texture copies are dropped (diagnostic)"); }
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pso; static id<MTLFunction> vf, ff; static id<MTLSamplerState> samp[2]; static id<MTL4ArgumentTable> at; static int failed;
+    if (!on || failed || sr->width <= 0 || sr->height <= 0 || dr->width <= 0 || dr->height <= 0) return 0;
+    if (t2t_fmt_int_or_ds(s.pixelFormat) || t2t_fmt_int_or_ds(d.pixelFormat) || t2t_fmt_block(d.pixelFormat) || t2t_fmt_block(s.pixelFormat)) return 0;
+    if (s.sampleCount > 1 || d.sampleCount > 1 || s.textureType == MTLTextureType3D || d.textureType == MTLTextureType3D) return 0;
+    if (s.textureType != MTLTextureType2D && s.textureType != MTLTextureType2DArray) return 0;
+    if (d.textureType != MTLTextureType2D && d.textureType != MTLTextureType2DArray) return 0;
+    if (!(d.usage & MTLTextureUsageRenderTarget)) { d = tex_upgrade_usage(dt, d, d.pixelFormat, MTLTextureUsageRenderTarget); if (!(d.usage & MTLTextureUsageRenderTarget)) return 0; }
+    if (!pso) {
+        static const char *src =
+            "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
+            // p[0] = source origin (texels), source texels per destination pixel; p[1] = destination origin, source level size
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {\n"
+            "  float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; return t.sample(s, st / p[1].zw, level(0)); }\n";
+        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+        vf = lib ? [lib newFunctionWithName:@"vs"] : nil; ff = lib ? [lib newFunctionWithName:@"fs"] : nil;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
+        at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
+        if (!vf || !ff || !at || !samp[0] || !samp[1]) { failed = 1; RED_ONCE(177, "scaled / format-changing texture copy: no pipeline: %s", e.localizedDescription.UTF8String); return 0; }
+        pso = [NSMutableDictionary dictionary];
+    }
+    id<MTLRenderPipelineState> ps = pso[@(d.pixelFormat)];
+    if (!ps) {
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = ff; pd.colorAttachments[0].pixelFormat = d.pixelFormat;
+        NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!ps) { RED_ONCE(178, "scaled / format-changing texture copy: no pipeline for format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
+        pso[@(d.pixelFormat)] = ps;
+    }
+    unsigned sw = MAX(s.width >> sl, 1ul), sh = MAX(s.height >> sl, 1ul), dw = MAX(d.width >> dl, 1ul), dh = MAX(d.height >> dl, 1ul);
+    if ((unsigned)(dr->xoffset + dr->width) > dw || (unsigned)(dr->yoffset + dr->height) > dh) return 0;
+    int nz = sr->depth ? sr->depth : 1;
+    rp_end(); blit_close();
+    for (int z = 0; z < nz; z++) {
+        id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss + sr->zoffset + z, 1)];
+        id<MTLBuffer> pb = nil; size_t po = arena_alloc(32, &pb);
+        if (!sv || !pb) { RED_ONCE(179, "scaled / format-changing texture copy: no source view / argument block"); return z > 0; }
+        float *p = (float *)((uint8_t *)pb.contents + po);
+        p[0] = sr->xoffset; p[1] = sr->yoffset; p[2] = (float)sr->width / dr->width; p[3] = (float)sr->height / dr->height;
+        p[4] = dr->xoffset; p[5] = dr->yoffset; p[6] = sw; p[7] = sh;
+        int whole = !dr->xoffset && !dr->yoffset && (unsigned)dr->width == dw && (unsigned)dr->height == dh;
+        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+        rp.colorAttachments[0].texture = d; rp.colorAttachments[0].level = dl; rp.colorAttachments[0].slice = ds + dr->zoffset + z;
+        rp.colorAttachments[0].loadAction = whole ? MTLLoadActionDontCare : MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        rs_sync(); pt_mark(g_cb, 'R', rp); id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+        if (!en) { RED_ONCE(180, "scaled / format-changing texture copy: no render encoder"); return z > 0; }
+        [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+        [en setArgumentTable:at atStages:MTLRenderStageFragment];
+        [at setTexture:sv.gpuResourceID atIndex:0]; [at setSamplerState:samp[!!linear].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress + po atIndex:0];
+        [en setViewport:(MTLViewport){dr->xoffset, dr->yoffset, dr->width, dr->height, 0, 1}];
+        [en setScissorRect:(MTLScissorRect){(NSUInteger)dr->xoffset, (NSUInteger)dr->yoffset, (NSUInteger)dr->width, (NSUInteger)dr->height}];
+        [en setRenderPipelineState:ps]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+        res_add(sv); defer_obj_release(sv);   // released after this submission has run
+    }
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    gpu_owned_mark(dt->serial);
+    { static int once; if (!once++) MLOG("scaled / format-changing texture copy: first case %dx%d format %lu -> %dx%d format %lu%s", sr->width, sr->height, (unsigned long)s.pixelFormat,
+                                         dr->width, dr->height, (unsigned long)d.pixelFormat, linear ? " (bilinear)" : ""); }
+    return 1;
+}
 static void copy_t2t(const p_copy_t2t *c) {
     { static long on = -1; static int left = 24; if (on < 0) { const char *e = getenv("TOTK_T2T_LOG"); on = e ? atol(e) : 0; if (e && !on) on = 1; }   // TOTK_T2T_LOG=<from frame> (diagnostic): 24 texture copies from that frame, their ends
       if (on > 0 && (long)atomic_load(&g_cur_frame) >= on && left > 0 && c->src && c->dst) { left--;
@@ -18992,6 +19076,10 @@ static void copy_t2t(const p_copy_t2t *c) {
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) { gpu_owned_mark(c->dst->serial); return; }
     }
+    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height || s.pixelFormat != d.pixelFormat) && !s3 && !d3
+        && (c->sr.depth ? c->sr.depth : 1) == (c->dr.depth ? c->dr.depth : 1) && !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
+        && copy_t2t_draw(c->dst, s, d, sl, sz0, dl, dz0, &c->sr, &c->dr, !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT)))
+        return;   // scaled or format-changing: drawn (copy_t2t_draw)
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
