@@ -455,11 +455,62 @@ static int res_on_heap(id r) {
     id<MTLTexture> t = r; while (t.parentTexture) t = t.parentTexture;
     return t.heap != nil;
 }
+#if TARGET_OS_IPHONE && defined(GAME_OOT)
+#define NVN_FILE_WIRE 1
+#else
+#define NVN_FILE_WIRE 0
+#endif
+#if NVN_FILE_WIRE
+/* iOS, the guest's memory in files (services.c, OOT_GUEST_FILE): file pages under a shared buffer that joins the residency
+   set are wired through the CPU's fault path (mlock) before the commit, and given back after it, when the commit holds them
+   for the GPU. Otherwise the commit pages the files in from the GPU driver's wiring path (IOGPUFamily -> the VM -> APFS
+   pagein), where an M1 iPad froze for good on an APFS lock (nxnative 2261a388, MIT) and a Mac deadlocked on 2026-11-06
+   (issues_lessons.md). Anonymous memory and Metal's own buffers are left alone. Under g_res_mu. */
+typedef struct { void *p; size_t n; } fwire_t;
+static fwire_t *g_fwire; static size_t g_nfwire, g_cfwire; static uint64_t g_fwire_n, g_fwire_bytes, g_fwire_ns, g_fwire_fail;
+static int range_file_backed(const void *p, size_t n) {
+    vm_address_t a = (vm_address_t)p, e = a + n; natural_t depth = 0;   // vm_region_recurse_64: mach_vm.h is not in the iOS SDK
+    while (a < e) {
+        vm_address_t r = a; vm_size_t sz = 0; vm_region_submap_info_data_64_t info; mach_msg_type_number_t c = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &r, &sz, &depth, (vm_region_recurse_info_t)&info, &c) || r >= e) return 0;
+        if (info.is_submap) { depth++; continue; }
+        if (info.external_pager) return 1;
+        a = r + sz;
+    }
+    return 0;
+}
+static void file_wire(id<MTLResource> r) {
+    if (![(id)r conformsToProtocol:@protocol(MTLBuffer)]) return;
+    id<MTLBuffer> b = (id<MTLBuffer>)r;
+    if (b.storageMode != MTLStorageModeShared || !b.length) return;
+    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)b.contents & ~(pg - 1), hi = ((uintptr_t)b.contents + b.length + pg - 1) & ~(pg - 1);
+    if (!range_file_backed((void *)lo, hi - lo)) return;
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (mlock((void *)lo, hi - lo)) {   // the commit pages them in itself, as before
+        if (!g_fwire_fail++) MLOG("【红】residency: file pages under a buffer of %llu KB could not be wired before the commit (mlock errno %d); the commit pages them in itself",
+                                  (unsigned long long)((hi - lo) >> 10), errno);
+        return;
+    }
+    g_fwire_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0; g_fwire_n++; g_fwire_bytes += hi - lo;
+    if (g_nfwire == g_cfwire) {
+        size_t cap = g_cfwire ? 2 * g_cfwire : 64; fwire_t *grown = realloc(g_fwire, cap * sizeof *grown);
+        if (!grown) { munlock((void *)lo, hi - lo); return; }   // cannot record it: give it back at once, the commit pages it in itself
+        g_fwire = grown; g_cfwire = cap;
+    }
+    g_fwire[g_nfwire].p = (void *)lo; g_fwire[g_nfwire++].n = hi - lo;
+    if (g_fwire_n == 1 || g_fwire_n % 500 == 0)
+        MLOG("residency: file pages wired before the commit: %llu buffers, %llu MB, %.1f ms in all", (unsigned long long)g_fwire_n,
+             (unsigned long long)(g_fwire_bytes >> 20), g_fwire_ns / 1e6);
+}
+#endif
 static void res_add_at(id<MTLResource> r, int site) { @autoreleasepool {
     // Weak-table growth autoreleases retained keys; guest threads may not drain an outer pool.
     if (!r || res_on_heap(r)) return;
     if (site < 0 || site >= RES_SITES) site = 0;
     pthread_mutex_lock(&g_res_mu);
+#if NVN_FILE_WIRE
+    if (![g_res_objects containsObject:r]) file_wire(r);   // before the commit that makes it resident (res_commit gives it back after)
+#endif
     [g_res addAllocation:(id<MTLAllocation>)r];
     if (!g_res_objects) { g_res_objects = [NSHashTable weakObjectsHashTable]; g_res_site_of = [NSMapTable weakToStrongObjectsMapTable]; }
     if (![g_res_objects containsObject:r]) {
@@ -584,7 +635,14 @@ static void res_commit(void) {
     gpu_budget_check("提交驻留集");
     pthread_mutex_lock(&g_res_mu);
     if (g_res_dirty) { if (!nogpu()) [g_res commit]; g_res_dirty = 0; }
+#if NVN_FILE_WIRE
+    fwire_t *fw = g_fwire; size_t nfw = g_nfwire; g_fwire = NULL; g_nfwire = g_cfwire = 0;   // the file pages wired for the changes just committed
+#endif
     pthread_mutex_unlock(&g_res_mu);
+#if NVN_FILE_WIRE
+    for (size_t i = 0; i < nfw; i++) munlock(fw[i].p, fw[i].n);   // the commit holds them for the GPU now; a range mapped anew meanwhile fails, harmlessly
+    free(fw);
+#endif
 }
 
 #include "nvn_deferred_queue.h"
@@ -1039,6 +1097,20 @@ void mtl_pool_addressed(const void *owner, const void *mem, uint64_t size) {
         }
     }
     pthread_mutex_unlock(&g_mu);
+}
+/* A shader-code pool whose own address the game asked for (hle_nvn.c nvnMemoryPoolGetBufferAddress): kept out of
+   g_addressed, so the raw pool table (gmem_map_gpu) does not make it resident. Counted for the memory report only. */
+static pidx g_code_addressed; static uint64_t g_code_pools, g_code_bytes;
+void mtl_pool_code_address(const void *mem, uint64_t size) {
+    uintptr_t lo=(uintptr_t)mem;
+    if(!lo||!size||size>UINTPTR_MAX-lo)return;
+    pthread_mutex_lock(&g_mu);
+    int fresh=!pidx_find(&g_code_addressed,lo,size);
+    if(fresh){pidx_ent e={.lo=lo,.hi=lo+size,.key=mem};if(pidx_insert(&g_code_addressed,&e)){g_code_pools++;g_code_bytes+=size;}else fresh=0;}
+    uint64_t n=g_code_pools,b=g_code_bytes;
+    pthread_mutex_unlock(&g_mu);
+    if(fresh&&(n==1||n%50==0))MLOG("raw global memory: shader-code pools whose own address the game asks for stay out of the pool table, so nothing makes them resident for its sake: %llu pools, %llu MB so far",
+                                   (unsigned long long)n,(unsigned long long)(b>>20));
 }
 void mtl_pool_forget_address(const void *owner) {
     pthread_mutex_lock(&g_mu);
@@ -5140,16 +5212,38 @@ static id<MTLTexture> reup_take(const reup_key *k) {
    a copy the GPU starts rendering into is uploaded again at full size (tex_mtl). 2D / 2D-array / cube textures with
    at least two levels and both sides >= TOTK_MIP_DROP_MIN (512). Not lower: at 256 the grass disappeared and the ground
    took wrong colours on an iPhone 14 (2026-10-23): data textures of that size (terrain material / grass maps) are read
-   by integer texel coordinates, which a copy one level smaller does not match. TOTK_MIP_DROP=1 opts in on the Mac.
-   iOS always preserves the original dimensions and all mip levels, just like the Mac's default (2026-11-04). In particular,
-   texture-copy commands use the game's original mip indices and texel regions; a smaller sampled copy cannot represent them. */
-static uint64_t g_mip_dropped;
+   by integer texel coordinates, which a copy one level smaller does not match.
+   Ocarina of Time on iOS only (user 2026-11-13: the one exception to the full-mip rule, because without it the game does
+   not fit an iPhone; never on the Mac): on by default where Metal's recommended working set is under 6 GiB, the rule of
+   nxnative #2270 (iPhone 17: 672 textures, 396 MB less, page-ins 468,772 -> 32,707, 24.0 -> 29.3 fps at the 30 fps cap).
+   TOTK_MIP_DROP=0 / 1 forces it off / on. Every other game is unchanged: complete mip chains on iOS, and on the Mac
+   TOTK_MIP_DROP=1 opts in (a diagnostic). Only sampling sees the smaller copy: every other use (render target,
+   copy source or destination, clear, image) makes it whole first (tex_whole), since those name the game's own level
+   numbers and texel regions, which a copy without its top level cannot represent (Bananza's level 9 copy, 2026-11-04). */
+static uint64_t g_mip_dropped, g_mip_dropped_bytes, g_mip_whole;
 static unsigned mip_drop_of(const tex_t *t) {
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && defined(GAME_OOT)   // Ocarina of Time on iOS only (user 2026-11-13)
+    static int on = -1; static unsigned minside;
+    if (on < 0) {
+        const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN");
+        const uint64_t ws = g_dev ? (uint64_t)g_dev.recommendedMaxWorkingSetSize : 0;
+        minside = m ? (unsigned)atoi(m) : 512;
+        on = e ? atoi(e) != 0 : (ws > 0 && ws < (6ull << 30));
+        MLOG("[texture] iOS: Metal working set %llu MB; large sampled textures leave out their top mip level: %s (2D / array / cube, both sides >= %u, 2+ levels; TOTK_MIP_DROP=0/1)",
+             (unsigned long long)(ws >> 20), on ? "on" : "off", minside);
+    }
+    if (!on || g_mip_nodrop || g_mip_keep) return 0;
+    uint32_t g = t->d.target;
+    if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
+    return 1;
+#elif TARGET_OS_IPHONE   // every other game on iOS: original dimensions and complete mip chains (2026-11-04)
     (void)t;
     static int noted; if (!noted) { noted = 1; MLOG("[texture] iOS: original texture dimensions and complete mip chains"); }
     return 0;
-#else
+#elif defined(GAME_OOT)   // Ocarina of Time on the Mac: every texture whole (user 2026-11-13: "mac上不允许")
+    (void)t;
+    return 0;
+#else   // the other games on the Mac: off unless TOTK_MIP_DROP=1 (a diagnostic)
     static int on = -1; static unsigned minside;
     if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : 0; minside = m ? (unsigned)atoi(m) : 512;
         if (on) MLOG("大贴图副本少传最高一级 mip：开（两边都 ≥%u 的 2D / 数组 / 立方体贴图；TOTK_MIP_DROP=0 关）", minside); }
@@ -5163,7 +5257,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     MTLTextureDescriptor *d = tex_desc(t, t->has_layout);   // TOTK: default-layout mirrored textures keep render-target usage
     if (!d) return nil;
     unsigned drop = mip_drop_of(t);   // TOTK (iPhone): the copy starts at the game's level `drop` (see mip_drop_of)
-    if (drop) { g_mip_dropped++; if (g_mip_dropped == 1 || g_mip_dropped % 2000 == 0) MLOG("大贴图副本少传最高一级：累计 %llu 张（例 %ux%u 格式 %#x %u 级）", (unsigned long long)g_mip_dropped, t->d.width, t->d.height, t->d.format, t->d.levels); }
+    if (drop) { g_mip_dropped++; if (g_mip_dropped == 1 || g_mip_dropped % 200 == 0) MLOG("大贴图副本少传最高一级：累计 %llu 张，省 %llu MB，恢复完整 %llu 张（例 %ux%u 格式 %#x %u 级）", (unsigned long long)g_mip_dropped, (unsigned long long)(g_mip_dropped_bytes >> 20), (unsigned long long)g_mip_whole, t->d.width, t->d.height, t->d.format, t->d.levels); }
     if (drop) { d.width = MAX(d.width >> drop, 1u); d.height = MAX(d.height >> drop, 1u); d.mipmapLevelCount -= drop; }
     *key = reup_key_of(d);
     id<MTLTexture> mt = reup_take(key);
@@ -5187,9 +5281,11 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     int tco = t->d.format == 0x49 ? 8 : 16;   // output bytes per block
     uint32_t upf; int ubpp = 0, unp = !tca && !tck && bc_unpack(t->d.format, &upf, &ubpp);   // 无 BC：解排布后在 CPU 上解压，暂存区按解压后的大小 | No BC: decompress on the CPU after deswizzling, with the staging area sized for the decompressed data
     size_t total = 0;
-    for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) {
+    for (unsigned l = 0; l < d.mipmapLevelCount + drop; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
-        total += unp ? (size_t)w * ubpp * h * z * layers : (size_t)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh) * z * layers;
+        size_t lb = unp ? (size_t)w * ubpp * h * z * layers : (size_t)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh) * z * layers;
+        if (l < drop) g_mip_dropped_bytes += lb;   // the bytes of the levels left out (mip_drop_of): the memory report
+        else total += lb;
     }
     g_bp_up_bytes += total;
     { static int fs = -1; static uint64_t by[256], n[256], gpuby[256], last; if (fs < 0) fs = getenv("DM_TEX_FMT_STATS") != NULL;   // TOTK: bytes uploaded per NVN format (first uploads + re-uploads)
@@ -5486,6 +5582,23 @@ static void *tex_mtl_p(const tex_t *ct) {
     serial_put(t->serial, mt);
     if (serial_is_dead(t->serial)) dead_put_note(t);
     return (__bridge void *)mt;
+}
+/* A texture whose Metal copy left out its top mip level (mip_drop_of, Ocarina of Time on iOS) is made whole before any
+   use other than sampling: a render target, a copy's source or destination, a clear or an image names the game's own
+   level numbers and texel regions, which the smaller copy does not hold (nxnative #2270: "Only sampling sees the smaller
+   texture; any other use makes it whole first"). It stays whole from then on (NvPkg keep_full, as for an integer-texel
+   read), and its serial steps, so views made of the smaller copy are made again. Returns whether it did. */
+static int tex_whole(const tex_t *t, const char *why) {
+    if (!g_mip_dropped || !t || !t->serial || !tex_mirrored(t)) return 0;   // nothing ever left out (the Mac): no lookup at all
+    __unsafe_unretained NvPkg *pk = (__bridge id)serial_ptr(t->serial);
+    if (!pk || pk->keep_full || !pk->tex || pk->tex.mipmapLevelCount >= (t->d.levels ? t->d.levels : 1u)) return 0;
+    pk->keep_full = 1;
+    tex_mtl_p(t);   // the reduced copy goes, a full-size one comes from the pool bytes
+    if (g_mip_whole++ < 8 || g_mip_whole % 200 == 0)
+        MLOG("[texture] a texture without its top mip level made whole for %s: ser=%llu %ux%u format %#x %u levels (%llu made whole, %llu left out, %llu MB saved)",
+             why, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)g_mip_whole,
+             (unsigned long long)g_mip_dropped, (unsigned long long)(g_mip_dropped_bytes >> 20));
+    return 1;
 }
 // 内存读数行（常开、低频、封顶）：常驻内存、显卡已分配、延迟释放队列、驻留集对象数、在册内存池数 / 峰值 / 跟踪表容量、贴图重传累计。
 // 用途：定「没有日志的闪退」——系统按内存杀进程前不给任何通知，只有事先留下的读数能说明是哪个数一路往上涨。
@@ -6314,6 +6427,7 @@ static void vr_image_projection(vr_projection_image image){
 #endif
 }
 static id<MTLTexture> attachment_texture(const tex_t *t, const view_t *v, int has_v) {
+    tex_whole(t, "a render target");   // mip_drop_of: the game renders into its own level numbers
     __unsafe_unretained id<MTLTexture> b0 = BOTW_ATTACH_TEX_U(t); if (!b0) return nil;   // TOTK: held by the serial table (tex_mtl); the common answer takes no retain
     id<MTLTexture> hdr=hdr_shadow_find(b0);
     if(hdr && (!has_v || ((!v->set_levels || !v->base_level) && (!v->set_layers || !v->min_layer))))return hdr;
@@ -8000,6 +8114,33 @@ static uint64_t evict_available(void) {
     return 0;
 #endif
 }
+/* iOS: bytes the eviction should free so that what this residency set holds (g_res_live_bytes) comes back to 80 % of
+   Metal's recommended working set, once it passed 85 %; 0 below that. The app's allowance (evict_available) cannot see
+   it: with the guest's memory in files, the pools' zero-copy buffers wired by residency are file pages, outside the
+   footprint, and the iPad entering the world wired more than it has and panicked in IOGPUFamily (kIOReturnNoMemory,
+   2026-11-10). Only the textures' copies can go; pools stay (the raw pool table needs them). TOTK_RES_CAP_PCT=<n> moves
+   the 85 %, 0 turns the rule off. The Mac never asks (mode 1 is iOS only); the other games do not either yet. */
+static uint64_t res_over_working_set(void) {
+#if TARGET_OS_IPHONE && defined(GAME_OOT)   // Ocarina of Time only for now; the other games keep the allowance rule alone
+    static uint64_t cap, back; static int init;
+    if (!init) {
+        init = 1; const char *e = getenv("TOTK_RES_CAP_PCT"); const uint64_t pct = e && *e ? strtoull(e, NULL, 10) : 85;
+        const uint64_t ws = g_dev ? (uint64_t)g_dev.recommendedMaxWorkingSetSize : 0;
+        if (ws && pct) { cap = ws / 100 * MIN(pct, 100); back = ws / 100 * (MIN(pct, 100) > 5 ? MIN(pct, 100) - 5 : 0); }
+        MLOG("residency cap: %llu MB (%llu %% of Metal's working set %llu MB; TOTK_RES_CAP_PCT): past it the eviction drops idle texture copies back to %llu MB",
+             (unsigned long long)(cap >> 20), (unsigned long long)pct, (unsigned long long)(ws >> 20), (unsigned long long)(back >> 20));
+    }
+    if (!cap) return 0;
+    pthread_mutex_lock(&g_res_mu); const uint64_t live = g_res_live_bytes; pthread_mutex_unlock(&g_res_mu);
+    if (live <= cap) return 0;
+    static uint64_t said;
+    if (said++ < 8 || said % 200 == 0) MLOG("residency cap: the set holds %llu MB, past %llu MB: evicting %llu MB of idle texture copies",
+                                            (unsigned long long)(live >> 20), (unsigned long long)(cap >> 20), (unsigned long long)((live - back) >> 20));
+    return live - back;
+#else
+    return 0;
+#endif
+}
 /* TOTK (2026-10-17, long-session memory): how many copies of CPU-pool textures are alive, and how many of them belong to a
    memory pool that is already gone (the game deleted the pool but never finalized the texture object, so mtl_tex_release
    never ran for it). Every 6,000 submits on the replay thread; the ranges are copied under g_smu, the pools looked up
@@ -8090,7 +8231,13 @@ static void pkg_evict_sweep(void) {
     }
     if (!mode || (g_sub_serial & 3)) return;
     uint64_t avail = 0, want = 0;
-    if (mode == 1) { avail = evict_available(); if (!avail || avail >= low) return; want = high - avail; }
+    if (mode == 1) {
+        avail = evict_available();
+        const uint64_t over = res_over_working_set();
+        if ((!avail || avail >= low) && !over) return;
+        want = avail && avail < low ? high - avail : 0;
+        if (over > want) want = over;
+    }
     registry_lock();
     pthread_mutex_lock(&g_smu);
     treg_merge_used_locked();
@@ -8362,21 +8509,11 @@ static uint64_t image_fast_rid(int tid,void **out) {
 }
 /* A texture bound to a slot its shader reads by integer texel coordinates (refl_mark_fetches) whose Metal copy left out
    the top mip level (mip_drop_of, the iPhone): kept at full size from now on (NvPkg keep_full) and uploaded again at once
-   (tex_mtl_p, as for a copy the GPU starts rendering into), so this very draw reads the right texels. Returns whether it
-   did; the caller takes the texture again. Registry lock held (the draw's bindings). */
-static uint64_t g_mip_kept;
+   (tex_whole, as for any use other than sampling), so this very draw reads the right texels. Returns whether it did; the
+   caller takes the texture again. Registry lock held (the draw's bindings). */
 static int tex_keep_full(int tid) {
     if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
-    tex_t *t = &g_treg[tid].t;
-    if (!t->serial || !tex_mirrored(t)) return 0;
-    __unsafe_unretained NvPkg *pk = (__bridge id)serial_ptr(t->serial);
-    if (!pk || pk->keep_full || !pk->tex || pk->tex.mipmapLevelCount >= (t->d.levels ? t->d.levels : 1u)) return 0;
-    pk->keep_full = 1;
-    tex_mtl_p(t);   // the reduced copy goes, a full-size one comes (its serial steps, so the texture's views are made again)
-    if (g_mip_kept++ < 8 || g_mip_kept % 200 == 0)
-        MLOG("少传最高一级 mip 的贴图被按整数坐标读：改为全尺寸（ser=%llu %ux%u 格式 %#x %u 级；累计 %llu 张）",
-             (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)g_mip_kept);
-    return 1;
+    return tex_whole(&g_treg[tid].t, "an integer-texel read");
 }
 static MTLSamplerAddressMode wrapm(int w) {
     switch (w) { case 0: case 7: return MTLSamplerAddressModeClampToEdge; case 1: return MTLSamplerAddressModeRepeat;
@@ -15604,6 +15741,7 @@ static void prepare_shader_images(NvShader *sh,int stage) {
   (void)tex_fast(tid); // follow the descriptor to the live storage owner first
   g_treg[tid].t.d.flags|=NVN_TEXTURE_FLAGS_IMAGE;
   tex_t image=g_treg[tid].t;
+  tex_whole(&image,"an image"); /* mip_drop_of: images address the game's own levels */
   id<MTLTexture> base=tex_mtl(&image);while(base.parentTexture)base=base.parentTexture;
   if(base&&!(base.usage&MTLTextureUsageShaderWrite)){
    if(image.d.target==10){serial_del(image.serial);(void)tex_mtl(&image);}
@@ -18475,6 +18613,7 @@ static void copy_t2b(const p_copy_b2t *c) {
     if (atomic_load(&g_draw_log) > 0 && c->tex)
         MLOG("[uw] F%llu pass %llu copy t2b ser %llu %ux%u fmt %#x region %d,%d %dx%d -> %#llx", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, (unsigned long long)c->tex->serial,
              c->tex->d.width, c->tex->d.height, c->tex->d.format, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src);
+    tex_whole(c->tex, "a copy or clear");   // mip_drop_of: the command names the game's own levels
     id<MTLTexture> t = tex_mtl(c->tex);
     if (!t) return;
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
@@ -18677,6 +18816,7 @@ static void copy_b2t(const p_copy_b2t *c) {
       if (on > 0 && (long)atomic_load(&g_cur_frame) >= on && left > 0 && c->tex) { left--;
           MLOG("[%s] f%llu tex ser=%llu %ux%u fmt=%#x mem=%p buf=%#llx", "b2t", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->tex->serial, c->tex->d.width, c->tex->d.height, c->tex->d.format, (void *)c->tex->mem, (unsigned long long)c->src); } }
     if (c->tex) { zskip_del(c->tex->serial); netbp_note_upload(c->tex->serial); }   // OOT: a movie's decoded planes (oot_movie_bypass.h)
+    tex_whole(c->tex, "a copy or clear");   // mip_drop_of: the command names the game's own levels
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("C ser=%llu", c->tex->serial);
     if (!t) return;
@@ -18773,6 +18913,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         int ss = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, ds = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
         if (zskip_has(c->src->serial, sl, ss)) zskip_add(c->dst->serial, dl, ds);
     }
+    tex_whole(c->src, "a copy source"); tex_whole(c->dst, "a copy destination");   // mip_drop_of: the game's own levels
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
@@ -18828,6 +18969,7 @@ static void clear_tex(const p_clear_tex *c) {
     if (atomic_load(&g_draw_log) > 0 && c->tex)
         MLOG("[uw] F%llu pass %llu clear tex ser %llu %ux%u fmt %#x region %d,%d %dx%d mask %#x %g %g %g %g", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, (unsigned long long)c->tex->serial,
              c->tex->d.width, c->tex->d.height, c->tex->d.format, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, c->mask, c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]);
+    tex_whole(c->tex, "a copy or clear");   // mip_drop_of: the command names the game's own levels
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("X ser=%llu 视图格式 %#x 区域 %d,%d,%d %dx%dx%d 掩码 %#x %s %g,%g,%g,%g", c->tex->serial, c->has_view && c->view.set_format ? c->view.format : -1, c->r.xoffset, c->r.yoffset, c->r.zoffset, c->r.width, c->r.height, c->r.depth, c->mask,
        c->is_uint ? "ui" : "f", c->is_uint ? (double)c->c.u[0] : c->c.f[0], c->is_uint ? (double)c->c.u[1] : c->c.f[1], c->is_uint ? (double)c->c.u[2] : c->c.f[2], c->is_uint ? (double)c->c.u[3] : c->c.f[3]);

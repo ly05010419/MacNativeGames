@@ -20,6 +20,7 @@ void mtl_pool_del(const void *mem);
 // Issued GPU addresses belong to the NVN pool lifetime, not its replaceable Metal wrapper.
 void mtl_pool_addressed(const void *owner, const void *mem, uint64_t size);
 void mtl_pool_forget_address(const void *owner);
+void mtl_pool_code_address(const void *mem, uint64_t size);   // a shader-code pool's own address: kept out of the raw pool table
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 成功 1；buf 是 (__bridge) id<MTLBuffer> | 1 on success; buf is a (__bridge) id<MTLBuffer>
 
 typedef struct {

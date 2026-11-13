@@ -348,7 +348,20 @@ static void pool_mark_addressed(const pool_t *p) {
         atomic_store_explicit(&((pool_t*)p)->address_issued,1,memory_order_release);
     if(stats)atomic_fetch_add_explicit(&g_pool_issue_marks,1,memory_order_relaxed);
 }
-NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { const pool_t *o=(const void *)p;pool_mark_addressed(o);return (NVNbufferAddress)o->mem; }
+/* A shader-code pool's own address (NVN_MEMORY_POOL_FLAGS_SHADER_CODE without VIRTUAL) is asked for to place programs:
+   nvnProgramSetShaders takes code addresses. The GPU never reads that code (the shaders run translated, their constants
+   are copied into host buffers), so it stays out of the raw pool table, which would make the pool resident and, on iOS,
+   wire its pages (nxnative 1c92e400, MIT: Ocarina of Time on the iPhone, 223 pools, 317 MB). A buffer made in such a
+   pool still puts it in (nvnBufferInitialize, nvnBufferGetAddress); a lookup by address still makes it resident. */
+NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) {
+    const pool_t *o=(const void *)p;
+#if defined(GAME_OOT)   // Ocarina of Time only for now: the other games keep every addressed pool in the table until each is checked
+    if((o->flags&(NVN_MEMORY_POOL_FLAGS_SHADER_CODE|NVN_MEMORY_POOL_FLAGS_VIRTUAL))==NVN_MEMORY_POOL_FLAGS_SHADER_CODE)mtl_pool_code_address(o->mem,o->size);
+    else
+#endif
+    pool_mark_addressed(o);
+    return (NVNbufferAddress)o->mem;
+}
 
 // Buffer objects reference their pool; they do not own the backing allocation.
 typedef struct{NVNdevice *dev;pool_t *pool;int64_t off;uint64_t size;} totk_buffer_builder;
