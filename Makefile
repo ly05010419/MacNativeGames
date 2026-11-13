@@ -28,12 +28,14 @@ C_TESTS = \
 	screenshot \
 	screenshot_botw \
 	agent_slot_limit \
-	agent_slot_limit_oot
+	agent_slot_limit_oot \
+	dispatch_chain
 C_TEST_EXTRA_users = games/totk/runtime/account.c -Igames/totk/runtime
 C_TEST_SRC_screenshot_botw = tests/test_screenshot.c
 C_TEST_EXTRA_screenshot_botw = -DGAME_BOTW190
 C_TEST_SRC_agent_slot_limit_oot = tests/test_agent_slot_limit.c
 C_TEST_EXTRA_agent_slot_limit_oot = -DAGENT_SLOT_LIMIT_H_PATH='"../games/oot/runtime/agent_slot_limit.h"'
+C_TEST_EXTRA_dispatch_chain = -Igames/oot/third_party/d2r_gfx/gfx/nvn
 
 .PHONY: check check-c
 

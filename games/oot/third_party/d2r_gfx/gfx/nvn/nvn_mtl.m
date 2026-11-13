@@ -23,6 +23,7 @@
 #include "nvn_ctl.h"   // NVN / NVN2 control sections
 #include "nvn_quad_strip.h"
 #include "totk_vpool.h"
+#include "nvn_dispatch_chain.h"   // P0: the shared compute encoder's ordering policy (off by default)
 static _Atomic int g_mesh_reuse = -1;
 static _Atomic int g_pool_validate_once = -1;
 static _Atomic int g_raw_index = -1;
@@ -1724,10 +1725,17 @@ static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; [g_ct
 static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) { return [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; }
 static inline void enc_b_end(id e) { m4_end(e); }
-static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; }
-static inline void enc_b_copy_buffer_texture(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o) { [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o]; }
-static inline void enc_b_copy_texture_buffer(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLSize z, id<MTLBuffer> d, NSUInteger doff, NSUInteger row, NSUInteger img) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:o sourceSize:z toBuffer:d destinationOffset:doff destinationBytesPerRow:row destinationBytesPerImage:img]; }
-static inline void enc_b_copy_texture(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin so, MTLSize z, id<MTLTexture> d, NSUInteger dl, NSUInteger dv, MTLOrigin doo) { [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:so sourceSize:z toTexture:d destinationSlice:dl destinationLevel:dv destinationOrigin:doo]; }
+/* Any command that is not a dispatch in the shared compute encoder (a copy, a texture upload) means the
+   next dispatch does not directly follow the previous one, so the byte-range proof must not speak for that
+   pair: the copy may have written bytes the dispatch reads. dchain_note reads and clears this. */
+static int g_dchain_other;
+/* A compute dispatch or a copy since the last render pass: two passes with such a command between them
+   cannot share an encoder, so the adjacency count must not call them mergeable. */
+static int g_rp_other;
+static inline void enc_b_copy_buffer(id e, id<MTLBuffer> s, NSUInteger so, id<MTLBuffer> d, NSUInteger doff, NSUInteger n) { g_dchain_other = 1; g_rp_other = 1; [e copyFromBuffer:s sourceOffset:so toBuffer:d destinationOffset:doff size:n]; }
+static inline void enc_b_copy_buffer_texture(id e, id<MTLBuffer> s, NSUInteger so, NSUInteger row, NSUInteger img, MTLSize z, id<MTLTexture> d, NSUInteger sl, NSUInteger lv, MTLOrigin o) { g_dchain_other = 1; g_rp_other = 1; [e copyFromBuffer:s sourceOffset:so sourceBytesPerRow:row sourceBytesPerImage:img sourceSize:z toTexture:d destinationSlice:sl destinationLevel:lv destinationOrigin:o]; }
+static inline void enc_b_copy_texture_buffer(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin o, MTLSize z, id<MTLBuffer> d, NSUInteger doff, NSUInteger row, NSUInteger img) { g_dchain_other = 1; g_rp_other = 1; [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:o sourceSize:z toBuffer:d destinationOffset:doff destinationBytesPerRow:row destinationBytesPerImage:img]; }
+static inline void enc_b_copy_texture(id e, id<MTLTexture> s, NSUInteger sl, NSUInteger lv, MTLOrigin so, MTLSize z, id<MTLTexture> d, NSUInteger dl, NSUInteger dv, MTLOrigin doo) { g_dchain_other = 1; g_rp_other = 1; [e copyFromTexture:s sourceSlice:sl sourceLevel:lv sourceOrigin:so sourceSize:z toTexture:d destinationSlice:dl destinationLevel:dv destinationOrigin:doo]; }
 #include "nvn_copy_sites.h"   // OOT_COPY_SITES=1: host copy bytes by source line
 static void blit_note(void);   // 逐通道转储：拷贝 / 缓冲更新结束了渲染通道（定义在 PD 之后） | Per-pass dump: a copy / buffer update ended the render pass (defined after PD)
 static void pd_update_bytes(const void *data, uint64_t dst, uint64_t n, uint64_t seq);
@@ -3402,6 +3410,125 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
     return 0;
 }
 static void dead_stat_print(unsigned long long frame);
+/* ---------- the shared compute encoder's ordering (plan P0, 2026-11-11) ----------
+   Today the shared compute encoder inserts a full-stage barrier between every pair of consecutive
+   dispatches. This switch exercises nvn_dispatch_chain.h's policy: =log only logs what the policy
+   sees, =drop removes the barrier for measurement (diagnostic: pictures from that mode are not
+   evidence of correctness because the runtime byte-range proof is not wired yet). Off by default;
+   "flag dispatch_chain 0|1|2" changes it while the game runs. */
+static _Atomic int g_dchain_mode = -1;   // 0 off (default), 1 log, 2 drop
+static _Atomic uint64_t g_dchain_game_barriers;   // replayed nvnCommandBufferBarrier calls
+static uint64_t g_dchain_seen_barriers, g_dchain_prev_indirect, g_dchain_dispatches, g_dchain_skipped;
+/* Diagnostic counters (mode 1/2 only, no behaviour of their own): how many dispatch boundaries sit on an
+   already-open shared encoder (a real adjacent pair), and how many of those the hard gates alone would
+   open. The difference between the two is what the byte-range proof still has to earn, so this decides
+   whether writing that proof is worth it before any of it exists. */
+static uint64_t g_dchain_pairs, g_dchain_open, g_dchain_block_game_bar, g_dchain_block_indirect, g_dchain_block_vpool;
+/* What the byte-range proof says about the pairs the hard gates already open (mode 1/2, diagnostics only).
+   `none` is the only answer that would let the barrier go; `maybe` means some ranges meet; `unknown`
+   means at least one side has a binding this proof cannot express (a texture, an image, a storage buffer
+   whose address the shader loads itself, raw memory through a loaded pointer). */
+static uint64_t g_dchain_alias_none, g_dchain_alias_maybe, g_dchain_alias_unknown, g_dchain_gap;
+static int g_dchain_skip_next;
+@class NvShader;
+#define DCHAIN_MAXR 24
+typedef struct { int n, complete; nvn_chain_range r[DCHAIN_MAXR]; } dchain_set;
+/* Defined beside dispatch(), where the NVN bind state (S) is in scope. */
+static void dchain_collect(NvShader *sh, dchain_set *rd, dchain_set *wr);
+static int dchain_mode(void) {
+    int v = atomic_load(&g_dchain_mode);
+    if (v < 0) {
+        const char *e = getenv("OOT_DISPATCH_CHAIN");
+        v = e && !strcmp(e, "drop") ? 2 : e && !strcmp(e, "proof") ? 3 : e && !strcmp(e, "log") ? 1 : 0;
+        atomic_store(&g_dchain_mode, v);
+        if (v) MLOG("[dispatch-chain] OOT_DISPATCH_CHAIN=%s", v == 2 ? "drop (diagnostic, hard gates only)" : v == 3 ? "proof (a barrier goes only where the byte ranges are proved disjoint)" : "log");
+    }
+    return v;
+}
+static void dchain_set_mode(int v) {
+    if (v < 0 || v > 3) { MLOG("[flag] dispatch_chain requires 0|1|2|3"); return; }
+    atomic_store(&g_dchain_mode, v);
+    MLOG("[flag] dispatch_chain = %d (%s)", v, v == 0 ? "off" : v == 1 ? "log" : v == 2 ? "drop, diagnostic" : "proof");
+}
+/* Once per game dispatch, before the shared encoder's barrier. The replayed game barrier count is
+   read here too: a dispatch that follows one keeps the barrier whatever else the policy sees.
+   `reuse` is the caller's decision to put this dispatch in the shared encoder (disp_reuse_on() &&
+   !pg_on()); when it is 0 every dispatch opens an encoder of its own and there is no pair to judge. */
+static void dchain_note(int indirect, int reuse, NvShader *sh) {
+    int mode = dchain_mode();
+    int other = g_dchain_other; g_dchain_other = 0;   /* a copy since the previous dispatch ends that pair's story */
+    if (!mode) { g_dchain_prev_indirect = (uint64_t)(indirect != 0); return; }
+    uint64_t barriers = atomic_load(&g_dchain_game_barriers);
+    nvn_chain_input in;
+    memset(&in, 0, sizeof in);
+    in.game_barrier = barriers != g_dchain_seen_barriers;
+    in.indirect = indirect != 0;
+    in.prev_indirect = g_dchain_prev_indirect != 0;
+    in.concurrent_ok = 1;   /* Metal 4 MTL4ComputeCommandEncoder: the barrier is the ordering control */
+    in.vpool_aliases = totk_vpool_aliases_used() ? 1 : 0;
+    in.alias = NVN_CHAIN_ALIAS_UNKNOWN;   /* the runtime byte-range proof is not wired yet */
+    g_dchain_seen_barriers = barriers;
+    g_dchain_prev_indirect = (uint64_t)(indirect != 0);
+    uint64_t n = g_dchain_dispatches++;
+    nvn_chain_input gates = in;
+    gates.alias = NVN_CHAIN_ALIAS_NONE;   /* the hard gates only: what a proved-disjoint pair would see */
+    int hard_blocked = nvn_chain_decide(&gates) == NVN_CHAIN_BARRIER;
+    /* This dispatch's own byte sets, kept for the next pair. Collected every dispatch, not only on a
+       pair, so the chain state stays "the previous dispatch" whatever happened between them. */
+    static dchain_set prev_rd, prev_wr; static int prev_ok;
+    dchain_set rd, wr;
+    dchain_collect(sh, &rd, &wr);
+    /* The candidate rate and what the proof says. A pair is a dispatch that lands in an encoder an
+       earlier dispatch opened, so it starts from the caller's own state: g_blit still holds the
+       previous dispatch's encoder here, and reuse says this dispatch would join it. */
+    if (reuse && g_blit != nil) {
+        g_dchain_pairs++;
+        if (!hard_blocked) {
+            g_dchain_open++;
+            if (other) { in.alias = NVN_CHAIN_ALIAS_UNKNOWN; g_dchain_gap++; }
+            else {
+                nvn_chain_ranges rg;
+                rg.prev_writes = prev_wr.r; rg.n_prev_writes = (unsigned)prev_wr.n;
+                rg.prev_reads = prev_rd.r;  rg.n_prev_reads = (unsigned)prev_rd.n;
+                rg.cur_writes = wr.r;       rg.n_cur_writes = (unsigned)wr.n;
+                rg.cur_reads = rd.r;        rg.n_cur_reads = (unsigned)rd.n;
+                rg.complete = prev_ok && rd.complete && wr.complete;
+                in.alias = nvn_chain_alias_of(&rg);
+            }
+            if (in.alias == NVN_CHAIN_ALIAS_NONE) g_dchain_alias_none++;
+            else if (in.alias == NVN_CHAIN_ALIAS_MAYBE) g_dchain_alias_maybe++;
+            else g_dchain_alias_unknown++;
+        }
+        else if (in.game_barrier) g_dchain_block_game_bar++;
+        else if (in.indirect || in.prev_indirect) g_dchain_block_indirect++;
+        else if (in.vpool_aliases) g_dchain_block_vpool++;
+        if (g_dchain_pairs % 300 == 0)
+            MLOG("[dispatch-chain] pairs %llu: hard gates open %llu (%.1f%%), blocked by game barrier %llu, indirect %llu, vpool %llu; of the open ones the proof says disjoint %llu (%.1f%%), may meet %llu, not expressible %llu (a copy between them %llu)",
+                 (unsigned long long)g_dchain_pairs, (unsigned long long)g_dchain_open,
+                 100.0 * (double)g_dchain_open / (double)g_dchain_pairs,
+                 (unsigned long long)g_dchain_block_game_bar, (unsigned long long)g_dchain_block_indirect,
+                 (unsigned long long)g_dchain_block_vpool,
+                 (unsigned long long)g_dchain_alias_none,
+                 g_dchain_open ? 100.0 * (double)g_dchain_alias_none / (double)g_dchain_open : 0.0,
+                 (unsigned long long)g_dchain_alias_maybe, (unsigned long long)g_dchain_alias_unknown,
+                 (unsigned long long)g_dchain_gap);
+    }
+    prev_rd = rd; prev_wr = wr; prev_ok = rd.complete && wr.complete;
+    /* Mode 2 drops on the hard gates alone (diagnostic: its pictures are not evidence). Mode 3 drops only
+       where the byte-range proof says the two dispatches touch no common byte, so a barrier that goes is a
+       barrier that was shown unnecessary. */
+    int skip = mode == 2 ? !hard_blocked : mode == 3 ? nvn_chain_decide(&in) == NVN_CHAIN_CONCURRENT : 0;
+    g_dchain_skip_next = skip;
+    if (skip) g_dchain_skipped++;
+    if (n < 4 || n % 300 == 0)
+        MLOG("[dispatch-chain] #%llu %s: game_barrier=%d indirect=%d prev_indirect=%d vpool=%d alias=%s hard_gates=%s -> %s (skipped %llu / %llu)",
+             (unsigned long long)n, mode == 2 ? "drop" : mode == 3 ? "proof" : "log", in.game_barrier, in.indirect, in.prev_indirect,
+             in.vpool_aliases, in.alias == NVN_CHAIN_ALIAS_NONE ? "disjoint" : in.alias == NVN_CHAIN_ALIAS_MAYBE ? "may meet" : "not expressible",
+             hard_blocked ? "block" : "open", skip ? "no barrier" : "barrier",
+             (unsigned long long)g_dchain_skipped, (unsigned long long)n + 1);
+}
+/* The shared encoder consumes the decision once. */
+static int dchain_skip_barrier(void) { int s = g_dchain_skip_next; g_dchain_skip_next = 0; return s; }
 void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
@@ -3510,6 +3637,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"raw_write_domain")) { atomic_store(&g_raw_write_domain,v!=0); MLOG("[flag] raw_write_domain = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_capture")) { atomic_store(&g_raw_write_capture,MAX(0,MIN(v,16))); MLOG("[flag] raw_write_capture = %d",atomic_load(&g_raw_write_capture)); return; }
+    if (!strcmp(name,"dispatch_chain")) { dchain_set_mode(v); return; }
     if (!strcmp(name,"writer_boundary")) { atomic_store(&g_writer_boundary,v!=0&&!TARGET_OS_IPHONE); MLOG("[flag] writer_boundary = %d seals=%llu waits=%llu wait-ms=%.3f",writer_boundary_on(),(unsigned long long)g_writer_seals,(unsigned long long)g_writer_waits,(double)g_writer_wait_ns/1e6);return; }
     if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
     if (!strcmp(name,"raw_range_cache")) { atomic_store(&g_raw_range_cache,v!=0); MLOG("[flag] raw_range_cache = %d",v!=0); return; }
@@ -6152,6 +6280,40 @@ static void vis_acquire(void) {
     }
     if(!g_vis)MDIE("cannot allocate visibility result storage");g_vis_acquires++;
 }
+/* ---------- how many render passes could share an encoder (plan 7.7, 2026-11-12) ----------
+   A pass costs about 33 µs of GPU time whatever its size, and its replay costs host time as well, so
+   two passes on the same attachments with no compute or copy between them are the only ones a merge
+   could take. This counts them and changes nothing: `OOT_RPASS_ADJ=1`. */
+static int g_rp_adj_on = -1;
+static int rp_adj_on(void) {
+    if (g_rp_adj_on < 0) { const char *e = getenv("OOT_RPASS_ADJ"); g_rp_adj_on = e && atoi(e) != 0;
+        if (g_rp_adj_on) MLOG("[rpass-adj] on: counting passes that repeat the previous pass's attachments"); }
+    return g_rp_adj_on;
+}
+static void *g_rp_adj_c[8]; static void *g_rp_adj_d; static int g_rp_adj_n = -1;
+static uint64_t g_rp_passes, g_rp_same, g_rp_mergeable, g_rp_continued;
+/* Why a same-target SetRenderTargets did not continue the open pass: a pending clear is by far the
+   likeliest, and it is the only one of these that a proof could ever remove. */
+static uint64_t g_rp_reason_pend, g_rp_reason_mode, g_rp_reason_nort, g_rp_reason_diff, g_rp_reason_other;
+static void rp_adj_note(int n, void *const *c, void *d) {
+    if (!rp_adj_on()) return;
+    int same = g_rp_adj_n == n && g_rp_adj_d == d;
+    for (int i = 0; same && i < n; i++) if (g_rp_adj_c[i] != c[i]) same = 0;
+    g_rp_passes++;
+    if (same) { g_rp_same++; if (!g_rp_other) g_rp_mergeable++; }
+    for (int i = 0; i < 8; i++) g_rp_adj_c[i] = i < n ? c[i] : NULL;
+    g_rp_adj_d = d; g_rp_adj_n = n; g_rp_other = 0;
+    if (g_rp_passes % 300 == 0)
+        MLOG("[rpass-adj] passes %llu: continued into the same encoder %llu (%.1f%%), same attachments as the previous pass %llu (%.1f%%), with nothing between them %llu (%.1f%%)",
+             (unsigned long long)g_rp_passes, (unsigned long long)g_rp_continued,
+             100.0 * (double)g_rp_continued / (double)(g_rp_passes + g_rp_continued),
+             (unsigned long long)g_rp_same, 100.0 * (double)g_rp_same / (double)g_rp_passes,
+             (unsigned long long)g_rp_mergeable, 100.0 * (double)g_rp_mergeable / (double)g_rp_passes);
+    if (g_rp_passes % 300 == 0)
+        MLOG("[rpass-adj] same-target SetRenderTargets that did not continue: pending clear %llu, encoder mode %llu, no target yet %llu, a different target %llu, other %llu",
+             (unsigned long long)g_rp_reason_pend, (unsigned long long)g_rp_reason_mode, (unsigned long long)g_rp_reason_nort,
+             (unsigned long long)g_rp_reason_diff, (unsigned long long)g_rp_reason_other);
+}
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     if (g_enc) return g_enc;
     chunk_maybe_split();
@@ -6366,6 +6528,9 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
     b2_note_pass(pd);   // stereo B2: the left pass's picture
+    { void *rc[8]; int rn = R.rt.n < 8 ? R.rt.n : 8;
+      for (int i = 0; i < rn; i++) rc[i] = (void *)R.rt.color[i];
+      rp_adj_note(rn, rc, (void *)R.rt.depth); }
     g_enc = oot_bar_render_begin(pd);
     args_dirty_all();
     g_stat_pass++;
@@ -13059,7 +13224,7 @@ static int lay_continue(const p_set_rt *r) {
     if (g_lay_probe_neg == 2 || !lay_single(r, &l) || !lay_single(&R.rt, &c) || !lay_same_group(&R.rt, r) || l < g_lay.base || l >= g_lay.base + g_lay.count) return 0;
     if (!g_lay.merges++) MLOG("[totk] layered pass: first SetRenderTargets merged (layer %d of %d-%d)", l, g_lay.base, g_lay.base + g_lay.count - 1);
     PD("M %llu 分层通道续用 层 %d", g_stat_pass, l);
-    g_lay.cur = l; R.rt = *r; g_rt_merged = 1; return 1;
+    g_lay.cur = l; R.rt = *r; g_rt_merged = 1; g_rp_continued++; return 1;
 }
 static uint64_t lay_gpu(int offset) {   // GPU address of the constant `offset` (the layer within the pass)
     static id<MTLBuffer> b; static uint64_t gpu;
@@ -17377,13 +17542,58 @@ static int disp_reuse_on(void) { static int v = -1; if (v < 0) { const char *e =
 static uint64_t g_disp_n, g_disp_shared;
 static int g_disp_probe_nobar;   // probe-gpu-dispatch-chain negative control: no barrier between the commands of the shared encoder
 static id<MTL4ComputeCommandEncoder> disp_enc(void) {
+    g_rp_other = 1;   /* a compute encoder in between: the render passes around it cannot share one */
     int open = g_blit != nil;
     g_disp_n++; g_disp_shared += open;
     if (!open) { rs_sync(); ser_gate(); pt_mark(g_cb, 'C', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; }
-    else if (!g_disp_probe_nobar) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
+    else if (!g_disp_probe_nobar && !dchain_skip_barrier()) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
     [g_blit setArgumentTable:g_ct]; args_dirty_all();
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
+}
+/* ---------- a compute dispatch's byte ranges (plan P0 step 2, 2026-11-12) ----------
+   The alias question between two dispatches is "does the second one touch a byte the first one wrote".
+   A wrong NONE loses pixels, so the four sets are complete or the answer is UNKNOWN:
+     - a storage buffer bound by NVN slot (SBUFP) is [addr, addr+size), writable when its reflection
+       says so;
+     - a block the shader reads by slot (CBUF) or by device pointer (UBOP) is the same kind of range,
+       read-only; a copy we stage for it (snapshot, renamed update) lives outside guest memory, so the
+       guest range is a superset of what the GPU actually reads, the safe direction;
+     - a slot bound to nothing is served by the runtime's dummy buffer, so it claims no guest byte;
+     - everything else clears `complete`: a texture or image (its footprint is not a binding range), a
+       storage buffer whose address the shader loads itself (SBUFU, it may address its whole pool), and
+       the raw memory reached through a pointer the shader loaded (GMEM / GMEML).
+   The sets are supersets of what the shader touches: supersets that do not meet prove the touched bytes
+   do not meet either. */
+static void dchain_add(dchain_set *s, uint64_t lo, uint64_t hi) {
+    if (!s->complete) return;
+    if (lo >= hi || s->n >= DCHAIN_MAXR) { s->complete = 0; return; }
+    s->r[s->n].lo = lo; s->r[s->n].hi = hi; s->n++;
+}
+static void dchain_collect(NvShader *sh, dchain_set *rd, dchain_set *wr) {
+    rd->n = wr->n = 0; rd->complete = wr->complete = 1;
+    if (!sh) { rd->complete = wr->complete = 0; return; }
+    for (int i = 0; i < sh->rf.nb; i++) {
+        const nvn_rbind *b = &sh->rf.b[i];
+        if (b->kind == NVN_RB_CBUF || b->kind == NVN_RB_UBOP) {
+            const p_bind_buf *u = b->reg < 16 ? &S.ubo[5][b->reg] : NULL;
+            if (!u || !u->addr || !u->size) { rd->complete = wr->complete = 0; continue; }
+            dchain_add(rd, u->addr, u->addr + u->size);
+            continue;
+        }
+        if (b->kind == NVN_RB_SBUFP) {
+            const p_bind_buf *u = b->reg < 16 ? &S.ssbo[5][b->reg] : NULL;
+            if (!u) { rd->complete = wr->complete = 0; continue; }
+            if (!u->addr || !u->size) continue;   /* the dummy buffer: no guest byte */
+            dchain_add(rd, u->addr, u->addr + u->size);
+            if (b->rw) dchain_add(wr, u->addr, u->addr + u->size);
+            continue;
+        }
+        /* These hold our own constant segments and a sampler handle, never guest data. */
+        if (b->kind == NVN_RB_SUPPORT || b->kind == NVN_RB_C1 || b->kind == NVN_RB_DRV0 ||
+            b->kind == NVN_RB_DRV2 || b->kind == NVN_RB_SAMPT) continue;
+        rd->complete = wr->complete = 0;   /* TEX / TBUF / SAMP / IMG / SAMPP / TEXP / SBUFU / GMEM / GMEML / GEO */
+    }
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
@@ -17483,6 +17693,7 @@ static void dispatch(const p_dispatch *dp) {
     if (pre) encode_args(nil, cs, 5, 0);   // binds through g_ct only (enc_c_args ignores the encoder)
     id<MTLComputeCommandEncoder> ce;
     int kprev = atomic_load_explicit(&g_oot_bar_last, memory_order_relaxed);   // passdump: what this dispatch follows
+    dchain_note(dp->indirect ? 1 : 0, reuse, cs);   // P0: the shared encoder's barrier decision for this dispatch
     if (reuse) ce = disp_enc();
     else { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } ce = pg_compute(); }
     PD("K %llu dispatch cs %.16s previous-render=%d pending-native=%d pending-bits=%#x submit=%llu",g_stat_pass,cs->key,kprev,g_oot_bar_pending,g_oot_bar_pending_bits,(unsigned long long)g_sub_serial);
@@ -18260,7 +18471,7 @@ void mtl_exec(const uint8_t *p) {
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
                 if (g_enc && g_lay.active && !pend && lay_continue(r)) break;   // TOTK: another layer of the layered pass
                 if (g_enc && !pend && R.has_rt && tbdr_on() && rt_range_same(&R.rt,r)) {
-                    g_rt_merged = g_rt_range_active = g_rt_range_pending = 1; R.rt = *r; break; }
+                    g_rt_merged = g_rt_range_active = g_rt_range_pending = 1; g_rp_continued++; R.rt = *r; break; }
                 if (g_enc && g_fz.active && g_fz.phase == 1 && fz_reuse_op(p) && !pend && g_enc_mode != 1 && R.has_rt && tbdr_on() && rt_same(&g_fz.rt1, r)) {
                     g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); break; }
                 // 不续用只为清除开的通道；少挂深度 / 模板的可续用（绘制前核平面）
@@ -18277,6 +18488,13 @@ void mtl_exec(const uint8_t *p) {
                         if (!g_rt_clear_kept++) MLOG("同目标重设：挂起的清除继续挂到下一通道的 load action（首例 通道 %llu）", g_stat_pass + 1);
                         PD("M %llu 同目标重设，清除继续挂起", g_stat_pass + 1); R.rt = *r; break; }
                     PD("M %llu 同目标重设但清除先落地：前瞻停在 op %d", g_stat_pass + 1, stop);
+                }
+                if (rp_adj_on() && g_enc) {
+                    if (pend) g_rp_reason_pend++;
+                    else if (g_enc_mode == 1) g_rp_reason_mode++;
+                    else if (!R.has_rt) g_rp_reason_nort++;
+                    else if (!rt_same(&R.rt, r)) g_rp_reason_diff++;
+                    else g_rp_reason_other++;
                 }
                 rp_flush(); R.rt = *r; R.has_rt = 1; break;
             }
@@ -18319,7 +18537,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
                                     S.tex_base = tp ? nvn_tex_pool_base(tp) : 0; S.tex_pool_n = tp ? S.tex_base + tp->n : 0; args_dirty_all(); break; }
             case OP_SET_SAMP_POOL: { const dpool_t *sp = ((const p_set_pool *)a)->pool; extern int nvn_samp_pool_base(const void *pool); S.samp_base = sp ? nvn_samp_pool_base(sp) : 0; S.samp_pool_n = sp ? sp->n : 0; args_dirty_all(); break; }
-            case OP_BARRIER: { uint32_t bits; memcpy(&bits, a, sizeof bits); oot_bar_native(bits); break; }
+            case OP_BARRIER: { uint32_t bits; memcpy(&bits, a, sizeof bits); atomic_fetch_add(&g_dchain_game_barriers, 1); oot_bar_native(bits); break; }
             default: break;
         }
         p += h.size;

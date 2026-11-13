@@ -63,6 +63,10 @@ extern void nvn_unimpl_entry(void);
 extern void nvn_prof_entry(void);
 void *nvn_real[NVN_NFUNC];               // DM_NVN_PROF：计时包装调用的真实现 | DM_NVN_PROF: the real implementation called by the timing wrapper
 _Atomic uint64_t nvn_prof_ticks[NVN_NFUNC]; // DM_NVN_PROF：各函数累计耗时（cntvct 计数） | DM_NVN_PROF: cumulative time of each function (cntvct counts)
+/* DM_NVN_PROF: how often the three entries that dominate the record phase are called, so their time per 300
+   frames can be read as "few expensive calls" or "many cheap ones". Counted only under DM_NVN_PROF. */
+static _Atomic uint64_t g_nvn_fini_n, g_nvn_esig_n, g_nvn_swait_n;
+static int nvn_count_on(void) { static int v = -1; if (v < 0) v = getenv("DM_NVN_PROF") != NULL; return v; }
 static uint8_t g_unimpl_seen[NVN_NFUNC];
 
 uint64_t nvn_unimpl_c(nvn_slot_t *slot, uint64_t x0, uint64_t x1, uint64_t x2) {
@@ -289,6 +293,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     return o->mem != NULL;
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
+    if (nvn_count_on()) atomic_fetch_add(&g_nvn_fini_n, 1);
     pool_t *o = (pool_t *)p;
     /* The same condition nvnMemoryPoolInitialize registered the pool under: an empty pool (size 0) was given no
        buffer and no dirty range, so its teardown is a no-op — a removal by address could otherwise hit a live
@@ -861,6 +866,7 @@ static uint64_t g_pf_fence[16]; static unsigned g_pf_n; static uint64_t g_sw_fra
 static int sync_lag_frame_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e && atoi(e) == 2; if (v) LOG("[nvn] TOTK_SYNC_LAG=2：等上一帧渲染栅栏时放宽到再上一帧末（实验）| a wait inside frame i settles for the end of frame i-1"); } return v; }
 static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e ? atoi(e) == 1 : SYNC_LAG_DEFAULT; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
+    if (nvn_count_on()) atomic_fetch_add(&g_nvn_swait_n, 1);
     NVN_BLOCKING();
     const sync_t *o = (const sync_t *)s;
     if (!o->fenced) {
@@ -908,7 +914,7 @@ NVN(nvnEventInitialize, NVNboolean, NVNevent *e, const NVNeventBuilder *b) {
 NVN(nvnEventFinalize, void, NVNevent *e) { ((ev_t *)e)->magic = 0; }
 NVN(nvnEventGetValue, uint32_t, const NVNevent *e) { return *((const ev_t *)e)->val; }
 static void ev_signal(const ev_t *e, int mode, uint32_t v) { if (mode == NVN_EVENT_SIGNAL_MODE_ADD) *e->val += v; else *e->val = v; }
-NVN(nvnEventSignal, void, NVNevent *e, NVNeventSignalMode m, uint32_t v) { ev_signal((const ev_t *)e, m, v); qo_cpu_signal(((const ev_t *)e)->val); }
+NVN(nvnEventSignal, void, NVNevent *e, NVNeventSignalMode m, uint32_t v) { if (nvn_count_on()) atomic_fetch_add(&g_nvn_esig_n, 1); ev_signal((const ev_t *)e, m, v); qo_cpu_signal(((const ev_t *)e)->val); }
 
 // ---------- 队列 ----------
 // ---------- Queue ----------
@@ -3370,6 +3376,11 @@ static double srow(uint64_t f, const char *name, double dflt) {
 static void slow_emit(uint64_t f) {
     static uint64_t judged, slow;
     double pm = srow(f, "@presented_ms", 0), fr = srow(f, "@frame_ms", 0), lim = 1000.0 / 60 * 1.5;
+    /* A configuration whose presents carry no presentedTime (the display link path) records no @presented_ms, and
+       every frame counted as "not judged" hid the slow ones entirely (judged=0 in run-slowf.log). The pacer's
+       scheduled display interval says the same thing about cadence, so it stands in when the presented one is
+       missing: only the drop test changes, no frame timing is reinterpreted. */
+    if (pm == 0) pm = srow(f, "@display_ms", 0);
     int has = mtl_has_window(), bad = has ? (pm > lim || pm < 0) : fr > lim;
     if (has ? pm != 0 : fr != 0) judged++;
     if (bad) {
@@ -3679,6 +3690,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             for (int k = 0; k < 5; k++) { unsigned best = 0; for (unsigned i = 1; i < NVN_NFUNC; i++) if (acc[i] > acc[best]) best = i;
                 if (!acc[best]) break; o += snprintf(line + o, sizeof line - o, " %s %.2f ms；", nvn_names[best] + 3, acc[best] * tb.numer / tb.denom / 1e6); acc[best] = 0; }
             LOG("[nvn] 翻译层耗时前 5（近 300 帧合计）：%s", line); memset(acc, 0, sizeof acc);
+            LOG("[nvn] 近 300 帧调用次数：MemoryPoolFinalize %llu，EventSignal %llu，SyncWait %llu",
+                (unsigned long long)atomic_exchange(&g_nvn_fini_n, 0), (unsigned long long)atomic_exchange(&g_nvn_esig_n, 0),
+                (unsigned long long)atomic_exchange(&g_nvn_swait_n, 0));
         }
         trow(g_frame, "@rec_ms", rec * tb.numer / tb.denom / 1e6); trow(g_frame, "@submit_ms", sub * tb.numer / tb.denom / 1e6);
         tpush(4, rec * tb.numer / tb.denom / 1e6); tpush(5, sub * tb.numer / tb.denom / 1e6);

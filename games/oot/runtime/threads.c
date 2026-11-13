@@ -51,6 +51,18 @@
 #define PROCESS_CORE_MASK  7u
 #endif
 #define WAITERS_BIT   0x40000000u
+/* TOTK: the two lock SVCs had no uncontended fast path -- every ArbitrateLock and ArbitrateUnlock took the global
+   lock G, which the notes at the top of this file call out as "correctness first, performance later". A waiter
+   always sets WAITERS_BIT before it blocks (lock_acquire_for) and the hand-off only exists when that bit is set, so
+   a word without it has no waiter: the lock SVC can finish without G. Both fast paths are a single CAS against the
+   exact word they read, so any concurrent change (a waiter setting the bit, another thread taking the lock) makes
+   the CAS fail and the slow path runs instead. TOTK_LOCK_FAST=0 restores the old path for A/B. */
+static int g_lock_fast = -1;
+static int lock_fast_on(void) {
+    if (g_lock_fast < 0) { const char *e = getenv("TOTK_LOCK_FAST"); g_lock_fast = !(e && !strcmp(e, "0"));
+        if (!g_lock_fast) fprintf(stderr, "[threads] lock SVC fast path off (TOTK_LOCK_FAST=0)\n"); }
+    return g_lock_fast;
+}
 #define H_CUR_THREAD  0xFFFF8000u
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION, O_TMEM };   // O_SESSION / O_TMEM: IPC objects owned by ipc.c
@@ -1166,6 +1178,7 @@ static int svc_thread_(int num, uint64_t *regs) {
 
     case 0x1A: {  // ArbitrateLock(w0 持有者句柄, x1 地址, w2 本线程标签) | ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)
         thr_t *t = cur(); uint64_t addr = regs[1];
+        if (lock_fast_on() && !(ld32(addr) & WAITERS_BIT)) { regs[0] = 0; return 1; }   /* no waiter: the SDK already set the tag in user mode */
         pthread_mutex_lock(&G);
 #ifdef GAME_BOTW
         tag_check(t, (uint32_t)regs[2], "ArbitrateLock", addr);
@@ -1179,7 +1192,13 @@ static int svc_thread_(int num, uint64_t *regs) {
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
     }
-    case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
+    case 0x1B: {
+        uint64_t addr = regs[0];
+        if (lock_fast_on()) {   /* no waiter: clear the tag it holds, and only if it still holds it */
+            uint32_t v = ld32(addr);
+            if (!(v & WAITERS_BIT) && cas32(addr, &v, 0)) { regs[0] = 0; return 1; }
+        }
+        pthread_mutex_lock(&G); lock_handoff(addr); pthread_mutex_unlock(&G); regs[0] = 0; return 1; }
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 锁地址, x1 条件键, w2 标签, x3 超时) | WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
         pthread_mutex_lock(&G);
