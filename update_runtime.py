@@ -481,7 +481,14 @@ def plan(app, work=None):
             folder, why = work_folder('OcarinaOfTime_build')
         except BuildError as e:
             return result('error', str(e), game='oot')
-        return result('express', 'Ocarina of Time: the express update checks its own shaders and says when a full build is needed',
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('oot_build_plan', build_app.REPO / 'games/oot/build.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        blocker = module.update_blocker(folder)   # the checks its update makes before it touches anything
+        if blocker:
+            return result('full', f'Ocarina of Time: {blocker}', game='oot', work=str(folder), work_why=why)
+        return result('express', 'Ocarina of Time: its shaders are of this repository\'s translation chain and its modules this repository\'s rewrites',
                       game='oot', work=str(folder), work_why=why)
     try:
         game, version = app_identity(app)

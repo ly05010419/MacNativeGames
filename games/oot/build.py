@@ -422,6 +422,27 @@ def app_running(app):
         return True
     return False
 
+def update_blocker(work):
+    """Why this work folder cannot take an update without the full build ('' when it can): its last full build's files
+    are missing, its shaders are of another translation chain or translator than this repository's (the seed's
+    translation_context), or its rewritten modules are not this repository's. update_runtime refuses then, and
+    update_runtime.py --plan (MNG Launcher, tools/mng.py) answers "full" instead of an express update that would stop
+    (2026-11-13: chain v27 made the Launcher start an express update that refused at once)."""
+    work=Path(work);tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
+    for needed in (manifest,tree/'build/shader-libs/libraries-manifest.json',tree/'extracted/oot/romfs/index.json',tree/'rewritten/oot'):
+        if not needed.exists():return f'{needed} is missing: run the full build once with this work folder'
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_ns2_seed import translation_context
+    try:metadata=json.loads(manifest.read_text())
+    except ValueError:return f'{manifest} is not readable: run the full build'
+    if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
+        return 'the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build'
+    expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
+    for name,want in expected['rewritten_sha256'].items():
+        if sha(tree/'rewritten/oot'/name)!=want:return 'rewritten module differs from this repository: run the full build: '+name
+    return ''
+
 def update_runtime(app,work=None):
     """Put a new runtime into an App this build made, keeping its shaders: rebuild the runtime and its pipeline archive only.
     The translations and Metal libraries of the last full build are reused; a new translation chain, translator or request
@@ -429,24 +450,15 @@ def update_runtime(app,work=None):
     app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]   # the app's own record first
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
-    tree=work/'oot';seed=tree/'build/shader-seed/oot';manifest=seed/'seed-manifest.json'
-    for needed in (manifest,tree/'build/shader-libs/libraries-manifest.json',tree/'extracted/oot/romfs/index.json',tree/'rewritten/oot'):
-        if not needed.exists():raise ValueError(f'{needed} is missing: run the full build once with this work folder')
+    tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
+    blocker=update_blocker(work)
+    if blocker:raise ValueError(blocker)
     told=False
     while app_running(app):
         if not told:print('waiting for the game to close',flush=True);told=True
         time.sleep(5)
     start=time.monotonic()
     sync_tree(GAME,tree)
-    scripts=str(GAME/'scripts')
-    if scripts not in sys.path:sys.path.insert(0,scripts)
-    from prepare_ns2_seed import translation_context
-    metadata=json.loads(manifest.read_text())
-    if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
-        raise ValueError('the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build')
-    expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
-    for name,want in expected['rewritten_sha256'].items():
-        if sha(tree/'rewritten/oot'/name)!=want:raise ValueError('rewritten module differs from this repository: run the full build: '+name)
     logs=work/'logs';logs.mkdir(exist_ok=True)
     print('building the runtime',flush=True)
     env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
