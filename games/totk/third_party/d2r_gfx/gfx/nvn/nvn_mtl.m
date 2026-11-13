@@ -7180,11 +7180,28 @@ static FILE *pso_user_file(void) {
 static NSString *pso_shared_path(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pso_collected.tsv"]; }
 static FILE *g_pso_shared; static int g_pso_shared_checked;
 static _Atomic uint64_t g_collect_new[3], g_collect_last_ns;
+/* TOTK_PSO_CAPTURE=<file> (a diagnostic, off unless set; 2026-11-13): every warm row this run builds, in the order it
+   builds them, also the rows the lists hold already (pso_user_record leaves those out). How a game's title rows are
+   recorded when its lists hold them all (Ocarina of Time had none, so its quick build had nothing to take): a session
+   to the title menu without warm lists, then shader_list.py merge --title <list> <file>. Only this run's repeats are
+   left out. */
+static void pso_capture(const char *line) {
+    static FILE *f; static int checked; static NSMutableSet<NSNumber *> *seen;
+    if (!checked) {
+        checked = 1; const char *e = getenv("TOTK_PSO_CAPTURE");
+        if (e && *e) { f = fopen(e, "a"); if (f) { seen = [NSMutableSet set]; MLOG("TOTK_PSO_CAPTURE: every warm row this run builds goes to %s", e); } }
+    }
+    if (!f) return;
+    size_t n = strlen(line); NSNumber *k = seen_key(line, n && line[n - 1] == '\n' ? n - 1 : n);
+    if ([seen containsObject:k]) return;
+    [seen addObject:k]; fputs(line, f); fflush(f);
+}
 static void pso_user_record(const char *fmt, ...) {
+    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    pso_capture(line);
     FILE *f = pso_user_file();
     if (!g_pso_shared_checked) { g_pso_shared_checked = 1; g_pso_shared = fopen(pso_shared_path().fileSystemRepresentation, "a"); }
     if (!f && !g_pso_shared) return;
-    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
     if (!g_pso_user_seen) {
         g_pso_user_seen = [NSMutableSet set];
         // the app's lists count as seen too: iOS carries the shared list's pipelines in pso_list.tsv (build_ipa.py), and
