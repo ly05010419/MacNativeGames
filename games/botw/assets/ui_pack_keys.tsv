@@ -1,0 +1,54 @@
+# The UI texture pack of Breath of the Wild (1.9.0 and 1.6.0: these textures have the same keys in both): the textures tools/ui_pack builds,
+# with their draw scale and the options of the shape method. Left out on purpose, so the game draws its own: title art and logos,
+# world-map tiles and item icons (an HD texture pack covers them), button prompts and controller pictures, soft glows and shadows.
+# key<TAB>scale<TAB>options (JSON)<TAB>name and where. A key is a hash of the texture's stored bytes, its size and format; no pixels and no game files are kept here.
+# scale: screen px per texel at the reference height, measured in game shots (empty: not found, the default applies).
+# reference-height: 1080
+# default-scale: 1.0
+02fd2e5658c66142-96x96-49	0.98	{}	Nt_PauseIconChL_01; measured in game at 0.98 (menu); filtered for 0.98
+118b019ae88e2c3a-72x72-49	0.71	{}	Nt_PauseIconL_02; measured in game at 0.71 and 1.01 (HUD/world/menu); filtered for 0.71
+19af69683d9d38b2-72x72-49	0.71	{}	Nt_PauseIconChL_04; measured in game at 0.71 and 1.02 (HUD/world/menu); filtered for 0.71
+1b153f21ec1ed1c3-48x48-49	0.95	{}	Nt_MapChallengeIcon_00; measured in game at 0.95 and 1.05 (HUD/world/map); filtered for 0.95
+1e0e8d570fd771b3-72x72-49	1.00	{}	Nt_PauseIconL_04; measured in game at 1.00 (menu); filtered for 1.00
+2140a1733a39dc25-128x32-49	1.66	{}	Nt_NorthBase_00; measured in game at 1.66 (menu); filtered for 1.66
+25b20e6533c6fe50-48x48-49		{"K":16,"hard":30}	Nt_TempMeterNew_02; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+287f079cd48c8c49-48x48-01		{}	Nt_MsgDecoL_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+29cb0a8232a387ee-128x128-49		{"mode":"ea","T":12,"S0":0}	Nt_MapFovy_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+2bf46547183b1eeb-72x72-49	1.02	{}	Nt_PauseIconL_00; measured in game at 1.02 (menu); filtered for 1.02
+362388661658f5f3-48x48-4b		{}	Nt_ChallengeMarkL_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+41c54b379f62d5e3-48x48-01	1.08	{}	Nt_HeartNewEmpty_00; measured in game at 1.08 (HUD/world); filtered for 1.08
+46298a5f75df4009-24x24-01	1.03	{}	Nt_SeekeTempS_01; measured in game at 1.03 (HUD/world); filtered for 1.03
+46c20b595075999b-128x128-49		{}	Nt_MsgDecoLBase_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+47b2bafdc94474c9-64x64-49		{"accept":{"levels":"thin 1-px outline: after the pre-filter it peaks at 252, source 255 (-3), as the accepted thin strokes of the TOTK list"}}	Nt_TipsLineCircle_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+4cf02821a46be05a-48x48-0d	1.00	{}	Nt_HeartNewB_00; measured in game at 1.00 (HUD/world); filtered for 1.00
+4ecfa693a656d41b-48x48-49		{}	Nt_Arrow48_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+51c63012c160ffe9-64x64-49		{"K":16,"hard":30,"accept":{"levels":"thin 1-px anti-aliased line: after the pre-filter it peaks at 234 (1080 high) to 247 (1944 high), source 239; the game-view mean ink matches (-0.5)"}}	Nt_PauseCorner_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+52f31cb352e0985a-48x48-49		{"mode":"ea"}	Nt_TempMeterNew_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+59ca2bca2896cb40-72x72-49	1.00	{}	Nt_PauseIconL_06; measured in game at 1.00 (menu); filtered for 1.00
+5eeb5126338cdc57-32x32-4b		{"skip":"binary block (levels 0 and 255 only) whose edges lie on texel boundaries: the game's texture already draws it exact (game-view RMSE 0.2 at 1080 high); the pre-filtered pack only softens it (0.8)"}	Half32_02 or Half32_03; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+74ddd1b660ad2c16-48x48-4b		{"skip":"soft glow sparkle (two-channel mask): the halo is a gradient; the default trace failed the gate (round trip 15-20, limit 10), and the edge-aware mode drew blobs and squiggles along the rays; the game's texture draws it"}	KiraKiraAnimReal_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+76fb9f5db1d91ddc-72x72-49	1.03	{}	Nt_PauseIconL_03; measured in game at 1.03 (menu); filtered for 1.03
+7e55a5dbdb353b6e-48x48-49	0.76	{}	Nt_GanbariFade_00; measured in game at 0.76 and 1.43 (menu); filtered for 0.76
+8c7066756d5d676f-28x12-01	1.15	{}	Sd_DecoText32_00; measured in game at 1.15 and 1.33 (menu); filtered for 1.15
+91778ab4af81a769-75x75-49		{}	Nt_ArrowS_02; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+97650c7757f1f4ce-72x72-49	1.03	{}	Nt_PauseIconL_05; measured in game at 1.03 (menu); filtered for 1.03
+97b2b0dd779cbc89-20x32-49		{}	Nt_AutoSaveWindow_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+9cab4a9d3211cc53-72x72-49	0.98	{}	Nt_PauseIconChL_02; measured in game at 0.98 (menu); filtered for 0.98
+9ee982629bf1a51e-48x48-49	0.68	{}	Nt_PauseIcon_00; measured in game at 0.68 and 0.74 and 1.06 and 1.50 (HUD/world/map/menu); filtered for 0.68
+a4346c5480ea2a7f-32x32-4b		{"skip":"binary block (levels 0 and 255 only) whose edges lie on texel boundaries: the game's texture already draws it exact (game-view RMSE 0.2 at 1080 high); the pre-filtered pack only softens it (0.8)"}	Half32_02 or Half32_03; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+a61486f7972ad1f0-16x32-49	1.67	{}	Nt_TempCursor_00; measured in game at 1.67 (HUD/world); filtered for 1.67
+a8e8d2a60eebd656-48x48-49		{"mode":"ea"}	Nt_TempMeterNew_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+ad83c8235fa2efc3-48x48-49	0.91	{}	Nt_MapPlayerIconNew_00; measured in game at 0.91 (HUD/world); filtered for 0.91
+ae9ea31bad4eec56-54x54-38		{}	Nt_RupeeIconNew_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+af07d894a4b23182-72x72-49	1.02	{}	Nt_PauseIconChL_00; measured in game at 1.02 (menu); filtered for 1.02
+b65408857c023479-48x48-4b		{"skip":"soft glow sparkle (two-channel mask): the halo is a gradient; the default trace failed the gate (round trip 15-20, limit 10), and the edge-aware mode drew blobs and squiggles along the rays; the game's texture draws it"}	KiraKiraAnimReal_02; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+b923ad1e303d6f26-20x32-49		{}	Nt_AutoSaveWindow_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+bafed9bb25a8bc52-64x64-49		{}	Nt_Circle64_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+bb57528107434567-48x48-4b	1.00	{}	Nt_HeartNewSh_00; measured in game at 1.00 (menu); filtered for 1.00
+c0796a8328a5ce42-48x48-4b		{"skip":"soft glow sparkle (two-channel mask): the halo is a gradient; the default trace failed the gate (round trip 15-20, limit 10), and the edge-aware mode drew blobs and squiggles along the rays; the game's texture draws it"}	KiraKiraAnimReal_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+c70c9d44bee90a72-64x64-01		{}	Nt_PauseIconCh_01; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+cbe7e5b16d04ec65-72x72-49	0.72	{}	Nt_PauseIconL_01; measured in game at 0.72 and 1.00 (HUD/world/menu); filtered for 0.72
+e3e671ae11470f1a-40x64-49		{}	Nt_Arrow_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+e75779a98f84d579-512x512-49		{"skip":"binary 512x512 pattern of 1-px strokes (the menu's fibre background): the trace changes the strokes (round-trip error 19.2, limit 10); the game's texture draws it as is"}	CmnTexWallBoxPartsFiberB_00+r / CmnTexWallBoxPartsFiberB_00 / Sd_CmnTexWallBoxPartsFiberB_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
+eb0a3aaff6c17867-24x24-01	1.22	{}	Nt_RstickArrow_00; measured in game at 1.22 (menu); filtered for 1.22
+eb2a49fb21a72544-510x720-49		{}	Nt_ChallengeMainLogo_00; not found in the in-game shots; default 1.0 (most HUD and menu textures draw at 1.0 at 1080 high)
