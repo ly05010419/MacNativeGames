@@ -399,7 +399,7 @@ yet. Show them in the game with the harvest on, then build again.
 the harvested textures that the list does not have (with the default options), and `--jobs N` sets the number of workers. A
 second build makes only the pictures whose texture, options, draw scale or screen height changed. The tool lists what it
 wrote in `manifest.tsv` in the pack folder and rewrites or deletes only the pictures listed there, so pictures made by
-another tool (such as drawn prompts) stay. An `ai-manifest.tsv` from the earlier AI builder is taken over: its pictures are
+another tool or by hand stay. An `ai-manifest.tsv` from the earlier AI builder is taken over: its pictures are
 built again or deleted, and the file is deleted. Delete a picture to go back to the game's texture for that key.
 
 **Same pack for every player.** `tools/ui_pack/requirements.txt` pins numpy, scipy, potracer and pillow, so the same harvest
@@ -830,7 +830,7 @@ key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图�
 
 `--dry-run` 只显示计划，`--only <key,...>` 限定 key，`--force` 重做已是最新的图片，`--all` 连清单里没有的采集贴图也按默认选项制作，
 `--jobs N` 设定并行数。再次制作时只重做贴图、选项、绘制倍数或画面高度变了的图片。工具把写出的图片记在贴图包文件夹的
-`manifest.tsv` 里，只重写或删除其中列出的图片，所以其他工具（例如画出来的按键提示）做的图片会保留。之前 AI 工具留下的
+`manifest.tsv` 里，只重写或删除其中列出的图片，所以其他工具做的或手工放入的图片会保留。之前 AI 工具留下的
 `ai-manifest.tsv` 会被接管：其中的图片重新制作或删除，然后删掉这个文件。删除某张图片，该 key 就回到游戏自己的贴图。
 
 **每位玩家得到同样的贴图包。** `tools/ui_pack/requirements.txt` 固定了 numpy、scipy、potracer 和 pillow 的版本，所以同样的采集

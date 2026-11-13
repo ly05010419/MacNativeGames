@@ -5,8 +5,8 @@
 
    The UI's small textures (48x48 and 72x72 masks, colour icons) are magnified about 2x at 3456x1944 with linear
    filtering, which blurs their one-texel anti-aliased edges. The pack holds larger copies (the game's masks traced into
-   shapes and drawn again by tools/ui_pack, or prompts drawn from vectors: docs/mods.md). The UI shaders sample with normalised coordinates, so a larger texture
-   draws at the same place and size.
+   shapes and drawn again by tools/ui_pack: docs/mods.md). The UI shaders sample with normalised coordinates, so a larger
+   texture draws at the same place and size.
 
    - Key: pkg_hash of the texture's guest bytes (block-linear, as in the pool), width, height and NVN format:
      "<hash 16 hex>-<w>x<h>-<format 2 hex>", file "<key>.png" in the pack folder.
