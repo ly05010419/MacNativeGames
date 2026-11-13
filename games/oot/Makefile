@@ -17,8 +17,8 @@ NATIVE_OPT ?= -O2
 GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m zeldaVR/gfx/*.c zeldaVR/gfx/*.m)
 GFX_OBJECTS := $(addprefix $(OUT)/obj/,$(addsuffix .o,$(GFX_SRC)))
-GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/*.inc third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h third_party/smaa/*.h zeldaVR/gfx/*.h zeldaVR/runtime/*.h)
-GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_OOT=1 -DGAME_NS2=1
+GFX_HEADERS := $(wildcard runtime/input_prompts.h runtime/prompt_bindings.h runtime/keyboard_map.h runtime/controller_map.h third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/*.inc third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h third_party/smaa/*.h zeldaVR/gfx/*.h zeldaVR/runtime/*.h)
+GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include -Iruntime -DGAME_OOT=1 -DGAME_NS2=1
 .DEFAULT_GOAL := runtime
 .PHONY: runtime
 $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile

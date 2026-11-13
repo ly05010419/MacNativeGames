@@ -6,7 +6,7 @@ NATIVE_OPT ?= -O2
 # in a cache folder of theirs, never in the one shared by programs without an id, also when a binary runs outside the app
 # (the build's pipeline-archive mode). Only that folder is cleaned (totk_pipeline_archive_folders.h).
 GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
-GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
+GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include -Iruntime
 
 # opus and libvpx: build_app.py passes these (codec_libraries); a make by hand asks the repository's tools/deps, which
 # makes them once per Mac from pinned sources (no Homebrew).
@@ -152,7 +152,7 @@ verify-boot: runtime
 
 
 
-GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/*.inc third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h third_party/smaa/*.h zeldaVR/gfx/*.h zeldaVR/runtime/*.h)
+GFX_HEADERS := $(wildcard runtime/input_prompts.h runtime/prompt_bindings.h runtime/keyboard_map.h runtime/controller_map.h third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/*.inc third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h third_party/smaa/*.h zeldaVR/gfx/*.h zeldaVR/runtime/*.h)
 
 build/gfx/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"

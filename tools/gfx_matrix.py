@@ -65,9 +65,15 @@ def ios_excluded():
     return out
 
 
-def compile_one(tree, src, defines, target, sysroot):
-    cmd = ['xcrun', 'clang', '-fsyntax-only', *FLAGS, *TARGETS[target], '-isysroot', sysroot, *defines,
-           f'-I{tree / GFX / "gfx/nvn"}', f'-I{tree / GFX / "gfx/nvn/include"}', f'-I{tree / "runtime"}', f'-I{GAME_DIR / "build"}', str(src)]
+# The runtime folder whose headers a configuration's build puts on the include path (its Makefile's GFX_FLAGS -Iruntime,
+# its iOS project's -I../runtime): Ocarina of Time builds the layer with its own runtime.
+RUNTIME = {'oot': 'oot'}
+
+
+def compile_one(tree, src, config, target, sysroot):
+    runtime = tree.parent / RUNTIME.get(config, 'totk') / 'runtime'
+    cmd = ['xcrun', 'clang', '-fsyntax-only', *FLAGS, *TARGETS[target], '-isysroot', sysroot, *CONFIGS[config],
+           f'-I{tree / GFX / "gfx/nvn"}', f'-I{tree / GFX / "gfx/nvn/include"}', f'-I{runtime}', f'-I{GAME_DIR / "build"}', str(src)]
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=tree)
     rel = src.relative_to(tree / GFX)
     warns = []
@@ -88,7 +94,7 @@ def run(tree, configs, targets, jobs):
                 work.append((c, t, s))
     res = {}
     with cf.ThreadPoolExecutor(jobs) as ex:
-        futs = {ex.submit(compile_one, tree, s, CONFIGS[c], t, roots[t]): (c, t) for c, t, s in work}
+        futs = {ex.submit(compile_one, tree, s, c, t, roots[t]): (c, t) for c, t, s in work}
         for f in cf.as_completed(futs):
             c, t = futs[f]; rel, rc, warns = f.result()
             res.setdefault((c, t), {})[rel] = (rc, warns)
@@ -106,7 +112,7 @@ def main():
     targets = a.targets.split(',')
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        arch = subprocess.run(['git', 'archive', a.base, 'games/totk', 'zeldaVR'], cwd=ROOT, capture_output=True, check=True).stdout
+        arch = subprocess.run(['git', 'archive', a.base, 'games/totk', 'games/oot/runtime', 'zeldaVR'], cwd=ROOT, capture_output=True, check=True).stdout
         subprocess.run(['tar', '-x', '-C', str(base)], input=arch, check=True)
         before = run(base / 'games/totk', configs, targets, a.j)
         after = run(GAME_DIR, configs, targets, a.j)

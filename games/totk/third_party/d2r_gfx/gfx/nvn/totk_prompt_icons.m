@@ -7,7 +7,8 @@
 #include <stdatomic.h>
 #include "totk_prompt_icons.h"
 #include "../tex/nvn_deswizzle.h"
-#include "../../../../runtime/input_prompts.h"
+#include "input_prompts.h"   /* the game's own runtime (its build puts runtime/ on the include path): a path relative to
+                                 this file named games/totk/runtime only through the symlink, never in a work-folder copy */
 
 /* The game's runtime draws the prompts (games/totk/runtime/input_prompts.m) and its definitions replace these weak ones
    at link time. A game whose runtime has none (Ocarina of Time) gets prompts off: the font's glyphs stay the game's. */
