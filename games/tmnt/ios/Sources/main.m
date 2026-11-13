@@ -75,7 +75,8 @@ static void *run_game(void *unused) {
     setenv("TOTK_SHARED_FONTS", fonts.fileSystemRepresentation, 1);
     setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
     setenv("TOTK_SHADER_CACHE", shaders.fileSystemRepresentation, 1);
-    setenv("TOTK_ROMFS_PATCHES", "0", 1);
+    NSString *patches = [root stringByAppendingPathComponent:@"romfs-patches"];
+    setenv("TOTK_ROMFS_PATCHES", patches.fileSystemRepresentation, 1);
     setenv("TOTK_ROMFS_MODS", "0", 1);
     setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1);
     setenv("TMNT_SPLIT_RECORDING", "1", 1);

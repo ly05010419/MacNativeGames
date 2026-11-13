@@ -17,6 +17,7 @@ from extract_exefs import validate_private_output
 from expected_inputs import check_supported_romfs
 from rewrite_modules import REPO
 from rewrite_nro import verify_nro_report
+from language_catalogue import language_patch
 
 MODULES = ('main', 'subsdk0', 'subsdk2', 'subsdk1')
 SUFFIXES = ('patched.bin', 'fixups.tsv', 'gates.tsv')
@@ -49,7 +50,7 @@ def write_app_entry(app, runtime_sha256):
         'export TOTK_SHARED_FONTS="$ROOT/shared-fonts"\n'
         'export TOTK_SHADER_CACHE="$PROFILE/shader-cache"\n'
         'export TOTK_SHADER_SEED=off TOTK_SHADER_SERVICE=native\n'
-        'export TOTK_ROMFS_MODS=0 TOTK_ROMFS_PATCHES=0\n'
+        'export TOTK_ROMFS_MODS=0 TOTK_ROMFS_PATCHES="$ROOT/romfs-patches"\n'
         'export TOTK_GPU_ALLOW_SUBMIT=1 TMNT_SPLIT_RECORDING=1\n'
         'export TMNT_DRAW_TEXTURE_INVERT=1 TMNT_STRICT_FRAME_DEPENDENCIES=1\n'
         'exec "$ROOT/build/tmnt-native" "$ROOT/rewritten" boot\n')
@@ -88,6 +89,7 @@ def pack(args):
     config = (args.resources / 'romfs_config.h').read_text()
     if f'"{index_hash}"' not in config or f'"{romfs_manifest["romfs_sha256"]}"' not in config:
         raise ValueError('runtime resource configuration does not match RomFS')
+    patches = language_patch(args.romfs / 'romfs.bin', romfs_manifest['files'])
     if args.fonts:
         font_manifest = json.loads((args.fonts / 'manifest.json').read_text())
         if font_manifest.get('status') != 'pass' or len(font_manifest['fonts']) != 6:
@@ -105,6 +107,9 @@ def pack(args):
     (output / 'build/spirv-cross').mkdir(parents=True)
     (output / 'rewritten/nro').mkdir(parents=True)
     (output / 'romfs').mkdir()
+    (output / 'romfs-patches').mkdir()
+    for name, data in patches.items():
+        (output / 'romfs-patches' / name).write_bytes(data)
     (output / 'shared-fonts').mkdir()
     if not args.app:
         (output / 'user-data').mkdir()
@@ -139,7 +144,7 @@ def pack(args):
         'export TOTK_SHADER_SEED=off\n'
         'export TOTK_SHADER_SERVICE=native\n'
         'export TOTK_ROMFS_MODS=0\n'
-        'export TOTK_ROMFS_PATCHES=0\n'
+        'export TOTK_ROMFS_PATCHES="$PWD/romfs-patches"\n'
         'export TOTK_GPU_ALLOW_SUBMIT=1\n'
         'export TMNT_SPLIT_RECORDING=1\n'
         'export TMNT_DRAW_TEXTURE_INVERT=1\n'
@@ -153,6 +158,7 @@ def pack(args):
         'spirv_cross_sha256': digest(args.spirv_cross),
         'romfs_sha256': romfs_manifest['romfs_sha256'],
         'index_sha256': index_hash, 'nro_sha256': nro_id,
+        'language_patches': {name: hashlib.sha256(data).hexdigest() for name, data in patches.items()},
         'romfs_linked': args.link_romfs, 'fonts': bool(args.fonts),
     }, indent=2) + '\n')
     return bundle

@@ -63,10 +63,19 @@ def package(bundle, app, build_headers):
         for suffix in ("fixups.tsv", "gates.tsv"):
             if not (bundle / "rewritten" / f"{module}.{suffix}").is_file():
                 raise ValueError(f"missing {module} rewrite metadata")
+    patches = manifest.get("language_patches", {})
+    if set(patches) != {"title.dat", "manifest.tsv"}:
+        raise ValueError("rebuild the private bundle with the Chinese language catalogue")
+    for name, sha in patches.items():
+        if digest(bundle / "romfs-patches" / name) != sha:
+            raise ValueError(f"language patch differs from the private bundle: {name}")
     # All checks precede creation. Copy actual bytes, never external-volume links.
     (target / "romfs").mkdir(parents=True)
     (target / "rewritten/nro").mkdir(parents=True)
     (target / "fonts").mkdir()
+    (target / "romfs-patches").mkdir()
+    for name in patches:
+        shutil.copy2(bundle / "romfs-patches" / name, target / "romfs-patches" / name)
     shutil.copy2(romfs, target / "romfs/romfs.bin")
     shutil.copy2(index, target / "romfs/runtime-index.bin")
     for font in fonts:

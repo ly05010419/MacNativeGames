@@ -336,28 +336,31 @@ static void performance_config(int mode,int cfg) {if(mode<0||mode>1)runtime_fail
 /* Super Mario Odyssey 1.4.1 reads the configuration before it sets one; the SDK's own version reads an apm session the
    host never opens. Unset, it is 0x00020003, the default switchbrew lists for apm GetCurrentPerformanceConfiguration. */
 static uint32_t get_performance_config(int mode) {if(mode<0||mode>1)runtime_fail("invalid performance mode");return performance_configuration[mode]?performance_configuration[mode]:0x00020003u;}
-/* The game's language: TOTK_LANG as given (a Switch language code), otherwise from a locale: TOTK_LOCALE, which the
-   launcher sets to the app's first preferred language (BCP 47, e.g. "pt-BR"; it follows a per-app language), or else
-   the Mac's current locale. Brazil maps to "pt-BR" only in the 1.4.3 build and in Breath of the Wild 1.9.0, whose RomFS have the official USpt text. */
+/* TOTK_LANG is an explicit Switch language code. Otherwise use TOTK_LOCALE
+   (BCP 47) or the host locale, preserving Chinese script/region preferences. */
 static uint64_t desired_language(void) {
  const char *explicit=getenv("TOTK_LANG");char code[8]={0};
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
  else {
-  char language[16]={0},region[4]={0};const char *tag=getenv("TOTK_LOCALE");
+  char language[16]={0},region[4]={0},script[8]={0};const char *tag=getenv("TOTK_LOCALE");
   if(tag&&*tag){
    size_t n=strcspn(tag,"-_");if(n<sizeof(language))memcpy(language,tag,n);
    for(const char *p=tag+n;*p;){p+=strspn(p,"-_");size_t k=strcspn(p,"-_");
     if(k==2&&isalpha((unsigned char)p[0])&&isalpha((unsigned char)p[1])){region[0]=(char)toupper((unsigned char)p[0]);region[1]=(char)toupper((unsigned char)p[1]);}
+    if(k==4){for(size_t i=0;i<k;i++)script[i]=(char)(i?tolower((unsigned char)p[i]):toupper((unsigned char)p[i]));}
     p+=k;}
   } else {
    CFLocaleRef locale=CFLocaleCopyCurrent();
    CFStringRef value=CFLocaleGetValue(locale,kCFLocaleLanguageCode);
    if(value)CFStringGetCString(value,language,sizeof(language),kCFStringEncodingUTF8);
    value=CFLocaleGetValue(locale,kCFLocaleCountryCode);
-   if(value)CFStringGetCString(value,region,sizeof(region),kCFStringEncodingUTF8);CFRelease(locale);
+   if(value)CFStringGetCString(value,region,sizeof(region),kCFStringEncodingUTF8);
+   value=CFLocaleGetValue(locale,kCFLocaleScriptCode);
+   if(value)CFStringGetCString(value,script,sizeof(script),kCFStringEncodingUTF8);CFRelease(locale);
   }
   const char *portuguese="pt";
-  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?portuguese:"en-US";
+  const char *chinese=!strcmp(script,"Hant")||(!*script&&(!strcmp(region,"TW")||!strcmp(region,"HK")||!strcmp(region,"MO")))?"zh-Hant":"zh-Hans";
+  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?chinese:!strcmp(language,"pt")?portuguese:"en-US";
   memcpy(code,selected,strlen(selected));
  }
  uint64_t result;memcpy(&result,code,8);

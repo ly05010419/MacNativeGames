@@ -39,6 +39,17 @@ app that saves disk space; omit it to copy the verified RomFS into the app.
 The build runs a no-guest link check, which does not start the game. The
 application still requires a separate visible startup/gameplay check.
 
+The supported base image contains both Simplified and Traditional Chinese text
+and glyphs, but its `title.dat` catalogue lists only seven other languages.
+Private packaging generates a hashed `romfs-patches/title.dat` overlay adding the
+game's `cn` and `zh-hant` identifiers; it keeps the default and existing languages
+and leaves the verified RomFS untouched. Both Mac launchers load this overlay,
+and iPad resource packaging verifies and copies it before signing. Rebuild older
+private bundles to include it. The game follows the host language or its saved
+in-game language option; `TOTK_LANG=zh-Hans` / `zh-Hant` explicitly selects either
+script for diagnostics. Automatic selection respects `Hant` and Taiwan, Hong
+Kong and Macao locale preferences, with an explicit `Hans` script taking priority.
+
 This rebuilds the original-input rules, NRO, resource tables, host and shader
 tools, validates the private bundle, and runs a no-guest link check. The bundle
 contains copyrighted game data and must stay on your machine. Its launcher
