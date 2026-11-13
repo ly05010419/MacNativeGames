@@ -17385,6 +17385,7 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
 }
+static int ndve_engine_dispatch(NvShader *cs, const p_dispatch *dp);
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
     void *indirect_buffer = NULL; uint64_t indirect_offset = 0, indirect_gpu = 0;
@@ -17428,6 +17429,7 @@ static void dispatch(const p_dispatch *dp) {
       if (skip && !g_defer_replaying) { char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)skip); if (!strncmp(cs->key, prefix, 16)) return; }
       if (!g_defer_replaying && fx_drop(cs, 5, nil)) return; }   // an effect switched off (totk_fx.h)
     prepare_shader_images(cs,5);prepare_shader_pools(cs);
+    if (ndve_engine_dispatch(cs, dp)) return; /* explicit replace mode only */
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
@@ -22929,3 +22931,5 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
              (unsigned long long)kept, (unsigned long long)dropped);
     }
 }}
+
+#include "oot_ndve_compare.inc" /* opt-in experiment; disabled by default */
