@@ -20,6 +20,8 @@
 #define POOL_MAGIC MAGIC('P', 'O', 'O', 'L')
 
 static pthread_mutex_t g_map_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_aliases_used;
+int totk_vpool_aliases_used(void) { return __atomic_load_n(&g_aliases_used, __ATOMIC_ACQUIRE); }
 
 static uint64_t host_page(void) { return (uint64_t)getpagesize(); }
 static uint64_t round_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
@@ -109,6 +111,7 @@ int totk_vpool_map(pool_t *v, int count, const totk_mapping_request *r) {
     for (int i = 0; i < count; i++) if (!check_request(v, &r[i], i)) return 0;
     pthread_mutex_lock(&g_map_mu);
     // GPU page tables of the old zero-copy buffer and dirty-page protections refer to the replaced pages.
+    __atomic_store_n(&g_aliases_used, 1, __ATOMIC_RELEASE);
     nvn_dirty_remove_range(v->mem);
     mtl_pool_del(v->mem);
     int ok = 1;

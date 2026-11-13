@@ -6,10 +6,10 @@
 // (nvn_mtl.m pso_contribute; user 2026-10-22), their shaders named as a build names them (totk_contrib_listed_name).
 // Each row is written once to the player's contribution file (TOTK_SHADER_CONTRIB, set by app/launcher.m and
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
-// bind states and pipeline descriptors, no game data. Every TOTK_CONTRIB_STEP new rows of any kind the Mac launcher asks
-// the player, before the game starts, to send the file in a GitHub issue (an iPhone / iPad never asks during play: while
-// it is connected, ios/tools/shader_contrib_watch.py asks on the Mac); scripts/collect_shader_issues.py merges what
-// arrives. Header-only: the runtime and the Mac launcher share it.
+// bind states and pipeline descriptors, no game data. Contributions reach the
+// shared lists only through the shader inbox (totk_contrib_upload.h, collected with
+// games/totk/scripts/collect_shaders.py --inbox; the GitHub issue route ended 2026-11-12). This game does not
+// upload yet, so its file stays where it is. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -20,13 +20,7 @@
 #ifndef TOTK_CONTRIB_STEP
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
 #endif
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets Breath of the Wild's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
-#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
-#define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
+#define TOTK_REPO_URL "https://github.com/ly05010419/MacNativeGames"   // the star button (launcher, settings panel): the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */
@@ -95,8 +89,8 @@ static inline void totk_contrib_json(NSMutableString *out, id value) {
 }
 
 /* Appends one row (a whole line without its newline), once. Not thread-safe: the runtime calls it under its translation
-   lock. TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a "# Game: " line, once per file and game, so the Mac
-   that sends a device's file names the game and version in the issue (ios/tools/shader_contrib_watch.py). */
+   lock. TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a "# Game: " line, once per file and game, so the file
+   names the game and version its rows came from. */
 static inline void totk_contrib_add_line(NSString *line) {
     static NSString *path, *gameLine; static NSMutableSet<NSString *> *rows; static int off, tagged;
     if (off) return;
@@ -117,8 +111,7 @@ static inline void totk_contrib_add_line(NSString *line) {
     fseek(f, 0, SEEK_END);
     if (ftell(f) == 0)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
-              "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
-              "# Send it in a GitHub issue: " TOTK_CONTRIB_ISSUE_URL "\n", f);
+              "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n", f);
     if (!tagged) { fprintf(f, "%s\n", gameLine.UTF8String); tagged = 1; }   /* an older file, or another version since */
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);

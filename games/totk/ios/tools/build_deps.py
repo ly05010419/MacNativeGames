@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Build the audio and VP9 static libraries for a physical iOS device, or a Vision Pro (second argument xros)."""
-import os, subprocess, sys, tempfile
+import os, shutil, subprocess, sys, tempfile
 from pathlib import Path
+
+# cmake and ninja come from build_app.py, which puts its pinned copies (PyPI wheels in the deps cache) first on PATH
+missing = [tool for tool in ('cmake', 'ninja') if not shutil.which(tool)]
+if missing: sys.exit(f'build_deps.py: {", ".join(missing)} not on PATH; run it through build_app.py, which provides them')
 
 out = Path(sys.argv[1]).resolve(); out.mkdir(parents=True, exist_ok=True)
 # libvpx's configure splits its compiler path and flags on spaces: when the work folder has one

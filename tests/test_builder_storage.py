@@ -14,21 +14,6 @@ def write(path, data=b'x'):
     path.write_bytes(data)
 
 
-class WorkFolder(unittest.TestCase):
-    def test_the_saved_work_path_wins(self):
-        folder = storage.work_dir(GAMES['totk'], '/games/Tears.xci', '/elsewhere/TOTK_build')
-        self.assertEqual(folder, Path('/elsewhere/TOTK_build'))
-
-    def test_without_a_saved_path_it_sits_beside_the_game_file(self):
-        folder = storage.work_dir(GAMES['totk'], '/games/Tears.xci', None)
-        self.assertEqual(folder, Path('/games/TOTK_build'))
-        self.assertEqual(storage.work_dir(GAMES['botw'], '/games/BotW.wux', ''),
-                         Path('/games/BotW_build'))
-
-    def test_without_a_game_file_there_is_no_work_folder(self):
-        self.assertIsNone(storage.work_dir(GAMES['totk'], None, None))
-
-
 class ShaderFolder(unittest.TestCase):
     def test_the_default_is_the_launchers_application_support_folder(self):
         home = Path('/Users/me')

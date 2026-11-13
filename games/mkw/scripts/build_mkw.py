@@ -48,12 +48,23 @@ DATA_FOLDER = 'MKW'   # runtime/game_version.h GAME_FOLDER
 TITLE_ID = '0400c3f00006e000'
 MODULES = ('main', 'sdk', 'subsdk0')
 LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-HOMEBREW = ('opus', 'libvpx')   # linked statically by the Makefile
+DEPS = ('opus', 'libvpx')   # linked statically by the Makefile (tools/deps)
 SHADER_CHAIN = ('build/spirv-cross/spirv-cross', 'build/dmsh_xlate/dmsh_xlate', 'build/shader-service/ampere_service')
 
 
 class BuildError(Exception):
     pass
+
+
+def pinned_deps(*names):
+    """OPUS_PREFIX, VPX_PREFIX, … in this process's environment, which the Makefile reads: the repository's tools/deps
+    makes them once per Mac from pinned sources, so no Homebrew is needed (2026-11-12)."""
+    sys.path.insert(0, str(GAME_DIR.parents[1]))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env(*names))
+    except DepsError as e:
+        raise BuildError(str(e)) from None
 
 
 def say(msg):
@@ -509,9 +520,7 @@ def main(argv):
     work, out = outside_source(work), outside_source(out)
     if out.suffix != '.app':
         raise BuildError(f'the output must end in .app: {out}')
-    missing = [p for p in HOMEBREW if not (Path('/opt/homebrew/opt') / p / 'lib').is_dir()]
-    if missing:
-        raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
+    pinned_deps(*DEPS)
     work.mkdir(parents=True, exist_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     data_dev = os.stat(work).st_dev if dump else os.stat(game).st_dev   # --dump: the image is packed into the work folder

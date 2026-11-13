@@ -24,13 +24,11 @@ The build checks the code and the game data against `expected-v131072.json`; ano
 
 ```sh
 xcode-select --install
-# Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
-brew install dav1d ffmpeg libvpx opus python@3.14 llvm
+# Python 3.14: the installer from https://www.python.org/downloads/macos/ (or brew install python@3.14)
+# opus, libvpx and dav1d: the build compiles them from pinned sources; no llvm or ffmpeg
 ```
 
 and the full **Xcode** app with its Metal toolchain (Xcode › Settings › Components › Metal Toolchain, or `xcodebuild -downloadComponent MetalToolchain`): the build compiles the game's shaders with Apple's offline Metal compiler, which the command line tools do not include. The build also installs three Python packages (`lz4`, `capstone`, `zbic`) into its own environment in the work folder.
-
-If the rewrite check can't find `llvm-objcopy`, run the build with `LLVM_BIN="$(brew --prefix llvm)/bin"` in its environment.
 
 **Free disk space** on the volume of the work folder: about 40 GB.
 

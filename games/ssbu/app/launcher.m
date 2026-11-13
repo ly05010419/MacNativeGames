@@ -256,7 +256,7 @@ int main(int argc, char **argv) {
            start to the title wrote 48 rows, and at TOTK_CONTRIB_STEP rows the reminder below would ask for a rebuild that
            takes no notes for this game yet. Both, and the contribution question, wait for the seed in the app. */
         if ([NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"build/shader-seed/seed-manifest.json"]]) {
-            NSString *contrib = env_or("TOTK_SHADER_CONTRIB", [data stringByAppendingPathComponent:@"shader-list-contribution.txt"]);
+            NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", [data stringByAppendingPathComponent:@"shader-list-contribution.txt"]));   // this game's file only
             setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
             smo_notes_reminder(contrib, root);
             contrib_ask(contrib);

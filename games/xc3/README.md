@@ -63,7 +63,7 @@ None of these shows on screen:
 
 ## Build and run
 
-You need Xcode's Command Line Tools, Python 3.14 and, from Homebrew, `llvm` (for `structck.py`), `opus` and `libvpx`. Xcode itself and the .NET SDK are not needed: the shader translator is prebuilt in `prebuilt/` and checked by its SHA-256.
+You need Xcode's Command Line Tools and Python 3.14 ([python.org](https://www.python.org/downloads/macos/)); opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew), and `structck.py` uses Xcode's `llvm-objdump`. Xcode itself and the .NET SDK are not needed: the shader translator is prebuilt in `prebuilt/` and checked by its SHA-256.
 
 From `games/xc3`, with a Python 3.14 environment made from `requirements.txt` (`PY=<that python>`):
 

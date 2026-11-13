@@ -15,7 +15,7 @@ Code in this repository that comes from other projects keeps its license; the li
 | `games/totk/third_party/d2r_gfx` (NVN on Metal, texture tools, host headers) | d2r-mobile, extended for this game | MIT | `games/totk/third_party/d2r_gfx/LICENSE` |
 | `games/oot/third_party/nup` (NUP reader) | [a55uka/nup](https://github.com/a55uka/nup) at `d40d9cf` | MIT | `games/oot/third_party/nup/LICENSE` |
 | `games/oot` AV1 movie decoder, mesh / task stages, HMMA lowering, typed pool arrays (adapted; each marked in its source) | [seedds/nxnative](https://github.com/seedds/nxnative), [ChiefSZ13/nxnative](https://github.com/ChiefSZ13/nxnative) at `ee9b776` | MIT | listed in `games/oot/third_party/COPIES.md` |
-| dav1d 1.5.3 (Homebrew build), bundled in the Ocarina of Time Mac app | AV1 fallback decoder | BSD-2-Clause | `games/oot/third_party/dav1d-COPYING` |
+| dav1d 1.5.3, built by `tools/deps` from the pinned VideoLAN release and linked statically into the Ocarina of Time app | AV1 fallback decoder | BSD-2-Clause | `games/oot/third_party/dav1d-COPYING` |
 | `games/totk/third_party/smaa` lookup tables and `totk_smaa_shader.h` (Metal adaptation of SMAA 1x presets) | [iryoku/smaa](https://github.com/iryoku/smaa) at `71c806a838bdd7d517df19192a20f0c61b3ca29d`; adapter origin recorded in `games/totk/third_party/smaa/README.md` | MIT | `games/totk/third_party/smaa/LICENSE.txt` |
 | `totk_fxaa_shader.h` (Metal adaptation of FXAA 3.11 Quality preset 39) | NVIDIA, Timothy Lottes; reference in [GameTechDev/CMAA2](https://github.com/GameTechDev/CMAA2) at `071c6b0857559f4e36f614362e6d2aab1b61938a`, `Projects/CMAA2/FXAA/Fxaa3_11.h` | NVIDIA BSD-3-Clause-style terms | `games/totk/third_party/fxaa/LICENSE.txt`; copied into Mac apps as `Contents/Resources/totk/licenses/fxaa.txt` |
 | texture layout sizes in `games/totk/third_party/d2r_gfx/gfx/nvn/nvn_tex.c` | deko3d | zlib | `games/totk/third_party/d2r_gfx/LICENSE.deko3d` |
@@ -42,8 +42,14 @@ Fetched or linked at build time (not in this repository):
 |---|---|---|
 | [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) at `aa217ae`, built from source when the build makes the translator itself (the prebuilt programs listed above carry it compiled in) | SPIR-V to Metal Shading Language | Apache-2.0 |
 | [hactool](https://github.com/SciresM/hactool) at `1d64a83` (with explicit private title-key-file hook), including its bundled mbedTLS | Base + update BKTR merge at build time only | ISC (hactool), Apache-2.0 (mbedTLS); see fetched source LICENSE files |
-| libopus (Homebrew), linked statically | Opus audio | BSD-3-Clause |
-| libvpx (Homebrew), linked statically | VP9 movies | BSD-3-Clause |
+| [libopus](https://opus-codec.org) 1.6.1, release tarball (SHA-256 pinned) built from source by `tools/deps`, linked statically | Opus audio | BSD-3-Clause |
+| [libvpx](https://chromium.googlesource.com/webm/libvpx) 1.16.0 at `1024874`, built from source by `tools/deps`, linked statically | VP9 movies | BSD-3-Clause |
+| [Meson](https://mesonbuild.com) 1.12.1, [Ninja](https://ninja-build.org) 1.13.2 and [CMake](https://cmake.org) 4.4.4, PyPI wheels (SHA-256 pinned) installed by `tools/deps` into its cache | build dav1d (Meson, Ninja), glslang, SPIRV-Cross's CLI and the iPhone / iPad libraries (CMake, Ninja) at build time; not shipped | Apache-2.0, Apache-2.0, BSD-3-Clause |
+| [XcodeGen](https://github.com/yonaskolb/XcodeGen) 2.46.0, release binary (SHA-256 pinned), by `tools/deps` | generates the iOS Xcode project at build time | MIT |
+| [libogg](https://xiph.org/ogg/) 1.3.6 and [libvorbis](https://xiph.org/vorbis/) 1.3.7, release tarballs (SHA-256 pinned) built from source by `tools/deps`, linked statically (Animal Crossing, Super Smash Bros. Ultimate) | Ogg Vorbis audio | BSD-3-Clause |
+| [Zstandard](https://github.com/facebook/zstd) 1.5.7 (`zstd` program), release tarball (SHA-256 pinned) built by `tools/deps` | unpacks game data in the nxnative builds; not shipped | BSD-3-Clause |
+| [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) `vulkan-sdk-1.4.363.0` (`f11ba9f`) and [glslang](https://github.com/KhronosGroup/glslang) 16.6.0 (`e1b562a`), built from source by `tools/deps` | the `spirv-cross` and `glslangValidator` programs of the nxnative builds; not shipped | Apache-2.0; glslang: BSD-3-Clause and others (its LICENSE.txt) |
+| [.NET SDK](https://dotnet.microsoft.com) 10.0.401, Microsoft's osx-arm64 tarball (SHA-512 pinned), downloaded by `tools/deps` | runs and builds the nxnative shader translator tools; not shipped | MIT |
 | [Berkeley SoftFloat 3](https://github.com/ucb-bar/berkeley-softfloat-3) at `5c06db3`, fetched by `windows_games/ra2/third_party/x86recomp/cmake/softfloat.cmake` | exact x87 arithmetic in windows_games | BSD-3-Clause |
 | [CORE-MATH](https://gitlab.inria.fr/core-math/core-math) at `74fcd10`, fetched by `windows_games/ra2/third_party/x86recomp/cmake/coremath.cmake` | correctly rounded math functions in windows_games | MIT |
 | SDL3 3.4.14, glslang, SPIRV-Cross, ffmpeg 8.1 (decoders only), built by `windows_games/ra2/scripts/ios/build_deps.sh` | windows_games on iOS | zlib, BSD-3-Clause / Apache-2.0, Apache-2.0, LGPL-2.1 |

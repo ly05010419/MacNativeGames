@@ -1,6 +1,6 @@
 """E6 S6.2b: controls_file.render's writing rules (C4, revision 3) and tools/builder/controller_controls.py's reading,
-saving and restoring (C5-C8) on real files in a temporary folder; the controller part on a real BuildController with
-InlineJobs. The game's own parser is compared in test_builder_controls_file.py."""
+saving and restoring (C5-C8) on real files in a temporary folder. The game's own parser is compared in
+test_builder_controls_file.py; the page over these calls in test_launcher_tab_controls.py."""
 import json
 import os
 from pathlib import Path
@@ -9,11 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_builder_controller import Base as ControllerBase
 from tools.builder import controller_controls as cc, controls_file as cf
-from tools.builder.jobs import InlineJobs
-from tools.builder.session import ControlsReady, ControlsSaved, IconsDone
-from tools.builder.start_options import StartPaths
 
 
 def effective(data, by_label=False):
@@ -174,55 +170,6 @@ class Files(unittest.TestCase):
     def test_restore_without_a_file_does_nothing(self):
         state = cc.read_state(self.data, self.store, 'totk')
         self.assertEqual(cc.restore(self.data, self.store, 'totk', state), cc.SaveResult(True))
-
-
-class Part(ControllerBase):
-    def test_save_holds_the_controller_and_reports(self):
-        tmp = Path(self.tmp)
-        self.ctl.load_jobs = jobs = InlineJobs()
-        self.ctl.start.paths = StartPaths(tmp / 'Builder/start-options.json', tmp / 'data')
-        (tmp / 'data/TOTK').mkdir(parents=True)
-        (tmp / 'data/TOTK/controller-type.txt').write_text('xbox\n')
-        self.ctl.select_game('totk')
-        self.ctl.controls.read()
-        jobs.run_next()
-        self.ctl.tick()
-        [ready] = [e for e in self.events() if isinstance(e, ControlsReady)]
-        with patch.object(cc.game_state, 'game_running', return_value=False):
-            self.ctl.controls.save(ready.state, cf.swap(ready.state.inputs, 'x', 'l1'))
-            self.assertFalse(self.ctl.idle)
-            self.assertRaises(RuntimeError, self.ctl.close)
-            jobs.run_next()
-            self.ctl.tick()
-        [saved] = [e for e in self.events() if isinstance(e, ControlsSaved)]
-        self.assertTrue(saved.result.ok and self.ctl.idle)
-
-
-class IconsHandoff(ControllerBase):                                        # E6 S6.3 B5
-    def test_made_icons_go_to_the_mods_part_and_the_controller_stays_held(self):
-        from tools.builder import controller_icons, controller_mods
-        tmp = Path(self.tmp)
-        self.ctl.load_jobs = jobs = InlineJobs()
-        self.ctl.start.paths = StartPaths(tmp / 'Builder/start-options.json', tmp / 'data')
-        self.ctl.select_game('totk')
-        self.ctl.set_paths(game=str(tmp / 'g.xci'), keys=str(tmp / 'k'))
-        built = controller_icons.IconsBuilt(True, work=str(tmp / 'work'), made_from={'controls': 'h'})
-        installed = controller_mods.IconsResult(True)
-        with patch.object(controller_icons, 'make_icons', return_value=built), \
-                patch.object(controller_mods, 'install_icons', return_value=installed) as install:
-            self.ctl.controls.update_icons(True, ['xbox-icons'])
-            self.ctl.mods.state()                                       # a Mods job queued meanwhile
-            jobs.run_next()
-            self.ctl.tick()
-            self.assertFalse(self.ctl.idle)                              # made, waiting for the Mods part
-            jobs.run_next()                                             # the Mods read
-            self.ctl.tick()
-            self.ctl.tick()                                             # handed over now
-            jobs.run_next()
-            self.ctl.tick()
-        self.assertEqual(install.call_args.args[-3:], (tmp / 'work', {'controls': 'h'}, ('xbox-icons',)))
-        self.assertIn(IconsDone(installed), self.events())
-        self.assertTrue(self.ctl.idle)
 
 
 if __name__ == '__main__':

@@ -28,7 +28,7 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 // game_mem/host/span: TOTK host-owned VM storage for physical/virtual pools (totk_vpool.c); host is NULL for game-backed pools.
-typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; } pool_t; FITS(pool_t, NVNmemoryPool);
+typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; _Atomic uint32_t address_issued; } pool_t; FITS(pool_t, NVNmemoryPool);
 
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
@@ -115,12 +115,13 @@ typedef struct { uint32_t stride, divisor; } vs_st;                             
 typedef struct { uint32_t op, size; } op_hdr;
 enum {
     OP_END, OP_JUMP, OP_BEGIN, OP_CALL,
-    OP_SIGNAL_EVENT, OP_REPORT_COUNTER, OP_COPY_B2B, OP_UPDATE_UB,                 // CPU 可见副作用 | CPU-visible side effects
+    OP_SIGNAL_EVENT, OP_REPORT_COUNTER, OP_COPY_B2B, OP_CLEAR_BUF, OP_UPDATE_UB,                 // CPU 可见副作用 | CPU-visible side effects
     OP_SET_RT, OP_CLEAR_COLOR, OP_CLEAR_DS, OP_VIEWPORTS, OP_SCISSOR, OP_DEPTH_RANGE,
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONST, OP_FENCE_SYNC,
+    OP_WAIT_EVENT,   // nvnCommandBufferWaitEvent {volatile uint32_t *val; uint32_t mode, value} (2026-11-08: recorded for cross-queue ordering)
     OP_COUNT_
 };
 // 载荷（紧跟 op_hdr）
@@ -298,13 +299,24 @@ extern _Thread_local int botw_bra_attach;   /* tex_mtl for a render target: its 
 #define BOTW_PKG_RENDER_ALIAS(pk, t) if (pk && pk->tex && !pk->owned && !botw_bra_attach) { void *a_ = botw_render_alias(t, (__bridge const void *)pk->tex); if (a_) return a_; }
 #else
 #define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
+#ifdef GAME_OOT
+/* Ocarina of Time's frame interpolation (2026-11-10, run g44): the scene ends at the first draw into the canvas after the
+   frame's upscaler network (oot_net_bypass.inc oot_ui_draw: those are the HUD's), and the camera is the game's 13,568-byte
+   view block, TOTK's camera layout in its first 84 floats (nvn_mtl.m mfx_take_camera). */
+#define MFX_UI_DRAW(pr) ((void)(pr), oot_ui_draw())
+#else
 #define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
+#endif
 #define UW_UI_BEGINS(pr) mfx_ui_vs(pr->sh[0]->key)
 #define UW_NOT_UI_DRAW(vs, dw, di) !uw_ui_vs(vs) || (dw ? dw->count : di ? di->count : 0) != 6
 #define BOTW_MFX_FRAME_RESET()
 #define BOTW_MFX_NO_UI_SCENE()
 #define MFX_CAM_SLOT 1
+#ifdef GAME_OOT
+#define MFX_CAM_SIZE 13568
+#else
 #define MFX_CAM_SIZE 2368
+#endif
 #define BOTW_MFXUP_MASK_BAD (S.chmask.mask & 0xf) != 0xf
 #define BOTW_MFXUP_DOCK_KEY(fs)
 #define BOTW_AND_NOT_DOCK
@@ -335,7 +347,12 @@ int totk_wb_fence_on(void);
 #define BOTW_LATE_FILTER(list, nl)
 #define BOTW_LATE_DROP(lo, hi)
 #define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
+#ifdef GAME_OOT
+void botw_ashot_poll(const void *t, long cur);   /* OOT (2026-11-09): "ashot" / "ashotn" background screenshots at the real frame rate (flicker measurements) */
+#define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
+#else
 #define BOTW_ASHOT_POLL(t, cur)
+#endif
 #define BOTW_REUP_TRACKED(pk, t)
 #define BOTW_PKG_FIELDS
 #define BOTW_WB_LANDED(t)
@@ -379,7 +396,7 @@ typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // wh
 typedef struct { float factor, units, clamp; } p_poly_offset;
 typedef struct { int32_t prim, first, count, base_instance, instances, pad_; uint64_t ind; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays); ind: NVN address of the {count, instances, first, base instance} record of an indirect draw (0 = direct)
 typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf, ind; } p_draw_idx;   // ind: NVN address of the {count, instances, first index, base vertex, base instance} record of an indirect draw (0 = direct)
-typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
+typedef struct { int32_t x, y, z; uint64_t caller, indirect; } p_dispatch;   // indirect: GPU address of three uint32 threadgroup counts; zero for a direct dispatch
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address

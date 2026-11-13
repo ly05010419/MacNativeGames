@@ -1,5 +1,5 @@
 // TOTK: the contribution file sent over HTTPS to the shader inbox (a separate project, MacNativeGamesWeb/shader-inbox,
-// live at mac-native-games.com), instead of a GitHub issue. One question, the same on the Mac (app/launcher.m) and the
+// live at mac-native-games.com). One question, the same on the Mac (app/launcher.m) and the
 // iPhone / iPad (ios/Sources/main.m), asked before the game starts once the file holds TOTK_CONTRIB_STEP new rows and the
 // player has not chosen (user 2026-11-10: one dialog, not three; two answers): "Contribute shaders" / "Don't
 // contribute" (totk_inbox_prompt, totk_inbox_answer). The choice is kept beside the file (.<name>.upload: "auto" or
@@ -21,6 +21,9 @@
 
 #ifndef TOTK_CONTRIB_INBOX
 #define TOTK_CONTRIB_INBOX "https://mac-native-games.com/v1/contrib"   /* empty: nothing is sent and nothing is asked */
+#endif
+#if !defined(GAME_INBOX_ID) && defined(GAME_OOT)
+#define GAME_INBOX_ID "oot"     /* Ocarina of Time builds this shared layer with GAME_OOT */
 #endif
 #ifndef GAME_INBOX_ID
 #define GAME_INBOX_ID "totk"    /* the game's id in the inbox (its lib/validate.js GAMES); game_version.h sets the others' */
@@ -53,8 +56,8 @@ static inline NSString *totk_inbox_prompt_title(void) {
 }
 static inline NSString *totk_inbox_prompt_text(void) {
     return @(TOTK_UI(
-        "选“贡献着色器”后，游戏会自动贡献着色器，不再打扰游玩体验。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号，不含游戏内容、存档或个人信息。随时可以在“设置”里关闭。",
-        "With \"Contribute shaders\" the game contributes new shaders on its own and never interrupts your play. Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are sent: no game data, saves or personal information. You can turn it off in Settings at any time."));
+        "选“贡献着色器”后，游戏会自动贡献着色器，不再打扰游玩体验。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号（Mac 上还有排行榜和昵称用的随机编号，用来在贡献榜上显示你的昵称），不含游戏内容、存档或个人信息。随时可以在“设置”里关闭。",
+        "With \"Contribute shaders\" the game contributes new shaders on its own and never interrupts your play. Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are sent (on a Mac also the random id of the board and the nickname, so the contributors show your nickname): no game data, saves or personal information. You can turn it off in Settings at any time."));
 }
 static inline NSArray<NSString *> *totk_inbox_prompt_answers(void) {
     return @[@(TOTK_UI("贡献着色器", "Contribute shaders")), @(TOTK_UI("不贡献", "Don't contribute"))];
@@ -74,6 +77,22 @@ static inline NSUInteger totk_inbox_should_ask(NSString *path) {
 static inline void totk_inbox_answer(NSString *path, totk_inbox_answer_t answer) {
     totk_inbox_choose(path, answer == TOTK_INBOX_AUTO);
     if (answer == TOTK_INBOX_NEVER) totk_contrib_never(path);
+}
+
+/* Where the board's random id is kept: MacNativeGames/leaderboard-id.txt, the folder above the game's (TOTK_BOARD_DIR, which
+   the launcher names; runtime/board_upload.h totk_board_id makes and moves it). nil without that folder (iOS, a
+   development run). */
+static inline NSString *totk_leaderboard_id_file(void) {
+    const char *e = getenv("TOTK_BOARD_DIR");
+    return e && *e ? [@(e).stringByDeletingLastPathComponent stringByAppendingPathComponent:@"leaderboard-id.txt"] : nil;
+}
+/* The board's id when this Mac has one, read only (none is made here): sent with the rows so the inbox shows the nickname
+   set for it on the contributors (user 2026-11-12); the id itself is never shown. */
+static inline NSString *totk_inbox_board_id(void) {
+    NSString *file = totk_leaderboard_id_file();
+    NSString *v = file ? [[NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil]
+                          stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : nil;
+    return v.length == 36 ? v.lowercaseString : nil;
 }
 
 /* A random id for this contribution file, made once: the inbox counts a row once per install. Nothing about the device. */
@@ -135,6 +154,37 @@ static inline void totk_inbox_count_sent(NSString *path, NSUInteger rows) {
         writeToFile:totk_contrib_side(path, @"sent") atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+/* Claims the contribution file for this game before the game starts (the launcher, the iPhone / iPad app): the game gets
+   the id (TOTK_CONTRIB_GAME_ID) and writes only to a file of it, the upload sends only such a file (totk_contrib_owner). A
+   file there of another game, or of none (written before 2026-11-12, when a file could hold several games' rows), moves
+   aside to <file>.of-<game>-<time> / <file>.unclaimed-<time> with its done and pruned files, never sent; the game starts a
+   new one. Returns the path. */
+static inline NSString *totk_inbox_claim(NSString *path) {
+    setenv("TOTK_CONTRIB_GAME_ID", GAME_INBOX_ID, 1);
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (!path || ![fm fileExistsAtPath:path]) return path;
+    NSString *owner = totk_contrib_owner(path);
+    if ([owner isEqualToString:@GAME_INBOX_ID]) return path;
+    NSDateFormatter *time = [NSDateFormatter new];
+    time.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    time.dateFormat = @"yyyyMMdd-HHmmss";
+    NSString *aside = [NSString stringWithFormat:@"%@.%@-%@", path, owner.length ? [@"of-" stringByAppendingString:owner] : @"unclaimed",
+                       [time stringFromDate:NSDate.date]];
+    NSError *error = nil;
+    if (![fm moveItemAtPath:path toPath:aside error:&error]) {   /* still never written to nor sent: its id is not this game's */
+        fprintf(stderr, "[shader-contrib] %s is not " GAME_INBOX_ID "'s and could not be moved aside: %s\n", path.UTF8String,
+                error.localizedDescription.UTF8String);
+        return path;
+    }
+    for (NSString *ext in @[@"done", @"pruned"]) {
+        NSString *side = totk_contrib_side(path, ext);
+        if ([fm fileExistsAtPath:side]) [fm moveItemAtPath:side toPath:totk_contrib_side(aside, ext) error:nil];
+    }
+    fprintf(stderr, "[shader-contrib] %s was %s: moved to %s, never sent; " GAME_INBOX_ID " starts a new one\n", path.UTF8String,
+            owner.length ? [NSString stringWithFormat:@"%@'s", owner].UTF8String : "no game's", aside.lastPathComponent.UTF8String);
+    return path;
+}
+
 /* One request: the HTTP status, or 0 when none came (no network, timeout). */
 static inline NSInteger totk_inbox_post(NSDictionary *body) {
     NSData *json = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
@@ -161,6 +211,13 @@ static inline NSInteger totk_inbox_post(NSDictionary *body) {
 /* Sends what the file holds, a chunk at a time; returns the rows the inbox took. Stops at the first chunk not taken. */
 static inline NSUInteger totk_inbox_send(NSString *path, NSString *platform) {
     if (!path || !totk_inbox_configured()) return 0;
+    NSString *owner = totk_contrib_owner(path);   /* only this game's file (totk_inbox_claim): never another game's rows */
+    if (![owner isEqualToString:@GAME_INBOX_ID]) {
+        if ([NSFileManager.defaultManager fileExistsAtPath:path])
+            fprintf(stderr, "[shader-inbox] %s is %s, not " GAME_INBOX_ID "'s: not sent\n", path.UTF8String,
+                    owner.length ? [NSString stringWithFormat:@"%@'s", owner].UTF8String : "no game's");
+        return 0;
+    }
     NSArray<NSString *> *rows = [totk_contrib_read(path).allObjects sortedArrayUsingSelector:@selector(compare:)];
     NSString *install = rows.count ? totk_inbox_install(path) : nil;
     if (!install) return 0;
@@ -172,6 +229,8 @@ static inline NSUInteger totk_inbox_send(NSString *path, NSString *platform) {
                                        @"platform": platform, @"os": totk_inbox_os(), @"rows": chunk} mutableCopy];
         NSString *device = totk_inbox_device();
         if (device) body[@"device"] = device;
+        NSString *board = totk_inbox_board_id();   /* the nickname's id (Mac): the contributors show the nickname */
+        if (board) body[@"board_id"] = board;
         NSInteger status = totk_inbox_post(body);
         if (status != 200) break;
         taken += totk_contrib_retire(path, [NSSet setWithArray:chunk]);   // malformed rows too: the inbox never takes them

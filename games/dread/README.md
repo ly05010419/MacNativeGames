@@ -30,8 +30,8 @@ python3.14 games/dread/build.py "<game>.xci" -k prod.keys --platform ios [-o OUT
 python3.14 games/dread/ios/tools/install_device.py "Metroid Dread.ipa" [--device NAME]
 ```
 
-The same steps, then an unsigned app (`ios/tools/build_ipa.py`; needs the full Xcode and `brew install xcodegen cmake
-ninja`) that carries the game (about 4.2 GB). `install_device.py` signs it with your Xcode team (a free Apple ID: 7 days)
+The same steps, then an unsigned app (`ios/tools/build_ipa.py`; needs the full Xcode; xcodegen, cmake and ninja
+come with the build, pinned) that carries the game (about 4.2 GB). `install_device.py` signs it with your Xcode team (a free Apple ID: 7 days)
 and installs it over the cable; the first time, trust your Apple ID on the device (Settings > General > VPN & Device
 Management). Play with a game controller or the on-screen controls (Switch layout; they hide while a controller is
 connected and come back on a touch).
@@ -75,8 +75,8 @@ done
 make prepare probe PY=python3.14
 ```
 
-Checks of the rewrite (developer tools: LLVM for `structck.py`, `brew install llvm`, then
-`LLVM_BIN=/opt/homebrew/opt/llvm/bin`; unicorn for `equiv.py`, `games/totk/requirements-dev.txt`):
+Checks of the rewrite (developer tools: `structck.py` disassembles with Xcode's `llvm-objdump`;
+unicorn for `equiv.py`, `games/totk/requirements-dev.txt`):
 
 ```sh
 python3.14 third_party/d2r/structck.py ../Dread_build/rewritten/v100 main ../Dread_build/extracted/v100/exefs/main

@@ -12,8 +12,8 @@ import sys
 
 from tools.builder_jobs.text import t
 
-BREW = Path('/opt/homebrew')
-BREW_PACKAGES = ('opus', 'libvpx')      # build_app.py prerequisites(): linked into the runtime
+# No game's build takes a library or tool from Homebrew: opus, libvpx and dav1d are built from pinned sources by
+# build_app.py (codec_libraries), and Ocarina of Time needs no llvm or ffmpeg since 2026-11-12.
 FREE_GB = 60                            # warn below this; the measured sizes are in docs/builder-app.md
 
 
@@ -46,13 +46,8 @@ def checks(work_root):
     cxx = clang and _ok(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input=b'#include <string>\n')
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
-    brew = (BREW / 'bin/brew').is_file()
-    add('brew', brew, t('Homebrew', 'Homebrew（软件包管理器）'), '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"')
-    missing = [p for p in BREW_PACKAGES if not (BREW / 'opt' / p / 'lib').is_dir()]
-    add('brew-packages', not missing, t('Homebrew packages ', 'Homebrew 软件包 ') + ' + '.join(BREW_PACKAGES),
-        f'brew install {" ".join(missing or BREW_PACKAGES)}', 'brew-install' if brew else None)
     add('git', shutil.which('git', path=os.pathsep.join(['/opt/homebrew/bin', '/usr/bin'])), 'git', 'xcode-select --install')
-    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), 'brew install python@3.14')
+    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))
     free = _free_gb(work_root)
     add('disk', free is not None and free >= FREE_GB,
         t(f'{FREE_GB} GB free for the work folder ({"unknown" if free is None else f"{free:.0f} GB"} free at {work_root})',

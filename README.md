@@ -121,13 +121,13 @@ repository.
 > [!TIP]
 > **Every shader in the shared list is ready before you play.** On a Mac the game does not stop to compile it, and on an iPhone or iPad nothing is missing from the picture. The more places players cover, the smoother the game gets for everyone.
 
-The [shared shader list](docs/shader-list.md) now holds **17,335 shader variants** (14,220 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
+The [shared shader list](docs/shader-list.md) now holds **18,238 shader variants** (14,725 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
 
 1. **Play.** Every build carries each shader of the game for its default bind state. When your game meets a shader in a state that variant does not serve, or builds a render pipeline the app's list lacks, it notes it in `shader-list-contribution.txt`; default variants are never noted.
-2. **On a Mac, every 100 new rows (shaders and pipelines together) it asks you once, before the game starts.** Click "Send": the GitHub form opens and the file is shown, ready to drag in. If the GitHub CLI (`gh`) is installed and signed in, the dialog offers "Submit automatically" instead, which sends this batch for you (a private gist and an issue) without opening the browser. An iPhone or iPad never asks during play: while it is connected to the Mac that built its app (cable or the same Wi-Fi), the Mac asks instead. "Don't remind me again" stops the reminders.
+2. **Once the file holds 100 new rows (shaders and pipelines together), the game asks you one question before it starts**, the same on a Mac, iPhone and iPad. With "Contribute shaders" the game sends the rows over HTTPS to the shader inbox ([mac-native-games.com](https://mac-native-games.com)) on its own, shortly after it starts and then every half hour, and never interrupts your play. "Don't contribute" sends nothing. The switch in Settings changes your answer at any time.
 3. **Everyone's next build carries them.** Nobody stutters there again.
 
-**[Send your shaders →](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)** · The game never uploads anything by itself.
+Only shader and pipeline identifiers, the game and app versions, the device model and system version and a random id are sent (on a Mac also the random id and nickname of the contributors board): no game data, saves or personal information. Nothing is sent before you answer "Contribute shaders". There is nothing to file by hand: contributions are no longer taken as GitHub issues (since 12 November 2026).
 
 **Stuttering when you first start playing or enter a new scene is expected while new shaders compile—don't be surprised.** Performance typically improves as the cache warms up, and every shader the [shared list](#lets-maintain-the-shader-list-together-no-more-stutter) gains is one nobody stutters on again.
 
@@ -163,7 +163,7 @@ The [shared shader list](docs/shader-list.md) now holds **17,335 shader variants
 
 Everything from building the app to playing is in **[docs/install.md](docs/install.md)**. The recommended way is to hand it to an AI assistant with the [install skill](.claude/skills/install-zelda/SKILL.md) (see the top of this page) rather than run the steps yourself:
 
-- [What you need](docs/install.md#what-you-need) · [Build with a window](docs/install.md#build-with-a-window) · [Build the app](docs/install.md#build-the-app) · [Breath of the Wild](docs/install.md#breath-of-the-wild) · [iPhone and iPad](docs/install.md#iphone-and-ipad) · [Apple Vision Pro](docs/install.md#apple-vision-pro)
+- [What you need](docs/install.md#what-you-need) · [Build with MNG Launcher or an AI](docs/install.md#build-with-mng-launcher-or-an-ai) · [Build the app](docs/install.md#build-the-app) · [Breath of the Wild](docs/install.md#breath-of-the-wild) · [iPhone and iPad](docs/install.md#iphone-and-ipad) · [Apple Vision Pro](docs/install.md#apple-vision-pro)
 - [Controls](docs/controls.md) · [Where things are](docs/install.md#where-things-are) · [Known issues](docs/install.md#known-issues)
 - [Test records](docs/test-records.md)
 - Ocarina of Time (Switch 2): [games/oot/docs/install.md](games/oot/docs/install.md)
@@ -186,7 +186,7 @@ Measuring by game state with the Metal performance tools of macOS 27 (`TOTK_STAT
 - **Ryujinx** (MIT): the shader translator (`vendor/ryujinx`, built ahead into `games/totk/prebuilt/macos-arm64/totk_xlate`) and a reference for the system services; the sound effects and the mixer in `games/totk/runtime` are ported from Ryujinx.Audio.
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)** (Apache-2.0) turns SPIR-V into Metal Shading Language; it is fetched at a pinned commit and compiled with clang during the build.
 - **[hactool](https://github.com/SciresM/hactool)** (ISC, with its bundled mbedTLS, Apache-2.0): merges the base game and its update at build time; fetched at a pinned commit.
-- **deko3d** (zlib): texture layout sizes. **[bcdec](https://github.com/iOrange/bcdec)** (MIT or public domain): BC texture decoding. **libopus** and **libvpx** (BSD) from Homebrew: audio and the pre-rendered movies.
+- **deko3d** (zlib): texture layout sizes. **[bcdec](https://github.com/iOrange/bcdec)** (MIT or public domain): BC texture decoding. **libopus** and **libvpx** (BSD), compiled by the build from pinned sources: audio and the pre-rendered movies.
 - **[x86recomp](https://github.com/JTM-rootstorm/x86recomp)** (MIT) is the recompiler and Win32 runtime of the Windows games (`windows_games/ra2/third_party/x86recomp`, with our changes); it builds on **Berkeley SoftFloat 3** (BSD-3-Clause) and **CORE-MATH** (MIT), and on iOS on **SDL3** (zlib), **glslang**, **SPIRV-Cross** and a decoders-only **ffmpeg** (LGPL). Its Simplified Chinese is converted with **[OpenCC](https://github.com/BYVoid/OpenCC)** (Apache-2.0), the added glyphs drawn from **[Noto Sans CJK](https://github.com/notofonts/noto-cjk)** (Source Han Sans, SIL OFL 1.1).
 - **[BasaltVR](https://github.com/frenchbaguetteman/BasaltVR)** (MIT) streams the VR picture: `zeldaVR/install_vr.sh` fetches it at a pinned commit and applies our changes (`zeldaVR/streamer/basaltvr.patch`). On the headset, the **[ALVR](https://github.com/alvr-org/ALVR)** client (MIT) shows it; it is downloaded from ALVR's releases and checked by its SHA-256. **[BotW-BetterVR](https://github.com/Crementif/BotW-BetterVR)** (MIT), UEVR and R.E.A.L. were references for the camera, first person and motion controls; no code is copied.
 - **Ocarina of Time** (`games/oot`; every source is listed in [its COPIES.md](games/oot/third_party/COPIES.md)): the NUP reader is **[nup](https://github.com/a55uka/nup)** (MIT); the AV1 movie decoder is adapted from **nxnative**, and the mesh and task shader stages, the HMMA matrix lowering and the typed pool arrays from **[ChiefSZ13/nxnative](https://github.com/ChiefSZ13/nxnative)** (MIT); **dav1d** (BSD-2-Clause) is bundled as the AV1 fallback; **zbic** (GPLv2) is run as a separate build tool, never copied or shipped. NVIDIA's CUDA Binary Utilities and PTX documents and Mesa's NAK were references for Ampere instruction semantics, and **[Lichii](https://github.com/zortos293/Lichii)** (GPL-3.0) for field meanings only; no code from it is copied.
@@ -308,13 +308,13 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 > [!TIP]
 > **公共清单里的每个着色器，开玩之前就已经准备好。** Mac 上不用停下来现场编译，iPhone 和 iPad 上画面也不会缺东西。大家玩过的地方越多，所有人玩得越流畅。
 
-[公共着色器清单](docs/shader-list.md)现在有 **17,335 个着色器变体**（14,220 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
+[公共着色器清单](docs/shader-list.md)现在有 **18,238 个着色器变体**（14,725 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
 
 1. **照常玩。** 每次打包都会把游戏里每个着色器按默认绑定状态各备一份。游戏遇到默认那份用不了的状态，或者建了 App 清单里没有的渲染管线，才会记进 `shader-list-contribution.txt`；默认变体不记。
-2. **在 Mac 上，着色器和管线合计每攒够 100 条，它会在游戏启动前问你一次。** 点“发送”，GitHub 提交页面会打开，文件也会显示出来，拖进去就行。装了 GitHub 命令行工具（`gh`）并已登录时，对话框里会多一个“自动提交”，点了就直接替你把这一批发出去（私密 gist 加一个 issue），不用打开浏览器。iPhone 和 iPad 玩的时候从不提醒：设备连着打包它的那台 Mac（线连或同一 Wi‑Fi）时，由 Mac 来问。点“不要提醒了”以后就不再问。
+2. **着色器和管线合计攒够 100 条后，游戏在启动前问你一个问题**，Mac、iPhone、iPad 都一样。选“贡献着色器”，游戏会自己通过 HTTPS 把这些条目发到着色器收件箱（[mac-native-games.com](https://mac-native-games.com)）：启动后不久发一次，之后每半小时一次，不打扰游玩。选“不贡献”就什么都不发。随时可以在“设置”里的开关改。
 3. **下次大家打包的 App 都会带上。** 谁到那里都不会再卡顿。
 
-**[发送你的着色器 →](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)** · 游戏不会自己上传任何东西。
+只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号（Mac 上还有贡献榜用的随机编号和昵称），不含游戏内容、存档或个人信息。你选“贡献着色器”之前什么都不发。不需要手动提交任何东西：从 2026 年 11 月 12 日起不再通过 GitHub issue 收集贡献。
 
 **第一次进入游戏或新场景时，新着色器的编译可能造成卡顿，这是预期现象，不必惊讶。** 随着着色器缓存逐步预热，表现通常会改善；[公共清单](#让我们一起维护着色器清单游戏不再卡顿)每多一个着色器，就少一处卡顿。
 
@@ -370,7 +370,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 - **Ryujinx**（MIT）：着色器翻译器（`vendor/ryujinx`，预编成 `games/totk/prebuilt/macos-arm64/totk_xlate`）和系统服务的参考；`games/totk/runtime` 里的音效和混音器移植自 Ryujinx.Audio。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**（Apache-2.0）把 SPIR-V 转成 Metal 着色语言；打包时按固定提交取得，用 clang 编。
 - **[hactool](https://github.com/SciresM/hactool)**（ISC，自带的 mbedTLS 是 Apache-2.0）：打包时合并本体和更新包；按固定提交取得。
-- **deko3d**（zlib）：贴图布局尺寸。**[bcdec](https://github.com/iOrange/bcdec)**（MIT 或公有领域）：BC 贴图解码。**libopus**、**libvpx**（BSD，来自 Homebrew）：音频和预渲染影片。
+- **deko3d**（zlib）：贴图布局尺寸。**[bcdec](https://github.com/iOrange/bcdec)**（MIT 或公有领域）：BC 贴图解码。**libopus**、**libvpx**（BSD，打包时从固定版本的源码编出）：音频和预渲染影片。
 - **[x86recomp](https://github.com/JTM-rootstorm/x86recomp)**（MIT）是 Windows 游戏的重编译器和 Win32 运行时（`windows_games/ra2/third_party/x86recomp`，含我们的改动）；它用到 **Berkeley SoftFloat 3**（BSD-3-Clause）和 **CORE-MATH**（MIT），iOS 上还用到 **SDL3**（zlib）、**glslang**、**SPIRV-Cross** 和只带解码器的 **ffmpeg**（LGPL）。简体中文用 **[OpenCC](https://github.com/BYVoid/OpenCC)**（Apache-2.0）转换，补的字形取自 **[思源黑体 / Noto Sans CJK](https://github.com/notofonts/noto-cjk)**（SIL OFL 1.1）。
 - **[BasaltVR](https://github.com/frenchbaguetteman/BasaltVR)**（MIT）负责串流 VR 画面：`zeldaVR/install_vr.sh` 按固定提交取得它，再打上我们的改动（`zeldaVR/streamer/basaltvr.patch`）。头显上显示画面的是 **[ALVR](https://github.com/alvr-org/ALVR)** 客户端（MIT），从 ALVR 的发布页下载并核对 SHA-256。**[BotW-BetterVR](https://github.com/Crementif/BotW-BetterVR)**（MIT）、UEVR 和 R.E.A.L. 是镜头、第一人称和体感操作的参考，没有拷代码。
 - **时之笛**（`games/oot`，全部来源列在[它的 COPIES.md](games/oot/third_party/COPIES.md)）：NUP 读取用 **[nup](https://github.com/a55uka/nup)**（MIT）；AV1 影片解码改编自 **nxnative**，网格 / 任务着色器阶段、HMMA 矩阵运算的翻译和按类型的池数组改编自 **[ChiefSZ13/nxnative](https://github.com/ChiefSZ13/nxnative)**（MIT）；**dav1d**（BSD-2-Clause）随 App 带着，作 AV1 的后备解码；**zbic**（GPLv2）只作为独立的打包工具运行，不拷贝、不随 App 发布。Ampere 指令语义参考了 NVIDIA 的 CUDA Binary Utilities、PTX 文档和 Mesa 的 NAK，**[Lichii](https://github.com/zortos293/Lichii)**（GPL-3.0）只参考了字段含义，没有拷它的代码。

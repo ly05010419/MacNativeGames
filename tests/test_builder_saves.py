@@ -62,6 +62,16 @@ class Locations(unittest.TestCase):
         self.assertEqual([item.game for item in items], ['botw', 'totk'])
         self.assertTrue(all(item.kind == 'nxnative' for item in items))
 
+    def test_a_game_s_page_lists_only_its_own_nxnative_title(self):
+        # the titles filter was accepted and ignored: the Tears of the Kingdom page listed Bananza's and Pokopia's saves
+        with tempfile.TemporaryDirectory() as folder:
+            root = saves.nxnative_root(Path(folder))
+            for title in ('0100F2C0115B6000', '040074A01BF12000', '0400A3A01EE4C000'):
+                (root / title).mkdir(parents=True)
+            self.assertEqual([t for t, _ in saves.nxnative_dirs(Path(folder), ('0100f2c0115b6000',))], ['0100F2C0115B6000'])
+            self.assertEqual(len(saves.nxnative_dirs(Path(folder))), 3)   # no filter: every title folder
+            self.assertEqual([s.title_id for s in saves.nxnative_sources(Path(folder))], ['0100F2C0115B6000'])
+
 
 class Files(unittest.TestCase):
     def test_a_folder_lists_relative_posix_paths_and_sizes(self):

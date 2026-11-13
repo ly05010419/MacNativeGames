@@ -14,16 +14,17 @@ import compression.zstd as zstd
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import struct
-import subprocess
 from make_romfs_patches import sarc_members
+import webm_one_frame
 
 EVENT = 'Event/EventFlow/Dm_Kokiri_0000.bfevfl.zs'
 DICTIONARIES = 'Pack/ZsDic.pack.zs'
 MOVIE = 'Event/Movie/Dm_Kokiri_0000.webm'
 MOVIE_SHA = '52c062a70ca69d1a482a4a6aaed5b0fd185cba974fa405862b53076158a4ed88'
 FIRST_PACKET_SHA = 'd4552a91945ae3f360e91456bf7f86fa745f1b6059543e5b99f331dde19be7e5'
+# The one-keyframe WebM the game played, as ffmpeg's bit-exact remux made it (webm_one_frame.py writes the same bytes).
+MOVIE_ONE_FRAME_SHA = 'cdd51e81a50fdef8e2c94ab77ec0b035be5b8522d18304621dc90022aea10048'
 HASHES = {
     EVENT: 'f0df23a290c1088c9893d116e0704baa4f7c35603caf5b1c3279aaa38537cad1',
     DICTIONARIES: '1f35801d24503905093bb2f6634e5779c1413ca7e6756421160e44d996e60904',
@@ -93,37 +94,35 @@ def generate(romfs, output):
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(compressed)
     digest = hashlib.sha256(compressed).hexdigest()
-    ffmpeg, ffprobe = shutil.which('ffmpeg'), shutil.which('ffprobe')
-    if not ffmpeg or not ffprobe:
-        raise RuntimeError('opening overlay generation requires ffmpeg and ffprobe (brew install ffmpeg)')
+    # The first AV1 keyframe in a WebM of its own, not re-encoded (webm_one_frame.py; ffmpeg made it until 2026-11-12).
+    with (romfs / 'romfs.bin').open('rb') as image:
+        image.seek(movie['offset'])
+        head = image.read(min(movie['size'], webm_one_frame.HEAD_BYTES))
+    short = webm_one_frame.one_frame(webm_one_frame.read_original(head))
+    # Read back on its own: one original-size AV1 keyframe, the original packet, a 16 ms movie, ffmpeg's bytes.
+    probe = webm_one_frame.inspect(short)
+    blocks = probe['blocks']
+    if probe['tracks'] != [{'codec': 'V_AV1', 'width': 1920, 'height': 1080}] or len(blocks) != 1 or not blocks[0]['keyframe']:
+        raise ValueError('short opening movie is not one original-size AV1 keyframe')
+    if not 0 < probe['duration'] < 0.034:
+        raise ValueError('short opening movie has an unexpected duration')
+    if hashlib.sha256(blocks[0]['payload']).hexdigest() != FIRST_PACKET_SHA:
+        raise ValueError('short opening movie changed the original AV1 packet')
+    clip_sha = hashlib.sha256(short).hexdigest()
+    if clip_sha != MOVIE_ONE_FRAME_SHA:
+        raise ValueError('short opening movie differs from the one played in the game')
     clip = output / MOVIE
     clip.parent.mkdir(parents=True, exist_ok=True)
-    source = f"subfile,,start,{movie['offset']},end,{movie['offset'] + movie['size']},,:{romfs / 'romfs.bin'}"
-    subprocess.run([ffmpeg, '-v', 'error', '-y', '-i', source, '-map', '0:v:0', '-frames:v', '1',
-        '-c:v', 'copy', '-an', '-map_metadata', '-1', '-fflags', '+bitexact', str(clip)], check=True)
-    # Independent decode/count and packet checks: one original AV1 keyframe,
-    # without re-encoding, in a complete 16 ms WebM container.
-    probe = json.loads(subprocess.check_output([ffprobe, '-v', 'error', '-count_frames', '-show_entries',
-        'format=duration:stream=codec_name,width,height,nb_read_frames', '-of', 'json', str(clip)]))
-    streams = probe['streams']
-    if len(streams) != 1 or streams[0] != {'codec_name': 'av1', 'width': 1920, 'height': 1080, 'nb_read_frames': '1'}:
-        raise ValueError('short opening movie is not one original-size AV1 frame')
-    if not 0 < float(probe['format']['duration']) < 0.034:
-        raise ValueError('short opening movie has an unexpected duration')
-    packet = subprocess.check_output([ffmpeg, '-v', 'error', '-i', str(clip), '-map', '0:v:0',
-        '-frames:v', '1', '-c', 'copy', '-f', 'data', '-'])
-    if hashlib.sha256(packet).hexdigest() != FIRST_PACKET_SHA:
-        raise ValueError('short opening movie changed the original AV1 packet')
-    clip_sha = hashlib.sha256(clip.read_bytes()).hexdigest()
+    clip.write_bytes(short)
     (output / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256\n'
         f'{EVENT}\t{len(compressed)}\t{digest}\t{HASHES[EVENT]}\n'
         f'{MOVIE}\t{clip.stat().st_size}\t{clip_sha}\t{MOVIE_SHA}\n')
     (output / 'generation.json').write_text(json.dumps(dict(
         event=EVENT, original_event_sha256=HASHES[EVENT], original_movie_sha256=MOVIE_SHA,
         original_duration_frames=9255, duration_frames=1, original_packet_sha256=FIRST_PACKET_SHA,
-        ffmpeg_version=subprocess.check_output([ffmpeg, '-version'], text=True).splitlines()[0],
-        ffmpeg_sha256=hashlib.sha256(Path(ffmpeg).resolve().read_bytes()).hexdigest(),
-        generated_event_sha256=digest, generated_movie_sha256=clip_sha, probe=probe), indent=2) + '\n')
+        movie_writer='webm_one_frame.py', movie_writer_sha256=hashlib.sha256(Path(webm_one_frame.__file__).read_bytes()).hexdigest(),
+        generated_event_sha256=digest, generated_movie_sha256=clip_sha,
+        probe=dict(tracks=probe['tracks'], blocks=len(blocks), duration=probe['duration'])), indent=2) + '\n')
     print('Verified opening overlay: 1-frame timeline and 1 original AV1 keyframe, no re-encoding')
 
 

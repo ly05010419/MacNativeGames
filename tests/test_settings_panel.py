@@ -144,17 +144,21 @@ class SettingsPanel(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             with LocalInbox() as inbox:
                 mine, other = '0f0f0f0f-0000-4000-8000-000000001234', str(uuid.uuid4())
-                for install, count in ((mine, 3), (other, 7)):
+                other_board = str(uuid.uuid4())   # the other player's board id, with a nickname: the list shows it (2026-11-12)
+                self.assertEqual(inbox.name(other_board, 'Zelda'), 'Zelda')
+                for install, count, board in ((mine, 3, None), (other, 7, other_board)):
                     rows = [f'V\t{(install[:8] + str(k)).ljust(64, "0")}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}' for k in range(count)]
                     body = {'schema': 1, 'game': 'totk', 'game_version': '1.2.1', 'app_build': 'test', 'rows': rows,
                             'install': install, 'platform': 'mac', 'device': 'Mac16,1', 'os': 'macOS 26.0'}
+                    if board:
+                        body['board_id'] = board
                     request = urllib.request.Request(f'{inbox.base}/v1/contrib', method='POST', headers={'content-type': 'application/json'},
                                                      data=json.dumps(body).encode())
                     with urllib.request.urlopen(request, timeout=30) as answer:
                         self.assertEqual(answer.status, 200)
                 settings = Path(directory) / 'saved'
                 settings.mkdir()
-                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), CONTRIB_TEST_URL=inbox.base)
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), CONTRIB_TEST_URL=inbox.base, CONTRIB_TEST_OTHER_NAME='Zelda')
                 run = subprocess.run([str(executable), 'contrib'], env=env, capture_output=True, text=True, timeout=120)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
                 self.assertIn('pass: contribution page with the server', run.stdout)

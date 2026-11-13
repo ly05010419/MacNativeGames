@@ -48,9 +48,31 @@ def stage_of(ctl, code):
     return SPH_STAGE.get(kind) if w0 & 0x1f else None
 
 
+# The control words the key hashes as zero (nvn_ctl.h ctl_key_update): a game holds them otherwise in memory than in its
+# files and the translation reads none of them. +0x30: the section's length in BNSH files, 0 in memory. +0x08..+0x0b and
+# the shader hash +0x20..+0x27 (2026-11-12): Pokopia writes them again before it sets the shader.
+KEY_ZERO = ((0x08, 0x0c), (0x20, 0x28), (0x30, 0x34))
+KEY_RULE = 'nvn2-ctl48-zero-08-20-30'   # nvn_ctl.h NVN2_KEY_RULE; a seed records it (prepare_ns2_seed.py)
+# A Switch 2 game's shader list names its shaders by one rule, said in its header (ns2_rekey.py writes it): a list and a
+# seed of other rules name no shader in common, so collect_shaders.py and prepare_ns2_seed.py refuse to mix them.
+KEY_RULE_HEADER = '# Shader key rule: '
+
+
+def list_key_rule(path):
+    """The key rule a Switch 2 game's shader list says it names its shaders by, or None (a list before 2026-11-12)."""
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            if not line.startswith('#'):
+                return None
+            if line.startswith(KEY_RULE_HEADER):
+                return line[len(KEY_RULE_HEADER):].strip()
+    return None
+
+
 def shader_key(ctl, code):
     k = bytearray(ctl[:0x48])
-    k[0x30:0x34] = bytes(4)
+    for a, b in KEY_ZERO:
+        k[a:b] = bytes(b - a)
     return hashlib.sha256(bytes(k) + code).hexdigest()
 
 
@@ -326,6 +348,8 @@ def main():
     p.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
     p.add_argument('--listed', type=Path, help="the game's shared shader list: of the RDB data files' shaders (130,904 in "
                    "Pokopia, most of them never loaded) only those its V rows name; the modules' and LINKDATA's all")
+    p.add_argument('--all-keys', type=Path, help='write the key of every shader found here, kept or not (a JSON list): '
+                   'which shaders are this game\'s (prepare_ns2_seed.py game-shader-keys.json; user 2026-11-12)')
     a = p.parse_args()
     listed = None
     if a.listed:
@@ -358,6 +382,10 @@ def main():
     if failed:
         sys.exit('[RED] ' + '\n'.join(failed))
     found = len(shaders)
+    if a.all_keys:   # every shader the game ships, before the list narrows what is translated (a failed file stopped above)
+        a.all_keys.parent.mkdir(parents=True, exist_ok=True)
+        a.all_keys.write_text(json.dumps(sorted(shaders), separators=(',', ':')) + '\n')
+        print(f'{found} shader keys -> {a.all_keys}')
     if listed is not None:
         shaders = {k: v for k, v in shaders.items() if k in startup or k in listed}
         print(f'{found} distinct shaders found; kept {len(shaders)}: {len(startup)} of the modules and LINKDATA and '

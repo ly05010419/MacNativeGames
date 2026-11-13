@@ -25,7 +25,7 @@
 
 仅支持上述亚洲版 1.05，无需 DLC 即可构建。不是通用模拟器，也不支持其他地区、
 其他更新版本或赠品应用。游戏、更新、DLC 和密钥均由玩家自行提供，不随代码分发。
-需要 Apple silicon、macOS 26 或更新版本、Command Line Tools/macOS 26 SDK、Homebrew。
+需要 Apple silicon、macOS 26 或更新版本、Command Line Tools/macOS 26 SDK、Python 3.14（[python.org](https://www.python.org/downloads/macos/)）。opus 和 libvpx 由打包从固定版本源码自己编（`tools/deps`，每台 Mac 一次），不用 Homebrew。
 依赖安装完成后，提取、改写、编译和打包均不访问网络。SPIRV-Cross 固定版本源码和
 带 SHA-256 的翻译器均由本目录自带。打包结果引用工作目录，移动工作目录后应重新运行 `make app`。
 
@@ -33,7 +33,6 @@
 位于源码树以外的工作目录，不要覆盖正在使用的工作目录或存档。
 
 ```sh
-brew install opus libvpx python@3.14 llvm@23
 cd games/unicorn
 WORK="$HOME/Games/Unicorn-build-1.05"
 python3.14 -m venv "$WORK/venv"
@@ -44,7 +43,6 @@ BASE="/absolute/path/base.nsp"
 UPDATE="/absolute/path/update-1.05.nsp"
 KEYS="/absolute/path/prod.keys"
 export DM_ROOT="$WORK"
-export LLVM_BIN="$(brew --prefix llvm@23)/bin"
 
 "$PY" scripts/extract_exefs.py "$UPDATE" --update --keys "$KEYS" --output "$WORK/extracted/v262144/exefs"
 "$PY" scripts/merge_romfs.py "$BASE" "$UPDATE" --keys "$KEYS" --output "$WORK/extracted/v262144/romfs"

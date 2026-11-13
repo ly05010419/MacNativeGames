@@ -16,8 +16,8 @@ update profile from verified CNMT metadata. It rejects unknown code/data
 identities. Combined update images and cheats are not part of this flow. The three
 separate, pinned DLC packages can optionally be added as described below.
 
-On Apple silicon with macOS 26+, the command-line tools and Homebrew libraries
-`opus`, `libvpx`, `libvorbis`, and `libogg`, create the isolated environment once:
+On Apple silicon with macOS 26+ and the command-line tools (opus, libvpx, libvorbis and libogg come with the build:
+pinned sources, made once per Mac by `tools/deps`; no Homebrew), create the isolated environment once:
 
 ```sh
 python3.14 -m venv build/acnh-3.0.1/work/venv

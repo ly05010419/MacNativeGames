@@ -10,7 +10,7 @@
 
 ## 构建方法
 
-需要支持 Metal 4 的苹果芯片 Mac、macOS 26+、Xcode/macOS 26+ SDK、Python 3.11+、.NET SDK 10、`make`、`clang`、`zstd`、`spirv-cross`。Python 依赖为 `lz4 capstone fonttools`，3.14 以前另需 `backports.zstd`。所有依赖预先安装后，构建过程不联网。另需通过 `--libhac-package` 显式提供本地 `libhac.0.19.0.nupkg`；不自动下载，不把该依赖包放入仓库。当前只提供 Mac 构建入口，iOS 未编译、未测试。
+需要支持 Metal 4 的苹果芯片 Mac、macOS 26+、Xcode/macOS 26+ SDK、Python 3.11+、`make`、`clang`（Xcode 自带）。.NET SDK 10、`zstd`、`spirv-cross` 由构建自己准备：每台 Mac 第一次构建时按固定版本从源头下载或编译（仓库的 `tools/deps`，缓存在 `~/Library/Caches/MacNativeGames/deps`），不用 Homebrew。Python 依赖为 `lz4 capstone fonttools`，3.14 以前另需 `backports.zstd`。所有依赖预先安装、这台 Mac 第一次构建取好固定版本的工具后，构建过程不联网。另需通过 `--libhac-package` 显式提供本地 `libhac.0.19.0.nupkg`；不自动下载，不把该依赖包放入仓库。当前只提供 Mac 构建入口，iOS 未编译、未测试。
 
 自行提供未经修改的本体 NSP/XCI、**2.3.0 更新 NSP** 和 `prod.keys`。本体和更新放在同一文件夹；无可识别票据时，文件名应含 `[标题ID]`，更新文件另含 `[v458752]`。提取后还会核对三个 NSO 的完整 SHA-256、大小和 build ID，文件名不能绕过校验。其他版本、DLC 和压缩容器不在支持范围内。
 

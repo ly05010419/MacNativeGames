@@ -29,9 +29,9 @@ excluded. The full per-file inventory is local build data and is not included.
 
 Use an Apple silicon Mac with macOS 26 or later, Xcode and its Metal toolchain.
 Build dependencies are Python 3 with `lz4`, `capstone`, `fonttools`, and
-`backports.zstd` when using Python before 3.14; .NET SDK/runtime 10; `spirv-cross`,
-`zstd`, and `make`. The translator payload is pinned and verified before
-staging. No build tooling is bundled in the runtime app.
+`backports.zstd` when using Python before 3.14, and `make` (Xcode). The .NET SDK 10,
+`spirv-cross` and `zstd` come with the build: the build makes them itself, once per Mac, from pinned sources (the repository's `tools/deps`, cached in `~/Library/Caches/MacNativeGames/deps`): no Homebrew.
+The translator payload is pinned and verified before staging. No build tooling is bundled in the runtime app.
 
 ```sh
 python3 -m venv /path/to/aoc-python

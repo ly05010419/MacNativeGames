@@ -41,6 +41,7 @@
 #include <stdatomic.h>
 #include "dmsh_chain.h"
 #include "totk_shader_rt.h"
+#include "nvn_compiler_retry.h"   /* #2070: an add the compiler service dropped is tried again */
 
 #ifndef PAR_BATCH_MAC
 #define PAR_BATCH_MAC 8
@@ -85,7 +86,15 @@ static int par_fill_light(void) {
 #if TARGET_OS_IPHONE
     return 1;
 #else
-    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL"); return e && !strcmp(e, "1");
+    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL");
+#ifdef GAME_OOT
+    /* The complete OOT seed has over 42,000 shaders. On a fresh install, keep
+       its precompiled libraries on disk and fill only recorded pipelines;
+       loading every library defeats the seed's bounded memory use. */
+    return !e || !strcmp(e, "1");
+#else
+    return e && !strcmp(e, "1");
+#endif
 #endif
 }
 static NSString *par_dir(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines"]; }
@@ -133,6 +142,8 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     const char *off = getenv("TOTK_PIPELINE_PREBUILT"), *seed = getenv("TOTK_SHADER_SEED_DIR");
     NSString *arch = dev.architecture.name, *dir = seed && *seed ? @(seed) : nil;
 #if !TARGET_OS_IPHONE
+    NSString *packaged = exe_rel("pipelines");
+    if ([NSFileManager.defaultManager fileExistsAtPath:[packaged stringByAppendingFormat:@"/pipelines-%@.json", arch]]) dir = packaged;
     if (!dir) {   // the Mac app's own (build_app.py mac_pipelines; the launcher names no seed): build/pipelines since 2026-11-03,
         dir = exe_rel("pipelines");   // beside the shader data bundle, which they would change on every packaging; before, the seed
         if (![NSFileManager.defaultManager fileExistsAtPath:dir]) dir = exe_rel("shader-seed");
@@ -308,8 +319,15 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch
     }
-    BOOL ok = b->archive && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [b->archive addRenderPipelineFunctionsWithDescriptor:desc error:&e]
-                                                                                  : [b->archive addComputePipelineFunctionsWithDescriptor:desc error:&e]);
+    // a mesh pipeline too (OOT 2026-11-11: its 124 listed mesh pipelines were compiled at every start, none archived)
+    /* Adding compiles through the compiler service: when it went away (another thread's shader crashed it, #2070), the
+       add is tried again once it is back, instead of losing the batch (nvn_compiler_retry.h). */
+    id<MTLBinaryArchive> archive = b->archive;
+    BOOL ok = archive && compiler_retry(&e, 100, ^BOOL(NSError **err) {
+        return [desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [archive addRenderPipelineFunctionsWithDescriptor:desc error:err]
+             : [desc isKindOfClass:MTLMeshRenderPipelineDescriptor.class] ? [archive addMeshRenderPipelineFunctionsWithDescriptor:desc error:err]
+                                                                        : [archive addComputePipelineFunctionsWithDescriptor:desc error:err];
+    });
     atomic_fetch_add(&g_par_add_ns, bp_now() - t0);
     if (ok) [b->keys addObject:key];
     else {

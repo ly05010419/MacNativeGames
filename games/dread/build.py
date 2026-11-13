@@ -49,6 +49,17 @@ class BuildError(Exception):
         self.code, self.log = code, log
 
 
+def pinned_deps(*names):
+    """OPUS_PREFIX, VPX_PREFIX, … in this process's environment, which the Makefile reads: the repository's tools/deps
+    makes them once per Mac from pinned sources, so no Homebrew is needed (2026-11-12)."""
+    sys.path.insert(0, str(REPO))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env(*names))
+    except DepsError as e:
+        raise BuildError(str(e), code='toolchain') from None
+
+
 def event(kind, /, **fields):
     print(json.dumps({'type': kind, 'time': round(time.time(), 3), **fields}), flush=True)
 
@@ -220,9 +231,7 @@ def prerequisites():
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install', code='toolchain')
     choose_sdk()
-    missing = [p for p in ('opus', 'libvpx') if not Path(f'/opt/homebrew/opt/{p}/lib').is_dir()]
-    if missing:
-        raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}', code='toolchain')
+    pinned_deps('opus', 'libvpx')
     for tool in ('git', 'make'):
         if not shutil.which(tool, path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
             raise BuildError(f'{tool} not found: xcode-select --install', code='toolchain')
@@ -392,9 +401,14 @@ def ios_prerequisites():
         developer_dir()
     except RuntimeError as e:
         raise BuildError(f'the iPhone / iPad app needs the full Xcode: {e}', code='toolchain')
-    missing = [tool for tool in ('xcodegen', 'cmake', 'ninja') if not shutil.which(tool)]
-    if missing:
-        raise BuildError(f'the iPhone / iPad app needs {", ".join(missing)}: brew install {" ".join(missing)}', code='toolchain')
+    # xcodegen, cmake and ninja from the repository's tools/deps (pinned, made once per Mac), first on PATH for
+    # build_ipa.py and build_deps.py, which run them by name
+    sys.path.insert(0, str(REPO))
+    from tools.deps import DepsError, path
+    try:
+        os.environ['PATH'] = os.pathsep.join(path('xcodegen', 'cmake', 'ninja') + [os.environ.get('PATH', '')])
+    except DepsError as e:
+        raise BuildError(str(e), code='toolchain') from None
 
 
 def step_ios(py, work, out, logs):

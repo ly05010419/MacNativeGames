@@ -30,8 +30,8 @@ Tested on a MacBook Pro M3 Max (36 GB, macOS 26.4); a packaged app also ran on a
 ## Build
 
 Needs a Mac with Apple silicon and macOS 26 or later, the Xcode command line tools (Xcode's Metal toolchain,
-`xcodebuild -downloadComponent MetalToolchain`, to compile shaders ahead of time; optional), Python 3.14, and from
-Homebrew `opus libvpx`.
+`xcodebuild -downloadComponent MetalToolchain`, to compile shaders ahead of time; optional), Python 3.14 ([python.org](https://www.python.org/downloads/macos/));
+opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew).
 
 ```sh
 cd games/ori

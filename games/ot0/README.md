@@ -37,7 +37,7 @@ The app's "Frame rate" setting (up to 120, 60 or 30; 120 by default) sets the en
 
 ## Build
 
-You need Xcode's Command Line Tools, Python 3.14 and, from Homebrew, `opus` and `libvpx`. Xcode itself is not needed. One command builds the app from your own files:
+You need Xcode's Command Line Tools and Python 3.14 ([python.org](https://www.python.org/downloads/macos/)); opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew). Xcode itself is not needed. One command builds the app from your own files:
 
 ```sh
 cd games/ot0
@@ -60,7 +60,7 @@ make prepare runtime shader-tools VERSION=$V PY=$PY
 cd OT0_build && TOTK_GPU_ALLOW_SUBMIT=1 ./build/ot0-native-$V rewritten/$V boot
 ```
 
-Verification of the rewrite (each module): `third_party/d2r/structck.py` (which needs Homebrew's `llvm`) and `third_party/d2r/equiv.py` with `OT0_build/rewritten/$V <module> OT0_build/extracted/$V/exefs/<module>`.
+Verification of the rewrite (each module): `third_party/d2r/structck.py` (Xcode's `llvm-objdump`) and `third_party/d2r/equiv.py` with `OT0_build/rewritten/$V <module> OT0_build/extracted/$V/exefs/<module>`.
 
 Several versions can be prepared in one work folder: each has its own `extracted/<version>`, `rewritten/<version>`, generated headers in `build/<version>` and runtime `build/ot0-native-<version>`, while the shader cache and the tools in `build/` are shared. The runtime stays directly in `build/` because the graphics layer finds the shader tools and cache next to it. `VERSION` defaults to the newest version extracted. Code patches go in `mods/<version>/<name>/exefs` (`mods/1.0.3`, `mods/1.0.4`, `mods/1.0.5`), are made into tables by `make patches` and checked against that version's build ID; the game applies the ones `OT0_PATCHES` names when it is run this way.
 

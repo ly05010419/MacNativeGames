@@ -1,4 +1,9 @@
 # Build in the external staged source copy made by scripts/build_mkw.py.
+# opus and libvpx come from the repository's tools/deps: made once per Mac from pinned sources (no Homebrew).
+# make runs here (games/<game>); set a *_PREFIX to use another build.
+OPUS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+VPX_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
+
 ifneq ($(wildcard ../../.git),)
 $(error Use scripts/build_mkw.py --work outside the checkout; direct builds write next to these sources)
 endif
@@ -43,7 +48,7 @@ $(GAME_DATA)/shared-fonts.txt: scripts/prepare_shared_fonts.py extracted/firmwar
 game-data: $(GAME_DATA)/runtime-tables.bin $(GAME_DATA)/rewriter.txt $(GAME_DATA)/romfs-config.txt $(GAME_DATA)/shared-fonts.txt
 
 $(BINARY): $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GFX_OBJECTS) Makefile
-	xcrun clang -mmacosx-version-min=26.0 -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_MKW=1 $(VERSION_FLAGS) -Iruntime -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+	xcrun clang -mmacosx-version-min=26.0 -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_MKW=1 $(VERSION_FLAGS) -Iruntime -Ibuild -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 binary: $(BINARY)
 # The shader translation chain from pinned sources (scripts/build_shader_tools.py): SPIRV-Cross, the vendored nxnative
 # SM86 frontend (third_party/nxnative) and tools/ampere_service, at the fixed paths the runtime starts them from.

@@ -54,9 +54,11 @@ def ocarina_app(app):
 def update_ocarina(app, work):
     """Ocarina of Time carries its own build, like build_app.build_oot. It gets the tool PATH main() gives the other games:
     an update started from the app inherits the Finder's PATH, which has no /opt/homebrew/bin, so the build's
-    make_opening_overlay.py found no ffmpeg (#2074)."""
+    make_opening_overlay.py found no ffmpeg (#2074). It needs no ffmpeg since 2026-11-12 (webm_one_frame.py), and dav1d,
+    opus, libvpx and dav1d come from build_app.codec_libraries, which sets the prefixes its Makefile links them from."""
     import importlib.util
     os.environ['PATH'] = os.pathsep.join(build_app.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')])
+    build_app.codec_libraries()   # without it the make took Homebrew's opus and libvpx, and found no static dav1d
     spec = importlib.util.spec_from_file_location('oot_build', build_app.REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -75,24 +77,35 @@ def app_identity(app):
     rewritten = app / 'Contents/Resources/totk/rewritten'
     versions = sorted(p.name for p in rewritten.iterdir() if p.is_dir()) if rewritten.is_dir() else []
     if not game or len(versions) != 1 or versions[0] not in VERSIONS or versions[0].startswith('botw') != (game == 'botw'):
-        raise BuildError(f'{app}: not an app build_app.py made (expected Contents/MacOS/TOTK or BotW and one version '
-                         f'in Contents/Resources/totk/rewritten, found {info.get("CFBundleExecutable")} and {versions})')
+        raise BuildError(f'{app}: not an app build_app.py made (expected Contents/MacOS/'
+                         f'{" or ".join(executable for _, _, executable in APPS.values())} and one version in '
+                         f'Contents/Resources/totk/rewritten, found {info.get("CFBundleExecutable")} and {versions})')
     return game, versions[0]
 
 
 def runtime_chain():
     """The translation chain of this repository's runtime (DMSH_CHAIN)."""
     text = (build_app.GAME / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text()
-    return re.search(r'#define DMSH_CHAIN "([^"]+)"', text).group(1)
+    return re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: totk\b', text).group(1)   # the shared layer's line for the games built with games/totk
 
 
-def check_seed_chain(res, chain, *, remake=False):
+def runtime_key_rule():
+    """The Switch 2 shader key rule of this repository's runtime (nvn_ctl.h NVN2_KEY_RULE)."""
+    text = (build_app.GAME / 'third_party/d2r_gfx/gfx/nvn/nvn_ctl.h').read_text()
+    return re.search(r'#define NVN2_KEY_RULE "([^"]+)"\s*/\* game: totk\b', text).group(1)   # the line of the games built with games/totk
+
+
+def check_seed_chain(res, chain, *, remake=False, key_rule=None):
     """The runtime warms up from the app's startup shader seed only when the seed is of its own translation chain
     (totk_shader_rt.m, nvn_mtl.m); with another, the first start would translate every shader as it is met. A new chain
     changes the seed's shaders, so the app needs a new seed: --seed makes it from the work folder (remake=True), or
-    build_app.py does. Returns whether the seed is of another chain."""
+    build_app.py does. A Switch 2 game's seed also names its shaders by the runtime's key rule (nvn_ctl.h NVN2_KEY_RULE,
+    recorded as shader_key_rule by prepare_ns2_seed.py): under another rule (or none recorded, a seed before 2026-11-12)
+    its keys name no shader the runtime asks for, so it is made again as for another chain. Returns whether the seed must
+    be made again."""
     try:
-        found = json.loads((res / 'build/shader-seed/seed-manifest.json').read_text())['chain']
+        manifest = json.loads((res / 'build/shader-seed/seed-manifest.json').read_text())
+        found = manifest['chain']
     except (OSError, ValueError, KeyError, TypeError):
         if remake:
             return True
@@ -103,7 +116,15 @@ def check_seed_chain(res, chain, *, remake=False):
                          f'{chain}: the shaders changed, so the app needs a new seed. Pass --seed to make it from the work '
                          f'folder of the app\'s build (a few minutes, no game file or keys), or do a full rebuild with '
                          f'build_app.py; the app was not changed')
-    return found != chain
+    rule = None
+    if build_app.ns2_game(str(manifest.get('version'))):
+        rule = key_rule or runtime_key_rule()
+        if manifest.get('shader_key_rule') != rule and not remake:
+            raise BuildError(f'the app\'s startup shaders are named by shader key rule {manifest.get("shader_key_rule") or "(none recorded)"}, '
+                             f'the runtime of this repository uses {rule}: their keys would name no shader the game sets. '
+                             f'Pass --seed to make them again from the work folder of the app\'s build (no game file or '
+                             f'keys), or do a full rebuild with build_app.py; the app was not changed')
+    return found != chain or (rule is not None and manifest.get('shader_key_rule') != rule)
 
 
 def check_work_files(tree, data, version):
@@ -127,11 +148,25 @@ def check_work_files(tree, data, version):
                          f'cannot make its startup shaders (pass --work <the work folder of the app\'s build>)')
 
 
+def old_work_name(game):
+    """The work folder an app that records none used, next to it (build_app.py before 31 October 2026)."""
+    return {'totk': 'TOTK_build', 'botw': 'BotW_build'}.get(game, f'{APPS[game][2]}_build')
+
+
+def seed_after_runtime(game):
+    """A Switch 2 game's seed is translated by its game binary (build_app.step_shaders_ns2), so the runtime is made first;
+    Tears of the Kingdom's and Breath of the Wild's are made by the shader tools alone, before it."""
+    return build_app.ns2_game(game) is not None
+
+
 def make_seed(tree, work, game, version, logs, env):
     """A new startup shader seed from the work folder's RomFS and modules, as build_app.py makes it (steps 3/4), the
     libraries compiled ahead for it, and the tool step_warm_metal compiles them into Metal's cache with when it cannot."""
     say('making the startup shaders from the work folder\'s game files (a few minutes; no game file or keys)')
-    if game == 'botw':
+    ns2 = build_app.ns2_game(version)
+    if ns2:   # every shader the game ships, translated by its new binary (prepare_ns2_seed.py)
+        build_app.step_shaders_ns2(tree, ns2, logs)
+    elif game == 'botw':
         build_app.step_shaders_botw(tree, work / 'botw', logs, version=version)
     else:
         build_app.step_shaders(tree, logs, version=version)
@@ -350,7 +385,7 @@ def prepare_vr_render_overlay(tree, res, data, version, logs, env):
         valid = False
     if not valid:
         raise BuildError('--vr needs the matching verified RomFS index and image in the work folder; use the original build workspace')
-    run([env.get('PY', sys.executable), 'scripts/make_output_res_overlay.py', '4096x4416',
+    run([env.get('PY', tree / '.venv/bin/python'), 'scripts/make_output_res_overlay.py', '4096x4416',   # Python 3.14 (#2099)
          '--scene', '4096x4416', '--version', version], logs / 'vr-render-overlay.log', cwd=tree, env=env)
     return tree / 'extracted/v143/romfs-patches-out/4096x4416-scene-4096x4416'
 
@@ -424,12 +459,68 @@ def replace_native_5k(res, action, made, version='v143'):
             build_app.copy_tree(folder, target)
 
 
+def plan(app, work=None):
+    """Which of the three updates the app needs, found by the checks main() makes before it touches anything, and nothing
+    is changed (--plan; MNG Launcher runs the fastest that fits, user 2026-11-12: "不要用最慢的形式打包"):
+      express  update_runtime.py "<app>"         no game files or keys
+      fast     update_runtime.py "<app>" --seed  new startup shaders from the work folder's files
+      full     build_app.py with the game files and keys
+      error    the app records a work folder on a disk that is not connected (reason says what to do)
+    with the reason in words, the game, its version and the work folder."""
+    app = Path(app).expanduser().resolve()
+    def result(kind, reason, **extra):
+        return {'app': str(app), 'kind': kind, 'reason': reason, **extra}
+    try:
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    except (OSError, ValueError):
+        return result('full', f'{app.name} is not a Mac app (no readable Contents/Info.plist)')
+    def work_folder(name):
+        return (Path(work).expanduser().resolve(), 'given') if work else build_app.recorded_work_folder(app, name)
+    if ocarina_app(app):
+        try:
+            folder, why = work_folder('OcarinaOfTime_build')
+        except BuildError as e:
+            return result('error', str(e), game='oot')
+        return result('express', 'Ocarina of Time: the express update checks its own shaders and says when a full build is needed',
+                      game='oot', work=str(folder), work_why=why)
+    try:
+        game, version = app_identity(app)
+    except BuildError as e:
+        return result('full', str(e))
+    shown = dict(game=game, version=version, display_version=VERSIONS[version]['display_version'])
+    try:
+        folder, why = work_folder(old_work_name(game))
+    except BuildError as e:
+        return result('error', str(e), **shown)
+    shown.update(work=str(folder), work_why=why)
+    res = app / 'Contents/Resources/totk'
+    data = res / f'build/game-data/{version}'
+    if not all((data / name).is_file() for name in build_app.game_data_files(version)):
+        if not (folder / f'totk/extracted/{version}').is_dir():
+            return result('full', 'the app has no game data folder and its work folder holds no files of its build to make one', **shown)
+        return result('express', 'the app has no game data folder yet: the express update makes it once from the work folder', **shown)
+    try:
+        check_game_data(data, res, version)
+        check_rewriter(data, res, version, rewriter_sha256())
+    except BuildError as e:
+        return result('full', str(e), **shown)
+    if check_seed_chain(res, runtime_chain(), remake=True):
+        try:
+            check_work_files(folder / 'totk', data, version)
+        except BuildError as e:
+            return result('full', f'the startup shaders must be made again and the work folder cannot: {e}', **shown)
+        return result('fast', 'the startup shaders are of another translation chain or shader key rule: they are made again from the work folder', **shown)
+    return result('express', 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt', **shown)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
     ap.add_argument('--work', type=Path, help='work folder to build in (default: the one the app records, MNGWorkFolder; an app '
                                               'that records none: TOTK_build, BotW_build or OcarinaOfTime_build next to it); an '
                                               'app made before the game data folder existed, and --seed, need the one of its build')
+    ap.add_argument('--plan', action='store_true', help='print which update the app needs (express, fast or full) as JSON, '
+                                                        'and change nothing')
     ap.add_argument('--vr', action='store_true', help='prepare TotK 1.4.3 exact VR render targets from its verified build inputs')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
@@ -437,6 +528,9 @@ def main(argv):
                     help='Mac TOTK 1.4.3 / BotW 1.6.0 and 1.9.0: include/omit 5K; without a recorded choice, include it on 32 GB-plus Macs '
                          'when the matching verified build cache is available. Saved resolution is not changed')
     args = ap.parse_args(argv)
+    if args.plan:
+        print(json.dumps(plan(args.app, args.work), ensure_ascii=False))
+        return
     app = args.app.expanduser().resolve()
     if ocarina_app(app):
         if args.seed or args.native_5k:
@@ -453,7 +547,7 @@ def main(argv):
         raise BuildError('MNGNative5K must be a boolean (or absent for automatic selection)')
     stale = check_seed_chain(app / 'Contents/Resources/totk', runtime_chain(), remake=args.seed)
     work, why = ((args.work.expanduser().resolve(), 'given with --work') if args.work
-                 else build_app.recorded_work_folder(app, 'BotW_build' if game == 'botw' else 'TOTK_build'))
+                 else build_app.recorded_work_folder(app, old_work_name(game)))
     py = build_app.prerequisites(args)
     logs = work / 'logs'
     env = dict(os.environ, PATH=os.pathsep.join(build_app.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
@@ -482,10 +576,13 @@ def main(argv):
     if args.seed:
         check_work_files(tree, data, version)
         if not stale:
-            say('   the app\'s startup shaders are of this runtime\'s translation chain; making them again as asked (--seed)')
-        make_seed(tree, work, game, version, logs, env)
+            say('   the app\'s startup shaders are of this runtime\'s translation chain and key rule; making them again as asked (--seed)')
+        if not seed_after_runtime(game):
+            make_seed(tree, work, game, version, logs, env)
     say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')
     run(['make', f'-j{os.cpu_count() or 4}', 'binary' if version == 'v0' else f'binary-{version}'], logs / 'runtime.log', cwd=tree, env=env)
+    if args.seed and seed_after_runtime(game):
+        make_seed(tree, work, game, version, logs, env)
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         build_app.build_spirv_cross(tree, logs)
     build_app.check_translator(tree)

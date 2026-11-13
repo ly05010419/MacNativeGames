@@ -1,12 +1,12 @@
-"""Code mods through the build (S5.4, C3 with R1-R3). The model: no Tk.
+"""Code mods through the build (S5.4, C3 with R1-R3). The model: no window.
 
 A valid library mod whose code check is ok or unchecked can be included in the next build; build_app.py merges it
 (--mod) and decides. --mod is passed only for Tears of the Kingdom and only with an update file (the build's version is
 the update's; a patch for another build of main stops it early, in the update's step_code, and the app is not replaced).
-At the build's start, inside prepare_request, the included mods' patch files (.pchtxt, .ips, .ips32 only) are copied
+At a full build's start (MNG Launcher's build job, tools/builder_jobs/code_mods.compose), the included mods' patch files (.pchtxt, .ips, .ips32 only) are copied
 into <library>/Builder code mods/exefs: a .pchtxt as <mod id>-<name>.pchtxt (its name carries no meaning, its @nsobid
 does), an .ips under its own name, and two IPS patches for main are refused before the build. The composed set (mod ids
-and each file's SHA-256) travels with the request, and code-in-app.json records it under the app's path (a player may
+and each file's SHA-256) is kept by the build job, and code-in-app.json records it under the app's path (a player may
 have two apps) only on that run's success; a failed or cancelled build leaves the record as it was. A successful TOTK
 build with no code (none switched on, or no update file) records an empty set (O2)."""
 import hashlib

@@ -150,8 +150,14 @@ static NSString *contrib_file(NSString *data) {
     NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGContributionFolder"];
     if (![folder isKindOfClass:NSString.class] || !folder.length || ![fm fileExistsAtPath:folder.stringByDeletingLastPathComponent]) return old;
     if (![fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]) return old;
-    // the Mac's file (an iPhone / iPad contributes its own, totk_contrib_upload.h); Breath of the Wild has a list of its own
-    NSString *mine = [folder stringByAppendingPathComponent:strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution-botw.txt" : @"shader-list-contribution.txt"];
+    // the Mac's file (an iPhone / iPad contributes its own, totk_contrib_upload.h). Each game its own file: Tears of the
+    // Kingdom's without a suffix, Breath of the Wild's -botw, Bananza's and Pokopia's -<TOTK_GAME_DIR>, as Ocarina of Time's
+    // launcher. Until 2026-11-12 every game but Tears of the Kingdom wrote -botw's, so one file held Breath of the Wild's and
+    // Pokopia's rows and whichever app sent it named its own game for both (the inbox: 464 Pokopia rows sent as Breath of
+    // the Wild 1.6.0's).
+    NSString *mine = [folder stringByAppendingPathComponent:!strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution.txt"
+                      : !strcmp(GAME_FOLDER, "BotW") ? @"shader-list-contribution-botw.txt"
+                      : [NSString stringWithFormat:@"shader-list-contribution-%s.txt", TOTK_GAME_DIR]];
     if (![fm fileExistsAtPath:mine] && [fm fileExistsAtPath:old]) {
         [fm moveItemAtPath:old toPath:mine error:nil];
         NSString *state = [old stringByAppendingString:@".reminded"];   // where the state was kept before (totk_contrib_state)
@@ -432,14 +438,15 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
-        NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
+        NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
           NSString *build = [root stringByAppendingPathComponent:@"build"];
           totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
         contrib_ask(contrib);
+        setenv("TOTK_BOARD_DIR", data.fileSystemRepresentation, 0);   // the leaderboard's folder (runtime/board_upload.h); a test run keeps its own;
+        //   named first: the uploads below send the board's id with the rows (totk_inbox_board_id)
         totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing
-        setenv("TOTK_BOARD_DIR", data.fileSystemRepresentation, 0);   // the leaderboard's folder (runtime/board_upload.h); a test run keeps its own
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
         { NSString *cmds = env_or("TOTK_INPUT_FILE", [data stringByAppendingPathComponent:@"input.txt"]);

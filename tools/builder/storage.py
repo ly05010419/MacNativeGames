@@ -1,8 +1,8 @@
 """The two caches the builder shows and cleans: the build's work folder and the game's shader cache.
 
-The work folder is build_app.py's: by default <game file's folder>/<work folder name> (TOTK_build,
-BotW_build), or the folder the build was given with --work; the builder remembers the last one in
-settings.json (SavedPaths.work). The shader cache is the game launcher's: <Application Support>/
+The work folder is build_app.py's: by default build_app.default_work (the folder the app records, else
+MacNativeGames-work/<game> beside the folder of the app), or the folder the build was given with --work; MNG Launcher's
+Storage page (tools/builder_jobs/tab_storage.py) finds it. The shader cache is the game launcher's: <Application Support>/
 MacNativeGames/<TOTK|BotW>/shader-cache, holding one rt-<chain> folder per Metal pipeline chain, and
 the launcher's TOTK_SHADER_CACHE environment variable moves it (games/totk/app/launcher.m; Breath of
 the Wild's launcher is the same program and reads the same name). The builder does not move it: the
@@ -11,8 +11,8 @@ launcher reads no folder chosen here.
 Everything here is read-only or explicitly confirmed by the caller: measure() only walks, clean()
 removes a folder's contents (never the folder, never a game, save or app) and move() moves one
 folder's contents. The guards in refuse_reason() are the safety rules; a caller that wants to
-delete something shows the reason instead. This module has no Tk: the window runs measure() and
-move() on a thread and shows the result.
+delete something shows the reason instead. This module has no window: the Storage page calls it and shows the
+result.
 """
 from __future__ import annotations
 
@@ -60,17 +60,6 @@ def measure(path):
             except OSError as error:
                 errors.append(f'{item}: {error.strerror or error}')
     return Size(total, count, tuple(errors))
-
-
-def work_dir(spec, game_file, saved):
-    """The work folder a build uses: the saved --work path when there is one, else the game's
-    default next to its file (paths.effective_paths' rule)."""
-    if saved:
-        return Path(saved).expanduser()
-    game = Path(game_file).expanduser() if game_file else None
-    if game is None:
-        return None
-    return game.parent / spec.work_folder_name
 
 
 def default_shader_dir(spec, home):

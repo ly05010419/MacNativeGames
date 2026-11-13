@@ -97,5 +97,8 @@ int nvn_fmt_to_mtl(int f, uint32_t *mtl, uint8_t swz[4]) {
     else if (f > 0 && f < (int)(sizeof T / sizeof *T)) e = T[f];
     if (mtl) *mtl = e.kind ? e.mtl : 0;
     if (swz) { swz[0] = e.rb ? NVN_SWZ_B : NVN_SWZ_R; swz[1] = NVN_SWZ_G; swz[2] = e.rb ? NVN_SWZ_R : NVN_SWZ_B; swz[3] = e.noalpha ? NVN_SWZ_ONE : NVN_SWZ_A; }
+#ifdef GAME_OOT   /* Ocarina of Time reads depth formats through plain texture2d slots (nvn_mtl.m samp_depth_read); TOTK declares them depth2d */
+    if (swz && f >= 0x32 && f <= 0x36) { swz[1] = swz[2] = NVN_SWZ_ZERO; swz[3] = NVN_SWZ_ONE; }   // a texture read of a depth format is (d, 0, 0, 1)
+#endif
     return e.kind;
 }

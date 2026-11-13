@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. This page says how the project works and what a pull request needs. The easiest way to help needs no code at all: play, and [send your shaders](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml) (see the [shared shader list](docs/shader-list.md)).
+Thanks for helping. This page says how the project works and what a pull request needs. The easiest way to help needs no code at all: play, and answer "Contribute shaders" when the game asks: it then sends the shaders and pipelines the shared list lacks to the shader inbox on its own (see the [shared shader list](docs/shader-list.md)).
 
 [中文说明在下面](#参与贡献)
 
@@ -56,7 +56,7 @@ Thanks for helping. This page says how the project works and what a pull request
 
 # 参与贡献
 
-感谢参与。本页说明项目的做法和提交 pull request 的要求。最简单的帮忙不用写代码：照常玩游戏，然后[发送你的着色器](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)（见[公共着色器清单](docs/shader-list.md)）。
+感谢参与。本页说明项目的做法和提交 pull request 的要求。最简单的帮忙不用写代码：照常玩游戏，游戏问的时候选“贡献着色器”：之后它会自己把公共清单缺的着色器和管线发到着色器收件箱（见[公共着色器清单](docs/shader-list.md)）。
 
 ## 法律：不放任何游戏内容
 

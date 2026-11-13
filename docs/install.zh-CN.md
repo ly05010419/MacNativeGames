@@ -32,11 +32,11 @@
 - 本体不能是压缩格式。NSZ / XCZ 本体先解压（`nsz -D`）。
 - 卡带镜像里自带了更新也可以，版本仍由 `--update` 决定。
 
-**`prod.keys`**：从同一台 Switch 导出（Lockpick_RCM）。在旧固件上导出的密钥，可能解不开较新的更新。
+**`prod.keys`**：和游戏文件来自同一台 Switch。比更新旧的 keys 文件解不开这个更新。
 
 **系统字体**：本体是 **NSP** 时需要，**旷野之息**一律需要。二选一：
 - `--firmware <文件夹>`：你导出的固件，一个装着 `.nca` 文件的文件夹（压缩包先解开），或已安装固件的 `registered` 文件夹。
-- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `TOTK_build/totk/extracted/firmware/shared-fonts`。
+- `--shared-fonts <文件夹>`：以前打包王国之泪时提取出的六个 `.bfttf` 文件，在 `<工作目录>/totk/extracted/firmware/shared-fonts`（默认是 `~/MacNativeGames-work/totk/…`）。
 
 王国之泪的 XCI 自带字体，不用另给。
 
@@ -47,29 +47,45 @@
 | 只有本体 | 25 GB | 45 GB |
 | 加更新 | 40 GB | 60 GB |
 
-工作目录默认建在游戏文件旁边（`TOTK_build`；旷野之息是 `BotW_build`）。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
+不带 `--work` 时，工作目录用 `-o` 那个 App 记录的；没有记录就用放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`（App 在 `~/Applications` 或 `/Applications` 时都是 `~/MacNativeGames-work/totk`）。MNG Launcher 用同一条规则。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
 
-## 用窗口打包
+## 用 MNG Launcher 或 AI 打包
 
-**新：拖放打包器。** 运行 `python3 tools/builder_app/make_app.py`，生成 `~/Applications/MacNativeGames Builder.app`（自带 Python）：第一步拖入游戏，第二步选择 `prod.keys`，第三步点**打包并游玩**，全程显示进度。目前打所有游戏的 Mac 包；细节见 [builder-app.md](builder-app.md)。下面的旧窗口保留 Mods、按键和存档几页。
+不管谁来操作，打包都用同一个引擎：MNG Launcher 的窗口，或终端里的 `tools/mng.py`（帮你的 AI 用的就是它）。两者都运行 `tools/builder_jobs`，遵守同一套规则（见下），所以用一种方式打的游戏，可以用另一种方式更新。
 
-不想敲命令的话：装好下面第 1 步的工具（窗口还要 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
+### MNG Launcher（窗口）
 
-- **Build**（打包）：选游戏，再选游戏文件、更新、`prod.keys`，游戏需要时再选固件或系统字体文件夹（工作目录和输出的 App 在 **Advanced** 里）。**Check files** 会检查这台 Mac 和你的文件，有问题就列出来，能修的附上修复命令。**Build app** 用这些路径运行 `build_app.py`，显示四个阶段、用时和日志；打完一键 **Open app** 或 **Show in Finder**。**Cancel** 会中断打包，下次用同一个工作目录再打会接着做。窗口只记住你选的路径，不复制文件；日志在 `~/Library/Logs/MacNativeGames/builder-<游戏>-<日期>-<时间>.log`。打包时别关掉跟着打开的终端窗口。
-- **Settings**（设置；王国之泪 1.4.3、旷野之息 1.9.0）：开局画面、补帧（这台 Mac 的显卡支持 Metal 4 MetalFX 补帧时才有）、边缘平滑、远处地面更清晰，1.4.3 还有画面比例。**▶ Play** 启动游戏。画面、补帧、边缘平滑、画面比例就是游戏里设置面板（1 键）存的那份设置，从访达打开也生效，在哪边改都一样；只有“远处地面更清晰”面板里没有，只在用 **▶ Play** 启动时生效。游戏开着时不改设置，先关掉游戏。
-- **Mods**（模组；王国之泪 1.4.3、旷野之息 1.9.0）：**Add mod...** 选你自己的模组文件夹（带 `romfs/`；王国之泪的代码补丁放 `exefs/`），窗口不带任何模组。每个模组都会对照打好的 App 检查，路径对得上这个版本才能打开；**Apply mods** 按顺序（下面的优先）装进游戏的模组文件夹，原来的文件夹留作备份，下次启动游戏生效。TKMM、BCML 的包不收，请用它们自己的管理器装。
-- **Controls**（按键）：在手柄图上改键位，存进 `controls.txt`；王国之泪还能顺带把游戏里的按键图标换成对应的样子。
-- **更新**：用 `git clone` 下载的，窗口打开时会看 MacNativeGames 的 `main` 有没有新提交；在 `main` 上点 **Update** 只做快进，本地改过文件或有自己的提交时不动、告诉你。更新后关掉窗口重新打开，再打包一次。用 ZIP 下载的不能自己更新，请重新下载。
+运行 `python3 tools/builder_app/make_app.py` 生成 `~/Applications/MNG Launcher.app`。它自带 Python，运行的是这个文件夹里的代码，所以 `git pull` 之后不用重新生成，除非窗口本身改了。
 
-没有 Tk 时 **Build Game.command** 会提示。同样的检查和打包也能在终端里用文字模式跑：
+- **游戏**（第一页，顶部没有标签栏）：每个游戏一张卡片。打包过的游戏显示它自己 App 的图片；点它出现右上角绿色的大按钮**启动游戏**，以及更新按钮，按能用的最快的一种命名：**极速更新**或**快速更新**（不用游戏文件），或**完整打包**（进入打包步骤，要游戏文件）；还有它的各页（点按钮就在下面展开）。没打包的游戏显示加号：点它进入打包三步，第一步拖入游戏文件，第二步选 `prod.keys`，第三步点**打包并游玩**，全程显示进度。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，会直接进入打包三步，第一、二步自动填好。
+- 打包过的游戏在卡片下面展开的各页：**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置，和游戏里的设置面板是同一份：每项显示你的设置，没设过的显示游戏默认值；点**启动游戏**就按这些设置启动）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装；不带任何模组）、**按键**（手柄布局、按键图标、按键测试）、**存储**（工作目录：大小和清理；着色器缓存：位置和大小；点**计算空间占用大小**才计算，之前显示上次算的结果）、**存档**（备份和恢复）。旧窗口（`Build Game.command`）已经去掉，由这几页代替。细节见 [builder-app.md](builder-app.md)；改代码的人看 [builder.md](builder.md)。
 
-```sh
-python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
-```
+### 用 AI 或终端：`tools/mng.py`
 
-`--dry-run` 只打印要运行的 `build_app.py` 命令；`python3.14 -m tools.builder --help` 列出全部选项。
+任何 `python3` 都能启动它（实际用 MNG Launcher 自带的 Python，没有就用 Python 3.14）。帮你打包的 AI 应该用它，不要自己拼 `build_app.py` 命令，而且**第一步永远是 `mng migrate`**：只有迁移完成的 Mac 才打开 MNG Launcher（在那之前 `mng open` 会拒绝）。
 
-**下载 ZIP 后第一次双击**：macOS 会拦下没打开过的下载脚本。在**系统设置 › 隐私与安全性**里对 `Build Game.command` 点**仍要打开**，或在这个文件夹里运行一次 `xattr -d com.apple.quarantine "Build Game.command"`。用 `git clone` 下载的不受影响。
+| 命令 | 做什么 |
+|---|---|
+| `python3 tools/mng.py migrate` | 这台 Mac 迁移完了吗？（`--apply` 把剩下的做完；见[老用户迁移](#老用户迁移到-mng-launcher)） |
+| `python3 tools/mng.py status` | 这台 Mac 上已装的游戏，以及各自要哪种更新 |
+| `python3 tools/mng.py check "<本体>" "<更新>" --keys "<prod.keys>"` | 文件分别是什么、会打出什么、这台 Mac 还缺什么 |
+| `python3 tools/mng.py build "<本体>" "<更新>" --keys "<prod.keys>"` | 打包这个游戏（已装过且版本相同时，就走更新） |
+| `python3 tools/mng.py update totk` | 不用文件更新已装的游戏（`botw`、`oot`、名字或 App 路径也行） |
+| `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <动作> --game totk` | 窗口里各页面的功能 |
+| `python3 tools/mng.py open "<文件>" "<prod.keys>"` | 打开 MNG Launcher 并填好这些文件（只在迁移完成后） |
+
+它会把每个阶段、步骤和日志行打印出来，每分钟报一次进度，最后报结果（加 `--json` 输出窗口读的原始数据）。`mng` 不做的事（iPhone 和 iPad、`--mod`、`--vr`）用[打包 App](#打包-app) 一节里的 `build_app.py` 命令。
+
+### 两者共同遵守的规则
+
+1. **目录规则只有一条。** App 放在你选的地方（MNG Launcher 默认 `~/Applications`）；工作目录用 App 已经记录的，没有就用放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`（App 在 `~/Applications` 时是 `~/MacNativeGames-work/totk`）。`build_app.py` 不带 `--work` 时也一样。
+2. **按顺序选能用的最快的更新：** 极速（`update_runtime.py`，几分钟，不用游戏文件）→ 快速（`--seed`，用工作目录重做启动着色器）→ 完整打包（`build_app.py`，要游戏文件和密钥）。`update_runtime.py "<App>" --plan` 会说该走哪种、为什么；窗口的**更新**和 `mng update` 就是按它走。给已装的游戏拖入同版本的文件也走更新；换了版本就完整打包到原来那个 App。
+3. **一台 Mac 同时只跑一个打包或更新**，不管是谁开始的。第二个会被拒绝，并说明正在跑的是哪个、谁开始的。窗口会显示在别处开始的任务（“从 … 开始的”）并能停止它；只有自己开始的任务结束后才会自动开游戏。
+4. **你的文件留在原处**：游戏文件和密钥都在原位置读取，不复制，也不上传任何东西。日志在 `~/Library/Logs/MacNativeGames/`；正在跑的任务在 `~/Library/Application Support/MacNativeGames/Builder/jobs/`。
+5. **不用 Homebrew**：打包需要的工具和库都由打包自己下载固定版本（见[需要准备](#需要准备)）。
+6. **先迁移**：AI 做任何事之前先检查迁移情况，迁移完才打开 MNG Launcher。
+
+老用户从旧安装迁移：见[老用户迁移到 MNG Launcher](#老用户迁移到-mng-launcher)。
 
 ## 打包 App
 
@@ -77,12 +93,12 @@ python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --key
 
 ```sh
 xcode-select --install
-# 没有 Homebrew 的话，按 https://brew.sh 安装（必须装在 /opt/homebrew）
-brew install opus libvpx python@3.14
-brew install python-tk@3.14   # 只有打包窗口需要（见上面“用窗口打包”）
+# Python 3.14：从 https://www.python.org/downloads/macos/ 下载安装包
+#   或者用 Homebrew：brew install python@3.14
+# opus、libvpx、dav1d 不用装：打包时从固定版本的源码自己编
 ```
 
-也可以不用 Homebrew 的 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
+也可以不装 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
 
 可选（装了完整 Xcode 时）：`xcodebuild -downloadComponent MetalToolchain`。
 - 装了它，打包时会把启动着色器直接编进 App：App 之后可以随意挪动，重新打包也更快。
@@ -136,7 +152,7 @@ Mac 上的王国之泪 1.4.3、旷野之息 1.6.0 / 1.9.0 在构建机器有 **3
 
 ```sh
 # 1.6.0，卡带镜像（本体、更新、DLC 在同一个 XCI 里）
-python3.14 build_app.py "<旷野之息 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
+python3.14 build_app.py "<旷野之息 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/MacNativeGames-work/totk/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
 
 # 1.9.0（或 1.6.0），用 NSP：本体加更新，DLC 包都可选
 python3.14 build_app.py "<旷野之息本体.nsp>" -k "<prod.keys>" --update "<1.9.0 更新.nsp>" --dlc "<DLC 1.nsp>" --dlc "<DLC 2.nsp>" --firmware "<固件文件夹>" -o "/Applications/Breath of the Wild.app"
@@ -148,7 +164,7 @@ python3.14 build_app.py "<旷野之息本体.nsp>" -k "<prod.keys>" --update "<1
 
 **需要：**
 - iOS / iPadOS 26，iPhone 14 或更新的机型。
-- Mac 上装好完整的 **Xcode 26** 或更高版本（含 iOS 平台），再 `brew install xcodegen cmake ninja`。
+- Mac 上装好完整的 **Xcode 26** 或更高版本（含 iOS 平台）。不用 Homebrew：XcodeGen、CMake、Ninja 由打包自己下载固定版本。
 - 在 Xcode › Settings › Accounts 里登录你的 Apple ID（免费账号也行）。
 - 设备上打开开发者模式。
 
@@ -206,10 +222,10 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 | 更新 | 什么时候 | 命令 | 需要 |
 |---|---|---|---|
 | **极速更新** | 本仓库每次有新版本（`git pull` 之后）；「更新」页跑的就是它 | `python3.14 update_runtime.py "<App 路径>"` | App 记录的工作目录；不需要游戏文件和密钥 |
-| **快速更新** | 极速更新提示启动着色器不再匹配时（王国之泪、旷野之息：翻译链换了）。时之笛没有这一档：它的极速更新自己核对着色器 | `python3.14 update_runtime.py "<App 路径>" --seed` | 工作目录里的游戏文件；不需要游戏容器和密钥 |
+| **快速更新** | 极速更新提示启动着色器不再匹配时（王国之泪、旷野之息、大金刚、Pokopia：翻译链换了）。时之笛没有这一档：它的极速更新自己核对着色器 | `python3.14 update_runtime.py "<App 路径>" --seed` | 工作目录里的游戏文件；不需要游戏容器和密钥 |
 | **普通更新**（完整打包） | 上面两种提示需要完整打包时：换游戏版本、DLC 或游戏文件，代码改写规则或画面尺寸覆盖变了，时之笛的翻译器或翻译链变了，2026 年 11 月 11 日以前准备着色器的时之笛 App，工作目录不在了或删掉了 | 和第一次打包一样运行 `build_app.py`，`-o "<App 路径>"` 不变，用 App 记录的 `--work` | 游戏文件和密钥 |
 
-大金刚和 Pokopia 只有普通更新（`build_app.py`），同样会复用没变的翻译和管线。
+大金刚和 Pokopia 从 2026 年 11 月 12 日起也有这三种更新（之前只有普通更新）；每种更新都会复用没变的翻译和管线。
 
 - **本仓库有新版本**（`git pull` 之后）：
   - 先退出游戏，再运行 `python3.14 update_runtime.py "<App 路径>"`，这就是极速更新（见下），不需要游戏文件和密钥。
@@ -235,6 +251,32 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 - **模组**：`--mod "<模组文件夹>" --install-mod-romfs` 会把模组的代码补丁打进 App，并装好它的数据。详见 [mods.md](mods.md)、[merged-mod-pack.md](merged-mod-pack.md) 和 [translation-mods.md](translation-mods.md)。
 - **只留一个桌面入口**（可选）：`python3.14 games/totk/tools/install_desktop_entry.py --app "<App 路径>"`。
 
+## 老用户迁移到 MNG Launcher
+
+适用于 2026 年 11 月 12 日以前用 `build_app.py` 或旧窗口（`Build Game.command`）打过游戏的玩家。下面的步骤不用重新打包，也不用游戏文件和密钥，除非某一步写明要。先关掉游戏。
+
+**用 AI（或在终端里）迁移只要一条命令，而且必须最先做：** `python3 tools/mng.py migrate` 列出每个游戏 App 和 MNG Launcher 还差什么；`python3 tools/mng.py migrate --apply` 把它做完（把不符合规则的工作目录在同一个盘上改名到 `MacNativeGames-work/<游戏>`，每个游戏用一次极速更新记下来，生成或重新生成 MNG Launcher）。迁移完成指：每个 App 都记录了符合规则的工作目录（不在源码目录和放 App 的文件夹里、和 App 在同一个盘上），并且 MNG Launcher 是由这份源码生成的；下次本来就要完整打包的游戏（大金刚、Pokopia、换版本的）不卡这一步。迁移完成后才打开 MNG Launcher：在那之前 `python3 tools/mng.py open` 会拒绝。下面是手动做的同样步骤。
+
+1. **更新代码。** 在 `MacNativeGames` 文件夹里运行 `git pull`（ZIP 下载的就重新下载）。`Build Game.command` 已经删掉，它的几页都搬进了 MNG Launcher。
+2. **Python。** 已经装了 Python 3.14 的照旧用。新 Mac 只要装 <https://www.python.org/downloads/macos/> 的安装包；不再需要 Homebrew（opus、libvpx、dav1d、XcodeGen、CMake 等编译工具由打包自己下载固定版本）。
+3. **生成 MNG Launcher：** `python3 tools/builder_app/make_app.py`，然后打开 `~/Applications/MNG Launcher.app`。它运行的是这个文件夹里的代码，以后 `git pull` 就够了；只有窗口本身有改动时才要重新生成。
+4. **你的游戏会自动列出来**：第一页的卡片就是它们，带各自的图片（macOS 知道的所有王国之泪、旷野之息、时之笛、大金刚、Pokopia 的 App）。点卡片，按钮写着它能用的更新，比如**极速更新**：不用游戏文件。
+5. **把每个游戏的工作目录放到规定的位置**（规则见英文版 [install.md 的 Folders 一节](install.md#folders)）：放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`，比如 App 在 `~/Applications`，就是 `~/MacNativeGames-work/totk`。打开**存储**页，选游戏，看它的工作目录：
+
+   | 页面上写着 | 怎么做 |
+   |---|---|
+   | 已记录，而且已经是 `…/MacNativeGames-work/<游戏>` | 不用动 |
+   | 已记录，但在别的地方（游戏文件旁边的 `TOTK_build`、`BotW_build`，或你自己选的文件夹） | 照现在这样也能用。要按规则放：点**移动…**选 `MacNativeGames-work/<游戏>`（同一个盘上瞬间完成），再点**现在更新**，App 就改记新位置 |
+   | App 没有记录（2026 年 10 月 31 日以前打的） | 把它打包时用的文件夹（一般是 App 或游戏文件旁边的 `TOTK_build`）**移动…**到 `MacNativeGames-work/<游戏>`，再点**现在更新** |
+   | 在一个没接上的盘上 | 接上那个盘再打开这一页，或者重新打包（见下一条） |
+
+   App 不记录的另一份旧工作目录，之后可以删掉；**存储**页会显示 App 实际用的是哪一个。
+6. **更新提示“要完整打包”时**（换了游戏版本、工作目录没了；大金刚和 Pokopia 一直如此）：在第一步拖入游戏文件、第二步选密钥，点**重新打包**。它会打进原来那个 App，保留存档和 App 记录的工作目录，并复用这个 App 里已经核对过的游戏数据。
+7. **旧窗口保存的东西都还在**，各页直接读原来的位置：模组（`<游戏数据目录>/mod-library`，**模组**页；如果提示模组和新 App 对不上，点一次**应用模组**）、手柄选择（**按键**页）、开局选项（**设置**页）、存档备份（`~/Documents/MacNativeGames-Backups`，**存档**页）。只有旧窗口记住的文件路径（`Builder/settings.json`）不再读取：需要完整打包时，重新拖一次文件就行。
+8. **可选的清理。** 只为这个项目装的 Homebrew 包可以卸掉（`brew uninstall opus libvpx dav1d ffmpeg llvm xcodegen cmake ninja`，前提是你别的东西不用它们）。在 App 还没有图标时建的程序坞或桌面快捷方式可能一直是空白图标：删掉重建即可。
+
+帮你的 AI 可以替你做完这些：install-zelda skill 会读每个 App 的 `MNGWorkFolder`，运行 `update_runtime.py "<App>" --plan`，并用 `open -a "MNG Launcher" "<文件>" "<prod.keys>"` 打开 Launcher。
+
 ## 打包报错
 
 处理步骤：
@@ -246,7 +288,8 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 |---|---|
 | `needs macOS 26 or later` | 本仓库不支持，见[需要准备](#需要准备)里的 macOS 15 fork。 |
 | `clang++ finds no C++ standard library headers` | 装了 Xcode：`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`；没装：`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`。 |
-| `Homebrew packages missing`、`Python 3.14 not found`、`git not found` | 装上它点名的东西。 |
+| `Python 3.14 not found`、`git not found` | 装上它点名的东西。 |
+| `[deps] … failed`（opus、libvpx、dav1d、XcodeGen 等） | 这些由打包自己从固定版本源码做出来；看它点名的日志（`~/Library/Caches/MacNativeGames/deps/logs` 下）。下载失败的，再打一次包。 |
 | `NSP files do not include system shared fonts`、`needs --firmware or --shared-fonts` | 加上 `--firmware` 或 `--shared-fonts`。 |
 | `SHA-256 … is not the expected …`、`ExeFS … is missing; not the supported version` | 先 `git pull`；再确认本体是 1.0.0、更新是支持的版本；都对的话，重新导出游戏。 |
 | `unsupported update module hashes` | 这个更新版本不支持。 |
@@ -255,7 +298,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | 这是别的游戏：按它自己的 `games/<名字>/README.md` 打包。 |
 | `needs about N GB free` | 腾出空间，或用 `--work` 和 `-o` 放到有空间的 APFS 卷上。 |
 | `BKTR verification failed`、合并更新时出错 | 先 `git pull`。还不行的话，你的密钥可能比更新旧：在新固件上重新导出 `prod.keys`。 |
-| `make failed`、`xcrun failed` | 看它点名的日志；通常是开发工具不完整，或 Homebrew 不在 `/opt/homebrew`。 |
+| `make failed`、`xcrun failed` | 看它点名的日志；通常是开发工具不完整。 |
 | iOS 签名或安装出错 | 在 Xcode › Settings › Accounts 登录 Apple ID，设备解锁并信任这台 Mac，打开开发者模式，再装一次。 |
 
 还是不行，就开一个 [issue](https://github.com/ly05010419/MacNativeGames/issues)，附上：

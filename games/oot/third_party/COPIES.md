@@ -14,7 +14,7 @@ GPU shader stages and matrix operations: bounded MIT adaptations from ChiefSZ13/
 
 The original MIT Ryujinx shader-only sources are vendored under `third_party/ryujinx`; project patches are applied only to an external build copy. SPIRV-Cross is built from the pinned official Khronos source declared in `tools/shader_pins.py`.
 
-The Mac App bundles dav1d 1.5.3 as the bounded AV1 fallback (Homebrew's installed build, BSD-2-Clause; license in dav1d-COPYING). VideoToolbox remains the primary path.
+The Mac App links dav1d 1.5.3 statically as the bounded AV1 fallback (BSD-2-Clause; license in dav1d-COPYING). `build_app.py` builds it once per Mac from the VideoLAN release tarball, pinned by SHA-256, with meson and ninja from hash-pinned PyPI wheels; no Homebrew. VideoToolbox remains the primary path.
 
 Ampere opcode semantics were cross-checked against NVIDIA CUDA Binary Utilities and Mesa NAK sm70_encode.rs (official Mesa source, retrieved 2026-11-05). Lichii nx2 at 62ba83427e16fa127acbe21f60b6fa0dd3bb2c5d was consulted for field meanings only; no GPL runtime or shader implementation was copied into this MIT code. UBREV, predicate packing and two-source F2IP U8/S8 conversion/packing use our existing IR/conversion emitters. F2IP conversion and packing were checked against NVIDIA's published SASS example (developer forum topic 255571/4) and the PTX `cvt.pack` specification, then independently tested on the native GPU backend.
 

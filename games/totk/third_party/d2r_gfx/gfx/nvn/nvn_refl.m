@@ -56,10 +56,13 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) {
                 int bank = [b[@"bank"] intValue];
-                /* NVN2 bank 24 holds pushed constants, not synthesized driver data. */
+                /* NVN2 bank 24 holds pushed constants, not synthesized driver data; only banks 0 and 2 are driver data. */
                 if (bank == NVN_PUSH_BANK) { r->kind = NVN_RB_CBUF; r->reg = reg = NVN_PUSH_BANK; }
-                else r->kind = bank == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+                else if (bank == 0 || bank == 2) r->kind = bank == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+                else { FAIL("unsupported driver bank %d", bank); }
             }
+            else if ([k isEqualToString:@"texpool"]) { r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); }
+            else if ([k isEqualToString:@"samppool"]) r->kind = NVN_RB_SAMPP;
             else if ([k isEqualToString:@"gmem_map"]) r->kind = NVN_RB_GMEM;
             else if ([k isEqualToString:@"geometry"]) { r->kind = NVN_RB_GEO; if (reg < 0 || reg > 4) FAIL("geometry helper %s: reg %d", [b[@"msl_name"] UTF8String], reg); }
             else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
@@ -78,6 +81,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;
         }
+        NSArray *cmp = j[@"compare_slots"];
+        if ([cmp isKindOfClass:[NSArray class]]) for (NSNumber *n in cmp) { int r = [n intValue]; if (r >= 0 && r < 128) o->compare[r >> 6] |= UINT64_C(1) << (r & 63); }
         NSDictionary *dr = j[@"drv_reads"];
         if ([dr isKindOfClass:[NSDictionary class]]) { o->drv_read[0] = dr[@"0"] != nil; o->drv_read[2] = dr[@"2"] != nil; }
         NSArray *uf = j[@"drv_unfillable"];

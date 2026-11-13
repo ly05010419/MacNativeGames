@@ -170,7 +170,10 @@ def main():
     if vision and a.version.startswith('botw'): raise RuntimeError('native visionOS builds currently support Tears of the Kingdom only')
     sdk=subprocess.check_output(['xcrun','--sdk',sdk_name,'--show-sdk-path'],env=env,text=True).strip()
     subprocess.run(['xcodebuild','-version'],env=env,check=True,stdout=subprocess.DEVNULL)
-    if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
+    # the repository's tools/deps: pinned XcodeGen (no Homebrew); build_app.py runs this from its copy in the work folder
+    sys.path.insert(0,os.environ.get('MNG_REPO') or str(Path(__file__).resolve().parents[4]))
+    from tools.deps import program
+    generator=program('xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
     ns2=a.version in ('dkb','pkp')
@@ -256,7 +259,7 @@ def main():
     xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a{xlate_link} {flags}\n'
                         + ('OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1\n' if device_xlate else ''))
-    run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
+    run([generator,'generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
     derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
         '-destination','generic/platform='+('visionOS' if vision else 'iOS'),'-derivedDataPath',derived,'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY='],
         ios,logs/f'xcodebuild-{a.platform}.log',env)

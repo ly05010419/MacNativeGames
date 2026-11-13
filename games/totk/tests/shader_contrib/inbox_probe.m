@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
         BOOL up = !strcmp(argv[2], "up");
         NSString *v = [NSString stringWithFormat:@"V\t%064x\t{\"attr\":{},\"fout\":{},\"img\":{},\"tex\":{}}", 7];
         NSString *r = @"R\tabcdef", *b = @"B\tabcdef\t-\t0:1:0x0p+0,0x0p+0,0x0p+0,0x1p+0;";
-        [[NSString stringWithFormat:@"# header\n# Game: TOTK 1.4.3\n%@\n%@\n%@\n", v, r, b]
+        [[NSString stringWithFormat:@"# header\n" TOTK_CONTRIB_OWNER GAME_INBOX_ID "\n# Game: TOTK 1.4.3\n%@\n%@\n%@\n", v, r, b]   /* as the game writes it after the launcher's claim */
             writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
         check(totk_inbox_configured(), "the URL is built in");

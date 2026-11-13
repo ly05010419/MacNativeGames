@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import plistlib
 import subprocess
@@ -27,7 +28,7 @@ class PackageTests(unittest.TestCase):
         library=self.libs/(source_hash+'.metallib');library.write_bytes(b'synthetic resource; not executed')
         self.recorded_library=self.libs/('c'*64+'.metallib')
         self.recorded_library.write_bytes(b'synthetic recorded binding variant')
-        chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
+        chain=re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: oot\b',(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text())[1]
         romfs=self.tree/'extracted/oot/romfs';romfs.mkdir(parents=True)   # the image this tree imported names the seed (#2009)
         (romfs/'index.json').write_text(json.dumps(dict(romfs_sha256='d'*64,romfs_size=16,files=[])))
         self.metadata=dict(schema=1,version='oot',source_romfs_sha256='d'*64,

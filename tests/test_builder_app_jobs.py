@@ -3,6 +3,7 @@ whole build run against a stand-in build_app.py (events, a failure, a cancel).""
 import io
 import json
 import os
+import plistlib
 from pathlib import Path
 import signal
 import subprocess
@@ -16,7 +17,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tools.builder_jobs import build_job, checks, classify, history, repo  # noqa: E402
+from tools.builder_jobs import build_job, checks, classify, history, installed, repo  # noqa: E402
 from tools.builder_jobs.events import Emitter  # noqa: E402
 
 KEYS = 'header_key = ' + 'ab' * 32 + '\n'
@@ -89,6 +90,13 @@ class Classify(unittest.TestCase):
         with mock.patch.dict(os.environ, {'MNG_LANG': 'en'}):
             self.assertIn('no game', classify.plan(classify.classify([u])).blocks[0])
 
+    def test_a_breath_of_the_wild_card_needs_fonts_too(self):
+        card = self.dir / 'BotW [01007EF00011E000][v786432].xci'
+        card.write_bytes(b'\0' * 0x100 + b'HEAD' + b'\0' * 60)
+        p = classify.plan(classify.classify([card]))
+        self.assertEqual(p.game, 'botw')
+        self.assertTrue(any('system fonts' in b or '系统字体' in b for b in p.blocks))
+
     def test_plan_refuses_two_games(self):
         a = pfs0(self.dir / 'a [0100F2C0115B6000].nsp')
         b = pfs0(self.dir / 'b [01007EF00011E000].nsp')
@@ -103,13 +111,55 @@ class Classify(unittest.TestCase):
 
 
 class Command(unittest.TestCase):
+    PLAN = dict(game='totk', base='/g/b.xci', keys='/k/prod.keys', update='/g/u.nsp', update_version=720896, dlc=[],
+                firmware=None, fonts='/f', blocks=[])
+
     def test_arguments(self):
-        plan = dict(game='totk', base='/g/b.xci', keys='/k/prod.keys', update='/g/u.nsp', dlc=[], firmware=None,
-                    fonts='/f', blocks=[])
         with tempfile.TemporaryDirectory() as tmp:
-            argv, work, out = build_job.command(dict(plan=plan, output_dir=tmp, work_root='/w'))
+            script, argv, work, out, kind, game = build_job.command(dict(plan=self.PLAN, output_dir=tmp, work_root='/w'))
+        self.assertEqual((script, kind, game), (repo.BUILD_APP, 'full', 'totk'))
         self.assertEqual(argv, ['/g/b.xci', '-k', '/k/prod.keys', '--update', '/g/u.nsp', '--shared-fonts', '/f',
                                 '--work', '/w/totk', '-o', str(Path(tmp) / 'Tears of the Kingdom.app')])
+
+    def test_without_a_work_root_the_one_folder_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp) / 'Applications'
+            _, argv, work, _, _, _ = build_job.command(dict(plan=self.PLAN, output_dir=str(apps), work_root=''))
+        self.assertEqual(work, Path(tmp) / 'MacNativeGames-work/totk')   # build_app.default_work: beside the apps folder
+
+    def app(self, tmp, work):
+        app = Path(tmp) / 'Applications/Tears of the Kingdom.app'
+        (app / 'Contents').mkdir(parents=True)
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'MNGWorkFolder': str(work)}))
+        return app
+
+    def test_an_installed_app_of_the_same_version_takes_the_express_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.app(tmp, Path(tmp) / 'w')
+            up = dict(kind='express', game='totk', version='v143', work=str(Path(tmp) / 'w'))
+            with mock.patch.object(build_job, 'express_plan', return_value=up):
+                script, argv, work, out, kind, _ = build_job.command(dict(plan=self.PLAN, output_dir=str(app.parent), work_root='/w'))
+        self.assertEqual((script, argv, kind, out), (repo.UPDATE_RUNTIME, [str(app)], 'express', app))
+
+    def test_another_version_or_an_unknown_one_takes_the_full_build_into_the_same_app(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.app(tmp, Path(tmp) / 'w')
+            up = dict(kind='express', game='totk', version='v121', work=str(Path(tmp) / 'w'))
+            for plan in (self.PLAN, dict(self.PLAN, update_version=None)):
+                with mock.patch.object(build_job, 'express_plan', return_value=up):
+                    script, argv, work, out, kind, _ = build_job.command(dict(plan=plan, output_dir=str(app.parent), work_root='/elsewhere'))
+                self.assertEqual((script, kind, work), (repo.BUILD_APP, 'full', Path(tmp) / 'w'))   # the work folder the app records
+                self.assertEqual(argv[-1], str(app))
+
+    def test_an_update_of_an_installed_app_needs_no_files(self):
+        for kind, extra in (('express', []), ('fast', ['--seed'])):
+            with mock.patch.object(build_job, 'express_plan', return_value=dict(kind=kind, game='botw', work='/w/botw')):
+                script, argv, work, out, k, game = build_job.command(dict(update='/A/Breath of the Wild.app'))
+            self.assertEqual((script, argv, work, k, game),
+                             (repo.UPDATE_RUNTIME, ['/A/Breath of the Wild.app'] + extra, Path('/w/botw'), kind, 'botw'))
+        with mock.patch.object(build_job, 'express_plan', return_value=dict(kind='full', reason='other modules')), \
+                self.assertRaisesRegex(build_job.Refused, 'other modules'):
+            build_job.command(dict(update='/A/x.app'))
 
     def test_a_blocked_plan_is_refused(self):
         with self.assertRaises(build_job.Refused):
@@ -117,8 +167,31 @@ class Command(unittest.TestCase):
 
     def test_a_dump_needs_no_keys(self):
         plan = dict(game='dkb', base='/d', keys='/k', blocks=[])
-        argv, _, _ = build_job.command(dict(plan=plan, output_dir='/o', work_root='/w'))
+        _, argv, _, _, _, _ = build_job.command(dict(plan=plan, output_dir='/o', work_root='/w'))
         self.assertNotIn('-k', argv)
+
+
+class Installed(unittest.TestCase):
+    def test_half_made_replaced_and_trashed_copies_are_left_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('A.app', 'A.app.partial', 'A.app.replaced-12', '.Trash/A.app'):
+                (Path(tmp) / name / 'Contents').mkdir(parents=True)
+                (Path(tmp) / name / 'Contents/Info.plist').write_bytes(b'')
+            self.assertEqual([n for n in ('A.app', 'A.app.partial', 'A.app.replaced-12', '.Trash/A.app')
+                              if installed.usable(str(Path(tmp) / n))], ['A.app'])
+
+    def test_apps_are_asked_for_by_bundle_id_quickly(self):
+        # LaunchServices by bundle ID, not a dump of every app this Mac knows (that took 4.9 s, user 2026-11-12)
+        start = time.monotonic()
+        found = installed.registered({'com.apple.finder'})
+        self.assertIn('/System/Library/CoreServices/Finder.app', found)
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertEqual(installed.registered({'org.macnativegames.nothing-has-this'}), [])
+
+    def test_every_game_s_bundle_is_looked_for(self):
+        ids = installed.bundle_ids()
+        for bundle in ('org.macnativegames.totk', 'org.macnativegames.botw', 'org.macnativegames.oot'):
+            self.assertIn(bundle, ids)
 
 
 class History(unittest.TestCase):
@@ -143,13 +216,17 @@ class History(unittest.TestCase):
 
 
 class Checks(unittest.TestCase):
-    def test_build_app_prerequisites_are_restated(self):
+    def test_no_homebrew_package_is_needed(self):
         source = repo.BUILD_APP.read_text()
         start = source.index('def prerequisites(')
-        body = source[start:source.index('\ndef ', start + 1)]
-        for package in checks.BREW_PACKAGES:
-            self.assertIn(f"'{package}'", body)
-        self.assertIn("('opus', 'libvpx')", body, 'build_app.py needs other Homebrew packages: update checks.BREW_PACKAGES')
+        body = source[start:source.index('\n\n\n', start)]   # the function alone, not the comment after it
+        self.assertNotIn('libvpx', body)          # built from pinned sources (codec_libraries), not checked in Homebrew
+        self.assertIn("codec_libraries(getattr(args, 'platform', 'macos'))", body)
+        # Ocarina of Time links dav1d statically from that build and needs no llvm or ffmpeg (2026-11-12), so the window
+        # asks for nothing from Homebrew: a Homebrew path back in its build has to come with a check here.
+        oot = (repo.REPO / 'games/oot/Makefile').read_text() + (repo.REPO / 'games/oot/build.py').read_text()
+        for gone in ('opt/dav1d', 'libdav1d.dylib', 'llvm@23', 'llvm-objcopy', 'ffmpeg'):
+            self.assertNotIn(gone, oot)
 
     def test_every_check_has_text(self):
         for c in checks.checks(tempfile.gettempdir()):

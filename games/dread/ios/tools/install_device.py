@@ -17,6 +17,12 @@ from pathlib import Path
 ENTITLEMENT = 'com.apple.developer.kernel.increased-memory-limit'
 CACHE = Path.home()/'Library/Caches/MacNativeGames/ios-signing'
 
+def xcodegen():
+    """The pinned XcodeGen of the repository's tools/deps (downloaded once per Mac; no Homebrew)."""
+    sys.path.insert(0, os.environ.get('MNG_REPO') or str(Path(__file__).resolve().parents[4]))
+    from tools.deps import program
+    return program('xcodegen')
+
 def run(cmd, **kw): return subprocess.run([str(x) for x in cmd], check=True, **kw)
 def out(cmd): return subprocess.run([str(x) for x in cmd], check=True, capture_output=True, text=True).stdout
 
@@ -64,7 +70,7 @@ targets:
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_ENTITLEMENTS: TOTK.entitlements
 ''')
-    run(['xcodegen','generate','--quiet'], cwd=proj)
+    run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
     with log.open('w') as f:

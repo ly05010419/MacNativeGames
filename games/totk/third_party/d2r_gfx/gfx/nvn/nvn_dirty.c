@@ -33,14 +33,14 @@ enum { PG_NONE = 0, PG_PROT = 1, PG_BUSY = 2 };
 #ifndef BUSY_WAIT_MS
 #define BUSY_WAIT_MS 2000
 #endif
-enum { BUSY_SITE_FAULT = 0, BUSY_SITE_PREP, BUSY_SITE_GPU, BUSY_SITE_PROTECT, BUSY_SITE_PROTECT_SEG, BUSY_SITE_N };
+enum { BUSY_SITE_FAULT = 0, BUSY_SITE_PREP, BUSY_SITE_GPU, BUSY_SITE_PROTECT, BUSY_SITE_PROTECT_SEG, BUSY_SITE_NOREAD, BUSY_SITE_N };
 static const char *const g_busy_site_name[BUSY_SITE_N] = {
-    "on_fault", "prep_write", "gpu_write_begin", "nvn_dirty_protect", "protect_seg",
+    "on_fault", "prep_write", "gpu_write_begin", "nvn_dirty_protect", "protect_seg", "noread_probe",
 };
 // 跟踪区间 = 各内存池（MemoryPoolInitialize 登记）。池销毁后复用 live=0 的槽，信号处理里无锁扫描。
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
 #define MAX_RANGE 16384 // 原为 256：内存池多于它时超出的池不跟踪，里面的贴图每次取用都当成脏的重传（暗黑实测峰值见内存读数行的「内存池」；塞尔达约 300 个，踩过）。扫描只到已用的槽数，容量大不增加开销 | was 256: with more memory pools than that the excess pools are untracked and their textures are treated as dirty and re-uploaded on every use (for Diablo's measured peak see "memory pools" in the memory readout line; Zelda has about 300 and hit this). The scan only covers slots in use, so a larger capacity costs nothing. TOTK (2026-10-17): 4096 was full in the user's own games and most long test games (about 3,900 live pools in the world, more when moving between regions); now 16384
-typedef struct { uintptr_t base, end; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; _Atomic uint64_t *blk; } range_t;   // latest (TOTK): highest page generation in the range; blk: the same per block of BLK_PAGES pages
+typedef struct { uintptr_t base, end; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; _Atomic uint64_t *blk; _Atomic uint64_t *rd; uint16_t *rm; uint8_t *rk; _Atomic uint8_t *nr; } range_t;   // rd (OOT): per page, the fence of the latest GPU submission that reads it (nvn_dirty_read_mark)   // latest (TOTK): highest page generation in the range; blk: the same per block of BLK_PAGES pages
 /* TOTK_DIRTY_FAST (default on; =0 off), 2026-10-23. Two lookups the replay makes for every CPU-mirrored texture at its
    check in each submission (tex_mtl: about 2.5% of the translate thread in the Korok Forest profile):
    - nvn_dirty_since walked every page of the texture whenever anything else in its pool had been written since the stamp
@@ -106,6 +106,47 @@ static int busy_wait(range_t *r, uintptr_t p, int site) {
     }
     return 1;
 }
+/* OOT (2026-11-09) GPU read fences (nvn_dirty_read_mark / rd_check). The game's frame-start fence wait may be relaxed
+   (TOTK_SYNC_LAG=2): the CPU frame then runs while the GPU still reads the previous frame's inputs. Every guest range a
+   submission reads on the GPU is marked with that submission's fence per page (rd[]) and set read-only; a CPU write to
+   such a page faults here and waits until the completed-fence counter reaches the mark, i.e. exactly until the GPU has
+   finished reading that page -- not the whole frame. The thread encoding a submission is exempt (it commits the fence it
+   would wait for). Fault path: atomics, mach_absolute_time, sched_yield / nanosleep only, as busy_wait. */
+static const uint64_t *g_rd_done, *g_rd_committed;   // nvn_mtl.m: highest completed fence / last committed fence (plain stores there, acquire loads here)
+static pthread_key_t g_rd_key; static int g_rd_key_ok;   // per-thread exemption flag: the encoding thread while it encodes, the completion threads for good (TSD: readable in the fault handler, no lock, no allocation)
+static _Atomic uint64_t g_rd_marks, g_rd_mark_pages, g_rd_waits, g_rd_wait_ns, g_rd_wait_max_ns, g_rd_timeouts;
+enum { RD_WAIT_MS = 3000 };
+static uint64_t rd_wait(uint64_t fence) {   // returns the wait in ns
+    uint64_t t0 = mach_absolute_time();
+    for (unsigned n = 1;; n++) {
+        if (__atomic_load_n(g_rd_done, __ATOMIC_ACQUIRE) >= fence) break;
+        if (!(n & 0x3f)) { uint64_t now = mach_absolute_time();
+            if ((now - t0) * g_tb.numer / g_tb.denom > (uint64_t)RD_WAIT_MS * 1000000ull) { atomic_fetch_add(&g_rd_timeouts, 1); break; } }
+        if (n < 64) sched_yield(); else { struct timespec ts = { 0, 20000 }; nanosleep(&ts, NULL); }
+    }
+    uint64_t ns = (mach_absolute_time() - t0) * g_tb.numer / g_tb.denom;
+    atomic_fetch_add(&g_rd_waits, 1); atomic_fetch_add(&g_rd_wait_ns, ns);
+    uint64_t m = atomic_load(&g_rd_wait_max_ns); while (ns > m && !atomic_compare_exchange_weak(&g_rd_wait_max_ns, &m, ns)) {}
+    return ns;
+}
+/* Before a CPU write to page p of r lands. committed_only: wait only for fences already committed (host writes: the
+   caller may hold a lock the encoding thread needs, so an in-progress fence could never be committed meanwhile). */
+static nvn_rd_event g_rde[4096]; static _Atomic uint64_t g_rde_n; static uint64_t g_rde_drained;   // the waits, for the attribution log (nvn_dirty_read_wait_events)
+static int g_nr_active;   // OOT_NOREAD_PROBE used at least once: read faults are ours to look at too
+static nvn_nr_event g_nre[4096]; static _Atomic uint64_t g_nre_n; static uint64_t g_nre_drained;
+static void nr_record(uintptr_t addr, uint64_t pc, int write) {
+    uint64_t i = atomic_fetch_add(&g_nre_n, 1);
+    g_nre[i % 4096] = (nvn_nr_event){ addr, pc, mach_absolute_time() * g_tb.numer / g_tb.denom, (uint8_t)write };
+}
+static inline void rd_check(range_t *r, uintptr_t p, int committed_only, uint64_t pc, int host, uintptr_t addr) {
+    if (!r->rd || !g_rd_done) return;
+    uint64_t f = atomic_load_explicit(&r->rd[p], memory_order_relaxed);
+    if (!f || __atomic_load_n(g_rd_done, __ATOMIC_ACQUIRE) >= f) return;
+    if (g_rd_key_ok && pthread_getspecific(g_rd_key)) return;   // the encoding thread (it commits this fence) and the completion threads (their guest writes are the GPU timeline's; g_done moves after them)
+    if (committed_only && f > __atomic_load_n(g_rd_committed, __ATOMIC_ACQUIRE)) return;
+    uint64_t ns = rd_wait(f), i = atomic_fetch_add(&g_rde_n, 1);
+    g_rde[i % 4096] = (nvn_rd_event){ addr, f, ns, pc, r->rm ? r->rm[p] : 0, r->rk ? r->rk[p] : 0, (uint8_t)host };   // the exact address written (page field)
+}
 static range_t *find(uintptr_t a) {
     /* TOTK: the replay asks about the same few pools over and over; the last hits per thread (8, round robin) are checked
        first (a slot reused for another pool fails the bounds or live test and falls through to the scan), so the scan over
@@ -146,15 +187,23 @@ void nvn_dirty_fast_stats(int *on, uint64_t *blk_skips, uint64_t *hash_hits, uin
 /* TOTK diagnostic (on with DM_NVN_TILELOG): a ring of the latest page unprotections with the writer, read by
    nvn_dirty_recent: game writes (fault: pc / lr of the faulting code) and host writes (dm_guest_write_prepare caller). */
 #include <sys/ucontext.h>
-static nvn_dirty_rec g_drec[4096]; static _Atomic uint64_t g_drec_n; static int g_drec_on;
+#define DREC_N 65536   // OOT (2026-11-09): 4096 held about two frames of page unprotections; the race inventory reads the ring one or two frames after the writes
+static nvn_dirty_rec g_drec[DREC_N]; static _Atomic uint64_t g_drec_n; static int g_drec_on;
 uint64_t dm_host_write_pc;   // set by dm_guest_write_prepare (runtime/gfx_bridge.c) before calling prep_write
 static void drec_add(uintptr_t page, uint64_t pc, uint64_t lr, uint32_t src) {
     if (!g_drec_on) return;
-    uint64_t i = atomic_fetch_add(&g_drec_n, 1) % 4096; g_drec[i] = (nvn_dirty_rec){ page, pc, lr, src };
+    uint64_t i = atomic_fetch_add(&g_drec_n, 1) % DREC_N;
+    g_drec[i] = (nvn_dirty_rec){ page, pc, lr, src, mach_absolute_time() * g_tb.numer / g_tb.denom };   // t on the CLOCK_UPTIME_RAW base (what clock_gettime_nsec_np returns); signal-safe
 }
+void nvn_dirty_recent_enable(void) { g_drec_on = 1; }
 int nvn_dirty_recent(uintptr_t lo, uintptr_t hi, nvn_dirty_rec *out, int max) {
     uint64_t n = atomic_load(&g_drec_n); int k = 0;
-    for (uint64_t j = n > 4096 ? n - 4096 : 0; j < n && k < max; j++) { nvn_dirty_rec r = g_drec[j % 4096]; if (r.page >= lo && r.page < hi) out[k++] = r; }
+    for (uint64_t j = n > DREC_N ? n - DREC_N : 0; j < n && k < max; j++) { nvn_dirty_rec r = g_drec[j % DREC_N]; if (r.page >= lo && r.page < hi) out[k++] = r; }
+    return k;
+}
+int nvn_dirty_recent_snapshot(nvn_dirty_rec *out, int max) {   // records being written meanwhile may come out torn: diagnostic use only
+    uint64_t n = atomic_load(&g_drec_n), cnt = n > DREC_N ? DREC_N : n; if (max > 0 && cnt > (uint64_t)max) cnt = (uint64_t)max;
+    int k = 0; for (uint64_t j = n - cnt; j < n; j++) out[k++] = g_drec[j % DREC_N];
     return k;
 }
 static void unprotect_page(range_t *r, uintptr_t p) {   // 调用方已把状态从 PROT 改成 BUSY | The caller has already changed the state from PROT to BUSY
@@ -171,10 +220,20 @@ static void unprotect_page(range_t *r, uintptr_t p) {   // 调用方已把状态
     atomic_store(&r->state[p], PG_NONE);
 }
 static int on_fault(void *addr, int is_write, void *uc) {
-    (void)uc;
-    range_t *r = is_write ? find((uintptr_t)addr) : NULL;
+    range_t *r = (is_write || g_nr_active) ? find((uintptr_t)addr) : NULL;
     if (!r) return 0;
     uintptr_t p = ((uintptr_t)addr - r->base) >> g_shift;
+    uint64_t pc = uc ? ((ucontext_t *)uc)->uc_mcontext->__ss.__pc : 0;
+    if (r->nr && g_nr_active) {   // OOT_NOREAD_PROBE: a page the GPU wrote last frame is inaccessible until its first CPU access
+        int was = atomic_exchange(&r->nr[p], 0);   // 1: this is that first access (record it); 0: another thread took it (or an ordinary write fault)
+        uint8_t st = atomic_load(&r->state[p]); if (st == PG_BUSY) { busy_wait(r, p, BUSY_SITE_NOREAD); st = atomic_load(&r->state[p]); }
+        if (was || !is_write || st != PG_PROT) {   // tracked pages are never inaccessible otherwise: restore the state's protection (idempotent) and re-execute
+            mp(r->base + (p << g_shift), g_pg, st == PG_PROT ? PROT_READ : PROT_READ | PROT_WRITE);
+            if (was) nr_record((uintptr_t)addr, pc, is_write);
+            if (!is_write || st != PG_PROT) return 1;
+        }
+    } else if (!is_write) return 0;
+    rd_check(r, p, 0, pc, 0, (uintptr_t)addr);   // OOT: a pending GPU reader of this page -> this write waits for its submission to complete
     uint8_t st = PG_PROT;
     if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { unprotect_page(r, p); atomic_fetch_add(&g_faults, 1);
         if (g_drec_on && uc) { _STRUCT_MCONTEXT64 *mc = ((ucontext_t *)uc)->uc_mcontext; drec_add(r->base + (p << g_shift), mc->__ss.__pc, mc->__ss.__lr, 0); }
@@ -182,13 +241,14 @@ static int on_fault(void *addr, int is_write, void *uc) {
     if (st == PG_BUSY) return busy_wait(r, p, BUSY_SITE_FAULT);   // 别的线程正在改这页的保护：等它改完重执行（改成了只读就再缺页一次、走上面那一支） | Another thread is changing this page's protection: wait for it to finish and re-execute (if it became read-only, it faults once more and takes the branch above)
     return atomic_load(&r->gen[p]) != 0;   // 刚被别的线程解掉（本次缺页发生在解之前）：重执行；从未保护过的页不是我们的 | Just unprotected by another thread (this fault happened before the unprotect): re-execute; pages that were never protected are not ours
 }
-static void prep_write(void *addr, size_t len) {
+static void prep_write_ex(void *addr, size_t len, int rd) {   // rd: wait for pending GPU readers (not from pool destruction, which holds g_slot_mu)
     uintptr_t a = (uintptr_t)addr, e = a + len;
     while (len && a < e) {
         range_t *r = find(a);
         if (!r) { a = (a + g_pg) & ~(g_pg - 1); continue; }
         uintptr_t stop = e < r->end ? e : r->end;
         for (uintptr_t p = (a - r->base) >> g_shift, q = (stop - 1 - r->base) >> g_shift; p <= q; p++) {
+            if (rd) rd_check(r, p, 1, dm_host_write_pc, 1, r->base + (p << g_shift));
             for (;;) { uint8_t st = PG_PROT;   // 见 BUSY 等完要重看：对方可能是在设只读，等完这页是 PROT，照样得解 | After waiting out BUSY, look again: the other side may have been setting read-only, in which case the page is PROT after the wait and still has to be unprotected
                 if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { unprotect_page(r, p); atomic_fetch_add(&g_preps, 1); drec_add(r->base + (p << g_shift), dm_host_write_pc, 0, 1); break; }
                 if (st != PG_BUSY || !busy_wait(r, p, BUSY_SITE_PREP)) break; }
@@ -196,6 +256,7 @@ static void prep_write(void *addr, size_t len) {
         a = stop;
     }
 }
+static void prep_write(void *addr, size_t len) { prep_write_ex(addr, len, 1); }
 
 /* Writes on behalf of the GPU (a rendering written back into CPU-visible memory): the bytes change without counting as
    a CPU write. Protected pages are taken to BUSY (a guest write meanwhile waits in the fault handler, then faults again
@@ -259,17 +320,17 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     uintptr_t base = (uintptr_t)mem & ~(g_pg - 1), end = ((uintptr_t)mem + size + g_pg - 1) & ~(g_pg - 1);
     size_t np = (end - base) >> g_shift;
     _Atomic uint8_t *state = r->state;
-    _Atomic uint64_t *gen = r->gen, *blk = r->blk;
+    _Atomic uint64_t *gen = r->gen, *blk = r->blk, *rd = r->rd; uint16_t *rm = r->rm; uint8_t *rk = r->rk; _Atomic uint8_t *nr = r->nr;
     if (r->cap < np) {
-        state = calloc(np, 1); gen = calloc(np, sizeof *gen); blk = calloc(blk_count(np), sizeof *blk);
-        if (!state || !gen || !blk) die("脏页表分配失败（%zu 页）", np);
+        state = calloc(np, 1); gen = calloc(np, sizeof *gen); blk = calloc(blk_count(np), sizeof *blk); rd = calloc(np, sizeof *rd); rm = calloc(np, sizeof *rm); rk = calloc(np, 1); nr = calloc(np, 1);
+        if (!state || !gen || !blk || !rd || !rm || !rk || !nr) die("脏页表分配失败（%zu 页）", np);
         // 旧数组不 free：信号处理里可能仍有极短暂的陈旧读者，泄漏量 = 每页 9 字节。
         // The old array is not freed: the signal handler may still have a very brief stale reader; leak = 9 bytes per page.
         r->cap = np;
     } else {
-        memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk);
+        memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk); memset((void *)rd, 0, np * sizeof *rd); memset(rm, 0, np * sizeof *rm); memset(rk, 0, np); memset((void *)nr, 0, np);
     }
-    r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; atomic_store(&r->latest, 0);
+    r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; r->rd = rd; r->rm = rm; r->rk = rk; r->nr = nr; atomic_store(&r->latest, 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
@@ -279,7 +340,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
 void nvn_dirty_remove_range(const void *mem) {
     pthread_mutex_lock(&g_slot_mu);
     range_t *r = find((uintptr_t)mem);
-    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
+    if (r) { prep_write_ex((void *)r->base, r->end - r->base, 0); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
     pthread_mutex_unlock(&g_slot_mu);
 }
 int nvn_dirty_tracked(const void *addr, size_t len) {
@@ -317,7 +378,67 @@ void nvn_dirty_protect(const void *addr, size_t len) {
 }
 #endif
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
+void nvn_dirty_read_fence_setup(const uint64_t *done, const uint64_t *committed) { g_rd_done = done; g_rd_committed = committed; if (!g_rd_key_ok && !pthread_key_create(&g_rd_key, NULL)) g_rd_key_ok = 1; }
+void nvn_dirty_read_wait_exempt(int on) { if (g_rd_key_ok) pthread_setspecific(g_rd_key, (void *)(intptr_t)on); }
+void nvn_dirty_read_wait_stats(uint64_t *marks, uint64_t *pages, uint64_t *waits, uint64_t *ns, uint64_t *max_ns, uint64_t *timeouts) {
+    *marks = atomic_load(&g_rd_marks); *pages = atomic_load(&g_rd_mark_pages); *waits = atomic_load(&g_rd_waits); *ns = atomic_load(&g_rd_wait_ns);
+    *max_ns = atomic_load(&g_rd_wait_max_ns); *timeouts = atomic_load(&g_rd_timeouts);
+}
+int nvn_dirty_read_mark(const void *addr, size_t len, uint64_t fence, uint16_t marker, uint8_t kind) {
+    if (!len || !g_rd_done) return 0;
+    range_t *r = find((uintptr_t)addr); if (!r || !r->rd || (uintptr_t)addr + len > r->end) return 0;
+    uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
+    for (uintptr_t i = p; i <= q; i++) { uint64_t v = atomic_load_explicit(&r->rd[i], memory_order_relaxed); while (v < fence && !atomic_compare_exchange_weak(&r->rd[i], &v, fence)) {}
+        if (r->rm) { r->rm[i] = marker; r->rk[i] = kind; } }   // the latest marker wins (the wait log names it; plain stores, diagnostic)
+    atomic_fetch_add(&g_rd_marks, 1); atomic_fetch_add(&g_rd_mark_pages, q - p + 1);
+    nvn_dirty_protect(addr, len);   // pages already read-only are left alone; a page the game wrote since is set read-only again so its next write faults
+    return 1;
+}
+void nvn_dirty_noread_mark(const void *addr, size_t len) {
+    if (!len) return;
+    range_t *r = find((uintptr_t)addr); if (!r || !r->nr || (uintptr_t)addr + len > r->end) return;
+    g_nr_active = 1;
+    uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
+    for (uintptr_t i = p; i <= q; i++) {
+        if (atomic_exchange(&r->nr[i], 1)) continue;
+        if (atomic_load(&r->state[i]) == PG_BUSY) busy_wait(r, i, BUSY_SITE_NOREAD);
+        mp(r->base + (i << g_shift), g_pg, PROT_NONE);   // the state machine's protection comes back on the first access (on_fault)
+    }
+}
+int nvn_dirty_noread_events(nvn_nr_event *out, int max) {
+    uint64_t n = atomic_load(&g_nre_n), d = g_nre_drained; if (n - d > 4096) d = n - 4096;
+    int k = 0; for (; d < n && k < max; d++) out[k++] = g_nre[d % 4096];
+    g_nre_drained = d; return k;
+}
+int nvn_dirty_read_wait_events(nvn_rd_event *out, int max) {
+    uint64_t n = atomic_load(&g_rde_n), d = g_rde_drained; if (n - d > 4096) d = n - 4096;
+    int k = 0; for (; d < n && k < max; d++) out[k++] = g_rde[d % 4096];
+    g_rde_drained = d; return k;
+}
 #if !defined(GAME_BOTW)
+/* OOT (2026-11-08): the byte ranges of [addr, addr+len) on pages written after stamp, for an incremental rescan.
+   Calls fn(lo, hi) for each run of such pages, clipped to the range. Returns 0 when the range is not tracked (the
+   caller rescans everything), 1 otherwise. Same generations as nvn_dirty_since. */
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) {
+    if (!len || !nvn_dirty_tracked(addr, len)) return 0;
+    range_t *r = find((uintptr_t)addr);
+    if (atomic_load(&r->latest) <= stamp) return 1;
+    uintptr_t a = (uintptr_t)addr, e = a + len, p = (a - r->base) >> g_shift, q = (e - 1 - r->base) >> g_shift;
+    uintptr_t run = 0; int open = 0;
+    for (uintptr_t i = p; i <= q + 1; i++) {
+        int dirty = 0;
+        if (i <= q) {
+            if (g_dirty_fast && !(i & (BLK_PAGES - 1)) && i + BLK_PAGES - 1 <= q && atomic_load(&r->blk[i >> BLK_SHIFT]) <= stamp) {
+                if (open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+                i += BLK_PAGES - 1; continue;
+            }
+            dirty = atomic_load(&r->gen[i]) > stamp;
+        }
+        if (dirty && !open) { run = i; open = 1; }
+        if (!dirty && open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+    }
+    return 1;
+}
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) {
     if (!len) return 0;
     if (!nvn_dirty_tracked(addr, len)) return 1;   // 未跟踪时保守视为脏，宁可多传也不显示旧内容 | When untracked, conservatively treat as dirty: better to upload more than to show stale content
@@ -335,15 +456,15 @@ static void range_put(int slot, int n, uintptr_t base, uintptr_t end, const void
     range_t *r = &g_r[slot];
     size_t np = (end - base) >> g_shift;
     _Atomic uint8_t *state = r->state;
-    _Atomic uint64_t *gen = r->gen, *blk = r->blk;
+    _Atomic uint64_t *gen = r->gen, *blk = r->blk, *rd = r->rd; uint16_t *rm = r->rm; uint8_t *rk = r->rk; _Atomic uint8_t *nr = r->nr;
     if (r->cap < np) {
-        state = calloc(np, 1); gen = calloc(np, sizeof *gen); blk = calloc(blk_count(np), sizeof *blk);
-        if (!state || !gen || !blk) die("脏页表分配失败（%zu 页）", np);
+        state = calloc(np, 1); gen = calloc(np, sizeof *gen); blk = calloc(blk_count(np), sizeof *blk); rd = calloc(np, sizeof *rd); rm = calloc(np, sizeof *rm); rk = calloc(np, 1); nr = calloc(np, 1);
+        if (!state || !gen || !blk || !rd || !rm || !rk || !nr) die("脏页表分配失败（%zu 页）", np);
         r->cap = np;   // the old arrays are not freed (see nvn_dirty_add_range above)
     } else {
-        memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk);
+        memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk); memset((void *)rd, 0, np * sizeof *rd); memset(rm, 0, np * sizeof *rm); memset(rk, 0, np); memset((void *)nr, 0, np);
     }
-    r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; atomic_store(&r->latest, 0);
+    r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; r->rd = rd; r->rm = rm; r->rk = rk; r->nr = nr; atomic_store(&r->latest, 0);
     g_rmem[slot] = (uintptr_t)mem; atomic_store(&g_rdying[slot], 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
@@ -489,3 +610,6 @@ void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;
 }
+#if defined(GAME_BOTW)
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) { (void)addr; (void)len; (void)stamp; (void)fn; (void)ctx; return 0; }   // pools span ranges there: rescan all
+#endif

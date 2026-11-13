@@ -69,10 +69,15 @@ class RecordedWorkFolder(unittest.TestCase):
 
 class UpdatesUseIt(unittest.TestCase):
     """Both update paths take their default from recorded_work_folder; --work still wins."""
-    def test_tears_and_breath_of_the_wild(self):
+    def test_tears_breath_of_the_wild_and_the_switch_2_games(self):
+        # one default for every game update_runtime.py updates (old_work_name names the folder an app that records none
+        # used, beside it; 32247916 added Bananza and Pokopia, which had only the full build until then)
         source = (ROOT / 'update_runtime.py').read_text()
-        self.assertIn("build_app.recorded_work_folder(app, 'BotW_build' if game == 'botw' else 'TOTK_build')", source)
+        self.assertIn("build_app.recorded_work_folder(app, old_work_name(game))", source)
         self.assertNotIn("else app.parent / ('BotW_build' if game == 'botw' else 'TOTK_build')", source)
+        import update_runtime
+        self.assertEqual({g: update_runtime.old_work_name(g) for g in ('totk', 'botw', 'dkb', 'pkp')},
+                         {'totk': 'TOTK_build', 'botw': 'BotW_build', 'dkb': 'Bananza_build', 'pkp': 'Pokopia_build'})
 
     def test_ocarina_of_time(self):
         source = (ROOT / 'update_runtime.py').read_text()

@@ -20,7 +20,6 @@ class GameSpec:
     app_name: str
     bundle_id: str
     data_folder: str        # ~/Library/Application Support/MacNativeGames/<data_folder>
-    work_folder_name: str   # default work folder, next to the game file
     assets_dir: str         # relative to the repository
     versions: tuple[VersionSpec, ...]
 
@@ -32,7 +31,6 @@ TOTK = GameSpec(
     app_name='Tears of the Kingdom',
     bundle_id='org.macnativegames.totk',
     data_folder='TOTK',
-    work_folder_name='TOTK_build',
     assets_dir='games/totk/assets',
     versions=(
         VersionSpec('v0', '1.0.0', 'expected-v1.0.0.json'),
@@ -48,7 +46,6 @@ BOTW = GameSpec(
     app_name='Breath of the Wild',
     bundle_id='org.macnativegames.botw',
     data_folder='BotW',
-    work_folder_name='BotW_build',
     assets_dir='games/botw/assets',
     versions=(
         VersionSpec('botw160', '1.6.0', 'expected-v1.6.0.json'),

@@ -8,8 +8,20 @@ struct ContentView: View {
     @EnvironmentObject var model: Model
 
     var body: some View {
+        // No bar on top (user 2026-11-12): the games are the first page; building opens from a card's plus and has
+        // its own way back; a game's settings, mods, controls, storage and saves open under its card.
+        if model.page == "build" { BuildPage() } else { HomePage() }
+    }
+}
+
+/// Building a game from its files: back to the games, then the three steps (updating lives on the games page).
+struct BuildPage: View {
+    @EnvironmentObject var model: Model
+
+    var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                Button { model.page = "home" } label: { Label(T.backToGames, systemImage: "chevron.left") }
                 StepBox(number: 1, title: T.step1, done: model.gameReady, enabled: true) { GameStep() }
                 StepBox(number: 2, title: T.step2, done: model.gameReady && model.keysReady, enabled: model.gameReady) { KeysStep() }
                 StepBox(number: 3, title: T.step3, done: model.phase == .done,
@@ -95,6 +107,17 @@ struct GameStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let game = model.buildFor {   // chosen with a card's plus on the first page
+                HStack(alignment: .firstTextBaseline) {
+                    Label(T.buildingFor(T.gameName(game)), systemImage: "plus.circle.fill").font(.headline)
+                    Spacer()
+                    Button(T.anyGame) { model.buildFor = nil }
+                }
+                Text(T.filesFor(game)).font(.callout).foregroundStyle(.secondary)
+                if let other = model.plan?.game, other != game {
+                    Label(T.otherGameDropped(T.gameName(other)), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+            }
             DropZone(hint: T.step1Hint, button: T.chooseGame, directories: true, busy: busy) { model.add($0) }
             if let error = model.classifyError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             let items = (model.report?.items ?? []).filter { $0.role != "keys" }
@@ -172,6 +195,7 @@ struct FileRow: View {
     }
 }
 
+
 struct BuildStep: View {
     @EnvironmentObject var model: Model
 
@@ -219,18 +243,19 @@ struct FoldersSection: View {
         DisclosureGroup(T.settings) {
             VStack(alignment: .leading, spacing: 6) {
                 row(T.output, $model.outputDir)
-                row(T.work, $model.workRoot)
+                row(T.work, $model.workRoot, empty: T.workAuto)
             }
             .padding(.top, 4)
         }
         .disabled(model.phase == .building)
     }
 
-    private func row(_ label: String, _ value: Binding<String>) -> some View {
+    private func row(_ label: String, _ value: Binding<String>, empty: String? = nil) -> some View {
         HStack {
             Text(label).frame(width: 110, alignment: .leading).foregroundStyle(.secondary)
-            Text(value.wrappedValue).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            Text(value.wrappedValue.isEmpty ? (empty ?? "") : value.wrappedValue).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             Spacer()
+            if empty != nil && !value.wrappedValue.isEmpty { Button(T.automatic) { value.wrappedValue = "" } }
             Button(T.change) {
                 let panel = NSOpenPanel()
                 panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true

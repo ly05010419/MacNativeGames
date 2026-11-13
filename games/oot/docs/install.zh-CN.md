@@ -24,8 +24,8 @@
 
 ```sh
 xcode-select --install
-# 没有 Homebrew 的话见 https://brew.sh（必须装在 /opt/homebrew）
-brew install dav1d ffmpeg libvpx opus python@3.14
+# Python 3.14：从 https://www.python.org/downloads/macos/ 下载安装包（或 brew install python@3.14）
+# opus、libvpx、dav1d：打包时从固定版本的源码自己编；不用 llvm 和 ffmpeg
 ```
 
 另外要装完整的 **Xcode** 和它的 Metal 工具链（Xcode › 设置 › 组件 › Metal Toolchain，或 `xcodebuild -downloadComponent MetalToolchain`）：打包要用苹果的离线 Metal 编译器编译游戏的着色器，命令行工具里没有它。打包还会在工作目录自己的环境里装三个 Python 包（`lz4`、`capstone`、`zbic`）。

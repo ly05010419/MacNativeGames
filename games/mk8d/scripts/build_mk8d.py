@@ -11,6 +11,8 @@ import subprocess
 import sys
 
 GAME = Path(__file__).resolve().parents[1]
+REPO = Path(os.environ.get('MNG_REPO') or GAME.parents[1])   # the MacNativeGames checkout (games/mk8d/scripts/build_mk8d.py → parents[3]; MNG_REPO when a process that imported tools/deps started this one): its tools/deps makes the build tools
+BUILD_TOOLS = ('zstd', 'dotnet')   # what the build runs from PATH; spirv-cross is build_spirv_cross's (its --revision is in the lock), xcodegen and glslang are not needed
 TITLE, UPDATE = '0100152000022000', '0100152000022800'
 VERSION = 'v1507328'   # 4.0.1
 AOC, AOC_VERSION = '0100152000023001', 'v65536'   # the Booster Course Pass: its licence data only (contents.dat, version.txt); the courses are in the 4.0.1 update
@@ -208,11 +210,25 @@ def link_inputs(inputs, work):
     return destination
 
 
+def pinned_tools(inherited):
+    """PATH with the folders of BUILD_TOOLS first, and DOTNET_ROOT naming the .NET SDK among them: MacNativeGames' tools/deps makes
+    them once per Mac from pinned sources (~/Library/Caches/MacNativeGames/deps), so the build needs no Homebrew and every Mac builds
+    with the same tools. The shader translator and nx_extract are framework-dependent apphosts, which find the runtime through DOTNET_ROOT."""
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from tools.deps import DepsError, env, path
+    try:
+        return {'PATH': os.pathsep.join([*path(*BUILD_TOOLS), inherited]), **env('dotnet')}
+    except DepsError as error:
+        raise ValueError(f'a build tool could not be made from its pinned source: {error}') from error
+
+
 def environment(work):
     env = dict(os.environ, DM_GAME=TITLE, TMPDIR=str(work / 'tmp'), NUGET_PACKAGES=str(work / 'cache/nuget'),
                DOTNET_CLI_HOME=str(work / 'cache/dotnet'), PYTHONDONTWRITEBYTECODE='1',
                DOTNET_CLI_TELEMETRY_OPTOUT='1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_NOLOGO='1',
                DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE='true', NuGetAudit='false', MACOSX_DEPLOYMENT_TARGET='26.0')   # NuGetAudit: MSBuild reads it from the environment; no vulnerability feed is queried
+    env.update(pinned_tools(env.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')))
     for key in ('TMPDIR', 'NUGET_PACKAGES', 'DOTNET_CLI_HOME'):
         Path(env[key]).mkdir(parents=True, exist_ok=True)
     return env

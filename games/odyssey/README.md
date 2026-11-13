@@ -74,7 +74,7 @@ Odyssey because its game logic advances once per frame.
 - `prod.keys` dumped from your own Switch.
 - Your Switch's **firmware** files (its NCA folder), dumped from your own Switch: the system fonts come from there.
   Some game cards carry them in their system-update partition, but not all (the tested 1.3.0 card doesn't).
-- Homebrew `opus` and `libvpx` (`brew install opus libvpx`), and Python 3 with `capstone`, `cryptography` and `lz4`.
+- Python 3 with `capstone`, `cryptography` and `lz4`; opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew).
 - About 12 GB of free disk space.
 
 Everything the build writes goes to a work folder inside `games/odyssey` (default `Odyssey_build/`), which Git

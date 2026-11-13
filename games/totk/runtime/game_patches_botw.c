@@ -1731,10 +1731,22 @@ static void output_mfx_off(void) {   /* a start above 1080p turns MetalFX 2K off
     dm_gfx_set_flag("mfx_output", 0); dm_gfx_set_flag("mfx_upscale", 0);
 }
 #endif
+#ifndef GAME_BOTW160
+/* MetalFX on a canvas above 1080p is a picture mode only when that canvas is native + MetalFX's own (2560x1440,
+   runtime_output_native); MetalFX 2K scales the 1080p canvas. */
+static int output_mfx_canvas(void) {
+    uint64_t c = atomic_load(&g_out_cur);
+    unsigned w, h;
+    return (uint32_t)c <= 1920 ||
+           (runtime_output_native(OUTPUT_MODE_NATIVE_METALFX, &w, &h) && w == (uint32_t)c && h == (uint32_t)(c >> 32));
+}
+#endif
 /* At the first present: once the framework has made the swapchain from the static, the static follows the canvas (the
-   dungeon map and the noise gauge scale by it every call). On 1.9.0 a start above 1080p (1440p, screen, a fixed size)
-   also turns off MetalFX 2K, which TOTK_MFX_OUTPUT / TOTK_MFX_UPSCALE may have turned on, so the panel starts from the
-   native size (1.6.0 keeps upstream's start). */
+   dungeon map and the noise gauge scale by it every call). On 1.9.0 MetalFX, which TOTK_MFX_OUTPUT / TOTK_MFX_UPSCALE or
+   the saved picture mode may have turned on, stays on only when the canvas it scales belongs to a picture mode
+   (output_mfx_canvas): a start above 1080p from 1440p, the screen or a fixed size turns it off, so the panel starts from
+   the native size, and a saved "native 2K + MetalFX" (2560x1440) keeps it (#1806: the old "above 1920 wide" test predates
+   that mode and turned it off at every start). 1.6.0 keeps upstream's start. */
 static void botw_output_tick(void) {
 #ifdef GAME_BOTW160
     if(g_out_vr){runtime_vr_render_apply_pending();return;}
@@ -1744,7 +1756,7 @@ static void botw_output_tick(void) {
     done = 1;
     if (g_out_mode == OUT_AUTO) output_static();
 #ifndef GAME_BOTW160
-    if ((uint32_t)atomic_load(&g_out_cur) > 1920) output_mfx_off();
+    if (!output_mfx_canvas()) output_mfx_off();
 #endif
 }
 #ifdef GAME_BOTW160

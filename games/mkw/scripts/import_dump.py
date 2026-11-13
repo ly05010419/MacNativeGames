@@ -26,6 +26,14 @@ ALIGN = 16
 CHUNK = 8 * 1024 * 1024
 
 
+def not_game_file(name):
+    """Files a dump folder may hold that are no game file: the dumper's own listing of each folder (.listing) and what
+    macOS writes into a folder Finder showed (.DS_Store, and ._<name> AppleDouble files on volumes without extended
+    attributes). 2026-11-12: Bananza's dump, opened in Finder after it was dumped, held 14 .DS_Store files, and the
+    packed RomFS no longer matched the verified one; no file of the game differed (games/totk/scripts/import_dump.py)."""
+    return name in ('.listing', '.DS_Store') or name.startswith('._')
+
+
 def walk(folder):
     """Every regular file under folder as (RomFS path, size), sorted as extract_romfs.py sorts them. Symbolic links,
     names with a backslash or a NUL, and anything that is not a regular file stop the pack."""
@@ -33,7 +41,7 @@ def walk(folder):
     for top, dirs, names in os.walk(folder, followlinks=False):
         dirs.sort()
         for name in names:
-            if name == '.listing':   # the dumper's own listing of the folder, not a game file
+            if not_game_file(name):
                 continue
             full = Path(top) / name
             rel = full.relative_to(folder).as_posix()

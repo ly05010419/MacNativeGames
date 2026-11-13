@@ -22,7 +22,7 @@ Use an Apple silicon Mac with macOS 26 or later and Xcode 27.1 with the Metal to
 Build prerequisites:
 
 - Python 3.12 or later with `lz4`, `capstone` and `fonttools` (and `backports.zstd` before Python 3.14), for example in a virtual environment outside the checkout.
-- .NET SDK **10**, `make`, `clang` and `zstd` (Homebrew) on `PATH`. glslang and xcodegen are not needed.
+- `make` and `clang` (Xcode). The .NET SDK **10** and `zstd` come with the build: the build makes them itself, once per Mac, from pinned sources (the repository's `tools/deps`, cached in `~/Library/Caches/MacNativeGames/deps`): no Homebrew. glslang and xcodegen are not needed.
 - A **local LibHac 0.19.0 NuGet package**, passed with `--libhac-package`. SHA-256 `1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19` (nuget.org's `libhac.0.19.0.nupkg`). It is a build prerequisite like .NET and the Python packages, not redistributed here. The build never downloads it: `nx_extract` restores from a NuGet configuration that clears every other feed and fallback folder.
 - The shader translator is carried as **binaries only** under `prebuilt/`, with SHA-256 checksums and upstream provenance; SPIRV-Cross is built at packaging from its pinned release (fetched from GitHub).
 - Your own **base game NSP** and **4.0.1 update NSP** (`v1507328`), and your own `prod.keys`. Optionally, your own purchased **Booster Course Pass NSP** (`0100152000023001`, `v65536`). They are private build inputs; this repository supplies none of them.

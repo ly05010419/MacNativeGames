@@ -3,6 +3,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import plistlib
 import shutil
@@ -19,6 +20,24 @@ def build_helpers():
     if root not in sys.path:sys.path.insert(0,root)
     import build_app
     return build_app
+
+TREE_SKIP=('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis')   # the build's own output and caches
+
+def sync_tree(source,tree):
+    """The work folder's copy of games/oot mirrors the checkout: files are copied (linked folders, the shared graphics
+    layer and zeldaVR, as their contents), and a file or folder the checkout no longer has is deleted. A copy that only
+    added files kept another branch's nvn_pool_sources.m, which the Makefile's wildcard compiled with this checkout's
+    headers (2026-11-13). The names in TREE_SKIP are neither copied nor deleted."""
+    import fnmatch
+    shutil.copytree(source,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns(*TREE_SKIP))
+    skip=lambda name:any(fnmatch.fnmatch(name,p) for p in TREE_SKIP)
+    for here,dirs,files in os.walk(tree,topdown=True):
+        rel=Path(here).relative_to(tree)
+        dirs[:]=[d for d in dirs if not skip(d)]
+        for name in list(dirs):
+            if not (source/rel/name).exists():shutil.rmtree(Path(here)/name);dirs.remove(name)
+        for name in files:
+            if not skip(name) and not (source/rel/name).exists():(Path(here)/name).unlink()
 
 def sha(path):
     h=hashlib.sha256()
@@ -39,10 +58,6 @@ def imported_romfs(tree):
     names it. Not a pinned image: two retail dumps of update 131072 pack to different images (#2009, #2011)."""
     index=json.loads((Path(tree)/'extracted/oot/romfs/index.json').read_text())
     return dict(sha256=index['romfs_sha256'],size=index['romfs_size'])
-
-def missing_tools(names):
-    """The command-line tools of names the build cannot find on PATH (build_app.py puts Homebrew's folders on it)."""
-    return [name for name in names if not shutil.which(name)]
 
 def make_path(work):
     """The work folder as make can name it (#2045): make splits target and prerequisite names at spaces, and the default
@@ -172,7 +187,7 @@ def verify_shader_resources(tree):
     seed=tree/'build/shader-seed/oot';libraries=tree/'build/shader-libs'
     if not seed.exists():return None   # explicit development packages from before offline preparation
     metadata=json.loads((seed/'seed-manifest.json').read_text())
-    chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
+    chain=re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: oot\b',(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text())[1]   # the shared layer's line for this game
     imported=imported_romfs(tree)   # the seed is translated from this tree's own RomFS image (#2009: images differ by dump)
     if (metadata.get('version')!='oot' or metadata.get('source_romfs_sha256')!=imported['sha256'] or
         metadata.get('translator_sha256')!=sha(GAME/'prebuilt/macos-arm64/totk_xlate') or
@@ -359,14 +374,8 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     title,manifest=lists   # the archive's lists, beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     clone_file(title,data/'build/pso_title.tsv');clone_file(manifest,data/'build/pso_manifest.tsv')
     if pipelines:check_archive_lists(data/'build')   # never an App whose archive was built from other lists
-    # VideoToolbox is the primary AV1 decoder; the same bounded dav1d fallback
-    # used by the native host is bundled, independent of a Homebrew installation.
-    dependencies=subprocess.check_output(['otool','-L',mac/'OcarinaOfTime'],text=True)
-    dav1d=next(line.strip().split(' (')[0]for line in dependencies.splitlines()if '/libdav1d.'in line)
-    framework=temporary/'Contents/Frameworks'/Path(dav1d).name
-    clone_file(Path(dav1d).resolve(),framework)
-    subprocess.run(['install_name_tool','-change',dav1d,'@executable_path/../Frameworks/'+framework.name,mac/'OcarinaOfTime'],check=True)
-    subprocess.run(['codesign','--force','--sign','-',framework],check=True)
+    # VideoToolbox is the primary AV1 decoder; the bounded dav1d fallback is linked statically (build_app.codec_libraries
+    # builds it from its pinned source), so the App carries no dylib for it, only its license.
     clone_file(GAME/'third_party/dav1d-COPYING',res/'licenses/dav1d-COPYING')
     info=dict(CFBundleDevelopmentRegion='en',CFBundleExecutable='OcarinaOfTime',CFBundleIdentifier='org.macnativegames.oot',CFBundleName='Ocarina of Time',CFBundleDisplayName='Ocarina of Time',CFBundlePackageType='APPL',CFBundleShortVersionString='131072',CFBundleVersion='131072',LSMinimumSystemVersion='26.0',NSHighResolutionCapable=True,LSSupportsGameMode=True,GCSupportsControllerUserInteraction=True)
     icon=tree/'build/AppIcon.icns'   # the game's icon (assets/app-icon.json, made by build), as build_app.py puts it in the app
@@ -428,7 +437,7 @@ def update_runtime(app,work=None):
         if not told:print('waiting for the game to close',flush=True);told=True
         time.sleep(5)
     start=time.monotonic()
-    shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
+    sync_tree(GAME,tree)
     scripts=str(GAME/'scripts')
     if scripts not in sys.path:sys.path.insert(0,scripts)
     from prepare_ns2_seed import translation_context
@@ -473,24 +482,34 @@ def shader_jobs():
     compiler service), 8 on this 10-core M4; 4 left most of the machine idle for 9 minutes of translation."""
     return max(4, min(8, (os.cpu_count() or 4) - 2))
 
+def library_image(args,out):
+    """The RomFS image an earlier build put in the game library (package_app 'library': <folder>/oot/romfs.bin), to take
+    instead of packing the dump's 26 GB again (import_dump.py adopt_image; 2026-11-12): the folder --mac-game-data-folder
+    names, else the one the app being replaced records (MNGGameDataFolder), else the default one. None when there is none."""
+    folders=[args.mac_game_data_folder]
+    try:folders.append(plistlib.loads((out/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder'))
+    except (OSError,ValueError):pass
+    folders.append(Path.home()/'Library/Application Support/MacNativeGames/OcarinaOfTime/GameData')
+    for folder in folders:
+        if folder and (Path(folder).expanduser()/'oot/romfs.bin').is_file():return Path(folder).expanduser()/'oot/romfs.bin'
+    return None
+
 def build(args, source):
     if args.platform not in ('macos','ios'):raise ValueError('Ocarina of Time has macOS and iOS build paths only')
     device=args.platform=='ios'
     if args.update or args.dlc or args.mod:raise ValueError('use the complete original update 131072 in the dump/NUP')
-    source=Path(source).resolve();work=args.work.expanduser().resolve() if args.work else source.parent/'OcarinaOfTime_build'
+    source=Path(source).resolve()
+    out=args.out.expanduser().resolve() if args.out else source.parent/'Ocarina of Time.app'
+    # without --work: the folder the app records, else MacNativeGames-work/oot beside the apps folder (build_app.default_work)
+    work,why=(args.work.expanduser().resolve(),'given with --work') if args.work else build_helpers().default_work(out,'oot')
+    print(f'work folder {work} ({why})',flush=True)
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
-    out=args.out.expanduser().resolve() if args.out else source.parent/'Ocarina of Time.app'
     if out.suffix!='.app' and not (device and out.suffix=='.ipa'):raise ValueError('output must end in .app'+(' or .ipa' if device else ''))
     if out==repo or repo in out.parents:raise ValueError('App must remain outside the source checkout')
     if args.vr or args.native_4k or args.native_5k:raise ValueError('this title currently uses its original rendering options')
-    configured_llvm=os.environ.get('LLVM_BIN')
-    llvm_candidates=[configured_llvm] if configured_llvm else ['/opt/homebrew/opt/llvm@23/bin','/opt/homebrew/opt/llvm/bin']
-    llvm=next((folder for folder in llvm_candidates if all(os.access(Path(folder)/tool,os.X_OK)
-               for tool in ('llvm-objcopy','llvm-objdump'))),None)
-    if llvm is None:raise ValueError('OoT needs llvm-objcopy and llvm-objdump for rewrite verification; install llvm or set LLVM_BIN')
-    missing=missing_tools(('ffmpeg','ffprobe'))   # the opening overlay, the build's last step (#2070: a traceback after minutes)
-    if missing:raise ValueError(f"OoT needs {' and '.join(missing)} for the opening overlay; brew install ffmpeg")
+    # Nothing to install from Homebrew (2026-11-12): the rewrite check disassembles with Xcode's llvm-objdump
+    # (third_party/d2r/structck.py) and the opening overlay cuts its clip in Python (scripts/webm_one_frame.py).
     # Close this title normally before changing its resource workspace or App.
     # The input command follows the same save-safe window close as normal play.
     executable=out/'Contents/MacOS/OcarinaOfTime'
@@ -505,8 +524,8 @@ def build(args, source):
             if time.monotonic()>deadline:raise RuntimeError('game did not finish its normal close; App left untouched')
             time.sleep(1)
     work.mkdir(parents=True,exist_ok=True);tree=work/'oot';logs=work/'logs';logs.mkdir(exist_ok=True)
-    shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
-    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0',LLVM_BIN=llvm)
+    sync_tree(GAME,tree)
+    env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
@@ -517,7 +536,18 @@ def build(args, source):
     extracted=tree/'extracted/oot';index=extracted/'romfs/index.json'
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
     if source.is_file():run([py,'scripts/import_nup.py',source,'--output',extracted],'import-original-nup')
-    elif not index.exists():run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072'],'import-original-dump')
+    elif not index.exists():
+        print('RomFS: there is no imported game data in this work folder',flush=True)   # a long step says why (2026-11-11)
+        library=library_image(args,out)
+        if library:
+            try:
+                run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072','--adopted-image',library],'import-original-dump')
+                romfs_pin.check(extracted/'romfs')
+                print(f'RomFS: taken from the game library ({library}), an earlier pack of this dump: not packed again',flush=True)
+            except (subprocess.CalledProcessError,ValueError) as e:
+                print(f'RomFS: the game library image {library} is not this dump\'s ({e}): packing the folder',flush=True)
+                shutil.rmtree(extracted,ignore_errors=True);library=None
+        if not library:run([py,'scripts/import_dump.py',source,'--output',extracted,'--update','131072'],'import-original-dump')
     code=extracted/'exefs'
     for name,digest in expected['exefs_sha256'].items():
         if sha(code/name)!=digest:raise ValueError('unsupported or damaged original ExeFS: '+name)
@@ -570,5 +600,5 @@ def build(args, source):
     else:
      package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)
-    chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
+    chain=re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: oot\b',(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text())[1]   # the shared layer's line for this game
     return out,tree,expected,chain

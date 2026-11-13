@@ -98,7 +98,7 @@ class Applied(Base):
 class Rules(Base):
     def test_every_apply_goes_through_the_wrapper(self):                # R2, by the AST
         calls = []
-        for path in (REPO / 'tools/builder').glob('*.py'):
+        for path in [*(REPO / 'tools/builder').glob('*.py'), *(REPO / 'tools/builder_jobs').glob('*.py')]:
             tree = ast.parse(path.read_text())
             for fn in ast.walk(tree):
                 if isinstance(fn, ast.FunctionDef):

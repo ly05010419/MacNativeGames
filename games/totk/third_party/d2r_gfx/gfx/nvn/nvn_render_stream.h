@@ -22,16 +22,29 @@
 enum {
     RS_PSO, RS_DSS, RS_VIEWPORT, RS_SCISSOR, RS_CULL, RS_WINDING, RS_FILL,
     RS_BIAS, RS_CLIP, RS_STENCIL, RS_BLEND, RS_VISIBILITY, RS_ADDRESS,
+    RS_MESH_TABLES, RS_OBJECT_ADDRESS, RS_DRAW_MESH, RS_DRAW_MESH_INDIRECT,
     RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE,
     RS_BEGIN,   /* u[0] = retained MTL4RenderPassDescriptor, u[1] = vertex table, u[2] = fragment table, u[3] = command buffer, u[4] = barrier at start, u[5] = visibility options */
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
     RS_INDEXED_INDIRECT,   /* u[0] primitive, u[1] index type, u[2] index buffer, u[3] its length, u[4] the indirect record */
     RS_INDIRECT,           /* u[0] primitive, u[1] the indirect record (non-indexed) */
+    RS_MESH_TIMESTAMP,     /* bounded diagnostics: heap, entry, render stages */
 };
-enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
-                                   for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
-                                   not a hot spin: with a hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*,
-                                   rs4v-* with 200 us): CPU power taken from the GPU's budget. */
+/* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses for that long,
+   so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev, not a hot spin: with a
+   hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*, rs4v-* with 200 us): CPU power
+   taken from the GPU's budget. TOTK_RS_SPIN_US overrides the 200 us (2026-11-08: Time Profiler showed B on a P-core 85% of
+   every OOT frame in this wait while the frame's packets keep arriving under 200 us apart). */
+static uint64_t rs_spin_ns(void) {
+    static uint64_t v;
+#ifdef GAME_OOT
+    enum { RS_SPIN_DEFAULT_US = 20 };    /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6) */
+#else
+    enum { RS_SPIN_DEFAULT_US = 200 };
+#endif
+    if (!v) { const char *e = getenv("TOTK_RS_SPIN_US"); long us = e ? atol(e) : RS_SPIN_DEFAULT_US; v = (uint64_t)(us < 1 ? 1 : us) * 1000ull; if (e) MLOG("TOTK_RS_SPIN_US=%ld: the encode stage waits %ld us on an empty queue before sleeping", us, us); }
+    return v;
+}
 static nvn_encode_fifo g_rs_fifo;
 static _Atomic int g_rs_on = -1;
 static _Atomic int g_rs_sleeping;          /* B announced it is about to sleep (seq_cst handshake with the publisher) */
@@ -76,7 +89,8 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
             *enc = e; atomic_fetch_add_explicit(&g_rs_b_passes, 1, memory_order_relaxed);
             break; }
         case RS_END:
-            if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
+            if (u[0] == 3) [e barrierAfterStages:MTLStageVertex | MTLStageObject | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:(MTL4VisibilityOptions)u[1]]; /* OOT: native draw dependencies; same policy as the direct encoder. */
+            else if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
             else if (u[0]) [e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:(MTL4VisibilityOptions)u[1]];
             [e endEncoding]; *enc = nil; break;
         case RS_PSO: [e setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)(void *)(uintptr_t)u[0]]; if (u[0]) CFRelease((CFTypeRef)(uintptr_t)u[0]); break;
@@ -88,10 +102,15 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_FILL: [e setTriangleFillMode:(MTLTriangleFillMode)u[0]]; break;
         case RS_BIAS: { float v[3]; memcpy(v, u, sizeof v); [e setDepthBias:v[0] slopeScale:v[1] clamp:v[2]]; break; }
         case RS_CLIP: [e setDepthClipMode:(MTLDepthClipMode)u[0]]; break;
-        case RS_STENCIL: [e setStencilReferenceValue:(uint32_t)u[0]]; break;
+        case RS_STENCIL: [e setStencilFrontReferenceValue:(uint32_t)u[0] backReferenceValue:(uint32_t)u[1]]; break;   /* front, back (enc_r_stencil_ref) */
         case RS_BLEND: { float v[4]; memcpy(v, u, sizeof v); [e setBlendColorRed:v[0] green:v[1] blue:v[2] alpha:v[3]]; break; }
         case RS_VISIBILITY: [e setVisibilityResultMode:(MTLVisibilityResultMode)u[0] offset:(NSUInteger)u[1]]; break;
         case RS_ADDRESS: [(u[0] ? *ft : *vt) setAddress:u[2] atIndex:(NSUInteger)u[1]]; break;
+        case RS_MESH_TIMESTAMP: [e writeTimestampWithGranularity:MTL4TimestampGranularityPrecise afterStage:(MTLRenderStages)u[2] intoHeap:(__bridge id<MTL4CounterHeap>)(void *)u[0] atIndex:(NSUInteger)u[1]]; break;
+        case RS_MESH_TABLES: [e setArgumentTable:g_vt atStages:MTLRenderStageMesh]; if(u[0]) [e setArgumentTable:g_ot atStages:MTLRenderStageObject]; break;
+        case RS_OBJECT_ADDRESS: [g_ot setAddress:u[1] atIndex:(NSUInteger)u[0]]; break;
+        case RS_DRAW_MESH_INDIRECT: [e drawMeshThreadgroupsWithIndirectBuffer:u[0] threadsPerObjectThreadgroup:MTLSizeMake(u[1],1,1) threadsPerMeshThreadgroup:MTLSizeMake(u[2],1,1)]; break;
+        case RS_DRAW_MESH: [e drawMeshThreadgroups:MTLSizeMake(u[0],1,1) threadsPerObjectThreadgroup:MTLSizeMake(u[1],1,1) threadsPerMeshThreadgroup:MTLSizeMake(u[2],1,1)]; break;
         case RS_DRAW: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2]]; break;
         case RS_INSTANCED: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2] instanceCount:(NSUInteger)u[3] baseInstance:(NSUInteger)u[4]]; break;
         case RS_INDEXED_INDIRECT: [e drawIndexedPrimitives:(MTLPrimitiveType)u[0] indexType:(MTLIndexType)u[1] indexBuffer:u[2] indexBufferLength:(NSUInteger)u[3] indirectBuffer:u[4]]; break;
@@ -117,7 +136,7 @@ static void *rs_worker(void *unused) {
             uint64_t now = rs_now();
             if (busy_since) { atomic_fetch_add_explicit(&g_rs_b_busy_ns, now - busy_since, memory_order_relaxed); busy_since = 0; }
             if (!idle_since) idle_since = now;
-            if (now - idle_since < RS_SPIN_NS) { __builtin_arm_wfe(); continue; }   /* low-power wait; A does sev after every publish */
+            if (now - idle_since < rs_spin_ns()) { __builtin_arm_wfe(); continue; }   /* low-power wait; A does sev after every publish */
             atomic_store_explicit(&g_rs_sleeping, 1, memory_order_seq_cst);
             atomic_thread_fence(memory_order_seq_cst);
             if (!nvn_encode_fifo_peek(&g_rs_fifo)) { dispatch_semaphore_wait(g_rs_sem, DISPATCH_TIME_FOREVER); atomic_fetch_add_explicit(&g_rs_b_sleeps, 1, memory_order_relaxed); }
