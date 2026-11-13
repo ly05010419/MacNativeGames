@@ -12,6 +12,7 @@
 #include "game_version.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
+#include "pause_state.h"
 #import "playtime.h"
 #define TOTK_HDR_FRONTEND 1
 #include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
@@ -280,8 +281,116 @@ static int assume_focus(void){static int v=-1;if(v<0){const char *e=getenv("TOTK
 /* Keep the guest active when the macOS window loses key status. Window keys and mouse input are cleared
    in windowDidResignKey so they cannot stick; physical controllers follow their saved background-input choice. */
 int runtime_front_focus(void){return 1;}
+__attribute__((weak)) int runtime_threads_is_paused(void) { return 0; }
+__attribute__((weak)) int runtime_threads_pause(uint64_t timeout_ns) { (void)timeout_ns; return -1; }
+__attribute__((weak)) void runtime_threads_resume(void) {}
+__attribute__((weak)) void runtime_guest_time_pause(void) {}
+__attribute__((weak)) void runtime_guest_time_resume(void) {}
+__attribute__((weak)) uint64_t runtime_guest_time_ns(void) { return runtime_now_ns(); }
+__attribute__((weak)) void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high) { (void)side; (void)amp_low; (void)freq_low; (void)amp_high; (void)freq_high; }
+
+typedef NS_OPTIONS(NSUInteger, TOTKPauseReason) {
+    TOTKPauseReasonNone       = 0,
+    TOTKPauseReasonManual     = TOTK_PAUSE_MANUAL,
+    TOTKPauseReasonSettings   = TOTK_PAUSE_SETTINGS,
+    TOTKPauseReasonBackground = TOTK_PAUSE_BACKGROUND,
+};
+/* All coordination state lives on the main thread. The worker gets only one
+   immutable operation and returns its acknowledgement to the main thread. */
+static TotkPauseState g_pauseState;
+static dispatch_queue_t g_pauseQueue;
+static NSMenuItem *pauseMenuItem = nil;
+static int front_pause_available(void) {
+#ifdef COMMAND_Q_PROBE
+    return 0;
+#else
+    return 1;
+#endif
+}
+static void front_pause_queue_ensure(void) {
+    if (!g_pauseQueue) g_pauseQueue = dispatch_queue_create("org.macnativegames.pause", DISPATCH_QUEUE_SERIAL);
+}
+static void front_pause_update_ui(void) {
+    if (!pauseMenuItem) return;
+    pauseMenuItem.state = NSControlStateValueOff;
+    pauseMenuItem.toolTip = nil;
+    if (!front_pause_available()) {
+        pauseMenuItem.title = @(TOTK_UI("暂停（暂不可用）", "Pause (Unavailable)"));
+        pauseMenuItem.toolTip = @(TOTK_UI("当前测试模式未启用安全暂停。", "Safe pause is unavailable in this mode."));
+        return;
+    }
+    if (g_pauseState.phase == TOTK_PAUSE_PAUSING)
+        pauseMenuItem.title = @(TOTK_UI("正在暂停…", "Pausing…"));
+    else if (g_pauseState.phase == TOTK_PAUSE_RESUMING)
+        pauseMenuItem.title = @(TOTK_UI("正在继续…", "Resuming…"));
+    else if (g_pauseState.phase == TOTK_PAUSE_PAUSED) {
+        if (g_pauseState.reasons == TOTKPauseReasonBackground)
+            pauseMenuItem.title = @(TOTK_UI("返回游戏窗口后继续", "Resumes When Game Is Active"));
+        else pauseMenuItem.title = (g_pauseState.reasons & TOTKPauseReasonSettings)
+            ? @(TOTK_UI("关闭设置并继续", "Close Settings and Resume")) : @(TOTK_UI("继续", "Resume"));
+        pauseMenuItem.state = NSControlStateValueOn;
+    } else pauseMenuItem.title = @(TOTK_UI("暂停", "Pause"));
+}
+static int front_pause_execute_pause(void) {
+    int result = runtime_threads_pause(1500000000ull);
+    if (result != 0) {
+        /* A failed backend must not leave any partially acquired pause behind. */
+        runtime_threads_resume();
+        return -1;
+    }
+    runtime_guest_time_pause();
+    runtime_rumble_set(0, 0, 0, 0, 0);
+    runtime_rumble_set(1, 0, 0, 0, 0);
+    runtime_triggers_release();
+    runtime_mouse_release();
+    runtime_input_clear();
+    return 0;
+}
+static void front_pause_execute_resume(void) {
+    runtime_guest_time_resume();
+    runtime_threads_resume();
+}
+static void front_pause_pump(void) {
+    TotkPauseWork work = totk_pause_next(&g_pauseState);
+    front_pause_update_ui();
+    if (work == TOTK_PAUSE_NO_WORK) return;
+    front_pause_queue_ensure();
+    dispatch_async(g_pauseQueue, ^{
+        int result = 0;
+        if (work == TOTK_PAUSE_DO_PAUSE) result = front_pause_execute_pause();
+        else front_pause_execute_resume();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            int failed = totk_pause_complete(&g_pauseState, work, result);
+            front_pause_pump();
+            if (failed && !g_pauseState.closing) {
+                fprintf(stderr, "[totk] pause failed; game continues running\n");
+                NSAlert *alert = [NSAlert new];
+                alert.messageText = @(TOTK_UI("未能暂停游戏", "Could Not Pause"));
+                alert.informativeText = @(TOTK_UI("运行时未能安全停止游戏。游戏仍在运行，请使用游戏内菜单后再操作。", "The runtime could not safely stop the game. It is still running; use the in-game menu before continuing."));
+                if (window.isVisible && !window.attachedSheet) [alert beginSheetModalForWindow:window completionHandler:nil];
+            }
+        });
+    });
+}
+static void front_pause_shutdown(void) {
+    totk_pause_shutdown(&g_pauseState);
+    front_pause_pump();
+    /* Run after any in-flight pause, even if its main-thread acknowledgement is
+       still queued. Save completion on close/update must never wait on pause. */
+    front_pause_queue_ensure();
+    dispatch_async(g_pauseQueue, ^{
+        front_pause_execute_resume();
+    });
+}
+static void front_pause_toggle_manual(void) {
+    if (!front_pause_available()) return;
+    if (!totk_pause_toggle_manual(&g_pauseState)) return;
+    if (settingsOpen) settings_show(0);
+    front_pause_pump();
+}
 static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,const CVTimeStamp *output,CVOptionFlags flags,CVOptionFlags *out,void *ctx){
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
+ if(runtime_threads_is_paused&&runtime_threads_is_paused())return kCVReturnSuccess;
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
 /* 1 / 0: the modifier key e (a flag change) is down / up; -1: not one the layout takes (Command, Caps Lock, fn). Each side
@@ -740,6 +849,7 @@ void runtime_front_resize_aspect(double ratio){
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);front_hdr_parameters_flush();
+ front_pause_shutdown();
  if(totk_sr_closing)totk_sr_closing();
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
@@ -807,6 +917,7 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
 -(void)openSettings:(id)sender;
 -(void)toggleFullscreen:(id)sender;
 -(void)chooseFrameLimit:(NSMenuItem *)sender;
+-(void)togglePause:(id)sender;
 @end
 @implementation TOTKMenuActions
 -(void)openSettings:(id)sender{(void)sender;settings_show(1);}
@@ -817,9 +928,15 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
  if(fps)dm_gfx_set_flag("mfx_interp",MFX_OFF);
  settings_save_frame();settings_refresh_all();
 }
+-(void)togglePause:(id)sender{(void)sender;front_pause_toggle_manual();}
 -(void)displayRate:(id)sender{(void)sender;}
 -(BOOL)validateMenuItem:(NSMenuItem *)item{
  if(item.action==@selector(toggleFullscreen:))item.title=@((window.styleMask&NSWindowStyleMaskFullScreen)?TOTK_UI("退出全屏","Exit Full Screen"):TOTK_UI("进入全屏","Enter Full Screen"));
+ if(item.action==@selector(togglePause:)){
+  front_pause_update_ui();
+  return window!=nil && front_pause_available() && !g_pauseState.closing && !textEntryOpen
+   && !(g_pauseState.phase==TOTK_PAUSE_PAUSED&&g_pauseState.reasons==TOTKPauseReasonBackground);
+ }
  if(item.action==@selector(chooseFrameLimit:)){item.state=nvn_fps_lock()==item.tag?NSControlStateValueOn:NSControlStateValueOff;if(getenv("TOTK_MFX"))return NO;}
  /* the screen the window is on now (another display, a changed refresh rate): read when the menu opens */
  if(item.action==@selector(displayRate:)){item.title=[NSString stringWithFormat:@(TOTK_UI("显示器刷新率：%ld Hz","Display refresh: %ld Hz")),(long)(window.screen?:NSScreen.mainScreen).maximumFramesPerSecond];return NO;}
@@ -829,6 +946,8 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
 static TOTKMenuActions *menuActions;
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
+ front_pause_queue_ensure();
+ g_pauseState.supported=front_pause_available();
  menuActions=[TOTKMenuActions new];
  NSMenu *menu=[NSMenu new],*appMenu=[[NSMenu alloc] initWithTitle:@GAME_NAME];
  NSMenuItem *appItem=[[NSMenuItem alloc] initWithTitle:@GAME_NAME action:nil keyEquivalent:@""];
@@ -853,6 +972,11 @@ static void front_install_menu(void){
  }
  NSMenuItem *screen=[[NSMenuItem alloc] initWithTitle:@"" action:@selector(displayRate:) keyEquivalent:@""];
  screen.target=menuActions;[view addItem:screen];
+ NSMenu *gameMenu=[[NSMenu alloc] initWithTitle:@(TOTK_UI("游戏","Game"))];
+ NSMenuItem *gameItem=[[NSMenuItem alloc] initWithTitle:gameMenu.title action:nil keyEquivalent:@""];gameItem.submenu=gameMenu;[menu addItem:gameItem];
+ pauseMenuItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("暂停","Pause")) action:@selector(togglePause:) keyEquivalent:@"p"];
+ pauseMenuItem.keyEquivalentModifierMask=NSEventModifierFlagCommand;pauseMenuItem.target=menuActions;[gameMenu addItem:pauseMenuItem];
+ front_pause_update_ui();pauseMenuItem.enabled=front_pause_available();
  front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 /* execv can make Launch Services show the nested runtime as a generic Unix executable.
