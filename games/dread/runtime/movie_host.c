@@ -267,6 +267,10 @@ static void release_codec(Movie *m) {
     for (int i = 0; i < IN_BUFS; i++) { free(m->in[i]); m->in[i] = NULL; }
     for (int i = 0; i < OUT_BUFS; i++) { free(m->out[i]); m->out[i] = NULL; }
     free(m->rgba); m->rgba = NULL;
+    /* No slot stays held over freed memory (Echoes of Wisdom's movie_host.c, as Kirby's, PR #819): the game can ask for a
+       frame it acquired just before Stop or Reset from another thread; that call now gets ST_ERROR instead of
+       converting from a freed frame (in texture mode nv12_to_rgba read m->out[index] after it was freed). */
+    memset(m->out_held, 0, sizeof m->out_held); memset(m->out_bytes, 0, sizeof m->out_bytes);
     m->configured = m->started = m->start_pending = 0; m->nin_free = m->npending = m->nready = m->ndecoded = 0; m->t0 = 0;
 }
 static void reset_queues(Movie *m) {

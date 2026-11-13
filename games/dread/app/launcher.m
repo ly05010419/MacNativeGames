@@ -230,7 +230,7 @@ int main(int argc, char **argv) {
                 work.UTF8String, getenv("DM_PRESENT_HZ"), getenv("DREAD_DISPLAY"), full ? "yes" : "no", getenv("TOTK_WINDOW_SIZE"),
                 getenv("TOTK_DRAWABLE_SCALE") ?: "1", getenv("TOTK_MFX_OUTPUT") ? "on" : "off", getenv("TOTK_ROMFS_MODS"));
         NSString *binary = [work stringByAppendingPathComponent:@"build/dread-native"];
-        char *const args[] = {(char *)binary.fileSystemRepresentation, "rewritten/v100", "boot", NULL};
+        char *const args[] = {(char *)binary.fileSystemRepresentation, "rewritten/v210", "boot", NULL};
         execv(args[0], args);
         fprintf(stderr, "[launcher] execv failed: %s\n", strerror(errno));
         fail([NSString stringWithFormat:T("No se pudo iniciar el juego. Mira %@.", "Starting the game failed. See %@."), log]);

@@ -9,5 +9,5 @@
   "work_holds_game_data": true,
   "sources": ["games/dread"],
   "files": {"game": ["xci", "nsp"], "update": []},
-  "versions": ["1.0.0"]
+  "versions": ["2.1.0"]
 }

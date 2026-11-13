@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Build an unsigned, sideloadable iPhone / iPad app of Metroid Dread 1.0.0 from a prepared work folder (games/Dread_build:
-the verified rewrite in rewritten/v100, the Mac runtime build/dread-native with its generated tables, the RomFS in
-extracted/v100/romfs, the prepared shader seed in build/shader-seed and the shaders the Mac translated in
+"""Build an unsigned, sideloadable iPhone / iPad app of Metroid Dread 2.1.0 from a prepared work folder (games/Dread_build:
+the verified rewrite in rewritten/v210, the Mac runtime build/dread-native with its generated tables, the RomFS in
+extracted/v210/romfs, the prepared shader seed in build/shader-seed and the shaders the Mac translated in
 build/shader-cache). Sign and install it with install_device.py.
 
   python3.14 games/dread/ios/tools/build_ipa.py --work games/Dread_build --out "games/Metroid Dread.ipa"
@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from xcode_dir import developer_dir
 
 GAME = Path(__file__).resolve().parents[2]   # games/dread
-VERSION = 'v100'
+VERSION = 'v210'
 APP = 'Dread'   # the product name, Dread.app (install_device.py)
 
 def run(args, cwd, log, env):
@@ -70,7 +70,7 @@ targets:
         CFBundleDisplayName: Metroid Dread
         CFBundleName: Metroid Dread
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
-        CFBundleShortVersionString: "1.0.0"
+        CFBundleShortVersionString: "2.1.0"
         CFBundleVersion: "1"
         UILaunchScreen: {{}}
         UIFileSharingEnabled: true

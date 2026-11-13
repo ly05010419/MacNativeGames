@@ -67,20 +67,33 @@ $(OUT)/spirv-cross/spirv-cross:
 	  -c "$(WORK)/src/SPIRV-Cross/$$f" -o "$(dir $@)obj/$$f.o" & done; wait
 	xcrun clang++ -arch arm64 $(addprefix $(dir $@)obj/,$(addsuffix .o,$(SPIRV_CROSS_SOURCES))) -o "$@"
 
+# Every shader of the game prepared from the player's RomFS (build/shader-seed, imported at the first start), then
+# compiled into Metal libraries (build/shader-libs), all or nothing; build.py runs both for the Mac app.
+.PHONY: shader-seed shader-libs
+shader-seed: shader-tools
+	"$(PY)" scripts/prepare_shader_seed.py --romfs "$(WORK)/extracted/$(GAME_DIR)/romfs" --output "$(OUT)/shader-seed" \
+	  --translator "$(OUT)/shader-service/totk_xlate" --spirv-cross "$(OUT)/spirv-cross/spirv-cross" --version $(GAME_DIR)
+shader-libs:
+	"$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --seed
+
+# The game version the boot, the probe and the mods use (runtime/game_version.h TOTK_GAME_DIR).
+GAME_DIR := v210
+
 # DREAD_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 DREAD_LOG ?= $(WORK)/logs/boot.log
 boot: runtime
 	@mkdir -p "$(dir $(DREAD_LOG))"
-	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/dread-native rewritten/v100 boot 2> "$(abspath $(DREAD_LOG))"; echo "exit $$?; log: $(DREAD_LOG)"
+	@"$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --check || echo "warning: the shader libraries do not serve the prepared seed (make shader-seed shader-libs); shaders will compile while playing"
+	cd "$(WORK)" && TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/dread-native rewritten/$(GAME_DIR) boot 2> "$(abspath $(DREAD_LOG))"; echo "exit $$?; log: $(DREAD_LOG)"
 
 probe: runtime
-	cd "$(WORK)" && ./build/dread-native rewritten/v100 probe
+	cd "$(WORK)" && ./build/dread-native rewritten/$(GAME_DIR) probe
 
 # The player's RomFS mods (mods/<name>/romfs/...) -> their manifest.tsv (sizes and SHA-256 of the replacements and the
 # originals).
 .PHONY: mods app
 mods:
-	for d in mods/*/romfs; do [ -d "$$d" ] && "$(PY)" scripts/make_mod_manifest.py "$$d" --romfs "$(WORK)/extracted/v100/romfs"; done; true
+	for d in mods/*/romfs; do [ -d "$$d" ] && "$(PY)" scripts/make_mod_manifest.py "$$d" --romfs "$(WORK)/extracted/$(GAME_DIR)/romfs"; done; true
 
 # The app: a small launcher bundle (settings window with presets, then the game) that runs the game from the work
 # folder, which it names in Info.plist (DreadWorkFolder): nothing large is copied. Its icon comes from the game's own
@@ -104,7 +117,7 @@ app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	  '<key>CFBundleIdentifier</key><string>org.macnativegames.dread</string>' \
 	  '<key>CFBundleName</key><string>Metroid Dread</string>' \
 	  '<key>CFBundlePackageType</key><string>APPL</string>' \
-	  '<key>CFBundleShortVersionString</key><string>1.0.0</string>' \
+	  '<key>CFBundleShortVersionString</key><string>2.1.0</string>' \
 	  '<key>CFBundleVersion</key><string>1</string>' \
 	  '<key>CFBundleIconFile</key><string>AppIcon</string>' \
 	  '<key>LSMinimumSystemVersion</key><string>26.0</string>' \
@@ -123,10 +136,17 @@ install: app
 	/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$(INSTALL_DIR)/$(APP)"
 	@echo "installed $(INSTALL_DIR)/$(APP)"
 
-# Native unit tests of the graphics pieces (synthetic data, no game files): texel region writes vs the whole-level path.
+# Native unit tests (synthetic data, no game files): texel region writes vs the whole-level path, and the movie decoder's
+# Stop and Reset with a frame still held, in buffer and texture mode (tests/movie_stop, AddressSanitizer).
 .PHONY: test
-test: $(OUT)/test-texel-region
+test: $(OUT)/test-texel-region $(OUT)/test-movie-stop
 	"$(OUT)/test-texel-region"
+	"$(OUT)/test-movie-stop"
+$(OUT)/test-movie-stop: tests/movie_stop/test.c runtime/movie_host.c runtime/movie_host.h Makefile
+	@mkdir -p "$(dir $@)"
+	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all \
+	  -I$(VPX_PREFIX)/include -Ithird_party/d2r_gfx/gfx/nvn/include \
+	  runtime/movie_host.c tests/movie_stop/test.c $(VPX_PREFIX)/lib/libvpx.a -o "$@"
 $(OUT)/test-texel-region: tests/texel_region/test.c third_party/d2r_gfx/gfx/nvn/nvn_tex.c third_party/d2r_gfx/gfx/tex/nvn_deswizzle.c
 	@mkdir -p "$(dir $@)"
 	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -Ithird_party/d2r_gfx/gfx/nvn -Ithird_party/d2r_gfx/gfx/tex $^ -o "$@"
