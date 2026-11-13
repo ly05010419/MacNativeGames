@@ -12351,6 +12351,8 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
         }
         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
     }
+    if (crop) atomic_store(&g_pic_big, cw > 1920 || ch > 1080);
+    if (crop) atomic_store(&g_pic_src, (uint64_t)ch << 32 | cw);
     static uint64_t last_crop[8]; uint64_t meta[8] = {src.width, src.height, cx, cy, cw, ch, dst.width, dst.height};
     if (memcmp(meta, last_crop, sizeof meta)) { memcpy(last_crop, meta, sizeof meta);
         MLOG("出图裁切：原纹理 %lux%lu，有效 %lu,%lu %lux%lu → 目标 %lux%lu", (unsigned long)src.width, (unsigned long)src.height,

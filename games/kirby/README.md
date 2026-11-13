@@ -38,6 +38,20 @@ binds them). Updates are not supported yet.
 
 Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to the app.
 
+## Resolution
+
+The Mac **Settings** menu offers dynamic resolution, fixed 1920×1080, and native 2560×1440.
+Changing between the 1080p canvas and the 1440p canvas takes effect after a normal quit and relaunch;
+the menu saves the choice and reminds you to save your game first. Key 3 switches dynamic/fixed 1080p
+within the 1080p canvas. Key 4 switches 30/60 FPS. Existing fixed-resolution preferences are preserved.
+
+Native 1440p changes the game's canvas, crop, scene target limits and initial sizes, and the corresponding
+half/quarter-size postprocessing targets. It keeps square shadow maps and source assets at their original sizes;
+prerecorded 1080p movies retain their source resolution. The HUD labels the presented **Game** canvas and
+**Window** dimensions separately. A large window alone does not enable native 1440p.
+Higher resolution costs GPU time and memory; performance depends on the scene and Mac.
+`KIRBY_RES=dynamic|1080|1440` overrides the saved setting for a diagnostic launch.
+
 ## Status
 
 | Component | Status | Details |
