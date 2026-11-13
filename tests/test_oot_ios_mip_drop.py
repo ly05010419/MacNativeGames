@@ -104,6 +104,23 @@ class OotIosMipDrop(unittest.TestCase):
         sweep = function_body(self.src, 'static void pkg_evict_sweep(void) {')
         self.assertIn('res_over_working_set()', sweep)
 
+    def test_ios_keeps_few_pipeline_archives_open(self):
+        """The iPad ran out of vnodes with one open archive per pipeline (jetsam vnode-limit, 2026-11-13): on iOS
+        Ocarina of Time keeps at most TOTK_PAR_OPEN_MAX archive files open, least recently used closed first."""
+        par = (NVN / 'totk_pipeline_archive.h').read_text()
+        self.assertIn('#if TARGET_OS_IPHONE && defined(GAME_OOT)\n/* Ocarina of Time on iOS: at most TOTK_PAR_OPEN_MAX', par)
+        note = function_body(par, 'static void par_open_note(NSString *name) {')
+        self.assertIn('[g_par_open removeObjectForKey:old];', note)
+        get = function_body(par, 'static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {')
+        self.assertIn('if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); }', get)
+        self.assertIn('if (a) PAR_OPEN_NOTE(name);', get)
+
+    def test_ios_warm_up_uses_several_threads(self):
+        warm = function_body(self.src, 'static int warm_threads(void) {')
+        oot = warm[warm.index('#if TARGET_OS_IPHONE && defined(GAME_OOT)'):warm.index('#elif TARGET_OS_IPHONE')]
+        self.assertIn('activeProcessorCount - 2; if (d > 4) d = 4;', oot)
+        self.assertIn('int d = 1;', warm[warm.index('#elif TARGET_OS_IPHONE'):], 'every other game keeps one thread on iOS')
+
     def test_other_games_keep_their_mip_behaviour(self):
         _, ios, _, mac = mip_drop_branches(self.src)
         self.assertIn('return 0;', ios)

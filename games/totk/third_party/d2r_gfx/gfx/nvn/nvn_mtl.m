@@ -10761,14 +10761,20 @@ static NvShader *warm_shader(NSMutableDictionary<NSString *, NvShader *> *dict, 
    one quits. build_app.py compiles the seed once at packaging time from the game binary's folder, with no other program
    using the store: tools/warm_metal_cache.m.) Once the player is in the world (mtl_warm_wait returned) at most 2 threads go on, so the
    rest of the warm-up does not take the game's cores. TOTK_WARM_THREADS=<n> (1 = one thread as before); default 8 on the
-   Mac (at most the core count minus 2), 1 on iOS (prebuilt libraries, nothing to compile). */
+   Mac (at most the core count minus 2), 1 on iOS (prebuilt libraries, nothing to compile) except Ocarina of Time on iOS
+   (cores minus 2, at most 4: about 20,000 pipelines taken from the device archive before the title, 2026-11-13). */
 enum { WARM_BLOCK = 512 };   // rows per block: the shaders of a block load in parallel, then its pipelines, then its other rows in order
 static _Atomic int g_warm_in_play;
 static int warm_threads(void) {
     static int n; static dispatch_once_t once;
     dispatch_once(&once, ^{
         const char *e = getenv("TOTK_WARM_THREADS");
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && defined(GAME_OOT)
+        /* Ocarina of Time on iOS warms about 20,000 listed pipelines before the title (user 2026-11-13: keep the
+           warm-up before the title, make it faster): taking each from the device archive still costs the driver
+           its link, so they go on the cores the game does not use yet, as on the Mac (cores minus 2, at most 4). */
+        int d = (int)NSProcessInfo.processInfo.activeProcessorCount - 2; if (d > 4) d = 4; if (d < 1) d = 1;
+#elif TARGET_OS_IPHONE
         int d = 1;
 #else
         int d = (int)NSProcessInfo.processInfo.activeProcessorCount - 2; if (d > 8) d = 8; if (d < 1) d = 1;

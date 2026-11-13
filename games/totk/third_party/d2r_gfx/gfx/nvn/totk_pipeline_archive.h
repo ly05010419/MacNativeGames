@@ -221,6 +221,28 @@ static void par_open_dir(id<MTLDevice> dev) {
     });
 }
 // The archive with this pipeline's code, or nil (no file yet; off).
+#if TARGET_OS_IPHONE && defined(GAME_OOT)
+/* Ocarina of Time on iOS: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first. An
+   open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole device: with the
+   device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and the system ended
+   the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). A pipeline already made does
+   not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
+static NSMutableArray<NSString *> *g_par_open_lru; static uint64_t g_par_open_closed;
+static void par_open_note(NSString *name) {
+    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = (NSUInteger)(v < 8 ? 8 : v); }
+    if (!g_par_open_lru) g_par_open_lru = [NSMutableArray array];
+    [g_par_open_lru removeObject:name]; [g_par_open_lru addObject:name];   // most recent last
+    while (g_par_open_lru.count > cap) {
+        NSString *old = g_par_open_lru[0]; [g_par_open_lru removeObjectAtIndex:0];
+        [g_par_open removeObjectForKey:old];
+        if (g_par_open_closed++ % 2000 == 0)
+            MLOG("pipeline archive: at most %lu files open at a time (vnodes): %llu closed so far", (unsigned long)cap, (unsigned long long)g_par_open_closed);
+    }
+}
+#define PAR_OPEN_NOTE(name) par_open_note(name)
+#else
+#define PAR_OPEN_NOTE(name) ((void)0)
+#endif
 static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
@@ -228,10 +250,11 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     NSString *name = g_par_where[key];
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
+    if (a) PAR_OPEN_NOTE(name);
     if (!a && name) {
         MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:pre ? par_pre_file(name) : par_file(name)];
         NSError *e = nil; a = [dev newBinaryArchiveWithDescriptor:d error:&e];
-        if (a) g_par_open[name] = a;
+        if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); }
         else {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
             for (NSString *k in [g_par_where allKeysForObject:name]) { [g_par_have removeObject:k]; [g_par_where removeObjectForKey:k]; }
             if (pre) [g_par_pre removeObject:name];
