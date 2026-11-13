@@ -302,8 +302,9 @@ static TOTKCheatMenu *cheatMenu;
 @end
 static void cheat_panel_toggle(void){
  TOTKCheatPanel *p=(TOTKCheatPanel *)cheatPanel;if(!p)return;
- if(p.hidden){[p reload];p.hidden=NO;runtime_input_clear();}   // keys held when it opens must not stay pressed in the game
+ if(p.hidden){[p reload];p.hidden=NO;}
  else p.hidden=YES;
+ runtime_input_suspend(RUNTIME_INPUT_SUSPEND_CHEATS,!p.hidden);
 }
 /* Controllers: both sticks pressed together (L3+R3) open and close the panel; D-pad or left stick select, A toggles,
    B closes. While it is open the game gets no controller input (runtime/gamepad.m). */
@@ -315,7 +316,7 @@ static int cheat_panel_pad(uint64_t held, uint64_t pressed){
  if(pressed&(PAD_UP|PAD_STICK_UP))[p move:-1];
  if(pressed&(PAD_DOWN|PAD_STICK_DOWN))[p move:1];
  if(pressed&PAD_A)[p toggleSelected];
- if(pressed&PAD_B)p.hidden=YES;   // returning 1 keeps this B from the game; it stays hidden until released
+ if(pressed&PAD_B)cheat_panel_toggle();   // the closing B stays hidden until released
  return 1;
 }
 static int cheat_panel_key(NSEvent *e){
@@ -325,7 +326,7 @@ static int cheat_panel_key(NSEvent *e){
  case 126:[p move:-1];break;                    // up
  case 125:[p move:1];break;                     // down
  case 49:case 36:case 76:if(!e.isARepeat)[p toggleSelected];break;   // space, return, enter
- case 53:p.hidden=YES;break;                    // esc
+ case 53:cheat_panel_toggle();break;            // esc
  default:break;                                 // every other key stays away from the game while the panel is open
  }
  return 1;
