@@ -223,34 +223,6 @@ def render(res, src, F, width=1.0, ss=8):
         out[..., i] = o
     return out
 
-def save(path, res):
-    d = {}
-    for i, r in res.items():
-        d[f'c{i}_const'] = np.array(r['const'])
-        if r['const']: continue
-        d[f'c{i}_levels'] = np.array(r['levels'])
-        if r.get('ea'): d[f'c{i}_S'] = r['S']; d[f'c{i}_B'] = r['B']
-        for j, l in enumerate(r['layers']):
-            d[f'c{i}_l{j}_ab'] = np.array([l['a'], l['b'], l['fit_mae'], l['fit_max'], l.get('sig', 0.0)])
-            d[f'c{i}_l{j}_n'] = np.array([len(p) for p in l['polys']], int)
-            d[f'c{i}_l{j}_pts'] = np.concatenate(l['polys']) if l['polys'] else np.zeros((0, 2))
-    np.savez_compressed(path, **d)
-
-def load(path):
-    z = np.load(path); res = {}; i = 0
-    while f'c{i}_const' in z:
-        if bool(z[f'c{i}_const']): res[i] = dict(const=True)
-        else:
-            ls = []; j = 0
-            while f'c{i}_l{j}_ab' in z:
-                ab = z[f'c{i}_l{j}_ab']; n = z[f'c{i}_l{j}_n']; pts = z[f'c{i}_l{j}_pts']; idx = np.cumsum(n)[:-1]
-                ls.append(dict(a=ab[0], b=ab[1], fit_mae=ab[2], fit_max=ab[3], sig=ab[4] if len(ab) > 4 else 0.0, polys=list(np.split(pts, idx)) if len(n) else []))
-                j += 1
-            res[i] = dict(const=False, levels=list(z[f'c{i}_levels']), layers=ls)
-            if f'c{i}_S' in z: res[i].update(ea=True, S=z[f'c{i}_S'], B=z[f'c{i}_B'])
-        i += 1
-    return res
-
 def fit_key(src, o):
     """The shapes of one key (the per-key logic of v3's recon.py CLI): src float (H, W, C), o the key's options. K is 8 (4 above 256
     px), it 80. 'sym' fits the source averaged with its mirror; 'pix' boxes are hidden from the trace (the median of the box

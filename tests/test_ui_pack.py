@@ -157,7 +157,7 @@ class KeyListFormatTest(unittest.TestCase):
         for check in keylist.CHECKS:
             keylist.check_options({'accept': {check: 'x'}})
         for bad in ({'sharpen': 2}, {'level0': 1}, {'levels': 1}, {'accept': {'speed': 'x'}}, {'accept': {'ink': ''}}, {'accept': {'ink': 3}},
-                    {'accept': ['ink']}, {'skip': ''}, {'skip': True}, {'skip': 0}):
+                    {'accept': ['ink']}, {'skip': ''}, {'skip': True}, {'skip': 0}, {'F': 16}, {'F': 0}, {'F': 2.5}, {'F': True}):
             with self.subTest(bad), self.assertRaises(UiPackError):
                 keylist.check_options(bad)
         with self.assertRaises(UiPackError):
@@ -516,6 +516,9 @@ class BuildOutcomeTest(Folders):
         self.assertEqual(self.build(A, B, jobs=2), 0)
         self.assertEqual({k: r.status for k, r in self.manifest().items()}, {A: 'written', B: 'written'})
         self.assertEqual(sorted(p.name for p in self.out.glob('*.png')), [f'{A}.png', f'{B}.png'])
+        pooled = {p.name: p.read_bytes() for p in self.out.iterdir()}
+        self.assertEqual(self.build(A, B, jobs=1, force=True), 0)
+        self.assertEqual({p.name: p.read_bytes() for p in self.out.iterdir()}, pooled)      # pictures and manifest, byte for byte
 
     def test_no_stale_picture_of_a_key_that_turns_skipped_or_failed(self):
         self.add(A, shape('disc', 24))

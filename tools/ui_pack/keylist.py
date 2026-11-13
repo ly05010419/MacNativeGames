@@ -40,6 +40,8 @@ def check_options(options, where='options'):
     accept = options.get('accept', {})
     if not isinstance(accept, dict) or any(k not in CHECKS or not isinstance(v, str) or not v for k, v in accept.items()):
         raise UiPackError(f'{where}: accept must map a check name ({", ".join(CHECKS)}) to a reason text')
+    if 'F' in options and (type(options['F']) is not int or not 1 <= options['F'] <= 8):
+        raise UiPackError(f'{where}: F must be an integer from 1 to 8 (the game takes a pack picture of at most 8x)')
     if 'skip' in options and (not isinstance(options['skip'], str) or not options['skip']):
         raise UiPackError(f'{where}: skip must be the evidence text')
     return options

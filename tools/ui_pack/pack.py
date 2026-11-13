@@ -19,7 +19,7 @@ def used_channels(a):
 
 
 def render(src, res, F, sd, o):
-    """src float (H, W, C), res the shapes (recon.reconstruct / recon.load), F the factor, sd the draw scale, o the key's options.
+    """src float (H, W, C), res the shapes (recon.fit_key), F the factor, sd the draw scale, o the key's options.
     Returns (img uint8 (H*F, W*F, C), dn, npatch): dn is the exact render (width 1) area-downscaled to the source, seen through the
     layer's blur (the gate's round trip); npatch the number of source-patch pixels."""
     H, W, Cn = src.shape; ch = used_channels(src)
