@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path, help='base game NSP or XCI')
     parser.add_argument('--keys', required=True, type=Path)
-    parser.add_argument('--shared-fonts', required=True, type=Path)
+    parser.add_argument('--shared-fonts', type=Path, help='optional verified shared-font directory')
     parser.add_argument('--work', required=True, type=Path, help='fresh private work directory')
     parser.add_argument('--out', required=True, type=Path, help='fresh output .app')
     parser.add_argument('--dotnet', help='optional .NET 10 SDK executable')
@@ -24,8 +24,11 @@ def main():
         validate_private_output(p)
     if work == out or work in out.parents or out in work.parents:
         parser.error('--out and --work must be separate')
-    if not args.game.is_file() or not args.keys.is_file() or not args.shared_fonts.is_dir():
-        parser.error('game file, keys file and shared-fonts directory must exist')
+    if not args.game.is_file() or not args.keys.is_file():
+        parser.error('game file and keys file must exist')
+
+    if args.shared_fonts and not (args.shared_fonts / 'manifest.json').is_file():
+        parser.error('--shared-fonts requires a verified font manifest')
 
     def run(name, *arguments):
         subprocess.run([sys.executable, GAME / 'scripts' / name, *arguments], check=True)
@@ -35,7 +38,7 @@ def main():
     run('extract_romfs.py', '--keys', args.keys, '--manifest', work / 'extraction-manifest.json',
         '--output', work / 'romfs')
     run('build_private_bundle.py', '--exefs', work / 'exefs', '--romfs', work / 'romfs',
-        '--fonts', args.shared_fonts, '--work', work / 'build-work', '--out', out, '--app',
+        *(['--fonts', args.shared_fonts] if args.shared_fonts else []), '--work', work / 'build-work', '--out', out, '--app',
         *(['--dotnet', args.dotnet] if args.dotnet else []))
 
 

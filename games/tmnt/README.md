@@ -18,10 +18,11 @@ requirements and run from the repository root:
 
 ```sh
 python games/tmnt/build.py '<base game.nsp or .xci>' --keys '<prod.keys>' \
-  --shared-fonts '<private shared-fonts directory>' --work '<fresh work directory>' \
+  --work '<fresh work directory>' \
   --out '<fresh private output>/TMNT.app'
 ```
 
+To include system fonts, pass `--shared-fonts` with the verified font directory and its manifest.
 The builder verifies and extracts the game and obtains the static Opus and VPX
 libraries, SPIRV-Cross CLI and .NET SDK from the repository's pinned dependencies.
 TMNT decodes Vorbis movie packets with its embedded stb_vorbis. The inherited

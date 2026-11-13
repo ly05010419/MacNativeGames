@@ -37,7 +37,8 @@ def build(args):
             raise ValueError(f'choose a fresh output directory: {path}')
     if work == out or work.is_relative_to(out) or out.is_relative_to(work):
         raise ValueError('build work and bundle output must be separate')
-    for path in (args.exefs, args.romfs, args.fonts):
+    fonts = ['--fonts', args.fonts] if args.fonts else []
+    for path in (args.exefs, args.romfs, *([args.fonts] if args.fonts else [])):
         if not path.is_dir():
             raise ValueError(f'input directory missing: {path}')
     check_supported_romfs(json.loads((args.romfs / 'index.json').read_text())['romfs_sha256'])
@@ -56,7 +57,7 @@ def build(args):
            '--out', work / 'metadata.json')
     script('prepare_host_tables.py', '--exefs', args.exefs, '--rewritten', rewritten,
            '--metadata', work / 'metadata.json', '--out', generated / 'runtime_tables.h')
-    script('prepare_resources.py', '--romfs', args.romfs, '--fonts', args.fonts,
+    script('prepare_resources.py', '--romfs', args.romfs, *fonts,
            '--out', resources)
     for name in ('romfs_config.h', 'shared_fonts_config.h'):
         shutil.copy2(resources / name, generated / name)
@@ -69,7 +70,7 @@ def build(args):
     script('package_private.py', '--native', generated / 'tmnt-native',
            '--rewritten', rewritten, '--nro-prepared', prepared_nro,
            '--nro-rewritten', rewritten_nro, '--romfs', args.romfs,
-           '--resources', resources, '--fonts', args.fonts,
+           '--resources', resources, *fonts,
            '--shader-service', shader_tools / 'shader-service/totk_xlate',
            '--spirv-cross', shader_tools / 'spirv-cross/spirv-cross',
            '--out', out, *(['--link-romfs'] if args.link_romfs else []),
@@ -81,8 +82,9 @@ def build(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('exefs', 'romfs', 'fonts', 'work', 'out'):
+    for name in ('exefs', 'romfs', 'work', 'out'):
         parser.add_argument('--' + name, required=True, type=Path)
+    parser.add_argument('--fonts', type=Path, help='optional verified shared-font directory')
     parser.add_argument('--dotnet',
                         help='path to a .NET 10 SDK executable')
     parser.add_argument('--link-romfs', action='store_true',
