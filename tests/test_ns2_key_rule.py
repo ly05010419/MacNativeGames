@@ -28,6 +28,8 @@ def load(name):
 
 
 corpus, rekey = load('ns2_shader_corpus'), load('ns2_rekey')
+_spec = importlib.util.spec_from_file_location('oot_ns2_shader_corpus', ROOT / 'games/oot/scripts/ns2_shader_corpus.py')
+oot_corpus = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(oot_corpus)
 from shader_list import ShaderList  # noqa: E402
 sys.path.insert(0, str(ROOT))
 import build_app  # noqa: E402
@@ -71,23 +73,33 @@ class KeyRule(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('xcrun'), 'needs the Xcode command line tools')
     def test_the_runtime_hashes_as_the_tools_do(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            (tmp / 'p.c').write_text(PROBE)
-            build = subprocess.run(['xcrun', 'clang', '-Wall', '-Werror', f'-I{NVN}', str(tmp / 'p.c'), '-o', str(tmp / 'p')],
-                                   capture_output=True, text=True)
-            self.assertEqual(build.returncode, 0, build.stderr)
-            for fields in ({}, {'x08': 17, 'x20': 9, 'x26': 200, 'x30': 7}, {'x38': 1}):
-                c = control(**fields)
-                (tmp / 'c.bin').write_bytes(c)
-                out = subprocess.run([str(tmp / 'p'), str(tmp / 'c.bin')], capture_output=True, text=True).stdout.strip()
-                self.assertEqual(out, corpus.shader_key(c, CODE), fields)
+        # Each game's runtime (the shared layer built with its defines) and that game's own tools: Ocarina of Time keeps
+        # its rule (2026-11-13: on the shared layer it took the one above, and its seed named none of its list's shaders).
+        for defines, tools in (([], corpus), (['-DGAME_NS2=1', '-DGAME_OOT=1'], oot_corpus)):
+            with self.subTest(defines=defines), tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                (tmp / 'p.c').write_text(PROBE)
+                build = subprocess.run(['xcrun', 'clang', '-Wall', '-Werror', *defines, f'-I{NVN}', str(tmp / 'p.c'), '-o', str(tmp / 'p')],
+                                       capture_output=True, text=True)
+                self.assertEqual(build.returncode, 0, build.stderr)
+                for fields in ({}, {'x08': 17, 'x20': 9, 'x26': 200, 'x30': 7}, {'x38': 1}):
+                    c = control(**fields)
+                    (tmp / 'c.bin').write_bytes(c)
+                    out = subprocess.run([str(tmp / 'p'), str(tmp / 'c.bin')], capture_output=True, text=True).stdout.strip()
+                    self.assertEqual(out, tools.shader_key(c, CODE), fields)
+
+    def test_ocarina_keeps_its_own_rule(self):
+        base = oot_corpus.shader_key(control(), CODE)
+        self.assertEqual(oot_corpus.shader_key(control(x30=0x55), CODE), base)
+        for field in ('x08', 'x20'):   # its list and seeds were made with these in the key
+            self.assertNotEqual(oot_corpus.shader_key(control(**{field: 0x55}), CODE), base, field)
 
 
 class KeyRuleName(unittest.TestCase):
     def test_the_runtime_and_the_tools_name_the_same_rule(self):
         text = (NVN / 'nvn_ctl.h').read_text()
-        self.assertEqual(re.search(r'#define NVN2_KEY_RULE "([^"]+)"', text).group(1), corpus.KEY_RULE)
+        rules = dict((g, r) for r, g in re.findall(r'#define NVN2_KEY_RULE "([^"]+)"\s*/\* game: (\w+)', text))
+        self.assertEqual(rules, {'totk': corpus.KEY_RULE, 'oot': oot_corpus.KEY_RULE})
         self.assertEqual(update_runtime.runtime_key_rule(), corpus.KEY_RULE)
 
     def test_the_seed_records_it(self):

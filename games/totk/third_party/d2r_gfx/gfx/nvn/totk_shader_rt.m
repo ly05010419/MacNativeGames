@@ -560,7 +560,7 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
     if (getenv("OOT_SHADER_REQUEST_DUMP")) {
         NSData *code=[NSData dataWithContentsOfFile:rq[@"code"]];
         if (!code) die("read shader request evidence %s",[rq[@"code"]UTF8String]);
-        NSMutableDictionary *evidence=[rq mutableCopy];
+        NSMutableDictionary *evidence=[request_sent(rq) mutableCopy];
         unsigned char digest[32];CC_SHA256(code.bytes,(CC_LONG)code.length,digest);evidence[@"code_sha256"]=hex(digest,32);
         NSData *request=[NSJSONSerialization dataWithJSONObject:evidence options:NSJSONWritingSortedKeys error:nil];
         NSString *path=[totk_rt_dir() stringByAppendingFormat:@"/%@.request.json",variant];

@@ -92,7 +92,7 @@ def runtime_chain():
 def runtime_key_rule():
     """The Switch 2 shader key rule of this repository's runtime (nvn_ctl.h NVN2_KEY_RULE)."""
     text = (build_app.GAME / 'third_party/d2r_gfx/gfx/nvn/nvn_ctl.h').read_text()
-    return re.search(r'#define NVN2_KEY_RULE "([^"]+)"', text).group(1)
+    return re.search(r'#define NVN2_KEY_RULE "([^"]+)"\s*/\* game: totk\b', text).group(1)   # the line of the games built with games/totk
 
 
 def check_seed_chain(res, chain, *, remake=False, key_rule=None):
