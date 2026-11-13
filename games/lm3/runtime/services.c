@@ -1,5 +1,6 @@
 /* Horizon services reached by the current TOTK startup. Unknown operations fail. */
 #include "runtime.h"
+#include "lm3_render_patch.h"
 #include <TargetConditionals.h>
 #include "ipc.h"
 #include <mach/mach.h>
@@ -58,9 +59,13 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define SYSTEM_RESOURCE_BUDGET (32ULL<<20)
 #define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
 #define APP_POOL app_pool()
-static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the true-2K texture heaps (TOTK_OUTPUT_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
-/* TOTK: application memory pool reported to the game (default: retail 3.2 GiB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
+static uint64_t app_pool(void){static uint64_t v;if(!v){
+ const char *e=getenv("TOTK_APP_POOL");uint64_t extra=runtime_lm3_render_extra_bytes();char *end=NULL;
+ v=e?strtoull(e,&end,0):0xcd500000ULL+extra;
+ if(extra&&((e&&(end==e||*end))||v<0xcd500000ULL+extra||v>HEAP_CAP))runtime_fail("LM3 1440p application pool must cover its enlarged guest heap and stay within the 4 GiB cap");
+ if(extra)fprintf(stderr,"[lm3-memory] application pool %#llx: +%llu MiB for the guarded 1440p guest/private-texture pools; GPU budget unchanged\n",(unsigned long long)v,(unsigned long long)(extra>>20));
+ }return v;}
+/* LM3's fixed heap and private GPU pool grow together for native 1440p. */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
 #define ASLR_START ((uintptr_t)low_space)

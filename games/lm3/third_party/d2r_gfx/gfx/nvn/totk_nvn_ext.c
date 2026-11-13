@@ -88,7 +88,8 @@ NVN(nvnWindowBuilderGetPresentInterval, int, const NVNwindowBuilder *b) { return
 NVN_NOPROTO(nvnWindowBuilderGetNumTextures, int, const NVNwindowBuilder *b) { return CWB(b)->ntex; }
 NVN_NOPROTO(nvnWindowBuilderGetTexture, NVNtexture *, const NVNwindowBuilder *b, int i) { return i >= 0 && i < CWB(b)->ntex ? CWB(b)->tex[i] : NULL; }
 NVN(nvnWindowGetNativeWindow, NVNnativeWindow, const NVNwindow *w) { return (NVNnativeWindow)CWIN(w)->native; }
-NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return CWIN(w)->interval; }
+extern int dm_nvn_effective_present_interval(const win_t *window);
+NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return dm_nvn_effective_present_interval(CWIN(w)); }
 NVN_NOPROTO(nvnWindowGetNumTextures, int, const NVNwindow *w) { return CWIN(w)->ntex; }
 NVN(nvnWindowGetCrop, void, const NVNwindow *w, NVNrectangle *r) {
     const win_t *o = CWIN(w);
