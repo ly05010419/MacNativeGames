@@ -27,11 +27,12 @@
      "<key>.png" (decoded on the CPU from the guest bytes) with a line in harvest.tsv. Default list: Breath of the Wild
      87d90016,e6a88e12,e1f8208d (the picture shaders and the temperature gauge's segment shader); any other game *.
      Textures already in the folder are not written again, so it grows over runs. */
-/* GAME_FOLDER: the gfx objects of a game are built with its -D flags (-DGAME_BOTW160 for 1.6.0 too: Makefile). The end of
-   the file is past every use of the two contribution macros that totk_shader_contrib.h gives a default. */
+/* GAME_FOLDER: the gfx objects of a game are built with its -D flags (-DGAME_BOTW160 for 1.6.0 too: Makefile), and the
+   header comes by name through the build's -Iruntime (Makefile GFX_FLAGS). The end of the file is past every use of the
+   two contribution macros that totk_shader_contrib.h gives a default. */
 #undef GAME_CONTRIB_TEMPLATE
 #undef GAME_CONTRIB_TITLE
-#include "../../../../runtime/game_version.h"
+#include "game_version.h"
 #import <CoreGraphics/CoreGraphics.h>
 
 int g_ui_pack = -1;   /* -1 not yet set up, 0 off, 1 on */
