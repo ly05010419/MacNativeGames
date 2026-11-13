@@ -1321,26 +1321,32 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
 static int async_replay(void);
 static uint64_t xsub_pushed(void), xsub_replayed(void);
 static int qo_replay_async(void); static uint64_t qo_pushed(void), qo_replayed(void);   /* nvn_queue_order.inc: queued replay (OOT_QO_ASYNC) */
-typedef struct { copy_prefix *pf; uint64_t after; } retired_copy;
+/* The guest-queue ordering (nvn_queue_order.inc, on by default) replays a submission after its submit call returns when
+   it parks it at a cross-queue wait or defers it to nvnQueueFlush: a copy released meanwhile waits until every queue item
+   pushed before the release has run (qo_after, g_qo_seq). Donkey Kong Bananza adds a submitted command buffer's control
+   memory again at once; without this its parked submission read a freed copy (2026-11-13, F162: FATAL corrupt recording
+   while copying uniforms). */
+static int qo_on(void);
+typedef struct { copy_prefix *pf; uint64_t after, qo_after; } retired_copy;
 static retired_copy *g_retired; static size_t g_nretired, g_cretired;
 static void retired_sweep(void) {
     if (!g_nretired) return;
-    uint64_t done = xsub_replayed(); size_t k = 0;
+    uint64_t done = xsub_replayed(), qo_done = qo_on() ? qo_replayed() : UINT64_MAX; size_t k = 0;
     for (size_t i = 0; i < g_nretired; i++) {
-        if (g_retired[i].after <= done) { copy_lists_free(g_retired[i].pf); g_copy_bytes -= malloc_size(g_retired[i].pf); free(g_retired[i].pf); }
+        if (g_retired[i].after <= done && g_retired[i].qo_after <= qo_done) { copy_lists_free(g_retired[i].pf); g_copy_bytes -= malloc_size(g_retired[i].pf); free(g_retired[i].pf); }
         else g_retired[k++] = g_retired[i];
     }
     g_nretired = k;
 }
 static void copy_free(copy_prefix *pf) {
-    uint64_t after = async_replay() || qo_replay_async() ? xsub_pushed() : 0;
-    if (!after || after <= xsub_replayed()) { copy_lists_free(pf); g_copy_bytes -= malloc_size(pf); free(pf); return; }
+    uint64_t after = async_replay() || qo_replay_async() ? xsub_pushed() : 0, qo_after = qo_on() ? qo_pushed() : 0;
+    if ((!after || after <= xsub_replayed()) && (!qo_after || qo_after <= qo_replayed())) { copy_lists_free(pf); g_copy_bytes -= malloc_size(pf); free(pf); return; }
     if (g_nretired == g_cretired) {
         size_t cap = g_cretired ? g_cretired * 2 : 256; retired_copy *r = realloc(g_retired, cap * sizeof *r);
         if (!r) die("retired command copies");
         g_retired = r; g_cretired = cap;
     }
-    g_retired[g_nretired++] = (retired_copy){pf, after};
+    g_retired[g_nretired++] = (retired_copy){pf, after, qo_after};
 }
 static uint64_t g_copy_drop_readd, g_copy_drop_token, g_copy_mark_faults;   /* why copies were released: their control memory was added again / their mark there is gone (of those: unmapped) */
 static uint64_t g_copy_mark_late;   /* Breath of the Wild: handles called after their mark was found gone (botw_handle_copy; the copy was kept) */
