@@ -43,6 +43,12 @@ static NVNcommandHandle two_ubo(NVNcommandBuffer *c, size_t *bytes) {
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
+#ifdef GAME_OOT
+    expect("guest queue ordering on by default for Ocarina of Time", QO_DEFAULT, 1);
+#else
+    expect("guest queue ordering off by default outside Ocarina of Time", QO_DEFAULT, 0);
+#endif
+    setenv("OOT_QUEUE_ORDER", "1", 1);   /* the recording-lifetime check below needs it in every configuration */
     fresh(&g_cb);
     size_t u0 = used(&g_cb);
     h_nvnCommandBufferBeginRecording(&g_cb);

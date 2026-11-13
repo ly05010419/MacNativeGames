@@ -15,11 +15,12 @@ PROBE = ROOT / 'tests/nvn_semantics_probe.c'
 TOTK_GFX = ROOT / 'games/totk/third_party/d2r_gfx/gfx'
 
 # The game configurations built from games/totk's graphics layer (games/totk/Makefile: GAME_BOTW for Breath of the Wild,
-# GAME_NS2 for Donkey Kong Bananza and Pokemon Pokopia).
+# GAME_NS2 for Donkey Kong Bananza and Pokemon Pokopia; games/oot/Makefile: GAME_NS2 and GAME_OOT for Ocarina of Time).
 CONFIGS = {
     'totk': [],
     'botw': ['-DGAME_BOTW=1'],
     'ns2': ['-DGAME_NS2=1'],
+    'oot': ['-DGAME_NS2=1', '-DGAME_OOT=1'],
 }
 _ACCOUNTING = 'command memory accounting not ported: #1742 fixed it for TOTK only; not measured against the driver here'
 KNOWN = {
@@ -28,6 +29,7 @@ KNOWN = {
     'ns2': {'CallCommands takes no command memory': _ACCOUNTING, 'CopyCommands takes the copied commands\' size': _ACCOUNTING,
             'bind + call + copy take 20 + 0 + 40': _ACCOUNTING},
 }
+KNOWN['oot'] = KNOWN['ns2']
 CFLAGS = ['-std=gnu11', '-O1', '-w', '-fobjc-arc', '-fno-sanitize=all']
 
 
@@ -93,6 +95,7 @@ class NvnSemantics(unittest.TestCase):
     def test_totk(self): self.check('totk')
     def test_botw(self): self.check('botw')
     def test_ns2(self): self.check('ns2')
+    def test_oot(self): self.check('oot')
 
 
 if __name__ == '__main__':

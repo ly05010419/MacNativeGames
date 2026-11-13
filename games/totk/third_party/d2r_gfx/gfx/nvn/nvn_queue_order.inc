@@ -15,7 +15,7 @@
  *
  * Safety: a head parked for more than OOT_QUEUE_ORDER_TIMEOUT_MS (200) while nothing can progress is resumed past its
  * wait with a red line: a wait the host cannot see satisfied (signalled by memory writes it does not track) must not hang
- * the game. OOT_QUEUE_ORDER=0 restores the former in-order replay. */
+ * the game. OOT_QUEUE_ORDER=0 restores the former in-order replay (the default outside Ocarina of Time, see qo_on). */
 #include <pthread.h>
 extern int mtl_qo_event_ready(volatile uint32_t *val, uint32_t mode, uint32_t target);
 extern void mtl_qo_cpu_signal(volatile uint32_t *val);
@@ -101,7 +101,15 @@ static pthread_cond_t g_qo_kick_cv = PTHREAD_COND_INITIALIZER; static int g_qo_k
 static int qo_async(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_QO_ASYNC"); on = e && atoi(e); LOG("[nvn] queue replay %s", on ? "on the queue-order thread (OOT_QO_ASYNC)" : "on the guest thread that flushes / signals (OOT_QO_ASYNC=0)"); } return on; }
 static void qo_kick_locked(void) { g_qo_kick = 1; pthread_cond_signal(&g_qo_kick_cv); }
 static int qo_defer_to_flush(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_REPLAY_AT_FLUSH"); on = !(e && !atoi(e)); LOG("[nvn] submissions replay %s", on ? "at nvnQueueFlush (NVN semantics)" : "inside the submit call (OOT_REPLAY_AT_FLUSH=0)"); } return on; }
-static int qo_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_QUEUE_ORDER"); on = !(e && !atoi(e)); LOG("[nvn] guest queue ordering %s", on ? "on: cross-queue waits are honoured" : "off (OOT_QUEUE_ORDER=0)"); } return on; }
+/* On by default for Ocarina of Time only (2026-11-13, the shared layer): the other games built here never had an unready
+   cross-queue wait in play (TOTK and BotW parked=0, Bananza 2 parks while loading) and pay for the deferred replay: Donkey
+   Kong Bananza 56.9 fps with it, 60.1 without (60.6 before the merge). OOT_QUEUE_ORDER=1 / 0 forces it either way. */
+#ifdef GAME_OOT
+#define QO_DEFAULT 1
+#else
+#define QO_DEFAULT 0
+#endif
+static int qo_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_QUEUE_ORDER"); on = e ? atoi(e) != 0 : QO_DEFAULT; LOG("[nvn] guest queue ordering %s", on ? "on: cross-queue waits are honoured" : e ? "off (OOT_QUEUE_ORDER=0)" : "off (on by default for Ocarina of Time only; OOT_QUEUE_ORDER=1 turns it on)"); } return on; }
 static uint64_t qo_timeout_ns(void) { static uint64_t t; if (!t) { const char *e = getenv("OOT_QUEUE_ORDER_TIMEOUT_MS"); t = (uint64_t)(e ? atoi(e) : 200) * 1000000ull; if (!t) t = 1; } return t; }
 static qo_q *qo_queue(const NVNqueue *q) {
     for (int i = 0; i < g_qo_nq; i++) if (g_qo_q[i].q == q) return &g_qo_q[i];
