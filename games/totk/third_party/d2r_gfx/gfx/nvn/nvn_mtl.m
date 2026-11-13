@@ -24384,7 +24384,16 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
     drain();
     /* The background queue holds one job per shader: a request for a shader that already has one waiting is dropped. So the
        listed states go in rounds, each after the last has drained, all shaders in parallel, until every state is translated
-       or a round adds none (the ones left are translation failures, counted below). */
+       or a round adds none (the ones left are translation failures, counted below). First every listed state is asked for
+       once, cached ones too: a cached translation goes into the seed only when this run checks it against this runtime's
+       request (totk_shader_rt.m seed_verified, TOTK_SEED_VERIFIED_OUT), and the rounds below skip states the cache holds.
+       Until 2026-11-13 they were never asked for, so every listed variant translated by an earlier run was left out of the
+       seed (Ocarina of Time: 0 of 8,525 in the seed, 47 bind states the default variant does not serve; the cache held them). */
+    for (NSArray *j in listed_jobs) {
+        const uint8_t *ctl = [j[3] pointerValue], *code = [j[4] pointerValue];
+        totk_rt_variant(j[0], [j[2] intValue], ctl, code, j[1], rt_local(ctl, [j[2] intValue]), 1);
+    }
+    drain();
     for (long was = -1, now; ; was = now) {
         now = 0; for (NSArray *j in listed_jobs) if (totk_rt_variant_cached(j[0], j[1])) now++;
         if (now == (long)listed_jobs.count || now <= was) break;
