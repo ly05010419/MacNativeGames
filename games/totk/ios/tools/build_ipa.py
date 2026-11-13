@@ -5,7 +5,7 @@ shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, struct, subprocess, sys, time, zlib
 from pathlib import Path
 from compile_seed import METAL_FLAGS, seed_flags
-from device_pipelines import SCHEMA, connected_gpus, seed_check
+from device_pipelines import SCHEMA, connected_gpus, mac_cache, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -321,7 +321,8 @@ def main():
     pipe_work=tree/f'build/ios-pipelines/{a.version}'
     # Two runs of the Mac binary's mode: the first records the patched variants the runtime compiles from source
     # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
-    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds.
+    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds,
+    # also when the runtime changed: only the pipelines it describes otherwise are made again (device_pipelines.mac_cache).
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
     # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
     # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
@@ -333,9 +334,8 @@ def main():
     tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)
     def mac_pipelines(folder,log):
         stamp=folder/'seed.txt'
-        if not (stamp.is_file() and stamp.read_text().strip()==want): shutil.rmtree(folder,ignore_errors=True)   # pipelines of other shaders or lists
-        folder.mkdir(parents=True,exist_ok=True)
-        run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1'))
+        recheck=mac_cache(folder,want)   # kept and checked against this runtime, never thrown away (device_pipelines.mac_cache)
+        run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1',**recheck))
         stamp.write_text(want+'\n')
     t0=time.time()
     if gpus:   # without the last build's variant libraries, so the first run compiles and records every variant it meets

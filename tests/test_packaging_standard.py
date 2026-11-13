@@ -119,5 +119,45 @@ class PackagingStandard(unittest.TestCase):
                 self.assertTrue(why.strip(), name)
 
 
+class DevicePipelineArchive(unittest.TestCase):
+    """Every game's iOS device pipeline archive is merged into a few files (user 2026-11-13: "统一 都做 … 保证 以后都这样"):
+    one file per pipeline used up the iPad's vnodes, as a pipeline made from an archive keeps its file mapped (Ocarina of
+    Time, 19,750 files: jetsam vnode-limit with 7,098 mapped regions; Breath of the Wild's iPhone build had 15,770 files).
+    nxnative bundles one archive per GPU. Every copy of the tool is the same file, so a fix reaches every game."""
+    COPIES = sorted((ROOT / 'games').glob('*/ios/tools/device_pipelines.py'))
+
+    def test_every_copy_merges(self):
+        self.assertTrue(self.COPIES, 'no device_pipelines.py found')
+        for path in self.COPIES:
+            with self.subTest(path=str(path.relative_to(ROOT))):
+                text = path.read_text()
+                groups = re.search(r'^GROUPS = (\d+)', text, re.M)
+                self.assertIsNotNone(groups, 'GROUPS is set')
+                self.assertGreater(int(groups.group(1)), 0, 'merged by default, never one file per pipeline')
+                self.assertIn('def plan_groups(', text)
+
+    def test_every_copy_is_the_same_file(self):
+        texts = {path.read_bytes() for path in self.COPIES}
+        self.assertEqual(len(texts), 1, 'copies of device_pipelines.py differ: '
+                         + ', '.join(str(p.relative_to(ROOT)) for p in self.COPIES))
+
+
+class IosMacPipelineCache(unittest.TestCase):
+    """Every iOS build that makes the device's pipelines on the Mac keeps that cache when the runtime changes and has the
+    run check it (device_pipelines.mac_cache, TOTK_PAR_RECHECK), as the Mac build does (build_app.mac_pipelines). User
+    2026-11-13: "根治，写测试 以后保证这样": the OOT iPad build threw both caches away for a runtime change, 240 s + 228 s
+    of pipelines made again from scratch, and every metal-tt group compiled again."""
+    BUILDS = [p for p in sorted((ROOT / 'games').glob('*/ios/tools/build_ipa.py')) if "'pipeline-archive'" in p.read_text()]
+
+    def test_every_build_checks_instead_of_throwing_away(self):
+        self.assertTrue(self.BUILDS, 'no iOS build makes pipelines on the Mac')
+        for path in self.BUILDS:
+            with self.subTest(path=str(path.relative_to(ROOT))):
+                text = path.read_text()
+                self.assertIn('mac_cache(folder,want)', text)
+                self.assertIn('**recheck', text, 'the run gets TOTK_PAR_RECHECK')
+                self.assertNotRegex(text, r'rmtree\(folder\b', 'the cache folder is never thrown away')
+
+
 if __name__ == '__main__':
     unittest.main()

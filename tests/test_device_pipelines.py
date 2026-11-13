@@ -39,7 +39,7 @@ class Compile(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_main(self, *archs):
+    def run_main(self, *archs, groups=None):   # groups: --groups (default: the tool's GROUPS, merged files)
         real_run = subprocess.run
         def fake_run(cmd, **kw):
             if 'metal-tt' in cmd:
@@ -48,7 +48,7 @@ class Compile(unittest.TestCase):
                 Path(cmd[cmd.index('-o') + 1]).write_bytes(b'gpu code')
                 return subprocess.CompletedProcess(cmd, 0, '', '')
             return real_run(cmd, **kw)
-        argv = ['device_pipelines.py', '--mac', str(self.mac), '--seed', str(self.seed), '--cache', str(self.cache), *[x for a in archs for x in ('--arch', a)]]
+        argv = ['device_pipelines.py', '--mac', str(self.mac), '--seed', str(self.seed), '--cache', str(self.cache), *[x for a in archs for x in ('--arch', a)], *(['--groups', str(groups)] if groups is not None else [])]
         out = io.StringIO()
         with mock.patch.object(sys, 'argv', argv), mock.patch.object(device_pipelines, 'tool', lambda *a: str(self.tool)), \
              mock.patch.object(device_pipelines, 'script_of', lambda p, *a: json.loads(json.dumps(self.scripts[p.stem]))), \
@@ -57,7 +57,7 @@ class Compile(unittest.TestCase):
         return json.loads(out.getvalue().strip().splitlines()[-1])
 
     def test_pipelines_of_seed_libraries_are_compiled_into_the_seed_flat(self):
-        r = self.run_main('applegpu_g14p')
+        r = self.run_main('applegpu_g14p', groups=0)   # one file per Mac file (--groups 0): the names it writes
         self.assertEqual(r['archs'][0]['pipelines'], 2); self.assertEqual(r['library from source'], 1)
         self.assertEqual(sorted(p.name for p in self.seed.glob('pipelines-*')),
                          ['pipelines-applegpu_g14p-k1-1.metalarchive', 'pipelines-applegpu_g14p-k2-1.metalarchive',
@@ -201,6 +201,36 @@ class Place(unittest.TestCase):
             self.assertEqual(dst.read_bytes(), b'new')
             (Path(d)/'gone').unlink(missing_ok=True); device_pipelines.place(src, Path(d)/'gone')
             self.assertEqual((Path(d)/'gone').read_bytes(), b'new')
+
+
+class MacCache(unittest.TestCase):
+    """build_ipa.py's Mac pipeline caches are kept and checked against a changed runtime, never thrown away (2026-11-13)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.folder = Path(self.tmp.name)/'variant-scan'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def fill(self, stamp):
+        (self.folder/'pipelines').mkdir(parents=True); (self.folder/'variants').mkdir()
+        (self.folder/'pipelines/a.metalarchive').write_bytes(b'a'); (self.folder/'variants/v.metal').write_text('v')
+        (self.folder/'seed.txt').write_text(stamp + '\n')
+
+    def test_a_new_folder_is_made_and_checked(self):
+        self.assertEqual(device_pipelines.mac_cache(self.folder, 'w'), {'TOTK_PAR_RECHECK': '1'})
+        self.assertTrue(self.folder.is_dir())
+
+    def test_same_inputs_keep_everything(self):
+        self.fill('w')
+        self.assertEqual(device_pipelines.mac_cache(self.folder, 'w'), {'TOTK_PAR_RECHECK': '0'})
+        self.assertEqual((self.folder/'pipelines/a.metalarchive').read_bytes(), b'a')
+        self.assertTrue((self.folder/'variants/v.metal').is_file())
+
+    def test_another_runtime_keeps_the_pipelines_and_checks_them(self):
+        self.fill('old runtime')
+        self.assertEqual(device_pipelines.mac_cache(self.folder, 'w'), {'TOTK_PAR_RECHECK': '1'})
+        self.assertEqual((self.folder/'pipelines/a.metalarchive').read_bytes(), b'a', 'pipelines kept for the recheck')
+        self.assertFalse((self.folder/'variants').exists(), 'variants are recorded again by the recheck')
 
 
 if __name__ == '__main__':
