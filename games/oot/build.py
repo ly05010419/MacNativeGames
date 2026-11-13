@@ -21,6 +21,24 @@ def build_helpers():
     import build_app
     return build_app
 
+TREE_SKIP=('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis')   # the build's own output and caches
+
+def sync_tree(source,tree):
+    """The work folder's copy of games/oot mirrors the checkout: files are copied (linked folders, the shared graphics
+    layer and zeldaVR, as their contents), and a file or folder the checkout no longer has is deleted. A copy that only
+    added files kept another branch's nvn_pool_sources.m, which the Makefile's wildcard compiled with this checkout's
+    headers (2026-11-13). The names in TREE_SKIP are neither copied nor deleted."""
+    import fnmatch
+    shutil.copytree(source,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns(*TREE_SKIP))
+    skip=lambda name:any(fnmatch.fnmatch(name,p) for p in TREE_SKIP)
+    for here,dirs,files in os.walk(tree,topdown=True):
+        rel=Path(here).relative_to(tree)
+        dirs[:]=[d for d in dirs if not skip(d)]
+        for name in list(dirs):
+            if not (source/rel/name).exists():shutil.rmtree(Path(here)/name);dirs.remove(name)
+        for name in files:
+            if not skip(name) and not (source/rel/name).exists():(Path(here)/name).unlink()
+
 def sha(path):
     h=hashlib.sha256()
     with Path(path).open('rb') as f:
@@ -419,7 +437,7 @@ def update_runtime(app,work=None):
         if not told:print('waiting for the game to close',flush=True);told=True
         time.sleep(5)
     start=time.monotonic()
-    shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
+    sync_tree(GAME,tree)
     scripts=str(GAME/'scripts')
     if scripts not in sys.path:sys.path.insert(0,scripts)
     from prepare_ns2_seed import translation_context
@@ -506,7 +524,7 @@ def build(args, source):
             if time.monotonic()>deadline:raise RuntimeError('game did not finish its normal close; App left untouched')
             time.sleep(1)
     work.mkdir(parents=True,exist_ok=True);tree=work/'oot';logs=work/'logs';logs.mkdir(exist_ok=True)
-    shutil.copytree(GAME,tree,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis'))
+    sync_tree(GAME,tree)
     env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
