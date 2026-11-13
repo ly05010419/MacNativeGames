@@ -30,7 +30,7 @@
 @implementation TOTKBoardPage
 static NSTextField *board_tab_label(NSString *text, CGFloat size, CGFloat white, NSTextAlignment align) {
  NSTextField *l=[NSTextField labelWithString:text];l.font=[NSFont systemFontOfSize:size];l.alignment=align;
- l.textColor=[NSColor colorWithCalibratedWhite:white alpha:1];l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
+ l.textColor=white>=0.85?NSColor.labelColor:NSColor.secondaryLabelColor;l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
 /* The player's anonymous code on the board: the first 6 hex of SHA-256(board id) in capitals, as the server names a
    player (its lib/name-store.js shownName); nil while this Mac has no id. The code is public and the site only marks
@@ -59,18 +59,20 @@ static NSArray<NSArray *> *board_tab_columns(void) {
  /* the switch, its title and state on the left; the group (uncapped, and how many players) on the right */
  NSSwitch *toggle=[NSSwitch new];[toggle sizeToFit];NSSize s=toggle.frame.size;
  toggle.frame=NSMakeRect(18,top-s.height,s.width,s.height);toggle.target=self;toggle.action=@selector(toggled:);toggle.refusesFirstResponder=YES;
+ toggle.autoresizingMask=NSViewMaxXMargin|NSViewMinYMargin;
  [self addSubview:toggle];self.toggle=toggle;
  NSTextField *title=board_tab_label(settings_text("我要上榜","Join the board"),15,1.0,NSTextAlignmentLeft);title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
- title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,120,22);[self addSubview:title];
- NSTextField *group=board_tab_label(settings_text("不锁帧","Uncapped"),12,0.7,NSTextAlignmentRight);group.frame=NSMakeRect(W-18-200,top-s.height+3,200,18);[self addSubview:group];self.group=group;
- NSTextField *state=board_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);[self addSubview:state];self.state=state;
+ title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,120,22);title.autoresizingMask=NSViewMaxXMargin|NSViewMinYMargin;[self addSubview:title];
+ NSTextField *group=board_tab_label(settings_text("不锁帧","Uncapped"),12,0.7,NSTextAlignmentRight);group.frame=NSMakeRect(W-18-200,top-s.height+3,200,18);group.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[self addSubview:group];self.group=group;
+ NSTextField *state=board_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);state.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:state];self.state=state;
  /* the nickname (nick_row.h) */
- TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];[self addSubview:nick];self.nick=nick;
+ TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];nick.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:nick];self.nick=nick;
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nickChanged:) name:TOTK_NICK_CHANGED_NOTE object:nil];
  /* the board */
  CGFloat noteH=30,tableTop=NSMinY(nick.frame)-6,tableBottom=8+noteH+4;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,tableBottom,W-28,tableTop-tableBottom)];
- scroll.hasVerticalScroller=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.hasVerticalScroller=YES;scroll.hasHorizontalScroller=YES;scroll.autohidesScrollers=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
  NSTableView *table=[[NSTableView alloc] initWithFrame:scroll.bounds];
  for(NSArray *c in board_tab_columns()){NSTableColumn *col=[[NSTableColumn alloc] initWithIdentifier:c[0]];col.title=c[1];col.width=[c[2] doubleValue];
   col.headerCell.alignment=[c[0] isEqualToString:@"chip"]||[c[0] isEqualToString:@"out"]||[c[0] isEqualToString:@"name"]?NSTextAlignmentLeft:NSTextAlignmentRight;[table addTableColumn:col];}
@@ -85,11 +87,11 @@ static NSArray<NSArray *> *board_tab_columns(void) {
     tooltip) */
  [table tableColumnWithIdentifier:@"name"].width+=fmax(0,fmin(96,scroll.contentSize.width-used-4));
  scroll.documentView=table;[self addSubview:scroll];self.table=table;
- NSTextField *status=board_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);[self addSubview:status];self.status=status;
+ NSTextField *status=board_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);status.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;[self addSubview:status];self.status=status;
  NSTextField *note=board_tab_label(settings_text("匿名：只上传配置、画面设置、帧数和一个随机编号。只算不锁帧、不补帧时进入世界后的游玩，暂停和切到后台不算；锁帧或补帧时不记录。",
   "Anonymous: only the hardware, picture settings, frame rates and a random id are sent. Only uncapped play in the world without interpolation counts, not pauses or the background; nothing is kept while the frame rate is locked or interpolated."),
   10.5,0.6,NSTextAlignmentCenter);
- note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);[self addSubview:note];self.note=note;
+ note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);note.autoresizingMask=NSViewWidthSizable|NSViewMaxYMargin;[self addSubview:note];self.note=note;
  [self refresh];
  return self;
 }
@@ -113,7 +115,7 @@ static NSString *board_tab_rule(void) {
   :settings_text("已关闭：不上传任何东西","Off: nothing is sent");
  int kind=0;NSString *flash=nick_row_flash_text(&kind);   /* a nickname change, for a few seconds */
  if(flash)self.state.stringValue=flash;
- self.state.textColor=flash?nick_row_flash_color(kind):[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ self.state.textColor=flash?nick_row_flash_color(kind):NSColor.secondaryLabelColor;
  self.state.toolTip=board_tab_rule();
  [self.nick refresh];
  double now=CACurrentMediaTime();
@@ -171,7 +173,7 @@ static NSString *board_tab_rule(void) {
  cell.stringValue=[self cellText:e column:col.identifier];
  cell.alignment=col.headerCell.alignment;
  cell.font=me?[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightBold]:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
- cell.textColor=me?NSColor.systemGreenColor:[NSColor colorWithCalibratedWhite:0.92 alpha:1];
+ cell.textColor=me?NSColor.systemGreenColor:NSColor.labelColor;
  cell.toolTip=[col.identifier isEqualToString:@"out"]&&[e[@"scene"] isKindOfClass:NSString.class]
   ?[NSString stringWithFormat:settings_text("内部分辨率 %@","Internal resolution %@"),e[@"scene"]]:[col.identifier isEqualToString:@"name"]?cell.stringValue:nil;
  return cell;

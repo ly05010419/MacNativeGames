@@ -1851,7 +1851,73 @@ int main(int argc, const char **argv) { @autoreleasepool {
         [settingsPanel cacheDisplayInRect:settingsPanel.bounds toBitmapImageRep:rep];
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
+    /* Window-mode settings host, Light/Dark effective appearance refresh, bindings view switching and shortcuts. */
+    press(18); assert(!settingsOpen);
+    setenv("TOTK_UI_LANG", "en", 1);
+    g_settings_page = SETTINGS_PAGE_DISPLAY; g_settings_bindings_list = NO; g_settings_bindings_device = 0;
+    NSWindow *hiddenSettings = probe_window();
+    [hiddenSettings setContentSize:NSMakeSize(960, 620)];
+    settingsWindow = hiddenSettings;
+    settingsWindowMode = YES;
+    settingsOpen = 1;
+    settings_panel_replace();
+    assert(settings_window_active() && settingsPanel.hidden && settings_drawings_fit());
+    TOTKSettingsWindowRootView *winRoot = [[TOTKSettingsWindowRootView alloc] initWithFrame:hiddenSettings.contentView.bounds panel:settingsPanel];
+    hiddenSettings.contentView = winRoot;
+    [winRoot updatePage:settingsPanel.page];
+    [settingsPanel refresh];
+    assert(winRoot.sidebarView.items.count == (NSUInteger)settings_pages() && winRoot.displayedPage == SETTINGS_PAGE_DISPLAY);
+    assert(settingsPanel.homeButton.superview == winRoot.footerBar && settingsPanel.versionLabel.superview == winRoot.footerBar);
+    [settingsPanel selectPage:SETTINGS_PAGE_USERS]; tick();
+    assert(winRoot.displayedPage == SETTINGS_PAGE_USERS && [winRoot.footerBar.subviews containsObject:settingsPanel.userButtons[0]]);
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
+    assert(winRoot.displayedPage == SETTINGS_PAGE_DISPLAY);
+    if (@available(macOS 10.14, *)) {
+        CGFloat (^lumaOf)(CGColorRef) = ^CGFloat(CGColorRef cg) {
+            NSColor *nc = [[NSColor colorWithCGColor:cg] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            return nc ? nc.redComponent : -1.0;
+        };
+        winRoot.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
+        [winRoot viewDidChangeEffectiveAppearance];
+        CGFloat lightWin = lumaOf(winRoot.layer.backgroundColor);
+        winRoot.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        [winRoot viewDidChangeEffectiveAppearance];
+        CGFloat darkWin = lumaOf(winRoot.layer.backgroundColor);
+        assert(lightWin > 0.7 && darkWin >= 0.0 && darkWin < 0.4 && fabs(lightWin - darkWin) > 0.3);
+        winRoot.appearance = nil;
+    }
+    [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
+    assert(winRoot.displayedPage == SETTINGS_PAGE_BINDINGS && settingsPanel.drawings);
+    assert(settingsPanel.listToggle.superview == winRoot.scrollView.documentView);
+    assert([winRoot.footerBar.subviews containsObject:settingsPanel.resetButtons[0]]);
+    settingsPanel.deviceTabs.selectedSegment = 1;
+    [settingsPanel deviceChanged:settingsPanel.deviceTabs]; tick();
+    assert(g_settings_bindings_device == 1 && settingsPanel.listToggle.superview == winRoot.scrollView.documentView);
+    assert([winRoot.footerBar.subviews containsObject:settingsPanel.resetButtons[1]]);
+    [settingsPanel.listToggle performClick:nil]; tick();
+    assert(g_settings_bindings_list && !settingsPanel.drawings && [settingsPanel.listToggle isDescendantOf:winRoot.scrollView.documentView]);
+    assert([winRoot.footerBar.subviews containsObject:settingsPanel.resetButtons[0]] && [winRoot.footerBar.subviews containsObject:settingsPanel.resetButtons[1]]);
+    [settingsPanel.listToggle performClick:nil]; tick();
+    assert(!g_settings_bindings_list && settingsPanel.drawings);
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
+    assert(winRoot.displayedPage == SETTINGS_PAGE_DISPLAY && settingsPanel.homeButton.superview == winRoot.footerBar);
+    [hiddenSettings setContentSize:NSMakeSize(820, 540)];
+    assert(winRoot.frame.size.width == 820 && winRoot.scrollView.documentView != nil);
+    NSEvent *winCmdW = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:NSEventModifierFlagCommand
+        timestamp:0 windowNumber:hiddenSettings.windowNumber context:nil characters:@"w" charactersIgnoringModifiers:@"w" isARepeat:NO keyCode:13];
+    assert([winRoot performKeyEquivalent:winCmdW] && !settingsOpen && !settings_window_active());
+    settingsOpen = 1; settingsWindowMode = YES; settings_panel_replace();
+    winRoot.panel = settingsPanel; [winRoot updatePage:SETTINGS_PAGE_DISPLAY];
+    [winRoot keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:0 windowNumber:hiddenSettings.windowNumber context:nil characters:@"\x1b" charactersIgnoringModifiers:@"\x1b" isARepeat:NO keyCode:53]];
+    assert(!settingsOpen && !settings_window_active());
+    settingsOpen = 1; settingsWindowMode = YES; settings_panel_replace();
+    winRoot.panel = settingsPanel; [winRoot updatePage:SETTINGS_PAGE_DISPLAY];
+    [winRoot keyDown:[NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:0 windowNumber:hiddenSettings.windowNumber context:nil characters:@"1" charactersIgnoringModifiers:@"1" isARepeat:NO keyCode:18]];
+    assert(!settingsOpen && !settings_window_active());
+    settingsWindow = nil; settingsWindowMode = NO;
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, users: this run, next launch, added through the text bar, full console, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, users: this run, next launch, added through the text bar, full console, game keys blocked while open, keys 2-7 inert, Chinese, window mode & appearance)");
     return 0;
 }}
