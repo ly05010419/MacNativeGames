@@ -275,21 +275,7 @@ void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the m
 void botw_wb_landed(const void *mem);
 uint64_t botw_wb_gen(void);
 int botw_wb_newer(const void *mem, uint64_t gen);
-/* Sharp UI art (games/botw/gfx/botw_texpack.h, included at the end of nvn_mtl.m): a texture pack's larger copy of a
-   UI texture is the sampling base of the texture-pool slots that view it whole (tex_by_id); harvest mode writes the
-   UI textures into a folder. g_botw_tp: -1 not yet set up (the first upload does it), 0 off. */
-extern int g_botw_tp;
-void botw_tp_uploaded(void *pk, const tex_t *t);
-void *botw_tp_pick(void *rp, void *base);
-void botw_tp_harvest(const char *fs_key, const tex_t *t);
-#define BOTW_TP_PKG_FIELDS id tp_rep; uint8_t *tp_px; uint32_t tp_pw, tp_ph; uint64_t tp_ser, tp_hash, tp_gen, tp_pgen, tp_hv; int tp_cls;
-#define BOTW_TP_UPLOADED(pk, t) if (g_botw_tp) botw_tp_uploaded((__bridge void *)(pk), (t));
-#define BOTW_TP_BASE(rp, b) if (g_botw_tp > 0) (b) = (__bridge id<MTLTexture>)botw_tp_pick((rp), (__bridge void *)(b));
-#define BOTW_TP_VIEW(rp, r, b) if (g_botw_tp > 0) { void *tp_ = botw_tp_pick((rp), (__bridge void *)(b)); if (tp_ != (__bridge void *)(b)) { (b) = (__bridge id<MTLTexture>)tp_; (r).v.set_format = 0; } }
-#define BOTW_TP_HARVEST(t, fs, tt) if ((t) && g_botw_tp > 0) botw_tp_harvest((fs), (tt));
-#define BOTW_TP_OWNED(pk) if (g_botw_tp > 0 && (pk)->tp_rep) ser_bump_locked((pk)->tp_ser);
-#define BOTW_TP_FREE() if (tp_rep) res_remove(tp_rep); free(tp_px);
-#define BOTW_PKG_FIELDS uint64_t wb_gen; BOTW_TP_PKG_FIELDS
+#define BOTW_PKG_FIELDS uint64_t wb_gen;
 #define BOTW_WB_LANDED(t) botw_wb_landed((t)->mem);
 #define BOTW_PKG_WB_SEEN(pk) (pk)->wb_gen = botw_wb_gen();
 #define BOTW_PKG_WB_TAKE() uint64_t wbg_ = botw_wb_gen();
@@ -349,12 +335,6 @@ int totk_wb_fence_on(void);
 #define BOTW_ASHOT_POLL(t, cur)
 #define BOTW_REUP_TRACKED(pk, t)
 #define BOTW_PKG_FIELDS
-#define BOTW_TP_UPLOADED(pk, t)
-#define BOTW_TP_BASE(rp, b)
-#define BOTW_TP_VIEW(rp, r, b)
-#define BOTW_TP_HARVEST(t, fs, tt)
-#define BOTW_TP_OWNED(pk)
-#define BOTW_TP_FREE()
 #define BOTW_WB_LANDED(t)
 #define BOTW_PKG_WB_SEEN(pk)
 #define BOTW_PKG_WB_TAKE()
@@ -362,6 +342,39 @@ int totk_wb_fence_on(void);
 #define BOTW_PKG_WB_STALE(pk, t, clean)
 #define BOTW_PKG_RENDER_ALIAS(pk, t)
 #define BOTW_ATTACH_TEX_U(t) tex_mtl(t)
+#endif
+/* Sharp UI art (ui_pack.h, included at the end of nvn_mtl.m): a texture pack's larger copy of a UI texture is the sampling
+   base of the texture-pool slots that view it whole (tex_by_id); harvest mode writes the UI textures into a folder. On
+   for a Mac build of a Switch 1 game (Switch 2 games and iOS: off); -DMNG_UI_PACK=0 turns it off. g_ui_pack: -1 not yet
+   set up (the first upload does it), 0 off. */
+#ifndef MNG_UI_PACK
+#include <TargetConditionals.h>
+#if !defined(GAME_NS2) && !TARGET_OS_IPHONE
+#define MNG_UI_PACK 1
+#else
+#define MNG_UI_PACK 0
+#endif
+#endif
+#if MNG_UI_PACK
+extern int g_ui_pack;
+void ui_pack_uploaded(void *pk, const tex_t *t);
+void *ui_pack_pick(void *rp, void *base);
+void ui_pack_harvest(const char *fs_key, const tex_t *t);
+#define UI_PACK_PKG_FIELDS id tp_rep; uint8_t *tp_px; uint32_t tp_pw, tp_ph; uint64_t tp_ser, tp_hash, tp_gen, tp_pgen, tp_hv; int tp_cls;
+#define UI_PACK_UPLOADED(pk, t) if (g_ui_pack) ui_pack_uploaded((__bridge void *)(pk), (t));
+#define UI_PACK_BASE(rp, b) if (g_ui_pack > 0) (b) = (__bridge id<MTLTexture>)ui_pack_pick((rp), (__bridge void *)(b));
+#define UI_PACK_VIEW(rp, r, b) if (g_ui_pack > 0) { void *tp_ = ui_pack_pick((rp), (__bridge void *)(b)); if (tp_ != (__bridge void *)(b)) { (b) = (__bridge id<MTLTexture>)tp_; (r).v.set_format = 0; } }
+#define UI_PACK_HARVEST(t, fs, tt) if ((t) && g_ui_pack > 0) ui_pack_harvest((fs), (tt));
+#define UI_PACK_OWNED(pk) if (g_ui_pack > 0 && (pk)->tp_rep) ser_bump_locked((pk)->tp_ser);
+#define UI_PACK_FREE() if (tp_rep) res_remove(tp_rep); free(tp_px);
+#else
+#define UI_PACK_PKG_FIELDS
+#define UI_PACK_UPLOADED(pk, t)
+#define UI_PACK_BASE(rp, b)
+#define UI_PACK_VIEW(rp, r, b)
+#define UI_PACK_HARVEST(t, fs, tt)
+#define UI_PACK_OWNED(pk)
+#define UI_PACK_FREE()
 #endif
 /* Key 5 (MetalFX temporal anti-aliasing, totk_taa.m): the compose draw that samples the linear HDR scene at fragment
    texture slot 0 before tone mapping. TOTK: 0ac9a549 (tone mapping and bloom). Breath of the Wild 1.9.0: f7ee6fe1 (two

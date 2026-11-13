@@ -1,10 +1,12 @@
-/* Breath of the Wild 1.9.0 and 1.6.0: sharp UI art from a high-res texture pack (BOTW_TP_* in nvn_obj.h; included at the
-   end of nvn_mtl.m for GAME_BOTW only, so TOTK objects stay as they were).
+/* Sharp UI art from a high-res texture pack, for every game built with MNG_UI_PACK (UI_PACK_* in nvn_obj.h; included at
+   the end of nvn_mtl.m; the guard is on for a Mac build of a Switch 1 game and off for Switch 2 games and iOS;
+   -DMNG_UI_PACK=0 turns it off). The pack is per game (key lists exist for Breath of the Wild 1.9.0 and 1.6.0 and for
+   Tears of the Kingdom 1.4.3); a game with no pack folder pays one directory scan.
 
    The UI's small textures (48x48 and 72x72 masks, colour icons) are magnified about 2x at 3456x1944 with linear
    filtering, which blurs their one-texel anti-aliased edges. The pack holds larger copies (AI-upscaled game art, or
-   prompts drawn from vectors: games/botw/scripts/botw_texpack.py, docs/mods.md). The UI shaders sample with
-   normalised coordinates, so a larger texture draws at the same place and size.
+   prompts drawn from vectors: docs/mods.md). The UI shaders sample with normalised coordinates, so a larger texture
+   draws at the same place and size.
 
    - Key: pkg_hash of the texture's guest bytes (block-linear, as in the pool), width, height and NVN format:
      "<hash 16 hex>-<w>x<h>-<format 2 hex>", file "<key>.png" in the pack folder.
@@ -18,15 +20,21 @@
    - A background queue decodes the PNG; the replay thread creates the texture when a slot next validates (after a
      ser_bump of the serial), if the upload it was decoded for is still the current one. Until then the guest texture
      draws. A re-upload, a GPU rendering into the texture or the NvPkg's end retires it.
-   - BOTW_TEXPACK_DIR: the pack folder (default ~/Library/Application Support/MacNativeGames/BotW/texture-pack);
-     BOTW_TEXPACK=0: off.
-   - BOTW_TEXPACK_HARVEST=<folder>: the first time a UI picture shader (BOTW_TEXPACK_HARVEST_FS, key prefixes, default
-     87d90016,e6a88e12,e1f8208d: the picture shaders and the temperature gauge's segment shader) samples a candidate,
-     its texels are written there as "<key>.png" (decoded on the CPU from the guest bytes) with a line in harvest.tsv.
+   - MNG_UI_PACK_DIR: the pack folder (default ~/Library/Application Support/MacNativeGames/<GAME_FOLDER>/ui-pack, the
+     game's data folder of game_version.h); MNG_UI_PACK=0: off. Otherwise the pack is on when the folder holds PNGs.
+   - MNG_UI_PACK_HARVEST=<folder>: the first time a fragment shader of the list MNG_UI_PACK_HARVEST_FS (key prefixes
+     separated by commas, or * for every fragment shader) samples a candidate, its texels are written there as
+     "<key>.png" (decoded on the CPU from the guest bytes) with a line in harvest.tsv. Default list: Breath of the Wild
+     87d90016,e6a88e12,e1f8208d (the picture shaders and the temperature gauge's segment shader); any other game *.
      Textures already in the folder are not written again, so it grows over runs. */
+/* GAME_FOLDER: the gfx objects of a game are built with its -D flags (-DGAME_BOTW160 for 1.6.0 too: Makefile). The end of
+   the file is past every use of the two contribution macros that totk_shader_contrib.h gives a default. */
+#undef GAME_CONTRIB_TEMPLATE
+#undef GAME_CONTRIB_TITLE
+#include "../../../../runtime/game_version.h"
 #import <CoreGraphics/CoreGraphics.h>
 
-int g_botw_tp = -1;   /* -1 not yet set up, 0 off, 1 on */
+int g_ui_pack = -1;   /* -1 not yet set up, 0 off, 1 on */
 static NSSet<NSString *> *g_tp_index;   /* pack keys */
 static NSString *g_tp_dir, *g_tp_harv;
 static NSMutableSet<NSString *> *g_tp_harv_seen;   /* keys in the harvest folder */
@@ -42,22 +50,27 @@ static NSSet<NSString *> *tp_scan(NSString *dir) {
     return s;
 }
 static void tp_setup(void) {
-    const char *on = getenv("BOTW_TEXPACK"), *dir = getenv("BOTW_TEXPACK_DIR"), *harv = getenv("BOTW_TEXPACK_HARVEST");
-    g_botw_tp = 0;
+    const char *on = getenv("MNG_UI_PACK"), *dir = getenv("MNG_UI_PACK_DIR"), *harv = getenv("MNG_UI_PACK_HARVEST");
+    g_ui_pack = 0;
     if (harv && *harv) {
         g_tp_harv = @(harv); [[NSFileManager defaultManager] createDirectoryAtPath:g_tp_harv withIntermediateDirectories:YES attributes:nil error:nil];
         g_tp_harv_seen = [tp_scan(g_tp_harv) mutableCopy];
-        g_tp_harv_fs = getenv("BOTW_TEXPACK_HARVEST_FS"); if (!g_tp_harv_fs || !*g_tp_harv_fs) g_tp_harv_fs = "87d90016,e6a88e12,e1f8208d";
-        MLOG("[texpack] harvest into %s (%lu textures there; fragment shaders %s)", harv, (unsigned long)g_tp_harv_seen.count, g_tp_harv_fs);
-        g_botw_tp = 1;
+        g_tp_harv_fs = getenv("MNG_UI_PACK_HARVEST_FS"); if (!g_tp_harv_fs || !*g_tp_harv_fs) g_tp_harv_fs =
+#ifdef GAME_BOTW
+            "87d90016,e6a88e12,e1f8208d";
+#else
+            "*";
+#endif
+        MLOG("[ui-pack] harvest into %s (%lu textures there; fragment shaders %s)", harv, (unsigned long)g_tp_harv_seen.count, g_tp_harv_fs);
+        g_ui_pack = 1;
     }
     if (!on || atoi(on)) {
-        g_tp_dir = dir && *dir ? @(dir) : [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/BotW/texture-pack"];
+        g_tp_dir = dir && *dir ? @(dir) : [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/" GAME_FOLDER "/ui-pack"];
         g_tp_index = tp_scan(g_tp_dir);
-        if (g_tp_index.count) { MLOG("[texpack] %lu textures in %s (BOTW_TEXPACK=0 off)", (unsigned long)g_tp_index.count, g_tp_dir.UTF8String); g_botw_tp = 1; }
+        if (g_tp_index.count) { MLOG("[ui-pack] %lu textures in %s (MNG_UI_PACK=0 off)", (unsigned long)g_tp_index.count, g_tp_dir.UTF8String); g_ui_pack = 1; }
         else g_tp_index = nil;
     }
-    if (g_botw_tp) g_tp_q = dispatch_queue_create("botw.texpack", DISPATCH_QUEUE_SERIAL);
+    if (g_ui_pack) g_tp_q = dispatch_queue_create("ui.pack", DISPATCH_QUEUE_SERIAL);
 }
 
 /* 1 R8 (BC4), 2 RG8 (BC5), 3 RGBA8, 4 RGBA8 sRGB; 0 not a candidate */
@@ -106,9 +119,9 @@ static uint8_t *tp_load(NSString *path, int cls, uint32_t w, uint32_t h, uint32_
 }
 
 /* nvn_mtl.m tex_mtl, after a first upload or a re-upload of a mirrored texture (replay thread) */
-void botw_tp_uploaded(void *pk_, const tex_t *t) {
-    if (g_botw_tp < 0) tp_setup();
-    if (!g_botw_tp) return;
+void ui_pack_uploaded(void *pk_, const tex_t *t) {
+    if (g_ui_pack < 0) tp_setup();
+    if (!g_ui_pack) return;
     NvPkg *pk = (__bridge NvPkg *)pk_;
     os_unfair_lock_lock(&g_tp_lk); uint64_t gen = ++pk->tp_gen; free(pk->tp_px); pk->tp_px = NULL; os_unfair_lock_unlock(&g_tp_lk);
     if (pk->tp_rep) { defer_obj_release(pk->tp_rep); pk->tp_rep = nil; }   // the serial was bumped by the re-upload: slot views look again
@@ -123,11 +136,11 @@ void botw_tp_uploaded(void *pk_, const tex_t *t) {
     int cls = pk->tp_cls; uint32_t w = t->d.width, h = t->d.height; uint64_t ser = t->serial;
     dispatch_async(g_tp_q, ^{
         uint32_t pw = 0, ph = 0; uint8_t *px = tp_load(path, cls, w, h, &pw, &ph);
-        if (!px) { g_tp_bad++; MLOG("【红】[texpack] %s: not an 8-bit PNG of a whole multiple of %ux%u, not used", path.lastPathComponent.UTF8String, w, h); return; }
+        if (!px) { g_tp_bad++; MLOG("【红】[ui-pack] %s: not an 8-bit PNG of a whole multiple of %ux%u, not used", path.lastPathComponent.UTF8String, w, h); return; }
         os_unfair_lock_lock(&g_tp_lk);
         if (pk->tp_gen == gen) { free(pk->tp_px); pk->tp_px = px; pk->tp_pw = pw; pk->tp_ph = ph; pk->tp_pgen = gen; px = NULL; }
         os_unfair_lock_unlock(&g_tp_lk);
-        if (px) free(px); else ser_bump(ser);   // the slots of this serial validate again and publish it (botw_tp_pick)
+        if (px) free(px); else ser_bump(ser);   // the slots of this serial validate again and publish it (ui_pack_pick)
     });
 }
 
@@ -146,7 +159,7 @@ static void tp_publish(NvPkg *pk) {
     if (rep) {
         [rep replaceRegion:MTLRegionMake2D(0, 0, pw, ph) mipmapLevel:0 withBytes:px bytesPerRow:(NSUInteger)pw * nc];
         res_add(rep); pk->tp_rep = rep; g_tp_published++;
-        if (g_tp_published <= 3 || g_tp_published % 100 == 0) MLOG("[texpack] serial %llu: %lux%lu pack texture in use (%llu so far, %llu matched, %llu unusable)",
+        if (g_tp_published <= 3 || g_tp_published % 100 == 0) MLOG("[ui-pack] serial %llu: %lux%lu pack texture in use (%llu so far, %llu matched, %llu unusable)",
             (unsigned long long)pk->tp_ser, (unsigned long)pw, (unsigned long)ph, (unsigned long long)g_tp_published, (unsigned long long)g_tp_matched, (unsigned long long)g_tp_bad);
     }
     free(px);
@@ -159,8 +172,8 @@ static int tp_slot_ok(const treg_t *rp) {
         && !(v->set_target && ttype(v->target, MTLTextureType2D) != MTLTextureType2D);
 }
 /* nvn_mtl.m tex_by_id (g_rmu held): the sampling base of a texture-pool slot, the pack texture or base (tex_mtl's) */
-void *botw_tp_pick(void *rp_, void *base_) {
-    if (g_botw_tp <= 0 || !base_) return base_;
+void *ui_pack_pick(void *rp_, void *base_) {
+    if (g_ui_pack <= 0 || !base_) return base_;
     treg_t *rp = rp_; __unsafe_unretained id o = serial_get(rp->t.serial);
     if (![o isKindOfClass:[NvPkg class]]) return base_;
     NvPkg *pk = o;
@@ -175,7 +188,7 @@ static uint8_t *tp_texels(const tex_t *t, int cls) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh), nc = tp_nc(cls);
     uint32_t w = t->d.width, h = t->d.height; size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
     uint8_t *raw = malloc(pitch * rows), *out = malloc((size_t)w * h * nc), *mem = malloc((size_t)t->L.size);
-    int bad = !raw || !out || !mem || !bpb || !guarded_memcpy(mem, t->mem, (size_t)t->L.size, "[texpack] harvest");   // a guarded copy: streaming may take the memory
+    int bad = !raw || !out || !mem || !bpb || !guarded_memcpy(mem, t->mem, (size_t)t->L.size, "[ui-pack] harvest");   // a guarded copy: streaming may take the memory
     if (!bad && nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows; r++) memcpy(raw + r * pitch, mem + r * stride, pitch); }
     else if (!bad) bad = nvn_deswizzle(&t->d, 0, 0, mem, raw, pitch) != 0;
     if (!bad && fmt_compressed(t->d.format)) bad = nvn_bc_decode(t->d.format, raw, pitch, w, h, out, (size_t)w * nc) != 0;
@@ -198,14 +211,15 @@ static int tp_write_png(NSString *path, const uint8_t *px, uint32_t w, uint32_t 
     return ok;
 }
 static int tp_fs_ok(const char *key) {
+    if (g_tp_harv_fs && !strcmp(g_tp_harv_fs, "*")) return 1;
     for (const char *q = g_tp_harv_fs; q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : NULL) {
         size_t n = strchr(q, ',') ? (size_t)(strchr(q, ',') - q) : strlen(q);
         if (n && !strncmp(key, q, n)) return 1;
     }
     return 0;
 }
-/* nvn_mtl.m encode_args, a texture bound for a draw (replay thread, g_rmu held) */
-void botw_tp_harvest(const char *fs_key, const tex_t *t) {
+/* nvn_mtl.m encode_args, a texture bound to a fragment shader for a draw (replay thread, g_rmu held) */
+void ui_pack_harvest(const char *fs_key, const tex_t *t) {
     if (!g_tp_harv || !fs_key || !tp_fs_ok(fs_key)) return;
     __unsafe_unretained id o = serial_get(t->serial);
     if (![o isKindOfClass:[NvPkg class]]) return;
@@ -216,7 +230,7 @@ void botw_tp_harvest(const char *fs_key, const tex_t *t) {
     if ([g_tp_harv_seen containsObject:key]) return;
     [g_tp_harv_seen addObject:key];
     int cls = pk->tp_cls; uint8_t *px = tp_texels(t, cls);
-    if (!px) { MLOG("【红】[texpack] harvest %s: texels not readable", key.UTF8String); return; }
+    if (!px) { MLOG("【红】[ui-pack] harvest %s: texels not readable", key.UTF8String); return; }
     uint32_t w = t->d.width, h = t->d.height;
     NSString *line = [NSString stringWithFormat:@"%@\t%u\t%u\t%#x\t%lu\t%s\t%d\t%.16s\t%llu\t%llu\n", key, w, h, t->d.format, (unsigned long)pk->tex.pixelFormat,
                       cls <= 2 ? "mask" : "colour", cls == 4, fs_key, (unsigned long long)t->L.size, (unsigned long long)atomic_load(&g_cur_frame)];
@@ -225,14 +239,14 @@ void botw_tp_harvest(const char *fs_key, const tex_t *t) {
         NSString *path = [[g_tp_harv stringByAppendingPathComponent:key] stringByAppendingPathExtension:@"png"];
         int ok = tp_write_png(path, px, w, h, cls);
         free(px);
-        if (!ok) { MLOG("【红】[texpack] harvest: cannot write %s", path.UTF8String); return; }
+        if (!ok) { MLOG("【红】[ui-pack] harvest: cannot write %s", path.UTF8String); return; }
         NSString *tsv = [g_tp_harv stringByAppendingPathComponent:@"harvest.tsv"];
         if (![[NSFileManager defaultManager] fileExistsAtPath:tsv])
             [@"key\twidth\theight\tnvn_format\tmetal_format\tclass\tsrgb\tfs_key\tbytes\tframe\n" writeToFile:tsv atomically:NO encoding:NSUTF8StringEncoding error:nil];
         NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:tsv];      /* the error-returning calls: the plain ones raise on a full disk */
         if (!fh || ![fh seekToEndReturningOffset:NULL error:NULL] || ![fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding] error:NULL])
-            MLOG("【红】[texpack] harvest: cannot add %s to %s", key.UTF8String, tsv.UTF8String);
+            MLOG("【红】[ui-pack] harvest: cannot add %s to %s", key.UTF8String, tsv.UTF8String);
         [fh closeAndReturnError:NULL];
     });
-    if (g_tp_harvested <= 3 || g_tp_harvested % 50 == 0) MLOG("[texpack] harvested %s (%llu this run)", key.UTF8String, (unsigned long long)g_tp_harvested);
+    if (g_tp_harvested <= 3 || g_tp_harvested % 50 == 0) MLOG("[ui-pack] harvested %s (%llu this run)", key.UTF8String, (unsigned long long)g_tp_harvested);
 }

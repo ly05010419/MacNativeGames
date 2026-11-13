@@ -448,7 +448,7 @@ test-audio-effects:
 GFX_OBJECTS_BOTW := $(addprefix build/gfx-botw/,$(addsuffix .o,$(GFX_SRC)))
 build/gfx-botw/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
-	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -c "$<" -o "$@"
+	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -DGAME_BOTW160=1 -c "$<" -o "$@"
 .PHONY: runtime-botw160 binary-botw160
 # The add-on content volumes (games/botw/scripts/extract_aoc_romfs.py -> extracted/botw160/aoc/<index>); a missing index is not listed.
 build/game-data/botw160/aoc-config.txt: scripts/prepare_romfs_backend.py $(wildcard extracted/botw160/aoc/*/index.json)
@@ -465,8 +465,6 @@ GFX_OBJECTS_BOTW190 := $(addprefix build/gfx-botw190/,$(addsuffix .o,$(GFX_SRC))
 build/gfx-botw190/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -DGAME_BOTW190=1 -c "$<" -o "$@"
-# nvn_mtl.m includes the texture-pack header for BotW (sharp UI art)
-build/gfx-botw/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m.o build/gfx-botw190/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m.o: ../botw/gfx/botw_texpack.h
 .PHONY: runtime-botw190 binary-botw190
 # 1.9.0: the add-on content volumes the build imported from the --dlc NSPs (extracted/botw190/aoc/<index>).
 build/game-data/botw190/aoc-config.txt: scripts/prepare_romfs_backend.py $(wildcard extracted/botw190/aoc/*/index.json)
