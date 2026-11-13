@@ -133,6 +133,7 @@ Only shader and pipeline identifiers, the game and app versions, the device mode
 
 ## What's new
 
+- **2026-11-13: experimental TMNT Mac source port.** Private-input build tools and host source are available under [`games/tmnt`](games/tmnt/README.md); complete playability and iOS are not validated.
 - **2026-11-11: Rankings, an anonymous frame-rate board (Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Mac).**
   A settings tab of its own (key 1) shows the latest board, one group per frame lock and interpolation setting. **Join the
   board** is off by default and never asked; once on, the session is kept on your Mac every 5 minutes and sent at start and
@@ -146,7 +147,6 @@ Only shader and pipeline identifiers, the game and app versions, the device mode
 - **2026-11-09: experimental Xenoblade Chronicles X 2.0.0 Mac diagnostic.** Separate integrity pins, cumulative update merge and version-aware packaging; original 30 FPS by default, opt-in checked 60/120 timing experiment awaiting broader acceptance ([details](games/xcx/README.md#update-200-mac-diagnostic)).
 - **2026-11-08: The Legend of Zelda: Link's Awakening 1.1.0 on Mac, experimental.** Built from your own files; played by hand around Mabe Village ([games/la](games/la/README.md)).
 - **2026-11-07: Hyrule Warriors: Age of Calamity builds from update 1.4.1 as well as 1.3.0 on Mac, experimental.** The builder takes the version from the extracted game folder ([`games/aoc`](games/aoc/README.md)).
-- **2026-11-09: experimental TMNT Mac source port.** Private-input build tools and host source are available under [`games/tmnt`](games/tmnt/README.md); complete playability and iOS are not validated.
 - **2026-11-03: optional SMAA and FXAA Quality for Tears of the Kingdom 1.4.3 on Mac.** Choose the method and its quality separately on the Effects page; the game's original FXAA remains the default ([controls](docs/controls.md)).
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
   Pokémon Pokopia plays its opening into the first area (scripted test). Pokopia 2.0.1 packages as a Mac app from your
