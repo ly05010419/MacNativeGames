@@ -74,7 +74,72 @@ and merged RomFS. These checks do not authenticate Nintendo's RSA signatures.
 
 The app is a small launcher around this checkout. Saves and the shader cache live in
 `~/Library/Application Support/MacNativeGames/LM3`; logs live in `~/Library/Logs/MacNativeGames/lm3.log`.
-Standalone packaging is a separate contribution.
+
+## Standalone app
+
+This packaging contribution depends on the LM3 1.4.0 input/native-display contribution. The separate SCREEN-blend
+and local two-controller fixes have their own contribution branches. The standalone packager currently accepts
+only the pinned 1.4.0 inputs; the checkout launcher above remains available for both versions.
+
+First build and play the checkout app to collect a local LM3 shader cache. Then close it and build the standalone app:
+
+```sh
+make standalone-app VERSION=v140 ROM="<base>.xci" KEYS=prod.keys \
+  STANDALONE_APP="/Applications/Luigi's Mansion 3 Standalone.app"
+```
+
+The new target leaves `make app` available for a fresh checkout with no shader cache. `SHADER_CACHE` defaults to
+the current user's LM3 shader cache. Set `SHADER_CACHE_EXTRA` to merge another local LM3 cache, and `SHADER_PSO_LIST`
+to include a profile's pipeline recipes. These inputs supply shader/pipeline data only. `make shader-seed` prepares
+and validates the seed separately, and rejects incomplete variants or a mismatched translation chain before replacing
+an existing seed.
+
+The standalone app contains its native runtime, shader tools, rewritten modules, merged game resources, original main
+identity, shared fonts, icon and a verified shader seed. It can be moved away from this checkout or copied alone to a
+compatible Apple silicon Mac. The package checks all four executables for system-library-only dependencies and sets
+its minimum macOS version to the highest of their actual deployment targets. A resource manifest pins every bundled
+file by SHA-256; signing and verification complete before an existing app is replaced, with the previous app retained
+as a backup. An unsupported atomic replacement leaves the existing app intact.
+
+New Macs create their own account/profile and saves in external user storage. Existing LM3 progress on the same Mac
+is preserved. The package excludes personal profiles, account files, saves, logs, cheat files, keys, original containers
+and the source checkout. Running it uses the bundled native translation tools and system libraries. Saves and writable
+shader caches use the LM3 user-data paths listed above; the app's resources stay immutable.
+
+The seed contains validated translated MSL, reflection, variant indexes and portable pipeline recipes. Device-specific
+Metal binaries are excluded. First launch imports the seed into the user's writable cache and compiles it for that Mac;
+this can take several minutes. Missing variants use the bundled native translator and SPIRV-Cross. Repackage after
+collecting more shaders to include them in another local copy. Generated game resources, caches and app bundles stay
+git-ignored; this contribution contains the packaging code and synthetic fixtures.
+
+Packaging checks can run without constructing a full game bundle:
+
+```sh
+make build/lm3-app-launcher VERSION=v140
+.venv/bin/python -m unittest discover -s tests -p test_app_launcher.py -v
+.venv/bin/python -m unittest discover -s tests -p test_package_native_app.py -v
+.venv/bin/python -m unittest discover -s tests -p test_shader_seed.py -v
+```
+
+On 2026-11-13, this branch passed all 25 packaging checks (5 launcher, 11 package, 9 shader-seed) and built the arm64
+launcher with strict compiler warnings. Its actual deployment target on this Mac is 27.2 and its dependencies are
+system libraries. The launcher checks use an isolated mock runtime in a path containing spaces and Chinese characters.
+Packaging and seed checks use synthetic files, exercise validation failures and atomic replacement, and check that
+personal data and device-specific binaries are excluded. This contribution branch has not constructed or played a
+full standalone bundle. Version 1.2.0 and iOS have not been packaged or played in this work.
+
+### Historical integrated standalone check (2026-11-11)
+
+An earlier integrated build on macOS 27.2, M1 Max with 32 GiB contained 16,378 verified resources (about 7.79 GB),
+including 5,541 prepared shader variants. All four executables used system libraries only and required macOS 27.2.
+No personal profile, account, save, original container, keys, logs or source checkout was included.
+
+An isolated relocated copy booted with source-checkout reads and app writes denied, imported its prepared shaders
+and rendered native 2560×1440 frames. A separate empty-cache run with the seed disabled used the bundled native
+translation tools, showed three empty story slots and entered a new game's opening. A separate save-contract probe
+kept its writes outside the app; strict/deep signatures and resource hashes passed after the runs. This was bounded
+development-Mac testing of an integrated build that also contained the separate graphics and input work. The target
+base M1 with 16 GiB was unavailable for testing. Local evidence remains in ignored `analysis/portable-2026-11-11/`.
 
 ## What differs from Tears of the Kingdom
 

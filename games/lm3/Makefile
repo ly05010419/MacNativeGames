@@ -156,6 +156,27 @@ app: runtime build/AppIcon.icns
 	codesign --force --sign - "$(APP)"
 	@echo "built $(APP) (it runs the game from $(abspath .))"
 
+# A relocatable app, built after a checkout run has collected shader variants.
+# Preserve `app` above so a fresh checkout can start without an existing cache.
+STANDALONE_APP ?= Luigi's Mansion 3 Standalone.app
+SHADER_CACHE ?= $(HOME)/Library/Application Support/MacNativeGames/LM3/shader-cache
+SHADER_CACHE_EXTRA ?=
+SHADER_PSO_LIST ?= $(HOME)/Library/Application Support/MacNativeGames/LM3/profile/pso_user.tsv
+SHADER_SEED ?= $(abspath build/shader-seed)
+
+build/lm3-app-launcher: scripts/lm3_app_launcher.m build/game_version_config.h
+	xcrun clang -O2 -g -Wall -Wextra -Werror -fobjc-arc -Ibuild "$<" -framework Foundation -o "$@"
+
+.PHONY: shader-seed standalone-app
+shader-seed:
+	@set -- --cache "$(SHADER_CACHE)"; \
+	if [ -n "$(SHADER_CACHE_EXTRA)" ]; then set -- "$$@" --cache "$(SHADER_CACHE_EXTRA)"; fi; \
+	if [ -f "$(SHADER_PSO_LIST)" ]; then set -- "$$@" --pso-list "$(SHADER_PSO_LIST)"; fi; \
+	"$(PY)" scripts/prepare_shader_seed.py "$$@" --output "$(SHADER_SEED)"
+
+standalone-app: runtime build/lm3-app-launcher build/AppIcon.icns shader-seed
+	"$(PY)" scripts/package_native_app.py --app "$(STANDALONE_APP)" --version "$(VERSION)" --seed "$(SHADER_SEED)" --launcher build/lm3-app-launcher
+
 # hactool at the commit build_app.py pins, with this folder's patch (tools/hactool.patch: a private title-key file and the
 # base Program NCA read in place inside the XCI/NSP, as build_app.py patches it).
 HACTOOL_COMMIT := 1d64a83450e025622f3468c28fc4164dad2c5ef6
