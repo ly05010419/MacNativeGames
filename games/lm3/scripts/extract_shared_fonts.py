@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import struct
+import shutil
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers import modes
 from extract_exefs import decrypt, read_at, require, load_keys, hfs, nca_ctr_key
@@ -150,16 +151,41 @@ def firmware_data_ncas(folder, keys):
     return found
 
 
+def copy_shared_fonts(source, output):
+    """Reuse the player's six previously extracted fonts, validating bytes before copying."""
+    manifest = json.loads((source / 'manifest.json').read_text())
+    require(manifest.get('status') == 'pass', 'Shared-font manifest is not verified')
+    require([r['type'] for r in manifest['fonts']] == list(range(6)), 'Expected all six shared fonts')
+    files = []
+    for row, (kind, name, _, _) in zip(manifest['fonts'], FONTS):
+        require(row['name'] == name, 'Shared-font name does not match type')
+        path = source / f'{kind}-{name}.bfttf'
+        data = path.read_bytes()
+        require(len(data) == row['bfttf_bytes'] and bfttf_size(data) == row['font_bytes'] and
+                hashlib.sha256(data).hexdigest() == row['sha256'], 'Shared-font size/header/hash mismatch')
+        files.append(path)
+    output.mkdir(parents=True)
+    for path in files:
+        shutil.copyfile(path, output / path.name)
+    manifest['source'] = str(source.resolve())
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps(dict(status='pass', fonts=len(files), source=str(source))))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--keys', type=Path, required=True)
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument('--xci', type=Path, help='game card image: take the fonts from its system update partition')
     sources.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory (for NSP builds)')
+    sources.add_argument('--shared-fonts', type=Path, help="the player's previously extracted six fonts and manifest")
     parser.add_argument('--inventory', type=Path, default=Path('analysis/firmware-inventory.json'))
     parser.add_argument('--output', type=Path, default=Path('extracted/firmware/shared-fonts'))
     args = parser.parse_args()
     require(not args.output.exists(), 'Output already exists')
+    if args.shared_fonts:
+        copy_shared_fonts(args.shared_fonts, args.output)
+        return
     keys = load_keys(args.keys)
     if args.xci:
         card = xci_data_ncas(args.xci, keys)
