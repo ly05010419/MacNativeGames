@@ -94,12 +94,17 @@ class WorkDirectoryTests(unittest.TestCase):
                 tree=build_app.prepare_work(work,Path('/usr/bin/python3'),work/'logs')
                 (tree/'build/gfx').mkdir(parents=True); (tree/'build/gfx/kept.m.o').write_text('object')
                 (tree/'extracted').mkdir(); (tree/'extracted/romfs.bin').write_text('unpacked game data')
+                (tree/'ios/Gen/shader-seed.ios-metallibs').mkdir(parents=True)   # the iOS build's output (build_ipa.py)
+                (tree/'ios/Gen/shader-seed.ios-metallibs/a.metallib').write_text('compiled library')
+                (tree/'ios/project.generated.yml').write_text('generated project')
                 (source/'gfx/branch_only.m').unlink()
                 build_app.prepare_work(work,Path('/usr/bin/python3'),work/'logs')
             self.assertFalse((tree/'gfx/branch_only.m').exists())
             self.assertEqual((tree/'gfx/kept.m').read_text(),'both')
             self.assertEqual((tree/'build/gfx/kept.m.o').read_text(),'object')
             self.assertEqual((tree/'extracted/romfs.bin').read_text(),'unpacked game data')
+            self.assertEqual((tree/'ios/Gen/shader-seed.ios-metallibs/a.metallib').read_text(),'compiled library')
+            self.assertEqual((tree/'ios/project.generated.yml').read_text(),'generated project')
 
     @unittest.skipUnless(shutil.which('rsync'),'rsync needed for real source-copy check')
     def test_game_files_in_the_checkout_are_not_copied(self):

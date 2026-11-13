@@ -389,7 +389,11 @@ def link(path, target):
 # copy of a card image is 16 GB more on the disk and 16 GB more to checksum on every build. The extensions of the
 # commit guard (.githooks), less the code modules.
 GAME_FILE_SUFFIXES = ('.keys', '.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz', '.tik')
-WORK_COPY_SKIP = ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR')
+# The build's own output in the work folder copy, which the source sync (prepare_work, rsync --delete) must leave alone:
+# ios/Gen and the generated Xcode project are the iOS build's (ios/tools/build_ipa.py: its shader seed, the compiled
+# library cache and the deps; 2026-11-13: deleted at every sync, so every iOS build compiled all its libraries again).
+WORK_COPY_SKIP = ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR',
+                  'ios/Gen', 'ios/project.generated.yml', 'ios/TOTKIOS.xcodeproj')
 
 
 def game_file_excludes():
