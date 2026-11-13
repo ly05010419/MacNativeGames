@@ -429,7 +429,11 @@ def prepare_work(work, py, logs):
     # would otherwise keep the stale objects. 2026-10-25: nvn_mtl.m.o of one branch linked with nvn_refl.m.o of another
     # (different nvn_rbind layouts) aborted every start in the shader warm-up ("参数块布局异常"). Unchanged files keep
     # their times, so nothing is rebuilt needlessly.
-    sync = ['rsync', '-rlpD', '--checksum', *excludes]
+    # --delete: the tree mirrors the checkout. A source file this checkout does not have (deleted since, or another branch's
+    # that built here before) was compiled by the Makefile's wildcards with this checkout's headers (2026-11-13: an express
+    # update from main stopped on a branch's nvn_pool_sources.m). The excluded folders (WORK_COPY_SKIP: the build's own
+    # output) and game files are never deleted: rsync leaves excluded paths alone.
+    sync = ['rsync', '-rlpD', '--checksum', '--delete', *excludes]
     run([*sync, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
     # zeldaVR's modules (games/totk/zeldaVR links to them in the repository): into the tree, where the Makefile and the
     # iOS project take them; VR stays off unless TOTK_VR_CONTROL is set
