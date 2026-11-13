@@ -94,6 +94,9 @@ def launcher_state():
         info = plistlib.loads((LAUNCHER / 'Contents/Info.plist').read_bytes())
     except Exception:   # not made yet, or unreadable
         return {'state': 'make', 'reason': t('MNG Launcher is not made yet', '还没有生成 MNG Launcher')}
+    digest = info.get('MNGSourceArchiveSHA256')
+    if digest and (repo.REPO / '.ready').is_file() and (repo.REPO / '.ready').read_text().strip() == digest:
+        return {'state': 'ok', 'reason': t('using the Launcher release source', '使用 Launcher 发布版配套源码')}
     if Path(info.get('MNGRepo', '')).resolve() != repo.REPO.resolve():
         return {'state': 'make', 'reason': t(f'MNG Launcher runs another checkout ({info.get("MNGRepo")})',
                                              f'MNG Launcher 用的是另一份源码（{info.get("MNGRepo")}）')}

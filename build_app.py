@@ -2103,6 +2103,10 @@ def recorded_work_folder(app, name):
 def source_commit():
     """The short hash of the commit this checkout is on (user 2026-10-25: the HUD shows it, to tell which commit an app
     was built from; uncommitted changes are not shown), or '' outside a git checkout."""
+    # GitHub Release launchers use a verified source snapshot, with no .git directory.
+    marker = REPO / '.mng-source-commit'
+    if marker.is_file():
+        return marker.read_text().strip()[:7]
     result = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=7', 'HEAD'], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ''
 

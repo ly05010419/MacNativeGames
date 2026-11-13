@@ -3,6 +3,14 @@ import Foundation
 /// Where the repository and its Python are, and how a job of tools/builder_jobs is started. The window holds no rule:
 /// it runs `python -m tools.builder_jobs <job>` in the repository and shows what it prints.
 enum Paths {
+    /// A Release carries an immutable source archive and a small installer beside its Python.
+    /// Run that installer for each job: it reuses the archive's hash directory after the first extraction.
+    static var bundledJob: URL? {
+        guard ProcessInfo.processInfo.environment["MNG_REPO"] == nil,
+              Bundle.main.object(forInfoDictionaryKey: "MNGSourceArchiveSHA256") is String else { return nil }
+        return Bundle.main.resourceURL?.appendingPathComponent("bundled_job.py")
+    }
+
     /// The checkout this app was made from (make_app.py writes MNGRepo into Info.plist).
     static var repo: URL? {
         if let path = ProcessInfo.processInfo.environment["MNG_REPO"] { return URL(fileURLWithPath: path) }
@@ -25,6 +33,24 @@ enum Paths {
 
     static let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/MacNativeGames/Builder")
+
+    static func configure(_ process: Process, arguments: [String]) throws {
+        process.executableURL = python
+        if let script = bundledJob {
+            process.arguments = ["-u", script.path] + arguments
+            process.currentDirectoryURL = script.deletingLastPathComponent()
+        } else {
+            guard let repo else { throw JobError.noRepo }
+            process.arguments = ["-u", "-m", "tools.builder_jobs"] + arguments
+            process.currentDirectoryURL = repo
+        }
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONPATH"] = process.currentDirectoryURL?.path
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["MNG_LANG"] = T.zh ? "zh" : "en"
+        env["MNG_JOB_SOURCE"] = Job.source
+        process.environment = env
+    }
 }
 
 /// One running job: its output lines come back on the main thread, one call per line, then `ended` with the exit code.
@@ -34,16 +60,7 @@ final class Job {
     private var buffer = Data()
 
     init(_ arguments: [String], onLine: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws {
-        guard let repo = Paths.repo else { throw JobError.noRepo }
-        process.executableURL = Paths.python
-        process.arguments = ["-u", "-m", "tools.builder_jobs"] + arguments
-        process.currentDirectoryURL = repo
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = repo.path
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["MNG_LANG"] = T.zh ? "zh" : "en"
-        env["MNG_JOB_SOURCE"] = Job.source   // tools/builder_jobs/shared.py: who started the Mac's one job
-        process.environment = env
+        try Paths.configure(process, arguments: arguments)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -70,16 +87,8 @@ final class Job {
 
     /// Runs a job to its end and returns everything it printed (for the one-object jobs: classify, checks).
     static func collect(_ arguments: [String]) async throws -> Data {
-        guard let repo = Paths.repo else { throw JobError.noRepo }
         let p = Process()
-        p.executableURL = Paths.python
-        p.arguments = ["-m", "tools.builder_jobs"] + arguments
-        p.currentDirectoryURL = repo
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONPATH"] = repo.path
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["MNG_LANG"] = T.zh ? "zh" : "en"
-        p.environment = env
+        try Paths.configure(p, arguments: arguments)
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
         p.standardError = err

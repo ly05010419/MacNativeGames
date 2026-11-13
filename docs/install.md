@@ -52,6 +52,13 @@ One engine builds every game, whoever drives it: MNG Launcher's window, or `tool
 
 ### MNG Launcher (the window)
 
+For a Launcher ZIP from GitHub Releases, unzip it and move **MNG Launcher.app** to Applications. It carries Python
+and matching build scripts; no Launcher compilation or source checkout is needed. A preview that is not notarized
+may require **System Settings → Privacy & Security → Open Anyway** after the first opening attempt.
+Game builds still need the developer tools and your own game files. See [download builds](builder-app.md#download-builds).
+
+For a development app from this checkout:
+
 `python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app`. It carries its own Python and runs this folder's code, so after a `git pull` it needs no remaking unless its window changed.
 
 - **Games** (the first page, no bar on top): one card per game. A built game shows its own app's picture; click it for a big green **Start game** (top right), its update, one button named after the fastest one that fits: **Express update** or **Fast update** (no game files), or **Full build** (the build steps with its game files); and its pages, which open under the buttons. A game not built yet shows a plus: click it for the build steps, step 1 drop the game files, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress the whole way. Opened as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"`, the build steps open with steps 1 and 2 filled in.

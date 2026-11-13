@@ -9,7 +9,39 @@ Its Settings, Mods, Controls, Storage and Saves pages (opened under a game's car
 behind them stay in `tools/builder`, the models the pages call through `tools/builder_jobs/tab_*.py`
 ([builder.md](builder.md)).
 
-## Make it
+## Download builds
+
+The Launcher can be distributed as `MNG-Launcher-<version>-macOS-arm64.zip` on GitHub Releases. Unzip it and move
+`MNG Launcher.app` to Applications. This build includes Python and its matching source snapshot; the player does
+not compile the Launcher or download a checkout. At first use, the source is verified and extracted to
+`~/Library/Application Support/MacNativeGames/Builder/sources/<archive-sha256>`. Subsequent jobs reuse it, and old
+source versions remain available to games that recorded them. Updating the Launcher means downloading the newer app.
+Building a game still requires Apple's command line tools and the player's own game files and keys.
+
+The initial download workflow makes **ad-hoc signed previews, not notarized releases**. A downloaded preview may need
+approval in System Settings → Privacy & Security → Open Anyway. A normal Developer ID / notarized distribution needs
+separate signing credentials; the Apple Development certificate used for device builds is not a replacement.
+
+Maintainers: run **Build Launcher download** in GitHub Actions with a `major.minor.patch` version. It builds on
+`macos-26` (Apple silicon), tests the bundled source, verifies the signature, and creates a **draft prerelease** with
+the ZIP and its SHA-256 file. Review the draft before publishing. It never runs on an ordinary source push.
+The source must be committed and complete: it refuses missing seed-image dependencies, dirty tracked files and local
+instruction/key files. Untracked and ignored files are never included. Locally, the same build is:
+
+```sh
+python3 tools/builder_app/make_app.py --portable --version 1.0.0 \
+  --scratch /path/outside-checkout/swift \
+  -o '/path/outside-checkout/MNG Launcher.app' \
+  --zip /path/outside-checkout/MNG-Launcher-1.0.0-macOS-arm64.zip
+```
+
+The source travels as an archive so signing the outer app cannot change the pinned translator binaries inside it.
+Its licences stay with it. The release packaging pattern was checked against
+[SwiftBar's MIT-licensed release automation](https://github.com/swiftbar/SwiftBar/blob/main/Justfile);
+no SwiftBar code is included. Signing requirements follow
+[Apple's Developer ID distribution guide](https://developer.apple.com/developer-id/).
+
+## Make a development app
 
 With the Xcode command line tools (`xcode-select --install`) and this checkout:
 

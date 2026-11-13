@@ -13,6 +13,7 @@ import hashlib
 import os
 from pathlib import Path
 import plistlib
+import platform
 import re
 import shutil
 import subprocess
@@ -82,6 +83,32 @@ def binary(scratch):
     return Path(out) / 'MNGBuilder'
 
 
+def check_release_source(repo):
+    """Only a committed tree is distributable: no ignored notes, keys, build data or unrelated untracked files.
+    Archive the source as data so signing the app cannot change the pinned translator executables inside it.
+    """
+    if subprocess.run(['git', '-C', repo, 'diff', '--quiet', 'HEAD', '--']).returncode:
+        raise ValueError('Portable builds require committed source changes; the window and bundled source must match.')
+    names = set(subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', 'HEAD'], text=True).splitlines())
+    required = {
+        'build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
+        'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
+        'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py',
+    }
+    missing = required - names
+    if missing:
+        raise ValueError('Release source is incomplete; commit these dependencies first: ' + ', '.join(sorted(missing)))
+    forbidden = names & {'CLAUDE.md', 'AGENTS.md', 'prod.keys', 'title.keys'}
+    if forbidden:
+        raise ValueError('Local-only files in release source: ' + ', '.join(sorted(forbidden)))
+
+
+def source_archive(repo, destination):
+    check_release_source(repo)
+    run(['git', '-C', repo, 'archive', '--format=tar.gz', '-o', destination, 'HEAD'])
+    return sha256(destination)
+
+
 def icon(resources):
     """Resources/AppIcon.icns from tools/builder_app/Resources/AppIcon.png (the project's own artwork, 1024 px, the shape
     on the macOS icon grid), every size iconutil wants, made with sips."""
@@ -112,10 +139,21 @@ def main(argv):
     ap.add_argument('-o', '--out', type=Path, default=Path.home() / 'Applications' / f'{NAME}.app')
     ap.add_argument('--scratch', type=Path, default=CACHE / 'swift', help='the Swift build folder')
     ap.add_argument('--no-python', action='store_true', help='use /opt/homebrew/bin/python3.14 instead of carrying one')
+    ap.add_argument('--portable', action='store_true', help='bundle committed source for download and installation on another Mac')
+    ap.add_argument('--version', default='1.0.0', help='release version (major.minor.patch)')
+    ap.add_argument('--zip', type=Path, help='also write a ZIP download containing the app')
     a = ap.parse_args(argv)
     out = a.out.expanduser().resolve()
     if out.suffix != '.app':
         raise SystemExit('-o must end in .app')
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', a.version):
+        raise SystemExit('--version must be major.minor.patch')
+    if a.portable and (a.no_python or platform.machine() != 'arm64'):
+        raise SystemExit('Portable releases require Apple silicon and the bundled Python (no --no-python).')
+    if out == REPO or REPO in out.parents:
+        raise SystemExit('The built app must be outside the source checkout.')
+    if a.portable:
+        check_release_source(REPO)
     exe = binary(a.scratch.expanduser())
     stage = out.with_name(out.name + '.partial')
     shutil.rmtree(stage, ignore_errors=True)
@@ -124,6 +162,13 @@ def main(argv):
     shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
     icon(stage / 'Contents/Resources')
     plist = info(REPO)
+    plist['CFBundleShortVersionString'] = a.version
+    plist['CFBundleVersion'] = a.version
+    if a.portable:
+        plist.pop('MNGRepo')
+        plist['MNGSourceCommit'] = subprocess.check_output(['git', '-C', REPO, 'rev-parse', 'HEAD'], text=True).strip()
+        plist['MNGSourceArchiveSHA256'] = source_archive(REPO, stage / 'Contents/Resources/source.tar.gz')
+        shutil.copy2(HERE / 'bundled_job.py', stage / 'Contents/Resources/bundled_job.py')
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:
             t.extractall(stage / 'Contents/Resources', filter='data') if sys.version_info >= (3, 12) else t.extractall(stage / 'Contents/Resources')
@@ -140,6 +185,14 @@ def main(argv):
     out.parent.mkdir(parents=True, exist_ok=True)
     stage.rename(out)
     say(f'made {out} (source {REPO}, commit {plist["MNGSourceCommit"]}); open it from Finder')
+    if a.zip:
+        archive = a.zip.expanduser().resolve()
+        if archive == REPO or REPO in archive.parents or archive == out or out in archive.parents:
+            raise SystemExit('The ZIP must be outside the source checkout and the app.')
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        run(['/usr/bin/ditto', '-c', '-k', '--keepParent', out, archive])
+        archive.with_name(archive.name + '.sha256').write_text(sha256(archive) + '  ' + archive.name + '\n')
+        say(f'download: {archive} (ad-hoc signed; not notarized)')
 
 
 if __name__ == '__main__':

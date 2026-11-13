@@ -1,0 +1,55 @@
+name: Build Launcher download
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Launcher version: major.minor.patch'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate version
+        run: python3 -c 'import os, re; assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", os.environ["VERSION"]), "Use major.minor.patch"'
+      - name: Build portable app and ZIP
+        run: >-
+          python3 tools/builder_app/make_app.py --portable --version "$VERSION"
+          --scratch "$RUNNER_TEMP/launcher-swift"
+          -o "$RUNNER_TEMP/download/MNG Launcher.app"
+          --zip "$RUNNER_TEMP/download/MNG-Launcher-$VERSION-macOS-arm64.zip"
+      - name: Test installed source and bundled Python
+        run: |
+          APP="$RUNNER_TEMP/download/MNG Launcher.app"
+          "$APP/Contents/Resources/python/bin/python3.14" -m unittest discover -s tests -p test_launcher_distribution.py
+          "$APP/Contents/Resources/python/bin/python3.14" -B "$APP/Contents/Resources/bundled_job.py" checks > "$RUNNER_TEMP/checks.json"
+          python3 -c 'import json, os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/checks.json")); assert d["checks"], d'
+          codesign --verify --deep --strict "$APP"
+      - name: Create draft download release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "launcher-v$VERSION" \
+            "$RUNNER_TEMP/download/MNG-Launcher-$VERSION-macOS-arm64.zip" \
+            "$RUNNER_TEMP/download/MNG-Launcher-$VERSION-macOS-arm64.zip.sha256" \
+            --draft --prerelease --target "$GITHUB_SHA" \
+            --title "MNG Launcher $VERSION (preview)" --notes-file tools/builder_app/release-notes.md
