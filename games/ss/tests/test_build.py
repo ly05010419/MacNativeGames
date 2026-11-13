@@ -1,4 +1,5 @@
 """Packaging safety and portable-toolchain checks; no game files or keys."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -16,14 +17,25 @@ import build_ss as build
 import extract_ss
 import package_ss
 import verify_ss
+import build_shader_tools as tools
+
+
+def fake_translator(source, env, logs=None):   # stage() without the dotnet build (TranslatorTests and S4 cover the real one)
+    exe = Path(source) / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
+    exe.parent.mkdir(parents=True, exist_ok=True); exe.write_text('#!/bin/sh\n'); exe.chmod(0o755)
+    return exe
 
 
 class BuildTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(build, 'build_translator', fake_translator)
+        patcher.start(); self.addCleanup(patcher.stop)
+
     def test_package_retains_license_and_patent_notices_without_build_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);package_ss.package_notices(root)
-            for name in ('third_party/nxnative/LICENSE','runtime/third_party/libvpx/LICENSE',
-                         'runtime/third_party/libvpx/PATENTS','runtime/third_party/stb_vorbis/LICENSE',
+            for name in ('third_party/nxnative/LICENSE','third_party/licenses/libvpx.txt',
+                         'third_party/licenses/libvpx-patents.txt','third_party/licenses/dav1d.txt','runtime/third_party/stb_vorbis/LICENSE',
                          'runtime/third_party/macnativegames/LICENSE','THIRD_PARTY_NOTICES.md'):
                 self.assertEqual((root/name).read_bytes(),(GAME/name).read_bytes())
             self.assertFalse((root/'third_party/nxnative/build_ipa_from_nsp.py').exists())
@@ -50,18 +62,6 @@ class BuildTests(unittest.TestCase):
             result=subprocess.run([str(binary)],env=dict(os.environ,DM_SS_PROFILE=str(alias)),capture_output=True,text=True)
             self.assertEqual(result.returncode,1);self.assertIn('outside the signed app',result.stderr)
             self.assertEqual({p.relative_to(app):p.read_bytes() for p in app.rglob('*') if p.is_file()},original)
-
-    def test_tooling_checksums(self):
-        build.verify_prebuilt()
-
-    def test_tooling_rejects_unlisted_files(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            shutil.copytree(GAME / 'prebuilt', root / 'prebuilt')
-            (root / 'prebuilt/macos-arm64/dmsh_xlate/unexpected.dll').write_bytes(b'extra')
-            with mock.patch.object(build, 'GAME', root):
-                with self.assertRaisesRegex(ValueError, 'file set differs'):
-                    build.verify_prebuilt()
 
     def test_rejects_modified_originals(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -245,6 +245,50 @@ class BuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'unknown shader binding'):verify_ss.verify_libraries(libs,table)
             value['bindings']=[];value['drv_unfillable']=['c0 outside table'];refl.write_text(json.dumps(value))
             with self.assertRaisesRegex(ValueError,'unfillable driver reads'):verify_ss.verify_libraries(libs,table)
+
+
+
+class TranslatorTests(unittest.TestCase):
+    """The shader translator is built from the vendored source (scripts/build_shader_tools.py), never carried as a binary."""
+    def test_vendored_source_is_mkws_unchanged_copy(self):
+        mkw = GAME.parents[1] / 'games/mkw/third_party/nxnative'
+        if not mkw.is_dir():
+            self.skipTest('no games/mkw in this checkout')
+        for name in ('dmsh_xlate', 'ryujinx'):
+            ours = {p.relative_to(tools.VENDOR / name): p.read_bytes() for p in (tools.VENDOR / name).rglob('*') if p.is_file()}
+            theirs = {p.relative_to(mkw / name): p.read_bytes() for p in (mkw / name).rglob('*') if p.is_file()}
+            self.assertEqual(ours.keys(), theirs.keys(), name)
+            self.assertTrue(all(ours[k] == theirs[k] for k in ours), name)
+
+    def test_lock_names_the_vendored_source(self):
+        src = tools.VENDOR / 'dmsh_xlate'
+        digest = hashlib.sha256((src / 'Program.cs').read_bytes() + (src / 'dmsh_xlate.csproj').read_bytes()).hexdigest()[:16]
+        self.assertEqual(tools.lock_source_sha(), digest)   # Program.cs --source-sha: the embedded Program.cs + csproj
+
+    def test_no_translator_binary_is_carried(self):
+        self.assertFalse((GAME / 'prebuilt').exists())
+        self.assertFalse(list(tools.VENDOR.rglob('*.dll')))
+
+    def built(self, tmp, embedded):
+        """A staged tree whose translator record is current; embedded is what its --source-sha prints."""
+        root = Path(tmp)
+        bin_dir = root / 'bin'; bin_dir.mkdir()
+        (bin_dir / 'dotnet').write_text('#!/bin/sh\necho 10.0.401\n'); (bin_dir / 'dotnet').chmod(0o755)
+        out = root / 'source' / tools.OUT; out.mkdir(parents=True)
+        (out / 'dmsh_xlate').write_text(f'#!/bin/sh\necho {embedded}\n'); (out / 'dmsh_xlate').chmod(0o755)
+        (out / tools.RECORD).write_text(json.dumps({'source_sha256': tools.source_fingerprint('10.0.401'), 'outputs': tools.outputs(out)}))
+        return root / 'source', {'PATH': f'{bin_dir}:/usr/bin:/bin'}
+
+    def test_a_current_build_is_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, env = self.built(tmp, tools.lock_source_sha())
+            self.assertEqual(tools.build_translator(source, env), source / tools.OUT / 'dmsh_xlate')
+
+    def test_a_translator_from_another_source_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, env = self.built(tmp, '0123456789abcdef')
+            with self.assertRaisesRegex(ValueError, 'the lock names'):
+                tools.build_translator(source, env)
 
 
 if __name__ == '__main__':

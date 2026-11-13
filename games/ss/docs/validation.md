@@ -1,8 +1,10 @@
 # Skyward Sword HD 1.0.1: validation records
 
 What was measured on a Mac for this target, how, and what is still open. Game files, saves and logs stay with the
-person who ran them; this file keeps only the method and the numbers. Mac: Apple M5 Pro, macOS 26.5, Xcode 26.6
-(Metal 32023.883), 2026-11-11.
+person who ran them; this file keeps only the method and the numbers. Mac: Apple M5 Pro. 2026-11-11: macOS 26.5, Xcode
+26.6 (Metal 32023.883), the first tests, build and runs. 2026-11-13: macOS 27.2.1, Xcode 27.2 (Metal 32023.922, the one
+`dmsh_chain.lock` records), the review changes: the translator built from source, the libraries from `tools/deps`, the
+strict compiler check, the warm-up list and the packaged app.
 
 ## Inputs
 
@@ -28,6 +30,11 @@ allocators of this runtime (`t_present_alloc`: 6 of 13 failed; with nxnative's 2
 `b1dee89` itself with only the macOS 27 SDK guard on this Mac); the shader list export expected 432-byte pipeline
 keys where this runtime records 440; the rewriter loaded rules from outside profile folders (`DM_GAMES_DIR`).
 
+2026-11-13, on the reviewed tree: `tests/` 69 OK (2 skipped without `SS_TEST_MAIN`), `runtime/tools/tests` 34 OK, the
+repository's `tests/test_no_homebrew.py` OK, and the host's video tests (`t_movie_vpx`, `t_movie_avc`, `t_codec_video`)
+linked against `tools/deps`' libvpx 1.16.0 and dav1d 1.5.3: all pass. `make test-gpu`, `make test-ui` and the graphics
+battery were not run again.
+
 ## Build
 
 A new work folder, no cache: 2,470 of 2,470 shaders `ok` (412 vertex, 2,058 pixel), 7,122 Metal libraries (2,470
@@ -37,9 +44,17 @@ The host in the app differs in SHA-256 from the one the build leaves in `build/t
 signatures removed, `__DATA` and `__DATA_CONST` are equal and `__TEXT` differs in 6 bytes, all in the Mach-O header and
 load commands (the `__LINKEDIT` size and the signature command).
 
+2026-11-13, the reviewed tree, a new work folder: the translator built from `third_party/nxnative` with `tools/deps`'
+SDK 10.0.401 (dlls as `dmsh_chain.lock` records them), SPIRV-Cross `f11ba9f`, Metal 32023.922 with the strict check
+(no other compiler allowed): chain `814ff6e91b75`, 2,470 of 2,470 shaders `ok`, none from a cache, in 1:41. Every
+shader's MSL is byte-identical to the 2026-11-11 build's (the prebuilt translator, the carried SPIRV-Cross): the
+translator built from source gives the same SPIR-V and reflection on all 2,605 translator jobs of the build, and the
+two SPIRV-Cross builds the same MSL. Only the Metal libraries differ (another compiler). Built host `f70b7f9d…`; in the
+app `d26751ed…`, which differs only by its signature (`__LINKEDIT` size).
+
 ## Runs
 
-Same route twice with the build's host, scripted input (`DM_KBD=Link`): the opening movie, a new file named Link,
+2026-11-11, same route twice with the build's host, scripted input (`DM_KBD=Link`): the opening movie, a new file named Link,
 the opening cutscenes; 135 s each, 7,416 frames.
 
 | Run | Exit | Red lines | FPS after frame 600 | Frames over 25 ms | Over 50 ms | Pipelines built on demand |
@@ -54,7 +69,38 @@ its statistics were checked by hand in the app.
 An earlier exploratory run with another tree and host (Age of Calamity's display-link hold) had 32 frames over 25 ms
 and 20 over 50 ms on the same route; the difference in frames over 25 ms is not explained.
 
+## Warm-up list (2026-11-13)
+
+Build: chain 814ff6e91b75 (translator built from `third_party/nxnative`, MacNativeGames' `tools/deps`, Metal 32023.922 / Xcode 27.2,
+macOS 27.2.1), host sha256 `f70b7f9d…`, 2,470 of 2,470 shaders. Every run: the same build, a new disposable profile, the opening route
+(`scripts/run_ss.py --window --audio --seconds 135`, `DM_KBD=Link`, the keys of the 2026-11-11 runs), screenshots at 65 s and 125 s.
+Pipelines built on demand: the host's last `[bootprof]` line, "pipelines created N / ms (all synchronous on the submit thread)".
+
+| Run | `DM_PSO_MANIFEST` | Built on demand | Put in the pipeline cache by the warm-up | Prepare before the first frame | Exit, RED |
+|---|---|---|---|---|---|
+| rec1 | off (recording) | 137 / 2,121 ms | 0 | none | 0, 0 |
+| rec2 | off (recording) | 137 / 2,397 ms | 0 | none | 0, 0 |
+| ctl1 | an empty list | 137 / 2,369 ms | 0 | none | 0, 0 |
+| cand1 | the candidate list (explicit path) | **0** | 137 render pipelines | 0.33 s (125 bases compiled, 12 reused) | 0, 0 |
+| ctl2 | an empty list | 131 / 2,369 ms | 0 | none | 0, 0 |
+| cand2 | the candidate list (explicit path) | **0** | 137 render pipelines | 0.35 s | 0, 0 |
+
+The two recordings gave the same 137 pipeline rows in the same order, also the set of the 2026-11-11 runs; the list is their merge
+(`pso_seed.py --shader-map … --kinds RC`, 142 lines). Control and candidate alternated, after the recordings, so macOS's Metal cache
+already held these pipelines in every A/B run (its state is not part of the result). Frame times are not the result either: in
+cand1 from about 80 s and in ctl2 from about 115 s the display link fired at about 28.6 Hz (frame time p50 35 ms with 0.7-0.9 ms
+of submit work, the host's power line 28.5 fps), the display's rate rather than the game; cand2 held 60.0 fps with no frame over
+50 ms outside the screenshots.
+
+From the packaged app with the list bundled (repackaged from the same work folder: 2,470 libraries from the cache, the
+app's `pso_manifest.tsv` byte-identical to the tested list, host `d26751ed…`), its own launcher, a new disposable
+profile and no `DM_PSO_MANIFEST`, the same route: the host read the app's list (137 lines), prepared it in 0.33 s before
+the first frame, putting its 137 pipelines in the cache, and built 0 pipelines on demand; 60.0 fps, exit 0 with a graceful
+exit, no red line. This run, not the A/B (which named the candidate list explicitly), checks the list bundled by default.
+The host's `prewarmed and used` counter counts pipelines put in the cache (`nvn_mtl.m` `warm_claim`), not draws that used
+them; the result is the count of synchronous builds.
+
 ## Open
 
 - A play-through past the opening; combat, flight, the dungeons; a game controller in a long session.
-- The warm-up list: the opening route recorded 153 pipeline rows of 880 hex digits, not yet merged or measured.
+- The warm-up list covers the opening route only; places past it still build their pipelines on first use.

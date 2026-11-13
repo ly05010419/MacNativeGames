@@ -9,13 +9,19 @@ were (SHA-256), the ones changed here (SHA-256 and line count before and after) 
   list export in `runtime/host`): `games/la` at MacNativeGames `549b8a9a`, renamed for this game.
 - **The runtime** (`runtime/`): nxnative `b1dee89c` (MIT), the commit that added this game's profile, with the file
   selection `games/la` made from its own pin (no other game's profile, no iOS app sources, the translator and
-  Ryujinx sources left out for the binaries in `prebuilt/`). Its graphics and host tests are included whole.
+  Ryujinx sources left out). Its graphics and host tests are included whole.
+- **The shader translator source** (`third_party/nxnative/dmsh_xlate`, `third_party/nxnative/ryujinx`): an unchanged copy of
+  `games/mkw/third_party/nxnative` at MacNativeGames `d9a52a77` (nxnative PR #983, commit `b124b24a`), built at packaging by
+  `scripts/build_shader_tools.py`. For this game's Maxwell shaders it translates exactly as nxnative `b1dee89c`'s translator: the
+  sources differ only in Switch 2 mesh and task code, and all 2,605 translator jobs of this game's build give byte-identical
+  SPIR-V and reflection with both.
 - **The runtime changes of this repository** (as `games/la` and `games/aoc` carry them over nxnative `7861e7c1`):
   merged three ways onto `b1dee89c` (base `7861e7c1`, ours `games/la/runtime`, theirs `b1dee89c`), conflicts
   resolved by hand; the review is in [docs/validation.md](../docs/validation.md#tests).
 
-The game profile (`game.tsv`, `dual_want.tsv`, `bf_want.tsv`, `pso_manifest.tsv`) was fetched unchanged from
-nxnative `b1dee89c`; [ss-profile-import.json](ss-profile-import.json) records the URLs and hashes.
+The game profile (`game.tsv`, `dual_want.tsv`, `bf_want.tsv`) was fetched unchanged from nxnative `b1dee89c`;
+[ss-profile-import.json](ss-profile-import.json) records the URLs and hashes. Its `pso_manifest.tsv` came from there too (an
+empty provisional list) and is now this repository's recorded warm-up list (README, Pipeline warm-up list).
 `nxnative/build_ipa_from_nsp.py` is nxnative's at `b1dee89c` with this repository's extracted mode.
 
 Changes from the sources, reviewed as source changes:

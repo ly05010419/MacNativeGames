@@ -22,29 +22,12 @@ SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
 GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))   # *.inc: nvn_mtl.m includes them (nvn_geometry.inc); an edit there alone used not to rebuild the host
-# Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
-VPX=../third_party/libvpx
-VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
-VPX_OBJ=$(patsubst $(VPX)/%.c,gen/vpx/%.o,$(VPX_SRC))
-VPX_LIB=gen/vpx/libvpx.a
-gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h) ../mac/min_os.mk
-	@mkdir -p $(dir $@)
-	clang -arch arm64 -O2 -g -mmacosx-version-min=$(MACOS_MIN) -I$(VPX) -I$(VPX)/config -c $< -o $@
-$(VPX_LIB): $(VPX_OBJ)
-	rm -f $@; ar rcs $@ $^
-# Third party: dav1d, the AV1 decoder where VideoToolbox has none (hle_movie_av1.c), with its arm64 NEON assembly and its configuration in config/. Its *_tmpl.c files are built
-# through the per-bit-depth wrappers in config/tmpl, and the assembly files other assembly files include (*_tmpl.S, util.S) are not built on their own: the list meson builds
-DAV1D=../third_party/dav1d
-DAV1D_SRC=$(sort $(filter-out %_tmpl.c,$(wildcard $(DAV1D)/src/*.c)) $(DAV1D)/src/arm/cpu.c $(wildcard $(DAV1D)/config/tmpl/*.c) \
-          $(filter-out %_tmpl.S %/util.S,$(wildcard $(DAV1D)/src/arm/64/*.S)))
-DAV1D_OBJ=$(patsubst $(DAV1D)/%,gen/dav1d/%.o,$(DAV1D_SRC))
-DAV1D_LIB=gen/dav1d/libdav1d.a
-DAV1D_H=$(wildcard $(DAV1D)/config/*.h $(DAV1D)/src/*.h $(DAV1D)/src/*_tmpl.c $(DAV1D)/src/arm/*.h $(DAV1D)/src/arm/asm.S $(DAV1D)/src/arm/64/*_tmpl.S $(DAV1D)/src/arm/64/util.S $(DAV1D)/include/*/*.h)
-gen/dav1d/%.o: $(DAV1D)/% $(DAV1D_H) ../mac/min_os.mk
-	@mkdir -p $(dir $@)
-	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) -fvisibility=hidden -fomit-frame-pointer -fno-align-functions -I$(DAV1D) -I$(DAV1D)/include -I$(DAV1D)/config -c $< -o $@
-$(DAV1D_LIB): $(DAV1D_OBJ)
-	rm -f $@; ar rcs $@ $^
+# Third party: libvpx (VP8 and VP9 movies, hle_movie.c) and dav1d (AV1 where VideoToolbox has none, hle_movie_av1.c), static libraries from MacNativeGames'
+# tools/deps (tools/deps/pins.py), made once per Mac from pinned sources. The build passes their prefixes (scripts/ss_env.py); a make in the checkout asks tools/deps.
+# Expanded only in the link recipe, so a make of another target (game_profile, host_msl, clean) needs neither
+DEPS = $(firstword $(wildcard $(MNG_REPO)/tools/deps ../../../../tools/deps))
+VPX_PREFIX ?= $(or $(and $(DEPS),$(shell python3 $(DEPS) prefix libvpx)),$(error VPX_PREFIX is not set and no MacNativeGames tools/deps was found))
+DAV1D_PREFIX ?= $(or $(and $(DEPS),$(shell python3 $(DEPS) prefix dav1d)),$(error DAV1D_PREFIX is not set and no MacNativeGames tools/deps was found))
 # The host's own Metal shaders (dm/gfx/msl/*.metal) compiled for MSL_SDK into gen/msl-<sdk>/host_msl_gen.h (dm/gfx/tools/host_msl.py; dm/gfx/nvn/host_msl.m loads them), so the host
 # compiles no MSL at run time. The iOS build (dm/ios/tools/gen_build.py) makes it with MSL_SDK=iphoneos, for the app's deployment target (MSL_MIN_iphoneos, as project.yml)
 MSL_SDK ?= macosx
@@ -76,8 +59,8 @@ endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h front.h front_settings.h front_shortcuts.h shader_activity.h hud_settings.h front_hud.h front_graph.h pso_export.h mac_display_settings.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
-	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
-clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
+dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h front.h front_settings.h front_shortcuts.h shader_activity.h hud_settings.h front_hud.h front_graph.h pso_export.h mac_display_settings.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(MSL_H)
+	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX_PREFIX)/include -I$(DAV1D_PREFIX)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_PREFIX)/lib/libvpx.a $(DAV1D_PREFIX)/lib/libdav1d.a -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+clean:   # the host and everything make generates for it (gen/: the profile headers and the game stamp; dmhost_* and *.dSYM beside them, as in .gitignore)
 	rm -rf gen dmhost dmhost_* *.dSYM
 .PHONY: clean

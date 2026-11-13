@@ -10,6 +10,14 @@ HOST = GAME/'runtime/host'
 TITLE = '01002DA013484000'
 
 
+def vpx_prefix():
+    """libvpx from MacNativeGames' tools/deps (its pinned source, made once per Mac): only its headers, the test stubs the decoder."""
+    if str(GAME.parents[1]) not in sys.path:
+        sys.path.insert(0, str(GAME.parents[1]))
+    from tools.deps import prefix
+    return prefix('libvpx')
+
+
 def build(tmp, source=HOST/'hle_movie.c'):
     """The test binary; source is the decoder file the test includes (a copy for the unmutated control)."""
     inc = Path(tmp)/'gen'; inc.mkdir()
@@ -23,7 +31,7 @@ def build(tmp, source=HOST/'hle_movie.c'):
         (work/'tests/t_movie_slots.c').symlink_to(test); test = work/'tests/t_movie_slots.c'
     out = Path(tmp)/'t_movie_slots'
     subprocess.run(['clang', '-O1', '-g', '-Wno-unused-function', '-Wno-tautological-compare', f'-I{inc}', f'-I{GAME}/runtime/games/{TITLE}',
-                    f'-I{GAME}/runtime/third_party/libvpx', f'-I{GAME}/runtime/third_party/libvpx/config', f'-I{GAME}/runtime/third_party/stb_vorbis',
+                    f'-I{vpx_prefix()}/include', f'-I{GAME}/runtime/third_party/stb_vorbis',
                     '-o', str(out), str(test), '-framework', 'AudioToolbox'], check=True, capture_output=True, text=True)
     return out
 

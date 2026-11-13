@@ -229,18 +229,18 @@ $(B)/t_vorbis_divides: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(
 run: $(B)/t_movie_vpx
 run: $(B)/t_codec_video
 run: $(B)/t_movie_avc
-$(B)/t_movie_avc: t_movie_avc.c ../hle_movie.c ../hle_movie_avc.c ../hle_movie_avc.h $(GAME_H) ../gen/vpx/libvpx.a | $(B)
-	$(CLANG) -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I../../third_party/libvpx -I../../third_party/libvpx/config -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_avc.c ../gen/vpx/libvpx.a \
+$(B)/t_movie_avc: t_movie_avc.c ../hle_movie.c ../hle_movie_avc.c ../hle_movie_avc.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I$(VPX_PREFIX)/include -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_avc.c $(VPX_PREFIX)/lib/libvpx.a \
 		-framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreFoundation
-$(B)/t_movie_vpx: t_movie_vpx.c ../hle_movie.c $(GAME_H) ../gen/vpx/libvpx.a | $(B)
-	$(CLANG) -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I../../third_party/libvpx -I../../third_party/libvpx/config -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_vpx.c ../gen/vpx/libvpx.a -framework AudioToolbox
-$(B)/t_codec_video: t_codec_video.c ../hle_codec_video.c ../hle_movie.c ../hle_movie_avc.c ../hle_movie_avc.h ../hle_movie_av1.c ../hle_movie_av1.h ../hle_movie_yuv.h $(GAME_H) ../gen/vpx/libvpx.a ../gen/dav1d/libdav1d.a | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-tautological-compare -fsanitize=address,undefined $(GINC) -I../../third_party/libvpx -I../../third_party/libvpx/config -I../../third_party/dav1d/include -I../../third_party/stb_vorbis -o $@ t_codec_video.c ../gen/vpx/libvpx.a ../gen/dav1d/libdav1d.a \
+$(B)/t_movie_vpx: t_movie_vpx.c ../hle_movie.c $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -Wno-tautological-compare $(GINC) -I$(VPX_PREFIX)/include -I../../third_party/stb_vorbis -Wl,-dead_strip -o $@ t_movie_vpx.c $(VPX_PREFIX)/lib/libvpx.a -framework AudioToolbox
+$(B)/t_codec_video: t_codec_video.c ../hle_codec_video.c ../hle_movie.c ../hle_movie_avc.c ../hle_movie_avc.h ../hle_movie_av1.c ../hle_movie_av1.h ../hle_movie_yuv.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-tautological-compare -fsanitize=address,undefined $(GINC) -I$(VPX_PREFIX)/include -I$(DAV1D_PREFIX)/include -I../../third_party/stb_vorbis -o $@ t_codec_video.c $(VPX_PREFIX)/lib/libvpx.a $(DAV1D_PREFIX)/lib/libdav1d.a \
 		-framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework CoreFoundation
-../gen/vpx/libvpx.a: FORCE
-	$(MAKE) -C .. GAME=$(GAME) gen/vpx/libvpx.a
-../gen/dav1d/libdav1d.a: FORCE
-	$(MAKE) -C .. GAME=$(GAME) gen/dav1d/libdav1d.a
+# libvpx and dav1d: MacNativeGames' tools/deps (pinned sources, made once per Mac), or the prefixes a build passes; expanded only in the recipes that link them
+DEPS = $(firstword $(wildcard $(MNG_REPO)/tools/deps ../../../../../tools/deps))
+VPX_PREFIX ?= $(or $(and $(DEPS),$(shell python3 $(DEPS) prefix libvpx)),$(error VPX_PREFIX is not set and no MacNativeGames tools/deps was found))
+DAV1D_PREFIX ?= $(or $(and $(DEPS),$(shell python3 $(DEPS) prefix dav1d)),$(error DAV1D_PREFIX is not set and no MacNativeGames tools/deps was found))
 .PHONY: FORCE
 FORCE:
 $(B):

@@ -1,7 +1,6 @@
 """scripts/pso_seed.py: rows merged file by file in the order given, every malformed row refused with its line, the seed never cut;
 and the bundled seed itself (runtime/games/<title>/pso_manifest.tsv): valid rows, no repeats, its sources named, within its limit."""
 import hashlib
-import json
 import re
 from pathlib import Path
 import subprocess
@@ -61,16 +60,26 @@ class PsoSeedTests(unittest.TestCase):
             (path,) = self.files(tmp, f'{good}\n{self.r_row(fs=b"")}\n')   # control: a pipeline with no fragment shader is a good row
             self.assertEqual(len(pso_seed.merge([path], self.L)), 2)
 
+    def test_kinds_keep_only_the_named_rows_and_still_check_the_others(self):
+        r1 = self.r_row(tail=3)
+        with tempfile.TemporaryDirectory() as tmp:
+            (path,) = self.files(tmp, f'S\t0000000000000002_b\t1\n{r1}\nC\t0000000000000001_b\n')
+            self.assertEqual(pso_seed.merge([path], self.L, kinds='RC'), [r1, 'C\t0000000000000001_b'])
+            bad = Path(tmp) / 'bad.tsv'; bad.write_text(f'S\t0000000000000002_b\t6\n{r1}\n')
+            with self.assertRaisesRegex(pso_seed.SeedError, r'bad\.tsv:1: stage not 0-5'):
+                pso_seed.merge([bad], self.L, kinds='RC')
+            out = Path(tmp) / 'seed.tsv'
+            r = self.run_cli(tmp, '--output', str(out), '--kinds', 'RC', str(path))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('# rows kept: R, C (--kinds', out.read_text()); self.assertNotIn('\nS\t', out.read_text())
+            self.assertEqual(pso_seed.merge([out], self.L), [r1, 'C\t0000000000000001_b'])   # the written seed reads back as valid rows
+
     def test_bundled_seed(self):
         seed = GAME / 'runtime/games/01002DA013484000/pso_manifest.tsv'
         text = seed.read_text(); lines = text.splitlines()
-        if not text.startswith(pso_seed.HEADER):   # no list recorded yet: nxnative's provisional one, empty and as imported (third_party/ss-profile-import.json)
-            import hashlib
-            row = next(r for r in json.loads((GAME / 'third_party/ss-profile-import.json').read_text()) if r['destination'].endswith('pso_manifest.tsv'))
-            self.assertEqual(hashlib.sha256(seed.read_bytes()).hexdigest(), row['sha256'])
-            self.assertEqual([x for x in lines if x.strip() and not x.startswith('#')], [])
-            return
-        self.assertLessEqual(len(lines), 1500)   # the size agreed for LA's seed (Albert, 2026-11-08); Skyward Sword HD's list needs its own agreement
+        self.assertTrue(text.startswith(pso_seed.HEADER))   # recorded and merged by pso_seed.py (nxnative's provisional list was empty)
+        self.assertLessEqual(len(lines), 1500)   # the size agreed for LA's seed (Albert, 2026-11-08); for Skyward Sword HD, Albert's GO of 2026-11-13
+        # covers this list (the opening route's 137 render pipelines, 142 lines); the general 1,500-line limit is a separate decision
         named = [x for x in lines if x.startswith('# source ')]
         self.assertTrue(named and all(x.split()[2] == str(i) and len(x.split()[-1]) == 64 for i, x in enumerate(named, 1)))
         rows = [x for x in lines if not x.startswith('#')]

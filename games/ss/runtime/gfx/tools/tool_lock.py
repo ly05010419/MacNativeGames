@@ -10,13 +10,20 @@ from dmsh_chain import LOCK, XLATE_DIR, SPIRV_CROSS, xlate_source_sha
 
 def sha16(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()[:16]
 
+def spirv_cross_commit(sc):
+    """'Git commit: <commit>' from spirv-cross --revision. MacNativeGames' tools/deps builds spirv-cross on each Mac from a pinned commit (scripts/ss_env.py SPIRV_CROSS),
+    so its bytes follow the compiler and the Timestamp part of the line the Mac's time zone (CMake string(TIMESTAMP) is local time); the commit is what fixes its output"""
+    r = subprocess.run([sc, '--revision'], capture_output=True, text=True)
+    line = (r.stdout + r.stderr).strip()   # spirv-cross prints it on stderr
+    return (line.split(' Timestamp:')[0] or 'no --revision') if r.returncode == 0 else f'no --revision (exit {r.returncode})'
+
 def tools_now():
     """Actual tool fingerprints: translator dll (including the Ryujinx shader library), spirv-cross, metal compiler (macOS / iOS)"""
     t = {}
     for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'): t[dll] = sha16(os.path.join(XLATE_DIR, dll))
     t['xlate_source'] = xlate_embedded()
     sc = shutil.which(SPIRV_CROSS)
-    t['spirv-cross'] = sha16(sc) if sc else 'missing'
+    t['spirv-cross'] = spirv_cross_commit(sc) if sc else 'missing'
     for sdk in ('macosx', 'iphoneos'):
         t['metal_' + sdk] = subprocess.run(['xcrun', '-sdk', sdk, 'metal', '--version'], capture_output=True, text=True).stdout.splitlines()[0:1] or ['missing']
         t['metal_' + sdk] = t['metal_' + sdk][0]
@@ -31,7 +38,7 @@ def xlate_embedded():
     if r.returncode == 0 and r.stdout.strip(): return r.stdout.strip()
     return '%s (%s)' % (NO_RUN, (r.stderr.strip().splitlines() or r.stdout.strip().splitlines() or [f'exit code {r.returncode}'])[0])
 
-def no_run_message(embedded): return f'the translator {embedded}: it needs the .NET 10 runtime for this Mac\'s architecture (brew install --cask dotnet-sdk); unset DOTNET_ROOT if it names another one'
+def no_run_message(embedded): return f'the translator {embedded}: it needs the .NET 10 runtime for this Mac\'s architecture (MacNativeGames\' tools/deps makes the SDK; scripts/ss_env.py passes DOTNET_ROOT)'
 
 def check_tools():
     want = dict(l.rstrip('\n').split('\t', 1) for l in open(LOCK) if '\t' in l and not l.startswith('#'))

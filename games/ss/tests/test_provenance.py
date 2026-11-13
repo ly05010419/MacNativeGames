@@ -1,6 +1,6 @@
 """Every file of this folder is accounted for (third_party/ss-import.json): copied unchanged from its origin, copied and changed, or new, with the size rule for each.
-Origins: LA's target layer (games/la, MNG 549b8a9a), nxnative b1dee89's dm/ (the runtime, the translator and SPIRV-Cross binaries, the NSP script) and MNG's own runtime files as LA
-has them. Files of more than 300 lines exist only as unchanged copies, except those the owner allowed to change, each with its own growth limit (AGREED). A large file changed
+Origins: LA's target layer (games/la, MNG 549b8a9a), nxnative b1dee89's dm/ (the runtime, the NSP script), MNG's own runtime files as LA
+has them, and the shader translator source copied unchanged from games/mkw/third_party/nxnative (MNG d9a52a77). Files of more than 300 lines exist only as unchanged copies, except those the owner allowed to change, each with its own growth limit (AGREED). A large file changed
 here but not yet agreed (PENDING) is reported as skipped, never as passing. New files keep to 300 lines."""
 import hashlib
 import json
@@ -22,6 +22,7 @@ AGREED = {   # Albert, 2026-11-11 ("yo alberto acepto los 12 archivos"): each ch
     'runtime/tools/nx_extract/Program.cs': 0,   # 395 -> 241 lines over nxnative b1dee89 dm/tools/nx_extract/Program.cs: LA: the verified extractor (Select.cs) in place of nxnative's
     'runtime/tools/patch_nso.py': 0,   # 1751 -> 1751 lines over nxnative b1dee89 dm/tools/patch_nso.py: MNG: AoC timing ABI line, 0x90 state page
     'third_party/nxnative/build_ipa_from_nsp.py': 71,   # 2734 -> 2805 lines over nxnative b1dee89 scripts/build_ipa_from_nsp.py: MNG: extracted mode (this target), rewrite proof, 4-column map, offline nx_extract
+    'runtime/host/tests/Makefile': 0,   # 337 -> 337 lines over nxnative b1dee89 dm/host/tests/Makefile: MNG: the three video tests link libvpx and dav1d from tools/deps (Albert, 2026-11-13: "Sí, integra")
 }
 PENDING = {}   # large files changed but not yet agreed (reported as skipped)
 LIMIT = 300

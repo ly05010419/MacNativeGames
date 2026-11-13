@@ -25,10 +25,10 @@
 #   The chain version header dm/gfx/nvn/dmsh_chain.h (one version for every game) is written again when a chain change was committed without it (chain_header: it follows from the source alone),
 #   so a run may leave it changed. The c1 / uniform extent tables (c1_full.tsv, cb_extent.tsv) are not in the repository: the iOS shader step's dmsh_build.py makes them in the profile folder from
 #   this build's shaders, where git ignores them, and a reused step makes them again when they do not name its libraries' stamp (chain_tables).
-# The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it; its launcher is universal, so an Intel Mac runs it too). SPIRV-Cross is the in-repo dm/gfx/tools/spirv_cross_bin and must match the lock too.
+# The shader translator is dm/gfx/tools/dmsh_xlate_bin, built by scripts/build_shader_tools.py from third_party/nxnative before this script runs (a reproducible build whose fingerprints match dmsh_chain.lock; another build is refused by dmsh_build). SPIRV-Cross is MacNativeGames' tools/deps build (SPIRV_CROSS) and its commit must match the lock too.
 # The shader libraries are built through dm/gfx/tools/own_compilers.py. The Metal compiler must match the lock (Xcode 27.2): another one stops an NVN game's build before its shader steps,
 # unless ALLOW_OTHER_METAL / --allow-other-metal. Issue #242 reported corruption with another compiler; the cause is still unconfirmed.
-# Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd. SPIRV-Cross is the in-repo build. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
+# Python 3.12+ is required for bounded archive mappings inside images. The Python running this file needs lz4, capstone 5.x and fonttools (and backports.zstd before Python 3.14); also needed: Xcode. zstd, spirv-cross and the .NET SDK 10 come from MacNativeGames' tools/deps (scripts/ss_env.py). A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
 import ast, collections, contextlib, ctypes, errno, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types
 from pathlib import Path
@@ -84,7 +84,7 @@ SWITCH_ALIAS = 0x1000000000             # the Switch's alias region (64 GB), whi
 PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file; 'json' = one JSON event per line, for a program that shows the build
 BEAT = 30                               # seconds between progress lines in 'lines' mode
 SS_TITLE, SS_PACKAGE, SS_PINS = '01002DA013484000', 'v65536', 'assets/expected-1.0.1.json'   # this target's one game and version
-TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/local/share/dotnet', os.path.expanduser('~/.dotnet')]   # GUI apps such as Spyder do not get the shell's PATH
+TOOL_PATHS = []   # MacNativeGames: no Homebrew; the caller's PATH (scripts/ss_env.py) starts with tools/deps' zstd, spirv-cross and .NET SDK
 
 
 class BuildError(Exception):
@@ -415,7 +415,7 @@ def free_gb(p):
 
 
 def configure_dotnet(env):
-    """Let standalone .NET apphosts find the runtime used by dotnet (Homebrew installs it outside the registered locations)."""
+    """Let standalone .NET apphosts find the runtime used by dotnet (a package manager can put it outside the registered locations)."""
     if env.get('DOTNET_ROOT'): return
     dn = shutil.which('dotnet', path=env['PATH'])
     if not dn: return
@@ -1041,7 +1041,7 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
     missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14
     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 "capstone>=5,<6" fonttools backports.zstd; backports.zstd only before Python 3.14)')
     check_capstone()
-    tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'make': 'Xcode'}   # MacNativeGames: an NVN target; glslang (an OpenGL game's shaders) is checked where that build needs it (build_gl_shaders)
+    deps = "MacNativeGames' tools/deps, which scripts/ss_env.py puts first on PATH"; tools = {'xcodebuild': 'Xcode', 'xcodegen': deps, 'dotnet': deps, 'zstd': deps, 'make': 'Xcode'}   # MacNativeGames: an NVN target; glslang (an OpenGL game's shaders) is checked where that build needs it (build_gl_shaders)
     if mac: del tools['xcodegen']
     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
     if gone: raise BuildError('tools not found: ' + ', '.join(gone))
@@ -1069,14 +1069,14 @@ def check_translator(xlate, env):
     except (OSError, subprocess.SubprocessError) as e: raise BuildError(f'the shader translator does not start ({e}): {xlate}') from e
     if r.returncode == 0 and r.stdout.strip(): return
     why = (r.stderr.strip().splitlines() or r.stdout.strip().splitlines() or [f'exit code {r.returncode}'])[0]
-    raise BuildError(f'the shader translator does not run ({why}): it needs the .NET 10 runtime for this Mac\'s architecture (brew install --cask dotnet-sdk); unset DOTNET_ROOT if it names another one')
+    raise BuildError(f'the shader translator does not run ({why}): it needs the .NET 10 runtime for this Mac\'s architecture (MacNativeGames\' tools/deps makes the SDK; scripts/ss_env.py passes DOTNET_ROOT)')
 
 
 def check_native_python():
     # An x86_64 Python (an Intel Homebrew in /usr/local) runs under Rosetta on Apple silicon, and the universal tools it starts run as x86_64 too: the shader translator
     # then looks for an x86_64 .NET, and the build would stop at the shader step with an empty translator fingerprint. sysctl.proc_translated is 1 under Rosetta, 0 or missing otherwise
     if sys.platform != 'darwin' or subprocess.run(['sysctl', '-n', 'sysctl.proc_translated'], capture_output=True, text=True).stdout.strip() != '1': return
-    raise BuildError(f'this Python ({sys.executable}) is an Intel one running under Rosetta, and the tools it starts would run as Intel code too: run the script with an arm64 Python (/usr/bin/python3, or Homebrew\'s in /opt/homebrew)')
+    raise BuildError(f'this Python ({sys.executable}) is an Intel one running under Rosetta, and the tools it starts would run as Intel code too: run the script with an arm64 Python (/usr/bin/python3)')
 
 
 def _importable(m):
@@ -1322,15 +1322,15 @@ def build_mac_host(repo, out, env, logs, g):
     and the macOS SDK) are as at the last build into out. The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
     if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
     host = repo / 'dm/host'
-    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a', 'gen/dav1d/libdav1d.a', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
+    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'host_msl'], logs / 'mac_host_make.log', env=env, cwd=host)
     dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
     cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
-    kf, tp = out.with_name(out.name + '.key'), repo / 'dm/third_party'
+    kf, tp, vpx, dav1d = out.with_name(out.name + '.key'), repo / 'dm/third_party', *(Path(env.get(k) or '/missing-' + k) for k in ('VPX_PREFIX', 'DAV1D_PREFIX'))   # tools/deps' libraries (ss_env)
     srcs = [p for d in HOST_DIRS for p in sorted((repo / d).iterdir()) if p.is_file() and p.suffix in ('.c', '.m', '.h', '.S', '.inc')]
-    common = fingerprint(cmd, ('files', [host / f'gen/{g.id}/game_profile.h', host / 'gen/msl-macosx/host_msl_gen.h', host / 'gen/vpx/libvpx.a', host / 'gen/dav1d/libdav1d.a', tp / 'stb_vorbis/stb_vorbis.c']),
-                         ('tree', tp / 'vulkan-headers/include'), ('tree', tp / 'libvpx/vpx'), ('tree', tp / 'dav1d/include'), ('cmd', ['clang', '--version']), ('cmd', ['xcrun', '--show-sdk-build-version']), env=env)
+    common = fingerprint(cmd, ('files', [host / f'gen/{g.id}/game_profile.h', host / 'gen/msl-macosx/host_msl_gen.h', vpx / 'lib/libvpx.a', dav1d / 'lib/libdav1d.a', tp / 'stb_vorbis/stb_vorbis.c']),
+                         ('tree', tp / 'vulkan-headers/include'), ('tree', vpx / 'include'), ('tree', dav1d / 'include'), ('cmd', ['clang', '--version']), ('cmd', ['xcrun', '--show-sdk-build-version']), env=env)
     key = fingerprint(common, ('files', srcs))
     chain = repo / CHAIN_H
     # The decoder serves game bytes before rendering. DMSH_CHAIN selects translated shader libraries and appears in the startup log; it cannot change decompression.
@@ -2131,7 +2131,7 @@ def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False, p
     """An OpenGL game's GLSL sources (roots: the RomFS, main, a run-time capture folder) → one Metal library each for the Mac (sh/gl/) and the iPhone (sh/ios/gl/, what build_ipa.sh takes from MSL_IOS;
     not with mac), replacing the NVN split and chain build, as build_vk_shaders does for a Vulkan game; glslang (glslangValidator) compiles the GLSL to SPIR-V for spirv-cross"""
     PROG.stage('GL shaders', step='checking the inputs')
-    if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (brew install glslang): it compiles an OpenGL game\'s GLSL shaders')
+    if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (MacNativeGames\' tools/deps program glslangValidator): it compiles an OpenGL game\'s GLSL shaders')
     key = fingerprint(*[('stat' if provisional else 'tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(repo, env),
                       ('cmd', ['glslangValidator', '--version']), env=env) if reuse else None
     return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac)

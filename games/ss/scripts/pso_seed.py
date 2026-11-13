@@ -10,11 +10,14 @@ Rows keep each file's own order, the files taken in the order given (independent
 there is no global order of first use); repeats are dropped; lines starting with # are skipped. The header names
 every input (its last two path parts, no local folders) with its SHA-256, in that order.
 More rows than --max-lines allows is an error and nothing is written: the seed is never cut to fit.
+--kinds RC keeps only R and C rows (every row is still checked): Skyward Sword HD creates a program for every shader while it
+loads, and the host loads each program's library in the background then (nvn_mtl.m mtl_prog_prefetch), which is what an S row
+would warm; its recordings name all 2,470 shaders as S rows, more than the line limit, so its seed carries the pipelines only.
 --shader-map <shader_map.tsv of a 1.0.1 build> also refuses a row naming a shader key that map lacks: it shows the keys exist
 in Skyward Sword HD 1.0.1's shaders, not that the file was recorded on 1.0.1 (versions can share keys). Players' exported
 contributions (the settings window's Export shader list) carry # header lines and merge like any recording.
 
-  pso_seed.py --output <new pso_manifest.tsv> [--shader-map <shader_map.tsv>] <current seed or recording> [<recording> ...]"""
+  pso_seed.py --output <new pso_manifest.tsv> [--shader-map <shader_map.tsv>] [--kinds RC] <current seed or recording> [<recording> ...]"""
 import argparse
 import hashlib
 import re
@@ -88,7 +91,7 @@ def unknown_key(row, L, keys):
     return next((f'shader key not in the shader map: {k}' for k in named if k and k not in keys), None)
 
 
-def merge(paths, L, keys=None):
+def merge(paths, L, keys=None, kinds='SRC'):
     rows, seen = [], set()
     for path in paths:
         lines = Path(path).read_text().split('\n')
@@ -97,7 +100,7 @@ def merge(paths, L, keys=None):
             if row.startswith('#'): continue
             why = (check(row, L) or (unknown_key(row, L, keys) if keys is not None else None)) if row else 'empty line'
             if why: raise SeedError(f'{path}:{n}: {why}')
-            if row not in seen: seen.add(row); rows.append(row)
+            if row not in seen and row[0] in kinds: seen.add(row); rows.append(row)
     return rows
 
 
@@ -106,12 +109,15 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--max-lines', type=int, default=1500, help='header included (the agreed exception for this file)')
     parser.add_argument('--shader-map', type=Path, help='refuse rows naming keys this 1.0.1 shader map lacks')
+    parser.add_argument('--kinds', default='SRC', help='the row kinds kept, of S, R and C (all rows are checked)')
     parser.add_argument('recordings', nargs='+')
     args = parser.parse_args()
     if args.output.exists(): parser.error(f'{args.output} exists: write a new file')
-    try: rows = merge(args.recordings, layout(), map_keys(args.shader_map) if args.shader_map else None)
+    if not args.kinds or set(args.kinds) - set('SRC'): parser.error('--kinds takes S, R and/or C')
+    try: rows = merge(args.recordings, layout(), map_keys(args.shader_map) if args.shader_map else None, args.kinds)
     except SeedError as error: sys.exit(f'error: {error}')
-    head = HEADER + sources(args.recordings); total = head.count('\n') + len(rows)
+    kept = '' if set(args.kinds) == set('SRC') else f'# rows kept: {", ".join(k for k in "SRC" if k in args.kinds)} (--kinds; the others were checked and left out)\n'
+    head = HEADER + kept + sources(args.recordings); total = head.count('\n') + len(rows)
     if total > args.max_lines: sys.exit(f'error: {total} lines, more than {args.max_lines}: nothing written (ask before raising the limit; never cut the list)')
     args.output.write_text(head + ''.join(r + '\n' for r in rows))
     kinds = {k: sum(r.startswith(k + '\t') for r in rows) for k in 'SRC'}

@@ -13,7 +13,7 @@
 #           --report FILE writes every finding with its line. Sources named on the command line are checked alone: quicker while fixing, but such a run does not report fixed
 #           findings (a file's findings also come from the sources including it).
 # Under GitHub Actions, tidy also writes to the job summary.
-# LLVM's clang-tidy is needed (Apple's toolchain has none): LLVM=<folder with bin/> (a release from github.com/llvm/llvm-project), else Homebrew's llvm@23 or llvm, else PATH.
+# LLVM's clang-tidy is needed (Apple's toolchain has none): LLVM=<folder with bin/> (a release from github.com/llvm/llvm-project), else PATH.
 # The baseline names the LLVM it was made with, the release CI downloads (LLVM_VERSION in .github/workflows/lint-c.yml; test_lint_c.py keeps the two in step); another major
 # version finds other things, and tidy says so.
 # Usage: lint_c.py compdb [--game ID] | tidy [--update | --rebaseline] [--against REV] [--report FILE] [-j N] [FILE...]
@@ -33,12 +33,8 @@ def llvm_tool(name):
         p = pathlib.Path(os.environ['LLVM']) / 'bin' / name
         if p.exists(): return str(p)
         sys.exit(f'{p} not found (LLVM={os.environ["LLVM"]})')
-    for f in ('llvm@23', 'llvm') if shutil.which('brew') else ():
-        r = subprocess.run(['brew', '--prefix', f], capture_output=True, text=True)
-        p = pathlib.Path(r.stdout.strip()) / 'bin' / name
-        if r.returncode == 0 and p.exists(): return str(p)
     if shutil.which(name): return shutil.which(name)
-    sys.exit(f'{name} not found: set LLVM=<LLVM folder> or brew install llvm@23')
+    sys.exit(f'{name} not found: set LLVM=<LLVM folder> (a release from github.com/llvm/llvm-project)')
 
 def rel(p):
     try: return pathlib.Path(p).resolve().relative_to(REPO).as_posix()

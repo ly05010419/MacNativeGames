@@ -15,12 +15,12 @@ import os, sys, ast, hashlib
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HERE = os.path.dirname(os.path.abspath(__file__)); GFX = os.path.dirname(HERE); HOME = os.path.expanduser('~')
 FILES = ['tools/dmsh_chain.py', 'tools/dmsh_build.py', 'tools/dmsh_atomic.py', 'tools/dmsh_fetch.py', 'tools/dmsh_vin.py', 'tools/dmsh_pull.py', 'tools/dmsh_pull.metal', 'tools/dmsh_alpha.py', 'tools/dmsh_logic.py', 'tools/dmsh_geometry.py', 'tools/dmsh_mesh.py', 'tools/dmsh_facts.py', 'tools/dmsh_ampere.py', 'nvn/dmsh_abi.h', 'tools/dmsh_abi.py', '../ios/tools/ios_metal.py', 'tools/dmsh_chain.lock']
-# MacNativeGames: the translator is a pinned binary (prebuilt/), so its sources (dmsh_xlate/*.cs, csproj) and the Ryujinx sources nxnative lists here are not in this copy;
-# its dll fingerprints and embedded source digest are in the lock
+# MacNativeGames: the translator is built at packaging from this target's third_party/nxnative (scripts/build_shader_tools.py), outside this staged tree, so its sources are
+# not listed here; its dll fingerprints (a reproducible build) and embedded source digest are in the lock, which is in V
 INPUT_TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'bf_want.tsv', 'geo_mesh.tsv', 'dual_want.tsv']   # in the game profile folder
 LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = os.path.join(GFX, 'nvn/dmsh_chain.h')
 STAMP = 'inputs.tsv'   # in the library directory b-<V>/
-# the translator defaults to the in-repo build that matches the lock file (a rebuilt dll has different fingerprints)
+# the translator defaults to the build staged here (scripts/build_shader_tools.py), whose dll fingerprints the lock file pins
 XLATE_DIR = os.path.dirname(os.environ.get('XLATE', os.path.join(HERE, 'dmsh_xlate_bin/dmsh_xlate')))
 # spirv-cross likewise: the in-repo build (spirv_cross_bin/build.sh, a pinned upstream commit) that matches the lock file, not the one on PATH, so every Mac converts with the same build
 SPIRV_CROSS = os.environ.get('SPIRV_CROSS', os.path.join(HERE, 'spirv_cross_bin/spirv-cross'))
@@ -76,7 +76,7 @@ def table_head(lib):   # the header c1_full.tsv / cb_extent.tsv start with: the 
     return f'# chain {os.path.basename(os.path.normpath(lib))} inputs {read_stamp(lib).get("inputs", "none")}'
 
 def xlate_source_sha():
-    """Expected embedded source hash of the binary-only pinned translator (MacNativeGames: its sources are not in this copy; the lock records the hash)."""
+    """Expected embedded source hash of the translator (MacNativeGames: its sources are in third_party/nxnative, outside the staged tree; the lock records the hash)."""
     return dict(l.rstrip('\n').split('\t', 1) for l in open(LOCK)
                 if '\t' in l and not l.startswith('#'))['xlate_source']
 def header_text(v):

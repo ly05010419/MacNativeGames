@@ -2,7 +2,6 @@
 """Build the isolated Skyward Sword HD macOS target from a checked extraction (scripts/extract_ss.py makes one)."""
 import argparse
 import fcntl
-import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,6 +11,7 @@ from inspect_inputs import EXPECTED, inspect, write_report
 from ss_env import environment as clean_environment
 from package_ss import PACKAGE, TITLE, package
 from verify_ss import verify_cut
+from build_shader_tools import build_translator
 
 GAME = Path(__file__).resolve().parents[1]
 
@@ -27,41 +27,23 @@ def copy_tree(source, destination):
             shutil.copy2(src, dst)
 
 
-def verify_prebuilt():
-    root = GAME/'prebuilt/macos-arm64'
-    expected = set()
-    for line in (root/'SHA256SUMS').read_text().splitlines():
-        digest, rel = line.split('  ', 1)
-        expected.add(rel)
-        if hashlib.sha256((root/rel).read_bytes()).hexdigest() != digest:
-            raise ValueError(f'shader translator checksum mismatch: {rel}')
-    actual = {str(p.relative_to(root)) for d in ('dmsh_xlate', 'spirv-cross') for p in (root/d).rglob('*') if p.is_file()}
-    if actual != expected:
-        raise ValueError('prebuilt tool file set differs from SHA256SUMS')
-
-
-def stage(work):
-    """Keep all generated code, tables and caches outside the checkout."""
+def stage(work, env=None):
+    """Keep all generated code, tables and caches outside the checkout. The shader translator is built from
+    third_party/nxnative into the staged tree (scripts/build_shader_tools.py), or reused when nothing changed."""
     source = work/'source'
-    verify_prebuilt()
     copy_tree(GAME/'runtime', source/'dm')
-    copy_tree(GAME/'prebuilt/macos-arm64/dmsh_xlate', source/'dm/gfx/tools/dmsh_xlate_bin')
-    copy_tree(GAME/'prebuilt/macos-arm64/spirv-cross', source/'dm/gfx/tools/spirv_cross_bin')   # the build nxnative's lock records (dmsh_chain.SPIRV_CROSS)
     copy_tree(GAME/'assets', source/'assets')
     target = source/'scripts/build_ipa_from_nsp.py'
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(GAME/'third_party/nxnative/build_ipa_from_nsp.py', target)
     shutil.copy2(GAME/'scripts/inspect_inputs.py', source/'scripts/inspect_inputs.py')
+    build_translator(source, env or environment(work))
     return source
 
 
 def environment(work):
-    env = clean_environment(work, TITLE)
-    dotnet = work/'dependencies/dotnet'
-    if dotnet.is_dir():
-        env['DOTNET_ROOT'] = str(dotnet)
-        env['PATH'] = str(dotnet)+':'+env['PATH']
-    return env
+    """ss_env's: zstd, spirv-cross, the .NET SDK, libvpx and dav1d from MacNativeGames' tools/deps."""
+    return clean_environment(work, TITLE)
 
 
 def main():

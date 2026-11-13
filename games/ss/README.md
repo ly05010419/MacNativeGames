@@ -18,9 +18,11 @@ base game supplies most of the RomFS. No container needs an integrity exception 
 
 ## Build
 
-Apple silicon, macOS 26 or later, Xcode with its Metal toolchain, .NET SDK 10, Python 3 with `lz4`,
-`capstone`, `fonttools` (and `backports.zstd` before 3.14), `zstd` and `make`. SPIRV-Cross is the pinned
-build in `prebuilt/macos-arm64/spirv-cross`, not one from `PATH`.
+Apple silicon, macOS 26 or later, Xcode with its Metal toolchain, Python 3 with `lz4`, `capstone`,
+`fonttools` (and `backports.zstd` before 3.14), and `make`. No Homebrew: zstd, SPIRV-Cross, the .NET SDK 10,
+libvpx and dav1d come from MacNativeGames' `tools/deps` (`tools/deps/pins.py`), made once per Mac from pinned
+sources (`scripts/ss_env.py`). The shader translator is built from `third_party/nxnative` at packaging
+(`scripts/build_shader_tools.py`; NuGet restores its packages once, which needs network access).
 
 ```sh
 python3 scripts/extract_ss.py --base "<base>.nsp" --update "<update 1.0.1>.nsp" --keys prod.keys \
@@ -28,9 +30,10 @@ python3 scripts/extract_ss.py --base "<base>.nsp" --update "<update 1.0.1>.nsp" 
 python3 scripts/build_ss.py "<extracted>" --work-dir "<work>" --output "<new>.app"
 ```
 
-Work, output and evidence stay outside the checkout. The shaders compile with the Mac's own Metal compiler
-(`DM_ALLOW_OTHER_METAL=1` in `scripts/ss_env.py`): `dmsh_chain.lock` records Xcode 27.2's, and the build log
-names the one used. Saves and logs go to `~/Library/Application Support/The Legend of Zelda Skyward Sword HD/`.
+Work, output and evidence stay outside the checkout. The shaders compile only with the Metal compiler
+`runtime/gfx/tools/dmsh_chain.lock` records (Xcode 27.2's, 32023.922): another one stops the build before the
+shader step, with installation instructions. Saves and logs go to `~/Library/Application Support/The Legend of
+Zelda Skyward Sword HD/`.
 
 ## Playing
 
@@ -47,19 +50,33 @@ Return for +, Tab for −; or a game controller. The game's button-only controls
 While you play, the app keeps the shaders and pipelines it had to build on the spot in `pso_user.tsv` beside
 the save folder, and builds them ahead at the next start. Settings → Shader list → **Export shader list…**
 saves the ones the app's own list lacks to a file you choose (keys only, no game data). Nothing is sent: send
-that file to the maintainer by hand. The bundled list is still nxnative's provisional one (empty); the
-maintainer merges contributions with `scripts/pso_seed.py`:
+that file to the maintainer by hand. The maintainer merges contributions into the bundled list
+(below) with `scripts/pso_seed.py`:
 
 ```sh
-python3 scripts/pso_seed.py --output new_pso_manifest.tsv --shader-map "<work>/source/dm/games/01002DA013484000/shader_map.tsv" \
+python3 scripts/pso_seed.py --output new_pso_manifest.tsv --shader-map "<work>/source/dm/games/01002DA013484000/shader_map.tsv" --kinds RC \
   runtime/games/01002DA013484000/pso_manifest.tsv ss-shaders-*.tsv
 ```
 
 `--shader-map` refuses keys that are not shaders of this game's 1.0.1 build.
 
+## Pipeline warm-up list
+
+`runtime/games/01002DA013484000/pso_manifest.tsv` lists the 137 render pipelines the opening route builds (file list,
+new game, the opening in Skyloft), recorded twice with `DM_PSO_MANIFEST=off` (both recordings gave the same 137, in the
+same order) and merged by `scripts/pso_seed.py --kinds RC`: 142 lines with its header, every key one of the 1.0.1
+build's shaders. It holds no S rows: the game creates a program for every one of its 2,470 shaders while it loads, and
+the host loads each library in the background then (`mtl_prog_prefetch`), which is what an S row would warm; with them
+the list would pass the 1,500-line limit (2,611 lines). The host builds the listed pipelines before the first frame.
+On the same build and route (2026-11-13) the opening built 137 and 131 pipelines on demand with an empty list and 0
+with this one given explicitly, and 0 again from the packaged app with the list bundled; it takes 0.33-0.35 s to
+prepare ([docs/validation.md](docs/validation.md)). Places past the opening still build their pipelines on first use,
+and players' `pso_user.tsv` keeps them for the next start.
+
 ## State and work to do
 
-Checked on an M5 Pro Mac (macOS 26.5) on 2026-11-11; the numbers are in [docs/validation.md](docs/validation.md).
+Checked on an M5 Pro Mac: macOS 26.5 on 2026-11-11, and macOS 27.2.1 with Xcode 27.2 on 2026-11-13 (the build with the
+locked compilers, the warm-up list, the packaged app); the numbers are in [docs/validation.md](docs/validation.md).
 
 What nxnative's profile needed and this runtime carries: dual-source blending for the 432 pixel shaders of
 `dual_want.tsv` (Link's eyes, the Sailcloth), logic operations on normalized targets (the distance fog of
@@ -68,9 +85,8 @@ What nxnative's profile needed and this runtime carries: dual-source blending fo
 
 Known limits:
 
-- Stutter the first time a place needs a pipeline: no warm-up list is bundled yet (137 pipelines built on
-  demand over the opening route, about 2 s in all).
-- The shaders were compiled with this Mac's Metal 32023.883, not the one `dmsh_chain.lock` names.
+- Stutter the first time a place past the opening needs a pipeline: the bundled list covers the opening route
+  only (see Pipeline warm-up list).
 - 60 fps, as the game runs on the Switch; no frame-rate control.
 
 Open:
