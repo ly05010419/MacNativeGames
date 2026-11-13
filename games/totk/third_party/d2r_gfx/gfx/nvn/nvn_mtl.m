@@ -10527,7 +10527,7 @@ static void pso_contribute(const pso_skey *sk, NSString *brec, NSString *trec) {
     });
 }
 static void pso_adopt(const pso_key *k, NvShader *vs, NvShader *fs, int border, int merged, id<MTLRenderPipelineState> ps, uint64_t bt, int bg, NSString *brec) {
-    if (k->a2c & PSO_HDR) { hm_put_id(&g_pso, k, ps); g_pso_gen++; return; }   // HDR pipelines (PR #1129): built on use, never recorded in the lists
+    if (k->a2c & (PSO_HDR | PSO_HOST_BITS)) { hm_put_id(&g_pso, k, ps); g_pso_gen++; return; }   // HDR pipelines (PR #1129) and host ones (PSO_HOST_BITS): built on use, never recorded in the lists
     pso_key rk = *k; rk.a2c &= ~PSO_VBORDER; if (border) rk.fsfn = NULL;   // the warm-up list records the plain pipeline: a border variant is built from the draw's samplers
     pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&rk, vs, fs, merged, merged ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
     if (survey_shader_log()) MLOG("[survey-shader] frame %llu render pipeline %s in %.2f ms%s%s%s%s", (unsigned long long)atomic_load(&g_cur_frame), shex, (bp_now() - bt) / 1e6, bg ? " (background, from queued to adopted)" : "",
@@ -10642,7 +10642,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     /* A tile-reading pipeline (att_fb_take) was recorded only as its plain R row, so the warm-up never built it and every
        session compiled it in play: about 4,750 pipelines per UltraCam run, frames of 0.3-1 s (2026-10-24). Its T row names
        the variant (aid:att pairs) so the warm-up builds it into the archive (warm_tileread). */
-    if (fbread && !hdr && g_pso_fbrec[0] && !(k.a2c & PSO_VBORDER)) {
+    if (fbread && !hdr && g_pso_fbrec[0] && !(k.a2c & (PSO_VBORDER | PSO_HOST_BITS))) {
         pso_key rk = k; rk.fsfn = NULL; pso_skey tsk; char thex[sizeof tsk * 2 + 1]; pso_skey_from(&rk, vs, fs, 0, NULL, &tsk); pso_skey_hex(&tsk, thex);
         pso_user_record("T\t%s\t%s\n", thex, g_pso_fbrec);
         pso_contribute(&tsk, nil, @(g_pso_fbrec));

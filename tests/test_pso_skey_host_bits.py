@@ -51,6 +51,12 @@ class HostBits(unittest.TestCase):
                 else:
                     self.assertEqual((result, back), (0, bits))
 
+    def test_host_pipelines_are_not_recorded(self):
+        # nor written to pso_user.tsv / the contributions by a VR session (pso_adopt), nor their tile-read (T) rows
+        text = (NVN / 'nvn_mtl.m').read_text()
+        self.assertIn('if (k->a2c & (PSO_HDR | PSO_HOST_BITS)) { hm_put_id(&g_pso, k, ps); g_pso_gen++; return; }', text)
+        self.assertIn('!(k.a2c & (PSO_VBORDER | PSO_HOST_BITS))', text)
+
 
 if __name__ == '__main__':
     unittest.main()
