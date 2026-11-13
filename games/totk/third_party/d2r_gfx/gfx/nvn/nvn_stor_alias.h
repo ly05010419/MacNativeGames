@@ -24,7 +24,8 @@
    A write through one layout leaves the overlapping layouts' content undefined, as on hardware. Same-layout
    descriptors keep sharing one MTLTexture (stor_key). A heap leaves the residency set and is freed once its last
    texture is deallocated (textures retire through the deferred-release queue after the GPU work that used them).
-   OOT_STOR_ALIAS=0: one private allocation per layout; OOT_STOR_ALIAS=2: exact-address heaps only (A/B). */
+   OOT_STOR_ALIAS=0: one private allocation per layout (the default outside Ocarina of Time, below); OOT_STOR_ALIAS=2:
+   exact-address heaps only (A/B). */
 typedef struct { uint64_t mem, pf, samples; } stor_alias_key;
 typedef struct stor_alias_heap { void *heap; stor_alias_key key; uint64_t lo, size; int live, queued, current, region; } stor_alias_heap;
 static nvn_hmap g_alias_by_key = {.klen = sizeof(stor_alias_key)};   // exact-address key -> current heap
@@ -35,7 +36,16 @@ static uint64_t g_alias_heaps_made, g_alias_heaps_freed, g_alias_heaps_live, g_a
                 g_alias_region_textures, g_alias_region_merges;
 static _Atomic uint64_t g_alias_uncompressed;   // region textures created without lossless compression (it would pass their guest range)
 
-static int stor_alias_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("OOT_STOR_ALIAS"); m = e ? atoi(e) : 1; } return m; }
+/* On by default only in Ocarina of Time, where it is measured to pay: memory peak 6.7 -> 4.4 GB (f447609e). The region
+   textures go without lossless compression, and that bandwidth is what a GPU-bound game pays: Breath of the Wild 1.9,
+   same save (2026-11-13, botw160-play-1028): 70.9 fps / GPU 12.52 ms a frame with it, 76.0 / 10.99 without (main 77.9 /
+   11.30). The other games keep their storage as before; OOT_STOR_ALIAS=1 turns it on for a measurement. */
+#ifdef GAME_OOT
+#define STOR_ALIAS_DEFAULT 1
+#else
+#define STOR_ALIAS_DEFAULT 0
+#endif
+static int stor_alias_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("OOT_STOR_ALIAS"); m = e ? atoi(e) : STOR_ALIAS_DEFAULT; } return m; }
 static int stor_alias_on(void) { return stor_alias_mode() != 0; }
 
 static void stor_alias_queue_locked(stor_alias_heap *h) {
