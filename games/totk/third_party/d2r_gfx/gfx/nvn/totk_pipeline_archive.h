@@ -42,6 +42,7 @@
 #include "dmsh_chain.h"
 #include "totk_shader_rt.h"
 #include "nvn_compiler_retry.h"   /* #2070: an add the compiler service dropped is tried again */
+#include "nvn_archive_map.h"   /* an archive file is mapped, not read whole, from an external drive */
 
 #ifndef PAR_BATCH_MAC
 #define PAR_BATCH_MAC 8
@@ -253,8 +254,8 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     if (a) PAR_OPEN_NOTE(name);
     if (!a && name) {
         MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:pre ? par_pre_file(name) : par_file(name)];
-        NSError *e = nil; a = [dev newBinaryArchiveWithDescriptor:d error:&e];
-        if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); }
+        NSError *e = nil; arch_map_begin(); a = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
+        if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
         else {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
             for (NSString *k in [g_par_where allKeysForObject:name]) { [g_par_have removeObject:k]; [g_par_where removeObjectForKey:k]; }
             if (pre) [g_par_pre removeObject:name];
