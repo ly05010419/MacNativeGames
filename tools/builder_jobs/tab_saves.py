@@ -20,7 +20,7 @@ import subprocess
 import time
 
 from tools.builder import game_state, saves, storage
-from tools.builder.games import GAMES
+from tools.builder.games import PAGE_GAMES as GAMES   # the games these pages serve
 from tools.builder_jobs.tabs import TabError
 from tools.builder_jobs.text import t
 
@@ -57,7 +57,7 @@ def slot_held(data_dir):
     """The game slot's lock held by any process (a player's game or a test game): game_state.game_running only counts
     the player's own, but any game on this profile writes its save back over a restored one."""
     try:
-        fd = os.open(Path(data_dir) / 'game-slot/lock', os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(game_state.slot_dir(data_dir) / 'lock', os.O_RDONLY | os.O_CLOEXEC)
     except OSError:
         return False
     try:

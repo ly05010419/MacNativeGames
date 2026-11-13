@@ -17,6 +17,7 @@ NAMES = {
                              'Purah Pad', 'Pause Menu', 'Crouch', None, None, None, None, None))),
     'botw': dict(zip(ORDER, ('Action', 'Cancel / Sprint', 'Jump', 'Attack', 'Target', 'Bow', 'Rune',
                              'Throw Weapon', 'Map', 'Pause Menu', 'Crouch', 'Look', None, None, None, None))),
+    'oot': dict.fromkeys(ORDER),   # Ocarina of Time (2026-11-13): no use confirmed in play yet, every row "to confirm"
 }
 
 SWITCH_LABELS = {'a': 'A', 'b': 'B', 'x': 'X', 'y': 'Y', 'zl': 'ZL', 'zr': 'ZR', 'l': 'L', 'r': 'R', 'minus': '−',

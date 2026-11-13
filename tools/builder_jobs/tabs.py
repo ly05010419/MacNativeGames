@@ -6,7 +6,8 @@ models, which these call unchanged.
 
 <tab> is the module tools/builder_jobs/tab_<tab>.py, which holds ACTIONS {action: fn(ctx, **args)}. The answer is
 {"ok": true, "result": …} or {"ok": false, "error": "<words>"}; the exit code is 0 either way, 2 for a bad call.
-Texts are Chinese when MNG_LANG starts with zh (text.t), as the build jobs'."""
+Texts are Chinese when MNG_LANG starts with zh (text.t), as the build jobs'. A game has the pages
+tools.builder.games PAGES gives it; another tab is refused."""
 from dataclasses import dataclass, fields, is_dataclass
 import enum
 import importlib
@@ -37,18 +38,19 @@ class TabError(Exception):
 
 
 def context(app, home=None):
-    """The Context of an app of a game the tabs serve (Tears of the Kingdom, Breath of the Wild: tools.builder.games)."""
-    from tools.builder.games import GAMES
+    """The Context of an app of a game the tabs serve (tools.builder.games PAGE_GAMES: Tears of the Kingdom, Breath of the
+    Wild, Ocarina of Time)."""
+    from tools.builder.games import PAGE_GAMES
     app = Path(app).expanduser()
     home = Path(home or Path.home())
     try:
         bundle = plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
     except Exception:   # unreadable or not a property list (plistlib raises expat's errors too)
         raise TabError(t(f'{app} is not an app', f'{app} 不是一个 App')) from None
-    spec = next((s for s in GAMES.values() if bundle == s.bundle_id), None)
+    spec = next((s for s in PAGE_GAMES.values() if bundle == s.bundle_id), None)
     if spec is None:
-        raise TabError(t('these pages serve Tears of the Kingdom and Breath of the Wild for now',
-                         '这几页目前只支持王国之泪和旷野之息'))
+        raise TabError(t('these pages serve Tears of the Kingdom, Breath of the Wild and Ocarina of Time for now',
+                         '这几页目前只支持王国之泪、旷野之息和时之笛'))
     support = home / 'Library/Application Support/MacNativeGames'
     return Context(spec, app, home, repo.REPO, support / spec.data_folder, support / 'Builder')
 
@@ -81,8 +83,12 @@ def call(tab, action, app, args=None, home=None):
     fn = module.ACTIONS.get(action)
     if fn is None:
         return {'ok': False, 'error': f'no action {action!r} in {tab}: one of {", ".join(module.ACTIONS)}'}
+    from tools.builder.games import PAGES
     try:
-        return {'ok': True, 'result': jsonable(fn(context(app, home), **(args or {})))}
+        ctx = context(app, home)
+        if tab not in PAGES[ctx.spec.id]:
+            raise TabError(t(f'{ctx.spec.display_name} has no {tab} page yet', f'{ctx.spec.display_name} 还没有这一页（{tab}）'))
+        return {'ok': True, 'result': jsonable(fn(ctx, **(args or {})))}
     except (TabError, ValueError, OSError, RuntimeError) as e:
         return {'ok': False, 'error': str(e)}
 

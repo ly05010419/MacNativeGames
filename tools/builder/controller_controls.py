@@ -2,7 +2,7 @@
 player uses when the type is auto, save an edited layout and move the file aside for the defaults. MNG Launcher's
 Controls page (tools/builder_jobs/tab_controls.py) calls these.
 
-Every game in GAMES, each in its own data folder: <data>/<data_folder>/controls.txt and controller-type.txt
+Every game in PAGE_GAMES, each in its own data folder: <data>/<data_folder>/controls.txt and controller-type.txt
 (TOTK_CONTROLS set by hand moves them; the page looks at the default place). With 'auto' the face buttons follow the
 controller, so the page asks (xbox: by position, nintendo: by label) and keeps the answer per game in
 Builder/controls-tab.json, never in the game's files; TOTK_FACE_BUTTONS set by hand wins over it. C6: every state
@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 
 from tools.builder import controls_file as cf, game_state
-from tools.builder.games import GAMES
+from tools.builder.games import PAGE_GAMES
 
 ANSWERS = cf.ANSWERS
 
@@ -54,7 +54,7 @@ def _read(path):
 
 
 def read_state(data_dir, store, game):
-    if game not in GAMES:
+    if game not in PAGE_GAMES:
         return ControlsState(game=game, reason='not_offered')
     controls, kind = Path(data_dir) / 'controls.txt', Path(data_dir) / 'controller-type.txt'
     raw, type_raw, answer = _read(controls), _read(kind), cf.read_answer(store, game)

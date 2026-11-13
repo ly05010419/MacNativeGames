@@ -81,8 +81,16 @@ final class Model: ObservableObject {
         Task { await classify() }
     }
 
-    /// The installed apps the pages besides building serve (Tears of the Kingdom, Breath of the Wild: tools/builder's games).
-    var pageApps: [InstalledReport.App] { installed.filter { $0.game == "totk" || $0.game == "botw" } }
+    /// The pages besides building each game has (tools/builder/games.py PAGES, which the backend enforces;
+    /// tests/test_launcher_pages.py checks the two agree). Ocarina of Time: Controls, Storage and Saves (user 2026-11-13).
+    static let gamePages: [String: [String]] = [
+        "totk": ["settings", "mods", "controls", "storage", "saves"],
+        "botw": ["settings", "mods", "controls", "storage", "saves"],
+        "oot": ["controls", "storage", "saves"],
+    ]
+    static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
+    /// The installed apps the pages besides building serve.
+    var pageApps: [InstalledReport.App] { installed.filter { !Model.pages($0.game).isEmpty } }
 
     /// Where the last look at the installed games is kept, so the games page shows them at once (user 2026-11-12).
     private static let rememberedInstalled = Paths.support.appendingPathComponent("installed.json")

@@ -22,6 +22,7 @@ class GameSpec:
     data_folder: str        # ~/Library/Application Support/MacNativeGames/<data_folder>
     assets_dir: str         # relative to the repository
     versions: tuple[VersionSpec, ...]
+    slot_folder: str = ''   # the data folder whose game-slot the game takes, when not its own (game_state.slot_dir)
 
 
 TOTK = GameSpec(
@@ -54,3 +55,27 @@ BOTW = GameSpec(
 )
 
 GAMES = {spec.id: spec for spec in (TOTK, BOTW)}
+
+# Ocarina of Time (Switch 2): built by games/oot/build.py, not build_app.py, so not in GAMES (the catalog the build pages
+# and tests/builder_buildapp_source.py compare with build_app.py). MNG Launcher's game pages serve it (PAGES). Its launcher
+# takes the game slot in TOTK/ (games/oot/app/launcher.m: TOTK_GAME_SLOT_DIR's default), its other files are in its own
+# folder as TOTK's are: profile/, shader-cache/, controls.txt (same app/launcher.m).
+OOT = GameSpec(
+    id='oot',
+    display_name='Ocarina of Time',
+    title_id='0400486024DEC000',
+    app_name='Ocarina of Time',
+    bundle_id='org.macnativegames.oot',
+    data_folder='OcarinaOfTime',
+    assets_dir='games/oot/assets',
+    versions=(VersionSpec('v131072', 'v131072', 'expected-v131072.json'),),
+    slot_folder='TOTK',
+)
+
+# The games MNG Launcher's game pages serve, and which pages each has (tools/builder_jobs/tabs.py TABS; the window shows
+# these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
+# its Settings and Mods are not written for it yet.
+PAGE_GAMES = {**GAMES, OOT.id: OOT}
+PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
+         'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
+         'oot': ('controls', 'storage', 'saves')}

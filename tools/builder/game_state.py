@@ -49,8 +49,17 @@ def _alive(pid):
     return True
 
 
+def slot_dir(data_dir):
+    """The game-slot folder of the game whose data folder is data_dir: its own, or the one its launcher takes
+    (GameSpec.slot_folder: Ocarina of Time's is TOTK/game-slot)."""
+    from tools.builder.games import PAGE_GAMES
+    data_dir = Path(data_dir)
+    spec = next((s for s in PAGE_GAMES.values() if s.data_folder == data_dir.name and s.slot_folder), None)
+    return (data_dir.parent / spec.slot_folder if spec else data_dir) / 'game-slot'
+
+
 def game_running(data_dir):
-    slot = Path(data_dir) / 'game-slot'
+    slot = slot_dir(data_dir)
     try:
         fd = os.open(slot / 'lock', os.O_RDONLY | os.O_CLOEXEC)
     except OSError:

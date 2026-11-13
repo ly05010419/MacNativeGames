@@ -14,7 +14,7 @@ from unittest.mock import patch
 from test_launcher_tabs import fake_app
 from tools.builder import controller_controls as cc, controls_file as cf
 from tools.builder.controller_icons import ICONS, IconsInfo, icons_info
-from tools.builder.games import BOTW, GAMES
+from tools.builder.games import BOTW, GAMES, PAGE_GAMES
 from tools.builder.gui_controls_table import NAMES, ORDER
 from tools.builder.strings import text
 from tools.builder_jobs import tabs
@@ -91,7 +91,7 @@ class Files(unittest.TestCase):
         (old / 'Contents/Resources/totk/extracted/botw160').mkdir(parents=True)
         self.assertEqual(icons_info(self.dirs['botw'], self.store, None, BOTW, old, self.tmp, self.tmp),
                          IconsInfo(False, 'not_latest'))                # 1.6.0's code points are not checked
-        self.assertEqual(sorted(NAMES), sorted(GAMES))
+        self.assertEqual(sorted(NAMES), sorted(PAGE_GAMES))   # every game the Controls page serves (2026-11-13: OOT too)
         for game, names in NAMES.items():
             self.assertEqual(tuple(names), ORDER, game)                  # the D-pad's four stay separate rows
         self.assertEqual(cc.read_state(self.dirs['botw'], self.store, 'other').reason, 'not_offered')

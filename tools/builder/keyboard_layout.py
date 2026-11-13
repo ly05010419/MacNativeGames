@@ -39,6 +39,15 @@ TITLES = {
     'camera_left': 'Camera left', 'camera_right': 'Camera right',
     'screenshot': 'Screenshot',
 }
+# A game whose buttons' uses are not confirmed yet names them by the button alone (Ocarina of Time, 2026-11-13; the uses
+# in TITLES are Zelda TotK / BotW's).
+PLAIN = {'a': 'A', 'b': 'B', 'x': 'X', 'y': 'Y', 'plus': 'Plus', 'minus': 'Minus'}
+PLAIN_GAMES = ('oot',)
+
+
+def titles(game):
+    """TITLES as this game names its actions."""
+    return {**TITLES, **PLAIN} if game in PLAIN_GAMES else TITLES
 
 # Every input name keyboard.txt accepts, with what a person calls it. The Controls page's key test maps a key code
 # into this vocabulary (tools/builder_jobs/tab_controls.key_codes, from the runtime's keyboard_map.h).

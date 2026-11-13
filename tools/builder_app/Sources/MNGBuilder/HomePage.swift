@@ -135,7 +135,7 @@ struct GameActions: View {
 
     /// Tears of the Kingdom and Breath of the Wild start through the Settings page's Play (tab_settings.play): the choices
     /// only Play passes (the 16x ground) go with it, and interpolation waits for the GPU check. The others open as apps.
-    private var startsWithSettings: Bool { model.pageApps.contains(where: { $0.app == app.app }) }
+    private var startsWithSettings: Bool { Model.pages(app.game).contains("settings") }
 
     var body: some View {
         GroupBox {
@@ -177,7 +177,7 @@ struct GameActions: View {
                 }
                 if model.pageApps.contains(where: { $0.app == app.app }) {   // the pages serve these games only
                     HStack {
-                        ForEach(T.gamePages, id: \.0) { id, label in
+                        ForEach(T.gamePages.filter { Model.pages(app.game).contains($0.0) }, id: \.0) { id, label in
                             // under the buttons, not a page of its own (user 2026-11-12); pressed again, it closes
                             Button(label) { section = section == id ? nil : id }
                                 .buttonStyle(.bordered).tint(section == id ? .accentColor : nil)

@@ -27,7 +27,8 @@ from tools.builder.strings import EN
 from tools.builder_jobs.tabs import TabError
 from tools.builder_jobs.text import t
 
-KEYMAP = 'games/totk/runtime/keyboard_map.h'
+KEYMAP = {'oot': 'games/oot/runtime/keyboard_map.h'}   # each game's own copy; the others build with games/totk's
+KEYMAP_DEFAULT = 'games/totk/runtime/keyboard_map.h'
 KEYMAP_INPUT = re.compile(r'\{(\d+), "([a-z0-9_]+)", "')
 
 # The old page's texts (tools/builder/strings.py gui.controls.*, read from there in English) in Chinese.
@@ -120,7 +121,7 @@ ZH_NAMES = {'Action': '动作', 'Put Away': '收起武器', 'Jump': '跳跃', 'A
             'Right stick': '右摇杆（按下）', 'Plus (menu)': '+（菜单）', 'Minus (map)': '−（地图）',
             'Move up': '向前移动', 'Move down': '向后移动', 'Move left': '向左移动', 'Move right': '向右移动',
             'Camera up': '镜头向上', 'Camera down': '镜头向下', 'Camera left': '镜头向左', 'Camera right': '镜头向右',
-            'Screenshot': '截图'}
+            'Screenshot': '截图', 'Plus': '+', 'Minus': '−'}
 KEYBOARD_WHERE = (t("Change the keys in the game's settings panel (key 1) → Key bindings; it writes keyboard.txt.",
                     '在游戏里的设置面板（按 1）→“按键绑定”里改键盘；它写 keyboard.txt。'))
 
@@ -337,9 +338,9 @@ def icons(ctx, install_env=False, switch_off=()):
     return {'ok': ok, 'message': message, 'icons': icons_info(ctx)}
 
 
-def key_codes(repo):
-    """{virtual key code: keyboard.txt name} from the runtime's own table (keyboard_map.h keymap_inputs), keys only."""
-    found = {int(code): name for code, name in KEYMAP_INPUT.findall((Path(repo) / KEYMAP).read_text())}
+def key_codes(repo, game='totk'):
+    """{virtual key code: keyboard.txt name} from the game's runtime table (keyboard_map.h keymap_inputs), keys only."""
+    found = {int(code): name for code, name in KEYMAP_INPUT.findall((Path(repo) / KEYMAP.get(game, KEYMAP_DEFAULT)).read_text())}
     return {code: name for code, name in found.items() if code < 128}
 
 
@@ -357,12 +358,12 @@ def keyboard(ctx):
     note = say('gui.controls.test.unread', detail=found.problems[0]) if found.problems else \
         '' if path else say('gui.controls.test.defaults')
     keys = {str(code): {'name': name, 'label': kb.INPUTS.get(name, name),
-                        'actions': [word(kb.TITLES.get(a, a)) for a in kb.owner(found, name)]}
-            for code, name in key_codes(ctx.repo).items()}
+                        'actions': [word(kb.titles(ctx.spec.id).get(a, a)) for a in kb.owner(found, name)]}
+            for code, name in key_codes(ctx.repo, ctx.spec.id).items()}
     texts = {k.rsplit('.', 1)[-1]: say(f'gui.controls.test.{k}') for k in
              ('title', 'note', 'start', 'stop', 'stopped', 'running', 'none')}
     return {'source': str(path or ''), 'note': note, 'where': KEYBOARD_WHERE, 'texts': texts,
-            'actions': [{'id': a, 'title': word(kb.TITLES.get(a, a)),
+            'actions': [{'id': a, 'title': word(kb.titles(ctx.spec.id).get(a, a)),
                          'keys': [kb.INPUTS.get(n, n) for n in found.bindings.get(a, ())]} for a in kb.ACTIONS],
             'keys': keys,
             'formats': {k: say(f'gui.controls.test.{k}', **{f: '{' + f + '}' for f in fields})

@@ -23,7 +23,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 
-from tools.builder import saves, storage
+from tools.builder import game_state, saves, storage
 from tools.builder_jobs import repo
 from tools.builder_jobs.tabs import TabError
 from tools.builder_jobs.text import t
@@ -73,7 +73,7 @@ def slot_taken(ctx):
     test, game_state.game_running, without its 'a player's game' condition: a test game writes the shader cache too).
     Taking the lock for an instant is what the launcher does too."""
     try:
-        fd = os.open(ctx.data_dir / 'game-slot/lock', os.O_RDONLY | os.O_CLOEXEC)
+        fd = os.open(game_state.slot_dir(ctx.data_dir) / 'lock', os.O_RDONLY | os.O_CLOEXEC)
     except OSError:
         return False
     try:
