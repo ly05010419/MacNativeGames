@@ -21,7 +21,7 @@ def build_helpers():
     import build_app
     return build_app
 
-TREE_SKIP=('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis')   # the build's own output and caches
+TREE_SKIP=('__pycache__','*.pyc','.venv','build','extracted','rewritten','analysis','Gen')   # the build's own output and caches (Gen: ios/Gen, the device seed and its compiled-library cache)
 
 def sync_tree(source,tree):
     """The work folder's copy of games/oot mirrors the checkout: files are copied (linked folders, the shared graphics
