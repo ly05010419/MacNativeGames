@@ -56,8 +56,40 @@ stutter the first time.
   worker threads cannot starve its main thread.
 - **NVN on Metal**: textures in CPU-no-access pools are mirrored, one-stage programs are merged per pair, depth/colour
   aliasing gets a colour twin, integer render targets never blend, and the sRGB swap chain is presented as stored.
+- **SCREEN blending**: advanced state retains the NVN object's eight-byte layout and survives recorded command
+  snapshots. An enabled SCREEN draw with uncorrelated coverage and a normalized destination uses exact RGBA blend
+  factors. A straight-alpha source gets a cached fragment variant that clamps UNORM/sRGB input and premultiplies
+  only the selected RGB outputs; alpha and the other outputs remain intact. This composes with depth-export removal
+  and sampler-border handling. Other active advanced modes and overlap/destination combinations still fail explicitly.
 - **Shaders**: the translator rejects non-constant texture offsets (`QueryHostSupportsNonConstantTextureOffset`) and
   pre-translates every program the game registers.
+
+## SCREEN blend validation
+
+`probe-gpu-screen-blend` exercises the production recorded-state and pipeline paths using synthetic shaders and GPU
+readback. It covers premultiplied/straight input, linear/sRGB targets, clamping, multiple outputs, early returns,
+depth-output removal, integer/masked targets, state lifetime and pipeline reuse. Negative controls 45/46 detect wrong
+factors or a bypassed straight-alpha variant; 47/48/49 reject unsupported active overlap, destination and modes.
+`LM3_BLEND_DIAG=1` enables bounded first-use blend/source diagnostics; these are off by default, while unsupported
+active-state failures always report their reason.
+`probe-gfx` also checks the setters/getters, invalid enums (negative controls 91/92), opaque-state canaries and command
+snapshots. For a runtime built from the player's verified 1.2.0 inputs:
+
+```sh
+TOTK_SLOT_OWNER=codex MTL_DEBUG_LAYER=1 build/lm3-native rewritten/v120 probe-gpu-screen-blend
+TOTK_SLOT_OWNER=codex TOTK_PROBE_NEGATIVE=45 MTL_DEBUG_LAYER=1 build/lm3-native rewritten/v120 probe-gpu-screen-blend
+```
+
+On 11 November 2026, the same SCREEN implementation fixed the vacuum-upgrade animation in a separate local 1.4.0
+build on an M1 Max with macOS 27.2. The player confirmed the animation completed and controls returned; the synthetic
+GPU probe passed 216,548 checks. That is historical Mac coverage, not a fresh 1.2.0 playthrough or an iOS result.
+Support for extracting/building 1.4.0 is a separate change; this repair does not add its input pins or display patches.
+
+This SCREEN-only branch has not been built or played with 1.2.0 inputs; those inputs are not available in this checkout.
+macOS syntax checks pass for the changed graphics sources and probe entry points. The shared Metal syntax check for
+iOS stops on two existing unavailable pixel formats (`MTLPixelFormatDepth24Unorm_Stencil8` and
+`MTLPixelFormatX24_Stencil8`); the unmodified base has the same errors. No complete iOS app build or device playtest
+has been performed for this change.
 
 ## Known gaps
 

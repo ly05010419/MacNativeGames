@@ -92,8 +92,13 @@ _Static_assert(__builtin_offsetof(cmd_t, inline_cur) == 0x20 && __builtin_offset
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------
 typedef struct { uint32_t blend_en : 8, logic_op : 4, alpha_func : 4; } color_st;            FITS(color_st, NVNcolorState);
 typedef struct { uint32_t mask; } chmask_st;            /* 每目标 4 位：r=1 g=2 b=4 a=8，置位 = 写 | 4 bits per target: r=1 g=2 b=4 a=8, bit set = write */ FITS(chmask_st, NVNchannelMaskState);
-typedef struct { uint64_t target : 3, src_rgb : 7, dst_rgb : 7, src_a : 7, dst_a : 7, eq_rgb : 3, eq_a : 3; } blend_st;
+/* Inverse booleans keep the compatibility defaults in zero-initialized spare
+   bits: premultiplied source, uncorrelated overlap, normalized destination.
+   Storing these flags does not imply every combination can be rendered. */
+typedef struct { uint64_t target : 3, src_rgb : 7, dst_rgb : 7, src_a : 7, dst_a : 7, eq_rgb : 3, eq_a : 3,
+    adv : 6, adv_npm : 1, adv_ovl : 2, adv_nnd : 1; } blend_st;
 FITS(blend_st, NVNblendState);
+_Static_assert(sizeof(blend_st) == 8, "blend state and command snapshots remain eight bytes");
 typedef struct { uint8_t enable, samples, a2c, a2c_dither, raster_samples, cov_mod, cov2color_en, cov2color_out, sl_en, sl_grid; } ms_st;
 FITS(ms_st, NVNmultisampleState);
 typedef struct { uint32_t cull : 2, front : 1, mode : 2, offset_en : 3; } poly_st;           FITS(poly_st, NVNpolygonState);
