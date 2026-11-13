@@ -39,7 +39,7 @@ static NSString *nick_row_flash_text(int *kind) {
  return nick_row_flash;
 }
 static NSColor *nick_row_flash_color(int kind) {
- return kind==NICK_ROW_FLASH_REFUSED?NSColor.systemOrangeColor:kind==NICK_ROW_FLASH_DONE?NSColor.systemGreenColor:[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ return kind==NICK_ROW_FLASH_REFUSED?NSColor.systemOrangeColor:kind==NICK_ROW_FLASH_DONE?NSColor.systemGreenColor:NSColor.secondaryLabelColor;
 }
 static void nick_row_show(NSString *text, int kind, double seconds) {
  nick_row_flash=text;nick_row_flash_kind=kind;nick_row_flash_until=CACurrentMediaTime()+seconds;
@@ -107,7 +107,7 @@ static void nick_row_change(void) {
  if(!(self=[super initWithFrame:frame]))return nil;
  self.madeAt=CACurrentMediaTime();
  NSTextField *label=[NSTextField labelWithString:@""];label.font=[NSFont systemFontOfSize:12];
- label.textColor=[NSColor colorWithCalibratedWhite:0.88 alpha:1];label.lineBreakMode=NSLineBreakByTruncatingTail;[self addSubview:label];self.label=label;
+ label.textColor=NSColor.labelColor;label.lineBreakMode=NSLineBreakByTruncatingTail;[self addSubview:label];self.label=label;
  NSButton *button=[NSButton buttonWithTitle:settings_text("修改","Change") target:self action:@selector(change:)];
  button.controlSize=NSControlSizeSmall;button.font=[NSFont systemFontOfSize:11];button.refusesFirstResponder=YES;[button sizeToFit];
  [self addSubview:button];self.button=button;
@@ -117,6 +117,7 @@ static void nick_row_change(void) {
  [self show];
  return self;
 }
+-(void)setFrame:(NSRect)frame{[super setFrame:frame];[self show];}
 -(void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];}
 -(BOOL)usable{return totk_board_dir()!=nil;}
 /* The page is shown (and twice a second while it is): the nickname read once in this opening. */

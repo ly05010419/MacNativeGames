@@ -92,13 +92,23 @@ static NSString *update_tab_by_hand(void) {
  CGFloat w=frame.size.width,h=frame.size.height;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,UPDATE_TAB_STRIP_H,w,fmax(0,h-UPDATE_TAB_STRIP_H))];
  scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
  TOTKFlippedView *list=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,w,0)];
  NSTextField *text=[NSTextField wrappingLabelWithString:@""];text.selectable=NO;text.refusesFirstResponder=YES;[list addSubview:text];
  scroll.documentView=list;[self addSubview:scroll];self.scroll=scroll;self.text=text;
- NSTextField *status=[NSTextField labelWithString:@""];status.font=[NSFont systemFontOfSize:12 weight:NSFontWeightMedium];status.textColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1];
- status.lineBreakMode=NSLineBreakByTruncatingTail;status.refusesFirstResponder=YES;status.frame=NSMakeRect(18,6,fmax(0,w-200),17);[self addSubview:status];self.status=status;
- NSButton *button=[NSButton buttonWithTitle:@"" target:self action:@selector(updateClicked:)];button.refusesFirstResponder=YES;button.font=[NSFont systemFontOfSize:12];button.wantsLayer=YES;[self addSubview:button];self.updateButton=button;
+ NSTextField *status=[NSTextField labelWithString:@""];status.font=[NSFont systemFontOfSize:12 weight:NSFontWeightMedium];status.textColor=[NSColor secondaryLabelColor];
+ status.lineBreakMode=NSLineBreakByTruncatingTail;status.refusesFirstResponder=YES;status.frame=NSMakeRect(18,6,fmax(0,w-200),17);
+ status.autoresizingMask=NSViewWidthSizable|NSViewMaxYMargin;
+ [self addSubview:status];self.status=status;
+ NSButton *button=[NSButton buttonWithTitle:@"" target:self action:@selector(updateClicked:)];button.refusesFirstResponder=YES;button.font=[NSFont systemFontOfSize:12];button.wantsLayer=YES;
+ button.autoresizingMask=NSViewMinXMargin|NSViewMaxYMargin;
+ [self addSubview:button];self.updateButton=button;
  return self;
+}
+-(void)setFrame:(NSRect)frame{
+ [super setFrame:frame];
+ self.shown=NO;
+ [self refresh];
 }
 /* The page opened: a check, unless one of the last UPDATE_TAB_RECHECK seconds is here or an update is under way. */
 -(void)show{
@@ -119,19 +129,19 @@ static NSString *update_tab_by_hand(void) {
   [all appendAttributedString:[[NSAttributedString alloc] initWithString:[(all.length?@"\n":@"") stringByAppendingString:text]
    attributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:color,NSParagraphStyleAttributeName:style}]];};
  NSFont *plain=[NSFont systemFontOfSize:12.5],*strong=[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],*small=[NSFont systemFontOfSize:11.5];
- NSColor *white=[NSColor colorWithCalibratedWhite:0.92 alpha:1],*dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1],*accent=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1],
-  *warn=[NSColor colorWithCalibratedRed:1 green:0.8 blue:0.55 alpha:1];
+ NSColor *textColor=[NSColor labelColor],*dim=[NSColor secondaryLabelColor],*accent=[NSColor systemGreenColor],
+  *warn=[NSColor systemOrangeColor];
  const char *c=getenv("TOTK_SOURCE_COMMIT");NSString *running=c&&*c?@(c):nil,*state=d[@"state"];
  NSString *version=[settings_text("当前版本 ","Version ") stringByAppendingString:running?:settings_text("未知","unknown")];
  BOOL newest=[state isEqualToString:@"latest"]||([state isEqualToString:@"updated"]&&running&&[d[@"to"] hasPrefix:running]);
  if(newest)add([version stringByAppendingString:settings_text(" · 已是最新版"," · the newest")],strong,accent,0);
  else{
-  add(version,strong,white,0);
+  add(version,strong,textColor,0);
   NSArray<NSString *> *commits=d[@"commits"];long long total=[d[@"total"] longLongValue];
   if(commits.count&&![state isEqualToString:@"updated"]){
    add(total>(long long)commits.count?[NSString stringWithFormat:@(TOTK_UI("最新版 %@ 多了 %lld 个提交（下面是最新的 %lu 个）：","The newest, %@, has %lld more commits (the newest %lu below):")),d[@"to"],total,(unsigned long)commits.count]:
-    [NSString stringWithFormat:@(TOTK_UI("最新版 %@ 多了这些提交：","The newest, %@, adds:")),d[@"to"]],plain,white,0);
-   for(NSString *title in commits)add([@"•  " stringByAppendingString:title],plain,white,12);
+    [NSString stringWithFormat:@(TOTK_UI("最新版 %@ 多了这些提交：","The newest, %@, adds:")),d[@"to"]],plain,textColor,0);
+   for(NSString *title in commits)add([@"•  " stringByAppendingString:title],plain,textColor,12);
   }
   if([@[@"blocked",@"error",@"failed"] containsObject:state?:@""]){
    add([update_tab_reason(d[@"reason"]) stringByAppendingString:settings_text("，没法替你更新。",", so it cannot be updated for you.")],plain,warn,0);

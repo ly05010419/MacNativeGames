@@ -76,7 +76,7 @@ static void contrib_tab_fetch(void (^done)(NSArray *players, NSString *error)) {
 @implementation TOTKContribPage
 static NSTextField *contrib_tab_label(NSString *text, CGFloat size, CGFloat white, NSTextAlignment align) {
  NSTextField *l=[NSTextField labelWithString:text];l.font=[NSFont systemFontOfSize:size];l.alignment=align;
- l.textColor=[NSColor colorWithCalibratedWhite:white alpha:1];l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
+ l.textColor=white>=0.85?NSColor.labelColor:NSColor.secondaryLabelColor;l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
 static NSString *contrib_tab_number(NSUInteger n) {
  static NSNumberFormatter *f;if(!f){f=[NSNumberFormatter new];f.numberStyle=NSNumberFormatterDecimalStyle;
@@ -96,16 +96,19 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
  /* the switch and its title; the state and the counts under them */
  NSSwitch *toggle=[NSSwitch new];[toggle sizeToFit];NSSize s=toggle.frame.size;
  toggle.frame=NSMakeRect(18,top-s.height,s.width,s.height);toggle.target=self;toggle.action=@selector(toggled:);toggle.refusesFirstResponder=YES;
+ toggle.autoresizingMask=NSViewMaxXMargin|NSViewMinYMargin;
  [self addSubview:toggle];self.toggle=toggle;
  NSTextField *title=contrib_tab_label(settings_text("自动贡献着色器","Contribute shaders automatically"),15,1.0,NSTextAlignmentLeft);
  title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
+ title.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;
  title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,W-18-NSMaxX(toggle.frame)-10,22);[self addSubview:title];
- NSTextField *state=contrib_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);[self addSubview:state];self.state=state;
- NSTextField *counts=contrib_tab_label(@"",12,0.92,NSTextAlignmentLeft);counts.frame=NSMakeRect(18,NSMinY(state.frame)-4-18,W-36,18);[self addSubview:counts];self.counts=counts;
+ NSTextField *state=contrib_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);state.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:state];self.state=state;
+ NSTextField *counts=contrib_tab_label(@"",12,0.92,NSTextAlignmentLeft);counts.frame=NSMakeRect(18,NSMinY(state.frame)-4-18,W-36,18);counts.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:counts];self.counts=counts;
  /* the contributors */
  CGFloat noteH=30,tableTop=NSMinY(counts.frame)-6,tableBottom=8+noteH+4;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,tableBottom,W-28,tableTop-tableBottom)];
- scroll.hasVerticalScroller=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.hasVerticalScroller=YES;scroll.hasHorizontalScroller=YES;scroll.autohidesScrollers=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
  NSTableView *table=[[NSTableView alloc] initWithFrame:scroll.bounds];
  for(NSArray *c in contrib_tab_columns()){NSTableColumn *col=[[NSTableColumn alloc] initWithIdentifier:c[0]];col.title=c[1];col.width=[c[2] doubleValue];
   col.headerCell.alignment=[c[0] isEqualToString:@"player"]?NSTextAlignmentLeft:NSTextAlignmentRight;[table addTableColumn:col];}
@@ -113,12 +116,12 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
  table.style=NSTableViewStylePlain;table.backgroundColor=NSColor.clearColor;table.allowsColumnSelection=NO;
  table.columnAutoresizingStyle=NSTableViewNoColumnAutoresizing;table.refusesFirstResponder=YES;table.selectionHighlightStyle=NSTableViewSelectionHighlightStyleNone;
  scroll.documentView=table;[self addSubview:scroll];self.table=table;
- NSTextField *status=contrib_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);[self addSubview:status];self.status=status;
+ NSTextField *status=contrib_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);status.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;[self addSubview:status];self.status=status;
  /* what is sent, at the bottom */
  NSTextField *note=contrib_tab_label(settings_text("只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号和排行榜用的随机编号（贡献榜上显示你的昵称），不含游戏内容、存档或个人信息。",
   "Only shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id plus the board's (so the contributors show your nickname) are sent: no game data, saves or personal information."),
   10.5,0.6,NSTextAlignmentCenter);
- note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);[self addSubview:note];self.note=note;
+ note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);note.autoresizingMask=NSViewWidthSizable|NSViewMaxYMargin;[self addSubview:note];self.note=note;
  [self refresh];
  return self;
 }
@@ -180,7 +183,7 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
  cell.font=me?[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightBold]:[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
  if([col.identifier isEqualToString:@"player"]&&![p[@"nick"] boolValue])cell.font=[NSFont monospacedSystemFontOfSize:12 weight:me?NSFontWeightBold:NSFontWeightRegular];
  if([col.identifier isEqualToString:@"player"])cell.toolTip=cell.stringValue;   /* a long nickname whole */
- cell.textColor=me?NSColor.systemGreenColor:[NSColor colorWithCalibratedWhite:0.92 alpha:1];
+ cell.textColor=me?NSColor.systemGreenColor:NSColor.labelColor;
  return cell;
 }
 @end

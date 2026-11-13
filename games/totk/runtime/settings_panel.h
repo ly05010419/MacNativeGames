@@ -359,6 +359,7 @@ static void settings_pointer_used(void);
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
 @property(strong) NSTextField *textLabel;        /* the field showing text() */
+@property(weak) NSView *rowView;                 /* host view for controller highlight */
 -(BOOL)slider;
 -(void)changed:(id)sender;
 -(void)refresh;
@@ -1082,6 +1083,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 #include "bindings_diagram.h"   /* the key bindings drawings */
 
 @class TOTKSettingsPanel;
+@class TOTKSettingsWindowRootView;
 /* One box of the key bindings: slot 0 and 1 the keyboard and mouse inputs, 2 the controller. A right-click clears it. */
 @interface TOTKBindingButton:NSButton
 @property int gameAction, slot;   /* keyboard_map.h KEYMAP_*; 0-1 keyboard and mouse, 2 controller */
@@ -1111,6 +1113,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property BOOL dragging;   /* the press being dragged was the panel's own */
 @property(strong) NSSegmentedControl *tabs;
 @property(strong) NSArray<NSView *> *pages;
+@property(strong) NSTextField *titleLabel;
 @property(strong) NSTextField *versionLabel;   /* the bottom-left corner */
 @property(strong) NSArray<NSButton *> *displayButtons;   /* the display page's own (none since 访问主页 is on every page) */
 @property(strong) NSButton *homeButton;   /* every page: 访问主页 */
@@ -1139,6 +1142,9 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(void)controllerHighlight;
 -(void)refresh;
 -(void)refreshBindings;
+-(void)updateTargets;
+-(void)refreshLayerColors;
+-(void)layoutWindowMode:(CGFloat)width height:(CGFloat)height;
 -(void)beginCapture:(TOTKBindingButton *)box;
 -(void)endCapture;
 -(void)clearBinding:(TOTKBindingButton *)box;
@@ -1187,8 +1193,15 @@ static NSInteger g_settings_bindings_device;
 /* A controller moved through the panel since it opened: only then is its row highlighted (PR #1210: nothing looks
    selected before the player picks it); a mouse click hides the highlight again. */
 static BOOL g_settings_controller_active;
+int vr_panel_in_headset(void);   /* zeldaVR: off by default */
+static NSWindow *settingsWindow;
+static BOOL settingsWindowMode;
+static void settings_window_update_page(NSInteger page);
+static void settings_window_update_footer(void);
+static BOOL settings_window_active(void);
 enum { SETTINGS_WIDE_W = 960, SETTINGS_WIDE_H = 530 };
 static BOOL settings_drawings_fit(void) {
+ if(settings_window_active())return YES;
  NSSize room=window?window.contentView.bounds.size:NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX);
  return room.width>=SETTINGS_WIDE_W+8&&room.height>=SETTINGS_WIDE_H+8;
 }
@@ -1225,14 +1238,15 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  self.aaMethod=dm_gfx_aa_method();
 #endif
  self.drawings=drawings;self.panelW=W;self.bindingButtons=[NSMutableArray array];self.bindingTargets=[NSMutableArray array];
- self.allRows=rows;self.controllerTargets=[NSMutableArray array];self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
- self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
- self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.12].CGColor;
+ self.allRows=rows;self.controllerTargets=[NSMutableArray array];
+ if(vr_enabled()&&vr_panel_in_headset())self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+ self.wantsLayer=YES;
+ self.layer.cornerRadius=12;self.layer.borderWidth=1;
  self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
  NSTextField *title=[NSTextField labelWithString:settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
- title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
+ title.textColor=NSColor.labelColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];self.titleLabel=title;
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
- close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
+ close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=[NSColor secondaryLabelColor];close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
  NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots")];
  if(vr_enabled())tabNames=[tabNames arrayByAddingObject:@"VR"];
  NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
@@ -1249,26 +1263,33 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
    CGFloat y=docH-(k+1)*rowH-k*gap,rw=W-28;k++;
-   NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
-   band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
+   NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.identifier=@"settings-card";band.wantsLayer=YES;
+   band.layer.cornerRadius=8;band.layer.borderWidth=1;
+   band.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-   label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-popW-24,18);[band addSubview:label];
+   label.textColor=[NSColor labelColor];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-popW-24,18);
+   label.autoresizingMask=NSViewWidthSizable;[band addSubview:label];
    if(r.slider){
     NSSlider *s=[NSSlider sliderWithValue:r.get?r.get():r.sliderMin minValue:r.sliderMin maxValue:r.sliderMax target:nil action:nil];
     s.continuous=YES;s.frame=NSMakeRect(rw-popW-8,floor((rowH-20)/2),popW-44,20);r.control=s;
+    s.autoresizingMask=NSViewMinXMargin;
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
+    value.autoresizingMask=NSViewMinXMargin;
    }else if(r.text){   /* a fixed value with the button that changes it at the row's end (the screenshot folder) */
     NSButton *b=[NSButton buttonWithTitle:r.buttonTitle target:nil action:nil];
     b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];[b sizeToFit];
     b.frame=NSMakeRect(rw-8-b.frame.size.width,floor((rowH-b.frame.size.height)/2),b.frame.size.width,b.frame.size.height);
+    b.autoresizingMask=NSViewMinXMargin;
     NSTextField *t=[NSTextField labelWithString:r.text()];t.font=[NSFont systemFontOfSize:11];t.textColor=label.textColor;
     t.lineBreakMode=NSLineBreakByTruncatingMiddle;   /* a long path keeps both of its ends */
     t.frame=NSMakeRect(rw-popW-8,floor((rowH-18)/2),popW-b.frame.size.width-14,18);
+    t.autoresizingMask=NSViewMinXMargin;
     t.toolTip=t.stringValue;[band addSubview:t];r.textLabel=t;r.control=b;
-   }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
-   else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
-    pop.enabled=r.set!=nil;r.control=pop;}
+   }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;
+    s.autoresizingMask=NSViewMinXMargin;
+   }else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
+    pop.enabled=r.set!=nil;r.control=pop;pop.autoresizingMask=NSViewMinXMargin;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
   }
   if(docH>body){
@@ -1292,7 +1313,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, user 2026-10-25); the reset buttons on the right
     of the key bindings page. */
  NSTextField *version=[NSTextField labelWithString:settings_version_text()];version.font=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular];
- version.textColor=[NSColor colorWithCalibratedWhite:0.6 alpha:1];version.lineBreakMode=NSLineBreakByTruncatingTail;version.frame=NSMakeRect(18,9,230,16);[self addSubview:version];self.versionLabel=version;
+ version.textColor=[NSColor secondaryLabelColor];version.lineBreakMode=NSLineBreakByTruncatingTail;version.frame=NSMakeRect(18,9,230,16);[self addSubview:version];self.versionLabel=version;
  NSButton *resetPad=[NSButton buttonWithTitle:settings_text("恢复默认手柄按键","Reset controller") target:self action:@selector(resetController:)];
  NSButton *resetKeys=[NSButton buttonWithTitle:settings_text("恢复默认键鼠按键","Reset keyboard & mouse") target:self action:@selector(resetKeyboard:)];
  NSButton *toggle=[NSButton buttonWithTitle:drawings?settings_text("以列表显示","Show as list"):settings_text("以图示显示","Show drawings")
@@ -1316,17 +1337,45 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  addUser.controlSize=NSControlSizeSmall;addUser.font=[NSFont systemFontOfSize:11];addUser.refusesFirstResponder=YES;[addUser sizeToFit];
  addUser.frame=NSMakeRect(0,5,addUser.frame.size.width,24);addUser.wantsLayer=YES;[self addSubview:addUser];
  self.userButtons=@[addUser];
- [self selectPage:g_settings_page];[self refresh];
+ [self selectPage:g_settings_page];[self refresh];[self refreshLayerColors];
  __weak TOTKSettingsPanel *weak=self;
  self.clickMonitor=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown|NSEventMaskRightMouseDown handler:^NSEvent *(NSEvent *e){
   TOTKSettingsPanel *panel=weak;
-  if(panel&&!panel.hidden&&e.window==panel.window&&NSPointInRect([panel convertPoint:e.locationInWindow fromView:nil],panel.bounds))settings_pointer_used();
+  BOOL inOverlay=panel&&!panel.hidden&&e.window==panel.window&&NSPointInRect([panel convertPoint:e.locationInWindow fromView:nil],panel.bounds);
+  BOOL inWindow=panel&&settingsOpen&&settingsWindow&&e.window==settingsWindow;
+  if(inOverlay||inWindow)settings_pointer_used();
   return e;}];
  self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;
-  TOTKSettingsPanel *panel=weak;if(!panel||panel.hidden)return;
+  TOTKSettingsPanel *panel=weak;if(!panel||(panel.hidden&&!(settingsOpen&&settings_window_active())))return;
   if(panel.capturing&&runtime_now_ns()/1e9>panel.captureUntil)[panel endCapture];
   [panel refresh];}];
  return self;
+}
+-(void)refreshLayerColors{
+ BOOL vrHeadset=vr_enabled()&&vr_panel_in_headset();
+ [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+  if(!settings_window_active()){
+   self.layer.backgroundColor=(vrHeadset?[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9]:[NSColor windowBackgroundColor]).CGColor;
+   self.layer.borderColor=(vrHeadset?[NSColor colorWithCalibratedWhite:1 alpha:0.12]:[NSColor separatorColor]).CGColor;
+  }
+  for(NSView *page in self.pages){
+   NSView *root=[page isKindOfClass:NSScrollView.class]?((NSScrollView *)page).documentView:page;
+   for(NSView *v in root.subviews){
+    if([v.identifier isEqualToString:@"settings-card"]){
+     v.layer.backgroundColor=[NSColor controlBackgroundColor].CGColor;
+     v.layer.borderColor=[NSColor separatorColor].CGColor;
+    }else if([v.identifier isEqualToString:@"settings-row"]){
+     v.layer.backgroundColor=[NSColor colorWithWhite:0.5 alpha:0.08].CGColor;
+    }
+   }
+  }
+  [self refreshBindings];
+  [self controllerHighlight];
+ }];
+}
+-(void)viewDidChangeEffectiveAppearance{
+ [super viewDidChangeEffectiveAppearance];
+ [self refreshLayerColors];
 }
 /* The key bindings page: a line of help, the column titles, and the actions in a scrolling list. */
 -(NSView *)bindingsPageWithFrame:(NSRect)frame{
@@ -1334,7 +1383,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  /* the boxes widen with the panel up to 140 pt ("Controller (PlayStation)" whole above them), the actions keep 200 */
  CGFloat cell=fmax(SETTINGS_CELL_W,fmin(SETTINGS_CELL_MAX_W,floor((bw-6-2*SETTINGS_CELL_GAP-200)/3)));
  CGFloat cx2=bw-6-cell,cx1=cx2-SETTINGS_CELL_GAP-cell,cx0=cx1-SETTINGS_CELL_GAP-cell;
- NSColor *dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ NSColor *dim=[NSColor secondaryLabelColor];
  NSTextField *help=[NSTextField wrappingLabelWithString:settings_text(
   "点一个格子，再按键盘按键、鼠标按键或手柄按钮（按 1 取消）；右键点格子清除。已被占用的按键会互换。手柄：选中一行按 A，再按新按钮。",
   "Click a box, then press a key, a mouse button or a controller button (1 cancels); right-click clears it. An input in use swaps places. With a controller: pick a row, press A, then the new button.")];
@@ -1350,13 +1399,13 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  for(int i=0;i<count;i++){
   const SettingsAction *a=&actions[i];
   if(a->action<0){NSTextField *t=[NSTextField labelWithString:@(TOTK_UI(a->zh,a->en))];t.font=[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
-   t.textColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1];t.frame=NSMakeRect(20,y+5,bw,16);[list addSubview:t];y+=SETTINGS_SECTION_H;continue;}
-  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,bw,SETTINGS_BIND_ROW_H-2)];band.wantsLayer=YES;
-  band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[list addSubview:band];
+   t.textColor=[NSColor systemGreenColor];t.frame=NSMakeRect(20,y+5,bw,16);[list addSubview:t];y+=SETTINGS_SECTION_H;continue;}
+  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,bw,SETTINGS_BIND_ROW_H-2)];band.identifier=@"settings-row";band.wantsLayer=YES;
+  band.layer.cornerRadius=6;[list addSubview:band];
   NSMutableAttributedString *name=[[NSMutableAttributedString alloc] initWithString:@(TOTK_UI(a->zh,a->en))
-   attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium],NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.92 alpha:1]}];
+   attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium],NSForegroundColorAttributeName:[NSColor labelColor]}];
   if(a->tag)[name appendAttributedString:[[NSAttributedString alloc] initWithString:[@"  " stringByAppendingString:@(a->tag)]
-   attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightRegular],NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
+   attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightRegular],NSForegroundColorAttributeName:[NSColor secondaryLabelColor]}]];
   NSTextField *label=[NSTextField labelWithAttributedString:name];label.lineBreakMode=NSLineBreakByTruncatingTail;
   label.frame=NSMakeRect(10,floor((SETTINGS_BIND_ROW_H-2-17)/2),cx0-16,17);[band addSubview:label];
   CGFloat cx[3]={cx0,cx1,cx2};
@@ -1378,9 +1427,10 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 -(void)selectPage:(NSInteger)page{
  [self endCapture];
  page=page<0?0:page>=settings_pages()?settings_pages()-1:page;
+ BOOL inWindowMode=settings_window_active();
  /* the drawings need the panel made at their size: it is made again on the next turn of the run loop (not under this
     method's feet), on that page */
- if(settings_drawings_for(page)!=self.drawings){g_settings_page=page;dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
+ if(settings_drawings_for(page)!=self.drawings&&(!inWindowMode||page==SETTINGS_PAGE_BINDINGS)){g_settings_page=page;dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
  self.page=page;g_settings_page=page;self.tabs.selectedSegment=page;
  for(NSInteger i=0;i<(NSInteger)self.pages.count;i++)self.pages[(NSUInteger)i].hidden=i!=page;
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
@@ -1391,8 +1441,9 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  if(page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];   /* the board now (read again at most once a minute) */
  if(page==SETTINGS_PAGE_SHOTS)[self refreshShotsPage];   /* the pictures now (read again at most once a minute) */
  [self layoutFooter];[self updateTargets];[self refreshBindings];
+ settings_window_update_page(page);
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
- [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
+ if(!inWindowMode)[self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
 }
 /* The bottom right: 访问主页 on every page at the far right; before it the page's own: on the user page add a user, on
    the effects page the reset, on the key bindings page the list / drawings switch and the reset of the device shown (both
@@ -1403,6 +1454,10 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
   self.page==SETTINGS_PAGE_EFFECTS?self.effectsButtons:!bindings?@[]:self.drawings?@[self.resetButtons[g_settings_bindings_device?1:0],self.listToggle]:@[self.resetButtons[1],self.resetButtons[0],self.listToggle];
 }
 -(void)layoutFooter{
+ if(settings_window_active()){
+  settings_window_update_footer();
+  return;
+ }
  NSArray<NSButton *> *shown=[self footerOwn];
  for(NSButton *b in [[[@[self.resetButtons[0],self.resetButtons[1],self.listToggle] arrayByAddingObjectsFromArray:self.displayButtons]
    arrayByAddingObjectsFromArray:self.effectsButtons] arrayByAddingObjectsFromArray:self.userButtons])b.hidden=![shown containsObject:b];
@@ -1411,15 +1466,39 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  for(NSButton *b in [@[self.homeButton] arrayByAddingObjectsFromArray:shown]){b.frame=NSMakeRect(right-b.frame.size.width,5,b.frame.size.width,24);right-=b.frame.size.width+6;}
  if([self.versionLabel.stringValue isEqualToString:settings_version_text()])[self fitVersion];
 }
+-(void)layoutWindowMode:(CGFloat)width height:(CGFloat)height{
+ (void)height;
+ self.tabs.hidden=YES;self.titleLabel.hidden=YES;
+ self.layer.borderWidth=0;self.layer.backgroundColor=[NSColor clearColor].CGColor;
+ CGFloat detailW=width,rw=detailW-48;
+ for(NSView *page in self.pages){
+  NSRect pf=page.frame;pf.origin.x=0;pf.size.width=detailW;page.frame=pf;
+  for(NSView *band in page.subviews){
+   if(band==self.bindingsScroll||[band isKindOfClass:[NSScrollView class]])continue;
+   NSRect f=band.frame;f.origin.x=24;f.size.width=rw;band.frame=f;band.layer.cornerRadius=10;
+  }
+ }
+ if(self.bindingsScroll){
+  NSRect bf=self.bindingsScroll.frame;bf.origin.x=24;bf.size.width=detailW-48;self.bindingsScroll.frame=bf;
+ }
+ [self layoutFooter];
+}
 /* The version where the buttons leave room (230 pt at most). */
 -(void)fitVersion{self.versionLabel.frame=NSMakeRect(18,9,fmax(40,fmin(230,self.panelW-36-[self footerButtonsWidth])),16);}
 /* A result of the display page's buttons, in the bottom-left corner for a few seconds instead of the version. */
 -(void)note:(NSString *)text{
- self.versionLabel.stringValue=text;self.versionLabel.frame=NSMakeRect(18,9,self.panelW-36-[self footerButtonsWidth],16);
+ self.versionLabel.stringValue=text;
+ if(settings_window_active()){
+  settings_window_update_footer();
+ }else{
+  self.versionLabel.frame=NSMakeRect(18,9,self.panelW-36-[self footerButtonsWidth],16);
+ }
  __weak TOTKSettingsPanel *weak=self;NSString *shown=text;
  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(6*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
   TOTKSettingsPanel *panel=weak;if(!panel||![panel.versionLabel.stringValue isEqualToString:shown])return;
-  panel.versionLabel.stringValue=settings_version_text();[panel fitVersion];});
+  panel.versionLabel.stringValue=settings_version_text();
+  if(settings_window_active())settings_window_update_footer();
+  else [panel fitVersion];});
 }
 -(CGFloat)footerButtonsWidth{
  CGFloat w=self.homeButton.frame.size.width+6;for(NSButton *b in [self footerOwn])if(!b.hidden)w+=b.frame.size.width+6;return w;
@@ -1456,7 +1535,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  else if(self.page==SETTINGS_PAGE_CONTRIB)[self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
  else if(self.page==SETTINGS_PAGE_BOARD)[self.controllerTargets addObjectsFromArray:[self boardPageTargets]];
  else if(self.page==SETTINGS_PAGE_SHOTS)[self.controllerTargets addObjectsFromArray:[self shotsPageTargets]];
- else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
+ else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows){NSView *t=r.rowView?:r.control.superview;if(t&&![self.controllerTargets containsObject:t])[self.controllerTargets addObject:t];}
   NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
   for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];
   for(NSButton *b in self.effectsButtons)if(!b.hidden)[self.controllerTargets addObject:b];}
@@ -1478,7 +1557,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(deviceChanged:)];
  device.refusesFirstResponder=YES;device.segmentDistribution=NSSegmentDistributionFillEqually;device.frame=NSMakeRect(18,h-28,330,24);
  device.selectedSegment=g_settings_bindings_device;[page addSubview:device];self.deviceTabs=device;
- NSTextField *help=[NSTextField labelWithString:@""];help.font=[NSFont systemFontOfSize:11];help.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ NSTextField *help=[NSTextField labelWithString:@""];help.font=[NSFont systemFontOfSize:11];help.textColor=[NSColor secondaryLabelColor];
  help.lineBreakMode=NSLineBreakByTruncatingTail;help.frame=NSMakeRect(362,h-25,w-380,16);[page addSubview:help];self.drawingsHelp=help;
  NSRect area=NSMakeRect(14,0,w-28,h-36);__weak TOTKSettingsPanel *weak=self;
  TOTKKeyboardDiagram *keys=[[TOTKKeyboardDiagram alloc] initWithFrame:area];
@@ -1498,7 +1577,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 }
 -(void)deviceChanged:(NSSegmentedControl *)device{
  g_settings_bindings_device=device.selectedSegment;[self showDevice];[self layoutFooter];[self updateTargets];
- [self.window makeFirstResponder:self.window.contentView];
+ if(!settings_window_active())[self.window makeFirstResponder:self.window.contentView];
 }
 -(void)toggleList:(id)sender{(void)sender;g_settings_bindings_list=!g_settings_bindings_list;dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});}
 /* The menu of actions for a key, mouse button or controller button, with the one it drives ticked and "None" last. */
@@ -1534,7 +1613,8 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  [view setNeedsDisplay:YES];[view displayIfNeeded];
  [[self menuForInput:input pad:pad] popUpMenuPositioningItem:nil atLocation:NSMakePoint(NSMinX(at),NSMaxY(at)+4) inView:view];   /* returns when closed */
  if(pad)self.padDiagram.selected=-1;else self.keyboardDiagram.selected=-1;
- [view setNeedsDisplay:YES];[self.window makeFirstResponder:self.window.contentView];
+ [view setNeedsDisplay:YES];
+ if(!settings_window_active())[self.window makeFirstResponder:self.window.contentView];
 }
 -(void)menuPicked:(NSMenuItem *)item{
  NSArray<NSNumber *> *what=item.representedObject;
@@ -1590,11 +1670,12 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
    action==SETTINGS_BIND_PANEL?(box.slot==0?@"1":box.slot==1?@"—":settings_panel_pad_text(family)):
    action==KEYMAP_SCREENSHOT&&box.slot==2?settings_shot_pad_text(family):
    box.slot<2?settings_input_text(keys.slot[action][box.slot]):settings_pad_text(action,map,family);
-  NSColor *color=waiting?NSColor.blackColor:box.enabled?[NSColor colorWithCalibratedWhite:0.95 alpha:1]:[NSColor colorWithCalibratedWhite:0.55 alpha:1];
+  NSColor *color=waiting?NSColor.blackColor:box.enabled?[NSColor labelColor]:[NSColor secondaryLabelColor];
   NSAttributedString *title=[[NSAttributedString alloc] initWithString:text attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium],
    NSForegroundColorAttributeName:color,NSParagraphStyleAttributeName:centered}];
   if(![box.attributedTitle isEqualToAttributedString:title])box.attributedTitle=title;
-  box.layer.backgroundColor=(waiting?[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1]:box.enabled?[NSColor colorWithCalibratedWhite:1 alpha:0.10]:[NSColor clearColor]).CGColor;
+  box.layer.backgroundColor=(waiting?[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1]:box.enabled?[NSColor colorWithWhite:0.5 alpha:0.10]:[NSColor clearColor]).CGColor;
+  box.layer.borderColor=[NSColor separatorColor].CGColor;box.layer.borderWidth=0.5;
   box.toolTip=box.enabled?settings_text("点击后按新的输入；右键清除","Click, then press the new input; right-click clears"):nil;
  }
 }
@@ -1624,7 +1705,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   case NSEventTypeKeyDown:
    if(e.modifierFlags&NSEventModifierFlagCommand)return e;   /* Command-Q, Command-W stay the system's */
    if(e.isARepeat)return nil;
-   if(e.keyCode==KEYMAP_SETTINGS_KEY){[self endCapture];return nil;}
+   if(e.keyCode==KEYMAP_SETTINGS_KEY||e.keyCode==53){[self endCapture];return nil;}
    input=e.keyCode;break;
   case NSEventTypeFlagsChanged:if(front_modifier_down(e)!=1)return nil;input=e.keyCode;break;
   case NSEventTypeLeftMouseDown:input=KEYMAP_MOUSE_FIRST;break;
@@ -1685,11 +1766,17 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   for(NSUInteger i=0;i<self.controllerTargets.count;i++)if([self controllerEnabled:i]){self.controllerIndex=i;break;}
  }
  int physical=-1;
+ [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+  for(NSUInteger i=0;i<self.controllerTargets.count;i++){
+   NSView *v=self.controllerTargets[i];BOOL here=g_settings_controller_active&&(NSInteger)i==self.controllerIndex;
+   if(v==self.padDiagram){continue;}
+   v.wantsLayer=YES;v.layer.cornerRadius=6;v.layer.borderWidth=here?2:0;
+   v.layer.borderColor=[NSColor systemGreenColor].CGColor;
+  }
+ }];
  for(NSUInteger i=0;i<self.controllerTargets.count;i++){
   NSView *v=self.controllerTargets[i];BOOL here=g_settings_controller_active&&(NSInteger)i==self.controllerIndex;
-  if(v==self.padDiagram){if(here)physical=[self padPhysical:i];continue;}
-  v.wantsLayer=YES;v.layer.cornerRadius=6;v.layer.borderWidth=here?2:0;
-  v.layer.borderColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1].CGColor;
+  if(v==self.padDiagram&&here){physical=[self padPhysical:i];break;}
  }
  if(self.padDiagram&&self.padDiagram.selected!=physical){self.padDiagram.selected=physical;[self.padDiagram setNeedsDisplay:YES];}
 }
@@ -1701,6 +1788,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 -(void)controllerMove:(int)step{
  if(self.page==SETTINGS_PAGE_UPDATE){[self scrollUpdatePage:step];return;}   /* up / down read on; left / right pick the button */
  NSInteger count=self.controllerTargets.count;
+ if(count<=0)return;
  for(NSInteger n=0;n<count;n++){
   self.controllerIndex=(self.controllerIndex+step+count)%count;
   if([self controllerEnabled:self.controllerIndex])break;
@@ -1796,12 +1884,10 @@ static void settings_pointer_used(void) { if(!g_settings_controller_active)retur
 static void settings_panel_replace(void) {   /* main thread; made again: what the game offers is known only once its code is in */
  [settingsPanel endCapture];if(settingsPanel.clickMonitor){[NSEvent removeMonitor:settingsPanel.clickMonitor];settingsPanel.clickMonitor=nil;}[settingsPanel.timer invalidate];[settingsPanel removeFromSuperview];
  settingsPanel=[TOTKSettingsPanel new];[window.contentView addSubview:settingsPanel];
+ if(settings_window_active())settingsPanel.hidden=YES;
 }
 /* Made again while open (the drawings page needs another size, or the list view): on the same page and spot. */
-static void settings_rebuild(void) {
- if(!window||!settingsOpen)return;
- settings_panel_replace();[settingsPanel center];[settingsPanel refresh];
-}
+static void settings_rebuild(void);
 #ifdef TOTK_GAME_V143
 /* Changing method adds, removes or replaces the quality row. Preserve the selected row, held-controller state and
    scroll distance from the top; rebuilding must not jump the player back to FOV or repeat a held button. */
@@ -1846,26 +1932,653 @@ static void settings_vr_capture(void) {
  CGContextClearRect(ctx,CGRectMake(0,0,w,h));CGContextScaleCTM(ctx,k,k);[settingsPanel.layer renderInContext:ctx];CGContextRelease(ctx);
  vr_panel_image(buf,w,h,w*4);
 }
+static void settings_show(int open);
+
+@interface TOTKSidebarItemView : NSView
+@property(assign) NSInteger index;
+@property(copy) NSString *itemTitle;
+@property(copy) NSString *symbolName;
+@property(strong) NSImageView *iconView;
+@property(strong) NSTextField *labelView;
+@property(strong) NSView *capsuleView;
+@property(assign) BOOL selected;
+@property(assign) BOOL hovered;
+@property(strong) NSTrackingArea *trackingArea;
+@property(weak) id target;
+@property(assign) SEL action;
+-(instancetype)initWithFrame:(NSRect)frame index:(NSInteger)idx title:(NSString *)title symbolName:(NSString *)symbolName target:(id)tgt action:(SEL)act;
+-(void)updateAppearance;
+-(void)activate;
+@end
+
+@implementation TOTKSidebarItemView
+-(instancetype)initWithFrame:(NSRect)frame index:(NSInteger)idx title:(NSString *)title symbolName:(NSString *)symbolName target:(id)tgt action:(SEL)act{
+ if((self=[super initWithFrame:frame])){
+  _index=idx;_itemTitle=[title copy];_symbolName=[symbolName copy];_target=tgt;_action=act;
+  _capsuleView=[[NSView alloc] initWithFrame:NSMakeRect(8,2,frame.size.width-16,frame.size.height-4)];
+  _capsuleView.wantsLayer=YES;_capsuleView.layer.cornerRadius=6;_capsuleView.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  [self addSubview:_capsuleView];
+  _iconView=[[NSImageView alloc] initWithFrame:NSMakeRect(18,(frame.size.height-18)/2,18,18)];
+  NSImage *img=[NSImage imageWithSystemSymbolName:symbolName accessibilityDescription:nil];
+  if(!img)img=[NSImage imageWithSystemSymbolName:@"gear" accessibilityDescription:nil];
+  NSImageSymbolConfiguration *cfg=[NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightMedium];
+  if(cfg&&img)img=[img imageWithSymbolConfiguration:cfg];
+  _iconView.image=img;_iconView.imageScaling=NSImageScaleProportionallyDown;
+  [self addSubview:_iconView];
+  _labelView=[NSTextField labelWithString:title];
+  _labelView.font=[NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+  _labelView.frame=NSMakeRect(44,(frame.size.height-18)/2,frame.size.width-52,18);
+  _labelView.autoresizingMask=NSViewWidthSizable;
+  [self addSubview:_labelView];
+  [self updateAppearance];
+ }
+ return self;
+}
+-(void)updateTrackingAreas{
+ [super updateTrackingAreas];
+ if(self.trackingArea)[self removeTrackingArea:self.trackingArea];
+ self.trackingArea=[[NSTrackingArea alloc] initWithRect:self.bounds options:NSTrackingMouseEnteredAndExited|NSTrackingActiveInActiveApp owner:self userInfo:nil];
+ [self addTrackingArea:self.trackingArea];
+}
+-(BOOL)acceptsFirstResponder{return YES;}
+-(BOOL)acceptsFirstMouse:(NSEvent *)e{(void)e;return YES;}
+-(NSView *)hitTest:(NSPoint)point{
+ NSPoint local=[self convertPoint:point fromView:self.superview];
+ if(NSPointInRect(local,self.bounds))return self;
+ return nil;
+}
+-(void)mouseEntered:(NSEvent *)e{(void)e;self.hovered=YES;[self updateAppearance];}
+-(void)mouseExited:(NSEvent *)e{(void)e;self.hovered=NO;[self updateAppearance];}
+-(void)activate{
+ if(self.target&&self.action){
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+  [self.target performSelector:self.action withObject:self];
+  #pragma clang diagnostic pop
+ }
+}
+-(void)mouseDown:(NSEvent *)e{(void)e;[self.window makeFirstResponder:self];[self activate];}
+-(void)keyDown:(NSEvent *)e{
+ if(e.keyCode==49||e.keyCode==36||e.keyCode==76){[self activate];return;}
+ if(e.keyCode==125||e.keyCode==126){
+  NSArray *items=[self.superview valueForKey:@"items"];
+  NSInteger next=self.index+(e.keyCode==125?1:-1);
+  if(next>=0&&next<(NSInteger)items.count){TOTKSidebarItemView *item=items[next];[self.window makeFirstResponder:item];[item activate];}
+  return;
+ }
+ [super keyDown:e];
+}
+-(BOOL)isAccessibilityElement{return YES;}
+-(NSString *)accessibilityRole{return NSAccessibilityRadioButtonRole;}
+-(NSString *)accessibilityLabel{return self.itemTitle;}
+-(id)accessibilityValue{return @(self.selected);}
+-(BOOL)accessibilityPerformPress{[self activate];return YES;}
+-(void)updateAppearance{
+ if(self.selected){
+  self.capsuleView.layer.backgroundColor=[NSColor selectedContentBackgroundColor].CGColor;
+  self.labelView.textColor=[NSColor alternateSelectedControlTextColor];
+  self.labelView.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+  self.iconView.contentTintColor=[NSColor alternateSelectedControlTextColor];
+ }else if(self.hovered){
+  self.capsuleView.layer.backgroundColor=[NSColor colorWithWhite:0.5 alpha:0.12].CGColor;
+  self.labelView.textColor=[NSColor labelColor];
+  self.labelView.font=[NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+  self.iconView.contentTintColor=[NSColor secondaryLabelColor];
+ }else{
+  self.capsuleView.layer.backgroundColor=[NSColor clearColor].CGColor;
+  self.labelView.textColor=[NSColor labelColor];
+  self.labelView.font=[NSFont systemFontOfSize:13 weight:NSFontWeightRegular];
+  self.iconView.contentTintColor=[NSColor secondaryLabelColor];
+ }
+}
+@end
+
+@interface TOTKSidebarView : NSVisualEffectView
+@property(strong) NSMutableArray<TOTKSidebarItemView *> *items;
+@property(strong) NSTextField *headerLabel;
+@property(assign) NSInteger selectedIndex;
+@property(weak) id delegate;
+-(instancetype)initWithFrame:(NSRect)frame;
+-(void)selectIndex:(NSInteger)index;
+-(void)rebuildItems;
+@end
+
+static const struct{const char *zh;const char *en;const char *symbol;}settingsWindowCategories[SETTINGS_PAGES]={
+ {"画面","Display","display"},
+ {"输入","Input","gamecontroller"},
+ {"用户","User","person.crop.circle"},
+ {"画面效果","Effects","sparkles"},
+ {"按键设置","Key bindings","keyboard"},
+ {"更新","Update","arrow.triangle.2.circlepath"},
+ {"着色器贡献","Shaders","square.stack.3d.up"},
+ {"性能排行榜","Performance","chart.bar.xaxis"},
+ {"截图分享","Screenshots","photo.on.rectangle"},
+ {"VR","VR","eyeglasses"}
+};
+
+@implementation TOTKSidebarView
+-(instancetype)initWithFrame:(NSRect)frame{
+ if((self=[super initWithFrame:frame])){
+  self.material=NSVisualEffectMaterialSidebar;
+  self.blendingMode=NSVisualEffectBlendingModeBehindWindow;
+  self.state=NSVisualEffectStateActive;
+  self.items=[NSMutableArray array];
+  self.wantsLayer=YES;
+  self.autoresizingMask=NSViewHeightSizable|NSViewMaxXMargin;
+  NSBox *sep=[[NSBox alloc] initWithFrame:NSMakeRect(frame.size.width-1,0,1,frame.size.height)];
+  sep.boxType=NSBoxCustom;sep.borderWidth=0;sep.fillColor=[NSColor separatorColor];
+  sep.autoresizingMask=NSViewHeightSizable|NSViewMinXMargin;
+  [self addSubview:sep];
+  [self rebuildItems];
+ }
+ return self;
+}
+-(void)rebuildItems{
+ for(TOTKSidebarItemView *item in self.items)[item removeFromSuperview];
+ [self.items removeAllObjects];
+ if(self.headerLabel)[self.headerLabel removeFromSuperview];
+ CGFloat h=self.bounds.size.height,w=self.bounds.size.width;
+ NSTextField *hdr=[NSTextField labelWithString:settings_text("设置","Settings")];
+ hdr.font=[NSFont systemFontOfSize:11 weight:NSFontWeightBold];
+ hdr.textColor=[NSColor secondaryLabelColor];
+ hdr.frame=NSMakeRect(18,h-56,w-36,16);
+ hdr.autoresizingMask=NSViewMinYMargin|NSViewWidthSizable;
+ [self addSubview:hdr];self.headerLabel=hdr;
+ NSUInteger count=MIN((NSUInteger)settings_pages(),(NSUInteger)SETTINGS_PAGES);
+ CGFloat y=h-94;
+ for(NSUInteger i=0;i<count;i++){
+  NSString *title=settings_text(settingsWindowCategories[i].zh,settingsWindowCategories[i].en);
+  NSString *symbol=@(settingsWindowCategories[i].symbol);
+  TOTKSidebarItemView *item=[[TOTKSidebarItemView alloc] initWithFrame:NSMakeRect(0,y,w-1,32) index:(NSInteger)i title:title symbolName:symbol target:self action:@selector(itemClicked:)];
+  item.autoresizingMask=NSViewMinYMargin|NSViewWidthSizable;
+  [self addSubview:item];[self.items addObject:item];
+  y-=34;
+ }
+ [self selectIndex:self.selectedIndex];
+}
+-(void)itemClicked:(TOTKSidebarItemView *)item{
+ [self selectIndex:item.index];
+ if(self.delegate&&[self.delegate respondsToSelector:@selector(sidebarDidSelectIndex:)]){
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+  [self.delegate performSelector:@selector(sidebarDidSelectIndex:) withObject:@(item.index)];
+  #pragma clang diagnostic pop
+ }
+}
+-(void)selectIndex:(NSInteger)idx{
+ _selectedIndex=idx;
+ for(TOTKSidebarItemView *item in self.items){
+  item.selected=(item.index==idx);
+  [item.effectiveAppearance performAsCurrentDrawingAppearance:^{[item updateAppearance];}];
+ }
+}
+@end
+
+static NSPoint settingsPageScroll[SETTINGS_PAGES];
+
+@interface TOTKSettingsWindowRootView : NSView
+@property(strong) TOTKSidebarView *sidebarView;
+@property(strong) NSView *detailView;
+@property(strong) NSView *topBar;
+@property(strong) NSView *footerBar;
+@property(strong) NSScrollView *scrollView;
+@property(strong) NSTextField *titleLabel;
+@property(strong) TOTKSettingsPanel *panel;
+@property(assign) NSInteger displayedPage;
+@property(assign) BOOL updatingPage;
+-(instancetype)initWithFrame:(NSRect)frame panel:(TOTKSettingsPanel *)p;
+-(void)updatePage:(NSInteger)page;
+-(void)updateFooterForPage:(NSInteger)page;
+@end
+
+@implementation TOTKSettingsWindowRootView
+-(instancetype)initWithFrame:(NSRect)frame panel:(TOTKSettingsPanel *)p{
+ if((self=[super initWithFrame:frame])){
+  _panel=p;_displayedPage=-1;
+  self.wantsLayer=YES;
+  self.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  CGFloat sidebarW=210,w=frame.size.width,h=frame.size.height;
+  _sidebarView=[[TOTKSidebarView alloc] initWithFrame:NSMakeRect(0,0,sidebarW,h)];
+  _sidebarView.delegate=self;[self addSubview:_sidebarView];
+  _detailView=[[NSView alloc] initWithFrame:NSMakeRect(sidebarW,0,w-sidebarW,h)];
+  _detailView.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:_detailView];
+  _topBar=[[NSView alloc] initWithFrame:NSMakeRect(0,h-52,w-sidebarW,52)];
+  _topBar.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[_detailView addSubview:_topBar];
+  NSButton *prevBtn=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"chevron.left" accessibilityDescription:@"Back"] target:self action:@selector(prevPage:)];
+  NSButton *nextBtn=[NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"chevron.right" accessibilityDescription:@"Forward"] target:self action:@selector(nextPage:)];
+  prevBtn.bezelStyle=NSBezelStyleTexturedRounded;nextBtn.bezelStyle=NSBezelStyleTexturedRounded;
+  prevBtn.frame=NSMakeRect(20,14,28,24);nextBtn.frame=NSMakeRect(52,14,28,24);
+  [_topBar addSubview:prevBtn];[_topBar addSubview:nextBtn];
+  _titleLabel=[NSTextField labelWithString:@""];
+  _titleLabel.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
+  _titleLabel.textColor=[NSColor labelColor];_titleLabel.frame=NSMakeRect(92,15,300,22);
+  [_topBar addSubview:_titleLabel];
+  NSBox *topSep=[[NSBox alloc] initWithFrame:NSMakeRect(0,0,w-sidebarW,1)];
+  topSep.boxType=NSBoxCustom;topSep.borderWidth=0;topSep.fillColor=[NSColor separatorColor];
+  topSep.autoresizingMask=NSViewWidthSizable;[_topBar addSubview:topSep];
+  _footerBar=[[NSView alloc] initWithFrame:NSMakeRect(0,0,w-sidebarW,44)];
+  _footerBar.autoresizingMask=NSViewWidthSizable|NSViewMaxYMargin;[_detailView addSubview:_footerBar];
+  NSBox *botSep=[[NSBox alloc] initWithFrame:NSMakeRect(0,43,w-sidebarW,1)];
+  botSep.boxType=NSBoxCustom;botSep.borderWidth=0;botSep.fillColor=[NSColor separatorColor];
+  botSep.autoresizingMask=NSViewWidthSizable;[_footerBar addSubview:botSep];
+  _scrollView=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,44,w-sidebarW,h-96)];
+  _scrollView.hasVerticalScroller=YES;
+  _scrollView.autohidesScrollers=YES;
+  _scrollView.drawsBackground=NO;
+  _scrollView.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  [_detailView addSubview:_scrollView];
+  [self updatePage:p?p.page:0];
+ }
+ return self;
+}
+-(TOTKSettingsPanel *)activePanel{return self.panel?:settingsPanel;}
+-(void)setFrameSize:(NSSize)size{
+ NSSize old=self.frame.size;[super setFrameSize:size];
+ if(self.scrollView&&!self.updatingPage&&!NSEqualSizes(old,size))[self updatePage:self.displayedPage];
+}
+-(void)refreshLayerColors:(NSView *)view{
+ if([view.identifier isEqualToString:@"settings-card"]){
+  view.layer.backgroundColor=[NSColor controlBackgroundColor].CGColor;
+  view.layer.borderColor=[NSColor separatorColor].CGColor;
+ }else if([view.identifier isEqualToString:@"settings-row"]){
+  view.layer.backgroundColor=[NSColor colorWithWhite:0.5 alpha:0.04].CGColor;
+  view.layer.borderColor=[NSColor separatorColor].CGColor;
+ }
+ for(NSView *child in view.subviews)[self refreshLayerColors:child];
+}
+-(void)viewDidChangeEffectiveAppearance{
+ [super viewDidChangeEffectiveAppearance];
+ [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+  self.layer.backgroundColor=[NSColor windowBackgroundColor].CGColor;
+  for(TOTKSidebarItemView *item in self.sidebarView.items)[item updateAppearance];
+  [self refreshLayerColors:self.scrollView];
+  [self.activePanel refreshBindings];
+  [self.activePanel controllerHighlight];
+ }];
+}
+-(void)prevPage:(id)sender{(void)sender;NSUInteger t=(NSUInteger)settings_pages();NSInteger next=(self.activePanel.page+(NSInteger)t-1)%(NSInteger)t;[self.activePanel selectPage:next];}
+-(void)nextPage:(id)sender{(void)sender;NSUInteger t=(NSUInteger)settings_pages();NSInteger next=(self.activePanel.page+1)%(NSInteger)t;[self.activePanel selectPage:next];}
+-(void)sidebarDidSelectIndex:(NSNumber *)num{
+ NSInteger page=num.integerValue;
+ if(page<0||page>=(NSInteger)settings_pages())return;
+ [self.activePanel selectPage:page];
+}
+-(void)updateFooterForPage:(NSInteger)page{
+ TOTKSettingsPanel *panel=self.activePanel;
+ if(!panel||!self.footerBar)return;
+ for(NSView *sub in [self.footerBar.subviews copy]){
+  if([sub isKindOfClass:[NSBox class]])continue;
+  [sub removeFromSuperview];
+ }
+ [self.footerBar addSubview:panel.versionLabel];
+ panel.versionLabel.hidden=NO;
+ NSArray<NSButton *> *shown=@[];
+ if(page==SETTINGS_PAGE_DISPLAY)shown=panel.displayButtons;
+ else if(page==SETTINGS_PAGE_USERS)shown=panel.userButtons;
+ else if(page==SETTINGS_PAGE_EFFECTS)shown=panel.effectsButtons;
+ else if(page==SETTINGS_PAGE_BINDINGS)shown=panel.drawings?@[panel.resetButtons[g_settings_bindings_device?1:0]]:@[panel.resetButtons[1],panel.resetButtons[0]];
+ for(NSButton *b in [[[@[panel.resetButtons[0],panel.resetButtons[1]] arrayByAddingObjectsFromArray:panel.displayButtons]
+   arrayByAddingObjectsFromArray:panel.effectsButtons] arrayByAddingObjectsFromArray:panel.userButtons]){
+  b.hidden=![shown containsObject:b];
+ }
+ NSArray<NSButton *> *footerButtons=panel.homeButton?[@[panel.homeButton] arrayByAddingObjectsFromArray:shown]:shown;
+ CGFloat detailW=self.detailView.bounds.size.width;
+ CGFloat right=detailW-24;
+ for(NSButton *b in footerButtons){
+  b.hidden=NO;
+  b.frame=NSMakeRect(right-b.frame.size.width,10,b.frame.size.width,24);
+  right-=b.frame.size.width+8;
+  [self.footerBar addSubview:b];
+ }
+ CGFloat maxVerW=[panel.versionLabel.stringValue isEqualToString:settings_version_text()]?250:fmax(40,right-32);
+ panel.versionLabel.frame=NSMakeRect(24,14,fmax(0,fmin(maxVerW,right-32)),16);
+}
+-(void)updatePage:(NSInteger)page{
+ if(page<0||page>=(NSInteger)settings_pages()||self.updatingPage)return;
+ self.updatingPage=YES;
+ if(self.displayedPage>=0&&self.displayedPage<SETTINGS_PAGES)settingsPageScroll[self.displayedPage]=self.scrollView.contentView.bounds.origin;
+ NSResponder *focus=self.window.firstResponder;
+ TOTKSettingsPanel *panel=self.activePanel;
+ TOTKBindingButton *captured=panel.capturing;
+ int captureAction=captured.gameAction,captureSlot=captured.slot;
+ [self.sidebarView selectIndex:page];
+ if(page>=0&&page<(NSInteger)SETTINGS_PAGES){
+  self.titleLabel.stringValue=settings_text(settingsWindowCategories[page].zh,settingsWindowCategories[page].en);
+ }
+ CGFloat detailW=self.detailView.bounds.size.width;
+ CGFloat scrollH=self.scrollView.bounds.size.height;
+ self.scrollView.hasHorizontalScroller=NO;
+ self.displayedPage=page;
+ [self updateFooterForPage:page];
+ if(page==SETTINGS_PAGE_BINDINGS){
+  if(panel.drawings){
+   CGFloat topBarH=46.0,diagW=960.0,diagH=356.0,aspect=diagW/diagH;
+   CGFloat availW=fmax(0,detailW-32),availH=fmax(0,scrollH-topBarH-16);
+   CGFloat cardW=availW,cardH=floor(cardW/aspect);
+   if(cardH>availH){cardH=availH;cardW=floor(cardH*aspect);}
+   CGFloat cardX=floor((detailW-cardW)/2.0),cardY=topBarH+6;
+   TOTKFlippedView *doc=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,detailW,fmax(scrollH,cardY+cardH+16))];
+   panel.deviceTabs.autoresizingMask=NSViewNotSizable;
+   [doc addSubview:panel.deviceTabs];
+   panel.deviceTabs.frame=NSMakeRect(24,10,240,26);
+   panel.listToggle.autoresizingMask=NSViewNotSizable;
+   [doc addSubview:panel.listToggle];
+   panel.listToggle.frame=NSMakeRect(detailW-24-100,10,100,26);
+   panel.listToggle.bezelStyle=NSBezelStyleRounded;
+   panel.listToggle.controlSize=NSControlSizeSmall;
+   panel.listToggle.font=[NSFont systemFontOfSize:11.5];
+   panel.listToggle.title=settings_text("以列表显示","Show as list");
+   panel.listToggle.hidden=NO;
+   CGFloat helpX=24+240+14,helpW=(detailW-24-100-12)-helpX;
+   panel.drawingsHelp.autoresizingMask=NSViewNotSizable;
+   [doc addSubview:panel.drawingsHelp];
+   panel.drawingsHelp.frame=NSMakeRect(helpX,14,fmax(0,helpW),18);
+   panel.drawingsHelp.hidden=helpW<120;
+   TOTKFlippedView *box=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(cardX,cardY,cardW,cardH)];
+   box.autoresizesSubviews=NO;
+   [box setBoundsSize:NSMakeSize(diagW,diagH)];
+   NSView *pageView=panel.pages[(NSUInteger)page];pageView.hidden=NO;
+   pageView.autoresizingMask=NSViewNotSizable;
+   pageView.autoresizesSubviews=NO;
+   [box addSubview:pageView];
+   pageView.frame=NSMakeRect(0,0,diagW,diagH);
+   pageView.bounds=NSMakeRect(0,0,diagW,diagH);
+   panel.keyboardDiagram.frame=NSMakeRect(0,0,diagW,diagH);
+   panel.padDiagram.frame=NSMakeRect(0,0,diagW,diagH);
+   [doc addSubview:box];
+   if(self.scrollView.documentView){[self.scrollView.documentView removeFromSuperview];self.scrollView.documentView=nil;}
+   self.scrollView.documentView=doc;
+  }else{
+   int count;const SettingsAction *actions=settings_actions(&count);
+   CGFloat cardW=detailW-48,topPad=40,secH=32,rowH=36,totalH=topPad+34+24;
+   for(int i=0;i<count;i++)totalH+=(actions[i].action<0)?secH:rowH;
+   TOTKFlippedView *doc=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,detailW,fmax(scrollH,totalH+32))];
+   TOTKFlippedView *card=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(24,16,cardW,totalH)];
+   card.identifier=@"settings-card";card.wantsLayer=YES;card.layer.cornerRadius=10;card.layer.borderWidth=1;
+   card.autoresizingMask=NSViewWidthSizable;
+   panel.listToggle.autoresizingMask=NSViewNotSizable;
+   [card addSubview:panel.listToggle];
+   panel.listToggle.frame=NSMakeRect(cardW-16-100,8,100,24);
+   panel.listToggle.bezelStyle=NSBezelStyleRounded;
+   panel.listToggle.controlSize=NSControlSizeSmall;
+   panel.listToggle.font=[NSFont systemFontOfSize:11.5];
+   panel.listToggle.title=settings_text("以图示显示","Show drawings");
+   panel.listToggle.hidden=NO;
+   NSTextField *tip=[NSTextField labelWithString:settings_text(
+    "点一个格子，再按键盘按键或手柄按钮；右键清除。按键已被占用的会自动互换。",
+    "Click a box, then press a key or controller button; right-click clears.")];
+   tip.font=[NSFont systemFontOfSize:11];tip.textColor=[NSColor secondaryLabelColor];
+   tip.frame=NSMakeRect(16,12,cardW-32-110,16);tip.autoresizingMask=NSViewWidthSizable;
+   [card addSubview:tip];
+   CGFloat rowInnerW=cardW-32,colW=100,gap=10,padRight=8;
+   CGFloat colPadX=rowInnerW-padRight-colW,colK2X=colPadX-gap-colW,colK1X=colK2X-gap-colW,colActX=14,colActW=colK1X-gap-colActX;
+   CGFloat curY=topPad;
+   NSBox *headerBg=[[NSBox alloc] initWithFrame:NSMakeRect(16,curY,cardW-32,28)];
+   headerBg.boxType=NSBoxCustom;headerBg.cornerRadius=6;headerBg.fillColor=[NSColor colorWithWhite:0.5 alpha:0.06];
+   headerBg.borderWidth=0;headerBg.autoresizingMask=NSViewWidthSizable;[card addSubview:headerBg];
+   NSTextField *thAct=[NSTextField labelWithString:settings_text("操作功能","Action")];
+   thAct.font=[NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold];thAct.textColor=[NSColor secondaryLabelColor];
+   thAct.frame=NSMakeRect(colActX,6,colActW,16);thAct.autoresizingMask=NSViewWidthSizable;[headerBg addSubview:thAct];
+   NSTextField *thK1=[NSTextField labelWithString:settings_text("按键 1","Key 1")];
+   thK1.font=[NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold];thK1.textColor=[NSColor secondaryLabelColor];thK1.alignment=NSTextAlignmentCenter;
+   thK1.frame=NSMakeRect(colK1X,6,colW,16);thK1.autoresizingMask=NSViewMinXMargin;[headerBg addSubview:thK1];
+   NSTextField *thK2=[NSTextField labelWithString:settings_text("按键 2","Key 2")];
+   thK2.font=[NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold];thK2.textColor=[NSColor secondaryLabelColor];thK2.alignment=NSTextAlignmentCenter;
+   thK2.frame=NSMakeRect(colK2X,6,colW,16);thK2.autoresizingMask=NSViewMinXMargin;[headerBg addSubview:thK2];
+   NSTextField *thPad=[NSTextField labelWithString:settings_text("手柄按钮","Controller")];
+   thPad.font=[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];thPad.lineBreakMode=NSLineBreakByTruncatingTail;thPad.textColor=[NSColor secondaryLabelColor];thPad.alignment=NSTextAlignmentCenter;
+   thPad.frame=NSMakeRect(colPadX,6,colW,16);thPad.autoresizingMask=NSViewMinXMargin;[headerBg addSubview:thPad];
+   panel.padHeader=thPad;
+   curY+=34;
+   [panel.bindingButtons removeAllObjects];
+   [panel.bindingTargets removeAllObjects];
+   for(int i=0;i<count;i++){
+    const SettingsAction *a=&actions[i];
+    if(a->action<0){
+     NSTextField *secTitle=[NSTextField labelWithString:@(TOTK_UI(a->zh,a->en))];
+     secTitle.font=[NSFont systemFontOfSize:12 weight:NSFontWeightBold];
+     secTitle.textColor=[NSColor systemGreenColor];
+     secTitle.frame=NSMakeRect(18,curY+6,200,18);
+     [card addSubview:secTitle];
+     curY+=secH;
+     continue;
+    }
+    TOTKFlippedView *rowBand=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(16,curY,cardW-32,rowH-4)];
+    rowBand.identifier=@"settings-row";rowBand.wantsLayer=YES;rowBand.layer.cornerRadius=6;rowBand.layer.borderWidth=0.5;
+    rowBand.autoresizingMask=NSViewWidthSizable;[card addSubview:rowBand];
+    NSMutableAttributedString *name=[[NSMutableAttributedString alloc] initWithString:@(TOTK_UI(a->zh,a->en))
+     attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium],NSForegroundColorAttributeName:[NSColor labelColor]}];
+    if(a->tag)[name appendAttributedString:[[NSAttributedString alloc] initWithString:[@"  " stringByAppendingString:@(a->tag)]
+     attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightRegular],NSForegroundColorAttributeName:[NSColor secondaryLabelColor]}]];
+    NSTextField *actLabel=[NSTextField labelWithAttributedString:name];actLabel.lineBreakMode=NSLineBreakByTruncatingTail;
+    actLabel.frame=NSMakeRect(colActX,6,colActW,20);actLabel.autoresizingMask=NSViewWidthSizable;[rowBand addSubview:actLabel];
+    CGFloat cx[3]={colK1X,colK2X,colPadX};
+    for(int slot=0;slot<3;slot++){
+     TOTKBindingButton *box=[TOTKBindingButton buttonWithTitle:@"" target:panel action:@selector(boxClicked:)];
+     box.bordered=NO;box.wantsLayer=YES;box.layer.cornerRadius=5;box.refusesFirstResponder=YES;
+     box.frame=NSMakeRect(cx[slot],5,colW,22);box.autoresizingMask=NSViewMinXMargin;
+     box.panel=panel;box.gameAction=a->action;box.slot=slot;
+     box.enabled=a->action==SETTINGS_BIND_PANEL?slot==2:slot<2||a->action<KEYMAP_SWITCH_BUTTONS||a->action==KEYMAP_SCREENSHOT;
+     [rowBand addSubview:box];[panel.bindingButtons addObject:box];
+    }
+    if(a->action<KEYMAP_SWITCH_BUTTONS||a->action==SETTINGS_BIND_PANEL||a->action==KEYMAP_SCREENSHOT)[panel.bindingTargets addObject:rowBand];
+    curY+=rowH;
+   }
+   [doc addSubview:card];
+   if(self.scrollView.documentView){[self.scrollView.documentView removeFromSuperview];self.scrollView.documentView=nil;}
+   self.scrollView.documentView=doc;
+   [panel refreshBindings];
+  }
+ }else if(page==SETTINGS_PAGE_UPDATE||page==SETTINGS_PAGE_CONTRIB||page==SETTINGS_PAGE_BOARD||page==SETTINGS_PAGE_SHOTS){
+  if(page==SETTINGS_PAGE_UPDATE)[panel showUpdatePage];
+  else if(page==SETTINGS_PAGE_CONTRIB)[panel refreshContribPage];
+  else if(page==SETTINGS_PAGE_BOARD)[panel refreshBoardPage];
+  else if(page==SETTINGS_PAGE_SHOTS)[panel refreshShotsPage];
+  CGFloat cardW=detailW-48,cardH=fmax(380,scrollH-32);
+  TOTKFlippedView *doc=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,detailW,fmax(scrollH,cardH+32))];
+  NSView *card=[[NSView alloc] initWithFrame:NSMakeRect(24,16,cardW,cardH)];
+  card.identifier=@"settings-card";card.wantsLayer=YES;card.layer.cornerRadius=10;card.layer.borderWidth=1;
+  card.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[doc addSubview:card];
+  NSView *pageView=panel.pages[(NSUInteger)page];
+  pageView.hidden=NO;
+  pageView.frame=NSInsetRect(card.bounds,12,12);
+  pageView.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  [card addSubview:pageView];
+  if(page==SETTINGS_PAGE_UPDATE)[(TOTKUpdatePage *)pageView refresh];
+  if(self.scrollView.documentView){[self.scrollView.documentView removeFromSuperview];self.scrollView.documentView=nil;}
+  self.scrollView.documentView=doc;
+ }else{
+  NSMutableArray<TOTKSettingRow *> *pageRows=[NSMutableArray array];
+  for(TOTKSettingRow *r in panel.allRows)if(r.page==page)[pageRows addObject:r];
+  NSUInteger count=pageRows.count;
+  CGFloat cardW=detailW-48,rowH=44,cardH=count*rowH;
+  CGFloat popW=fmax(SETTINGS_POP_W,fmin(SETTINGS_POP_MAX_W,cardW-32-SETTINGS_LABEL_W));
+  CGFloat totalDocH=fmax(scrollH,16+cardH+20);
+  TOTKFlippedView *doc=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,detailW,totalDocH)];
+  TOTKFlippedView *card=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(24,16,cardW,cardH)];
+  card.identifier=@"settings-card";card.wantsLayer=YES;card.layer.cornerRadius=10;card.layer.borderWidth=1;
+  card.autoresizingMask=NSViewWidthSizable;[doc addSubview:card];
+  for(NSUInteger i=0;i<count;i++){
+   TOTKSettingRow *r=pageRows[i];CGFloat y=i*rowH;
+   NSTextField *label=[NSTextField labelWithString:r.title];
+   label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+   label.textColor=[NSColor labelColor];
+   label.frame=NSMakeRect(16,y+(rowH-18)/2,cardW-32-popW,18);
+   label.autoresizingMask=NSViewWidthSizable;[card addSubview:label];
+   [r.control removeFromSuperview];
+   r.control.refusesFirstResponder=NO;
+   r.rowView=r.control;
+   if(r.slider){
+    r.control.frame=NSMakeRect(cardW-16-(popW-44),y+(rowH-20)/2,popW-44,20);
+    r.control.autoresizingMask=NSViewMinXMargin;[card addSubview:r.control];
+    [r.valueLabel removeFromSuperview];
+    r.valueLabel.frame=NSMakeRect(cardW-54,y+(rowH-18)/2,38,18);
+    r.valueLabel.autoresizingMask=NSViewMinXMargin;[card addSubview:r.valueLabel];
+   }else if(r.text){
+    [r.textLabel removeFromSuperview];
+    r.control.frame=NSMakeRect(cardW-16-r.control.frame.size.width,y+(rowH-r.control.frame.size.height)/2,r.control.frame.size.width,r.control.frame.size.height);
+    r.control.autoresizingMask=NSViewMinXMargin;[card addSubview:r.control];
+    r.textLabel.textColor=[NSColor secondaryLabelColor];
+    r.textLabel.frame=NSMakeRect(cardW-16-popW,y+(rowH-18)/2,fmax(40,popW-r.control.frame.size.width-10),18);
+    r.textLabel.autoresizingMask=NSViewMinXMargin;[card addSubview:r.textLabel];
+   }else if(!r.choices){
+    r.control.frame=NSMakeRect(cardW-16-r.control.frame.size.width,y+(rowH-r.control.frame.size.height)/2,r.control.frame.size.width,r.control.frame.size.height);
+    r.control.autoresizingMask=NSViewMinXMargin;[card addSubview:r.control];
+   }else{
+    r.control.frame=NSMakeRect(cardW-16-popW,y+(rowH-26)/2,popW,26);
+    r.control.autoresizingMask=NSViewMinXMargin;[card addSubview:r.control];
+   }
+   if(i<count-1){
+    NSBox *sep=[[NSBox alloc] initWithFrame:NSMakeRect(16,(i+1)*rowH-0.5,cardW-32,0.5)];
+    sep.boxType=NSBoxCustom;sep.borderWidth=0;sep.fillColor=[NSColor separatorColor];
+    sep.autoresizingMask=NSViewWidthSizable;[card addSubview:sep];
+   }
+  }
+  if(self.scrollView.documentView){[self.scrollView.documentView removeFromSuperview];self.scrollView.documentView=nil;}
+  self.scrollView.documentView=doc;
+ }
+ if(page==panel.page){[panel updateTargets];[panel controllerHighlight];}
+ if(captured&&page==SETTINGS_PAGE_BINDINGS&&!panel.drawings){
+  for(TOTKBindingButton *box in panel.bindingButtons)if(box.gameAction==captureAction&&box.slot==captureSlot){panel.capturing=box;break;}
+  [panel refreshBindings];
+ }
+ [self.effectiveAppearance performAsCurrentDrawingAppearance:^{[self refreshLayerColors:self.scrollView];}];
+ self.displayedPage=page;
+ NSPoint saved=settingsPageScroll[page];
+ NSRect docBounds=self.scrollView.documentView.bounds,clipBounds=self.scrollView.contentView.bounds;
+ saved.x=fmax(0,fmin(saved.x,NSWidth(docBounds)-NSWidth(clipBounds)));
+ saved.y=fmax(0,fmin(saved.y,NSHeight(docBounds)-NSHeight(clipBounds)));
+ [self.scrollView.contentView scrollToPoint:saved];
+ [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+ if([focus isKindOfClass:[NSView class]]&&[(NSView *)focus window]==self.window&&self.window.firstResponder!=focus)[self.window makeFirstResponder:focus];
+ self.updatingPage=NO;
+ [self.scrollView.contentView setNeedsDisplay:YES];
+ [self.scrollView setNeedsDisplay:YES];
+}
+-(BOOL)acceptsFirstResponder{return YES;}
+-(BOOL)performKeyEquivalent:(NSEvent *)e{
+ NSEventModifierFlags mods=e.modifierFlags&NSEventModifierFlagDeviceIndependentFlagsMask;
+ if((mods&(NSEventModifierFlagCommand|NSEventModifierFlagControl|NSEventModifierFlagOption))==NSEventModifierFlagCommand
+  &&[[e.charactersIgnoringModifiers lowercaseString] isEqualToString:@"w"]){
+  if(self.window.styleMask&NSWindowStyleMaskClosable)[self.window performClose:nil];
+  else settings_show(0);
+  return YES;
+ }
+ return [super performKeyEquivalent:e];
+}
+-(void)keyDown:(NSEvent *)e{
+ if(e.keyCode==53||e.keyCode==KEYMAP_SETTINGS_KEY){settings_show(0);return;}
+ [super keyDown:e];
+}
+@end
+
+static BOOL settings_window_active(void) {
+ return settingsWindowMode;
+}
+static void settings_window_update_page(NSInteger page) {
+ if(settings_window_active()&&settingsWindow&&[settingsWindow.contentView isKindOfClass:[TOTKSettingsWindowRootView class]]){
+  [(TOTKSettingsWindowRootView *)settingsWindow.contentView updatePage:page];
+ }
+}
+static void settings_window_update_footer(void) {
+ if(settings_window_active()&&settingsWindow&&[settingsWindow.contentView isKindOfClass:[TOTKSettingsWindowRootView class]]){
+  TOTKSettingsWindowRootView *root=(TOTKSettingsWindowRootView *)settingsWindow.contentView;
+  [root updateFooterForPage:root.displayedPage>=0?root.displayedPage:settingsPanel.page];
+ }
+}
+
+@interface TOTKSettingsWindowDelegate: NSObject <NSWindowDelegate>
+@end
+@implementation TOTKSettingsWindowDelegate
+-(void)windowWillClose:(NSNotification *)notification{(void)notification;if(settingsOpen)settings_show(0);}
+@end
+static TOTKSettingsWindowDelegate *settingsWindowDelegate;
+
 static void settings_show(int open) {   /* main thread */
  open=!!open;
- if(!window||open==settingsOpen||(open&&textEntryOpen))return;
+ if(!window||(open&&textEntryOpen))return;
+ BOOL useWindow=NSApp.isRunning&&window.isVisible&&!(vr_enabled()&&vr_panel_in_headset());
+ if(open&&settingsOpen){
+  if(useWindow&&settingsWindow){[settingsWindow makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}
+  return;
+ }
+ if(open==settingsOpen)return;
  /* Made again at every opening: what the game offers (aspect ratio, resolution) is known only once its code is in. */
  /* With VR running, the first opening shows the VR page (user 2026-10-30: "启动vr的时候 打开设置 默认打开vr tab"); later ones
     the page left last. */
  {static int vrPageShown;if(open&&!vrPageShown&&vr_enabled()){vrPageShown=1;g_settings_page=SETTINGS_PAGE_VR;}}
+ settingsWindowMode=open&&useWindow;
  if(open){g_settings_controller_active=NO;settings_panel_replace();}else [settingsPanel endCapture];
  settingsOpen=open;
  runtime_gamepad_text_capture(open);
- if(open){runtime_input_clear();[settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
- else{[window makeFirstResponder:window.contentView];
-  if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];}
- settingsPanel.hidden=!open;
+ if(open){
+  runtime_input_clear();
+  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
+  if(!useWindow){
+   if(settingsWindow&&settingsWindow.isVisible)[settingsWindow orderOut:nil];
+   [settingsPanel center];[settingsPanel refresh];[settingsPanel refreshLayerColors];
+   settingsPanel.hidden=NO;
+  }else{
+   if(!settingsWindow){
+    settingsWindow=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,960,620)
+     styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable|NSWindowStyleMaskFullSizeContentView
+     backing:NSBackingStoreBuffered defer:NO];
+    settingsWindow.titlebarAppearsTransparent=YES;
+    settingsWindow.titleVisibility=NSWindowTitleHidden;
+    settingsWindow.level=NSNormalWindowLevel;
+    settingsWindow.collectionBehavior=NSWindowCollectionBehaviorFullScreenAuxiliary|NSWindowCollectionBehaviorMoveToActiveSpace;
+    settingsWindow.releasedWhenClosed=NO;
+    settingsWindowDelegate=[TOTKSettingsWindowDelegate new];
+    settingsWindow.delegate=settingsWindowDelegate;
+    settingsWindow.minSize=NSMakeSize(760,500);
+#ifdef GAME_BOTW
+    NSString *frameName=@"BOTWSettingsWindow";
+#else
+    NSString *frameName=@"TOTKSettingsWindow";
+#endif
+    if(![settingsWindow setFrameUsingName:frameName])[settingsWindow center];
+    [settingsWindow setFrameAutosaveName:frameName];
+   }
+   TOTKSettingsWindowRootView *root;
+   if([settingsWindow.contentView isKindOfClass:[TOTKSettingsWindowRootView class]]){
+    root=(TOTKSettingsWindowRootView *)settingsWindow.contentView;root.panel=settingsPanel;
+   }else{
+    root=[[TOTKSettingsWindowRootView alloc] initWithFrame:settingsWindow.contentView.bounds panel:settingsPanel];
+    settingsWindow.contentView=root;
+   }
+   [root updatePage:settingsPanel.page];
+   settingsPanel.hidden=YES;
+   [settingsPanel refresh];
+   [settingsWindow makeKeyAndOrderFront:nil];
+  }
+ }else{
+  if(settingsWindow&&settingsWindow.isVisible)[settingsWindow orderOut:nil];
+  settingsPanel.hidden=YES;
+  [window makeFirstResponder:window.contentView];
+  [window makeKeyWindow];
+  if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];
+ }
  [settingsVRTimer invalidate];settingsVRTimer=nil;
  if(open&&vr_enabled()&&vr_panel_in_headset())settingsVRTimer=[NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t){(void)t;settings_vr_capture();}];
  settings_vr_capture();   /* the first picture now, or the headset's copy gone */
  front_mouse_update();
  fprintf(stderr,"[totk] settings panel %s\n",open?"open":"closed");
  if(totk_sr_settings)totk_sr_settings(open);   /* TOTK_STATE_REPORTING: the game gets no input while it is open */
+}
+static void settings_rebuild(void) {
+ if(!window||!settingsOpen)return;
+ settings_panel_replace();
+ if(settings_window_active()&&settingsWindow&&[settingsWindow.contentView isKindOfClass:[TOTKSettingsWindowRootView class]]){
+  settingsPanel.hidden=YES;
+  TOTKSettingsWindowRootView *root=(TOTKSettingsWindowRootView *)settingsWindow.contentView;
+  [root.sidebarView rebuildItems];
+  root.panel=settingsPanel;
+  [root updatePage:settingsPanel.page];
+ }else{
+  [settingsPanel center];
+ }
+ [settingsPanel refresh];
+ [settingsPanel refreshLayerColors];
 }
 /* A user named in the game's text bar (main queue, from addUser:): kept before the panel is made again, so its list
    has it, and the result shows for a few seconds where the version is. nil: the bar was cancelled — just come back. */
@@ -1900,7 +2613,8 @@ static void settings_controller_start(void){
   (void)t;BOOL requested=runtime_gamepad_settings_requested();
   if(textEntryOpen){settingsControllerReady=NO;return;}
   RuntimeGamepadState pad;runtime_gamepad_text_read(&pad);
-  settings_controller_tick(pad,requested,window.isKeyWindow&&NSApp.active,runtime_now_ns()/1e9);
+  BOOL uiActive=(window.isKeyWindow||(settingsWindow&&settingsWindow.isKeyWindow))&&NSApp.active;
+  settings_controller_tick(pad,requested,uiActive,runtime_now_ns()/1e9);
  }];
  [NSRunLoop.mainRunLoop addTimer:settingsControllerTimer forMode:NSRunLoopCommonModes];
 }

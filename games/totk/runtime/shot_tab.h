@@ -90,7 +90,7 @@ static void (*shot_tab_take)(void) = screenshot_request;
 
 static NSTextField *shot_tab_label(NSString *text, CGFloat size, CGFloat white, NSTextAlignment align) {
  NSTextField *l=[NSTextField labelWithString:text];l.font=[NSFont systemFontOfSize:size];l.alignment=align;
- l.textColor=[NSColor colorWithCalibratedWhite:white alpha:1];l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
+ l.textColor=white>=0.85?NSColor.labelColor:NSColor.secondaryLabelColor;l.lineBreakMode=NSLineBreakByTruncatingTail;return l;
 }
 /* The server's time ("2026-11-11T09:30:12.345Z") as the player's day, yyyy-MM-dd; its first ten characters when it is
    not one. */
@@ -160,9 +160,11 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
  if(!(self=[super initWithFrame:frame]))return nil;
  self.owner=owner;self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.92].CGColor;
  NSImageView *image=[[NSImageView alloc] initWithFrame:NSInsetRect(self.bounds,8,8)];image.imageScaling=NSImageScaleProportionallyUpOrDown;
- image.imageFrameStyle=NSImageFrameNone;image.editable=NO;[self addSubview:image];self.image=image;
+ image.imageFrameStyle=NSImageFrameNone;image.editable=NO;image.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:image];self.image=image;
  NSTextField *status=shot_tab_label(settings_text("正在读取截图…","Reading the picture…"),12,0.7,NSTextAlignmentCenter);
- status.frame=NSMakeRect(20,NSMidY(self.bounds)-10,frame.size.width-40,20);[self addSubview:status];self.status=status;
+ status.textColor=[NSColor colorWithCalibratedWhite:0.8 alpha:1];
+ status.frame=NSMakeRect(20,NSMidY(self.bounds)-10,frame.size.width-40,20);
+ status.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;[self addSubview:status];self.status=status;
  self.toolTip=settings_text("点击或按 Esc 关闭","Click or press Esc to close");
  __weak TOTKShotViewer *weakSelf=self;
  totk_shot_image(shotId,NO,^(NSImage *img){
@@ -197,46 +199,57 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
  /* the switch, its title and the state line, as on the 排行榜 page */
  NSSwitch *toggle=[NSSwitch new];[toggle sizeToFit];NSSize s=toggle.frame.size;
  toggle.frame=NSMakeRect(18,top-s.height,s.width,s.height);toggle.target=self;toggle.action=@selector(toggled:);toggle.refusesFirstResponder=YES;
+ toggle.autoresizingMask=NSViewMaxXMargin|NSViewMinYMargin;
  [self addSubview:toggle];self.toggle=toggle;
  NSTextField *title=shot_tab_label(settings_text("分享我的截图","Share my screenshots"),15,1.0,NSTextAlignmentLeft);title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
- title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,300,22);[self addSubview:title];
- NSTextField *state=shot_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);[self addSubview:state];self.state=state;
+ title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,300,22);title.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:title];
+ NSTextField *state=shot_tab_label(@"",11,0.7,NSTextAlignmentLeft);state.frame=NSMakeRect(18,top-s.height-20,W-36,16);state.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:state];self.state=state;
  /* 截屏, at the right of the switch's line */
  NSButton *take=[NSButton buttonWithTitle:settings_text("截屏","Take screenshot") target:self action:@selector(takeShot:)];
  take.refusesFirstResponder=YES;[take sizeToFit];NSSize b=take.frame.size;
  take.frame=NSMakeRect(W-18-b.width,top-s.height+floor((s.height-b.height)/2),b.width,b.height);
+ take.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
  take.toolTip=settings_text("保存现在的游戏画面（不含设置面板）；分享开着时也分享","Saves the game picture now, without this panel; shared too while sharing is on");
  [self addSubview:take];self.takeButton=take;
  title.frame=NSMakeRect(NSMaxX(toggle.frame)+10,top-s.height+1,fmin(300,NSMinX(take.frame)-NSMaxX(toggle.frame)-20),22);
  /* the nickname (nick_row.h) */
- TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];[self addSubview:nick];self.nick=nick;
+ TOTKNickRow *nick=[[TOTKNickRow alloc] initWithFrame:NSMakeRect(18,NSMinY(state.frame)-4-NICK_ROW_H,W-36,NICK_ROW_H)];nick.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:nick];self.nick=nick;
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(nickChanged:) name:TOTK_NICK_CHANGED_NOTE object:nil];
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(shared:) name:TOTK_SHOT_SHARED_NOTE object:nil];
  /* where the pictures are saved, and the button that changes it */
  NSButton *folderButton=[NSButton buttonWithTitle:settings_text("更改文件夹…","Change Folder…") target:self action:@selector(changeFolder:)];
  folderButton.refusesFirstResponder=YES;[folderButton sizeToFit];NSSize fb=folderButton.frame.size;
  CGFloat folderY=NSMinY(nick.frame)-6-fb.height;
- folderButton.frame=NSMakeRect(W-18-fb.width,folderY,fb.width,fb.height);[self addSubview:folderButton];self.folderButton=folderButton;
+ folderButton.frame=NSMakeRect(W-18-fb.width,folderY,fb.width,fb.height);folderButton.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[self addSubview:folderButton];self.folderButton=folderButton;
  NSTextField *folderLabel=shot_tab_label(@"",12,0.85,NSTextAlignmentLeft);folderLabel.lineBreakMode=NSLineBreakByTruncatingMiddle;
- folderLabel.frame=NSMakeRect(18,folderY+floor((fb.height-17)/2),NSMinX(folderButton.frame)-18-10,17);[self addSubview:folderLabel];self.folderLabel=folderLabel;
+ folderLabel.frame=NSMakeRect(18,folderY+floor((fb.height-17)/2),NSMinX(folderButton.frame)-18-10,17);folderLabel.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[self addSubview:folderLabel];self.folderLabel=folderLabel;
  [self showFolder];
  /* the pictures */
  CGFloat noteH=30,gridTop=folderY-6,gridBottom=8+noteH+4;
  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,gridBottom,W-28,fmax(0,gridTop-gridBottom))];
  scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.scrollerStyle=NSScrollerStyleOverlay;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+ scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
  TOTKShotsGrid *grid=[[TOTKShotsGrid alloc] initWithFrame:NSMakeRect(0,0,scroll.contentSize.width,scroll.contentSize.height)];
  scroll.documentView=grid;[self addSubview:scroll];self.scroll=scroll;self.grid=grid;
  scroll.contentView.postsBoundsChangedNotifications=YES;
  [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(scrolled:) name:NSViewBoundsDidChangeNotification object:scroll.contentView];
- NSTextField *status=shot_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);[self addSubview:status];self.status=status;
+ NSTextField *status=shot_tab_label(@"",12,0.7,NSTextAlignmentCenter);status.frame=NSMakeRect(20,NSMidY(scroll.frame)-10,W-40,20);status.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;[self addSubview:status];self.status=status;
  NSTextField *note=shot_tab_label(settings_text("匿名：只上传游戏画面（缩到 1920 宽的 JPEG）和一个随机编号算出的匿名名字，不含用户名、存档和机器信息。自己的截图可以删除。",
   "Anonymous: only the game picture (a JPEG at most 1920 wide) and a random id, shown as an anonymous name, are sent; no user name, saves or machine details. You can delete your own."),
   10.5,0.6,NSTextAlignmentCenter);
- note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);[self addSubview:note];self.note=note;
+ note.lineBreakMode=NSLineBreakByWordWrapping;note.maximumNumberOfLines=2;note.frame=NSMakeRect(30,8,W-60,noteH);note.autoresizingMask=NSViewWidthSizable|NSViewMaxYMargin;[self addSubview:note];self.note=note;
  [self showState];[self showStatus];   /* nothing is read until the page is shown (refresh) */
  return self;
 }
 -(void)dealloc{[NSNotificationCenter.defaultCenter removeObserver:self];}
+-(void)setFrameSize:(NSSize)size{
+ [super setFrameSize:size];
+ if(self.viewer)self.viewer.frame=self.bounds;
+ if(self.shots.count&&fabs(self.scroll.contentSize.width-self.grid.frame.size.width)>1.0){
+  NSArray<NSDictionary *> *all=self.shots;self.shots=@[];
+  [self showShots:all];
+ }
+}
 
 -(BOOL)usable{return totk_board_dir()!=nil;}
 -(void)showFolder{
@@ -251,7 +264,7 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
  self.state.stringValue=flash?self.flash:nickFlash?nickFlash:!usable?settings_text("这次运行不分享截图","This run shares no screenshots")
   :on?[NSString stringWithFormat:settings_text("已开启：每张截图自动分享，每天最多 %d 张","On: every screenshot is shared, up to %d a day"),TOTK_SHOT_PENDING_MAX]
   :settings_text("已关闭：不上传任何东西","Off: nothing is sent");
- self.state.textColor=flash?NSColor.systemOrangeColor:nickFlash?nick_row_flash_color(kind):[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ self.state.textColor=flash?NSColor.systemOrangeColor:nickFlash?nick_row_flash_color(kind):NSColor.secondaryLabelColor;
 }
 -(void)showStatus{
  self.status.stringValue=self.shots.count?@""
@@ -320,7 +333,7 @@ static NSString *shot_tab_next(id next) { return [next isKindOfClass:NSString.cl
   CGFloat w=[self cellWidth],h=[TOTKShotCell heightForWidth:w];
   NSMutableArray<TOTKShotCell *> *cells=[NSMutableArray array];
   for(NSDictionary *s in all){TOTKShotCell *c=old[s[@"id"]];
-   if(c&&c.mine==[s[@"me"] boolValue])[old removeObjectForKey:s[@"id"]];else c=[[TOTKShotCell alloc] initWithShot:s width:w owner:self];
+   if(c&&c.mine==[s[@"me"] boolValue]&&fabs(c.frame.size.width-w)<0.5)[old removeObjectForKey:s[@"id"]];else c=[[TOTKShotCell alloc] initWithShot:s width:w owner:self];
    [cells addObject:c];}
   for(TOTKShotCell *c in old.allValues)[c removeFromSuperview];
   NSUInteger rows=(cells.count+SHOT_TAB_COLUMNS-1)/SHOT_TAB_COLUMNS;
