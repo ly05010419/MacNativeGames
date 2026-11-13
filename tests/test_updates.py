@@ -161,7 +161,7 @@ class Updates(unittest.TestCase):
                 self.assertEqual(build_app.identify_update(tree, source, self.keys, self.root/'logs'), (version, source))
         self.assertFalse((tree/'rewritten').exists())
 
-    def test_lockpick_kek_source_nul_is_stripped_for_hactool(self):
+    def test_nul_padded_kek_source_is_stripped_for_hactool(self):
         body = '11' * 16
         original = self.keys.read_text()
         if not original.endswith('\n'):

@@ -29,7 +29,7 @@ On macOS 15, use the community fork by [1918662410-ship-it](https://github.com/1
 - The base game must be uncompressed. Decompress an NSZ or XCZ base first (`nsz -D`).
 - A card image that also holds its own update is fine; the version still comes from `--update`.
 
-**`prod.keys`** from the same Switch (Lockpick_RCM). Keys dumped on an old firmware can be too old for a newer update.
+**`prod.keys`** from the same Switch as the game files. A keys file older than the update cannot open it.
 
 **System fonts**, needed when the base game is an **NSP** and always for **Breath of the Wild**. Give one of:
 - `--firmware <folder>`: your firmware dump as a folder of `.nca` files (unzip it first), or an installed firmware `registered` folder.
@@ -301,7 +301,7 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | Another game: build it with its own `games/<name>/README.md`. |
 | `needs about N GB free` | Free space, or `--work` and `-o` on an APFS volume with room. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](#folders)). |
-| `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update: dump `prod.keys` again on current firmware. |
+| `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update. |
 | `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools. |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |
 

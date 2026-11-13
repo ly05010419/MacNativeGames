@@ -60,7 +60,7 @@ def _keys(path):
     except OSError as e:
         return Item(str(path), 'ignored', note=t(f'cannot be read: {e.strerror}', f'读不了：{e.strerror}'))
     if not _HEADER_KEY.search(text):
-        return Item(str(path), 'ignored', note=t('a keys file without header_key: dump prod.keys again from your Switch', '没有 header_key 的 keys 文件：从 Switch 重新导出 prod.keys'))
+        return Item(str(path), 'ignored', note=t('a keys file without header_key: not a complete keys file', '没有 header_key 的 keys 文件：不是完整的 keys 文件'))
     return Item(str(path), 'keys')
 
 
