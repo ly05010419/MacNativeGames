@@ -53,8 +53,8 @@ class Packaging(unittest.TestCase):
         # 2026-11-11: a fast update kept the seed's lists of 11-09 (2,957 render rows) for the archive while the App's
         # build/ lists, resolved from the current shared list, had 7,516: 4,559 listed pipelines were built at first start.
         body = function(self.source, 'def package_app')
-        resolved = body.index("lists=resolve_lists(tree,tree/'build/warm-lists',")
-        self.assertLess(resolved, body.index('compute_pipeline_archive(work,tree,lists)'))
+        resolved = body.index("lists=resolve_lists(tree,tree/f'build/warm-lists{suffix}',")   # a title build's own (shader_dirs)
+        self.assertLess(resolved, body.index('compute_pipeline_archive(work,tree,lists,mode)'))
         archive = function(self.source, 'def compute_pipeline_archive')
         self.assertNotIn("seed/'pso_manifest.tsv'", archive)
         self.assertNotIn("seed/'pso_title.tsv'", archive)

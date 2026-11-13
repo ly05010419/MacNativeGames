@@ -16,7 +16,9 @@ static uint64_t par_load_dir(NSUInteger *files) {
     return bytes;
 }
 /* Packaging (g_par_recheck), after the fill: the files none of whose keys they still hold (every key written again into a
-   newer file by par_stale) are removed, so a package carries no file only older runtimes could use. Returns how many. */
+   newer file by par_stale), and the files none of whose keys this run used (g_par_used: pipelines the lists no longer
+   have, such as the old keys of shaders a translator change rewrote), are removed, so a package carries no file only
+   older runtimes or lists could use. Returns how many. */
 static NSUInteger par_prune_superseded(void) {
     NSFileManager *fm = NSFileManager.defaultManager; NSUInteger removed = 0;
     for (NSString *name in [fm contentsOfDirectoryAtPath:par_dir() error:nil] ?: @[]) {
@@ -25,7 +27,7 @@ static NSUInteger par_prune_superseded(void) {
         NSString *list = [NSString stringWithContentsOfFile:par_keys_file(base) encoding:NSUTF8StringEncoding error:nil];
         BOOL holds = NO;
         pthread_mutex_lock(&g_par_mu);
-        for (NSString *key in [list componentsSeparatedByString:@"\n"]) if (key.length && [g_par_where[key] isEqualToString:base]) { holds = YES; break; }
+        for (NSString *key in [list componentsSeparatedByString:@"\n"]) if (key.length && [g_par_where[key] isEqualToString:base] && (!g_par_used || [g_par_used containsObject:key])) { holds = YES; break; }
         pthread_mutex_unlock(&g_par_mu);
         if (holds || !list) continue;
         [fm removeItemAtPath:par_file(base) error:nil]; [fm removeItemAtPath:par_keys_file(base) error:nil]; removed++;

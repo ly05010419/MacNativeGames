@@ -7011,7 +7011,7 @@ static void fn_note_src(id<MTLFunction> fn, NSString *src);   // below: the sour
 static NSString *sh_src(NvShader *s) {
     if (!s) return nil;
     if (s->src) return s->src;
-    return s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil;
+    return s->src_path ? totk_rt_text(s->src_path) : nil;   // the seed's image or a file (totk_rt_read)
 }
 static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
 #include "nvn_pso_skey.h"
@@ -7237,6 +7237,15 @@ static void pso_user_record(const char *fmt, ...) {
 // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
 static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
     int fd = open(path.fileSystemRepresentation, O_RDONLY); struct stat st;
+    if (fd < 0) {   // not a file: the seed's image (totk_seed_image.h), whose part stays open; only this file's pages are mapped, and copied at once
+        int open_errno = errno; NSData *img = totk_rt_read(path);
+        if (img.length) {
+            void *copy = malloc(img.length);   // as below on iOS: a library keeps no mapping (each one is a VM region)
+            if (copy) { memcpy(copy, img.bytes, img.length);
+                        return [g_dev newLibraryWithData:dispatch_data_create(copy, img.length, NULL, DISPATCH_DATA_DESTRUCTOR_FREE) error:err]; }
+        }
+        errno = open_errno;
+    }
     if (fd < 0 || fstat(fd, &st) || st.st_size <= 0) { if (fd >= 0) close(fd); if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"打不开 %@", path]}]; return nil; }
     size_t len = (size_t)st.st_size; void *m = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
     if (m == MAP_FAILED) { if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"映射失败 %@", path]}]; return nil; }
@@ -7595,7 +7604,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     NSError *e = nil;
     // TOTK: runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
     NSString *rt_src = totk_rt_file([pc stringByAppendingString:@".metal"]);
-    int rt = [NSFileManager.defaultManager fileExistsAtPath:rt_src];
+    int rt = totk_rt_exists(rt_src);
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
     id<MTLLibrary> lib = nil;
     if (rt) {
@@ -7608,9 +7617,9 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
         {
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = totk_rt_file([pc stringByAppendingString:@".metallib"]);
-        if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
+        if (totk_rt_exists(rt_lib)) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
         }
-        if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
+        if (!lib) { NSData *raw = totk_rt_read(rt_src);
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) atomic_fetch_add(&g_rt_prebuilt, 1);
 #endif
@@ -7619,7 +7628,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     } else lib = lib_from_file(lp, &e);
     if (rt) { uint64_t pre = atomic_load(&g_rt_prebuilt), com = atomic_load(&g_rt_compiled);
               if ((pre + com) % 200 == 1) MLOG("着色器库：预编译加载 %llu 个，现编 %llu 个", (unsigned long long)pre, (unsigned long long)com); }
-    NSData *jd = [NSData dataWithContentsOfFile:rt ? totk_rt_file([pc stringByAppendingString:@".json"]) : [NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]];
+    NSData *jd = rt ? totk_rt_read(totk_rt_file([pc stringByAppendingString:@".json"])) : [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", g_msl_dir, pc]];
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (!lib || !j) { MLOG("【红】加载着色器失败 %s：%s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "无反射 json"); return nil; }
     if (![j[@"chain"] isEqual:@DMSH_CHAIN]) { MLOG("【红】着色器 %s 的翻译链版本 %s 与本宿主期望的 %s 不符", pc.UTF8String, [[j[@"chain"] description] UTF8String], DMSH_CHAIN); return nil; }
@@ -7651,7 +7660,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
                 o->geo_words = (int)reads.count; } }
         NSString *ce = j[@"entry_geometry_capture"];
         if ([ce isKindOfClass:NSString.class] && !(o->geo_fn = [lib newFunctionWithName:ce])) { MLOG("【红】顶点着色器 %s 没有抓取入口 %s", pc.UTF8String, ce.UTF8String); return nil; } }
-    NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
+    NSString *full = rt ? totk_rt_text(rt_src) : nil;
     if (stage == 1 && o->rf.has_c1 && ssao_on()) full = ssao_patch(o, full, j[@"entry"]);   // TOTK_SSAO (totk_ssao.h): the scans below then see the patched source
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
     if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); refl_mark_fetches(o, j[@"bindings"], full); refl_read_extents(o, j[@"bindings"], full); o->pool_reads=nvn_pool_sources(&o->rf,j[@"bindings"],full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores; uniform read extents
@@ -7783,7 +7792,7 @@ static void plib_kick(NSString *pc, int stage) {   // submission thread
     dispatch_async(q, ^{ @autoreleasepool {
         dispatch_semaphore_wait(slots, DISPATCH_TIME_FOREVER);
         // the check variant_lookup makes before the draw takes a variant: a source that cannot compile is translated again there
-        NSString *msl = [NSString stringWithContentsOfFile:totk_rt_file([pc stringByAppendingString:@".metal"]) encoding:NSUTF8StringEncoding error:nil];
+        NSString *msl = totk_rt_text(totk_rt_file([pc stringByAppendingString:@".metal"]));
         NvShader *sh = msl && ![msl containsString:@"double "] && ![msl containsString:@"unsupported_GLSLstd450"] ? shader_load(pc, stage) : nil;
         dispatch_semaphore_signal(slots);
         pthread_mutex_lock(&g_plib_mu);
@@ -10150,7 +10159,7 @@ static int frmw_listed(NvShader *cs) {
 /* cs->fn from the shader's MSL with its device float adds lowered; 0 (fn unchanged) when it has none or cannot be built. */
 static int frmw_use_lowered(NvShader *cs) {
     if (cs->frmw || !cs->key[0]) return 0;
-    NSString *msl = [NSString stringWithContentsOfFile:totk_rt_file([@(cs->key) stringByAppendingString:@".metal"]) encoding:NSUTF8StringEncoding error:nil];
+    NSString *msl = totk_rt_text(totk_rt_file([@(cs->key) stringByAppendingString:@".metal"]));
     if (!frmw_has_device_float_rmw(msl.UTF8String)) return 0;
     int n = 0; char *lowered = frmw_lower(msl.UTF8String, &n);
     if (!lowered) { MLOG("[RED] compute shader %s: its float adds are not in the form nvn_float_rmw.h lowers (#2070)", cs->key); return 0; }
@@ -10715,8 +10724,8 @@ static int warm_available(NSString *key) {
     if (!key.length) return 1;
     if (!totk_shader_scope_contains(g_warm_scope, key)) return 0;
     NSFileManager *fm = NSFileManager.defaultManager;
-    int have = [fm fileExistsAtPath:totk_rt_file([key stringByAppendingString:@".metal"])] ||
-               [fm fileExistsAtPath:totk_rt_file([key stringByAppendingString:@".metallib"])] ||
+    int have = totk_rt_exists(totk_rt_file([key stringByAppendingString:@".metal"])) ||
+               totk_rt_exists(totk_rt_file([key stringByAppendingString:@".metallib"])) ||
                [fm fileExistsAtPath:[g_msl_dir stringByAppendingFormat:@"/%@.metallib", key]];
     if (!have) {
         static NSMutableSet *missing; static dispatch_once_t once;
@@ -10732,9 +10741,8 @@ static NvShader *warm_shader_load(NSString *key, int stage) {
        instead of a red "cannot open" per pipeline that names it (2026-10-16 night: 42 such lines in one session). */
     static NSMutableSet<NSString *> *missing; static dispatch_once_t once; dispatch_once(&once, ^{ missing = [NSMutableSet set]; });
     @synchronized (missing) { if ([missing containsObject:key]) return nil; }
-    NSString *msl = [NSString stringWithContentsOfFile:totk_rt_file([key stringByAppendingString:@".metal"])
-                                                encoding:NSUTF8StringEncoding error:nil];
-    if (!msl && ![NSFileManager.defaultManager fileExistsAtPath:totk_rt_file([key stringByAppendingString:@".metallib"])] &&
+    NSString *msl = totk_rt_text(totk_rt_file([key stringByAppendingString:@".metal"]));
+    if (!msl && !totk_rt_exists(totk_rt_file([key stringByAppendingString:@".metallib"])) &&
         ![NSFileManager.defaultManager fileExistsAtPath:[NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, key]]) {
         @synchronized (missing) { if (![missing containsObject:key]) { [missing addObject:key]; g_warm_missing++; } }
         return nil;
@@ -11182,7 +11190,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             // The native service publishes reflection last. A newly written
             // MSL with no reflection yet is still in flight, not a failed shader.
             NSString *json = [[file stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"];
-            if (![NSFileManager.defaultManager fileExistsAtPath:totk_rt_file(json)]) continue;
+            if (!totk_rt_exists(totk_rt_file(json))) continue;
             [known_files addObject:file]; [cache_files addObject:file]; ++total;
             NSString *key = [file stringByDeletingPathExtension];
             if (![planned_keys containsObject:key]) { [planned_keys addObject:key]; ++shader_total; }
@@ -11195,7 +11203,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             NSString *key = [file stringByDeletingPathExtension];
             if (dict[key]) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
             NSString *jp = totk_rt_file([key stringByAppendingPathExtension:@"json"]);
-            NSData *jd = [NSData dataWithContentsOfFile:jp];
+            NSData *jd = totk_rt_read(jp);
             NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
             NSString *stage = j[@"stage"];
             int st = [stage isEqual:@"vs"] ? 0 : [stage isEqual:@"ps"] ? 1 : [stage isEqual:@"cs"] ? 5 : -1;
@@ -11259,7 +11267,7 @@ static void warm_filled(void) {
         [fm createDirectoryAtPath:@"shader-requests/done" withIntermediateDirectories:YES attributes:nil error:nil];
         for (NSString *n in names) @autoreleasepool {
             NSString *variant = [n stringByDeletingPathExtension];
-            if (![fm fileExistsAtPath:totk_rt_file([variant stringByAppendingString:@"_b.metal"])]) { pending++; continue; }
+            if (!totk_rt_exists(totk_rt_file([variant stringByAppendingString:@"_b.metal"]))) { pending++; continue; }
             NSData *jd = [NSData dataWithContentsOfFile:[@"shader-requests" stringByAppendingPathComponent:n]];
             NSDictionary *rq = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
             NSString *sn = [rq isKindOfClass:[NSDictionary class]] ? rq[@"stage"] : nil;
@@ -11473,7 +11481,7 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
     warm_fill_archive(lists, done); dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     if (g_par_recheck) {
         NSUInteger pruned = par_prune_superseded();
-        MLOG("管线存档：按这个运行时核对，%llu 条和存档里的不一样，重新编进新文件；删掉被完全取代的旧文件 %lu 个",
+        MLOG("管线存档：按这个运行时核对，%llu 条和存档里的不一样，重新编进新文件；删掉被完全取代或清单里已没有的旧文件 %lu 个",
              (unsigned long long)atomic_load(&g_par_stale), (unsigned long)pruned);
     }
     printf("{\"render\": %llu, \"compute\": %llu, \"mesh\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\"}\n",

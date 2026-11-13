@@ -256,20 +256,29 @@ def push_seed(dev, bundle_id, seed):
         folder = f'shader-seed-{fp[:12]}-{int(time.time())}'
         names = sorted(p.name for p in seed.iterdir() if p.is_file())
         total = sum((seed/n).stat().st_size for n in names)
-        pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in names) + 2   # write_pack's stream
-        parts = (pack + PART - 1) // PART
-        print(f'shaders: copying {len(names)} files, {total / 2**30:.1f} GiB, as one pack in {parts} parts (once per shader list; later installs keep them)', flush=True)
-        prog = Progress('shaders', pack); made = [0]
+        # The shaders' own files go as image parts (<folder>.img.NNN, seed_image.py), read in place on the device
+        # (totk_seed_image.h); the few others as the pack the app unpacks (2026-11-13: the device unpacked about 128,000
+        # files after every update and removed the last seed's 128,000).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from seed_image import image_names, write_parts
+        imaged = image_names(names); loose = sorted(set(names) - set(imaged))
+        image = sum((seed/n).stat().st_size + 16 + 24 + len(n.encode()) for n in imaged)   # write_parts' data, alignment, index
+        pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in loose) + 2   # write_pack's stream
+        parts = (pack + PART - 1) // PART + (image + PART - 1) // PART
+        print(f'shaders: copying {len(names)} files, {total / 2**30:.1f} GiB: {len(imaged)} in image parts and {len(loose)} '
+              f'in a pack, {parts} parts in all (once per shader list; later installs keep them)', flush=True)
+        prog = Progress('shaders', pack + image); made = [0]
         print(f'  shaders: making part 1/{parts} from the shader files …', flush=True)
         def copy(local, name):
             run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
                  bundle_id,'--source',local,'--destination',f'Documents/GameData/{name}'], capture_output=True)
         got.write_text('stale\n'); copy(got, 'shader-seed.txt')   # until every part is there
-        def push(local):   # each part as write_pack completes it (making a part reads ~1 GiB of shader files first)
+        def push(local):   # each part as it is complete (making a part reads ~1 GiB of shader files first)
             made[0] += 1; n = local.stat().st_size
             prog.part(f'part {made[0]}/{parts}', n, lambda: copy(local, local.name)); local.unlink()
             if made[0] < parts: print(f'  shaders: making part {made[0] + 1}/{parts} from the shader files …', flush=True)
-        write_pack(seed, names, Path(d), folder, PART, push)
+        write_parts(seed, imaged, Path(d)/folder, PART, push)
+        write_pack(seed, loose, Path(d), folder, PART, push)
         got.write_text(f'{folder}\n{fp}\n'); copy(got, 'shader-seed.txt')
 
 def built_bundle_id(ipa, team):

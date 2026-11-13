@@ -363,15 +363,26 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
-        NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
-        setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
-        { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
-          NSString *build = [root stringByAppendingPathComponent:@"build"];
-          totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
-        contrib_ask(contrib);
+        /* A quick App (games/oot/build.py shader_mode 'title', MNGShaders) contributes nothing: its warm-up lists hold only
+           the title's rows, so every pipeline it met would look new and go to the inbox (2026-11-13: one session of the
+           quick copy wrote 165 of the list's own pipelines and 120 of its variants), as a run without the seed would
+           (totk_contrib_path). Once filled in (MNG Launcher's 补全着色器: MNGShaders 'full') it contributes again. */
+        NSString *shaders = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGShaders"];
+        BOOL quick = [shaders isKindOfClass:NSString.class] && [shaders isEqualToString:@"title"];
         setenv("TOTK_BOARD_DIR", data.fileSystemRepresentation, 0);   // the leaderboard's folder (runtime/board_upload.h); a test run keeps its own;
         //   named first: the uploads below send the board's id with the rows (totk_inbox_board_id)
-        totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing
+        if (quick) {
+            unsetenv("TOTK_SHADER_CONTRIB");
+            fprintf(stderr, "[launcher] quick App (only the title's shaders): no shader contribution until it is filled in\n");
+        } else {
+            NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
+            setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
+            { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it
+              NSString *build = [root stringByAppendingPathComponent:@"build"];
+              totk_contrib_prune(contrib, seed ? @(seed) : [build stringByAppendingPathComponent:@"shader-seed"], build); }
+            contrib_ask(contrib);
+            totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing
+        }
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
         { NSString *cmds = env_or("TOTK_INPUT_FILE", [data stringByAppendingPathComponent:@"input.txt"]);

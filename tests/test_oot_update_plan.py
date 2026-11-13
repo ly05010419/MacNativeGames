@@ -40,7 +40,7 @@ class OcarinaPlan(unittest.TestCase):
 
     def test_the_update_refuses_with_the_same_check(self):
         text = (ROOT / 'games/oot/build.py').read_text()
-        self.assertIn('blocker=update_blocker(work)\n    if blocker:raise ValueError(blocker)', text)
+        self.assertIn('blocker=update_blocker(work,mode)\n    if blocker:raise ValueError(blocker)', text)
 
 
 if __name__ == '__main__':

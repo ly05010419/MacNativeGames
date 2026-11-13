@@ -61,6 +61,11 @@ static _Atomic int par_filling;                                          // the 
    keys all moved go (par_prune_superseded). The archive is kept from one package to the next instead of thrown away
    whenever the runtime changed (user 2026-11-11: "如何让 快速更新 不要这么容易失效"). */
 static int g_par_recheck;
+/* The keys this packaging run looked up or wrote (par_archive_for, par_write): the lists' pipelines. A file holding none
+   of them goes too (par_prune_superseded): its pipelines are no longer listed (2026-11-13, Ocarina of Time for an iPad:
+   a translator change gave about half the shaders new keys, the old keys' files stayed, 0 removed, and the device archive
+   was compiled with them). */
+static NSMutableSet<NSString *> *g_par_used;
 static _Atomic uint64_t g_par_stale;                                      // keys whose file missed their pipeline (par_stale)
 static __thread int par_write_in_place;                                  // the fill's and the start-up warm-up's thread: they write at once
 
@@ -248,6 +253,7 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
     pthread_mutex_lock(&g_par_mu);
+    if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     NSString *name = g_par_where[key];
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
@@ -327,6 +333,7 @@ static void par_flush_thread(void) {
 }
 static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
     pthread_mutex_lock(&g_par_mu);
+    if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     BOOL skip = [g_par_have containsObject:key] || [g_par_pending containsObject:key];
     if (!skip) [g_par_pending addObject:key];
     pthread_mutex_unlock(&g_par_mu);

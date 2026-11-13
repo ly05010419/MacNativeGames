@@ -151,7 +151,7 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
             if([j isKindOfClass:NSDictionary.class]&&[j[@"abi"] intValue]==1&&[j[@"chain"] isEqual:@DMSH_CHAIN]&&[j[@"shader"] isEqual:@(sh->key)]){
                 NSData *src=[sh_src(sh) dataUsingEncoding:NSUTF8StringEncoding];
                 unsigned char hash[32];char hex[65]={0};if(src){CC_SHA256(src.bytes,(CC_LONG)src.length,hash);for(int k=0;k<32;k++)snprintf(hex+2*k,3,"%02x",hash[k]);}
-                NSData *reflection=[NSData dataWithContentsOfFile:[[sh->src_path stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]];
+                NSData *reflection=totk_rt_read([[sh->src_path stringByDeletingPathExtension] stringByAppendingPathExtension:@"json"]);
                 char rh[65]={0};if(reflection){CC_SHA256(reflection.bytes,(CC_LONG)reflection.length,hash);for(int k=0;k<32;k++)snprintf(rh+2*k,3,"%02x",hash[k]);}
                 if(src&&reflection&&[j[@"reflection_sha256"] isEqual:@(rh)]&&[j[@"msl_sha256"] isEqual:@(hex)]&&[j[@"variants"] isKindOfClass:NSArray.class]&&[j[@"variants"] count]<=16)sh->raw_write_domains=j[@"variants"];
             }

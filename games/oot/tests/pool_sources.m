@@ -48,6 +48,15 @@ int main(int argc,const char **argv) { @autoreleasepool {
     int count=nvn_pool_index_values(program,uniform_read,uniform,values,64);assert(count==1&&values[0]==UINT32_MAX);checks++;
     assert(nvn_pool_index_values(index_program(@"uint(1) << 32",@""),uniform_read,uniform,values,64)==-1);checks++;
     assert(!index_program(@"2147483648 >> 1",@"").count);checks++;
+    /* No pooled texture read: an empty result straight away (2026-11-13: the scans of the whole source are skipped), and
+       a read of another pool's name does not count as this one's. */
+    {nvn_refl r={.nb=2};r.b[0].kind=NVN_RB_SBUFP;r.b[1].kind=NVN_RB_TEXP;r.b[1].pool_sources=5;
+     NSArray *b=@[@{@"msl_name":@"data",@"msl_type":@"const device Words*"},@{@"msl_name":@"textures"}];
+     NSString *none=[base stringByAppendingString:@"\nfloat x = spvDescriptorSet0.other.read(uint2(0)).x;"];
+     assert(!nvn_pool_sources(&r,b,none).count&&!r.b[1].pool_sources);checks++;
+     NSString *other=[fixture(base,@"int(_3)") stringByReplacingOccurrencesOfString:@"spvDescriptorSet0.textures" withString:@"spvDescriptorSet0.texturesX"];
+     assert(!nvn_pool_sources(&r,b,other).count&&!r.b[1].pool_sources);checks++;
+     assert(nvn_pool_sources(&r,b,fixture(base,@"int(_3)")).count==1&&r.b[1].pool_sources==1);checks++;}
     printf("pool-sources: PASS %d proof and rejection checks\n",checks);
     if(argc>1){NSUInteger shaders=0,pools=0,proven=0;NSString *root=@(argv[1]);
         for(NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:NULL]){@autoreleasepool {

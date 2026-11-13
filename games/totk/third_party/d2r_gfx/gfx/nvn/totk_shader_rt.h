@@ -8,6 +8,11 @@ NSString *totk_rt_dir(void);
 // (read in place, never copied). totk_rt_list: every file name of both, sorted.
 NSString *totk_rt_file(NSString *name);
 NSArray<NSString *> *totk_rt_list(void);
+// A file of totk_rt_file's: its bytes, whether it exists, its text. The seed's per-shader files may be in its image
+// (<seed>.img.000 ..., totk_seed_image.h) rather than its folder; these read either. nil / 0 when there is no such file.
+NSData *totk_rt_read(NSString *path);
+int totk_rt_exists(NSString *path);
+NSString *totk_rt_text(NSString *path);
 // Current-game raw shader keys observed outside the bundled static inventory.
 // Includes persisted earlier sessions and returns an immutable snapshot.
 NSSet<NSString *> *totk_rt_observed_shader_keys(void);

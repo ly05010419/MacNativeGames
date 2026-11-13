@@ -27,6 +27,7 @@
 #include <dirent.h>
 #include <stdatomic.h>
 #include "totk_shader_seed.h"
+#include "totk_seed_image.h"
 #include "totk_shader_observed.h"
 #include "totk_shader_contrib.h"
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
@@ -60,6 +61,8 @@ static NSString *g_root, *g_dir;
    shader's .variants lists of both places are joined. nil on the Mac, where the seed is cloned into the cache. */
 static NSString *g_seed_dir;
 static NSSet<NSString *> *g_seed_names;
+static seed_image g_seed_img;   // the seed's per-shader files when it came as an image (<seed>.img.000 ...), opened with g_seed_dir
+static NSString *g_seed_prefix;   // g_seed_dir + "/"
 /* Seed files found broken (an empty or entry-less MSL, 2026-10-30: a translation cut short on 10-26 left a 0-byte
    5e0447ea... in the packaging cache, and the warm-up ended the game on it): read from the cache instead, where the
    translation made again goes. Also every seed name the cache already has a file for (made again in an earlier run). */
@@ -126,6 +129,9 @@ NSString *totk_rt_dir(void) {
             totk_seed_progress = NULL;
             if ([seed[@"overlay"] isKindOfClass:NSArray.class]) {
                 g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]];
+                g_seed_prefix = [source stringByAppendingString:@"/"]; seed_image_open(&g_seed_img, source);
+                if (g_seed_img.parts) { uint64_t files = 0; for (int i = 0; i < g_seed_img.parts; i++) files += g_seed_img.p[i].count;
+                    LOG("[shader-seed] 着色器文件在镜像里：%d 份，%llu 个文件（原地读取，不解包）", g_seed_img.parts, (unsigned long long)files); }
                 for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:g_dir error:nil] ?: @[])   // made again before: the cache's
                     if ([name hasSuffix:@"_b.metal"] && [g_seed_names containsObject:name]) {
                         seed_mark_broken(name); seed_mark_broken([[name substringToIndex:name.length - 6] stringByAppendingString:@".json"]);
@@ -281,6 +287,29 @@ NSString *totk_rt_file(NSString *name) {
     return g_seed_dir && [g_seed_names containsObject:name] && !seed_broken(name) ? [g_seed_dir stringByAppendingPathComponent:name]
                                                              : [dir stringByAppendingPathComponent:name];
 }
+/* A seed file in the image, by its path under the seed folder (what totk_rt_file gave): nil when it is not there. */
+static NSData *seed_image_file(NSString *path) {
+    if (!g_seed_img.parts || ![path hasPrefix:g_seed_prefix]) return nil;
+    NSString *name = [path substringFromIndex:g_seed_prefix.length];
+    return [name containsString:@"/"] ? nil : seed_image_data(&g_seed_img, name);
+}
+NSData *totk_rt_read(NSString *path) {
+    if (!path) return nil;
+    NSData *d = seed_image_file(path);
+    return d ?: [NSData dataWithContentsOfFile:path];
+}
+int totk_rt_exists(NSString *path) {
+    if (!path) return 0;
+    if (g_seed_img.parts && [path hasPrefix:g_seed_prefix]) {
+        const seed_image_part *p; const seed_image_ent *x; NSString *name = [path substringFromIndex:g_seed_prefix.length];
+        if (![name containsString:@"/"] && seed_image_find(&g_seed_img, name, &p, &x)) return 1;
+    }
+    return [NSFileManager.defaultManager fileExistsAtPath:path];
+}
+NSString *totk_rt_text(NSString *path) {
+    NSData *d = totk_rt_read(path);
+    return d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
+}
 NSArray<NSString *> *totk_rt_list(void) {
     NSArray<NSString *> *cached = [NSFileManager.defaultManager contentsOfDirectoryAtPath:totk_rt_dir() error:nil] ?: @[];
     if (!g_seed_dir) return [cached sortedArrayUsingSelector:@selector(compare:)];
@@ -290,7 +319,7 @@ NSArray<NSString *> *totk_rt_list(void) {
 static NSString *index_path(NSString *shader) { return [totk_rt_dir() stringByAppendingFormat:@"/%@.variants", shader]; }
 static NSMutableArray *variants_of(NSString *shader);
 static NSArray *variants_file(NSString *path) {
-    NSData *d = [NSData dataWithContentsOfFile:path];
+    NSData *d = totk_rt_read(path);
     NSArray *a = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     return [a isKindOfClass:[NSArray class]] ? a : @[];
 }
@@ -346,8 +375,7 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
         if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
         BOOL checked = [g_msl_checked containsObject:found];
         NSString *msl = checked ? nil :
-            [NSString stringWithContentsOfFile:totk_rt_file([found stringByAppendingString:@"_b.metal"])
-                                             encoding:NSUTF8StringEncoding error:nil];
+            totk_rt_text(totk_rt_file([found stringByAppendingString:@"_b.metal"]));
         /* missing, empty (a translation cut short: 0 bytes, 2026-10-30) or previously un-compilable: translated again */
         if (!checked && (!msl || msl.length < 64 || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
             [vs removeObjectAtIndex:i];

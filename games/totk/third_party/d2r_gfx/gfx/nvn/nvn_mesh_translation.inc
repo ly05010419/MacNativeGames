@@ -30,7 +30,7 @@ static id<MTLFunction> mtk_translation_function(NvShader*ms,int *selected) {
     NSData*src=[NSData dataWithContentsOfFile:[stem stringByAppendingString:@".metal"]];
     NSData*ref=[NSData dataWithContentsOfFile:[stem stringByAppendingString:@".json"]];
     NSData*original=[sh_src(ms)dataUsingEncoding:NSUTF8StringEncoding];
-    NSData*oref=[NSData dataWithContentsOfFile:[[ms->src_path stringByDeletingPathExtension]stringByAppendingPathExtension:@"json"]];
+    NSData*oref=totk_rt_read([[ms->src_path stringByDeletingPathExtension]stringByAppendingPathExtension:@"json"]);
     if(![j[@"original_source_sha256"]isEqual:mtk_translation_sha(original)]||
        ![j[@"original_reflection_sha256"]isEqual:mtk_translation_sha(oref)]||
        ![j[@"candidate_source_sha256"]isEqual:mtk_translation_sha(src)]||

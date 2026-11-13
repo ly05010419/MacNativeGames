@@ -163,6 +163,18 @@ static proof trace(NSString *expr,NSDictionary *defs,NSDictionary *types,NSDicti
 NSDictionary *nvn_pool_sources(nvn_refl *rf,NSArray *bindings,NSString *src) {
     for(int i=0;i<rf->nb;i++)rf->b[i].pool_sources=0;
     if(bindings.count!=(NSUInteger)rf->nb)return @{};
+    /* Only a pooled texture read "(&spvDescriptorSet0.<name>->e[0])[min(" has anything to prove (the reads pattern
+       below starts with that text): without one in the source the result is empty, so the scans of the whole source
+       are skipped. They were the shader load's cost (2026-11-13, iPad A16 CPU report: about 30 of 31 samples of
+       shader_load_mode in this function's regexes, matching rather than compiling them: 4.16 against 0.02 ms per
+       shader on an M4); 2,304 of Ocarina of Time's 18,661 iOS shaders have such a read. */
+    BOOL pooled=NO;
+    for(int i=0;i<rf->nb&&!pooled;i++){
+        if(rf->b[i].kind!=NVN_RB_TEXP)continue;
+        NSString *name=[bindings[i] isKindOfClass:NSDictionary.class]?bindings[i][@"msl_name"]:nil;if(![name isKindOfClass:NSString.class]||!name.length)continue;
+        pooled=src&&[src rangeOfString:[NSString stringWithFormat:@"(&spvDescriptorSet0.%@->e[0])[min(",name]].location!=NSNotFound;
+    }
+    if(!pooled)return @{};
     // A bound mutable alias needs interprocedural analysis. Helper parameters
     // alone are harmless; direct lvalue arguments are rejected below instead.
     if(matches(src,@"(?:thread|device)\\s+(?!const\\b)[^;\\n{}]*&\\s*\\w+\\s*=").count||[src containsString:@"const_cast"]||[src containsString:@"[&"])return @{};

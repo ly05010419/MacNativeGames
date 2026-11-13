@@ -166,10 +166,48 @@ class ShaderMode(unittest.TestCase):
             self.build.title_shader_file(Path(self.tmp.name) / 'tree', shared)
         self.assertIn('no title rows', str(e.exception))
 
+    def test_a_title_build_keeps_its_own_folders(self):
+        # 2026-11-13: a title build in the full build's work folder deleted 3,081 pipeline archive files of the full
+        # build and put all 64,607 libraries into the quick app's 2.7 GB shader bundle
+        tree = Path(self.tmp.name)
+        full, title = self.build.shader_dirs(tree, 'full'), self.build.shader_dirs(tree, 'title')
+        self.assertEqual(full, (tree / 'build/shader-seed/oot', tree / 'build/shader-libs', ''))
+        self.assertTrue(set(full[:2]).isdisjoint(title[:2]))
+        self.assertEqual(title[2], '-title')
+        text = (GAME / 'build.py').read_text()
+        for used in ("cache=folder/(chain+suffix)", "target=tree/f'build/pipelines{suffix}'",
+                     "bundle=tree/f'build/shader-bundles/ShaderData-oot{suffix}.bundle'", "'--output',seed,", "'--out',libraries,"):
+            self.assertIn(used, text)
+
+    def test_a_title_update_needs_no_earlier_seed(self):
+        # its few shaders are made again in the update (2026-11-13: the first title update of a work folder was refused
+        # for want of shader-seed-title); a full update still needs the full build's seed and libraries
+        work = Path(self.tmp.name) / 'work'
+        tree = work / 'oot'
+        (tree / 'extracted/oot/romfs').mkdir(parents=True)
+        (tree / 'extracted/oot/romfs/index.json').write_text('{}')
+        (tree / 'rewritten/oot').mkdir(parents=True)
+        with mock.patch.object(self.build, 'sha', return_value='x'), \
+                mock.patch.object(self.build.json, 'loads', return_value={'rewritten_sha256': {'main.patched.bin': 'x'}}):
+            self.assertEqual(self.build.update_blocker(work, 'title'), '')
+        self.assertIn('is missing', self.build.update_blocker(work, 'full'))
+
     def test_the_app_records_its_mode_and_shader_fill_makes_it_full(self):
         text = (GAME / 'build.py').read_text()
         self.assertIn("info['MNGShaders']=mode", text)
         self.assertIn("package_app(work,tree,app,'library' if folder else 'app',folder,shared=listfile,mode='full')", text)
+
+
+class QuickAppContributesNothing(unittest.TestCase):
+    def test_the_launcher_leaves_the_contribution_off_for_a_quick_app(self):
+        # its lists hold only the title's rows: every pipeline would look new (2026-11-13: 165 of the list's own
+        # pipelines and 120 of its variants in one session of the quick copy)
+        text = (GAME / 'app/launcher.m').read_text()
+        guard = text.index('BOOL quick = [shaders isKindOfClass:NSString.class] && [shaders isEqualToString:@"title"];')
+        quick = text.index('unsetenv("TOTK_SHADER_CONTRIB");', guard)
+        for call in ('totk_inbox_claim(', 'totk_contrib_prune(', 'contrib_ask(contrib);', 'totk_inbox_start(contrib'):
+            self.assertGreater(text.index(call, guard), quick, call)   # only in the else branch, after the guard
+        self.assertEqual(text.count('totk_inbox_start(contrib'), 1)
 
 
 class CaptureSwitch(unittest.TestCase):

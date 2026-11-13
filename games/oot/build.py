@@ -110,6 +110,15 @@ def shader_mode(app=None):
     if want not in SHADER_MODES:raise ValueError(f'OOT_SHADERS={want}: one of '+', '.join(SHADER_MODES))
     return want
 
+def shader_dirs(tree, mode='full'):
+    """(seed, Metal libraries, suffix) of a build's shaders: a 'title' build keeps its own (shader-seed-title,
+    shader-libs-title, and with the suffix its pipeline cache, warm lists, archive files and shader data bundle), so it
+    never replaces or prunes a full build's. 2026-11-13: a title build in the full build's work folder deleted 3,081
+    pipeline archive files of the full build and cut its libraries' record to 33 shaders, so the next full update would
+    have built 23,710 pipelines and 42,895 libraries again."""
+    suffix='-title' if mode=='title' else ''
+    return tree/f'build/shader-seed{suffix}/oot',tree/f'build/shader-libs{suffix}',suffix
+
 def title_shader_file(tree, shared):
     """The shaders the title rows of the shared list name, written for prepare_ns2_seed.py --only (a 'title' build)."""
     keys=oot_shader_list().ShaderList.load(shared).title_keys()
@@ -148,7 +157,7 @@ def remove_device_reminder():
     agent.unlink(missing_ok=True)
     print('removed the old Mac reminder for iPhone / iPad shader contributions: the devices contribute on their own now',flush=True)
 
-def resolve_lists(tree, folder, logs, shared=None):
+def resolve_lists(tree, folder, logs, shared=None, mode='full'):
     """The App's warm-up lists beside build/shader-map.tsv, build/pso_manifest.tsv and build/pso_title.tsv: the shared
     list's rows of this game, each variant named as the seed serves its bind state (scripts/shader_list.py resolve), as
     build_app.py resolve_lists makes them for every game it packages. The Mac runtime reads the lists in the shader map's
@@ -160,7 +169,7 @@ def resolve_lists(tree, folder, logs, shared=None):
     from these same files and the App carries them (package_app). The seed's own copies are of the list the seed was
     translated with; a fast update keeps that seed, so on 2026-11-11 the archive had 2,957 listed render pipelines of the
     11-09 list while the App's lists named 7,516."""
-    seed=tree/'build/shader-seed/oot';shared=Path(shared) if shared else tree/'assets/shader_list.tsv'   # shared: shader_update.py's download
+    seed=shader_dirs(tree,mode)[0];shared=Path(shared) if shared else tree/'assets/shader_list.tsv'   # shared: shader_update.py's download
     folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
     title,manifest=folder/'pso_title.tsv',folder/'pso_manifest.tsv'
     for path in (title,manifest):path.unlink(missing_ok=True)   # never an older package's file
@@ -207,9 +216,9 @@ def listed_shader_file(tree, shared):
     print(f'Metal libraries: {len(keys)} shaders the list uses (OOT_SHADER_SUBSET=listed; unset compiles every one)',flush=True)
     return str(path)
 
-def verify_shader_resources(tree):
+def verify_shader_resources(tree, mode='full'):
     """Check every prepared variant/library and bind both manifests into the normal build record."""
-    seed=tree/'build/shader-seed/oot';libraries=tree/'build/shader-libs'
+    seed,libraries,_=shader_dirs(tree,mode)
     if not seed.exists():return None   # explicit development packages from before offline preparation
     metadata=json.loads((seed/'seed-manifest.json').read_text())
     chain=re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: oot\b',(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text())[1]   # the shared layer's line for this game
@@ -247,9 +256,10 @@ def verify_shader_resources(tree):
     (tree/'build/game-data/oot/precompiled-shaders.json').write_text(json.dumps(record,indent=2)+'\n')
     return record
 
-def shader_bundle(tree,record):
+def shader_bundle(tree,record,mode='full'):
     """Seal the large immutable seed once, using the repository's nested-bundle layout."""
-    shared=build_helpers();bundle=tree/'build/shader-bundles/ShaderData-oot.bundle'
+    seed,libraries,suffix=shader_dirs(tree,mode)
+    shared=build_helpers();bundle=tree/f'build/shader-bundles/ShaderData-oot{suffix}.bundle'
     stamp=bundle.with_name(bundle.name+'.json')
     want={k:record[k]for k in ('seed_manifest_sha256','libraries_manifest_sha256')}
     if (bundle/'Contents/_CodeSignature/CodeResources').is_file() and stamp.exists() and json.loads(stamp.read_text())==want:
@@ -257,8 +267,8 @@ def shader_bundle(tree,record):
     temporary=bundle.with_name(bundle.name+'.partial-'+str(os.getpid()))
     if temporary.exists():raise ValueError('unfinished shader bundle: '+str(temporary))
     resources=temporary/'Contents/Resources'
-    shared.copy_tree(tree/'build/shader-seed/oot',resources/'shader-seed')
-    libraries=tree/'build/shader-libs';manifest=json.loads((libraries/'libraries-manifest.json').read_text())
+    shared.copy_tree(seed,resources/'shader-seed')
+    manifest=json.loads((libraries/'libraries-manifest.json').read_text())
     for name in manifest['files']:clone_file(libraries/name,resources/'shader-libs'/name)
     clone_file(libraries/'libraries-manifest.json',resources/'shader-libs/libraries-manifest.json')
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
@@ -271,7 +281,7 @@ def shader_bundle(tree,record):
     temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
     return bundle
 
-def compute_pipeline_archive(work, tree, lists):
+def compute_pipeline_archive(work, tree, lists, mode='full'):
     """Build every seed compute pipeline and, with them, the render pipelines the App's warm-up lists name (lists: the
     pso_title.tsv / pso_manifest.tsv resolve_lists made from the current games/oot/assets/shader_list.tsv, the files the
     App carries), then package only a complete verified archive: every planned compute pipeline must be in the index; the
@@ -280,13 +290,13 @@ def compute_pipeline_archive(work, tree, lists):
     if scripts not in sys.path:sys.path.insert(0,scripts)
     from prepare_compute_pipelines import compute_rows
     from dev.game_slot import GameSlot
-    seed=tree/'build/shader-seed/oot'
+    seed,_,suffix=shader_dirs(tree,mode)
     rows=compute_rows(seed)
     folder=tree/'build/compute-pipelines';folder.mkdir(parents=True,exist_ok=True)
     plan=folder/'compute.tsv';plan.write_text('\n'.join(rows)+'\n')
     chain=json.loads((seed/'seed-manifest.json').read_text())['chain']
     # The runtime's archive metadata also checks GPU, OS and chain before reuse.
-    cache=folder/chain
+    cache=folder/(chain+suffix)   # a title build's own: its pruning never reaches the full build's files
     # Kept from one package to the next, also when the runtime changed: with TOTK_PAR_RECHECK=1 the tool makes every listed
     # pipeline against the archive (Metal compares the functions and state), so one this runtime describes otherwise is
     # compiled and written again and the rest come from their files (nvn_mtl.m mtl_pipeline_archive_tool, par_stale; user
@@ -310,7 +320,7 @@ def compute_pipeline_archive(work, tree, lists):
     if report['write_failed'] or report['compute']+report['kept']<len(rows) or (report['failed'] and not lists):
         raise ValueError('incomplete pipeline archive: '+str(report))
     if report['failed']:print(f"[RED] {report['failed']} listed pipelines were not built; see {log}",flush=True)
-    target=tree/'build/pipelines'
+    target=tree/f'build/pipelines{suffix}'
     count=build_helpers().mac_pipeline_files(cache/'pipelines',target,report['arch'],chain)
     expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
     index=target/f"pipelines-{report['arch']}.tsv"
@@ -355,10 +365,11 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     """Stage a sealed App containing its runtime data, then replace the closed App. mode: shader_mode, recorded in the
     App (MNGShaders) for its updates and MNG Launcher."""
     mode=mode or shader_mode()
-    shader_record=verify_shader_resources(tree) if mode!='none' else None
-    lists=resolve_lists(tree,tree/'build/warm-lists',work/'logs',shared)   # one resolve of the current list: the archive and the App's build/ use it
-    pipelines=compute_pipeline_archive(work,tree,lists) if shader_record else None
-    prepared=shader_bundle(tree,shader_record) if shader_record else None
+    shader_record=verify_shader_resources(tree,mode) if mode!='none' else None
+    suffix=shader_dirs(tree,mode)[2]
+    lists=resolve_lists(tree,tree/f'build/warm-lists{suffix}',work/'logs',shared,mode)   # one resolve of the current list: the archive and the App's build/ use it
+    pipelines=compute_pipeline_archive(work,tree,lists,mode) if shader_record else None
+    prepared=shader_bundle(tree,shader_record,mode) if shader_record else None
     opening_overlay=tree/'extracted/oot/opening-patches'
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
                     '--output',opening_overlay],check=True)
@@ -450,22 +461,27 @@ def app_running(app):
         return True
     return False
 
-def update_blocker(work):
+def update_blocker(work, mode='full'):
     """Why this work folder cannot take an update without the full build ('' when it can): its last full build's files
     are missing, its shaders are of another translation chain or translator than this repository's (the seed's
     translation_context), or its rewritten modules are not this repository's. update_runtime refuses then, and
     update_runtime.py --plan (MNG Launcher, tools/mng.py) answers "full" instead of an express update that would stop
-    (2026-11-13: chain v27 made the Launcher start an express update that refused at once)."""
-    work=Path(work);tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
-    for needed in (manifest,tree/'build/shader-libs/libraries-manifest.json',tree/'extracted/oot/romfs/index.json',tree/'rewritten/oot'):
+    (2026-11-13: chain v27 made the Launcher start an express update that refused at once).
+    A 'title' App's update makes its few shaders again in a minute or two, so neither an earlier seed nor the same
+    translation chain is needed for it: only the game files and this repository's rewritten modules."""
+    work=Path(work);tree=work/'oot';seed,libraries,_=shader_dirs(tree,'title' if mode=='title' else 'full')
+    manifest=seed/'seed-manifest.json'
+    shaders=() if mode=='title' else (manifest,libraries/'libraries-manifest.json')
+    for needed in (*shaders,tree/'extracted/oot/romfs/index.json',tree/'rewritten/oot'):
         if not needed.exists():return f'{needed} is missing: run the full build once with this work folder'
-    scripts=str(GAME/'scripts')
-    if scripts not in sys.path:sys.path.insert(0,scripts)
-    from prepare_ns2_seed import translation_context
-    try:metadata=json.loads(manifest.read_text())
-    except ValueError:return f'{manifest} is not readable: run the full build'
-    if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
-        return 'the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build'
+    if mode!='title':
+        scripts=str(GAME/'scripts')
+        if scripts not in sys.path:sys.path.insert(0,scripts)
+        from prepare_ns2_seed import translation_context
+        try:metadata=json.loads(manifest.read_text())
+        except ValueError:return f'{manifest} is not readable: run the full build'
+        if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
+            return 'the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build'
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
     for name,want in expected['rewritten_sha256'].items():
         if sha(tree/'rewritten/oot'/name)!=want:return 'rewritten module differs from this repository: run the full build: '+name
@@ -478,8 +494,10 @@ def update_runtime(app,work=None):
     app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]   # the app's own record first
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
-    tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
-    blocker=update_blocker(work)
+    tree=work/'oot'
+    mode=shader_mode(app)
+    if mode=='none':mode='full'   # an update always carries shaders, as before (an App of OOT_BUNDLE_SHADERS=0 gets them all)
+    blocker=update_blocker(work,mode)
     if blocker:raise ValueError(blocker)
     told=False
     while app_running(app):
@@ -497,8 +515,6 @@ def update_runtime(app,work=None):
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
     # The new runtime asks for every translation again: the ones whose request is the same are kept, the others made again
     # (prepare_ns2_seed.py, totk_shader_rt.m seed_verified), and only the libraries whose source changed are compiled.
-    mode=shader_mode(app)
-    if mode=='none':mode='full'   # an update always carries shaders, as before (an App of OOT_BUNDLE_SHADERS=0 gets them all)
     shader_steps(work,tree,logs,run,mode=mode)
     folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
     package_app(work,tree,app,'library' if folder else 'app',folder,mode=mode)
@@ -511,8 +527,10 @@ def update_shaders(app,listfile,work=None):
     pipeline archive checked against them, then the App packaged as update_runtime does. The work folder is used as it
     is: no source sync and no runtime build, so the shaders are of the runtime the App carries."""
     app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]
-    tree=work/'oot';manifest=tree/'build/shader-seed/oot/seed-manifest.json'
-    for needed in (manifest,tree/'build/shader-libs/libraries-manifest.json',tree/'extracted/oot/romfs/index.json',work/'build/oot-native'):
+    tree=work/'oot'
+    # the App's own seed (a quick App's is shader-seed-title): its translations are of this repository's chain and translator
+    manifest=shader_dirs(tree,shader_mode(app))[0]/'seed-manifest.json'
+    for needed in (manifest,tree/'extracted/oot/romfs/index.json',work/'build/oot-native'):
         if not needed.exists():raise ValueError(f'{needed} is missing: the work folder cannot translate shaders (a full build makes it)')
     scripts=str(GAME/'scripts')
     if scripts not in sys.path:sys.path.insert(0,scripts)
@@ -541,13 +559,14 @@ def shader_steps(work,tree,logs,run,device=False,shared=None,mode='full'):
     py=work/'venv/bin/python'
     shared=Path(shared) if shared else GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists; shader_update.py gives the newest from GitHub
     only=title_shader_file(tree,shared) if mode=='title' else None   # a quick build: the title rows' shaders only
+    seed,libraries,_=shader_dirs(tree,mode)
     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
-        '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
+        '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,'--output',seed,
         *(['--list',shared] if shared.is_file() else []),*(['--only',only] if only else [])],'prepare-shader-seed')
     if not device:
-        only=shader_subset(tree,shared)
-        run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
-            '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only else [])],'compile-shader-libraries')
+        subset=shader_subset(tree,shared) if mode=='full' else None   # OOT_SHADER_SUBSET (test builds); a title seed holds only its shaders
+        run([py,GAME/'scripts/build_shader_libs.py','--cache',seed,
+            '--out',libraries,'--jobs',str(shader_jobs()),*(['--only',subset] if subset else [])],'compile-shader-libraries')
 
 def shader_jobs():
     """Translation workers and Metal compiles at once: the cores minus two (the runtime's own threads and the Metal
