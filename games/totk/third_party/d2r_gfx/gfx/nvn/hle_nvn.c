@@ -3295,6 +3295,10 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] 拷贝编码器 至帧 %llu：每帧 %.1f 个（其中打断渲染通道 %.1f）；uniform 更新 %.1f 次（打断 %.1f），缓冲拷贝 %.1f 次（打断 %.1f）", frame,
                 (v[0] - pv[0]) / nf, (v[1] - pv[1]) / nf, (v[2] - pv[2]) / nf, (v[3] - pv[3]) / nf, (v[4] - pv[4]) / nf, (v[5] - pv[5]) / nf); }
           memcpy(pv, v, sizeof pv); }
+        { static uint64_t pv[5]; uint64_t v[5]; void mtl_dispatch_barrier_stats(uint64_t[5]); mtl_dispatch_barrier_stats(v);   // nvn_dispatch_order.h (DM_NVN_DISPATCH_BARRIER=game)
+          if (pf && frame > pf && memcmp(v, pv, sizeof pv)) LOG("[nvn] compute dispatches up to frame %llu: %llu after a barrier of the game's, %llu after a host operation, %llu in the full order (a binding with no range), %llu with no barrier, %llu after a host operation in their argument resolution (DM_NVN_DISPATCH_BARRIER)", frame,
+              (unsigned long long)(v[0] - pv[0]), (unsigned long long)(v[1] - pv[1]), (unsigned long long)(v[2] - pv[2]), (unsigned long long)(v[3] - pv[3]), (unsigned long long)(v[4] - pv[4]));
+          memcpy(pv, v, sizeof pv); }
         { static uint64_t pp[4]; uint64_t v[4]; void mtl_pool_res_stats(uint64_t[4]); mtl_pool_res_stats(v);   // TOTK: memory pools resident on first GPU use (nvn_mtl.m pool_res)
           if (memcmp(v, pp, sizeof pp)) LOG("[nvn] 内存池 至帧 %llu：在册 %llu 个 / %llu MB，其中已放进驻留集 %llu 个 / %llu MB", frame,
               (unsigned long long)v[0], (unsigned long long)(v[1] >> 20), (unsigned long long)v[2], (unsigned long long)(v[3] >> 20));

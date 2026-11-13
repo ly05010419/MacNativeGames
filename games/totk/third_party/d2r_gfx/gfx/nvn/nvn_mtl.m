@@ -1945,10 +1945,12 @@ static uint64_t g_blit_opens, g_blit_splits, g_upd_n, g_upd_split, g_copy_n, g_c
    test read a stale value 1 time in 3). The barrier when the encoder opens only orders it against earlier encoders. On
    Metal 4 the copy encoder is a compute encoder, so both blit and dispatch stages are ordered. TOTK_BLIT_BAR=0: off. */
 static int blit_bar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BLIT_BAR"); v = !e || atoi(e); } return v; }
+#include "nvn_dispatch_order.h"   // compute dispatches ordered by the game's barriers (disp_enc); every host operation here has unknown reach
 static id<MTL4ComputeCommandEncoder> blit_kind(int buffer_alias) { blit_note(); if (!g_blit) { g_blit_opens++; g_blit_splits += g_enc != nil; } rp_end();
     if (buffer_alias && !g_copy_probe_no_alias) g_blit_alias = 1; // rp_end may itself open and close a copy encoder
     if (!g_blit) { rs_sync(); ser_gate(); pt_mark(g_cb, 'B', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:blit_vis()]; }
     else if (blit_bar_on()) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:blit_vis()];
+    dsp_note_host_op();
     return g_blit; }
 static id<MTL4ComputeCommandEncoder> blit(void) { return blit_kind(0); }
 /* Buffer copies (mtl_sub_copy, the copy fallback of inline uniform updates). The same memory can be reached through two Metal
@@ -17567,6 +17569,7 @@ static void oot_bar_native(uint32_t bits) {
     if(i<32) g_oot_bar_hist[i].count++; else g_oot_bar_hist_overflow++;
     PD("I %llu barrier bits=%#x submit=%llu",g_stat_pass,bits,(unsigned long long)g_sub_serial);
     if (!bits) return;
+    dsp_note_game_barrier();   // the next compute dispatch is ordered after everything before it (nvn_dispatch_order.h)
     if (g_oot_bar_probe_negative != 1) { g_oot_bar_pending = 1; g_oot_bar_pending_bits |= bits; }   // ~0u (unknown) stays unknown
     if (g_oot_bar_mode && g_enc) {
         if (g_oot_bar_writes) { rp_end(); g_oot_bar_splits++; }
@@ -18446,11 +18449,34 @@ static void bright_lut(NvShader *cs) {
 static int disp_reuse_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_DISPATCH_REUSE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_DISPATCH_REUSE=0：每次派发单开计算编码器（旧行为）"); } return v; }
 static uint64_t g_disp_n, g_disp_shared;
 static int g_disp_probe_nobar;   // probe-gpu-dispatch-chain negative control: no barrier between the commands of the shared encoder
-static id<MTL4ComputeCommandEncoder> disp_enc(void) {
+/* A binding whose reach is no guest memory range keeps its dispatch in the full order (nvn_dispatch_order.h), as upstream
+   547c5db6's cs_access_of: uniform and storage buffers in slots 0-15 have their bound range; driver segments (SUPPORT, C1,
+   DRV0, DRV2) and push constants (bank NVN_PUSH_BANK: a per-dispatch arena copy, encode_args) touch no guest memory;
+   anything else (textures, images, buffer textures, samplers, handles and pointers loaded from uniforms, descriptor pools,
+   global memory and its write log) has no range here. */
+static int cs_rangeless(const NvShader *cs) {
+    for (int i = 0; i < cs->rf.nb; i++) {
+        const nvn_rbind *b = &cs->rf.b[i];
+        switch (b->kind) {
+        case NVN_RB_CBUF: case NVN_RB_UBOP: case NVN_RB_SBUFP: {
+            if (b->kind == NVN_RB_CBUF && b->reg == NVN_PUSH_BANK) break;
+            if (b->reg >= 16) return 1;
+            const p_bind_buf *u = b->kind == NVN_RB_SBUFP ? &S.ssbo[5][b->reg] : &S.ubo[5][b->reg];
+            if (u->addr && (!u->size || u->addr > UINT64_MAX - u->size)) return 1;   // bound with no size: no range
+            break; }
+        case NVN_RB_SUPPORT: case NVN_RB_C1: case NVN_RB_DRV0: case NVN_RB_DRV2: break;
+        default: return 1;
+        }
+    }
+    return 0;
+}
+void mtl_dispatch_barrier_stats(uint64_t v[5]) { v[0] = g_dbar_game; v[1] = g_dbar_host; v[2] = g_dbar_full; v[3] = g_dbar_free; v[4] = g_dbar_late; }   // the periodic [nvn] line (hle_nvn.c)
+static id<MTL4ComputeCommandEncoder> disp_enc(int rangeless) {
     int open = g_blit != nil;
     g_disp_n++; g_disp_shared += open;
-    if (!open) { rs_sync(); ser_gate(); pt_mark(g_cb, 'C', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; }
-    else if (!g_disp_probe_nobar) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
+    if (!open) { rs_sync(); ser_gate(); pt_mark(g_cb, 'C', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; dsp_note_encoder_open(); }
+    if (dsp_barrier_before(open, rangeless) && !g_disp_probe_nobar)   // the game's barriers, or after everything before it (nvn_dispatch_order.h)
+        [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
     [g_blit setArgumentTable:g_ct]; args_dirty_all();
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
@@ -18581,7 +18607,8 @@ static void dispatch(const p_dispatch *dp) {
         enc_b_end(g_blit); g_blit = nil;
         if (g_ind_splits++ % 20000 == 0) MLOG("indirect dispatch: the copy encoder ended before it, %llu times (%.16s)", (unsigned long long)g_ind_splits, cs->key);
     }
-    if (reuse) ce = disp_enc();
+    int rangeless = cs_rangeless(cs); uint64_t host_ops = 0;
+    if (reuse) { ce = disp_enc(rangeless); host_ops = g_dsp_host_ops; }
     else { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } ce = pg_compute(); }
     PD("K %llu dispatch cs %.16s previous-render=%d pending-native=%d pending-bits=%#x submit=%llu",g_stat_pass,cs->key,kprev,g_oot_bar_pending,g_oot_bar_pending_bits,(unsigned long long)g_sub_serial);
     enc_c_pso(ce, ps);
@@ -18589,6 +18616,13 @@ static void dispatch(const p_dispatch *dp) {
     cs_trace_prepare(cs);
     pt_note_dispatch(cs->key, dp, tg);
     if (enc_label_on()) [(id<MTL4ComputeCommandEncoder>)ce setLabel:[NSString stringWithFormat:@"F%llu s%llu cs %s", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_fence + 1), cs->key]];
+    if (reuse && g_dsp_host_ops != host_ops && ce == (id)g_blit && !g_disp_probe_nobar) {
+        /* A host operation went into the shared encoder after disp_enc (resolving the arguments above): blit_kind ordered it
+           after what came before, this orders the dispatch after it, in both modes, and binds the compute table again. */
+        [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
+        [g_blit setArgumentTable:g_ct]; g_dsp_unknown = rangeless; g_dbar_late++;
+        static int once; if (!once++) MLOG("compute dispatch %.16s: a host operation went into its encoder while its arguments were resolved; a barrier orders the dispatch after it", cs->key);
+    }
     int dispatch_sample = dp_time_begin((id<MTL4ComputeCommandEncoder>)ce, cs->key, dp, tg, (__bridge id<MTLBuffer>)indirect_buffer, indirect_offset);
     if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.16s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
     if (dp->indirect) [(id<MTL4ComputeCommandEncoder>)ce dispatchThreadgroupsWithIndirectBuffer:indirect_gpu threadsPerThreadgroup:MTLSizeMake(tg[0], tg[1], tg[2])];
@@ -19305,6 +19339,7 @@ void mtl_exec(const uint8_t *p) {
     uint64_t revision = TOTK_PROMPT_ICONS_ON ? totk_prompt_revision() : 0;
     if (revision != prompt_revision) { prompt_revision = revision; g_reg_gen++; }
     static int inited; if (!inited) { inited = 1; state_reset(); }
+    if (!g_ret_n) dsp_note_game_barrier();   // a top-level command list: its first dispatch is ordered after earlier lists' work (nvn_dispatch_order.h)
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     { static long st_frame = -2, st_ms; if (st_frame == -2) { const char *e = getenv("DM_NVN_STALL"); st_frame = e ? atol(e) : -1; st_ms = e && strchr(e, ':') ? atol(strchr(e, ':') + 1) : 1000; }   // TOTK diagnostic: DM_NVN_STALL=frame:ms sleeps the replay thread once at the start of that frame's replay
       static long st_done = -1; long cf = (long)atomic_load(&g_cur_frame); if (st_frame >= 0 && cf == st_frame && st_done != cf) { st_done = cf; MLOG("[stall] frame %ld: sleeping %ld ms on the replay thread", cf, st_ms); usleep((useconds_t)(st_ms * 1000)); } }
@@ -19349,6 +19384,7 @@ void mtl_exec(const uint8_t *p) {
                 if (g_qo_stopped) { qo_push(p + h.size); return; }   // guest queue ordering: the caller resumes after the call
                 break; }
             case OP_WAIT_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
+                dsp_note_game_barrier();   // an ordering point: another queue's work may come in here
                 qwait_check(val, m, v);
                 if (cpu_wait_live_on() && mtl_qo_event_ready(val, m, v) && !mtl_qo_event_gpu_projected(val)) { usnap_drop_snapshots_only(); g_cpu_wait_drops++; }
                 if (g_qo_armed && !mtl_qo_event_ready(val, m, v)) {   // another queue's producer first: stop before the wait
@@ -22983,7 +23019,9 @@ int mtl_probe_dispatch_chain(void) {
            nor modify either buffer or disturb reuse of the open encoder. */
         const p_dispatch empty[] = {{0,1,1,0,0}, {1,0,1,0,0}, {1,1,0,0,0}};
         for (unsigned i = 0; i < sizeof empty / sizeof empty[0]; i++) { dispatch(&empty[i]); checked++; }
-        p_dispatch dp = {N / 64, 1, 1, 0, 0}; dispatch(&dp);
+        p_dispatch dp = {N / 64, 1, 1, 0, 0};
+        dsp_note_game_barrier();   // K2 reads what K1 wrote and the reverse: the game orders them with a barrier (DM_NVN_DISPATCH_BARRIER=game)
+        dispatch(&dp);
     }
     uint64_t shared = g_disp_shared - shared0;
     S.prog = saved; mtl_sub_commit(); mtl_finish(); memset(&S.ssbo, 0, sizeof S.ssbo);
