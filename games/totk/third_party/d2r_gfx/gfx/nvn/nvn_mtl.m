@@ -1876,7 +1876,7 @@ static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilS
    depth clip, stencil reference and blend color for every draw (about 30,000 encoder calls per frame), nearly all unchanged.
    The cache belongs to one encoder: it is reset where any render encoder is created (es_reset) and also when a wrapper sees
    a different encoder object. */
-static struct { __unsafe_unretained id en; MTLViewport vp; MTLScissorRect sc; int cull, wind, fill, clip; float bias[3], bc[4]; uint32_t sref;
+static struct { __unsafe_unretained id en; MTLViewport vp; MTLScissorRect sc; int cull, wind, fill, clip; float bias[3], bc[4]; uint32_t sref, sref_b;
                 uint8_t has_vp, has_sc, has_bias, has_bc, has_sref; } g_es;
 static uint64_t g_es_sets, g_es_skips;
 static inline void es_reset(void) { memset(&g_es, 0, sizeof g_es); g_es.cull = g_es.wind = g_es.fill = g_es.clip = -1; nvn_arg_address_reset(&g_arg_addresses); }
@@ -1890,7 +1890,9 @@ static inline void enc_r_fill(id<MTL4RenderCommandEncoder> e, MTLTriangleFillMod
 static inline void enc_r_depth_bias(id<MTL4RenderCommandEncoder> e, float u, float s, float c) { es_on(e); float b[3] = {u, s, c}; if (g_es.has_bias && !memcmp(g_es.bias, b, sizeof b)) { g_es_skips++; return; } memcpy(g_es.bias, b, sizeof b); g_es.has_bias = 1; g_es_sets++; if (rs_using(e)) rs_copy(RS_BIAS, b, sizeof b); else [e setDepthBias:u slopeScale:s clamp:c]; }
 static inline void enc_r_clip(id<MTL4RenderCommandEncoder> e, MTLDepthClipMode m) { es_on(e); if (g_es.clip == (int)m) { g_es_skips++; return; } g_es.clip = (int)m; g_es_sets++; if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_CLIP,.u={m}},0); else [e setDepthClipMode:m]; }
 static inline void enc_r_depth_clip(id<MTL4RenderCommandEncoder> e, BOOL v) { MTLDepthClipMode m = v ? MTLDepthClipModeClip : MTLDepthClipModeClamp; if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_CLIP,.u={m}},0); else [e setDepthClipMode:m]; }
-static inline void enc_r_stencil_ref(id<MTL4RenderCommandEncoder> e, uint32_t f, uint32_t b) { (void)b; es_on(e); if (g_es.has_sref && g_es.sref == f) { g_es_skips++; return; } g_es.sref = f; g_es.has_sref = 1; g_es_sets++; if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_STENCIL,.u={f}},0); else [e setStencilReferenceValue:f]; }
+/* Each face has its own reference value (nvnCommandBufferSetStencilRef takes a face), as it has its own compare function,
+   operations and masks: the back face's value reaches Metal too (nxnative 2fb82008, PR #2351, MIT). */
+static inline void enc_r_stencil_ref(id<MTL4RenderCommandEncoder> e, uint32_t f, uint32_t b) { es_on(e); if (g_es.has_sref && g_es.sref == f && g_es.sref_b == b) { g_es_skips++; return; } g_es.sref = f; g_es.sref_b = b; g_es.has_sref = 1; g_es_sets++; if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_STENCIL,.u={f, b}},0); else [e setStencilFrontReferenceValue:f backReferenceValue:b]; }
 static inline void enc_r_blend_color(id<MTL4RenderCommandEncoder> e, float r, float g, float b, float a) { es_on(e); float c[4] = {r, g, b, a}; if (g_es.has_bc && !memcmp(g_es.bc, c, sizeof c)) { g_es_skips++; return; } memcpy(g_es.bc, c, sizeof c); g_es.has_bc = 1; g_es_sets++; if (rs_using(e)) rs_copy(RS_BLEND, c, sizeof c); else [e setBlendColorRed:r green:g blue:b alpha:a]; }
 static inline void enc_r_visibility(id<MTL4RenderCommandEncoder> e, MTLVisibilityResultMode m, NSUInteger o) {
     /* A clear interrupts counting inside the encoder. Metal cannot re-enable
@@ -17956,7 +17958,7 @@ frz_plain:;
     { static long nodepth_from = -2; static id<MTLDepthStencilState> nodss; if (nodepth_from == -2) { const char *e = getenv("TOTK_GPU_NODEPTH_FROM"); nodepth_from = e ? atol(e) : -1; }
       if (nodepth_from >= 0 && (long)atomic_load(&g_cur_frame) >= nodepth_from) { if (!nodss) { MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = NO; nodss = [g_dev newDepthStencilStateWithDescriptor:dd]; } cur_ds = nodss; } }
     if (cur_ds != g_enc_dss) { enc_r_dss(en, cur_ds); g_enc_dss = cur_ds; }
-    if (g_rt_ovr && g_pass.hs) enc_r_stencil_ref(en, g_rt_ovr == 3 ? 0x40 : 0, 0); else enc_r_stencil_ref(en, S.st_ref[0], S.st_ref[1]);
+    if (g_rt_ovr && g_pass.hs) { const uint32_t ov = g_rt_ovr == 3 ? 0x40 : 0; enc_r_stencil_ref(en, ov, ov); } else enc_r_stencil_ref(en, S.st_ref[0], S.st_ref[1]);
     // 视口 / 剪裁（夹到目标尺寸内）
     // Viewport / scissor (clamped within the target size)
     NSUInteger tw = g_pass.tw, th = g_pass.th;
@@ -18453,6 +18455,26 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
 }
+/* An indirect dispatch whose group counts an earlier dispatch wrote does not join a copy encoder that already holds work:
+   the encoder ends and the dispatch begins the next one, behind its queue barrier (disp_enc). Inside one encoder the
+   barrier between the two dispatches did not order the read of the group counts after the write on Apple GPUs: Ocarina of
+   Time's GPU cull in Hyrule Castle's courtyard dropped groups of flower bushes in about 40 % of the frames on an M1 Max
+   (nxnative PR #2226, MIT; that the barrier misses the indirect read is the upstream's measured result, the exact rule is
+   not documented). On by default for Ocarina of Time; DM_NVN_IND_SPLIT=0 / 1 turns it off / on for any game. */
+static int ind_split(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("DM_NVN_IND_SPLIT");
+#if defined(GAME_OOT)
+        v = !(e && !strcmp(e, "0"));
+#else
+        v = e && atoi(e) != 0;
+#endif
+        MLOG("indirect dispatches %s an open copy encoder (DM_NVN_IND_SPLIT)", v ? "end" : "join");
+    }
+    return v;
+}
+static uint64_t g_ind_splits;
 static void dispatch(const p_dispatch *dp) {
     /* An empty grid has no invocations. Metal's direct-dispatch API rejects
        zero dimensions (BotW's ordinary loading path submits them), so leave
@@ -18555,6 +18577,10 @@ static void dispatch(const p_dispatch *dp) {
     if (pre) encode_args(nil, cs, 5, 0);   // binds through g_ct only (enc_c_args ignores the encoder)
     id<MTLComputeCommandEncoder> ce;
     int kprev = atomic_load_explicit(&g_oot_bar_last, memory_order_relaxed);   // passdump: what this dispatch follows
+    if (reuse && dp->indirect && g_blit && ind_split()) {   // the indirect read follows the work before it (ind_split)
+        enc_b_end(g_blit); g_blit = nil;
+        if (g_ind_splits++ % 20000 == 0) MLOG("indirect dispatch: the copy encoder ended before it, %llu times (%.16s)", (unsigned long long)g_ind_splits, cs->key);
+    }
     if (reuse) ce = disp_enc();
     else { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } ce = pg_compute(); }
     PD("K %llu dispatch cs %.16s previous-render=%d pending-native=%d pending-bits=%#x submit=%llu",g_stat_pass,cs->key,kprev,g_oot_bar_pending,g_oot_bar_pending_bits,(unsigned long long)g_sub_serial);

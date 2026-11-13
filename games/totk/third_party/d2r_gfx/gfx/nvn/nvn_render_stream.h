@@ -102,7 +102,7 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_FILL: [e setTriangleFillMode:(MTLTriangleFillMode)u[0]]; break;
         case RS_BIAS: { float v[3]; memcpy(v, u, sizeof v); [e setDepthBias:v[0] slopeScale:v[1] clamp:v[2]]; break; }
         case RS_CLIP: [e setDepthClipMode:(MTLDepthClipMode)u[0]]; break;
-        case RS_STENCIL: [e setStencilReferenceValue:(uint32_t)u[0]]; break;
+        case RS_STENCIL: [e setStencilFrontReferenceValue:(uint32_t)u[0] backReferenceValue:(uint32_t)u[1]]; break;   /* front, back (enc_r_stencil_ref) */
         case RS_BLEND: { float v[4]; memcpy(v, u, sizeof v); [e setBlendColorRed:v[0] green:v[1] blue:v[2] alpha:v[3]]; break; }
         case RS_VISIBILITY: [e setVisibilityResultMode:(MTLVisibilityResultMode)u[0] offset:(NSUInteger)u[1]]; break;
         case RS_ADDRESS: [(u[0] ? *ft : *vt) setAddress:u[2] atIndex:(NSUInteger)u[1]]; break;
