@@ -64,7 +64,7 @@ def build(args):
     script('rewrite_nro.py', '--prepared', prepared_nro, '--out', rewritten_nro)
     script('prepare_nro_digest.py', '--prepared', prepared_nro,
            '--rewritten', rewritten_nro, '--out', generated / 'tmnt_nro_digest.h')
-    script('build_shader_tools.py', '--out', shader_tools, '--dotnet', args.dotnet)
+    script('build_shader_tools.py', '--out', shader_tools, *(['--dotnet', args.dotnet] if args.dotnet else []))
     call('make', '-C', GAME, 'runtime', f'WORK={work}', f'PY={sys.executable}')
     script('package_private.py', '--native', generated / 'tmnt-native',
            '--rewritten', rewritten, '--nro-prepared', prepared_nro,
@@ -83,7 +83,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('exefs', 'romfs', 'fonts', 'work', 'out'):
         parser.add_argument('--' + name, required=True, type=Path)
-    parser.add_argument('--dotnet', default='dotnet',
+    parser.add_argument('--dotnet',
                         help='path to a .NET 10 SDK executable')
     parser.add_argument('--link-romfs', action='store_true',
                         help='save disk space; the bundle then depends on the input RomFS path')

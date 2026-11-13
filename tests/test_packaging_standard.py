@@ -49,6 +49,17 @@ PATHS = {
     'switch 2 dumps (Bananza, Pokopia)': (
         ['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_ns2_seed.py', GFX.format('totk')], {}),
     'oot': (['games/oot/build.py', 'update_runtime.py', 'games/oot/scripts/prepare_ns2_seed.py', GFX.format('oot')], {}),
+    'tmnt': (['games/tmnt/build.py', 'games/tmnt/scripts/build_private_bundle.py', 'games/tmnt/scripts/package_private.py'], {
+        'shader data in its own signed bundle': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'pipeline archive built while packaging': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'title after the warm-up': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'no program runs inside a new app': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'seed and library digests are reused': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'repackaging keeps the .app folder': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'a runtime change can update quickly': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'warm-up lists beside the shader map': 'the private TMNT builder currently assembles a fresh standalone bundle',
+        'pipeline archive built from the App\'s lists': 'no pipeline archive for this game yet',
+    }),
     'dread': (['games/dread/build.py'], {
         'shader data in its own signed bundle': 'not done for this game yet',
         'pipeline archive built while packaging': 'not done for this game yet',
@@ -62,7 +73,7 @@ PATHS = {
     }),
 }
 
-BUILD_SCRIPTS = {'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread'}
+BUILD_SCRIPTS = {'games/tmnt/build.py': 'tmnt', 'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread'}
 
 
 class PackagingStandard(unittest.TestCase):

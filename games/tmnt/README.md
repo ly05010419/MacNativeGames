@@ -1,8 +1,8 @@
 # Teenage Mutant Ninja Turtles: Shredder's Revenge — work in progress
 
-This is an experimental, Mac-only source port. The host, graphics, audio and
+This is an experimental Apple silicon Mac port with an [iPad target](ios/README.md). The host, graphics, audio and
 private-input build flow are present, but the source in this contribution has
-not been validated as a complete playable application. It has no iOS build.
+not been validated as a complete playable application.
 Never commit game content, generated binaries, keys, shaders or saves. Use
 your own game files and keys.
 
@@ -13,23 +13,22 @@ the extraction manifest. The table comes from one locally verified base input;
 other revisions must be reviewed and added explicitly rather than accepted by
 title ID alone.
 
-For a private Apple silicon Mac build from verified extracted base-game files,
-install the pinned Python requirements, .NET 10 SDK, Xcode command-line tools,
-`pkg-config`, and static development archives for Opus, libvpx, Vorbis and
-Ogg. Then run from the repository root:
+On an Apple silicon Mac with Xcode command-line tools, install the pinned Python
+requirements and run from the repository root:
 
 ```sh
-python games/tmnt/scripts/build_private_bundle.py \
-  --exefs '<private-input>/exefs' \
-  --romfs '<private-input>/romfs' \
-  --fonts '<private-input>/shared-fonts' \
-  --work '<fresh-private-build-directory>' \
-  --out '<fresh-private-bundle-directory>' \
-  --dotnet '<dotnet-10-executable>'
+python games/tmnt/build.py '<base game.nsp or .xci>' --keys '<prod.keys>' \
+  --shared-fonts '<private shared-fonts directory>' --work '<fresh work directory>' \
+  --out '<fresh private output>/TMNT.app'
 ```
 
-Add `--app` and choose a fresh `--out '<private-output>/TMNT.app'` for a
-Finder-launchable macOS application. Its private game inputs live under
+The builder verifies and extracts the game and obtains the static Opus and VPX
+libraries, SPIRV-Cross CLI and .NET SDK from the repository's pinned dependencies.
+TMNT decodes Vorbis movie packets with its embedded stb_vorbis. The inherited
+movie fallback is built without its optional external Vorbis decoder.
+For existing verified extractions use `scripts/build_private_bundle.py --help`.
+
+Its private game inputs live under
 `Contents/Resources/game`; `Contents/MacOS/PlayTMNT` sets the same graphics,
 shader and input options as the directory launcher. Saves and shader cache live
 under `~/Library/Application Support/MacNativeGames/TMNT-<runtime-hash-prefix>`, separate
