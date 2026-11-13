@@ -1,0 +1,15 @@
+# Ori: tools fetched by make, game data (extracted/, rewritten/, build/), keys and apps, wherever they land in this folder
+local.mk
+/work
+/tooling
+/extracted
+/rewritten
+/analysis
+/build
+*.app
+romfs.bin
+*.keys
+/.venv
+/user-data/
+tools/totk_xlate/obj/
+tools/totk_xlate/bin/
