@@ -151,10 +151,10 @@ static NSPopUpButton *controls_popup(NSView *v,NSArray *items,CGFloat y){NSPopUp
  self.vsync.state=controlVsync;self.cap.integerValue=controlCap;self.generation.state=controlFI;self.error.stringValue=@"";
  self.draftKeys=[NSMutableArray new];for(int i=0;i<5;i++)[self.draftKeys addObject:@(atomic_load(&controlKeys[i]))];[self stopRecording];[self refreshStatus];
  self.statusTimer=[NSTimer scheduledTimerWithTimeInterval:0.5 target:self selector:@selector(refreshStatus) userInfo:nil repeats:YES];
- runtime_input_clear();[window beginSheet:self.window completionHandler:nil];
+ runtime_input_suspend(RUNTIME_INPUT_SUSPEND_SETTINGS,1);[window beginSheet:self.window completionHandler:nil];
 }
 -(BOOL)windowShouldClose:(NSWindow *)sender{(void)sender;[self cancelSettings:nil];return NO;}
--(void)cancelSettings:(id)sender{(void)sender;[self stopRecording];[self.statusTimer invalidate];self.statusTimer=nil;[window endSheet:self.window];[self.window orderOut:nil];}
+-(void)cancelSettings:(id)sender{(void)sender;[self stopRecording];[self.statusTimer invalidate];self.statusTimer=nil;[window endSheet:self.window];[self.window orderOut:nil];runtime_input_suspend(RUNTIME_INPUT_SUSPEND_SETTINGS,0);}
 -(void)applySettings:(id)sender{
  (void)sender;[self stopRecording];NSString *s=[self.cap.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];NSScanner *scan=[NSScanner scannerWithString:s];int cap=0;
  if(![scan scanInt:&cap]||!scan.isAtEnd||(cap!=0&&(cap<15||cap>240))){self.error.stringValue=@(TOTK_UI("帧率上限应为 0 或 15–240。","Frame limit must be 0 or 15–240."));return;}
