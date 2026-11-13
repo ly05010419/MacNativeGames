@@ -408,7 +408,8 @@ static void resize_note(const tex_t *o) {
         static _Atomic uint64_t n; uint64_t i = atomic_fetch_add(&n, 1);
         if (i < 3 || (i & (i - 1)) == 0) LOG("[nvn] texture serial %llu %ux%u replaced at %p by serial %llu %ux%u without Finalize: released (%llu so far)",
             (unsigned long long)old->serial, old->d.width, old->d.height, (void *)o->mem, (unsigned long long)o->serial, o->d.width, o->d.height, (unsigned long long)i + 1);
-        if (async_replay()) { void x_texrel(const tex_t *o); x_texrel(old); } else mtl_tex_release(old);
+        if (async_replay()) { void x_texresize(const tex_t *, const tex_t *); x_texresize(old, o); }
+        else mtl_tex_resize(old, o);
     }
     free(old);
 }
@@ -1991,8 +1992,8 @@ _Atomic int dm_submit_busy;   // TOTK diagnostic: submissions being replayed (ru
 //  - Operations that destroy or read Metal state (pool / texture / program finalize, ReadTexels / WriteTexels, QueueFinish,
 //    suspend) wait until the queue is empty first (x_drain), so they never overtake a queued replay that still uses them.
 // TOTK_ASYNC_REPLAY=0 (default for now) runs everything on the calling thread as before.
-enum { XJ_SUBMIT = 1, XJ_PRESENT, XJ_TEXREL };
-typedef struct { int kind, n; uint64_t *h; void *ucap; win_t *win; int idx; double period; int crop[4]; uint64_t frame, sub; tex_t tex; } xjob;   // tex: copy of a finalized texture (XJ_TEXREL); ucap: uniforms captured at the submit call
+enum { XJ_SUBMIT = 1, XJ_PRESENT, XJ_TEXREL, XJ_TEXRESIZE };
+typedef struct { int kind, n; uint64_t *h; void *ucap; win_t *win; int idx; double period; int crop[4]; uint64_t frame, sub; tex_t tex, next_tex; } xjob;   // copied descriptors keep resize/finalize jobs in submission order
 #define XQ 64
 #define XF 4096
 static xjob g_xq[XQ];
@@ -2017,6 +2018,7 @@ static void *x_thread(void *unused) {
         pthread_mutex_unlock(&g_xq_mu);
         if (j.kind == XJ_SUBMIT) { submit_exec(j.n, j.h, j.ucap); free(j.h); }
         else if (j.kind == XJ_TEXREL) { void live_del_x(const tex_t *o); live_del_x(&j.tex); mtl_tex_release(&j.tex); }
+        else if (j.kind == XJ_TEXRESIZE) { mtl_tex_resize(&j.tex, &j.next_tex); }
         else {
             // Real-time like the game's render thread that used to replay (set at acquire): otherwise the game's ~50
             // worker threads preempt the replay (measured: replay 6.6 -> 13 ms, 10 fps). Half the period is declared.
@@ -2046,6 +2048,7 @@ static uint64_t x_push(xjob *j) {   // returns the job number (1-based)
     return no;
 }
 void x_texrel(const tex_t *o) { xjob j = {.kind = XJ_TEXREL}; j.tex = *o; x_push(&j); }
+void x_texresize(const tex_t *old, const tex_t *next) { xjob j = {.kind = XJ_TEXRESIZE}; j.tex = *old; j.next_tex = *next; x_push(&j); }
 void x_start(void) {
     pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8u << 20);
     pthread_attr_set_qos_class_np(&a, QOS_CLASS_USER_INTERACTIVE, 0);
@@ -2260,6 +2263,16 @@ static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended
 static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED_HZ while interpolation paces the game
 #include "totk_present_policy.h"
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
+#if defined(GAME_LM3)
+#include "../../../../runtime/lm3_frame_policy.h"
+extern int runtime_lm3_target_fps(void) __attribute__((weak_import));
+/* CPU-only probe fixtures; -1 always uses the production runtime/display. */
+static int g_lm3_probe_fps = -1, g_lm3_probe_hz = -1, g_lm3_probe_old_query;
+static int lm3_engine_fps(void) { return g_lm3_probe_fps >= 0 ? g_lm3_probe_fps : runtime_lm3_target_fps ? runtime_lm3_target_fps() : 0; }
+static int lm3_display_hz(void) { return g_lm3_probe_hz >= 0 ? g_lm3_probe_hz : mtl_display_hz(); }
+#else
+static int lm3_engine_fps(void) { return 0; }
+#endif
 static _Atomic uint64_t g_control_pacing;
 void nvn_control_pacing(int vsync,int cap){
  if(cap<0||cap>240)return;
@@ -2619,6 +2632,9 @@ static void present_cfg(const win_t *o) {
 }
 static unsigned present_ticks(const win_t *o) {   /* display ticks per game frame */
     present_cfg(o);
+#if defined(GAME_LM3)
+    if (lm3_engine_fps()) return (unsigned)lm3_frame_interval(present_period(o));
+#endif
     /* TOTK_MFX / key 2: MetalFX makes the frame between two game frames. Half the refresh rate: the game presents every
        second display tick (50 + 50 on a 100 Hz display); 30+30: hz / 30 ticks (2 at 60 Hz; at 100 Hz the own clock paces,
        mfx_own_clock). Held here and not only by the game's controller, because the code carries the 60 FPS patch (the
@@ -2630,6 +2646,24 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
 }
 static uint64_t present_period(const win_t *o) {
     uint64_t control=atomic_load(&g_control_pacing);
+#if defined(GAME_LM3)
+    int engine_fps = lm3_engine_fps();
+    if (engine_fps) {
+        present_cfg(o);
+        int vsync = control ? (int)((control >> 32) & 1) : 1;
+        int cap = control ? (int)(control & 65535) : 0;
+        int hz = control ? lm3_display_hz() : g_paced_hz;
+        uint64_t period = lm3_frame_period_ns(engine_fps, vsync, cap, hz);
+        /* Optional interpolation can lower real FPS, never unlock the NLG
+           engine above its validated startup target. Generated FPS is separate. */
+        int interpolation = mfx_enabled();
+        if (!control && interpolation == MFX_30 && period < 1000000000ull / 30)
+            period = 1000000000ull / 30;
+        if (!control && interpolation == MFX_HALF && hz > 0 && period < 2000000000ull / (unsigned)hz)
+            period = 2000000000ull / (unsigned)hz;
+        return period;
+    }
+#endif
     if(control)return totk_control_period((control>>32)&1,control&65535,mtl_display_hz());
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
@@ -2640,11 +2674,26 @@ static uint64_t present_period(const win_t *o) {
     if (m == MFX_30) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
+/* The game reads this before presenting. Report the effective 60 Hz interval
+   under the LM3 target/cap, rather than its original request of two vsyncs. */
+int dm_nvn_effective_present_interval(const win_t *window) {
+#if defined(GAME_LM3)
+    if (g_lm3_probe_old_query) return window->interval;
+    if (lm3_engine_fps()) return lm3_frame_interval(present_period(window));
+#endif
+    return window->interval;
+}
 /* Exercise production policy, including the shrine's interval=2 and the
    legacy 30 FPS path. No sleep, present or GPU allocation is involved. */
 void dm_nvn_probe_present_interval(void) {
     int saved_hz = g_hz, saved_display = g_display_mode, saved_uncapped = g_uncapped;
     int saved_flag = atomic_load(&g_uncapped_interval), checked = 0;
+#if defined(GAME_LM3)
+    int saved_lm3_fps = g_lm3_probe_fps, saved_lm3_hz = g_lm3_probe_hz;
+    uint64_t saved_control = atomic_load(&g_control_pacing);
+    /* Keep the donor-policy regressions as distinct old-version fixtures. */
+    g_lm3_probe_fps = 0; atomic_store(&g_control_pacing, 0);
+#endif
     const char *neg = getenv("TOTK_PROBE_NEGATIVE");
     for (int hz = 60; hz <= 120; hz += 60) for (int uncapped = 0; uncapped < 2; uncapped++)
     for (int display = 0; display < 2; display++) for (int on = 0; on < 2; on++)
@@ -2687,6 +2736,44 @@ void dm_nvn_probe_present_interval(void) {
             die("present interval probe: uncapped interpolation must keep the pacing of the mode without interpolation");
         checked++;
     }
+#if defined(GAME_LM3)
+    mfx_set(MFX_OFF); mfx_latch();
+    int (*query)(const NVNwindow *) = nvn_slot_fn("nvnWindowGetPresentInterval");
+    g_lm3_probe_old_query = neg && atoi(neg) == 44;
+    const int lm3_rates[] = {30, 60, 120, 144};
+    const int lm3_caps[] = {0, 15, 30, 60, 120, 240};
+    for (int target = 30; target <= 60; target += 30)
+    for (unsigned rate = 0; rate < sizeof lm3_rates / sizeof *lm3_rates; rate++)
+    for (unsigned cap = 0; cap < sizeof lm3_caps / sizeof *lm3_caps; cap++)
+    for (int vsync = 0; vsync <= 1; vsync++) {
+        win_t w = {.interval = 2};
+        g_lm3_probe_fps = target; g_lm3_probe_hz = lm3_rates[rate];
+        g_hz = g_paced_hz = lm3_rates[rate];
+        nvn_control_pacing(vsync, lm3_caps[cap]);
+        int fps = target;
+        if (lm3_caps[cap] > 0 && lm3_caps[cap] < fps) fps = lm3_caps[cap];
+        if (vsync && lm3_rates[rate] < fps) fps = lm3_rates[rate];
+        uint64_t expected = 1000000000ull / (unsigned)fps;
+        int interval = fps == 60 ? 1 : fps == 30 ? 2 : 4;
+        if (present_period(&w) != expected || present_ticks(&w) != (unsigned)interval)
+            die("LM3 present probe: real-frame cap or high-refresh ceiling mismatch");
+        if (query((const NVNwindow *)&w) != interval)
+            die("LM3 present probe: interval query differs from effective pacing");
+        checked++;
+    }
+    /* A headless/environment start has no control menu. It must observe the
+       same 30/60 ceiling even with the donor's uncapped policy configured. */
+    atomic_store(&g_control_pacing, 0);
+    for (int target = 30; target <= 60; target += 30) {
+        win_t w = {.interval = 2}; g_lm3_probe_fps = target;
+        g_hz = g_paced_hz = 120; g_uncapped = 1;
+        if (present_period(&w) != 1000000000ull / (unsigned)target || query((const NVNwindow *)&w) != 60 / target)
+            die("LM3 present probe: target without controls differs from effective interval");
+        checked++;
+    }
+    g_lm3_probe_fps = saved_lm3_fps; g_lm3_probe_hz = saved_lm3_hz; g_lm3_probe_old_query = 0;
+    atomic_store(&g_control_pacing, saved_control);
+#endif
     mfx_set(saved_mfx); mfx_latch();
     g_hz = saved_hz; g_paced_hz = saved_paced; g_display_mode = saved_display; g_uncapped = saved_uncapped;
     atomic_store(&g_uncapped_interval, saved_flag);
@@ -2697,6 +2784,15 @@ int (*g_nvn_loadscreen_up)(void);   // 宿主登记：读取画面此刻是否�
 // replay frame number, which the synchronous path sets at the end of nvnQueuePresentTexture.
 static void present_exec(win_t *o, int idx, double period, const int crop[4], uint64_t frame) {
     gfx_enter();
+#if defined(GAME_LM3)
+    if(getenv("LM3_QUALITY_DIAG")&&idx>=0&&idx<o->ntex&&idx<4){
+        const tex_t *t=CTX(o->tex[idx]);static unsigned seen[4];static uint64_t last[4];
+        uint64_t number=frame?frame:g_frame;
+        if(seen[idx]<2||last[idx]!=t->serial||number%1800<6){
+            LOG("[lm3-window] frame=%llu index=%d object=%p serial=%llu descriptor=%ux%u bytes=%llu pool=%p pool-bytes=%llu offset=%lld crop=%d,%d %dx%d",(unsigned long long)number,idx,(void *)o->tex[idx],(unsigned long long)t->serial,t->d.width,t->d.height,(unsigned long long)t->L.size,(void *)(t->pool?t->pool->mem:NULL),(unsigned long long)(t->pool?t->pool->size:0),(long long)t->off,crop[0],crop[1],crop[2],crop[3]);seen[idx]++;last[idx]=t->serial;
+        }
+    }
+#endif
     { void mtl_shot_at_present(const tex_t *t); if (idx >= 0 && idx < o->ntex && idx < 4) mtl_shot_at_present(CTX(o->tex[idx])); }
     if (idx >= 0 && idx < o->ntex && idx < 4) o->ticket[idx] = mtl_present(CTX(o->tex[idx]), period, (int *)crop);   // 只入队，立即返回 | enqueue only, return immediately
     if (frame) mtl_set_frame(frame);

@@ -498,10 +498,22 @@ static uint32_t vi_vsync(void *ev,void *display){
  if(!ev||display!=&displayIdentity)return 0xf601;hle_bind_system_event(ev,1);
  pthread_mutex_lock(&vsyncLock);if(vsyncCount>=16)runtime_fail("VI display event limit");vsyncEvents[vsyncCount++]=ev;pthread_mutex_unlock(&vsyncLock);return 0;
 }
+/* SDK 7 ListFrameHistory returns an entry count, not a Result. Its null/zero
+   capacity query returns the eight-entry limit (verified in 1.4.0's SDK).
+   This native layer retains no VI frame-history records: report an empty
+   history rather than entering the guest SDK with our opaque layer identity. */
+static int vi_frame_history(void *out,int capacity,const void *layer){
+ if(!out||!capacity)return 8;
+ if(layer!=&layerIdentity||capacity<0)return 0;
+ static atomic_flag noted=ATOMIC_FLAG_INIT;
+ if(!atomic_flag_test_and_set(&noted))fprintf(stderr,"[lm3] VI frame history: no records retained by the native layer\n");
+ return 0;
+}
 void *runtime_front_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
  {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE",vi_layer},{"_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE",vi_window},
- {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
+ {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync},
+ {"_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE",vi_frame_history}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }

@@ -1,4 +1,6 @@
 #include "game_patches.h"
+#include "lm3_frame_policy.h"
+#include "lm3_render_patch.h"
 #include "aspect_patch.h"
 #include "game_version.h"
 #include "world_survey.h"
@@ -135,6 +137,11 @@ static int output_res_auto(unsigned *w, unsigned *h) {
 #endif
 }
 static int output_res(unsigned *w, unsigned *h) {
+#if defined(GAME_LM3)
+    /* NLG's render pools are configured by lm3_render_patch, not TOTK's AGL
+       HeapDef overlays. Never grow the application pool using that formula. */
+    (void)w;(void)h;return 0;
+#endif
     static int decided, on; static unsigned cw, ch;
     if (!decided) {
         const char *e = getenv("TOTK_OUTPUT_RES");
@@ -281,7 +288,9 @@ static void patch_pchtxt(Module *m) {
 }
 
 void runtime_game_patches(Module *m) {
-    /* Luigi's Mansion 3 runs unmodified: only the player's own patches, if any. (The copied Tears of the Kingdom body after
-       this, 60 FPS and real-time step at that game's addresses, was never reached and is gone, after PR #218.) */
     patch_pchtxt(m);
+    /* Only the verified LM3 build is adapted. These run before seal(), so the
+       guest's code and constants retain their ordinary RX/R permissions. */
+    runtime_lm3_render_patch(m);
+    runtime_lm3_frame_patch(m);
 }
