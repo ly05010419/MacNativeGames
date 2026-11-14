@@ -1,0 +1,48 @@
+# WORLDEND SYNDROME 1.0.0 (base v0): scaffold macOS profile.
+# Unity 2017.4.17f1 IL2CPP + CRIWARE. See README.md. Memory numbers are the
+# NPDM / profile_guess starting point (sys_resource=0); a heap check may revise them.
+
+# ---- Identity ----
+title_id	010048900CF64000
+program_id	010048900CF64000
+
+# ---- App ----
+name	WORLDEND SYNDROME
+ipa	WorldendSyndrome.ipa
+app_category	public.app-category.games
+pad_layout	full
+op_mode	console
+
+# ---- Versions ----
+build	v0	1.0.0	main=bafcd7d04e010b4693a580ec7f0e0422	subsdk0=b2bfdeddd143de2d821031fe668d097b	sdk=e29be8ad6778527aa248310d0c71a8a5
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# rtld is the loader; main imports from subsdk0 (movie) and sdk.
+modules	main subsdk0 sdk
+# Extraction is atomic; check its root without shipping an original asset path.
+romfs_marker	Data/boot.config
+zip_store	.cpk:.usm:.assets:.ress:.resource:.bundle:.unity3d:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource (META +0x14 = 0). Main may SetHeapSize.
+# Starting layout matches profile_guess for a 4 GB application pool without VA memory.
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# Modules are 70 MB; default 64 MB used-memory made SetHeapSize(pool-used) overflow the pool.
+mem_used	0x4A00000
+sys_resource	0
+
+# Unity 2017.4 traps unless NVN minor > 311 (Cuphead / Ori). SDK 6 would otherwise report 53.313.
+device_api	53.399
+
+# ---- Presentation ----
+fps_target	0
+present_interval	game
+
+# ---- Shader split ----
+shader_groups	/Data=data
+shader_note	WORLDEND SYNDROME shaders (scaffold profile)

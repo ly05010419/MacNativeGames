@@ -53,6 +53,7 @@ Ocarina of Time and Pokopia package as a Mac app with `build_app.py`. Not yet: i
 | Pokémon Legends: Arceus | 1.1.1 | Mac | Community port, early | [`games/pla`](games/pla/README.md) |
 | Ori and the Blind Forest: Definitive Edition | 1.0.1 | Mac | Community port | [`games/ori`](games/ori/README.md) |
 | Super Mario Party Jamboree | 2.3.0 | Mac | Community port, experimental | [`games/jamboree`](games/jamboree/README.md) |
+| WORLDEND SYNDROME | 1.0.0 | Mac | Community port, experimental | [`games/worldend`](games/worldend/README.md) |
 | Mario vs. Donkey Kong | 1.0.1 | Mac | Community port, early | [`games/mvdk`](games/mvdk/README.md) |
 | Metroid Dread | 2.1.0 (base + update) | Mac (validated); iPhone / iPad scripts updated, not yet built or validated on 2.1.0 | Community port, early | [`games/dread`](games/dread/README.md) |
 | Unicorn Overlord (Asian release) | 1.05 | Mac | Community port, early; DLC optional | [`games/unicorn`](games/unicorn/README.md) |
@@ -134,6 +135,7 @@ Only shader and pipeline identifiers, the game and app versions, the device mode
 
 ## What's new
 
+- **2026-11-14: WORLDEND SYNDROME 1.0.0 on Mac, experimental.** Built from your own base files; title through ADV, saves and the first loop were played ([games/worldend](games/worldend/README.md)).
 - **2026-11-11: Rankings, an anonymous frame-rate board (Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Mac).**
   A settings tab of its own (key 1) shows the latest board, one group per frame lock and interpolation setting. **Join the
   board** is off by default and never asked; once on, the session is kept on your Mac every 5 minutes and sent at start and
@@ -250,6 +252,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 宝可梦传说 阿尔宙斯 | 1.1.1 | Mac | 社区移植，早期 | [`games/pla`](games/pla/README.md) |
 | 奥日与黑暗森林 终极版 | 1.0.1 | Mac | 社区移植 | [`games/ori`](games/ori/README.md) |
 | 超级马力欧派对 空前盛会 | 2.3.0 | Mac | 社区移植，实验 | [`games/jamboree`](games/jamboree/README.md) |
+| WORLDEND SYNDROME | 1.0.0 | Mac | 社区移植，实验 | [`games/worldend`](games/worldend/README.md) |
 | 马力欧 vs. 大金刚 | 1.0.1 | Mac | 社区移植，早期 | [`games/mvdk`](games/mvdk/README.md) |
 | 密特罗德 生存恐惧 | 2.1.0（本体 + 更新） | Mac（已验证）；iPhone / iPad 脚本已更新，尚未在 2.1.0 上构建或验证 | 社区移植，早期 | [`games/dread`](games/dread/README.md) |
 | 圣兽之王（亚洲版） | 1.05 | Mac | 社区移植，早期；DLC 可选 | [`games/unicorn`](games/unicorn/README.md) |
@@ -324,6 +327,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 
 ## 更新说明
 
+- **2026-11-14：WORLDEND SYNDROME 1.0.0 登陆 Mac，实验性。** 用你自己的本体文件打包；从标题玩过 ADV、存档和第一周目循环（[games/worldend](games/worldend/README.md)）。
 - **2026-11-11：排行榜，匿名的帧率榜单（王国之泪、旷野之息、时之笛，Mac）。** 设置面板（按 1）里单独一个标签页显示最新榜单，
   按锁帧和补帧设置分组。**我要上榜**默认关，不弹窗询问；打开后每 5 分钟在本机记一次这局的成绩，开机时和每 30 分钟上传；
   你自己那一行是绿色，所有人都只显示匿名玩家名（[操作与设置](docs/controls.zh-CN.md)）。着色器贡献也改为开机时和每 30 分钟上传。
