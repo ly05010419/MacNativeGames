@@ -16,6 +16,7 @@
 #include <TargetConditionals.h>
 #include "text_padding_v143.h"   /* who owns which bytes after the code */
 #include "prompt_cache_v143.h"
+#include "chinese_ellipsis_v143.h"
 _Static_assert(PAD_V143_ASPECT_LEN == 4 * ASPECT_STUB && PAD_V143_VERT_LEN == 2 * ASPECT_VSTUB, "1.4.3 padding: aspect stub sizes");
 #if !TARGET_OS_IPHONE
 #include <mach/mach.h>
@@ -1489,6 +1490,7 @@ void runtime_game_patches(Module *m) {
     prompt_cache_install(m);
     runtime_survey_init(m);
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
+    chinese_ellipsis_install(m);
     patch_realtime(m);
     patch_output_res(m);
     patch_render_res(m);
