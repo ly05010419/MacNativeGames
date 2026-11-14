@@ -471,7 +471,14 @@ static void patch_fov(Module *m){
    scale the game clamps (main+0xf5998 width, +0xf59b8 height), stores it (+0x3d8 / +0x3f8) and makes or updates the
    cascade's textures from it at once (main+0xf5a1c -> 0xfca60; found with TOTK_SIZE_CHAIN=800x800). Each multiply
    branches to a stub that multiplies by K from the data page (+0x198), so the textures, viewports and everything sized
-   from those fields follow; K = 1 is the game's own (an exact multiply by 1). s3 was last read at 0xf5960. */
+   from those fields follow; K = 1 is the game's own (an exact multiply by 1). s3 was last read at 0xf5960.
+   That path does not size the sun's map in the world (800 x 800, array of 4, 2026-10-31): main+0xf5814 makes it from the
+   fields of the sun's entry, and the sun's cascade setup sets them (main+0x68318c, called only from main+0x67e320 with the
+   one object): the size it picks from its table, aligned to 8, stored as width and height. The align's add (main+0x683604,
+   where both ways to the size meet) branches to a stub that multiplies the size by K first, so whatever size the game
+   picks for the sun follows, and no other target is touched. The table goes up to 3072, so the product is capped at
+   8192: the map has four layers, and at 16384 their 2 GiB would overflow the int nvnTextureGetStorageSize returns.
+   s18, s19, w14 and the flags are free there: on every path each is written again before it is read. */
 #define SHADOW_DATA_SLOT 0x198u
 #if !TARGET_OS_IPHONE
 static _Atomic uint32_t *shadow_factor;
@@ -498,6 +505,19 @@ static void patch_shadow_res(Module *m){
     }
     shadow_factor=(_Atomic uint32_t *)(void *)(m->base+data+SHADOW_DATA_SLOT);factor_store(shadow_factor,k);
     for(unsigned i=0;i<2;i++){uint32_t j=branch(sites[i].off,stub+i*16);memcpy(m->base+sites[i].off,&j,4);}
+    static const Patch sun={0x683604,0x11001d6b,0};   /* add w11,w11,#7: the sun's size, before the and that aligns it */
+    uint64_t sun_stub=stub+32+48;   /* after the depth of field stubs */
+    if(sun_stub+36>data)runtime_fail("1.4.3 shadow resolution layout");
+    for(unsigned i=0;i<36;i++)if(m->base[sun_stub+i])runtime_fail("1.4.3 shadow resolution padding not empty");
+    uint32_t sun_word,sun_next;memcpy(&sun_word,m->base+sun.off,4);memcpy(&sun_next,m->base+sun.off+4,4);
+    if(sun_word!=sun.original||sun_next!=0x121d7173)runtime_fail("1.4.3 shadow resolution: the sun's shadow size does not match");   /* and w19,w11,#~7 */
+    uint32_t sun_words[9]={
+        0x1c000000|(((uint32_t)((data+SHADOW_DATA_SLOT-sun_stub)>>2)&0x7ffff)<<5)|18,   /* ldr s18, K */
+        0x1e220173,0x1e320a73,0x1e38026b,    /* scvtf s19,w11; fmul s19,s19,s18; fcvtzs w11,s19 */
+        0x5284000e,0x6b0e017f,0x1a8eb16b,    /* mov w14,#8192; cmp w11,w14; csel w11,w11,w14,lt */
+        sun.original,branch(sun_stub+32,sun.off+4)};
+    memcpy(m->base+sun_stub,sun_words,sizeof sun_words);
+    uint32_t sun_jump=branch(sun.off,sun_stub);memcpy(m->base+sun.off,&sun_jump,4);
     fprintf(stderr,"[totk] 1.4.3 shadow resolution x%g (cascades %gx%g), stub +%#llx\n",k,800*k,800*k,(unsigned long long)stub);
 #endif
 }
