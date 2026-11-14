@@ -2799,43 +2799,114 @@ static void post(post_op o) {
    neither the projection nor the CPU-visible value reaches was replayed before its producer: its work reads stale data. */
 extern uint64_t g_qwait_queue;   // guest queue (NVNqueue address) of the submission being replayed (set by hle_nvn.c)
 typedef struct { volatile uint32_t *val; uint32_t projected, hist[8]; unsigned nhist; uint64_t queue, frame, fence; } qwait_ev;
-static qwait_ev g_qwait_ev[512]; static uint64_t g_qwait_waits, g_qwait_unready, g_qwait_signals, g_qwait_last_report;
+/* CPU signals also use this table, outside the replay section. Keep every
+   lookup through its final entry access under this lock, including relocation.
+   Never acquire the queue-order or replay locks while holding it. */
+static pthread_mutex_t g_qwait_mu = PTHREAD_MUTEX_INITIALIZER;
+static qwait_ev *g_qwait_ev;
+static size_t g_qwait_cap, g_qwait_count;
+static uint64_t g_qwait_grows, g_qwait_failures;
+static uint64_t g_qwait_waits, g_qwait_unready, g_qwait_signals, g_qwait_last_report;
+static void qwait_grow(void) {   // g_qwait_mu held; entries contain no owning references
+    if (g_qwait_cap > SIZE_MAX / 2) {
+        g_qwait_failures++;
+        MDIE("event projection capacity overflow: %zu entries / %zu slots", g_qwait_count, g_qwait_cap);
+    }
+    size_t cap = g_qwait_cap ? g_qwait_cap * 2 : 512;
+    if (cap > SIZE_MAX / sizeof(qwait_ev)) {
+        g_qwait_failures++;
+        MDIE("event projection allocation overflow: %zu slots", cap);
+    }
+    qwait_ev *next = calloc(cap, sizeof *next);
+    if (!next) {
+        g_qwait_failures++;
+        MDIE("event projection allocation failed: %zu entries / %zu slots, %llu failures",
+             g_qwait_count, cap, (unsigned long long)g_qwait_failures);
+    }
+    for (size_t i = 0; i < g_qwait_cap; i++) {
+        const qwait_ev *e = &g_qwait_ev[i];
+        if (!e->val) continue;
+        size_t h = (((uintptr_t)e->val >> 2) * 2654435761u) & (cap - 1);
+        while (next[h].val) h = (h + 1) & (cap - 1);
+        memcpy(&next[h], e, sizeof *e);
+    }
+    free(g_qwait_ev);
+    if (g_qwait_cap) g_qwait_grows++;   // initial allocation is not a growth
+    g_qwait_ev = next; g_qwait_cap = cap;
+}
 static qwait_ev *qwait_find(volatile uint32_t *val, int add) {
-    unsigned h = (unsigned)(((uintptr_t)val >> 2) * 2654435761u) & 511;
-    for (unsigned k = 0; k < 512; k++) { qwait_ev *e = &g_qwait_ev[(h + k) & 511]; if (e->val == val) return e; if (!e->val) { if (!add) return NULL; e->val = val; e->projected = *val; return e; } }
-    return NULL;
+    // g_qwait_mu held. The returned pointer is valid only until unlocking.
+    if (!g_qwait_cap) { if (!add) return NULL; qwait_grow(); }
+    size_t h = (((uintptr_t)val >> 2) * 2654435761u) & (g_qwait_cap - 1);
+    for (size_t k = 0; k < g_qwait_cap; k++) {
+        qwait_ev *e = &g_qwait_ev[(h + k) & (g_qwait_cap - 1)];
+        if (e->val == val) return e;
+        if (!e->val) {
+            if (!add) return NULL;
+            e->val = val; e->projected = *val; g_qwait_count++; return e;
+        }
+    }
+    if (!add) return NULL;
+    qwait_grow();   // only a new address in a full table needs more slots
+    return qwait_find(val, 1);
 }
 static int qwait_ready(uint32_t actual, uint32_t mode, uint32_t target) { return mode == 0 ? actual == target : (uint32_t)(actual - target) < 0x80000000u; }
 static void qwait_signal(volatile uint32_t *val, uint32_t mode, uint32_t v) {
-    qwait_ev *e = qwait_find(val, 1); g_qwait_signals++; if (!e) return;
+    pthread_mutex_lock(&g_qwait_mu);
+    qwait_ev *e = qwait_find(val, 1); g_qwait_signals++;
     uint32_t before = e->fence && g_done < e->fence ? e->projected : *val;   // a completed projection yields to memory
     e->projected = mode == 1 ? before + v : v; e->queue = g_qwait_queue; e->frame = atomic_load(&g_cur_frame); e->fence = g_fence + 1;
     e->hist[e->nhist++ & 7] = e->projected;
+    pthread_mutex_unlock(&g_qwait_mu);
 }
 /* The value a wait sees at this point of the single queue's order: CPU-visible memory, or the projection of signals
    already replayed whose GPU work has not completed. An EQUAL wait also accepts a value the event held earlier in this
    order (the guest's consumer would have caught it; replaying it later must not turn into a hang). */
-int mtl_qo_event_ready(volatile uint32_t *val, uint32_t mode, uint32_t target) {
+static int qwait_event_ready(volatile uint32_t *val, uint32_t mode, uint32_t target) {   // g_qwait_mu held
     if (qwait_ready(*val, mode, target)) return 1;
     qwait_ev *e = qwait_find(val, 0); if (!e || !e->fence) return 0;
     if (qwait_ready(e->projected, mode, target)) return 1;
     if (mode == 0) for (unsigned k = 0; k < 8 && k < e->nhist; k++) if (e->hist[k] == target) return 1;
     return 0;
 }
+int mtl_qo_event_ready(volatile uint32_t *val, uint32_t mode, uint32_t target) {
+    pthread_mutex_lock(&g_qwait_mu);
+    int ready = qwait_event_ready(val, mode, target);
+    pthread_mutex_unlock(&g_qwait_mu);
+    return ready;
+}
 /* 1 when the event's current value comes from a signal replayed on the GPU timeline and not yet completed (a GPU producer),
    0 when it is memory as the CPU sees it (a CPU signal or completed GPU work). */
-int mtl_qo_event_gpu_projected(volatile uint32_t *val) { qwait_ev *e = qwait_find(val, 0); return e && e->fence && g_done < e->fence; }
+int mtl_qo_event_gpu_projected(volatile uint32_t *val) {
+    pthread_mutex_lock(&g_qwait_mu);
+    qwait_ev *e = qwait_find(val, 0); int projected = e && e->fence && g_done < e->fence;
+    pthread_mutex_unlock(&g_qwait_mu);
+    return projected;
+}
 /* nvnEventSignal from the CPU: memory is authoritative again for this event. */
-void mtl_qo_cpu_signal(volatile uint32_t *val) { qwait_ev *e = qwait_find(val, 0); if (e) { e->projected = *val; e->fence = 0; e->nhist = 0; } }
+void mtl_qo_cpu_signal(volatile uint32_t *val) {
+    pthread_mutex_lock(&g_qwait_mu);
+    qwait_ev *e = qwait_find(val, 0); if (e) { e->projected = *val; e->fence = 0; e->nhist = 0; }
+    pthread_mutex_unlock(&g_qwait_mu);
+}
 static void qwait_check(volatile uint32_t *val, uint32_t mode, uint32_t target) {
-    qwait_ev *e = qwait_find(val, 0); uint32_t mem = *val; g_qwait_waits++;
-    int ready = mtl_qo_event_ready(val, mode, target); (void)mem; (void)e;
     uint64_t fr = atomic_load(&g_cur_frame);
-    if (!ready) { g_qwait_unready++;
-        if (g_qwait_unready <= 24) MLOG("[queue-wait] unready F%llu queue=%#llx event=%p mode=%u target=%u memory=%u projected=%u last-signal queue=%#llx F%llu",
-            (unsigned long long)fr, (unsigned long long)g_qwait_queue, (void *)val, mode, target, mem, e ? e->projected : 0, e ? (unsigned long long)e->queue : 0ull, e ? (unsigned long long)e->frame : 0ull); }
-    if (fr >= g_qwait_last_report + 300) { g_qwait_last_report = fr;
-        MLOG("[queue-wait] F%llu waits=%llu unready=%llu signals=%llu", (unsigned long long)fr, (unsigned long long)g_qwait_waits, (unsigned long long)g_qwait_unready, (unsigned long long)g_qwait_signals); }
+    qwait_ev snapshot = {0}; uint64_t waits, unready, signals, grows, failures; size_t count, cap;
+    pthread_mutex_lock(&g_qwait_mu);
+    int ready = qwait_event_ready(val, mode, target);
+    uint32_t mem = *val;
+    qwait_ev *e = qwait_find(val, 0); if (e) memcpy(&snapshot, e, sizeof snapshot);
+    waits = ++g_qwait_waits; if (!ready) g_qwait_unready++;
+    unready = g_qwait_unready; signals = g_qwait_signals;
+    grows = g_qwait_grows; failures = g_qwait_failures; count = g_qwait_count; cap = g_qwait_cap;
+    int report = fr >= g_qwait_last_report + 300;
+    if (report) g_qwait_last_report = fr;
+    pthread_mutex_unlock(&g_qwait_mu);
+    if (!ready && unready <= 24) MLOG("[queue-wait] unready F%llu queue=%#llx event=%p mode=%u target=%u memory=%u projected=%u last-signal queue=%#llx F%llu",
+        (unsigned long long)fr, (unsigned long long)g_qwait_queue, (void *)val, mode, target, mem, snapshot.projected, (unsigned long long)snapshot.queue, (unsigned long long)snapshot.frame);
+    if (report) MLOG("[queue-wait] F%llu waits=%llu unready=%llu signals=%llu entries=%zu capacity=%zu grows=%llu failures=%llu",
+        (unsigned long long)fr, (unsigned long long)waits, (unsigned long long)unready, (unsigned long long)signals,
+        count, cap, (unsigned long long)grows, (unsigned long long)failures);
 }
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, NULL}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) { post((post_op){2, NULL, 0, 0, addr, type, NULL}); }
