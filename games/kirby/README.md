@@ -47,6 +47,14 @@ Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to
 | Audio & Video | Verified | Opus audio; VP9 movies with libvpx, their Vorbis sound track with stb_vorbis (`runtime/movie_host.c`, after nxnative's `hle_movie.c`) |
 | Saves | Verified | Auto-save backups retained across sessions |
 
+## Language
+
+**Settings → Language / 语言** offers **Follow System**, **简体中文**, and **English**.
+The selection applies to both game text and the Mac host interface after a normal quit and relaunch.
+Follow System uses the Mac's preferred language list; changing language preserves the same save files.
+`KIRBY_LANGUAGE=system|zh-Hans|en-US` overrides the saved choice for diagnostics; explicit `TOTK_LANG`,
+`TOTK_LOCALE` and `TOTK_UI_LANG` environment overrides remain available.
+
 ## Shaders
 
 The game's GPU shaders are Switch (Maxwell) code. Each is translated to Metal Shading Language by
