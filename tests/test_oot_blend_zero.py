@@ -61,7 +61,11 @@ class Wiring(unittest.TestCase):
 
     def test_ocarina_s_chain_names_the_guard(self):
         text = (NVN / 'dmsh_chain.h').read_text()
-        self.assertRegex(text, r'#define DMSH_CHAIN "oot-native-v27-blend-zero"\s*/\* game: oot \*/')
+        # the guard came with v27; a later chain keeps it (and still names it on the line)
+        m = re.search(r'#define DMSH_CHAIN "oot-native-v(\d+)-[^"]*"\s*/\* game: oot \*/(.*)', text)
+        self.assertIsNotNone(m)
+        self.assertGreaterEqual(int(m.group(1)), 27)
+        self.assertIn('nvn_blend_zero.h', m.group(2))
 
 
 if __name__ == '__main__':
