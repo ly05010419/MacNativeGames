@@ -834,6 +834,33 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
 }
 @end
 static TOTKMenuActions *menuActions;
+#ifdef RUNTIME_AMIIBO
+/* The virtual amiibo reader (applet_host.c): a figure chosen here is read once, by the game's scan now or at its next one. */
+@interface TOTKAmiiboMenu:NSObject<NSMenuItemValidation> @end
+@implementation TOTKAmiiboMenu
+-(void)place:(NSMenuItem *)sender{runtime_amiibo_place((int)sender.tag);}
+-(BOOL)validateMenuItem:(NSMenuItem *)item{
+ int current=runtime_amiibo_current();
+ item.state=item.tag>=0&&item.tag==current?NSControlStateValueOn:NSControlStateValueOff;
+ return item.tag>=0||current>=0;
+}
+@end
+static TOTKAmiiboMenu *amiiboMenu;
+static void front_menu_amiibo_add(NSMenu *bar){   // from front_install_menu
+ amiiboMenu=[TOTKAmiiboMenu new];
+ NSMenu *sub=[[NSMenu alloc] initWithTitle:@"amiibo"];
+ NSMenuItem *hint=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("选一个 amiibo，游戏下次扫描 amiibo 时读取一次","Choose a figure: the game's next amiibo scan reads it once")) action:nil keyEquivalent:@""];
+ hint.enabled=NO;[sub addItem:hint];[sub addItem:NSMenuItem.separatorItem];
+ for(int i=0;i<runtime_amiibo_count();i++){
+  NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@(runtime_amiibo_name(i)) action:@selector(place:) keyEquivalent:@""];
+  item.tag=i;item.target=amiiboMenu;[sub addItem:item];
+ }
+ [sub addItem:NSMenuItem.separatorItem];
+ NSMenuItem *lift=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("拿走 amiibo","Remove amiibo")) action:@selector(place:) keyEquivalent:@""];
+ lift.tag=-1;lift.target=amiiboMenu;[sub addItem:lift];
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:sub.title action:nil keyEquivalent:@""];item.submenu=sub;[bar addItem:item];
+}
+#endif
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  menuActions=[TOTKMenuActions new];
@@ -860,6 +887,9 @@ static void front_install_menu(void){
  }
  NSMenuItem *screen=[[NSMenuItem alloc] initWithTitle:@"" action:@selector(displayRate:) keyEquivalent:@""];
  screen.target=menuActions;[view addItem:screen];
+#ifdef RUNTIME_AMIIBO
+ front_menu_amiibo_add(menu);
+#endif
  front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 /* execv can make Launch Services show the nested runtime as a generic Unix executable.
@@ -1023,6 +1053,152 @@ int runtime_front_text_input(const RuntimeTextRequest *req,char *out,size_t out_
  snprintf(out,out_size,"%s",result.UTF8String?result.UTF8String:"");
  return 1;
 }
+#ifdef RUNTIME_AMIIBO
+/* The amiibo picker (user 2026-11-10: "a pop up to choose the amiibo/cancel as it already does with the keyboard"). It
+   follows the game's scan (applet_host.c): shown in the game window when the game starts an amiibo scan (the amiibo rune, the Purah Pad) with no figure
+   waiting, closed when the game stops it. A figure picked here goes on the reader at once (runtime_amiibo_place), as from
+   the amiibo menu. Cancel closes the picker only; the game keeps its own scan screen, which B leaves. Controller (D-pad or
+   stick, A picks, B cancels; reversed on a Switch layout, as the text bar), keyboard (arrows, Return, Esc) and mouse. */
+enum { AMIIBO_COLUMNS = 4 };
+@interface TOTKAmiiboPicker:NSView
+@property(strong) NSView *card;
+@property(strong) NSMutableArray<TOTKKeyboardKey *> *buttons;
+@property(strong) NSTextField *hint;
+@property(strong) NSTimer *timer;
+@property int focus,column,previousDirection,lastPadType;
+@property uint64_t previousButtons;
+@property double repeatAt;
+@property BOOL armed,finished;
+@property(copy) void(^done)(int figure);   /* -1: cancelled */
+@end
+@implementation TOTKAmiiboPicker
+-(BOOL)acceptsFirstResponder{return YES;}
+-(void)setFrameSize:(NSSize)size{[super setFrameSize:size];self.needsLayout=YES;}
+-(void)layout{
+ [super layout];if(!self.card)return;
+ CGFloat scale=fmin(1,fmin(self.bounds.size.width/800,self.bounds.size.height/560));
+ self.card.frame=NSMakeRect((self.bounds.size.width-760*scale)/2,(self.bounds.size.height-520*scale)/2,760*scale,520*scale);
+ self.card.bounds=NSMakeRect(0,0,760,520);
+}
+-(TOTKKeyboardKey *)key:(NSString *)title tag:(int)tag frame:(NSRect)frame{
+ TOTKKeyboardKey *b=[TOTKKeyboardKey buttonWithTitle:title target:self action:@selector(clicked:)];
+ b.tag=tag;b.frame=frame;[(NSButtonCell *)b.cell setRefusesFirstResponder:YES];
+ b.bezelStyle=NSBezelStyleRegularSquare;b.bordered=NO;b.wantsLayer=YES;b.layer.cornerRadius=9;
+ b.font=[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];b.contentTintColor=NSColor.whiteColor;b.accessibilityLabel=title;
+ [self.buttons addObject:b];[self.card addSubview:b];return b;
+}
+-(void)build{
+ self.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;self.wantsLayer=YES;
+ self.layer.backgroundColor=[NSColor colorWithWhite:0 alpha:0.45].CGColor;
+ self.card=[[NSView alloc] initWithFrame:NSMakeRect(0,0,760,520)];self.card.wantsLayer=YES;
+ self.card.layer.cornerRadius=20;self.card.layer.borderWidth=1;
+ self.card.layer.borderColor=[NSColor colorWithWhite:1 alpha:0.18].CGColor;
+ self.card.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:0.98].CGColor;
+ [self addSubview:self.card];[self layout];
+ NSTextField *title=[NSTextField labelWithString:text_keyboard_label(@"Choose an amiibo",@"Choisir un amiibo",@"选择一个 amiibo")];
+ title.frame=NSMakeRect(24,474,712,28);title.font=[NSFont systemFontOfSize:21 weight:NSFontWeightMedium];title.textColor=NSColor.whiteColor;
+ [self.card addSubview:title];
+ self.buttons=[NSMutableArray array];
+ int n=runtime_amiibo_count(),rows=(n+AMIIBO_COLUMNS-1)/AMIIBO_COLUMNS;CGFloat w=(712-8*(AMIIBO_COLUMNS-1))/(CGFloat)AMIIBO_COLUMNS;
+ for(int i=0;i<n;i++)[self key:@(runtime_amiibo_name(i)) tag:i frame:NSMakeRect(24+(i%AMIIBO_COLUMNS)*(w+8),424-(i/AMIIBO_COLUMNS)*46,w,40)];
+ [self key:text_keyboard_label(@"Cancel",@"Annuler",@"取消") tag:n frame:NSMakeRect(280,424-rows*46-16,200,46)];
+ self.hint=[NSTextField labelWithString:@""];self.hint.frame=NSMakeRect(24,14,712,20);
+ self.hint.font=[NSFont systemFontOfSize:11 weight:NSFontWeightMedium];self.hint.textColor=[NSColor colorWithWhite:0.75 alpha:1];
+ self.hint.alignment=NSTextAlignmentCenter;[self.card addSubview:self.hint];
+ self.lastPadType=-2;[self updateHint];[self highlight];
+}
+-(void)updateHint{
+ int detected=-1,type=runtime_gamepad_type(&detected);if(type==GAMEPAD_TYPE_AUTO)type=detected;
+ if(type==self.lastPadType)return;self.lastPadType=type;
+ BOOL ps=type==GAMEPAD_TYPE_PLAYSTATION,pad=ps||type==GAMEPAD_TYPE_XBOX||type==GAMEPAD_TYPE_SWITCH;
+ NSString *pick=ps?@"×":pad?@"A":text_keyboard_label(@"South",@"Bas",@"下键"),*back=ps?@"○":pad?@"B":text_keyboard_label(@"East",@"Droite",@"右键");
+ self.hint.stringValue=[NSString stringWithFormat:text_keyboard_label(
+  @"Move: D-pad / stick / arrows   ·   Choose: %@ / Return   ·   Cancel: %@ / Esc, then leave the scan in the game",
+  @"Déplacer : croix / stick / flèches   ·   Choisir : %@ / Entrée   ·   Annuler : %@ / Échap, puis quitter le scan dans le jeu",
+  @"移动：方向键 / 摇杆   ·   选择：%@ / 回车   ·   取消：%@ / Esc，再在游戏里退出扫描"),pick,back];
+ TOTKKeyboardKey *cancel=self.buttons.lastObject;cancel.shortcut=back;cancel.needsDisplay=YES;
+}
+-(void)highlight{
+ for(TOTKKeyboardKey *b in self.buttons){BOOL selected=b.tag==self.focus;b.needsDisplay=YES;
+  b.layer.backgroundColor=(selected?[NSColor colorWithCalibratedRed:0.15 green:0.55 blue:0.55 alpha:1]:[NSColor colorWithWhite:1 alpha:0.10]).CGColor;
+  b.layer.borderWidth=selected?2:0;b.layer.borderColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1].CGColor;}
+}
+-(void)finish:(int)figure{
+ if(self.finished)return;self.finished=YES;[self.timer invalidate];self.timer=nil;
+ void(^d)(int)=self.done;self.done=nil;if(d)d(figure);
+}
+-(void)activate{int n=runtime_amiibo_count();[self finish:self.focus<n?self.focus:-1];}
+-(void)clicked:(NSButton *)b{self.focus=(int)b.tag;[self highlight];[self activate];}
+/* 1 left, 2 right, 3 up, 4 down, as the text bar's; Cancel is a row of its own under the figures. */
+-(void)move:(int)d{
+ int n=runtime_amiibo_count(),C=AMIIBO_COLUMNS,f=self.focus,last=(n-1)/C*C;
+ if(f>=n){if(d==3)f=MIN(last+self.column,n-1);else if(d==4)f=self.column;}
+ else{int r=f/C,c=f%C;
+  if(d==1||d==2){int width=MIN(C,n-r*C);c=(c+(d==1?width-1:1))%width;f=r*C+c;self.column=c;}
+  else if(d==3)f=r?f-C:n;
+  else f=f+C<n?f+C:n;}
+ self.focus=f;[self highlight];
+}
+-(void)keyDown:(NSEvent *)e{
+ switch(e.keyCode){case 123:[self move:1];return;case 124:[self move:2];return;case 126:[self move:3];return;case 125:[self move:4];return;
+  case 36:case 76:case 49:[self activate];return;case 53:[self finish:-1];return;}
+}
+-(void)tick{
+ [self updateHint];RuntimeGamepadState pad;runtime_gamepad_text_read(&pad);
+ if(self.finished)return;
+ if(!self.window.isKeyWindow||!pad.connected){self.armed=NO;self.previousButtons=pad.buttons;self.previousDirection=0;return;}
+ int direction=(pad.buttons&(1ull<<12)||pad.lx < -16000)?1:(pad.buttons&(1ull<<14)||pad.lx>16000)?2:
+  (pad.buttons&(1ull<<13)||pad.ly>16000)?3:(pad.buttons&(1ull<<15)||pad.ly < -16000)?4:0;
+ if(!self.armed){if(!pad.buttons&&!direction)self.armed=YES;self.previousButtons=pad.buttons;return;}   /* the press that used the rune is not a pick */
+ uint64_t edges=pad.buttons&~self.previousButtons;self.previousButtons=pad.buttons;
+ double now=NSProcessInfo.processInfo.systemUptime;
+ if(direction){if(direction!=self.previousDirection){[self move:direction];self.repeatAt=now+0.38;}
+  else if(now>=self.repeatAt){[self move:direction];self.repeatAt=now+0.09;}}
+ self.previousDirection=direction;
+ BOOL sw=self.lastPadType==GAMEPAD_TYPE_SWITCH;
+ if(edges&(sw?1u:2u)){[self finish:-1];return;}
+ if(edges&(sw?2u:1u))[self activate];
+}
+-(void)startController{
+ __weak TOTKAmiiboPicker *weakSelf=self;
+ self.timer=[NSTimer timerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *timer){TOTKAmiiboPicker *p=weakSelf;if(!p){[timer invalidate];return;}[p tick];}];
+ [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
+}
+-(void)dealloc{[_timer invalidate];}
+@end
+static __weak TOTKAmiiboPicker *openPicker;   /* main thread only */
+static _Atomic int amiiboPickerWanted;       /* the game is scanning with no figure waiting */
+static int amiiboPickerDone;                 /* main thread: the picker was answered during this scan; it is not shown again */
+static void amiibo_picker_close(void){
+ TOTKAmiiboPicker *p=openPicker;if(!p)return;openPicker=nil;
+ [p.timer invalidate];[p removeFromSuperview];
+ runtime_gamepad_text_capture(0);[window makeFirstResponder:window.contentView];
+ textEntryOpen=0;front_mouse_update();
+}
+static void amiibo_picker_sync(void){   /* main thread: the picker follows amiiboPickerWanted */
+ if(!atomic_load(&amiiboPickerWanted)){amiiboPickerDone=0;amiibo_picker_close();return;}
+ if(openPicker||amiiboPickerDone||openBar||!window)return;
+ if(settingsOpen)settings_show(0);
+ NSView *cv=window.contentView;
+ TOTKAmiiboPicker *p=[[TOTKAmiiboPicker alloc] initWithFrame:cv.bounds];[p build];
+ p.done=^(int figure){
+  amiiboPickerDone=1;amiibo_picker_close();
+  if(figure>=0)runtime_amiibo_place(figure);
+  else fprintf(stderr,"[amiibo] picker cancelled\n");
+ };
+ [cv addSubview:p];openPicker=p;
+ runtime_input_clear();
+ if(window.miniaturized)[window deminiaturize:nil];
+ [window makeFirstResponder:p];
+ runtime_gamepad_text_capture(1);[p startController];
+ textEntryOpen=1;front_mouse_update();   /* the pointer is the player's while choosing */
+ fprintf(stderr,"[amiibo] picker shown\n");
+}
+void runtime_front_amiibo_picker(int show){
+ atomic_store(&amiiboPickerWanted,show?1:0);
+ dispatch_async(dispatch_get_main_queue(),^{amiibo_picker_sync();});
+}
+#endif
 static int viReady;
 static unsigned displayIdentity,layerIdentity;
 static void vi_initialize(void){if(!metalLayer)runtime_fail("VI requires native macOS window");viReady=1;fprintf(stderr,"[totk] native VI display initialized\n");}

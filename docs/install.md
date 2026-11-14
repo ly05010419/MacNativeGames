@@ -338,5 +338,5 @@ Tears of the Kingdom; for Breath of the Wild replace `TOTK` with `BotW` and `tot
 **Requests beyond this page are welcome.** The versions and games listed are the ones we could test. If you need another version or another game, the AI assistant should do its best to make it work.
 
 - Tears of the Kingdom: base 1.0.0, optionally with the 1.2.1 or 1.4.3 update. Breath of the Wild: 1.6.0 and 1.9.0. Other versions, compressed base games and personalized tickets are not supported.
-- No online features, no amiibo.
+- No online features. amiibo: Breath of the Wild and Tears of the Kingdom on the Mac only (Tears of the Kingdom untested). When the game scans for an amiibo (the amiibo rune, the Purah Pad), a window lists the figures: pick one with the controller, the keyboard or the mouse, or Cancel and leave the scan in the game. The **amiibo** menu in the menu bar can also put a figure on the reader before a scan. No dump is needed. In Breath of the Wild, Wolf Link has 3 hearts, as a figure never used with Twilight Princess HD has.
 - New shaders can stutter the first time; the cache and the [shared shader list](shader-list.md) reduce it.
