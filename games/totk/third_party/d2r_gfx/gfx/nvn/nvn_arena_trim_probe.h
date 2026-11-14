@@ -21,7 +21,7 @@ int mtl_probe_arena_trim(void) {
         enc_b_copy_buffer(blit(), b, off, pixels, i * 64, 64);
     }
     mtl_sub_commit(); mtl_finish();
-    uint64_t burst_fence = g_fence, idle = arena_idle_submits();
+    uint64_t burst_fence = g_fence, idle = STOR_IDLE_SUBMITS;
     for (int i = 0; i < BURST; i++) for (int j = 0; j < 64; j++) {
         if (((uint8_t *)pixels.contents)[i * 64 + j] != 17 + i) MDIE("arena trim probe: initial GPU bytes changed");
         checked++;

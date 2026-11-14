@@ -8789,21 +8789,12 @@ static void shader_args_invalidate_stale(NvShader *sh) {
 void arena_begin(void) { g_arena_epoch++; if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; } g_cur_arena = nil; }
 /* OOT (2026-11-06): the free list only grew. Every block made while loading stayed for the whole session (25, 53 and
    87 blocks = 176, 400 and 672 MB in three runs of the same save, all made between frames 600 and 1200, none after),
-   while play reuses a few. A block idle for 120 submissions on low-memory OoT Macs (600 elsewhere) is released once the
+   while play reuses a few. A block idle for STOR_IDLE_SUBMITS submissions is released once the
    GPU completed its last use and no pending CPU write can still read it (the reuse condition in arena_new). */
 static uint64_t g_arenas_released, g_arena_bytes_released;
-static uint64_t arena_idle_submits(void) {
-#if defined(GAME_OOT) && TARGET_OS_OSX
-    static uint64_t idle; static dispatch_once_t once;
-    dispatch_once(&once, ^{ idle = NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30) ? 120 : STOR_IDLE_SUBMITS; });
-    return idle;
-#else
-    return STOR_IDLE_SUBMITS;
-#endif
-}
 static void arena_trim(uint64_t fence) {
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
-    uint64_t idle = arena_idle_submits();
+    uint64_t idle = STOR_IDLE_SUBMITS;
     for (NSInteger i = (NSInteger)g_arenas.count - 1; i >= 0; i--) {
         NvArena *it = g_arenas[(NSUInteger)i];
         if (!it->fence || it->fence > done || it->fence + idle >= fence) continue;
