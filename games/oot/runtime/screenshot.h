@@ -1,8 +1,9 @@
 /* The controller's capture button takes a picture of the game's own frame (a Nintendo controller's square button below the
    D-pad, macOS's Share button, and the joypad gamepad.m's HID fallback reads): the next frame the renderer presents is
    copied on the present thread and saved off the main thread, so the picture is the game picture -- not the boot screen's
-   text, the FPS box or the settings panel, none of which the game draws -- and the game never stops for it. Where it goes
-   depends on the platform:
+   text, the FPS box or the settings panel, none of which the game draws -- and the game never stops for it. The frame is
+   the game's own, at the game's render resolution and without the letterbox bars; the window picture (bars and boxes
+   included) stays with the diagnostics (wshot). Where it goes depends on the platform:
      - iPhone and iPad: the system photo library (Photos), in the album named after the game, the way a console's Capture
        button does;
      - a desktop (macOS, Windows, Linux): a folder, the Desktop until the settings panel's folder chooser names another

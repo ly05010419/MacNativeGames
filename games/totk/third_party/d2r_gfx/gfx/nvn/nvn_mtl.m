@@ -19637,6 +19637,10 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
 // with the same encoding as the present (present_encode) into an offscreen texture of the same size as the swapchain, and after the GPU finishes hands out a CGImage in the completion callback (the callback does not block the present). Guarded by g_shotq_mu
 static void (^g_grab_cb)(CGImageRef img);
 void mtl_grab_next_present(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
+// 玩家截图键（screenshot.h，前端 screenshot_picture）要的游戏帧：下一次上屏时把出图贴图 src（上屏放大之前、无黑边）整体拷进共享缓冲，GPU 完成后在反馈回调里交出 CGImage；HDR 或意外格式的源帧暂回退到整窗（上屏贴图）拷贝。
+// The game frame the player's capture button wants (screenshot.h, the front ends' screenshot_picture): at the next present the source texture src (before the output upscale, no letterbox bars) is copied whole into a shared buffer, and the feedback handler hands out a CGImage once the GPU is done; an HDR or unexpected source frame falls back to the whole-window (drawable) copy for now.
+static void (^g_grab_game_cb)(CGImageRef img);
+void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_game_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 /* The window picture re-rendered offscreen by the legacy encoder: only for presents that draw no drawable
    (TOTK_PRESENT_SKIP measurement runs); a real present copies its drawable (present_now). */
 static void grab_present(void (^cb)(CGImageRef), id<MTLTexture> src, const int crop[4], CGSize sz) {
@@ -20869,9 +20873,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     window_shot_tick(g_present_n);
     /* TOTK: whole-window shots (wshot, TOTK_WINDOW_SHOT) copy the drawable itself after the present has drawn into it: what
        the screen shows, MetalFX output upscale and boxes included (grab_present re-renders only for TOTK_PRESENT_SKIP). */
-    void (^grab)(CGImageRef) = nil; NSString *grab_src = nil;
-    if (g_grab_cb && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil;
-        if (g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
+    void (^grab)(CGImageRef) = nil; void (^grab_game)(CGImageRef) = nil; NSString *grab_src = nil;
+    if ((g_grab_cb || g_grab_game_cb) && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil; grab_game = g_grab_game_cb; g_grab_game_cb = nil;
+        if (grab && g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
     /* TOTK_PRESENT_SKIP=1 (measurement only): never take a drawable, so the render pipeline's own frame rate shows (the window
        does not update). */
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
@@ -20889,7 +20893,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
+    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
     /* TOTK_VR_CONTROL (stage 1, totk_vr.m): a copy of this game frame's picture for the headset, in the same command buffer;
        published from the feedback handler below. */
     const int *vr_crop = crop; id<MTLTexture> vr_src = interp < 0 ? vr_picture(cb, src, &vr_crop) : nil;   // the MetalFX picture modes: MetalFX's, twice as large
@@ -20900,7 +20904,29 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     BOOL grab_hdr=dr.texture.pixelFormat==MTLPixelFormatRGBA16Float;
     size_t grab_bpp=grab_hdr?8:4;
     id<MTLBuffer> grab_buf = nil; size_t grab_w = dr.texture.width, grab_h = dr.texture.height;
-    if (grab) {
+    /* 玩家游戏帧（grab_game）：SDR 源贴图拷出图裁切区域——游戏画面本身（即输出分辨率）；画布可以比画面大（如 2560x1440 画布配 1920x1080 输出），其余是未定义填充。
+       裁切无效（VR 放大模式把裁切指到别处等）、HDR 或意外格式、或缓冲建不出时回退到下面的上屏拷贝（HDR 上屏已压到 SDR）。
+       The player's game frame (grab_game): the SDR source texture is copied as the present's crop region -- the game's picture, the output resolution; the canvas can be larger than the picture (e.g. a 2560x1440 canvas with 1920x1080 output) and the remainder is undefined fill.
+       An invalid crop (e.g. the VR MetalFX modes point the crop elsewhere), an HDR or unexpected source, or a buffer that cannot be made, falls back to the drawable copy below (an HDR drawable is already tone-pressed to SDR). */
+    BOOL game_sdr = grab_game && (src.pixelFormat == MTLPixelFormatRGBA8Unorm || src.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
+        src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
+    id<MTLBuffer> game_buf = nil; size_t game_w = src.width, game_h = src.height; NSUInteger game_x = 0, game_y = 0;
+    if (game_sdr && vr_crop && vr_crop[0] >= 0 && vr_crop[1] >= 0 && vr_crop[2] > 0 && vr_crop[3] > 0 &&
+        vr_crop[0] + vr_crop[2] <= (int)src.width && vr_crop[1] + vr_crop[3] <= (int)src.height) {   // 出图裁切即画面区域 | the crop names the picture's region
+        game_x = (NSUInteger)vr_crop[0]; game_y = (NSUInteger)vr_crop[1]; game_w = (size_t)vr_crop[2]; game_h = (size_t)vr_crop[3];
+    }
+    if (game_sdr) {
+        game_buf = game_w && game_h ? [g_dev newBufferWithLength:game_w * game_h * 4 options:MTLResourceStorageModeShared] : nil;
+        if (game_buf) {
+            res_add(game_buf); res_commit();   // resident before this command buffer runs (lesson 55)
+            id<MTL4ComputeCommandEncoder> ge = [cb computeCommandEncoder];
+            [ge barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+            [ge copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(game_x, game_y, 0) sourceSize:MTLSizeMake(game_w, game_h, 1)
+                       toBuffer:game_buf destinationOffset:0 destinationBytesPerRow:game_w * 4 destinationBytesPerImage:game_w * game_h * 4];
+            m4_end(ge);
+        } else { MLOG("【红】游戏帧截图：%zux%zu 读回缓冲建不出，回退到整窗画面", game_w, game_h); game_sdr = NO; }
+    }
+    if (grab || (grab_game && !game_sdr)) {   // 整窗拷贝：整窗截图诊断 + 游戏帧的回退 | the drawable copy: the window-shot diagnostic and the game frame's fallback
         grab_buf = grab_w && grab_h ? [g_dev newBufferWithLength:grab_w * grab_h * grab_bpp options:MTLResourceStorageModeShared] : nil;
         if (grab_buf) {
             res_add(grab_buf); res_commit();   // resident before this command buffer runs (lesson 55)
@@ -20909,7 +20935,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             [ge copyFromTexture:dr.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(grab_w, grab_h, 1)
                        toBuffer:grab_buf destinationOffset:0 destinationBytesPerRow:grab_w * grab_bpp destinationBytesPerImage:grab_w * grab_h * grab_bpp];
             m4_end(ge);
-        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); grab(NULL); grab = nil; }
+        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); if (grab) grab(NULL); if (grab_game && !game_sdr) { grab_game(NULL); grab_game = nil; } grab = nil; }
     }
     id<MTLBuffer> src_buf = nil; size_t src_w = src.width, src_h = src.height;   // TOTK_WSHOT_SRC: the source picture of this present too
     if (grab && grab_src && src.pixelFormat == MTLPixelFormatRGBA8Unorm) {
@@ -20951,7 +20977,18 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                 CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; window_shot_save(img, path);
                 if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); CGColorSpaceRelease(cs); }
             res_remove(buf); }]; }
-    if (grab) { void (^g)(CGImageRef) = grab; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
+    if (game_buf) { void (^g)(CGImageRef) = grab_game; id<MTLBuffer> buf = game_buf; size_t w = game_w, h = game_h;
+        int bgra = src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;   // 字节序同 shot_body | the byte order as shot_body
+        [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
+            CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
+            if (!f.error) { cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                CGBitmapInfo bi = bgra ? (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : (CGBitmapInfo)kCGImageAlphaNoneSkipLast;
+                ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, bi);
+                img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
+            g(img);
+            if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
+            res_remove(buf); }]; }
+    if (grab_buf) { void (^g)(CGImageRef) = grab; void (^gg)(CGImageRef) = grab_game && !game_sdr ? grab_game : nil; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
             NSMutableData *sdr=nil;
@@ -20972,7 +21009,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                 }
                 ctx = CGBitmapContextCreate((void *)pixels, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
                 img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
-            g(img);
+            if (g) g(img);
+            if (gg) gg(img);
             if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
             res_remove(buf); }]; }
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {

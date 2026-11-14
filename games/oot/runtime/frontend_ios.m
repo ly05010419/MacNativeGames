@@ -174,8 +174,15 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
 #if TARGET_OS_IOS || TARGET_OS_VISION
 #import <Photos/Photos.h>
 extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
-/* The renderer's next frame, for screenshot.h: weak, so a build without the renderer answers with no picture. */
-static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+extern void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+/* The renderer's next frame -- the game's own, before the output upscale -- for screenshot.h: mtl_grab_next_game_frame
+   first, the window picture when the renderer only offers that; weak, so a build without the renderer answers with no
+   picture. */
+static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) {
+    if (mtl_grab_next_game_frame) mtl_grab_next_game_frame(cb);
+    else if (mtl_grab_next_present) mtl_grab_next_present(cb);
+    else cb(NULL);
+}
 #define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
 #endif
 #include "screenshot.h"   /* the album is GAME_NAME (game_version.h): the game whose frame it is */
