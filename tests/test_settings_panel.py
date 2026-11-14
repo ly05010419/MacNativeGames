@@ -200,8 +200,13 @@ class SettingsPanel(unittest.TestCase):
                                        TOTK_MFX='interp' if overridden else '0',
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
                                        TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
-                            run = subprocess.run([str(executable)], env=env,
-                                                 capture_output=True, text=True, timeout=35)
+                            try:
+                                run = subprocess.run([str(executable)], env=env,
+                                                     capture_output=True, text=True, timeout=35)
+                            except subprocess.TimeoutExpired as timeout:   # where the probe was when it stopped
+                                said = ''.join(part.decode(errors='replace') if isinstance(part, bytes) else part or ''
+                                               for part in (timeout.stdout, timeout.stderr))
+                                self.fail('timed out after 35 s; last output:\n' + '\n'.join(said.splitlines()[-25:]))
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: settings panel', run.stdout)
                 settings = Path(directory) / ('saved-' + (version or 'base'))
