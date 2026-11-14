@@ -12187,6 +12187,15 @@ static void writer_boundary_seal(void) {
    From seedds/nxnative's fb_prepare and fb_pinned_level (MIT; docs/reference/rendering.md there, "Mip-chain pass sampling the
    level it renders" and "Upsample pass reading the level above the one it renders"). */
 static void rt_sub(const p_set_rt *r, int k, uint64_t *ser, int *lv, int *sl);
+static NSMutableDictionary *g_mip_feedback_cache;   // replay thread only; each view retains the root named by its key
+static void mip_feedback_cache_flush(void) {
+    @autoreleasepool {
+        // Encoded draws may still name these views. Forgetting the dictionary entry
+        // must also retire its residency registration, after the existing GPU fence.
+        for (id view in g_mip_feedback_cache.allValues) defer_obj_release(view);
+        [g_mip_feedback_cache removeAllObjects];
+    }
+}
 // The levels (from, count) a draw samples when it renders level lv of a view of base + n levels, its sampler pinning level pin of the view (-1: none); 0: the view stays as it is
 static int mip_feedback_levels(int base, int n, int lv, int pin, int *from, int *count) {
     if (lv < base || lv >= base + n) return 0;
@@ -12216,12 +12225,13 @@ static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial, const
         NSUInteger slices = ty == MTLTextureTypeCube ? 6 : ty == MTLTextureTypeCubeArray ? t.arrayLength * 6 : t.arrayLength;
         if (ty == MTLTextureType3D) slices = 1;
         NSUInteger first = t.parentTexture ? t.parentRelativeSlice : 0;
-        static NSMutableDictionary *cache; if (!cache) cache = [NSMutableDictionary dictionary];
+        if (!g_mip_feedback_cache) g_mip_feedback_cache = [NSMutableDictionary dictionary];
+        NSMutableDictionary *cache = g_mip_feedback_cache;
         NSString *key = [NSString stringWithFormat:@"%p/%d/%d/%lu/%lu/%lu/%lu", (__bridge void *)root, from, count,
                          (unsigned long)ty, (unsigned long)t.pixelFormat, (unsigned long)first, (unsigned long)slices];
         id<MTLTexture> v = cache[key];
         if (!v) {
-            if (cache.count > 512) [cache removeAllObjects];
+            if (cache.count > 512) mip_feedback_cache_flush();
             v = [root newTextureViewWithPixelFormat:t.pixelFormat textureType:ty levels:NSMakeRange((NSUInteger)from, (NSUInteger)count) slices:NSMakeRange(first, slices)];
             if (!v) { RED_ONCE(100, "mip-chain feedback view failed (levels %d+%d)", from, count); return nil; }
             res_add(v); cache[key] = v;
@@ -22568,9 +22578,10 @@ int mtl_probe_linear_rt_upload(void) {
     return checked;
 }
 
+#include "nvn_mip_feedback_probe.h"
 /* Reproduce unused descriptor slots holding the old texture after streaming replaces its storage. */
 int mtl_probe_texture_retire(void) {
-    mtl_init(); enum { W=256,H=256,N=16 }; int checked=0;
+    mtl_init(); enum { W=256,H=256,N=16 }; int checked=probe_mip_feedback_retire();
     tex_t t={0}; t.serial=0xffffffb0;t.d=(nvn_texdesc){.width=W,.height=H,.depth=1,.levels=1,.target=1,.format=0x2a,.flags=0x40,.swizzle_r=2,.swizzle_g=3,.swizzle_b=4,.swizzle_a=5};
     nvn_tex_layout(&t.d,&t.L);size_t size=(t.L.size+getpagesize()-1)&~((size_t)getpagesize()-1);
     void *mem=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);if(mem==MAP_FAILED)MDIE("texture retire mmap");
