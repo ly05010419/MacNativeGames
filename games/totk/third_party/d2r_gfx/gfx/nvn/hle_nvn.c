@@ -3284,7 +3284,14 @@ static void tsummary(uint64_t frame) {
           if (pf && frame > pf) LOG("[nvn] 上传槽等待 至帧 %llu：每帧 %.2f 次 / %.3f ms", frame, (double)(un - pun) / (double)(frame - pf), (double)(uns - puns) / 1e6 / (double)(frame - pf));
           pun = un; puns = uns; }
         { static uint64_t pcc; uint64_t mtl_chunk_commits(void), cc = mtl_chunk_commits();
-          if (pf && frame > pf) LOG("[nvn] 分段提交 至帧 %llu：每帧额外 %.2f 段", frame, (double)(cc - pcc) / (double)(frame - pf));
+          static uint64_t pps; uint64_t mtl_pass_splits(void), ps = mtl_pass_splits();
+          if (pf && frame > pf) LOG("[nvn] 分段提交 至帧 %llu：每帧额外 %.2f 段，其中长通道拆分 %.2f 次 | chunks to frame %llu: %.2f extra a frame, %.2f of them long-pass splits", frame, (double)(cc - pcc) / (double)(frame - pf),
+                                (double)(ps - pps) / (double)(frame - pf), frame, (double)(cc - pcc) / (double)(frame - pf), (double)(ps - pps) / (double)(frame - pf));
+          { static uint64_t pb[5]; uint64_t b[5]; void mtl_pass_split_busy(uint64_t[5]); mtl_pass_split_busy(b); double nf = (double)(frame - pf);
+            if (pf && frame > pf && (b[0] - pb[0] || b[1] - pb[1] || b[2] - pb[2] || b[3] - pb[3] || b[4] - pb[4])) LOG("[nvn] long-pass split candidates to frame %llu, draws per frame: GPU idle %.1f, 1 command buffer in flight %.1f, 2 %.1f, 3+ %.1f, pass not splittable %.1f",
+                frame, (b[0] - pb[0]) / nf, (b[1] - pb[1]) / nf, (b[2] - pb[2]) / nf, (b[3] - pb[3]) / nf, (b[4] - pb[4]) / nf);
+            for (int i = 0; i < 5; i++) pb[i] = b[i]; }
+          pps = ps;
           pcc = cc; }
         if (synclog_env() && pf && frame > pf) { static uint64_t pc[2], pb[2], pn[2], pw[2]; double nf = (double)(frame - pf);
           for (int k = 0; k < 2; k++) { uint64_t c = atomic_load(&g_sw_calls[k]), b = atomic_load(&g_sw_blocked[k]), n = atomic_load(&g_sw_ns[k]), w = atomic_load(&g_sw_newest[k]);

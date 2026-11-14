@@ -3763,12 +3763,14 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
     return 0;
 }
 static void dead_stat_print(unsigned long long frame);
+static void pass_split_set(int draws);   // TOTK_PASS_SPLIT, with draw_inner
 void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
     if (!strcmp(name, "tex_slots_check")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_check, v != 0); MLOG("[flag] tex_slots_check = %d verified=%llu hits=%llu", v != 0, (unsigned long long)atomic_load(&g_tex_slots_verified), (unsigned long long)atomic_load(&g_tex_slots_hits)); return; }
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
+    if (!strcmp(name, "pass_split")) { pass_split_set(v); MLOG("[flag] pass_split = %d (a long render pass is split while the GPU idles, after that many draws; 0 off)", v > 0 ? v : 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "skipvc")) { atomic_store(&g_skipvc_any, v); MLOG("[flag] skipvc = %d", v); return; }
@@ -17679,6 +17681,61 @@ static void oot_bar_before_draw(NvProg *pr) {
 static void oot_bar_note_draw(NvProg *pr) {
     if (g_oot_bar_mode) g_oot_bar_writes |= oot_bar_shader_writes(pr);
 }
+/* TOTK_PASS_SPLIT (after seedds/nxnative's pass_split_try, its PR #1468): mid-submission commits (chunk_maybe_split) happen
+   only between render passes, so a long pass reaches the GPU in one piece at its end. Breath of the Wild 1.9.0 draws about
+   2,700 of its 4,100 draws a frame into one G-buffer pass, and the GPU, done with the shadow passes before it, waits for the
+   whole pass to be translated (nxnative measured about 2.5 ms of a 9 ms frame; M4 Max at 120 fps, frame p50 / p90
+   8.75 / 9.33 -> 8.34 / 8.68 ms). At a draw, with nothing committed still on the GPU (g_q4_inflight) and TOTK_PASS_SPLIT
+   draws (default 256, 0 off) since the last commit, the pass is ended, the chunk committed as chunk_maybe_split does, and
+   the draw opens the pass again: its attachments were stored (always, here) and are loaded, so the pictures are the same.
+   A split costs a store and a load of the attachments, so it is taken only while the GPU would otherwise wait, and at most
+   TOTK_PASS_SPLIT_MAX (default 2) times per NVN pass (a SetRenderTargets, g_cg.rt_seq). Not split: passes opened without
+   all their attachments (g_enc_mode), ranged, layered or cube-merged passes, hoisted or pending clears, the TBDR rewrites
+   and geometry draws. "flag pass_split <draws>" sets it while the game runs (0 off; A/B). */
+static _Atomic int g_pass_split = -1;
+static uint64_t g_pass_splits, g_split_rtseq; static int g_split_n;
+static uint64_t g_split_busy[5];   // draws past the threshold in an open pass: [0..3] by command buffers still in flight (0, 1, 2, 3+), [4] the pass may not be split
+static int pass_split_draws(void) {
+    int v = atomic_load_explicit(&g_pass_split, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("TOTK_PASS_SPLIT"); v = e ? atoi(e) : 256; if (v < 0) v = 0;
+                 int unset = -1; atomic_compare_exchange_strong(&g_pass_split, &unset, v); v = atomic_load(&g_pass_split); }
+    return v;
+}
+static void pass_split_set(int draws) { atomic_store(&g_pass_split, draws > 0 ? draws : 0); }
+static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PASS_SPLIT_MAX"); v = e ? atoi(e) : 2; } return v; }
+uint64_t mtl_pass_splits(void) { return g_pass_splits; }
+/* The settings panel's display page switch (settings_panel.h, pass-split.txt; like the GPU keep-alive): on = the default
+   256 draws, off = 0. TOTK_PASS_SPLIT decides first and greys the switch out. */
+int dm_gfx_pass_split_locked(void) { return getenv("TOTK_PASS_SPLIT") != NULL; }
+int dm_gfx_pass_split(void) { return pass_split_draws() > 0; }
+void dm_gfx_pass_split_start(int on) { if (!dm_gfx_pass_split_locked()) pass_split_set(on ? 256 : 0); }
+void dm_gfx_pass_split_set(int on) {
+    if (dm_gfx_pass_split_locked() || dm_gfx_pass_split() == !!on) return;
+    pass_split_set(on ? 256 : 0);
+    MLOG("长通道拆分：设置面板%s | long-pass split: %s from the settings panel", on ? "打开" : "关闭", on ? "on" : "off");
+}
+void mtl_pass_split_busy(uint64_t v[5]) { for (int i = 0; i < 5; i++) v[i] = g_split_busy[i]; }
+static void pass_split_try(void) {
+    int n = pass_split_draws();
+    if (n <= 0 || !g_enc || !g_chunk_size || !g_cb || g_frz_on || tbdr_on() || pt_active()) return;   // chunk_maybe_split's conditions, and a pass open
+    if (g_stat_draw - g_chunk_mark < (uint64_t)n) return;   // too soon
+    /* A continued pass (g_rt_merged: same-target SetRenderTargets, TOTK_RT_CONTINUE) is split like any other: ending one is
+       what a landed clear and a sampled attachment already do (rp_end), and the halves store and load as the passes did
+       before continuation. A counting occlusion query is too: each Metal pass counts into its own slot (vis_count_begin,
+       g_pass.serial) and the report adds all the slots since the reset. A pending clear is not: the reopened pass would
+       clear instead of loading. */
+    int clears = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) clears |= R.clear_c[i];
+    if (clears || g_enc_mode || g_rt_range_active || g_lay.active || g_cg_force_layers || g_hoist_n || g_defer_replaying || g_fz_checking || g_geo_ras.pr) { g_split_busy[4]++; return; }
+    { int busy = atomic_load_explicit(&g_q4_inflight, memory_order_relaxed); g_split_busy[busy > 3 ? 3 : busy < 0 ? 0 : busy]++;
+      if (busy) return; }   // the GPU has work: a commit would only queue
+    if (g_split_rtseq != g_cg.rt_seq) { g_split_rtseq = g_cg.rt_seq; g_split_n = 0; }
+    if (pass_split_max() > 0 && g_split_n >= pass_split_max()) return;
+    g_split_n++;
+    rp_end();
+    if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    mtl_sub_split();
+    if (!g_pass_splits++) MLOG("TOTK: pass split: a long render pass was ended and its chunk committed while the GPU had nothing to do (TOTK_PASS_SPLIT=%d, frame %llu)", n, (unsigned long long)atomic_load(&g_cur_frame));
+}
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     NSUInteger native_output_width=0,native_output_height=0;
     uint64_t native_output_source=0;
@@ -17697,6 +17754,7 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
                      pr->key[0] ? [pr->key[0] substringToIndex:16].UTF8String : "-", pr->key[1] ? [pr->key[1] substringToIndex:16].UTF8String : "-",
                      pr->key[2] ? [pr->key[2] substringToIndex:16].UTF8String : "-", (const void *)S.gst[0], (const void *)S.gst[1], (const void *)S.gst[2]); } }
         draw_skipped(); return; }   // TOTK (iOS): a stage is not translated yet; Mac (async shaders): still in the background
+    pass_split_try();   // before anything of this draw touches the encoder: the draw opens the pass again when it was split
     oot_bar_before_draw(pr);
     if(mesh_indirect_mode()==2)mesh_indirect_written(pr);
     mesh_batch_written(pr);
