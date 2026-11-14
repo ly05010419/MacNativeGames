@@ -15,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #include <stdio.h>
 #include <sys/sysctl.h>
+#include <stdatomic.h>
 #include <TargetConditionals.h>
 #include "totk_shader_contrib.h"   /* totk_contrib_read, _side, _retire, _due, _reminded, _never */
 #include "include/totk_ui_lang.h"   /* TOTK_UI */
@@ -35,18 +36,26 @@
 
 static inline BOOL totk_inbox_configured(void) { return TOTK_CONTRIB_INBOX[0] != 0; }
 
+/* A requested opt-out takes effect across launcher/settings translation units
+   immediately, even if a full disk or permission error prevents persisting it. */
+__attribute__((weak)) _Atomic int totk_inbox_session_off;
+
 /* The player's choice: @"auto", @"off", or nil when not asked yet. */
 static inline NSString *totk_inbox_choice(NSString *path) {
     if (!path) return nil;
+    if (atomic_load_explicit(&totk_inbox_session_off, memory_order_acquire)) return @"off";
     NSString *v = [[NSString stringWithContentsOfFile:totk_contrib_side(path, @"upload") encoding:NSUTF8StringEncoding error:nil]
                    stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     return [v isEqualToString:@"auto"] || [v isEqualToString:@"off"] ? v : nil;
 }
-static inline void totk_inbox_choose(NSString *path, BOOL on) {
-    if (!path) return;
+static inline BOOL totk_inbox_choose(NSString *path, BOOL on) {
+    if (!on) atomic_store_explicit(&totk_inbox_session_off, 1, memory_order_release);
+    if (!path) return NO;
     NSError *error = nil;
-    if (![(on ? @"auto\n" : @"off\n") writeToFile:totk_contrib_side(path, @"upload") atomically:YES encoding:NSUTF8StringEncoding error:&error])
-        fprintf(stderr, "[shader-inbox] cannot keep the choice: %s\n", error.localizedDescription.UTF8String);
+    BOOL saved = [(on ? @"auto\n" : @"off\n") writeToFile:totk_contrib_side(path, @"upload") atomically:YES encoding:NSUTF8StringEncoding error:&error];
+    if (!saved) fprintf(stderr, "[shader-inbox] cannot keep the choice: %s\n", error.localizedDescription.UTF8String);
+    if (saved && on) atomic_store_explicit(&totk_inbox_session_off, 0, memory_order_release);
+    return saved;
 }
 
 /* The one question, Mac and iOS alike: title, text and the answers in order (auto, never). */
@@ -157,29 +166,36 @@ static inline void totk_inbox_count_sent(NSString *path, NSUInteger rows) {
 /* Claims the contribution file for this game before the game starts (the launcher, the iPhone / iPad app): the game gets
    the id (TOTK_CONTRIB_GAME_ID) and writes only to a file of it, the upload sends only such a file (totk_contrib_owner). A
    file there of another game, or of none (written before 2026-11-12, when a file could hold several games' rows), moves
-   aside to <file>.of-<game>-<time> / <file>.unclaimed-<time> with its done and pruned files, never sent; the game starts a
-   new one. Returns the path. */
+   aside to <file>.of-<game>-<time> / <file>.unclaimed-<time> with its consent and metadata sidecars, never sent; the game
+   starts a new one with no inherited choice. A failed move keeps the path API but disables uploads for this run. */
 static inline NSString *totk_inbox_claim(NSString *path) {
     setenv("TOTK_CONTRIB_GAME_ID", GAME_INBOX_ID, 1);
     NSFileManager *fm = NSFileManager.defaultManager;
     if (!path || ![fm fileExistsAtPath:path]) return path;
     NSString *owner = totk_contrib_owner(path);
     if ([owner isEqualToString:@GAME_INBOX_ID]) return path;
+    atomic_store_explicit(&totk_inbox_session_off, 1, memory_order_release);
     NSDateFormatter *time = [NSDateFormatter new];
     time.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     time.dateFormat = @"yyyyMMdd-HHmmss";
     NSString *aside = [NSString stringWithFormat:@"%@.%@-%@", path, owner.length ? [@"of-" stringByAppendingString:owner] : @"unclaimed",
                        [time stringFromDate:NSDate.date]];
+    /* Consent belongs to the quarantined game too. Move its sidecars before
+       the main file: on failure the foreign owner remains and the run is off. */
+    for (NSString *ext in @[@"upload", @"done", @"pruned", @"install", @"sent", @"reminded"]) {
+        NSString *side = totk_contrib_side(path, ext);
+        NSError *error = nil;
+        if ([fm fileExistsAtPath:side] && ![fm moveItemAtPath:side toPath:totk_contrib_side(aside, ext) error:&error]) {
+            fprintf(stderr, "[shader-contrib] cannot quarantine %s: %s; contributions disabled for this run\n", side.UTF8String, error.localizedDescription.UTF8String);
+            return path;
+        }
+    }
     NSError *error = nil;
-    if (![fm moveItemAtPath:path toPath:aside error:&error]) {   /* still never written to nor sent: its id is not this game's */
-        fprintf(stderr, "[shader-contrib] %s is not " GAME_INBOX_ID "'s and could not be moved aside: %s\n", path.UTF8String,
-                error.localizedDescription.UTF8String);
+    if (![fm moveItemAtPath:path toPath:aside error:&error]) {
+        fprintf(stderr, "[shader-contrib] %s is not " GAME_INBOX_ID "'s and could not be moved aside: %s\n", path.UTF8String, error.localizedDescription.UTF8String);
         return path;
     }
-    for (NSString *ext in @[@"done", @"pruned"]) {
-        NSString *side = totk_contrib_side(path, ext);
-        if ([fm fileExistsAtPath:side]) [fm moveItemAtPath:side toPath:totk_contrib_side(aside, ext) error:nil];
-    }
+    atomic_store_explicit(&totk_inbox_session_off, 0, memory_order_release);
     fprintf(stderr, "[shader-contrib] %s was %s: moved to %s, never sent; " GAME_INBOX_ID " starts a new one\n", path.UTF8String,
             owner.length ? [NSString stringWithFormat:@"%@'s", owner].UTF8String : "no game's", aside.lastPathComponent.UTF8String);
     return path;
@@ -218,11 +234,13 @@ static inline NSUInteger totk_inbox_send(NSString *path, NSString *platform) {
                     owner.length ? [NSString stringWithFormat:@"%@'s", owner].UTF8String : "no game's");
         return 0;
     }
+    if (![totk_inbox_choice(path) isEqualToString:@"auto"]) return 0;
     NSArray<NSString *> *rows = [totk_contrib_read(path).allObjects sortedArrayUsingSelector:@selector(compare:)];
     NSString *install = rows.count ? totk_inbox_install(path) : nil;
     if (!install) return 0;
     NSUInteger taken = 0;
     for (NSUInteger at = 0; at < rows.count; at += TOTK_INBOX_CHUNK) {
+        if (![totk_inbox_choice(path) isEqualToString:@"auto"]) break;   // opt-out stops the next chunk
         NSArray<NSString *> *chunk = [rows subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)TOTK_INBOX_CHUNK, rows.count - at))];
         NSMutableDictionary *body = [@{@"schema": @1, @"game": @GAME_INBOX_ID, @"install": install,
                                        @"game_version": @TOTK_GAME_VERSION, @"app_build": totk_inbox_build(),
