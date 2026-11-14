@@ -210,6 +210,12 @@ def _cmake_install(name, src, stage, *options, extra_env=None):
     run([tools / 'cmake', '--install', build], f'{name}-install.log', env=env)
 
 
+def spirv_cross_source():
+    """Pinned source tree for targets that cross-compile the in-process translator."""
+    with locked():
+        return _checkout('spirv-cross')
+
+
 def _spirv_cross(stage):
     """With CMake, which writes the commit (git describe) into --revision: nxnative keys its shader cache on that line."""
     src = _checkout('spirv-cross')
