@@ -1,11 +1,12 @@
 # v3 shape reconstruction of UI masks: per channel and level layer, a threshold field at K x the source is refined until the
-# box coverage of its level set matches the source's coverage (back-projection), then traced with potrace into polygons
+# box coverage of its level set matches the source's coverage (back-projection), then traced with ContourPy into polygons
 # (source px units). fit_key() is the whole fit of one key (shapes); save/load keep the shapes as .npz.
 import numpy as np
 from PIL import Image
 from scipy import ndimage
 from scipy.spatial import cKDTree
-import potrace
+import contourpy
+from tools.ui_pack.outline import pixel_boundaries
 from tools.ui_pack import param, prim, raster
 
 def plateaus(c, minfrac=0.005):
@@ -77,28 +78,26 @@ def fit_layer(C, K, it, o):
     u, e = consistent(C, K, it, sig=sg, reg=rg, reg0=o.get("reg0", 0.0), hard=o.get("hard", 0))
     return u, e, sg
 
-def flatten(curve):
-    P = lambda q: np.array([q.x, q.y], float); pts, p0 = [], P(curve.start_point)
-    for s in curve.segments:
-        e = P(s.end_point)
-        if s.is_corner: pts += [p0, P(s.c)]
-        else:
-            c1, c2 = P(s.c1), P(s.c2); n = int(min(96, max(8, (np.abs(c1 - p0).sum() + np.abs(c2 - c1).sum() + np.abs(e - c2).sum()) / 1.5)))
-            t = (np.arange(n) / n)[:, None]
-            pts += list((1 - t) ** 3 * p0 + 3 * (1 - t) ** 2 * t * c1 + 3 * (1 - t) * t * t * c2 + t ** 3 * e)
-        p0 = e
-    return np.array(pts)
+def trace(u, K, tolerance=0.2, speck=None):
+    """Trace the fitted level set at subpixel centres; keep border continuation and holes.
 
-def trace(u, K, alphamax=1.0, opttol=0.2, turd=None):
-    """Polygons (source px) of {u >= .5}; u may be (padded field, pad in source px): the shape then runs on past the texture
-    border, so potrace does not round it where it meets the edge, and the polygons are shifted back (the rasteriser crops).
-    potracer traces the False pixels, so pass the complement."""
+    ContourPy supplies deterministic linear contours. Shape regularisation below fits
+    lines/arcs; no external curve fitter or game-specific shape data is used.
+    """
     pad = 0
     if isinstance(u, tuple): u, pad = u
-    b = u >= 0.5
-    if not b.any(): return []
-    pa = potrace.Bitmap(~b).trace(turdsize=turd if turd is not None else max(1, K * K // 2), alphamax=alphamax, opticurve=True, opttolerance=opttol)
-    return [flatten(c) / K - pad for c in pa]
+    if not (u >= 0.5).any(): return []
+    z = np.pad(u, 1, constant_values=min(0.0, float(u.min())))
+    lines = contourpy.contour_generator(x=np.arange(z.shape[1]) - 0.5,
+        y=np.arange(z.shape[0]) - 0.5, z=z, name='serial', line_type='Separate').lines(0.5)
+    minimum = speck if speck is not None else max(1, K * K // 2)
+    result = []
+    for line in lines:
+        P = line[:-1] if np.array_equal(line[0], line[-1]) else line
+        area = abs(np.sum(P[:, 0] * np.roll(P[:, 1], -1) - P[:, 1] * np.roll(P[:, 0], -1))) / 2
+        if len(P) >= 3 and area > minimum:
+            result.append(dp_closed(P, tolerance) / K - pad)
+    return result
 
 def layers(c, pl):
     """Coverage maps of the level layers (a, b): clip((c - a)/(b - a))."""
@@ -128,7 +127,7 @@ def edge_aware(c, K, it, o):
     cov = np.where(Z, np.clip((c - S) / np.where(np.abs(gap) > 4, gap, 1e9), 0, 1), (c > T).astype(float))
     cov = np.where(Z & (np.abs(gap) <= 4), (c > T).astype(float), cov)
     u, e, sg = fit_layer(cov, K, it, o)
-    polys = trace(u, K, o.get('alphamax', 1.0), o.get('opttol', 0.2))
+    polys = trace(u, K, o.get('trace_tol', 0.2))
     if o.get('prim', 0.15): polys = regular(polys, o.get('prim', 0.15), [], o.get('corner', prim.CORNER))
     return dict(const=False, ea=True, S=S, B=B, levels=[float(c.min()), float(c.max())],
                 layers=[dict(a=0.0, b=1.0, polys=polys, fit_mae=float(np.abs(e).mean()), fit_max=float(np.abs(e).max()), sig=sg)], zfrac=float(Z.mean()))
@@ -169,10 +168,8 @@ def regular(polys, tol, log, corner=prim.CORNER):
     return out
 
 def pixel_outline(C, pad=4):
-    """Exact pixel-boundary polygons of a binary coverage map (pixel-crisp sources): potrace with corners only, on the
-    edge-padded map, so a shape that touches the border runs on past it (the pre-filter must not fade it there)."""
-    pa = potrace.Bitmap(~(np.pad(C, pad, mode='edge') >= 0.5)).trace(turdsize=0, alphamax=0.0, opticurve=False)
-    return [flatten(c) - pad for c in pa]
+    """Exact grid edges, including holes, padded so border-touching shapes continue."""
+    return [P - pad for P in pixel_boundaries(np.pad(C, pad, mode='edge') >= 0.5)]
 
 def dp_closed(P, tol):
     """Douglas-Peucker simplification of a closed polygon (tol in the polygon's units): straight runs become one segment."""
@@ -202,7 +199,7 @@ def reconstruct(src, K=8, it=80, opts=None):
                 polys, e, sg, q = param.fit(C, opts['param']); log.append('param ' + ' '.join(f'{v:.3f}' for v in q))
             else:
                 u, e, sg = fit_layer(C, K, it, opts)
-                polys = trace(u, K, 0.0 if 'poly' in opts else opts.get('alphamax', 1.0), opts.get('opttol', 0.2), int(opts['turd'] * K * K) if 'turd' in opts else None)
+                polys = trace(u, K, opts.get('trace_tol', 0.2), int(opts['turd'] * K * K) if 'turd' in opts else None)
                 if 'poly' in opts: polys = [dp_closed(P, opts['poly']) for P in polys]   # straight-edged glyphs
                 if not opts.get('noround'): polys = roundify(polys, opts.get('ctol', 0.3), log, *C.shape, cmin=opts.get('cmin', 0.8))
             if opts.get('prim', 0.15) and sg >= 0 and not opts.get('param'): polys = regular(polys, opts.get('prim', 0.15), log, opts.get('corner', prim.CORNER))   # lines + arcs

@@ -1,4 +1,0 @@
-numpy==2.5.4
-scipy==1.18.1
-potracer==0.0.4
-pillow==13.0.0

@@ -12,7 +12,7 @@ from typing import NamedTuple
 from tools.ui_pack.errors import UiPackError
 
 CHECKS = ('ink', 'levels', 'rt', 'gv')    # the gate checks an `accept` option can name (gate.py)
-OPTIONS = {'mode', 'T', 'P', 'tau', 'zdil', 'S0', 'ea_ch', 'hard', 'K', 'it', 'reg', 'reg0', 'sig', 'alphamax', 'opttol', 'turd', 'poly',
+OPTIONS = {'mode', 'T', 'P', 'tau', 'zdil', 'S0', 'ea_ch', 'hard', 'K', 'it', 'reg', 'reg0', 'sig', 'trace_tol', 'turd', 'poly',
            'ctol', 'cmin', 'noround', 'nopix', 'prim', 'corner', 'param', 'pix', 'sym', 'patch', 'patch_sig', 'F', 'skip', 'accept'}
 LEVELS = re.compile(r'levels\d+$')          # levels0, levels1, ...: the plateau values of a channel
 

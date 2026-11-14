@@ -38,7 +38,7 @@
 5229bb6afe48b189-42x18-49	1.77	{}	measured in game at 1.77; filtered for 1.77
 527c4f219d719000-20x458-49		{"K":16,"hard":30,"turd":1.5,"sig":0.45}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 54ddd76b6c6b3dec-82x82-01		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
-55cfaa8ff69de6f4-36x36-4b		{"reg0":0.0,"alphamax":0.75,"ctol":0.5,"cmin":2.0,"pix":[[2,8,2,8,0],[2,8,28,34,0],[28,34,2,8,0],[28,34,28,34,0],[15,21,15,21,0]]}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+55cfaa8ff69de6f4-36x36-4b		{"reg0":0.0,"ctol":0.5,"cmin":2.0,"pix":[[2,8,2,8,0],[2,8,28,34,0],[28,34,2,8,0],[28,34,28,34,0],[15,21,15,21,0]]}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 585f65c1edbf5ab4-144x144-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 64d5742e30a1243a-440x160-49	1.54	{}	measured in game at 1.54; filtered for 1.54
 6dcf8126c583c212-512x512-49		{"K":8,"skip":"soft greyscale glow mask: one channel, values 0-30 (96% zero), star blobs peaking at 11 with 1-4 halos, 1-px lines at 8 with 2-3 halos, largest neighbour step 14 levels; every traced version turned the faint lines into dashes and the stars into rings"}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
@@ -56,7 +56,7 @@
 92c436d3040c0c90-6x36-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 94364e0daee2cff8-48x48-49		{"mode":"ea","T":150,"P":208,"zdil":0}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 948d367fccaf7d89-72x72-49	1.09	{}	measured in game at 1.09; filtered for 1.09
-95aa06998d83af04-36x69-49		{"alphamax":1.2,"sym":"y"}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+95aa06998d83af04-36x69-49		{"sym":"y"}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 97ff78f4aed2d8c0-108x108-49	1.22	{}	measured in game at 1.22; filtered for 1.22
 99de0642821c0f3a-50x50-49		{"accept":{"levels":"tiny dot: the source's brightest plateau is 230 and the pack's is 255 (+25); the pre-filtered dot's game-view mean ink matches the source (+0.03); owner approved 2026-11-13"}}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
 9c57617344d9af67-56x56-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)

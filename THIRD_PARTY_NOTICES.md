@@ -51,3 +51,10 @@ Fetched or linked at build time (not in this repository):
 | [ALVR](https://github.com/alvr-org/ALVR) client v20.14.0, downloaded (SHA-256 checked) and installed on the headset by `zeldaVR/install_vr.sh` | shows the VR picture on the Meta Quest 3 | MIT |
 | [Noto Sans CJK SC](https://github.com/notofonts/noto-cjk) (Source Han Sans) DemiLight at `165c01b`, downloaded and checked by `windows_games/ra2/scripts/languages.py` | the Simplified Chinese glyphs it draws into the player's game font | SIL OFL 1.1 |
 | [OpenCC](https://github.com/BYVoid/OpenCC), run (not included) by `windows_games/ra2/scripts/languages.py` | Traditional to Simplified Chinese | Apache-2.0 |
+
+## Optional UI reconstruction tools
+
+`tools/ui_pack` uses NumPy (BSD-3-Clause), SciPy (BSD-3-Clause), ContourPy (BSD-3-Clause) and Pillow (MIT-CMU).
+Their CPython wheels are downloaded from PyPI, verified against `tools/deps/pins.py`, and installed only in the external
+dependency cache; each wheel retains its own license files. [ContourPy license](https://github.com/contourpy/contourpy/blob/main/LICENSE).
+The grid-edge tracer in `tools/ui_pack/outline.py` is original MIT code. No Potrace code is included or required.

@@ -27,11 +27,14 @@ jobs:
           cache: pip
           cache-dependency-path: |
             games/totk/requirements.txt
-            tools/ui_pack/requirements.txt
+            tools/deps/pins.py
       - name: Install build-tool test dependencies
-        run: python -m pip install -r games/totk/requirements.txt -r tools/ui_pack/requirements.txt
+        run: |
+          UI_PYTHON="$(python tools/deps python ui-pack)"
+          "$UI_PYTHON" -m pip install -r games/totk/requirements.txt
+          echo "MNG_TEST_PYTHON=$UI_PYTHON" >> "$GITHUB_ENV"
       - name: Run synthetic container, update and native path tests
-        run: python .github/run_source_tests.py ${{ matrix.group }}
+        run: '"$MNG_TEST_PYTHON" .github/run_source_tests.py ${{ matrix.group }}'
 
   launcher-distribution:
     name: Launcher local-build regressions

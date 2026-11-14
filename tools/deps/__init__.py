@@ -23,7 +23,7 @@ from .pins import BUILD_TOOLS, SOURCES
 # tools/deps) through MNG_REPO, which every process that imported tools/deps passes on to the ones it starts.
 os.environ.setdefault('MNG_REPO', str(Path(__file__).resolve().parents[2]))
 
-__all__ = ['DepsError', 'cache', 'env', 'path', 'prefix', 'program', 'build_tools', 'LIBRARIES', 'PROGRAMS']
+__all__ = ['DepsError', 'cache', 'env', 'path', 'prefix', 'program', 'build_tools', 'python_environment', 'LIBRARIES', 'PROGRAMS']
 
 # library or tool name: (folder under the cache, the file whose presence means it is installed)
 def _folder(name):
@@ -51,6 +51,37 @@ def package(name):
     filename, url, digest = PACKAGES[name]
     with locked():
         return fetch(url, digest, filename)
+
+
+def python_environment(name):
+    """An isolated CPython 3.14 tool environment from checked, locally installed wheels."""
+    import platform
+    from .pins import PYTHON_ENVIRONMENTS
+    from .core import fetch
+    if name not in PYTHON_ENVIRONMENTS:
+        raise DepsError(f'unknown Python tool environment: {name}')
+    if sys.platform != 'darwin' or platform.machine() != 'arm64':
+        raise DepsError(f'{name} requires an Apple silicon Mac')
+    wheels = PYTHON_ENVIRONMENTS[name]
+    identity = hashlib.sha256(repr(wheels).encode()).hexdigest()[:16]
+    folder = cache() / f'python-{name}-{identity}'
+    python, done = folder/'bin/python', folder/'.done'
+    if done.is_file() and python.is_file():
+        return python
+    with locked():
+        if done.is_file() and python.is_file():
+            return python
+        host = sys.executable if sys.version_info[:2] == (3, 14) else shutil.which('python3.14', path=os.pathsep.join([
+            '/usr/local/bin', os.environ.get('PATH', '')]))
+        if not host:
+            raise DepsError('Python 3.14 is required: https://www.python.org/downloads/macos/')
+        archives = [fetch(url, digest, filename) for filename, url, digest in wheels]
+        if folder.exists():
+            shutil.rmtree(folder)
+        run([host, '-m', 'venv', folder], f'{name}-venv.log')
+        run([python, '-m', 'pip', 'install', '--no-index', '--no-deps', '--disable-pip-version-check', *archives], f'{name}-pip.log')
+        done.touch()
+    return python
 
 
 def prefix(name):

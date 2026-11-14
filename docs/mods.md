@@ -419,12 +419,11 @@ premultiplied, sRGB colour left encoded) for colour.
    open --env MNG_UI_PACK_HARVEST="$HOME/Library/Application Support/MacNativeGames/BotW/ui-harvest" "/path/to/Breath of the Wild.app"
    ```
 
-2. Build the pack with uv, from the repository folder. Set `--screen-height` to the height of the game's picture (1944 for
+2. Build the pack with Python 3.14, from the repository folder. Set `--screen-height` to the height of the game's picture (1944 for
    3456x1944, 1080 for 1920x1080):
 
    ```bash
-   uv run --no-project --python 3.14 --with-requirements tools/ui_pack/requirements.txt \
-     python -m tools.ui_pack build --game botw \
+   python3.14 -m tools.ui_pack build --game botw \
      --harvest "$HOME/Library/Application Support/MacNativeGames/BotW/ui-harvest" \
      --out "$HOME/Library/Application Support/MacNativeGames/BotW/ui-pack" \
      --screen-height 1944
@@ -457,9 +456,10 @@ wrote in `manifest.tsv` in the pack folder and rewrites or deletes only the pict
 another tool or by hand stay. An `ai-manifest.tsv` from the earlier AI builder is taken over: its pictures are
 built again or deleted, and the file is deleted. Delete a picture to go back to the game's texture for that key.
 
-**Same pack for every player.** `tools/ui_pack/requirements.txt` pins numpy, scipy, potracer and pillow, so the same harvest
-gives the same pack on every Mac. uv installs them for the build only. potracer (GPL-2.0) is used as a library. The
-repository does not contain it.
+**Repeatable builds.** `tools/deps/pins.py` fixes the NumPy, SciPy, ContourPy and Pillow wheels and their SHA-256 values.
+The command installs them in an isolated cache automatically. ContourPy (BSD-3-Clause) traces fitted level sets; the
+pixel-boundary tracer is this project's MIT implementation. Existing packs rebuild once for method v3.2. Synthetic
+shape tests pass, but per-key tuning made with the previous tracer needs visual validation on the player's own harvest.
 
 The repository holds no file made from the game. The harvest folder and the pack are made from your game data: they stay on
 your Mac and never go into the repository or a pull request.
@@ -897,11 +897,10 @@ key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图�
    open --env MNG_UI_PACK_HARVEST="$HOME/Library/Application Support/MacNativeGames/BotW/ui-harvest" "/path/to/Breath of the Wild.app"
    ```
 
-2. 在仓库文件夹里用 uv 制作贴图包。`--screen-height` 设为游戏画面的高度（3456x1944 为 1944，1920x1080 为 1080）：
+2. 在仓库文件夹里用 Python 3.14 制作贴图包。`--screen-height` 设为游戏画面的高度（3456x1944 为 1944，1920x1080 为 1080）：
 
    ```bash
-   uv run --no-project --python 3.14 --with-requirements tools/ui_pack/requirements.txt \
-     python -m tools.ui_pack build --game botw \
+   python3.14 -m tools.ui_pack build --game botw \
      --harvest "$HOME/Library/Application Support/MacNativeGames/BotW/ui-harvest" \
      --out "$HOME/Library/Application Support/MacNativeGames/BotW/ui-pack" \
      --screen-height 1944
@@ -927,8 +926,9 @@ key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图�
 `manifest.tsv` 里，只重写或删除其中列出的图片，所以其他工具做的或手工放入的图片会保留。之前 AI 工具留下的
 `ai-manifest.tsv` 会被接管：其中的图片重新制作或删除，然后删掉这个文件。删除某张图片，该 key 就回到游戏自己的贴图。
 
-**每位玩家得到同样的贴图包。** `tools/ui_pack/requirements.txt` 固定了 numpy、scipy、potracer 和 pillow 的版本，所以同样的采集
-在每台 Mac 上得到同样的贴图包。uv 只在制作时安装它们。potracer（GPL-2.0）作为库使用，仓库里不包含它。
+**可复现的构建。** `tools/deps/pins.py` 固定 NumPy、SciPy、ContourPy、Pillow 的轮子和 SHA-256，命令自动安装到独立缓存。
+ContourPy（BSD-3-Clause）追踪拟合场的轮廓，像素边界由本项目自己的 MIT 实现处理。方法版本改为 v3.2，旧包会重做一次。
+合成形状回归通过；原轮廓工具的逐项参数仍需用玩家自己的采集画面核对。
 
 仓库里没有任何从游戏生成的文件。采集文件夹和贴图包由你的游戏数据生成，只保留在你的 Mac 上，不放进仓库或拉取请求。
 

@@ -1,5 +1,5 @@
 """tools/ui_pack (the UI texture pack builder): the key and the key lists on stdlib only; the shape method and the incremental
-build on small made-up pictures (no game data), when numpy, scipy, potracer and pillow are installed (tools/ui_pack/requirements.txt)."""
+build on small made-up pictures (no game data), when numpy, scipy, ContourPy and pillow are installed (tools/deps python ui-pack)."""
 import ast
 import contextlib
 import importlib.util
@@ -22,8 +22,8 @@ HARD_CODED = (0xda812a146f668251, 0x007b59654d24b601, 0x8cbdd07534315025, 0xc3dd
               0x62d5b638c9953066, 0x2320f475120411ca, 0xe93e6c20a9092f4e, 0x125d7bed6f3bdaf1)
 KEY_FORMAT = r'^[0-9a-f]{16}-\d+x\d+-[0-9a-f]{2}$'
 HARVEST_HEADER = 'key\twidth\theight\tnvn_format\tmetal_format\tclass\tsrgb\tfs_key\tbytes\tframe\n'      # as the game writes it (ui_pack.h)
-HAVE_METHOD = all(importlib.util.find_spec(name) for name in ('numpy', 'scipy', 'potrace', 'PIL'))
-NEED_METHOD = 'numpy, scipy, potracer and pillow are not installed (tools/ui_pack/requirements.txt)'
+HAVE_METHOD = all(importlib.util.find_spec(name) for name in ('numpy', 'scipy', 'contourpy', 'PIL'))
+NEED_METHOD = 'numpy, scipy, ContourPy and pillow are not installed (tools/deps python ui-pack)'
 
 
 def pattern(n):

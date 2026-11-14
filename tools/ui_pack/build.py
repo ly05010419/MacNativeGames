@@ -16,7 +16,7 @@ from tools.ui_pack.errors import UiPackError
 from tools.ui_pack.harvest import read_harvest
 from tools.ui_pack.keylist import Entry, draw_scale
 
-REVISION = 'v3.1'
+REVISION = 'v3.2-contourpy'
 GRADIENT_MIN = 0.5     # a mask whose sharpest 4-neighbour step is below this fraction of the range of every used channel is a pure gradient
 COLOUR = 'colour art: the shape method is for masks'
 
