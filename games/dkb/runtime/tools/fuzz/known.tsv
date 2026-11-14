@@ -1,0 +1,1 @@
+# Open findings of the fuzz harnesses (dm/tools/fuzz/fuzzlib.py), one row per cause: harness, signature pattern (fnmatch, alternatives separated by |), its inputs in corpus/<harness>/ (comma-separated), issue, what

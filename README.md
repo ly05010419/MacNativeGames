@@ -40,6 +40,8 @@ that runtime in [`games/oot`](games/oot/README.md).
 
 Ocarina of Time and Pokopia package as a Mac app with `build_app.py`. Not yet: iPhone / iPad (a build path for Ocarina of Time is being tested), DLC.
 
+Donkey Kong Bananza also builds as a Mac app, from a copy of nxnative: [`games/dkb`](games/dkb/README.md).
+
 ### Switch 1 games
 
 | Game | Version | Platform | Status | Folder |
@@ -238,6 +240,8 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 马力欧卡丁车 世界 | 1.0.0 | Mac | 社区移植，实验性；[构建说明](games/mkw/README.md) |
 
 时之笛和 Pokopia 可以用 `build_app.py` 打包成 Mac App。还没有：iPhone / iPad（时之笛的打包路径在测试中）、DLC。
+
+大金刚 Bananza 另外可以用 nxnative 的副本打包成 Mac App：[`games/dkb`](games/dkb/README.md)。
 
 ### Switch 1 游戏
 
