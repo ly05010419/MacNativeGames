@@ -14,6 +14,9 @@
      GPU keep-alive       switch, default on                 dm_gfx_keepalive_set (gfx/nvn/nvn_mtl.m), at once;
                                                              gpu-keepalive.txt above the game's folder (both games);
                                                              TOTK_GPU_KEEPALIVE first (greyed out)
+     long-pass split      switch, default on                 dm_gfx_pass_split_set (gfx/nvn/nvn_mtl.m), at once;
+                                                             pass-split.txt above the game's folder (both games);
+                                                             TOTK_PASS_SPLIT first (greyed out)
      resolution           720p / + MetalFX / 1080p /         runtime_output_mode_set (game_patches*.c); the player picks,
                           + MetalFX / 2K /
                           2K + MetalFX (a 4K screen)
@@ -140,6 +143,7 @@ void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
 void dm_gfx_aniso_start(int n); int dm_gfx_aniso_locked(void); int dm_gfx_aniso(void); void dm_gfx_aniso_set(int n);   /* gfx/nvn/nvn_mtl.m */
 void dm_gfx_keepalive_start(int on); int dm_gfx_keepalive_locked(void); int dm_gfx_keepalive(void); void dm_gfx_keepalive_set(int on);   /* gfx/nvn/nvn_mtl.m */
+void dm_gfx_pass_split_start(int on); int dm_gfx_pass_split_locked(void); int dm_gfx_pass_split(void); void dm_gfx_pass_split_set(int on);   /* gfx/nvn/nvn_mtl.m */
 #ifdef GAME_BOTW190
 int runtime_shadow_res_available(void); int runtime_shadow_res_locked(void); int runtime_shadow_res_saved(void);
 void runtime_shadow_res_save(int size);   /* game_patches_botw.c */
@@ -283,6 +287,7 @@ static void settings_restore_begin(void) {
  settings_ssao_restore();
  if(!dm_gfx_aniso_locked()&&settings_read_int("graphics-aniso.txt",&v)&&v<=16)dm_gfx_aniso_start(v);
  if(!dm_gfx_keepalive_locked()&&runtime_shared_setting_word("gpu-keepalive.txt",word,sizeof word))dm_gfx_keepalive_start(!strncmp(word,"on",2));
+ if(!dm_gfx_pass_split_locked()&&runtime_shared_setting_word("pass-split.txt",word,sizeof word))dm_gfx_pass_split_start(!strncmp(word,"on",2));
  settings_effects_restore();
  /* Edge smoothing's resolve, kept in graphics-taa-mode.txt: "fast" (one compute pass) or "metalfx" (the default);
     TOTK_TAA_FAST decides first. The display page's edge smoothing row (off / fast / MetalFX) writes it. */
@@ -868,6 +873,13 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   if(dm_gfx_keepalive_locked())[rows addObject:settings_fixed(t,settings_on_off(dm_gfx_keepalive()))];
   else [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_keepalive();},
    ^(int v){dm_gfx_keepalive_set(v);runtime_shared_setting_save("gpu-keepalive.txt",v?"on":"off","GPU keep-alive");})];}
+ /* Long-pass split (nvn_mtl.m pass_split_try): a long render pass is committed in parts while the GPU idles, so the GPU
+    starts on it sooner. Breath of the Wild 1.9.0 uncapped on an M4 Max kept its GPU clock (641 MHz against 344-380 without)
+    and its frames (10.9 against 14-19 ms); the GPU then works more, so more power at an uncapped frame rate. */
+ {NSString *t=settings_text("长通道拆分（GPU 少降频，帧更多）","Long-pass split (steadier GPU clock, more fps)");
+  if(dm_gfx_pass_split_locked())[rows addObject:settings_fixed(t,settings_on_off(dm_gfx_pass_split()))];
+  else [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_pass_split();},
+   ^(int v){dm_gfx_pass_split_set(v);runtime_shared_setting_save("pass-split.txt",v?"on":"off","long-pass split");})];}
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
  static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_720P_METALFX,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K,
