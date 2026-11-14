@@ -3763,12 +3763,14 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
     return 0;
 }
 static void dead_stat_print(unsigned long long frame);
+static void function_cache_set(int on);   // below, with function_cache_on
 void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
     if (!strcmp(name, "tex_slots_check")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_check, v != 0); MLOG("[flag] tex_slots_check = %d verified=%llu hits=%llu", v != 0, (unsigned long long)atomic_load(&g_tex_slots_verified), (unsigned long long)atomic_load(&g_tex_slots_hits)); return; }
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
+    if (!strcmp(name, "function_cache")) { function_cache_set(v); MLOG("[flag] function_cache = %d (border and varying shader variants looked up in the per-shader function cache)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "skipvc")) { atomic_store(&g_skipvc_any, v); MLOG("[flag] skipvc = %d", v); return; }
@@ -9567,6 +9569,7 @@ static int variant_defer(NSString *job, void (^build)(void)) {
 #define VARIANT_NONE ((__bridge id)kCFNull)   // cached: the border rewrite found no sample call, so no patched function
 typedef struct { float c[8][4]; int a[8]; unsigned x[8]; samp_par p[8]; int n; } border_in;
 static os_unfair_lock g_bpatch_lock = OS_UNFAIR_LOCK_INIT, g_vpatch_lock = OS_UNFAIR_LOCK_INIT;   // NvShader bpatch / vpatch
+static _Atomic int g_function_cache_on = -1;   // function_cache_on: TOTK_SHADER_FUNCTION_CACHE, "flag function_cache 0|1"
 /* Border recipes: a stage's border_key text holds every input of its variant ("<argument id>:<axes>:<r>,<g>,<b>,<a>;" per
    sampler, colours in %a; a filtering sampler adds ":f<ws>,<wt>,<wr>,<magf>,<minf>,<aniso>,<lod min>,<lod max>" before ';'), so it reads back exactly. pso_adopt records it with the pipeline (B rows) and the next start's
    warm-up builds the border variant and its pipeline from it (warm_worker): the pipeline only ever drawn with those
@@ -9632,11 +9635,12 @@ static void function_cache_put(NvFunctionCache *__strong *cache, id peer, NSStri
     c->peer[i] = peer; c->key[i] = key; c->mode[i] = mode; c->fn[i] = fn;
 }
 static int function_cache_on(void) {
-    static _Atomic int cached = -1;
-    int value = atomic_load_explicit(&cached, memory_order_relaxed);
-    if (value < 0) { const char *e = getenv("TOTK_SHADER_FUNCTION_CACHE"); value = !(e && !strcmp(e, "0")); atomic_store_explicit(&cached, value, memory_order_relaxed); }
+    int value = atomic_load_explicit(&g_function_cache_on, memory_order_relaxed);
+    if (value < 0) { const char *e = getenv("TOTK_SHADER_FUNCTION_CACHE"); value = !(e && !strcmp(e, "0"));
+                     int unset = -1; atomic_compare_exchange_strong(&g_function_cache_on, &unset, value); value = atomic_load(&g_function_cache_on); }
     return value;
 }
+static void function_cache_set(int on) { atomic_store(&g_function_cache_on, on != 0); }
 static id<MTLFunction> fs_fn_border(NvShader *fs, int nodepth, NSString **recipe) {
     if (!fs || !sh_has_src(fs)) return nil;
     border_in b;
@@ -9782,10 +9786,18 @@ static NSString *msl_retype_inputs(NSString *msl, NSString *vin, const char *key
 static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, NSString **cache_key, const pso_key *pk);
 /* The vertex function for the pass (layer index), the fragment shader's varyings and, with border, the draw's vertex-stage
    samplers with a border colour Metal lacks (PSO_VBORDER), and pk's bound vertex formats (vs_vin). recipe: their border_key. */
+static id<MTLFunction> vs_fn_cached(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, const pso_key *pk);
 static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int border, NSString **recipe, const pso_key *pk) {
     border_in b; b.n = 0;
     NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, b.c, b.a, b.x, b.p, &b.n) : nil;
     if (recipe) *recipe = bkey;
+    return vs_fn_cached(vs, fs, layered, bkey, b, pk);
+}
+/* vs_fn_variant through vs->vertex_cache (function_cache_get: the fragment shader, the border key object and layered, all
+   retained). TOTK_PSO_MEMO's pipeline lookup (pso_get_p) called vs_fn_variant itself for every bordered vertex shader, which
+   rebuilt the varying map, a sorted key list and a formatted key string to find the same vpatch entry each time (Breath of
+   the Wild 1.9.0: about 1,000 times a frame on the replay thread); it now takes this cache as vs_fn_for does. */
+static id<MTLFunction> vs_fn_cached(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, const pso_key *pk) {
     if (!function_cache_on() || vs_vin(vs, pk)) return vs_fn_variant(vs, fs, layered, bkey, b, NULL, pk);   // retyped inputs: vs->vpatch caches them
     os_unfair_lock_lock(&g_vpatch_lock);
     id<MTLFunction> fn = function_cache_get(vs->vertex_cache, fs, bkey, layered);
@@ -10679,7 +10691,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
         // recipes clear this pointer in pso_skey_from, keeping the stable ABI.
         /* TOTK_PSO_MEMO: the key just made is the one vs_fn_for would make again (border_key's per-stage cache, under the
            registry lock once more); vs_fn_for takes it only from a vertex shader with source. */
-        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_variant(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, NULL, &k); }
+        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_cached(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, &k); }
         else k.vs = (__bridge void *)vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 1, &vrec, &k);
     } }
     g_vprobe = 0;
