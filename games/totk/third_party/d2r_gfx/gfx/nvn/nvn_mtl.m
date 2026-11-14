@@ -791,12 +791,14 @@ static int pool_query_on(void) {
 }
 static NSMutableArray *g_keep;                  // 持有缓冲引用（pidx_ent 里是不持有的指针） | Holds the buffer references (pidx_ent has non-owning pointers)
 static uint64_t g_pool_adds;
+static char g_pool_registration_key;   // monotonically assigned host registration ID, including virtual remaps
 
 #define C1_BANK_SIZE (4u << 20)
 #define C1_DECL_SIZE (64u << 10)
 static NSMutableArray *g_c1_banks;
 static size_t g_c1_bank_off, g_c1_alloc_bytes, g_c1_data_bytes;
-static uint64_t g_c1_count, g_c1_exclusive;
+static uint64_t g_c1_count;   // cumulative stores, including temporary warm-up shaders
+static uint64_t g_c1_exclusive;   // live shader-owned buffers; deferred GPU retirement may still hold bytes
 static NSMutableSet<NSString *> *g_c1_full;
 static int g_c1_full_valid;
 static os_unfair_lock g_c1_lock = OS_UNFAIR_LOCK_INIT;
@@ -1157,6 +1159,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (!pidx_insert(&g_pools, &ent)) MDIE("内存池表扩容失败（%d 个）", g_pools.n);
     pidx_query_invalidate(&g_pool_queries); atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);
     g_pool_adds++; g_pool_bytes += hi - lo;
+    objc_setAssociatedObject(buf, &g_pool_registration_key,
+        [[NSNumber alloc] initWithUnsignedLongLong:g_pool_adds], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
 }
@@ -3465,6 +3469,25 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
     if (!serial || to - from >= SER_CHG_N) return 0;
     for (uint64_t g = from + 1; g <= to; g++) { uint64_t s = atomic_load_explicit(&g_ser_chg[g % SER_CHG_N], memory_order_relaxed); if (!s || s == serial) return 0; }
     return atomic_load_explicit(&g_ser_gen, memory_order_acquire) - from < SER_CHG_N;   // no slot was overwritten while scanning
+}
+/* Pool identity for immutable alias windows. Never block on g_mu: texture preparation can hold storage/registry
+   locks, and pool residency can acquire the alias mutex. Reject ambiguous overlapping registrations as well. */
+typedef struct { uint64_t base, size, generation; } stor_alias_pool;
+static int stor_alias_pool_range(uint64_t address, uint64_t length, stor_alias_pool *out) {
+    if (!address || !length || length > UINT64_MAX - address || pthread_mutex_trylock(&g_mu)) return 0;
+    const pidx_ent *p = pidx_find(&g_pools, (uintptr_t)address, length);
+    int valid = 0;
+    if (p) {
+        int index = (int)(p - g_pools.e);
+        int overlaps = (index > 0 && g_pools.maxhi[index - 1] > p->lo) ||
+                       (index + 1 < g_pools.n && g_pools.e[index + 1].lo < p->hi);
+        uint64_t generation = [objc_getAssociatedObject((__bridge id)p->buf, &g_pool_registration_key) unsignedLongLongValue];
+        if (!overlaps && p->hi > p->lo && generation) {
+            *out = (stor_alias_pool){p->lo, p->hi - p->lo, generation}; valid = 1;
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+    return valid;
 }
 #include "nvn_stor_alias.h"   // OOT: layouts at one pool address share physical pages (placement heap)
 // ---------- TOTK: storage-shared GPU textures ----------
@@ -6983,7 +7006,7 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
-    id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
+    id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; int c1_exclusive; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
     NSMutableDictionary<NSNumber *, NSData *> *pool_demand;   /* read only (pool_demand_for): a memo's NSData or a fresh bitmap */
     uint64_t pool_capture_mask, pool_capture_gpu[NVN_REFL_MAXB];
     const uint8_t *pool_capture_cpu[NVN_REFL_MAXB];
@@ -7005,14 +7028,25 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
     // The argument buffer encoded last time
     arg_epoch_key ab_epoch; int ab_epoch_ok;
     tex_slot_cache tex_slots;
-    id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; const uint8_t *ab_cpu; uint64_t ab_arena;   // ab_cpu / ab_arena (TOTK_AB_SAME): the block's bytes and the arena epoch it was allocated in; ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
+    __unsafe_unretained id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; const uint8_t *ab_cpu; uint64_t ab_arena;   // ab_cpu / ab_arena (TOTK_AB_SAME): the block's bytes and the arena epoch it was allocated in; ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; id<MTLFunction> no_depth_fn;
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen;
     NvBorderKeyCache *border_cache;   // registry lock
     NvFunctionCache *fragment_cache, *vertex_cache;   // g_bpatch_lock / g_vpatch_lock
     uint8_t vertex_components[32];   // atomic: 0 unknown, otherwise 1 + highest lane read by the original MSL
 } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
-@implementation NvShader @end
+@implementation NvShader
+- (void)dealloc {
+    // Shared c1 banks outlive individual shaders; exclusive buffers retire after their GPU readers.
+    if (c1_exclusive) {
+        os_unfair_lock_lock(&g_c1_lock);
+        g_c1_exclusive--; g_c1_alloc_bytes -= C1_DECL_SIZE; g_c1_data_bytes -= rf.c1_len;
+        os_unfair_lock_unlock(&g_c1_lock);
+        defer_obj_release(c1buf);
+    }
+    free(geo_slot);
+}
+@end
 static void fn_note_src(id<MTLFunction> fn, NSString *src);   // below: the source a derived function starts from (the HDR twin's)
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
@@ -7089,7 +7123,7 @@ static void c1_store(NvShader *o, NSString *src) {
     if ((g_c1_full_valid && [g_c1_full containsObject:guardKey]) || !bounded) {   // 运行时下标未证有界：独占 64 KiB 全零（同原实现） | Runtime index not proven bounded: exclusive 64 KiB of all zeros (same as the original implementation)
         o->c1buf = [g_dev newBufferWithLength:C1_DECL_SIZE options:MTLResourceStorageModeShared]; o->c1_gpu = o->c1buf.gpuAddress;
         if (!o->c1buf) { os_unfair_lock_unlock(&g_c1_lock); MDIE("c1 独占缓冲分配失败"); }
-        res_add(o->c1buf);
+        o->c1_exclusive = 1; res_add(o->c1buf);
         memset(o->c1buf.contents, 0, C1_DECL_SIZE); memcpy(o->c1buf.contents, o->rf.c1, len);
         g_c1_alloc_bytes += C1_DECL_SIZE; g_c1_data_bytes += len; g_c1_count++; g_c1_exclusive++;
         os_unfair_lock_unlock(&g_c1_lock);
@@ -7170,7 +7204,17 @@ static NSMutableSet<NSNumber *> *g_pso_shipped_seen;   // !warm_shared(): the sh
    warm_fill_archive): kept, 6,813 render pipelines put an iPhone 14 in the world at 3.82-3.89 GB with p99 117-200 ms
    (2026-10-23). One drawn comes from the archive. TOTK_WARM_SHARED=1 / 0 forces either. */
 static int warm_shared(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WARM_SHARED"); v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE; }
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("TOTK_WARM_SHARED");
+        v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE;
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+        /* The complete OoT corpus contains over 20,000 pipelines. Keep its
+           prepared archives, rather than every pipeline object, on 16 GB Macs.
+           The explicit override still wins; used pipelines load on demand. */
+        if (!(e && *e) && NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30)) v = 0;
+#endif
+    }
     return v;
 }
 static FILE *pso_user_file(void) {
@@ -8727,6 +8771,12 @@ static NvArena *arena_new(size_t minimum) {
     a->gpu = a->buf.gpuAddress; a->cpu = (uint8_t *)a->buf.contents; res_add(a->buf); return a;
 }
 static uint64_t g_arena_epoch; // A cached GPU address is valid only for its submission.
+/* Arenas own argument blocks through GPU completion. A shader cache must not retain an idle block after trimming,
+   and may only inspect its non-owning buffer/CPU pointers during the submission that allocated them. */
+static void shader_args_invalidate_stale(NvShader *sh) {
+    if (sh->ab_arena == g_arena_epoch) return;
+    sh->ab_buf = nil; sh->ab_cpu = NULL; sh->ab_gpu = 0; sh->ab_pass = 0;
+}
 void arena_begin(void) { g_arena_epoch++; if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; } g_cur_arena = nil; }
 /* OOT (2026-11-06): the free list only grew. Every block made while loading stayed for the whole session (25, 53 and
    87 blocks = 176, 400 and 672 MB in three runs of the same save, all made between frames 600 and 1200, none after),
@@ -11033,12 +11083,42 @@ static int par_row_have(const pso_skey *sk, int vborder, int fz, NSString *varia
     pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key]; pthread_mutex_unlock(&g_par_mu);
     return have && !g_par_recheck;   // packaging makes it against the archive (g_par_recheck)
 }
+/* The archive-fill hit test is shared by preload planning and execution. Invalid rows remain for fill_row to
+   handle as before; a hit never needs its shaders. This uses the same keys as the existing R / C / B / T fill. */
+static int fill_row_have(NSArray<NSString *> *c) {
+    if (g_par_recheck || c.count < 2) return 0;
+    if ([c[0] isEqualToString:@"C"] && c[1].length) {
+        const char *ck = c[1].UTF8String;
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
+        return have;
+    }
+    pso_skey sk;
+    if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) return 0;
+    if ([c[0] isEqualToString:@"R"]) {
+        memset(&sk.fz_desc, 0, sizeof sk.fz_desc);
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&sk, sizeof sk)]; pthread_mutex_unlock(&g_par_mu);
+        return have;
+    }
+    if (sk.merged) return 0;
+    if ([c[0] isEqualToString:@"B"] && c.count >= 4)
+        return par_row_have(&sk, ![c[2] isEqualToString:@"-"], ![c[3] isEqualToString:@"-"], [NSString stringWithFormat:@"B:%@\t%@", c[2], c[3]]);
+    if ([c[0] isEqualToString:@"T"] && c.count >= 3)
+        return par_row_have(&sk, 0, 1, [@"T:" stringByAppendingString:c[2]]);
+    return 0;
+}
+static NSArray<NSString *> *fill_rows_to_load(NSArray<NSString *> *rows) {
+    /* Packaging rechecks and runs without a valid archive retain the original preload behavior. */
+    if (!g_par_on || !g_par_valid || g_par_recheck) return rows;
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    for (NSString *line in rows) if (!fill_row_have([line componentsSeparatedByString:@"\t"])) [missing addObject:line];
+    return missing;
+}
 /* A B row (pso_adopt): the pipeline with its border variants, built from the recipe instead of bound samplers.
    keep 0 (warm_fill_archive): built into the pipeline archive and dropped; 2 when the archive has it already. */
 static int warm_border(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict, int keep) {
     pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.merged || sk.fz) return 0;
     NSString *variant = [NSString stringWithFormat:@"B:%@\t%@", c[2], c[3]];
-    if (!keep && par_row_have(&sk, ![c[2] isEqualToString:@"-"], ![c[3] isEqualToString:@"-"], variant)) return 2;
+    if (!keep && fill_row_have(c)) return 2;
     NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
     NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
     int hv = ![c[2] isEqualToString:@"-"], hf = ![c[3] isEqualToString:@"-"];
@@ -11066,7 +11146,7 @@ static int warm_border(NSArray<NSString *> *c, NSMutableDictionary<NSString *, N
 static int warm_tileread(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict, int keep) {
     pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.merged || sk.fz) return 0;
     NSString *variant = [@"T:" stringByAppendingString:c[2]];
-    if (!keep && par_row_have(&sk, 0, 1, variant)) return 2;
+    if (!keep && fill_row_have(c)) return 2;
     NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
     NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
     if (!vs || !fs) return 0;
@@ -11360,11 +11440,7 @@ static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *>
     id ps = nil;
     if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
         pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) return;
-        /* already in the archive: nothing to make (the key pso_archive_key gives a warm-built one: no fragment
-           state description); a start then reads the list without loading a shader */
-        pso_skey ak = sk; memset(&ak.fz_desc, 0, sizeof ak.fz_desc);
-        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&ak, sizeof ak)]; pthread_mutex_unlock(&g_par_mu);
-        if (have && !g_par_recheck) { atomic_fetch_add(&fc->nhave, 1); return; }   // packaging makes it against the archive
+        if (fill_row_have(c)) { atomic_fetch_add(&fc->nhave, 1); return; }
         NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
         NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
         if (!vs || (fkey.length && !fs)) { atomic_fetch_add(&fc->nfail, 1); return; }
@@ -11372,9 +11448,7 @@ static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *>
         NSError *er = nil; ps = pso_new(pso_desc(&k, vs, fs, nil, sk.merged), pso_archive_key(&k, vs, fs, sk.merged, nil), &er);
         if (ps) atomic_fetch_add(&fc->nr, 1);
     } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
-        const char *ck = c[1].UTF8String;
-        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
-        if (have && !g_par_recheck) { atomic_fetch_add(&fc->nhave, 1); return; }
+        if (fill_row_have(c)) { atomic_fetch_add(&fc->nhave, 1); return; }
         NvShader *cs = warm_shader(dict, c[1], 5); if (!cs) { atomic_fetch_add(&fc->nfail, 1); return; }
         NSError *er = nil; ps = cs_new(cs, &er);
         if (ps) atomic_fetch_add(&fc->nc, 1);
@@ -11420,7 +11494,8 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         for (NSUInteger at = 0; at < rows; at += WARM_BLOCK) @autoreleasepool {
             NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, rows - at))];
             if (workers > 1) {
-                warm_load_rows(block, dict);
+                /* Archive hits still pass through fill_row for counters; only misses need shader preloads. */
+                warm_load_rows(fill_rows_to_load(block), dict);
                 __block _Atomic size_t next = 0;
                 dispatch_apply(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) { (void)w;
                     int owip = par_write_in_place; par_write_in_place = 1;   // dispatch_apply may run a share on the calling thread
@@ -11511,6 +11586,7 @@ static void warm_start(void) {
     const char *e = getenv("DM_PSO_MANIFEST");
     if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
     NSArray<NSString *> *paths;
+    NSMutableSet<NSString *> *shipped = [NSMutableSet set];
     if (e && *e) {
         paths = @[@(e)];
     } else {
@@ -11528,8 +11604,8 @@ static void warm_start(void) {
         // iOS: the shared list's pipelines (shader-seed/pso_list.tsv, build_ipa.py), whose pso_manifest.tsv there is the
         // seed's own; the Mac's export is build/pso_manifest.tsv. Before 2026-10-22 the phone warmed none of them.
         NSString *list = [dir stringByAppendingPathComponent:@"pso_list.tsv"];
-        if ([fm fileExistsAtPath:list]) [all addObject:list];
-        if ([fm fileExistsAtPath:seed]) [all addObject:seed];
+        if ([fm fileExistsAtPath:list]) { [all addObject:list]; [shipped addObject:list]; }
+        if ([fm fileExistsAtPath:seed]) { [all addObject:seed]; [shipped addObject:seed]; }
         NSString *user = pso_user_path();
         if (user && [fm fileExistsAtPath:user]) [all addObject:user];
         NSString *shared = pso_shared_path();   // what every session collected (pso_user_record)
@@ -11538,7 +11614,7 @@ static void warm_start(void) {
         // only, while the lists above also build the pipelines the first scenes need.
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         NSString *prepared = [dir stringByAppendingPathComponent:@"shader-seed/pso_manifest.tsv"];
-        if (!(seedMode && !strcmp(seedMode, "off")) && [fm fileExistsAtPath:prepared]) [all addObject:prepared];
+        if (!(seedMode && !strcmp(seedMode, "off")) && [fm fileExistsAtPath:prepared]) { [all addObject:prepared]; [shipped addObject:prepared]; }
         paths = all;
         NSMutableString *desc = [NSMutableString string];
         for (NSString *p in paths) { NSString *t = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
@@ -11562,7 +11638,13 @@ static void warm_start(void) {
         cached = @[];
         if (g_par_valid) {
             if (!warm_shared()) {   // the shared list goes into the archive, not into memory (warm_shared)
-                NSIndexSet *shared = [lists indexesOfObjectsPassingTest:^BOOL(NSString *p, NSUInteger i, BOOL *stop) { return [p.lastPathComponent isEqualToString:@"pso_list.tsv"]; }];
+                NSIndexSet *shared = [lists indexesOfObjectsPassingTest:^BOOL(NSString *p, NSUInteger i, BOOL *stop) {
+#if defined(GAME_OOT)
+                    return [shipped containsObject:p];
+#else
+                    return [p.lastPathComponent isEqualToString:@"pso_list.tsv"];
+#endif
+                }];
                 if (shared.count) { g_shared_fill = [lists objectsAtIndexes:shared]; [lists removeObjectsAtIndexes:shared];
                     MLOG("预热：统一清单的管线只编进存档、不留在内存（TOTK_WARM_SHARED=1 留）"); }
             }
@@ -13267,6 +13349,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         enc_r_args((id<MTL4RenderCommandEncoder>)en,MTLRenderStageFragment,b.gpuAddress+off,30);
     }
     if (!sh->ae) return 1;
+    shader_args_invalidate_stale(sh);
     if (nvn_stage == 1 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR") && R.rt.n && R.rt.color[0])
         g_flash_tonemap_target = tex_mtl(R.rt.color[0]);
     uint64_t slots[NVN_REFL_MAXB] = {0};
@@ -13283,7 +13366,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         epoch_hit = sh->ab_buf && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
         registry_unlock();
     }
-    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_arena == g_arena_epoch && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
         !((g_vr_collapse_draw || g_vr_ui_ray_draw) && nvn_stage == 0) &&   // Per-draw palette/HUD projection copies must be bound anew.
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
@@ -24520,8 +24603,9 @@ int mtl_probe_pipeline_archive(void) {
     unsetenv("TOTK_SHADER_SEED_DIR"); atomic_store(&g_par_pre_hit, 0); atomic_store(&g_par_pre_miss, 0);
     int identity_checks = par_probe_identity_lock();
     int mesh_checks = par_probe_mesh();
+    int fill_checks = par_probe_fill_preload();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks + mesh_checks;
+    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks + mesh_checks + fill_checks;
 }
 
 /* seed-shaders <corpus> (loader.c; docs/ns2-port.md): every shader a Switch 2 game ships, as

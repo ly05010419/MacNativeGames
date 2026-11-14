@@ -25,10 +25,18 @@
    descriptors keep sharing one MTLTexture (stor_key). A heap leaves the residency set and is freed once its last
    texture is deallocated (textures retire through the deferred-release queue after the GPU work that used them).
    OOT_STOR_ALIAS=0: one private allocation per layout (the default outside Ocarina of Time, below); OOT_STOR_ALIAS=2:
-   exact-address heaps only (A/B). */
+   exact-address heaps only (A/B). OOT_STOR_ALIAS=3 selects immutable 8 MiB windows (also the default on
+   GAME_OOT Macs with at most 16 GiB) inside
+   unambiguous registered pool generations. Boundaries, nonfitting layouts and unknown registrations retain the
+   exact-address fallback. A fallback and an overlapping in-window layout have independent Metal storage;
+   content across layout boundaries requires validation when extending this policy to other hardware or games. */
 typedef struct { uint64_t mem, pf, samples; } stor_alias_key;
-typedef struct stor_alias_heap { void *heap; stor_alias_key key; uint64_t lo, size; int live, queued, current, region; } stor_alias_heap;
+typedef struct { uint64_t pool_base, pool_size, pool_generation, window_base, pf, samples; } stor_alias_window_key;
+typedef struct stor_alias_heap { void *heap; stor_alias_key key; uint64_t lo, size; int live, queued, current, region, window;
+    stor_alias_window_key window_key;
+} stor_alias_heap;
 static nvn_hmap g_alias_by_key = {.klen = sizeof(stor_alias_key)};   // exact-address key -> current heap
+static nvn_hmap g_alias_by_window = {.klen = sizeof(stor_alias_window_key)};
 static stor_alias_heap **g_alias_regions; static int g_alias_nregions, g_alias_cregions;   // current region heaps (key.mem unused)
 static pthread_mutex_t g_alias_mu = PTHREAD_MUTEX_INITIALIZER;     // lock order: g_alias_mu before g_res_mu
 static stor_alias_heap **g_alias_retire; static int g_alias_nretire, g_alias_cretire;
@@ -45,7 +53,25 @@ static _Atomic uint64_t g_alias_uncompressed;   // region textures created witho
 #else
 #define STOR_ALIAS_DEFAULT 0
 #endif
-static int stor_alias_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("OOT_STOR_ALIAS"); m = e ? atoi(e) : STOR_ALIAS_DEFAULT; } return m; }
+/* Fixed windows bound retained region generations on 16 GiB OoT Macs. Explicit environment values, including an
+   empty value parsed as 0, retain priority. Other games, iOS and larger Macs keep their existing defaults. */
+static int stor_alias_mode(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        const char *value = getenv("OOT_STOR_ALIAS");
+        int selected;
+        if (value) {
+            selected = atoi(value);
+        } else {
+            selected = STOR_ALIAS_DEFAULT;
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+            if (NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30)) selected = 3;
+#endif
+        }
+        mode = selected;
+    }
+    return mode;
+}
 static int stor_alias_on(void) { return stor_alias_mode() != 0; }
 
 static void stor_alias_queue_locked(stor_alias_heap *h) {
@@ -79,7 +105,8 @@ static void stor_alias_collect(void) {
         stor_alias_heap *h = g_alias_retire[i]; h->queued = 0;
         if (h->live) continue;   // a texture was placed on it again meanwhile
         if (h->current) {
-            if (h->region) { for (int j = 0; j < g_alias_nregions; j++) if (g_alias_regions[j] == h) { g_alias_regions[j] = g_alias_regions[--g_alias_nregions]; break; } }
+            if (h->window) { if (nvn_hm_get(&g_alias_by_window, &h->window_key) == h) nvn_hm_del(&g_alias_by_window, &h->window_key); }
+            else if (h->region) { for (int j = 0; j < g_alias_nregions; j++) if (g_alias_regions[j] == h) { g_alias_regions[j] = g_alias_regions[--g_alias_nregions]; break; } }
             else if (nvn_hm_get(&g_alias_by_key, &h->key) == h) nvn_hm_del(&g_alias_by_key, &h->key);
         }
         dead[nd++] = h;
@@ -157,6 +184,30 @@ static id<MTLTexture> stor_alias_exact_locked(MTLTextureDescriptor *d, stor_alia
     return stor_alias_place_locked(h, d, 0);
 }
 
+/* An immutable window never grows or absorbs an adjacent heap. The host registration generation keeps a reused
+   virtual address from sending a new pool's textures to a heap still held by the previous pool's GPU work. */
+#define STOR_ALIAS_WINDOW_BYTES (UINT64_C(8) << 20)
+static id<MTLTexture> stor_alias_window_texture(const tex_t *t, MTLTextureDescriptor *d, stor_alias_key k, MTLSizeAndAlign sa) {
+    stor_alias_pool pool;
+    if (!stor_alias_pool_range(k.mem, t->L.size, &pool)) return nil;
+    uint64_t relative = k.mem - pool.base;
+    uint64_t lo = pool.base + relative / STOR_ALIAS_WINDOW_BYTES * STOR_ALIAS_WINDOW_BYTES;
+    uint64_t remaining = pool.size - (lo - pool.base);
+    uint64_t span = MIN(STOR_ALIAS_WINDOW_BYTES, remaining), offset = k.mem - lo;
+    if (!sa.align || offset % sa.align || offset > span || sa.size > span - offset) return nil;
+    stor_alias_window_key key = {pool.base, pool.size, pool.generation, lo, k.pf, k.samples};
+    pthread_mutex_lock(&g_alias_mu);
+    stor_alias_heap *h = nvn_hm_get(&g_alias_by_window, &key);
+    if (!h) {
+        h = stor_alias_heap_new_locked(d, k, lo, span, 1);
+        if (h) { h->window = 1; h->window_key = key; nvn_hm_put(&g_alias_by_window, &key, h); }
+    } else g_alias_reused++;
+    id<MTLTexture> texture = h ? stor_alias_place_locked(h, d, offset) : nil;
+    if (texture) g_alias_region_textures++;
+    pthread_mutex_unlock(&g_alias_mu);
+    return texture;
+}
+
 /* A new private texture for t placed on an alias heap of its storage, or nil (the caller allocates it on the device). */
 static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d) {
     if (!stor_alias_on() || !t->mem || !t->L.size || d.storageMode != MTLStorageModePrivate || d.textureType == MTLTextureTypeTextureBuffer) return nil;
@@ -170,7 +221,8 @@ static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d
         MTLTextureDescriptor *u = d; MTLSizeAndAlign su = sa;
         if (su.size > t->L.size) { u = [d copy]; u.allowGPUOptimizedContents = NO; su = [g_dev heapTextureSizeAndAlignWithDescriptor:u]; }
         if (su.size && su.size <= t->L.size && su.align && k.mem % su.align == 0) {
-            pthread_mutex_lock(&g_alias_mu); mt = stor_alias_region_locked(u, k, k.mem, su.size, su.align); pthread_mutex_unlock(&g_alias_mu);
+            if (stor_alias_mode() == 3) mt = stor_alias_window_texture(t, u, k, su);
+            else { pthread_mutex_lock(&g_alias_mu); mt = stor_alias_region_locked(u, k, k.mem, su.size, su.align); pthread_mutex_unlock(&g_alias_mu); }
             if (mt) { if (u != d) g_alias_uncompressed++; return mt; }
         }
     }
