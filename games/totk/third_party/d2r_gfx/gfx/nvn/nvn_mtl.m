@@ -12120,6 +12120,15 @@ static int mip_pinned_level(const NvShader *sh, unsigned reg, int sid) {
     return (int)p->lod_min;
 }
 static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial, const NvShader *sh, unsigned reg, int sid) {
+    /* Nearly every texture a draw binds is not one of its render targets: look for one in plain C before the Objective-C reads
+       below (parentTexture, parentRelativeLevel, mipmapLevelCount), which every sampled texture of every draw paid before
+       returning nil (Breath of the Wild 1.9.0: about 2% of the replay thread). The result is the same. */
+    int target = 0;
+    for (int k = 0; k < R.rt.n && k < 8 && !target; k++) {
+        if (!R.rt.color[k]) continue;
+        uint64_t ser = 0; int lv = 0, sl = 0; rt_sub(&R.rt, k, &ser, &lv, &sl); target = ser == serial;
+    }
+    if (!target) return nil;
     id<MTLTexture> root = t.parentTexture ? t.parentTexture : t;
     NSUInteger base = t.parentTexture ? t.parentRelativeLevel : 0, n = t.mipmapLevelCount;
     if (n < 2) return nil;
