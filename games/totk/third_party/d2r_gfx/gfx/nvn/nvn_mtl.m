@@ -7182,7 +7182,17 @@ static NSMutableSet<NSNumber *> *g_pso_shipped_seen;   // !warm_shared(): the sh
    warm_fill_archive): kept, 6,813 render pipelines put an iPhone 14 in the world at 3.82-3.89 GB with p99 117-200 ms
    (2026-10-23). One drawn comes from the archive. TOTK_WARM_SHARED=1 / 0 forces either. */
 static int warm_shared(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WARM_SHARED"); v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE; }
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("TOTK_WARM_SHARED");
+        v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE;
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+        /* The complete OoT corpus contains over 20,000 pipelines. Keep its
+           prepared archives, rather than every pipeline object, on 16 GB Macs.
+           The explicit override still wins; used pipelines load on demand. */
+        if (!(e && *e) && NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30)) v = 0;
+#endif
+    }
     return v;
 }
 static FILE *pso_user_file(void) {
@@ -11554,6 +11564,7 @@ static void warm_start(void) {
     const char *e = getenv("DM_PSO_MANIFEST");
     if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
     NSArray<NSString *> *paths;
+    NSMutableSet<NSString *> *shipped = [NSMutableSet set];
     if (e && *e) {
         paths = @[@(e)];
     } else {
@@ -11571,8 +11582,8 @@ static void warm_start(void) {
         // iOS: the shared list's pipelines (shader-seed/pso_list.tsv, build_ipa.py), whose pso_manifest.tsv there is the
         // seed's own; the Mac's export is build/pso_manifest.tsv. Before 2026-10-22 the phone warmed none of them.
         NSString *list = [dir stringByAppendingPathComponent:@"pso_list.tsv"];
-        if ([fm fileExistsAtPath:list]) [all addObject:list];
-        if ([fm fileExistsAtPath:seed]) [all addObject:seed];
+        if ([fm fileExistsAtPath:list]) { [all addObject:list]; [shipped addObject:list]; }
+        if ([fm fileExistsAtPath:seed]) { [all addObject:seed]; [shipped addObject:seed]; }
         NSString *user = pso_user_path();
         if (user && [fm fileExistsAtPath:user]) [all addObject:user];
         NSString *shared = pso_shared_path();   // what every session collected (pso_user_record)
@@ -11581,7 +11592,7 @@ static void warm_start(void) {
         // only, while the lists above also build the pipelines the first scenes need.
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         NSString *prepared = [dir stringByAppendingPathComponent:@"shader-seed/pso_manifest.tsv"];
-        if (!(seedMode && !strcmp(seedMode, "off")) && [fm fileExistsAtPath:prepared]) [all addObject:prepared];
+        if (!(seedMode && !strcmp(seedMode, "off")) && [fm fileExistsAtPath:prepared]) { [all addObject:prepared]; [shipped addObject:prepared]; }
         paths = all;
         NSMutableString *desc = [NSMutableString string];
         for (NSString *p in paths) { NSString *t = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
@@ -11605,7 +11616,13 @@ static void warm_start(void) {
         cached = @[];
         if (g_par_valid) {
             if (!warm_shared()) {   // the shared list goes into the archive, not into memory (warm_shared)
-                NSIndexSet *shared = [lists indexesOfObjectsPassingTest:^BOOL(NSString *p, NSUInteger i, BOOL *stop) { return [p.lastPathComponent isEqualToString:@"pso_list.tsv"]; }];
+                NSIndexSet *shared = [lists indexesOfObjectsPassingTest:^BOOL(NSString *p, NSUInteger i, BOOL *stop) {
+#if defined(GAME_OOT)
+                    return [shipped containsObject:p];
+#else
+                    return [p.lastPathComponent isEqualToString:@"pso_list.tsv"];
+#endif
+                }];
                 if (shared.count) { g_shared_fill = [lists objectsAtIndexes:shared]; [lists removeObjectsAtIndexes:shared];
                     MLOG("预热：统一清单的管线只编进存档、不留在内存（TOTK_WARM_SHARED=1 留）"); }
             }
