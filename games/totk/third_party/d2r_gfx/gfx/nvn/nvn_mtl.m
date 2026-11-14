@@ -19639,6 +19639,7 @@ static void (^g_grab_cb)(CGImageRef img);
 void mtl_grab_next_present(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 // 玩家截图键（screenshot.h，前端 screenshot_picture）要的游戏帧：下一次上屏时把出图贴图 src（上屏放大之前、无黑边）整体拷进共享缓冲，GPU 完成后在反馈回调里交出 CGImage；HDR 或意外格式的源帧暂回退到整窗（上屏贴图）拷贝。
 // The game frame the player's capture button wants (screenshot.h, the front ends' screenshot_picture): at the next present the source texture src (before the output upscale, no letterbox bars) is copied whole into a shared buffer, and the feedback handler hands out a CGImage once the GPU is done; an HDR or unexpected source frame falls back to the whole-window (drawable) copy for now.
+#include "nvn_capture_region.h"
 static void (^g_grab_game_cb)(CGImageRef img);
 void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_game_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 /* The window picture re-rendered offscreen by the legacy encoder: only for presents that draw no drawable
@@ -20874,17 +20875,18 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     /* TOTK: whole-window shots (wshot, TOTK_WINDOW_SHOT) copy the drawable itself after the present has drawn into it: what
        the screen shows, MetalFX output upscale and boxes included (grab_present re-renders only for TOTK_PRESENT_SKIP). */
     void (^grab)(CGImageRef) = nil; void (^grab_game)(CGImageRef) = nil; NSString *grab_src = nil;
-    if ((g_grab_cb || g_grab_game_cb) && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil; grab_game = g_grab_game_cb; g_grab_game_cb = nil;
+    if (interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil; grab_game = g_grab_game_cb; g_grab_game_cb = nil;
         if (grab && g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
     /* TOTK_PRESENT_SKIP=1 (measurement only): never take a drawable, so the render pipeline's own frame rate shows (the window
        does not update). */
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
-    if (nogpu() || present_skip) { if (grab && present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize);
+    if (nogpu() || present_skip) { if (grab) { if (present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize); else grab(NULL); }
+        if (grab_game) grab_game(NULL);
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
-    if (!dr) return 0;
+    if (!dr) { if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }
     int alloc_i = (int)((ticket * 2 + (interp >= 0 ? 0 : 1)) % 3);   // the interpolated frame of a ticket and the ticket's own frame use different allocators
     pthread_mutex_lock(&g_pq_mu);
     while (g_present_alloc_busy[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -20905,15 +20907,17 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     size_t grab_bpp=grab_hdr?8:4;
     id<MTLBuffer> grab_buf = nil; size_t grab_w = dr.texture.width, grab_h = dr.texture.height;
     /* 玩家游戏帧（grab_game）：SDR 源贴图拷出图裁切区域——游戏画面本身（即输出分辨率）；画布可以比画面大（如 2560x1440 画布配 1920x1080 输出），其余是未定义填充。
-       裁切无效（VR 放大模式把裁切指到别处等）、HDR 或意外格式、或缓冲建不出时回退到下面的上屏拷贝（HDR 上屏已压到 SDR）。
+       原始出图裁切无效、HDR 或意外格式、或缓冲建不出时回退到下面的上屏拷贝（HDR 上屏已压到 SDR）。
+       Use the original src/crop pair; vr_picture may replace vr_crop for its separate enlarged texture.
        The player's game frame (grab_game): the SDR source texture is copied as the present's crop region -- the game's picture, the output resolution; the canvas can be larger than the picture (e.g. a 2560x1440 canvas with 1920x1080 output) and the remainder is undefined fill.
-       An invalid crop (e.g. the VR MetalFX modes point the crop elsewhere), an HDR or unexpected source, or a buffer that cannot be made, falls back to the drawable copy below (an HDR drawable is already tone-pressed to SDR). */
+       An invalid source crop, an HDR or unexpected source, or a buffer that cannot be made, falls back to the drawable copy below (an HDR drawable is already tone-pressed to SDR). */
     BOOL game_sdr = grab_game && (src.pixelFormat == MTLPixelFormatRGBA8Unorm || src.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
         src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
     id<MTLBuffer> game_buf = nil; size_t game_w = src.width, game_h = src.height; NSUInteger game_x = 0, game_y = 0;
-    if (game_sdr && vr_crop && vr_crop[0] >= 0 && vr_crop[1] >= 0 && vr_crop[2] > 0 && vr_crop[3] > 0 &&
-        vr_crop[0] + vr_crop[2] <= (int)src.width && vr_crop[1] + vr_crop[3] <= (int)src.height) {   // 出图裁切即画面区域 | the crop names the picture's region
-        game_x = (NSUInteger)vr_crop[0]; game_y = (NSUInteger)vr_crop[1]; game_w = (size_t)vr_crop[2]; game_h = (size_t)vr_crop[3];
+    nvn_capture_region region;
+    if (game_sdr) game_sdr = nvn_capture_source_region(src.width, src.height, crop, &region);
+    if (game_sdr) {
+        game_x = region.x; game_y = region.y; game_w = region.w; game_h = region.h;
     }
     if (game_sdr) {
         game_buf = game_w && game_h ? [g_dev newBufferWithLength:game_w * game_h * 4 options:MTLResourceStorageModeShared] : nil;
