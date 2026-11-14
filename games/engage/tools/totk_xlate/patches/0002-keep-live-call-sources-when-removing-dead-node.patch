@@ -1,0 +1,20 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+@@ -384,7 +384,16 @@
+                     if (src.UseOps.Remove(node) && src.UseOps.Count == 0)
+                     {
+                         Debug.Assert(src.AsgOp != null);
+-                        nodes.Enqueue(src.AsgOp);
++
++                        // TOTK (2026-10-16, from Ryujinx_Optime 01a1e37f): only follow into a producer that will itself be
++                        // removed. An operation with side effects (a call, an atomic) stays in the block even when its
++                        // result is unused, so its sources are still live: stripping their use lists here made the next
++                        // DCE pass delete the whole chain feeding a global-memory atomic turned into a helper call, which
++                        // then read an uninitialised value (TOTK's sun-visibility kernel; our c7830fac lost its atomicMin).
++                        if (!HasSideEffects(src.AsgOp))
++                        {
++                            nodes.Enqueue(src.AsgOp);
++                        }
+                     }
+                 }
+             }

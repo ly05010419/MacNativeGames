@@ -1,0 +1,9 @@
+{
+ "title": "0100A6301214E000",
+ "version": "2.0.0",
+ "exefs": {
+  "main": "516cefba69dffb6910a00e5b61c24ca8f9cadcbc63c811ac699445cabb6a9bf1",
+  "subsdk0": "7e78c99d9b95dd05585df59f3fa05904c058577bde29b921e2bc3e17a9ece9a1",
+  "sdk": "f2d8d3399b0a4ed2db0d634f50cca6a0381c182f26d644e9be45841851c22f1a"
+ }
+}
