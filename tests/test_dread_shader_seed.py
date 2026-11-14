@@ -16,7 +16,21 @@ SCRIPTS = ROOT/'games/dread/scripts'
 sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location('dread_prepare_shader_seed', SCRIPTS/'prepare_shader_seed.py')
 seed = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(seed)
+# prepare_shader_seed imports its sibling shader_list.py by name. In the whole suite Tears of the Kingdom's shader_list.py
+# (which normalizes pipeline keys; Dread's does not) can already be in sys.modules under that name, so Dread's is loaded
+# by path for this import and the earlier entry is put back afterwards.
+_list_spec = importlib.util.spec_from_file_location('dread_shader_list', SCRIPTS/'shader_list.py')
+_dread_list = importlib.util.module_from_spec(_list_spec)
+_list_spec.loader.exec_module(_dread_list)
+_earlier = sys.modules.get('shader_list')
+sys.modules['shader_list'] = _dread_list
+try:
+    spec.loader.exec_module(seed)
+finally:
+    if _earlier is None:
+        sys.modules.pop('shader_list', None)
+    else:
+        sys.modules['shader_list'] = _earlier
 # The names totk_shader_seed.h totk_seed_import_into accepts; anything else makes it refuse the whole seed.
 SAFE = re.compile(r'^(?:[0-9a-f]{64}\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\.(?:metal|json|metallib)|pso_manifest\.tsv)$')
 
