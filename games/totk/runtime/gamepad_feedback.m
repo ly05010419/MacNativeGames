@@ -36,6 +36,10 @@
 #include "bow_state.h"
 #include "game_version.h"   /* Tears of the Kingdom 1.4.3's scene slot and actor name offsets, for the bow state */
 #import <IOKit/hid/IOHIDManager.h>
+#include "switch_joycon_stick.h"
+#include "hid_device_lifetime.h"
+static IOReturn hid_open_binding(IOHIDDeviceRef device, IOHIDManagerRef manager);
+static void hid_retire_binding(IOHIDDeviceRef device);
 #endif
 #include "hid_imu.h"
 
@@ -241,7 +245,6 @@ typedef struct { uint16_t vendor, product; uint8_t reportId, length, lowAt, high
 enum { HID_PROFILES_MAX = 16, HID_MIN_MS = 20, HID_KEEP_MS = 50, HID_QUIET_REPEATS = 3 };
 static HidRumbleProfile hidProfiles[HID_PROFILES_MAX] = { {0x2dc8, 0x6012, 0x05, 5, 1, 2, 1} };
 static int hidProfileCount = 1;
-static IOHIDManagerRef hidRumbleManager;   /* main queue */
 static IOHIDDeviceRef hidRumbleDevice;     /* set on rumbleQueue, opened on the main queue */
 static HidRumbleProfile hidRumbleProfile;  /* the profile of hidRumbleDevice */
 static GCController *padRumblePad;         /* main queue */
@@ -308,7 +311,7 @@ static void hid_rumble_quiet_at_exit(void) {   /* the controller keeps the last 
 }
 static void hid_rumble_attach(GCController *c) {   /* main queue: c has no haptics */
     const char *off = getenv("TOTK_RUMBLE_HID");
-    if (hidRumbleDevice || (off && !strcmp(off, "0"))) return;
+    if (padRumblePad || (off && !strcmp(off, "0"))) return;   /* main-owned reservation also covers pending setup */
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         hid_profiles_load();
@@ -321,7 +324,7 @@ static void hid_rumble_attach(GCController *c) {   /* main queue: c has no hapti
     for (int i = 0; i < hidProfileCount; i++) [matching addObject:@{@kIOHIDVendorIDKey: @(hidProfiles[i].vendor), @kIOHIDProductIDKey: @(hidProfiles[i].product)}];
     IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     IOHIDManagerSetDeviceMatchingMultiple(m, (__bridge CFArrayRef)matching);
-    IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
+    /* Enumerate only. Opening the manager would implicitly open every match outside the lifetime owner. */
     NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(m);
     IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
     if (!d) { CFRelease(m); return; }
@@ -332,22 +335,21 @@ static void hid_rumble_attach(GCController *c) {   /* main queue: c has no hapti
     const HidRumbleProfile *found = NULL;
     for (int i = hidProfileCount - 1; i >= 0 && !found; i--) if (hidProfiles[i].vendor == vendor && hidProfiles[i].product == product) found = &hidProfiles[i];   /* the player's lines win */
     if (!found) { CFRelease(m); return; }
-    IOReturn r = IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone);
-    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] HID device %04x:%04x found but did not open (0x%x): no rumble from it\n", vendor, product, r); CFRelease(m); return; }
-    hidRumbleManager = m; padRumblePad = c; hidRumbleFailed = NO;
+    IOReturn r = hid_open_binding(d, m);
+    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] HID device %04x:%04x found but did not open (0x%x): no rumble from it\n", vendor, product, r); return; }
+    padRumblePad = c; hidRumbleFailed = NO;
     HidRumbleProfile pr = *found;
-    IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
+    IOHIDDeviceRef held = d;   /* hid_open_binding supplied this owned binding reference */
     dispatch_async(rumbleQueue, ^{ padSent[0] = padSent[1] = 0; padSentAt = 0; padQuietSent = HID_QUIET_REPEATS; hidRumbleProfile = pr; hidRumbleDevice = held; });
     fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (%04x:%04x, report 0x%02x)\n", (c.vendorName ?: @"controller").UTF8String, vendor, product, pr.reportId);
 }
 static void hid_rumble_detach(GCController *c) {   /* main queue */
     if (padRumblePad != c) return;
     padRumblePad = nil;
-    IOHIDManagerRef m = hidRumbleManager; hidRumbleManager = NULL;
     dispatch_async(rumbleQueue, ^{
         IOHIDDeviceRef d = hidRumbleDevice; hidRumbleDevice = NULL;
-        if (d) { hid_rumble_write(d, &hidRumbleProfile, 0, 0); CFRelease(d); }
-        if (m) CFRelease(m);
+        if (d) hid_rumble_write(d, &hidRumbleProfile, 0, 0);
+        dispatch_async(dispatch_get_main_queue(), ^{ hid_retire_binding(d); });
     });
 }
 static BOOL hid_rumble_active(void) { return rumbleHid || rumbleHidLeft || hidRumbleDevice; }   /* a HID path, not Core Haptics */
@@ -477,16 +479,26 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
    G = raw * 4 / (sensitivity - origin), deg/s = (raw - origin) * 936 / (sensitivity - origin); until it arrives the
    sensor's nominal ranges, 8 G and 2000 deg/s over 32768. */
 #if TARGET_OS_OSX
-static IOHIDManagerRef hidManager;   /* main queue */
-static IOHIDDeviceRef hidDevice;     /* main queue: open while motion or rumble uses it */
+static IOHIDDeviceRef hidDevice;     /* main queue: motion, rumble, or paired right input-report setup */
+static int hidProduct;              /* main queue: Nintendo product id, 0 for hid_imu_start's device */
 static BOOL hidMotion, hidRumble;    /* main queue: which of them does (motion: a Switch pad's IMU, or hid_imu_start's pad) */
+static unsigned hidMotionGeneration;   /* main queue: delayed Switch setup belongs to one motion stream */
+static void hid_rumble_stop(void);
 static const HidImuProfile *imuProfile;   /* main run loop: the pad hid_imu_start reads (PR #309), else NULL */
 static GCController *hidRumblePad;   /* main queue */
 static dispatch_queue_t hidOut;      /* every output report, in order; the packet counter is its own */
 static IOHIDDeviceRef hidCountDev[2]; /* hidOut: which device each packet counter belongs to (compared, not retained) */
 static uint8_t hidCount[2];           /* hidOut */
-static IOHIDManagerRef hidLeftManager;   /* main queue: the left Joy-Con of a paired set, for rumble only */
+static IOReturn hid_left_open(void);
 static IOHIDDeviceRef hidLeft;           /* main queue */
+static GCController *hidJoyConPad;       /* main queue: paired input/report-mode owner, independent of motion and rumble */
+typedef struct { unsigned generation, tries; uint64_t at; BOOL simple, pending; } HidJoyConMode;
+static HidJoyConMode hidJoyConModes[2];   /* left, right: separate negotiation and cancellation state */
+static void hid_joycon_mode_reset(int left) {
+    HidJoyConMode *s = &hidJoyConModes[left ? 0 : 1];
+    *s = (HidJoyConMode){.generation = s->generation + 1};
+}
+static void hid_joycon_report_mode(int left, uint32_t id, CFIndex len);
 static uint8_t hidReport[128];   /* room for the DS4's 78-byte report, the largest */
 static BOOL hidJoyConRight; /* local: paired original Joy-Con uses the right IMU */
 static uint64_t hidLast;
@@ -500,8 +512,9 @@ static int hidImuRetries;
 static BOOL hidImuLive;
 static double hidAccScale[3] = {8.0 / 32768, 8.0 / 32768, 8.0 / 32768}, hidGyroScale[3] = {2000.0 / 32768, 2000.0 / 32768, 2000.0 / 32768}, hidGyroOrigin[3];
 static int16_t le16(const uint8_t *p) { return (int16_t)(p[0] | p[1] << 8); }
+typedef void (^HidWriteCompletion)(void);   /* delivered on main */
 /* Output report `id`: the packet counter, then `body` (0x01: rumble for both sides, subcommand, its argument; 0x10: rumble). */
-static void hid_write(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n) {   /* any queue */
+static void hid_write_completed(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n, HidWriteCompletion completed) {   /* any queue */
     if (!d) return;
     struct { uint8_t b[49]; } out = {{id}};
     memcpy(out.b + 2, body, n);
@@ -516,19 +529,42 @@ static void hid_write(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n) 
             if (id == 0x10) rumbleFailed = YES;
             fprintf(stderr, "[hid] output report 0x%02x%s failed: 0x%x\n", id, id == 0x10 ? " (rumble; not logged again)" : "", r);
         }
+        if (completed) dispatch_async(dispatch_get_main_queue(), ^{ completed(); });
         CFRelease(d);
     });
 }
+static void hid_write(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n) {   /* any queue */
+    hid_write_completed(d, id, body, n, nil);
+}
 /* A closed device gives up its packet counter (after the reports queued for it), or the next two devices would share one. */
 static void hid_count_forget(IOHIDDeviceRef d) {   /* any queue, hidOut made */
-    dispatch_async(hidOut, ^{ for (int i = 0; i < 2; i++) if (hidCountDev[i] == d) { hidCountDev[i] = NULL; hidCount[i] = 0; } });
+    CFRetain(d);   /* keep the pointer from being reused before the queued comparison */
+    dispatch_async(hidOut, ^{
+        for (int i = 0; i < 2; i++) if (hidCountDev[i] == d) { hidCountDev[i] = NULL; hidCount[i] = 0; }
+        CFRelease(d);
+    });
 }
-static void hid_subcommand_on(IOHIDDeviceRef d, uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
+static void hid_subcommand_on_completed(IOHIDDeviceRef d, uint8_t cmd, const uint8_t *arg, int n, HidWriteCompletion completed) {   /* main queue */
     uint8_t body[47] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, cmd};   /* neutral rumble */
     memcpy(body + 9, arg, n);
-    hid_write(d, 0x01, body, 9 + n);
+    hid_write_completed(d, 0x01, body, 9 + n, completed);
+}
+static void hid_subcommand_on(IOHIDDeviceRef d, uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
+    hid_subcommand_on_completed(d, cmd, arg, n, nil);
 }
 static void hid_subcommand(uint8_t cmd, const uint8_t *arg, int n) { hid_subcommand_on(hidDevice, cmd, arg, n); }   /* main queue */
+static void hid_motion_command_after(int milliseconds, uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
+    struct { uint8_t data[5]; } copy = {{0}};
+    if (!hidDevice || n < 0 || n > (int)sizeof copy.data) runtime_fail("HID motion setup command");
+    memcpy(copy.data, arg, n);
+    IOHIDDeviceRef device = (IOHIDDeviceRef)CFRetain(hidDevice);
+    unsigned generation = hidMotionGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)milliseconds * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (hidMotion && generation == hidMotionGeneration && device == hidDevice)
+            hid_subcommand_on(device, cmd, copy.data, n);
+        CFRelease(device);
+    });
+}
 static void hid_quiet_at_exit(void);
 /* hid_open and hid_close_unused both need the queue, and hid_imu_start opens its device without hid_open. */
 static dispatch_queue_t hid_out_queue(void) {   /* any queue */
@@ -541,6 +577,90 @@ static void hid_quiet_at_exit(void) {   /* the controller keeps the last rumble 
     uint8_t out[49] = {0x10, 0, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
     if (hidDevice) IOHIDDeviceSetReport(hidDevice, kIOHIDReportTypeOutput, 0x10, out, sizeof out);
     if (hidLeft) IOHIDDeviceSetReport(hidLeft, kIOHIDReportTypeOutput, 0x10, out, sizeof out);
+}
+/* Main-owned records, keyed by exact HID object identity, not the current logical controller or globals.
+   One lease per accepted binding; retiring transfers that lease across rumbleQueue -> hidOut -> main.
+   This encloses old producers, queued writes, neutral reports and their completions. Only the lifetime model
+   may authorize a physical close. Managers are enumeration contexts only, never bulk-opened; their references
+   stay with the record until it closes, so parent/context destruction cannot bypass this ownership boundary. */
+typedef struct HidHeldManager { IOHIDManagerRef manager; struct HidHeldManager *next; } HidHeldManager;
+typedef struct HidManagedDevice {
+    IOHIDDeviceRef device;
+    HidDeviceLifetime lifetime;
+    BOOL opened;
+    HidHeldManager *managers;
+    struct HidManagedDevice *next;
+} HidManagedDevice;
+static HidManagedDevice *hidManagedDevices;
+static HidManagedDevice *hid_managed_find(IOHIDDeviceRef device) {   /* main queue */
+    for (HidManagedDevice *p = hidManagedDevices; p; p = p->next) if (p->device == device) return p;
+    return NULL;
+}
+static void hid_managed_close_if_idle(HidManagedDevice *p) {   /* main queue */
+    if (!hid_lifetime_close(&p->lifetime)) return;
+    if (p->opened) {
+        IOHIDDeviceClose(p->device, kIOHIDOptionsTypeNone);
+        hid_out_queue(); hid_count_forget(p->device);
+    }
+    while (p->managers) {
+        HidHeldManager *m = p->managers; p->managers = m->next;
+        CFRelease(m->manager); free(m);
+    }
+    HidManagedDevice **link = &hidManagedDevices;
+    while (*link && *link != p) link = &(*link)->next;
+    if (!*link) runtime_fail("HID lifetime record missing");
+    *link = p->next;
+    CFRelease(p->device); free(p);
+}
+/* Always consumes the enumeration manager reference, including on failure. Success owns one binding and one device CF
+   reference, balanced by hid_retire_binding even when a candidate cannot be adopted. */
+static IOReturn hid_open_binding(IOHIDDeviceRef device, IOHIDManagerRef manager) {   /* main queue */
+    if (!device) { if (manager) CFRelease(manager); return kIOReturnNotFound; }
+    HidManagedDevice *p = hid_managed_find(device);
+    if (!p) {
+        p = calloc(1, sizeof *p);
+        if (!p) runtime_fail("HID lifetime allocation");
+        p->device = (IOHIDDeviceRef)CFRetain(device); p->next = hidManagedDevices; hidManagedDevices = p;
+    }
+    if (!hid_lifetime_bind(&p->lifetime)) { if (manager) CFRelease(manager); return kIOReturnBusy; }
+    if (manager) {
+        HidHeldManager *m = malloc(sizeof *m);
+        if (!m) runtime_fail("HID manager lifetime allocation");
+        *m = (HidHeldManager){manager, p->managers}; p->managers = m;
+    }
+    IOReturn result = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
+    /* IOKit also marks a seized client open when it returns ExclusiveAccess. Roll that partial acquisition back
+       when idle, but never close it out from under an older accepted binding. */
+    if (result == kIOReturnSuccess || result == kIOReturnExclusiveAccess) p->opened = YES;
+    if (result == kIOReturnSuccess) { CFRetain(device); return result; }
+    if (!hid_lifetime_retire(&p->lifetime) || !hid_lifetime_finish(&p->lifetime)) runtime_fail("HID open rollback");
+    hid_managed_close_if_idle(p);
+    return result;
+}
+/* A second consumer of an already-open object needs a lifetime lease, not just a memory retain. */
+static IOHIDDeviceRef hid_retain_binding(IOHIDDeviceRef device) {   /* main queue */
+    HidManagedDevice *p = hid_managed_find(device);
+    if (!p || !p->opened || !hid_lifetime_bind(&p->lifetime)) runtime_fail("HID consumer binding");
+    return (IOHIDDeviceRef)CFRetain(device);
+}
+static void hid_retire_binding(IOHIDDeviceRef device) {   /* main queue, consumes the owned binding reference */
+    if (!device) return;
+    HidManagedDevice *p = hid_managed_find(device);
+    if (!p || !hid_lifetime_retire(&p->lifetime)) runtime_fail("HID binding retirement");
+    CFRelease(device);   /* the record pins the HID object across all remaining bindings and barriers */
+    dispatch_queue_t out = hid_out_queue();
+    dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{
+        if (!hid_lifetime_finish(&p->lifetime)) runtime_fail("HID retirement completion");
+        hid_managed_close_if_idle(p);
+    }); }); });
+}
+static void hid_retire_device(IOHIDDeviceRef device, uint8_t *report, CFIndex length, BOOL timestamp) {   /* main queue */
+    if (device) {
+        IOHIDDeviceRegisterInputReportCallback(device, report, length, NULL, NULL);
+        if (timestamp) IOHIDDeviceRegisterInputReportWithTimeStampCallback(device, report, length, NULL, NULL);
+        IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    }
+    hid_retire_binding(device);
 }
 static void hid_calibration(const uint8_t *c, const char *which) {
     /* Origins are rest offsets: a few dozen steps on a Nintendo controller. An 8BitDo reports -2048, -2048, 2048 (acceleration)
@@ -561,7 +681,9 @@ static void hid_calibration(const uint8_t *c, const char *which) {
     fprintf(stderr, "[gyro] %s HID calibration: acc %.6f G, gyro %.4f deg/s per step, gyro origin %d %d %d\n", which, hidAccScale[0], hidGyroScale[0], gyroOrigin[0], gyroOrigin[1], gyroOrigin[2]);
 }
 static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
-    (void)ctx; (void)sender; (void)type;
+    (void)sender; (void)type;
+    if (!hidDevice || ctx != hidDevice) return;   /* a retired device must not update a newer session */
+    if (result == kIOReturnSuccess && hidProduct == 0x2007) hid_joycon_report_mode(0, id, len);
     /* Byte 2's high nibble is the battery: 8 full, 6 medium, 4 low, 2 critical, 0 empty, +1 while charging. A paired
        Joy-Con set: the right one's here, the left one's in hid_left_report. Five steps: 0, 25, 50, 75 or 100 %. */
     if (result == kIOReturnSuccess && len >= 3 && (id == 0x30 || id == 0x21)) {
@@ -576,7 +698,7 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         return;
     }
     if (id != 0x30) return;
-    if (!hidJoyConRight) runtime_gamepad_switch_left((__bridge void *)motionPad,
+    if (!hidJoyConRight && !hidJoyConPad) runtime_gamepad_switch_left((__bridge void *)motionPad,
         p[6] | (p[7] & 15) << 8, (p[7] >> 4) | p[8] << 4);
     runtime_gamepad_switch_right((__bridge void *)motionPad,
         p[9] | (p[10] & 15) << 8, (p[10] >> 4) | p[11] << 4);
@@ -616,46 +738,47 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
 /* product: 0x2009 a Switch Pro Controller (motion or rumble), 0x2007 the right Joy-Con of a paired set (motion, PR #889) */
 static IOReturn hid_open(int product) {   /* main queue */
     hid_out_queue();
-    if (hidDevice) return kIOReturnSuccess;
-    hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-    IOHIDManagerSetDeviceMatching(hidManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @(product)});
-    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidManager);
+    if (hidDevice) return hidProduct == product ? kIOReturnSuccess : kIOReturnExclusiveAccess;
+    IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatching(manager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @(product)});
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(manager);
     IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
-    IOReturn r = d ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
-    if (r != kIOReturnSuccess) { CFRelease(hidManager); hidManager = NULL; return r; }
-    hidDevice = (IOHIDDeviceRef)CFRetain(d);
+    IOReturn r = hid_open_binding(d, manager);
+    if (r != kIOReturnSuccess) return r;
+    hidDevice = d;
+    hidProduct = product;
+    if (product == 0x2007) hid_joycon_mode_reset(0);
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, NULL);
+    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, hidDevice);
     return kIOReturnSuccess;
 }
 static void hid_close_now(void) {   /* main queue */
-    if (!hidDevice || hidMotion || hidRumble) return;
-    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);
-    IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);   /* hid_imu_start's (PR #309) */
-    IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    IOHIDDeviceClose(hidDevice, kIOHIDOptionsTypeNone);
-    hid_count_forget(hidDevice); CFRelease(hidDevice); hidDevice = NULL;
-    CFRelease(hidManager); hidManager = NULL; imuProfile = NULL;
+    if (!hidDevice || hidMotion || hidRumble || (hidJoyConPad && hidProduct == 0x2007)) return;
+    if (hidProduct == 0x2007) hid_joycon_mode_reset(0);
+    IOHIDDeviceRef device = hidDevice;
+    hidDevice = NULL; hidProduct = 0; imuProfile = NULL;
     runtime_gamepad_hid_battery(0, -1);
+    hid_retire_device(device, hidReport, sizeof hidReport, YES);
 }
-/* Close the device once nothing uses it, but only after the reports already queued have been written: the neutral rumble
-   goes rumbleQueue, then hidOut, and a device closed before it would keep its last rumble. */
+/* Unbind immediately when unused. The retirement lease, not a later test of globals, protects queued output. */
 static void hid_close_unused(void) {   /* main queue */
-    if (!hidDevice || hidMotion || hidRumble) return;
-    dispatch_queue_t out = hid_out_queue();   /* not hidOut: a pad opened by hid_imu_start never made it, and a nil queue crashed here */
-    dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_close_now(); }); }); });
+    hid_close_now();
 }
 static void hid_motion_start(void) {   /* main queue */
     if (!motionPad || hidMotion) return;
     const char *name = (motionPad.vendorName ?: @"controller").UTF8String;
     hidJoyConRight = [motionPad.productCategory containsString:@"Joy-Con"];
     if (hidDevice && !hidRumble) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
+    /* Attach owns the paired set's left input. This can retry its open if the device was not ready at attach;
+       selecting or stopping the right IMU must not change the left input's owner. */
+    if (hidJoyConRight && hid_left_open() != kIOReturnSuccess)
+        fprintf(stderr, "[totk-input] %s: the left Joy-Con's HID device could not be opened: the left stick stays as macOS reports it (zero)\n", name);
     IOReturn r = hid_open(hidJoyConRight ? 0x2007 : 0x2009);
     if (r != kIOReturnSuccess) {
         fprintf(stderr, "[gyro] %s: no usable GameController motion and no matching Switch HID device could be opened (0x%x): no motion from it\n", name, r);
         return;
     }
-    hidMotion = YES; hidLast = 0; hidUserCalibration = NO;
+    hidMotion = YES; ++hidMotionGeneration; hidLast = 0; hidUserCalibration = NO;
     hidZeroSince = hidImuTriedAt = 0; hidImuRetries = 0; hidImuLive = NO;
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
     runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
@@ -663,49 +786,102 @@ static void hid_motion_start(void) {   /* main queue */
     /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back. The IMU-on waits
        250 ms too: HD rumble's vibration-on subcommand (hid_rumble_start) goes to the same device just before this. */
     static const uint8_t imuOn[1] = {0x01}, factory[5] = {0x20, 0x60, 0, 0, 24}, user[5] = {0x26, 0x80, 0, 0, 26};
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x40, imuOn, sizeof imuOn); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, factory, sizeof factory); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, user, sizeof user); });
-    if (hidJoyConRight) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ const uint8_t mode = 0x30; if (hidMotion) hid_subcommand(0x03, &mode, 1); });
+    hid_motion_command_after(250, 0x40, imuOn, sizeof imuOn);
+    hid_motion_command_after(500, 0x10, factory, sizeof factory);
+    hid_motion_command_after(750, 0x10, user, sizeof user);
+    if (hidJoyConRight) { const uint8_t mode = 0x30; hid_motion_command_after(1000, 0x03, &mode, 1); }
 }
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidMotion) return;
-    runtime_gamepad_switch_left(NULL, -1, -1);
+    ++hidMotionGeneration;
+    if (!hidJoyConPad) runtime_gamepad_switch_left(NULL, -1, -1);   /* Pro input belongs to motion; paired left input does not */
     runtime_gamepad_switch_right(NULL, -1, -1);
     runtime_gamepad_switch_capture(NULL, 0);
     hidMotion = NO; hid_close_unused(); runtime_motion_deadzone_default(0);
 }
-/* The left Joy-Con of a paired set (057e:2006): opened for rumble; of its input only the battery is read (GameController
-   keeps its buttons and stick). */
+/* Left Joy-Con (057e:2006): GameController can leave the combined set's leftThumbstick at zero. Feed both its full
+   0x30 and simple 0x3f axes into the existing native-priority fallback, so a slow full-mode request does not discard
+   input already arriving in simple reports. Buttons still come from GameController. Attach/detach own this input
+   independently of motion and rumble. */
 static uint8_t hidLeftReport[64];
+/* Reconnect can return either Joy-Con to simple 0x3f reports. On the measured paired set the left stick then went
+   missing and the right's B/X were exchanged by GameController; requesting 0x30 on each side restored them without
+   remapping any buttons. Both sides therefore need report-mode setup even with gyro and rumble off. */
+enum { HID_JOYCON_MODE_TRIES = 5 };
+static void hid_joycon_request_full_reports(int left) {   /* main queue */
+    HidJoyConMode *s = &hidJoyConModes[left ? 0 : 1];
+    IOHIDDeviceRef current = left ? hidLeft : hidProduct == 0x2007 ? hidDevice : NULL;
+    if (!current || !hidJoyConPad || s->pending || s->tries >= HID_JOYCON_MODE_TRIES) return;
+    uint64_t now = runtime_now_ns();
+    if (s->at && now - s->at < 2000000000ULL) return;
+    s->pending = YES;
+    unsigned generation = s->generation;
+    IOHIDDeviceRef device = (IOHIDDeviceRef)CFRetain(current);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (generation == s->generation) {
+            IOHIDDeviceRef live = left ? hidLeft : hidProduct == 0x2007 ? hidDevice : NULL;
+            if (device == live && hidJoyConPad && s->simple) {
+                unsigned attempt = ++s->tries;
+                const uint8_t mode = 0x30;
+                /* pending covers the output queue AND the potentially slow synchronous write, not just this timer.
+                   Otherwise 3f reports enqueue all five retries while an earlier SetReport is still blocked. */
+                hid_subcommand_on_completed(device, 0x03, &mode, 1, ^{
+                    if (generation == s->generation) { s->pending = NO; s->at = runtime_now_ns(); }
+                });
+                fprintf(stderr, "[totk-input] %s Joy-Con: simple 0x3f reports; queueing full 0x30 request (%u of %d)\n",
+                    left ? "left" : "right", attempt, HID_JOYCON_MODE_TRIES);
+            } else s->pending = NO;
+        }
+        CFRelease(device);
+    });
+}
+static void hid_joycon_report_mode(int left, uint32_t id, CFIndex len) {   /* main queue */
+    HidJoyConMode *s = &hidJoyConModes[left ? 0 : 1];
+    if (id == 0x3f && len >= 12) {
+        s->simple = YES; hid_joycon_request_full_reports(left);
+    } else if (id == 0x30 && len >= 12) {
+        if (s->simple) fprintf(stderr, "[totk-input] %s Joy-Con: full 0x30 input reports received\n", left ? "left" : "right");
+        s->simple = NO; s->tries = 0;   /* bound consecutive failures, not successful recoveries over the whole connection */
+    }
+}
 static void hid_left_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
-    (void)ctx; (void)sender; (void)type;
-    if (result != kIOReturnSuccess || len < 3 || (id != 0x30 && id != 0x21)) return;
-    int level = p[2] >> 5;   /* as in hid_report */
-    runtime_gamepad_hid_battery(1, level > 4 ? 100 : level * 25);
+    (void)sender; (void)type;
+    if (!hidLeft || ctx != hidLeft) return;
+    if (result != kIOReturnSuccess) return;
+    hid_joycon_report_mode(1, id, len);
+    if (len >= 3 && (id == 0x30 || id == 0x21)) {
+        int level = p[2] >> 5;   /* as in hid_report; 0x3f has buttons, not battery, here */
+        runtime_gamepad_hid_battery(1, level > 4 ? 100 : level * 25);
+    }
+    int x, y;
+    if (len < 12 || !switch_joycon_left_decode(id, p, (size_t)len, &x, &y)) return;
+    if (hidJoyConPad) runtime_gamepad_switch_left((__bridge void *)hidJoyConPad, x, y);
 }
 static IOReturn hid_left_open(void) {   /* main queue */
     hid_out_queue();
     if (hidLeft) return kIOReturnSuccess;
-    hidLeftManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-    IOHIDManagerSetDeviceMatching(hidLeftManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @0x2006});
-    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidLeftManager);
+    IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatching(manager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @0x2006});
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(manager);
     IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
-    IOReturn r = d ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
-    if (r != kIOReturnSuccess) { CFRelease(hidLeftManager); hidLeftManager = NULL; return r; }
-    hidLeft = (IOHIDDeviceRef)CFRetain(d);
+    IOReturn r = hid_open_binding(d, manager);
+    if (r != kIOReturnSuccess) return r;
+    hidLeft = d;
+    hid_joycon_mode_reset(1);
     IOHIDDeviceScheduleWithRunLoop(hidLeft, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-    IOHIDDeviceRegisterInputReportCallback(hidLeft, hidLeftReport, sizeof hidLeftReport, hid_left_report, NULL);
+    IOHIDDeviceRegisterInputReportCallback(hidLeft, hidLeftReport, sizeof hidLeftReport, hid_left_report, hidLeft);
     return kIOReturnSuccess;
 }
 static void hid_left_close_now(void) {   /* main queue */
-    if (!hidLeft || hidRumble) return;
-    IOHIDDeviceRegisterInputReportCallback(hidLeft, hidLeftReport, sizeof hidLeftReport, NULL, NULL);
-    IOHIDDeviceUnscheduleFromRunLoop(hidLeft, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    if (!hidLeft || hidRumble || hidJoyConPad) return;
+    hid_joycon_mode_reset(1);   /* cancel a pending request for this device */
+    IOHIDDeviceRef device = hidLeft;
+    hidLeft = NULL;
     runtime_gamepad_hid_battery(1, -1);
-    IOHIDDeviceClose(hidLeft, kIOHIDOptionsTypeNone);
-    hid_count_forget(hidLeft); CFRelease(hidLeft); hidLeft = NULL;
-    CFRelease(hidLeftManager); hidLeftManager = NULL;
+    hid_retire_device(device, hidLeftReport, sizeof hidLeftReport, NO);
+}
+static void hid_left_close_unused(void) {   /* main queue: preserve rumble's final neutral report, as hid_close_unused does */
+    hid_left_close_now();
 }
 /* HID rumble for a Switch controller unless rumble-hid.txt says off (TOTK_RUMBLE_HID=0 / 1 wins over the file). */
 static BOOL rumble_hid_wanted(void) {
@@ -718,6 +894,7 @@ static BOOL rumble_hid_wanted(void) {
     return on != 0;
 }
 static BOOL hid_rumble_start(GCController *c) {   /* main queue, rumbleQueue made */
+    hid_rumble_stop();   /* serialize replacement even if a caller repeats start without an explicit stop */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
     BOOL joyCon = [c.productCategory containsString:@"Joy-Con"];
     if (hidDevice && !hidMotion && !hidRumble) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
@@ -732,10 +909,9 @@ static BOOL hid_rumble_start(GCController *c) {   /* main queue, rumbleQueue mad
     if (right) hid_subcommand_on(hidDevice, 0x48, on, sizeof on);
     if (left) hid_subcommand_on(hidLeft, 0x48, on, sizeof on);
     hidRumble = YES; hidRumblePad = c;
-    IOHIDDeviceRef d = right ? (IOHIDDeviceRef)CFRetain(hidDevice) : NULL, l = left ? (IOHIDDeviceRef)CFRetain(hidLeft) : NULL;
+    IOHIDDeviceRef d = right ? hid_retain_binding(hidDevice) : NULL, l = left ? hid_retain_binding(hidLeft) : NULL;
     dispatch_async(rumbleQueue, ^{
-        if (rumbleHid) CFRelease(rumbleHid);
-        if (rumbleHidLeft) CFRelease(rumbleHidLeft);
+        if (rumbleHid || rumbleHidLeft) runtime_fail("HID rumble replacement ordering");
         rumbleHid = d; rumbleHidLeft = l; rumbleHidJoyCon = joyCon;
         hidSentAt = 0; hidQuietSent = 0; memset(hidHeld, 0, sizeof hidHeld);
     });
@@ -748,15 +924,37 @@ static void hid_rumble_stop(void) {   /* main queue */
     hidRumble = NO; hidRumblePad = nil;
     dispatch_async(rumbleQueue, ^{   /* after the timer's last report: leave the controller neutral */
         static const uint8_t neutral[8] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
-        if (rumbleHid) { hid_write(rumbleHid, 0x10, neutral, sizeof neutral); CFRelease(rumbleHid); } rumbleHid = NULL;
-        if (rumbleHidLeft) { hid_write(rumbleHidLeft, 0x10, neutral, sizeof neutral); CFRelease(rumbleHidLeft); } rumbleHidLeft = NULL;
+        IOHIDDeviceRef right = rumbleHid, left = rumbleHidLeft; rumbleHid = rumbleHidLeft = NULL;
+        if (right) hid_write(right, 0x10, neutral, sizeof neutral);
+        if (left) hid_write(left, 0x10, neutral, sizeof neutral);
         rumbleHidJoyCon = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{ hid_retire_binding(right); hid_retire_binding(left); });
     });
     hid_close_unused();
-    if (hidLeft) {   /* closed once the neutral report above has been written, as hid_close_unused does */
-        dispatch_queue_t out = hid_out_queue();
-        dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_left_close_now(); }); }); });
+    hid_left_close_unused();
+}
+static void hid_joycon_input_release(void) {   /* main queue: also used when a new owner appears before old detach */
+    GCController *owner = hidJoyConPad;
+    if (!owner) return;
+    if (hidRumblePad == owner) hid_rumble_stop();
+    if (motionPad == owner) {
+        owner.motion.valueChangedHandler = nil;
+        if (owner.motion.sensorsRequireManualActivation) owner.motion.sensorsActive = NO;
+        hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
+    hidJoyConPad = nil;
+    runtime_gamepad_switch_left(NULL, -1, -1);
+    hid_joycon_mode_reset(1); hid_joycon_mode_reset(0);
+    IOHIDDeviceRef left = hidLeft;
+    hidLeft = NULL;
+    runtime_gamepad_hid_battery(1, -1);
+    hid_retire_device(left, hidLeftReport, sizeof hidLeftReport, NO);
+    if (hidDevice && hidProduct == 0x2007 && !hidMotion && !hidRumble) {
+        IOHIDDeviceRef right = hidDevice;
+        hidDevice = NULL; hidProduct = 0; imuProfile = NULL;
+        runtime_gamepad_hid_battery(0, -1);
+        hid_retire_device(right, hidReport, sizeof hidReport, YES);
+    } else hid_close_unused();
 }
 #else
 static void hid_motion_start(void) {
@@ -982,7 +1180,8 @@ void runtime_triggers_release(void) {}
 #if TARGET_OS_OSX
 static uint64_t imuLast;   /* main run loop: the time of the last sample */
 static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len, uint64_t stamp) {   /* main run loop */
-    (void)ctx; (void)sender; (void)type;
+    (void)sender; (void)type;
+    if (!hidDevice || ctx != hidDevice) return;
     const HidImuProfile *pr = imuProfile;
     if (result != kIOReturnSuccess || !pr || id != pr->reportId) return;
     if (len < pr->length) {
@@ -1003,7 +1202,7 @@ static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion,
         [matching addObject:@{@kIOHIDVendorIDKey: @(hid_imu_profiles[i].vendor), @kIOHIDProductIDKey: @(hid_imu_profiles[i].product)}];
     IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     IOHIDManagerSetDeviceMatchingMultiple(m, (__bridge CFArrayRef)matching);
-    IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
+    /* Matching/copying enumerates without opening; acquire only the selected device through the lifetime owner. */
     NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(m);
     IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
     if (!d) { CFRelease(m); return NO; }
@@ -1013,17 +1212,19 @@ static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion,
     if (cp) CFNumberGetValue(cp, kCFNumberIntType, &product);
     const HidImuProfile *found = hid_imu_find(vendor, product);
     const char *name = (c.vendorName ?: @"controller").UTF8String;
-    IOReturn r = found ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
+    IOReturn r;
+    if (found) r = hid_open_binding(d, m);
+    else { CFRelease(m); r = kIOReturnNotFound; }
     if (r != kIOReturnSuccess) {
         if (found) fprintf(stderr, "[gyro] %s: HID device %04x:%04x found but did not open (0x%x): no motion from it\n", name, vendor, product, r);
-        CFRelease(m); return NO;
+        return NO;
     }
     hid_motion_stop(); hid_close_now();   /* the shared device (PR #920): close it now unless rumble uses it */
-    if (hidDevice) { fprintf(stderr, "[gyro] %s: the Switch HID device is in use for rumble: no motion from %04x:%04x\n", name, vendor, product); IOHIDDeviceClose(d, kIOHIDOptionsTypeNone); CFRelease(m); return NO; }
-    hidManager = m; hidDevice = (IOHIDDeviceRef)CFRetain(d); imuProfile = found; hidMotion = YES;
+    if (hidDevice) { fprintf(stderr, "[gyro] %s: the Switch HID device is in use for input or rumble: no motion from %04x:%04x\n", name, vendor, product); hid_retire_binding(d); return NO; }
+    hidDevice = d; hidProduct = 0; imuProfile = found; hidMotion = YES; ++hidMotionGeneration;
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     imuLast = 0;
-    IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, NULL);
+    IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, hidDevice);
     motionPad = c; runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
     fprintf(stderr, "[gyro] %s: no motion from GameController; reading the six-axis sensor from its HID reports (%04x:%04x)\n", name, vendor, product);
     return YES;
@@ -1038,6 +1239,26 @@ static BOOL hid_imu_start(GCController *c) {   /* the raw HID fallback is macOS 
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
+#if TARGET_OS_OSX
+    /* Paired input setup must not depend on motion or rumble. The left needs its own stick reports; the right also
+       needs full report mode for GameController to deliver the measured pair's B/X correctly. */
+    if (c.productCategory && [c.productCategory containsString:@"Joy-Con"]) {
+        if (hidJoyConPad != c) {
+            if (hidJoyConPad) hid_joycon_input_release();
+            else runtime_gamepad_switch_left(NULL, -1, -1);
+        }
+        hidJoyConPad = c;   /* keep the input owner even if another consumer must retry the open later */
+        IOReturn r = hid_left_open();
+        if (r == kIOReturnSuccess) {
+            fprintf(stderr, "[totk-input] %s: reading the left stick from the left Joy-Con's HID reports\n", name);
+        } else {
+            fprintf(stderr, "[totk-input] %s: the left Joy-Con's HID device could not be opened (0x%x): the left stick stays as macOS reports it (zero)\n", name, r);
+        }
+        r = hid_open(0x2007);
+        if (r != kIOReturnSuccess)
+            fprintf(stderr, "[totk-input] %s: the right Joy-Con's HID device could not be opened (0x%x): its input report mode could not be managed\n", name, r);
+    }
+#endif
     if (runtime_rumble_enabled()) {
         rumble_start();
         BOOL tookHid = NO;
@@ -1110,6 +1331,9 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (motionPad == c) {
         c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
+#if TARGET_OS_OSX
+    if (hidJoyConPad == c) hid_joycon_input_release();
+#endif
 }
 /* iOS deactivates a manual-activation controller's sensors while the app is in the background (Settings, Control
    Center); without this, gyro aiming stays dead until the controller reconnects. */
