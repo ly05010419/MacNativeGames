@@ -96,8 +96,10 @@ compare-and-swap loops that retry inside the window. `prepare_runtime.py`, `prep
   reads as none, so at high frame rates the floor stood still for some steps and then caught up. The call now goes to a
   veneer (text padding +0x300) that returns 2 atan2(|xyz|, |w|) through the game's own atan2f import. Cause and cure
   were found by Phosquitos for SavageWindRecomp ([pull request #312](https://github.com/Revivedx/SavageWindRecomp/pull/312),
-  issue #209 there). `verify_kf_angle_patch.py` runs both angles in Unicorn: the shipped one reads 0.1, 0.29 and 0.43
-  mrad as 0. In game, Link stood still on a tilting Medoh at 60+60 and uncapped. `TOTK_KF_ANGLE=0` keeps the shipped
+  issue #209 there). `verify_kf_angle_patch.py` assembles the veneer's actual words and executes them on Apple silicon,
+  comparing with `acosf` as a negative control; it needs no game data or CPU emulator. An optional original main image
+  also checks the patch guards and padding. The original angle loses small turns when w rounds to 1.
+  The PR author reported Link standing still on a tilting Medoh at 60+60 and uncapped. `TOTK_KF_ANGLE=0` keeps the shipped
   angle.
 - Docked play renders at 1920x1080, as upstream's 1.6.0 port does: the display-mode routine main+0x1266074, `movk` at
   main+0x12660c8. `TOTK_RENDER_RES=900` keeps 1600x900.
