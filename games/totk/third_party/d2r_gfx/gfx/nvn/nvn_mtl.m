@@ -8313,7 +8313,14 @@ static void pkg_evict_sweep(void) {
     static int mode = -1; static uint64_t budget, low, high, crit;
     if (mode < 0) {
         const char *e = getenv("TOTK_TEX_EVICT");
-        budget = env_mb("TOTK_TEX_EVICT_MB", 0); low = env_mb("TOTK_TEX_EVICT_LOW_MB", 250); high = env_mb("TOTK_TEX_EVICT_HIGH_MB", 350); crit = env_mb("TOTK_TEX_EVICT_CRIT_MB", 150);
+        uint64_t default_budget = 0;
+#if defined(GAME_OOT) && TARGET_OS_OSX
+        // An explicit value, including empty or 0, keeps the existing env_mb behavior.
+        if (!getenv("TOTK_TEX_EVICT_MB") &&
+            NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30))
+            default_budget = 1536;
+#endif
+        budget = env_mb("TOTK_TEX_EVICT_MB", default_budget); low = env_mb("TOTK_TEX_EVICT_LOW_MB", 250); high = env_mb("TOTK_TEX_EVICT_HIGH_MB", 350); crit = env_mb("TOTK_TEX_EVICT_CRIT_MB", 150);
         mode = e && !atoi(e) ? 0 : budget ? 2 : TARGET_OS_IPHONE ? 1 : 0;
         if (mode == 1) MLOG("贴图副本淘汰：开（可用内存低于 %llu MB 时淘汰久未使用的副本，直到 %llu MB；TOTK_TEX_EVICT=0 关）", (unsigned long long)(low >> 20), (unsigned long long)(high >> 20));
         if (mode == 2) MLOG("贴图副本淘汰：开（副本总量上限 %llu MB）", (unsigned long long)(budget >> 20));
@@ -8782,14 +8789,24 @@ static void shader_args_invalidate_stale(NvShader *sh) {
 void arena_begin(void) { g_arena_epoch++; if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; } g_cur_arena = nil; }
 /* OOT (2026-11-06): the free list only grew. Every block made while loading stayed for the whole session (25, 53 and
    87 blocks = 176, 400 and 672 MB in three runs of the same save, all made between frames 600 and 1200, none after),
-   while play reuses a few. A block that no submission reused for STOR_IDLE_SUBMITS submissions is released once the
+   while play reuses a few. A block idle for 120 submissions on low-memory OoT Macs (600 elsewhere) is released once the
    GPU completed its last use and no pending CPU write can still read it (the reuse condition in arena_new). */
 static uint64_t g_arenas_released, g_arena_bytes_released;
+static uint64_t arena_idle_submits(void) {
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    static uint64_t idle; static dispatch_once_t once;
+    dispatch_once(&once, ^{ idle = NSProcessInfo.processInfo.physicalMemory <= (UINT64_C(16) << 30) ? 120 : STOR_IDLE_SUBMITS; });
+    return idle;
+#else
+    return STOR_IDLE_SUBMITS;
+#endif
+}
 static void arena_trim(uint64_t fence) {
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
+    uint64_t idle = arena_idle_submits();
     for (NSInteger i = (NSInteger)g_arenas.count - 1; i >= 0; i--) {
         NvArena *it = g_arenas[(NSUInteger)i];
-        if (!it->fence || it->fence > done || it->fence + STOR_IDLE_SUBMITS >= fence) continue;
+        if (!it->fence || it->fence > done || it->fence + idle >= fence) continue;
         if (it->fence > g_pend_reuse_done) continue;   // stricter than reuse: freed memory must not be read by a pending CPU write
         g_arenas_released++; g_arena_bytes_released += it->capacity;
         res_remove(it->buf); [g_arenas removeObjectAtIndex:(NSUInteger)i];
