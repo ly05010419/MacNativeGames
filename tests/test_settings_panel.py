@@ -201,12 +201,13 @@ class SettingsPanel(unittest.TestCase):
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
                                        TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
                             try:
+                                # About 6 s on a Mac, 35 s and more on GitHub's macOS virtual machines (Tears of the Kingdom 1.4.3)
                                 run = subprocess.run([str(executable)], env=env,
-                                                     capture_output=True, text=True, timeout=35)
+                                                     capture_output=True, text=True, timeout=120)
                             except subprocess.TimeoutExpired as timeout:   # where the probe was when it stopped
                                 said = ''.join(part.decode(errors='replace') if isinstance(part, bytes) else part or ''
                                                for part in (timeout.stdout, timeout.stderr))
-                                self.fail('timed out after 35 s; last output:\n' + '\n'.join(said.splitlines()[-25:]))
+                                self.fail('timed out after 120 s; last output:\n' + '\n'.join(said.splitlines()[-25:]))
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: settings panel', run.stdout)
                 settings = Path(directory) / ('saved-' + (version or 'base'))
