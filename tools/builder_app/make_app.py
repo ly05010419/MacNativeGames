@@ -58,6 +58,13 @@ def sha256(path):
     return h.hexdigest()
 
 
+def zip_app(app, archive):
+    # Keep the public local-build path independent of the maintainer's signing
+    # tools. Omit xattrs so Archive Utility cannot add AppleDouble sidecars.
+    run(['/usr/bin/ditto', '-c', '-k', '--norsrc', '--noextattr', '--keepParent', app, archive])
+    archive.with_name(archive.name + '.sha256').write_text(sha256(archive) + '  ' + archive.name + '\n')
+
+
 def python_archive(cache):
     archive = cache / PYTHON_URL.rsplit('/', 1)[1].replace('%2B', '+')
     if archive.is_file() and sha256(archive) == PYTHON_SHA256:
@@ -190,8 +197,7 @@ def main(argv):
         if archive == REPO or REPO in archive.parents or archive == out or out in archive.parents:
             raise SystemExit('The ZIP must be outside the source checkout and the app.')
         archive.parent.mkdir(parents=True, exist_ok=True)
-        run(['/usr/bin/ditto', '-c', '-k', '--keepParent', out, archive])
-        archive.with_name(archive.name + '.sha256').write_text(sha256(archive) + '  ' + archive.name + '\n')
+        zip_app(out, archive)
         say(f'download: {archive} (ad-hoc signed; not notarized)')
 
 

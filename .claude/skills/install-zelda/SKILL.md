@@ -7,6 +7,19 @@ description: Build and install The Legend of Zelda Tears of the Kingdom or Breat
 
 You are helping a player turn **their own** game dump into an app. Done right, this is one build of 20–40 minutes, mostly waiting. Follow the steps in order. `docs/install.md` has the same steps for the player to read; you do not need it unless a step below points there.
 
+## Choose the Launcher installation route first
+
+- **Official downloaded Launcher:** install its DMG by dragging the app to Applications, then use its window.
+  It already contains Python and matching build scripts and is signed/notarized by the maintainer. Never ask the
+  player to configure Developer ID credentials, re-sign it, notarize it, or run `make_app.py` over it. Updating the
+  Launcher means installing a newer official download. Building the player's game is separate from building the Launcher.
+- **Source-checkout route:** use the terminal setup, `make_app.py` and migration instructions below only when the
+  player chooses a source build or source-based terminal workflow. Local Launcher builds are automatically ad-hoc
+  signed without a developer account or certificate. Do not replace an existing official Launcher as a setup step.
+- **Official release signing:** it is not part of helping a player install or build games. Do not invent a release
+  signing step or request the maintainer's certificate. iOS game sideloading later in this guide uses the player's own
+  account and is a separate operation.
+
 ## Rules
 
 - **Only the player's own files.** Never search the internet for, download, or ask anyone for game files, `prod.keys`, title keys or firmware. If something is missing, tell the player what to dump from their own Switch and stop.
@@ -16,7 +29,7 @@ You are helping a player turn **their own** game dump into an app. Done right, t
 - Speak the player's language. Find what you can yourself; ask only for what you cannot find (where the files are, which device).
 - Commands that need `sudo`, a password or a click in a macOS dialog: ask the player to run them (in Claude Code, typing `! <command>` runs it in this session).
 - **Folders (`docs/install.md` › Folders).** Keep the app and saves apart from the work folder: the work folder can be deleted and made again, the app and saves cannot. One work folder per game, outside the `MacNativeGames` checkout and outside the folder that holds the apps, on the app's APFS volume. Without `--work`, `build_app.py` and MNG Launcher both take the folder the app records, else `MacNativeGames-work/<game>` beside the apps folder (`build_app.default_work`): leave `--work` out unless the default disk lacks space.
-- **Use MNG Launcher when the player wants a window, and always for updates.** Make it once: `python3 tools/builder_app/make_app.py` (it carries its own Python; it runs this checkout's code, so `git pull` is enough later). Open it with the files filled in: `open -a "MNG Launcher" "<base>" "<update>" "<prod.keys>"` (keys go to step 2, the rest to step 1); the player then presses **Build and Play**. Games already installed are listed at the top: **Update** needs no files and runs the fastest update that fits (`update_runtime.py --plan`: express, else fast; it asks for the files only when a full build is needed). Never start a full build for an installed game before that plan says so.
+- **Use MNG Launcher when the player wants a window, and always for updates.** Reuse the installed official Launcher. Only for the source-checkout route, make a local development copy with `python3 tools/builder_app/make_app.py` (it carries its own Python and runs that checkout's code). Open it with the files filled in: `open -a "MNG Launcher" "<base>" "<update>" "<prod.keys>"` (keys go to step 2, the rest to step 1); the player then presses **Build and Play**. Games already installed are listed at the top: **Update** needs no files and runs the fastest update that fits (`update_runtime.py --plan`: express, else fast; it asks for the files only when a full build is needed). Never start a full build for an installed game before that plan says so.
 - **An existing install: check it first, and adapt it.** A player who built before 12 November 2026 (with `build_app.py` or the old `Build Game.command` window): walk them through `docs/install.md` › "Moving an older install to MNG Launcher". If the player already has the app, read `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"` (and `MNGBuildPython`) before building or updating, and use that folder and that Python. If the key is missing (an app from before 31 October 2026), names a folder that is gone, or names one inside the apps folder (an update before 11 November 2026 without `--work` made one there), choose the work folder as above, `mv` the old one there when it holds the build, and run `update_runtime.py "<the app>" --work "<that folder>"` once: the app records it from then on. Tell the player what you moved.
 
 ## 1. Check the Mac (about 2 minutes)
@@ -75,7 +88,7 @@ Other things the build needs:
 
 **Use `tools/mng.py` (MNG Launcher's engine in a terminal), not `build_app.py` by hand.** It is what the Launcher runs: it tells the files apart, checks the Mac, puts the app and its work folder where the one folder rule says, takes the fastest update when the game is already installed, and runs as the Mac's one job, so the player's Launcher window shows its progress and can stop it. Any `python3` starts it (it then uses MNG Launcher's own Python, or Python 3.14).
 
-**First, always: `python3 tools/mng.py migrate`.** It says whether this Mac is migrated to MNG Launcher and the folder rule; when it is not, run `python3 tools/mng.py migrate --apply` (it moves work folders on the same disk, records them with express updates, makes the Launcher), tell the player what it did, and only then go on. Open MNG Launcher only on a migrated Mac (`mng open` refuses before).
+**For the source-checkout route, first: `python3 tools/mng.py migrate`.** It says whether this Mac is migrated to MNG Launcher and the folder rule; when it is not, run `python3 tools/mng.py migrate --apply` (it moves work folders on the same disk, records them with express updates, makes the development Launcher), tell the player what it did, and only then go on. `mng open` refuses before migration. Do not run these checkout commands merely to install an official downloaded Launcher; use the DMG route above.
 
 ```sh
 python3 tools/mng.py migrate [--apply]                        # first: is this Mac migrated? --apply finishes it

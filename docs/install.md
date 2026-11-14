@@ -52,19 +52,25 @@ One engine builds every game, whoever drives it: MNG Launcher's window, or `tool
 
 ### MNG Launcher (the window)
 
-For a Launcher ZIP from GitHub Releases, unzip it and move **MNG Launcher.app** to Applications. It carries Python
-and matching build scripts; no Launcher compilation or source checkout is needed. A preview that is not notarized
-may require **System Settings → Privacy & Security → Open Anyway** after the first opening attempt.
+Download the official Launcher DMG from GitHub Releases, open it and drag **MNG Launcher.app** to Applications.
+Eject the image and open the installed app. The ZIP is an alternative. Official downloads are already signed and
+Apple notarized: players do not compile or re-sign the Launcher, configure certificates, or submit it for notarization.
+It carries Python and matching build scripts; no source checkout is needed.
 Game builds still need the developer tools and your own game files. See [download builds](builder-app.md#download-builds).
 
-For a development app from this checkout:
+Only if you choose to build a development app from source:
 
 `python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app`. It carries its own Python and runs this folder's code, so after a `git pull` it needs no remaking unless its window changed.
+The local build is automatically ad-hoc signed, without a Developer ID account or certificate. Do not use this
+command to replace or re-sign an official downloaded Launcher.
 
 - **Games** (the first page, no bar on top): one card per game. A built game shows its own app's picture; click it for a big green **Start game** (top right), its update, one button named after the fastest one that fits: **Express update** or **Fast update** (no game files), or **Full build** (the build steps with its game files); and its pages, which open under the buttons. A game not built yet shows a plus: click it for the build steps, step 1 drop the game files, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress the whole way. Opened as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"`, the build steps open with steps 1 and 2 filled in.
 - A built game's pages, under its card: **Settings** (how Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 start, the same as the game's settings panel: each shows your setting, or the game's default by name; **Start game** starts with them), **Mods** (your own mods, checked against your app and applied with the repository's installer; none ship), **Controls** (the controller layout, button icons, a key test), **Storage** (the work folder: size and clean; the shader cache: where it is and its size; sizes are measured when you press **Measure space used**, and the last ones show until then), **Saves** (backups and restore). The old window (`Build Game.command`) is gone; these pages replaced it. Details: [builder-app.md](builder-app.md) and, for those changing the code, [builder.md](builder.md).
 
 ### With an AI or a terminal: `tools/mng.py`
+
+The commands in this section are for the source-checkout route. Players using an official downloaded Launcher
+can use its window directly; do not run a separate checkout's Launcher migration over that installation.
 
 Any `python3` starts it (it runs with MNG Launcher's own Python, else a Python 3.14). An AI building for you should use it rather than writing `build_app.py` commands itself, and **its first step is always `mng migrate`**: MNG Launcher is opened only on a migrated Mac (`mng open` refuses until then).
 
@@ -239,6 +245,9 @@ Bananza and Pokopia have the same three updates since 12 November 2026 (until th
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.
 
 ## Moving an older install to MNG Launcher
+
+This section covers a source-checkout installation. For an official downloaded Launcher, follow the DMG
+installation above and use its window; do not rebuild or re-sign it as a migration step.
 
 For players who built a game before 12 November 2026 with `build_app.py` or the old window (`Build Game.command`). Nothing is rebuilt and no game files or keys are needed, unless a step says so. Quit the game first.
 

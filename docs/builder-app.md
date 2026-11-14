@@ -11,22 +11,23 @@ behind them stay in `tools/builder`, the models the pages call through `tools/bu
 
 ## Download builds
 
-The Launcher can be distributed as `MNG-Launcher-<version>-macOS-arm64.zip` on GitHub Releases. Unzip it and move
-`MNG Launcher.app` to Applications. This build includes Python and its matching source snapshot; the player does
-not compile the Launcher or download a checkout. At first use, the source is verified and extracted to
-`~/Library/Application Support/MacNativeGames/Builder/sources/<archive-sha256>`. Subsequent jobs reuse it, and old
-source versions remain available to games that recorded them. Updating the Launcher means downloading the newer app.
-Building a game still requires Apple's command line tools and the player's own game files and keys.
+The recommended download on GitHub Releases is `MNG-Launcher-<version>-macOS-arm64.dmg`.
+Open it, drag `MNG Launcher.app` to Applications, eject the image, then open the installed app.
+The ZIP is an alternative. Official downloads are Developer ID signed and Apple notarized.
+Players do not re-sign the downloaded Launcher, configure signing certificates or submit it for notarization.
 
-The initial download workflow makes **ad-hoc signed previews, not notarized releases**. A downloaded preview may need
-approval in System Settings → Privacy & Security → Open Anyway. A normal Developer ID / notarized distribution needs
-separate signing credentials; the Apple Development certificate used for device builds is not a replacement.
+A portable build includes Python and its matching source snapshot; players do not compile the Launcher or
+need a checkout. At first use, the source is verified and extracted to
+`~/Library/Application Support/MacNativeGames/Builder/sources/<archive-sha256>`. Old source versions remain
+available to games that recorded them. Building a game still requires Apple's command line tools and the
+player's own game files and keys.
 
-Maintainers: run **Build Launcher download** in GitHub Actions with a `major.minor.patch` version. It builds on
-`macos-26` (Apple silicon), tests the bundled source, verifies the signature, and creates a **draft prerelease** with
-the ZIP and its SHA-256 file. Review the draft before publishing. It never runs on an ordinary source push.
-The source must be committed and complete: it refuses missing seed-image dependencies, dirty tracked files and local
-instruction/key files. Untracked and ignored files are never included. Locally, the same build is:
+## Build a portable copy locally
+
+Local compilation is supported independently of the maintainer's signing credentials and release tools.
+It automatically uses an ad-hoc signature and needs no Developer ID certificate or developer membership.
+Choose this route only for a source build; do not replace an official downloaded Launcher as an installation step.
+Use an Apple silicon Mac with the command line tools. Commit the source you want to bundle first, then run:
 
 ```sh
 python3 tools/builder_app/make_app.py --portable --version 1.0.0 \
@@ -35,11 +36,21 @@ python3 tools/builder_app/make_app.py --portable --version 1.0.0 \
   --zip /path/outside-checkout/MNG-Launcher-1.0.0-macOS-arm64.zip
 ```
 
-The source travels as an archive so signing the outer app cannot change the pinned translator binaries inside it.
-Its licences stay with it. The release packaging pattern was checked against
-[SwiftBar's MIT-licensed release automation](https://github.com/swiftbar/SwiftBar/blob/main/Justfile);
-no SwiftBar code is included. Signing requirements follow
-[Apple's Developer ID distribution guide](https://developer.apple.com/developer-id/).
+This makes an **ad-hoc signed local build**, not an Apple-notarized official download. Outputs must be outside
+the checkout. The builder refuses dirty tracked source, missing required dependencies and local instruction/key
+files; untracked and ignored files are never included. ZIP creation preserves symlinks and ordinary resources,
+while omitting extended attributes so Archive Utility cannot add AppleDouble (`._`) files.
+
+Run its regression tests with:
+
+```sh
+python3 -m pip install -r games/totk/requirements.txt
+python3 -m unittest discover -s tests -p 'test_launcher_*.py' -v
+```
+
+The **Validate Launcher preview (not notarized)** Actions workflow runs these tests, builds the portable app and
+stores its ZIP as a short-lived Actions artifact for testing. It does not publish a GitHub Release.
+Official signing, notarization and release automation are maintained separately from this repository.
 
 ## Make a development app
 

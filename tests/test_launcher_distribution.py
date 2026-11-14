@@ -1,6 +1,6 @@
 """A downloaded Launcher works after relocation without the developer checkout or a separately installed Python."""
 import hashlib
-import importlib.util
+import importlib
 import io
 import json
 import os
@@ -18,10 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def module(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / 'tools/builder_app' / (name + '.py'))
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+    return importlib.import_module('tools.builder_app.' + name)
 
 
 builder = module('make_app')
