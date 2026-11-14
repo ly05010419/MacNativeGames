@@ -539,6 +539,61 @@ static void patch_blend_first_step(Module *m, uint64_t stub) {
     fprintf(stderr, "[botw] camera blends start with one 30 fps frame, then follow the measured ratio (veneer +%#llx; TOTK_BLEND_FIRST_STEP=0: as shipped)\n",
             (unsigned long long)stub);
 }
+/* Moving platforms above 30 fps (TOTK_KF_ANGLE=0: as shipped). The bodies the game moves (a Divine Beast's floor while
+   it tilts, lifts, gates) get each physics step the angular velocity that takes them to their target; main+0x12d57fc
+   takes the angle of the turn left from hkQuaternion::getAngle (main+0xb06d4), 2 acos(|w|). Below about a milliradian
+   w rounds to 1.0 in a float and the turn reads as none. Vah Medoh's floor turns about 1.7 mrad per 30 fps frame, less
+   per step at higher rates: the floor stood still for some steps and then caught up at once, and Link on it hopped in
+   place, more the higher the frame rate, not at 30+30 (user, 2026-11-13). Cause and cure as found by SavageWindRecomp
+   (pull request #312: at 120 fps, Link's vertical speed jitter fell from 0.9-1.6 m/s to 0.07-0.13). The call now goes to
+   a veneer that returns 2 atan2(|xyz|, |w|), the same angle without the rounding, through the game's own atan2f import
+   (PLT main+0x159ff10, GOT main+0x1d78050). getAngle's caller only reads s0 back (main+0x12d5804) and keeps its values on
+   the stack across the call; the veneer uses only caller-saved registers, as getAngle and its acosf call do. */
+static void patch_kf_angle(Module *m, uint64_t stub) {
+    const char *e = getenv("TOTK_KF_ANGLE");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] moving platforms' turn angle as shipped, 2 acos(|w|) (TOTK_KF_ANGLE=0)\n"); return; }
+    enum { SITE = 0x12d57fc, ATAN2F = 0x159ff10 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0x12d57f8u, 0x3c9983a0u},     /* stur q0, [x29, #-0x68] */
+        {0x12d57fcu, 0x97b76bb6u},     /* bl main+0xb06d4 (hkQuaternion::getAngle) */
+        {0x12d5800u, 0x3cd883a6u},     /* ldur q6, [x29, #-0x78] */
+        {0x12d5804u, 0x1e2008c0u},     /* fmul s0, s6, s0 */
+        {0xb06d4u, 0x3dc00000u},       /* ldr q0, [x0] */
+        {0xb06f8u, 0x9453bdf6u},       /* bl main+0x159fed0 (acosf) */
+        {0x159ff10u, 0xb0003ed0u},     /* adrp x16, main+0x1d78000 */
+        {0x159ff14u, 0xf9402a11u},     /* ldr x17, [x16, #0x50] (atan2f) */
+        {0x159ff1cu, 0xd61f0220u},     /* br x17 */
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] moving platforms main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("the moving platforms' turn angle requires the 1.9.0 keyframed-body code");
+        }
+    }
+    const uint32_t veneer[] = {
+        0x3dc00000u,   /* ldr q0, [x0]                 x, y, z, w of the turn left */
+        0x6e20dc01u,   /* fmul v1.4s, v0.4s, v0.4s */
+        0x7e30d822u,   /* faddp s2, v1.2s              x² + y² */
+        0x5e140423u,   /* mov s3, v1.s[2] */
+        0x1e232842u,   /* fadd s2, s2, s3              + z² */
+        0x5e1c0401u,   /* mov s1, v0.s[3] */
+        0x1e20c021u,   /* fabs s1, s1                  |w| */
+        0x1e21c040u,   /* fsqrt s0, s2                 |xyz| */
+        0xa9bf7bfdu,   /* stp x29, x30, [sp, #-16]! */
+        0x910003fdu,   /* mov x29, sp */
+        0x94000000u | (uint32_t)((((int64_t)ATAN2F - (int64_t)(stub + 40)) >> 2) & 0x3ffffff),   /* bl atan2f */
+        0xa8c17bfdu,   /* ldp x29, x30, [sp], #16 */
+        0x1e202800u,   /* fadd s0, s0, s0              2 atan2(|xyz|, |w|) */
+        0xd65f03c0u,   /* ret */
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("moving platforms veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("moving platforms veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "moving platforms veneer");
+    put_word(m, SITE, 0x94000000u | (uint32_t)((((int64_t)stub - (int64_t)SITE) >> 2) & 0x3ffffff), "moving platforms turn angle");
+    fprintf(stderr, "[botw] moving platforms: the turn angle is 2 atan2(|xyz|, |w|), small turns kept (veneer +%#llx; TOTK_KF_ANGLE=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
@@ -576,6 +631,7 @@ static void patch_realtime(Module *m) {
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
     patch_blend_first_step(m, ((m->text_end + 15) & ~15ULL) + 80);   /* after the FOV stub (+32, 11 words) */
+    patch_kf_angle(m, ((m->text_end + 15) & ~15ULL) + 0x300);        /* past the VR and heap veneers (+0x80..+0x158) */
 }
 #endif
 /* Diagnostics (TOTK_JQ_CHECK=1): random crashes look like one job run twice (two threads in the same skinning job, a list
