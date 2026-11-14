@@ -416,6 +416,7 @@ static inline NSString *totk_contrib_seed_row(NSString *row, NSMutableDictionary
    their V rows pruned here as the seed served them). Called by the Mac launcher before its reminder counts the file and by the iPhone / iPad app before the game
    starts. Returns the rows moved. */
 static inline NSUInteger totk_contrib_prune(NSString *path, NSString *seedDir, NSString *listDir) {
+    if (!totk_contrib_writable(path)) return 0;   // a failed claim must leave the foreign file untouched
     NSString *app = path ? totk_contrib_app(seedDir, listDir) : nil, *mark = path ? totk_contrib_side(path, @"pruned") : nil;
     if (!app || [[NSString stringWithContentsOfFile:mark encoding:NSUTF8StringEncoding error:nil] isEqualToString:app]) return 0;
     NSMutableSet<NSString *> *served = [NSMutableSet set];

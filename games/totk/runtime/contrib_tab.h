@@ -63,6 +63,7 @@ static void contrib_tab_fetch(void (^done)(NSArray *players, NSString *error)) {
 }
 @interface TOTKContribPage:NSView<NSTableViewDataSource,NSTableViewDelegate>
 @property(copy) NSString *path;
+@property(copy) NSString *choiceError;
 @property(strong) NSTextField *counts, *state, *status, *note;
 @property(strong) NSSwitch *toggle;
 @property(strong) NSTableView *table;
@@ -131,6 +132,7 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
  self.state.stringValue=!usable?settings_text("这次运行不记录着色器贡献","This run keeps no shader contribution")
   :on?settings_text("已开启：游戏会在后台自动贡献，不打扰游玩","On: the game contributes them in the background, without interrupting play")
   :settings_text("已关闭：不会上传任何东西","Off: nothing is uploaded");
+ if(usable&&self.choiceError.length)self.state.stringValue=self.choiceError;
  self.counts.stringValue=!usable?@"":[NSString stringWithFormat:settings_text("已贡献 %@ 个着色器和管线 · %@","%@ shaders and pipelines contributed · %@"),
   contrib_tab_number(totk_inbox_sent(self.path)),rows?[NSString stringWithFormat:settings_text("又发现 %@ 个新的，可以贡献","%@ new ones found to contribute"),contrib_tab_number(rows)]
   :settings_text("暂时没有新发现","nothing new found yet")];
@@ -160,8 +162,11 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
 -(void)toggled:(NSSwitch *)toggle{
  if(![self usable]){[self refresh];return;}
  BOOL on=toggle.state==NSControlStateValueOn;
- totk_inbox_choose(self.path,on);if(on)totk_inbox_start(self.path,@"mac");
- fprintf(stderr,"[settings] contribute shaders automatically %s\n",on?"on":"off");
+ BOOL saved=totk_inbox_choose(self.path,on);
+ self.choiceError=saved?nil:on?settings_text("无法保存贡献设置；未启用自动贡献","Could not save the setting; automatic contributions were not enabled")
+  :settings_text("本次运行已关闭贡献，但无法保存设置；下次启动请检查","Contributions are off for this run, but the setting could not be saved; check it next launch");
+ if(saved&&on)totk_inbox_start(self.path,@"mac");
+ fprintf(stderr,"[settings] contribute shaders automatically %s%s\n",[totk_inbox_choice(self.path) isEqualToString:@"auto"]?"on":"off",saved?"":" (not saved)");
  [self refresh];
 }
 
