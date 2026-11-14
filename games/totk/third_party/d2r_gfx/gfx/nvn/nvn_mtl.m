@@ -1872,7 +1872,7 @@ static id<MTL4RenderCommandEncoder> oot_bar_render_begin(MTL4RenderPassDescripto
     g_oot_bar_beginning = 0; g_oot_bar_writes = g_oot_bar_order = 0;
     return en;
 }
-static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { gpu_trace_pipeline(p.label); if (rs_using(e)) rs_object(RS_PSO, p); else [e setRenderPipelineState:p]; }
+static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { if (gpu_trace_on()) gpu_trace_pipeline(p.label); if (rs_using(e)) rs_object(RS_PSO, p); else [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { if (rs_using(e)) rs_object(RS_DSS, s); else [e setDepthStencilState:s]; }
 /* TOTK: render state already set on the current encoder. The replay sets viewport, scissor, cull, winding, fill, depth bias,
    depth clip, stencil reference and blend color for every draw (about 30,000 encoder calls per frame), nearly all unchanged.
@@ -1927,7 +1927,7 @@ static inline void enc_r_store(id<MTL4RenderCommandEncoder> e, int depth, MTLSto
 static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor *d) { atomic_store_explicit(&g_oot_bar_last, 0, memory_order_relaxed); (void)d; blit_close(); rs_sync(); pt_mark(g_cb, 'C', nil); id<MTL4ComputeCommandEncoder> e = [g_cb computeCommandEncoder]; if (bar_start_on()) [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; [e setArgumentTable:g_ct]; return e; }
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
 static inline void enc_c_end(id e) { m4_end(e); }
-static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { gpu_trace_pipeline(p.label); [e setComputePipelineState:p]; }
+static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { if (gpu_trace_on()) gpu_trace_pipeline(p.label); [e setComputePipelineState:p]; }
 static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; [g_ct setAddress:gpu atIndex:i]; }
 static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) { return [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; }
@@ -3769,6 +3769,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
     if (!strcmp(name, "tex_slots_check")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_check, v != 0); MLOG("[flag] tex_slots_check = %d verified=%llu hits=%llu", v != 0, (unsigned long long)atomic_load(&g_tex_slots_verified), (unsigned long long)atomic_load(&g_tex_slots_hits)); return; }
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
+    if (!strcmp(name, "gpu_trace")) { gpu_trace_set(v); MLOG("[flag] gpu_trace = %d (pipeline binds recorded for GPU failure reports)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "skipvc")) { atomic_store(&g_skipvc_any, v); MLOG("[flag] skipvc = %d", v); return; }
