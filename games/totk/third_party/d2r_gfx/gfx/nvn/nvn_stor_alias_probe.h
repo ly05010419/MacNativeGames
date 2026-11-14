@@ -30,8 +30,102 @@ static void alias_probe_read(tex_t *t, id<MTLBuffer> rb, float red) {
     for (NSUInteger i = 0; i < w * h; i++) if (memcmp(p + i * 4, e, 4))
         MDIE("alias probe: disjoint neighbour corrupted %lux%lu at texel %lu: %u,%u,%u,%u, cleared to %u,64,128,255", (unsigned long)w, (unsigned long)h, (unsigned long)i, p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3], e[0]);
 }
+static int alias_probe_is_window(id<MTLTexture> texture, uint64_t *pool_generation) {
+    @autoreleasepool {
+        while (texture.parentTexture) texture = texture.parentTexture;
+        NvAliasTrack *track = objc_getAssociatedObject(texture, &g_alias_track_key);
+        if (pool_generation) *pool_generation = track ? track->h->window_key.pool_generation : 0;
+        return track && track->h->window;
+    }
+}
+/* Mode 3 tests use real host pool registrations. Fixed windows must not grow with each new layout, cross a pool
+   boundary, inherit a finalized registration's heap, or turn an ambiguous lookup into an allocator identity. */
+static int alias_probe_windows(void) {
+    int checked = 0;
+    const size_t page = (size_t)getpagesize(), tail = 128u << 10;
+    const size_t span = 2 * STOR_ALIAS_WINDOW_BYTES + tail;
+    void *mem = NULL; if (posix_memalign(&mem, page, span)) MDIE("window alias probe memory");
+    memset(mem, 0, span); mtl_pool_add(mem, span);
+    uint64_t heaps0 = g_alias_heaps_live, made0 = g_alias_heaps_made, freed0 = g_alias_heaps_freed;
+    id<MTLBuffer> rb = probe_buf(512 * 512 * 4);
+    const uint32_t sides[] = {256, 256, 256, 256, 512, 128, 256, 256};
+    tex_t t[8] = {{0}}; id<MTLTexture> mt[8] = {nil};
+    for (int i = 0; i < 8; i++) {
+        t[i].serial = UINT64_C(0xfffd5300) + (uint64_t)i;
+        t[i].d = (nvn_texdesc){.width=sides[i],.height=sides[i],.depth=1,.levels=1,.target=1,.format=0x25,
+                              .swizzle_r=2,.swizzle_g=3,.swizzle_b=4,.swizzle_a=5};
+        nvn_tex_layout(&t[i].d, &t[i].L);
+    }
+    uint64_t q = t[0].L.size;
+    t[0].mem = mem; t[1].mem = (uint8_t *)mem + q;
+    t[2].mem = (uint8_t *)mem + STOR_ALIAS_WINDOW_BYTES - q / 2;
+    t[3].mem = (uint8_t *)mem + STOR_ALIAS_WINDOW_BYTES;
+    t[4].mem = mem; t[5].mem = (uint8_t *)mem + 2 * STOR_ALIAS_WINDOW_BYTES;
+    t[6].mem = (uint8_t *)((uintptr_t)mem + span + page);   // no registered range, never read on the CPU
+    t[7].mem = (uint8_t *)mem + 1;   // cannot place at Metal's alignment; exact fallback stays available
+    mt[0] = alias_probe_clear_read(&t[0], rb, 1.0f/8.0f, 0);
+    mt[1] = alias_probe_clear_read(&t[1], rb, 2.0f/8.0f, 0);
+    if (!alias_probe_is_window(mt[0], NULL) || alias_probe_heap(mt[0]) != alias_probe_heap(mt[1])) MDIE("window alias probe: disjoint textures did not share their window");
+    if (alias_probe_heap(mt[0]).size != STOR_ALIAS_WINDOW_BYTES || alias_probe_offset(mt[1]) != q) MDIE("window alias probe: wrong immutable span or guest-relative offset");
+    checked += 2;
+    alias_probe_read(&t[0], rb, 1.0f/8.0f); checked++;
+    tex_t same = t[0]; same.serial = UINT64_C(0xfffd5380);
+    alias_probe_read(&same, rb, 1.0f/8.0f); checked++;
+    mt[2] = alias_probe_clear_read(&t[2], rb, 3.0f/8.0f, 0);
+    mt[3] = alias_probe_clear_read(&t[3], rb, 4.0f/8.0f, 0);
+    if (alias_probe_is_window(mt[2], NULL) || !alias_probe_is_window(mt[3], NULL) || alias_probe_heap(mt[3]) == alias_probe_heap(mt[0])) MDIE("window alias probe: boundary fallback or next window incorrect");
+    checked++;
+    mt[4] = alias_probe_clear_read(&t[4], rb, 5.0f/8.0f, 0);
+    if (alias_probe_heap(mt[4]) != alias_probe_heap(mt[0]) || alias_probe_heap(mt[4]).size != STOR_ALIAS_WINDOW_BYTES) MDIE("window alias probe: a larger layout grew the window");
+    checked++;
+    mt[5] = alias_probe_clear_read(&t[5], rb, 6.0f/8.0f, 0);
+    if (!alias_probe_is_window(mt[5], NULL) || alias_probe_heap(mt[5]).size != tail) MDIE("window alias probe: final window was not clipped to the pool");
+    checked++;
+    mt[6] = alias_probe_clear_read(&t[6], rb, 7.0f/8.0f, 0);
+    mt[7] = alias_probe_clear_read(&t[7], rb, 1.0f/8.0f, 0);
+    if (alias_probe_is_window(mt[6], NULL) || alias_probe_is_window(mt[7], NULL)) MDIE("window alias probe: unknown range or misalignment used a window");
+    checked += 2;
+    tex_t too_small = t[0]; too_small.mem = (uint8_t *)mem + (STOR_ALIAS_WINDOW_BYTES / 2); too_small.L.size = 1;
+    id<MTLTexture> nonfitting = stor_alias_texture(&too_small, tex_desc(&too_small, 0));
+    if (!nonfitting || alias_probe_is_window(nonfitting, NULL)) MDIE("window alias probe: nonfitting layout used a window");
+    defer_obj_release(nonfitting); nonfitting = nil; checked++;
+    stor_alias_pool found;
+    pthread_mutex_lock(&g_mu); int locked = stor_alias_pool_range((uintptr_t)mem, q, &found); pthread_mutex_unlock(&g_mu);
+    if (locked || stor_alias_pool_range(UINT64_MAX - 8, 32, &found)) MDIE("window alias probe: recursive lock or overflow accepted");
+    checked += 2;
+    // A second overlapping registration makes the pool identity ambiguous; no blocking or guessed owner is allowed.
+    mtl_pool_add((uint8_t *)mem + page, span - page);
+    if (stor_alias_pool_range((uintptr_t)mem + 2 * page, q, &found)) MDIE("window alias probe: overlapping pools accepted");
+    tex_t ambiguous = t[0]; ambiguous.mem = (uint8_t *)mem + 2 * page;
+    id<MTLTexture> overlap = stor_alias_texture(&ambiguous, tex_desc(&ambiguous, 0));
+    if (!overlap || alias_probe_is_window(overlap, NULL)) MDIE("window alias probe: ambiguous range did not fall back");
+    defer_obj_release(overlap); overlap = nil; checked += 2;
+    mtl_pool_del((uint8_t *)mem + page);
+    uint64_t old_generation = 0; alias_probe_is_window(mt[0], &old_generation);
+    id<MTLHeap> old_heap = alias_probe_heap(mt[0]);
+    mtl_pool_del(mem); mtl_pool_add(mem, span);
+    tex_t fresh = t[0]; fresh.serial = UINT64_C(0xfffd5381);
+    id<MTLTexture> fresh_mt = alias_probe_clear_read(&fresh, rb, 3.0f/8.0f, 0);
+    uint64_t new_generation = 0;
+    if (!alias_probe_is_window(fresh_mt, &new_generation) || !new_generation || new_generation == old_generation || alias_probe_heap(fresh_mt) == old_heap)
+        MDIE("window alias probe: reused pool inherited the previous registration's heap");
+    checked++;
+    old_heap = nil; fresh_mt = nil; mtl_tex_release(&fresh); mtl_tex_release(&same);
+    for (int i = 0; i < 8; i++) { mt[i] = nil; mtl_tex_release(&t[i]); }
+    mtl_pool_del(mem);
+    // t[6] deliberately lies outside the registered pool; retire its storage explicitly too.
+    stor_drop_range((uintptr_t)t[6].mem, (uintptr_t)t[6].mem + t[6].L.size);
+    op_hdr end = {OP_END, 8};
+    for (int i = 0; i < 4; i++) { mtl_sub_begin(); mtl_exec((const uint8_t *)&end); mtl_sub_commit(); mtl_finish(); defer_drain(); }
+    stor_alias_collect();
+    if (g_alias_heaps_live != heaps0 || g_alias_heaps_freed - freed0 != g_alias_heaps_made - made0) MDIE("window alias probe: heaps survived final pool/texture retirement");
+    checked++;
+    MLOG("window alias probe: %d checks, %llu heaps made and freed", checked, (unsigned long long)(g_alias_heaps_made - made0));
+    res_remove(rb); free(mem); return checked;
+}
 int mtl_probe_stor_alias(void) {
-    mtl_init(); int checked = 0;
+    mtl_init(); if (stor_alias_mode() == 3) return alias_probe_windows();
+    int checked = 0;
     const size_t page = (size_t)getpagesize(), span = 4u << 20;
     void *mem = NULL; if (posix_memalign(&mem, page, span)) MDIE("alias probe memory"); memset(mem, 0, span);
     const uint32_t sides[] = {512, 384, 448, 256, 640}, formats[] = {0x25, 0x25, 0x25, 0x25, 0x25};

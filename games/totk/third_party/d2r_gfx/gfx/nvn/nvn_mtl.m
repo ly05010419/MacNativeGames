@@ -791,6 +791,7 @@ static int pool_query_on(void) {
 }
 static NSMutableArray *g_keep;                  // 持有缓冲引用（pidx_ent 里是不持有的指针） | Holds the buffer references (pidx_ent has non-owning pointers)
 static uint64_t g_pool_adds;
+static char g_pool_registration_key;   // monotonically assigned host registration ID, including virtual remaps
 
 #define C1_BANK_SIZE (4u << 20)
 #define C1_DECL_SIZE (64u << 10)
@@ -1158,6 +1159,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (!pidx_insert(&g_pools, &ent)) MDIE("内存池表扩容失败（%d 个）", g_pools.n);
     pidx_query_invalidate(&g_pool_queries); atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);
     g_pool_adds++; g_pool_bytes += hi - lo;
+    objc_setAssociatedObject(buf, &g_pool_registration_key,
+        [[NSNumber alloc] initWithUnsignedLongLong:g_pool_adds], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
 }
@@ -3466,6 +3469,25 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
     if (!serial || to - from >= SER_CHG_N) return 0;
     for (uint64_t g = from + 1; g <= to; g++) { uint64_t s = atomic_load_explicit(&g_ser_chg[g % SER_CHG_N], memory_order_relaxed); if (!s || s == serial) return 0; }
     return atomic_load_explicit(&g_ser_gen, memory_order_acquire) - from < SER_CHG_N;   // no slot was overwritten while scanning
+}
+/* Pool identity for immutable alias windows. Never block on g_mu: texture preparation can hold storage/registry
+   locks, and pool residency can acquire the alias mutex. Reject ambiguous overlapping registrations as well. */
+typedef struct { uint64_t base, size, generation; } stor_alias_pool;
+static int stor_alias_pool_range(uint64_t address, uint64_t length, stor_alias_pool *out) {
+    if (!address || !length || length > UINT64_MAX - address || pthread_mutex_trylock(&g_mu)) return 0;
+    const pidx_ent *p = pidx_find(&g_pools, (uintptr_t)address, length);
+    int valid = 0;
+    if (p) {
+        int index = (int)(p - g_pools.e);
+        int overlaps = (index > 0 && g_pools.maxhi[index - 1] > p->lo) ||
+                       (index + 1 < g_pools.n && g_pools.e[index + 1].lo < p->hi);
+        uint64_t generation = [objc_getAssociatedObject((__bridge id)p->buf, &g_pool_registration_key) unsignedLongLongValue];
+        if (!overlaps && p->hi > p->lo && generation) {
+            *out = (stor_alias_pool){p->lo, p->hi - p->lo, generation}; valid = 1;
+        }
+    }
+    pthread_mutex_unlock(&g_mu);
+    return valid;
 }
 #include "nvn_stor_alias.h"   // OOT: layouts at one pool address share physical pages (placement heap)
 // ---------- TOTK: storage-shared GPU textures ----------
