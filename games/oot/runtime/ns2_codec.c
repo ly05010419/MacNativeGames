@@ -16,6 +16,7 @@
    decoder's event lives in its type at +0x100. Not served: encrypted input, native image handles (the GPU route). */
 #include "runtime.h"
 #include "hle_movie_av1.h"
+#include "ns2_movie_clock.h"
 #include "thread_compat.h"
 #include <pthread.h>
 #include <stdbool.h>
@@ -23,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <CommonCrypto/CommonDigest.h>
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
@@ -99,6 +101,14 @@ typedef struct {
     vpx_image_t *held[CV_HOLD]; int64_t held_ts[CV_HOLD]; uint8_t held_eos[CV_HOLD]; int nheld;
     int eos_pending;
     int opening_packet_seen,opening_ready;uint64_t opening_token,opening_picture_start;
+    uint64_t trace_at;
+    Ns2MovieClock clock;
+    uint64_t dropped;
+    int64_t decoded_pts;
+    uint64_t picture_step;
+    int have_decoded_pts;
+    vpx_image_t *last_skipped;
+    int64_t last_skipped_ts;
 } cv_dec;
 static const char *const k_name[] = {"VP8", "VP9", "AV1"};
 
@@ -168,15 +178,43 @@ static void spt_fire(cv_dec *d, uint32_t i) {   /* buffer i of d filled: signal 
 }
 static void spt_unarm(void *e) { pthread_mutex_lock(&g_spt_mu); for (int k = 0; k < 64; k++) if (g_spt[k] == e) g_spt[k] = NULL; pthread_mutex_unlock(&g_spt_mu); SPT(e)->armed = 0; }
 
+static int movie_sync(void);
+static void pop_held(cv_dec *d) {
+    memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD - 1));
+    memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD - 1));
+    memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1);
+    d->nheld--;
+}
+
 /* Pictures and end of stream into the released buffers, in order (decoder lock held). */
 static void drain(cv_dec *d) {
+    /* OoT registers one output picture, so there may be no newer ready buffer
+       for Acquire to choose. Discard late decoded pictures BEFORE publishing
+       that single buffer; input-ready stays signalled and the decoder can
+       consume all reference packets until it reaches the current movie time. */
+    if (d->codec == CV_AV1 && d->clock.started && movie_sync()) {
+        int64_t target = ns2_movie_clock_target(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+        uint64_t step = d->picture_step ? d->picture_step : 16666667;
+        while (d->nheld && !d->held_eos[0] && d->held_ts[0] < target &&
+               (uint64_t)target - (uint64_t)d->held_ts[0] > step) {
+            if (d->last_skipped) vpx_img_free(d->last_skipped);
+            d->last_skipped = d->held[0]; d->last_skipped_ts = d->held_ts[0];
+            pop_held(d); d->dropped++;
+        }
+    }
+    /* EOF can arrive in a separate, empty packet. Retain at most one skipped
+       picture until then, so even a late last frame precedes the EOS marker. */
+    if (d->eos_pending && !d->nheld && d->last_skipped) {
+        d->held[0] = d->last_skipped; d->held_ts[0] = d->last_skipped_ts;
+        d->held_eos[0] = 0; d->nheld = 1; d->last_skipped = NULL; d->dropped--;
+    }
     while (d->pcount && (d->nheld || d->eos_pending)) {
         uint32_t i = d->pend[d->phead]; d->phead = (d->phead + 1) % CV_BUFS; d->pcount--;
         cv_buf *b = &d->buf[i];
         if (d->nheld) {
+            if (d->last_skipped) { vpx_img_free(d->last_skipped); d->last_skipped = NULL; }
             vpx_image_t *im = d->held[0]; int64_t ts = d->held_ts[0]; uint8_t eos = d->held_eos[0];
-            memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD - 1)); memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD - 1));
-            memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1); d->nheld--;
+            pop_held(d);
             b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos;
             if (b->pool && b->pidx < b->pool->count) { if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
             if (!d->pictures++) LOG("%s decoder %u: first picture %ux%u into buffer %u", k_name[d->codec], d->id, b->w, b->h, i);
@@ -259,6 +297,7 @@ static Result cv_dec_fin(void *t) {
     opening_end(d);
     if (d->av1) mav1_free(d->av1); else if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
+    if (d->last_skipped) vpx_img_free(d->last_skipped);
     d->magic = 0;
     /* The submission-ready event goes with the decoder, as in the SDK: kept, it stayed bound, and the next decoder made in the
        same (cleared) memory found it "bound" and got none; nn::os aborted on it (nxnative, Bananza's second movie). */
@@ -292,6 +331,9 @@ static Result cv_dec_reset(void *t) {   /* Stop / Flush: undelivered pictures an
     cv_dec *d = cv_of(t); if (!d) return 0;
     pthread_mutex_lock(&d->mu);
     opening_end(d);d->opening_packet_seen=0;
+    d->clock = (Ns2MovieClock){0}; d->dropped = 0; d->trace_at = 0;
+    d->picture_step = 0; d->have_decoded_pts = 0;
+    if (d->last_skipped) { vpx_img_free(d->last_skipped); d->last_skipped = NULL; }
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
     d->nheld = 0; d->eos_pending = 0;
     cv_open(d);
@@ -302,6 +344,9 @@ static Result cv_dec_reset(void *t) {   /* Stop / Flush: undelivered pictures an
 static Result cv_dec_event(void **out, void *t) { cv_dec *d = cv_of(t); *out = d ? d->event : NULL; return d ? 0 : CV_R(2004); }
 static int cv_hold(cv_dec *d, vpx_image_t *c, int64_t ts) {
     if (d->nheld >= CV_HOLD) { static int n; if (n++ < 4) LOG("[RED] %s: a packet gave more pictures than the host holds: one dropped", k_name[d->codec]); vpx_img_free(c); return 0; }
+    if (d->have_decoded_pts && ts > d->decoded_pts && (uint64_t)ts - (uint64_t)d->decoded_pts <= 1000000000ull)
+        d->picture_step = (uint64_t)ts - (uint64_t)d->decoded_pts;
+    d->decoded_pts = ts; d->have_decoded_pts = 1;
     d->held[d->nheld] = c; d->held_ts[d->nheld] = ts; d->held_eos[d->nheld] = 0; d->nheld++; return 1;
 }
 static vpx_image_t *av1_i420(const mav1_picture *p) {
@@ -333,9 +378,47 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
     pthread_mutex_unlock(&d->mu);
     return 0;
 }
+static int movie_sync(void) {
+    const char *e = getenv("OOT_MOVIE_SYNC");
+    return !e || strcmp(e, "0");
+}
+
+/* A 60 Hz movie cannot consume one picture per rendered frame at 30 Hz: its
+   sound advances normally while the FIFO falls farther behind every second.
+   Keep decoding every packet (AV1 references need them), but recycle an old
+   unacquired picture when a newer, already decoded picture is due. Buffers
+   already acquired by the client and the last picture before EOS stay owned
+   by the client exactly as before. Release's generation/queue/event protocol
+   is also used here so the producer can immediately refill the skipped slots. */
+static void skip_late_pictures(cv_dec *d) {
+    if (d->codec != CV_AV1 || !d->clock.started || !movie_sync()) return;
+    int64_t target = ns2_movie_clock_target(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+    for (unsigned n = 0; n < CV_BUFS + CV_HOLD && d->fcount; n++) {
+        uint32_t i = d->fifo[d->fhead]; cv_buf *b = &d->buf[i];
+        if (!b->filled || b->eos) break;
+        int64_t newer_ts;
+        if (d->fcount > 1) {
+            cv_buf *newer = &d->buf[d->fifo[(d->fhead + 1) % 8]];
+            if (!newer->filled || newer->eos) break;
+            newer_ts = newer->ts;
+        } else {
+            if (!d->nheld) break;
+            newer_ts = d->held_ts[0];
+        }
+        if (newer_ts <= b->ts || newer_ts > target) break;
+        d->fhead = (d->fhead + 1) % 8; d->fcount--;
+        b->gen++; b->filled = 0;
+        d->pend[(d->phead + d->pcount) % CV_BUFS] = i; d->pcount++;
+        d->fifo[(d->fhead + d->fcount) % 8] = i; d->fcount++;
+        d->dropped++;
+        drain(d);
+    }
+}
+
 static Result cv_dec_acq(uint32_t *idx, cv_sync *sync, void *t) {
     cv_dec *d = cv_of(t); if (!d) return CV_R(2004);
     pthread_mutex_lock(&d->mu);
+    skip_late_pictures(d);
     if (!d->fcount) { pthread_mutex_unlock(&d->mu); return CV_NONE; }
     uint32_t i = d->fifo[d->fhead]; d->fhead = (d->fhead + 1) % 8; d->fcount--;
     *idx = i; *sync = (cv_sync){CV_SYNC, d->id, i, d->buf[i].gen};
@@ -356,6 +439,17 @@ static Result cv_dec_props(uint16_t *w, uint16_t *h, uint16_t *cw, uint16_t *ch,
     pthread_mutex_lock(&d->mu);
     int ok = d->buf[i].filled;
     if (ok) { *w = *cw = d->buf[i].w; *h = *ch = d->buf[i].h; *ts = d->buf[i].ts; *eos = d->buf[i].eos != 0; }
+    if (ok && !*eos) ns2_movie_clock_start(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), *ts);
+    if (ok && getenv("OOT_MOVIE_TRACE")) {
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        if (!d->trace_at || now - d->trace_at >= 1000000000ull) {
+            LOG("[movie-trace] decoder=%u now_ns=%llu pts=%lld pictures=%llu dropped=%llu fifo=%u pending=%u held=%d submits=%llu", d->id,
+                (unsigned long long)now, (long long)*ts, (unsigned long long)d->pictures,
+                (unsigned long long)d->dropped, d->fcount, d->pcount, d->nheld,
+                (unsigned long long)d->submits);
+            d->trace_at = now;
+        }
+    }
     pthread_mutex_unlock(&d->mu);
     return ok ? 0 : CV_NONE;
 }

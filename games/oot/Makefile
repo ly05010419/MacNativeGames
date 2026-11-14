@@ -50,6 +50,14 @@ $(OUT)/gmem-index: tests/gmem_index.c third_party/d2r_gfx/gfx/nvn/nvn_gmem_index
 probe-gmem-index: $(OUT)/gmem-index
 	"$(OUT)/gmem-index"
 
+$(OUT)/ns2-movie-queue: tests/ns2_movie_queue.c runtime/ns2_codec.c runtime/ns2_movie_clock.h runtime/runtime.h runtime/thread_compat.h
+	@mkdir -p "$(OUT)"
+	xcrun clang -std=gnu11 -O1 -g -Wall -Wextra -Werror -Wno-unused-function -Wno-deprecated-declarations -fsanitize=address,undefined -fno-sanitize-recover=all -DGAME_OOT=1 -DGAME_NS2=1 -Ithird_party/d2r_gfx/gfx/nvn/include -I$(VPX_PREFIX)/include tests/ns2_movie_queue.c $(VPX_PREFIX)/lib/libvpx.a -o "$@"
+.PHONY: probe-movie-queue
+probe-movie-queue: $(OUT)/ns2-movie-queue
+	"$(OUT)/ns2-movie-queue"
+	"$(OUT)/ns2-movie-queue" off
+
 $(OUT)/timeline-owner: tests/timeline_owner.c third_party/d2r_gfx/gfx/nvn/totk_timeline.c third_party/d2r_gfx/gfx/nvn/totk_timeline.h
 	@mkdir -p "$(OUT)"
 	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror tests/timeline_owner.c third_party/d2r_gfx/gfx/nvn/totk_timeline.c -o "$@"

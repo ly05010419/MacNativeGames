@@ -401,7 +401,7 @@ static int near(float a, float b) { return fabsf(a - b) <= 1e-4f; }
 /* Full positional tables, including unused records whose metadata id is zero.
  * Actual wire parsing must preserve both active voices and their matrices,
  * update gain on the next request, and release only the specified slot. */
-static int probe_positional_voice_tables(unsigned revision) {
+static int probe_positional_voice_tables(unsigned revision, int shuffled) {
     AudrenParameter p={.sample_rate=48000,.sample_count=240,.mix_buffer_count=2,.voice_count=3,.sink_count=1,.revision=REV(revision)};
     AudioRenderer *r=renderer_new(&p);audio_mixer_open(r);
     float pcm[2][720];for(unsigned i=0;i<720;i++){pcm[0][i]=0.25f;pcm[1][i]=0.125f;}
@@ -415,9 +415,10 @@ static int probe_positional_voice_tables(unsigned revision) {
         AudrenChannelIn channels[3]={{.id=0,.mix={gain,0},.in_use=1},{.id=1,.mix={0,gain},.in_use=block<2},{.id=0,.in_use=0}};
         memcpy(at,channels,sizeof channels);at+=sizeof channels;
         for(unsigned i=0;i<3;i++) {
-            unsigned active=i<2 && !(block==2&&i==1);
-            AudrenVoiceIn voice={.id=active?i:0,.is_new=!block,.in_use=active,.play_state=PLAY_STARTED,.sample_format=FMT_PCMF32,.sample_rate=48000,.channel_count=1,.pitch=1,.volume=1,.mix_id=0,.splitter_id=0xffffffff,.channel_ids={i}};
-            voice.wave_buffers[0]=(AudrenWaveBuffer){.address=(uintptr_t)pcm[i<2?i:0],.size=sizeof pcm[0],.end=720,.sent=block!=0};
+            unsigned id = shuffled && block == 1 && i < 2 ? 1 - i : i;
+            unsigned active=id<2 && !(block==2&&id==1);
+            AudrenVoiceIn voice={.id=active?id:0,.is_new=!block,.in_use=active,.play_state=PLAY_STARTED,.sample_format=FMT_PCMF32,.sample_rate=48000,.channel_count=1,.pitch=1,.volume=1,.mix_id=0,.splitter_id=0xffffffff,.channel_ids={id}};
+            voice.wave_buffers[0]=(AudrenWaveBuffer){.address=(uintptr_t)pcm[id<2?id:0],.size=sizeof pcm[0],.end=720,.sent=block!=0};
             for(unsigned j=1;j<4;j++)voice.wave_buffers[j].sent=1;
             AudrenVoiceInV2 wire={0};memcpy(wire.prefix,&voice,sizeof wire.prefix);memcpy(wire.tail,(uint8_t *)&voice+0x3c,sizeof wire.tail);
             memcpy(at,&wire,sizeof wire);at+=sizeof wire;
@@ -555,7 +556,7 @@ void runtime_audio_probe(void) {
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
-    int checked = probe_rev15() + probe_positional_voice_tables(15) + probe_positional_voice_tables(16);
+    int checked = probe_rev15() + probe_positional_voice_tables(15,0) + probe_positional_voice_tables(15,1) + probe_positional_voice_tables(16,0) + probe_positional_voice_tables(16,1);
 #ifdef GAME_NS2
     { int runtime_ns2_input_stream_probe(void); checked += runtime_ns2_input_stream_probe(); }
 #endif
