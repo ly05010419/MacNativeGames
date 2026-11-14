@@ -1,0 +1,23 @@
+{
+  "title_id": "010048900CF64000",
+  "version": "1.0.0",
+  "package": "v0",
+  "identity_basis": "pinned NSO build IDs, NPDM and extracted-file SHA-256",
+  "modules": {
+    "main": {
+      "size": 17684964,
+      "sha256": "a1014e99c8f0842d53c721ace11cf8913740bea9f98fd085020c10de3103ec7a",
+      "build_id": "bafcd7d04e010b4693a580ec7f0e0422"
+    },
+    "subsdk0": {
+      "size": 3564776,
+      "sha256": "b2584d1dac59a92f60cb8e4fd852b554f11650ed468f5dc1c82aba98e33c9abd",
+      "build_id": "b2bfdeddd143de2d821031fe668d097b"
+    },
+    "sdk": {
+      "size": 5231344,
+      "sha256": "d58f76a49d32c1a8192befc8cd6341e45d802eade3a474f7117a842232446d7e",
+      "build_id": "e29be8ad6778527aa248310d0c71a8a5"
+    }
+  }
+}
