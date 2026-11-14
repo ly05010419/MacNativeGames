@@ -11051,12 +11051,42 @@ static int par_row_have(const pso_skey *sk, int vborder, int fz, NSString *varia
     pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key]; pthread_mutex_unlock(&g_par_mu);
     return have && !g_par_recheck;   // packaging makes it against the archive (g_par_recheck)
 }
+/* The archive-fill hit test is shared by preload planning and execution. Invalid rows remain for fill_row to
+   handle as before; a hit never needs its shaders. This uses the same keys as the existing R / C / B / T fill. */
+static int fill_row_have(NSArray<NSString *> *c) {
+    if (g_par_recheck || c.count < 2) return 0;
+    if ([c[0] isEqualToString:@"C"] && c[1].length) {
+        const char *ck = c[1].UTF8String;
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
+        return have;
+    }
+    pso_skey sk;
+    if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) return 0;
+    if ([c[0] isEqualToString:@"R"]) {
+        memset(&sk.fz_desc, 0, sizeof sk.fz_desc);
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&sk, sizeof sk)]; pthread_mutex_unlock(&g_par_mu);
+        return have;
+    }
+    if (sk.merged) return 0;
+    if ([c[0] isEqualToString:@"B"] && c.count >= 4)
+        return par_row_have(&sk, ![c[2] isEqualToString:@"-"], ![c[3] isEqualToString:@"-"], [NSString stringWithFormat:@"B:%@\t%@", c[2], c[3]]);
+    if ([c[0] isEqualToString:@"T"] && c.count >= 3)
+        return par_row_have(&sk, 0, 1, [@"T:" stringByAppendingString:c[2]]);
+    return 0;
+}
+static NSArray<NSString *> *fill_rows_to_load(NSArray<NSString *> *rows) {
+    /* Packaging rechecks and runs without a valid archive retain the original preload behavior. */
+    if (!g_par_on || !g_par_valid || g_par_recheck) return rows;
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    for (NSString *line in rows) if (!fill_row_have([line componentsSeparatedByString:@"\t"])) [missing addObject:line];
+    return missing;
+}
 /* A B row (pso_adopt): the pipeline with its border variants, built from the recipe instead of bound samplers.
    keep 0 (warm_fill_archive): built into the pipeline archive and dropped; 2 when the archive has it already. */
 static int warm_border(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict, int keep) {
     pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.merged || sk.fz) return 0;
     NSString *variant = [NSString stringWithFormat:@"B:%@\t%@", c[2], c[3]];
-    if (!keep && par_row_have(&sk, ![c[2] isEqualToString:@"-"], ![c[3] isEqualToString:@"-"], variant)) return 2;
+    if (!keep && fill_row_have(c)) return 2;
     NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
     NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
     int hv = ![c[2] isEqualToString:@"-"], hf = ![c[3] isEqualToString:@"-"];
@@ -11084,7 +11114,7 @@ static int warm_border(NSArray<NSString *> *c, NSMutableDictionary<NSString *, N
 static int warm_tileread(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict, int keep) {
     pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.merged || sk.fz) return 0;
     NSString *variant = [@"T:" stringByAppendingString:c[2]];
-    if (!keep && par_row_have(&sk, 0, 1, variant)) return 2;
+    if (!keep && fill_row_have(c)) return 2;
     NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
     NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
     if (!vs || !fs) return 0;
@@ -11378,11 +11408,7 @@ static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *>
     id ps = nil;
     if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
         pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) return;
-        /* already in the archive: nothing to make (the key pso_archive_key gives a warm-built one: no fragment
-           state description); a start then reads the list without loading a shader */
-        pso_skey ak = sk; memset(&ak.fz_desc, 0, sizeof ak.fz_desc);
-        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&ak, sizeof ak)]; pthread_mutex_unlock(&g_par_mu);
-        if (have && !g_par_recheck) { atomic_fetch_add(&fc->nhave, 1); return; }   // packaging makes it against the archive
+        if (fill_row_have(c)) { atomic_fetch_add(&fc->nhave, 1); return; }
         NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
         NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
         if (!vs || (fkey.length && !fs)) { atomic_fetch_add(&fc->nfail, 1); return; }
@@ -11390,9 +11416,7 @@ static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *>
         NSError *er = nil; ps = pso_new(pso_desc(&k, vs, fs, nil, sk.merged), pso_archive_key(&k, vs, fs, sk.merged, nil), &er);
         if (ps) atomic_fetch_add(&fc->nr, 1);
     } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
-        const char *ck = c[1].UTF8String;
-        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
-        if (have && !g_par_recheck) { atomic_fetch_add(&fc->nhave, 1); return; }
+        if (fill_row_have(c)) { atomic_fetch_add(&fc->nhave, 1); return; }
         NvShader *cs = warm_shader(dict, c[1], 5); if (!cs) { atomic_fetch_add(&fc->nfail, 1); return; }
         NSError *er = nil; ps = cs_new(cs, &er);
         if (ps) atomic_fetch_add(&fc->nc, 1);
@@ -11438,7 +11462,8 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         for (NSUInteger at = 0; at < rows; at += WARM_BLOCK) @autoreleasepool {
             NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, rows - at))];
             if (workers > 1) {
-                warm_load_rows(block, dict);
+                /* Archive hits still pass through fill_row for counters; only misses need shader preloads. */
+                warm_load_rows(fill_rows_to_load(block), dict);
                 __block _Atomic size_t next = 0;
                 dispatch_apply(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) { (void)w;
                     int owip = par_write_in_place; par_write_in_place = 1;   // dispatch_apply may run a share on the calling thread
@@ -24539,8 +24564,9 @@ int mtl_probe_pipeline_archive(void) {
     unsetenv("TOTK_SHADER_SEED_DIR"); atomic_store(&g_par_pre_hit, 0); atomic_store(&g_par_pre_miss, 0);
     int identity_checks = par_probe_identity_lock();
     int mesh_checks = par_probe_mesh();
+    int fill_checks = par_probe_fill_preload();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks + mesh_checks;
+    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + identity_checks + mesh_checks + fill_checks;
 }
 
 /* seed-shaders <corpus> (loader.c; docs/ns2-port.md): every shader a Switch 2 game ships, as
