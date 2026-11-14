@@ -363,6 +363,39 @@ void botw_ashot_poll(const void *t, long cur);   /* OOT (2026-11-09): "ashot" / 
 #define BOTW_PKG_RENDER_ALIAS(pk, t)
 #define BOTW_ATTACH_TEX_U(t) tex_mtl(t)
 #endif
+/* Sharp UI art (ui_pack.h, included at the end of nvn_mtl.m): a texture pack's larger copy of a UI texture is the sampling
+   base of the texture-pool slots that view it whole (tex_by_id); harvest mode writes the UI textures into a folder. On
+   for a Mac build of a Switch 1 game (Switch 2 games and iOS: off); -DMNG_UI_PACK=0 turns it off. g_ui_pack: -1 not yet
+   set up (the first upload does it), 0 off. */
+#ifndef MNG_UI_PACK
+#include <TargetConditionals.h>
+#if !defined(GAME_NS2) && !TARGET_OS_IPHONE
+#define MNG_UI_PACK 1
+#else
+#define MNG_UI_PACK 0
+#endif
+#endif
+#if MNG_UI_PACK
+extern int g_ui_pack;
+void ui_pack_uploaded(void *pk, const tex_t *t);
+void *ui_pack_pick(void *rp, void *base);
+void ui_pack_harvest(const char *fs_key, const tex_t *t);
+#define UI_PACK_PKG_FIELDS id tp_rep; uint8_t *tp_px; uint32_t tp_pw, tp_ph; uint64_t tp_ser, tp_hash, tp_gen, tp_pgen, tp_hv; int tp_cls;
+#define UI_PACK_UPLOADED(pk, t) if (g_ui_pack) ui_pack_uploaded((__bridge void *)(pk), (t));
+#define UI_PACK_BASE(rp, b) if (g_ui_pack > 0) (b) = (__bridge id<MTLTexture>)ui_pack_pick((rp), (__bridge void *)(b));
+#define UI_PACK_VIEW(rp, r, b) if (g_ui_pack > 0) { void *tp_ = ui_pack_pick((rp), (__bridge void *)(b)); if (tp_ != (__bridge void *)(b)) { (b) = (__bridge id<MTLTexture>)tp_; (r).v.set_format = 0; } }
+#define UI_PACK_HARVEST(t, fs, tt) if ((t) && g_ui_pack > 0) ui_pack_harvest((fs), (tt));
+#define UI_PACK_OWNED(pk) if (g_ui_pack > 0 && (pk)->tp_rep) ser_bump_locked((pk)->tp_ser);
+#define UI_PACK_FREE() if (tp_rep) res_remove(tp_rep); free(tp_px);
+#else
+#define UI_PACK_PKG_FIELDS
+#define UI_PACK_UPLOADED(pk, t)
+#define UI_PACK_BASE(rp, b)
+#define UI_PACK_VIEW(rp, r, b)
+#define UI_PACK_HARVEST(t, fs, tt)
+#define UI_PACK_OWNED(pk)
+#define UI_PACK_FREE()
+#endif
 /* Key 5 (MetalFX temporal anti-aliasing, totk_taa.m): the compose draw that samples the linear HDR scene at fragment
    texture slot 0 before tone mapping. TOTK: 0ac9a549 (tone mapping and bloom). Breath of the Wild 1.9.0: f7ee6fe1 (two
    texel reads: the 1600x900 R11G11B10F scene at slot 0, the 320x180 bloom at slot 1; it writes the 1600x900 RGB10A2

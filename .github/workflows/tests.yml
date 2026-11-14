@@ -25,9 +25,11 @@ jobs:
         with:
           python-version: '3.14'
           cache: pip
-          cache-dependency-path: games/totk/requirements.txt
+          cache-dependency-path: |
+            games/totk/requirements.txt
+            tools/ui_pack/requirements.txt
       - name: Install build-tool test dependencies
-        run: python -m pip install -r games/totk/requirements.txt
+        run: python -m pip install -r games/totk/requirements.txt -r tools/ui_pack/requirements.txt
       - name: Run synthetic container, update and native path tests
         run: python .github/run_source_tests.py ${{ matrix.group }}
 
