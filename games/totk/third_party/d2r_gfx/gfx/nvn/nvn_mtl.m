@@ -7005,7 +7005,9 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
     // The argument buffer encoded last time
     arg_epoch_key ab_epoch; int ab_epoch_ok;
     tex_slot_cache tex_slots;
-    id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; const uint8_t *ab_cpu; uint64_t ab_arena;   // ab_cpu / ab_arena (TOTK_AB_SAME): the block's bytes and the arena epoch it was allocated in; ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
+    // NvArena owns this allocation through GPU completion and pending CPU reads.
+    // A shader caches an address, not ownership of its entire last arena (#2113).
+    __unsafe_unretained id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass; const uint8_t *ab_cpu; uint64_t ab_arena;
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; id<MTLFunction> no_depth_fn;
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen;
     NvBorderKeyCache *border_cache;   // registry lock
@@ -8727,6 +8729,10 @@ static NvArena *arena_new(size_t minimum) {
     a->gpu = a->buf.gpuAddress; a->cpu = (uint8_t *)a->buf.contents; res_add(a->buf); return a;
 }
 static uint64_t g_arena_epoch; // A cached GPU address is valid only for its submission.
+static int shader_ab_current(const NvShader *sh) {
+    // Check identity before touching the non-owning buffer or its CPU bytes.
+    return sh->ab_arena == g_arena_epoch && sh->ab_buf != nil;
+}
 void arena_begin(void) { g_arena_epoch++; if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; } g_cur_arena = nil; }
 /* OOT (2026-11-06): the free list only grew. Every block made while loading stayed for the whole session (25, 53 and
    87 blocks = 176, 400 and 672 MB in three runs of the same save, all made between frames 600 and 1200, none after),
@@ -13279,11 +13285,11 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         // key precedes resource lookup: later changes cannot validate old bytes.
         registry_lock(); epoch = arg_epoch_current(nvn_stage);
         if (shader_uses_pool(sh)) epoch.pool = arg_epoch_pool(sh);   // the pool tables and captured inputs this block would hold
-        if (g_arg_epoch_negative && sh->ab_buf) epoch.bindings = sh->ab_epoch.bindings;
-        epoch_hit = sh->ab_buf && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
+        if (g_arg_epoch_negative && shader_ab_current(sh)) epoch.bindings = sh->ab_epoch.bindings;
+        epoch_hit = shader_ab_current(sh) && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
         registry_unlock();
     }
-    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && shader_ab_current(sh) && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
         !((g_vr_collapse_draw || g_vr_ui_ray_draw) && nvn_stage == 0) &&   // Per-draw palette/HUD projection copies must be bound anew.
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
@@ -13594,7 +13600,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
        That block lives in this submission's arena, which nothing rewrites before the submission completes, so it is bound
        again instead of a copy: the GPU reads the same bytes, and the unchanged address lets the render encoder's
        argument-table cache skip the setAddress (and its encode-stage packet) for consecutive draws of the shader. */
-    if (sh->ab_cpu && sh->ab_arena == g_arena_epoch && !ab_noreuse && ab_same_on() && !memcmp(sh->ab_cpu, slots, arg_len)) {
+    if (shader_ab_current(sh) && sh->ab_cpu && !ab_noreuse && ab_same_on() && !memcmp(sh->ab_cpu, slots, arg_len)) {
         bind_args(en, nvn_stage, metal_vertex, sh->ab_buf, sh->ab_gpu, sh->ab_off, sh->rf.abi);
         sh->ab_pass = g_pass.serial; sh->ab_epoch = epoch; g_args_dirty[nvn_stage] = 0;
         g_stat_args_enc++; g_ab_same++;
