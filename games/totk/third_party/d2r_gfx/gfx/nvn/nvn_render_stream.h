@@ -37,8 +37,11 @@ enum {
    every OOT frame in this wait while the frame's packets keep arriving under 200 us apart). */
 static uint64_t rs_spin_ns(void) {
     static uint64_t v;
-#ifdef GAME_OOT
-    enum { RS_SPIN_DEFAULT_US = 20 };    /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6) */
+#if defined(GAME_OOT) || defined(GAME_BOTW)
+    /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6).
+       Breath of the Wild 1.9.0 (2026-11-14, M4 Max, Kakariko standing still, about 105 fps, no frame interpolation): B in
+       this wait 62% -> 51% of its samples, package CPU power about 10.7 -> 10.3 W (powermetrics), frame p50 9.5 -> 9.25 ms. */
+    enum { RS_SPIN_DEFAULT_US = 20 };
 #else
     enum { RS_SPIN_DEFAULT_US = 200 };
 #endif
