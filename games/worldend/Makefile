@@ -3,8 +3,8 @@ PYTHON ?= python3
 help:
 	@$(PYTHON) scripts/build_worldend.py --help
 build:
-	@test -n "$(INPUTS)" -a -n "$(KEYS)" -a -n "$(LIBHAC)" -a -n "$(WORK)" -a -n "$(OUTPUT)" || (echo 'Set INPUTS, KEYS, LIBHAC, WORK, OUTPUT; see README.md'; exit 1)
-	$(PYTHON) scripts/build_worldend.py "$(INPUTS)" --keys "$(KEYS)" --libhac-package "$(LIBHAC)" --work-dir "$(WORK)" --output "$(OUTPUT)" --language "$(or $(LANGUAGE),en-US)"
+	@test -n "$(INPUTS)" -a -n "$(KEYS)" -a -n "$(WORK)" -a -n "$(OUTPUT)" || (echo 'Set INPUTS, KEYS, WORK, OUTPUT; see README.md'; exit 1)
+	$(PYTHON) scripts/build_worldend.py "$(INPUTS)" --keys "$(KEYS)" $(if $(LIBHAC),--libhac-package "$(LIBHAC)",) --work-dir "$(WORK)" --output "$(OUTPUT)" --language "$(or $(LANGUAGE),en-US)"
 test:
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) -m unittest discover -s runtime/tools/tests -v

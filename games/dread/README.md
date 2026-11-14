@@ -14,18 +14,28 @@ this repository; `Dread_build/` (the work folder) and `mods/` are ignored by git
 
 ## Build and play
 
-In one command from the top of the repository:
+Use MNG Launcher or its command-line engine:
 
 ```sh
-python3.14 games/dread/build.py "<base>.xci|nsp" --update "<2.1.0 update>.nsp" -k prod.keys [-o OUT.app]
+python3 tools/mng.py build "<base>.xci" "<2.1.0 update>.nsp" --keys "<prod.keys>"
+python3 tools/mng.py update dread
 ```
 
-`games/dread/build.py` runs the four steps below in
-`Dread_build/` next to the game file (reused by the next run), checks each against `assets/expected-v2.1.0.json`, and
-writes `Metroid Dread.app` next to it. Both files are required: the code comes from the update, and the RomFS is the
-base's merged with the update's. The app is a small launcher (window or full screen, monitor, window size,
-MetalFX or plain scaling) that runs the game from the work folder: do not move or delete that folder. Saves:
-`~/Library/Application Support/MacNativeGames/Dread/profile`; log: `~/Library/Logs/MacNativeGames/dread.log`.
+Leave out the update to build the still-supported 1.0.0 base. Each version uses its own pinned ExeFS, rewrite and
+RomFS hashes; the Launcher accepts the 2.1.0 update NSP. The shared work-folder policy records `MNGWorkFolder`
+in the App, so later express updates use that directory. An explicit `--work` must point outside the checkout.
+
+The original external game-data layout is retained: keep the recorded work directory to play. The App now has a
+separately signed `ShaderData-dread.bundle`, the exact warm-up lists beside its shader map and an offline pipeline
+archive. Packaging builds descriptors in parallel outside the App and verifies the saved archive in a fresh process.
+Launch waits for every bundled list and translated variant before the title. Rebuilds preserve the App directory;
+express updates retain translations, usable descriptor entries, digest records and matching signed shader data.
+Saves remain in `~/Library/Application Support/MacNativeGames/Dread/profile`.
+
+The packaging integration was checked with synthetic Metal/native tests. A complete game build and gameplay
+check for these new packaging paths is still needed; the earlier gameplay measurements below predate this integration.
+Shader contributions remain local for manual merging with this game's tool; this backend's bind-state format has no
+registered online inbox schema. It does not upload through another game's identity.
 
 ### iPhone / iPad
 

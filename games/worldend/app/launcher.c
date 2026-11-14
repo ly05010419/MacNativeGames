@@ -7,9 +7,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <time.h>
 #include <unistd.h>
 
 static void make_dir(const char *path) {
+    char parent[PATH_MAX];
+    if (snprintf(parent, sizeof parent, "%s", path) >= (int)sizeof parent) exit(1);
+    for (char *p = parent + 1; *p; p++) if (*p == '/') {
+        *p = 0;
+        if (mkdir(parent, 0755) && errno != EEXIST) { perror(parent); exit(1); }
+        *p = '/';
+    }
     if (!mkdir(path, 0755) || errno == EEXIST) return;
     fprintf(stderr, "mkdir %s: %s\n", path, strerror(errno));
     exit(1);
@@ -38,28 +47,64 @@ int main(void) {
     // and writing them inside Resources would invalidate the bundle signature.
     const char *home = getenv("HOME");
     if (!home) return 1;
-    join(run, sizeof run, home, "Library/Application Support/MacNativeGames/Worldend Syndrome");
+    const char *profile = getenv("DM_WORLDEND_PROFILE");
+    if (profile && *profile) {
+        // Package validation uses an existing disposable directory. Resolve
+        // symlinks before rejecting a directory inside the signed app.
+        char bundle[PATH_MAX];
+        struct stat state_info;
+        if (*profile != '/' || !realpath(profile, run) || stat(run, &state_info) || !S_ISDIR(state_info.st_mode)) {
+            fprintf(stderr, "DM_WORLDEND_PROFILE must name an existing absolute directory\n");
+            return 1;
+        }
+        memcpy(bundle, app, strlen(app) + 1);
+        char *contents = strrchr(bundle, '/'); if (!contents) return 1;
+        *contents = 0;
+        size_t len = strlen(bundle);
+        if (!strncmp(run, bundle, len) && (!run[len] || run[len] == '/')) {
+            fprintf(stderr, "profile must be outside the signed app\n");
+            return 1;
+        }
+    } else {
+        join(run, sizeof run, home, "Library/Application Support/MacNativeGames/Worldend Syndrome");
+    }
     join(save, sizeof save, run, "save");
     join(temp, sizeof temp, run, "temp");
-    join(log, sizeof log, run, "last-launch.log");
-
     make_dir(run); make_dir(save); make_dir(temp);
-    int fd = open(log, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    char lockpath[PATH_MAX];
+    join(lockpath, sizeof lockpath, run, "session.lock");
+    int lock = open(lockpath, O_RDWR | O_CREAT, 0600);
+    if (lock < 0 || flock(lock, LOCK_EX | LOCK_NB)) {
+        fprintf(stderr, "Worldend Syndrome is already running or its profile is unavailable\n");
+        return 1;
+    }
+    // Keep the lock through exec so a second app cannot write this save profile.
+    char filename[64];
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now)) { perror("session time"); return 1; }
+    snprintf(filename, sizeof filename, "session-%lld-%09ld-%ld.log", (long long)now.tv_sec, now.tv_nsec, (long)getpid());
+    join(log, sizeof log, run, filename);
+    int fd = open(log, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) { perror("session log"); return 1; }
     if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
 
     setenv("DM_ROOT", game, 1);
-    char romfs[PATH_MAX], msl[PATH_MAX], shmap[PATH_MAX], font[PATH_MAX];
+    char romfs[PATH_MAX], msl[PATH_MAX], shmap[PATH_MAX], font[PATH_MAX], archive[PATH_MAX];
     join(romfs, sizeof romfs, game, "RomFS");
     join(msl, sizeof msl, game, "shader-cache");
-    join(shmap, sizeof shmap, game, "profile/shader_map.tsv");
+    join(shmap, sizeof shmap, game, "build/shader_map.tsv");
+    join(archive, sizeof archive, game, "pipeline-archive");
     join(font, sizeof font, game, "font");
     setenv("DM_ROMFS", romfs, 1);
     setenv("DM_SAVE", save, 1);
     setenv("DM_TEMP", temp, 1);
     setenv("DM_MSL_DIR", msl, 1);
     setenv("DM_NVN_SHMAP", shmap, 1);
+    setenv("DM_PSO_ARCHIVE", archive, 1);
+    unsetenv("DM_PSO_OFFLINE"); unsetenv("DM_PSO_ARCHIVE_BUILD"); unsetenv("DM_PSO_REQUIRE_ARCHIVE");
+    setenv("DM_PSO_PREPARE", "1", 1);
     setenv("DM_FONT_DIR", font, 1);
-    setenv("DM_METAL_RUNTIME", "1", 1);
+    setenv("DM_METAL_RUNTIME", "0", 1);
     char language_path[PATH_MAX], language[64] = "en-US";
     join(language_path, sizeof language_path, game, "language.txt");
     FILE *settings = fopen(language_path, "r");

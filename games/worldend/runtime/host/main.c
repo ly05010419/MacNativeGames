@@ -122,6 +122,7 @@ void dm_host_preload_start(int argc, char **argv) {
     if (pthread_create(&g_pre.th, &a, preload_thread, NULL)) die("dm_host_preload_start: cannot start the thread");
 }
 int main(int argc, char **argv) {
+    if (getenv("DM_PSO_OFFLINE")) { extern int mng_build_pipeline_archive(void); return mng_build_pipeline_archive(); }
     if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())
     if (atomic_load(&g_pre.started)) {
         pthread_join(g_pre.th, NULL);

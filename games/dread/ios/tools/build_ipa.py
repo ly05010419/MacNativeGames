@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from xcode_dir import developer_dir
 
 GAME = Path(__file__).resolve().parents[2]   # games/dread
-VERSION = 'v210'
+VERSION = os.environ.get('DREAD_VERSION', 'v210')
 APP = 'Dread'   # the product name, Dread.app (install_device.py)
 
 def run(args, cwd, log, env):
@@ -70,7 +70,7 @@ targets:
         CFBundleDisplayName: Metroid Dread
         CFBundleName: Metroid Dread
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
-        CFBundleShortVersionString: "2.1.0"
+        CFBundleShortVersionString: "{'1.0.0' if VERSION == 'v100' else '2.1.0'}"
         CFBundleVersion: "1"
         UILaunchScreen: {{}}
         UIFileSharingEnabled: true
@@ -111,7 +111,7 @@ targets:
         - {nvn/'nvn/include'}
         - {gen}
         - {gen/'deps/include'}
-      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I{rt} -I{nvn/'nvn'} -I{nvn/'nvn/include'} -I{gen} -I{work/'build'}
+      OTHER_CFLAGS: $(inherited) {'-DDREAD_V100=1' if VERSION == 'v100' else ''} -mcpu=apple-a15 -I{rt} -I{nvn/'nvn'} -I{nvn/'nvn/include'} -I{gen} -I{work/'build'}
 '''
 
 def main():

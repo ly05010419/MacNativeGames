@@ -9,6 +9,7 @@ is checked against assets/expected-v2.1.0.json first.
 import argparse
 import hashlib
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -18,8 +19,8 @@ sys.path.insert(0, str(HERE / 'third_party/d2r'))   # Metroid Dread's own copy o
 from relr import decode_relr
 import nsoimg
 
-VERSION = 'v210'
-EXPECTED = json.loads((HERE / 'assets/expected-v2.1.0.json').read_text())
+VERSION = os.environ.get('DREAD_VERSION', 'v210')
+EXPECTED = json.loads((HERE / ('assets/expected-v1.0.0.json' if VERSION == 'v100' else 'assets/expected-v2.1.0.json')).read_text())
 
 
 def sha(path):

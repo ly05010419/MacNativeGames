@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "worldend",
+  "name": "Worldend Syndrome",
+  "title_id": "010048900CF64000",
+  "bundle_id": "org.macnativegames.worldend",
+  "data_folder": "Worldend Syndrome",
+  "build": "games/worldend/build.py",
+  "work_holds_game_data": false,
+  "sources": ["games/worldend"],
+  "files": {"game": ["xci", "nsp"], "update": []},
+  "versions": ["1.0.0"]
+}

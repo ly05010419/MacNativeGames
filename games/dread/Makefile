@@ -16,10 +16,11 @@ WORK ?= ../Dread_build
 OUT := $(WORK)/build
 PY ?= python3
 NATIVE_OPT ?= -O2
+GAME_CPPFLAGS = $(if $(filter v100,$(GAME_DIR)),-DDREAD_V100=1,)
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
-GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h)
+GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/*.inc third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h)
 GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
 
 RUNTIME_SRC := $(filter-out runtime/frontend_ios.m,$(wildcard runtime/*.c runtime/*.m runtime/*.S))
@@ -35,10 +36,10 @@ $(GENERATED):
 
 $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
-	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
+	xcrun clang $(NATIVE_OPT) $(GAME_CPPFLAGS) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
 $(OUT)/dread-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+	xcrun clang -std=c11 $(NATIVE_OPT) $(GAME_CPPFLAGS) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a \
 	  -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics \
@@ -50,25 +51,17 @@ runtime: $(OUT)/dread-native
 # The runtime shader translation the graphics layer starts on first use: <work>/build/shader-service/totk_xlate (the
 # repository's prebuilt NativeAOT translator, checked against its SHA-256) and <work>/build/spirv-cross/spirv-cross,
 # built like build_app.py does (same pinned commit, sources and flags as SPIRV-Cross's CMake Release build).
-SPIRV_CROSS_COMMIT := aa217aeb6c9f0ace7a0ab233b28807edf45eb165
-SPIRV_CROSS_SOURCES := main.cpp spirv_cfg.cpp spirv_cpp.cpp spirv_cross.cpp spirv_cross_parsed_ir.cpp spirv_cross_util.cpp \
-  spirv_glsl.cpp spirv_hlsl.cpp spirv_msl.cpp spirv_parser.cpp spirv_reflect.cpp
+SPIRV_CROSS_PROGRAM := $(shell python3 ../../tools/deps program spirv-cross)
 .PHONY: shader-tools
 shader-tools: $(OUT)/shader-service/totk_xlate $(OUT)/spirv-cross/spirv-cross
 $(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos-arm64/totk_xlate.sha256
 	@mkdir -p "$(dir $@)"
 	test "$$(shasum -a 256 "$<" | cut -d' ' -f1)" = "$$(cut -d' ' -f1 "prebuilt/macos-arm64/totk_xlate.sha256")"
 	cp "$<" "$@" && chmod +x "$@"
-$(OUT)/spirv-cross/spirv-cross:
-	@mkdir -p "$(WORK)/src" "$(dir $@)obj"
-	test -d "$(WORK)/src/SPIRV-Cross" || git clone -q https://github.com/KhronosGroup/SPIRV-Cross.git "$(WORK)/src/SPIRV-Cross"
-	git -C "$(WORK)/src/SPIRV-Cross" checkout -q $(SPIRV_CROSS_COMMIT)
-	for f in $(SPIRV_CROSS_SOURCES); do xcrun clang++ -O3 -DNDEBUG -std=c++11 -arch arm64 -Wno-deprecated-declarations \
-	  -c "$(WORK)/src/SPIRV-Cross/$$f" -o "$(dir $@)obj/$$f.o" & done; wait
-	xcrun clang++ -arch arm64 $(addprefix $(dir $@)obj/,$(addsuffix .o,$(SPIRV_CROSS_SOURCES))) -o "$@"
+$(OUT)/spirv-cross/spirv-cross: $(SPIRV_CROSS_PROGRAM)
+	@mkdir -p "$(dir $@)"
+	cp "$(SPIRV_CROSS_PROGRAM)" "$@" && chmod +x "$@"
 
-# Every shader of the game prepared from the player's RomFS (build/shader-seed, imported at the first start), then
-# compiled into Metal libraries (build/shader-libs), all or nothing; build.py runs both for the Mac app.
 .PHONY: shader-seed shader-libs
 shader-seed: shader-tools
 	"$(PY)" scripts/prepare_shader_seed.py --romfs "$(WORK)/extracted/$(GAME_DIR)/romfs" --output "$(OUT)/shader-seed" \
@@ -77,7 +70,7 @@ shader-libs:
 	"$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --seed
 
 # The game version the boot, the probe and the mods use (runtime/game_version.h TOTK_GAME_DIR).
-GAME_DIR := v210
+GAME_DIR = $(or $(DREAD_VERSION),v210)
 
 # DREAD_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 DREAD_LOG ?= $(WORK)/logs/boot.log

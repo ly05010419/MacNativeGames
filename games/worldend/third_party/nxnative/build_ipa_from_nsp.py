@@ -55,7 +55,7 @@ HEAP_CHECK_NNMAIN_SECS = 5
 
 PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file; 'json' = one JSON event per line, for a program that shows the build
 BEAT = 30                               # seconds between progress lines in 'lines' mode
-TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/local/share/dotnet', os.path.expanduser('~/.dotnet')]   # GUI apps such as Spyder do not get the shell's PATH
+TOOL_PATHS = []  # The MNG adapter provides the pinned tools/deps PATH.
 
 
 class BuildError(Exception):
@@ -710,7 +710,7 @@ def profile_files(g):   # every file of the game profile (game.tsv and its table
 def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'mac'), which needs no xcodegen and compiles shaders only for macOS
     missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not _importable(m)] + ([] if _importable('compression.zstd') or _importable('backports.zstd') else ['backports.zstd'])   # zstd: built in from Python 3.14
     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
-    tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
+    tools = {'xcodebuild': 'Xcode', 'xcodegen': "tools/deps program xcodegen", 'dotnet': '.NET SDK 10', 'zstd': "tools/deps program zstd", 'spirv-cross': "tools/deps program spirv-cross", 'make': 'Xcode'}
     if mac: del tools['xcodegen']
     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
     if gone: raise BuildError('tools not found: ' + ', '.join(gone))
@@ -728,6 +728,15 @@ def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote t
     try: rows = re.findall(r'[:|] (\d+) files ([\d.]+) MB', log.read_text(errors='replace'))
     except OSError: return None
     return (sum(int(n) for n, _ in rows), int(sum(float(mb) for _, mb in rows) * 2**20)) if rows else None
+
+
+def verify_original_exefs(repo, extracted):
+    pins = json.loads((repo/'assets/expected-1.0.0.json').read_text())
+    for name, pin in pins['modules'].items():
+        data = (extracted/'ExeFS'/name).read_bytes()
+        if len(data) != pin['size'] or hashlib.sha256(data).hexdigest() != pin['sha256']:
+            raise BuildError(f'original ExeFS hash mismatch: {name}; use unmodified Worldend 1.0.0 inputs')
+    return pins
 
 
 def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs are checked by the caller (build_mismatch)
@@ -884,15 +893,15 @@ def build_mac_host(repo, out, env, logs, g):
     and the macOS SDK) are as at the last build into out. The host runs the game's own arm64 code natively, so an Intel Mac stops here (GitHub issue #54)"""
     if not apple_silicon(): raise BuildError('this step boots the game in the Mac host, which runs the game\'s own arm64 code natively: it needs a Mac with Apple silicon, and this Mac has an Intel processor')
     host = repo / 'dm/host'
-    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
+    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h'], logs / 'mac_host_make.log', env=env, cwd=host)
     dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
     line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
     if not line: raise BuildError(f'make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
     cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
     kf, tp = out.with_name(out.name + '.key'), repo / 'dm/third_party'
     srcs = [p for d in HOST_DIRS for p in sorted((repo / d).iterdir()) if p.is_file() and p.suffix in ('.c', '.m', '.h', '.S', '.inc')]
-    key = fingerprint(cmd, ('files', srcs + [host / f'gen/{g.id}/game_profile.h', host / 'gen/vpx/libvpx.a', tp / 'stb_vorbis/stb_vorbis.c']),
-                      ('tree', tp / 'vulkan-headers/include'), ('tree', tp / 'libvpx/vpx'), ('cmd', ['clang', '--version']), ('cmd', ['xcrun', '--show-sdk-build-version']), env=env)
+    key = fingerprint(cmd, ('files', srcs + [host / f'gen/{g.id}/game_profile.h', Path(env['VPX_PREFIX']) / 'lib/libvpx.a', tp / 'stb_vorbis/stb_vorbis.c']),
+                      ('tree', tp / 'vulkan-headers/include'), ('tree', Path(env['VPX_PREFIX']) / 'include/vpx'), ('cmd', ['clang', '--version']), ('cmd', ['xcrun', '--show-sdk-build-version']), env=env)
     if out.is_file() and reused(kf, key) is not None: return out
     rmtree(kf); out.parent.mkdir(parents=True, exist_ok=True)
     run(cmd, logs / 'mac_host_build.log', env=env, cwd=host)
@@ -1363,7 +1372,7 @@ def build_gl_shaders(py, repo, roots, sh, env, logs, g, reuse=True, mac=False):
     """An OpenGL game's GLSL sources (roots: the RomFS, main, a run-time capture folder) → one Metal library each for the Mac (sh/gl/) and the iPhone (sh/ios/gl/, what build_ipa.sh takes from MSL_IOS;
     not with mac), replacing the NVN split and chain build, as build_vk_shaders does for a Vulkan game; glslang (glslangValidator) compiles the GLSL to SPIR-V for spirv-cross"""
     PROG.stage('GL shaders', step='checking the inputs')
-    if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (brew install glslang): it compiles an OpenGL game\'s GLSL shaders')
+    if not shutil.which('glslangValidator', path=env['PATH']): raise BuildError('glslangValidator not found (tools/deps program glslangValidator): it compiles an OpenGL game\'s GLSL shaders')
     key = fingerprint(*[('tree', r) if Path(r).is_dir() else ('files', [r]) for r in roots], ('files', tool_files(repo)), ('files', profile_files(g)), *toolchain(),
                       ('cmd', ['glslangValidator', '--version']), env=env) if reuse else None
     return layer_shaders(py, repo, 'gl', 'GL', roots, sh, key, logs, env, mac)
@@ -1619,11 +1628,7 @@ def main(args=None):
         if u is None and clone is None and can_clone(ex): clone = dirs[ver] / 'RomFS'
     bad = [] if derived else [f'{v}: {x}' for v in versions for x in build_mismatch(dirs[v], v, g)]   # every module's build ID must be the one the profile registers for its version
     if bad: raise BuildError('unsupported executable build: ' + '; '.join(bad))
-    pins = json.loads((repo / 'assets/expected-2.3.0.json').read_text())
-    for name, pin in pins['modules'].items():
-        data = (dirs[pkg_ver] / 'ExeFS' / name).read_bytes()
-        if len(data) != pin['size'] or hashlib.sha256(data).hexdigest() != pin['sha256']:
-            raise BuildError(f'original ExeFS hash mismatch: {name}; use unmodified 2.3.0 inputs')
+    verify_original_exefs(repo, dirs[pkg_ver])
     if bad and provisional: raise BuildError(f'not the builds provisional game profile {g.id} registers: {"; ".join(bad)}')
     if bad:   # files of other builds under a registered version's tag: packed like any other version
         derived = f'not the builds game profile {g.id} registers: {"; ".join(bad)}'

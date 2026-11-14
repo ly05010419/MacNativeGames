@@ -1,0 +1,29 @@
+{
+  "_comment": "Verified Metroid Dread 1.0.0 code and RomFS (base card image, no update) and the rewrite of its three modules. Hashes only; no game content.",
+  "title_id": "010093801237C000",
+  "version": 0,
+  "display_version": "1.0.0",
+  "main_build_id": "49161D9CCBC15DF944D0B6278A3C446C006B0BE8",
+  "base_program_nca": {
+    "name": "ef84c741a4eff99c29bb0a35fe9a8faf.nca",
+    "nca_offset": 63488,
+    "size": 4431331328
+  },
+  "exefs_sha256": {
+    "main": "8f0064d97a8b55d6bb681d9ddadea3ece197514c69272cbed334a879a575e851",
+    "main.npdm": "ef6ced2afe6b7777267a328caf58b849578033344794acfda23336621aa7a611",
+    "rtld": "bc175ad9865adb48f9cbe9d7993ddb3367d3771bc06642c87d16ccf4f4dc9ff4",
+    "sdk": "1c9f198a91c0bcfee5cf8f5b53fb941895e91334dfb766ce79fc68576797f017",
+    "subsdk0": "67a38fcf89cd13e040a021eb3d157072f38ebf6680a907874c35c7b231b5d4e2"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "a358b91072a19e8bd742b3db095ab36bf07af36425c315213fb56823cf7deb04",
+    "sdk.patched.bin": "31f8d4331e89291232776b3edfb0ed097bbce7761179eb7311ccf590f6e2a649",
+    "subsdk0.patched.bin": "e84539bb052a880b97ad759dea2115e3fa557dae0390cc4a8900716fc56ab388"
+  },
+  "romfs": {
+    "size": 4400319820,
+    "sha256": "d3c6c3101a7109fed312383e18646ff5aeca4d0479a5b753e6ac4d77a582a3ae",
+    "files": 9654
+  }
+}

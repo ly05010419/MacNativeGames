@@ -16,6 +16,23 @@ import build_worldend as build
 
 
 class BuildTests(unittest.TestCase):
+    def test_extraction_gate_uses_this_games_pins(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/'assets').mkdir()
+            (root/'extract/ExeFS').mkdir(parents=True)
+            original = b'synthetic original module'
+            (root/'extract/ExeFS/main').write_bytes(original)
+            (root/'assets/expected-1.0.0.json').write_text(json.dumps({'modules': {'main': {
+                'size': len(original), 'sha256': hashlib.sha256(original).hexdigest()}}}))
+            spec = importlib.util.spec_from_file_location('worldend_extract_gate', GAME/'third_party/nxnative/build_ipa_from_nsp.py')
+            module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+            module.verify_original_exefs(root, root/'extract')
+            (root/'extract/ExeFS/main').write_bytes(b'modified')
+            with self.assertRaisesRegex(module.BuildError, 'Worldend 1.0.0'):
+                module.verify_original_exefs(root, root/'extract')
+
     def test_tooling_checksums(self):
         build.verify_prebuilt()
 

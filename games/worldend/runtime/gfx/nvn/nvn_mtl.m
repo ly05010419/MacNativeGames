@@ -1,5 +1,6 @@
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#include "mng_pipeline_archive.h"
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
 #import <ImageIO/ImageIO.h>
@@ -4235,7 +4236,7 @@ static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // No
     if (at >= 0 || slot < 0) return 0;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        NSError *e = nil; id<MTLRenderPipelineState> ps = mng_render_pipeline(g_dev, d, &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
     });
     return 1;
@@ -4278,13 +4279,13 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     if (ps) g_pp_taken++;
     else {
         MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL);
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        ps = mng_render_pipeline(g_dev, d, &e);
         // A vertex shader that writes the layer (render_target_array_index) needs the pipeline's input primitive class, which the reflection does not record and the pipeline key does not hold.
         // Pokémon Legends: Z-A has two (b29f08619f379a83, 57246f9a04af8529, layered full-screen passes); Metal names the reason, the shader is marked and every later pipeline with it gets the
         // triangle class (layered draws are triangle lists; a line or point draw with such a shader would fail validation)
         if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {
             vs->layer_out = 1; MLOG("vertex shader %s writes the layer: its pipelines get the triangle input primitive class", vs->key);
-            e = nil; d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL); ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+            e = nil; d = pso_desc(&k, vs, fs, ms_fn ? ms_fn : g_pso_fsfn, g_pso_lmap != NULL); ps = mng_render_pipeline(g_dev, d, &e);
         }
     }
     g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
@@ -4355,9 +4356,9 @@ static void warm_worker(NSArray<NSString *> *paths) {
                                                 if (!fsfn) { g_warm_skip_fz++; continue; }
                     }
                     pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
-                    NSError *e = nil; id ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e];
+                    NSError *e = nil; id ps = mng_render_pipeline(g_dev, pso_desc(&k, vs, fs, fsfn, sk.merged), &e);
                     if (!ps && !vs->layer_out && [e.localizedDescription containsString:@"render_target_array_index"]) {   // a vertex shader that writes the layer (see pso_get_)
-                        vs->layer_out = 1; e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e]; }
+                        vs->layer_out = 1; e = nil; ps = mng_render_pipeline(g_dev, pso_desc(&k, vs, fs, fsfn, sk.merged), &e); }
                     if (!ps) { MLOG("[RED] background render pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
                     WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = vkey; item->fs_key = fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
                     warm_enqueue(item); g_warm_rps++;
@@ -4365,7 +4366,7 @@ static void warm_worker(NSArray<NSString *> *paths) {
                     NSString *key = c[1]; if (!key.length) continue;
                     NvShader *cs = warm_shader(dict, key, 5);
                     if (!cs) continue;
-                    NSError *e = nil; id ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+                    NSError *e = nil; id ps = mng_compute_pipeline(g_dev, cs->fn, &e);
                     if (!ps) { MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
                     WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps;
                     warm_enqueue(item); g_warm_cps++;
@@ -4407,6 +4408,11 @@ static void warm_start(void) {
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     atomic_store(&g_warm_running, 1);
     dispatch_async(q, ^{ warm_worker(paths); });
+    /* Every bundled library and pipeline is ready before the first title frame. */
+    if (getenv("DM_PSO_PREPARE") && atoi(getenv("DM_PSO_PREPARE"))) {
+        while (atomic_load(&g_warm_running)) usleep(2000);
+        warm_claim();
+    }
 }
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
     struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs; } k;
@@ -6209,7 +6215,7 @@ void ms_after(void) {
     static int failed; static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at; static int logged_att;
     if (failed) return;
     if (!ps) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ms_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"ms"] : nil;
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        ps = fn ? mng_compute_pipeline(g_dev, fn, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxBufferBindCount = 1; at = rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]);
         if (!ps || !at) { failed = 1; MLOG("[RED] DM_NVN_MAGSCAN: cannot create the compute pipeline %s", e.localizedDescription.UTF8String); return; } }
     ms_scan *s = &g_ms_s[g_ms_cur]; int pdist = g_ms_pframe == s->frame && g_ms_ppass != ~0ull ? (int)((int64_t)g_stat_pass - (int64_t)g_ms_ppass) : 9999;
@@ -6341,7 +6347,7 @@ static void ixc_run(const p_draw *dw, const p_draw_idx *di) {
     static id<MTLComputePipelineState> ps[2]; static id<MTL4ArgumentTable> at; static int failed;
     if (failed) return;
     if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_ixc_msl) options:nil error:&e];
-        for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; ps[k] = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil; }
+        for (int k = 0; k < 2 && lib; k++) { id<MTLFunction> f = [lib newFunctionWithName:k ? @"ixc_expand" : @"ixc_arrays"]; ps[k] = f ? mng_compute_pipeline(g_dev, f, &e) : nil; }
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; at = ps[0] && ps[1] ? rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]) : nil;
         if (!at) { failed = 1; MLOG("[RED] indirect draw conversion: cannot create the compute pipeline %s (indirect draws of quads / fans / 8-bit indices are skipped)", e.localizedDescription.UTF8String); return; } }
     if (g_ixc_epoch != g_wr_epoch || g_ixc_sub != g_sub_serial || g_ixc_n > IXC_MAX - 8) { g_ixc_n = 0; g_ixc_epoch = g_wr_epoch; g_ixc_sub = g_sub_serial; }
@@ -6419,7 +6425,7 @@ static void wide_run(const p_draw_idx *di) {
     static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at; static int failed;
     if (failed) return;
     if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_wide_msl) options:nil error:&e]; id<MTLFunction> f = lib ? [lib newFunctionWithName:@"wide_u8"] : nil;
-        ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+        ps = f ? mng_compute_pipeline(g_dev, f, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; at = ps ? rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]) : nil;
         if (!at) { failed = 1; MLOG("[RED] 8-bit index GPU expansion: cannot create the compute pipeline %s (the CPU expands them as before)", e.localizedDescription.UTF8String); return; } }
     if (g_wide_epoch != g_wr_epoch || g_wide_sub != g_sub_serial || g_wide_n > WIDE_MAX - 8) { g_wide_n = 0; g_wide_epoch = g_wr_epoch; g_wide_sub = g_sub_serial; }
@@ -6554,7 +6560,7 @@ static void mdx_run(const p_draw *dw, const p_draw_idx *di) {
     static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at; static int failed;
     if (failed) return;
     if (!at) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_mdx_msl) options:nil error:&e]; id<MTLFunction> f = [lib newFunctionWithName:@"mdx_mask"];
-        ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+        ps = f ? mng_compute_pipeline(g_dev, f, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; at = ps ? rec_table([g_dev newArgumentTableWithDescriptor:ad error:&e]) : nil;
         if (!at) { failed = 1; MLOG("[RED] indirect-count multi-draw masking: cannot create the compute pipeline %s (those draws wait for the GPU)", e.localizedDescription.UTF8String); return; } }
     if (g_mdx_ep != g_mdx_epoch || g_mdx_sub != g_sub_serial || g_mdx_n > MDX_SLOTS / 4) { g_mdx_tag++; g_mdx_n = 0; g_mdx_ep = g_mdx_epoch; g_mdx_sub = g_sub_serial; }
@@ -6624,7 +6630,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> tf_pso(NvShader *vs, int c
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
     if (hm_get_id(&g_pso_fail, &k)) return nil;
-    NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, nil, nil, 0) error:&e];
+    NSError *e = nil; id<MTLRenderPipelineState> ps = mng_render_pipeline(g_dev, pso_desc(&k, vs, nil, nil, 0), &e);
     if (!ps) { MLOG("[RED] failed to create the rasterizer-discard pipeline (vertex %s): %s", vs->key, e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
     hm_put_id(&g_pso, &k, ps);
     return ps;
@@ -7102,7 +7108,7 @@ static void dispatch(const p_dispatch *dp) {
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
-        NSError *e = nil; uint64_t bt = bp_now(); ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+        NSError *e = nil; uint64_t bt = bp_now(); ps = mng_compute_pipeline(g_dev, cs->fn, &e);
         g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
         if (!ps) { MLOG("[RED] failed to create compute pipeline: %s", e.localizedDescription.UTF8String); return; }
         pso_record("C\t%s\n", cs->key);
@@ -7282,7 +7288,7 @@ static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     if (!ps) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = depth ? (scopy ? fds : fd) : ff;
         if (depth) { pd.depthAttachmentPixelFormat = d.pixelFormat; if (stencil) pd.stencilAttachmentPixelFormat = d.pixelFormat; } else pd.colorAttachments[0].pixelFormat = d.pixelFormat;
-        NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        NSError *e = nil; ps = mng_render_pipeline(g_dev, pd, &e);
         if (!ps) { RED_ONCE(83, "format-converting / scaling texture copy: cannot create the pipeline for destination format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
         pso[pk] = ps;
     }
@@ -7542,7 +7548,7 @@ static id<MTLRenderPipelineState> clr_pso(const clr_key *k) {
     for (int i = 0; i < 8; i++) if (k->cfmt[i]) { d.colorAttachments[i].pixelFormat = (MTLPixelFormat)k->cfmt[i]; d.colorAttachments[i].writeMask = MTLColorWriteMaskNone; }   // the other attachments stay as they are
     if (k->slot >= 0) d.colorAttachments[k->slot].writeMask = (MTLColorWriteMask)((k->mask & 1 ? MTLColorWriteMaskRed : 0) | (k->mask & 2 ? MTLColorWriteMaskGreen : 0) | (k->mask & 4 ? MTLColorWriteMaskBlue : 0) | (k->mask & 8 ? MTLColorWriteMaskAlpha : 0));
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt; d.rasterSampleCount = k->samples ? k->samples : 1;
-    NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+    NSError *e = nil; ps = mng_render_pipeline(g_dev, d, &e);
     if (!ps) { static int n; if (n++ < 4) MLOG("[RED] cannot create the clear-triangle pipeline (slot %d color format %u depth %u stencil %u samples %u): %s; this clear is skipped", k->slot, k->slot >= 0 ? k->cfmt[k->slot] : 0, k->dfmt, k->sfmt, k->samples, e.localizedDescription.UTF8String); return nil; }
     cache[kd] = ps; return ps;
 }
@@ -7959,7 +7965,7 @@ static void td_dump(void) {
         MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
         d.vertexFunction = [lib newFunctionWithName:@"vs"]; d.fragmentFunction = [lib newFunctionWithName:@"fs"];
         d.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        ps = mng_render_pipeline(g_dev, d, &e);
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sp = [g_dev newSamplerStateWithDescriptor:sd];
         if (!ps) { MLOG("[RED] TEXDUMP pipeline failed %s", e.localizedDescription.UTF8String); return; }
     }
@@ -8087,7 +8093,7 @@ static void present_pipeline(MTLPixelFormat format) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
         pd.colorAttachments[0].pixelFormat = format;
-        g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        g_blit_pso = mng_render_pipeline(g_dev, pd, &e);
         if (!g_blit_pso) MDIE("present pipeline failed %s", e.localizedDescription.UTF8String);
         g_blit_fmt = format;
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
@@ -8617,3 +8623,5 @@ void mtl_wait_state_dump(void) {
 }
 void mtl_alloc_stats(uint64_t *waits, uint64_t *grown, int *n) { *waits = g_alloc_waits; *grown = g_alloc_grown; *n = g_alloc_n; }   // Main submit allocator pool: how many times it waited, how many times it grew, how many exist now
 #pragma clang attribute pop
+
+#include "mng_archive_manifest.inc"

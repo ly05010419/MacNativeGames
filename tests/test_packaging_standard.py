@@ -34,7 +34,7 @@ STANDARDS = {
     'a runtime change keeps the translations': seed_identity_ignores_runtime,
     # the runtime's warm-up, its contribution filter and the launcher's prune read pso_title.tsv / pso_manifest.tsv beside the
     # shader map (build/): Ocarina of Time's were only in the seed, so every pipeline it drew was contributed (2026-11-10)
-    'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t or "check_archive_lists(resources/'pipeline-archive', resources/'build')" in t,
+    'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t or "check_archive_lists(resources/'pipeline-archive', resources/'build')" in t or "check_archive_lists(resources/'pipeline-archive', resources)" in t,
     # the pipeline archive is built from those same build/ lists: Ocarina of Time's fast update built it from the seed's
     # older list, 2,957 of the App's 7,516 render pipelines, and 4,559 were compiled at the first start (2026-11-11)
     'pipeline archive built from the App\'s lists': lambda t: (
@@ -51,20 +51,15 @@ PATHS = {
     'oot': (['games/oot/build.py', 'update_runtime.py', 'games/oot/scripts/prepare_ns2_seed.py', GFX.format('oot')], {}),
     'ss': (['games/ss/build.py', 'games/ss/scripts/package_ss.py', 'games/ss/scripts/ss_bundle.py',
             'games/ss/scripts/ss_pipelines.py', 'games/ss/scripts/ss_update.py', 'games/ss/app/launcher.c'], {}),
-    'dread': (['games/dread/build.py'], {
-        'shader data in its own signed bundle': 'not done for this game yet',
-        'pipeline archive built while packaging': 'not done for this game yet',
-        'title after the warm-up': 'not done for this game yet',
-        'no program runs inside a new app': 'not done for this game yet',
-        'seed and library digests are reused': 'not done for this game yet',
-        'repackaging keeps the .app folder': 'not done for this game yet',
-        'a runtime change can update quickly': 'not done for this game yet',
-        'warm-up lists beside the shader map': 'not done for this game yet',
-        'pipeline archive built from the App\'s lists': 'no pipeline archive for this game yet',
-    }),
+    'dread': (['games/dread/build.py', 'games/dread/scripts/package_dread.py', 'games/dread/scripts/dread_bundle.py',
+               'games/dread/scripts/dread_pipelines.py', 'games/dread/app/launcher.m'], {}),
+    'worldend': (['games/worldend/build.py', 'games/worldend/scripts/build_worldend.py', 'games/worldend/scripts/worldend_bundle.py',
+                  'games/worldend/scripts/worldend_pipelines.py', 'games/worldend/scripts/worldend_update.py',
+                  'games/worldend/app/launcher.c'], {}),
 }
 
-BUILD_SCRIPTS = {'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss'}
+BUILD_SCRIPTS = {'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
+                 'games/worldend/build.py': 'worldend'}
 
 
 class PackagingStandard(unittest.TestCase):

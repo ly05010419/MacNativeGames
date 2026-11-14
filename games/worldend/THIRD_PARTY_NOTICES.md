@@ -8,7 +8,7 @@ These notices live inside the isolated game directory to comply with the reposit
 | `nvn.h` reconstructed API types | nxnative `dm/gfx/nvn/include/nvn.h` | MIT, copyright 2020 h1k421; full notice in [header](runtime/gfx/nvn/include/nvn.h) |
 | Texture layout size algorithm, adapted | [deko3d](https://github.com/devkitPro/deko3d), `source/dk_image.cpp` | zlib, copyright 2018–2020 fincs; [license](third_party/licenses/deko3d.txt). Adaptation marked in `runtime/gfx/nvn/nvn_tex.c` |
 | GPU index widening, clear triangles, vertex counter lowering | MacNativeGames, through the pinned nxnative source | MIT, copyright 2026 MacNativeGames contributors; [license](runtime/third_party/macnativegames/LICENSE) |
-| VP9 decoder subset | libvpx v1.17.0, commit `6df3ec3` | BSD 3-Clause; [license](runtime/third_party/libvpx/LICENSE), [patent grant](runtime/third_party/libvpx/PATENTS), [source record](runtime/third_party/libvpx/README.md) |
+| VP9 decoder | libvpx 1.16.0 from the shared `tools/deps` pins | BSD 3-Clause; [license](third_party/licenses/libvpx/LICENSE), [patent grant](third_party/licenses/libvpx/PATENTS) |
 | Vorbis decoder | stb_vorbis 1.22, commit `1ee679c` | MIT or public domain; [license](runtime/third_party/stb_vorbis/LICENSE) |
 | Vulkan header subset | Vulkan-Headers 1.4.363 | Apache-2.0 or MIT; [license](runtime/third_party/vulkan-headers/LICENSE.md); per-file SPDX notices retained |
 | Shader translation libraries only | Ryujinx 1.3.2 shader subset, with nxnative modifications | MIT; [license](third_party/licenses/ryujinx.txt), [upstream binary modifications](third_party/licenses/ryujinx-build.md) |

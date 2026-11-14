@@ -2,7 +2,7 @@
 
 [Validation](docs/validation.md) · [Source copies](third_party/COPIES.md) · [Licenses](THIRD_PARTY_NOTICES.md)
 
-Isolated Apple silicon port of **WORLDEND SYNDROME** (`010048900CF64000`, base v0 / 1.0.0). The game's ARM64 code is rewritten ahead of time and runs through the nxnative host, with NVN rebuilt on Metal. **Mac only, experimental:** title through ADV, Name Entry, story choices, and the first-loop fade have been played locally. Not a claim that every route or the true end has been checked.
+Isolated Apple silicon port of **WORLDEND SYNDROME** (`010048900CF64000`, base v0 / 1.0.0). The game's ARM64 code is rewritten ahead of time and runs through the nxnative host, with NVN rebuilt on Metal. **Mac only, experimental:** title through ADV, Name Entry, story choices, and the first-loop fade were reported as played by the original contributor. Not a claim that every route or the true end has been checked.
 
 Unity 2017.4 per-stage VS/FS binds work through the host's combined programs. Zero game-code patches (0 CUTS).
 
@@ -39,47 +39,40 @@ Gleaned Unity 2017.4 needs already present in this host (from Cuphead / AI: THE 
 - pre-2019.3 Unity shader subprogram layout in `shader_split.py`
 - mixed vertex+fragment program binding
 
-First boot needed no extra game patches. Docked `op_mode=console` fills 1920×1080. Offline MSL compile uses `DM_METAL_RUNTIME=1` (no Xcode Metal toolchain).
+First boot needed no extra game patches. Docked `op_mode=console` fills 1920×1080. The build compiles Metal libraries offline with Xcode (`DM_METAL_RUNTIME=0`).
 
 ## Build
 
 Use an Apple silicon Mac with Metal 4 support, macOS 26 or later, and Xcode with the macOS 26 SDK or later. Mac only.
 
-Build dependencies:
-
-- Python 3.11 or later with `lz4`, `capstone`, `fonttools`, and `backports.zstd` when Python is older than 3.14.
-- .NET SDK **10**, `make`, `clang`, `zstd` and `spirv-cross` on `PATH`.
-- A **local LibHac 0.19.0 NuGet package** supplied with `--libhac-package`. SHA-256: `1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19`.
-- Your own unmodified base NSP or XCI and `prod.keys`. No update is used.
-
-Put the base in one directory. The inventory identifies the title through the container ticket or a `[title ID]` tag in the filename. Executable build IDs and NSO SHA-256 values are checked after extraction against [assets/expected-1.0.0.json](assets/expected-1.0.0.json).
-
-From the repository root:
+Use MNG Launcher, or the same build engine from the repository root:
 
 ```sh
-python3 games/worldend/scripts/build_worldend.py \
-  /path/to/your/Worldend-inputs \
-  --keys /path/to/your/prod.keys \
-  --libhac-package /path/to/local/libhac.0.19.0.nupkg \
-  --work-dir /path/to/private/Worldend-build \
-  --output '/path/to/private/Worldend Syndrome.app' \
-  --language en-US
+python3 tools/mng.py build "<base>.nsp" --keys "<prod.keys>"
+python3 tools/mng.py update worldend
 ```
 
-`--work-dir` and `--output` must be outside the Git checkout. The first shader split fills `shader_map.tsv` in the staged profile; later builds require those tables to match.
+Python 3.14 or later and Xcode are required. The build supplies its pinned Python packages and the shared
+`tools/deps` supplies .NET, SPIRV-Cross, zstd, LibHac and static libvpx. No manual package download is required.
+The base v0 is the only supported version. Original module sizes and SHA-256 values must match
+[expected-1.0.0.json](assets/expected-1.0.0.json).
 
-Alternatively:
+The work directory is recorded in the App (`MNGWorkFolder`); `--work` selects an explicit external directory.
+Normal rebuilds keep the App directory and reuse matching signed data bundles. Express updates rebuild only the
+host and launcher when verified game, rewrite and translation inputs match. Game data are packaged in
+`GameData-worldend.bundle`, libraries in `ShaderData-worldend.bundle`; unchanged bundles keep their signatures.
+Pipeline archives are checked against actual descriptors using parallel workers outside the App, then verified in a
+fresh process. The exact warm-up list is placed beside `build/shader_map.tsv`. Launch waits for the whole list.
 
-```sh
-make -C games/worldend build \
-  INPUTS=/path/to/your/Worldend-inputs KEYS=/path/to/your/prod.keys \
-  LIBHAC=/path/to/local/libhac.0.19.0.nupkg WORK=/path/to/private/Worldend-build \
-  OUTPUT='/path/to/private/Worldend Syndrome.app' LANGUAGE=en-US
-```
+The contributed profile currently has **no recorded render/compute pipeline rows**. All 543 mapped libraries are
+warmed, but first-use pipeline compilation in game remains unmeasured; the build does not invent pipeline
+coverage from an empty list. The offline archive path has a native host regression with synthetic shaders.
+No end-to-end game or route validation was performed as part of the packaging integration.
+Online shader contributions are not enabled: this profile's Unity package keys need a matching inbox schema before
+uploads can be accepted. It does not reuse another game's inbox identity.
 
-```sh
-make -C games/worldend test
-```
+Developer entry: `games/worldend/build.py <base> -k <keys> --work <external-work> -o <App>`.
+`make -C games/worldend test` checks source staging and tool fingerprints without game files.
 
 ## Status
 

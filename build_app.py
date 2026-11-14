@@ -1775,8 +1775,8 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
                    for rel in ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')):
             continue
         if bundle.name.startswith('GameData-'):
-            if bundle.name == 'GameData-ss.bundle':
-                # SS stores a verified directory tree, whose complete file hashes are
+            if bundle.name in ('GameData-ss.bundle', 'GameData-worldend.bundle'):
+                # SS and Worldend store verified directory trees, whose complete file hashes are
                 # sealed in files.json (ss_bundle.signed_bundle), rather than romfs.bin.
                 manifest = 'Contents/Resources/files.json'
                 if not (before/manifest).is_file() or (before/manifest).read_bytes() != (bundle/manifest).read_bytes():

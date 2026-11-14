@@ -172,6 +172,10 @@ def _supported(game):
     """The title versions of game build_app.py has verified values for (its VERSIONS), the base's 0 included."""
     if game == 'ss':
         return {65536}
+    if game == 'dread':
+        return {0, 327680}
+    if game == 'worldend':
+        return {0}
     return {int(v['version']) for v in repo.build_app().VERSIONS.values()
             if str(v.get('version', '')).isdigit() and repo.game_of_title(str(v.get('title_id', '0' * 16))) == game}
 
@@ -242,12 +246,14 @@ def plan(items, work=None):
     b = repo.build_app()
     has_fonts = p.firmware or p.fonts or (work and b.fonts_valid(Path(work) / 'totk/extracted/firmware/shared-fonts'))
     # build_app.py: an NSP holds no system fonts, nor does a Breath of the Wild card image (step_data_botw)
-    if p.game != 'ss' and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
+    if p.game not in ('ss', 'dread', 'worldend') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
         p.blocks.append(t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
                           'an earlier build) too',
                           '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来'))
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
+    if p.game in ('dread', 'worldend') and p.dlc:
+        p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
     if p.game == 'ss' and p.dlc:
         p.blocks.append(t('Skyward Sword HD does not accept add-on packages', '天空之剑 HD 不接收附加内容包'))
     p.blocks = p.keys_problems + p.blocks

@@ -44,6 +44,26 @@ import build_app
 from build_app import APPS, VERSIONS, BuildError, clone, run, say, sha256
 
 
+def standalone_game(app):
+    try:
+        bundle = plistlib.loads((Path(app)/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
+        return {'org.macnativegames.dread': 'dread', 'org.macnativegames.worldend': 'worldend'}.get(bundle)
+    except (OSError, ValueError):
+        return None
+
+
+def standalone_module(game):
+    import importlib.util
+    folder = build_app.REPO/f'games/{game}'
+    scripts = folder/'scripts'
+    if str(scripts) not in sys.path: sys.path.insert(0, str(scripts))
+    file = folder/'build.py' if game == 'dread' else scripts/'worldend_update.py'
+    name = f'mng_update_{game}'
+    spec = importlib.util.spec_from_file_location(name, file)
+    module = importlib.util.module_from_spec(spec); sys.modules[name] = module; spec.loader.exec_module(module)
+    return module
+
+
 def skyward():
     folder = build_app.REPO/'games/ss/scripts'
     if str(folder) not in sys.path:
@@ -502,6 +522,19 @@ def plan(app, work=None):
         return result('full', f'{app.name} is not a Mac app (no readable Contents/Info.plist)')
     def work_folder(name):
         return (Path(work).expanduser().resolve(), 'given') if work else build_app.recorded_work_folder(app, name)
+    game = standalone_game(app)
+    if game:
+        folder, why = (Path(work).expanduser().resolve(), 'given') if work else build_app.default_work(app, game)
+        module = standalone_module(game)
+        if game == 'dread':
+            from package_dread import blocker
+            problem = blocker(app, folder)
+            version = info.get('MNGDreadVersion', 'v210')
+        else:
+            problem = module.blocker(app)
+            version = 'v0'
+        return result('full' if problem else 'express', problem or 'verified game and shader inputs match',
+                      game=game, version=version, display_version=info.get('CFBundleShortVersionString'), work=str(folder), work_why=why)
     if info.get('CFBundleIdentifier') == 'org.macnativegames.ss':
         folder, why = (Path(work).expanduser().resolve(), 'given') if work else build_app.default_work(app, 'ss')
         problem = skyward().blocker(app)
@@ -586,6 +619,19 @@ def main(argv):
         print(json.dumps(plan(args.app, args.work), ensure_ascii=False))
         return
     app = args.app.expanduser().resolve()
+    game = standalone_game(app)
+    if game:
+        if args.seed or args.vr or args.native_5k is not None:
+            raise BuildError(f'{game}: these options require a full build')
+        work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.default_work(app, game)
+        say(f'work folder {work} ({why})')
+        module = standalone_module(game)
+        try:
+            return module.update(app, work)
+        except Exception as error:
+            if isinstance(error, ValueError) or (game == 'dread' and isinstance(error, module.BuildError)):
+                raise BuildError(str(error)) from error
+            raise
     if skyward_app(app):
         if args.seed or args.vr or args.native_5k is not None:
             raise BuildError('Skyward Sword HD: these options are not supported; use a full build for new shaders')
