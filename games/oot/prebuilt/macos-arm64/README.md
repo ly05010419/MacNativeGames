@@ -31,6 +31,14 @@ Chain `oot-native-v24-depth-register` (patch `0033`) reads a pixel shader's dept
 
 Chain `oot-native-v25-z-snap-early-tests-gather-offsets` takes three fixes from seedds/nxnative (MIT, commit 0cae4830): `FragZSnap.cs` (a pixel shader's `gl_FragCoord.z` compared with a texture value takes that value when it lies within one ulp and a fraction of the pixel's depth step under z: Apple's GPU stores a depth up to that much under the z the fragment reads, NVIDIA stores exactly it; Ocarina of Time's ground mist lost scattered pixels of its own surface), `GatherOffsets.cs` (`textureGatherOffsets` with its four offsets written out, one gather for a 2x2 square, instead of spirv-cross's loop over an offset Metal takes only as a constant), and the Switch 2 early fragment tests flag (control byte +0x5b, `totk_shader_rt.m`: no NVN2 pixel shader got `[[early_fragment_tests]]` before). The Metal libraries are also compiled with `-fwrapv` now (`scripts/build_shader_libs.py`). Checks: `games/oot/tests/frag_z_snap.py`, `frag_z_snap_gpu.m`, `gather_offsets.py`, `gather_offsets_gpu.m`, `ampere_early_fragment_tests.py`.
 
+Chain `oot-native-v28-mesh-primitive-output-blocks` (PR #2166) reads complete vertex blocks before primitive blocks.
+The checked-in tools were rebuilt from the PR's sources using the pinned .NET SDK 10.0.401 and the shader-service builder.
+970 reconstructed Ocarina requests (500 mesh, 20 task, 150 each vertex/fragment/compute) produced 3,880 byte-identical
+MSL, SPIR-V and reflection files compared with the contributor's build. The proof library passed 36,872 independent
+comparisons and returned 144 byte-identical replies on matching inputs. `tests/test_oot_mesh_output_layout.py` checks
+both depth exports against independent block contents for 128/64, 32/32, 128/64 without primitive outputs, and 64/128.
+These are translator checks; they do not replace a Forest Temple gameplay check.
+
 ## Licences of what is compiled in
 
 `totk_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
