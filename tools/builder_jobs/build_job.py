@@ -42,6 +42,8 @@ def same_version(plan, update_plan):
         return False
     if plan['game'] == 'oot':   # one version is built (131072), checked by the build itself
         return True
+    if plan['game'] == 'ss':
+        return update_plan.get('version') == 'v65536' and plan.get('update_version') == 65536
     app_version = repo.build_app().VERSIONS.get(update_plan.get('version') or '', {}).get('version')
     dropped = plan.get('update_version') if plan.get('update') else 0
     return dropped is not None and app_version is not None and str(app_version) == str(dropped)
@@ -95,18 +97,19 @@ def command(request, python=sys.executable):
             return (repo.UPDATE_RUNTIME, [str(out)] + (['--seed'] if up['kind'] == 'fast' else []), Path(up['work']), out,
                     up['kind'], plan['game'])
     argv = [plan['base']]
-    if plan.get('keys') and plan['game'] in ('totk', 'botw'):
+    if plan.get('keys') and plan['game'] in ('totk', 'botw', 'ss'):
         argv += ['-k', plan['keys']]
     if plan.get('update'):
         argv += ['--update', plan['update']]
     for dlc in plan.get('dlc') or []:
         argv += ['--dlc', dlc]
-    if plan.get('firmware'):
+    if plan.get('firmware') and plan['game'] != 'ss':
         argv += ['--firmware', plan['firmware']]
-    elif plan.get('fonts'):
+    elif plan.get('fonts') and plan['game'] != 'ss':
         argv += ['--shared-fonts', plan['fonts']]
     argv += ['--work', str(work), '-o', str(out)]
-    return repo.BUILD_APP, argv, work, out, 'full', plan['game']
+    script = repo.REPO/'games/ss/build.py' if plan['game'] == 'ss' else repo.BUILD_APP
+    return script, argv, work, out, 'full', plan['game']
 
 
 class Steps:

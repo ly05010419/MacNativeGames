@@ -44,6 +44,21 @@ import build_app
 from build_app import APPS, VERSIONS, BuildError, clone, run, say, sha256
 
 
+def skyward():
+    folder = build_app.REPO/'games/ss/scripts'
+    if str(folder) not in sys.path:
+        sys.path.insert(0, str(folder))
+    import ss_update
+    return ss_update
+
+
+def skyward_app(app):
+    try:
+        return plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') == 'org.macnativegames.ss'
+    except (OSError, ValueError):
+        return False
+
+
 def ocarina_app(app):
     try:
         return plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleExecutable') == 'OcarinaOfTime'
@@ -487,6 +502,11 @@ def plan(app, work=None):
         return result('full', f'{app.name} is not a Mac app (no readable Contents/Info.plist)')
     def work_folder(name):
         return (Path(work).expanduser().resolve(), 'given') if work else build_app.recorded_work_folder(app, name)
+    if info.get('CFBundleIdentifier') == 'org.macnativegames.ss':
+        folder, why = (Path(work).expanduser().resolve(), 'given') if work else build_app.default_work(app, 'ss')
+        problem = skyward().blocker(app)
+        return result('full' if problem else 'express', problem or 'SS: verified rewrite and shader translation inputs match',
+                      game='ss', version='v65536', display_version='1.0.1', work=str(folder), work_why=why)
     if ocarina_app(app):
         try:
             folder, why = work_folder('OcarinaOfTime_build')
@@ -566,6 +586,15 @@ def main(argv):
         print(json.dumps(plan(args.app, args.work), ensure_ascii=False))
         return
     app = args.app.expanduser().resolve()
+    if skyward_app(app):
+        if args.seed or args.vr or args.native_5k is not None:
+            raise BuildError('Skyward Sword HD: these options are not supported; use a full build for new shaders')
+        work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.default_work(app, 'ss')
+        say(f'work folder {work} ({why})')
+        try:
+            return skyward().update(app, work)
+        except ValueError as e:
+            raise BuildError(str(e)) from e
     if ocarina_app(app):
         if args.seed or args.native_5k:
             raise BuildError('Ocarina of Time: --seed and --native-5k are not supported; run build_app.py for new shaders')

@@ -36,6 +36,11 @@ SOURCES = {
                '69f64eb00dc045398755c440b152225d544301a345a146a16e86a56a0c52b7c94b2c331520e976dbb821f18d31930aafbd25bb85961e3517e0665414ce0cbcff'),
 }
 
+PACKAGES = {
+    'libhac': ('libhac.0.19.0.nupkg', 'https://api.nuget.org/v3-flatcontainer/libhac/0.19.0/libhac.0.19.0.nupkg',
+               '1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19'),
+}
+
 # meson and ninja build dav1d; cmake builds glslang and the iPhone / iPad libraries (games/*/ios/tools/build_deps.py).
 # PyPI wheels pinned by SHA-256, in a virtual environment under the cache. The folder name is a hash of exactly this
 # mapping for the tools asked for (build-tools-7678300352e8 = meson + ninja): keep the values (version, sha256) tuples.

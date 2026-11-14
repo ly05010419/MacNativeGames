@@ -8,11 +8,11 @@ DOTNET_ROOT the SDK, which the shader translator's apphost needs to find its run
 import os
 from pathlib import Path
 import sys
+from functools import lru_cache
 
 KEPT = ('HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE')
 PATH = ('/usr/bin', '/bin', '/usr/sbin', '/sbin')
 TOOLS = ('zstd', 'spirv-cross', 'dotnet')   # what the steps run from PATH
-XCODE = '/Applications/Xcode.app/Contents/Developer'
 # games/ss/scripts/ss_env.py → parents[3] is the MacNativeGames checkout; MNG_REPO when a process that imported tools/deps started this one
 REPO = Path(os.environ.get('MNG_REPO') or Path(__file__).resolve().parents[3])
 
@@ -28,12 +28,26 @@ def pinned():
         raise ValueError(f'a build dependency could not be made from its pinned source: {error}') from error
 
 
+@lru_cache(maxsize=4)
+def developer_directory(given):
+    if given:
+        return given
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from build_app import metal_compiler
+    found = metal_compiler()
+    if not found:
+        raise ValueError('Xcode with the Metal toolchain is required; select it with DEVELOPER_DIR')
+    return found[2]['DEVELOPER_DIR']
+
+
 def environment(work, title, source=None):
     work = Path(work)
     folders, deps = pinned()
     env = {k: os.environ[k] for k in KEPT if k in os.environ}
     env.update(deps)
-    env.update(PATH=os.pathsep.join([*folders, *PATH]), DEVELOPER_DIR=XCODE, SS_BUILD_ENV='1', DM_GAME=title, DM_METAL_RUNTIME='0', J='8',
+    developer = developer_directory(os.environ.get('DEVELOPER_DIR'))
+    env.update(PATH=os.pathsep.join([*folders, *PATH]), DEVELOPER_DIR=developer, MNG_REPO=str(REPO), SS_BUILD_ENV='1', DM_GAME=title, DM_METAL_RUNTIME='0', J='8',
                TMPDIR=str(work / 'tmp'), NUGET_PACKAGES=str(work / 'cache/nuget'), DOTNET_CLI_HOME=str(work / 'cache/dotnet'),
                DM_NUGET_SOURCE=str(work / 'dependencies/nuget'), PYTHONDONTWRITEBYTECODE='1', DOTNET_CLI_TELEMETRY_OPTOUT='1',
                DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE='true', MACOSX_DEPLOYMENT_TARGET='26.0')

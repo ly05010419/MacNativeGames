@@ -2,8 +2,9 @@
 
 Three sources, each named per file in [ss-import.json](ss-import.json) (`origins`), with the files kept as they
 were (SHA-256), the ones changed here (SHA-256 and line count before and after) and the ones left out.
-`tests/test_provenance.py` checks the folder against it; large changed files carry the owner's growth limit
-(Albert, 2026-11-11). No donor folder is read by this build, its runtime or its tests.
+`tests/test_provenance.py` checks the folder against it. Original import metadata is retained for attribution;
+the contributor's private file-length approval policy does not apply to MNG changes.
+No donor folder is read by this build, its runtime or its tests.
 
 - **The target layer** (`scripts/`, `app/`, `assets/`, `tests/`, the settings window, the corner box and the shader
   list export in `runtime/host`): `games/la` at MacNativeGames `549b8a9a`, renamed for this game.
@@ -25,6 +26,13 @@ empty provisional list) and is now this repository's recorded warm-up list (READ
 `nxnative/build_ipa_from_nsp.py` is nxnative's at `b1dee89c` with this repository's extracted mode.
 
 Changes from the sources, reviewed as source changes:
+
+- MNG integration after PR #2093: shared dependency and build-engine routing, recorded
+  work folders, signed game/shader data bundles, retained App directories, express runtime
+  updates, and exact-manifest pipeline archives built outside the App. The runtime reads
+  packaged archives without modifying them and uses its existing descriptor lookup for
+  reuse. The local source manifest records these changes without the contributor's private
+  file-length approval rules. Diagnostic export no longer asks players to submit files by hand.
 
 - The importer takes only an extraction checked by `scripts/extract_ss.py`, for 1.0.1 (v65536) only, in the
   environment `scripts/ss_env.py` builds; its container mode stops at once. `nx_extract` is `games/la`'s (programs

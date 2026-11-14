@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Package the build as a signed app, only after every check passes. Never rewrites a patched binary."""
-import ctypes
 import hashlib
 import json
 import os
@@ -11,6 +10,8 @@ import subprocess
 import sys
 
 from verify_ss import verify_cut, verify_libraries, set_digest
+from ss_bundle import Digests, check_output, signed_bundle, link_data, publish, record_update_source, clone
+from ss_pipelines import mac_pipelines, check_archive_lists
 
 GAME = Path(__file__).resolve().parents[1]
 TITLE = '01002DA013484000'
@@ -40,16 +41,6 @@ def package_notices(resources):
         destination = resources/path.relative_to(GAME)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
-
-
-def publish(partial, output):
-    """Atomic publication that cannot replace an app created during the build."""
-    rename = ctypes.CDLL(None, use_errno=True).renamex_np
-    rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-    rename.restype = ctypes.c_int
-    if rename(os.fsencode(partial), os.fsencode(output), 4):  # RENAME_EXCL
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), str(output))
 
 
 def verify_binary(binary):
@@ -87,10 +78,7 @@ def verify_rewrite(source, patched, pins):
 
 
 def package(source, build, output, language, env):
-    if output.suffix != '.app':
-        raise ValueError('--output must end in .app')
-    if output.exists():
-        raise ValueError(f'output exists; choose a new path or move it aside: {output}')
+    check_output(output)
     pins = verify_originals(build)
     from inspect_inputs import EXPECTED, EXTERNAL, inspect, sha256
     extract, patched = build/f'extract/{PACKAGE}', build/f'patched_{PACKAGE}'
@@ -120,25 +108,36 @@ def package(source, build, output, language, env):
         if not (profile/name).read_text().splitlines()[0].startswith(f'# chain b-{chain} inputs {inputs} '):
             raise ValueError(f'stale shader table: {name}')
     verify_seed(profile)
+    archive = mac_pipelines(build/'tools/dmhost', profile, libraries, build, env)
+    digests = Digests(build/'verified-digests.json')
     partial = output.with_name(output.stem+'.partial.app')
     if partial.exists():
         raise ValueError(f'partial output exists; inspect or remove it first: {partial}')
     resources, macos = partial/'Contents/Resources/game', partial/'Contents/MacOS'
     resources.mkdir(parents=True)
     macos.mkdir(parents=True)
-    for src, name in [(extract/'RomFS', 'RomFS'), (patched, 'patched'), (build/'font', 'font'), (profile, 'profile')]:
-        shutil.copytree(src, resources/name)
-    (resources/'shader-cache').mkdir()
-    shutil.copytree(libraries, resources/'shader-cache'/libraries.name)
-    shutil.copy2(build/'tools/dmhost', resources/'dmhost')
+    data = signed_bundle(partial, output, 'GameData', {'ExeFS': extract/'ExeFS', 'RomFS': extract/'RomFS', 'patched': patched, 'font': build/'font'}, digests, env)
+    for name in ('RomFS', 'patched', 'font'):
+        link_data(resources, name, data)
+    shaders = signed_bundle(partial, output, 'ShaderData', {libraries.name: libraries}, digests, env)
+    link_data(resources, 'shader-cache', shaders, '.')
+    shutil.copytree(profile, resources/'build')
+    (resources/'profile').symlink_to('build')   # compatibility with earlier development builds
+    shutil.copytree(archive, resources/'pipeline-archive')
+    check_archive_lists(resources/'pipeline-archive', resources/'build')
+    clone(build/'tools/dmhost', resources/'dmhost')
     (resources/'language.txt').write_text(language+'\n')
     package_notices(resources)
     with (partial/'Contents/Info.plist').open('wb') as stream:
-        plistlib.dump({'CFBundleExecutable': 'SkywardSwordHD', 'CFBundleIdentifier': 'org.macnativegames.ss', 'CFBundleName': APP_NAME, 'CFBundleDisplayName': APP_NAME,
+        info = {'CFBundleExecutable': 'SkywardSwordHD', 'CFBundleIdentifier': 'org.macnativegames.ss', 'CFBundleName': APP_NAME, 'CFBundleDisplayName': APP_NAME,
                        'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.1', 'CFBundleVersion': '65536', 'LSMinimumSystemVersion': '26.0',
-                       'NSHighResolutionCapable': True, 'LSApplicationCategoryType': 'public.app-category.adventure-games'}, stream)
+                       'NSHighResolutionCapable': True, 'LSApplicationCategoryType': 'public.app-category.adventure-games'}
+        record_update_source(info, build.parent)
+        plistlib.dump(info, stream)
+    launcher = build/'tools/SkywardSwordHD'
     subprocess.run(['clang', '-arch', 'arm64', '-mmacosx-version-min=26.0', '-O2', '-Wall', '-Wextra', '-Werror', str(GAME/'app/launcher.c'),
-                    '-o', str(macos/'SkywardSwordHD')], check=True, env=env)
+                    '-o', str(launcher)], check=True, env=env)
+    clone(launcher, macos/'SkywardSwordHD')
     verify_binary(macos/'SkywardSwordHD')
     # Sign the nested executable before recording its final content hash.
     subprocess.run(['codesign', '--force', '--sign', '-', str(resources/'dmhost')], check=True, env=env)
@@ -148,9 +147,11 @@ def package(source, build, output, language, env):
               'repository_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=GAME, text=True, env=env).strip()}
     # Identify the actual isolated sources including uncommitted changes.
     report['source_files'] = {p.relative_to(GAME).as_posix(): sha256(p) for p in sorted(GAME.rglob('*')) if p.is_file() and '__pycache__' not in p.parts and p.name != '.DS_Store'}
-    report['outputs'] = {p.relative_to(resources).as_posix(): sha256(p) for p in sorted(resources.rglob('*')) if p.is_file()}
+    report['outputs'] = {p.relative_to(resources).as_posix(): digests.sha256(p) for p in sorted(resources.rglob('*')) if p.is_file()}
     (resources/'build-info.json').write_text(json.dumps(report, indent=2)+'\n')
     subprocess.run(['codesign', '--force', '--sign', '-', str(partial)], check=True, env=env)
-    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(partial)], check=True, env=env)
+    # Child data bundles were verified above; the outer seal binds their signatures.
+    subprocess.run(['codesign', '--verify', '--strict', str(partial)], check=True, env=env)
     publish(partial, output)
+    digests.save()
     print(f'Built {output}\nSave: ~/Library/Application Support/{PROFILE_NAME}/save')

@@ -133,7 +133,7 @@ static void export_rules(DmSettingsPanel *panel) {   // the settings window's Ex
     CHECK("cancelling writes nothing", ![panel finishExport:NSModalResponseCancel url:out] && ![NSFileManager.defaultManager fileExistsAtPath:out.path]);
     NSString *said = [panel finishExport:NSModalResponseOK url:out];
     NSString *file = [NSString stringWithContentsOfFile:out.path encoding:NSUTF8StringEncoding error:nil];
-    CHECK("the export counts again and says nothing was sent", [said hasPrefix:@"Saved 2 rows to ss-shaders.tsv"] && [said containsString:@"Nothing was sent"]);
+    CHECK("the diagnostic export counts again", [said hasPrefix:@"Saved 2 diagnostic rows to ss-shaders.tsv"]);
     CHECK("the file holds a header and the rows", [file hasPrefix:@"# The Legend of Zelda: Skyward Sword HD 1.0.1, shader list contribution exported "] &&
           [file containsString:@": 2 rows the app's list lacks.\n"] && [file hasSuffix:[NSString stringWithFormat:@"\n%@\n%@\n", C, D]]);
     CHECK("exporting leaves the player's list as it was", [[NSString stringWithContentsOfFile:user encoding:NSUTF8StringEncoding error:nil] isEqualToString:[NSString stringWithFormat:@"%@\n%@\n", C, D]]);

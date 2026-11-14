@@ -18,22 +18,39 @@ base game supplies most of the RomFS. No container needs an integrity exception 
 
 ## Build
 
-Apple silicon, macOS 26 or later, Xcode with its Metal toolchain, Python 3 with `lz4`, `capstone`,
-`fonttools` (and `backports.zstd` before 3.14), and `make`. No Homebrew: zstd, SPIRV-Cross, the .NET SDK 10,
+Apple silicon, macOS 26 or later, Xcode with its Metal toolchain, Python 3.14 or later,
+and `make`. MNG installs the pinned Python requirements in the work folder's virtual
+environment. No Homebrew: zstd, SPIRV-Cross, the .NET SDK 10,
 libvpx and dav1d come from MacNativeGames' `tools/deps` (`tools/deps/pins.py`), made once per Mac from pinned
 sources (`scripts/ss_env.py`). The shader translator is built from `third_party/nxnative` at packaging
 (`scripts/build_shader_tools.py`; NuGet restores its packages once, which needs network access).
 
+Use MNG Launcher, or its engine from the repository root:
+
 ```sh
-python3 scripts/extract_ss.py --base "<base>.nsp" --update "<update 1.0.1>.nsp" --keys prod.keys \
-  --libhac libhac.0.19.0.nupkg --work-dir "<work>" --output "<extracted>" --evidence "<evidence>"
-python3 scripts/build_ss.py "<extracted>" --work-dir "<work>" --output "<new>.app"
+python3 tools/mng.py build "<base>.nsp" "<update 1.0.1>.nsp" --keys prod.keys
+python3 tools/mng.py update "<installed>.app"
 ```
+
+An already extracted `ExeFS/` + `RomFS/` folder is also accepted by `mng build`.
+The engine records its work folder in the App and reuses it for updates. Containers
+are extracted with the pinned LibHac package from `tools/deps`, then checked against
+the expected module and RomFS hashes. `scripts/extract_ss.py` remains an inspection
+tool for producing a separate extraction and integrity report.
 
 Work, output and evidence stay outside the checkout. The shaders compile only with the Metal compiler
 `runtime/gfx/tools/dmsh_chain.lock` records (Xcode 27.2's, 32023.922): another one stops the build before the
 shader step, with installation instructions. Saves and logs go to `~/Library/Application Support/The Legend of
 Zelda Skyward Sword HD/`.
+
+Game data and shader libraries are signed in separate `Contents/Helpers` bundles.
+The App's `build/` directory carries the shader map and the exact warm-up list used
+to build its pipeline archive. Packaging runs the host outside the App, builds that
+list on multiple workers, and fails if any row is missing or fails. Existing archive
+entries are queried by their real descriptors, including after runtime or list changes.
+The installed App folder stays in place; unchanged shader data keeps its signature
+and inode. Express updates preserve game resources and translated shaders, and refuse
+changed rewriter or translation inputs with a reason requiring a full build.
 
 ## Playing
 
@@ -45,13 +62,14 @@ Return for +, Tab for −; or a game controller. The game's button-only controls
 - **F1** or **⌘,** opens the settings window: output size cap, full screen, controller layout, the same
   statistics, and the shader list export.
 
-## Sharing shaders
+## Local shader diagnostics
 
 While you play, the app keeps the shaders and pipelines it had to build on the spot in `pso_user.tsv` beside
 the save folder, and builds them ahead at the next start. Settings → Shader list → **Export shader list…**
-saves the ones the app's own list lacks to a file you choose (keys only, no game data). Nothing is sent: send
-that file to the maintainer by hand. The maintainer merges contributions into the bundled list
-(below) with `scripts/pso_seed.py`:
+saves the ones the app's own list lacks to a local diagnostic file (keys only, no game data).
+There is no manual community submission route. Contributions must use the website inbox;
+SS registration and collection are still pending. Developers can validate their own recordings with
+`scripts/pso_seed.py`:
 
 ```sh
 python3 scripts/pso_seed.py --output new_pso_manifest.tsv --shader-map "<work>/source/dm/games/01002DA013484000/shader_map.tsv" --kinds RC \
@@ -92,7 +110,8 @@ Known limits:
 Open:
 
 - Not checked: a play-through past the opening, combat, flight, the dungeons.
-- Packaging gaps, as in `games/la` and `games/aoc`: the shader libraries stay in `Resources/game/shader-cache`
-  instead of a signed `Contents/Helpers/ShaderData-*.bundle`, no pipeline archive is built at packaging, and
-  repackaging refuses an existing `.app`.
-- The iOS subtests of the runtime's tests need the iPhone SDK, which the Mac that checked this target lacks.
+- The SS pipeline-key format differs from the website inbox's shared format. Website
+  contribution support is not registered for this experimental target yet; do not send
+  its rows under another game's ID. See the validation record for local build coverage.
+- There is no supported iOS app target; the shared Metal backend is compile-checked
+  against the iPhone SDK separately.

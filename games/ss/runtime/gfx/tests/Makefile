@@ -304,6 +304,11 @@ t_pso_stall: t_pso_stall.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_stall.m $(MTL_T_SRC) $(FW)
 check_t_pso_stall: RUN_ENV = MTL_DEBUG_LAYER=1
 check_t_pso_bundle: RUN_ENV = MTL_DEBUG_LAYER=1
+t_pso_manifest: t_pso_manifest.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_manifest.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pso_manifest
+check_t_pso_manifest: t_pso_manifest
+	MTL_DEBUG_LAYER=1 python3 test_pso_manifest.py $(CURDIR)/t_pso_manifest
 t_pso_warm: t_pso_warm.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_warm.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pso_warm

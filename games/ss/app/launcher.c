@@ -82,16 +82,19 @@ int main(void) {
     if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
 
     setenv("DM_ROOT", game, 1);
-    char romfs[PATH_MAX], msl[PATH_MAX], shmap[PATH_MAX], font[PATH_MAX];
+    char romfs[PATH_MAX], msl[PATH_MAX], shmap[PATH_MAX], font[PATH_MAX], archive[PATH_MAX];
     join(romfs, sizeof romfs, game, "RomFS");
     join(msl, sizeof msl, game, "shader-cache");
-    join(shmap, sizeof shmap, game, "profile/shader_map.tsv");
+    join(shmap, sizeof shmap, game, "build/shader_map.tsv");
+    join(archive, sizeof archive, game, "pipeline-archive");
     join(font, sizeof font, game, "font");
     setenv("DM_ROMFS", romfs, 1);
     setenv("DM_SAVE", save, 1);
     setenv("DM_TEMP", temp, 1);
     setenv("DM_MSL_DIR", msl, 1);
     setenv("DM_NVN_SHMAP", shmap, 1);
+    setenv("DM_PSO_SEED", archive, 1);
+    setenv("DM_PSO_PREPARE", "1", 1);
     setenv("DM_FONT_DIR", font, 1);
     setenv("DM_METAL_RUNTIME", "0", 1);
     char language_path[PATH_MAX], language[64] = "en-US";

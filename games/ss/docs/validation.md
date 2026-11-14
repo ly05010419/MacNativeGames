@@ -104,3 +104,52 @@ them; the result is the count of synchronous builds.
 
 - A play-through past the opening; combat, flight, the dungeons; a game controller in a long session.
 - The warm-up list covers the opening route only; places past it still build their pipelines on first use.
+
+## MNG integration review (2026-11-14)
+
+The results above are the contributor's M5 Pro game runs. The integration checks below
+ran on an M4 Mac with Xcode's Metal 32023.883 and iPhoneOS26.5.sdk. No Skyward Sword game
+image was available on this machine. The complete game build still requires the locked
+Metal 32023.922; its check was not bypassed.
+
+- The full Mac host compiled and linked. The modified shared Metal backend also compiled
+  for iPhone; this is a compile check, not an iOS app build or device run.
+- The translator built from source. All three DLL identities matched `dmsh_chain.lock`.
+  This local check did not replay the game's 2,605 translator jobs.
+- A synthetic shader/PSO fixture passed four fresh-process checks: create an archive,
+  reuse it without compiling, load a read-only bundled seed, and reject a bad manifest
+  row. The production `mac_pipelines` wrapper ran twice against the fixture, including
+  its fresh-process archive verification; the second run preserved the archive bytes.
+  The existing PSO warm-up probe passed 98 checks and shader-map warm-up passed six.
+- Settings checks ran twice: 112 checks each, none failed. Runtime tool tests: 34 passed.
+  Target Python tests: 76 tests, none failed, two skipped without `SS_TEST_MAIN`.
+  Signing/publication tests preserved the App, shader bundle and game-data bundle
+  inodes, and restored the previous content when final signature verification failed.
+- The root suite ran 1,514 tests: nine failures, two skipped. Failures concerned existing
+  install-progress assertions, storage-path quoting, a mod-library preference, four
+  Breath of the Wild settings cases, and a startup-memory test fixture. The five
+  non-settings failures reproduced with the pre-merge `build_app.py`; the settings
+  probe and its production dependencies were unchanged by this PR. These failures
+  remain open and are not counted as passing integration checks.
+
+Packaging review:
+
+| Requirement | Result and evidence |
+|---|---|
+| Separately signed shader data | Implemented: `ss_bundle.signed_bundle`, real signing/reuse test. |
+| Parallel archive creation during packaging | Implemented: `ss_pipelines.mac_pipelines`, manifest probe and fresh-process replay. |
+| Finish warm-up before the title | Implemented: launcher forces `DM_PSO_PREPARE=1`; existing runtime waits for preparation. |
+| Run build tools outside the App | Implemented: host and launcher build in `build/tools`. |
+| Reuse verified hashes and signatures | Implemented: per-file identity cache and signed bundle reuse. |
+| Keep the installed App directory | Implemented: common `build_app.install_app`, including rollback. |
+| Runtime-only express updates | Implemented: MNG/update planner and `ss_update`; real-game execution remains unverified locally. |
+| Retain matching translations and archives | Implemented: translation chain/input checks and per-descriptor archive lookup; runtime changes do not clear either cache. |
+| Reuse verified installed game data | Implemented: `adopt_inputs` checks expected hashes; unchanged signed data is retained at publication. |
+| Common dependencies without Homebrew | Implemented: `tools/deps` provides the native dependencies and LibHac; Python requirements use the work environment. |
+| Lists beside the shader map in `build/` | Implemented: package and launcher use that directory; archive/list digests must match. |
+| MNG entry point and common work directory | Implemented: `games/ss/build.py`, builder routing, recorded/default work folder and update planning. |
+| Grouped iOS archives and retained iOS build cache | Not applicable yet: this target has no supported iOS packaging entry point. |
+| Website contribution intake | Not implemented: SS uses 16-digit shader keys and 440-byte recipes; the shared collector expects another format. Keep this experimental target's export local until the website, uploader and collector support its format and game ID together. |
+
+No local test above establishes gameplay correctness, frame rate, controller support
+or stability beyond the contributor's recorded opening route.

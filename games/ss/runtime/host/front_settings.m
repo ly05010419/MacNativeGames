@@ -107,7 +107,7 @@ static NSView *row(NSString *title, NSView *control) {
     self.shaderCount = label(@"", 11, NSColor.secondaryLabelColor);
     self.exportShaders = [NSButton buttonWithTitle:@"Export shader list…" target:self action:@selector(exportShaderList:)];
     self.exportShaders.bezelStyle = NSBezelStyleRounded; self.exportShaders.identifier = @"settings-export-shaders";
-    NSTextField *share = label(@"Saves the shaders and pipelines this Mac built that the app's list lacks, to send by hand. Nothing is sent.", 11, NSColor.secondaryLabelColor);
+    NSTextField *share = label(@"Saves a local list for diagnostics. Website contributions are not available for this experimental target yet.", 11, NSColor.secondaryLabelColor);
     NSButton *reset = [NSButton buttonWithTitle:@"Reset controller layout" target:self action:@selector(resetController:)];
     reset.bezelStyle = NSBezelStyleRounded;
     NSTextField *quality = label(@"Picture quality: original game settings", 12, NSColor.labelColor);
@@ -185,7 +185,7 @@ static NSView *row(NSString *title, NSView *control) {
     DmPsoExport *e = [DmPsoExport fromUserPath:self.shaderLists.firstObject seedPath:self.shaderLists.lastObject];   // counted again now, from one read
     NSString *problem = [e writeTo:url date:NSDate.date];
     if (problem) return [@"Not exported: " stringByAppendingString:problem];
-    return [NSString stringWithFormat:@"Saved %lu rows to %@%@. Nothing was sent: send the file by hand.", (unsigned long)e.rows, url.lastPathComponent,
+    return [NSString stringWithFormat:@"Saved %lu diagnostic rows to %@%@.", (unsigned long)e.rows, url.lastPathComponent,
             e.partialTail ? @" (a row still being written was left out)" : @""];
 }
 - (void)hudLine:(NSButton *)b { self.change(DmSettingHudLine, b.tag << 1 | (b.state == NSControlStateValueOn)); [self refresh]; }

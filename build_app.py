@@ -1774,8 +1774,15 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         if not all((before / rel).is_file() and (before / rel).read_bytes() == (bundle / rel).read_bytes()
                    for rel in ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')):
             continue
-        if bundle.name.startswith('GameData-') and (not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size):
-            continue
+        if bundle.name.startswith('GameData-'):
+            if bundle.name == 'GameData-ss.bundle':
+                # SS stores a verified directory tree, whose complete file hashes are
+                # sealed in files.json (ss_bundle.signed_bundle), rather than romfs.bin.
+                manifest = 'Contents/Resources/files.json'
+                if not (before/manifest).is_file() or (before/manifest).read_bytes() != (bundle/manifest).read_bytes():
+                    continue
+            elif not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size:
+                continue
         fresh = new.with_name(f'{new.name}.{bundle.name}.fresh')   # outside the app: anything extra in it fails the seal
         if fresh.exists():
             remove_tree(fresh)

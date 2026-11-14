@@ -6067,6 +6067,19 @@ static void pso4_init(void) {
             MLOG("pipeline archive %s: %lu files (%lu of bases without a vertex layout), %.1f MB, opened in %.1f ms", g_arch_dir.UTF8String, (unsigned long)(arch.count + archp.count - (g_arch_bundle != nil)),
                  (unsigned long)archp.count - (g_arch_bundle != nil), bytes / 1048576.0, (bp_now() - t0) / 1e6);
         }
+        // Packaging builds the exact manifest on this Mac. These files are read-only;
+        // only the player's own g_arch_dir receives new captures and compaction.
+        const char *seed = getenv("DM_PSO_SEED");
+        if (seed && *seed) {
+            NSString *dir = @(seed);
+            for (NSString *name in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
+                if (![name hasSuffix:@".mtl4a"]) continue;
+                NSString *path = [dir stringByAppendingPathComponent:name]; NSError *error = nil;
+                id<MTL4Archive> a = arch_file_ok(path) ? [g_dev newArchiveWithURL:[NSURL fileURLWithPath:path] error:&error] : nil;
+                if (a) [[name hasPrefix:@"p"] ? archp : arch addObject:a];
+                else MLOG("packaged pipeline archive %s unavailable on this device: %s", name.UTF8String, error.localizedDescription.UTF8String);
+            }
+        }
         g_arch4 = arch; g_arch4p = archp;
         NSError *ce = nil; g_comp4 = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&ce];
         if (!g_comp4) MLOG("[RED] no Metal 4 compiler (%s): render pipelines are built through the MTLDevice", ce.localizedDescription.UTF8String);
@@ -6595,8 +6608,11 @@ static int pso_prebuild(int threads, int wait, dispatch_qos_class_t qos) {
 }
 // DM_PSO_PREBUILD=tool: the prebuild alone (the host's other environment as for a run: DM_NVN_SHMAP, DM_MSL_DIR, DM_SAVE or DM_PSO_ARCHIVE), then exit; DM_PSO_PREBUILD_DEPTH=zero for
 // a game that sets the near=0 depth mode, DM_PSO_PREBUILD_THREADS=<n> workers (default: the performance cores less one). Returns 0 when not asked for
+static int pso_manifest_tool(void);
 int mtl_pso_prebuild_tool(void) {
-    const char *e = getenv("DM_PSO_PREBUILD"); if (!e || strcmp(e, "tool")) return 0;
+    const char *e = getenv("DM_PSO_PREBUILD");
+    if (e && !strcmp(e, "manifest")) return pso_manifest_tool();
+    if (!e || strcmp(e, "tool")) return 0;
     setenv("DM_PSO_MANIFEST", "off", 1);   // no prewarm (loading the shader map starts it)
     mtl_init(); const char *z = getenv("DM_PSO_PREBUILD_DEPTH"); if (z && !strcmp(z, "zero")) atomic_store(&g_depth_zero, 1);
     int threads = getenv("DM_PSO_PREBUILD_THREADS") ? atoi(getenv("DM_PSO_PREBUILD_THREADS")) : 0;
@@ -6966,6 +6982,34 @@ static void warm_start(void) {
     dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);   // Not optional background work: it decides whether the pipelines are ready before the player enters a run
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     dispatch_async(q, ^{ @autoreleasepool { long lines = 0; for (WarmTask *t in warm_parse(paths, &lines)) warm_task(t); warm_finish(); } });
+}
+// Build precisely the same manifest through the same descriptors as startup. No
+// game code or frame is executed. A dropped/malformed/failed row fails packaging.
+static int pso_manifest_tool(void) {
+    const char *path = getenv("DM_PSO_MANIFEST");
+    if (!path || !*path || !strcmp(path, "off")) { MLOG("[RED] missing packaging manifest"); exit(2); }
+    mtl_init();
+    const char *depth = getenv("DM_PSO_PREBUILD_DEPTH");
+    if (depth && !strcmp(depth, "zero")) atomic_store(&g_depth_zero, 1);
+    shmap_read_once(); pso4_init(); warm_load_begin();
+    NSString *text = [NSString stringWithContentsOfFile:@(path) encoding:NSUTF8StringEncoding error:nil];
+    long requested = 0;
+    for (NSString *line in [text componentsSeparatedByString:@"\n"])
+        if (line.length && ![line hasPrefix:@"#"]) requested++;
+    long parsed = 0; NSArray<WarmTask *> *tasks = warm_parse(@[@(path)], &parsed);
+    if (!text || requested <= 0 || parsed != requested || !g_comp4 || !g_arch_cap) {
+        MLOG("[RED] packaging manifest incomplete: %ld requested, %ld parsed, compiler %d, archive %d", requested, parsed, g_comp4 != nil, g_arch_cap); exit(2);
+    }
+    warm_prepare(tasks, parsed); arch_flush_wait();
+    unsigned long long built = g_warm_shaders + g_warm_rps + g_warm_cps;
+    if (built != (unsigned long long)requested || (g_pb_built && !g_arch_flush_ok)) {
+        MLOG("[RED] packaging manifest failed: %ld requested, %llu built, flush %d", requested, built, g_arch_flush_ok); exit(2);
+    }
+    if (getenv("DM_PSO_REQUIRE_ARCHIVE") && (g_pb_built || g_pb_legacy || g_warm_cps)) {
+        MLOG("[RED] packaging archive verification compiled a missing pipeline"); exit(2);
+    }
+    MLOG("[MNG] manifest archive: %ld requested, %llu built, success", requested, built);
+    return 1;
 }
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
     struct { ds_st ds; uint32_t vm[2], wm[2]; int hd, hs; } k;

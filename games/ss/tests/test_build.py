@@ -31,6 +31,17 @@ class BuildTests(unittest.TestCase):
         patcher = mock.patch.object(build, 'build_translator', fake_translator)
         patcher.start(); self.addCleanup(patcher.stop)
 
+    def test_mng_managed_inputs_are_accepted_but_other_overlapping_inputs_are_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp).resolve()/'work'
+            with mock.patch.object(build, 'inspect', return_value={'romfs': {'files': 1}}) as inspect:
+                build.main([str(work/'inputs'), '--work-dir', str(work), '--phase', 'inspect'])
+                inspect.assert_called_once_with(work/'inputs', build.EXPECTED)
+                self.assertTrue((work/'input-report.json').is_file())
+                for original in (work, work/'other-inputs', work.parent):
+                    with self.assertRaises(SystemExit):
+                        build.main([str(original), '--work-dir', str(work), '--phase', 'inspect'])
+
     def test_package_retains_license_and_patent_notices_without_build_tools(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);package_ss.package_notices(root)
@@ -89,7 +100,10 @@ class BuildTests(unittest.TestCase):
             source = build.stage(work)
             table = source / f'dm/games/{package_ss.TITLE}/c1_full.tsv'
             table.write_text('generated locally')
+            ghost = source/'dm/gfx/nvn/from_another_branch.c'
+            ghost.write_text('stale source')
             build.stage(work)
+            self.assertFalse(ghost.exists())
             self.assertEqual(table.read_text(), 'generated locally')
             self.assertTrue((source / 'dm/tools/nx_extract/Select.cs').is_file())
             self.assertTrue((source / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate').is_file())
@@ -203,15 +217,17 @@ class BuildTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'stale rewrite rule'):package_ss.verify_rewrite(root/'source',patched,pins)
 
     @unittest.skipUnless(sys.platform=='darwin','macOS atomic directory publication')
-    def test_atomic_publication_never_replaces_an_existing_app(self):
+    def test_publication_never_replaces_an_unknown_app(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);partial=root/'new.partial.app';output=root/'new.app'
             partial.mkdir();output.mkdir();(output/'keep').write_text('existing')
-            with self.assertRaises(OSError):package_ss.publish(partial,output)
+            with self.assertRaisesRegex(ValueError, 'not an SS app'):package_ss.publish(partial,output)
             self.assertEqual((output/'keep').read_text(),'existing')
             self.assertTrue(partial.is_dir())
             (output/'keep').unlink();output.rmdir()
-            package_ss.publish(partial,output)
+            with mock.patch('ss_bundle.install_app', side_effect=lambda new, out: new.rename(out)), \
+                 mock.patch.dict(os.environ, DM_SS_PROFILE=str(root/'profile')):
+                package_ss.publish(partial,output)
             self.assertTrue(output.is_dir());self.assertFalse(partial.exists())
 
     def test_layer_only_geometry_requires_valid_reflection(self):

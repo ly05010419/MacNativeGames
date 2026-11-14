@@ -44,6 +44,15 @@ PROGRAMS = {'zstd': ('zstd', 'bin/zstd'), 'spirv-cross': ('spirv-cross', 'bin/sp
 CMAKE_SET = ('cmake', 'meson', 'ninja')
 
 
+def package(name):
+    """A pinned package consumed by an isolated build's offline dependency feed."""
+    from .pins import PACKAGES
+    from .core import fetch
+    filename, url, digest = PACKAGES[name]
+    with locked():
+        return fetch(url, digest, filename)
+
+
 def prefix(name):
     """The installed folder of a pinned dependency (SOURCES), made from its source the first time."""
     if name not in SOURCES:

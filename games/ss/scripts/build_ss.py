@@ -12,6 +12,7 @@ from ss_env import environment as clean_environment
 from package_ss import PACKAGE, TITLE, package
 from verify_ss import verify_cut
 from build_shader_tools import build_translator
+from ss_bundle import check_output, adopt_inputs
 
 GAME = Path(__file__).resolve().parents[1]
 
@@ -27,17 +28,27 @@ def copy_tree(source, destination):
             shutil.copy2(src, dst)
 
 
-def stage(work, env=None):
+def stage(work, env=None, *, translator=True):
     """Keep all generated code, tables and caches outside the checkout. The shader translator is built from
     third_party/nxnative into the staged tree (scripts/build_shader_tools.py), or reused when nothing changed."""
     source = work/'source'
+    # Makefile wildcards must not compile a file left by another branch. Generated
+    # tables, embedded headers and translator outputs remain in their own folders.
+    for path in (source/'dm').rglob('*'):
+        rel = path.relative_to(source/'dm')
+        if any(p in ('gen', 'obj', 'bin', '__pycache__', 'dmsh_xlate_bin') for p in rel.parts):
+            continue
+        if path.is_file() and path.suffix in ('.c', '.m', '.h', '.S', '.inc', '.py', '.cs') and not (GAME/'runtime'/rel).is_file():
+            print(f'sources: removing {rel}, no longer in this checkout', flush=True)
+            path.unlink()
     copy_tree(GAME/'runtime', source/'dm')
     copy_tree(GAME/'assets', source/'assets')
     target = source/'scripts/build_ipa_from_nsp.py'
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(GAME/'third_party/nxnative/build_ipa_from_nsp.py', target)
     shutil.copy2(GAME/'scripts/inspect_inputs.py', source/'scripts/inspect_inputs.py')
-    build_translator(source, env or environment(work))
+    if translator:
+        build_translator(source, env or environment(work))
     return source
 
 
@@ -46,27 +57,30 @@ def environment(work):
     return clean_environment(work, TITLE)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('inputs', type=Path, help='extracted root containing ExeFS/ and RomFS/; no keys needed')
     parser.add_argument('--work-dir', required=True, type=Path)
     parser.add_argument('--output', type=Path, help='new .app output path (required for package/all)')
     parser.add_argument('--phase', choices=('inspect', 'rewrite', 'host', 'shaders', 'package', 'all'), default='all')
     parser.add_argument('--language', default='en-US', choices=('en-US', 'en-GB', 'ja', 'fr', 'de', 'es-419', 'es', 'it', 'nl', 'fr-CA', 'ru', 'ko', 'zh-Hant', 'zh-Hans', 'pt-BR'))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     work = args.work_dir.expanduser().resolve()
     original = args.inputs.expanduser().resolve()
     output = args.output.expanduser().resolve() if args.output else None
     checkout = GAME.parents[1]
     for path in (work, output):
-        if path and (path == checkout or checkout in path.parents or path == original or original in path.parents or path in original.parents):
+        managed_input = path == work and original == work/'inputs'
+        if path and (path == checkout or checkout in path.parents or path == original or original in path.parents or (path in original.parents and not managed_input)):
             parser.error('work/output must be outside the checkout and original inputs')
     if work in checkout.parents:
         parser.error('work must not contain the checkout')
     if args.phase in ('all', 'package') and not output:
         parser.error('--output is required for package/all')
-    if output and (output.exists() or output.suffix != '.app' or work == output or output in work.parents):
-        parser.error('--output must be a new .app path outside source inputs')
+    if output:
+        check_output(output)
+        if work == output or output in work.parents:
+            parser.error('--output must be outside the work directory ancestry')
     work.mkdir(parents=True, exist_ok=True)
     with (work/'build.lock').open('a') as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
