@@ -18,6 +18,26 @@ static _Atomic uint64_t g_gpu_trace_sequence;
 @implementation NVNGPUErrorTrace
 @end
 
+/* Whether the replay records pipeline binds for the report (gpu_trace_pipeline at enc_r_pso / enc_c_pso). Each record reads
+ * the pipeline's label and stores it in the ring (an Objective-C call, a retain and a release per bind); Breath of the Wild
+ * binds pipelines thousands of times a frame on the replay thread, its critical path. On by default in Ocarina of Time,
+ * whose #2112 this evidence is for; off in the other games. TOTK_GPU_TRACE=1 turns it on and =0 off, in any game, and
+ * "flag gpu_trace 0|1" (gpu_trace_set) switches it while the game runs (A/B). */
+static _Atomic int g_gpu_trace_on = -1;
+static int gpu_trace_on(void) {
+    int v = atomic_load_explicit(&g_gpu_trace_on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("TOTK_GPU_TRACE");
+#ifdef GAME_OOT
+        v = !(e && *e && !atoi(e));
+#else
+        v = e && atoi(e);
+#endif
+        int unset = -1; atomic_compare_exchange_strong(&g_gpu_trace_on, &unset, v); v = atomic_load(&g_gpu_trace_on);
+    }
+    return v;
+}
+static inline void gpu_trace_set(int on) { atomic_store(&g_gpu_trace_on, on != 0); }
 static void gpu_trace_pipeline(NSString *label) {
     g_gpu_trace_labels[g_gpu_trace_binds++ % GPU_TRACE_PIPELINES] = label ?: @"unlabelled helper pipeline";
 }
@@ -71,10 +91,11 @@ static void gpu_error_report(NSError *error, NVNGPUErrorTrace *t, double start, 
     if (!error || reports++ >= 8) return;
     NSMutableString *s = [NSMutableString stringWithFormat:
         @"[gpu-error] submit=%llu frame=%llu fence=%llu chunk=%u role=%@ domain=%@ code=%ld GPU=%.9f..%.9f\n%@\n%@\n"
-         "pipeline_binds=%llu retained=%lu omitted=%llu (CPU encoded candidates; not proof of GPU execution/fault):",
+         "pipeline_binds=%llu retained=%lu omitted=%llu (CPU encoded candidates; not proof of GPU execution/fault)%s:",
         (unsigned long long)t->sequence, (unsigned long long)t->frame, (unsigned long long)t->fence, t->chunk, t->role,
         error.domain, (long)error.code, start, end, error.description, context ?: @"",
-        (unsigned long long)t->binds, (unsigned long)t->pipelines.count, (unsigned long long)(t->binds - t->pipelines.count)];
+        (unsigned long long)t->binds, (unsigned long)t->pipelines.count, (unsigned long long)(t->binds - t->pipelines.count),
+        !t->binds && !gpu_trace_on() ? " [pipeline trace off in this game: TOTK_GPU_TRACE=1 records it]" : ""];
     NSUInteger i = 0;
     for (NSString *label in t->pipelines) [s appendFormat:@"\n  bind[%llu] %@", (unsigned long long)(t->binds - t->pipelines.count + i++), label];
     gpu_error_write(s);
