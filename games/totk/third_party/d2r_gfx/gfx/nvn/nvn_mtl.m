@@ -22,6 +22,7 @@
 #include "nvn_obj.h"
 #include "nvn_ctl.h"   // NVN / NVN2 control sections
 #include "nvn_quad_strip.h"
+#include "nvn_frame_telemetry.h"
 #include "totk_vpool.h"
 static _Atomic int g_mesh_reuse = -1;
 static _Atomic int g_pool_validate_once = -1;
@@ -2957,7 +2958,7 @@ static uint64_t g_up_total_ns;   // 上传累计耗时（与逐帧 @upload_ms �
 // ---------- 按帧归集 GPU 时间 ----------
 // ---------- Per-frame GPU time aggregation ----------
 #define GRING 1024
-static struct { _Atomic uint64_t frame, ns, t0, t1; _Atomic int pending; } g_gpu[GRING];   // t0 / t1：该帧最早 GPUStart / 最晚 GPUEnd（mach 绝对时间 ns） | t0 / t1: the frame's earliest GPUStart / latest GPUEnd (mach absolute time, ns)
+static struct { _Atomic uint64_t frame, ns, t0, t1; _Atomic int pending, invalid; } g_gpu[GRING];   // t0 / t1：该帧最早 GPUStart / 最晚 GPUEnd（mach 绝对时间 ns） | t0 / t1: the frame's earliest GPUStart / latest GPUEnd (mach absolute time, ns)
 /* g_cur_frame is defined above (conditional rendering) */
 // ---------- 同进程交替测量（DM_NVN_UB，缺省无：不设环境变量时下面只多一次「是否启用」的判断） ----------
 // 真机热态下系统持续调功率 / 频率，分段对比（A 段、B 段各跑一分钟）分不清 <10% 的差；在同一局里按相轮流开关、相邻相配对取差，漂移对消。
@@ -3072,18 +3073,18 @@ static void gpu_tag_begin(uint64_t f) {
     if (atomic_load(&g_cbw_committed) == atomic_load(&g_cbw_completed)) atomic_store(&g_cbw_last_commit_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));   // nothing outstanding: this commit starts the wait
     atomic_fetch_add(&g_cbw_committed, 1);
     unsigned k = f % GRING;
-    if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
+    if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].invalid, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
     atomic_fetch_add(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_done(uint64_t f, double g0, double g1) {
+static void gpu_tag_done(uint64_t f, double g0, double g1, int failed) {
     atomic_store(&g_cbw_last_done_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); atomic_fetch_add(&g_cbw_completed, 1);
     double d = g1 - g0;
     /* A command buffer can complete with no start time (GPUStartTime exactly 0, twice in a two-minute Ocarina of Time
        pass on an M5 Pro, 2026-11-12), and its span is then measured from the start of the clock: one such sample took
        a frame's @gpu_ms to 588279960.72 ms, the machine's whole uptime. games/mk8d guards the same way. Only the
-       sample is dropped: the watchdog's counters and the frame's pending count move either way, so a dropped sample
-       never stalls a frame. */
-    int usable = d > 0 && g0 > 0;
+       sample is dropped and its frame aggregate is unavailable: watchdog and pending bookkeeping still complete.
+       Reject nonfinite endpoints and failed feedback too, rather than exporting a partial frame as complete. */
+    int usable = nvn_gpu_timestamps_valid(g0, g1, failed);
     if (usable) sysload_note_gpu(g0, g1);   // the load line's game GPU share
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
@@ -3093,18 +3094,19 @@ static void gpu_tag_done(uint64_t f, double g0, double g1) {
         for (v = atomic_load(&g_gpu[k].t0); s0 < v && !atomic_compare_exchange_weak(&g_gpu[k].t0, &v, s0);) {}
         for (v = atomic_load(&g_gpu[k].t1); s1 > v && !atomic_compare_exchange_weak(&g_gpu[k].t1, &v, s1);) {}
     }
+    else atomic_store(&g_gpu[k].invalid, 1);
     atomic_fetch_sub(&g_gpu[k].pending, 1);
 }
-static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime); }]; }
+static void gpu_tag_f(id<MTLCommandBuffer> cb, uint64_t f) { gpu_tag_begin(f); [cb addCompletedHandler:^(id<MTLCommandBuffer> c) { gpu_tag_done(f, c.GPUStartTime, c.GPUEndTime, c.error != nil); }]; }
 void gpu_tag(id<MTLCommandBuffer> cb) { gpu_tag_f(cb, atomic_load(&g_cur_frame)); }
 double mtl_gpu_ms(uint64_t f) {
     unsigned k = f % GRING;
-    if (atomic_load(&g_gpu[k].frame) != f || atomic_load(&g_gpu[k].pending)) return -1;
+    if (atomic_load(&g_gpu[k].frame) != f || atomic_load(&g_gpu[k].pending) || atomic_load(&g_gpu[k].invalid)) return -1;
     return atomic_load(&g_gpu[k].ns) / 1e6;
 }
 int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
     unsigned k = f % GRING;
-    if (atomic_load(&g_gpu[k].frame) != f || atomic_load(&g_gpu[k].pending)) return 0;
+    if (atomic_load(&g_gpu[k].frame) != f || atomic_load(&g_gpu[k].pending) || atomic_load(&g_gpu[k].invalid)) return 0;
     *t0 = atomic_load(&g_gpu[k].t0); *t1 = atomic_load(&g_gpu[k].t1);
     return *t1 >= *t0 && *t1;
 }
@@ -3181,7 +3183,7 @@ static void mtl_sub_split_done(dispatch_semaphore_t completed) {
     NSString *cctx = @(cctx_snap());
     TotkCommitOptions *o = [TotkCommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
-        gpu_tag_done(gpu_f, f.GPUStartTime, f.GPUEndTime);
+        gpu_tag_done(gpu_f, f.GPUStartTime, f.GPUEndTime, f.error != nil);
         if (f.error) {
             gpu_error_report(f.error, trace, f.GPUStartTime, f.GPUEndTime, cctx);
             atomic_store(&g_last_commit_error, 1); // Publish only after the evidence is flushed: a waiter may abort immediately.
@@ -3285,7 +3287,7 @@ uint64_t mtl_sub_commit(void) {
     NVNGPUErrorTrace *trace = gpu_trace_take(gpu_f, fence, (unsigned)g_sub_chunks, @"main-final");
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         nvn_dirty_read_wait_exempt(1);   // OOT_GPU_READ_FENCE: the semaphore / counter results below are GPU-timeline writes; g_done for this fence moves only after them (rdf1: the wait here stalled every completion 3 s -> GPU watchdog)
-        gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
+        gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime, cb.error != nil);
         if (cb.error) {
             gpu_error_report(cb.error, trace, cb.GPUStartTime, cb.GPUEndTime, cctx);
             atomic_store(&g_last_commit_error, 1);
@@ -20221,12 +20223,9 @@ void ts_after(void) {
 }
 // 真实呈现时刻环：出图序号 → presentedTime（秒；−1 = 被系统丢弃未呈现）
 // Ring of actual presentation times: present sequence number -> presentedTime (seconds; -1 = dropped by the system, not presented)
-#define PRING 1024
-typedef struct { uint64_t n; double t; } pres_ent;
-static pres_ent g_pres[PRING];
 // 取第 n 次出图的实际呈现时刻（未就绪返回 0，被丢弃返回 −1）
 // Get the actual presentation time of the nth present (returns 0 if not ready, -1 if dropped)
-double mtl_presented_time(uint64_t n) { pres_ent e = g_pres[n % PRING]; return e.n == n ? e.t : 0; }
+double mtl_presented_time(uint64_t n) { return nvn_present_time_get(n); }
 static _Atomic uint64_t g_drawable_ns;   // 出图里等 nextDrawable 的累计墙钟（计时埋点） | Accumulated wall clock waiting for nextDrawable in present (timing instrumentation)
 uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0); }
 // 有窗口时屏幕的最高刷新率（Hz）；无窗口返回 0。Mac 用 CoreGraphics 显示模式（线程安全的 C 接口，出图配置在游戏线程上读）
@@ -20847,6 +20846,7 @@ static double present_min_duration(double period) {
 }
 #endif
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], __strong id<CAMetalDrawable> supplied, double target_ts, int interp) {
+    const uint64_t content_serial = t ? t->serial : 0;  // copied into asynchronous presentation feedback
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
     /* TOTK: the FPS box counts game presents per second and, while MetalFX interpolates, the generated frames shown as
@@ -20868,7 +20868,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<MTLTexture> src = interp >= 0 ? mfx_output(interp) : ring >= 0 ? g_pring[ring] : tex_mtl(t);
     BOOL hdrFrame=NO;t_hdr_present_white=1;t_hdr_present_peak=1;
     if(interp<0){id<MTLTexture> linear=hdr_swap_texture(t->serial,frame,&t_hdr_present_white,&t_hdr_present_peak);if(linear){src=linear;hdrFrame=YES;}}
-    if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
+    if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture");
+        nvn_present_event("dropped", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "no_source_texture"); return 0; }
     if (interp < 0) anom_present(src, frame);   // TOTK_ANOMALY
     /* One-frame temporal fallback (TOTK_FLASH_GUARD=1, off by default): a same-queue readback of the picture's centre
        before the drawable is encoded; on an abrupt colour jump the previous good picture is shown again, at most twice
@@ -21026,7 +21027,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
       for (int i = 0; i < nshot && interp < 0; i++) if (!by_frame && !done[i] && cur == shots[i]) { done[i] = 1; char path[1024]; snprintf(path, sizeof path, shot_path, (int)shots[i]); mtl_finish_gpu(); shot(src, path, 1, crop); } }
 
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer();
-    if (!layer) return 0;
+    if (!layer) {
+        nvn_present_event("dropped", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "no_layer"); return 0; }
 #if TARGET_OS_OSX
     if(totk_hdr_available() && front_hdr_present_mode){
         MTLPixelFormat want=hdrFrame?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
@@ -21055,11 +21057,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
     if (nogpu() || present_skip) { if (grab) { if (present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize); else grab(NULL); }
         if (grab_game) grab_game(NULL);
+        nvn_present_event("dropped", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "present_disabled");
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
-    if (!dr) { if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }
+    if (!dr) { if (grab) grab(NULL); if (grab_game) grab_game(NULL);
+        nvn_present_event("dropped", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "no_drawable"); return 0; }
     int alloc_i = (int)((ticket * 2 + (interp >= 0 ? 0 : 1)) % 3);   // the interpolated frame of a ticket and the ticket's own frame use different allocators
     pthread_mutex_lock(&g_pq_mu);
     while (g_present_alloc_busy[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -21068,7 +21072,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
+    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); if (grab_game) grab_game(NULL);
+        nvn_present_event("dropped", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "present_encode_failed"); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
     /* TOTK_VR_CONTROL (stage 1, totk_vr.m): a copy of this game frame's picture for the headset, in the same command buffer;
        published from the feedback handler below. */
     const int *vr_crop = crop; id<MTLTexture> vr_src = interp < 0 ? vr_picture(cb, src, &vr_crop) : nil;   // the MetalFX picture modes: MetalFX's, twice as large
@@ -21243,12 +21248,13 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     }
     [g_q4 signalDrawable:dr];
 #if TARGET_OS_SIMULATOR   // iOS 模拟器 SDK 没有呈现时刻回调与最短显示时长（只作画面验收用，不计节拍） | The iOS simulator SDK has no presentation-time callback and no minimum display duration (used only for picture acceptance, display-link ticks are not counted)
+    nvn_present_event("invalid", frame, ticket, content_serial, interp >= 0, 0, CACurrentMediaTime(), "simulator_no_presented_callback");
     (void)period; [dr present];
 #else
     uint64_t pn = ticket;   // 按游戏出图序号（票号）记上屏时刻：hle 的上屏统计按「游戏第 n 次出图」取；显示节拍路径里实际出图次数 ≠ 游戏出图次数（旧帧会被合并丢弃） | Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
     [dr addPresentedHandler:^(id<MTLDrawable> d) {   // 真实呈现时刻（屏幕上真正换上这一帧的时间，CACurrentMediaTime 基准） | Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base)
         CFTimeInterval tt = d.presentedTime;
-        if (interp < 0) g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};   // statistics per game frame; the interpolated one is not a game frame
+        nvn_present_event("presented", frame, pn, content_serial, interp >= 0, tt, CACurrentMediaTime(), "drawable_callback");   // statistics per game frame; the interpolated one is not a game frame
         cadence_note(tt, interp >= 0);
         front_frame_presented();
     }];
@@ -21257,7 +21263,6 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (target_ts > 0) [dr present];
     else if (period > 0) [dr presentAfterMinimumDuration:present_min_duration(period)]; else [dr present];
 #endif
-    (void)frame;
     return 1;
 }
 // ---------- 出图线程 ----------
@@ -21276,6 +21281,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 typedef struct { tex_t t; double period; uint64_t frame; int crop[4]; double t_in; int interp, interp_shown; double interp_ts; int ring; } pq_item;   // interp (TOTK_MFX): output slot of the frame shown before this one, or -1; interp_ts: the refresh it was shown at   // t_in：游戏把这一帧交进出图队列的时刻（CACurrentMediaTime） | t_in: the time the game handed this frame into the present queue (CACurrentMediaTime)
 static pq_item g_pq[PQ];
 static uint64_t g_pq_in;
+/* g_pq_mu held: the bounded pending range still owns these queue slots. Copy identity before slot reuse. */
+static void present_record_drop(uint64_t ticket, const char *reason) {
+    const pq_item *item = &g_pq[(ticket - 1) % PQ];
+    nvn_present_event("dropped", item->frame, ticket, item->t.serial, 0, 0, CACurrentMediaTime(), reason);
+}
 static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], id<CAMetalDrawable>, double, int);
 
 @interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>
@@ -21333,7 +21343,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = tts; }
     pq_item it = *ip; g_link_it_tin = it.t_in;
     g_pq_read = interp >= 0 ? g_pq_in - 1 : g_pq_in;
-    if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // 被合并丢弃的旧帧记「未上屏」，上屏统计如实算掉帧 | Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
+    if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) present_record_drop(k, "merged"); }   // 被合并丢弃的旧帧记「未上屏」，上屏统计如实算掉帧 | Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
@@ -21419,7 +21429,7 @@ static void present_drop_for_suspend(void) {
     pthread_mutex_lock(&g_pq_mu);
     if (g_link_owns_layer) {
         uint64_t n = g_pq_in - g_pq_read;
-        for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        for (uint64_t k = g_pq_read + 1; k <= g_pq_in; k++) present_record_drop(k, "suspend");
         g_link_dropped += n; g_pq_read = g_pq_in;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < g_pq_in) g_pq_done = g_pq_in;
@@ -21560,7 +21570,10 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     if (atomic_load(&g_vr_camscan) > 0) atomic_fetch_sub(&g_vr_camscan, 1);
     if (atomic_load(&g_vr_palscan) > 0) atomic_fetch_sub(&g_vr_palscan, 1);
     if (atomic_load(&g_vr_meshlog) > 0) atomic_fetch_sub(&g_vr_meshlog, 1);
-    if (discard) return 0;   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait
+    if (discard) {
+        nvn_present_event("dropped", atomic_load(&g_cur_frame), 0, t ? t->serial : 0, 0, 0, CACurrentMediaTime(), "discard_before_enqueue");
+        return 0;
+    }   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait
     if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
     link_sync();
@@ -21600,6 +21613,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // 当帧状态随票号入队，不在出图线程晚读可变window | The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
+    nvn_present_event("queued", it->frame, tk, it->t.serial, 0, 0, it->t_in, "enqueue");
     eye_note_present(t, crop);   // stereo replay: which textures the game presents, and the picture's rectangle
     if(vr_projection_tracking())vr_image_projection(vr_native_image(t,NULL,0));
     vr_present_queued(tk);   // VR head look: this frame's head pose goes with its ticket (the present thread copies it later)
@@ -21655,7 +21669,7 @@ void mtl_present_wait(uint64_t tk) {
         if (g_pq_read >= tk) continue;
         if (now - last < STALL_NS) { pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts); continue; }   // 节拍还在走，只是这张还没轮到：接着等（有上限，不空转） | The display link is still running, it is just not this one's turn yet: keep waiting (bounded, no busy spinning)
         uint64_t n = tk - g_pq_read;
-        for (uint64_t k = g_pq_read + 1; k <= tk; k++) g_pres[k % PRING] = (pres_ent){k, -1};
+        for (uint64_t k = g_pq_read + 1; k <= tk; k++) present_record_drop(k, "display_link_stall");
         g_link_dropped += n; g_pq_read = tk;
         while (g_pq_inflight) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
         if (g_pq_done < tk) g_pq_done = tk;
