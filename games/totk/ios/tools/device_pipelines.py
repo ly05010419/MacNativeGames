@@ -254,9 +254,12 @@ def main():
     ap.add_argument('--sdk', default='iphoneos')
     ap.add_argument('--arch', action='append', default=[], help='GPU architecture, e.g. applegpu_g14p (iPhone 14); none: remove them')
     ap.add_argument('--groups', type=int, default=GROUPS, help=f'merged files per GPU (default {GROUPS}; 0: one file per Mac file, as before 2026-11-13)')
-    ap.add_argument('--group-jobs', type=int, default=GROUP_JOBS, help=f'merged files compiled at once (default {GROUP_JOBS}: metal-tt runs one on several cores)')
+    ap.add_argument('--group-jobs', type=int, default=os.environ.get('MNG_DEVICE_PIPELINE_JOBS', GROUP_JOBS),
+                    help=f'merged files compiled at once (MNG_DEVICE_PIPELINE_JOBS, otherwise {GROUP_JOBS}; each uses several cores)')
     ap.add_argument('--variants', type=Path, help='only compile the recorded variant sources of this folder into the seed (none: remove them)')
     a = ap.parse_args()
+    if a.group_jobs < 1:
+        ap.error('--group-jobs / MNG_DEVICE_PIPELINE_JOBS must be at least 1')
     env = os.environ.copy()
     seed = a.seed.resolve()
     if a.variants:

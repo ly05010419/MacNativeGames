@@ -1,6 +1,7 @@
 """games/totk/ios/tools/device_pipelines.py: the device's pipeline archive compiled on the Mac while packaging (2026-10-29)."""
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,28 @@ class Compile(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_environment_limits_actual_merged_compiler_workers(self):
+        real_pool = device_pipelines.concurrent.futures.ThreadPoolExecutor
+        workers = []
+        def pool(*args, **kwargs):
+            workers.append(kwargs.get('max_workers', args[0] if args else None))
+            return real_pool(*args, **kwargs)
+        with mock.patch.dict(os.environ, {'MNG_DEVICE_PIPELINE_JOBS': '1'}), \
+             mock.patch.object(device_pipelines.concurrent.futures, 'ThreadPoolExecutor', side_effect=pool):
+            result = self.run_main('applegpu_g14p')
+        self.assertEqual(result['archs'][0]['failed'], 0)
+        self.assertEqual(workers[-1], 1)
+
+    def test_invalid_environment_worker_limit_fails_before_changing_the_seed(self):
+        old = self.seed/'pipelines-applegpu_old-k0-1.metalarchive'
+        for value in ('0', '-1', 'not-an-integer'):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {'MNG_DEVICE_PIPELINE_JOBS': value}), \
+                 mock.patch.object(sys, 'argv', ['device_pipelines.py', '--seed', str(self.seed), '--cache', str(self.cache)]), \
+                 mock.patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit) as error:
+                device_pipelines.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertEqual(old.read_bytes(), b'old')
 
     def run_main(self, *archs, groups=None):   # groups: --groups (default: the tool's GROUPS, merged files)
         real_run = subprocess.run

@@ -29,6 +29,7 @@ In a Python script:
 """
 import argparse
 import ctypes
+import errno
 import fcntl
 import os
 import random
@@ -46,6 +47,7 @@ _libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, c
 _libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
 _libproc.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE, _SZOMB = 3, 136, 5   # struct proc_bsdinfo: status at 4, pbi_start_tvsec at 120
+_PROC_FLAG_INEXIT = 4   # sys/proc_info.h: pbi_flags, not the pbi_status enum
 
 
 class Preempted(Exception):
@@ -191,13 +193,22 @@ def legacy_games(d, entries=None, user_pid=None, exclude=()):
 def pid_stuck_exiting(pid):
     """True when the process is gone, a zombie, or stuck exiting (ps state E): a game whose GPU context the kernel cannot
     tear down after a GPU hang stays in E for ever, holding every lock it had (2026-11-06 and 2026-11-07)."""
-    if pid <= 0 or not pid_start(pid):
+    if pid <= 0:
         return True
-    try:
-        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return "E" in stat or "Z" in stat
+    # /bin/ps is setuid and cannot be exec'd inside the build/test sandbox.
+    # Read the same kernel exit flag without a privileged subprocess. An unreadable
+    # process is unknown, not proof that a held lock can safely be replaced.
+    buf = ctypes.create_string_buffer(_BSDINFO_SIZE)
+    ctypes.set_errno(0)
+    size = _libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, buf, _BSDINFO_SIZE)
+    if size != _BSDINFO_SIZE:
+        error = ctypes.get_errno()
+        if size == 0 and error == errno.ESRCH:
+            return True
+        raise OSError(error or errno.EIO, f'cannot read process {pid} exit state ({size} bytes)')
+    flags = int.from_bytes(buf.raw[:4], 'little')
+    status = int.from_bytes(buf.raw[4:8], 'little')
+    return bool(flags & _PROC_FLAG_INEXIT) or status == _SZOMB
 
 
 def rotate_stuck_lock(d, log):

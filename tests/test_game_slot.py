@@ -7,10 +7,13 @@ and neither counted OcarinaOfTime as a game. So Ocarina of Time's packaging step
 and Tears of the Kingdom's Makefile probes (GAME_SLOT_RUN) never waited for a running game, and a user's game could not
 stop an agent's Ocarina of Time test game holding the slot (preempt_holder only signals a pid it counts as a game)."""
 import importlib.util
+import ctypes
+import errno
 import os
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -134,6 +137,59 @@ class GameProcesses(unittest.TestCase):
                 run = subprocess.run([str(exe), '/Users/someone'], capture_output=True, text=True, timeout=30)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: game processes and the default slot folder', run.stdout)
+
+
+class ExitingProcesses(unittest.TestCase):
+    """OOT's stuck-lock recovery must still read exit state when setuid ps is unavailable."""
+    def setUp(self):
+        self.slot = load_slot('oot')
+
+    def test_kernel_exit_flag_and_zombie_status_do_not_confuse_stopped_processes(self):
+        for flags, status, expected in [(0, 2, False), (0x10, 2, False), (2, 2, False),
+                                        (0, 4, False), (4, 2, True), (0x14, 2, True), (0, 5, True)]:
+            def info(pid, kind, arg, buf, size):
+                data = flags.to_bytes(4, 'little') + status.to_bytes(4, 'little') + bytes(size - 8)
+                ctypes.memmove(buf, data, size)
+                return size
+            with self.subTest(flags=flags, status=status), \
+                 mock.patch.object(self.slot._libproc, 'proc_pidinfo', side_effect=info), \
+                 mock.patch.object(self.slot.subprocess, 'run', side_effect=AssertionError('must not exec ps')):
+                self.assertEqual(self.slot.pid_stuck_exiting(123), expected)
+
+    def test_only_missing_process_is_treated_as_gone(self):
+        for error, size in [(errno.EPERM, 0), (errno.EACCES, 0), (0, 8), (0, 0)]:
+            def info(*args):
+                ctypes.set_errno(error)
+                return size
+            with self.subTest(error=error, size=size), \
+                 mock.patch.object(self.slot._libproc, 'proc_pidinfo', side_effect=info), self.assertRaises(OSError):
+                self.slot.pid_stuck_exiting(123)
+        def gone(*args):
+            ctypes.set_errno(errno.ESRCH)
+            return 0
+        with mock.patch.object(self.slot._libproc, 'proc_pidinfo', side_effect=gone):
+            self.assertTrue(self.slot.pid_stuck_exiting(123))
+
+    def test_query_failure_does_not_rotate_a_held_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder/'lock').write_text('original')
+            (folder/'holder').write_text(f'game_pid={os.getpid()}\n')
+            inode = (folder/'lock').stat().st_ino
+            with mock.patch.object(self.slot, 'pid_stuck_exiting', side_effect=PermissionError('unknown state')), \
+                 self.assertRaises(PermissionError):
+                self.slot.rotate_stuck_lock(folder, lambda text: None)
+            self.assertEqual((folder/'lock').stat().st_ino, inode)
+            self.assertEqual((folder/'lock').read_text(), 'original')
+
+    def test_real_self_and_child_exit_state_without_ps(self):
+        self.assertFalse(self.slot.pid_stuck_exiting(os.getpid()))
+        child = subprocess.Popen([sys.executable, '-B', '-c', 'import sys;sys.stdin.read()'], stdin=subprocess.PIPE)
+        try:
+            self.assertFalse(self.slot.pid_stuck_exiting(child.pid))
+        finally:
+            child.communicate(timeout=10)
+        self.assertTrue(self.slot.pid_stuck_exiting(child.pid))
 
 
 class AgentGameWatch(unittest.TestCase):
