@@ -60,6 +60,7 @@ int mtl_probe_midclear(void);
 int mtl_probe_srgb_view(void);
 int mtl_probe_storage_view(void);
 int mtl_probe_stor_alias(void);
+int mtl_probe_pkg_budget(void);
 int mtl_probe_arena_trim(void);
 int mtl_probe_compressed_alias(void);
 int mtl_probe_linear_rt_upload(void);

@@ -23773,6 +23773,7 @@ int mtl_probe_arg_epoch(void) {
 #include "nvn_upstream_probe.h"
 #include "nvn_memory_demand_probe.h"
 #include "nvn_stor_alias_probe.h"
+#include "nvn_pkg_budget_probe.h"
 #include "nvn_arena_trim_probe.h"
 #include "nvn_cube_group_probe.h"
 #if defined(GAME_BOTW) || defined(GAME_OOT)
