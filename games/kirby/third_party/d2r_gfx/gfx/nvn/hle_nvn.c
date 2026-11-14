@@ -1532,7 +1532,15 @@ NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, c
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }
-NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, int h) { *REC(c, OP_SCISSOR, p_scissor) = (p_scissor){x, y, w, h}; }
+extern uint64_t runtime_output_size_current(void) __attribute__((weak_import));
+NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, int h) {
+    /* Kirby's UI retains its retail full-canvas scissor even when its renderer's
+       targets and viewport are larger. Only the exact full-canvas rectangle is
+       promoted; partial UI clips and every other target keep their own bounds. */
+    if (!x && !y && w == 1920 && h == 1080 && runtime_output_size_current &&
+        runtime_output_size_current() == ((uint64_t)1440 << 32 | 2560)) { w = 2560; h = 1440; }
+    *REC(c, OP_SCISSOR, p_scissor) = (p_scissor){x, y, w, h};
+}
 
 /* CPU-only regression: independently recorded handles can share command storage. */
 void dm_nvn_probe_commands(void) {

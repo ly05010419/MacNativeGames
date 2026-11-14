@@ -104,13 +104,15 @@ int fps_overlay_toggle_hints(void);   /* key 1: all overlays -> FPS only -> off;
 int fps_overlay_hud_mode(void);
 void fps_overlay_set_hud_mode(int mode);
 int fps_overlay_value(void);          /* new pictures per second, -1 before the first measurement */
-/* runtime/game_patches.c: Kirby's frame rate (60 / 30) and resolution (dynamic / fixed 1920x1080), switchable while the
-   game runs and kept in the app's preferences; unavailable (0) with KIRBY_FPS60=0. */
+/* Kirby: frame rate (60/30), dynamic/fixed 1080p (live) and native 1440p (new canvas on restart).
+   Choices persist in the app preferences; unavailable with KIRBY_FPS60=0. */
 int runtime_kirby_settings_available(void);
 int runtime_kirby_fps(void);
 void runtime_kirby_set_fps(int fps);
 int runtime_kirby_fixed_res(void);
 void runtime_kirby_set_fixed_res(int on);
+int runtime_kirby_resolution(void); /* 0 dynamic, 1 fixed 1080p, 2 native 1440p */
+int runtime_kirby_set_resolution(int mode); /* 1: saved, restart needed */
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */

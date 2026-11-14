@@ -138,9 +138,10 @@ static NSString *shortcut_text(void){
  }
  if(!runtime_kirby_settings_available())
   return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)")),[NSString stringWithUTF8String:interp]];
- NSString *res=runtime_kirby_fixed_res()?@(TOTK_UI("固定 1920×1080","fixed 1920×1080")):@(TOTK_UI("动态（游戏默认）","dynamic (game default)"));
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  分辨率：当前 %@（按键切换）\n4  帧率：当前 %d FPS（按键切换）",
-  "Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Resolution: %@ (current; press to switch)\n4  Frame rate: %d FPS (current; press to switch)")),
+ NSString *res=runtime_kirby_resolution()==2?@(TOTK_UI("原生 2560×1440（设置中切换，需重启）","native 2560×1440 (change in Settings; restart required)")):
+  runtime_kirby_fixed_res()?@(TOTK_UI("固定 1920×1080","fixed 1920×1080")):@(TOTK_UI("动态（游戏默认）","dynamic (game default)"));
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  分辨率：%@\n4  帧率：当前 %d FPS（按键切换）",
+  "Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Resolution: %@\n4  Frame rate: %d FPS (current; press to switch)")),
   [NSString stringWithUTF8String:interp],res,runtime_kirby_fps()];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
@@ -247,11 +248,16 @@ static void front_overlays_apply(int mode);
 -(void)showLog:(id)s{(void)s;NSURL *f=front_log_file();if(f)[NSWorkspace.sharedWorkspace openURL:f];}
 -(void)openDataFolder:(id)s{(void)s;NSURL *d=front_data_folder();if(d)[NSWorkspace.sharedWorkspace openURL:d];}
 -(void)setFrameRate:(NSMenuItem *)s{runtime_kirby_set_fps((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
--(void)setResolution:(NSMenuItem *)s{runtime_kirby_set_fixed_res((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
+-(void)restartNotice{
+ NSAlert *alert=[NSAlert new];alert.messageText=@(TOTK_UI("设置已保存，下次启动生效","Setting saved for the next launch"));
+ alert.informativeText=@(TOTK_UI("请先在游戏中保存进度，再正常退出并重新打开 Kirby。","Save your progress in the game, then quit normally and reopen Kirby."));
+ [alert addButtonWithTitle:@(TOTK_UI("好","OK"))];[alert beginSheetModalForWindow:window completionHandler:nil];
+}
+-(void)setResolution:(NSMenuItem *)s{if(runtime_kirby_set_resolution((int)s.tag))[self restartNotice];[(TOTKShortcutHelp *)shortcutHelp refresh];}
 -(void)setOverlays:(NSMenuItem *)s{front_overlays_apply((int)s.tag);}
 -(BOOL)validateMenuItem:(NSMenuItem *)item{
  if(item.action==@selector(setFrameRate:)){item.state=runtime_kirby_fps()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
- if(item.action==@selector(setResolution:)){item.state=runtime_kirby_fixed_res()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
+ if(item.action==@selector(setResolution:)){item.state=runtime_kirby_resolution()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
  if(item.action==@selector(setOverlays:)){item.state=fps_overlay_hud_mode()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return YES;}
  return item.action==@selector(showLog:)?front_log_file()!=nil:front_data_folder()!=nil;}
 @end
@@ -293,6 +299,7 @@ static void front_install_menu(void){
  [settings addItem:NSMenuItem.separatorItem];
  menu_item(settings,TOTK_UI("分辨率：动态（游戏默认）","Resolution: Dynamic (game default)"),@selector(setResolution:),@"",0,menuTarget).tag=0;
  menu_item(settings,TOTK_UI("分辨率：固定 1920×1080","Resolution: Fixed 1920×1080"),@selector(setResolution:),@"",0,menuTarget).tag=1;
+ menu_item(settings,TOTK_UI("分辨率：原生 2560×1440（切换需重启）","Resolution: Native 2560×1440 (restart required)"),@selector(setResolution:),@"",0,menuTarget).tag=2;
  [settings addItem:NSMenuItem.separatorItem];
  menu_item(settings,TOTK_UI("提示：全部","Overlays: All"),@selector(setOverlays:),@"",0,menuTarget).tag=1;
  menu_item(settings,TOTK_UI("提示：只显示 FPS","Overlays: FPS Only"),@selector(setOverlays:),@"",0,menuTarget).tag=2;
