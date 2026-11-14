@@ -927,7 +927,18 @@ void mtl_init(void) {
     if (runtime_boot_status) runtime_boot_status(TOTK_UI("创建 Metal 图形设备","Creating the Metal device"),TOTK_UI("准备 GPU、命令队列和图形资源","Preparing the GPU, command queues and graphics resources"));
     g_present_probe = getenv("DM_PRESENT_PROBE") != NULL;
     const char *link = getenv("DM_PRESENT_LINK");
-    g_dm_present_link = link ? atoi(link) : 1; if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;   // 缺省 1（真机同进程交替：负载超一拍时长帧 15% → 0、帧间隔变匀；稳 60 时与 0 无差别）；DM_PRESENT_LINK=0 关   // 1 = 60 Hz 节拍每拍出图；2 = 120 Hz 节拍、游戏隔拍出一帧（落后时下一个 8.33 ms 拍就能上屏） | Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)
+#ifdef GAME_BOTW
+    /* Breath of the Wild: off by default. On a 120 Hz display the 60 Hz display link delayed the frames it
+       presented: refreshes dropped 14.9 / 15.7 % with the link against 0.0 / 1.3 % without it (indoors / the
+       Great Plateau, M5 Max, 1920x1080, one save, 60 s standing still per run), p99 25 / 16.67 ms against
+       8.33 / 25 ms, and the present cadence over the last 600 presents 4.3-8.8 % of frames more than one
+       refresh late against 0.2-2.8 %. The game's own present interval still paces it (interval 2 = 60 fps on
+       this display); the link only delayed the frames it presented. DM_PRESENT_LINK=1 brings the link back. */
+    g_dm_present_link = link ? atoi(link) : 0;
+#else
+    g_dm_present_link = link ? atoi(link) : 1;   // 缺省 1（真机同进程交替：负载超一拍时长帧 15% → 0、帧间隔变匀；稳 60 时与 0 无差别）；DM_PRESENT_LINK=0 关   // 1 = 60 Hz 节拍每拍出图；2 = 120 Hz 节拍、游戏隔拍出一帧（落后时下一个 8.33 ms 拍就能上屏） | Default 1 (real-device same-process alternation: when load exceeds one display-link period, long frames 15% → 0 and frame intervals even out; no difference from 0 at a steady 60); DM_PRESENT_LINK=0 turns it off   // 1 = present on every tick of a 60 Hz display link; 2 = 120 Hz display link, the game presents a frame every other display-link tick (when behind, it can present on the next 8.33 ms display-link tick)
+#endif
+    if (g_dm_present_link < 0 || g_dm_present_link > 2) g_dm_present_link = 1;
     const char *latency = getenv("DM_PRESENT_LATENCY");
     if (latency && atoi(latency) > 0) g_present_latency = atoi(latency);
     g_res_check_on = getenv("DM_RES_CHECK") != NULL;
