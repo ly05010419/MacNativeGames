@@ -18587,8 +18587,12 @@ static uint64_t g_ind_splits;
 static void dispatch(const p_dispatch *dp) {
     /* An empty grid has no invocations. Metal's direct-dispatch API rejects
        zero dimensions (BotW's ordinary loading path submits them), so leave
-       the current encoder and its pending work unchanged. */
-    if (!dp->x || !dp->y || !dp->z) return;
+       the current encoder and its pending work unchanged. A recorded indirect
+       dispatch carries no x/y/z (they live in its argument buffer), so the
+       guard must not take it: dropping it silently drops the GPU work
+       (Ocarina of Time's grass stopped being generated; also see the note at
+       hle_nvn.c "entries that would silently drop GPU work"). */
+    if (!dp->indirect && (!dp->x || !dp->y || !dp->z)) return;
     zskip_clear();
     void *indirect_buffer = NULL; uint64_t indirect_offset = 0, indirect_gpu = 0;
     if (dp->indirect) {
