@@ -414,6 +414,8 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         const char *debugEnv = getenv("TOTK_DEBUG_LOG");
         BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv, "0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
         NSString *log = [logs stringByAppendingPathComponent:@GAME_LOG ".log"];
+        // Failure-only evidence survives even when normal debug output is off (#2112).
+        setenv("OOT_GPU_ERROR_LOG", [logs stringByAppendingPathComponent:@GAME_LOG ".gpu-error.log"].fileSystemRepresentation, 0);
         NSString *previous = [logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"];
         [NSFileManager.defaultManager removeItemAtPath:previous error:nil];
         if (debugLog) [NSFileManager.defaultManager moveItemAtPath:log toPath:previous error:nil];

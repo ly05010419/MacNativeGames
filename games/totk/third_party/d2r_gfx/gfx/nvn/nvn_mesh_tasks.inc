@@ -155,6 +155,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
     m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
     NSString *akey=mtk_archive_key(ts,ms,fs,key);
+    m.label=[NSString stringWithFormat:@"pipeline=%@ variant=%llu %@",akey?:@"unarchived",(unsigned long long)key->variant,m.label];
     id<MTLBinaryArchive> a=akey?par_archive_for(g_dev,akey):nil;
     if(a){
         m.binaryArchives=@[a];
@@ -166,6 +167,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     if(akey&&g_par_on){par_count(0);atomic_fetch_add(&g_mtk_archive_misses,1);}
     id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
     if(ps&&akey)par_add(g_dev,akey,m);
+    if(!ps)gpu_compile_error(error?*error:nil,m.label);
     return ps;
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {

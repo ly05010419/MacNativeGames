@@ -152,6 +152,7 @@ static int guarded_memcmp(const void *a, const void *b, size_t n, int *differ, c
     return 1;
 }
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
+#include "nvn_gpu_error.h"
 #define TOTK_SERIAL_SET_FAIL() MDIE("serial history: out of memory")
 #include "totk_serial_set.h"
 
@@ -1871,7 +1872,7 @@ static id<MTL4RenderCommandEncoder> oot_bar_render_begin(MTL4RenderPassDescripto
     g_oot_bar_beginning = 0; g_oot_bar_writes = g_oot_bar_order = 0;
     return en;
 }
-static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { if (rs_using(e)) rs_object(RS_PSO, p); else [e setRenderPipelineState:p]; }
+static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { gpu_trace_pipeline(p.label); if (rs_using(e)) rs_object(RS_PSO, p); else [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { if (rs_using(e)) rs_object(RS_DSS, s); else [e setDepthStencilState:s]; }
 /* TOTK: render state already set on the current encoder. The replay sets viewport, scissor, cull, winding, fill, depth bias,
    depth clip, stencil reference and blend color for every draw (about 30,000 encoder calls per frame), nearly all unchanged.
@@ -1926,7 +1927,7 @@ static inline void enc_r_store(id<MTL4RenderCommandEncoder> e, int depth, MTLSto
 static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor *d) { atomic_store_explicit(&g_oot_bar_last, 0, memory_order_relaxed); (void)d; blit_close(); rs_sync(); pt_mark(g_cb, 'C', nil); id<MTL4ComputeCommandEncoder> e = [g_cb computeCommandEncoder]; if (bar_start_on()) [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; [e setArgumentTable:g_ct]; return e; }
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
 static inline void enc_c_end(id e) { m4_end(e); }
-static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { [e setComputePipelineState:p]; }
+static inline void enc_c_pso(id e, id<MTLComputePipelineState> p) { gpu_trace_pipeline(p.label); [e setComputePipelineState:p]; }
 static inline void enc_c_args(id e, uint64_t gpu, NSUInteger i) { (void)e; [g_ct setAddress:gpu atIndex:i]; }
 static inline void enc_c_dispatch(id e, MTLSize n, MTLSize t) { [e dispatchThreadgroups:n threadsPerThreadgroup:t]; }
 static inline id enc_b_begin(id cb) { return [cb respondsToSelector:@selector(beginCommandBufferWithAllocator:)] ? [cb computeCommandEncoder] : [cb blitCommandEncoder]; }
@@ -3111,8 +3112,7 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
 static void gpu_hang_guard(NSError *error) {
     static _Atomic int hangs;
     NSString *d = error.description ?: @"";
-    int hang = error.code == MTLCommandBufferErrorTimeout || [d containsString:@"Timeout"] || [d containsString:@"timeout"] ||
-               [d containsString:@"Hang"] || [d containsString:@"hang"] || [d containsString:@"InnocentVictim"];
+    int hang = gpu_error_is_hang(error);
     if (!hang) return;
     int n = atomic_fetch_add(&hangs, 1) + 1;
     MLOG("【红】GPU 超时 / 挂起（第 %d 次）：%s", n, d.UTF8String);
@@ -3173,10 +3173,15 @@ static void mtl_sub_split_done(dispatch_semaphore_t completed) {
     res_commit();
     fc3 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t gpu_f = atomic_load(&g_cur_frame), fence_next = g_fence + 1; gpu_tag_begin(gpu_f);
+    NVNGPUErrorTrace *trace = gpu_trace_take(gpu_f, fence_next, (unsigned)g_sub_chunks, @"main-mid");
+    NSString *cctx = @(cctx_snap());
     TotkCommitOptions *o = [TotkCommitOptions new];
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         gpu_tag_done(gpu_f, f.GPUStartTime, f.GPUEndTime);
-        if (f.error) { atomic_store(&g_last_commit_error, 1); static int n; if (n++ < 8) MLOG("【红】分段命令缓冲错误 fence=%llu：%s", (unsigned long long)fence_next, f.error.description.UTF8String); }
+        if (f.error) {
+            gpu_error_report(f.error, trace, f.GPUStartTime, f.GPUEndTime, cctx);
+            atomic_store(&g_last_commit_error, 1); // Publish only after the evidence is flushed: a waiter may abort immediately.
+        }
         if(completed)dispatch_semaphore_signal(completed);
     }];
     uint64_t tlid = totk_tl_on() ? totk_tl_commit_id() : 0;
@@ -3273,10 +3278,15 @@ uint64_t mtl_sub_commit(void) {
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; nvn_dirty_read_wait_exempt(1); for (dispatch_block_t block in commit_blocks) block(); }];   // OOT_GPU_READ_FENCE: a completion thread never waits for a GPU reader (its guest writes are the GPU timeline's)
     uint64_t gpu_f = atomic_load(&g_cur_frame); gpu_tag_begin(gpu_f);
     NSString *cctx = @(cctx_snap());
+    NVNGPUErrorTrace *trace = gpu_trace_take(gpu_f, fence, (unsigned)g_sub_chunks, @"main-final");
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         nvn_dirty_read_wait_exempt(1);   // OOT_GPU_READ_FENCE: the semaphore / counter results below are GPU-timeline writes; g_done for this fence moves only after them (rdf1: the wait here stalled every completion 3 s -> GPU watchdog)
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
-        if (cb.error) { gpu_hang_guard(cb.error); atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
+        if (cb.error) {
+            gpu_error_report(cb.error, trace, cb.GPUStartTime, cb.GPUEndTime, cctx);
+            atomic_store(&g_last_commit_error, 1);
+            gpu_hang_guard(cb.error);
+        }
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
@@ -10076,6 +10086,7 @@ static void par_miss_note(const char *what, NSString *key, MTLRenderPipelineDesc
     os_unfair_lock_lock(&lk); fprintf(f, "%s\t%s\t%s\t%s\n", what, key.UTF8String, hex.UTF8String, s.UTF8String); fflush(f); os_unfair_lock_unlock(&lk);
 }
 static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
+    d.label = [NSString stringWithFormat:@"pipeline=%@ %@", key ?: @"unarchived", d.label ?: @"render"];
     id<MTLRenderPipelineState> ps = nil;
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
@@ -10089,6 +10100,7 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     if (key && g_par_on) par_count(0);
     ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
     if (ps) par_add(g_dev, key, d);
+    else gpu_compile_error(e ? *e : nil, d.label);
     return ps;
 }
 static _Atomic uint64_t g_compute_bundle_hits,g_compute_device_hits,g_compute_misses;
@@ -10096,7 +10108,7 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
     NSString *key = cs_archive_key(cs);
     // A constrained threadgroup is a different Metal descriptor and archive key.
     if(key&&d.maxTotalThreadsPerThreadgroup)key=[key stringByAppendingFormat:@"-tg%lu",(unsigned long)d.maxTotalThreadsPerThreadgroup];
-    d.label = cs->key[0] ? @(cs->key) : cs->builtin ? @(cs->builtin) : @"builtin compute";
+    d.label = [NSString stringWithFormat:@"pipeline=%@ cs=%s", key ?: @"unarchived", cs->key[0] ? cs->key : cs->builtin ?: "builtin compute"];
     id<MTLComputePipelineState> ps = nil;
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
@@ -10111,6 +10123,7 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
     if (ps) par_add(g_dev, key, d);
+    else gpu_compile_error(e ? *e : nil, d.label);
     return ps;
 }
 /* A compute pipeline that takes the shader's own thread group size. Metal compiles a kernel for some number of threads a group
