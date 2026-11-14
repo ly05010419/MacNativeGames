@@ -16,7 +16,21 @@ SCRIPTS = ROOT/'games/dread/scripts'
 sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location('dread_prepare_shader_seed', SCRIPTS/'prepare_shader_seed.py')
 seed = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(seed)
+# prepare_shader_seed imports its sibling shader_list.py by name. In the whole suite Tears of the Kingdom's shader_list.py
+# (which normalizes pipeline keys; Dread's does not) can already be in sys.modules under that name, so Dread's is loaded
+# by path for this import and the earlier entry is put back afterwards.
+_list_spec = importlib.util.spec_from_file_location('dread_shader_list', SCRIPTS/'shader_list.py')
+_dread_list = importlib.util.module_from_spec(_list_spec)
+_list_spec.loader.exec_module(_dread_list)
+_earlier = sys.modules.get('shader_list')
+sys.modules['shader_list'] = _dread_list
+try:
+    spec.loader.exec_module(seed)
+finally:
+    if _earlier is None:
+        sys.modules.pop('shader_list', None)
+    else:
+        sys.modules['shader_list'] = _earlier
 # The names totk_shader_seed.h totk_seed_import_into accepts; anything else makes it refuse the whole seed.
 SAFE = re.compile(r'^(?:[0-9a-f]{64}\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\.(?:metal|json|metallib)|pso_manifest\.tsv)$')
 
@@ -178,6 +192,35 @@ class PrepareTests(unittest.TestCase):
             self.assertEqual(asked, [seed.variant_name(ps, seed.answers_for(json.loads(cube)))])
             self.assertEqual(grown['shaders'], 4)
 
+
+
+class WarmPipelineTests(unittest.TestCase):
+    """Render pipelines of the list go into the seed's warm-up manifest as recorded, only when the seed holds their
+    shaders: Dread's runtime looks pipelines up by the key as recorded (no pso_key_norm)."""
+
+    def key(self, vs, fs, tail=b''):
+        name = seed.NAME
+        raw = vs.encode().ljust(name, b'\0') + fs.encode().ljust(name, b'\0') + tail
+        return raw.ljust(544, b'\0').hex()
+
+    def test_rows_whose_shaders_the_seed_holds_are_kept_as_recorded(self):
+        a, b, c = ('%064x-%012x_b' % (i, i) for i in (1, 2, 3))
+        # blend factors set on a target that does not blend: TOTK's pso_key_norm would clear them
+        odd = self.key(a, b, bytes(272 - 160) + bytes([7] * 8))
+        rows = [odd, self.key(a, c), self.key(a, '')]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'shader_list.tsv'
+            path.write_text(''.join(f'R\t{r}\tm\n' for r in rows))
+            self.assertEqual(seed.warm_pipelines(path, {a, b}), [odd, self.key(a, '')])
+            self.assertEqual(seed.warm_pipelines(Path(tmp)/'missing.tsv', {a, b}), [])
+
+    def test_the_shipped_list_reads_and_its_pipelines_name_listed_shader_keys(self):
+        rows = [r for r in seed.ShaderList.load(seed.LIST).warm if r[0] == 'R']
+        self.assertTrue(rows)
+        for _, key in rows:
+            self.assertEqual(len(key), 2 * 544)
+            vs = bytes.fromhex(key)[:seed.NAME].partition(b'\0')[0].decode()
+            self.assertRegex(vs, r'^[0-9a-f]{64}-[0-9a-f]{12}_b$')
 
 if __name__ == '__main__':
     unittest.main()

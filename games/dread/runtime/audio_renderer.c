@@ -89,7 +89,7 @@ static void skip_empty(AudioRenderer *r, ServerVoice *v) {
         if (b->loop && b->loop_count < 0) break;   /* an endless empty loop starves the voice, as on the DSP */
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
         if (r) r->empty_played++;
-        if (b->end_of_stream) { v->played = 0; break; }
+        if (b->end_of_stream) { v->played = 0; if (!AUDIO_EOS_PLAYS_ON) break; }
     }
 }
 static int stop_release(void) {
@@ -261,7 +261,7 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
         if (v->offset < length) break;
         if (b->loop && (b->loop_count < 0 || v->loops_done < b->loop_count)) { v->loops_done++; v->offset = b->loop_start > b->start && b->loop_start < b->end ? (uint64_t)(b->loop_start - b->start) : 0; continue; }
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
-        if (b->end_of_stream) { v->played = 0; break; }
+        if (b->end_of_stream) { v->played = 0; if (!AUDIO_EOS_PLAYS_ON) break; }
         skip_empty(r, v);
     }
 }
@@ -404,12 +404,40 @@ static int probe_rev15(void){
     free(input);audio_mixer_close(r);free(r->voices);free(r->pools);free(r->mixes);free(r->sinks);free(r->effects);free(r->channels);free(r);
     return checked;
 }
+/* The mixed output of a voice whose end-of-stream buffer ends inside a frame with another queued (Metroid Dread's streamed
+   music and movie audio: every buffer is end of stream). The second buffer's samples must reach the mix in the same
+   frame: 100 samples at +0.5, then -0.25 from sample 100 on. Stopping the voice for the rest of the frame left 0 there,
+   a gap of up to 5 ms every 325 ms in the game (the tick). This checks the mixer's walk; section 8 below checks the
+   renderer's cursor. */
+static int probe_eos_mix(void) {
+    AudrenParameter p = {48000, 240, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, REV(11)};
+    AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
+    r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
+    r->sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 2, .inputs = {0, 1}};
+    static int16_t a[100], b[480]; for (int k = 0; k < 100; k++) a[k] = 16384; for (int k = 0; k < 480; k++) b[k] = -8192;
+    AudrenVoiceIn v = {.id = 0, .is_new = 1, .in_use = 1, .play_state = PLAY_STARTED, .sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1,
+                       .pitch = 1, .volume = 1, .mix_id = 0, .splitter_id = 0xffffffffu, .channel_ids = {0}};
+    v.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)a, .size = sizeof a, .end = 100, .end_of_stream = 1};
+    v.wave_buffers[1] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)b, .size = sizeof b, .end = 480, .end_of_stream = 1};
+    v.wave_buffers[2] = (AudrenWaveBuffer){.sent = 1}; v.wave_buffers[3] = (AudrenWaveBuffer){.sent = 1};
+    r->channels[0].mix[0] = r->channels[0].mix[1] = 1; update_voice(r, &v);
+    const double frame = 240.0 / 48000; float lr[480]; int checked = 0;
+    audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, &r->voices[0], frame); audio_mixer_read(r, lr, 240);
+    for (int k = 0; k < 240; k++) {
+        float want = k < 100 ? 0.5f : -0.25f;
+        if (!near(lr[2 * k], want)) { fprintf(stderr, "eos mix: output %d is %f, want %f\n", k, lr[2 * k], want); runtime_fail("audio probe: the next queued buffer after an end-of-stream one is not mixed in the same frame"); }
+        checked++;
+    }
+    audio_mixer_close(r); free(r->voices); free(r->pools); free(r->mixes); free(r->sinks); free(r->effects); free(r->channels); free(r);
+    return checked;
+}
 void runtime_audio_probe(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1);
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
     int checked = probe_rev15();
+    checked += probe_eos_mix();
     /* final mix 0: buffers 0-1; submix 1: buffers 2-3 -> mix 0 with a swap matrix at volume 0.5 */
     r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
     r->mixes[1] = (AudrenMixIn){.volume = 0.5f, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 1, .dest_mix_id = 0, .dest_splitter_id = 0xffffffffu};
@@ -610,6 +638,25 @@ void runtime_audio_probe(void) {
         }
         checked += 3;
         x.flush_wave_buffer_count = 0; x.in_use = 0; update_voice(r, &x);
+        /* 8. EOS with another buffer queued: the voice plays on within this frame (AUDIO_EOS_PLAYS_ON,
+           Metroid Dread's streamed music and movie audio). Check both paths, including the played-sample count returned to the game's audio client. */
+        x.in_use = 1; x.is_new = 1; x.wave_buffer_index = 0;
+        x.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)a7, .size = sizeof a7, .end = 100, .end_of_stream = 1};
+        x.wave_buffers[1] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)b7, .size = sizeof b7, .end = 480, .end_of_stream = 1};
+        x.wave_buffers[2] = (AudrenWaveBuffer){.sent = 1}; x.wave_buffers[3] = (AudrenWaveBuffer){.sent = 1};
+        update_voice(r, &x); audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        unsigned eos_offset = AUDIO_EOS_PLAYS_ON ? 140 : 0;
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != eos_offset || sv7->played != eos_offset) {
+            fprintf(stderr, "end of stream: consumed %u index %u offset %llu played %llu, want 1 1 %u %u\n", sv7->consumed, sv7->index, (unsigned long long)sv7->offset, (unsigned long long)sv7->played, eos_offset, eos_offset);
+            runtime_fail("audio probe: end-of-stream frame boundary");
+        }
+        checked += 4;
+        x.is_new = 0; x.wave_buffers[0].sent = x.wave_buffers[1].sent = 1; update_voice(r, &x);
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != eos_offset + 240 || sv7->played != eos_offset + 240)
+            runtime_fail("audio probe: voice did not resume after an end-of-stream boundary");
+        checked += 4;
+        x.in_use = 0; update_voice(r, &x);
     }
     printf("{\"status\":\"pass\",\"probe\":\"probe-audio\",\"checked\":%d,\"scope\":\"REV15 wire parsing, native float voice/splitter biquads and consecutive request state; PCM16 channel mix, pitch interpolation, DSP-ADPCM decode, splitter to submix to final mix, device sink, stereo cascaded biquads, ordered submix reverb, auxiliary ring exchange, output limiter, bypass, frame continuity and reset\"}\n", checked);
 }
