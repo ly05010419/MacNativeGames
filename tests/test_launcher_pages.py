@@ -44,7 +44,7 @@ class Pages(unittest.TestCase):
     def test_ocarina_is_a_page_game_but_not_in_the_build_catalog(self):
         self.assertIn('oot', PAGE_GAMES)
         self.assertNotIn('oot', GAMES)   # built by games/oot/build.py; GAMES is compared with build_app.py
-        self.assertEqual(PAGES['oot'], ('controls', 'storage', 'saves'))
+        self.assertEqual(PAGES['oot'], ('controls', 'storage', 'saves', 'diag'))   # diag: 诊断模式 (2026-11-15)
 
     def test_a_page_the_game_does_not_have_is_refused(self):
         for tab in ('settings', 'mods'):

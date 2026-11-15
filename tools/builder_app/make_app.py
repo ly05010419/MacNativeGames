@@ -84,10 +84,29 @@ def python_archive(cache):
 
 def binary(scratch):
     env = dict(os.environ)
-    run(['swift', 'build', '-c', 'release', '--package-path', HERE, '--scratch-path', scratch], env=env)
-    out = subprocess.run(['swift', 'build', '-c', 'release', '--package-path', str(HERE), '--scratch-path', str(scratch),
-                          '--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
+    # --disable-sandbox: SwiftPM compiles a dependency's manifest (SwiftTerm, pinned in Package.swift) in a sandbox of
+    # its own, which cannot be made inside another one (this Mac's storage_guard runs every build in sandbox-exec)
+    run(['swift', 'build', '-c', 'release', '--disable-sandbox', '--package-path', HERE, '--scratch-path', scratch], env=env)
+    out = subprocess.run(['swift', 'build', '-c', 'release', '--disable-sandbox', '--package-path', str(HERE),
+                          '--scratch-path', str(scratch), '--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
     return Path(out) / 'MNGBuilder'
+
+
+def licenses(scratch, resources):
+    """The licence and notice files of every package SwiftPM checked out (SwiftTerm, MIT; swift-argument-parser,
+    Apache-2.0, which only SwiftTerm's own tools use), into Contents/Resources/licenses/<package>/: the app carries
+    their code. Returns the packages."""
+    done = []
+    for package in sorted(p for p in (Path(scratch) / 'checkouts').glob('*') if p.is_dir()):
+        files = [f for f in package.iterdir() if f.is_file() and re.match(r'(LICEN[CS]E|NOTICE|COPYING)', f.name, re.I)]
+        if not files:
+            raise SystemExit(f'{package.name}: no licence file in its checkout; the app cannot carry its code without one')
+        target = resources / 'licenses' / package.name
+        target.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            shutil.copy2(f, target / f.name)
+        done.append(package.name)
+    return done
 
 
 def check_release_source(repo):
@@ -118,14 +137,16 @@ def source_archive(repo, destination):
 
 def icon(resources):
     """Resources/AppIcon.icns from tools/builder_app/Resources/AppIcon.png (the project's own artwork, 1024 px, the shape
-    on the macOS icon grid), every size iconutil wants, made with sips."""
+    on the macOS icon grid), every size iconutil wants, drawn with AppKit (resize_icon.js; sips writes through the
+    user's temporary folder, which this Mac's build sandbox refuses)."""
     art = HERE / 'Resources/AppIcon.png'
     iconset = resources / 'AppIcon.iconset'
     iconset.mkdir()
     for size in (16, 32, 128, 256, 512):
         for scale in (1, 2):
             name = f'icon_{size}x{size}{"@2x" if scale == 2 else ""}.png'
-            run(['sips', '-z', str(size * scale), str(size * scale), art, '--out', iconset / name], stdout=subprocess.DEVNULL)
+            run(['/usr/bin/osascript', '-l', 'JavaScript', HERE / 'resize_icon.js', art, str(size * scale), iconset / name],
+                stdout=subprocess.DEVNULL)
     run(['iconutil', '-c', 'icns', iconset, '-o', resources / 'AppIcon.icns'])
     shutil.rmtree(iconset)
 
@@ -167,6 +188,7 @@ def main(argv):
     (stage / 'Contents/MacOS').mkdir(parents=True)
     (stage / 'Contents/Resources').mkdir()
     shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
+    say('licences: ' + ', '.join(licenses(a.scratch.expanduser(), stage / 'Contents/Resources')))
     icon(stage / 'Contents/Resources')
     plist = info(REPO)
     plist['CFBundleShortVersionString'] = a.version

@@ -10,7 +10,7 @@ struct ContentView: View {
     var body: some View {
         // No bar on top (user 2026-11-12): the games are the first page; building opens from a card's plus and has
         // its own way back; a game's settings, mods, controls, storage and saves open under its card.
-        if model.page == "build" { BuildPage() } else { HomePage() }
+        if model.page == "build" { BuildPage() } else if model.page == "terminal" { TerminalPage() } else { HomePage() }
     }
 }
 

@@ -3,7 +3,8 @@
 there, plus those in the Launcher's apps folder, each with the update it needs (update_runtime.py --plan): an installed
 game is updated in place, with the work folder it records, by the fastest update that fits.
 
-Contract: apps(apps_dir) returns a list of dicts {app, name, game, version, kind, reason, work, commit}; it never raises.
+Contract: apps(apps_dir) returns a list of dicts {app, name, game, version, kind, reason, work, commit, shaders}; it never
+raises. shaders is the App's MNGShaders: 'title' for a quick App (only the title's shaders), else 'full'.
 kind is express, fast, full or error (update_runtime.plan)."""
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -73,11 +74,12 @@ def usable(path):
             and (p / 'Contents/Info.plist').is_file())
 
 
-def plan(app, python=sys.executable, work=None):
-    """update_runtime.py --plan for one app (with --work when given), or an 'error' plan saying why it could not be asked."""
+def plan(app, python=sys.executable, work=None, env=None):
+    """update_runtime.py --plan for one app (with --work when given, in env when given: a quick start asks with
+    OOT_SHADERS=title), or an 'error' plan saying why it could not be asked."""
     try:
         done = subprocess.run([python, str(repo.UPDATE_RUNTIME), str(app), '--plan'] + (['--work', str(work)] if work else []),
-                              cwd=repo.REPO, capture_output=True,
+                              cwd=repo.REPO, capture_output=True, env=env,
                               text=True, timeout=300)
         return json.loads(done.stdout.strip().splitlines()[-1])
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as e:
@@ -107,5 +109,7 @@ def apps(apps_dir=None, python=sys.executable):
             'game': plans[real].get('game'),
             'version': plans[real].get('display_version') or info.get('CFBundleShortVersionString'),
             'kind': plans[real].get('kind', 'error'), 'reason': plans[real].get('reason', ''), 'work': plans[real].get('work'),
-            'commit': info.get('MNGSourceCommit')} for real, info in found.items()]
+            'commit': info.get('MNGSourceCommit'),
+            # 'title': a quick App (games/oot/build.py shader_mode), offered 补全着色器 on its card
+            'shaders': info.get('MNGShaders') or 'full'} for real, info in found.items()]
     return sorted(out, key=lambda a: (a['name'], a['app']))

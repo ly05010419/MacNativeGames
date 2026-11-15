@@ -32,6 +32,9 @@ final class Model: ObservableObject {
     @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var page = "home"         // the page shown: home (the games) or build
     @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)
+    @Published var quickStart = false    // 快速启动: build with only the title's shaders (Model.quickGames)
+    /// The log of the job that failed last, which the terminal page's AI is asked about.
+    var failureLog: String? { failure.flatMap { $0.step_log ?? $0.log } }
     @Published var outputDir: String { didSet { save() } }
     @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
 
@@ -84,9 +87,9 @@ final class Model: ObservableObject {
     /// The pages besides building each game has (tools/builder/games.py PAGES, which the backend enforces;
     /// tests/test_launcher_pages.py checks the two agree). Ocarina of Time: Controls, Storage and Saves (user 2026-11-13).
     static let gamePages: [String: [String]] = [
-        "totk": ["settings", "mods", "controls", "storage", "saves"],
-        "botw": ["settings", "mods", "controls", "storage", "saves"],
-        "oot": ["controls", "storage", "saves"],
+        "totk": ["settings", "mods", "controls", "storage", "saves", "diag"],
+        "botw": ["settings", "mods", "controls", "storage", "saves", "diag"],
+        "oot": ["controls", "storage", "saves", "diag"],   // diag: 诊断模式 (DiagPage, user 2026-11-13)
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.
@@ -212,7 +215,20 @@ final class Model: ObservableObject {
         // an installed app of this game is built into where it is, with the work folder it records
         let installedApp = plan.game.flatMap { g in installed.first(where: { $0.game == g })?.app }
         updating = nil
-        start(BuildRequest(plan: plan, output_dir: outputDir, work_root: workRoot, platform: "macos", app: installedApp))
+        let quick = quickStart && Model.quickGames.contains(plan.game ?? "")
+        start(BuildRequest(plan: plan, output_dir: outputDir, work_root: workRoot, platform: "macos", app: installedApp,
+                           quick: quick ? true : nil))
+    }
+    /// The games a build can make quick: only the title's shaders, the rest translated at first use (user 2026-11-13).
+    static let quickGames: Set<String> = ["oot"]
+
+    /// 快速启动 of an installed app (its card; user 2026-11-15: after 诊断模式, one function with the Build page's switch):
+    /// the same quick request, so the app is made again with only the title's shaders, also when a new translator would
+    /// otherwise need the full build. 补全着色器 on its card makes it full later.
+    func quickStart(_ app: InstalledReport.App) {
+        guard phase != .building && phase != .cancelling else { return }
+        updating = app.app
+        start(BuildRequest(update: app.app, quick: true))
     }
 
     /// An installed app, without files: the fastest update that fits (express, else fast; the job refuses a full one).

@@ -19,6 +19,24 @@ GAME = ROOT / 'games/oot'
 SCRIPTS = GAME / 'scripts'
 
 
+class OotScripts:
+    """games/oot/scripts on the path for a test, and at its end every module it loaded from there taken out again: the
+    scripts import ns2_shader_corpus / shader_list, which other tests import from games/totk/scripts under the same
+    names (2026-11-15: collect_shaders then took Ocarina of Time's ns2_shader_corpus and failed to import)."""
+
+    def __enter__(self):
+        sys.path.insert(0, str(SCRIPTS))
+        self.before = set(sys.modules)
+        return self
+
+    def __exit__(self, *exc):
+        sys.path.remove(str(SCRIPTS))
+        for name in set(sys.modules) - self.before:
+            where = getattr(sys.modules[name], '__file__', None) or ''
+            if where.startswith(str(SCRIPTS)):
+                del sys.modules[name]
+
+
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -39,7 +57,7 @@ class QuickList(unittest.TestCase):
     """shader_list.py: the shaders of the title rows, and the list cut to some shaders."""
 
     def setUp(self):
-        sys.path.insert(0, str(SCRIPTS))
+        self.scripts = OotScripts().__enter__()
         self.shader_list = load('oot_shader_list_quick', SCRIPTS / 'shader_list.py')
         self.lst = self.shader_list.ShaderList()
         self.lst.add_warm(('R', render_key(variant(1), variant(2))), 't')
@@ -48,7 +66,7 @@ class QuickList(unittest.TestCase):
         self.lst.add_warm(('R', render_key(variant(1), variant(4))), 'm')   # one of its shaders is not a title one
 
     def tearDown(self):
-        sys.path.remove(str(SCRIPTS))
+        self.scripts.__exit__(None, None, None)
 
     def test_the_title_rows_name_the_quick_build_s_shaders(self):
         self.assertEqual(self.lst.title_keys(), {variant(n)[:64] for n in (1, 2, 5)})
@@ -73,14 +91,14 @@ class QuickCorpus(unittest.TestCase):
     """prepare_ns2_seed.py: the corpus cut to some shaders, in the corpus's own form."""
 
     def setUp(self):
-        sys.path.insert(0, str(SCRIPTS))
+        self.scripts = OotScripts().__enter__()
         self.seed = load('oot_ns2_seed_quick', SCRIPTS / 'prepare_ns2_seed.py')
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
 
     def tearDown(self):
         self.tmp.cleanup()
-        sys.path.remove(str(SCRIPTS))
+        self.scripts.__exit__(None, None, None)
 
     def corpus(self, n):
         records, keys = [], []
@@ -208,6 +226,65 @@ class QuickAppContributesNothing(unittest.TestCase):
         for call in ('totk_inbox_claim(', 'totk_contrib_prune(', 'contrib_ask(contrib);', 'totk_inbox_start(contrib'):
             self.assertGreater(text.index(call, guard), quick, call)   # only in the else branch, after the guard
         self.assertEqual(text.count('totk_inbox_start(contrib'), 1)
+
+
+class LauncherQuickStart(unittest.TestCase):
+    """MNG Launcher's 快速启动: a build request with quick makes the job's build carry only the title's shaders, only for
+    Ocarina of Time; the installed list says which apps are quick (their cards offer 补全着色器)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        from tools.builder_jobs import build_job
+        self.build_job = build_job
+
+    def tearDown(self):
+        sys.path.remove(str(ROOT))
+
+    def test_a_quick_build_of_ocarina_of_time_carries_the_title_s_shaders(self):
+        with mock.patch.dict(os.environ, {'OOT_SHADERS': ''}):
+            self.assertEqual(self.build_job.job_env({'quick': True}, 'oot')['OOT_SHADERS'], 'title')
+            self.assertEqual(self.build_job.job_env({}, 'oot')['OOT_SHADERS'], '')   # a normal build as before
+
+    def test_another_game_refuses_a_quick_build(self):
+        with self.assertRaises(self.build_job.Refused):
+            self.build_job.job_env({'quick': True}, 'totk')
+
+    def test_the_job_runs_the_build_with_that_environment_and_its_own_history(self):
+        text = (ROOT / 'tools/builder_jobs/build_job.py').read_text()
+        self.assertIn('start_new_session=True, env=env)', text)
+        self.assertIn("'macos-quick' if request.get('quick')", text)
+
+    def test_a_card_s_quick_start_is_judged_as_a_quick_build(self):
+        # user 2026-11-15: the card's 快速启动 and the Build page's switch are one function; an installed app whose
+        # translator changed (a full build otherwise) takes it as an update that makes only the title's shaders
+        seen = {}
+        def plan(app, python, work=None, env=None):
+            seen['env'] = env
+            return {'kind': 'express', 'work': '/w', 'game': 'oot'}
+        with mock.patch('tools.builder_jobs.installed.plan', plan), mock.patch.dict(os.environ, {'OOT_SHADERS': ''}):
+            script, argv, work, app, kind, game = self.build_job.command({'update': '/Apps/Ocarina of Time.app', 'quick': True})
+        self.assertEqual(seen['env']['OOT_SHADERS'], 'title')
+        self.assertEqual((kind, game), ('express', 'oot'))
+        with mock.patch('tools.builder_jobs.installed.plan', plan):
+            self.build_job.command({'update': '/Apps/Ocarina of Time.app'})
+        self.assertIsNone(seen['env'])   # an ordinary update is judged as before
+
+    def test_the_card_button_follows_the_diagnostic_page_and_sends_the_same_request(self):
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        home = (swift / 'HomePage.swift').read_text()
+        self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button(T.quickStart) { model.quickStart(app) }'))
+        model = (swift / 'Model.swift').read_text()
+        self.assertIn('start(BuildRequest(update: app.app, quick: true))', model)
+        self.assertIn('quick: quick ? true : nil))', model)   # the Build page's switch: the same field
+        self.assertIn('Toggle(T.quickStart', (swift / 'ActionSection.swift').read_text())
+
+    def test_the_installed_list_names_a_quick_app(self):
+        text = (ROOT / 'tools/builder_jobs/installed.py').read_text()
+        self.assertIn("'shaders': info.get('MNGShaders') or 'full'", text)
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertIn('if app.shaders == "title"', (swift / 'HomePage.swift').read_text())
+        self.assertIn('model.updateShaders(app)', (swift / 'HomePage.swift').read_text())
+        self.assertIn('var quick: Bool? = nil', (swift / 'Reports.swift').read_text())
 
 
 class CaptureSwitch(unittest.TestCase):

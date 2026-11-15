@@ -29,9 +29,13 @@ class Refused(Exception):
     pass
 
 
-def express_plan(app, python=sys.executable, work=None):
-    """update_runtime.py --plan for an installed app (tools/builder_jobs/installed.py asks the same)."""
+def express_plan(app, python=sys.executable, work=None, quick=False):
+    """update_runtime.py --plan for an installed app (tools/builder_jobs/installed.py asks the same). quick: asked for a
+    快速启动, whose update makes only the title's shaders again, so a new translator or chain needs no full build for it
+    (games/oot/build.py update_blocker 'title')."""
     from tools.builder_jobs.installed import plan
+    if quick:
+        return plan(app, python, work, env={**os.environ, 'OOT_SHADERS': 'title'})
     return plan(app, python, work) if work else plan(app, python)
 
 
@@ -76,7 +80,7 @@ def command(request, python=sys.executable):
     if request.get('update'):
         app = Path(request['update']).expanduser()
         given = request.get('work')
-        up = express_plan(app, python, given)
+        up = express_plan(app, python, given, quick=bool(request.get('quick')))   # 快速启动 from a card: the same quick build
         if up['kind'] == 'full':
             raise Refused(t(f'this app needs a full build: {up["reason"]}. Drop its game files in step 1',
                             f'这个 App 要完整打包：{up["reason"]}。请在第一步拖入它的游戏文件'))
@@ -97,7 +101,7 @@ def command(request, python=sys.executable):
     work_root = (request.get('work_root') or '').strip()
     work = b.default_work(out, plan['game'])[0] if out.is_dir() or not work_root else Path(work_root).expanduser() / plan['game']
     if out.is_dir():
-        up = express_plan(out, python)
+        up = express_plan(out, python, quick=bool(request.get('quick')))
         if up['kind'] in ('express', 'fast') and same_version(plan, up):
             return (repo.UPDATE_RUNTIME, [str(out)] + (['--seed'] if up['kind'] == 'fast' else []), Path(up['work']), out,
                     up['kind'], plan['game'])
@@ -157,8 +161,24 @@ class Steps:
         return None
 
 
+QUICK_GAMES = {'oot'}   # games whose build can carry only the title's shaders (games/oot/build.py shader_mode 'title')
+
+
+def job_env(request, game):
+    """The build's environment: this one's, and for a quick build (request quick: MNG Launcher's 快速启动, user 2026-11-13:
+    "就带上 菜单的 着色器就行") OOT_SHADERS=title, so the app carries only the title's shaders; its card then offers
+    补全着色器 (a shaders request), which makes it a full app."""
+    env = dict(os.environ)
+    if request.get('quick'):
+        if game not in QUICK_GAMES:
+            raise Refused(t('a quick start is only for Ocarina of Time so far', '快速启动目前只支持时之笛'))
+        env['OOT_SHADERS'] = 'title'
+    return env
+
+
 def run(request, emit, history_dir, python=sys.executable, script=None, record=None):
     chosen, argv, work, out, kind, game = command(request, python)
+    env = job_env(request, game)
     if record is not None:   # the shared record names the job for a window that did not start it (shared.py)
         shared.describe(record, game=game, app=str(out), kind=kind)
     home = Path(os.environ.get('MNG_HOME') or Path.home())
@@ -170,7 +190,8 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
             at = argv.index('--work')
             argv = argv[:at] + extra + argv[at:]
     # each kind of update has its own measured history: an express update takes minutes, a full build much longer
-    record = history.record_path(history_dir, game, 'macos' if kind == 'full' else f'macos-{kind}')
+    record = history.record_path(history_dir, game, ('macos-quick' if request.get('quick') else
+                                                      'macos' if kind == 'full' else f'macos-{kind}'))
     estimator = history.Estimator(history.load(record))
     start = time.time()
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -179,7 +200,7 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
          command=[str(script), *argv], kind=kind)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True)
+                            stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True, env=env)
     cancelled = threading.Event()
 
     def cancel(*_):

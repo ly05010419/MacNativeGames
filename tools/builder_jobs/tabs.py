@@ -20,7 +20,7 @@ import sys
 from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
 
-TABS = ('settings', 'mods', 'controls', 'storage', 'saves')
+TABS = ('settings', 'mods', 'controls', 'storage', 'saves', 'diag')   # diag: 诊断模式 (tab_diag.py)
 
 
 @dataclass(frozen=True)

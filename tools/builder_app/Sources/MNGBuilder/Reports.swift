@@ -55,6 +55,7 @@ struct InstalledReport: Codable {
         let reason: String
         let work: String?
         let commit: String?
+        let shaders: String?    // "title": a quick app (only the title's shaders), offered 补全着色器
     }
     let apps: [App]
 }
@@ -70,6 +71,7 @@ struct BuildRequest: Codable {
     var update: String? = nil
     var work: String? = nil       // with update: a work folder moved on the Storage page, which the app records from then on
     var shaders: Bool? = nil      // with update: only its shaders and pipelines, from the game's newest list (shader_update.py)
+    var quick: Bool? = nil        // 快速启动: only the title's shaders (Ocarina of Time; build_job.job_env OOT_SHADERS=title)
 }
 
 /// One line `build` prints (tools/builder_jobs/events.py); fields a kind does not have are nil.

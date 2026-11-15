@@ -32,6 +32,9 @@ struct ActionSection: View {
             case .cancelling:
                 Button(T.cancelling) {}.disabled(true)
             default:
+                if Model.quickGames.contains(model.plan?.game ?? "") {   // 快速启动 (user 2026-11-13)
+                    Toggle(T.quickStart, isOn: $model.quickStart).help(T.quickStartHelp)
+                }
                 Button(action: model.build) {
                     Text(model.existingApp == nil ? T.build : T.rebuild).frame(minWidth: 160)
                 }
@@ -99,6 +102,11 @@ struct ActionSection: View {
             }
             HStack {
                 if let log = f.step_log ?? f.log { Button(T.openLog) { NSWorkspace.shared.open(URL(fileURLWithPath: log)) } }
+                // the terminal page with an AI asked about this failure (user 2026-11-13)
+                Button(T.askAI) {
+                    model.page = "terminal"
+                    TerminalHost.shared.ask("claude", AIHelp.prompt(log: f.step_log ?? f.log))
+                }.buttonStyle(.borderedProminent)
                 Button(T.copyError) {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString([f.message ?? "", f.detail ?? ""].joined(separator: "\n"), forType: .string)

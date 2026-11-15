@@ -28,6 +28,9 @@ struct HomePage: View {
                         Text("MNG Launcher").font(.largeTitle.weight(.bold))
                         Text(T.homeSubtitle).foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    // the terminal with an AI helper (TerminalTab.swift; user 2026-11-13)
+                    Button { model.page = "terminal" } label: { Label(T.terminal, systemImage: "terminal") }
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 14) {
@@ -195,6 +198,12 @@ struct GameActions: View {
                 default:
                     EmptyView()   // the reason above says why it cannot be updated now
                 }
+                if app.shaders == "title" {   // a quick app: the rest of its shaders, made while it is not played (user 2026-11-13)
+                    HStack(alignment: .firstTextBaseline) {
+                        Button(T.fillShaders) { model.updateShaders(app) }.buttonStyle(.borderedProminent).disabled(busy)
+                        Text(T.quickApp).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
                 if Model.shaderGames.contains(app.game ?? "") {   // only the shaders and pipelines, from the newest list (user 2026-11-13)
                     HStack(alignment: .firstTextBaseline) {
                         Button(T.checkShaders) { Task { await checkShaders() } }.disabled(checkingShaders || busy)
@@ -213,6 +222,10 @@ struct GameActions: View {
                             // under the buttons, not a page of its own (user 2026-11-12); pressed again, it closes
                             Button(label) { section = section == id ? nil : id }
                                 .buttonStyle(.bordered).tint(section == id ? .accentColor : nil)
+                        }
+                        if Model.quickGames.contains(app.game ?? "") {   // 快速启动, after 诊断模式 (user 2026-11-15)
+                            Button(T.quickStart) { model.quickStart(app) }.buttonStyle(.bordered).help(T.quickStartHelp)
+                                .disabled(model.phase == .building || model.phase == .cancelling)
                         }
                     }
                     if let section {
@@ -263,6 +276,7 @@ struct GamePage: View {
         case "mods": ModsPage(app: app)
         case "controls": ControlsPage(app: app)
         case "storage": StoragePage(app: app)
+        case "diag": DiagPage(app: app)
         default: SavesPage(app: app)
         }
     }

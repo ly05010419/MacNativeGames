@@ -76,6 +76,6 @@ OOT = GameSpec(
 # these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
 PAGE_GAMES = {**GAMES, OOT.id: OOT}
-PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
-         'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
-         'oot': ('controls', 'storage', 'saves')}
+PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves', 'diag'),
+         'botw': ('settings', 'mods', 'controls', 'storage', 'saves', 'diag'),
+         'oot': ('controls', 'storage', 'saves', 'diag')}   # diag: 诊断模式 (tools/builder_jobs/tab_diag.py; user 2026-11-13)
