@@ -1218,8 +1218,15 @@ static int mtl_addr_known(uint64_t addr,uint64_t len) {
     pthread_mutex_unlock(&g_mu);
     return found;
 }
-static void pool_res(pidx_ent *p) {   // caller holds g_mu
+static char g_pool_origin_key;
+static const char *memory_inventory_path(void) {
+    static const char *path; static dispatch_once_t once;
+    dispatch_once(&once, ^{ path = getenv("TOTK_MEMORY_INVENTORY"); });
+    return path && *path ? path : NULL;
+}
+static void pool_res(pidx_ent *p, int origin) {   // caller holds g_mu; first cause: 1 binding, 2 CPU range query, 3 raw table
     if (p->res) return;
+    if (memory_inventory_path()) objc_setAssociatedObject((__bridge id)p->buf, &g_pool_origin_key, @(origin), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
     p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
 }
@@ -1315,7 +1322,7 @@ static void pool_tls_keep(const pidx_ent *p, uintptr_t a) {   // caller holds g_
 static int pool_lookup_locked(uint64_t addr, uint64_t len, void **buf, uint64_t *base, uint64_t *gpu, int keep) {
     pthread_mutex_lock(&g_mu);
     pidx_ent *p = pool_query((uintptr_t)addr, len);
-    if (p) { pool_res(p); *buf = p->buf; *base = p->base; *gpu = p->gpu; if (keep) pool_tls_keep(p, (uintptr_t)addr); }
+    if (p) { pool_res(p, 1); *buf = p->buf; *base = p->base; *gpu = p->gpu; if (keep) pool_tls_keep(p, (uintptr_t)addr); }
     pthread_mutex_unlock(&g_mu);
     return p != NULL;
 }
@@ -1339,7 +1346,7 @@ static int mtl_addr_range(uint64_t addr, uint64_t len, uintptr_t *lo, uintptr_t 
     if (pool_tls_on()) { const pool_tls_ent *e = pool_tls_find((uintptr_t)addr, len); if (e) { *lo = e->lo; *hi = e->hi; return 1; } }
     pthread_mutex_lock(&g_mu);
     pidx_ent *p = pool_query((uintptr_t)addr, len);
-    if (p) { pool_res(p); *lo = p->lo; *hi = p->hi; if (pool_tls_on()) pool_tls_keep(p, (uintptr_t)addr); }
+    if (p) { pool_res(p, 2); *lo = p->lo; *hi = p->hi; if (pool_tls_on()) pool_tls_keep(p, (uintptr_t)addr); }
     pthread_mutex_unlock(&g_mu);
     return p != NULL;
 }
@@ -1355,6 +1362,54 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
     *off = addr - base; *gpu = pgpu + *off;
     return 1;
 }
+
+/* Opt-in identity inventory. Copy scalar facts under the owning lock, then write
+   outside it; do not keep diagnostic strong references to allocations. Counts
+   are allocation sizes, not physical footprint, and overlapping pools are kept
+   as distinct identities so the reader can calculate their range union. */
+static void memory_inventory_report(uint64_t frame) { @autoreleasepool {
+    const char *path = memory_inventory_path(); if (!path) return;
+    typedef struct { uint64_t id, lo, hi, base, bytes, addressed, origin, resident; } prow;
+    typedef struct { uint64_t id, kind, site, bytes, lo, length, storage; } arow;
+    pthread_mutex_lock(&g_mu);
+    size_t np = (size_t)g_pools.n;
+    prow *ps = calloc(np ? np : 1, sizeof *ps);
+    if (ps) for (size_t i = 0; i < np; i++) {
+        const pidx_ent *p = &g_pools.e[i]; id<MTLBuffer> b = (__bridge id)p->buf;
+        ps[i] = (prow){(uintptr_t)p->buf, p->lo, p->hi, p->base, b.allocatedSize,
+            pidx_overlaps(&g_addressed, p->lo, p->hi), [objc_getAssociatedObject(b, &g_pool_origin_key) unsignedLongLongValue], (uint64_t)p->res};
+    }
+    pthread_mutex_unlock(&g_mu);
+    pthread_mutex_lock(&g_res_mu);
+    size_t cap = g_res_objects.count, na = 0;
+    arow *as = calloc(cap ? cap : 1, sizeof *as);
+    if (as) for (id obj in g_res_objects) {
+        if (na == cap) break;
+        int buffer = [obj conformsToProtocol:@protocol(MTLBuffer)], texture = [obj conformsToProtocol:@protocol(MTLTexture)];
+        id<MTLBuffer> b = buffer ? obj : nil;
+        as[na++] = (arow){(uintptr_t)(__bridge void *)obj, buffer ? 1 : texture ? 2 : 3,
+            [[g_res_site_of objectForKey:obj] unsignedLongLongValue], (uint64_t)[obj allocatedSize],
+            (uintptr_t)b.contents, b.length, (uint64_t)[obj storageMode]};
+    }
+    pthread_mutex_unlock(&g_res_mu);
+    FILE *f = ps && as ? fopen(path, "a") : NULL;
+    if (f) {
+        for (size_t i = 0; i < np; i++) { prow r = ps[i];
+            fprintf(f, "pool\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\n",
+                (unsigned long long)frame, (unsigned long long)r.id, (unsigned long long)r.lo, (unsigned long long)r.hi,
+                (unsigned long long)r.base, (unsigned long long)r.bytes, (unsigned long long)r.addressed,
+                (unsigned long long)r.origin, (unsigned long long)r.resident);
+        }
+        for (size_t i = 0; i < na; i++) { arow r = as[i];
+            fprintf(f, "allocation\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\n",
+                (unsigned long long)frame, (unsigned long long)r.id, (unsigned long long)r.kind, (unsigned long long)r.site,
+                (unsigned long long)r.bytes, (unsigned long long)r.lo, (unsigned long long)r.length, (unsigned long long)r.storage);
+        }
+        fclose(f);
+        MLOG("[memory-inventory] F%llu: %zu pools, %zu resident allocations", (unsigned long long)frame, np, na);
+    } else MLOG("[memory-inventory] could not allocate or write snapshot");
+    free(ps); free(as);
+} }
 
 // ---------- 提交 ----------
 // ---------- Submission ----------
@@ -4814,7 +4869,9 @@ static void stor_memory_report(uint64_t frame) {
                that identity explicitly; nser alone does not prove a live owner. */
             fputc('\t', file);
             for (int s = 0; s < e->nser; s++) fprintf(file, "%s%d", s ? "," : "", totk_serial_has(&g_dead_serial, e->ser[s]));
-            fputc('\n', file);
+            id<MTLHeap> heap = texture.heap;
+            fprintf(file, "\t%llu\t%llu\t%llu\n", (unsigned long long)(uintptr_t)(__bridge void *)heap,
+                    (unsigned long long)heap.size, (unsigned long long)texture.heapOffset);
         }
     }
     pthread_mutex_unlock(&g_smu);
@@ -4988,6 +5045,40 @@ static NSMutableArray *g_up_keep;
 /* Staging belongs to the upload batch, not the still-unsubmitted game command buffer.
    Split large streaming bursts so a single NVN submission cannot retain gigabytes of scratch buffers. */
 static size_t g_up_batch_bytes, g_up_batch_limit = 128u << 20;
+/* Opt-in per-batch ownership accounting. These are allocated/residency bytes,
+   not physical footprint. Feedback uses the immutable snapshot of its submit;
+   no additional Metal objects survive through the diagnostic. */
+typedef struct { uint64_t seq,frame,accounted,sources,private_bytes,shared_bytes,destinations,resident; unsigned pending; } up_memory;
+static uint64_t g_up_source_bytes;
+static FILE *up_memory_file(void) {
+    static dispatch_once_t once;static FILE *file;
+    dispatch_once(&once, ^{const char *p=getenv("TOTK_UPLOAD_MEMORY_FILE");if(p&&*p)file=fopen(p,"a");});return file;
+}
+static void up_memory_write(const char *event,up_memory m,int failed) {
+    FILE *file=up_memory_file();if(!file)return;
+    flockfile(file);
+    fprintf(file,"%s\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%u\t%d\n",event,
+        (unsigned long long)m.seq,(unsigned long long)m.frame,(unsigned long long)m.accounted,
+        (unsigned long long)m.sources,(unsigned long long)m.private_bytes,(unsigned long long)m.shared_bytes,
+        (unsigned long long)m.destinations,(unsigned long long)m.resident,m.pending,failed);
+    fflush(file);funlockfile(file);
+}
+static up_memory up_memory_snapshot(NSArray *staging) {
+    up_memory m={.seq=g_up_seq,.frame=atomic_load(&g_cur_frame),.accounted=g_up_batch_bytes,
+        .sources=g_up_source_bytes,.pending=(unsigned)atomic_load(&g_up_pending)};
+    if(!up_memory_file())return m;
+    for(id<MTLBuffer> b in staging) {
+        if(b.storageMode==MTLStorageModePrivate)m.private_bytes+=b.allocatedSize;else m.shared_bytes+=b.allocatedSize;
+    }
+    for(int i=0;i<UP_POOL;i++)if(g_up_batch_pool>>i&1)m.private_bytes+=g_up_pool[i].allocatedSize;
+    for(int i=0;i<UP_SPOOL;i++)if(g_up_batch_spool>>i&1)m.shared_bytes+=g_up_spool[i].allocatedSize;
+    NSHashTable *seen=[NSHashTable hashTableWithOptions:NSPointerFunctionsOpaquePersonality|NSPointerFunctionsOpaqueMemory];
+    for(id<MTLTexture> t in g_up_texs) { id<MTLTexture> base=t;while(base.parentTexture)base=base.parentTexture;
+        if(![seen containsObject:base]){[seen addObject:base];m.destinations+=base.allocatedSize;} }
+    pthread_mutex_lock(&g_res_mu);for(id o in g_res_objects)m.resident+=(uint64_t)[o allocatedSize];pthread_mutex_unlock(&g_res_mu);
+    return m;
+}
+
 
 
 // 上传命令缓冲被系统丢弃（GPU 出错恢复时连带丢，进崔凡克首帧那次每局丢一条）：这批贴图的对象已建好、时间戳已更新，内容却没写进去，
@@ -5044,9 +5135,14 @@ static void up_flush(void) {
     if (g_up_block && !g_up_block_pooled) [staging addObject:g_up_block];
     if (g_up_sblock && !g_up_sblock_pooled) [staging addObject:g_up_sblock];
     uint32_t pool_mask = g_up_batch_pool, spool_mask = g_up_batch_spool;
+    up_memory memory=up_memory_snapshot(staging);up_memory_write("submit",memory,0);
     atomic_fetch_add(&g_up_pending, 1);
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
-        if (f.error) MLOG("【红】上传命令缓冲执行出错：%s", f.error.description.UTF8String);
+        up_memory_write("complete",memory,f.error!=nil);
+        if (f.error) MLOG("【红】上传命令缓冲执行出错：batch=%llu frame=%llu reserved=%llu source=%llu private=%llu shared=%llu targets=%llu resident=%llu pending=%u: %s",
+            (unsigned long long)memory.seq,(unsigned long long)memory.frame,(unsigned long long)memory.accounted,
+            (unsigned long long)memory.sources,(unsigned long long)memory.private_bytes,(unsigned long long)memory.shared_bytes,
+            (unsigned long long)memory.destinations,(unsigned long long)memory.resident,memory.pending,f.error.description.UTF8String);
         if (f.error || fake_lost) {
             os_unfair_lock_lock(&g_up_lost_lk); if (!g_up_lost) g_up_lost = [NSHashTable weakObjectsHashTable]; for (id d in dsts) [g_up_lost addObject:d]; int n = (int)g_up_lost.allObjects.count; atomic_store(&g_up_lost_n, n); os_unfair_lock_unlock(&g_up_lost_lk);
             ser_bump(0);   // 让各贴图号的视图缓存走一次慢路（缓存命中时不会经过 tex_mtl，看不到这份记录） | Make the view cache of every texture ID take the slow path once (on a cache hit tex_mtl is not passed through and this record is not seen)
@@ -5065,7 +5161,7 @@ static void up_flush(void) {
     cb_submit_label(cb, atomic_load(&g_cur_frame), "upload", 0, 0);
     [cb endCommandBuffer];
     q4_commit(cb, o);
-    g_up_cb = nil; g_up_block = nil; g_up_block_off = g_up_block_size = 0; g_up_batch_bytes = 0; g_up_block_pooled = 0; g_up_batch_pool = 0;
+    g_up_cb = nil; g_up_block = nil; g_up_block_off = g_up_block_size = 0; g_up_batch_bytes = 0; g_up_source_bytes = 0; g_up_block_pooled = 0; g_up_batch_pool = 0;
     g_up_sblock = nil; g_up_sblock_off = g_up_sblock_size = 0; g_up_sblock_pooled = 0; g_up_batch_spool = 0;
     [g_up_keep removeAllObjects];
     up_diag();
@@ -5117,10 +5213,10 @@ static void up_diag(void) {
     MLOG("上传暂存块%s：累计新建 %llu 块、其中一批内换块 %llu 次（换下的旧块共 %llu MB）；换下的旧块此刻还活着 %lu 块 %llu MB、仍在驻留集 %lu 块；显卡已分配 %llu MB、驻留集 %lu 个对象、延迟释放队列 %lu", fol && !chg ? "（落定后）" : "",
          (unsigned long long)g_up_blocks_new, (unsigned long long)g_up_swaps, (unsigned long long)(g_up_swap_bytes >> 20), alive, (unsigned long long)(abytes >> 20), inres, (unsigned long long)(g_dev.currentAllocatedSize >> 20), nres, ndef);
 }
-static id<MTLBuffer> up_alloc(size_t n, size_t *off) {
+static id<MTLBuffer> up_alloc_block(size_t n, size_t *off, int reserve) {
     size_t need = (n + 255u) & ~((size_t)255u);
     if (!g_up_block || g_up_block_off + need > g_up_block_size) {
-        up_reserve(n > UP_BLOCK_SIZE ? need : UP_BLOCK_SIZE);
+        if (reserve) up_reserve(n > UP_BLOCK_SIZE ? need : UP_BLOCK_SIZE);
         // 换块：旧块还被这一批已经登记的拷贝 / 解压命令引用着，不能当场放；交给 g_up_keep，在本批上传完成时撤出驻留集并释放。
         // 原先这里直接把 g_up_block 换成新块：旧块没人退役、却一直留在驻留集里，一批上传每多换一次块就漏掉一块（通常 32 MB）显卡内存。
         // 旧块与冲刷时退役的「当前块」是两个对象，不会重复退役
@@ -5142,6 +5238,45 @@ static id<MTLBuffer> up_alloc(size_t n, size_t *off) {
     *off = g_up_block_off;
     g_up_block_off += need;
     return g_up_block;
+}
+
+static id<MTLBuffer> up_alloc(size_t n, size_t *off) { return up_alloc_block(n, off, 1); }
+/* Reserve a texture's source pages and BOTH dependent scratch buffers before
+   allocating either. Splitting inside the pair retired the deswizzle output in
+   one batch while the next batch's transcoder still read it. Simulate the actual
+   block packing; the 128 MiB limit and the oversize-single-upload rule stay put. */
+static size_t up_pair_extra(size_t first, size_t second) {
+    size_t size=g_up_block_size, off=g_up_block_off, extra=0;
+    size_t requests[2]={first,second};
+    for (int i=0;i<2;i++) if (requests[i]) {
+        size_t need=(requests[i]+255u)&~(size_t)255u;
+        if (!size || need>size-off) { size=MAX(need,(size_t)UP_BLOCK_SIZE);off=0;extra+=size; }
+        off+=need;
+    }
+    return extra;
+}
+static unsigned g_up_pair_first_seq;
+static int g_up_pair_negative;   // GPU regression only: replay the old split-inside-a-texture path
+static void up_pair_alloc(size_t source, size_t first, size_t second,
+                          id<MTLBuffer> __strong *a, size_t *ao, id<MTLBuffer> __strong *b, size_t *bo) {
+    up_begin();
+    if (g_up_pair_negative) {
+        up_reserve(source); *a=up_alloc(first,ao);g_up_pair_first_seq=g_up_seq; *b=second?up_alloc(second,bo):nil; return;
+    }
+    size_t extra=source+up_pair_extra(first,second);
+    if (g_up_batch_bytes && extra>g_up_batch_limit-MIN(g_up_batch_bytes,g_up_batch_limit)) {
+        up_flush();up_begin();extra=source+up_pair_extra(first,second);
+    }
+    g_up_batch_bytes+=extra;
+    *a=up_alloc_block(first,ao,0);g_up_pair_first_seq=g_up_seq; *b=second?up_alloc_block(second,bo,0):nil;
+}
+static void up_cpu_reserve(size_t need) {
+    size_t extra=need>UP_SBLOCK_SIZE?need:
+        (!g_up_sblock || need>g_up_sblock_size-g_up_sblock_off)?UP_SBLOCK_SIZE:0;
+    if (g_up_batch_bytes && extra>g_up_batch_limit-MIN(g_up_batch_bytes,g_up_batch_limit)) {
+        up_flush();up_begin();extra=need>UP_SBLOCK_SIZE?need:UP_SBLOCK_SIZE;
+    }
+    g_up_batch_bytes+=extra;
 }
 
 // 解排布参数块：64 字节一格，从 64 KB 共享存储块里顺序切；块满换新，旧块按栅栏延迟释放
@@ -5448,19 +5583,20 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         g_upt_path = 1;
         // GPU 执行时读内存池，比 CPU 上传时刻快照更接近 Switch 真机；脏页戳仍在编码前取，之后写入仍会触发重传。
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
-        up_begin();up_reserve((size_t)t->L.size);
-        size_t stg_off;
-        id<MTLBuffer> stg = up_alloc(gdec ? ctotal : total ? total : 16, &stg_off);
-        size_t ast_off = 0, aoff = 0; id<MTLBuffer> ast = gtca ? up_alloc(atotal ? atotal : 16, &ast_off) : tck ? up_alloc(xtotal ? xtotal : 16, &ast_off) : nil;   // a block switch keeps the earlier block alive (g_up_keep)
-        // The GPU needs only this upload's source pages. A batch owns their
-        // no-copy wrapper until its feedback handler retires g_up_keep.
         uintptr_t pg=(uintptr_t)getpagesize(),a=(uintptr_t)t->mem&~(pg-1);
         uintptr_t end=((uintptr_t)t->mem+t->L.size+pg-1)&~(pg-1);
+        size_t stg_off=0,ast_off=0,aoff=0;
+        id<MTLBuffer> stg=nil,ast=nil;
+        up_pair_alloc(end-a, gdec ? ctotal : total ? total : 16,
+                      gtca ? (atotal ? atotal : 16) : tck ? (xtotal ? xtotal : 16) : 0,
+                      &stg,&stg_off,&ast,&ast_off);
+        // The GPU needs only this upload's source pages. The same batch owns
+        // their no-copy wrapper and both scratch buffers through GPU completion.
         void *token=nvn_dirty_tracked((void *)a,end-a)?nvn_dirty_gpu_write_begin((void *)a,end-a):NULL;
         id<MTLBuffer> source=[g_dev newBufferWithBytesNoCopy:(void *)a length:end-a options:MTLResourceStorageModeShared deallocator:nil];
         nvn_dirty_gpu_write_end(token);
         if(!source)MDIE("texture upload source wrapper failed: %p+%llu",t->mem,(unsigned long long)t->L.size);
-        res_add(source);[g_up_keep addObject:source];mb=(__bridge void *)source;mo=(uintptr_t)t->mem-a;
+        res_add(source);[g_up_keep addObject:source];g_up_source_bytes+=source.length;mb=(__bridge void *)source;mo=(uintptr_t)t->mem-a;
         if (race_on() || rdf_on()) { static char lbl[64][48]; static unsigned li; char *l = lbl[li++ & 63]; snprintf(l, 48, "upload ser=%llu %ux%u fmt=%#x", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); gpu_read_input((uint64_t)(uintptr_t)t->mem, t->L.size, l, 't'); }
         upt_mark(4);
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits, nd0 = g_nup_decs, nt0 = g_nup_tcas, nx0 = g_nup_tcxs;
@@ -5514,8 +5650,8 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     if (tca) total = atotal;   // CPU path writes ASTC blocks (16 bytes) into the staging
     g_upt_path = g_upt_path == 1 ? 3 : 2; upt_mark(3);
     up_begin();
-    up_reserve(total ? total : 16);
     size_t sneed = ((total ? total : 16) + 255u) & ~(size_t)255u, off = 0;
+    up_cpu_reserve(sneed);
     id<MTLBuffer> stg = nil;
     if (sneed <= UP_SBLOCK_SIZE) {   // TOTK: pooled shared staging (see UP_POOL)
         if (!g_up_sblock || g_up_sblock_off + sneed > g_up_sblock_size) {
@@ -5527,7 +5663,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         }
         stg = g_up_sblock; off = g_up_sblock_off; g_up_sblock_off += sneed;
     } else {
-        stg = [g_dev newBufferWithLength:total options:MTLResourceStorageModeShared];
+        stg = [g_dev newBufferWithLength:sneed options:MTLResourceStorageModeShared];
         if (!stg) MDIE("shared upload staging %#zx", total);
         res_add(stg); [g_up_keep addObject:stg];
     }
@@ -5606,6 +5742,29 @@ static int tex_mirrored(const tex_t *t) {
 }
 static int tex_check_once(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TEX_CHECK_ONCE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_TEX_CHECK_ONCE=0：CPU 池贴图每次取用都查是否被改写（旧行为）"); } return v; }
 static void pkg_unpurge(NvPkg *pk);
+/* Diagnostic creation events survive a failure between periodic snapshots.
+   Record the requester and real storage identity; retain no Metal objects. */
+static void storage_allocation_trace(const tex_t *t, id<MTLTexture> texture) {
+    static dispatch_once_t once; static FILE *file;
+    dispatch_once(&once, ^{
+        const char *path = getenv("TOTK_STORAGE_ALLOCATION_FILE");
+        if (path && *path) file = fopen(path, "a");
+    });
+    if (!file) return;
+    id<MTLHeap> heap = texture.heap;
+    flockfile(file);
+    fprintf(file, "%llu\t%llu\t%d\t%llu\t%llu\t%llu\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%llu\t%llu\t%llu\t%llu\t%llu\t%d\n",
+            (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_fence,
+            g_dead_by_id ? g_dead_src : DEAD_SRC_DIRECT,
+            (unsigned long long)t->serial, (unsigned long long)(uintptr_t)t->mem, (unsigned long long)t->L.size,
+            t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.flags, t->d.target,
+            t->pool ? t->pool->flags : 0,
+            (unsigned long long)obj_key(texture), (unsigned long long)texture.allocatedSize,
+            (unsigned long long)(uintptr_t)(__bridge void *)heap, (unsigned long long)heap.size,
+            (unsigned long long)texture.heapOffset, serial_is_dead(t->serial));
+    fflush(file);
+    funlockfile(file);
+}
 static void *tex_mtl_p(const tex_t *ct) {
     tex_t *t = (tex_t *)ct; BOTW_TEX_FOLLOW(t)
     if (!t || !t->serial) return NULL;
@@ -5711,6 +5870,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return NULL; }
         res_add(mt);   // no-op for a heap texture: resident through its heap
         stor_publish(t, mt);
+        storage_allocation_trace(t, mt);
     }
     serial_put(t->serial, mt);
     if (serial_is_dead(t->serial)) dead_put_note(t);
@@ -5755,6 +5915,9 @@ static void dead_stat_print(unsigned long long frame) {   // OOT_DEAD_TEX: per f
 }
 void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     if (dead_stat_on() && frame % 1800 == 0) dead_stat_print(frame);
+    /* Explicit identity capture must not depend on the console log's delta
+       threshold: a large allocation can fail before its next printed line. */
+    if (memory_inventory_path()) { stor_memory_report(frame); memory_inventory_report(frame); }
     static unsigned long long last_rss, last_gpu, last_frame; static int lines; unsigned long long gpu = (unsigned long long)(g_dev.currentAllocatedSize >> 20);
     unsigned long long dr = rss_mb > last_rss ? rss_mb - last_rss : last_rss - rss_mb, dg = gpu > last_gpu ? gpu - last_gpu : last_gpu - gpu;
     if (lines >= 400 || (lines && dr < 64 && dg < 64 && frame - last_frame < 3000)) return; lines++; last_rss = rss_mb; last_gpu = gpu; last_frame = frame;
@@ -5762,7 +5925,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     pthread_mutex_lock(&g_res_mu); unsigned long nr = (unsigned long)g_res_objects.count; pthread_mutex_unlock(&g_res_mu);
     int live = 0, peak = 0, cap = 0; nvn_dirty_stat(&live, &peak, &cap);
     MLOG("内存 至帧 %llu：常驻 %llu MB，显卡已分配 %llu MB，延迟释放队列 %lu，驻留集 %lu 个，内存池 %d 个（峰值 %d / 跟踪表容量 %d），贴图重传累计 %llu 次", frame, rss_mb, gpu, nd, nr, live, peak, cap, (unsigned long long)g_pkg_reuploads);
-    stor_memory_report(frame);
+    if (!memory_inventory_path()) stor_memory_report(frame);
     MLOG("已死序号纹理累计 %llu 张（替换前即为泄漏来源）", (unsigned long long)g_dead_put_total);
     /* Exact-writeback snapshots are host allocations, absent from Metal's allocatedSize. Include them in the existing
        diagnostic so an iPhone run can attribute the cost of the larger terrain-normal snapshots (PR #188). */
@@ -7253,6 +7416,7 @@ static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps, g_warm
 static _Atomic uint64_t g_warm_mesh, g_warm_mesh_failed;   // mesh pipelines (M rows) built on the warm-up threads / not built
 static void mtk_warm_row(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict);   // nvn_mesh_tasks.inc
 static int mtk_fill_row(NSArray<NSString *> *c, NSMutableDictionary<NSString *, NvShader *> *dict);    // nvn_mesh_tasks.inc
+static int mtk_device_compiles(void);   // same capability gate for archive preloading and mesh creation
 static _Atomic uint64_t g_mtk_archive_hits, g_mtk_archive_misses;   // mesh pipelines taken from the archive / compiled (mtk_build)
 static id<MTLFunction> bf_fn(NvShader *fs, const int *fx, uint8_t fbmask, const uint8_t *lmap);
 static int rt_range_bindings_ro(NSDictionary *j);
@@ -11191,10 +11355,9 @@ static void warm_task_done(uint64_t *done,uint64_t total,uint64_t shader_total,u
 }
 /* Whether the pipeline archive has a B / T row's pipeline, from the row alone (the key pso_archive_key gives it: a fragment
    variant sets fz, a vertex border variant PSO_VBORDER), so the fill skips it without loading its shaders. */
+#include "nvn_warm_policy.h"
 static int par_row_have(const pso_skey *sk, int vborder, int fz, NSString *variant) {
-    pso_skey ak = *sk; memset(&ak.fz_desc, 0, sizeof ak.fz_desc); ak.fz = fz != 0; if (vborder) ak.k.a2c |= PSO_VBORDER;
-    NSMutableData *b = [NSMutableData dataWithBytes:&ak length:sizeof ak]; [b appendData:[variant dataUsingEncoding:NSUTF8StringEncoding]];
-    NSString *key = par_hash(b.bytes, b.length);
+    NSString *key = warm_variant_archive_key(sk, vborder, fz, variant);
     pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key]; pthread_mutex_unlock(&g_par_mu);
     return have && !g_par_recheck;   // packaging makes it against the archive (g_par_recheck)
 }
@@ -11584,6 +11747,14 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         NSUInteger rows = todo.count;
         for (NSUInteger at = 0; at < rows; at += WARM_BLOCK) @autoreleasepool {
             NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, rows - at))];
+            NSUInteger processed = block.count;
+            uint64_t hits = 0;
+            block = warm_fill_pending(block, g_par_recheck, mtk_device_compiles() && !getenv("TOTK_SHADER_DEVICE_LIBS"),
+                ^BOOL(NSString *key) {
+                    pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:key]; pthread_mutex_unlock(&g_par_mu);
+                    return have;
+                }, &hits);
+            atomic_fetch_add(&fc->nhave, hits);
             if (workers > 1) {
                 warm_load_rows(block, dict);
                 __block _Atomic size_t next = 0;
@@ -11602,7 +11773,7 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
                 fill_row(line, dict, fc);
                 if (dict.count > 256) [dict removeAllObjects];
             }
-            if (done && runtime_warm_progress) { uint64_t d = at + block.count; runtime_warm_progress(d, rows, 0, 0, d, rows); }
+            if (done && runtime_warm_progress) { uint64_t d = at + processed; runtime_warm_progress(d, rows, 0, 0, d, rows); }
         }
         [dict removeAllObjects];
         par_flush_thread(); atomic_store(&par_filling, 0); par_write_in_place = 0;
@@ -11675,13 +11846,14 @@ static void warm_start(void) {
     warm_filled();
     const char *e = getenv("DM_PSO_MANIFEST");
     if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
+    NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
+    NSString *title = [dir stringByAppendingPathComponent:@"pso_title.tsv"];
+    NSString *user = pso_user_path();
     NSArray<NSString *> *paths;
     if (e && *e) {
         paths = @[@(e)];
     } else {
         NSFileManager *fm = NSFileManager.defaultManager;
-        NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
-        NSString *title = [dir stringByAppendingPathComponent:@"pso_title.tsv"];
         NSString *seed = [dir stringByAppendingPathComponent:@"pso_manifest.tsv"];
         NSMutableArray<NSString *> *all = [NSMutableArray array];
         // The first list is the one the first frame waits for (g_warm_priority_done below): only what the title screen,
@@ -11695,7 +11867,6 @@ static void warm_start(void) {
         NSString *list = [dir stringByAppendingPathComponent:@"pso_list.tsv"];
         if ([fm fileExistsAtPath:list]) [all addObject:list];
         if ([fm fileExistsAtPath:seed]) [all addObject:seed];
-        NSString *user = pso_user_path();
         if (user && [fm fileExistsAtPath:user]) [all addObject:user];
         NSString *shared = pso_shared_path();   // what every session collected (pso_user_record)
         if ([fm fileExistsAtPath:shared]) [all addObject:shared];
@@ -11714,31 +11885,25 @@ static void warm_start(void) {
     g_warm_scope = totk_rt_shader_scope();
     NSArray<NSString *> *cached = totk_rt_list();
     par_open_dir(g_dev);   // the pipeline archive: with files, the pipeline lists are made from them and the rest when drawn
-    /* With a valid pipeline archive the pipeline lists are still warmed (the title's, the shared list's, this device's):
-       they will be drawn, so making them before play costs no more memory, and from the archive it is quick. Skipped:
+    /* With a valid pipeline archive the resident lists are still warmed (title and local user on low-memory devices;
+       all lists with warm_shared). The rest are checked / filled without keeping their pipelines in memory. Skipped:
        the shader libraries alone: every list's S rows (warm_plan; the seed's list is nearly all S rows: 20,368 on the
        iPhone for 1.4.3) and every other shader in the cache, most of which a session never draws. Chosen by row kind,
        not by file: 8b6d26b kept the iPhone seed's list by its path, and a second start loaded all 20,368 libraries
        again (12,266 after 7 minutes; the warm-up never ended).
        Only the title list first (2026-10-20: 866 ms frames on entering the world when the lists were skipped too). */
     if (g_par_valid || (g_par_on && par_fill_light())) {
-        NSMutableArray<NSString *> *lists = [paths mutableCopy];
+        NSArray<NSString *> *archive = nil;
+        paths = warm_resident_lists(paths, title, user, g_par_valid, warm_shared(), &archive);
         g_warm_pipelines_only = 1;
         cached = @[];
         if (g_par_valid) {
-            if (!warm_shared()) {   // the shared list goes into the archive, not into memory (warm_shared)
-                NSIndexSet *shared = [lists indexesOfObjectsPassingTest:^BOOL(NSString *p, NSUInteger i, BOOL *stop) { return [p.lastPathComponent isEqualToString:@"pso_list.tsv"]; }];
-                if (shared.count) { g_shared_fill = [lists objectsAtIndexes:shared]; [lists removeObjectsAtIndexes:shared];
-                    MLOG("预热：统一清单的管线只编进存档、不留在内存（TOTK_WARM_SHARED=1 留）"); }
-            }
-            paths = lists;
+            g_shared_fill = archive;
+            if (archive) MLOG("预热：标题和本机清单驻留，其余 %lu 份只填存档（TOTK_WARM_SHARED=1 全部驻留）", (unsigned long)archive.count);
             MLOG("预热：有管线存档，只建管线清单里的 %lu 份（不单独加载着色器库），其余用到时从存档取", (unsigned long)paths.count);
         } else {   // first run, memory short: only the title's pipelines are kept; the rest go into the archive in the background
-            NSString *title = [lists.firstObject.lastPathComponent isEqualToString:@"pso_title.tsv"] ? lists.firstObject : nil;
-            paths = title ? @[title] : @[];
-            if (title) [lists removeObjectAtIndex:0];
-            g_par_fill_lists = lists;
-            MLOG("预热：还没有管线存档，只建标题画面的管线；其余 %lu 份清单在后台收进存档", (unsigned long)lists.count);
+            g_par_fill_lists = archive ?: @[];   // even with no lists, low-memory mode must not warm the whole shader cache
+            MLOG("预热：还没有管线存档，只建标题画面的管线；其余 %lu 份清单在后台收进存档", (unsigned long)archive.count);
         }
     }
     NSMutableArray<NSString *> *files = [NSMutableArray array];
@@ -11943,7 +12108,7 @@ static uint64_t gmem_map_gpu(int compatible) {
     for(int k=0;k<g_pools.n;k++){
         pidx_ent *p=&g_pools.e[k];
         if(!pool_res_all()&&!pidx_overlaps(&g_addressed,p->lo,p->hi))continue;
-        pool_res(p);
+        pool_res(p, 3);
         uint64_t lo=MAX((uint64_t)p->lo,end),hi=p->hi;
         if(lo>=hi)continue;
         uint64_t e[3]={lo,hi,p->gpu-(uint64_t)p->base};
@@ -22321,10 +22486,38 @@ int mtl_probe_ds_clear(void) {
     for (id o in @[color, depth, rc, rd, rs]) defer_obj_release(o); return checked+probe_vis_reuse();
 }
 
+/* Reproduce the boundary inside a deswizzle/transcode pair: 24 MiB already
+   used in a 32 MiB block, then 1 MiB source + 8 MiB first + 16 MiB second.
+   The old path crossed the 64 MiB batch limit between the two allocations. */
+static int probe_upload_pair(void) {
+    const size_t mb=1u<<20;int checked=0;
+    g_up_batch_limit=64*mb;g_up_pair_negative=getenv("TOTK_PROBE_UPLOAD_SPLIT")!=NULL;
+    mtl_sub_begin();up_begin();size_t pad;up_alloc(24*mb,&pad);
+    id<MTLBuffer> a=nil,b=nil;size_t ao=0,bo=0;
+    up_pair_alloc(mb,8*mb,16*mb,&a,&ao,&b,&bo);
+    /* Every scratch buffer must still be owned by the open batch. This catches
+       the broken lifetime before submitting a GPU read from retired storage. */
+    int owned=(a==g_up_block || [g_up_keep containsObject:a]);
+    for(int i=0;i<UP_POOL;i++)if((g_up_batch_pool>>i&1)&&g_up_pool[i]==a)owned=1;
+    if(!owned || g_up_pair_first_seq!=g_up_seq)MDIE("upload pair probe: first scratch belongs to a retired batch");checked++;
+    if(g_up_batch_bytes!=mb+UP_BLOCK_SIZE || g_up_batch_bytes>g_up_batch_limit)
+        MDIE("upload pair probe: inaccurate transaction budget %zu",g_up_batch_bytes);checked++;
+    id<MTLBuffer> source=probe_buf(256),readback=probe_buf(256);
+    for(int i=0;i<256;i++)((uint8_t *)source.contents)[i]=(uint8_t)(i*17+3);
+    enc_b_copy_buffer(g_up_ce,source,0,a,ao,256);
+    [g_up_ce barrierAfterEncoderStages:MTLStageAll beforeEncoderStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    enc_b_copy_buffer(g_up_ce,a,ao,b,bo,256);
+    [g_up_ce barrierAfterEncoderStages:MTLStageAll beforeEncoderStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    enc_b_copy_buffer(g_up_ce,b,bo,readback,0,256);
+    up_flush();while(atomic_load(&g_up_pending))usleep(1000);
+    if(memcmp(source.contents,readback.contents,256))MDIE("upload pair probe: lost chained scratch pixels");checked+=256;
+    mtl_sub_commit();mtl_finish();res_remove(source);res_remove(readback);return checked;
+}
+
 /* Keep a game submission open while more than one staging batch is uploaded. Check both payload
    ordering and bounded batch memory, including retirement before the game fence is committed. */
 int mtl_probe_upload_batch(void) {
-    mtl_init(); const int N = 12; const size_t cap = 2u * UP_BLOCK_SIZE; int checked = 0;
+    mtl_init();if(getenv("TOTK_PROBE_UPLOAD_PAIR"))return probe_upload_pair(); const int N = 12; const size_t cap = 2u * UP_BLOCK_SIZE; int checked = 0;
     g_up_batch_limit = getenv("TOTK_PROBE_NEGATIVE") ? SIZE_MAX : cap;
     id<MTLBuffer> src = [g_dev newBufferWithLength:N * 256 options:MTLResourceStorageModeShared]; res_add(src);
     id<MTLBuffer> result = [g_dev newBufferWithLength:N * 256 options:MTLResourceStorageModeShared]; res_add(result);
