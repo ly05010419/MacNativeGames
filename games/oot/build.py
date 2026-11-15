@@ -276,7 +276,7 @@ def shader_bundle(tree,record,mode='full'):
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier='org.macnativegames.oot.shaders.oot',CFBundleName='Startup shaders',
         CFBundlePackageType='BNDL',CFBundleShortVersionString='131072',CFBundleVersion='1')))
-    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)
+    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)   # nested: not the app
     subprocess.run(['codesign','--verify','--strict',temporary],check=True)
     old=bundle.with_name(bundle.name+'.previous-'+str(time.time_ns()))
     if bundle.exists():bundle.rename(old)
@@ -457,7 +457,11 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     commit=build_app.source_commit()
     if commit:info['MNGSourceCommit']=commit   # the HUD box and the Update page name the commit the app was built from
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(info));(temporary/'Contents/PkgInfo').write_bytes(b'APPL????')
-    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)
+    # build_app.sign_app: the designated requirement is the bundle ID, so macOS keeps the player's "removable volume"
+    # permission across updates. A plain ad-hoc signature made it this build's code hash: every update asked again, and an
+    # app started with open waited in launcher.m running_game's open() until someone clicked (2026-11-15, TCC.db: oot's
+    # grant was a cdhash, totk / botw / pokopia's an identifier).
+    build_app.sign_app(temporary,work/'logs')
     subprocess.run(['codesign','--verify','--strict',temporary],check=True)
     # The installed .app folder stays and takes the new contents: macOS keeps its first-run check of an app with the folder.
     while app_running(out):time.sleep(5)   # the build may have taken a while: the App is replaced only once it is closed

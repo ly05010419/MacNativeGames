@@ -1594,7 +1594,7 @@ def data_bundle(tree, version, logs, *, bundle_id=BUNDLE_ID, display_version=Non
         say(f'4/4 app: signing the game data once (a minute or two; later builds reuse it): {why}')
         clone(image, tmp / 'Contents/Resources/romfs.bin')
         (tmp / 'Contents/Info.plist').write_bytes(info)
-        run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-data-{version}.log')
+        run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-data-{version}.log')   # nested: not the app
         # Checked once here, where the 16 GB are hashed anyway; an app carrying this bundle checks only its own seal (which
         # records this bundle's signature), not --deep (55 s on each packaging, 2026-10-21).
         run(['codesign', '--verify', '--strict', tmp], logs / f'verify-data-{version}.log')
@@ -1941,7 +1941,7 @@ def seal_shader_bundle(bundle, seed, libs, version, logs, bundle_id):
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleIdentifier=f'{bundle_id}.shaders.{version}', CFBundleName='Startup shaders', CFBundlePackageType='BNDL',
         CFBundleShortVersionString=VERSIONS[version]['display_version'], CFBundleVersion='1')))
-    run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-shaders-{version}.log')
+    run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-shaders-{version}.log')   # nested: not the app
     run(['codesign', '--verify', '--strict', tmp], logs / f'verify-shaders-{version}.log')
     if bundle.exists():
         shutil.rmtree(bundle)
