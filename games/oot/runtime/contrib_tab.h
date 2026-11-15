@@ -137,7 +137,9 @@ static NSArray<NSArray *> *contrib_tab_columns(void) {
  NSString *me=contrib_tab_pseudonym(self.path);   /* the first upload makes the id */
  if(!(me==self.me||[me isEqualToString:self.me])){self.me=me;[self.table reloadData];}
  double now=CACurrentMediaTime();
- if(!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>CONTRIB_TAB_REFETCH_S))[self fetch];
+ /* Only a page on screen reads the site: the panel is made again at every opening (settings_panel_replace), and a page
+    made then and never shown read it each time (2026-11-15: GET /v1/board and /v1/stats were a third of the site's requests). */
+ if(self.window&&!self.hiddenOrHasHiddenAncestor&&!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>CONTRIB_TAB_REFETCH_S))[self fetch];
 }
 -(void)fetch{
  if(!contrib_tab_root()){self.status.stringValue=settings_text("这次运行不连接网站","This run does not reach the site");return;}

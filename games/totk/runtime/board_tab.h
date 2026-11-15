@@ -117,7 +117,9 @@ static NSString *board_tab_rule(void) {
  self.state.toolTip=board_tab_rule();
  [self.nick refresh];
  double now=CACurrentMediaTime();
- if(!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>BOARD_TAB_REFETCH_S))[self fetch];
+ /* Only a page on screen reads the site: the panel is made again at every opening (settings_panel_replace), and a page
+    made then and never shown read it each time (2026-11-15: GET /v1/board and /v1/stats were a third of the site's requests). */
+ if(self.window&&!self.hiddenOrHasHiddenAncestor&&!self.fetching&&(!self.fetchedAt||now-self.fetchedAt>BOARD_TAB_REFETCH_S))[self fetch];
 }
 -(void)fetch{
  self.fetching=YES;if(!self.loaded)self.status.stringValue=settings_text("正在读取榜单…","Reading the board…");
