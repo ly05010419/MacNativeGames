@@ -3,6 +3,7 @@
 Synthetic instructions only. No game files, interpreter or GPU are needed.
 The old interleaved export fails the multi-block cases below.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT/'games/oot/tests'))
-from ampere_scoreboard_gpu import inst, mov
+spec = importlib.util.spec_from_file_location('oot_ampere_scoreboard_fixture',
+                                            ROOT/'games/oot/tests/ampere_scoreboard_gpu.py')
+scoreboard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(scoreboard)
+inst, mov = scoreboard.inst, scoreboard.mov
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'NativeAOT translator is a Mac tool')
