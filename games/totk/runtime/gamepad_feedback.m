@@ -445,6 +445,10 @@ static void rumble_start(void) {
 
 /* ---- motion: the math is in runtime/motion_fusion.c ---- */
 static GCController *motionPad;  /* main queue */
+/* Keep native input streams attached while DSU owns the six-axis fusion: Switch
+   HID reports also carry the stick fallbacks and capture button. */
+static void native_motion_live(int on) { if (!runtime_dsu_motion_active()) runtime_motion_live(on); }
+static void native_motion_deadzone_default(double deg) { if (!runtime_dsu_motion_active()) runtime_motion_deadzone_default(deg); }
 static void hid_motion_start(void);
 static void hid_motion_stop(void);
 static uint64_t zeroSince;          /* the controller's handler queue */
@@ -462,7 +466,7 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
         }
         motionSeen = YES;
     }
-    runtime_motion_feed(acc, gyro, runtime_now_ns());
+    if (!runtime_dsu_motion_active()) runtime_motion_feed(acc, gyro, runtime_now_ns());
 }
 
 /* ---- motion straight from a Switch Pro Controller's HID reports (2026-10-19; macOS only) ----
@@ -584,6 +588,7 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
        DualSense's Share button does through GameController (runtime/gamepad.m runtime_capture_set_hook). Home (bit 4) is
        left alone: macOS keeps that one for its own screen. */
     runtime_gamepad_switch_capture((__bridge void *)motionPad, p[4] & 0x20);
+    if (runtime_dsu_motion_active()) return;   /* only six-axis samples yield; buttons and sticks above stay live */
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
     if (!hidImuLive) {
@@ -658,7 +663,7 @@ static void hid_motion_start(void) {   /* main queue */
     hidMotion = YES; hidLast = 0; hidUserCalibration = NO;
     hidZeroSince = hidImuTriedAt = 0; hidImuRetries = 0; hidImuLive = NO;
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
-    runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
+    native_motion_deadzone_default(1.2); native_motion_live(1);
     fprintf(stderr, "[gyro] %s: reading the six-axis sensor from its HID reports (right Joy-Con for a paired set)\n", name);
     /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back. The IMU-on waits
        250 ms too: HD rumble's vibration-on subcommand (hid_rumble_start) goes to the same device just before this. */
@@ -673,7 +678,7 @@ static void hid_motion_stop(void) {   /* main queue */
     runtime_gamepad_switch_left(NULL, -1, -1);
     runtime_gamepad_switch_right(NULL, -1, -1);
     runtime_gamepad_switch_capture(NULL, 0);
-    hidMotion = NO; hid_close_unused(); runtime_motion_deadzone_default(0);
+    hidMotion = NO; hid_close_unused(); native_motion_deadzone_default(0);
 }
 /* The left Joy-Con of a paired set (057e:2006): opened for rumble; of its input only the battery is read (GameController
    keeps its buttons and stick). */
@@ -983,6 +988,7 @@ void runtime_triggers_release(void) {}
 static uint64_t imuLast;   /* main run loop: the time of the last sample */
 static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len, uint64_t stamp) {   /* main run loop */
     (void)ctx; (void)sender; (void)type;
+    if (runtime_dsu_motion_active()) return;
     const HidImuProfile *pr = imuProfile;
     if (result != kIOReturnSuccess || !pr || id != pr->reportId) return;
     if (len < pr->length) {
@@ -1024,7 +1030,7 @@ static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion,
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     imuLast = 0;
     IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, NULL);
-    motionPad = c; runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
+    motionPad = c; native_motion_deadzone_default(1.2); native_motion_live(1);
     fprintf(stderr, "[gyro] %s: no motion from GameController; reading the six-axis sensor from its HID reports (%04x:%04x)\n", name, vendor, product);
     return YES;
 }
@@ -1090,14 +1096,25 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             motionPad.motion.valueChangedHandler = nil;
             /* A controller that needed manual activation keeps its sensors powered until told otherwise. */
             if (motionPad.motion.sensorsRequireManualActivation) motionPad.motion.sensorsActive = NO;
-            runtime_motion_live(0);
+            native_motion_live(0);
         }
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
-        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
+        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; native_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
-        motionPad = c; runtime_motion_live(1);
+        motionPad = c; native_motion_live(1);
         fprintf(stderr, "[gyro] %s: motion sensors on (gyro%s)\n", name, m.hasGravityAndUserAcceleration ? ", gravity" : ", acceleration");
     }
+}
+/* DSU changes only the fusion source, never the native controller lifecycle. */
+void runtime_feedback_motion_source_changed(void) {
+    runtime_motion_live(0);
+    if (runtime_dsu_motion_active() || !motionPad) return;
+#if TARGET_OS_OSX
+    runtime_motion_deadzone_default(hidMotion ? 1.2 : 0);
+#else
+    runtime_motion_deadzone_default(0);
+#endif
+    runtime_motion_live(1);
 }
 void runtime_feedback_detach(GCController *c) {   /* main queue */
     hid_rumble_detach(c);
@@ -1108,7 +1125,7 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (hidRumblePad == c) hid_rumble_stop();
 #endif
     if (motionPad == c) {
-        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
+        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; native_motion_live(0);
     }
 }
 /* iOS deactivates a manual-activation controller's sensors while the app is in the background (Settings, Control

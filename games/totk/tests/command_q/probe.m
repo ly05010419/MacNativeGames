@@ -44,6 +44,9 @@ void runtime_input_clear(void){}
 void runtime_input_clear_window(void){inputClears++;memset(heldInput,0,sizeof heldInput);}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_dsu_settings(RuntimeDSUSettings *out){*out=(RuntimeDSUSettings){.endpoint="127.0.0.1:26760"};}
+void runtime_dsu_status(RuntimeDSUStatus *out){*out=(RuntimeDSUStatus){0};}
+int runtime_dsu_apply(const RuntimeDSUSettings *settings){(void)settings;return 0;}
 void runtime_gamepad_focus(int on){(void)on;}
 int runtime_gamepad_background_enabled(void){return 0;}
 void runtime_gamepad_background_set(int on){(void)on;}

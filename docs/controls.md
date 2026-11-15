@@ -112,6 +112,56 @@ Native 2K changes the game's composition canvas and UI to 2560×1440. The 3D sce
 
 Language: the game and the launcher's own text (startup screen, shader warm-up progress, overlays, keyboard prompt) follow the Mac's language. The launcher text is Chinese on a Chinese Mac and English otherwise. Regional variants follow the console: English outside the Americas (en-GB, en-AU, ...) selects British English, which shows temperatures in Celsius (American English shows Fahrenheit), French in Canada selects Canadian French, Spanish in the Americas Latin American Spanish, and in a 1.4.3 build Brazilian Portuguese selects the game's official pt-BR text. Simplified and Traditional Chinese are told apart by the script (zh-Hans / zh-Hant) or, without one, by the region (Taiwan, Hong Kong and Macau are Traditional). To give only this game another language, choose it in System Settings › General › Language & Region › Applications, or set its preferred language, for example `defaults write org.macnativegames.totk AppleLanguages -array pt-BR` (`defaults delete org.macnativegames.totk AppleLanguages` removes it). To override, launch with `TOTK_LANG` for the game (for example `open --env TOTK_LANG=en-US "Tears of the Kingdom.app"`) or `TOTK_UI_LANG=zh` / `en` for the launcher text.
 
+### DSU / Cemuhook input on Mac (optional)
+
+Tears of the Kingdom and Breath of the Wild can receive one controller's buttons,
+sticks and native six-axis motion from a DSU protocol 1001 server. This is off by
+default and does not depend on a controller brand. Press **1 → Input** and scroll
+to the DSU rows to enable it, edit `host:port` and select slot 0–3. DSU always
+receives buttons, sticks and motion. Changes apply immediately and are kept next
+to `controls.txt` in `dsu.txt` (`on`/`off`), `dsu-server.txt` and `dsu-slot.txt`.
+Turning DSU off restores the native controller motion source;
+rumble is not restarted by these changes. Hostname lookup runs off the UI thread.
+
+One status line shows the live connection state, buttons, both sticks,
+acceleration (g) and rotation (degrees/s).
+No controller data is shown while disconnected; stale motion shows no sensor values. The raw sensor readout remains available
+when gyro aiming is off. Values refresh twice a second. A socket waiting for data does
+not count as a connected controller.
+
+Alternatively, quit the game and override the saved preferences for one launch:
+
+```sh
+open --env TOTK_DSU=127.0.0.1:26760 --env TOTK_DSU_SLOT=0 "/Applications/Tears of the Kingdom.app"
+```
+
+- `TOTK_DSU=host:port` selects a server; `1` means `127.0.0.1:26760`. Hostnames and
+  bracketed IPv6 (`[::1]:26760`) are accepted. Empty or `0` disables DSU; unset
+  uses saved settings (off when never configured).
+- Either `TOTK_DSU` or `TOTK_DSU_SLOT` locks the DSU settings
+  for that launch; remove them and relaunch to edit the saved choices in the UI.
+- `TOTK_DSU_SLOT=0` selects a zero-based slot, `0` through `3` (default `0`).
+- Buttons and sticks follow the existing controller layout and foreground/background input policy.
+- DSU replaces native controller **motion** only after a valid six-axis sample
+  arrives, keeping the sensors separate. Opening a socket or receiving buttons
+  alone does not take motion over. Empty sensor payloads and zero sensor timestamps
+  do not count as motion. A missing server leaves native motion available.
+  Native controller rumble stays on its existing path; DSU rumble extensions
+  are not implemented.
+- Both the game's own motion setting and the port's gyro setting must be on.
+  Existing `TOTK_GYRO_AXES`, dead-zone and bias settings apply. Server timestamp
+  intervals are mapped to the local monotonic clock; the server may run on another
+  machine and need not share the game's uptime or wall clock.
+- Sensor silence returns motion to the native controller after 200 ms; a fresh
+  DSU sensor sample takes over again. Missing controller packets release
+  its input after 500 ms. Disconnects and server/device restarts reset the source.
+  No packets from another server endpoint or unselected slot are used.
+
+DSU is unauthenticated UDP. Prefer a local server or a trusted LAN. The receiver
+opens no public listener and sends registration only to the configured server.
+This support is macOS-only; iPhone/iPad keep their existing input paths. Protocol
+and receiver checks: `python -m unittest discover -s tests -p test_dsu.py -v`.
+
 ## Screenshots
 
 The controller's capture button saves a picture of the game's own frame: the square button below the D-pad on a Nintendo controller (read from the controller's HID reports; the Home button stays macOS's own), and macOS's Share button on a DualSense, a DualShock 4 or an Xbox controller. One press, one picture. The keyboard's **P** does the same, and so does holding a DualSense or DualShock 4's **touchpad** for 3 seconds (one picture per hold; the touchpad keeps anything else you gave it). Both are the **Key bindings** page's last row, *Screenshot*: change the keys like any action, and pick another controller button for the 3-second hold, or none (kept in `controller-screenshot.txt` next to `controls.txt`: a button's `controls.txt` name or `none`; the touchpad without the file). The **Screenshots** page of the settings panel has a **Take screenshot** button too (A on a controller), which saves the game picture without the panel, which stays open. macOS keeps a Share button for its own screenshot gesture until a game asks otherwise; the game asks, so the button reaches it -- but a shortcut you bound to the button yourself (System Settings › Game Center) keeps it, and then the button takes no picture. The picture is the game's own frame, at the game's render resolution and without the letterbox bars: the boot screen's text, the FPS box and the settings panel are not in it.
