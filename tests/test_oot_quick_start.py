@@ -238,7 +238,9 @@ class ShaderMode(unittest.TestCase):
         self.assertTrue(set(full[:2]).isdisjoint(title[:2]))
         self.assertEqual(title[2], '-title')
         text = (GAME / 'build.py').read_text()
-        for used in ("cache=folder/(chain+suffix)", "target=tree/f'build/pipelines{suffix}'",
+        # the pipeline cache: one per kind, kept across chains (test_oot_archive_lists.CacheKeptAcrossChains)
+        self.assertEqual(self.build.pipeline_cache(tree, '-title'), tree / 'archive-title')
+        for used in ("cache=pipeline_cache(folder,suffix)","target=tree/f'build/pipelines{suffix}'",
                      "bundle=tree/f'build/shader-bundles/ShaderData-oot{suffix}.bundle'", "'--output',seed,", "'--out',libraries,"):
             self.assertIn(used, text)
 

@@ -110,9 +110,20 @@ static NSString *par_lock_file(void) { return [totk_rt_dir() stringByAppendingPa
 // 5 (2026-10-29): border and tile-read pipelines are keyed with their variant (nvn_mtl.m pso_archive_key); files of 4 held
 // some under the plain pipeline's key, which then missed in every session.
 #define PAR_SCHEMA 6   /* vertex fetches omit trailing lanes proven unused by the MSL */
+/* What the folder's files are good for: the key format, the GPU and the OS. Not the translation chain (2026-11-15, user:
+   "为什么要重建？这次必须重建吗？"): a new chain changes few shaders (v27 -> v28: 18 of 18,661 .metal files differ, the other
+   18,643 byte-identical), and every pipeline taken from a file is made with MTLPipelineOptionFailOnBinaryArchiveMiss, which
+   misses when its functions changed (par_stale writes it again). Throwing the folder away for the chain made the OOT iPad
+   build compile all ~19,700 pipelines twice, and a player's first start after an update compile everything again. */
 static NSDictionary *par_identity(id<MTLDevice> dev) {
-    return @{@"schema": @PAR_SCHEMA, @"chain": @DMSH_CHAIN, @"gpu": dev.name ?: @"?",
+    return @{@"schema": @PAR_SCHEMA, @"gpu": dev.name ?: @"?",
              @"os": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"?"};
+}
+/* A stamp still carrying the chain (written before 2026-11-15) is the same identity when these three match. */
+static BOOL par_same_identity(NSDictionary *stamp, NSDictionary *want) {
+    if (![stamp isKindOfClass:NSDictionary.class]) return NO;
+    for (NSString *k in want) if (![stamp[k] isEqual:want[k]]) return NO;
+    return YES;
 }
 static NSString *par_hash(const void *bytes, size_t n) {
     uint8_t d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(bytes, (CC_LONG)n, d);
@@ -199,8 +210,10 @@ static int par_open_identity(id<MTLDevice> dev) {
     NSDictionary *stamp = sd ? [NSJSONSerialization JSONObjectWithData:sd options:0 error:nil] : nil;
     [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.metalarchive"] error:nil];   // layouts of earlier tests
     [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.json"] error:nil];
-    if (![stamp isEqual:par_identity(dev)] && [fm fileExistsAtPath:par_dir()]) {
-        if (stamp) MLOG("管线存档：系统版本、GPU 或翻译链变了，删掉重建");
+    if (par_same_identity(stamp, par_identity(dev)) && stamp[@"chain"] && ![stamp[@"chain"] isEqual:@DMSH_CHAIN])
+        MLOG("管线存档：翻译链 %s → %s，存档保留；着色器变了的管线逐条重编", [[stamp[@"chain"] description] UTF8String], DMSH_CHAIN);
+    if (!par_same_identity(stamp, par_identity(dev)) && [fm fileExistsAtPath:par_dir()]) {
+        if (stamp) MLOG("管线存档：系统版本、GPU 或存档格式变了，删掉重建（翻译链变了不删：着色器变了的管线取存档时 Metal 认不出，逐条重编）");
         if (!par_pub_wipe(par_dir(), par_lock_file())) {   // totk_pipeline_archive_publish.h
             MLOG("【红】[pipeline-archive] another process of the app is writing %s for another system, GPU or chain: no archive this run", par_dir().UTF8String);
             return 0;
@@ -212,7 +225,9 @@ static int par_open_identity(id<MTLDevice> dev) {
         MLOG("【红】[pipeline-archive] cannot lock %s (%s): no archive this run", par_lock_file().UTF8String, strerror(errno));
         return 0;
     }
-    [[NSJSONSerialization dataWithJSONObject:par_identity(dev) options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
+    NSMutableDictionary *written = [par_identity(dev) mutableCopy];
+    written[@"chain"] = @DMSH_CHAIN;   // for the log line above only; par_same_identity does not compare it
+    [[NSJSONSerialization dataWithJSONObject:written options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
     par_pub_unlock(lk);
     return 1;
 }

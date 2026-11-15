@@ -283,6 +283,23 @@ def shader_bundle(tree,record,mode='full'):
     temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
     return bundle
 
+def pipeline_cache(folder, suffix):
+    """The pipeline-archive tool's folder for one kind of App ('archive' full, 'archive-title' quick), kept from one chain
+    to the next (user 2026-11-15: "mac会有同样问题吗？"). It was named after the chain, so every new chain began empty:
+    v28's full update compiled all 28,714 pipelines in 2,546 s beside v27's folder, although only 18 of 18,661 shaders
+    changed. The tool runs with TOTK_PAR_RECHECK=1 and Metal finds a pipeline only with the functions it was made from,
+    so the changed ones are compiled again and the rest come from their files (totk_pipeline_archive.h
+    par_same_identity). The first run takes over the newest chain-named folder of the same kind."""
+    target=folder/('archive'+suffix)
+    if target.exists():return target
+    kind=lambda p:p.name.endswith('-title')==bool(suffix)
+    old=[p for p in folder.iterdir() if p.is_dir() and p.name.startswith('oot-native-') and kind(p) and (p/'pipelines').is_dir()]
+    if old:
+        newest=max(old,key=lambda p:(p/'pipelines').stat().st_mtime)
+        newest.rename(target)
+        print(f'pipeline archive: {target.name} takes over {newest.name} (kept across chains; changed pipelines are compiled again)',flush=True)
+    return target
+
 def compute_pipeline_archive(work, tree, lists, mode='full'):
     """Build every seed compute pipeline and, with them, the render pipelines the App's warm-up lists name (lists: the
     pso_title.tsv / pso_manifest.tsv resolve_lists made from the current games/oot/assets/shader_list.tsv, the files the
@@ -297,8 +314,7 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     folder=tree/'build/compute-pipelines';folder.mkdir(parents=True,exist_ok=True)
     plan=folder/'compute.tsv';plan.write_text('\n'.join(rows)+'\n')
     chain=json.loads((seed/'seed-manifest.json').read_text())['chain']
-    # The runtime's archive metadata also checks GPU, OS and chain before reuse.
-    cache=folder/(chain+suffix)   # a title build's own: its pruning never reaches the full build's files
+    cache=pipeline_cache(folder,suffix)   # a title build's own: its pruning never reaches the full build's files
     # Kept from one package to the next, also when the runtime changed: with TOTK_PAR_RECHECK=1 the tool makes every listed
     # pipeline against the archive (Metal compares the functions and state), so one this runtime describes otherwise is
     # compiled and written again and the rest come from their files (nvn_mtl.m mtl_pipeline_archive_tool, par_stale; user
