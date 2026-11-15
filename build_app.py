@@ -1249,7 +1249,7 @@ def build_device_translator(tree, logs):
     background instead of skipping its draws until the Mac fills it in."""
     prebuilt = [tree / 'prebuilt/ios-arm64' / name for name in ('libtotk_xlate.a', 'libtotk_xlate_bootstrap.o')]
     for lib in prebuilt:
-        want = (lib.parent / (lib.name + '.sha256')).read_text().strip()
+        want = (lib.parent / (lib.name + '.sha256')).read_text().split()[0]
         if not lib.is_file() or sha256(lib) != want:
             raise BuildError(f'{lib}: not the file this repository ships (its SHA-256 differs from {lib.name}.sha256); '
                              f'check it out again, or rebuild both with games/totk/tools/totk_xlate/publish_ios_lib.sh')
@@ -1275,7 +1275,7 @@ def build_device_translator(tree, logs):
 def check_translator(tree):
     """The shader translation service: a native program in this repository (no .NET needed to build or to play)."""
     translator = tree / 'prebuilt/macos-arm64/totk_xlate'
-    want = (translator.parent / 'totk_xlate.sha256').read_text().strip()
+    want = (translator.parent / 'totk_xlate.sha256').read_text().split()[0]
     if not translator.is_file() or sha256(translator) != want:
         raise BuildError(f'{translator}: not the shader translator this repository ships (its SHA-256 differs from '
                          f'totk_xlate.sha256); check it out again, or rebuild it with games/totk/tools/totk_xlate/publish_native.sh')
@@ -2868,7 +2868,7 @@ def step_shaders_botw(tree, botw, logs, *, version='botw160', shader_list=None):
         say('3/4 shaders: building SPIRV-Cross with clang')
         build_spirv_cross(tree, logs)
     translator = tree / 'prebuilt/macos-arm64/totk_xlate'
-    want = (translator.parent / 'totk_xlate.sha256').read_text().strip()
+    want = (translator.parent / 'totk_xlate.sha256').read_text().split()[0]
     if not translator.is_file() or sha256(translator) != want:
         raise BuildError(f'{translator}: not the shader translator this repository ships (its SHA-256 differs from '
                          f'totk_xlate.sha256); check it out again, or rebuild it with games/totk/tools/totk_xlate/publish_native.sh')
