@@ -792,7 +792,6 @@ static int pool_query_on(void) {
 }
 static NSMutableArray *g_keep;                  // 持有缓冲引用（pidx_ent 里是不持有的指针） | Holds the buffer references (pidx_ent has non-owning pointers)
 static uint64_t g_pool_adds;
-static char g_pool_registration_key;   // monotonically assigned host registration ID, including virtual remaps
 
 #define C1_BANK_SIZE (4u << 20)
 #define C1_DECL_SIZE (64u << 10)
@@ -1128,19 +1127,10 @@ static int mtl_addr_known(uint64_t addr,uint64_t len) {
     pthread_mutex_unlock(&g_mu);
     return found;
 }
-static void pool_res(pidx_ent *p) {   // caller holds g_mu
-    if (p->res) return;
-    res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
-    p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
-}
-void mtl_pool_res_stats(uint64_t v[4]) {   // registered pools, their bytes, pools / bytes in the residency set
-    pthread_mutex_lock(&g_mu); v[0] = (uint64_t)g_pools.n; v[1] = g_pool_bytes; v[2] = g_pool_res_n; v[3] = g_pool_res_bytes; pthread_mutex_unlock(&g_mu);
-}
-void mtl_pool_add(const void *mem, uint64_t size) {
-    mtl_init(); g_reg_gen++;
-    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)mem, hi = lo + size;
-    uintptr_t a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1);
-    pool_range_check(a, b, mem, size);
+static id<MTLBuffer> pool_buffer_new(const pidx_ent *p) {
+    const void *mem = (const void *)p->lo;
+    uint64_t size = p->hi - p->lo;
+    uintptr_t pg = (uintptr_t)getpagesize(), a = p->base, b = (p->hi + pg - 1) & ~(pg - 1);
     id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
     /* TOTK (2026-10-24, crash at boot 12:36): Metal refused the zero-copy buffer while pipelining had pages of the range
        write-protected (a guest thread was faulting on one at the same moment). Retry with the tracked pages writable for
@@ -1153,16 +1143,59 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         if (!buf) usleep(2000 << k);
     }
     if (!buf) MDIE("内存池 %p+%#llx 建零拷贝缓冲失败", mem, (unsigned long long)size);
+    return buf;
+}
+static void pool_res(pidx_ent *p) {   // caller holds g_mu; every GPU-address consumer passes here
+    if (p->res) return;
+    if (!p->buf) {
+        uintptr_t pg = (uintptr_t)getpagesize(), end = (p->hi + pg - 1) & ~(pg - 1);
+        pool_range_check(p->base, end, (const void *)p->lo, p->hi - p->lo);
+        id<MTLBuffer> buf = pool_buffer_new(p);
+        p->buf = (__bridge void *)buf; p->gpu = buf.gpuAddress;
+        [g_keep addObject:buf];
+    }
+    res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
+    p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
+}
+void mtl_pool_res_stats(uint64_t v[4]) {   // registered pools, their bytes, pools / bytes in the residency set
+    pthread_mutex_lock(&g_mu); v[0] = (uint64_t)g_pools.n; v[1] = g_pool_bytes; v[2] = g_pool_res_n; v[3] = g_pool_res_bytes; pthread_mutex_unlock(&g_mu);
+}
+static void pool_wrapper_report(void) {
+    uint64_t wrapped = 0, allocated = 0, dormant = 0, dormant_bytes = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_pools.n; i++) {
+        const pidx_ent *p = &g_pools.e[i];
+        if (p->buf) {
+            __unsafe_unretained id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)p->buf;
+            wrapped++; allocated += buffer.allocatedSize;
+        } else { dormant++; dormant_bytes += p->hi - p->lo; }
+    }
+    pthread_mutex_unlock(&g_mu);
+    MLOG("[pool-wrappers] materialized %llu/%llu allocated bytes, dormant %llu/%llu logical bytes",
+         (unsigned long long)wrapped, (unsigned long long)allocated,
+         (unsigned long long)dormant, (unsigned long long)dormant_bytes);
+}
+void mtl_pool_add(const void *mem, uint64_t size) {
+    mtl_init(); g_reg_gen++;
+    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)mem, hi = lo + size;
+    uintptr_t a = lo & ~(pg - 1), b = (hi + pg - 1) & ~(pg - 1);
+    pool_range_check(a, b, mem, size);
+    pidx_ent ent = {.lo = lo, .hi = hi, .base = a, .key = mem};
+    int eager = 1;
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+    eager = pool_res_all();   // untouched CPU-only pools need no Metal allocation
+#endif
+    id<MTLBuffer> buf = eager ? pool_buffer_new(&ent) : nil;
+    if (buf) { ent.buf = (__bridge void *)buf; ent.gpu = buf.gpuAddress; }
     pthread_mutex_lock(&g_mu);
     if (pidx_overlaps(&g_pools, lo, hi)) { static int said; if (said++ < 8) MLOG("memory pool %p+%#llx overlaps a registered pool (%d live)", mem, (unsigned long long)size, g_pools.n); }
-    pidx_ent ent = {lo, hi, a, (__bridge void *)buf, buf.gpuAddress, mem, 0};
     if (pool_res_all()) { res_add(buf); ent.res = 1; g_pool_res_n++; g_pool_res_bytes += hi - lo; }
+    ent.registration = g_pool_adds + 1;
+    if (!ent.registration) MDIE("memory pool registration generation overflow");
     if (!pidx_insert(&g_pools, &ent)) MDIE("内存池表扩容失败（%d 个）", g_pools.n);
     pidx_query_invalidate(&g_pool_queries); atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);
     g_pool_adds++; g_pool_bytes += hi - lo;
-    objc_setAssociatedObject(buf, &g_pool_registration_key,
-        [[NSNumber alloc] initWithUnsignedLongLong:g_pool_adds], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [g_keep addObject:buf];
+    if (buf) [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -1179,7 +1212,7 @@ void mtl_pool_del(const void *mem) {
         __unsafe_unretained id<MTLBuffer> buf = (__bridge id<MTLBuffer>)ent.buf;
         lo = ent.lo; hi = ent.hi; g_pool_bytes -= hi - lo;
         if (ent.res) { res_remove(buf); g_pool_res_n--; g_pool_res_bytes -= hi - lo; }
-        [g_keep removeObjectIdenticalTo:buf];
+        if (buf) [g_keep removeObjectIdenticalTo:buf];
     }
     pthread_mutex_unlock(&g_mu);
     if (hi > lo) { stor_drop_range(lo, hi); wb_drop_range(lo, hi); BOTW_LATE_DROP(lo, hi) }   // TOTK: storage-shared textures and pending write-backs of this pool
@@ -3554,7 +3587,7 @@ static int stor_alias_pool_range(uint64_t address, uint64_t length, stor_alias_p
         int index = (int)(p - g_pools.e);
         int overlaps = (index > 0 && g_pools.maxhi[index - 1] > p->lo) ||
                        (index + 1 < g_pools.n && g_pools.e[index + 1].lo < p->hi);
-        uint64_t generation = [objc_getAssociatedObject((__bridge id)p->buf, &g_pool_registration_key) unsignedLongLongValue];
+        uint64_t generation = p->registration;
         if (!overlaps && p->hi > p->lo && generation) {
             *out = (stor_alias_pool){p->lo, p->hi - p->lo, generation}; valid = 1;
         }
@@ -5785,6 +5818,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
            cbc_mode(), (unsigned long long)g_cbc_hits, (unsigned long long)g_cbc_misses, (unsigned long long)g_cbc_verified, (unsigned long long)g_ab_same,
            pso_memo_on(), (unsigned long long)g_pso_memo_hits, (unsigned long long)g_pso_memo_misses); }
     MLOG("[pkg-final-cache] enabled=%d kept=%llu", pkg_final_cache_on(), (unsigned long long)atomic_load(&g_pkg_final_kept));
+    pool_wrapper_report();
     blk_aux_report();
     MLOG("贴图类型缓存已回收退役视图 %llu 个", (unsigned long long)g_type_retired_views);
     res_site_report(8);

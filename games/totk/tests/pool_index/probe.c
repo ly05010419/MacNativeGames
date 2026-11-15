@@ -38,7 +38,8 @@ static int check_one(const pidx *x, find_fn f, uintptr_t addr, uint64_t len) {
     return 1;
 }
 static void add(pidx *x, uintptr_t lo, uintptr_t hi, uintptr_t key) {
-    pidx_ent v = {lo, hi, lo & ~(uintptr_t)0x3fff, (void *)key, 0x1000000000ull + lo, (const void *)key, 0};
+    pidx_ent v = {.lo=lo, .hi=hi, .base=lo & ~(uintptr_t)0x3fff, .buf=(void *)key,
+                  .gpu=0x1000000000ull + lo, .key=(const void *)key};
     if (!pidx_insert(x, &v)) { fprintf(stderr, "insert failed\n"); exit(2); }
     g_ref[g_nref++] = (ref_ent){lo, hi, (const void *)key};
 }
