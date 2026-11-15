@@ -54,16 +54,32 @@ class GpuProbeVersion(unittest.TestCase):
             line = probe_line(make('probe-gpu-drv-c0', f'PROBE_ROOT={root}/', 'PROBE_VERSION=v143').stdout)
             self.assertIn(f'build/totk-native-v143 "{root}/rewritten/v143"', line)
 
-    def test_no_game_code_or_no_game_data_stops_before_anything_runs(self):
+    def test_a_version_without_game_data_in_a_work_folder_is_passed_over(self):
+        """This Mac's work folder: 1.0.0's code without its game data, 1.4.3 with both (make end to end picked 1.0.0)."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            run = make('probe-gpu-version', f'PROBE_ROOT={root}/', dry=False)
+            place(root, 'v0', data=False)
+            place(root, 'v143')
+            line = probe_line(make('probe-gpu-drv-c0', f'PROBE_ROOT={root}/').stdout)
+            self.assertIn(f'build/totk-native-v143 "{root}/rewritten/v143"', line)
+
+    def test_no_game_code_or_no_game_data_stops_before_anything_is_built(self):
+        """Checked while the Makefile is read: with make -j the build ran beside a checking recipe."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = make('probe-gpu-drv-c0', '-j8', f'PROBE_ROOT={root}/')
             self.assertNotEqual(run.returncode, 0)
             self.assertIn('GPU probes need a version', run.stdout + run.stderr)
+            self.assertNotIn('clang', run.stdout)
             place(root, 'v143', data=False)
-            run = make('probe-gpu-version', f'PROBE_ROOT={root}/', dry=False)
+            run = make('probe-gpu-drv-c0', '-j8', f'PROBE_ROOT={root}/')
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn('GPU probes need a version', run.stdout + run.stderr)
+            self.assertNotIn('clang', run.stdout)
+            run = make('probe-gpu-drv-c0', '-j8', f'PROBE_ROOT={root}/', 'PROBE_VERSION=v143')
             self.assertNotEqual(run.returncode, 0)
             self.assertIn('no game data', run.stdout + run.stderr)
+            self.assertNotIn('clang', run.stdout)
             place(root, 'v143')
             run = make('probe-gpu-version', f'PROBE_ROOT={root}/', dry=False)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
