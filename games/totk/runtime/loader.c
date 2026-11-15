@@ -4,6 +4,7 @@
 #include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -358,6 +359,46 @@ static void thread_cleanup(void) {
  ThreadEnvironment *e=pthread_getspecific(environment_key);pthread_setspecific(environment_key,NULL);
  for(unsigned i=0;i<4;i++)pthread_setspecific(runtime_keys[i],NULL);environment_destroy(e);
 }
+static _Atomic uint64_t g_guest_pause_seq = 0;
+static _Atomic uint64_t g_guest_pause_accum_ns = 0;
+static _Atomic uint64_t g_guest_pause_start_ns = 0;
+static _Atomic int g_guest_clock_paused = 0;
+
+uint64_t runtime_guest_time_ns(void) {
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ for (;;) {
+  uint64_t s1 = atomic_load_explicit(&g_guest_pause_seq, memory_order_acquire);
+  if (s1 & 1) continue;
+  int paused = atomic_load_explicit(&g_guest_clock_paused, memory_order_relaxed);
+  uint64_t start = atomic_load_explicit(&g_guest_pause_start_ns, memory_order_relaxed);
+  uint64_t accum = atomic_load_explicit(&g_guest_pause_accum_ns, memory_order_relaxed);
+  uint64_t raw = paused ? start : (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+  uint64_t s2 = atomic_load_explicit(&g_guest_pause_seq, memory_order_acquire);
+  if (s1 == s2) return raw > accum ? raw - accum : 0;
+ }
+}
+
+void runtime_guest_time_pause(void) {
+ if (atomic_load_explicit(&g_guest_clock_paused, memory_order_acquire)) return;
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ uint64_t now = (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+ atomic_fetch_add_explicit(&g_guest_pause_seq, 1, memory_order_acq_rel);
+ atomic_store_explicit(&g_guest_pause_start_ns, now, memory_order_relaxed);
+ atomic_store_explicit(&g_guest_clock_paused, 1, memory_order_relaxed);
+ atomic_fetch_add_explicit(&g_guest_pause_seq, 1, memory_order_release);
+}
+
+void runtime_guest_time_resume(void) {
+ if (!atomic_load_explicit(&g_guest_clock_paused, memory_order_acquire)) return;
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ uint64_t now = (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+ uint64_t start = atomic_load_explicit(&g_guest_pause_start_ns, memory_order_relaxed);
+ atomic_fetch_add_explicit(&g_guest_pause_seq, 1, memory_order_acq_rel);
+ if (now > start) atomic_fetch_add_explicit(&g_guest_pause_accum_ns, now - start, memory_order_relaxed);
+ atomic_store_explicit(&g_guest_clock_paused, 0, memory_order_relaxed);
+ atomic_fetch_add_explicit(&g_guest_pause_seq, 1, memory_order_release);
+}
+
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
 /* The system counter (cntpct / cntvct) at the rate the game's SDK converts it with: the Switch's 19.2 MHz, or the Switch 2's
    31.25 MHz (32 ns a tick; its nn::os::GetSystemTickFrequency answers 0x1dcd650). At 19.2 MHz a Switch 2 game measured every
@@ -375,7 +416,7 @@ void runtime_dispatch(uint64_t ret,uint64_t *regs) {
   if(lo==modules[i].ngate||b+modules[i].gates[lo].ret!=ret)continue;
   const Gate *g=&modules[i].gates[lo];
   if(g->timer==2){runtime_spin_wait(i,g->original);return;}   // spin wait (patch_nso.py "Spin waits"): no register changes
-  if(g->timer){mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
+  if(g->timer){__uint128_t ns=(__uint128_t)runtime_guest_time_ns();
    need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)GUEST_TICKS(ns);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
   __atomic_fetch_add(&svc_calls,1,__ATOMIC_RELAXED);runtime_svc(g->arg,regs,modules[i].name,g->original);return;
  }
