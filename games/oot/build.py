@@ -120,12 +120,14 @@ def shader_dirs(tree, mode='full'):
     return tree/f'build/shader-seed{suffix}/oot',tree/f'build/shader-libs{suffix}',suffix
 
 def title_shader_file(tree, shared):
-    """The shaders the title rows of the shared list name, written for prepare_ns2_seed.py --only (a 'title' build)."""
-    keys=oot_shader_list().ShaderList.load(shared).title_keys()
-    if not keys:raise ValueError(f'{shared} has no title rows (flag t): a quick build has nothing to take; record them first (TOTK_PSO_CAPTURE, shader_list.py merge --title)')
+    """The shaders of the shared list's title rows and of its compute, tile-read and mesh pipelines (shader_list.py
+    quick_keys), written for prepare_ns2_seed.py --only (a 'title' build): the packaging then warms those pipelines too."""
+    lst=oot_shader_list().ShaderList.load(shared)
+    if not lst.title_keys():raise ValueError(f'{shared} has no title rows (flag t): a quick build has nothing to take; record them first (TOTK_PSO_CAPTURE, shader_list.py merge --title)')
+    keys=lst.quick_keys()
     path=tree/'build/shader-seed-title.txt';path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(''.join(k+'\n' for k in sorted(keys)))
-    print(f'quick build: the {len(keys)} shaders of the title rows; the game translates the rest at first use',flush=True)
+    print(f'quick build: the {len(keys)} shaders of the title rows and the compute, tile-read and mesh pipelines; the game translates the rest at first use',flush=True)
     return path
 
 def oot_shader_list():
@@ -290,7 +292,7 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     if scripts not in sys.path:sys.path.insert(0,scripts)
     from prepare_compute_pipelines import compute_rows
     from dev.game_slot import GameSlot
-    seed,_,suffix=shader_dirs(tree,mode)
+    seed,libraries,suffix=shader_dirs(tree,mode)
     rows=compute_rows(seed)
     folder=tree/'build/compute-pipelines';folder.mkdir(parents=True,exist_ok=True)
     plan=folder/'compute.tsv';plan.write_text('\n'.join(rows)+'\n')
@@ -303,7 +305,9 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     # 2026-11-11: "如何让 快速更新 不要这么容易失效"). Until then any runtime change threw it away: 17 min for 21,330 pipelines.
     logs=work/'logs';logs.mkdir(exist_ok=True)
     log=logs/'compute-pipelines.log'
-    env=dict(os.environ,TOTK_NATIVE_DIR=str(tree/'build'),TOTK_SHADER_CACHE=str(cache),
+    # TOTK_SHADER_LIBS_DIR: the libraries this App carries (a quick App's shader-libs-title), not TOTK_NATIVE_DIR's
+    # shader-libs, the full build's: Metal finds an archived pipeline only with the very library binary it was made from
+    env=dict(os.environ,TOTK_NATIVE_DIR=str(tree/'build'),TOTK_SHADER_CACHE=str(cache),TOTK_SHADER_LIBS_DIR=str(libraries),
              TOTK_SHADER_SEED_DIR=str(seed),TOTK_PIPELINE_ARCHIVE_HOST='1',TOTK_DEBUG_LOG='1',TOTK_PAR_RECHECK='1')
     lists_sha256={p.name:sha(p) for p in lists}   # check_archive_lists compares them with the files the App carries
     lists=[p for p in lists if p.is_file() and any(l and not l.startswith('#') for l in p.read_text().splitlines())]
@@ -316,6 +320,7 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     reports=[json.loads(line) for line in log.read_text().splitlines() if line.startswith('{"render":')]
     if not reports:raise ValueError(f'pipeline archive exit {tool.returncode} without a completion report; see {log}')
     report=reports[-1]
+    check_archive_libraries(report,libraries)
     # A listed render row that cannot be built only misses the warm-up (it is built at its draw); every compute pipeline must be there (the index check below).
     if report['write_failed'] or report['compute']+report['kept']<len(rows) or (report['failed'] and not lists):
         raise ValueError('incomplete pipeline archive: '+str(report))
@@ -340,6 +345,17 @@ RENDER_ROWS=('R\t','B\t','T\t')   # the warm rows that are render pipelines (sha
 MESH_ROWS=('M\t',)                 # mesh pipelines: archived since 2026-11-11 (nvn_mesh_tasks.inc mtk_archive_key)
 MESH_KEY='m'                       # their archive keys ('m' + 40 hex; render keys are hex, compute keys 'c' + hex)
 WARM_LISTS=('pso_title.tsv','pso_manifest.tsv')
+
+def check_archive_libraries(report, libraries):
+    """The pipeline archive must be made from the libraries the App carries: Metal takes an archived pipeline only with the
+    very library binary it was compiled from. 2026-11-15: the packaging tool loaded the full build's libraries for a quick
+    App (494 of its 537 differ in bytes); the game's Metal refused 531 of the 602 archived pipelines ("Unable to find
+    function main0") and compiled them all again before the title (134 s). report: the tool's JSON line, which names the
+    folder it loaded them from (libs). Raises ValueError when it is not this App's."""
+    used=report.get('libs')
+    if not used:raise ValueError('the pipeline archive tool did not name the libraries it built from (libs): rebuild the runtime')
+    if Path(used).resolve()!=Path(libraries).resolve():
+        raise ValueError(f'the pipeline archive was built from the libraries in {used}, not from the ones this App carries ({libraries})')
 
 def check_archive_lists(build):
     """The App's pipeline archive must be built from the warm-up lists the App carries (build/pso_title.tsv,

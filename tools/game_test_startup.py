@@ -103,6 +103,8 @@ def startup_state(text, expected_shaders):
         raise ValueError('runtime disabled GPU submission; no game-picture validation is possible')
     if 'Startup shader seed identity is invalid' in text or '改为边玩边翻译' in text:
         raise ValueError('runtime rejected its prepared startup seed; stop and diagnose')
+    if '【红】管线存档（' in text:   # nvn_mtl.m par_miss_summary: the App's own listed pipelines missed its archive
+        raise ValueError('the App\'s pipeline archive missed its own listed pipelines (they are compiled again); stop and diagnose')
     ready = re.findall(r'启动关键管线已就绪：等待 \d+ ms，可用着色器 (\d+) / 渲染管线 (\d+) / 计算管线 (\d+)', text)
     if ready:
         shaders, render, compute = map(int, ready[-1])

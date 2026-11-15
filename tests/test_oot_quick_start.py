@@ -71,6 +71,22 @@ class QuickList(unittest.TestCase):
     def test_the_title_rows_name_the_quick_build_s_shaders(self):
         self.assertEqual(self.lst.title_keys(), {variant(n)[:64] for n in (1, 2, 5)})
 
+    def test_a_quick_build_also_takes_the_mesh_rows_shaders(self):
+        # user 2026-11-15: "快速启动 默认 预热 网格管线" -- a quick App compiled every mesh pipeline at its first draw
+        # (a cold world entry: 32 of them, 75 s); their shaders (task, mesh, fragment) go into the quick seed so the
+        # packaging warms them into the pipeline archive
+        self.lst.add_warm(('M', variant(7), render_key(variant(8), variant(9))), 'm')
+        self.lst.add_warm(('M', '-', render_key(variant(10), variant(2))), 'm')
+        self.assertEqual(self.lst.quick_keys(), {variant(n)[:64] for n in (1, 2, 5, 7, 8, 9, 10)})
+        self.assertEqual(self.lst.title_keys(), {variant(n)[:64] for n in (1, 2, 5)})   # the title rows alone, as before
+
+    def test_a_quick_build_also_takes_every_compute_and_tile_read_pipeline(self):
+        # user 2026-11-15: the compute (C) and tile-read (T) pipelines are warmed by default too, as the mesh ones
+        self.lst.add_warm(('C', variant(11)), 'm')
+        self.lst.add_warm(('T', render_key(variant(12), variant(13))), 'm')
+        self.assertEqual(self.lst.quick_keys(), {variant(n)[:64] for n in (1, 2, 5, 11, 12, 13)})
+        self.assertNotIn(variant(3)[:64], self.lst.quick_keys())   # an R row's shaders still only when it is a title row
+
     def test_a_list_without_title_rows_names_none(self):
         lst = self.shader_list.ShaderList()
         lst.add_warm(('R', render_key(variant(3), variant(4))), 'm')
@@ -183,6 +199,35 @@ class ShaderMode(unittest.TestCase):
         with self.assertRaises(ValueError) as e:
             self.build.title_shader_file(Path(self.tmp.name) / 'tree', shared)
         self.assertIn('no title rows', str(e.exception))
+
+    def test_the_quick_seed_file_names_the_mesh_rows_shaders(self):
+        name = lambda v: v.encode().ljust(80, b'\0')
+        mesh_key = (name(variant(8)) + name(variant(9)) + bytes(544 - 160)).hex()
+        title_key = (name(variant(1)) + name(variant(2)) + bytes(544 - 160)).hex()
+        shared = Path(self.tmp.name) / 'shader_list.tsv'
+        shared.write_text(f'# list\nR\t{title_key}\tt\nM\t{variant(7)}\t{mesh_key}\tm\n')
+        written = self.build.title_shader_file(Path(self.tmp.name) / 'tree', shared).read_text().split()
+        self.assertEqual(set(written), {variant(n)[:64] for n in (1, 2, 7, 8, 9)})
+
+    def test_the_archive_is_built_from_the_libraries_the_app_carries(self):
+        # 2026-11-15: the packaging tool loaded the full build's libraries (TOTK_NATIVE_DIR/shader-libs) for a quick App,
+        # whose own are shader-libs-title: 494 of its 537 libraries differ in bytes, and the game's Metal refused 531 of
+        # 602 archived pipelines ("Unable to find function main0"). The tool now takes the mode's libraries and names
+        # them in its report, and packaging stops when they are not the ones the App carries.
+        tree = Path(self.tmp.name)
+        libraries = self.build.shader_dirs(tree, 'title')[1]
+        libraries.mkdir(parents=True)
+        self.build.check_archive_libraries({'libs': str(libraries)}, libraries)
+        with self.assertRaisesRegex(ValueError, 'libraries'):
+            self.build.check_archive_libraries({'libs': str(tree / 'build/shader-libs')}, libraries)
+        with self.assertRaisesRegex(ValueError, 'libraries'):
+            self.build.check_archive_libraries({}, libraries)   # a tool that does not say which ones it took
+        text = (GAME / 'build.py').read_text()
+        self.assertIn("TOTK_SHADER_LIBS_DIR=str(libraries)", text)
+        self.assertIn("check_archive_libraries(report,libraries)", text)
+        gfx = (ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
+        self.assertIn('getenv("TOTK_SHADER_LIBS_DIR")', gfx)
+        self.assertIn('\\"libs\\": \\"%s\\"', gfx)
 
     def test_a_title_build_keeps_its_own_folders(self):
         # 2026-11-13: a title build in the full build's work folder deleted 3,081 pipeline archive files of the full

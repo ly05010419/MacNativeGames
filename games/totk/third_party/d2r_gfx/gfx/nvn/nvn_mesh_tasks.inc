@@ -156,14 +156,26 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
     NSString *akey=mtk_archive_key(ts,ms,fs,key);
     m.label=[NSString stringWithFormat:@"pipeline=%@ variant=%llu %@",akey?:@"unarchived",(unsigned long long)key->variant,m.label];
+    /* Diagnostic TOTK_MESH_SRC_DUMP=<folder> (off by default): the source of the mesh and fragment functions this pipeline is
+       made of, written per archive key, to compare the packaging tool's with the game's when Metal refuses an archived mesh
+       pipeline ("Unable to find function main0": the functions differ; 2026-11-15, 14 of 124 after the library fix). */
+    static NSString *dump;static dispatch_once_t dumpOnce;
+    dispatch_once(&dumpOnce,^{const char *e=getenv("TOTK_MESH_SRC_DUMP");if(e&&*e){dump=@(e);[NSFileManager.defaultManager createDirectoryAtPath:dump withIntermediateDirectories:YES attributes:nil error:nil];}});
+    if(dump&&akey){
+        NSString *msrc=fn_src(m.meshFunction)?:[NSString stringWithFormat:@"// the library function of %s\n",ms->key];
+        NSString *fsrc=m.fragmentFunction?(fn_src(m.fragmentFunction)?:[NSString stringWithFormat:@"// the library function of %s\n",fs?fs->key:"-"]):@"// none\n";
+        NSString *text=[NSString stringWithFormat:@"// mesh %s fragment %s task %s variant %llu pack %d\n%@\n//==== fragment\n%@",ms->key,fs?fs->key:"-",ts?ts->key:"-",(unsigned long long)key->variant,pack,msrc,fsrc];
+        [text writeToFile:[dump stringByAppendingFormat:@"/%@.metal",akey] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }
     id<MTLBinaryArchive> a=akey?par_archive_for(g_dev,akey):nil;
     if(a){
         m.binaryArchives=@[a];
-        id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        par_pre_note(ps!=nil);m.binaryArchives=nil;
+        NSError *why=nil;
+        id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&why];
+        par_pre_note(ps!=nil);m.binaryArchives=nil;par_lookup_note(PAR_MESH,akey,1,ps!=nil,why);
         if(ps){par_count(1);atomic_fetch_add(&g_mtk_archive_hits,1);if(from_archive)*from_archive=1;return ps;}
         par_stale(akey);   // its file holds another description: written again (totk_pipeline_archive.h)
-    }
+    }else par_lookup_note(PAR_MESH,akey,0,0,nil);
     if(akey&&g_par_on){par_count(0);atomic_fetch_add(&g_mtk_archive_misses,1);}
     id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
     if(ps&&akey)par_add(g_dev,akey,m);
@@ -183,6 +195,10 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived);
+    /* Counted with the render pipelines made at a draw, as pso_get counts them (archive hits included): until 2026-11-15 a
+       mesh pipeline built here was missing from the long-frame line's and the per-frame record's pipeline count and time
+       (an OOT world entry: 32 mesh pipelines, 75 s, none of it counted). */
+    g_bp_pso_n++;atomic_fetch_add_explicit(&g_bp_pso_ns,bp_now()-build_t0,memory_order_relaxed);
 #if TARGET_OS_IPHONE
     if(!ps){MLOG("【红】网格管线没建成，跳过这次绘制（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return nil;}   // the fallback: never an exit on the phone
 #endif

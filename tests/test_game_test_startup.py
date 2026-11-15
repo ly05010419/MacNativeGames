@@ -145,6 +145,15 @@ class GameTestStartup(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'disabled GPU submission'):
             startup_state('GPU submission disabled: work is encoded but never submitted',33)
 
+    def test_an_app_archive_the_runtime_refuses_is_immediate_failure(self):
+        # 2026-11-15: a quick App's archive was built from other libraries than it carries; the game compiled 531 of 602
+        # listed pipelines again. The runtime names it in red (nvn_mtl.m par_miss_summary); a test start stops on it.
+        line = '【红】管线存档（预热结束，预热 App 自带清单）：渲染 取到 50 / 没存过 0 / 不认 210；计算 11 / 0 / 207；网格 10 / 0 / 114'
+        with self.assertRaisesRegex(ValueError, 'pipeline archive'):
+            startup_state(line, 33)
+        fine = '管线存档（预热结束，预热玩家清单）：渲染 取到 0 / 没存过 0 / 不认 0；计算 0 / 0 / 0；网格 0 / 4 / 0'
+        self.assertEqual(startup_state(fine, 33), 'preparing')   # the player's own list was never packaged: not a defect
+
     def test_zero_warm_pipelines_cannot_pass(self):
         with self.assertRaises(ValueError):
             startup_state('启动关键管线已就绪：等待 3 ms，可用着色器 0 / 渲染管线 0 / 计算管线 0', 33)

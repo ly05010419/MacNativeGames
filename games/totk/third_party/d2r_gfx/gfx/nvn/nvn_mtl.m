@@ -7858,10 +7858,22 @@ static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK: translated vari
 /* TOTK: the startup shaders compiled when the app was built (build_app.py step_shader_libs), named by the SHA-256 of their
    MSL, so only an exact match is used. Metal's own cache of libraries compiled here does not follow the app to a folder
    whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
+/* The folder of the prebuilt libraries. TOTK_SHADER_LIBS_DIR: the libraries the App carries, for the packaging tool
+   (games/oot/build.py): a quick App's are shader-libs-title, beside the full build's shader-libs under the same
+   TOTK_NATIVE_DIR. 2026-11-15: the tool took the full build's (494 of 537 differ in bytes), so the game's Metal refused
+   531 of the 602 archived pipelines ("Unable to find function main0"). */
+static NSString *shader_libs_dir(void) {
+    static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{
+        const char *own = getenv("TOTK_SHADER_LIBS_DIR");
+        dir = own && *own ? @(own) : exe_rel("shader-libs");
+        MLOG("着色器库目录：%s", dir.UTF8String ?: "(无)");
+    });
+    return dir;
+}
 static NSString *shader_lib_prebuilt_path(NSData *src) {
     if(oot_umul_diagnostic_on())return nil;
     if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) return nil;   // built with safe math (totk_precise_opts)
-    static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{ dir = exe_rel("shader-libs"); });
+    NSString *dir = shader_libs_dir();
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(src.bytes, (CC_LONG)src.length, md);
     char hex[2 * sizeof md + 1]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
     NSString *path = [NSString stringWithFormat:@"%@/%s.metallib", dir, hex];
@@ -8193,6 +8205,7 @@ static void prog_stage_set(NvProg *o, int st, NSString *variant) {   // a transl
 static int g_prog_prefetch;   // prog_get called by shader_predict_rest: every stage is translated in the background
 static int prog_timing_on(void); static void prog_timing(const char *what, const prog_t *p, unsigned i, int st, const char *key);   // TOTK_PROG_TIMING (below)
 static void shader_predict_maybe(void);
+static void sync_ahead_maybe(void);
 // The shader key: SHA-256 of the control section and the code, in hex (prog_get; prediction of unseen programs).
 static void shader_key_of(const uint8_t *control, const void *code, uint32_t length, char key[65]) {
     uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);ctl_key_update(&ctx,control);
@@ -8213,7 +8226,7 @@ static void *prog_get_p(const prog_t *cp) {   // 只在提交线程调用 | Call
     __unsafe_unretained NvProg *have = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
     if (have) { lp = p; lser = p->serial; lgen = gen; lpr = have; return (__bridge void *)have; }
     shmap_load();
-    if (g_prog_for_draw) shader_predict_maybe();   // a program met for the first time: the rest of the submission may bring more
+    if (g_prog_for_draw) { shader_predict_maybe(); sync_ahead_maybe(); }   // a program met for the first time: the rest of the submission may bring more
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {   // a stage that stores or streams out keeps every draw of the program
         if (!p->sd[i].control || !p->sd[i].data) MDIE("null TOTK shader binary");
@@ -9418,7 +9431,7 @@ static int prog_fit(NvProg *pr) {
         int may_skip = v ? 0 : draw_may_skip(pr); uint64_t gen = totk_rt_ready_gen();
         if (!v && pr->miss_has[st] && sg == pr->miss_sig[st] && (!async_shaders() || (may_skip && gen == pr->miss_gen))) return -1;
         if (!v) {
-            shader_predict_maybe();
+            shader_predict_maybe(); sync_ahead_maybe();
             uint64_t f0 = async_fresh();
             NSString *variant = totk_rt_variant(pr->key[st], st, pr->ctl[st], pr->code[st], rt_answers(st), nil, may_skip);
             if (!may_skip) async_why(pr, f0);
@@ -10366,6 +10379,43 @@ static void par_count(int hit) {
     uint64_t h = hit ? atomic_fetch_add(&g_par_hits, 1) + 1 : atomic_load(&g_par_hits), m = hit ? atomic_load(&g_par_misses) : atomic_fetch_add(&g_par_misses, 1) + 1;
     if ((h + m) % 1000 == 0) MLOG("管线存档：建管线 %llu 次，从存档取 %llu 次，现编 %llu 次", (unsigned long long)(h + m), (unsigned long long)h, (unsigned long long)m);
 }
+/* Every pipeline-archive lookup, classified (user 2026-11-15: "如果没有命中 记录下来 是否真的没有缓存或者预热"): a quick
+   App's cold start compiled 929 of 1,000 pipelines (118 of 128 mesh ones) although its packaging had reported every
+   listed one in the archive, and nothing said why. Where: the warm-up of the App's own lists (pso_title / pso_manifest,
+   archived at packaging: a miss there is a defect, logged red), of the player's list (pso_user.tsv, never packaged: a
+   miss only means it was not prepared), or a draw. Why: no file (the archive index lacks the key: nothing was archived
+   under it) or refused (a file holds the key and Metal does not take the descriptor: functions or state differ from the
+   archived ones; Metal's own reason is logged). A first start's background fill (par_filling) is not counted; the
+   packaging tool's is (mtl_pipeline_archive_tool prints its counts), to compare with the game's. */
+enum { PAR_AT_DRAW, PAR_AT_APP_LIST, PAR_AT_USER_LIST, PAR_AT_N };
+enum { PAR_RENDER, PAR_COMPUTE, PAR_MESH, PAR_KINDS };
+static __thread int par_at;   // where this thread builds pipelines: warm_build_rows sets it for the list being warmed
+static _Atomic int g_par_at_warm = PAR_AT_APP_LIST;   // the list warm_worker is on
+static _Atomic uint64_t g_par_look[PAR_AT_N][PAR_KINDS][3];   // [where][kind][hit, no file, refused]
+static const char *const PAR_AT_NAME[PAR_AT_N] = {"绘制时", "预热 App 自带清单", "预热玩家清单"};
+static const char *const PAR_KIND_NAME[PAR_KINDS] = {"渲染", "计算", "网格"};
+static void par_lookup_note(int kind, NSString *key, int had_file, int hit, NSError *why) {
+    if (!key || !g_par_on || (atomic_load(&par_filling) && !g_compute_archive_tool)) return;   // a first start's background fill: no
+    int at = par_at, what = hit ? 0 : had_file ? 2 : 1;
+    uint64_t n = atomic_fetch_add(&g_par_look[at][kind][what], 1);
+    if (hit) return;
+    int red = at == PAR_AT_APP_LIST;
+    if (n < (red ? 20u : 5u))
+        MLOG("%s管线存档没命中（%s，%s管线）%s：%s%s", red ? "【红】" : "", PAR_AT_NAME[at], PAR_KIND_NAME[kind], key.UTF8String,
+             had_file ? "存档里有这个键，Metal 不认——" : "存档索引里没有这个键（没存过）",
+             had_file ? (why.localizedDescription.UTF8String ?: "Metal 没给原因") : "");
+}
+/* The counts so far, one line per place with any lookup; red when the App's own lists missed (their archive is broken). */
+static void par_miss_summary(const char *when) {
+    for (int at = 0; at < PAR_AT_N; at++) {
+        uint64_t c[PAR_KINDS][3], any = 0, miss = 0;
+        for (int k = 0; k < PAR_KINDS; k++) for (int w = 0; w < 3; w++) { c[k][w] = atomic_load(&g_par_look[at][k][w]); any += c[k][w]; if (w) miss += c[k][w]; }
+        if (!any) continue;
+        MLOG("%s管线存档（%s，%s）：渲染 取到 %llu / 没存过 %llu / 不认 %llu；计算 %llu / %llu / %llu；网格 %llu / %llu / %llu",
+             at == PAR_AT_APP_LIST && miss ? "【红】" : "", when, PAR_AT_NAME[at],
+             c[0][0], c[0][1], c[0][2], c[1][0], c[1][1], c[1][2], c[2][0], c[2][1], c[2][2]);
+    }
+}
 static NSMutableDictionary<NSString *, NSString *> *g_par_miss_hex;   // TOTK_PAR_MISS_LOG: archive key -> its pso_skey in hex
 static os_unfair_lock g_par_miss_hex_lk = OS_UNFAIR_LOCK_INIT;
 /* variant: for a pipeline with a border or tile-read variant function, its border recipe ("B:<vertex>\t<fragment>", as in
@@ -10421,12 +10471,13 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
         d.binaryArchives = @[a];
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        par_pre_note(ps != nil);
+        NSError *why = nil;
+        ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&why];
+        par_pre_note(ps != nil); par_lookup_note(PAR_RENDER, key, 1, ps != nil, why);
         if (ps) { par_count(1); return ps; }
         par_miss_note("miss", key, d);
         par_stale(key);
-    } else par_miss_note(atomic_load(&par_filling) ? "fill" : "nofile", key, d);
+    } else { par_miss_note(atomic_load(&par_filling) ? "fill" : "nofile", key, d); par_lookup_note(PAR_RENDER, key, 0, 0, nil); }
     if (key && g_par_on) par_count(0);
     ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
     if (ps) par_add(g_dev, key, d);
@@ -10443,12 +10494,13 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
         d.binaryArchives = @[a];
-        ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        par_pre_note(ps != nil);
+        NSError *why = nil;
+        ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:&why];
+        par_pre_note(ps != nil); par_lookup_note(PAR_COMPUTE, key, 1, ps != nil, why);
         if (ps) { atomic_fetch_add(par_last_pre?&g_compute_bundle_hits:&g_compute_device_hits,1); par_count(1); return ps; }
         d.binaryArchives = nil;
         par_stale(key);
-    }
+    } else par_lookup_note(PAR_COMPUTE, key, 0, 0, nil);
     atomic_fetch_add(&g_compute_misses,1);
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
@@ -10788,6 +10840,8 @@ static int scan_budget_left(scan_budget *b, int limit_us) {
 }
 static int env_us(const char *name, int dflt) { const char *e = getenv(name); int v = e ? atoi(e) : dflt; return v < 0 ? 0 : v; }
 static int pso_rescans(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PSO_RESCANS"); v = e ? atoi(e) : 32; if (v < 0) v = 0; } return v; }
+static int g_pp_wide;   // nonzero (microseconds): the one scan after sync_ahead_rest, with every key of the queue and this time
+static uint64_t g_sa_wide_serial;   // the submission whose next pipeline miss runs that scan (sync_ahead_rest)
 static int g_pp_more, g_pp_rescans; static uint64_t g_pp_sync; static scan_budget g_pp_budget;   // last scan stopped at a budget; scans after the first; pipelines compiled on the submission thread
 // Statistics line (pso_predict_rest, every 100 scans): guesses refused because the table was full, stale guesses freed,
 // time draws waited for a background compile, scans and which budget ended them.
@@ -11044,7 +11098,11 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
         if (frame_us < 0) { frame_us = env_us("TOTK_PSO_PREDICT_FRAME_US", 4000); const char *a = getenv("TOTK_PSO_SCAN_ADAPT"); adapt = !a || atoi(a); }
         uint64_t cf = atomic_load(&g_cur_frame);
         int left = nvn_scan_budget_left(&g_pp_budget, cf, (uint64_t)frame_us * 1000ull, adapt);   // the first call resets the budget at a new frame
-        if (!left) { if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; g_pp_rescans = 0; g_pp_more = adapt; } }   // this frame's scans are spent (adaptive: a later miss, once a build has paid for it, scans)
+        if (g_sa_wide_serial == g_sub_serial) {   // sync_ahead_rest compiled the libraries of the rest of this submission: start all their pipelines
+            g_sa_wide_serial = 0; g_pp_submit_mark = g_sub_serial; g_pp_rescans = 0; g_pp_more = 0;
+            g_pp_wide = 50000; pso_predict_rest(); g_pp_wide = 0;
+        }
+        else if (!left) { if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; g_pp_rescans = 0; g_pp_more = adapt; } }   // this frame's scans are spent (adaptive: a later miss, once a build has paid for it, scans)
         else if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; g_pp_rescans = 0; g_pp_more = 0; pso_predict_rest(); }   // 本次提交第一次缺：先把后面的丢出去并行编，再同步编眼前这条 | First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
         else if (g_pp_more && g_pp_rescans < pso_rescans()) { g_pp_rescans++; pso_predict_rest(); }   // TOTK: the last scan stopped early: go on from here
         uint64_t b0 = adapt ? bp_now() : 0;   // the build alone pays for scans (not the scan just above, or scans would pay for themselves)
@@ -11464,11 +11522,11 @@ static void warm_build_rows(NSArray<NSString *> *rows, NSMutableDictionary<NSStr
     size_t n = todo.count, workers = (size_t)warm_threads_now();
     if (!n) return;
     if (workers > n) workers = n;
-    int bg = g_variant_bg, wip = par_write_in_place;
+    int bg = g_variant_bg, wip = par_write_in_place, at = atomic_load(&g_par_at_warm);
     __block _Atomic size_t next = 0;
     dispatch_apply(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) {
-        int obg = g_variant_bg, owip = par_write_in_place;   // dispatch_apply may run a share on the calling thread
-        g_variant_bg = bg; par_write_in_place = wip;
+        int obg = g_variant_bg, owip = par_write_in_place, oat = par_at;   // dispatch_apply may run a share on the calling thread
+        g_variant_bg = bg; par_write_in_place = wip; par_at = at;
         for (;;) @autoreleasepool {
             if (w && w >= (size_t)warm_threads_now()) break;   // fewer threads once playing; share 0 always goes on
             size_t i = atomic_fetch_add(&next, 1);
@@ -11476,7 +11534,7 @@ static void warm_build_rows(NSArray<NSString *> *rows, NSMutableDictionary<NSStr
             warm_build_row(todo[i], dict);
         }
         par_flush_thread();
-        g_variant_bg = obg; par_write_in_place = owip;
+        g_variant_bg = obg; par_write_in_place = owip; par_at = oat;
     });
 }
 static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
@@ -11495,6 +11553,8 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         par_write_in_place = 1;
         uint64_t done = 0;
         for (NSString *path in paths) {
+            // the App's own lists were archived at packaging; the player's own list (pso_user_record) never was
+            atomic_store(&g_par_at_warm, [path.lastPathComponent isEqualToString:@"pso_user.tsv"] ? PAR_AT_USER_LIST : PAR_AT_APP_LIST);
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { MLOG("【红】预热清单读取失败：%s", path.UTF8String);
                 if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1); continue; }
@@ -11578,6 +11638,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6, warm_threads(),
              atomic_load(&g_par_add_ns)/1e6, (unsigned long long)atomic_load(&g_par_files), atomic_load(&g_par_flush_ns)/1e6);
         MLOG("预热库来源：预编译 %llu 次，源码编译 %llu 次", (unsigned long long)atomic_load(&g_rt_prebuilt), (unsigned long long)atomic_load(&g_rt_compiled));
+        par_miss_summary("预热结束");
     }
     par_flush_thread(); g_variant_bg = 0; par_write_in_place = 0;   // a queue thread: other work may run on it next
     atomic_store(&g_warm_running, 0);
@@ -11834,9 +11895,12 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
         MLOG("管线存档：按这个运行时核对，%llu 条和存档里的不一样，重新编进新文件；删掉被完全取代或清单里已没有的旧文件 %lu 个",
              (unsigned long long)atomic_load(&g_par_stale), (unsigned long)pruned);
     }
-    printf("{\"render\": %llu, \"compute\": %llu, \"mesh\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\"}\n",
+    par_miss_summary("打包填存档，查找都在填充线程上，记作绘制时");
+    // "libs": the folder the pipelines' libraries came from (shader_lib_prebuilt_path); packaging checks it is the App's
+    NSString *libs = [shader_libs_dir() ?: @"" stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+    printf("{\"render\": %llu, \"compute\": %llu, \"mesh\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\", \"libs\": \"%s\"}\n",
            g_fill_last.render, g_fill_last.compute, g_fill_last.mesh, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed),
-           g_dev.architecture.name.UTF8String ?: "");
+           g_dev.architecture.name.UTF8String ?: "", libs.UTF8String);
     fflush(stdout);
     return atomic_load(&g_par_write_failed) || g_fill_last.failed ? 1 : 0;
 }
@@ -14378,6 +14442,113 @@ static void shader_predict_maybe(void) {
     if (!g_sp_more || g_sp_n >= 16 || (frame_us && !scan_budget_left(&g_sp_budget, frame_us))) return;
     g_sp_n++; shader_predict_rest();
 }
+/* Sync shaders (the default, Mac): the rest of a submission's new shaders, compiled side by side.
+   Without async shaders a draw that meets a new program or binding variant translates it and compiles its Metal library
+   on the submission thread, then its pipeline, one draw after another. The prediction scans could not help: they must not
+   translate (prog_prediction_unseen finds only translated variants), so in an area the app had no shaders for they found
+   almost nothing. Measured 2026-11-15 (Ocarina of Time quick app, first entry of an area): of 300 new pipelines 240 were
+   compiled on the submission thread, 5 libraries in the background; a 5.25 s frame was 2.20 s libraries + 2.67 s
+   pipelines + 0.36 s translation, the process using 1.9 s of CPU in a 19 s stop.
+   Now the first draw or dispatch of a submission that meets a new shader scans the rest of it (state replayed, nothing
+   drawn, as shader_predict_rest): each later draw's / dispatch's new variant is translated there and then, on this thread,
+   by the same translator call the draw would make (totk_rt_variant, the same state answers), and its library starts
+   compiling in the background (plib_kick, up to 8 at once); the scan then waits until those libraries are compiled.
+   The draws later take the same libraries (shader_get, plib_take) and the same variants (translation cache). The next
+   pipeline miss of this submission then runs one pipeline prediction scan without its usual 64 keys / 2 ms limit
+   (g_pp_wide), which finds those libraries and starts every pipeline in the background. Translation itself stays one
+   at a time (the translator service, as before). A scan that ends on its command limit runs again at the next miss,
+   up to 4 per submission. TOTK_SYNC_AHEAD=0 turns it off; TOTK_SYNC_AHEAD_SCAN (16384 commands). */
+static int sync_ahead_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("TOTK_SYNC_AHEAD"); v = (!e || atoi(e)) && plib_on();
+        MLOG("[sync-ahead] %s", v ? "on: a submission's new shaders are translated ahead, their libraries and pipelines compiled side by side" : "off");
+    }
+    return v;
+}
+static uint64_t g_sa_mark; static int g_sa_n, g_sa_more;
+static uint64_t g_sa_scans, g_sa_variants, g_sa_libs, g_sa_ns, g_sa_xl_ns, g_sa_wait_ns;
+// One stage of a later draw: translate its variant (as prog_get / prog_fit would at the draw) and start its library.
+static void sync_ahead_stage(NSString *key, int st, const uint8_t *control, const uint8_t *code, NSArray *local, NSMutableArray<NSString *> *libs) {
+    uint64_t t0 = bp_now();
+    NSString *v = totk_rt_variant(key, st, control, code, rt_answers(st), local, 0);
+    g_sa_xl_ns += bp_now() - t0;
+    if (!v) return;
+    g_sa_variants++;
+    NSString *pc = [v stringByAppendingString:@"_b"];
+    if (g_shcache[pc] || plib_take(pc, 0)) return;
+    plib_kick(pc, st);
+    pthread_mutex_lock(&g_plib_mu); int started = g_plib[pc] == NSNull.null; pthread_mutex_unlock(&g_plib_mu);
+    if (started) { [libs addObject:pc]; g_sa_libs++; }
+}
+static void sync_ahead_rest(void) {
+    static int max_ops = -1;
+    if (max_ops < 0) { const char *e = getenv("TOTK_SYNC_AHEAD_SCAN"); max_ops = e ? atoi(e) : 16384; if (max_ops < 1) max_ops = 1; }
+    static typeof(S) Ssave; memcpy(&Ssave, &S, sizeof S); typeof(R) Rsave = R;
+    int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty, for_draw = g_prog_for_draw; g_prog_for_draw = 0;
+    fz_cursor cur = {.p = g_exec_next};
+    uint64_t started = bp_now(), xl0 = g_sa_xl_ns, var0 = g_sa_variants; int guard = 0, stop = 0;
+    NSMutableArray<NSString *> *libs = [NSMutableArray array];
+    NSMutableSet<NSNumber *> *seen = [NSMutableSet set];   // new programs of this scan (by serial), translated once
+    for (; ; guard++) {
+        if (guard >= max_ops) { stop = 1; break; }
+        const uint8_t *q; op_hdr hq; const void *aq;
+        if (!fz_next(&cur, &q, &hq, &aq)) break;
+        if (hq.op == OP_SET_RT) { R.rt = *(const p_set_rt *)aq; R.has_rt = 1; continue; }   // the fragment outputs' types are answered from the targets
+        int dispatch = hq.op == OP_DISPATCH;
+        if (dispatch || hq.op == OP_DRAW || hq.op == OP_DRAW_IDX) {
+            const prog_t *p = dispatch && S.cprog ? S.cprog : S.prog;   // as dispatch_inner / draw_inner
+            if (!p) continue;
+            NvProg *pr = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+            if (pr) {   // a known program: a binding variant it has not drawn with (prog_fit)
+                if (pr->missing || dispatch) continue;
+                for (int st = 0; st < 5; st++) {
+                    if (st == 2 || !pr->sh[st] || !pr->key[st]) continue;
+                    uint64_t sg = stage_sig(st);
+                    if (sg == pr->sig[st] || pr->alt[st][@(sg)]) continue;
+                    sync_ahead_stage(pr->key[st], st, pr->ctl[st], pr->code[st], nil, libs);
+                }
+                continue;
+            }
+            if (p->serial && [seen containsObject:@(p->serial)]) continue;
+            if (p->serial) [seen addObject:@(p->serial)];
+            for (unsigned i = 0; i < p->nstage && i < 6; i++) {   // a program met for the first time (prog_get)
+                const uint8_t *control = p->sd[i].control, *code = (const uint8_t *)(uintptr_t)p->sd[i].data;
+                if (!control || !code) break;
+                uint32_t length = ctl_code_len(control); int st = ctl_stage(control, code);
+                if (!length || length > 16 * 1024 * 1024) break;
+                if (st != 0 && st != 1 && st != 5 && !(nvn2_ctl(control) && (st == 3 || st == 4))) continue;   // geometry and the rest: as prog_get, at the draw
+                char key[65]; shader_key_of(control, code, length, key);
+                sync_ahead_stage(@(key), st, control, code, rt_local(control, st), libs);
+            }
+            continue;
+        }
+        if (hq.op == OP_CLEAR_COLOR || hq.op == OP_CLEAR_DS || hq.op == OP_RENDER_COND) continue;
+        state_op(hq.op, aq);
+    }
+    memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty; g_dss_dirty = dss_dirty; g_prog_for_draw = for_draw;
+    g_sa_more = stop && g_sa_variants > var0;
+    uint64_t w0 = bp_now();
+    if (libs.count) {   // the libraries compile side by side; every draw of this submission needs them
+        pthread_mutex_lock(&g_plib_mu);
+        for (NSString *pc in libs) while (g_plib[pc] == NSNull.null) pthread_cond_wait(&g_plib_cv, &g_plib_mu);
+        pthread_mutex_unlock(&g_plib_mu);
+        g_sa_wide_serial = g_sub_serial;   // the next pipeline miss scans for every pipeline (pso_get)
+    }
+    g_sa_wait_ns += bp_now() - w0;
+    g_sa_scans++; g_sa_ns += bp_now() - started;
+    if (g_sa_variants > var0 && (g_sa_scans <= 20 || g_sa_scans % 50 == 0))
+        MLOG("[sync-ahead] scan %llu (%d commands%s): %llu variants translated ahead in %.1f ms, %lu libraries compiled side by side, waited %.1f ms for them; in all %llu scans, %llu variants, %llu libraries, %.1f ms (translation %.1f, waiting %.1f)",
+             (unsigned long long)g_sa_scans, guard, stop ? ", limit" : "", (unsigned long long)(g_sa_variants - var0), (g_sa_xl_ns - xl0) / 1e6,
+             (unsigned long)libs.count, (bp_now() - w0) / 1e6, (unsigned long long)g_sa_scans, (unsigned long long)g_sa_variants,
+             (unsigned long long)g_sa_libs, g_sa_ns / 1e6, g_sa_xl_ns / 1e6, g_sa_wait_ns / 1e6);
+}
+static void sync_ahead_maybe(void) {
+    if (async_shaders() || !g_exec_next || !sync_ahead_on()) return;
+    if (g_sa_mark != g_sub_serial) { g_sa_mark = g_sub_serial; g_sa_n = 0; g_sa_more = 1; }
+    if (!g_sa_more || g_sa_n >= 4) return;
+    g_sa_n++; sync_ahead_rest();
+}
 static void pso_predict_rest(void) {
     static int enabled = -1; if (enabled < 0) { const char *e = getenv("TOTK_PSO_PREDICT"); enabled = !e || atoi(e); }
     if (!enabled) return;
@@ -14385,14 +14556,16 @@ static void pso_predict_rest(void) {
     // Bound speculative work. Submit likely keys as they are found instead of
     // making the current draw wait for the entire scan before any worker starts.
     // Budget per scan: commands, keys (each of the two queues), microseconds -- TOTK_PSO_PREDICT_SCAN / _KEYS / _US.
-    enum { QN = 160 }; static int max_ops = -1, max_keys, max_us;
+    enum { QN = 160 }; static int max_ops = -1, max_keys_env, max_us_env;
     if (max_ops < 0) {
         const char *e = getenv("TOTK_PSO_PREDICT_SCAN"); int ops = e ? atoi(e) : 8192;
-        e = getenv("TOTK_PSO_PREDICT_KEYS"); max_keys = e ? atoi(e) : 64; if (max_keys < 1) max_keys = 1; if (max_keys > QN) max_keys = QN;
-        e = getenv("TOTK_PSO_PREDICT_US"); max_us = e ? atoi(e) : 2000; if (max_us < 1) max_us = 1;
+        e = getenv("TOTK_PSO_PREDICT_KEYS"); max_keys_env = e ? atoi(e) : 64; if (max_keys_env < 1) max_keys_env = 1; if (max_keys_env > QN) max_keys_env = QN;
+        e = getenv("TOTK_PSO_PREDICT_US"); max_us_env = e ? atoi(e) : 2000; if (max_us_env < 1) max_us_env = 1;
         max_ops = ops < 1 ? 1 : ops;
-        MLOG("[totk] pipeline prediction: after a submission's first pipeline miss, scans at most %d commands, %d keys, %d us", max_ops, max_keys, max_us);
+        MLOG("[totk] pipeline prediction: after a submission's first pipeline miss, scans at most %d commands, %d keys, %d us", max_ops, max_keys_env, max_us_env);
     }
+    // sync_ahead_rest has just compiled the libraries of the rest of the submission: this scan may take every key it finds
+    int max_keys = g_pp_wide ? QN : max_keys_env, max_us = g_pp_wide ? g_pp_wide : max_us_env;
     static typeof(S) Ssave; memcpy(&Ssave, &S, sizeof S); typeof(R) Rsave = R;
     int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty;
     uint32_t cf[8]; memcpy(cf, g_pass.cfmt, sizeof cf); uint32_t df = g_pass.dfmt, sf = g_pass.sfmt, samples = g_pass.samples, dfull = df, sfull = sf; int kicked0 = (int)g_pp_kicked, draws = 0;

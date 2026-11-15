@@ -69,11 +69,12 @@ class ArchiveLists(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def fake_run(self, argv, stdout=None, **_):
+    def fake_run(self, argv, stdout=None, env=None, **_):
         self.argv = [str(a) for a in argv]
         render = sum(1 for p in argv[4:] for l in Path(p).read_text().splitlines() if l.startswith(('R\t', 'B\t', 'T\t')))
+        # the tool names the libraries it loaded: the TOTK_SHADER_LIBS_DIR packaging gave it (nvn_mtl.m shader_libs_dir)
         stdout.write(json.dumps({'render': render, 'compute': len(COMPUTE), 'mesh': self.mesh_archived, 'kept': 0, 'failed': 0,
-                                 'write_failed': 0, 'arch': ARCH}) + '\n')
+                                 'write_failed': 0, 'arch': ARCH, 'libs': (env or {}).get('TOTK_SHADER_LIBS_DIR', '')}) + '\n')
         return types.SimpleNamespace(returncode=0)
 
     def fake_files(self, source, target, arch, chain):
