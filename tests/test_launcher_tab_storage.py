@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import plistlib
+import shlex
 import shutil
 import sys
 import tempfile
@@ -176,7 +177,9 @@ class StorageTab(unittest.TestCase):
         self.assertTrue((target / 'romfs/a.bin').is_file())
         self.assertEqual(list(self.work.iterdir()), [])
         self.assertIn('update_runtime.py', moved['command'])
-        self.assertIn(f'--work {target}', moved['command'])
+        # quoted as a shell argument: a temporary folder under a non-ASCII path (this machine's external drive) is
+        # printed in quotes, which is right for the command the player copies
+        self.assertIn(f'--work {shlex.quote(str(target))}', moved['command'])
         self.assertIn('still records', moved['message'])
 
     def test_move_refuses_the_places_a_work_folder_may_not_be(self):

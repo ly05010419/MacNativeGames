@@ -2,7 +2,9 @@
 #include <assert.h>
 int main(void){@autoreleasepool {
  setenv("TOTK_UI_LANG","en",1);
- NSString *dir=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+ // TMPDIR first: NSTemporaryDirectory() is on the system disk, which this machine's storage guard does not let tests write
+ const char *tmp=getenv("TMPDIR");
+ NSString *dir=[(tmp&&*tmp?@(tmp):NSTemporaryDirectory()) stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
  NSString *path=[dir stringByAppendingPathComponent:@"playtime.json"];
  [@"{\"seconds\":120,\"seed\":{\"seconds\":120}}" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];

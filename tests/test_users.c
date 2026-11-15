@@ -42,7 +42,12 @@ static int marked_line(const char *text) {
 }
 /* scenario: the body runs in a forked child with TOTK_PROFILE_DIR set (a child that fails stops loudly); the
    parent waits for it, so its own process stays uninitialized and reads only the files the child left */
-static void new_dir(void) { snprintf(dir, sizeof dir, "/tmp/mng-users-XXXXXX"); assert(mkdtemp(dir)); }
+/* Under TMPDIR when it is set: this machine's storage guard lets tests write there, not to /tmp. */
+static void new_dir(void) {
+    const char *tmp = getenv("TMPDIR"); size_t n = tmp && *tmp ? strlen(tmp) : 0;
+    snprintf(dir, sizeof dir, "%.*s%smng-users-XXXXXX", n ? (int)n : 5, n ? tmp : "/tmp/", n && tmp[n - 1] != '/' ? "/" : "");
+    assert(mkdtemp(dir));
+}
 static void scenario(void (*body)(void)) {
     pid_t pid = fork();
     assert(pid >= 0);

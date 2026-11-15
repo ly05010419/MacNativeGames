@@ -48,7 +48,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains (XcodeGen, CMake and Ninja 
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, glob, hashlib, itertools, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, ctypes, errno, glob, hashlib, itertools, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -2015,6 +2015,61 @@ def place_seed(tree, app, res, version, logs, *, game='totk', bundle_id=BUNDLE_I
     place_shader_bundle(shader_bundle(tree, version, logs, game=game, bundle_id=bundle_id), app, res)
 
 
+_LIBPROC = None
+
+
+def _libproc():
+    global _LIBPROC
+    if _LIBPROC is None:
+        lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        _LIBPROC = lib
+    return _LIBPROC
+
+
+def running_executables():
+    """(pid, executable path) of the processes this user can see. Not through ps: /bin/ps is setuid and cannot run under
+    this machine's storage guard (2026-11-15: "Operation not permitted: 'ps'"); games/oot/scripts/dev/game_slot.py reads
+    processes the same way. A failed listing raises, so a query error is never taken for "no game running"."""
+    lib = _libproc()
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        raise OSError(ctypes.get_errno(), 'cannot list processes')
+    cap = n + 64
+    pids = (ctypes.c_int * cap)()
+    n = lib.proc_listallpids(pids, ctypes.sizeof(pids))
+    if n <= 0:
+        raise OSError(ctypes.get_errno(), 'cannot list processes')
+    found, path = [], ctypes.create_string_buffer(4096)
+    for pid in pids[:min(n, cap)]:
+        if pid > 0 and lib.proc_pidpath(pid, path, 4096) > 0:
+            found.append((pid, path.value.decode(errors='replace')))
+    return found
+
+
+def process_args(pid):
+    """A process's command line (its arguments joined by spaces, as ps -o args prints them), or None when it has exited.
+    sysctl KERN_PROCARGS2: an int argc, the executable path, padding zeros, then argv. Any other failure raises."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    mib = (ctypes.c_int * 3)(1, 49, pid)   # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t(0)
+    for buf in (None, True):
+        if buf:
+            buf = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            error = ctypes.get_errno()
+            if error in (errno.ESRCH, errno.EINVAL):
+                return None   # gone (EINVAL is what the kernel answers for a pid that has exited)
+            raise OSError(error, f'cannot read the arguments of process {pid}')
+    raw = buf.raw[:size.value]
+    argc, rest = int.from_bytes(raw[:4], 'little'), raw[4:]
+    start = rest.find(b'\0')
+    while 0 <= start < len(rest) and rest[start] == 0:
+        start += 1
+    return ' '.join(a.decode(errors='replace') for a in rest[start:].split(b'\0')[:argc])
+
+
 def wait_until_closed(out, prefix=''):
     """Preparing/signing a replacement is safe while playing; replacing the resources of an active game is not. Wait
     without closing the player."""
@@ -2022,19 +2077,14 @@ def wait_until_closed(out, prefix=''):
     old_binaries = [b for b in old_binaries if b.is_file()]   # the game runs as the app's executable (Contents/MacOS)
     notified = 0
     while old_binaries:
-        processes = subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True, text=True, check=True).stdout.splitlines()
         binaries = {str(b.resolve()) for b in old_binaries}
         running = False
-        for process in processes:
-            fields = process.strip().split(maxsplit=1)
-            if len(fields) != 2 or fields[1] not in binaries:
+        for pid, binary in running_executables():
+            if binary not in binaries:
                 continue
-            pid, binary = fields
-            args = subprocess.run(['ps', '-ww', '-p', pid, '-o', 'args='], capture_output=True, text=True)
-            if args.returncode == 1 and not args.stdout.strip():
-                continue   # the process exited between the two snapshots
-            args.check_returncode()
-            command = args.stdout.strip()
+            command = process_args(pid)
+            if command is None:
+                continue   # the process exited between the two queries
             options = command[len(binary) + 1:].split() if command.startswith(binary + ' ') else []
             # The update window of an app built before 13 November 2026 (the settings panel's Update page, removed
             # since: updates go through MNG Launcher) uses the game's executable and waits for this installer.

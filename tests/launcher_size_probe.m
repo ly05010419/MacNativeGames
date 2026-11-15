@@ -3,7 +3,9 @@
 #undef main
 #include <assert.h>
 int main(void){@autoreleasepool{
- NSFileManager *fm=NSFileManager.defaultManager;NSString *folder=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+ // TMPDIR first: NSTemporaryDirectory() is on the system disk, which this machine's storage guard does not let tests write
+ const char *tmp=getenv("TMPDIR");
+ NSFileManager *fm=NSFileManager.defaultManager;NSString *folder=[(tmp&&*tmp?@(tmp):NSTemporaryDirectory()) stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
  NSString *image=[folder stringByAppendingPathComponent:@"romfs.bin"],*mark=[folder stringByAppendingPathComponent:@"romfs.sha256"];
  assert(!game_data_in(folder,64,@"fixture"));
