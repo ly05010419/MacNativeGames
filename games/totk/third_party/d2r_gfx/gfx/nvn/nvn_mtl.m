@@ -3695,6 +3695,8 @@ static int serial_is_dead(uint64_t k) { pthread_mutex_lock(&g_smu); int d = totk
    80 textures a frame and had 17.4 million entries after 30 minutes on a static screen, TOTK about 130 MB in 27 minutes. */
 static nvn_hmap g_treg_refs = {.klen = 8};   /* serial -> pool slots registered with it (g_rmu) */
 static uint64_t g_serial_forgotten;
+static void blk_aux_retire_locked(uint64_t serial);
+static void blk_aux_report(void);
 static void treg_ref_locked(uint64_t serial, int delta) {   /* g_rmu held */
     if (!serial) return;
     uintptr_t n = (uintptr_t)nvn_hm_get(&g_treg_refs, &serial);
@@ -3705,7 +3707,10 @@ static void serial_forget_locked_rmu(uint64_t k) {   /* g_rmu held (g_rmu -> g_p
     extern int dm_nvn_pin_has_serial(uint64_t serial);
     if (!k || nvn_hm_get(&g_treg_refs, &k) || dm_nvn_pin_has_serial(k)) return;
     pthread_mutex_lock(&g_smu);
-    if (totk_serial_del(&g_dead_serial, k)) g_serial_forgotten++;
+    if (totk_serial_del(&g_dead_serial, k)) {
+        g_serial_forgotten++;
+        blk_aux_retire_locked(k);
+    }
     totk_serial_del(&g_gpu_owned, k);
     pthread_mutex_unlock(&g_smu);
 }
@@ -5780,6 +5785,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
            cbc_mode(), (unsigned long long)g_cbc_hits, (unsigned long long)g_cbc_misses, (unsigned long long)g_cbc_verified, (unsigned long long)g_ab_same,
            pso_memo_on(), (unsigned long long)g_pso_memo_hits, (unsigned long long)g_pso_memo_misses); }
     MLOG("[pkg-final-cache] enabled=%d kept=%llu", pkg_final_cache_on(), (unsigned long long)atomic_load(&g_pkg_final_kept));
+    blk_aux_report();
     MLOG("贴图类型缓存已回收退役视图 %llu 个", (unsigned long long)g_type_retired_views);
     res_site_report(8);
     stor_diag_report();
@@ -6259,6 +6265,29 @@ static int pf_block_compressed(NSUInteger pf) { return pf >= 130 && pf <= 222 &&
 // through a buffer when the pass ends (and copied back first when the pass loads the old contents).
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 static NSMutableDictionary<NSNumber *, id<MTLTexture>> *g_blkaux;
+static uint64_t g_blkaux_bytes, g_blkaux_created, g_blkaux_retired;   // g_smu
+/* g_smu held. A replacement or a finalized, unreferenced serial cannot use this
+   auxiliary again. Recorded/in-flight readers keep residency through the normal
+   deferred fence; a live serial or a registered descriptor keeps its contents. */
+static void blk_aux_retire_locked(uint64_t serial) { @autoreleasepool {
+    if (!g_blkaux.count) return;
+    NSNumber *key = @(serial);
+    id<MTLTexture> texture = g_blkaux[key];
+    if (!texture) return;
+    g_blkaux_bytes -= texture.allocatedSize;
+    g_blkaux_retired++;
+    defer_obj_release(texture);
+    [g_blkaux removeObjectForKey:key];
+} }
+static void blk_aux_report(void) {
+    pthread_mutex_lock(&g_smu);
+    uint64_t count = g_blkaux.count, bytes = g_blkaux_bytes;
+    uint64_t created = g_blkaux_created, retired = g_blkaux_retired;
+    pthread_mutex_unlock(&g_smu);
+    MLOG("[block-aux] live %llu textures / %llu bytes, created %llu, retired %llu",
+         (unsigned long long)count, (unsigned long long)bytes,
+         (unsigned long long)created, (unsigned long long)retired);
+}
 typedef struct { __unsafe_unretained id<MTLTexture> aux, dst; NSUInteger level, slice, plane, lw, lh, bx, by, bpb; int decode, fmt; } blk_wb;   // plane: 3D depth plane
 static blk_wb g_blk_wb[8]; static int g_nblk_wb;
 /* GPUs without BC (A15/A16): the compressed texture exists only decompressed (bc_unpack), so the rendered blocks are
@@ -6343,8 +6372,10 @@ static id<MTLTexture> blk_aux(const tex_t *t, const view_t *v, int has_v, blk_wb
         MDIE("render target on compressed texture format %#x through view format %#x: no block-sized uncompressed view", t->d.format, has_v && v->set_format ? v->format : 0);
     int is3d = base.textureType == MTLTextureType3D;
     if (base.textureType != MTLTextureType2D && base.textureType != MTLTextureType2DArray && !is3d) MDIE("compressed render target of texture type %lu", (unsigned long)base.textureType);
-    if (!g_blkaux) g_blkaux = [NSMutableDictionary dictionary];
-    NSNumber *key = @(t->serial); id<MTLTexture> a = g_blkaux[key];
+    NSNumber *key = @(t->serial);
+    pthread_mutex_lock(&g_smu);
+    id<MTLTexture> a = g_blkaux[key];
+    pthread_mutex_unlock(&g_smu);
     NSUInteger aw = (base.width + bw - 1) / bw, ah = (base.height + bh - 1) / bh;
     if (!a || a.pixelFormat != vpf || a.width != aw || a.height != ah) {
         MTLTextureDescriptor *d = [MTLTextureDescriptor new];
@@ -6353,7 +6384,14 @@ static id<MTLTexture> blk_aux(const tex_t *t, const view_t *v, int has_v, blk_wb
         d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
         a = [g_dev newTextureWithDescriptor:d];
         if (!a) MDIE("auxiliary block render texture %lux%lu", (unsigned long)aw, (unsigned long)ah);
-        res_add(a); g_blkaux[key] = a;
+        res_add(a);
+        pthread_mutex_lock(&g_smu);
+        blk_aux_retire_locked(t->serial);
+        if (!g_blkaux) g_blkaux = [NSMutableDictionary dictionary];
+        g_blkaux[key] = a;
+        g_blkaux_bytes += a.allocatedSize;
+        g_blkaux_created++;
+        pthread_mutex_unlock(&g_smu);
         static int once; if (!once++) MLOG("[totk] rendering into compressed texture format %#x through view format %#x via a %lux%lu block texture", t->d.format, v->format, (unsigned long)aw, (unsigned long)ah);
     }
     NSUInteger lv = v->set_levels ? v->base_level : 0, sl = v->set_layers ? v->min_layer : 0;
@@ -8306,19 +8344,36 @@ static uint64_t res_over_working_set(void) {
 /* TOTK (2026-10-17, long-session memory): how many copies of CPU-pool textures are alive, and how many of them belong to a
    memory pool that is already gone (the game deleted the pool but never finalized the texture object, so mtl_tex_release
    never ran for it). Every 6,000 submits on the replay thread; the ranges are copied under g_smu, the pools looked up
-   under g_mu afterwards (the two locks are never held together here). */
+   under g_mu afterwards (the two locks are never held together here). The same
+   scan partitions package entries by eviction eligibility, without enabling it. */
+static void treg_merge_used_locked(void);
 static void pkg_orphan_report(void) {
     if (g_sub_serial % 6000) return;
     size_t n = 0, cap = 0; struct { uintptr_t lo, hi; uint64_t bytes; } *v = NULL;
+    uint64_t owned_n = 0, owned_b = 0, hashed_n = 0, hashed_b = 0;
+    uint64_t eligible_n = 0, eligible_b = 0, idle_n = 0, idle_b = 0;
+    registry_lock();
     pthread_mutex_lock(&g_smu);
+    treg_merge_used_locked();   // descriptor fast-path uses must count before checking idle age
     for (uint32_t i = 0; i < g_by_serial.cap; i++) {
         __unsafe_unretained id o = (__bridge id)g_by_serial.vals[i];
         if (!o || ![o isKindOfClass:[NvPkg class]]) continue;
-        NvPkg *pk = (NvPkg *)o; if (!pk->tex || pk->hi <= pk->lo) continue;
+        NvPkg *pk = (NvPkg *)o; if (!pk->tex) continue;
+        uint64_t bytes = pk->tex.allocatedSize;
+        if (pk->owned) { owned_n++; owned_b += bytes; }
+        else if (pk->hashed) { hashed_n++; hashed_b += bytes; }
+        else {
+            eligible_n++; eligible_b += bytes;
+            if (pk->used <= g_sub_serial && g_sub_serial - pk->used >= EVICT_IDLE) {
+                idle_n++; idle_b += bytes;
+            }
+        }
+        if (pk->hi <= pk->lo) continue;
         if (n == cap) { cap = cap ? cap * 2 : 4096; v = realloc(v, cap * sizeof *v); if (!v) MDIE("orphan report"); }
-        v[n].lo = pk->lo; v[n].hi = pk->hi; v[n].bytes = pk->tex.allocatedSize; n++;
+        v[n].lo = pk->lo; v[n].hi = pk->hi; v[n].bytes = bytes; n++;
     }
     pthread_mutex_unlock(&g_smu);
+    registry_unlock();
     uint64_t total = 0, orphan_n = 0, orphan_b = 0;
     pthread_mutex_lock(&g_mu);
     for (size_t i = 0; i < n; i++) { total += v[i].bytes; if (!pidx_find_mut(&g_pools, v[i].lo, v[i].hi - v[i].lo)) { orphan_n++; orphan_b += v[i].bytes; } }
@@ -8326,6 +8381,11 @@ static void pkg_orphan_report(void) {
     free(v);
     MLOG("素材贴图副本 至提交 %llu：在册 %zu 个 / %llu MB，其中所在内存池已删 %llu 个 / %llu MB", (unsigned long long)g_sub_serial, n, (unsigned long long)(total >> 20),
          (unsigned long long)orphan_n, (unsigned long long)(orphan_b >> 20));
+    MLOG("[pkg-eligibility] sub %llu: owned %llu/%llu bytes, hashed-only %llu/%llu bytes, eligible %llu/%llu bytes, idle%u %llu/%llu bytes (serial entries)",
+         (unsigned long long)g_sub_serial, (unsigned long long)owned_n, (unsigned long long)owned_b,
+         (unsigned long long)hashed_n, (unsigned long long)hashed_b,
+         (unsigned long long)eligible_n, (unsigned long long)eligible_b, (unsigned)EVICT_IDLE,
+         (unsigned long long)idle_n, (unsigned long long)idle_b);
 }
 /* TOTK (iPhone): copies idle for PURGE_IDLE submissions are marked purgeable (MTLPurgeableStateVolatile) instead of being
    dropped: the system takes their memory only when it needs it, and memory marked so is not counted against the app's
@@ -21875,9 +21935,10 @@ int mtl_probe_widen(void) {
 }
 /* blk_copy both ways (block texture <-> compressed texture) and rendering into the block texture, for 2D and 3D
    BC4 (8-byte blocks) and 2D BC3 (16-byte blocks). Returns the number of compared bytes; dies on a mismatch. */
+#include "nvn_block_aux_probe.h"
 int mtl_probe_blockrt(void) {
     mtl_init();
-    int checked = 0;
+    int checked = probe_block_aux_retire();
     struct { MTLTextureType type; MTLPixelFormat bc, view; NSUInteger w, h, d, bpb, level, plane; } cases[] = {
         {MTLTextureType2D, MTLPixelFormatBC4_RUnorm, MTLPixelFormatRGBA16Uint, 32, 32, 1, 8, 0, 0},
         {MTLTextureType2D, MTLPixelFormatBC4_RUnorm, MTLPixelFormatRGBA16Uint, 64, 32, 1, 8, 1, 0},
