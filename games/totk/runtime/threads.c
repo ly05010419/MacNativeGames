@@ -80,9 +80,9 @@ typedef struct thr {
     uint64_t yrun_ns, yrun_svc;   // the current run of yields: when it started, and nsvc at its last yield (yield_backoff_ns)
     uint64_t core_wait_ns, core_held_ns, core_nwait, core_stats_since;   // time in core_take waiting for a virtual core, time holding one, waits (core_table)
     uint64_t core_held_prev, core_wait_prev, core_nwait_prev, cpu_prev_ns;   // the same, and the host thread's CPU time, at the last table
-    volatile uintptr_t *hle_slot;   // TOTK: this thread's host-stack TSD slot (0 while it runs a host function), read by core waiters (totk_kick)
+    volatile uintptr_t *hle_slot;   // this thread's host-stack TSD slot (0 while it runs a host function), read by core waiters (totk_kick, BotW's core_kick)
     volatile uint16_t *tlr16;       // TOTK: its ThreadLocalRegion (+0x100 disable_count, +0x102 interrupt_flag)
-    uint64_t ap_sig_ns;             // TOTK: when a core waiter last signalled it
+    uint64_t ap_sig_ns;             // TOTK: when a core waiter last signalled it; BotW: when the signal not yet handled was sent (0 once handled)
 #ifdef GAME_BOTW
     uint64_t cwait_ns;            // when it last queued for a virtual core (starvation rule, core_beats)
     uint64_t protect_until;       // given a core by the starvation rule: no priority preemption before this
@@ -361,13 +361,50 @@ static int async_preempt_on(void) {   // holding G
     }
     return g_async_preempt;
 }
+/* Signals that cannot preempt are not sent (2026-11-14, Breath of the Wild 1.9.0 at Kakariko, `sample` of 20 s: 70% of the
+   handler entries found the owner in host code -- waiting on a host lock or condition, in a host call -- and returned
+   without doing anything, each one a kernel round trip on both sides and an interrupted wait; TOTK measured 35% of 2
+   million and has filtered them since, totk_kick). An owner is still marked (preempt) in every case:
+   - in a host function (its host-stack slot is 0, recorded at its first SVC): it gives the core up at its next SVC
+     (runtime_core_checkpoint) or, back in game code, at the waiter's next kick, at most 1 ms later as before;
+   - with a signal sent and not yet handled (ap_sig_ns, cleared on entry to the handler): a second one would be merged
+     with it by the kernel, and the handler reads the queue under G when it runs, so it sees this waiter too. A signal
+     still unhandled after KICK_PENDING_NS is sent again (a safety net; it does not happen in a normal run).
+   TOTK_KICK_FILTER=0 sends every signal as before, and "flag kick_filter 0|1" (TOTK_INPUT_FILE) switches it while the game
+   runs (A/B). Holding G. */
+#define KICK_PENDING_NS 50000000ull
+extern uint64_t runtime_hle_tsd_off;                 // hle_stack.c: host-stack slot, cleared while a host function runs
+static uint64_t g_kick_skip_host, g_kick_skip_pending;
+static _Atomic uint64_t g_preempt_refused;           // handler entries that found the owner outside game code
+static _Atomic int g_kick_filter = -1;
+static int kick_filter_on(void) {
+    int v = atomic_load_explicit(&g_kick_filter, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("TOTK_KICK_FILTER"); v = !(e && !strcmp(e, "0"));
+                 if (!v) fprintf(stderr, "[threads] TOTK_KICK_FILTER=0: every preemption signal is sent (A/B)\n");
+                 int unset = -1; atomic_compare_exchange_strong(&g_kick_filter, &unset, v); v = atomic_load(&g_kick_filter); }
+    return v;
+}
+static void note_host_slot(thr_t *t) {   // the calling thread, once its slots are set (its first SVC): for core_kick
+    if (t->hle_slot || !runtime_hle_tsd_off) return;
+    uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
+    __atomic_store_n(&t->hle_slot, (volatile uintptr_t *)(tp + runtime_hle_tsd_off), __ATOMIC_RELEASE);
+}
 static int core_kick(thr_t *t) {   // holding G, t waiting: mark (and signal) the owners t may preempt; returns how many
     int n = 0; uint64_t now = now_ns();
     for (int i = 0; i < NCORE; i++) {
         thr_t *o = g_core_owner[i];
         if (!o || !core_allowed(t, i) || !core_beats(t, o, now)) continue;
         __atomic_store_n(&o->preempt, 1, __ATOMIC_RELEASE); n++;
-        if (async_preempt_on() && !pthread_kill(o->pt, SIGUSR2)) g_preempt_kicks++;
+        if (!async_preempt_on()) continue;
+        if (kick_filter_on()) {
+            volatile uintptr_t *slot = __atomic_load_n(&o->hle_slot, __ATOMIC_ACQUIRE);
+            if (slot && !*slot) { g_kick_skip_host++; continue; }
+            uint64_t sent = __atomic_load_n(&o->ap_sig_ns, __ATOMIC_ACQUIRE);
+            if (sent && now - sent < KICK_PENDING_NS) { g_kick_skip_pending++; continue; }
+        }
+        __atomic_store_n(&o->ap_sig_ns, now, __ATOMIC_RELEASE);
+        if (!pthread_kill(o->pt, SIGUSR2)) g_preempt_kicks++;
+        else __atomic_store_n(&o->ap_sig_ns, 0, __ATOMIC_RELEASE);
     }
     return n;
 }
@@ -568,15 +605,16 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
 #ifdef GAME_BOTW
-extern uint64_t runtime_hle_tsd_off;                 // hle_stack.c: host-stack slot, cleared while a host function runs
 int runtime_guest_code_pc(uint64_t pc);              // loader.c
 static void preempt_signal(int sig, siginfo_t *si, void *context) {
     (void)sig; (void)si;
     thr_t *t = me_or_null();
+    if (t) __atomic_store_n(&t->ap_sig_ns, 0, __ATOMIC_RELEASE);   // handled: core_kick may signal it again
     if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) || t->cur_core < 0) return;
     uint64_t pc = (uint64_t)((ucontext_t *)context)->uc_mcontext->__ss.__pc;
     uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
-    if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) return;
+    if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) {
+        atomic_fetch_add_explicit(&g_preempt_refused, 1, memory_order_relaxed); return; }
     int saved = errno;
     pthread_mutex_lock(&G);
     if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); g_preempt_async++; }
@@ -585,6 +623,20 @@ static void preempt_signal(int sig, siginfo_t *si, void *context) {
     errno = saved;
 }
 #endif
+/* "flag <name> <v>" lines for the scheduler (input.c, TOTK_INPUT_FILE); 1 when the name is one of these. */
+int runtime_thread_flag(const char *name, int v) {
+#ifdef GAME_BOTW
+    if (!strcmp(name, "kick_filter")) {
+        atomic_store(&g_kick_filter, v != 0);
+        fprintf(stderr, "[threads] [flag] kick_filter = %d (preemption signals to owners in a host function or with one pending: %s)\n",
+                v != 0, v ? "not sent" : "sent");
+        return 1;
+    }
+#else
+    (void)name; (void)v;
+#endif
+    return 0;
+}
 void runtime_thread_note_hle(unsigned i) { thr_t *t = me_or_null(); if (t) t->last_hle = (int)i + 1; }   // hle_stack.c, while tracing
 uint32_t runtime_thread_current_handle(void) { thr_t *t = me_or_null(); return t ? t->handle : 0; }
 // Host services that wait for other threads or the GPU give the core up around the wait (no host locks held).
@@ -632,6 +684,7 @@ void runtime_core_checkpoint(void) {
     /* Breath of the Wild (botw.md): the preempt flag is set when a waiter queues up, but a waiter's mask or priority can
        change while it waits; so at every SVC a core owner also looks at the queue itself (core_should_yield: Horizon's
        rule, see core_beats). */
+    if (t && !t->hle_slot) note_host_slot(t);   // once, at its first SVC (its slots are set by then): for core_kick
     if (!t || t->cur_core < 0 || (!t->preempt && !__atomic_load_n(&g_core_wait, __ATOMIC_RELAXED))) return;
     pthread_mutex_lock(&G);
     if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); }
@@ -811,6 +864,9 @@ static void core_table(void) {
     uint64_t ap[7]={g_ap_kicks,__atomic_load_n(&g_ap_taken,__ATOMIC_RELAXED),__atomic_load_n(&g_ap_refused,__ATOMIC_RELAXED),
                     __atomic_load_n(&g_ap_deferred,__ATOMIC_RELAXED),g_ap_skip_host,g_ap_skip_disabled,g_ap_skip_recent};
     int ap_on=g_totk_ap==1;
+#else
+    uint64_t ap[5]={g_preempt_kicks,g_preempt_async,atomic_load_explicit(&g_preempt_refused,memory_order_relaxed),g_kick_skip_host,g_kick_skip_pending};
+    int ap_on=g_async_preempt==1;
 #endif
     pthread_mutex_unlock(&G);
     fprintf(stderr,"[core-table] last %.0f ms; mask: bit 0-2 = virtual cores 0-2\n",span);
@@ -820,6 +876,11 @@ static void core_table(void) {
                        "%llu deferred to SVC 0x36; not signalled: %llu in a host function, %llu with preemption disabled, %llu signalled < 2 ms ago\n",
                        (unsigned long long)ap[0],(unsigned long long)ap[1],(unsigned long long)ap[2],(unsigned long long)ap[3],
                        (unsigned long long)ap[4],(unsigned long long)ap[5],(unsigned long long)ap[6]);
+#else
+    if (ap_on) fprintf(stderr,"[core-table] asynchronous preemption so far: %llu signals, %llu cores given up in the handler, %llu refused (outside game code); "
+                       "not signalled: %llu in a host function, %llu with a signal still pending%s\n",
+                       (unsigned long long)ap[0],(unsigned long long)ap[1],(unsigned long long)ap[2],(unsigned long long)ap[3],
+                       (unsigned long long)ap[4], kick_filter_on() ? "" : " (TOTK_KICK_FILTER=0)");
 #endif
     for (int i=0;i<n;i++) { const row *r=&rows[i];
         fprintf(stderr,"[core-table]   thread %#x priority %d mask %#llx ideal %d: held %.0f ms (%.0f%%), cpu %.0f ms (%.0f%% of held), waited %.1f ms in %llu waits, last svc %#x%s\n",
@@ -1339,8 +1400,11 @@ static void dump_threads(unsigned secs) {
                                             g_core_owner[c] ? (now_ns() - g_core_owner[c]->core_since) / 1e6 : 0.0);
     for (thr_t *w = g_core_wait; w; w = w->cnext) fprintf(stderr, "[totk-dump] core waiter %#x prio %d mask %#llx ideal %d\n", w->handle, w->prio, (unsigned long long)w->mask, w->core);
 #ifdef GAME_BOTW
-    fprintf(stderr, "[totk-dump] preemption signals %llu, cores given up in the signal handler %llu, starvation grants %llu\n",
-            (unsigned long long)g_preempt_kicks, (unsigned long long)g_preempt_async, (unsigned long long)g_starve_grants);
+    fprintf(stderr, "[totk-dump] preemption signals %llu, cores given up in the signal handler %llu, refused outside game code %llu; "
+            "not sent: %llu owner in a host function, %llu signal still pending; starvation grants %llu\n",
+            (unsigned long long)g_preempt_kicks, (unsigned long long)g_preempt_async,
+            (unsigned long long)atomic_load_explicit(&g_preempt_refused, memory_order_relaxed),
+            (unsigned long long)g_kick_skip_host, (unsigned long long)g_kick_skip_pending, (unsigned long long)g_starve_grants);
     for (thr_t *w = g_core_wait; w; w = w->cnext) if (eff_prio(w) != w->prio) fprintf(stderr, "[totk-dump] core waiter %#x runs at %d (owns a mutex a better thread waits for)\n", w->handle, eff_prio(w));
 #endif
     thr_t *run[64]; int nrun = 0;

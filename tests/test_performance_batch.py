@@ -43,5 +43,21 @@ class CoreWaitStats(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+@unittest.skipUnless(sys.platform == "darwin" and platform.machine() == "arm64", "native Apple scheduler")
+class BotwKickFilter(unittest.TestCase):
+    def test_signals_skip_host_functions_and_pending_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            binary = str(Path(folder) / "kick-filter")
+            build = subprocess.run(["xcrun", "clang", "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
+                                    "-I" + str(INCLUDE), "-DGAME_BOTW=1", "-Wl,-dead_strip",
+                                    str(ROOT / "tests/test_botw_kick_filter.c"), "-o", binary],
+                                   capture_output=True, text=True, timeout=60)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            for on in ("1", "0"):
+                result = subprocess.run([binary, on], capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"kick filter {'on' if on == '1' else 'off'}", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
