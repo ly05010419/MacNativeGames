@@ -50,12 +50,12 @@ static id<MTLRenderPipelineState> fin_ps(MTLPixelFormat f, int pct) {
         "  return float4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), c.a);\n"
         "}\n", pct / 100.0);
     MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;   // isfinite must not be folded away
-    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:o error:&e];
+    NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(src), o, &e);
     if (!lib) { RED_ONCE(123, "FXAA / 锐化通道编译失败：%s", e.localizedDescription.UTF8String); return nil; }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     pd.vertexFunction = [lib newFunctionWithName:@"fin_vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fin_fs"];
     pd.colorAttachments[0].pixelFormat = f;
-    id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    id<MTLRenderPipelineState> ps = mtl_counted_render(g_dev, pd, &e);
     if (!ps) { RED_ONCE(124, "FXAA / 锐化管线建不出（格式 %lu）：%s", (unsigned long)f, e.localizedDescription.UTF8String); return nil; }
     g_fin.ps[slot] = ps; g_fin.ps_fmt[slot] = f; g_fin.ps_pct[slot] = pct;
     return ps;

@@ -44,22 +44,7 @@ enum T {
     /// A built game's own pages, opened under its card (Tears of the Kingdom and Breath of the Wild: tools/builder's games).
     static let gamePages: [(String, String)] = [("settings", s("Settings", "设置")), ("mods", s("Mods", "模组")),
                                                 ("controls", s("Controls", "按键")), ("storage", s("Storage", "存储")),
-                                                ("saves", s("Saves", "存档")), ("diag", s("Diagnostic mode", "诊断模式"))]
-    // 诊断模式 (DiagPage, tools/builder_jobs/tab_diag.py)
-    static let diagIntro = s("Starts the game with every diagnostic on (game log, long frames, per-frame record, pipelines) and a run folder of its own. Start game above stays without them.",
-                             "用全部诊断开关启动游戏（游戏日志、长帧、逐帧记录、管线），每局一个运行目录。上面的“开始游戏”不带任何诊断。")
-    static let diagStart = s("Start in diagnostic mode", "用诊断模式启动")
-    static let diagShot = s("Screenshot", "截图")
-    static let diagPassdump = s("Record one frame's passes", "记录一帧的通道")
-    static let diagShader = s("Fragment shader (16 hex)", "片元着色器（16 位十六进制）")
-    static let diagSkip = s("Leave it out + screenshot", "跳过它并截图")
-    static let diagUnskip = s("Put it back + screenshot", "恢复它并截图")
-    static let diagClose = s("Close the game", "关闭游戏")
-    static let diagFolder = s("Open the run folder", "打开运行目录")
-    static let diagLog = s("Open the game log", "打开游戏日志")
-    static let diagRunning = s("Running in diagnostic mode", "诊断模式运行中")
-    static let diagNotRunning = s("Not running", "没有在运行")
-    static func diagSent(_ line: String) -> String { s("Sent: \(line)", "已发送：\(line)") }
+                                                ("saves", s("Saves", "存档"))]
     // the terminal page (TerminalTab.swift)
     static let terminal = s("AI helper", "AI问题助手")   // the games page's button to the terminal page (user 2026-11-15)
     static let askClaude = s("Ask Claude", "问 Claude")
@@ -150,9 +135,10 @@ enum T {
     static let checkingShaders = s("Downloading the newest shader list…", "正在下载最新的着色器清单…")
     static let updateShaders = s("Update shaders", "更新着色器")
     static let quickStart = s("Quick start", "快速启动")   // the card's button and the Build page's switch: one function
-    static let quickStartHelp = s("Packs in minutes. The rest are translated when the game first uses them, so the first trip into the world is slow; Fill in shaders on the game's card makes it a full app later.",
-                                  "几分钟就打好。其余着色器在游戏第一次用到时现场翻译，所以第一次进世界会很慢；之后在游戏卡片上点“补全着色器”变成完整版。")
-    static let quickApp = s("Quick app: only the title menu's shaders", "快速版：只带了标题菜单的着色器")
+    static let quickStartHelp = s("Packs in minutes with the title menu's shaders and every compute, tile-read and mesh pipeline. The rest are translated when the game first uses them, so the first trip into the world is slow; Fill in shaders on the game's card makes it a full app later. A quick app always starts with every diagnostic on (game log, long frames, per-frame record, pipelines), in a run folder under Logs/MacNativeGames/diagnostics.",
+                                  "几分钟就打好：带标题菜单的着色器和全部计算、读帧缓冲、网格管线。其余着色器在游戏第一次用到时现场翻译，所以第一次进世界会很慢；之后在游戏卡片上点“补全着色器”变成完整版。快速版启动时总是带全部诊断（游戏日志、长帧、逐帧记录、管线），记录在 Logs/MacNativeGames/diagnostics 下每局一个目录。")
+    static let quickApp = s("Quick app: the title menu's shaders and the compute, tile-read and mesh pipelines; starts with every diagnostic on",
+                            "快速版：带标题菜单的着色器和计算、读帧缓冲、网格管线；启动时带全部诊断")
     static let fillShaders = s("Fill in shaders", "补全着色器")
     static let doneElsewhere = s("Done (started elsewhere; the game is not started from here).", "完成（这个任务是在别处开始的，这里不替它开游戏）。")
     static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",

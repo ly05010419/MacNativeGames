@@ -67,11 +67,11 @@ static int geo_lean_kernels(void) {   // the host kernels, built once; 0 when th
     static int state;   // 0 not tried, 1 built, -1 failed
     if (state) return state > 0;
     static const char *names[GLK_N] = {"geo_lean_tri", "geo_lean_cull", "geo_lean_index", "geo_pack_count", "geo_pack_scan", "geo_pack_write"};
-    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_geo_lean_msl) options:nil error:&e];
+    NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_geo_lean_msl), nil, &e);
     state = lib ? 1 : -1;
     for (int i = 0; i < GLK_N && state > 0; i++) {
         id<MTLFunction> fn = [lib newFunctionWithName:@(names[i])];
-        g_geo_lean_k[i] = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        g_geo_lean_k[i] = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         if (!g_geo_lean_k[i] || g_geo_lean_k[i].maxTotalThreadsPerThreadgroup < GEO_SCAN_THREADS) state = -1;
     }
     if (state < 0) MLOG("[RED] lean geometry host kernels: %s; geometry draws keep their full kernels", e ? e.localizedDescription.UTF8String : "no function or too small a threadgroup");
@@ -88,7 +88,7 @@ static NvShader *geo_lean_pick(NvProg *pr, NvShader *gs, NvShader *lean, int top
     int width = topology == 0 ? 1 : topology == 1 ? 2 : topology == 3 ? 3 : 0;
     if (!on || !lean || !width || instances != 1 || gs->geo_invocations != 1 || lean->geo_invocations != 1 || lean->geo_vertices != width || !lean->geo_slot ||
         (width == 1 && lean->geo_output != 1) || (width == 2 && lean->geo_output != 6) || !pr->sh[1] || geo_vs_writes(pr->sh[0])) return nil;
-    if (!lean->geo_pso) { NSError *e = nil; lean->geo_pso = [g_dev newComputePipelineStateWithFunction:lean->fn error:&e];
+    if (!lean->geo_pso) { NSError *e = nil; lean->geo_pso = mtl_counted_compute(g_dev, lean->fn, &e);
         if (!lean->geo_pso) { RED_ONCE(172, "lean geometry kernel %s: %s; the full kernel draws", lean->key, e.localizedDescription.UTF8String); lean->geo_slot = NULL; return nil; } }
     return geo_lean_kernels() ? lean : nil;
 }

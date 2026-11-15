@@ -111,8 +111,8 @@ static const char *k_cg_copy_msl =
 static id<MTLComputePipelineState> cg_pso(int out) {
     static id<MTLComputePipelineState> ps[2]; static int failed;
     if (failed) return nil;
-    if (!ps[out]) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_cg_copy_msl) options:nil error:&e];
-        id<MTLFunction> fn = lib ? [lib newFunctionWithName:out ? @"cg_out" : @"cg_in"] : nil; ps[out] = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+    if (!ps[out]) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_cg_copy_msl), nil, &e);
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:out ? @"cg_out" : @"cg_in"] : nil; ps[out] = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         if (!ps[out]) { failed = 1; MLOG("【红】[cube-merge] 拷贝计算核建不出：%s（改用 blit 拷贝）", e.localizedDescription.UTF8String); return nil; } }
     return ps[out];
 }

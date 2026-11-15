@@ -76,6 +76,8 @@ OOT = GameSpec(
 # these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
 PAGE_GAMES = {**GAMES, OOT.id: OOT}
-PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves', 'diag'),
-         'botw': ('settings', 'mods', 'controls', 'storage', 'saves', 'diag'),
-         'oot': ('controls', 'storage', 'saves', 'diag')}   # diag: 诊断模式 (tools/builder_jobs/tab_diag.py; user 2026-11-13)
+# 诊断模式 (2026-11-13) was removed 2026-11-15 (user: "去掉诊断模式 快速启动 默认带诊断"): a quick App starts with its
+# diagnostics itself (games/oot/app/launcher.m).
+PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
+         'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
+         'oot': ('controls', 'storage', 'saves')}

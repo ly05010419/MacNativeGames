@@ -24,14 +24,14 @@ static id<MTLRenderPipelineState> smaa_ps(int fn, MTLPixelFormat format) {
     for (int i = 0; i < g_smaa.nps; i++) if (g_smaa.ps[i].fn == fn && g_smaa.ps[i].format == format) return g_smaa.ps[i].state;
     if (g_smaa.failed || g_smaa.nps == 12) return nil;
     NSError *err = nil;
-    if (!g_smaa.lib) g_smaa.lib = [g_dev newLibraryWithSource:@(totk_smaa_msl) options:spatial_aa_compile_options() error:&err];
+    if (!g_smaa.lib) g_smaa.lib = mtl_counted_library(g_dev, @(totk_smaa_msl), spatial_aa_compile_options(), &err);
     if (!g_smaa.lib) { MLOG("[smaa] shader build failed: %s; keeping the scene", err.localizedDescription.UTF8String); g_smaa.failed = 1; return nil; }
     static NSString *const names[] = {@"smaa_edge", @"smaa_weight", @"smaa_blend"};
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = [g_smaa.lib newFunctionWithName:@"smaa_vs"];
     d.fragmentFunction = [g_smaa.lib newFunctionWithName:names[fn]];
     d.colorAttachments[0].pixelFormat = format;
-    id<MTLRenderPipelineState> p = [g_dev newRenderPipelineStateWithDescriptor:d error:&err];
+    id<MTLRenderPipelineState> p = mtl_counted_render(g_dev, d, &err);
     if (!p) { MLOG("[smaa] pipeline failed: %s; keeping the scene", err.localizedDescription.UTF8String); g_smaa.failed = 1; return nil; }
     int i = g_smaa.nps++; g_smaa.ps[i].fn = fn; g_smaa.ps[i].format = format; g_smaa.ps[i].state = p;
     return p;

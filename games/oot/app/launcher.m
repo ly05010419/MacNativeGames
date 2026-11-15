@@ -374,6 +374,31 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         if (quick) {
             unsetenv("TOTK_SHADER_CONTRIB");
             fprintf(stderr, "[launcher] quick App (only the title's shaders): no shader contribution until it is filled in\n");
+            /* A quick App is the test build (user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断"; the Launcher's 诊断模式 page is
+               gone): however it is opened it starts with every switch of a debug session (keep/tools/oot-debug/play.sh: the
+               game log, long-frame detail, wait statistics, the per-pipeline log, the per-frame record). A choice already
+               in the environment is kept (a test start names its own record). The per-frame record goes to a run folder of
+               this start; the newest QUICK_DIAG_RUNS stay. A full App's start carries none of them (the player's: user
+               2026-11-13, tests/test_launcher_play_clean.py). tests/test_oot_quick_start.py QuickStartCarriesDiagnostics. */
+            enum { QUICK_DIAG_RUNS = 5 };
+            NSString *runs = [home stringByAppendingPathComponent:@"Library/Logs/MacNativeGames/diagnostics"];
+            NSDateFormatter *stamp = [NSDateFormatter new]; stamp.dateFormat = @"yyyyMMdd-HHmmss";
+            stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+            NSString *run = [runs stringByAppendingPathComponent:[@"oot-" stringByAppendingString:[stamp stringFromDate:NSDate.date]]];
+            NSFileManager *fm = NSFileManager.defaultManager;
+            NSArray<NSString *> *earlier = [[[fm contentsOfDirectoryAtPath:runs error:nil] ?: @[]
+                filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'oot-'"]] sortedArrayUsingSelector:@selector(compare:)];
+            for (NSUInteger i = 0; i + QUICK_DIAG_RUNS <= earlier.count; i++)   // with this one, QUICK_DIAG_RUNS are left
+                [fm removeItemAtPath:[runs stringByAppendingPathComponent:earlier[i]] error:nil];
+            BOOL made = [fm createDirectoryAtPath:run withIntermediateDirectories:YES attributes:nil error:nil];
+            setenv("TOTK_DEBUG_LOG", "1", 0);
+            setenv("TOTK_LONGFRAME_DETAIL", "1", 0);
+            setenv("TOTK_SVC_STATS", "1", 0);
+            setenv("TOTK_SURVEY_SHADER_LOG", "1", 0);
+            if (made) setenv("DM_NVN_TSV", [run stringByAppendingPathComponent:@"frames.tsv"].fileSystemRepresentation, 0);
+            setenv("DM_NVN_UPTIME", "2", 0);
+            fprintf(stderr, "[launcher] quick App: diagnostics on (game log, long frames, per-frame record in %s)\n",
+                    getenv("DM_NVN_TSV") ?: "nowhere: the run folder could not be made");
         } else {
             NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
             setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);

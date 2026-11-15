@@ -66,6 +66,35 @@ def bananza_pane(root):
         'DefaultValue':'960x540','AutocapitalizationType':'None','AutocorrectionType':'No','KeyboardType':'ASCIICapable'}
     return root
 
+# The icon at one size, drawn with the system's AppKit through osascript (as MNG Launcher's tools/builder_app/
+# resize_icon.js; the work tree carries only this game's folder). sips writes through the user's temporary folder on the
+# system disk, which this Mac's build sandbox refuses: 2026-11-15 the iPad package stopped at "sips … Cannot write to
+# file /var/folders/…/T/…". tests/test_ios_icon_no_sips.py.
+RESIZE_ICON_JS = r"""ObjC.import('AppKit');
+function run(argv) {
+  var image = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (image.isNil()) throw new Error('cannot read ' + argv[0]);
+  var n = parseInt(argv[1], 10);
+  var rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
+    null, n, n, 8, 4, true, false, $.NSDeviceRGBColorSpace, 0, 0);
+  rep.size = $.NSMakeSize(n, n);
+  var context = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep);
+  $.NSGraphicsContext.saveGraphicsState;
+  $.NSGraphicsContext.setCurrentContext(context);
+  context.setImageInterpolation($.NSImageInterpolationHigh);
+  image.drawInRectFromRectOperationFraction($.NSMakeRect(0, 0, n, n), $.NSZeroRect, $.NSCompositingOperationCopy, 1.0);
+  context.flushGraphics;
+  $.NSGraphicsContext.restoreGraphicsState;
+  var data = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+  if (!data.writeToFileAtomically(argv[2], false)) throw new Error('cannot write ' + argv[2]);
+  return '';
+}
+"""
+
+def png_icon(source, pixels, out, log, env):
+    script=Path(log).with_suffix('.js'); script.parent.mkdir(parents=True,exist_ok=True); script.write_text(RESIZE_ICON_JS)
+    run(['/usr/bin/osascript','-l','JavaScript',script,source,str(pixels),out],Path(out).parent,Path(log),env)
+
 def run(args, cwd, log, env):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
@@ -130,7 +159,7 @@ def configure_app_icon(tree, gen, project, logs, env, vision=False):
             appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True); png=appicon/'icon-1024.png'
             (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':png.name,'idiom':'universal','platform':'ios','size':'1024x1024'}],'info':info}))
         (catalog/'Contents.json').write_text(json.dumps({'info':info}))
-        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',png],tree,logs/'ios-icon.log',env)
+        png_icon(icon,1024,png,logs/'ios-icon.log',env)
         project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
         project=project.replace('      CODE_SIGN_STYLE: Manual\n','      CODE_SIGN_STYLE: Manual\n      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n')
     return project

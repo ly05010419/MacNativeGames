@@ -132,7 +132,7 @@ static void mesh_batch_pipeline(void) {
     if(g_mb_ps)return;
     NSString *source=@"#include <metal_stdlib>\nusing namespace metal;struct Job{ulong source;ulong output;};kernel void mesh_grid_batch(const device Job*jobs[[buffer(0)]],uint i[[thread_position_in_grid]]){Job j=jobs[i];if(!j.source)return;const device uint*r=reinterpret_cast<const device uint*>(j.source);uint count=r[0],first=r[1];*reinterpret_cast<device uint4*>(j.output)=uint4(count,1,1,first);}";
     NSError *error=nil;id<MTLLibrary> lib=totk_msl_library(source,&error);if(!lib)MDIE("mesh batch library: %s",error.localizedDescription.UTF8String);
-    g_mb_ps=[g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"mesh_grid_batch"]error:&error];
+    g_mb_ps=mtl_counted_compute(g_dev,[lib newFunctionWithName:@"mesh_grid_batch"],&error);
     MTL4ArgumentTableDescriptor *d=[MTL4ArgumentTableDescriptor new];d.maxBufferBindCount=1;g_mb_at=[g_dev newArgumentTableWithDescriptor:d error:&error];
     if(!g_mb_ps||!g_mb_at)MDIE("mesh batch pipeline: %s",error.localizedDescription.UTF8String);
     MLOG("[mesh-batch] created mesh_grid_batch; immutable count/firstTask; native barrier policy required");

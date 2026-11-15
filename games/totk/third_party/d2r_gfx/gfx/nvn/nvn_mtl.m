@@ -2,6 +2,7 @@
 // NVN 空设备的 Metal 执行层，见 nvn_mtl.h。
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#include "nvn_counted.h"   // every library / pipeline outside the game's paths is counted (mtl_counted_*)
 #include "totk_ui_lang.h"
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
@@ -979,8 +980,8 @@ static void keepalive_start(void) {
     if (!dm_gfx_keepalive() || nogpu() || getenv("TOTK_HEADLESS")) return;   // not in standalone probes
     if (atomic_exchange(&g_ka_started, 1)) return;
     NSError *err = nil;
-    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], device atomic_uint *stop [[buffer(2)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) { x = fma(x, 1.0000001f, 0.5f); if ((j & 1023u) == 1023u && atomic_load_explicit(stop, memory_order_relaxed)) break; } a[i] = x; }\n" options:nil error:&err];
-    id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
+    id<MTLLibrary> lib = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], device atomic_uint *stop [[buffer(2)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) { x = fma(x, 1.0000001f, 0.5f); if ((j & 1023u) == 1023u && atomic_load_explicit(stop, memory_order_relaxed)) break; } a[i] = x; }\n", nil, &err);
+    id<MTLComputePipelineState> ps = lib ? mtl_counted_compute(g_dev, [lib newFunctionWithName:@"keep"], &err) : nil;
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
     id<MTLBuffer> stop = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared];
     if (!ps || !q || !buf || !stop) { MLOG("【红】TOTK_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
@@ -3103,6 +3104,22 @@ static int bootprof(void) { static int v = -1; if (v < 0) v = getenv("DM_BOOTPRO
 static uint64_t g_bp_lib_n, g_bp_pso_n, g_bp_up_bytes, g_bp_first_present;
 /* The guest present thread reads these while asynchronous replay may still be updating them. */
 static _Atomic uint64_t g_bp_lib_ns, g_bp_pso_ns;
+/* nvn_counted.h: a library or pipeline made outside the game's own paths, counted with the frame's (any thread). */
+id<MTLLibrary> mtl_counted_library(id<MTLDevice> dev, NSString *source, MTLCompileOptions *options, NSError **error) {
+    uint64_t t0 = bp_now(); id<MTLLibrary> lib = [dev newLibraryWithSource:source options:options error:error];
+    __atomic_fetch_add(&g_bp_lib_n, 1, __ATOMIC_RELAXED); atomic_fetch_add_explicit(&g_bp_lib_ns, bp_now() - t0, memory_order_relaxed);
+    return lib;
+}
+id<MTLRenderPipelineState> mtl_counted_render(id<MTLDevice> dev, MTLRenderPipelineDescriptor *descriptor, NSError **error) {
+    uint64_t t0 = bp_now(); id<MTLRenderPipelineState> ps = [dev newRenderPipelineStateWithDescriptor:descriptor error:error];
+    __atomic_fetch_add(&g_bp_pso_n, 1, __ATOMIC_RELAXED); atomic_fetch_add_explicit(&g_bp_pso_ns, bp_now() - t0, memory_order_relaxed);
+    return ps;
+}
+id<MTLComputePipelineState> mtl_counted_compute(id<MTLDevice> dev, id<MTLFunction> function, NSError **error) {
+    uint64_t t0 = bp_now(); id<MTLComputePipelineState> ps = function ? [dev newComputePipelineStateWithFunction:function error:error] : nil;
+    __atomic_fetch_add(&g_bp_pso_n, 1, __ATOMIC_RELAXED); atomic_fetch_add_explicit(&g_bp_pso_ns, bp_now() - t0, memory_order_relaxed);
+    return ps;
+}
 static uint64_t g_up_total_ns;   // 上传累计耗时（与逐帧 @upload_ms 同源） | Cumulative upload time (same source as the per-frame @upload_ms)
 // ---------- 按帧归集 GPU 时间 ----------
 // ---------- Per-frame GPU time aggregation ----------
@@ -4978,14 +4995,14 @@ static int bcd_fmt(uint32_t f) {   // NVN 格式 → bcd 的 fmt；0 = GPU 不�
 }
 static id<MTLComputePipelineState> bcd3_pso(void) {   // TOTK: 3D BC render targets (blk_decode)
     static id<MTLComputePipelineState> ps; static int failed;
-    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bcd_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd3"] : nil;
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil; if (!ps) failed = 1; }
+    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_bcd_msl), nil, &e); id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd3"] : nil;
+        ps = fn ? mtl_counted_compute(g_dev, fn, &e) : nil; if (!ps) failed = 1; }
     return ps;
 }
 static id<MTLComputePipelineState> bcd_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
-    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bcd_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd"] : nil;
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_bcd_msl), nil, &e); id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bcd"] : nil;
+        ps = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         if (!ps) { failed = 1; MLOG("【红】无 BC：GPU 解压管线建不出 %s（退回 CPU 解压）", e.localizedDescription.UTF8String); } else MLOG("无 BC：BC1–5 改在 GPU 上解压"); }
     return ps;
 }
@@ -4993,8 +5010,8 @@ static id<MTLComputePipelineState> bcd_pso(void) {
 #include "../tex/nvn_bc1astc_msl.h"
 static id<MTLComputePipelineState> bc1astc_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
-    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bc1astc_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bc1astc"] : nil;
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_bc1astc_msl), nil, &e); id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bc1astc"] : nil;
+        ps = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         if (!ps) { failed = 1; MLOG("【红】BC1 → ASTC 转码管线建不出 %s（改在 CPU 上转）", e.localizedDescription.UTF8String); } }
     return ps;
 }
@@ -5006,8 +5023,8 @@ static up_tca *g_up_tcxs; static int g_nup_tcxs, g_up_tcxcap;   // TOTK: BC2/3/4
 #include "../tex/nvn_bctc_msl.h"
 static id<MTLComputePipelineState> bctc_pso(void) {
     static id<MTLComputePipelineState> ps; static int failed;
-    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_bctc_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bctc"] : nil;
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_bctc_msl), nil, &e); id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"bctc"] : nil;
+        ps = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         if (!ps) { failed = 1; MLOG("【红】BC → ASTC / EAC 转码管线建不出 %s（这些贴图改回解压）", e.localizedDescription.UTF8String); } }
     return ps;
 }
@@ -10704,10 +10721,10 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (nk < 0) { nk = 0; const char *e = getenv("DM_NVN_HILITE");
             for (const char *q = e; q && *q && nk < 6; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 23) n = 23; memcpy(keys[nk], q, n); keys[nk++][n] = 0; } }
         for (int i = 0; i < nk; i++) if (!strncmp(fs->key, keys[i], strlen(keys[i]))) {
-            if (!hl) { NSError *e = nil; hl = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nstruct O { float4 c0 [[color(0)]]; float4 c1 [[color(1)]]; float4 c2 [[color(2)]]; };\n"
+            if (!hl) { NSError *e = nil; hl = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\nstruct O { float4 c0 [[color(0)]]; float4 c1 [[color(1)]]; float4 c2 [[color(2)]]; };\n"
                 "fragment O hl0() { return {float4(1,0,1,1),float4(1,0,1,1),float4(1,0,1,1)}; } fragment O hl1() { return {float4(0,1,0,1),float4(0,1,0,1),float4(0,1,0,1)}; }\n"
                 "fragment O hl2() { return {float4(0,1,1,1),float4(0,1,1,1),float4(0,1,1,1)}; } fragment O hl3() { return {float4(1,1,0,1),float4(1,1,0,1),float4(1,1,0,1)}; }\n"
-                "fragment O hl4() { return {float4(0,0,1,1),float4(0,0,1,1),float4(0,0,1,1)}; } fragment O hl5() { return {float4(1,1,1,1),float4(1,1,1,1),float4(1,1,1,1)}; }\n" options:nil error:&e];
+                "fragment O hl4() { return {float4(0,0,1,1),float4(0,0,1,1),float4(0,0,1,1)}; } fragment O hl5() { return {float4(1,1,1,1),float4(1,1,1,1),float4(1,1,1,1)}; }\n", nil, &e);
                 if (!hl) MLOG("【红】HILITE 着色器编译失败 %s", e.localizedDescription.UTF8String); }
             if (hl) d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"hl%d", i]];
             break; } }
@@ -10718,16 +10735,16 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         if (nk < 0) { nk = 0; const char *e = getenv("TOTK_GPU_HILITE1");
             for (const char *q = e; q && *q && nk < 4; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 23) n = 23; memcpy(keys[nk], q, n); keys[nk++][n] = 0; } }
         for (int i = 0; i < nk; i++) if (keys[i][0] && !strncmp(fs->key, keys[i], strlen(keys[i]))) {
-            if (!hl) { NSError *e = nil; hl = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+            if (!hl) { NSError *e = nil; hl = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\n"
                 "fragment float4 h0() { return float4(0,1,0,1); } fragment float4 h1() { return float4(0,1,1,1); }\n"
-                "fragment float4 h2() { return float4(1,1,0,1); } fragment float4 h3() { return float4(0,0,1,1); }\n" options:nil error:&e];
+                "fragment float4 h2() { return float4(1,1,0,1); } fragment float4 h3() { return float4(0,0,1,1); }\n", nil, &e);
                 if (!hl) MDIE("TOTK_GPU_HILITE1 shader library failed: %s", e.localizedDescription.UTF8String); }
             d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"h%d", i]]; hilited = 1;
             /* TOTK_GPU_HILITE_VS=1: also replace the vertex shader with a 25x15 screen-tile grid driven only by vertex_id / instance_id
                (same quad order 0,2,1,1,2,3 as the game's tile-light draw), to tell draw-path problems from shader-input problems */
-            if (getenv("TOTK_GPU_HILITE_VS")) { static id<MTLLibrary> vl; if (!vl) { NSError *e2 = nil; vl = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+            if (getenv("TOTK_GPU_HILITE_VS")) { static id<MTLLibrary> vl; if (!vl) { NSError *e2 = nil; vl = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\n"
                 "struct V { float4 p [[position]]; };\nvertex V vtile(uint vid [[vertex_id]], uint iid [[instance_id]]) { float2 c = float2(vid & 1, vid >> 1); uint tx = iid % 25, ty = iid / 25;"
-                " float2 q = (float2(tx, ty) + c) * float2(2.0 / 25.0, 2.0 / 15.0); V o; o.p = float4(q.x - 1.0, 1.0 - q.y, 0.5, 1.0); return o; }\n" options:nil error:&e2]; if (!vl) MDIE("HILITE_VS library: %s", e2.localizedDescription.UTF8String); }
+                " float2 q = (float2(tx, ty) + c) * float2(2.0 / 25.0, 2.0 / 15.0); V o; o.p = float4(q.x - 1.0, 1.0 - q.y, 0.5, 1.0); return o; }\n", nil, &e2); if (!vl) MDIE("HILITE_VS library: %s", e2.localizedDescription.UTF8String); }
                 d.vertexFunction = [vl newFunctionWithName:@"vtile"]; d.vertexDescriptor = nil; static int said2; if (!said2++) MLOG("TOTK_GPU_HILITE_VS: vertex shader of %s replaced by the grid VS", keys[i]); }
             static int said[4]; if (!said[i]++) MLOG("TOTK_GPU_HILITE1: fragment shader %s drawn as solid colour %d", keys[i], i);
             break; } }
@@ -16011,10 +16028,10 @@ static int bloomq_make_pipeline(MTLPixelFormat fmt) {
         "vertex V vs(uint id [[vertex_id]]) { float2 uv=float2((id<<1)&2,id&2); V o; o.p=float4(uv*float2(2,-2)+float2(-1,1),0,1); o.uv=uv; return o; }\n"
         "struct P { float threshold; float coeff_g; float coeff_b; float dm; float sh; };\n"
         "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant P& p [[buffer(0)]]) { float2 d=float2(1.0/p.dm,1.0/p.sh); float3 c=0; for (int y=-1;y<=1;y+=2) for (int x=-1;x<=1;x+=2) { float3 v=t.sample(s,in.uv+float2(x,y)*d).rgb; float l=v.r*0.2126+v.g*p.coeff_g+v.b*p.coeff_b; if(l>=p.threshold) c+=v/(1.0+l); } return float4(c*0.25,1); }\n";
-    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+    NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(src), nil, &e);
     if (!lib) { MLOG("【红】泛光 1/4 着色器编译失败：%s", e.localizedDescription.UTF8String); return 0; }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"]; pd.colorAttachments[0].pixelFormat = fmt;
-    g_bloomq_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    g_bloomq_pso = mtl_counted_render(g_dev, pd, &e);
     if (!g_bloomq_pso) { MLOG("【红】泛光 1/4 管线失败：%s", e.localizedDescription.UTF8String); return 0; }
     g_bloomq_fmt = fmt;
     MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES;
@@ -16195,11 +16212,11 @@ static void widen_u8_gpu(uint64_t src, uint32_t count, __strong id<MTLBuffer> *o
     static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at;
     if (!ps) {
         NSError *e = nil;
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+        id<MTLLibrary> lib = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\n"
             "kernel void widen(device const uchar *s [[buffer(0)]], device ushort *d [[buffer(1)]], constant uint2 &n [[buffer(2)]], uint i [[thread_position_in_grid]]) {"
-            " if (i < n.x) { uchar v = s[n.y + i]; d[i] = v == 0xff ? ushort(0xffff) : ushort(v); } }" options:nil error:&e];
+            " if (i < n.x) { uchar v = s[n.y + i]; d[i] = v == 0xff ? ushort(0xffff) : ushort(v); } }", nil, &e);
         id<MTLFunction> fn = [lib newFunctionWithName:@"widen"];
-        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        ps = fn ? mtl_counted_compute(g_dev, fn, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 3; at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
         if (!ps || !at) MDIE("8-bit index widening kernel: %s", e.localizedDescription.UTF8String);
     }
@@ -16254,7 +16271,7 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
         for (int i = 0; i < 8; i++) if (cfmt[i]) { d.colorAttachments[i].pixelFormat = (MTLPixelFormat)cfmt[i]; d.colorAttachments[i].writeMask = MTLColorWriteMaskNone; }
         d.colorAttachments[index].writeMask = (mask & 1 ? MTLColorWriteMaskRed : 0) | (mask & 2 ? MTLColorWriteMaskGreen : 0) | (mask & 4 ? MTLColorWriteMaskBlue : 0) | (mask & 8 ? MTLColorWriteMaskAlpha : 0);
         d.depthAttachmentPixelFormat = (MTLPixelFormat)dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)sfmt; d.rasterSampleCount = samples ? samples : 1;
-        ps = d.fragmentFunction ? [g_dev newRenderPipelineStateWithDescriptor:d error:&e] : nil;
+        ps = d.fragmentFunction ? mtl_counted_render(g_dev, d, &e) : nil;
         if (!ps) MDIE("clear pipeline (index %d format %u): %s", index, cfmt[index], e.localizedDescription.UTF8String);
         cache[key] = ps;
     }
@@ -16285,8 +16302,8 @@ static void clear_ds_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt[8
     static NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *pipelines;
     static NSMutableDictionary<NSNumber *, id<MTLDepthStencilState>> *states; static id<MTLLibrary> lib;
     if (!lib) {
-        NSError *e = nil; lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nconstant float depth [[function_constant(0)]];\n"
-            "vertex float4 ds_vs(uint id [[vertex_id]]) { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, depth, 1); }\n" options:totk_precise_opts() error:&e];
+        NSError *e = nil; lib = mtl_counted_library(g_dev, @"#include <metal_stdlib>\nusing namespace metal;\nconstant float depth [[function_constant(0)]];\n"
+            "vertex float4 ds_vs(uint id [[vertex_id]]) { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, depth, 1); }\n", totk_precise_opts(), &e);
         if (!lib) MDIE("depth/stencil clear shader: %s", e.localizedDescription.UTF8String);
         pipelines = [NSMutableDictionary dictionary]; states = [NSMutableDictionary dictionary];
     }
@@ -16299,7 +16316,7 @@ static void clear_ds_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt[8
         d.vertexFunction = [lib newFunctionWithName:@"ds_vs" constantValues:cv error:&e];
         for (int i = 0; i < 8; i++) if (cfmt[i]) { d.colorAttachments[i].pixelFormat = (MTLPixelFormat)cfmt[i]; d.colorAttachments[i].writeMask = MTLColorWriteMaskNone; }
         d.depthAttachmentPixelFormat = (MTLPixelFormat)dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)sfmt; d.rasterSampleCount = samples ? samples : 1;
-        ps = d.vertexFunction ? [g_dev newRenderPipelineStateWithDescriptor:d error:&e] : nil;
+        ps = d.vertexFunction ? mtl_counted_render(g_dev, d, &e) : nil;
         if (!ps) MDIE("depth/stencil clear pipeline: %s", e.localizedDescription.UTF8String); pipelines[key] = ps;
     }
     unsigned sm = sfmt ? c->stencil_mask & 255 : 0, dw = dfmt && c->depth_mask;
@@ -19030,8 +19047,8 @@ static void bright_lut(NvShader *cs) {
     int tid = 0; for (int i = 0; i < cs->rf.nb && !tid; i++) if (cs->rf.b[i].kind == NVN_RB_IMG && cs->rf.b[i].reg < 32) tid = (int)(S.img[5][cs->rf.b[i].reg] & 0xfffff);
     registry_lock(); id<MTLTexture> lut = tid ? tex_by_id(tid) : nil; registry_unlock();
     if (!lut || lut.textureType != MTLTextureType3D || !(lut.usage & MTLTextureUsageShaderWrite)) { static int n; if (!n++) MLOG("【红】3D 画面加亮：调色表认不出（贴图号 %d），不加亮", tid); return; }
-    if (!ps) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_lut_msl) options:nil error:&e]; id<MTLFunction> f = lib ? [lib newFunctionWithName:@"lutk"] : nil;
-        ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+    if (!ps) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_lut_msl), nil, &e); id<MTLFunction> f = lib ? [lib newFunctionWithName:@"lutk"] : nil;
+        ps = f ? mtl_counted_compute(g_dev, f, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2; ad.maxBufferBindCount = 1; at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
         for (int i = 0; i < 3; i++) { kb[i] = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; if (kb[i]) res_add(kb[i]); }
         if (!ps || !at || !kb[0] || !kb[1] || !kb[2]) { failed = 1; MLOG("【红】3D 画面加亮：计算管线建不出 %s（退回原版亮度）", e.localizedDescription.UTF8String); return; }
@@ -19550,8 +19567,8 @@ static const char k_a2u_msl[] =
 static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, int sx, int sy, int dx, int dy, int w, int h) {
     static int failed; static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at;
     if (failed) return 0;
-    if (!ps) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_a2u_msl) options:nil error:&e]; id<MTLFunction> f = lib ? [lib newFunctionWithName:@"a2u"] : nil;
-        ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+    if (!ps) { NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(k_a2u_msl), nil, &e); id<MTLFunction> f = lib ? [lib newFunctionWithName:@"a2u"] : nil;
+        ps = f ? mtl_counted_compute(g_dev, f, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 2; ad.maxBufferBindCount = 1; at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
         if (!ps || !at) { failed = 1; MLOG("【红】无 BC：ASTC → 解压格式拷贝的计算管线建不出 %s", e.localizedDescription.UTF8String); return 0; } }
     MTLTextureType tt = MTLTextureType2D;
@@ -19608,7 +19625,7 @@ static int copy_t2t_draw(const tex_t *dt, id<MTLTexture> s, id<MTLTexture> d0, u
             // p[0] = source origin (texels), source texels per destination pixel; p[1] = destination origin, source level size
             "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 *p [[buffer(0)]]) {\n"
             "  float2 st = p[0].xy + (in.p.xy - p[1].xy) * p[0].zw; return t.sample(s, st / p[1].zw, level(0)); }\n";
-        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+        NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(src), nil, &e);
         vf = lib ? [lib newFunctionWithName:@"vs"] : nil; ff = lib ? [lib newFunctionWithName:@"fs"] : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
         at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
@@ -19620,7 +19637,7 @@ static int copy_t2t_draw(const tex_t *dt, id<MTLTexture> s, id<MTLTexture> d0, u
     id<MTLRenderPipelineState> ps = pso[@(d.pixelFormat)];
     if (!ps) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = vf; pd.fragmentFunction = ff; pd.colorAttachments[0].pixelFormat = d.pixelFormat;
-        NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        NSError *e = nil; ps = mtl_counted_render(g_dev, pd, &e);
         if (!ps) { RED_ONCE(178, "scaled / format-changing texture copy: no pipeline for format %lu: %s", (unsigned long)d.pixelFormat, e.localizedDescription.UTF8String); return 0; }
         pso[@(d.pixelFormat)] = ps;
     }
@@ -20507,11 +20524,11 @@ static void td_dump_body(void) {
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
             "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { float4 c = t.sample(s, in.uv); return float4(c.rgb, 1); }\n"
             "fragment float4 fsa(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) { float4 c = t.sample(s, in.uv); return float4(c.a, c.a, c.a, 1); }\n";   // TOTK: DM_NVN_TEXDUMP_ALPHA=1 writes the alpha channel as grey
-        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
+        NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(src_msl), nil, &e);
         MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
         d.vertexFunction = [lib newFunctionWithName:@"vs"]; d.fragmentFunction = [lib newFunctionWithName:getenv("DM_NVN_TEXDUMP_ALPHA") ? @"fsa" : @"fs"];
         d.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        ps = mtl_counted_render(g_dev, d, &e);
         MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sp = [g_dev newSamplerStateWithDescriptor:sd];
         if (!ps) { MLOG("【红】TEXDUMP 管线失败 %s", e.localizedDescription.UTF8String); return; }
     }
@@ -20729,15 +20746,15 @@ static void present_pipeline(MTLPixelFormat format, BOOL hdrSource) {
         if(getenv("TOTK_HDR") || getenv("TOTK_HDR_CONTROL"))MLOG("[hdr] presentation: format %lu, HDR shader %s, supported %d",(unsigned long)format,hdrAvailable?"on":"off",totk_hdr_available());
         NSString *source=totk_hdr_present_source(format,hdrAvailable);
         NSError *e = nil;
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:source options:hdrAvailable?totk_precise_opts():nil error:&e];
+        id<MTLLibrary> lib = mtl_counted_library(g_dev, source, hdrAvailable?totk_precise_opts():nil, &e);
         if (!lib) MDIE("出图着色器编译失败 %s", e.localizedDescription.UTF8String);
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
         pd.colorAttachments[0].pixelFormat = format;
-        g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        g_blit_pso = mtl_counted_render(g_dev, pd, &e);
         if (!g_blit_pso) MDIE("出图管线失败 %s", e.localizedDescription.UTF8String);
         if(hdrAvailable){
-            pd.fragmentFunction=[lib newFunctionWithName:@"fshdr"];g_blit_hdr_pso=[g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+            pd.fragmentFunction=[lib newFunctionWithName:@"fshdr"];g_blit_hdr_pso=mtl_counted_render(g_dev, pd, &e);
             if(!g_blit_hdr_pso)MDIE("HDR presentation pipeline: %s",e.localizedDescription.UTF8String);
         }
         g_blit_fmt = format;

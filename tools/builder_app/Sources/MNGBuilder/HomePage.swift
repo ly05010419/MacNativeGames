@@ -223,7 +223,7 @@ struct GameActions: View {
                             Button(label) { section = section == id ? nil : id }
                                 .buttonStyle(.bordered).tint(section == id ? .accentColor : nil)
                         }
-                        if Model.quickGames.contains(app.game ?? "") {   // 快速启动, after 诊断模式 (user 2026-11-15)
+                        if Model.quickGames.contains(app.game ?? "") {   // 快速启动, after the game's pages (user 2026-11-15)
                             Button(T.quickStart) { model.quickStart(app) }.buttonStyle(.bordered).help(T.quickStartHelp)
                                 .disabled(model.phase == .building || model.phase == .cancelling)
                         }
@@ -276,7 +276,6 @@ struct GamePage: View {
         case "mods": ModsPage(app: app)
         case "controls": ControlsPage(app: app)
         case "storage": StoragePage(app: app)
-        case "diag": DiagPage(app: app)
         default: SavesPage(app: app)
         }
     }
