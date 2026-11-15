@@ -37,7 +37,11 @@ static void fresh(NSString *root, NSString *sub) {
 
 int main(void) {
     @autoreleasepool {
-        NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+        // TMPDIR first: NSTemporaryDirectory() is the system disk's per-user folder, which this machine's storage guard
+        // does not let tests write (archive_map_probe.m does the same)
+        const char *tmp = getenv("TMPDIR");
+        NSString *base = tmp && *tmp ? @(tmp) : NSTemporaryDirectory();
+        NSString *root = [base stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         // Without a record of the keys used (a start, not packaging): only the files whose keys all moved go.
         fresh(root, @"no-record");
         file(@"a", @[@"k1", @"k2"]); file(@"b", @[@"k3"]); file(@"a-old", @[@"k4"]); file(@"z-new", @[@"k4"]);
