@@ -173,12 +173,19 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
         return 0;
     }
     NSString *index = [NSString stringWithContentsOfFile:[base stringByAppendingString:@".tsv"] encoding:NSUTF8StringEncoding error:nil];
-    NSUInteger n = 0;
+    NSUInteger n = 0, twice = 0; NSMutableSet<NSString *> *listed = [NSMutableSet set];
     for (NSString *line in [index componentsSeparatedByString:@"\n"]) {
         NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
-        if (c.count != 2 || !c[0].length || !c[1].length || [c[1] containsString:@"/"] || g_par_where[c[0]]) continue;
+        if (c.count != 2 || !c[0].length || !c[1].length || [c[1] containsString:@"/"]) continue;
+        /* A key listed twice: the App's index must give each key one file (build_app.py mac_pipeline_files). 2026-11-15:
+           a pipeline written again stayed listed in its old file too, the old row came first, and the game took that
+           stale pipeline, which Metal refused (14 mesh pipelines compiled again at every start): red, so it is seen. */
+        if ([listed containsObject:c[0]]) { twice++; continue; }
+        [listed addObject:c[0]];
+        if (g_par_where[c[0]]) continue;   // the device's own file wins
         [g_par_have addObject:c[0]]; g_par_where[c[0]] = c[1]; [g_par_pre addObject:c[1]]; n++;
     }
+    if (twice) MLOG("【红】管线存档：App 带的索引里有 %lu 个键重复（每个键应只对应一个文件；用的是先列的那个，可能是旧的），重新打包", (unsigned long)twice);
     g_par_pre_base = [base stringByAppendingString:@"-"];
     return n;
 }

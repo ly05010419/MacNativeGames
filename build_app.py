@@ -2261,13 +2261,26 @@ def mac_pipeline_files(made, seed, arch, chain):
     seed.mkdir(parents=True, exist_ok=True)
     for old in seed.glob('pipelines-*'):
         old.unlink()
+    # Each key belongs to one file: the one the tool itself takes (totk_pipeline_archive_publish.h par_pub_scan: the key
+    # lists oldest first by modification time, then by name; a later file wins a key both list). A pipeline written again
+    # (par_stale) stays listed in its old file, which keeps its other keys; until 2026-11-15 the index listed such a key
+    # twice, the old file first by name, and the game takes a key's first row (par_load_prebuilt): it used the stale
+    # pipeline, which Metal refused (14 of a quick App's 124 mesh pipelines compiled again at every start).
+    batches = sorted((p.with_suffix('.keys') for p in made.glob('*.metalarchive') if p.with_suffix('.keys').is_file()),
+                     key=lambda k: (k.stat().st_mtime, k.stem))
+    owner = {}
+    for keys in batches:
+        for key in keys.read_text().split('\n'):
+            if key:
+                owner[key] = keys.stem
     index = []
-    for archive in sorted(made.glob('*.metalarchive')):
-        keys = archive.with_suffix('.keys')
-        if not keys.is_file():
-            continue
-        clone(archive, seed / f'pipelines-{arch}-{archive.stem}.metalarchive')
-        index += [f'{key}\t{archive.stem}' for key in keys.read_text().split('\n') if key]
+    for keys in batches:
+        mine = [key for key in keys.read_text().split('\n') if key and owner.get(key) == keys.stem]
+        if not mine:
+            continue   # every key it lists was written again later: the App does not carry it
+        mine = list(dict.fromkeys(mine))
+        clone(keys.with_suffix('.metalarchive'), seed / f'pipelines-{arch}-{keys.stem}.metalarchive')
+        index += [f'{key}\t{keys.stem}' for key in mine]
     if not index:
         return 0
     # #2070: the compute shaders this GPU's Metal compiler built only with their float adds lowered (nvn_float_rmw.h): the
