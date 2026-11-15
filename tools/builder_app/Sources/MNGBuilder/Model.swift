@@ -86,10 +86,11 @@ final class Model: ObservableObject {
 
     /// The pages besides building each game has (tools/builder/games.py PAGES, which the backend enforces;
     /// tests/test_launcher_pages.py checks the two agree). Ocarina of Time: Controls, Storage and Saves (user 2026-11-13).
+    /// 诊断模式 was removed 2026-11-15: a quick App starts with every diagnostic itself (games/oot/app/launcher.m).
     static let gamePages: [String: [String]] = [
-        "totk": ["settings", "mods", "controls", "storage", "saves", "diag"],
-        "botw": ["settings", "mods", "controls", "storage", "saves", "diag"],
-        "oot": ["controls", "storage", "saves", "diag"],   // diag: 诊断模式 (DiagPage, user 2026-11-13)
+        "totk": ["settings", "mods", "controls", "storage", "saves"],
+        "botw": ["settings", "mods", "controls", "storage", "saves"],
+        "oot": ["controls", "storage", "saves"],
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.
@@ -222,7 +223,7 @@ final class Model: ObservableObject {
     /// The games a build can make quick: only the title's shaders, the rest translated at first use (user 2026-11-13).
     static let quickGames: Set<String> = ["oot"]
 
-    /// 快速启动 of an installed app (its card; user 2026-11-15: after 诊断模式, one function with the Build page's switch):
+    /// 快速启动 of an installed app (its card; user 2026-11-15: after the game's pages, one function with the Build page's switch):
     /// the same quick request, so the app is made again with only the title's shaders, also when a new translator would
     /// otherwise need the full build. 补全着色器 on its card makes it full later.
     func quickStart(_ app: InstalledReport.App) {
