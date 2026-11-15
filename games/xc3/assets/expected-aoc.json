@@ -28,7 +28,7 @@
         "3": {
             "title": "010074F013263003",
             "data_nca": {
-                "name": "4ecf19cc198ac3f4dfbcc3018a8dbee4.nca",
+                "name": "908612f418996938b73329c9dc0feed3.nca",
                 "size": 189874176
             },
             "romfs": {
@@ -40,12 +40,12 @@
         "4": {
             "title": "010074F013263004",
             "data_nca": {
-                "name": "4ff0ef8a079bfa2dc7592ead46831248.nca",
+                "name": "20973f431f1538e91912c5650ee7603c.nca",
                 "size": 4282007552
             },
             "romfs": {
-                "size": 4273556608,
-                "sha256": "6606367cbe8542f1fd85ac787fae16b3ab0c9f9ae09e8e8150d7d5c5d6ae73b3",
+                "size": 4273557616,
+                "sha256": "0cdab82a155a72c43c7380d3537ef2a8d75892a73c5a4361489d76e559b37058",
                 "files": 80
             }
         }
