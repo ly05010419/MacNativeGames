@@ -1641,7 +1641,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([actions.itemArray.firstObject.title isEqualToString:@"E"] && ticked && ticked.tag == KEYMAP_A && jump && [actions.itemArray.lastObject.title isEqualToString:@"None (unused)"]);
     [settingsPanel menuPicked:jump]; runtime_keymap_get(&keysNow);   /* E jumps now (with Space); confirm keeps Return */
     assert(keysNow.slot[KEYMAP_X][0] == 49 && keysNow.slot[KEYMAP_X][1] == 14 && keysNow.slot[KEYMAP_A][0] == 36 && keysNow.slot[KEYMAP_A][1] == KEYMAP_NONE);
-    [settingsPanel assignInput:36 action:-1]; assert([diagram_missing(0) isEqualToString:@"No key: Confirm / Interact"]);
+    [settingsPanel assignInput:36 action:-1]; NSString *missing = diagram_missing(0);
+    if (![missing isEqualToString:@"No key: Confirm / Interact"]) fprintf(stderr, "diagram_missing(0): %s\n", missing.UTF8String);
+    assert([missing isEqualToString:@"No key: Confirm / Interact"]);
     [settingsPanel.resetButtons[0] performClick:nil]; assert(diagram_missing(0) == nil);
     settingsPanel.deviceTabs.selectedSegment = 1; [settingsPanel deviceChanged:settingsPanel.deviceTabs];
     assert(settingsPanel.keyboardDiagram.hidden && !settingsPanel.padDiagram.hidden && settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden);

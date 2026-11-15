@@ -21,9 +21,12 @@ class ShaderStartupMemory(unittest.TestCase):
         body = text[begin:text.index('\n/* PR #84', begin)]
         probe = r'''
 #import "totk_shader_seed.h"
+#include "totk_seed_image.h"
 #include <malloc/malloc.h>
 static NSString *g_dir, *g_seed_dir;
 static NSSet *g_seed_names;
+static seed_image g_seed_img;
+static NSString *g_seed_prefix;
 static BOOL g_seed_all_default;
 static void (*runtime_boot_status)(const char *, const char *);
 static NSString *root_dir(void) { return @"unused"; }

@@ -3,7 +3,7 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc != 3) return 2;
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device || ![device supportsFamily:MTLGPUFamilyMetal4]) return 3;
+        if (!device || ![device supportsFamily:MTLGPUFamilyMetal4]) { fprintf(stderr, "no Metal 4 GPU\n"); return 3; }
         setenv("DM_PSO_ARCHIVE", argv[1], 1);
         BOOL verify = !strcmp(argv[2], "verify"), changed = !strcmp(argv[2], "changed");
         setenv(verify || changed ? "DM_PSO_REQUIRE_ARCHIVE" : "DM_PSO_ARCHIVE_BUILD", "1", 1);
