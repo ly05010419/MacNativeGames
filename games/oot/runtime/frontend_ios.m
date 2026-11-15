@@ -5,6 +5,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #include "runtime.h"
 #include "totk_ui_lang.h"
 static CAMetalLayer *metalLayer;
@@ -98,7 +99,19 @@ static void app_active_changed(int active){
  if(active)runtime_feedback_active();
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
-void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
+/* Explicit diagnostic close / agent watchdog only. UIKit backgrounding still just pauses GPU work. Like the Mac's
+   close path, wait for the save writer; a test must not leave its game running or terminate it during a save. */
+void runtime_front_request_close(void){
+ static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  fprintf(stderr,"[totk] close requested; waiting for pending save writes\n");
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+   while(runtime_fs_save_busy())usleep(20000);
+   fprintf(stderr,"[totk] save idle; closing iOS test session\n");
+   runtime_cloud_save_quit();fflush(NULL);_exit(0);
+  });
+ });
+}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
 
 /* The display link's rate, which paces the game (mtl_display_hz): 60 on every iPhone / iPad, also a ProMotion one, whose
