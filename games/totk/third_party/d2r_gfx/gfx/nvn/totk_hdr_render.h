@@ -80,9 +80,9 @@ static void hdr_capture(NvProg *pr) {
     static id<MTLRenderPipelineState> pso;
     if(!pso) {
         NSString *msl=totk_hdr_copy_source();
-        NSError *e=nil;id<MTLLibrary> l=[g_dev newLibraryWithSource:msl options:nil error:&e];
+        NSError *e=nil;id<MTLLibrary> l=mtl_counted_library(g_dev, msl, nil, &e);
         MTLRenderPipelineDescriptor *pd=[MTLRenderPipelineDescriptor new];pd.vertexFunction=[l newFunctionWithName:@"vs"];pd.fragmentFunction=[l newFunctionWithName:@"fs"];pd.colorAttachments[0].pixelFormat=MTLPixelFormatRGBA16Float;
-        pso=[g_dev newRenderPipelineStateWithDescriptor:pd error:&e];if(!pso)MDIE("HDR copy pipeline: %s",e.localizedDescription.UTF8String);
+        pso=mtl_counted_render(g_dev, pd, &e);if(!pso)MDIE("HDR copy pipeline: %s",e.localizedDescription.UTF8String);
     }
     MTL4RenderPassDescriptor *pd=[MTL4RenderPassDescriptor new];pd.colorAttachments[0].texture=out;pd.colorAttachments[0].loadAction=MTLLoadActionClear;pd.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,1);pd.colorAttachments[0].storeAction=MTLStoreActionStore;
     id<MTL4RenderCommandEncoder> en=[g_cb renderCommandEncoderWithDescriptor:pd];

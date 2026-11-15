@@ -40,6 +40,7 @@
 //  - On M5 Pro / M5 Max (macOS 27) the scaler runs its network on the Neural Engine: that work is on the command buffer's
 //    timeline (the GPU waits for it) but not on the GPU's cores.
 #import <MetalFX/MetalFX.h>
+#include "nvn_counted.h"
 #include <dispatch/dispatch.h>
 #include <math.h>
 #include <os/lock.h>
@@ -232,9 +233,9 @@ static int setup(id<MTLDevice> dev) {
         "  mv.write(float4(m, 0.0, 0.0), g); cd.write(float4(z, 0.0, 0.0, 0.0), g); rm.write(float4(r, 0.0, 0.0, 0.0), g);\n"
         "}\n";
     MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
-    id<MTLLibrary> lib = [dev newLibraryWithSource:@(src) options:o error:&e];
+    id<MTLLibrary> lib = mtl_counted_library(dev, @(src), o, &e);
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"taa_mv"] : nil;
-    g.mv_ps = fn ? [dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+    g.mv_ps = fn ? mtl_counted_compute(dev, fn, &e) : nil;
     MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
     for (int i = 0; i < TAA_SLOTS && g.rs; i++) {
         g.args[i] = [dev newArgumentTableWithDescriptor:ad error:&e];
@@ -355,9 +356,9 @@ static int ensure_fast(id<MTLTexture> src) {
     if (!g.rs_ps) {   // compiled once, the first time the fast mode runs (tens of milliseconds on the replay thread)
         NSError *e = nil;
         MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
-        id<MTLLibrary> lib = [g.dev newLibraryWithSource:@(g_resolve_src) options:o error:&e];
+        id<MTLLibrary> lib = mtl_counted_library(g.dev, @(g_resolve_src), o, &e);
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"taa_resolve"] : nil;
-        g.rs_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        g.rs_ps = fn ? mtl_counted_compute(g.dev, fn, &e) : nil;
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
         for (int i = 0; i < TAA_SLOTS && g.rs_ps; i++) g.rargs[i] = [g.dev newArgumentTableWithDescriptor:ad error:&e];
         if (!g.rs_ps || !g.rargs[TAA_SLOTS - 1]) {
@@ -754,13 +755,13 @@ static id<MTLRenderPipelineState> up_copy_ps(MTLPixelFormat f) {   // our output
             "  return float4((lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0), c.a);\n"
             "}\n", up_sharpen());
         MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;   // isfinite must not be folded away
-        lib = [g.dev newLibraryWithSource:@(src) options:o error:&e];
+        lib = mtl_counted_library(g.dev, @(src), o, &e);
         if (!lib) { TLOG("temporal upscale: copy shader not compiled: %s", e.localizedDescription.UTF8String); return nil; }
     }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     pd.vertexFunction = [lib newFunctionWithName:@"tup_vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"tup_fs"];
     pd.colorAttachments[0].pixelFormat = f;
-    id<MTLRenderPipelineState> ps = [g.dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    id<MTLRenderPipelineState> ps = mtl_counted_render(g.dev, pd, &e);
     if (!ps) { TLOG("temporal upscale: copy pipeline for format %lu not created: %s", (unsigned long)f, e.localizedDescription.UTF8String); return nil; }
     int i = !u.copy_ps[0] ? 0 : 1;
     keep_old(u.copy_ps[i]);   // a copy pass of the last frames may still use it
