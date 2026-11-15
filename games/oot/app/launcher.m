@@ -251,8 +251,9 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
             const char *v = getenv(name); return v && *v ? @(v) : fallback; };
         NSString *profile = env_or("TOTK_PROFILE_DIR", [data stringByAppendingPathComponent:@"profile"]);
         NSString *slot = env_or("TOTK_GAME_SLOT_DIR", [home stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/TOTK/game-slot"]);
-        /* One cache per prepared seed, as totk_shader_rt.m totk_rt_dir names it: a cache's own variants come before the seed's
-           (variants_of), so variants left by an earlier build of the same chain would hide the seed's and miss its pipeline archive. */
+        /* One cache per prepared seed, as totk_shader_rt.m totk_rt_dir names it: its translations are another translator's
+           otherwise. (Until 61e7c86d the cache's variants also came before the seed's.) The pipeline archive and the
+           collected list are not lost with the folder: a new one takes them over (totk_rt_carry.h, 2026-11-16). */
         NSString *cacheChain = @DMSH_CHAIN;
         NSData *seedManifest = [NSData dataWithContentsOfFile:[root stringByAppendingPathComponent:@"build/shader-seed/seed-manifest.json"]];
         NSDictionary *seedMetadata = seedManifest ? [NSJSONSerialization JSONObjectWithData:seedManifest options:0 error:nil] : nil;

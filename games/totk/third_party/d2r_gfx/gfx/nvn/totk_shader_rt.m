@@ -13,6 +13,7 @@
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
 #include "totk_variant_rows.h"
+#include "totk_rt_carry.h"
 #include "dmsh_chain.h"
 /* Test launch preflight reads the compiled identity, never a source header
    standing in for the binary it is about to execute. */
@@ -123,6 +124,10 @@ NSString *totk_rt_dir(void) {
         g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%@", cacheChain];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
+        // a new chain or context: this device's pipeline archive and collected list come along (totk_rt_carry.h)
+        for (NSString *from in totk_rt_carry_over(g_dir))
+            LOG("[shader-cache] 本机的 %s 从上一个缓存目录接过来：%s（翻译链或翻译上下文变了；管线由 Metal 逐条核对，着色器变了的才重编）",
+                from.lastPathComponent.UTF8String, from.stringByDeletingLastPathComponent.lastPathComponent.UTF8String);
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         if (!(seedMode && !strcmp(seedMode, "off"))) {
             NSError *error = nil;
