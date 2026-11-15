@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 NVN = ROOT / "games/oot/third_party/d2r_gfx/gfx/nvn"
-GUARD = "    int usable = d > 0 && g0 > 0;\n"
+GUARD = "    int usable = nvn_gpu_timestamps_valid(g0, g1, failed);\n"
 NOTE = "    if (usable) sysload_note_gpu(g0, g1);"
 
 
@@ -22,10 +22,12 @@ def _block(source, start, end="\n}\n"):
 def probe_source(mtl, sysload):
     parts = {
         "/* SYSLOAD_ADD */": _block(sysload, "double sysload_busy_add(sysload_busy *b,"),
+        "/* VALIDATOR */": _block((NVN/'nvn_frame_telemetry.h').read_text(),
+                                  "static int nvn_gpu_timestamps_valid(double start, double end, int failed) {"),
         "/* RING */": _block(mtl, "#define GRING ", "g_gpu[GRING];"),
         "/* COUNTERS */": _block(mtl, "static _Atomic uint64_t g_cbw_committed,", ";\n"),
         "/* TAG_BEGIN */": _block(mtl, "static void gpu_tag_begin(uint64_t f) {"),
-        "/* TAG_DONE */": _block(mtl, "static void gpu_tag_done(uint64_t f, double g0, double g1) {"),
+        "/* TAG_DONE */": _block(mtl, "static void gpu_tag_done(uint64_t f, double g0, double g1, int failed) {"),
         "/* READERS */": _block(mtl, "double mtl_gpu_ms(uint64_t f) {", "    return *t1 >= *t0 && *t1;\n}\n"),
     }
     fixture = (ROOT / "tests/oot_gpu_span_probe.c").read_text()
@@ -55,7 +57,7 @@ class GpuSpan(unittest.TestCase):
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60)
             if expected_failure is None:
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-                self.assertIn("6 cases passed", run.stdout)
+                self.assertIn("7 cases passed", run.stdout)
             else:
                 self.assertNotEqual(run.returncode, 0, "the old rule unexpectedly passed")
                 self.assertIn(expected_failure, run.stderr, run.stdout + run.stderr)
@@ -65,8 +67,8 @@ class GpuSpan(unittest.TestCase):
 
     def test_without_the_guard_a_zero_start_is_charged_to_the_frame(self):
         self.assertEqual(self.mtl.count(GUARD), 1)
-        self.run_probe(self.mtl.replace(GUARD, "    int usable = d > 0;\n"),
-                       "a zero start adds no GPU time")
+        self.run_probe(self.mtl.replace(GUARD, "    int usable = nvn_gpu_timestamps_valid(g0 == 0 ? 1 : g0, g1, failed);\n"),
+                       "a zero start makes frame timing unavailable")
 
     def test_without_the_guard_a_zero_start_reaches_the_load_line(self):
         self.assertEqual(self.mtl.count(NOTE), 1)

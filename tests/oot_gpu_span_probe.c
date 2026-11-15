@@ -6,10 +6,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 /* ---- the production pieces ---- */
 typedef struct { double last_end, busy; } sysload_busy;   /* totk_sysload.h */
 /* SYSLOAD_ADD */
+/* VALIDATOR */
 /* RING */
 /* COUNTERS */
 static void gpu_watchdog_start(void) {}   /* the watchdog thread itself is not under test */
@@ -33,7 +35,7 @@ static void expect_eq(double got, double want, const char *what) {
 }
 
 /* One command buffer of frame f, committed and then completed with this GPU pair. */
-static void buffer(uint64_t f, double g0, double g1) { gpu_tag_begin(f); gpu_tag_done(f, g0, g1); }
+static void buffer(uint64_t f, double g0, double g1) { gpu_tag_begin(f); gpu_tag_done(f, g0, g1, 0); }
 
 /* A valid pair is counted: 1 ms of GPU time, and the span is the pair itself. */
 static void valid_interval_counted(void) {
@@ -46,37 +48,39 @@ static void valid_interval_counted(void) {
 }
 
 /* A zero start with a positive end is dropped, and the frame still finishes: pending reaches zero, so the reader
-   answers instead of staying at -1, and the watchdog still sees a completion. This is the pair captured on 2026-11-12
+   marks its aggregate unavailable, and the watchdog still sees a completion. This is the pair captured on 2026-11-12
    (g0 = 0.000000000, g1 = 588279.960720750); the old rule charged the frame the whole clock. */
 static void zero_start_dropped(void) {
     uint64_t before = atomic_load(&g_cbw_completed);
     buffer(2, 0.0, 588279.960720750);
     uint64_t t0 = 0, t1 = 0;
-    expect_eq(mtl_gpu_ms(2), 0.0, "a zero start adds no GPU time");
-    expect(mtl_gpu_ms(2) >= 0, "the frame still finishes (pending reached zero)");
+    expect_eq(mtl_gpu_ms(2), -1.0, "a zero start makes frame timing unavailable");
+    expect(atomic_load(&g_gpu[2 % GRING].pending) == 0, "the frame still finishes (pending reached zero)");
     expect(mtl_gpu_span(2, &t0, &t1) == 0, "a zero start leaves no span");
     expect(atomic_load(&g_cbw_completed) == before + 1, "the watchdog still counts the completion");
     expect(atomic_load(&g_cbw_last_done_ns) != 0, "the watchdog still marks the time of the completion");
 }
 
-/* The realistic frame: several command buffers, one of them with no start time. The good ones are counted whole. */
+/* One invalid command buffer makes the aggregate unavailable rather than exporting the good buffers as a full frame. */
 static void zero_start_beside_good_ones(void) {
     gpu_tag_begin(3); gpu_tag_begin(3); gpu_tag_begin(3);
-    gpu_tag_done(3, 200.000, 200.002);
-    gpu_tag_done(3, 0.0, 588300.0);
-    gpu_tag_done(3, 200.004, 200.005);
+    gpu_tag_done(3, 200.000, 200.002, 0);
+    gpu_tag_done(3, 0.0, 588300.0, 0);
+    gpu_tag_done(3, 200.004, 200.005, 0);
     uint64_t t0 = 0, t1 = 0;
-    expect_eq(mtl_gpu_ms(3), 3.0, "only the two usable buffers are counted");
-    expect(mtl_gpu_span(3, &t0, &t1) == 1, "the frame reports a span");
-    expect_eq((double)t0, 200.000 * 1e9, "the span starts at the earliest usable start");
-    expect_eq((double)t1, 200.005 * 1e9, "the span ends at the latest usable end");
+    expect_eq(atomic_load(&g_gpu[3 % GRING].ns) / 1e6, 3.0, "only the two usable buffers are accumulated");
+    expect_eq(mtl_gpu_ms(3), -1.0, "a partial frame is unavailable");
+    expect(mtl_gpu_span(3, &t0, &t1) == 0, "a partial frame reports no complete span");
+    expect(atomic_load(&g_gpu[3 % GRING].pending) == 0, "all three completions finish");
 }
 
-/* Unchanged: an empty interval was already dropped, and the frame still finishes. */
+/* Equal positive endpoints are valid zero-duration feedback, and the frame still finishes. */
 static void empty_interval_dropped(void) {
     uint64_t before = atomic_load(&g_cbw_completed);
     buffer(4, 300.0, 300.0);
     expect_eq(mtl_gpu_ms(4), 0.0, "an empty interval adds no GPU time");
+    uint64_t t0 = 0, t1 = 0;
+    expect(mtl_gpu_span(4, &t0, &t1) && t0 == t1 && t0 == 300000000000ULL, "positive equal endpoints preserve a valid span");
     expect(atomic_load(&g_cbw_completed) == before + 1, "the watchdog counts the empty interval too");
 }
 
@@ -100,11 +104,22 @@ static void slot_already_reused(void) {
     int pending_before = atomic_load(&g_gpu[7 % GRING].pending);
     uint64_t completed_before = atomic_load(&g_cbw_completed);
     gpu_tag_begin(7 + GRING);                 /* the same slot, a later frame: the slot is re-armed */
-    gpu_tag_done(7, 400.0, 400.001);          /* the late completion of the frame that left */
+    gpu_tag_done(7, 400.0, 400.001, 0);       /* the late completion of the frame that left */
     expect(atomic_load(&g_gpu[7 % GRING].pending) == 1, "a late completion does not touch the new frame's count");
     expect(atomic_load(&g_cbw_completed) == completed_before + 1, "the watchdog counts the late completion");
     expect(pending_before == 1, "the frame had one buffer outstanding");
     expect_eq(mtl_gpu_ms(7), -1.0, "the frame that left reports nothing");
+}
+
+static void invalid_feedback_unavailable(void) {
+    const double pairs[][2] = {{1, 2}, {NAN, 2}, {1, INFINITY}, {2, 1}, {1, 2e10}};
+    for (unsigned i = 0; i < sizeof pairs / sizeof pairs[0]; i++) {
+        uint64_t f = 8 + i, t0 = 0, t1 = 0;
+        gpu_tag_begin(f); gpu_tag_done(f, pairs[i][0], pairs[i][1], i == 0);
+        expect_eq(mtl_gpu_ms(f), -1, "failed, nonfinite, reversed and overflowing feedback is unavailable");
+        expect(!mtl_gpu_span(f, &t0, &t1), "invalid feedback has no span");
+        expect(atomic_load(&g_gpu[f % GRING].pending) == 0, "invalid feedback still completes bookkeeping");
+    }
 }
 
 int main(void) {
@@ -114,7 +129,8 @@ int main(void) {
     empty_interval_dropped();
     load_line_after_a_gap();
     slot_already_reused();
+    invalid_feedback_unavailable();
     if (failures) { fprintf(stderr, "%d checks failed\n", failures); return 1; }
-    printf("GPU span accounting: 6 cases passed\n");
+    printf("GPU span accounting: 7 cases passed\n");
     return 0;
 }

@@ -21,6 +21,7 @@ class Capture(unittest.TestCase):
 #include <assert.h>
 #include <limits.h>
 #include "nvn_capture_region.h"
+#include "nvn_frame_telemetry.h"
 static void (^g_grab_cb)(CGImageRef), (^g_grab_game_cb)(CGImageRef);
 static char g_grab_src_path[1024];
 static pthread_mutex_t g_shotq_mu = PTHREAD_MUTEX_INITIALIZER, g_pq_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -42,7 +43,7 @@ static void grab_present(void (^cb)(CGImageRef), id src, const int *crop, CGSize
 @end
 static int present(Layer *layer, int interp) {
     id<CAMetalDrawable> supplied = nil;
-    id src = nil; const int *crop = NULL; uint64_t ticket = 9;
+    id src = nil; const int *crop = NULL; uint64_t ticket = 9, frame = 42, content_serial = 81;
     BODY
     return 2;
 }
@@ -53,10 +54,11 @@ int main(int argc, char **argv) { @autoreleasepool {
     g_grab_game_cb = ^(CGImageRef image) { assert(!image); b++; };
     Layer *layer = [Layer new];
     int rc = present(layer, mode == 4 ? 0 : -1);
-    if (mode == 4) { assert(rc == 2 && a == 0 && b == 0 && g_grab_cb && g_grab_game_cb); }
+    if (mode == 4) { assert(rc == 2 && a == 0 && b == 0 && g_grab_cb && g_grab_game_cb); assert(nvn_present_time_get(9) == 0); }
     else {
         assert(rc == (mode == 3 ? 0 : 1));
         assert(a == 1 && b == 1 && !g_grab_cb && !g_grab_game_cb);
+        assert(nvn_present_time_get(9) == -1);
         present(layer, -1); assert(a == 1 && b == 1);
     }
     nvn_capture_region r;
@@ -76,7 +78,7 @@ int main(int argc, char **argv) { @autoreleasepool {
             subprocess.run(['xcrun','clang','-fobjc-arc','-fsanitize=address,undefined','-g',
                 '-I'+str(NVN),'-framework','Foundation','-framework','QuartzCore',str(path/'probe.m'),'-o',str(path/'probe')],check=True)
             for mode in (1,2,3,4):
-                env = dict(os.environ); env.pop('TOTK_PRESENT_SKIP',None)
+                env = dict(os.environ); env.pop('TOTK_PRESENT_SKIP',None); env.pop('DM_NVN_TSV',None)
                 if mode == 2: env['TOTK_PRESENT_SKIP']='1'
                 out = subprocess.run([str(path/'probe'),str(mode)],env=env,capture_output=True,text=True,timeout=15)
                 self.assertEqual(out.returncode,0,out.stdout+out.stderr)
