@@ -57,6 +57,22 @@ class GameTestStartup(unittest.TestCase):
             self.assertEqual(self.popen.call_args.kwargs['env']['TOTK_SHADER_SEED'], 'on')
         self.assertEqual(self.popen.call_count, 2)
 
+    def test_a_game_test_is_a_quick_start_by_default(self):
+        # user 2026-11-15: "我们测试的使用 默认用 快速启动"
+        self.run_launch()
+        self.assertEqual(self.popen.call_args.kwargs['env']['MNG_TEST_STARTUP'], 'quick')
+
+    def test_no_background_translation_is_turned_on(self):
+        # user 2026-11-15: "不用 后台编译了 这个 有问题" (its translator service crashed): neither the test entry nor a
+        # quick app's launcher turns TOTK_ASYNC_SHADERS on
+        for mode in ('quick', 'test'):
+            self.run_launch(mode=mode)
+            self.assertNotIn('TOTK_ASYNC_SHADERS', self.popen.call_args.kwargs['env'], mode)
+        for source in ('tools/game_test_startup.py', 'games/oot/app/launcher.m'):
+            text = (Path(__file__).resolve().parents[1] / source).read_text()
+            self.assertNotIn('"TOTK_ASYNC_SHADERS", "1"', text, source)
+            self.assertNotIn("'TOTK_ASYNC_SHADERS', '1'", text, source)
+
     def test_v28_runtime_with_v27_seed_rejected_before_launch(self):
         self.metadata['chain'] = 'oot-native-v27-blend-zero'; self.save(); self.rejected()
 

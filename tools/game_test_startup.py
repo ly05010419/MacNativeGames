@@ -75,7 +75,10 @@ def preflight(binary, native, seed, libraries, expected_chain):
                 libraries_manifest_sha256=digest(libraries / 'libraries-manifest.json'))
 
 
-def launch(binary, native, seed, libraries, expected_chain, command, *, mode='test', env=None, popen=None):
+def launch(binary, native, seed, libraries, expected_chain, command, *, mode='quick', env=None, popen=None):
+    """A game test starts as a quick start by default (user 2026-11-15: "我们测试的使用 默认用 快速启动"). Shaders it was
+    not given are made as the game's own start makes them (on the submit thread): background translation was tried the
+    same day and its translator service crashed (user: "不用 后台编译了")."""
     if mode not in ('quick', 'test'):
         raise ValueError('game tests require quick or test startup')
     values = dict(os.environ if env is None else env)

@@ -227,6 +227,11 @@ class QuickAppContributesNothing(unittest.TestCase):
             self.assertGreater(text.index(call, guard), quick, call)   # only in the else branch, after the guard
         self.assertEqual(text.count('totk_inbox_start(contrib'), 1)
 
+    def test_a_quick_app_does_not_turn_background_translation_on(self):
+        # tried 2026-11-15 and taken back the same day: in the background its translator service crashed (user: "不用
+        # 后台编译了 这个 有问题"); a quick app makes its shaders as every app does
+        self.assertNotIn('TOTK_ASYNC_SHADERS', (GAME / 'app/launcher.m').read_text())
+
 
 class LauncherQuickStart(unittest.TestCase):
     """MNG Launcher's 快速启动: a build request with quick makes the job's build carry only the title's shaders, only for
@@ -285,6 +290,19 @@ class LauncherQuickStart(unittest.TestCase):
         self.assertIn('if app.shaders == "title"', (swift / 'HomePage.swift').read_text())
         self.assertIn('model.updateShaders(app)', (swift / 'HomePage.swift').read_text())
         self.assertIn('var quick: Bool? = nil', (swift / 'Reports.swift').read_text())
+
+
+class NoSetuidPs(unittest.TestCase):
+    def test_the_build_finds_the_running_game_without_ps(self):
+        # /bin/ps is setuid and cannot run under this Mac's storage guard (2026-11-15: the quick app's update stopped at
+        # "Operation not permitted: 'ps'"); the processes are read with libproc / sysctl as build_app.py reads them
+        text = (GAME / 'build.py').read_text()
+        self.assertNotIn("['ps'", text)
+        self.assertIn('build_app.running_executables()', text)
+        self.assertIn('build_app.process_args(pid)', text)
+        build = load('oot_build_ps', GAME / 'build.py')
+        with mock.patch.object(build.build_helpers(), 'running_executables', return_value=[(1, '/x/Contents/MacOS/Other')]):
+            self.assertFalse(build.app_running('/x'))
 
 
 class CaptureSwitch(unittest.TestCase):

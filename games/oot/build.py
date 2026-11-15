@@ -446,16 +446,15 @@ def missing_compute_message(missing,arch,log):
 
 def app_running(app):
     """The game is running from this App. The Update window runs the same executable as "--update-install <pid>" or
-    "--update-check" and waits for this installer, so it is not the game (#1784; build_app.py wait_until_closed, 577e4576)."""
+    "--update-check" and waits for this installer, so it is not the game (#1784; build_app.py wait_until_closed, 577e4576).
+    The processes are read as build_app.py reads them (libproc and sysctl): /bin/ps is setuid and cannot run under this
+    Mac's storage guard (2026-11-15: an update of the quick app stopped at "Operation not permitted: 'ps'")."""
     executable=str((Path(app)/'Contents/MacOS/OcarinaOfTime').resolve())
-    table=subprocess.run(['ps','-axo','pid=,comm='],capture_output=True,text=True,check=True).stdout.splitlines()
-    for line in table:
-        fields=line.strip().split(maxsplit=1)
-        if len(fields)!=2 or fields[1]!=executable:continue
-        args=subprocess.run(['ps','-ww','-p',fields[0],'-o','args='],capture_output=True,text=True)
-        if args.returncode==1 and not args.stdout.strip():continue   # it exited between the two snapshots
-        args.check_returncode()
-        command=args.stdout.strip()
+    build_app=build_helpers()
+    for pid,binary in build_app.running_executables():
+        if binary!=executable:continue
+        command=build_app.process_args(pid)
+        if command is None:continue   # it exited between the two queries
         options=command[len(executable)+1:].split() if command.startswith(executable+' ') else []
         if options==['--update-check'] or (len(options)==2 and options[0]=='--update-install' and options[1].isdigit() and int(options[1])>0):continue
         return True
@@ -604,9 +603,8 @@ def build(args, source):
     # Close this title normally before changing its resource workspace or App.
     # The input command follows the same save-safe window close as normal play.
     executable=out/'Contents/MacOS/OcarinaOfTime'
-    def running():
-        processes=subprocess.check_output(['ps','-axo','comm='],text=True).splitlines()
-        return str(executable) in {p.strip()for p in processes}
+    def running():   # libproc, as app_running: no setuid /bin/ps under this Mac's storage guard
+        return str(executable.resolve()) in {path for _,path in build_helpers().running_executables()}
     if running():
         control=Path(os.environ.get('TOTK_INPUT_FILE',str(Path.home()/'Library/Application Support/MacNativeGames/OcarinaOfTime/input.txt')))
         with control.open('a')as f:f.write('close\n')
