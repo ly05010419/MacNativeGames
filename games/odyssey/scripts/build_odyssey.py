@@ -75,8 +75,10 @@ def preflight(args, py):
     for path in (args.game, args.keys):
         if not path.is_file():
             problems.append(f"{path} not found")
-    if args.game.suffix.lower() == ".nsp" and not args.firmware:
-        problems.append("an NSP carries no system fonts: pass --firmware <unpacked firmware NCA directory>")
+    fonts = args.work / "extracted/firmware/shared-fonts"
+    has_shared_fonts = len(list(fonts.glob("*.bfttf"))) >= 6
+    if args.game.suffix.lower() == ".nsp" and not args.firmware and not has_shared_fonts:
+        problems.append("an NSP carries no system fonts: provide six shared-font BFTTF files or pass --firmware")
     # About 12 GB in all; the merged RomFS (5.6 GB) is most of it, so a resumed build needs less.
     need = 5 if (args.work / "extracted/local/romfs/index.json").is_file() else 12
     free = shutil.disk_usage(args.work.parent if not args.work.exists() else args.work).free / 2**30
