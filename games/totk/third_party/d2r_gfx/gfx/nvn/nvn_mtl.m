@@ -7346,6 +7346,18 @@ static NSNumber *seen_key(const char *line, size_t n) { return @(pkg_hash(line, 
 static NSNumber *seen_key_str(NSString *line) { const char *u = line.UTF8String; return seen_key(u, strlen(u)); }
 static NSMutableSet<NSNumber *> *g_pso_user_seen;
 static NSMutableSet<NSNumber *> *g_pso_shipped_seen;   // !warm_shared(): the shared list's lines, recorded but not shown as new
+/* Published before the warm workers start, then immutable. A shipped mesh row
+   excluded from resident warm-up must still be learned when actually drawn. */
+static NSSet<NSString *> *g_pso_unretained_mesh_lists;
+static void pso_user_mesh_warm_paths(NSSet<NSString *> *shipped, NSArray<NSString *> *retained) {
+#if defined(GAME_OOT)
+    NSMutableSet<NSString *> *excluded = [shipped mutableCopy];
+    [excluded minusSet:[NSSet setWithArray:retained]];
+    g_pso_unretained_mesh_lists = [excluded copy];
+#else
+    (void)shipped; (void)retained;
+#endif
+}
 /* The shared list's pipelines (pso_list.tsv: every player's, 13,875 rows after #229-#272) are kept in memory only on the
    Mac. On an iPhone / iPad they are compiled into the pipeline archive before the title and dropped (warm_start,
    warm_fill_archive): kept, 6,813 render pipelines put an iPhone 14 in the world at 3.82-3.89 GB with p99 117-200 ms
@@ -7420,7 +7432,13 @@ static void pso_user_record(const char *fmt, ...) {
         NSString *user = pso_user_path(); if (user) [paths addObject:user];
         [paths addObject:pso_shared_path()];
         for (NSString *path in paths) @autoreleasepool { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:seen_key_str(old)]; }
+            BOOL learn_mesh = [g_pso_unretained_mesh_lists containsObject:path];
+            for (NSString *old in [txt componentsSeparatedByString:@"\n"]) {
+                if (!old.length || [old hasPrefix:@"#"]) continue;
+                if (learn_mesh && [old hasPrefix:@"M\t"]) continue;
+                [g_pso_user_seen addObject:seen_key_str(old)];
+            }
+        }
     }
     size_t ll = strlen(line);
     NSNumber *k = seen_key(line, ll && line[ll - 1] == '\n' ? ll - 1 : ll);   // 与清单文件按行（不含换行）比 | Compared with the manifest file line by line (without the newline)
@@ -11832,6 +11850,7 @@ static void warm_start(void) {
             MLOG("预热：还没有管线存档，只建标题画面的管线；其余 %lu 份清单在后台收进存档", (unsigned long)lists.count);
         }
     }
+    pso_user_mesh_warm_paths(shipped, paths);
     NSMutableArray<NSString *> *files = [NSMutableArray array];
     NSUInteger skipped = 0;
     for (NSString *file in cached) {
