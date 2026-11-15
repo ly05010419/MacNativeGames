@@ -11592,10 +11592,23 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             if (!txt) { MLOG("【红】预热清单读取失败：%s", path.UTF8String);
                 if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1); continue; }
             NSMutableArray<NSString *> *todo = [NSMutableArray array];
+            NSUInteger moved = 0, repeats = 0;
             for (NSString *line in [txt componentsSeparatedByString:@"\n"]) {
-                if (![eligible containsObject:line] || [seen containsObject:line]) continue;
-                [seen addObject:line]; [todo addObject:line];
+                if (![eligible containsObject:line]) continue;
+                /* this device's rows: a variant the app's seed supersedes (a quick start's, same deps) is put on the
+                   seed's, the one a draw takes now (totk_variant_rows.h); the row is then often one the app's lists
+                   already built, so a repeat */
+                NSString *row = own ? totk_rt_row_prefer_seed(line) : line;
+                if (row != line && ![row isEqualToString:line]) {
+                    moved++;
+                    // counted in total as its own row: done now, so the progress still reaches its total
+                    if ([seen containsObject:row]) { repeats++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                }
+                if ([seen containsObject:row]) continue;
+                [seen addObject:row]; [todo addObject:row];
             }
+            if (moved) MLOG("预热：%s 有 %lu 行用的是被 App 自带变体取代的本机变体（同样的依赖），换成 App 的；其中 %lu 行与已建的重复，不再建",
+                            path.lastPathComponent.UTF8String, (unsigned long)moved, (unsigned long)repeats);
             for (NSUInteger at = 0; at < todo.count; at += WARM_BLOCK) @autoreleasepool {
                 NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, todo.count - at))];
                 warm_load_rows(block, dict);    // the block's shaders on several threads,

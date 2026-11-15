@@ -44,6 +44,48 @@ int main(void) { @autoreleasepool {
 '''
 
 
+ROWS_PROGRAM = r'''#import <Foundation/Foundation.h>
+%s
+static NSString *hex(NSData *d) { NSMutableString *h = [NSMutableString string];
+    const uint8_t *p = (const uint8_t *)d.bytes; for (NSUInteger i = 0; i < d.length; i++) [h appendFormat:@"%%02x", p[i]]; return h; }
+/* a pipeline state: name, "_b", NUL, a second name, "_b", NUL, NUL, 0x01, 0xff */
+static NSData *state(NSString *first, NSString *second) {
+    NSMutableData *d = [NSMutableData data]; const uint8_t tail[] = {0, 0, 1, 0xff}, nul = 0;
+    [d appendData:[[first stringByAppendingString:@"_b"] dataUsingEncoding:NSASCIIStringEncoding]]; [d appendBytes:&nul length:1];
+    [d appendData:[[second stringByAppendingString:@"_b"] dataUsingEncoding:NSASCIIStringEncoding]]; [d appendBytes:tail length:4];
+    return d;
+}
+int main(void) { @autoreleasepool {
+    NSString *sh = [@"" stringByPaddingToLength:64 withString:@"ab" startingAtIndex:0];
+    NSString *app = [sh stringByAppendingString:@"-b7530f698e76"], *quick = [sh stringByAppendingString:@"-062c9c711c36"];
+    NSString *other = [sh stringByAppendingString:@"-aaaaaaaaaaaa"];
+    NSDictionary *deps = @{@"attr": @{@"0": @"float"}, @"fout": @{}, @"img": @{}, @"tex": @{}};
+    NSArray *seed = @[@{@"variant": app, @"deps": deps}];
+    NSArray *cache = @[@{@"variant": quick, @"deps": deps, @"answers": @{@"tex": @{@"0": @"2d"}}},
+                       @{@"variant": other, @"deps": @{@"attr": @{}, @"fout": @{}, @"img": @{}, @"tex": @{@"0": @"cube"}}}];
+    if (![totk_superseding_variant(quick, seed, cache) isEqual:app]) { puts("FAIL same deps"); return 1; }
+    if (![totk_superseding_variant(other, seed, cache) isEqual:other]) { puts("FAIL other deps"); return 1; }
+    if (![totk_superseding_variant(app, seed, cache) isEqual:app]) { puts("FAIL seed variant"); return 1; }
+    if (![totk_superseding_variant(quick, @[], cache) isEqual:quick]) { puts("FAIL no seed"); return 1; }
+    NSString *(^map)(NSString *) = ^NSString *(NSString *v) { return totk_superseding_variant(v, seed, cache); };
+    // S row: plain
+    NSString *s = [NSString stringWithFormat:@"S\t%%@_b\t1", quick];
+    if (![totk_row_map_variants(s, map) isEqual:([NSString stringWithFormat:@"S\t%%@_b\t1", app])]) { puts("FAIL S row"); return 1; }
+    // R row: the pipeline state in hex, two names with NULs and other bytes around them
+    NSString *r = [@"R\t" stringByAppendingString:hex(state(quick, other))];
+    NSString *got = totk_row_map_variants(r, map);
+    if (![got isEqual:[@"R\t" stringByAppendingString:hex(state(app, other))]]) { printf("FAIL R row %%s\n", got.UTF8String); return 1; }
+    if (got.length != r.length) { puts("FAIL length"); return 1; }
+    // M row: a "-" field, then the state; a row without such variants comes back unchanged
+    NSString *m = [@"M\t-\t" stringByAppendingString:hex(state(quick, other))];
+    if (![totk_row_map_variants(m, map) isEqual:[@"M\t-\t" stringByAppendingString:hex(state(app, other))]]) { puts("FAIL M row"); return 1; }
+    NSString *plain = [NSString stringWithFormat:@"C\t%%@_b", app];
+    if (![totk_row_map_variants(plain, map) isEqual:plain]) { puts("FAIL unchanged row"); return 1; }
+    puts("OK"); return 0;
+} }
+'''
+
+
 class SeedVariantsFirst(unittest.TestCase):
     def test_the_seed_variant_comes_before_the_cache_one(self):
         source = SOURCE.read_text()
@@ -60,6 +102,25 @@ class SeedVariantsFirst(unittest.TestCase):
     def test_variants_of_joins_seed_then_cache(self):
         body = function(SOURCE.read_text(), 'static NSMutableArray *variants_of(NSString *shader) {')
         self.assertIn('totk_variants_join(seed, variants_file(index_path(shader)))', body)
+
+    def test_old_device_rows_are_put_on_the_apps_variant(self):
+        # 2026-11-15 ("做 换成 App 的变体 加上测试"): rows recorded before the order fix name a quick start's variants
+        program = ROWS_PROGRAM % (SOURCE.parent / 'totk_variant_rows.h').read_text()
+        with tempfile.TemporaryDirectory() as folder:
+            src, exe = Path(folder) / 'rows.m', Path(folder) / 'rows'
+            src.write_text(program)
+            built = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-framework', 'Foundation', str(src), '-o', str(exe)],
+                                   capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+        self.assertEqual(ran.stdout.strip(), 'OK', ran.stdout + ran.stderr)
+
+    def test_the_warm_up_rewrites_only_this_devices_lists(self):
+        mtl = (SOURCE.parent / 'nvn_mtl.m').read_text()
+        self.assertIn('NSString *row = own ? totk_rt_row_prefer_seed(line) : line;', mtl)
+        rt = SOURCE.read_text()
+        self.assertIn('#include "totk_variant_rows.h"', rt)
+        self.assertIn('totk_superseding_variant(variant, seed, variants_file(index_path(shader)))', rt)
 
     def test_the_devices_collected_list_is_not_an_app_list(self):
         # the same evening: the cache's pso_collected.tsv (this device's, never archived at packaging) was counted as an

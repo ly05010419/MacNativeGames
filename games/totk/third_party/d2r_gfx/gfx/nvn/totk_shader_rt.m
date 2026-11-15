@@ -12,6 +12,7 @@
 #include "dm_wait_stats.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
+#include "totk_variant_rows.h"
 #include "dmsh_chain.h"
 /* Test launch preflight reads the compiled identity, never a source header
    standing in for the binary it is about to execute. */
@@ -883,6 +884,24 @@ void totk_rt_variant_broken(NSString *key) {
     for (NSUInteger i = vs.count; i-- > 0;) if ([vs[i] isKindOfClass:NSDictionary.class] && [vs[i][@"variant"] isEqual:variant]) [vs removeObjectAtIndex:i];
     [g_msl_checked removeObject:variant];
     pthread_mutex_unlock(&g_rt_lock);
+}
+/* A row of this device's warm-up lists with its variants put on the app's own (totk_variant_rows.h): the one a draw takes
+   now. Each variant is looked up once. */
+NSString *totk_rt_row_prefer_seed(NSString *line) {
+    static NSMutableDictionary<NSString *, NSString *> *done;
+    return totk_row_map_variants(line, ^NSString *(NSString *variant) {
+        pthread_mutex_lock(&g_rt_lock);
+        if (!done) done = [NSMutableDictionary dictionary];
+        NSString *now = done[variant];
+        if (!now) {
+            NSString *shader = [variant substringToIndex:64], *seedIndex = [shader stringByAppendingString:@".variants"];
+            NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
+                ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
+            now = done[variant] = totk_superseding_variant(variant, seed, variants_file(index_path(shader)));
+        }
+        pthread_mutex_unlock(&g_rt_lock);
+        return now;
+    });
 }
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
