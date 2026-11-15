@@ -11583,8 +11583,11 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         par_write_in_place = 1;
         uint64_t done = 0;
         for (NSString *path in paths) {
-            // the App's own lists were archived at packaging; the player's own list (pso_user_record) never was
-            atomic_store(&g_par_at_warm, [path.lastPathComponent isEqualToString:@"pso_user.tsv"] ? PAR_AT_USER_LIST : PAR_AT_APP_LIST);
+            /* the App's own lists were archived at packaging; this device's own (pso_user.tsv and pso_collected.tsv in the
+               cache, both pso_user_record) never were. 2026-11-15: pso_collected.tsv counted as an App list, so 1,716 of its
+               rows the device archive lacked showed as "App 自带清单 没存过" in red, as if the packaging had missed them. */
+            BOOL own = [path.lastPathComponent isEqualToString:@"pso_user.tsv"] || [path isEqualToString:pso_shared_path()];
+            atomic_store(&g_par_at_warm, own ? PAR_AT_USER_LIST : PAR_AT_APP_LIST);
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { MLOG("【红】预热清单读取失败：%s", path.UTF8String);
                 if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1); continue; }

@@ -326,18 +326,30 @@ static NSArray *variants_file(NSString *path) {
     NSArray *a = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     return [a isKindOfClass:[NSArray class]] ? a : @[];
 }
+/* The seed's rows first, then the cache's own ones the seed lacks: variant_lookup takes the first whose deps match, and
+   the app's pipeline archive is made from the seed's variants. Until 2026-11-15 the cache's came first (user: "为什么有
+   这么多 新管线？？？"): a quick start, whose seed holds only the title's shaders, translated 1,040 shaders during play into
+   the cache the full app shares (same chain and context), each as a variant named after all its answers (…-90d07effe7fb)
+   beside the seed's default one (…-b7530f698e76) with the very same deps. The full app then took the cache's, so its
+   pipelines had other keys than its archive's: 866 render and 36 mesh pipelines of the app's own warm-up lists compiled
+   at every start; with an empty cache, 0. */
+NSArray *totk_variants_join(NSArray *seed, NSArray *cache) {
+    NSMutableArray *v = [NSMutableArray array]; NSMutableSet *known = [NSMutableSet set];
+    for (NSArray *rows in @[seed ?: @[], cache ?: @[]])
+        for (NSDictionary *row in rows)
+            if ([row isKindOfClass:NSDictionary.class] && row[@"variant"] && ![known containsObject:row[@"variant"]]) {
+                [known addObject:row[@"variant"]]; [v addObject:row];
+            }
+    return v;
+}
 static NSMutableArray *variants_of(NSString *shader) {
     if (!g_variants) g_variants = [NSMutableDictionary dictionary];
     NSMutableArray *v = g_variants[shader];
     if (v) return v;
-    v = [NSMutableArray arrayWithArray:variants_file(index_path(shader))];
     NSString *seedIndex = [shader stringByAppendingString:@".variants"];
-    if (g_seed_dir && [g_seed_names containsObject:seedIndex]) {   // the cache's own rows (fill packs) first, then the seed's
-        NSMutableSet *known = [NSMutableSet set];
-        for (NSDictionary *row in v) if ([row isKindOfClass:NSDictionary.class] && row[@"variant"]) [known addObject:row[@"variant"]];
-        for (NSDictionary *row in variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]))
-            if ([row isKindOfClass:NSDictionary.class] && row[@"variant"] && ![known containsObject:row[@"variant"]]) [v addObject:row];
-    }
+    NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
+        ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
+    v = [totk_variants_join(seed, variants_file(index_path(shader))) mutableCopy];
     g_variants[shader] = v;
     return v;
 }
