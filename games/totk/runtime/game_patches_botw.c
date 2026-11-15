@@ -1190,6 +1190,9 @@ static void patch_font_size(Module *m) {
    kept texture (bit-4 panes too), stub B the render target of a pane without bit 4, rounded as the kept one so the copy
    fills it. Panes of a quarter of the 1280x720 layout or more (the 1280x720 blurred backgrounds of the pause menu, map
    and system windows: 26-38 MiB each at k = 2.7) stay as shipped; the text captures are 0.1-5.5 MiB each at k = 2.7.
+   Only panes at least 150 layout units wide are scaled (TOTK_CAPTURE_MIN_W): the text captures (name cards, quest and
+   location names, messages, button labels) are wide; the narrow ones are icons and gauges, and the scaled stamina gauge
+   (PaGanbariGauge_01, 80x80 and 90x90, six half-ring pictures in one capture) showed a vertical line through the ring.
    The second CaptureScale reader (1.9.0 main+0xf60e24, 1.6.0 main+0x135bca0) is another capture path that the name
    card does not take; it stays as shipped. 1.6.0 compiles the pass differently (the size goes to s0 / s1 with x0 = the
    pane, not s10 / s11 with x24), so its stub B differs; stub A is the same. TOTK_CAPTURE_RES=0 keeps all as shipped. */
@@ -1212,9 +1215,10 @@ static const struct { uint32_t off, original; } g_capture_check[] = {
 enum { CAPTURE_SITE_A = 0xf5974c, CAPTURE_SITE_B = 0xf5a0b8 };
 #define CAPTURE_STUB_B   /* x24 = pane, s8 / s9 = the pass's width / height -> s11 / s10 */ \
     0x1e20412au, 0x1e20410bu,   /* fmov s10, s9 / fmov s11, s8 (as shipped) */ \
+    0xbd405300u, 0x1c0001c1u, 0x1e212000u, 0x5400014bu,   /* ldr s0, [x24, #0x50] / ldr s1, minw / fcmp s0, s1 / b.lt ret */ \
     0x2d4a0700u, 0x1e210800u,   /* ldp s0, s1, [x24, #0x50] / fmul s0, s0, s1: the pane's area */ \
     0x1c000101u, 0x1e212000u, 0x540000aau,   /* ldr s1, area / fcmp s0, s1 / b.ge ret */ \
-    0x1c0000c0u, 0x1e2c1001u,   /* ldr s0, k / fmov s1, #0.5 */ \
+    0x1c0000e0u, 0x1e2c1001u,   /* ldr s0, k / fmov s1, #0.5 */ \
     0x1f00052au, 0x1f00050bu,   /* fmadd s10, s9, s0, s1 / fmadd s11, s8, s0, s1: rounded as the kept texture */ \
     0xd65f03c0u   /* ret */
 #else
@@ -1236,25 +1240,28 @@ static const struct { uint32_t off, original; } g_capture_check[] = {
 enum { CAPTURE_SITE_A = 0x135176c, CAPTURE_SITE_B = 0x1350968 };
 #define CAPTURE_STUB_B   /* x0 = pane, s8 / s9 = the pass's width / height -> s1 / s0 */ \
     0x4ea91d20u, 0x4ea81d01u,   /* mov v0.16b, v9.16b / mov v1.16b, v8.16b (as shipped) */ \
+    0xbd405002u, 0x1c0001c3u, 0x1e232040u, 0x5400014bu,   /* ldr s2, [x0, #0x50] / ldr s3, minw / fcmp s2, s3 / b.lt ret */ \
     0x2d4a0c02u, 0x1e230842u,   /* ldp s2, s3, [x0, #0x50] / fmul s2, s2, s3: the pane's area */ \
     0x1c000103u, 0x1e232040u, 0x540000aau,   /* ldr s3, area / fcmp s2, s3 / b.ge ret */ \
-    0x1c0000c2u, 0x1e2c1003u,   /* ldr s2, k / fmov s3, #0.5 */ \
+    0x1c0000e2u, 0x1e2c1003u,   /* ldr s2, k / fmov s3, #0.5 */ \
     0x1f020d20u, 0x1f020d01u,   /* fmadd s0, s9, s2, s3 / fmadd s1, s8, s2, s3: rounded as the kept texture */ \
     0xd65f03c0u   /* ret */
 #endif
-enum { CAPTURE_STUB_B_AT = 10, CAPTURE_K = 23 };
-static const uint32_t g_capture_stub[] = {   /* stubs A and B, then their two literals; 24 words */
+enum { CAPTURE_STUB_B_AT = 14, CAPTURE_MIN_W = 31, CAPTURE_K = 32 };
+static const uint32_t g_capture_stub[] = {   /* stubs A and B, then their three literals; 33 words */
     /* A: x19 = pane, s9 / s8 = the kept texture's width / height; ends with the fcmp it replaces */
+    0xbd405260u, 0x1c0003c1u, 0x1e212000u, 0x5400012bu,   /* ldr s0, [x19, #0x50] / ldr s1, minw / fcmp s0, s1 / b.lt A+0x30 */
     0x2d4a0660u, 0x1e210800u,   /* ldp s0, s1, [x19, #0x50] / fmul s0, s0, s1: the pane's area */
-    0x1c000281u, 0x1e212000u, 0x5400008au,   /* ldr s1, area / fcmp s0, s1 / b.ge A+0x20 */
-    0x1c000240u, 0x1e200929u, 0x1e200908u,   /* ldr s0, k / fmul s9, s9, s0 / fmul s8, s8, s0 */
+    0x1c000301u, 0x1e212000u, 0x5400008au,   /* ldr s1, area / fcmp s0, s1 / b.ge A+0x30 */
+    0x1c0002e0u, 0x1e200929u, 0x1e200908u,   /* ldr s0, k / fmul s9, s9, s0 / fmul s8, s8, s0 */
     0x1e202128u, 0xd65f03c0u,   /* fcmp s9, #0.0 / ret */
     CAPTURE_STUB_B,
     0x48610000u,   /* area: 230400.0f, a quarter of 1280x720 */
+    0x43160000u,   /* minw: 150.0f, set below */
     0x3f800000u,   /* k: set below */
 };
 #undef CAPTURE_STUB_B
-_Static_assert(sizeof g_capture_stub / 4 == 24, "the literal offsets in the stub words assume 24 words");
+_Static_assert(sizeof g_capture_stub / 4 == 33, "the literal offsets in the stub words assume 33 words");
 static void patch_capture_res(Module *m) {
     if (ios_code()) return;
     const char *e = getenv("TOTK_CAPTURE_RES");
@@ -1281,12 +1288,15 @@ static void patch_capture_res(Module *m) {
     memcpy(words, g_capture_stub, sizeof words);
     const float k = (float)h / 720.0f;
     memcpy(&words[CAPTURE_K], &k, 4);
+    const char *mw = getenv("TOTK_CAPTURE_MIN_W");
+    const float min_w = mw && *mw ? (float)atof(mw) : 150.0f;
+    memcpy(&words[CAPTURE_MIN_W], &min_w, 4);
     put_words(m, stub, words, sizeof words / 4, "UI capture stubs");
     put_word(m, CAPTURE_SITE_A, 0x80000000u | branch_to(CAPTURE_SITE_A, stub), "UI capture kept texture");   /* bl A */
     put_word(m, CAPTURE_SITE_B, 0x80000000u | branch_to(CAPTURE_SITE_B, stub + 4 * CAPTURE_STUB_B_AT), "UI capture pass");   /* bl B */
     put_word(m, CAPTURE_SITE_B + 4, 0xd503201fu, "UI capture pass");   /* nop: B did the second move */
-    fprintf(stderr, "[botw] UI capture textures x%.2f for the %u-pixel canvas (panes under a quarter screen; stubs at main+%#llx; "
-            "TOTK_CAPTURE_RES=0 keeps 720p)\n", k, h, (unsigned long long)stub);
+    fprintf(stderr, "[botw] UI capture textures x%.2f for the %u-pixel canvas (panes %.0f layout units wide or more and under a quarter screen; "
+            "stubs at main+%#llx; TOTK_CAPTURE_RES=0 keeps 720p)\n", k, h, min_w, (unsigned long long)stub);
 }
 #endif
 
