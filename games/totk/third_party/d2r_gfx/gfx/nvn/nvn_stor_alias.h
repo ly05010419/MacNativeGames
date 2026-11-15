@@ -27,7 +27,21 @@
    OOT_STOR_ALIAS=0: one private allocation per layout (the default outside Ocarina of Time, below); OOT_STOR_ALIAS=2:
    exact-address heaps only (A/B). */
 typedef struct { uint64_t mem, pf, samples; } stor_alias_key;
-typedef struct stor_alias_heap { void *heap; stor_alias_key key; uint64_t lo, size; int live, queued, current, region; } stor_alias_heap;
+typedef struct stor_alias_heap { void *heap; stor_alias_key key; uint64_t lo, size, generation; int live, queued, current, region; struct stor_alias_heap *all_prev, *all_next; } stor_alias_heap;
+static stor_alias_heap *g_alias_all;   // every live heap, current or not (stor_alias_report: which generations hold the memory)
+static void stor_alias_migrate_to(stor_alias_heap *destination);
+static uint64_t g_alias_migrated, g_alias_migration_skipped;   // nvn_stor_migrate.h
+/* On by default wherever the alias heaps are (Ocarina of Time, STOR_ALIAS_DEFAULT): a new region heap takes the live
+   textures of the earlier generations it covers, so those heaps go (nvn_stor_migrate.h). Without it a few live render
+   targets kept every earlier generation: same OOT save and route on an M4 (2026-11-15, memory-seven-followup
+   lifetime-run vs migrate-run), alias heaps 1,197 -> 758 MiB at the end and 1,249 -> 790 MiB after walking, for live
+   targets whose guest ranges come to about 683 MB; same pictures, no GPU error, the longest frame while walking 990 ->
+   137 ms. OOT_STOR_MIGRATE=0 keeps every generation, as before. */
+static int stor_alias_migrate_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OOT_STOR_MIGRATE"); on = e ? atoi(e) != 0 : 1; }
+    return on;
+}
 static nvn_hmap g_alias_by_key = {.klen = sizeof(stor_alias_key)};   // exact-address key -> current heap
 static stor_alias_heap **g_alias_regions; static int g_alias_nregions, g_alias_cregions;   // current region heaps (key.mem unused)
 static pthread_mutex_t g_alias_mu = PTHREAD_MUTEX_INITIALIZER;     // lock order: g_alias_mu before g_res_mu
@@ -83,11 +97,13 @@ static void stor_alias_collect(void) {
             else if (nvn_hm_get(&g_alias_by_key, &h->key) == h) nvn_hm_del(&g_alias_by_key, &h->key);
         }
         dead[nd++] = h;
+        if (h->all_prev) h->all_prev->all_next = h->all_next; else g_alias_all = h->all_next;
+        if (h->all_next) h->all_next->all_prev = h->all_prev;
         g_alias_heaps_freed++; g_alias_heaps_live--; g_alias_heap_bytes -= h->size;
     }
     g_alias_nretire = 0;
     pthread_mutex_unlock(&g_alias_mu);
-    for (int i = 0; i < nd; i++) { res_remove((__bridge id<MTLResource>)dead[i]->heap); CFRelease(dead[i]->heap); free(dead[i]); }
+    for (int i = 0; i < nd; i++) { if (!rt_heap_put((__bridge id<MTLHeap>)dead[i]->heap)) res_remove((__bridge id<MTLResource>)dead[i]->heap); CFRelease(dead[i]->heap); free(dead[i]); }
     free(dead);
 }
 
@@ -97,11 +113,14 @@ static stor_alias_heap *stor_alias_heap_new_locked(MTLTextureDescriptor *d, stor
     hd.type = MTLHeapTypePlacement; hd.storageMode = MTLStorageModePrivate; hd.cpuCacheMode = d.cpuCacheMode;
     hd.hazardTrackingMode = MTLHazardTrackingModeUntracked;   // MTL4 queues order work by explicit barriers, as for device textures
     hd.size = size;
-    id<MTLHeap> heap = [g_dev newHeapWithDescriptor:hd];
+    id<MTLHeap> heap = rt_heap_on() ? rt_heap_take(d, size, 1) : nil;
+    if (!heap) heap = [g_dev newHeapWithDescriptor:hd];
     if (!heap) { RED_ONCE(200, "alias heap of %llu bytes not created", (unsigned long long)size); return NULL; }
     stor_alias_heap *h = calloc(1, sizeof *h); if (!h) MDIE("alias heap entry");
     h->heap = (void *)CFBridgingRetain(heap); h->key = k; h->lo = lo; h->size = heap.size; h->current = 1; h->region = region;
     g_alias_heaps_made++; g_alias_heaps_live++; g_alias_heap_bytes += h->size;
+    h->generation = g_alias_heaps_made;
+    h->all_next = g_alias_all; if (g_alias_all) g_alias_all->all_prev = h; g_alias_all = h;
     res_add((__bridge id<MTLResource>)h->heap);   // the heap is the allocation the residency set holds, not its textures
     return h;
 }
@@ -161,7 +180,7 @@ static id<MTLTexture> stor_alias_exact_locked(MTLTextureDescriptor *d, stor_alia
 static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d) {
     if (!stor_alias_on() || !t->mem || !t->L.size || d.storageMode != MTLStorageModePrivate || d.textureType == MTLTextureTypeTextureBuffer) return nil;
     stor_alias_key k = {(uint64_t)(uintptr_t)t->mem, (uint64_t)d.pixelFormat, d.sampleCount ? (uint64_t)d.sampleCount : 1};
-    id<MTLTexture> mt = nil;
+    id<MTLTexture> mt = nil; uint64_t before = g_alias_heaps_made;
     MTLSizeAndAlign sa = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
     if (!sa.size) return nil;
     if (stor_alias_mode() != 2) {
@@ -171,10 +190,15 @@ static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d
         if (su.size > t->L.size) { u = [d copy]; u.allowGPUOptimizedContents = NO; su = [g_dev heapTextureSizeAndAlignWithDescriptor:u]; }
         if (su.size && su.size <= t->L.size && su.align && k.mem % su.align == 0) {
             pthread_mutex_lock(&g_alias_mu); mt = stor_alias_region_locked(u, k, k.mem, su.size, su.align); pthread_mutex_unlock(&g_alias_mu);
-            if (mt) { if (u != d) g_alias_uncompressed++; return mt; }
+            if (mt) { if (u != d) g_alias_uncompressed++; goto placed; }
         }
     }
     pthread_mutex_lock(&g_alias_mu); mt = stor_alias_exact_locked(d, k, sa); pthread_mutex_unlock(&g_alias_mu);
+placed:
+    if (mt && stor_alias_migrate_on() && g_alias_heaps_made != before) {
+        NvAliasTrack *track = objc_getAssociatedObject(mt, &g_alias_track_key);
+        if (track) stor_alias_migrate_to(track->h);
+    }
     return mt;
 }
 
@@ -184,5 +208,17 @@ static void stor_alias_report(void) {
          (unsigned long long)g_alias_heaps_live, (unsigned long long)(g_alias_heap_bytes >> 20), g_alias_nregions, (unsigned long long)g_alias_heaps_made,
          (unsigned long long)g_alias_heaps_freed, (unsigned long long)g_alias_grown, (unsigned long long)g_alias_region_merges, (unsigned long long)g_alias_textures,
          (unsigned long long)g_alias_region_textures, (unsigned long long)atomic_load(&g_alias_uncompressed), (unsigned long long)g_alias_reused);
+    /* Which heaps hold the memory (2026-11-15: 1,197 MiB of heaps for render targets whose guest ranges are 73 MB): the
+       current ones and the earlier generations a few live textures keep, with their textures. Counting only. */
+    uint64_t n[2] = {0}, bytes[2] = {0}, tex[2] = {0}, few[2] = {0}, few_b[2] = {0};
+    for (stor_alias_heap *h = g_alias_all; h; h = h->all_next) {
+        int c = h->current != 0; n[c]++; bytes[c] += h->size; tex[c] += (uint64_t)h->live;
+        if (h->live <= 2) { few[c]++; few_b[c] += h->size; }
+    }
+    MLOG("[storage-alias] by generation: current %llu heaps / %llu MiB / %llu textures; earlier %llu heaps / %llu MiB / %llu textures "
+         "(heaps kept by at most 2 textures: current %llu / %llu MiB, earlier %llu / %llu MiB); migration moved %llu, skipped %llu",
+         (unsigned long long)n[1], (unsigned long long)(bytes[1] >> 20), (unsigned long long)tex[1], (unsigned long long)n[0], (unsigned long long)(bytes[0] >> 20),
+         (unsigned long long)tex[0], (unsigned long long)few[1], (unsigned long long)(few_b[1] >> 20), (unsigned long long)few[0], (unsigned long long)(few_b[0] >> 20),
+         (unsigned long long)g_alias_migrated, (unsigned long long)g_alias_migration_skipped);
     pthread_mutex_unlock(&g_alias_mu);
 }

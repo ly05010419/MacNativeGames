@@ -1124,6 +1124,7 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
    DrawElements 12 words (index format, index address, 6-word draw macro, 1-word macro), DrawElementsBaseVertex 11 words,
    BindVertexAttribState 1+n words, BindVertexStreamState 16+n words, BindVertexBuffer 6 words each (address + limit). */
 static void hw_fix(cmd_t *o, size_t bytes) { o->hw_used += bytes; o->hw_used -= o->last_rec; o->last_rec = bytes; }
+#include "nvn_record_compact.h"
 static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLOG"); v = e ? atoi(e) : 0; } return v; }
 extern void runtime_frametrace_event(int kind) __attribute__((weak_import));   // "frametrace" diagnostic (Mac runtime)
 NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
@@ -1245,22 +1246,34 @@ static int flatten_fast_mode(void) { static int v = -1; if (v < 0) { const char 
 static uint8_t *flatten_recording(const uint8_t *p) {
     int mode = flatten_fast_mode();
     if (!mode) return flatten_recording_ops(p);
-    const uint8_t *q = p; int bulk_ok = 1, first = 1; uint32_t last_size = 0, end_size = 0; flat_lists fl = {0};
+    const uint8_t *q = p; size_t len = 0; int compact = 0, bulk_ok = 1, first = 1; uint32_t last_size = 0, end_size = 0; flat_lists fl = {0};
     for (;;) {
         op_hdr h; memcpy(&h, q, sizeof h);
         if (h.size < 8 || (h.size & 7)) die("corrupt recording at %p (op %u size %u)", (const void *)q, h.op, h.size);
         if (h.op == OP_JUMP) { free(fl.ubo); free(fl.call); free(fl.coff); return flatten_recording_ops(p); }
-        flat_note(&fl, &h, q, (size_t)(q - p));
+        uint32_t step = h.size; const uint8_t *record = q; uint8_t expanded[48];
+        if (record_draw_expand(q,expanded)) { compact = 1; record = expanded; memcpy(&h,record,8); }
+        flat_note(&fl, &h, record, len);
         if (h.op >= OP_COUNT_ || h.size > (64u << 20)) bulk_ok = 0;
         if (first) { if (h.op != OP_BEGIN || h.size != 8) bulk_ok = 0; first = 0; }
         else if (h.op == OP_BEGIN) bulk_ok = 0;
         else if (h.op != OP_END) last_size = h.size;
-        q += h.size;
+        q += step; len += h.size;
         if (h.op == OP_END) { end_size = h.size; break; }
     }
-    size_t len = (size_t)(q - p), n = sizeof(copy_prefix) + len;
+    size_t n = sizeof(copy_prefix) + len;
     uint8_t *out = malloc(n); if (!out) die("command copy allocation");
-    memcpy(out + sizeof(copy_prefix), p, len);
+    if (!compact) memcpy(out + sizeof(copy_prefix), p, len);
+    else { // one exact allocation; copy unchanged spans together, expand only draws
+        const uint8_t *r = p, *span = p; uint8_t *dst = out + sizeof(copy_prefix);
+        while (r < q) { op_hdr h; memcpy(&h,r,8); uint8_t expanded[48];
+            uint32_t bytes = record_draw_expand(r,expanded);
+            if (bytes) { size_t unchanged = (size_t)(r-span); memcpy(dst,span,unchanged); dst += unchanged;
+                memcpy(dst,expanded,bytes); dst += bytes; span = r + h.size; }
+            r += h.size;
+        }
+        memcpy(dst,span,(size_t)(q-span));
+    }
     copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; flat_store(c, &fl, len);
 #ifdef GAME_BOTW
     c->used = 0;
@@ -1289,13 +1302,15 @@ static uint8_t *flatten_recording_ops(const uint8_t *p) {
         op_hdr h; memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7)) die("corrupt recording at %p (op %u size %u)", (const void *)p, h.op, h.size);
         if (h.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
-        flat_note(&fl, &h, p, n - sizeof(copy_prefix));
+        uint32_t step = h.size; const uint8_t *record = p; uint8_t expanded[48];
+        if (record_draw_expand(p, expanded)) { record = expanded; memcpy(&h, record, sizeof h); }
+        flat_note(&fl, &h, record, n - sizeof(copy_prefix));
         if (h.op >= OP_COUNT_ || h.size > (64u << 20)) bulk_ok = 0;
         if (n == sizeof(copy_prefix)) { if (h.op != OP_BEGIN || h.size != 8) bulk_ok = 0; }
         else if (h.op == OP_BEGIN) bulk_ok = 0;
         else if (h.op != OP_END) last_size = h.size;
         if (n + h.size > cap) { while (n + h.size > cap) cap *= 2; out = realloc(out, cap); if (!out) die("command copy allocation"); }
-        memcpy(out + n, p, h.size); n += h.size;
+        memcpy(out + n, record, h.size); n += h.size;
         if (h.op == OP_END) {
             uint8_t *trimmed = realloc(out, n); if (trimmed) out = trimmed;
             copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; flat_store(c, &fl, n - sizeof(copy_prefix));
@@ -1307,7 +1322,7 @@ static uint8_t *flatten_recording_ops(const uint8_t *p) {
             c->last_size = c->body_bytes ? last_size : 0;
             g_copy_bytes += malloc_size(out); return out + sizeof(copy_prefix);
         }
-        p += h.size;
+        p += step;
     }
 }
 /* Track handle use for diagnostics; lifetime depends on control-memory reuse, never elapsed frames. */
@@ -2445,7 +2460,7 @@ NVN(nvnCommandBufferSetStencilRef, void, NVNcommandBuffer *c, NVNface f, int v) 
 NVN(nvnCommandBufferSetPolygonOffsetClamp, void, NVNcommandBuffer *c, float fa, float un, float cl) {
     *REC(c, OP_POLY_OFFSET, p_poly_offset) = (p_poly_offset){fa, un, cl};
 }
-NVN_NOPROTO(nvnCommandBufferDrawMeshTasksIndirect, void, NVNcommandBuffer *c, NVNbufferAddress indirect) { *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=0x40,.count=1,.instances=1,.ind=indirect}; }
+NVN_NOPROTO(nvnCommandBufferDrawMeshTasksIndirect, void, NVNcommandBuffer *c, NVNbufferAddress indirect) { record_draw(c, &(p_draw){.prim=0x40,.count=1,.instances=1,.ind=indirect}, NULL); }
 /* Metal has no NVN per-tile fragment shading-rate image. The Mac backend
    evaluates every covered pixel at full rate, preserving full rendering quality
    rather than reducing resolution. This is a performance difference from NVN
@@ -2458,17 +2473,17 @@ NVN_NOPROTO(nvnCommandBufferShadingRateImagePalette, void, NVNcommandBuffer *c, 
     (void)c; (void)first; (void)count; (void)entries;
 }
 NVN_NOPROTO(nvnCommandBufferSetShadingRatePaletteMode, void, NVNcommandBuffer *c, int mode) { (void)c; (void)mode; }
-NVN_NOPROTO(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, int first, int count) { *REC(c, OP_DRAW, p_draw) = (p_draw){.prim=0x40,.first=first,.count=count,.instances=1}; }
-NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { *REC(c, OP_DRAW, p_draw) = (p_draw){pr, first, n, 0, 1}; }
+NVN_NOPROTO(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, int first, int count) { record_draw(c, &(p_draw){.prim=0x40,.first=first,.count=count,.instances=1}, NULL); }
+NVN(nvnCommandBufferDrawArrays, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n) { record_draw(c, &(p_draw){pr, first, n, 0, 1}, NULL); }
 NVN(nvnCommandBufferDrawArraysInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, int first, int n, int bi, int inst) {
     if (inst <= 0) return;   // NVN: zero instances draw nothing
-    *REC(c, OP_DRAW, p_draw) = (p_draw){pr, first, n, bi, inst};
+    record_draw(c, &(p_draw){pr, first, n, bi, inst}, NULL);
 }
 NVN(nvnCommandBufferDrawElements, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib) {
-    *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, 0, 0, 1, ib}; hw_fix(CB(c), 48);
+    record_draw(c, NULL, &(p_draw_idx){pr, it, n, 0, 0, 1, ib}); hw_fix(CB(c), 48);
 }
 NVN(nvnCommandBufferDrawElementsBaseVertex, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib, int bv) {
-    *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, 0, 1, ib}; hw_fix(CB(c), 44);
+    record_draw(c, NULL, &(p_draw_idx){pr, it, n, bv, 0, 1, ib}); hw_fix(CB(c), 44);
 }
 /* Indirect: the 20-byte record at ind is NVN's DrawElementsIndirectData {count, instances, first index, base vertex, base
    instance}, Metal's MTLDrawIndexedPrimitivesIndirectArguments; the GPU reads it when the draw runs, so a record an earlier
@@ -2477,10 +2492,10 @@ NVN(nvnCommandBufferDrawElementsBaseVertex, void, NVNcommandBuffer *c, NVNdrawPr
    instance}, Metal's MTLDrawPrimitivesIndirectArguments (nvn_mtl.m draw_inner). Pokemon Pokopia calls it; seedds/nxnative
    records it the same way (MIT). */
 NVN(nvnCommandBufferDrawArraysIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNbufferAddress ind) {
-    *REC(c, OP_DRAW, p_draw) = (p_draw){pr, 0, 0, 0, 1, 0, ind}; hw_fix(CB(c), 40);
+    record_draw(c, &(p_draw){pr, 0, 0, 0, 1, 0, ind}, NULL); hw_fix(CB(c), 40);
 }
 NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, NVNbufferAddress ib, NVNbufferAddress ind) {
-    *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, 0, 0, 0, 1, ib, ind}; hw_fix(CB(c), 48);
+    record_draw(c, NULL, &(p_draw_idx){pr, it, 0, 0, 0, 1, ib, ind}); hw_fix(CB(c), 48);
 }
 #ifdef GAME_NS2
 /* NVN2 push constants: (command buffer, a word seen 0, byte offset, size, data); from seedds/nxnative a7bd05f4 (MIT).
@@ -2496,7 +2511,7 @@ NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uin
 #endif
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
-    *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib}; hw_fix(CB(c), 44);   /* assumed: same 6-parameter draw macro as the base-vertex form (unverified) */
+    record_draw(c, NULL, &(p_draw_idx){pr, it, n, bv, bi, inst, ib}); hw_fix(CB(c), 44);   /* assumed: same 6-parameter draw macro as the base-vertex form (unverified) */
 }
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
     // 跳板是尾跳（br），这里的返回地址就是游戏里的调用点
@@ -2691,6 +2706,15 @@ static void replay_enter(void) {
 static void replay_leave(void) { if (!async_replay()) pthread_mutex_unlock(&g_sync_replay_mu); }
 void nvn_replay_enter(void) { replay_enter(); }   // for the graphics layer (memory-pool write-back)
 void nvn_replay_leave(void) { replay_leave(); }
+/* Idle residency maintenance must not race a replay or steal its upload owner.
+   The optional translation-thread mode owns a different queue; let that mode
+   keep submission-driven collection until it has an equivalent barrier. */
+int nvn_replay_idle_try(void) {
+    if (async_replay()) return -1;
+    return pthread_mutex_trylock(&g_sync_replay_mu) == 0;
+}
+void nvn_replay_idle_leave(void) { pthread_mutex_unlock(&g_sync_replay_mu); }
+
 static _Thread_local int t_on_x_thread;   // set on the translation thread: x_drain there would wait for itself
 static void *x_thread(void *unused) {
     (void)unused; pthread_setname_np("totk-translate"); t_on_x_thread = 1;

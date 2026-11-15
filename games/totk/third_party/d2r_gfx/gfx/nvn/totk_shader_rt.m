@@ -13,6 +13,9 @@
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
 #include "dmsh_chain.h"
+/* Test launch preflight reads the compiled identity, never a source header
+   standing in for the binary it is about to execute. */
+__attribute__((used)) static const char g_test_shader_chain[] = "MNG_SHADER_CHAIN=" DMSH_CHAIN;
 #include "nvn_blend_zero.h"
 #include "../../host/hle.h"
 #include <CommonCrypto/CommonDigest.h>

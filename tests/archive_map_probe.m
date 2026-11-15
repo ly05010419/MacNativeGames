@@ -31,7 +31,8 @@ static double open_all(id<MTLDevice> dev, NSArray<NSString *> *paths, int mapped
 int main(int argc, char **argv) {
     @autoreleasepool {
         setvbuf(stdout, NULL, _IONBF, 0);
-        NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID UUID].UUIDString];
+        NSString *temporaryRoot = getenv("TMPDIR") ? @(getenv("TMPDIR")) : NSTemporaryDirectory();
+        NSString *dir = [temporaryRoot stringByAppendingPathComponent:[NSUUID UUID].UUIDString];
         [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
         NSString *arch = [dir stringByAppendingPathComponent:@"a.metalarchive"], *other = [dir stringByAppendingPathComponent:@"b.bin"];
         [[NSData dataWithBytes:"0123456789abcdef" length:16] writeToFile:arch atomically:YES];
