@@ -42,6 +42,8 @@ static struct {
 // DISABLED-FOR-CLEAN-BOOT  {0x94100,  0, K_ONESHOT, 0, "bl-94100"},
  {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
  {0x110038, 0, K_EMU, 0, "alloc-entry"},
+ {0x110124, 0, K_ONESHOT, 0, "alloc-success"},
+ {0x110310, 0, K_EMU, 0, "free-cand"},
  {0x11061c, 0, K_ONESHOT, 0, "pool-ready-32"},
  {0x10f1b0, 0, K_EMU, 0, "pool-init"},
  {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
@@ -87,6 +89,7 @@ static void poke_rx(uint8_t *p, uint32_t w) {
 }
 
 static uint64_t g_wp2a_this = 0;
+uint8_t g_wp2a_map0[64]; uint64_t g_wp2a_mapaddr = 0;
 uint64_t wp2a_pool_this(void) { return g_wp2a_this; }
 static int read_mem(uint64_t a, void *dst, size_t n) {
  mach_vm_size_t got = 0;
@@ -233,10 +236,28 @@ int runtime_emio_snap_trap(int num, void *context) {
    }
   }
  }
+ if (sites[id].off == 0x110310) {
+  if (hits[id] <= 5 || (hits[id]%500)==0) fprintf(stderr, "[snap] free-cand#%u this=%llx a1=%llx\n", hits[id], (unsigned long long)x[0], (unsigned long long)x[1]);
+ }
  if (sites[id].off == 0x110038) {
   g_wp2a_this = x[0];
   { static _Atomic unsigned c=0; unsigned k=++c;
-   if (x[1] >= 0x10000 || (k%500)==1) fprintf(stderr, "[snap] AllocAlign-entry#%u this=%llx size=%llx\n", k, (unsigned long long)x[0], (unsigned long long)x[1]); }
+   if (x[1] >= 0x10000 || (k%500)==1) fprintf(stderr, "[snap] AllocAlign-entry#%u this=%llx size=%llx\n", k, (unsigned long long)x[0], (unsigned long long)x[1]);
+   if (k==1) { uint64_t mp=0; read_mem(x[0]+0x68,&mp,8);
+    extern uint8_t g_wp2a_map0[64]; extern uint64_t g_wp2a_mapaddr;
+    if (mp) { read_mem(mp, g_wp2a_map0, 64); g_wp2a_mapaddr=mp; } }
+  }
+ }
+ if (sites[id].off == 0x110124 && hits[id]==1) {
+  extern uint8_t g_wp2a_map0[64]; extern uint64_t g_wp2a_mapaddr;
+  uint64_t mp=0; read_mem(g_wp2a_this+0x68,&mp,8);
+  if (mp && mp==g_wp2a_mapaddr) {
+   uint8_t m1[64]; if (read_mem(mp, m1, 64)) {
+    char b[320];int n=0;const char *h="[snap] map-delta ";while(*h)b[n++]=*h++;
+    for(unsigned i=0;i<32;i++){ if(g_wp2a_map0[i]!=m1[i]){ b[n++]="0123456789abcdef"[(i>>4)&15]; b[n++]="0123456789abcdef"[i&15]; b[n++]=':'; b[n++]= "0123456789abcdef"[(g_wp2a_map0[i]>>4)&15]; b[n++]="0123456789abcdef"[g_wp2a_map0[i]&15]; b[n++]='>'; b[n++]="0123456789abcdef"[(m1[i]>>4)&15]; b[n++]="0123456789abcdef"[m1[i]&15]; b[n++]=' '; } if(n>280)break; }
+    b[n++]='\n';write(2,b,n);
+   }
+  }
  }
  if (sites[id].off == 0x1100b8) {
   fail_n++;
@@ -253,8 +274,9 @@ int runtime_emio_snap_trap(int num, void *context) {
    {uint32_t v=0; read_mem(pt+0x38,&v,4); cnt=v;}
    {uint32_t v=0; read_mem(pt+0x40,&v,4); bsz=v;}
    read_mem(pt+0x68,&map,8);
-   fprintf(stderr, "[snap] pool this=%llx base=%llx size=%llx count=%llu blksz=%llu map=%llx\n",
-    (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,(unsigned long long)cnt,(unsigned long long)bsz,(unsigned long long)map);
+   { uint16_t fc=0; read_mem(map,&fc,2);
+   fprintf(stderr, "[snap] pool this=%llx base=%llx size=%llx count=%llu blksz=%llu map=%llx freecnt=%u\n",
+    (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,(unsigned long long)cnt,(unsigned long long)bsz,(unsigned long long)map,fc); }
    if (map && cnt && cnt < 100000 && bsz) {
     /* count free + longest run. Map format unknown: try byte-per-block then bit-per-block. */
     uint8_t mbuf[1024]; uint64_t got=0;
@@ -552,8 +574,9 @@ int runtime_emio_snap_trap(int num, void *context) {
    uint64_t rv = (rt == 31) ? 0 : x[rt];
    int set = ((rv >> bit) & 1) != 0;
    if ((!set) != is_tbnz) npc = pc + d;
-  } else if (o == 0xFD7BBEA9u) { /* stp x29,x30,[sp,#-0x20]! (keep armed, generic) */
-   uint64_t sp = u->uc_mcontext->__ss.__sp - 0x20;
+  } else if (o == 0xFD7BBEA9u || o == 0xA9BF7BFDu) { /* stp x29,x30,[sp,#-0xN]! (keep armed, generic) */
+   unsigned sub = (o == 0xFD7BBEA9u) ? 0x20 : 0x10;
+   uint64_t sp = u->uc_mcontext->__ss.__sp - sub;
    uint64_t fp = u->uc_mcontext->__ss.__fp, lr = u->uc_mcontext->__ss.__lr;
    memcpy((void *)(uintptr_t)sp, &fp, 8);
    memcpy((void *)(uintptr_t)(sp+8), &lr, 8);
