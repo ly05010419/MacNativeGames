@@ -684,7 +684,7 @@ static TOTKSettingRow *settings_shadow_row(void) {
   settings_effects_save();});
 }
 /* HDR / EDR (PR #1129, the RenoDX approach; Mac, 1.4.3): the switch and the game's brightness (its white in SDR-white
-   units). hdr.txt holds on / off; each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
+   units). hdr.txt holds on / off / auto (hdr_auto.h); each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
    others, peak (0: the display's headroom), UI white, exposure, ..., are set in their files; the page has no room). Off leaves every shader, pipeline and texture as without HDR (nvn_mtl.m keeps both compose shaders).
    Frame interpolation shows SDR MetalFX frames, so turning HDR on turns it off (and picking it turns HDR off). */
 static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *milli,int n,NSString *(^text)(int)){
@@ -695,8 +695,11 @@ static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *
  return settings_row(title,choices,values,current,^(int v){front_hdr_parameter_save(which,v/1000.0f);});
 }
 static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
- [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),nil,nil,^int{return front_hdr_enabled();},^(int v){
-  if(v&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
+ /* Off / Auto / On in this order: a controller stepping from Off reaches Auto without passing On, which turns frame
+    interpolation off. Auto keeps the interpolation choice: it runs wherever Auto leaves HDR off (hdr_auto.h). Picking
+    interpolation while HDR is on (On, or Auto on an HDR screen) turns HDR off, as before. */
+ [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),@[settings_on_off(0),settings_text("自动（HDR 屏幕上开）","Auto (on an HDR screen)"),settings_on_off(1)],@[@(HDR_CHOICE_OFF),@(HDR_CHOICE_AUTO),@(HDR_CHOICE_ON)],^int{return front_hdr_choice();},^(int v){
+  if(v==HDR_CHOICE_ON&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
   runtime_front_hdr_set(v);})];
  static const int white[]={500,750,1000,1500,2000};
  [rows addObject:settings_hdr_choice(TOTK_HDR_GAME_WHITE,settings_text("HDR 游戏亮度","HDR game brightness"),white,5,^NSString *(int v){

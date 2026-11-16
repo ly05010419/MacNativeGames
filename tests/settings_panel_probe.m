@@ -506,6 +506,77 @@ static void shots_share(int n, NSString *board) {
     dispatch_sync(totk_shot_worker(), ^{ status = totk_shot_post(json); });
     if (status != 200) { fprintf(stderr, "screenshots page: sharing picture %d answered %ld\n", n, (long)status); abort(); }
 }
+/* The HDR / EDR choice (runtime/hdr_auto.h, frontend.m front_hdr_auto): off, on, auto. No window: front_hdr_auto takes
+   the screen's potential EDR value from the test. */
+static void hdr_start(const char *env, const char *file) {
+    if (env) setenv("TOTK_HDR", env, 1); else unsetenv("TOTK_HDR");
+    if (file) runtime_setting_save("hdr.txt", file, "test"); else runtime_setting_remove("hdr.txt");
+    front_hdr_init();
+}
+static void hdr_probe(void) {
+    assert(getenv("SETTINGS_TEST_DIR"));
+    unsetenv("TOTK_HDR_CONTROL"); unsetenv("TOTK_MFX");
+#ifndef TOTK_GAME_V143
+    /* 1.2.1 and Breath of the Wild have no HDR: no row, and auto changes nothing */
+    hdr_start("auto", "auto"); front_hdr_auto(16, "probe XDR");
+    assert(!totk_hdr_available() && front_hdr_choice() == HDR_CHOICE_OFF && !front_hdr_enabled());
+    for (TOTKSettingRow *r in settings_rows()) assert(![r.title hasPrefix:@"HDR"]);
+#else
+    /* The start: TOTK_HDR, set and not empty, wins (1 on, auto auto, anything else off); otherwise hdr.txt's first word. */
+    static const struct { const char *env, *file; int choice; } starts[] = {
+        {NULL, NULL, HDR_CHOICE_OFF}, {NULL, "on", HDR_CHOICE_ON}, {NULL, " auto ", HDR_CHOICE_AUTO}, {NULL, "off", HDR_CHOICE_OFF},
+        {NULL, "1", HDR_CHOICE_OFF}, {NULL, "  ", HDR_CHOICE_OFF}, {"", "auto", HDR_CHOICE_AUTO}, {"", "on", HDR_CHOICE_ON},
+        {"1", NULL, HDR_CHOICE_ON}, {"1", "off", HDR_CHOICE_ON}, {"1", "auto", HDR_CHOICE_ON}, {"auto", NULL, HDR_CHOICE_AUTO},
+        {"auto", "off", HDR_CHOICE_AUTO}, {"auto", "on", HDR_CHOICE_AUTO}, {"0", "on", HDR_CHOICE_OFF}, {"0", "auto", HDR_CHOICE_OFF}};
+    for (size_t i = 0; i < sizeof starts / sizeof *starts; i++) { hdr_start(starts[i].env, starts[i].file); assert(front_hdr_choice() == starts[i].choice); }
+    /* On and off are the switch as before, whatever the screen. */
+    hdr_start(NULL, "on"); front_hdr_auto(1, "probe SDR monitor"); assert(front_hdr_enabled());
+    hdr_start(NULL, "off"); front_hdr_auto(16, "probe XDR"); assert(!front_hdr_enabled());
+    hdr_start(NULL, NULL); front_hdr_auto(16, "probe XDR"); assert(!front_hdr_enabled());   /* no setting: off, as before */
+    /* No window yet: auto starts from the main screen's own potential, whichever screen that is here. The switch is
+       put the other way first, so the start is seen to set it on an SDR screen and on an HDR one alike. */
+    int here = NSScreen.mainScreen && NSScreen.mainScreen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1;
+    hdr_start(NULL, here ? "off" : "on"); assert(front_hdr_enabled() == !here);
+    hdr_start("auto", NULL); assert(front_hdr_choice() == HDR_CHOICE_AUTO && front_hdr_enabled() == here);
+
+    /* Auto as the window moves: an SDR monitor (potential 1), an XDR screen (16), back. Frame interpolation follows the
+       switch (mfx_latch takes MFX_OFF while it is on), and the player's request stays for the SDR monitor. */
+    front_hdr_auto(1, "probe SDR monitor"); assert(!front_hdr_enabled());
+    mfx_set(MFX_30); mfx_latch(); assert(mfx_enabled() == MFX_30);
+    front_hdr_auto(16, "probe XDR"); assert(front_hdr_enabled() && !mfx_enabled());
+    mfx_latch(); assert(!mfx_enabled() && mfx_requested() == MFX_30);
+    front_hdr_auto(1, "probe SDR monitor"); mfx_latch(); assert(!front_hdr_enabled() && mfx_enabled() == MFX_30);
+    mfx_set(MFX_OFF); mfx_latch();
+
+    /* hdr.txt takes each choice's word and the start reads it back. */
+    unsetenv("TOTK_HDR");
+    for (int c = HDR_CHOICE_OFF; c <= HDR_CHOICE_AUTO; c++) {
+        runtime_front_hdr_set(c); front_hdr_auto(c == HDR_CHOICE_ON ? 1 : 16, "probe");
+        assert(!strcmp(savedName, "hdr.txt") && !strcmp(savedWord, hdr_choice_word(c)) && front_hdr_choice() == c);
+        assert(front_hdr_enabled() == (c != HDR_CHOICE_OFF));
+        front_hdr_init(); assert(front_hdr_choice() == c);
+    }
+
+    /* The row: Off / Auto / On, so a controller stepping from Off reaches Auto without passing On (On turns frame
+       interpolation off). It shows the choice, not the switch. */
+    TOTKSettingRow *hdr = frame_row(@"HDR / EDR"), *interp = frame_row(@"Frame interpolation (MetalFX)");
+    assert(([hdr.choices isEqualToArray:@[@"Off", @"Auto (on an HDR screen)", @"On"]]));
+    assert(([hdr.values isEqualToArray:@[@(HDR_CHOICE_OFF), @(HDR_CHOICE_AUTO), @(HDR_CHOICE_ON)]] && hdr.set));
+    NSUInteger rows = 0; for (TOTKSettingRow *r in settings_rows()) rows += [r.title hasPrefix:@"HDR"];
+    assert(rows == SETTINGS_HDR_ROWS);
+    hdr.set(HDR_CHOICE_OFF); interp.set(MFX_30);
+    hdr.set(HDR_CHOICE_AUTO); front_hdr_auto(1, "probe SDR monitor");
+    assert(hdr.get() == HDR_CHOICE_AUTO && !front_hdr_enabled() && !strcmp(savedWord, "auto") && mfx_requested() == MFX_30);   /* auto keeps interpolation */
+    interp.set(MFX_40); assert(hdr.get() == HDR_CHOICE_AUTO && mfx_requested() == MFX_40);   /* auto is off here: nothing to turn off */
+    front_hdr_auto(16, "probe XDR"); assert(hdr.get() == HDR_CHOICE_AUTO && front_hdr_enabled());
+    interp.set(MFX_30);   /* auto is on here: picking interpolation turns HDR off, as with On */
+    assert(hdr.get() == HDR_CHOICE_OFF && !front_hdr_enabled() && !strcmp(savedName, "hdr.txt") && !strcmp(savedWord, "off"));
+    hdr.set(HDR_CHOICE_ON); assert(hdr.get() == HDR_CHOICE_ON && front_hdr_enabled() && mfx_requested() == MFX_OFF);   /* On turns interpolation off, as before */
+    hdr.set(HDR_CHOICE_OFF); assert(hdr.get() == HDR_CHOICE_OFF && !front_hdr_enabled() && !strcmp(savedWord, "off"));
+    mfx_set(MFX_OFF); mfx_latch();
+#endif
+    puts("pass: HDR / EDR choice");
+}
 static void shots_probe(void) {
     const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("SHOTS_TEST_URL"); assert(dir);
     NSString *game = [@(dir) stringByAppendingPathComponent:@"shots/TOTK"];   /* the board id lives in the folder above */
@@ -996,6 +1067,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"hdr")) { setenv("TOTK_UI_LANG","en",1); hdr_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
     fakeUsersCount = 2; fakeUsersActive = 0;   /* the store the User page reads (tests/test_users.c covers the files) */
