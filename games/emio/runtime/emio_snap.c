@@ -43,6 +43,7 @@ static struct {
  {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
  {0x110038, 0, K_EMU, 0, "alloc-entry"},
  {0x11061c, 0, K_ONESHOT, 0, "pool-ready-32"},
+ {0x10f1b0, 0, K_EMU, 0, "pool-init"},
  {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
@@ -215,6 +216,9 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
+ if (sites[id].off == 0x10f1b0 && hits[id] <= 10) {
+  fprintf(stderr, "[snap] pool-init#%u base=%llx size=%llx\n", hits[id], (unsigned long long)x[1], (unsigned long long)x[2]);
+ }
  if ((sites[id].off == 0x11061c || sites[id].off == 0x110708) && hits[id] <= 2) {
   uint64_t pt = x[19];
   uint64_t base=0,sz=0,mp=0; uint32_t cnt=0;
@@ -548,7 +552,7 @@ int runtime_emio_snap_trap(int num, void *context) {
    uint64_t rv = (rt == 31) ? 0 : x[rt];
    int set = ((rv >> bit) & 1) != 0;
    if ((!set) != is_tbnz) npc = pc + d;
-  } else if (o == 0xFD7BBEA9u && sites[id].off == 0x110038) { /* stp x29,x30,[sp,#-0x20]! (keep armed) */
+  } else if (o == 0xFD7BBEA9u) { /* stp x29,x30,[sp,#-0x20]! (keep armed, generic) */
    uint64_t sp = u->uc_mcontext->__ss.__sp - 0x20;
    uint64_t fp = u->uc_mcontext->__ss.__fp, lr = u->uc_mcontext->__ss.__lr;
    memcpy((void *)(uintptr_t)sp, &fp, 8);
