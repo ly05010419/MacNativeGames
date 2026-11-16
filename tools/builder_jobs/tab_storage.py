@@ -11,7 +11,8 @@ window never sends a path to clean: every action finds the folder again here.
 Actions: state() -> both folders without sizes (instant); measure(folder) -> one folder with its size (walks it: seconds
 to a minute for a big work folder); clean(folder) -> what was removed; move(target, confirmed) -> the question to ask
 first (confirmed false), then what was moved and how the app records the new folder; memory_saver() /
-set_memory_saver(on) -> the card's "开启省内存模式" switch (memory_saver.py)."""
+set_memory_saver(on) -> the card's "开启省内存模式" switch; diagnostics() / set_diagnostics(on) -> its "诊断模式" switch
+(memory_saver.py SWITCHES)."""
 import fcntl
 import json
 import os
@@ -367,5 +368,17 @@ def set_memory_saver(ctx, on=False):
     return model.choose(ctx, on)
 
 
+def diagnostics(ctx):
+    """The card's "诊断模式" switch (memory_saver.py SWITCHES 'diagnostics'): a full App's start with the diagnostics."""
+    from tools.builder_jobs import memory_saver as model
+    return model.state(ctx, 'diagnostics')
+
+
+def set_diagnostics(ctx, on=False):
+    from tools.builder_jobs import memory_saver as model
+    return model.choose(ctx, on, 'diagnostics')
+
+
 ACTIONS = {'state': state, 'measure': measure, 'clean': clean, 'move': move,
-           'memory_saver': memory_saver, 'set_memory_saver': set_memory_saver}
+           'memory_saver': memory_saver, 'set_memory_saver': set_memory_saver,
+           'diagnostics': diagnostics, 'set_diagnostics': set_diagnostics}

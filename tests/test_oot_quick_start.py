@@ -341,30 +341,36 @@ class LauncherQuickStart(unittest.TestCase):
 
 class QuickStartCarriesDiagnostics(unittest.TestCase):
     """user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断": the Launcher's 诊断模式 page is gone; a quick App (MNGShaders 'title')
-    starts with every diagnostic of a debug session however it is opened (app/launcher.m), with a run folder of its own for
-    the per-frame record. A full App's start stays clean (tests/test_launcher_play_clean.py)."""
+    starts with every diagnostic of a debug session however it is opened (app/launcher.m start_diagnostics), with a run
+    folder of its own for the per-frame record. user 2026-11-16: "诊断模式 也改成 CheckBox， 正常启动 可以带上 诊断模式": a full
+    App's start carries them too while the card's 诊断模式 switch is on (diagnostics.txt), and none while it is off."""
     SWITCHES = ('TOTK_DEBUG_LOG', 'TOTK_LONGFRAME_DETAIL', 'TOTK_SVC_STATS', 'TOTK_SURVEY_SHADER_LOG', 'DM_NVN_TSV', 'DM_NVN_UPTIME')
 
-    def branches(self):
+    def parts(self):
         text = (GAME / 'app/launcher.m').read_text()
-        start = text.index('if (quick) {')
-        middle = text.index('} else {', start)
-        end = text.index('unsetenv("TOTK_AUTOLOAD")', middle)
-        return text[start:middle], text[middle:end], text[:start] + text[end:]
+        start = text.index('static void start_diagnostics(NSString *home, const char *why) {')
+        end = text.index('\n}\n', start)
+        return text[start:end], text[:start] + text[end:]
 
-    def test_a_quick_app_starts_with_every_diagnostic(self):
-        quick, _, _ = self.branches()
+    def test_the_diagnostics_set_every_switch(self):
+        diag, _ = self.parts()
         for name in self.SWITCHES:
             # overwrite 0: a test start's own choice (its record path, a switch it turns off) is kept
-            self.assertRegex(quick, rf'setenv\("{name}", [^;]*, 0\)', name)
-        self.assertIn('Logs/MacNativeGames/diagnostics', quick)   # the run folder of its per-frame record
-        self.assertIn('frames.tsv', quick)
+            self.assertRegex(diag, rf'setenv\("{name}", [^;]*, 0\)', name)
+        self.assertIn('Logs/MacNativeGames/diagnostics', diag)   # the run folder of its per-frame record
+        self.assertIn('frames.tsv', diag)
 
-    def test_a_full_app_starts_with_none(self):
-        _, full, rest = self.branches()
-        for name in self.SWITCHES:
-            self.assertNotIn(f'"{name}"', full, name)
+    def test_a_quick_app_always_and_a_full_app_only_with_the_switch(self):
+        _, rest = self.parts()
+        self.assertIn('if (quick) start_diagnostics(home, "quick App");', rest)
+        self.assertIn('else if (diagnostics_switch(data)) start_diagnostics(home,', rest)
+        for name in self.SWITCHES:   # nowhere else: a full App with the switch off starts with none
             self.assertNotIn(f'setenv("{name}"', rest, name)
+        switch = rest[rest.index('static BOOL diagnostics_switch(NSString *data) {'):]
+        switch = switch[:switch.index('\n}\n')]
+        from tools.builder_jobs import memory_saver
+        self.assertIn(f'@"{memory_saver.SWITCHES["diagnostics"][0]}"', switch)   # the file the Launcher's card writes
+        self.assertIn('isEqualToString:@"on"', switch)
 
     def test_the_diagnostic_page_is_gone(self):
         from tools.builder import games

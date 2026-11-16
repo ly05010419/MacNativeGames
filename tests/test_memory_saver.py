@@ -62,6 +62,17 @@ class MemorySaverTests(unittest.TestCase):
         self.assertFalse((self.home / 'Library/Application Support/MacNativeGames/TOTK/memory-saver.txt').exists())
         self.assertFalse(self.call('set_memory_saver', {'on': 'yes'})['ok'])   # only true / false
 
+    def test_the_diagnostics_switch_writes_its_own_file(self):   # user 2026-11-16: "诊断模式 也改成 CheckBox"
+        r = self.call('diagnostics')
+        self.assertTrue(r['ok'] and r['result']['available'] and not r['result']['on'], r)
+        r = self.call('set_diagnostics', {'on': True})
+        self.assertTrue(r['ok'] and r['result']['on'], r)
+        self.assertEqual((self.data / 'diagnostics.txt').read_text(), 'on\n')
+        self.assertFalse((self.data / 'memory-saver.txt').exists())   # the other switch is not touched
+        self.assertTrue(self.call('set_diagnostics', {'on': False})['ok'])
+        self.assertFalse((self.data / 'diagnostics.txt').exists())
+        self.assertFalse(self.call('diagnostics', bundle='org.macnativegames.totk')['result']['available'])
+
     def test_words_match_the_runtime(self):
         self.assertEqual([memory_saver.word(w) for w in ('on\n', ' on ', '', 'off\n', 'ON')], ['on', 'on', 'off', 'off', None])
 
@@ -73,6 +84,9 @@ class MemorySaverTests(unittest.TestCase):
         self.assertIn('"storage", "set_memory_saver", app: app.app, args: ["on": on]', home)
         self.assertIn('"storage", "memory_saver", app: app.app', home)
         self.assertIn('.task(id: app.app) { await loadSaver() }', home)
+        self.assertIn('static let diagnostics = s("Diagnostic mode", "诊断模式")', strings)
+        self.assertIn('Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))', home)
+        self.assertIn('"storage", "set_diagnostics", app: app.app, args: ["on": on]', home)
         # under the start button, not inside a page (it shows whether or not a page is open)
         body = home[home.index('Button(action: start)'):]
         self.assertLess(body.index('Toggle(T.memorySaver'), body.index('One button named after the update'))

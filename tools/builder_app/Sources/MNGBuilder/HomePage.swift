@@ -139,19 +139,32 @@ struct GameActions: View {
     @State private var shaderUpdate = false     // the newest list adds something: the Update shaders button shows
     @State private var checkingShaders = false
     @State private var saver: MemorySaver?   // 开启省内存模式 (tools/builder_jobs/memory_saver.py), read when the card shows
+    @State private var diagnostics: MemorySaver?   // 诊断模式 (the same module, its 'diagnostics' switch)
     @State private var saverNote = ""
 
+    /// A card switch's state (memory_saver.py state): the game reads its file at its next start.
     struct MemorySaver: Decodable { let available: Bool; let on: Bool; let file: String; let unknown_word: String? }
 
-    /// The switch, as the game will read it at its next start (memory-saver.txt next to its controls.txt).
+    /// The switches, as the game will read them at its next start (their files next to its controls.txt).
     private func loadSaver() async {
-        do { saver = try await TabClient.decode(MemorySaver.self, "storage", "memory_saver", app: app.app); saverNote = "" }
-        catch { saverNote = error.localizedDescription }
+        do {
+            saver = try await TabClient.decode(MemorySaver.self, "storage", "memory_saver", app: app.app)
+            diagnostics = try await TabClient.decode(MemorySaver.self, "storage", "diagnostics", app: app.app)
+            saverNote = ""
+        } catch { saverNote = error.localizedDescription }
     }
     private func setSaver(_ on: Bool) {
         Task {
             do {
                 saver = try await TabClient.decode(MemorySaver.self, "storage", "set_memory_saver", app: app.app, args: ["on": on])
+                saverNote = T.memorySaverNext
+            } catch { saverNote = error.localizedDescription; await loadSaver() }
+        }
+    }
+    private func setDiagnostics(_ on: Bool) {
+        Task {
+            do {
+                diagnostics = try await TabClient.decode(MemorySaver.self, "storage", "set_diagnostics", app: app.app, args: ["on": on])
                 saverNote = T.memorySaverNext
             } catch { saverNote = error.localizedDescription; await loadSaver() }
         }
@@ -207,6 +220,10 @@ struct GameActions: View {
                             Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))
                                 .help(T.memorySaverHelp)
                             if let w = saver.unknown_word { Text(T.memorySaverUnknown(w)).font(.caption).foregroundStyle(.orange) }
+                        }
+                        if let diagnostics, diagnostics.available {   // user 2026-11-16: "诊断模式 也改成 CheckBox"
+                            Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))
+                                .help(T.diagnosticsHelp)
                         }
                         if !saverNote.isEmpty {
                             Text(saverNote).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)

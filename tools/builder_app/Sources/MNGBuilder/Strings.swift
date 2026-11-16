@@ -145,6 +145,10 @@ enum T {
     static let memorySaverHelp = s("Off (the default): every pipeline stays in memory after the warm-up, so nothing is fetched while you play. On: only the title menu's pipelines and every compute, mesh and tile-read pipeline stay; the rest come from the pipeline archive the first time they are drawn (a short hitch each time), and the memory saved shrinks the further you play. Counts from the game's next start; you can change it while the game runs.",
                                    "关（默认）：预热后全部管线常驻内存，游玩中不用临时从存档取。开：只常驻标题菜单的管线和全部计算、网格、贴图读取管线，其余第一次画到时从管线存档取（每次会小卡一下），玩得越远省下的内存越少。下次启动游戏时生效，游戏开着也能改。")
     static let memorySaverNext = s("Counts from the game's next start.", "下次启动游戏时生效。")
+    // the card's diagnostics switch (user 2026-11-16: "诊断模式 也改成 CheckBox， 正常启动 可以带上 诊断模式")
+    static let diagnostics = s("Diagnostic mode", "诊断模式")
+    static let diagnosticsHelp = s("On: the normal start also writes every diagnostic a quick app always has (game log, long frames, per-frame record, pipelines), in a run folder under Logs/MacNativeGames/diagnostics (the newest 5 kept). They cost a little speed; leave it off for normal play. Counts from the game's next start.",
+                                   "开：正常启动也带上快速版总带的全部诊断（游戏日志、长帧、逐帧记录、管线），记录在 Logs/MacNativeGames/diagnostics 下每局一个目录（留最近 5 个）。会稍微拖慢游戏，平时玩请关着。下次启动游戏时生效。")
     static func memorySaverUnknown(_ word: String) -> String {
         s("memory-saver.txt says \"\(word)\", which the game reads as off", "memory-saver.txt 里写的是“\(word)”，游戏按关处理")
     }

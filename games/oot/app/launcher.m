@@ -139,6 +139,42 @@ static void contrib_ask(NSString *path) {
     totk_inbox_answer(path, choice == NSAlertFirstButtonReturn ? TOTK_INBOX_AUTO : TOTK_INBOX_NEVER);
 }
 
+/* 诊断模式: MNG Launcher's card switch (user 2026-11-16: "诊断模式 也改成 CheckBox， 正常启动 可以带上 诊断模式") writes "on"
+   into diagnostics.txt in the data folder, next to controls.txt (tools/builder_jobs/memory_saver.py SWITCHES); no file
+   or any other word is off. Read at every start, so it counts from the next one. */
+static BOOL diagnostics_switch(NSString *data) {
+    NSString *word = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"diagnostics.txt"] encoding:NSUTF8StringEncoding error:nil];
+    return [[word stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] isEqualToString:@"on"];
+}
+
+/* Every switch of a debug session (keep/tools/oot-debug/play.sh: the game log, long-frame detail, wait statistics, the
+   per-pipeline log, the per-frame record), for a quick App (the test build, user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断")
+   and for any App while 诊断模式 is on (diagnostics_switch). A choice already in the environment is kept (a test start
+   names its own record). The per-frame record goes to a run folder of this start; the newest DIAG_RUNS stay. A full App
+   with the switch off starts with none of them (the player's: user 2026-11-13). tests/test_oot_quick_start.py
+   QuickStartCarriesDiagnostics. */
+static void start_diagnostics(NSString *home, const char *why) {
+    enum { DIAG_RUNS = 5 };
+    NSString *runs = [home stringByAppendingPathComponent:@"Library/Logs/MacNativeGames/diagnostics"];
+    NSDateFormatter *stamp = [NSDateFormatter new]; stamp.dateFormat = @"yyyyMMdd-HHmmss";
+    stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    NSString *run = [runs stringByAppendingPathComponent:[@"oot-" stringByAppendingString:[stamp stringFromDate:NSDate.date]]];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *earlier = [[[fm contentsOfDirectoryAtPath:runs error:nil] ?: @[]
+        filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'oot-'"]] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSUInteger i = 0; i + DIAG_RUNS <= earlier.count; i++)   // with this one, DIAG_RUNS are left
+        [fm removeItemAtPath:[runs stringByAppendingPathComponent:earlier[i]] error:nil];
+    BOOL made = [fm createDirectoryAtPath:run withIntermediateDirectories:YES attributes:nil error:nil];
+    setenv("TOTK_DEBUG_LOG", "1", 0);
+    setenv("TOTK_LONGFRAME_DETAIL", "1", 0);
+    setenv("TOTK_SVC_STATS", "1", 0);
+    setenv("TOTK_SURVEY_SHADER_LOG", "1", 0);
+    if (made) setenv("DM_NVN_TSV", [run stringByAppendingPathComponent:@"frames.tsv"].fileSystemRepresentation, 0);
+    setenv("DM_NVN_UPTIME", "2", 0);
+    fprintf(stderr, "[launcher] %s: diagnostics on (game log, long frames, per-frame record in %s)\n", why,
+            getenv("DM_NVN_TSV") ?: "nowhere: the run folder could not be made");
+}
+
 /* The contribution file: in the project folder the app was built from, <clone>/shader-list-contribution/shader-list-contribution.txt
    (MNGContributionFolder in Info.plist, build_app.py), where players look and where the iPhone / iPad copies go too; the
    data folder when that folder is gone (user 2026-10-22: nobody found the file in ~/Library). The file that was in the data
@@ -372,34 +408,12 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         BOOL quick = [shaders isKindOfClass:NSString.class] && [shaders isEqualToString:@"title"];
         setenv("TOTK_BOARD_DIR", data.fileSystemRepresentation, 0);   // the leaderboard's folder (runtime/board_upload.h); a test run keeps its own;
         //   named first: the uploads below send the board's id with the rows (totk_inbox_board_id)
+        // a quick App always, any App while 诊断模式 is on (MNG Launcher's card switch, diagnostics.txt)
+        if (quick) start_diagnostics(home, "quick App");
+        else if (diagnostics_switch(data)) start_diagnostics(home, "诊断模式 (diagnostics.txt)");
         if (quick) {
             unsetenv("TOTK_SHADER_CONTRIB");
             fprintf(stderr, "[launcher] quick App (only the title's shaders): no shader contribution until it is filled in\n");
-            /* A quick App is the test build (user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断"; the Launcher's 诊断模式 page is
-               gone): however it is opened it starts with every switch of a debug session (keep/tools/oot-debug/play.sh: the
-               game log, long-frame detail, wait statistics, the per-pipeline log, the per-frame record). A choice already
-               in the environment is kept (a test start names its own record). The per-frame record goes to a run folder of
-               this start; the newest QUICK_DIAG_RUNS stay. A full App's start carries none of them (the player's: user
-               2026-11-13, tests/test_launcher_play_clean.py). tests/test_oot_quick_start.py QuickStartCarriesDiagnostics. */
-            enum { QUICK_DIAG_RUNS = 5 };
-            NSString *runs = [home stringByAppendingPathComponent:@"Library/Logs/MacNativeGames/diagnostics"];
-            NSDateFormatter *stamp = [NSDateFormatter new]; stamp.dateFormat = @"yyyyMMdd-HHmmss";
-            stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-            NSString *run = [runs stringByAppendingPathComponent:[@"oot-" stringByAppendingString:[stamp stringFromDate:NSDate.date]]];
-            NSFileManager *fm = NSFileManager.defaultManager;
-            NSArray<NSString *> *earlier = [[[fm contentsOfDirectoryAtPath:runs error:nil] ?: @[]
-                filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'oot-'"]] sortedArrayUsingSelector:@selector(compare:)];
-            for (NSUInteger i = 0; i + QUICK_DIAG_RUNS <= earlier.count; i++)   // with this one, QUICK_DIAG_RUNS are left
-                [fm removeItemAtPath:[runs stringByAppendingPathComponent:earlier[i]] error:nil];
-            BOOL made = [fm createDirectoryAtPath:run withIntermediateDirectories:YES attributes:nil error:nil];
-            setenv("TOTK_DEBUG_LOG", "1", 0);
-            setenv("TOTK_LONGFRAME_DETAIL", "1", 0);
-            setenv("TOTK_SVC_STATS", "1", 0);
-            setenv("TOTK_SURVEY_SHADER_LOG", "1", 0);
-            if (made) setenv("DM_NVN_TSV", [run stringByAppendingPathComponent:@"frames.tsv"].fileSystemRepresentation, 0);
-            setenv("DM_NVN_UPTIME", "2", 0);
-            fprintf(stderr, "[launcher] quick App: diagnostics on (game log, long frames, per-frame record in %s)\n",
-                    getenv("DM_NVN_TSV") ?: "nowhere: the run folder could not be made");
         } else {
             NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
             setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
