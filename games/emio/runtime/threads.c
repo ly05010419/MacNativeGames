@@ -399,6 +399,7 @@ int svc_thread(int num, uint64_t *regs) {
     case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 锁地址, x1 条件键, w2 标签, x3 超时) | WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
+        { static _Atomic unsigned wc=0; unsigned k=++wc; if(k<=30||addr==0x74f8fb6268ULL) fprintf(stderr,"[emio-wait] #%u tid=%x addr=%llx key=%llx tag=%u timeout=%lld\n",k,t->handle,(unsigned long long)addr,(unsigned long long)key,(unsigned)regs[2],(long long)regs[3]); }
         pthread_mutex_lock(&G);
         // 顺序要紧：先置条件键 = 1，再放互斥锁。SDK 的 InternalConditionVariable::Signal 在用户态先读条件键、为 0 就不发 svc 0x1D；
         // 用户态抢互斥锁也不经过 G。原先先 lock_handoff 后置键：放锁后、置键前，别的线程可在用户态抢到锁、改完条件、读到键 0 就不唤醒，
@@ -428,6 +429,7 @@ int svc_thread(int num, uint64_t *regs) {
     }
     case 0x1D: {  // SignalProcessWideKey(x0 条件键, w1 个数，<=0 全部) | SignalProcessWideKey(x0 condition key, w1 count, <=0 all)
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
+        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=30) fprintf(stderr,"[emio-signal] #%u key=%llx cnt=%d\n",k,(unsigned long long)key,cnt); }
         pthread_mutex_lock(&G);
         for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) lock_acquire_for(w, w->waddr, w->wtag);   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
         int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
