@@ -25,7 +25,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--program', choices=('base', 'update'), default='update')
     args = parser.parse_args()
-    ex.require(not args.output.exists(), 'Output already exists')
+    ex.require(
+        not args.output.exists() or (args.output / 'firmware/shared-fonts').is_dir(),
+        'Output exists without the expected shared-fonts directory'
+    )
     keys = ex.load_keys(args.keys)
     with args.game.open('rb') as f:
         kind, entries = ex.container_entries(f, args.game.stat().st_size)
@@ -72,7 +75,7 @@ def main():
             files = [(name, pfs[offset:offset+size]) for name, offset, size in
                      ex.partition_entries(io.BytesIO(pfs), 0, len(pfs))]
             ex.require(any(name == 'main.npdm' for name, _ in files), 'Partition is not ExeFS')
-            args.output.mkdir(parents=True)
+            args.output.mkdir(parents=True, exist_ok=True)
             extracted = []
             for name, data in files:
                 (args.output / name).write_bytes(data)

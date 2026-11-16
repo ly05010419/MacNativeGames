@@ -57,7 +57,7 @@ static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
     d.vertexFunction = vs->geo_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO;
     for (int i = 0; i < 8; i++) d.colorAttachments[i].pixelFormat = MTLPixelFormatInvalid;
     d.depthAttachmentPixelFormat = MTLPixelFormatInvalid; d.stencilAttachmentPixelFormat = MTLPixelFormatInvalid; d.rasterSampleCount = 1;
-    NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+    NSError *e = nil; ps = mtl_counted_render(g_dev, d, &e);
     if (!ps) { MLOG("【红】几何抓取管线失败 %s：%s", vs->key, e.localizedDescription.UTF8String); return nil; }
     g_geo_cap_pso[key] = ps; return ps;
 }
@@ -98,7 +98,7 @@ static int geo_prep(NvProg *pr, const p_draw *dw, const p_draw_idx *di, geo_job 
     }
     if (!vsc || !vsc->geo_fn || !gs || !gs->geo_input_vertices || !reader) { RED_ONCE(164, "geometry draw: capture %p / kernel %p / reader %p missing (skipped)", (__bridge void *)vsc, (__bridge void *)gs, (__bridge void *)reader); return 0; }
     if (gs->geo_input_vertices != width) { RED_ONCE(165, "geometry kernel %s reads %d vertices a primitive, the draw gives %d (skipped)", gs->key, gs->geo_input_vertices, width); return 0; }
-    if (!gs->geo_pso) { NSError *e = nil; gs->geo_pso = [g_dev newComputePipelineStateWithFunction:gs->fn error:&e];
+    if (!gs->geo_pso) { NSError *e = nil; gs->geo_pso = mtl_counted_compute(g_dev, gs->fn, &e);
         if (!gs->geo_pso) { MLOG("【红】几何计算管线 %s：%s", gs->key, e.localizedDescription.UTF8String); return 0; } }
     id<MTLRenderPipelineState> cap = geo_capture_pso(vsc); if (!cap) return 0;
     lean = geo_lean_pick(pr, gs, lean, topology, instances);

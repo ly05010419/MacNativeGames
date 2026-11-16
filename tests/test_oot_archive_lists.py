@@ -6,6 +6,7 @@ build/ lists were resolved from the current one. The archive held 2,957 render p
 """
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -203,6 +204,52 @@ class MeshPipelinesInTheArchive(unittest.TestCase):
 
     def test_the_probe_checks_a_mesh_pipeline(self):
         self.assertIn('par_probe_mesh()', function(self.mtl, 'int mtl_probe_pipeline_archive'))
+
+
+class CacheKeptAcrossChains(unittest.TestCase):
+    """2026-11-15 ("mac会有同样问题吗？"): the Mac packaging's pipeline cache was named after the chain, so v28 began empty
+    beside v27's folder and compiled all 28,714 pipelines (2,546 s) though 18 of 18,661 shaders changed."""
+
+    def setUp(self):
+        self.build = load_build()
+        self.temp = tempfile.TemporaryDirectory()
+        self.folder = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def chain_folder(self, name, files, age):
+        pipelines = self.folder / name / 'pipelines'
+        pipelines.mkdir(parents=True)
+        for i in range(files):
+            (pipelines / f'{i}.metalarchive').write_text('x')
+        os.utime(pipelines, (age, age))
+
+    def test_the_newest_chain_folder_of_each_kind_is_taken_over_once(self):
+        self.chain_folder('oot-native-v26-raw-span-all-stages', 1, 1000)
+        self.chain_folder('oot-native-v27-blend-zero', 3, 2000)
+        self.chain_folder('oot-native-v27-blend-zero-title', 2, 3000)   # newer, but a quick App's: not the full one's
+        with mock.patch('builtins.print'):
+            full = self.build.pipeline_cache(self.folder, '')
+            title = self.build.pipeline_cache(self.folder, '-title')
+        self.assertEqual(full, self.folder / 'archive')
+        self.assertEqual(len(list((full / 'pipelines').iterdir())), 3)
+        self.assertEqual(title, self.folder / 'archive-title')
+        self.assertEqual(len(list((title / 'pipelines').iterdir())), 2)
+        self.assertFalse((self.folder / 'oot-native-v27-blend-zero').exists())
+        self.assertTrue((self.folder / 'oot-native-v26-raw-span-all-stages').exists())   # older ones are left alone
+        # the next chain uses the same folder: nothing is taken over again, nothing starts empty
+        self.chain_folder('oot-native-v29-next', 5, 4000)
+        self.assertEqual(self.build.pipeline_cache(self.folder, ''), full)
+        self.assertEqual(len(list((full / 'pipelines').iterdir())), 3)
+
+    def test_no_earlier_folder_starts_a_new_one(self):
+        self.assertEqual(self.build.pipeline_cache(self.folder, ''), self.folder / 'archive')
+
+    def test_the_archive_step_no_longer_names_its_cache_after_the_chain(self):
+        source = (GAME / 'build.py').read_text()
+        self.assertIn('cache=pipeline_cache(folder,suffix)', source)
+        self.assertNotIn('cache=folder/(chain+suffix)', source)
 
 
 if __name__ == '__main__':

@@ -26,6 +26,7 @@
 #include <string.h>
 #include "totk_mfx.h"
 #include "totk_hdr.h"
+#include "nvn_counted.h"
 #include <TargetConditionals.h>
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
@@ -246,9 +247,9 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             "  mv.write(float4(m, 0.0, 0.0), g);\n"
             "}\n";
         MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
-        id<MTLLibrary> lib = [g.dev newLibraryWithSource:@(src) options:o error:&e];
+        id<MTLLibrary> lib = mtl_counted_library(g.dev, @(src), o, &e);
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"mfx_mv"] : nil;
-        g.mv_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        g.mv_ps = fn ? mtl_counted_compute(g.dev, fn, &e) : nil;
         if (!g.mv_ps) MDIE("motion vector kernel: %s", e.localizedDescription.UTF8String);
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 3;
         for (int i = 0; i < MFX_OUT; i++) {

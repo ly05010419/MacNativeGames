@@ -238,7 +238,9 @@ class ShaderMode(unittest.TestCase):
         self.assertTrue(set(full[:2]).isdisjoint(title[:2]))
         self.assertEqual(title[2], '-title')
         text = (GAME / 'build.py').read_text()
-        for used in ("cache=folder/(chain+suffix)", "target=tree/f'build/pipelines{suffix}'",
+        # the pipeline cache: one per kind, kept across chains (test_oot_archive_lists.CacheKeptAcrossChains)
+        self.assertEqual(self.build.pipeline_cache(tree, '-title'), tree / 'archive-title')
+        for used in ("cache=pipeline_cache(folder,suffix)","target=tree/f'build/pipelines{suffix}'",
                      "bundle=tree/f'build/shader-bundles/ShaderData-oot{suffix}.bundle'", "'--output',seed,", "'--out',libraries,"):
             self.assertIn(used, text)
 
@@ -319,7 +321,7 @@ class LauncherQuickStart(unittest.TestCase):
             self.build_job.command({'update': '/Apps/Ocarina of Time.app'})
         self.assertIsNone(seen['env'])   # an ordinary update is judged as before
 
-    def test_the_card_button_follows_the_diagnostic_page_and_sends_the_same_request(self):
+    def test_the_card_button_follows_the_game_pages_and_sends_the_same_request(self):
         swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
         home = (swift / 'HomePage.swift').read_text()
         self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button(T.quickStart) { model.quickStart(app) }'))
@@ -335,6 +337,54 @@ class LauncherQuickStart(unittest.TestCase):
         self.assertIn('if app.shaders == "title"', (swift / 'HomePage.swift').read_text())
         self.assertIn('model.updateShaders(app)', (swift / 'HomePage.swift').read_text())
         self.assertIn('var quick: Bool? = nil', (swift / 'Reports.swift').read_text())
+
+
+class QuickStartCarriesDiagnostics(unittest.TestCase):
+    """user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断": the Launcher's 诊断模式 page is gone; a quick App (MNGShaders 'title')
+    starts with every diagnostic of a debug session however it is opened (app/launcher.m), with a run folder of its own for
+    the per-frame record. A full App's start stays clean (tests/test_launcher_play_clean.py)."""
+    SWITCHES = ('TOTK_DEBUG_LOG', 'TOTK_LONGFRAME_DETAIL', 'TOTK_SVC_STATS', 'TOTK_SURVEY_SHADER_LOG', 'DM_NVN_TSV', 'DM_NVN_UPTIME')
+
+    def branches(self):
+        text = (GAME / 'app/launcher.m').read_text()
+        start = text.index('if (quick) {')
+        middle = text.index('} else {', start)
+        end = text.index('unsetenv("TOTK_AUTOLOAD")', middle)
+        return text[start:middle], text[middle:end], text[:start] + text[end:]
+
+    def test_a_quick_app_starts_with_every_diagnostic(self):
+        quick, _, _ = self.branches()
+        for name in self.SWITCHES:
+            # overwrite 0: a test start's own choice (its record path, a switch it turns off) is kept
+            self.assertRegex(quick, rf'setenv\("{name}", [^;]*, 0\)', name)
+        self.assertIn('Logs/MacNativeGames/diagnostics', quick)   # the run folder of its per-frame record
+        self.assertIn('frames.tsv', quick)
+
+    def test_a_full_app_starts_with_none(self):
+        _, full, rest = self.branches()
+        for name in self.SWITCHES:
+            self.assertNotIn(f'"{name}"', full, name)
+            self.assertNotIn(f'setenv("{name}"', rest, name)
+
+    def test_the_diagnostic_page_is_gone(self):
+        from tools.builder import games
+        from tools.builder_jobs import tabs
+        self.assertNotIn('diag', tabs.TABS)
+        self.assertTrue(all('diag' not in pages for pages in games.PAGES.values()))
+        self.assertFalse((ROOT / 'tools/builder_jobs/tab_diag.py').exists())
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertFalse((swift / 'DiagTab.swift').exists())
+        for name in ('Model.swift', 'HomePage.swift', 'Strings.swift'):
+            text = (swift / name).read_text()
+            self.assertNotIn('"diag"', text, name)
+            self.assertNotIn('DiagPage', text, name)
+
+    def test_the_quick_start_says_it_carries_the_diagnostics(self):
+        strings = (ROOT / 'tools/builder_app/Sources/MNGBuilder/Strings.swift').read_text()
+        start = strings.index('static let quickStartHelp')
+        definition = strings[start:strings.index('static let', start + 1)]   # both languages, over two lines
+        self.assertIn('诊断', definition)
+        self.assertIn('diagnostic', definition)
 
 
 class NoSetuidPs(unittest.TestCase):

@@ -12,6 +12,8 @@
 #include "dm_wait_stats.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
+#include "totk_variant_rows.h"
+#include "totk_rt_carry.h"
 #include "dmsh_chain.h"
 /* Test launch preflight reads the compiled identity, never a source header
    standing in for the binary it is about to execute. */
@@ -122,6 +124,10 @@ NSString *totk_rt_dir(void) {
         g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%@", cacheChain];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
+        // a new chain or context: this device's pipeline archive and collected list come along (totk_rt_carry.h)
+        for (NSString *from in totk_rt_carry_over(g_dir))
+            LOG("[shader-cache] 本机的 %s 从上一个缓存目录接过来：%s（翻译链或翻译上下文变了；管线由 Metal 逐条核对，着色器变了的才重编）",
+                from.lastPathComponent.UTF8String, from.stringByDeletingLastPathComponent.lastPathComponent.UTF8String);
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         if (!(seedMode && !strcmp(seedMode, "off"))) {
             NSError *error = nil;
@@ -326,18 +332,30 @@ static NSArray *variants_file(NSString *path) {
     NSArray *a = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
     return [a isKindOfClass:[NSArray class]] ? a : @[];
 }
+/* The seed's rows first, then the cache's own ones the seed lacks: variant_lookup takes the first whose deps match, and
+   the app's pipeline archive is made from the seed's variants. Until 2026-11-15 the cache's came first (user: "为什么有
+   这么多 新管线？？？"): a quick start, whose seed holds only the title's shaders, translated 1,040 shaders during play into
+   the cache the full app shares (same chain and context), each as a variant named after all its answers (…-90d07effe7fb)
+   beside the seed's default one (…-b7530f698e76) with the very same deps. The full app then took the cache's, so its
+   pipelines had other keys than its archive's: 866 render and 36 mesh pipelines of the app's own warm-up lists compiled
+   at every start; with an empty cache, 0. */
+NSArray *totk_variants_join(NSArray *seed, NSArray *cache) {
+    NSMutableArray *v = [NSMutableArray array]; NSMutableSet *known = [NSMutableSet set];
+    for (NSArray *rows in @[seed ?: @[], cache ?: @[]])
+        for (NSDictionary *row in rows)
+            if ([row isKindOfClass:NSDictionary.class] && row[@"variant"] && ![known containsObject:row[@"variant"]]) {
+                [known addObject:row[@"variant"]]; [v addObject:row];
+            }
+    return v;
+}
 static NSMutableArray *variants_of(NSString *shader) {
     if (!g_variants) g_variants = [NSMutableDictionary dictionary];
     NSMutableArray *v = g_variants[shader];
     if (v) return v;
-    v = [NSMutableArray arrayWithArray:variants_file(index_path(shader))];
     NSString *seedIndex = [shader stringByAppendingString:@".variants"];
-    if (g_seed_dir && [g_seed_names containsObject:seedIndex]) {   // the cache's own rows (fill packs) first, then the seed's
-        NSMutableSet *known = [NSMutableSet set];
-        for (NSDictionary *row in v) if ([row isKindOfClass:NSDictionary.class] && row[@"variant"]) [known addObject:row[@"variant"]];
-        for (NSDictionary *row in variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]))
-            if ([row isKindOfClass:NSDictionary.class] && row[@"variant"] && ![known containsObject:row[@"variant"]]) [v addObject:row];
-    }
+    NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
+        ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
+    v = [totk_variants_join(seed, variants_file(index_path(shader))) mutableCopy];
     g_variants[shader] = v;
     return v;
 }
@@ -871,6 +889,24 @@ void totk_rt_variant_broken(NSString *key) {
     for (NSUInteger i = vs.count; i-- > 0;) if ([vs[i] isKindOfClass:NSDictionary.class] && [vs[i][@"variant"] isEqual:variant]) [vs removeObjectAtIndex:i];
     [g_msl_checked removeObject:variant];
     pthread_mutex_unlock(&g_rt_lock);
+}
+/* A row of this device's warm-up lists with its variants put on the app's own (totk_variant_rows.h): the one a draw takes
+   now. Each variant is looked up once. */
+NSString *totk_rt_row_prefer_seed(NSString *line) {
+    static NSMutableDictionary<NSString *, NSString *> *done;
+    return totk_row_map_variants(line, ^NSString *(NSString *variant) {
+        pthread_mutex_lock(&g_rt_lock);
+        if (!done) done = [NSMutableDictionary dictionary];
+        NSString *now = done[variant];
+        if (!now) {
+            NSString *shader = [variant substringToIndex:64], *seedIndex = [shader stringByAppendingString:@".variants"];
+            NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
+                ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
+            now = done[variant] = totk_superseding_variant(variant, seed, variants_file(index_path(shader)));
+        }
+        pthread_mutex_unlock(&g_rt_lock);
+        return now;
+    });
 }
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];

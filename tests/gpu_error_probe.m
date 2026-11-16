@@ -15,6 +15,10 @@ static NSError *err(NSString *domain, NSInteger code) {
 int main(int argc, char **argv) { @autoreleasepool {
     unsigned checks = 0;
     if (argc != 2) return 2;
+    if (!strcmp(argv[1], "--trace-on")) {   // the bind trace's default and TOTK_GPU_TRACE, then "flag gpu_trace" the other way
+        int on = gpu_trace_on(); gpu_trace_set(!on);
+        printf("trace=%d switched=%d\n", on, gpu_trace_on()); return 0;
+    }
     setenv("OOT_GPU_ERROR_LOG", argv[1], 1);
     CHECK(gpu_error_is_hang(err(MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorTimeout)));
     CHECK(!gpu_error_is_hang(err(MTL4CommandQueueErrorDomain, MTL4CommandQueueErrorNotPermitted)));

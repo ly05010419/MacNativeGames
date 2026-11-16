@@ -207,7 +207,10 @@ def main(argv):
         plist['MNGPython'] = '/opt/homebrew/bin/python3.14'
     with open(stage / 'Contents/Info.plist', 'wb') as f:
         plistlib.dump(plist, f)
-    run(['codesign', '--force', '--deep', '--sign', '-', stage])
+    # The designated requirement is the bundle ID, not the ad-hoc default (this build's code hash): macOS keeps the
+    # "removable volume" permission by it, so a rebuilt Launcher is not asked again (2026-11-15: TCC.db held a cdhash for
+    # org.macnativegames.launcher; build_app.sign_app does the same for the game apps).
+    run(['codesign', '--force', '--deep', '--sign', '-', f'-r=designated => identifier "{BUNDLE_ID}"', stage])
     run(['codesign', '--verify', '--deep', '--strict', stage])
     if out.exists():
         shutil.rmtree(out)
