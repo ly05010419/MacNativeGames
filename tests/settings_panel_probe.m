@@ -91,6 +91,11 @@ int runtime_gamepad_battery_percent(void) { return -1; }
 static int fakePadBackground;
 int runtime_gamepad_background_enabled(void) { return fakePadBackground; }
 void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
+static RuntimeDSUSettings fakeDSU = {.endpoint="127.0.0.1:26760"};
+static RuntimeDSUStatus fakeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out) { *out=fakeDSU; }
+void runtime_dsu_status(RuntimeDSUStatus *out) { *out=fakeDSUStatus; }
+int runtime_dsu_apply(const RuntimeDSUSettings *settings) { fakeDSU=*settings; return 0; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -270,6 +275,20 @@ static TOTKSettingRow *row(NSString *title) {
     fprintf(stderr, "no row %s\n", title.UTF8String); abort();
 }
 static NSPopUpButton *menu(NSString *title) { return (NSPopUpButton *)row(title).control; }
+static void footer_spacing_probe(void) {
+    NSUInteger counts[SETTINGS_PAGES] = {0};
+    for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page]++;
+    NSInteger previous = settingsPanel.page, longest = SETTINGS_PAGE_DISPLAY;
+    for (NSInteger p = 0; p < SETTINGS_PAGES; p++)
+        if (counts[p] > counts[longest]) longest = p;
+    [settingsPanel selectPage:longest]; tick();
+    NSView *band = settingsPanel.rows.lastObject.control.superview;
+    NSRect lastBand = [band convertRect:band.bounds toView:settingsPanel];
+    NSRect version = settingsPanel.versionLabel.frame;
+    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 &&
+           NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
+    [settingsPanel selectPage:previous]; tick();
+}
 static void pick(NSString *title, NSString *choice) {
     NSPopUpButton *p = menu(title);
     assert(p.enabled && [p indexOfItemWithTitle:choice] >= 0);
@@ -1077,6 +1096,37 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts(getenv("CONTRIB_TEST_URL") ? "pass: contribution page with the server" : "pass: contribution page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "dsu")) {
+        window=probe_window();window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,1280,720)];
+        g_settings_page=SETTINGS_PAGE_INPUT;settings_show(1);
+        assert(row(@"DSU input") && row(@"DSU server").buttonAction);
+        pick(@"DSU controller slot", @"2");assert(fakeDSU.slot==2);
+        NSSwitch *toggle=(NSSwitch *)row(@"DSU input").control;toggle.state=NSControlStateValueOn;
+        [row(@"DSU input") changed:toggle];assert(fakeDSU.enabled);
+        settings_dsu_change(-1,0,@"localhost:1234");[settingsPanel refresh];
+        assert([row(@"DSU server").textLabel.stringValue isEqualToString:@"localhost:1234"]);
+        fakeDSUStatus=(RuntimeDSUStatus){.connected=1,.sensor=1,.buttons=1,.axes={128,255,0,128},.acc={0,0,-1},.gyro={10,-20,30}};
+        [settingsPanel refresh];assert([row(@"DSU status").textLabel.stringValue containsString:@"Connected"]);
+        assert([row(@"DSU status").textLabel.stringValue containsString:@"-20.0"]);
+        assert([row(@"DSU status").textLabel.stringValue containsString:@"L128,255 R0,128"]);
+        assert(row(@"DSU status").fullWidthText && row(@"DSU status").textLabel.bounds.size.width>600);
+        NSUInteger dsuRows=0;for(TOTKSettingRow *r in settingsPanel.rows)if([r.title hasPrefix:@"DSU "])dsuRows++;
+        assert(dsuRows==4);
+        footer_spacing_probe();
+        for(const char **language=(const char *[]){"en","zh",NULL};*language;language++){
+            setenv("TOTK_UI_LANG",*language,1);settings_rebuild();[settingsPanel selectPage:SETTINGS_PAGE_INPUT];[settingsPanel refresh];
+            const char *png=getenv("DSU_TEST_PNG");if(png){
+                NSBitmapImageRep *rep=[settingsPanel bitmapImageRepForCachingDisplayInRect:settingsPanel.bounds];
+                [settingsPanel cacheDisplayInRect:settingsPanel.bounds toBitmapImageRep:rep];
+                NSString *file=[NSString stringWithFormat:@"%s-%s.png",png,*language];
+                assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:file atomically:YES]);
+            }
+        }
+        fakeDSUStatus.connected=fakeDSUStatus.sensor=0;[settingsPanel refresh];
+        assert([row(@"DSU 状态").textLabel.stringValue containsString:@"等待"]);
+        fakeDSU.locked=1;settings_rebuild();assert(!row(@"DSU 输入（环境变量指定）").control.enabled && !row(@"DSU 服务器").buttonAction);
+        [settingsPanel.timer invalidate];puts("pass: DSU settings, live status, localization and environment lock");return 0;
+    }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1091,7 +1141,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 32 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1537,7 +1587,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(!starButton.hidden && settingsPanel.controllerTargets.lastObject == starButton);   /* every page */
-    assert(settingsPanel.rows.count == 8 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
+    assert(settingsPanel.rows.count == 12 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
@@ -1559,10 +1609,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
     /* The overlay keeps its build line too (user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
-    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();   /* the longest page sets the panel's height */
+    footer_spacing_probe();   /* the longest page keeps the original tight footer spacing */
+    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
-    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
+    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6);
     for (NSView *view in settingsPanel.subviews)
         if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only the effects page's reset and 访问主页 */
             assert(view.hidden || [settingsPanel.effectsButtons containsObject:(NSButton *)view] || view == settingsPanel.homeButton);
