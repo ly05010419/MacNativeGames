@@ -235,7 +235,9 @@ Added for it (general where possible, each with its reason in the code):
   pool registering in some scenes (the table per pool); nvnCommandBufferDrawArraysIndirect and SetCopyImageStride.
 
 **Pokopia, 2026-11-04: packaged as a Mac app by build_app.py, its shaders prepared at packaging.**
-- `build_app.py <dump folder> --shared-fonts <folder>`: a folder as the game argument is a Switch 2 dump (base/,
+- `build_app.py <dump folder> [--shared-fonts <folder>]` (fonts optional since 2026-11-16: without them the build takes
+  open-source Noto fonts, `build_app.ns2_shared_fonts` / `tools/deps/open_fonts.py`; no Bananza or Pokopia log of this
+  Mac shows the game reading them): a folder as the game argument is a Switch 2 dump (base/,
   updates/<version>/ with exefs/ and romfs/); the title ID in its main.npdm picks the game (NS2 table: Pokopia
   0400A3A01EE4C000, update 655360), no keys. Steps: import_dump.py, the ExeFS / RomFS / rewrite checked against
   games/pokopia/assets/expected-v2.0.1.json (the verified rewrite), `make runtime-pkp` (launcher with GAME_POKOPIA /

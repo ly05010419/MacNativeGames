@@ -48,6 +48,24 @@ BUILD_TOOLS = {'meson': ('1.12.1', '930bc7542cbd9f57009e182fd014eba48cf1a0180a7b
                'ninja': ('1.13.2', 'fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b'),
                'cmake': ('4.4.4', '883962a72b1b3a16ff445427f24c8caca9797dd9e563bbe208cbcd89e877f9d3')}
 
+# Open-source stand-ins for the six nn::pl shared fonts (tools/deps/open_fonts.py), for a game whose player has no firmware
+# fonts (Ocarina of Time: a Switch 2 dump holds none). google/fonts at a fixed commit (2026-10-30), SIL OFL 1.1; each
+# file by the SHA-256 of its bytes. (slot, slot name build_app.py expects, file under ofl/, sha256)
+OPEN_FONTS_COMMIT = '6c1dbe27dcf7d817d4b62cec033ba77fa8e2a5ec'
+OPEN_FONTS = (
+    (0, 'standard', 'notosansjp/NotoSansJP[wght].ttf', 'c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f'),
+    (1, 'chinese-simplified', 'notosanssc/NotoSansSC[wght].ttf', 'a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da'),
+    (2, 'chinese-simplified-extension', 'notosanssc/NotoSansSC[wght].ttf', 'a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da'),
+    (3, 'chinese-traditional', 'notosanstc/NotoSansTC[wght].ttf', '864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f'),
+    (4, 'korean', 'notosanskr/NotoSansKR[wght].ttf', '194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252'),
+    (5, 'nintendo-extension', 'notosanssymbols2/NotoSansSymbols2-Regular.ttf', '7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21'),
+)
+OPEN_FONTS_LICENSE = ('notosanssc/OFL.txt', '1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9')
+# fontTools pins the variable fonts at Regular: the pure-Python wheel (released 2025-09-29), any Python 3.9 or later.
+FONTTOOLS = ('fonttools-4.60.1-py3-none-any.whl',
+             'https://files.pythonhosted.org/packages/c7/93/0dd45cd283c32dea1545151d8c3637b4b8c53cdb3a625aeb2885b184d74d/fonttools-4.60.1-py3-none-any.whl',
+             '906306ac7afe2156fcf0042173d6ebbb05416af70f6b370967b47f8f00103bbb')
+
 # UI reconstruction, CPython 3.14 / Apple silicon. PyPI wheels, all released before 2026-10-31.
 PYTHON_ENVIRONMENTS = {
     'ui-pack': (

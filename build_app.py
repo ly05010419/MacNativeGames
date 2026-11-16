@@ -2688,6 +2688,32 @@ def record_ns2_device_build(tree, out, g, args):
     out.with_name(out.stem + '-build-record.json').write_text(json.dumps(record, indent=2) + '\n')
 
 
+def ns2_shared_fonts(fonts, shared_fonts=None, make=None):
+    """The six shared fonts of a Switch 2 game's work folder (a dump holds none): the given folder (--shared-fonts), else
+    the valid ones already there, else the open-source stand-ins of tools/deps/open_fonts.py (make stands in for it in the
+    tests), as Ocarina of Time does (games/oot/build.py prepare_fonts; user 2026-11-16: "一样处理"). In this Mac's 18 Bananza
+    and 4 Pokopia game logs the game never called nn::pl's font functions (games/totk/runtime/shared_font.c loads them at
+    the first call and logs "shared fonts loaded"). Returns which fonts it used."""
+    if shared_fonts:
+        copy_shared_fonts(shared_fonts, fonts)
+        used = f'the given folder {shared_fonts}'
+    elif fonts_valid(fonts):
+        used = f'kept in the work folder ({fonts})'
+    else:
+        if make is None:
+            from tools.deps.open_fonts import open_fonts as make
+        made = Path(make())
+        validate_fonts(made)
+        if fonts.exists():
+            shutil.rmtree(fonts)
+        shutil.copytree(made, fonts)
+        used = (f'none given: open-source Noto fonts (SIL OFL 1.1) from {made}; --shared-fonts <the shared-fonts folder of '
+                'a Tears of the Kingdom or Breath of the Wild build> uses those instead')
+    validate_fonts(fonts)
+    say(f'shared fonts: {used}')
+    return used
+
+
 def main_ns2(args, dump):
     """A Mac app of a Switch 2 game from its dump folder (no keys: the dump holds the decrypted ExeFS and RomFS)."""
     if args.platform == 'visionos':
@@ -2718,13 +2744,7 @@ def main_ns2(args, dump):
     t0 = time.time()
     tree = prepare_work(work, py, logs)
     say(f'{app_name} {VERSIONS[v]["display_version"]} from {dump}; work folder {work} ({why})')
-    fonts = tree / 'extracted/firmware/shared-fonts'
-    if not fonts_valid(fonts):
-        if not shared_fonts:
-            raise BuildError('a Switch 2 dump holds no system shared fonts: pass --shared-fonts <a folder of the six .bfttf files '
-                             'a Tears of the Kingdom or Breath of the Wild build extracted (TOTK_build/totk/extracted/firmware/shared-fonts)>')
-        copy_shared_fonts(shared_fonts, fonts)
-    validate_fonts(fonts)
+    ns2_shared_fonts(tree / 'extracted/firmware/shared-fonts', shared_fonts)
     step_code_ns2(tree, dump, g, env, logs, app=out if out.suffix == '.app' else None)
     if v == 'dkb':
         for size in ('2560x1440', '3840x2160'):

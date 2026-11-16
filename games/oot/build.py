@@ -712,6 +712,33 @@ def library_image(args,out):
         if folder and (Path(folder).expanduser()/'oot/romfs.bin').is_file():return Path(folder).expanduser()/'oot/romfs.bin'
     return None
 
+def prepare_fonts(fonts, given=None, make=None):
+    """The six nn::pl shared fonts in the work folder (fonts: tree/extracted/firmware/shared-fonts), in this order: the
+    folder the player gave (--shared-fonts, which must pass build_app.py validate_fonts), the valid ones the work folder
+    already has, else the open-source Noto fonts (tools/deps/open_fonts.py; make stands in for it in the tests). A Switch 2
+    dump holds no fonts and this build has no --firmware, so until 2026-11-16 a player without an earlier Tears of the
+    Kingdom or Breath of the Wild build stopped here after minutes of packaging ("经常有人 安装 oot 缺字体"). In 385 game
+    logs of this Mac the game never called nn::pl's font functions (shared_font.c loads them at the first call and logs
+    "shared fonts loaded"; Tears of the Kingdom's logs have that line), so the stand-ins have not been seen on screen.
+    Returns which fonts it used."""
+    fonts=Path(fonts);helpers=build_helpers()
+    def copy(folder):
+        if fonts.exists():shutil.rmtree(fonts)
+        shutil.copytree(folder,fonts)
+    if given:
+        given=Path(given).expanduser().resolve()
+        try:helpers.validate_fonts(given)
+        except (helpers.BuildError,OSError) as e:raise ValueError(f'--shared-fonts {given}: {e}') from None
+        if given!=fonts.resolve():copy(given)
+        return f'the given folder {given}'
+    if helpers.fonts_valid(fonts):return f'kept in the work folder ({fonts})'
+    if make is None:from tools.deps.open_fonts import open_fonts as make
+    made=Path(make())
+    helpers.validate_fonts(made)
+    copy(made)
+    return (f'none given: open-source Noto fonts (SIL OFL 1.1) from {made}; '
+            'give --shared-fonts with the firmware fonts of a Tears of the Kingdom or Breath of the Wild build to use those')
+
 def build(args, source):
     if args.platform not in ('macos','ios'):raise ValueError('Ocarina of Time has macOS and iOS build paths only')
     device=args.platform=='ios'
@@ -788,9 +815,7 @@ def build(args, source):
     report=tree/'analysis/oot-port/phase12-validation.json';report.parent.mkdir(parents=True,exist_ok=True)
     report.write_text(json.dumps(dict(format=1,status='pass',rom_version='oot',module_file_sha256=hashes),indent=2)+'\n')
     for script in ('prepare_runtime.py','prepare_romfs_backend.py'):run([py,'scripts/'+script,'--version','oot'],script[:-3])
-    fonts=tree/'extracted/firmware/shared-fonts'
-    if args.shared_fonts:shutil.copytree(args.shared_fonts.expanduser().resolve(),fonts,dirs_exist_ok=True)
-    if not (fonts/'manifest.json').exists():raise ValueError('pass --shared-fonts with the six verified firmware fonts')
+    print('shared fonts: '+prepare_fonts(tree/'extracted/firmware/shared-fonts',args.shared_fonts),flush=True)
     run([py,'scripts/prepare_shared_fonts.py','--version','oot'],'prepare-shared-fonts')
     install_translator(tree)
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
