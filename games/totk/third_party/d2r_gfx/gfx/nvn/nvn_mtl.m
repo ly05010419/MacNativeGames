@@ -8509,17 +8509,19 @@ static uint64_t evict_available(void) {
     return 0;
 #endif
 }
-/* iOS: bytes the eviction should free so that what this residency set holds (g_res_live_bytes) comes back to 80 % of
-   Metal's recommended working set, once it passed 85 %; 0 below that. The app's allowance (evict_available) cannot see
+/* iOS: bytes the eviction should free so that what this residency set holds (g_res_live_bytes) comes back to 90 % of
+   Metal's recommended working set, once it passed 95 %; 0 below that. 95 since 2026-11-16 (user: "超过上限的 95% 才行"):
+   at 85 % the iPad (A16, working set 4096 MB) sat at the 3481 MB cap in the world and dropped 22,629 copies (11.8 GB)
+   in 5 minutes, 23,608 uploaded again. The app's allowance (evict_available) cannot see
    it: with the guest's memory in files, the pools' zero-copy buffers wired by residency are file pages, outside the
    footprint, and the iPad entering the world wired more than it has and panicked in IOGPUFamily (kIOReturnNoMemory,
    2026-11-10). Only the textures' copies can go; pools stay (the raw pool table needs them). TOTK_RES_CAP_PCT=<n> moves
-   the 85 %, 0 turns the rule off. The Mac never asks (mode 1 is iOS only); the other games do not either yet. */
+   the 95 %, 0 turns the rule off. The Mac never asks (mode 1 is iOS only); the other games do not either yet. */
 static uint64_t res_over_working_set(void) {
 #if TARGET_OS_IPHONE && defined(GAME_OOT)   // Ocarina of Time only for now; the other games keep the allowance rule alone
     static uint64_t cap, back; static int init;
     if (!init) {
-        init = 1; const char *e = getenv("TOTK_RES_CAP_PCT"); const uint64_t pct = e && *e ? strtoull(e, NULL, 10) : 85;
+        init = 1; const char *e = getenv("TOTK_RES_CAP_PCT"); const uint64_t pct = e && *e ? strtoull(e, NULL, 10) : 95;
         const uint64_t ws = g_dev ? (uint64_t)g_dev.recommendedMaxWorkingSetSize : 0;
         if (ws && pct) { cap = ws / 100 * MIN(pct, 100); back = ws / 100 * (MIN(pct, 100) > 5 ? MIN(pct, 100) - 5 : 0); }
         MLOG("residency cap: %llu MB (%llu %% of Metal's working set %llu MB; TOTK_RES_CAP_PCT): past it the eviction drops idle texture copies back to %llu MB",

@@ -94,10 +94,12 @@ class OotIosMipDrop(unittest.TestCase):
 
     def test_ios_eviction_follows_what_the_residency_set_holds(self):
         """The app's allowance cannot see file pages wired by residency (the iPad's IOGPUFamily panic, 2026-11-10): on iOS
-        the texture eviction also runs once the set passes 85 % of Metal's working set; the Mac never asks."""
+        the texture eviction also runs once the set passes 95 % of Metal's working set (85 % until 2026-11-16, user:
+        "超过上限的 95% 才行"); the Mac never asks."""
         cap = function_body(self.src, 'static uint64_t res_over_working_set(void) {')
         ios, mac = cap.split('#else', 1)
         self.assertIn('#if TARGET_OS_IPHONE && defined(GAME_OOT)', ios)
+        self.assertIn('strtoull(e, NULL, 10) : 95;', ios)
         self.assertIn('recommendedMaxWorkingSetSize', ios)
         self.assertIn('g_res_live_bytes', ios)
         self.assertIn('return 0;', mac)
