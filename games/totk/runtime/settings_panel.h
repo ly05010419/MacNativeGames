@@ -349,6 +349,7 @@ static void settings_pointer_used(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
 @property(copy) NSString *(^text)(void);         /* a fixed text value beside a button, no picker (the screenshot folder) */
+@property BOOL fullWidthText;                  /* a single status line across the whole row */
 @property(copy) NSString *buttonTitle;           /* the button at the row's end (with text) */
 @property(copy) void (^buttonAction)(void);
 @property int sliderMin, sliderMax;              /* a slider when sliderMax > sliderMin */
@@ -374,6 +375,9 @@ static void settings_pointer_used(void);
 -(void)refresh{
  if(self.text){NSString *t=self.text();
   if(![self.textLabel.stringValue isEqualToString:t]){self.textLabel.stringValue=t;self.textLabel.toolTip=t;}
+  if(self.fullWidthText){CGFloat width=[t sizeWithAttributes:@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]}].width;
+   CGFloat size=fmax(9,fmin(11,11*self.textLabel.bounds.size.width/fmax(1,width)));
+   if(fabs(self.textLabel.font.pointSize-size)>.01)self.textLabel.font=[NSFont monospacedSystemFontOfSize:size weight:NSFontWeightRegular];}
   return;}
  int v=self.get?self.get():0;
  if(self.slider){NSSlider *s=(NSSlider *)self.control;if(s.intValue!=v)s.intValue=v;self.valueLabel.stringValue=[NSString stringWithFormat:@"%d",v];return;}
@@ -487,6 +491,7 @@ static TOTKSettingRow *settings_sensitivity_row(void) {
  r.sliderMin=1;r.sliderMax=100;return r;
 }
 /* Auto's text: the type it takes the connected controller for (runtime/gamepad.m). */
+#include "dsu_settings_rows.h"
 static NSString *settings_pad_auto_text(void) {
  static const char *const names[GAMEPAD_TYPE_COUNT]={NULL,"Xbox","PlayStation","Switch"};
  int detected=-1;runtime_gamepad_type(&detected);
@@ -684,7 +689,7 @@ static TOTKSettingRow *settings_shadow_row(void) {
   settings_effects_save();});
 }
 /* HDR / EDR (PR #1129, the RenoDX approach; Mac, 1.4.3): the switch and the game's brightness (its white in SDR-white
-   units). hdr.txt holds on / off; each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
+   units). hdr.txt holds on / off / auto (hdr_auto.h); each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
    others, peak (0: the display's headroom), UI white, exposure, ..., are set in their files; the page has no room). Off leaves every shader, pipeline and texture as without HDR (nvn_mtl.m keeps both compose shaders).
    Frame interpolation shows SDR MetalFX frames, so turning HDR on turns it off (and picking it turns HDR off). */
 static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *milli,int n,NSString *(^text)(int)){
@@ -695,8 +700,11 @@ static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *
  return settings_row(title,choices,values,current,^(int v){front_hdr_parameter_save(which,v/1000.0f);});
 }
 static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
- [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),nil,nil,^int{return front_hdr_enabled();},^(int v){
-  if(v&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
+ /* Off / Auto / On in this order: a controller stepping from Off reaches Auto without passing On, which turns frame
+    interpolation off. Auto keeps the interpolation choice: it runs wherever Auto leaves HDR off (hdr_auto.h). Picking
+    interpolation while HDR is on (On, or Auto on an HDR screen) turns HDR off, as before. */
+ [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),@[settings_on_off(0),settings_text("自动（HDR 屏幕上开）","Auto (on an HDR screen)"),settings_on_off(1)],@[@(HDR_CHOICE_OFF),@(HDR_CHOICE_AUTO),@(HDR_CHOICE_ON)],^int{return front_hdr_choice();},^(int v){
+  if(v==HDR_CHOICE_ON&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
   runtime_front_hdr_set(v);})];
  static const int white[]={500,750,1000,1500,2000};
  [rows addObject:settings_hdr_choice(TOTK_HDR_GAME_WHITE,settings_text("HDR 游戏亮度","HDR game brightness"),white,5,^NSString *(int v){
@@ -946,6 +954,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ settings_dsu_rows(rows);
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */
@@ -1256,12 +1265,14 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
    }else if(r.text){   /* a fixed value with the button that changes it at the row's end (the screenshot folder) */
-    NSButton *b=[NSButton buttonWithTitle:r.buttonTitle target:nil action:nil];
+    NSButton *b=[NSButton buttonWithTitle:r.buttonTitle?:@"" target:nil action:nil];
     b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];[b sizeToFit];
     b.frame=NSMakeRect(rw-8-b.frame.size.width,floor((rowH-b.frame.size.height)/2),b.frame.size.width,b.frame.size.height);
+    if(!r.buttonAction){b.hidden=YES;b.enabled=NO;b.frame=NSMakeRect(rw-8,0,0,0);}
     NSTextField *t=[NSTextField labelWithString:r.text()];t.font=[NSFont systemFontOfSize:11];t.textColor=label.textColor;
     t.lineBreakMode=NSLineBreakByTruncatingMiddle;   /* a long path keeps both of its ends */
     t.frame=NSMakeRect(rw-popW-8,floor((rowH-18)/2),popW-b.frame.size.width-14,18);
+    if(r.fullWidthText){label.hidden=YES;t.frame=NSMakeRect(12,floor((rowH-18)/2),rw-24,18);t.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];t.lineBreakMode=NSLineBreakByTruncatingTail;}
     t.toolTip=t.stringValue;[band addSubview:t];r.textLabel=t;r.control=b;
    }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
@@ -1716,6 +1727,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   return;
  }
  TOTKSettingRow *r=self.rows[i];
+ if(r.text&&!r.buttonAction)return;
  if(r.buttonAction){if(select)[r changed:r.control];[self controllerHighlight];return;}   /* the text row: A is its button */
  if(r.slider){if(select)return;NSSlider *s=(NSSlider *)r.control;s.intValue=MAX(r.sliderMin,MIN(r.sliderMax,s.intValue+step*5));}
  else if(r.choices){

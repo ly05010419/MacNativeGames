@@ -3210,6 +3210,16 @@ void mtl_set_frame(uint64_t f) {
    lets the kernel tear the GPU context down. Shader compiles stall before commit, never between commit and completion,
    and no frame's GPU work legitimately takes 10 s, so a hit is a hang. */
 static _Atomic uint64_t g_cbw_committed, g_cbw_completed, g_cbw_last_done_ns, g_cbw_last_commit_ns;
+/* Elapsed ns of the outstanding work, 0 when there is no reference or the reference is not older than the reading.
+   gpu_tag_begin / gpu_tag_done stamp CLOCK_UPTIME_RAW on the submit and completion threads (submit runs at real-time
+   priority) while this thread used to read its own clock before loading them, and a completion landing in between left
+   the reference newer than the reading. now - ref is uint64_t: it underflowed and aborted a healthy game twice within an
+   hour on 2026-11-14, printing 2^64 ns as 18446744074 seconds. The caller loads the reference first, which makes that
+   order impossible; the guard keeps the subtraction total anyway. */
+static uint64_t gpu_stall_ns(uint64_t now, uint64_t since, uint64_t first) {
+    uint64_t ref = since > first ? since : first;   // the newer of: last completion, the commit the outstanding work started with
+    return (ref && now > ref) ? now - ref : 0;
+}
 static void *gpu_watchdog_main(void *arg) {
     pthread_setname_np("nvn-gpu-watchdog");
     const uint64_t limit = (uint64_t)(intptr_t)arg * 1000000000ull;
@@ -3217,11 +3227,11 @@ static void *gpu_watchdog_main(void *arg) {
         sleep(1);
         uint64_t committed = atomic_load(&g_cbw_committed), completed = atomic_load(&g_cbw_completed);
         if (committed == completed) continue;
-        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), since = atomic_load(&g_cbw_last_done_ns), first = atomic_load(&g_cbw_last_commit_ns);
-        uint64_t ref = since > first ? since : first;   // the newer of: last completion, the commit the outstanding work started with
-        if (ref && now - ref > limit)
+        uint64_t since = atomic_load(&g_cbw_last_done_ns), first = atomic_load(&g_cbw_last_commit_ns);
+        uint64_t stalled = gpu_stall_ns(clock_gettime_nsec_np(CLOCK_UPTIME_RAW), since, first);
+        if (stalled > limit)
             MDIE("GPU 看门狗：%llu 个命令缓冲提交后 %.0f 秒没有任何完成（GPU 挂起），停止游戏以保护系统；TOTK_GPU_HANG_S 调整或 =0 关闭",
-                 (unsigned long long)(committed - completed), (now - ref) / 1e9);
+                 (unsigned long long)(committed - completed), stalled / 1e9);
     }
     return NULL;
 }
