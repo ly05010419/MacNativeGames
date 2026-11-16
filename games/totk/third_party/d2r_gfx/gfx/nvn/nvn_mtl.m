@@ -11893,6 +11893,13 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
             }
         }
         seen = nil;
+        /* Waited for: the rows sorted, so the rows of one shader pair fall into the same block. A block's shaders are
+           dropped after it (the dictionary below, memory bounded), and the lists' order spread a vertex shader's rows
+           over many blocks: the packaging's check loaded 38,001 libraries for 28,714 pipelines, each again in every block
+           that named it (2026-11-16, express-speed/express-1.log). A render row's key begins with its vertex then its
+           fragment shader (nvn_pso_skey.h pso_skey), so sorting the lines groups them; the rows themselves are
+           independent (fill_row), so the order changes nothing else. */
+        if (done) [todo sortUsingSelector:@selector(compare:)];
         atomic_store(&par_filling, 1); par_write_in_place = 1;
         /* Waited for (packaging's pipeline-archive mode, the title on a first run): on warm_threads() threads, a block's
            shaders first, then its pipelines, as the warm-up does (warm_load_rows, warm_build_rows). One thread took 22 min
@@ -25367,6 +25374,7 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
     totk_rt_fail_soft();   // a shader the translator cannot do yet is counted below, not the end of the seed
     NSMutableArray<NSString *> *keys = [NSMutableArray array];
     unsigned other_stage = 0, bad = 0; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    NSMutableArray<NSArray *> *shaders = [NSMutableArray arrayWithCapacity:n];   // (key, stage, control, code), the corpus's order
     for (uint32_t i = 0; i < n; i++) {
         if (end - p < 14) MDIE("seed-shaders: %s ends inside shader %u of %u", path, i, n);
         uint32_t st, cn, kn; uint16_t ln; memcpy(&st, p, 4); memcpy(&cn, p + 4, 4); memcpy(&kn, p + 8, 4); memcpy(&ln, p + 12, 2); p += 14;
@@ -25378,9 +25386,22 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
            Use the same translator entry points as prog_get, including mesh_ctl. */
         if (stage < 0 || stage > 5) { other_stage++; continue; }
         char key[65]; shader_key_of(ctl, code, kn, key);
-        totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
+        [shaders addObject:@[@(key), @(stage), [NSValue valueWithPointer:ctl], [NSValue valueWithPointer:code]]];
         [keys addObject:@(key)];
-        for (NSDictionary *a in listed[@(key)]) { [listed_jobs addObject:@[@(key), a, @(stage), [NSValue valueWithPointer:ctl], [NSValue valueWithPointer:code]]]; listed_n++; }
+    }
+    /* Their cached indexes and default sources read on all cores first (totk_shader_rt.m totk_rt_prefetch; 95 s of one thread
+       waiting on the disk before, 2026-11-16); the asks below then take them from memory, in the same order as before. */
+    uint64_t tp = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    NSMutableArray<NSArray *> *asks = [NSMutableArray arrayWithCapacity:keys.count];
+    for (NSString *k in keys) { [asks addObject:@[k, answers]]; for (NSDictionary *a in listed[k]) [asks addObject:@[k, a]]; }
+    totk_rt_prefetch(asks);
+    MLOG("[seed] cached indexes and sources of %lu shaders (%lu asks) read in %.1f s (all cores)", (unsigned long)keys.count,
+         (unsigned long)asks.count, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tp) / 1e9);
+    for (NSArray *s in shaders) {
+        NSString *key = s[0]; int stage = [s[1] intValue];
+        const uint8_t *ctl = [s[2] pointerValue], *code = [s[3] pointerValue];
+        totk_rt_variant(key, stage, ctl, code, answers, rt_local(ctl, stage), 1);
+        for (NSDictionary *a in listed[key]) { [listed_jobs addObject:@[key, a, @(stage), [NSValue valueWithPointer:ctl], [NSValue valueWithPointer:code]]]; listed_n++; }
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);

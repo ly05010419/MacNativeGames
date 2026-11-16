@@ -283,6 +283,58 @@ def shader_bundle(tree,record,mode='full'):
     temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
     return bundle
 
+def pipeline_files_stamp(pipelines):
+    """What the App's pipeline archive is (pipeline_bundle): each pipelines-* file's name and size, an archive file also by
+    its modification time (mac_pipeline_files clones it, keeping the time of the file the tool wrote, so an archive the
+    tool did not write again keeps its stamp), the small index files by their bytes (written on every packaging)."""
+    h=hashlib.sha256()
+    for p in sorted(p for p in Path(pipelines).iterdir() if p.is_file() and p.name.startswith('pipelines-')):
+        st=p.stat()
+        h.update(f'{p.name} {st.st_size} {st.st_mtime_ns if p.suffix==".metalarchive" else sha(p)}\n'.encode())
+    return h.hexdigest()
+
+def pipeline_bundle(tree,pipelines,suffix=''):
+    """The App's pipeline archive (compute_pipeline_archive, 6.8 GB in 3,791 files) as a signed bundle of its own, like the
+    shader data (shader_bundle), kept in the work folder and signed again only when an archive file changed. In the App's
+    Resources every update sealed it again: 59 of the 69 s of signing and 10.5 s of every seal check (2026-11-16,
+    scratch/runs/2026-11/express-speed/sign-test.log: an App clone without it signed in 9.6 s, checked in 0.4 s). The
+    archive's record (compute-manifest.json, which names this runtime) stays out of it: build/compute-manifest.json."""
+    bundle=tree/f'build/pipeline-bundles/Pipelines-oot{suffix}.bundle'
+    stamp=bundle.with_name(bundle.name+'.json')
+    want={'format':1,'files':pipeline_files_stamp(pipelines)}
+    if (bundle/'Contents/_CodeSignature/CodeResources').is_file() and stamp.exists() and json.loads(stamp.read_text())==want:
+        return bundle
+    print('pipeline archive bundle: signed again ('+('none in this work folder' if not stamp.exists() else 'an archive file changed')+')',flush=True)
+    temporary=bundle.with_name(bundle.name+'.partial-'+str(os.getpid()))
+    if temporary.exists():raise ValueError('unfinished pipeline bundle: '+str(temporary))
+    files=temporary/'Contents/Resources/pipelines';files.mkdir(parents=True)
+    for p in sorted(Path(pipelines).iterdir()):
+        if p.is_file() and p.name.startswith('pipelines-'):clone_file(p,files/p.name)
+    (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier=f'org.macnativegames.oot.pipelines.oot{suffix.replace("-",".")}',CFBundleName='Pipelines',
+        CFBundlePackageType='BNDL',CFBundleShortVersionString='131072',CFBundleVersion='1')))
+    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)   # nested: not the app
+    subprocess.run(['codesign','--verify','--strict',temporary],check=True)
+    stamp.unlink(missing_ok=True)
+    if bundle.exists():build_helpers().remove_tree(bundle)
+    temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
+    return bundle
+
+HELPER_SIGNATURE=('Contents/_CodeSignature/CodeResources','Contents/Info.plist')
+
+def place_helper(bundle,app,installed):
+    """A signed helper bundle (game data, shader data, pipelines) in the new App's Contents/Helpers. When the installed App
+    (`installed`) carries the same one (the same signature and Info.plist), only its signature goes in, and install_app
+    moves the installed bundle in (build_app.keep_game_data), as update_runtime.py does for Tears of the Kingdom
+    (clone_app_except, shader_signature_only); else the whole bundle is cloned. The shader data's 193,375 files were
+    cloned on every update (~100 s) and, the installed ones being moved in, deleted again. Returns whether only the
+    signature went in."""
+    shared=build_helpers();before=Path(installed)/'Contents/Helpers'/bundle.name
+    same=all((before/rel).is_file() and (before/rel).read_bytes()==(bundle/rel).read_bytes() for rel in HELPER_SIGNATURE)
+    if same:shared.shader_signature_only(app,bundle)
+    else:shared.copy_tree(bundle,app/'Contents/Helpers'/bundle.name)
+    return same
+
 def pipeline_cache(folder, suffix):
     """The pipeline-archive tool's folder for one kind of App ('archive' full, 'archive-title' quick), kept from one chain
     to the next (user 2026-11-15: "mac会有同样问题吗？"). It was named after the chain, so every new chain began empty:
@@ -342,6 +394,11 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
         raise ValueError('incomplete pipeline archive: '+str(report))
     if report['failed']:print(f"[RED] {report['failed']} listed pipelines were not built; see {log}",flush=True)
     target=tree/f'build/pipelines{suffix}'
+    try:   # the last record: an archive file of the same name, size and modification time keeps its digest (below)
+        previous=json.loads((target/'compute-manifest.json').read_text())
+        known={n:(d,tuple(previous.get('file_identity',{}).get(n,())))for n,d in previous.get('files',{}).items()}
+    except (OSError,ValueError,AttributeError):
+        known={}
     count=build_helpers().mac_pipeline_files(cache/'pipelines',target,report['arch'],chain)
     expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
     index=target/f"pipelines-{report['arch']}.tsv"
@@ -351,9 +408,21 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     mesh_indexed=sum(1 for key in actual if key.startswith(MESH_KEY))
     if mesh_rows and not mesh_indexed:raise ValueError(f'the pipeline archive holds none of the {mesh_rows} listed mesh pipelines; see {log}')
     if mesh_indexed<mesh_rows:print(f'[RED] {mesh_rows-mesh_indexed} of {mesh_rows} listed mesh pipelines are not in the archive; see {log}',flush=True)
+    # The archive files' digests: an archive file clone keeps the time of the file the tool wrote (mac_pipeline_files), so
+    # one of the last record's name, size and time keeps its digest; the rest (the index files, rewritten every time, and
+    # archives the tool wrote again) are read, on all cores. Reading all 3,791 files (6.8 GB) again took part of every
+    # express update's ~23 s outside the fill (2026-11-16).
+    def file_digest(p):
+        st=p.stat();ident=(st.st_size,st.st_mtime_ns)
+        old=known.get(p.name)
+        return (old[0] if p.suffix=='.metalarchive' and old and old[1]==ident else sha(p)),ident
+    import concurrent.futures
+    names=sorted(p for p in target.iterdir() if p.is_file() and p.name!='compute-manifest.json')
+    with concurrent.futures.ThreadPoolExecutor(16) as pool:
+        digests=dict(zip((p.name for p in names),pool.map(file_digest,names)))
     report.update(planned=len(rows),listed_render=render_rows,listed_mesh=mesh_rows,mesh_indexed=mesh_indexed,lists=[p.name for p in lists],lists_sha256=lists_sha256,indexed=count,chain=chain,
                   plan_sha256=sha(plan),runtime_sha256=sha(work/'build/oot-native'),
-                  files={p.name:sha(p)for p in sorted(target.iterdir()) if p.is_file() and p.name!='compute-manifest.json'})
+                  files={n:d for n,(d,_) in digests.items()},file_identity={n:list(i) for n,(_,i) in digests.items()})
     (target/'compute-manifest.json').write_text(json.dumps(report,indent=2)+'\n')
     return target
 
@@ -377,8 +446,10 @@ def check_archive_lists(build):
     """The App's pipeline archive must be built from the warm-up lists the App carries (build/pso_title.tsv,
     build/pso_manifest.tsv). On 2026-11-11 a fast update built it from the seed's older list: 2,957 render pipelines in
     the archive, 7,516 in the App's lists, so 4,559 were compiled at the first start. Raises ValueError naming what
-    differs; an App without a pipeline archive has nothing to check."""
-    build=Path(build);record=build/'pipelines/compute-manifest.json'
+    differs; an App without a pipeline archive has nothing to check. The record is build/compute-manifest.json since the
+    archive went into its own bundle (pipeline_bundle, 2026-11-16); build/pipelines/compute-manifest.json in an older App."""
+    build=Path(build);record=build/'compute-manifest.json'
+    if not record.is_file():record=build/'pipelines/compute-manifest.json'
     if not record.is_file():return
     report=json.loads(record.read_text())
     want=report.get('lists_sha256')
@@ -431,21 +502,35 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     """Stage a sealed App containing its runtime data, then replace the closed App. mode: shader_mode, recorded in the
     App (MNGShaders) for its updates and MNG Launcher."""
     mode=mode or shader_mode()
+    clock=[time.monotonic()]
+    def took(what):   # every part's time in the log (user 2026-11-16: "极速更新 还是 太慢 看看如何优化")
+        now=time.monotonic();print(f'   {what}: {now-clock[0]:.1f} s',flush=True);clock[0]=now
     shader_record=verify_shader_resources(tree,mode) if mode!='none' else None
     if shader_record:check_translator(tree,mode)   # never an App whose in-game translator is not its seed's
+    took('shader resources checked')
     suffix=shader_dirs(tree,mode)[2]
     lists=resolve_lists(tree,tree/f'build/warm-lists{suffix}',work/'logs',shared,mode)   # one resolve of the current list: the archive and the App's build/ use it
+    took('warm-up lists resolved')
     pipelines=compute_pipeline_archive(work,tree,lists,mode) if shader_record else None
+    took('pipeline archive')
     prepared=shader_bundle(tree,shader_record,mode) if shader_record else None
+    piped=pipeline_bundle(tree,pipelines,suffix) if pipelines else None
+    took('shader data and pipeline bundles')
     opening_overlay=tree/'extracted/oot/opening-patches'
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
                     '--output',opening_overlay],check=True)
+    took('opening overlay')
     temporary=out.with_name('.'+out.name+'.ready')
     if temporary.exists():raise ValueError('unfinished App staging directory exists; left untouched: '+str(temporary))
     mac=temporary/'Contents/MacOS';res=temporary/'Contents/Resources';data=res/'totk'
     mac.mkdir(parents=True);data.mkdir(parents=True)
     clone_file(work/'build/oot-native',mac/'OcarinaOfTime')
-    if pipelines:shutil.copytree(pipelines,data/'build/pipelines',copy_function=clone_file)
+    if piped:   # the archive in its own signed bundle, read through build/pipelines (totk_pipeline_archive.h exe_rel("pipelines"))
+        kept=place_helper(piped,temporary,out)
+        link=data/'build/pipelines';link.parent.mkdir(parents=True,exist_ok=True)
+        link.symlink_to(os.path.relpath(temporary/'Contents/Helpers'/piped.name/'Contents/Resources/pipelines',link.parent))
+        clone_file(pipelines/'compute-manifest.json',data/'build/compute-manifest.json')   # its record: names this runtime, changes every time
+        print('   pipeline archive: '+('unchanged, moved in from the installed App' if kept else 'bundle cloned in'),flush=True)
     for rel in ('build/game-data/oot','build/shader-service','extracted/oot/exefs',
                 'extracted/firmware/shared-fonts'):
         shutil.copytree(tree/rel,data/rel,copy_function=clone_file)
@@ -454,7 +539,9 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     # the player's first start compile those sources synchronously again.
     libraries=tree/'build/shader-libs'
     if prepared:
-        build_helpers().place_shader_bundle(prepared,temporary,data)
+        kept=place_helper(prepared,temporary,out)   # 193,375 files: the installed App's moved in when they are the same
+        build_helpers().link_shader_data(temporary,data,prepared.name)
+        print('   shader data: '+('unchanged, moved in from the installed App' if kept else 'bundle cloned in'),flush=True)
     elif libraries.is_dir():
         shutil.copytree(libraries,data/'build/shader-libs',copy_function=clone_file)
     shutil.copytree(tree/'extracted/oot/romfs',data/'extracted/oot/romfs',copy_function=clone_file,
@@ -479,6 +566,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     title,manifest=lists   # the archive's lists, beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     clone_file(title,data/'build/pso_title.tsv');clone_file(manifest,data/'build/pso_manifest.tsv')
     if pipelines:check_archive_lists(data/'build')   # never an App whose archive was built from other lists
+    took('App assembled')
     # VideoToolbox is the primary AV1 decoder; the bounded dav1d fallback is linked statically (build_app.codec_libraries
     # builds it from its pinned source), so the App carries no dylib for it, only its license.
     clone_file(GAME/'third_party/dav1d-COPYING',res/'licenses/dav1d-COPYING')
@@ -497,10 +585,14 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     # app started with open waited in launcher.m running_game's open() until someone clicked (2026-11-15, TCC.db: oot's
     # grant was a cdhash, totk / botw / pokopia's an identifier).
     build_app.sign_app(temporary,work/'logs')
-    subprocess.run(['codesign','--verify','--strict',temporary],check=True)
+    took('signed')
+    # The seal is checked once, by install_app (keep_game_data when it moves the installed bundles in, else itself), before
+    # the installed App is touched; a second check here read the 6.8 GB archive again (10.5 s) and could not pass a
+    # signature-only bundle, which is only complete once install_app moved the installed one in.
     # The installed .app folder stays and takes the new contents: macOS keeps its first-run check of an app with the folder.
     while app_running(out):time.sleep(5)   # the build may have taken a while: the App is replaced only once it is closed
     build_app.install_app(temporary,out)
+    took('installed, its seal checked')
     return out
 
 def missing_compute(rows,index_ids):

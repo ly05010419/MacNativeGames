@@ -1767,9 +1767,10 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
     image = 'Contents/Resources/romfs.bin'
     swapped, start = [], len(_moves.done)
     helpers = new / 'Contents/Helpers'
-    for bundle in sorted([*helpers.glob('GameData-*.bundle'), *helpers.glob('ShaderData-*.bundle')]):
+    for bundle in sorted([*helpers.glob('GameData-*.bundle'), *helpers.glob('ShaderData-*.bundle'), *helpers.glob('Pipelines-*.bundle')]):
         # ShaderData (shader_bundle) the same way: 117,000 files moved instead of cloned, sealed and deleted (2026-11-03);
-        # in update_runtime.py's new app it is only its signature (Info.plist, _CodeSignature), what the app's seal records
+        # in update_runtime.py's new app it is only its signature (Info.plist, _CodeSignature), what the app's seal records.
+        # Pipelines: Ocarina of Time's pipeline archive (games/oot/build.py pipeline_bundle, 6.8 GB), the same way (2026-11-16)
         before = old / 'Contents/Helpers' / bundle.name
         if not all((before / rel).is_file() and (before / rel).read_bytes() == (bundle / rel).read_bytes()
                    for rel in ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')):
@@ -1798,9 +1799,9 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         _moves.restore(start)
         swapped = []
     _moves.discard.extend(fresh for _, fresh in swapped)
-    for bundle in helpers.glob('ShaderData-*.bundle'):   # update_runtime.py's signature-only bundle must have been replaced
+    for bundle in [*helpers.glob('ShaderData-*.bundle'), *helpers.glob('Pipelines-*.bundle')]:   # a signature-only bundle must have been replaced
         if not (bundle / 'Contents/Resources').is_dir():
-            raise BuildError(f'{bundle.name}: the installed app\'s shader data could not be moved into the new app; the installed app is unchanged')
+            raise BuildError(f'{bundle.name}: the installed app\'s {"pipeline archive" if bundle.name.startswith("Pipelines-") else "shader data"} could not be moved into the new app; the installed app is unchanged')
     return any(bundle.name.startswith('GameData-') for bundle, _ in swapped)
 
 

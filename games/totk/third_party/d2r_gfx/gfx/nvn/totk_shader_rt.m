@@ -435,6 +435,52 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     }
     return nil;
 }
+/* A seed run (nvn_mtl.m runtime_shader_seed) asks for every shader of the game once, on one thread, under g_rt_lock; each
+   ask read the shader's index and its variant's Metal source from the cache on disk (variants_of, variant_lookup): 42,848
+   shaders took 95 s of every express update, the thread waiting on the external disk (2026-11-16: 649 us for one index
+   read alone, 73 us with 16 threads; scratch/runs/2026-11/express-speed/io-probe.log). Here, before that loop and before
+   any translation runs, the same files are read on all cores and the same checks made: each shader's index, and the
+   Metal source of the variant variant_lookup would take for each ask's answers. The loop then finds them in g_variants
+   and g_msl_checked. A source that fails the check is left out of g_msl_checked, so variant_lookup reads it again and
+   drops it as before: the variants taken and translated again are exactly the ones without this.
+   asks: (shader key, answers) pairs, every shader once with the default answers and the shader list's other states. */
+void totk_rt_prefetch(NSArray<NSArray *> *asks) {
+    NSUInteger n = asks.count;
+    if (!n) return;
+    (void)totk_rt_dir();   // made once (dispatch_once) before the threads
+    NSMutableOrderedSet<NSString *> *unique = [NSMutableOrderedSet orderedSetWithCapacity:n];
+    for (NSArray *ask in asks) [unique addObject:ask[0]];   // not valueForKey: on arrays of arrays it asks each inner element
+    NSArray<NSString *> *shaders = unique.array;
+    NSMutableDictionary<NSString *, NSMutableArray *> *rows = [NSMutableDictionary dictionaryWithCapacity:shaders.count];
+    NSMutableSet<NSString *> *ok = [NSMutableSet set];
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER, *mup = &mu;
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_apply(shaders.count, q, ^(size_t i) { @autoreleasepool {   // each shader's index, as variants_of joins it
+        NSString *shader = shaders[i], *seedIndex = [shader stringByAppendingString:@".variants"];
+        NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
+            ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
+        NSMutableArray *v = [totk_variants_join(seed, variants_file(index_path(shader))) mutableCopy];
+        pthread_mutex_lock(mup); rows[shader] = v; pthread_mutex_unlock(mup);
+    }});
+    dispatch_apply(n, q, ^(size_t i) { @autoreleasepool {   // each ask's variant's source, checked as variant_lookup checks it
+        NSString *shader = asks[i][0]; NSDictionary *answers = asks[i][1];
+        pthread_mutex_lock(mup); NSArray *v = [rows[shader] copy]; pthread_mutex_unlock(mup);
+        for (NSDictionary *row in v) {   // the first whose deps match: the one variant_lookup takes
+            if (!totk_deps_match(row[@"deps"], answers)) continue;
+            NSString *found = row[@"variant"], *msl = totk_rt_text(totk_rt_file([found stringByAppendingString:@"_b.metal"]));
+            if (msl && msl.length >= 64 && ![msl containsString:@"double "] && ![msl containsString:@"unsupported_GLSLstd450"]) {
+                pthread_mutex_lock(mup); [ok addObject:found]; pthread_mutex_unlock(mup);
+            }
+            break;
+        }
+    }});
+    pthread_mutex_lock(&g_rt_lock);
+    if (!g_variants) g_variants = [NSMutableDictionary dictionary];
+    if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
+    [rows enumerateKeysAndObjectsUsingBlock:^(NSString *shader, NSMutableArray *v, BOOL *stop) { (void)stop; if (!g_variants[shader]) g_variants[shader] = v; }];
+    [g_msl_checked unionSet:ok];
+    pthread_mutex_unlock(&g_rt_lock);
+}
 #include "nvn_ctl.h"
 /* Diagnostic, off unless TOTK_SHADER_DUMP_UNSEEDED names a folder (2026-11-12, Pokopia): a shader the game sets whose key is
    not among the game's shaders (the seed's game-shader-keys.json, prepare_ns2_seed.py) is written there once, its control

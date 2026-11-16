@@ -117,11 +117,13 @@ def seed_unchanged(out, files, inputs):
         names = set(old.get('files', {}))
         if not set(files) <= names or not names - set(files) <= GENERATED:
             return False
-        for name, src in files.items():
+        def same(item):   # 128,668 files, two stats each: on all cores (2026-11-16, 117 us a stat on the external disk)
+            name, src = item
             a, b = (out / name).stat(), src.stat()
-            if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
-                return False
-        return True
+            return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+            return all(pool.map(same, files.items(), chunksize=512))
     except (OSError, ValueError, AttributeError):
         return False
 
@@ -131,14 +133,15 @@ def seed_files(cache, verified=None):
     (the variants the seed run checked against its runtime's requests or made), only those, and indexes -> the entries left
     of each shader's index (written into the seed in place of the cache's file)."""
     files, checks, indexes = {}, [], {}
-    for index in sorted(cache.glob('*.variants')):
-        if not VARIANTS.match(index.name):
-            continue
+    # Each index and its files on all cores, put together in the indexes' order as one thread did: 42,848 indexes and two
+    # stats each took most of a minute of every express update on the external disk (2026-11-16: 649 us for one index read
+    # alone, 73 us with 16 threads; scratch/runs/2026-11/express-speed/io-probe.log).
+    def one(index):
         try:
             entries = json.loads(index.read_text())
         except (OSError, ValueError):
-            continue
-        kept = []
+            return None
+        kept, found = [], []
         for entry in entries if isinstance(entries, list) else []:
             name = entry.get('variant') if isinstance(entry, dict) else None
             if not isinstance(name, str) or not VARIANT.match(name):
@@ -149,9 +152,20 @@ def seed_files(cache, verified=None):
                 continue
             metal, refl = cache / f'{name}_b.metal', cache / f'{name}_b.json'
             if metal.is_file() and metal.stat().st_size and refl.is_file():
-                checks.append((name, refl))
-                files[metal.name], files[refl.name] = metal, refl
+                found.append((name, metal, refl))
                 kept.append(entry)
+        return entries, kept, found
+    import concurrent.futures
+    candidates = sorted(p for p in cache.glob('*.variants') if VARIANTS.match(p.name))
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        results = list(pool.map(one, candidates, chunksize=256))
+    for index, result in zip(candidates, results):
+        if result is None:
+            continue
+        entries, kept, found = result
+        for name, metal, refl in found:
+            checks.append((name, refl))
+            files[metal.name], files[refl.name] = metal, refl
         if kept:
             files[index.name] = index
             if verified is not None and len(kept) != len(entries):
@@ -162,9 +176,8 @@ def seed_files(cache, verified=None):
         reflection = json.loads(refl.read_text())
         if reflection.get('chain') != CHAIN or reflection.get('key') != name + '_b' or not reflection.get('entry'):
             raise ValueError(f'invalid seed reflection: {refl}')
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
-        for _ in pool.map(check, checks):
+        for _ in pool.map(check, checks, chunksize=256):
             pass
     return (files, indexes) if verified is not None else files
 
