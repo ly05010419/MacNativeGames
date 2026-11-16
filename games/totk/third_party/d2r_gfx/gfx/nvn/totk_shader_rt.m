@@ -14,6 +14,7 @@
 #include "totk_shader_rt.h"
 #include "totk_variant_rows.h"
 #include "totk_rt_carry.h"
+#include "totk_rt_translator.h"
 #include "dmsh_chain.h"
 /* Test launch preflight reads the compiled identity, never a source header
    standing in for the binary it is about to execute. */
@@ -124,6 +125,31 @@ NSString *totk_rt_dir(void) {
         g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%@", cacheChain];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
+#if !TARGET_OS_IPHONE
+        { /* The translator that will write into this folder (start_service's program) is the one it records; a folder
+             another translator wrote is set aside, its pipeline archive and collected list still carried below
+             (totk_rt_translator.h). Ocarina of Time's folders that record none were written by the App's older
+             translator after the 2026-11-15 express updates (games/oot/build.py install_translator). */
+          const char *xe = getenv("TOTK_SHADER_XLATE");
+          NSString *service = xe && *xe ? @(xe) : [root_dir() stringByAppendingString:@"/build/shader-service/totk_xlate"];
+          NSString *translator = totk_file_sha256(service), *why = nil;
+#ifdef GAME_OOT
+          const BOOL unrecorded_untrusted = YES;
+#else
+          const BOOL unrecorded_untrusted = NO;   // build_app.py clones the repository's translator into every App with its seed
+#endif
+          NSString *retired = totk_rt_translator_check(g_dir, translator, unrecorded_untrusted, &why);
+          if (retired) LOG("[shader-cache] 本机缓存目录换新的：%s（%s）；旧的翻译留在 %s，管线存档和收集清单照常接过来",
+                           g_dir.lastPathComponent.UTF8String, why.UTF8String, retired.lastPathComponent.UTF8String);
+          else if (why) LOG("[shader-cache] 【红】本机缓存目录 %s：%s", g_dir.UTF8String, why.UTF8String);
+          NSData *md = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"seed-manifest.json"]];
+          NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:nil] : nil;
+          NSString *seedTranslator = [m isKindOfClass:NSDictionary.class] ? m[@"translator_sha256"] : nil;
+          if (translator && [seedTranslator isKindOfClass:NSString.class] && ![seedTranslator isEqualToString:translator] && !(xe && *xe))
+              LOG("[shader-cache] 【红】App 的翻译器 %.12s 不是种子用的 %.12s：游玩中翻译的着色器和种子不是同一个翻译器做的，重新打包",
+                  translator.UTF8String, seedTranslator.UTF8String);
+        }
+#endif
         // a new chain or context: this device's pipeline archive and collected list come along (totk_rt_carry.h)
         for (NSString *from in totk_rt_carry_over(g_dir))
             LOG("[shader-cache] 本机的 %s 从上一个缓存目录接过来：%s（翻译链或翻译上下文变了；管线由 Metal 逐条核对，着色器变了的才重编）",

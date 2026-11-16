@@ -393,11 +393,46 @@ def check_archive_lists(build):
         if report.get(field)!=rows:
             raise ValueError(f"the pipeline archive planned {report.get(field)} listed {what} pipelines, the App's lists name {rows}")
 
+TRANSLATOR_FILES=(('totk_xlate','totk_xlate.sha256'),('oot_write_proof.dylib','oot_write_proof.dylib.sha256'))
+
+def install_translator(tree):
+    """This repository's shader translator and proof analyzer (checked against their .sha256) into the work tree's
+    build/shader-service, which package_app copies into the App: the program the game runs to translate a shader or
+    variant its seed lacks. Called by every path that packages: the full build, update_runtime and update_shaders.
+    2026-11-16 (user: "极速更新 有bug？" / "修 1234"): only the full build installed it, while every update made the seed
+    again with the repository's translator (prepare_ns2_seed.py uses its own copy), so the express updates since 11-15
+    shipped the seed of translator 9845718d with the in-game translator 3b26a94d of 11-11 (before chain v28's mesh fix
+    and the HMMA fix). Unchanged files stay; a changed one is a new file, never written over a program macOS ran."""
+    service=tree/'build/shader-service';service.mkdir(parents=True,exist_ok=True)
+    prebuilt=GAME/'prebuilt/macos-arm64'
+    for name,checksum in TRANSLATOR_FILES:
+        want=(prebuilt/checksum).read_text().split()[0]
+        if sha(prebuilt/name)!=want:raise ValueError(f'{prebuilt/name} does not match {checksum}: check it out again')
+        target=service/name
+        if target.is_file() and sha(target)==want:continue
+        temporary=service/(name+'.new');temporary.unlink(missing_ok=True)
+        shutil.copy2(prebuilt/name,temporary);os.replace(temporary,target)
+        print(f'shader translator: {name} installed from this repository ({want[:12]})',flush=True)
+    shutil.copy2(prebuilt/'SPIRV-Tools.LICENSE',service/'SPIRV-Tools.LICENSE')
+
+def check_translator(tree,mode):
+    """The App's in-game translator (build/shader-service/totk_xlate) is the one its seed was translated with
+    (seed-manifest.json translator_sha256); otherwise the seed's shaders and the ones translated in play differ in
+    translator, and the device cache named after the seed's translation context holds the other's (install_translator)."""
+    manifest=shader_dirs(tree,mode)[0]/'seed-manifest.json'
+    want=json.loads(manifest.read_text()).get('translator_sha256')
+    service=tree/'build/shader-service/totk_xlate'
+    have=sha(service) if service.is_file() else None
+    if not want or have!=want:
+        raise ValueError(f"the App's shader translator {service} ({(have or 'missing')[:12]}) is not the one its seed was "
+                         f"translated with ({(want or 'not recorded')[:12]}, {manifest}): not packaged")
+
 def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=None,mode=None):
     """Stage a sealed App containing its runtime data, then replace the closed App. mode: shader_mode, recorded in the
     App (MNGShaders) for its updates and MNG Launcher."""
     mode=mode or shader_mode()
     shader_record=verify_shader_resources(tree,mode) if mode!='none' else None
+    if shader_record:check_translator(tree,mode)   # never an App whose in-game translator is not its seed's
     suffix=shader_dirs(tree,mode)[2]
     lists=resolve_lists(tree,tree/f'build/warm-lists{suffix}',work/'logs',shared,mode)   # one resolve of the current list: the archive and the App's build/ use it
     pipelines=compute_pipeline_archive(work,tree,lists,mode) if shader_record else None
@@ -548,6 +583,7 @@ def update_runtime(app,work=None):
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+    install_translator(tree)   # the seed below is this repository's translator's; so must the App's in-game one be
     # The new runtime asks for every translation again: the ones whose request is the same are kept, the others made again
     # (prepare_ns2_seed.py, totk_shader_rt.m seed_verified), and only the libraries whose source changed are compiled.
     shader_steps(work,tree,logs,run,mode=mode)
@@ -582,6 +618,7 @@ def update_shaders(app,listfile,work=None):
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+    install_translator(tree)   # the App's in-game translator is the one the seed is checked against above
     shader_steps(work,tree,logs,run,shared=listfile)   # every shader: a quick App becomes a full one (补全着色器)
     folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
     package_app(work,tree,app,'library' if folder else 'app',folder,shared=listfile,mode='full')
@@ -700,15 +737,7 @@ def build(args, source):
     if args.shared_fonts:shutil.copytree(args.shared_fonts.expanduser().resolve(),fonts,dirs_exist_ok=True)
     if not (fonts/'manifest.json').exists():raise ValueError('pass --shared-fonts with the six verified firmware fonts')
     run([py,'scripts/prepare_shared_fonts.py','--version','oot'],'prepare-shared-fonts')
-    service=tree/'build/shader-service';service.mkdir(parents=True,exist_ok=True)
-    binary=GAME/'prebuilt/macos-arm64/totk_xlate'
-    if sha(binary)!=(binary.with_suffix('.sha256')).read_text().split()[0]:raise ValueError('shader translator checksum mismatch')
-    temporary_service=service/'totk_xlate.new'
-    shutil.copy2(binary,temporary_service);os.replace(temporary_service,service/'totk_xlate')
-    proof=GAME/'prebuilt/macos-arm64/oot_write_proof.dylib'
-    if sha(proof)!=proof.with_suffix('.dylib.sha256').read_text().split()[0]:raise ValueError('shader proof analyzer checksum mismatch')
-    shutil.copy2(proof,service/proof.name)
-    shutil.copy2(proof.with_name('SPIRV-Tools.LICENSE'),service/'SPIRV-Tools.LICENSE')
+    install_translator(tree)
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j2'],'native-runtime',work)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
