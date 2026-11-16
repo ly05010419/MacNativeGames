@@ -32,6 +32,16 @@ class HudEveryKind(unittest.TestCase):
                 text = f.read_text()
                 self.assertIn('static const int order[]=HUD_ORDER;', text)
                 self.assertNotIn('for(int i=0;i<4;i++){char t[128];int hl=0;', text)
+                self.assertIn('if(!hud_line_shown(i)||!hud_snapshot(i,t,sizeof t,&hl))continue;', text)   # the overlay choice decides
+
+    def test_fps_full_information_is_a_settings_choice(self):   # user 2026-11-16: "在设置里 新建一个 叫 fps 全信息"
+        self.assertIn('HUD_MODE_FULL = 3', self.header)
+        for game in ('oot', 'totk'):
+            with self.subTest(game=game):
+                panel = (ROOT / f'games/{game}/runtime/settings_panel.h').read_text()
+                self.assertIn('settings_text("FPS 全信息', panel)
+                self.assertIn('@[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)]', panel)
+                self.assertIn('v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v)', panel)   # kept between runs
 
     def test_every_line_but_fps_and_load_is_published_on_its_own(self):
         start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')

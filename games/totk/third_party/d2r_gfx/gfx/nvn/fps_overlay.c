@@ -37,14 +37,23 @@ static const Glyph FONT[] = {
     {' ', {0, 0, 0, 0, 0, 0, 0}},
 };
 
-/* The settings panel's overlay choice (key 1 opens it, runtime/frontend.m): all, minimal (FPS only) or off. */
+/* The settings panel's overlay choice (key 1 opens it, runtime/frontend.m): all, FPS full information, minimal (FPS only)
+   or off. */
 static _Atomic int g_hud_mode = HUD_MODE_ALL;
 int fps_overlay_hud_mode(void) { return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
 int fps_overlay_hints_enabled(void) { return fps_overlay_hud_mode() != HUD_MODE_OFF; }
-int fps_overlay_full_hud(void) { return fps_overlay_hud_mode() == HUD_MODE_ALL; }
+int fps_overlay_full_hud(void) { int m = fps_overlay_hud_mode(); return m == HUD_MODE_ALL || m == HUD_MODE_FULL; }
 void fps_overlay_set_hud_mode(int mode) {
-    if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL)
+    if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL || mode == HUD_MODE_FULL)
         atomic_store_explicit(&g_hud_mode, mode, memory_order_relaxed);
+}
+int hud_line_shown(int line) {
+    switch (fps_overlay_hud_mode()) {
+    case HUD_MODE_FULL: return line >= 0 && line < HUD_LINES;
+    case HUD_MODE_ALL: return line == HUD_FPS || line == HUD_SHADER || line == HUD_PSO || line == HUD_LOAD;
+    case HUD_MODE_MINIMAL: return line == HUD_FPS;
+    default: return 0;
+    }
 }
 
 int fps_overlay_enabled(void) {
@@ -255,9 +264,13 @@ void hitch_text(char *out, size_t n, const hitch_info *h) {
     double held = h->frame_ms > h->submit_ms ? h->frame_ms : h->submit_ms;
     double rest = h->submit_ms - h->make_ms - h->upload_ms;
     if (rest < 0) rest = 0;
-    snprintf(out, n, TOTK_UI("卡顿 %.0f ms @%.1f s：建管线 %u + 库 %u 共 %.0f ms · 贴图 %u 张 %.0f ms · 其余提交 %.0f ms · GPU %.0f ms%s",
-                             "Hitch %.0f ms @%.1f s: pipelines %u + libraries %u %.0f ms · textures %u %.0f ms · rest of submit %.0f ms · GPU %.0f ms%s"),
-             held, h->at_s, h->pipelines, h->libraries, h->make_ms, h->uploads + h->reuploads, h->upload_ms, rest, h->gpu_ms,
+    /* The time of the frame interval outside the submit and present (the game's own work between two frames, or a wait):
+       with it the parts add up to the hitch (2026-11-16: a 63 ms hitch showed 8 ms of submit and nothing for the rest). */
+    double outside = h->frame_ms - h->submit_ms;
+    if (outside < 0) outside = 0;
+    snprintf(out, n, TOTK_UI("卡顿 %.0f ms @%.1f s：建管线 %u + 库 %u 共 %.0f ms · 贴图 %u 张 %.0f ms · 其余提交 %.0f ms · 提交外 %.0f ms · GPU %.0f ms%s",
+                             "Hitch %.0f ms @%.1f s: pipelines %u + libraries %u %.0f ms · textures %u %.0f ms · rest of submit %.0f ms · outside submit %.0f ms · GPU %.0f ms%s"),
+             held, h->at_s, h->pipelines, h->libraries, h->make_ms, h->uploads + h->reuploads, h->upload_ms, rest, outside, h->gpu_ms,
              h->hidden ? TOTK_UI("（读取画面里）", " (loading screen)") : "");
 }
 void hitch_count_text(char *out, size_t n, uint64_t all, uint64_t shown, uint64_t hidden, double shown_ms) {

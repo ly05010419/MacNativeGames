@@ -4,7 +4,7 @@
    the version in the bottom-left corner instead of the overlay box; no key hints at the bottom. One row per setting, a
    pop-up menu, a switch or a slider, each applied at once:
    Display
-     overlay              all / FPS + playtime / off               fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
+     overlay              all / FPS full information / FPS + playtime / off   fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
      FPS graph            switch, default on                 fps-graph.txt above the game's folder (both games)
      frame lock           off / 30 / 40 / 60 / 72 / 90 / 120  nvn_fps_lock_set (gfx/nvn/hle_nvn.c; user 2026-10-25 "锁帧")
                                                              frame lock and frame interpolation exclude each other: picking
@@ -281,7 +281,7 @@ static void settings_effects_restore(void) {}
 #endif
 static void settings_restore_begin(void) {
  int v;char word[32];
- if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_MINIMAL)fps_overlay_set_hud_mode(v);
+ if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v);
  if(!getenv("TOTK_MFX")&&runtime_setting_word("graphics-frame.txt",word,sizeof word)){
   int n=0;char tail=0;
   if(sscanf(word,"lock-%d %c",&n,&tail)==1&&(n>0&&totk_fps_limit_valid(n))){dm_gfx_set_flag("mfx_interp",MFX_OFF);nvn_fps_lock_set(n);}
@@ -851,8 +851,10 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),
-  @[settings_text("全部（FPS、着色器、读取、游玩时间）","All (FPS, shaders, load, playtime)"),settings_text("FPS 与游玩时间","FPS + playtime"),settings_on_off(0)],
-  @[@(HUD_MODE_ALL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
+  @[settings_text("全部（FPS、着色器、读取、游玩时间）","All (FPS, shaders, load, playtime)"),
+    settings_text("FPS 全信息（另加卡顿、着色器库、管线、存档没命中）","FPS full information (also hitches, libraries, pipelines, archive misses)"),   // user 2026-11-16
+    settings_text("FPS 与游玩时间","FPS + playtime"),settings_on_off(0)],
+  @[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_shared_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];

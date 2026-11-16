@@ -398,9 +398,9 @@ static NSString *hud_settings_hint(void) {
   NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium];
   NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
   NSMutableAttributedString *a=[NSMutableAttributedString new];
-  int full=fps_overlay_full_hud();   // FPS only: the FPS line (line 0); the others keep their last text, so skip them
+  // hud_line_shown: which lines the overlay choice shows (the hidden ones keep their last text, so they are skipped)
   static const int order[]=HUD_ORDER;   // FPS, shaders, libraries, render pipelines, in play, the other kinds, the rest, load (user 2026-11-16: "都要显示")
-  for(int o=0;o<(int)(sizeof order/sizeof *order);o++){int i=order[o];char t[HUD_TEXT_MAX];int hl=0;if((!full&&i!=HUD_FPS)||!hud_snapshot(i,t,sizeof t,&hl))continue;
+  for(int o=0;o<(int)(sizeof order/sizeof *order);o++){int i=order[o];char t[HUD_TEXT_MAX];int hl=0;if(!hud_line_shown(i)||!hud_snapshot(i,t,sizeof t,&hl))continue;
    [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
   if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
   if(playtime)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[playtime.text stringByAppendingString:@"\n"]

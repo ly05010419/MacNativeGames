@@ -14,8 +14,11 @@ typedef struct { int fps, screen_w, screen_h, mfx, gen, big, scene_w, scene_h; }
 
 int fps_overlay_enabled(void);
 /* Shared user toggle for every in-picture HUD layer: FPS, shader collection and load telemetry. */
-/* The settings panel (key 1): HUD_MODE_ALL (FPS, shader collection, load), HUD_MODE_MINIMAL (FPS only) or HUD_MODE_OFF. */
-enum { HUD_MODE_OFF = 0, HUD_MODE_ALL = 1, HUD_MODE_MINIMAL = 2 };
+/* The settings panel (key 1): HUD_MODE_ALL (FPS, shader collection, load), HUD_MODE_MINIMAL (FPS only), HUD_MODE_OFF, or
+   HUD_MODE_FULL, "FPS 全信息" (user 2026-11-16: "fps pannel 现在这么多信息 在设置里 新建一个 叫 fps 全信息"): ALL's lines and every
+   other line of the corner panel (the hitches, shader libraries, pipelines made in play, archive misses, the other kinds,
+   the rest). hud_line_shown says which line each mode shows. graphics-overlay.txt keeps the number. */
+enum { HUD_MODE_OFF = 0, HUD_MODE_ALL = 1, HUD_MODE_MINIMAL = 2, HUD_MODE_FULL = 3 };
 int fps_overlay_hud_mode(void);
 int fps_overlay_hints_enabled(void);   /* the FPS readout shows (all or minimal) */
 int fps_overlay_full_hud(void);        /* everything shows (all) */
@@ -53,6 +56,7 @@ void hitch_text(char *out, size_t n, const hitch_info *h);          /* one hitch
 void hitch_count_text(char *out, size_t n, uint64_t all, uint64_t shown, uint64_t hidden, double shown_ms);
 void hitch_overlay_publish(uint64_t now_ns);   /* the panel's hitch lines, yellow for 3 s after a new hitch */
 enum { HUD_TEXT_MAX = 192 };   // bytes of one panel line with its NUL (a Chinese character is 3; the hitch lines need ~150)
+int hud_line_shown(int line);   /* the corner panel shows this HUD_* line in the current HUD_MODE_* */
 int hud_compact(void);
 void hud_publish(int line, const char *text, int highlight);
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* 0: the line was never published (hidden or not known yet) */
