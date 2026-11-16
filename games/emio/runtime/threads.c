@@ -437,7 +437,7 @@ int svc_thread(int num, uint64_t *regs) {
     }
     case 0x1D: {  // SignalProcessWideKey(x0 条件键, w1 个数，<=0 全部) | SignalProcessWideKey(x0 condition key, w1 count, <=0 all)
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
-        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=300) fprintf(stderr,"[emio-signal] #%u key=%llx cnt=%d lr=%llx\n",k,(unsigned long long)key,cnt,(unsigned long long)regs[30]); }
+        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=3000) fprintf(stderr,"[emio-signal] #%u key=%llx cnt=%d lr=%llx\n",k,(unsigned long long)key,cnt,(unsigned long long)regs[30]); }
         pthread_mutex_lock(&G);
         for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) lock_acquire_for(w, w->waddr, w->wtag);   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
         int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }
