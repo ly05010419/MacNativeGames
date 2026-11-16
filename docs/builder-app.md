@@ -22,6 +22,30 @@ need a checkout. At first use, the source is verified and extracted to
 available to games that recorded them. Building a game still requires Apple's command line tools and the
 player's own game files and keys.
 
+### Code updates without a new Launcher (1.0.2 and newer)
+
+Before 1.0.2 a Launcher only ever ran the source it shipped with: an express update rebuilt the same code, and a fix
+reached players only through a new Launcher download (2026-11-16: a 1.0.0 player kept the Ocarina of Time grass bug fixed
+two days earlier). From 1.0.2 the Launcher also runs newer code from signed source releases:
+
+- **Published by hand.** The maintainer picks a pushed commit and publishes it as a GitHub release tagged `source-*`
+  with three files: `mng-source.json` (commit, commit time, archive name, SHA-256 and size, the oldest Launcher it works
+  with), `mng-source.json.sig` (its Ed25519 signature) and `mng-source-<commit>.tar.gz` (`git archive` of the commit).
+  The private key stays in the maintainer's keychain; nothing is published automatically.
+- **Checked by the signed app.** `tools/builder_app/source_updates.py` and `bundled_job.py` ship inside the signed
+  Launcher, never inside a source archive. A release is used only when the signature verifies with the public key in the
+  Launcher's own `Info.plist` (`MNGSourcePublicKey`, from `tools/builder_app/source_signing.pub`), the archive has the
+  size and SHA-256 the manifest names, its commit is newer than the Launcher's own source, and it asks for no newer
+  Launcher (otherwise the update's log says which Launcher to download).
+- **When.** The home page reads the release list at most once in ten minutes and downloads new code in the background;
+  pressing any update (express, fast or full) first makes sure the newest code is here, and its log names the code it
+  builds with (`Code: <commit>`). No network or a bad release leaves the code already on the Mac.
+- **Where.** Downloaded code goes to the same `sources/<archive-sha256>` folders with its manifest beside it; the game's
+  overlay then shows that commit as its build.
+- **Privacy.** GitHub is asked with the User-Agent `MNG-Launcher` and nothing about the player.
+
+`MNG_SOURCE_UPDATES=0` in the Launcher's environment keeps it on its own source.
+
 ## Build a portable copy locally
 
 Local compilation is supported independently of the maintainer's signing credentials and release tools.
