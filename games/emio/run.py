@@ -42,6 +42,9 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal4"):
         environment["TOTK_FORCE_VISIBLE"]="1"
         environment["TOTK_FS_LOG"]="1"
         environment["TOTK_INPUT_LOG"]="1"
+        import os as _os2
+        _s=_os2.path.join(str(session),"wshot-%d.png")
+        environment["TOTK_WINDOW_SHOT"]="1,2,3:"+_s
         import os as _os
         if _os.getenv("EMIO_RAW_FAULT"): environment["EMIO_RAW_FAULT"]="1"
         environment["TOTK_ATT_SNAPSHOT"]="1"

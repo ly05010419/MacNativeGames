@@ -9,6 +9,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <execinfo.h>
+extern uint64_t runtime_host_image_base(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -221,10 +223,29 @@ static void fs_log(const char *what,const char *path){static int on=-1;static ui
 void runtime_fs_log(const char *what,const char *path){fs_log(what,path);}
 unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) {
  { sigjmp_buf jbo; runtime_fault_guard=&jbo;
-  if(sigsetjmp(jbo,1)){ runtime_fault_guard=NULL; return NOT_FOUND; } }
+  if(path){ sigjmp_buf jb2; runtime_fault_guard=&jb2; int ok=0;
+   if(sigsetjmp(jb2,1)) ok=0;
+   else { volatile const char *v=(volatile const char *)path; unsigned j=0;
+    while(j<512){ if(!v[j]){ok=1;break;} j++; } }
+   runtime_fault_guard=&jbo;
+   if(!ok){ char bb[64];int nn=0;const char *hh="[emio] open BAD PATH ptr=";while(*hh)bb[nn++]=*hh++;
+    uint64_t av2=(uint64_t)path;for(int k=15;k>=0;k--)bb[nn++]="0123456789abcdef"[(av2>>(k*4))&15];
+    bb[nn++]='\n';write(2,bb,nn); runtime_fault_guard=NULL; return NOT_FOUND; } }
+  if(sigsetjmp(jbo,1)){ runtime_fault_guard=NULL; { void *fr[12]; int fn=backtrace(fr,12);
+   char b[256];int n=0;const char *h="[emio] open-fault-bt ";while(*h)b[n++]=*h++;
+   for(int i=0;i<fn&&n<240;i++){ uint64_t av=(uint64_t)fr[i]-runtime_host_image_base();
+    for(int k=7;k>=0;k--)b[n++]="0123456789abcdef"[(av>>(k*4))&15]; b[n++]=' '; }
+   b[n++]='\n';write(2,b,n); } return NOT_FOUND; } }
  fs_log("rom",path?path:"(null)");
- if(!out||mode!=1){ runtime_fault_guard=NULL; return UNSUPPORTED; }const char *p=rom_path(path);if(!p){ runtime_fault_guard=NULL; return NOT_FOUND; }uint64_t i=lower(p);if(i>=file_count||strcmp(p,entry_name(entry(i)))){ runtime_fault_guard=NULL; return NOT_FOUND; }runtime_fault_guard=NULL;
- uint8_t ov=0;for(unsigned k=0;k<noverlay;k++)if(overlays[k].index==i)ov=(uint8_t)(k+1);
+ if(!out||mode!=1){ runtime_fault_guard=NULL; return UNSUPPORTED; }const char *p=rom_path(path);
+ {char b[160];int n=0;const char *h="[emio] open step1 path=";while(*h)b[n++]=*h++;
+  if(p){unsigned j=0;while(j<100&&p[j]){b[n++]=p[j];j++;} if(j>=100){b[n++]='.';b[n++]='.';}}else{const char *h2="(null rel)";while(*h2)b[n++]=*h2++;}
+  b[n++]='\n';write(2,b,n);}
+ if(!p){ runtime_fault_guard=NULL; return NOT_FOUND; }uint64_t i=lower(p);
+ {char b[32];int n=0;const char *h="[emio] open step2 i=";while(*h)b[n++]=*h++;uint64_t vv=i;char t2[24];int j=0;
+  do{t2[j++]='0'+vv%10;vv/=10;}while(vv);while(j)b[n++]=t2[--j];b[n++]='\n';write(2,b,n);}
+ if(i>=file_count||strcmp(p,entry_name(entry(i)))){ runtime_fault_guard=NULL; return NOT_FOUND; }runtime_fault_guard=NULL;
+ uint8_t ov=0;if(noverlay<100)for(unsigned k=0;k<noverlay;k++)if(overlays[k].index==i)ov=(uint8_t)(k+1);
  pthread_mutex_lock(&lock);for(unsigned j=1;j<NH;j++)if(!handles[j]){handles[j]=i+1;handle_ovl[j]=ov;*out=0x100000000ULL+j;pthread_mutex_unlock(&lock);return 0;}pthread_mutex_unlock(&lock);runtime_fail("file handle table full");return INVALID;
 }
 static int handle_entry(uint64_t h,Entry *e) {if(h<=0x100000000ULL||h>=0x100000000ULL+NH)return 0;pthread_mutex_lock(&lock);uint64_t i=handles[h-0x100000000ULL];pthread_mutex_unlock(&lock);if(!i)return 0;*e=entry(i-1);return 1;}
@@ -265,10 +286,11 @@ int runtime_romfs_owns(const char *path) {
  else { if(owns_one(mount_name,path))r=1; else if(nmount_alias<1000) for(unsigned i=0;i<nmount_alias;i++)if(owns_one(mount_alias[i],path)){r=1;break;}
   if(!r){ if(owns_one("app0",path))r=1; else if(owns_one("rom",path))r=1; } }
  runtime_fault_guard=NULL;
- { static _Atomic unsigned h=0; unsigned k=h++; if((k%200)==0) { char b[96];int n=0;const char *hh="[emio] owns health nmount=";while(*hh)b[n++]=*hh++;
-  unsigned m=nmount_alias;char t2[12];int j=0;do{t2[j++]='0'+m%10;m/=10;}while(m);while(j)b[n++]=t2[--j];
-  const char *h2=" files=";while(*h2)b[n++]=*h2++;uint64_t f=file_count;char t3[24];j=0;do{t3[j++]='0'+f%10;f/=10;}while(f);while(j)b[n++]=t3[--j];
-  b[n++]='\n';write(2,b,n); } }
+ { static _Atomic unsigned h=0; unsigned k=h++; if((k%200)==0) { char b[256];int n=0;
+  n+=snprintf(b+n,sizeof b-n,"[emio] health nmount=%u files=%llu nov=%u idx=%llx sz=%llu soff=%llu\n",
+   nmount_alias,(unsigned long long)file_count,noverlay,(unsigned long long)index_bytes,
+   (unsigned long long)index_size,(unsigned long long)strings_offset);
+  if(n>0)write(2,b,(size_t)n); } }
  if(!r) { char b[128];int n=0;const char *h="[emio] owns MISS nmount=";while(*h)b[n++]=*h++;
   unsigned m=nmount_alias;char t2[12];int k=0;do{t2[k++]='0'+m%10;m/=10;}while(m);while(k)b[n++]=t2[--k];
   const char *h2=" alias0=";while(*h2)b[n++]=*h2++;

@@ -312,6 +312,8 @@ void runtime_dispatch(uint64_t ret,uint64_t *regs) {
 }
 /* Signal diagnostics use only stack buffers + write; no guest continuation. */
 __thread sigjmp_buf *runtime_fault_guard;
+static uint64_t host_image_base; /* precomputed via dladdr at startup (async-safe subtract in handler) */
+uint64_t runtime_host_image_base(void) { return host_image_base; }
 static void signal_hex(const char *label,uint64_t value) {
  char b[128];size_t n=0;while(*label)b[n++]=*label++;b[n++]='0';b[n++]='x';
  for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(value>>(i*4))&15];b[n++]='\n';write(2,b,n);
@@ -344,8 +346,10 @@ static void crash(int num,siginfo_t *info,void *context) {
   if((insn&~31u)==0xd53b0020u){if(rt!=31)u->uc_mcontext->__ss.__x[rt]=HOST_CTR_EL0;u->uc_mcontext->__ss.__pc+=4;in_crash=0;return;}   /* mrs Xt, CTR_EL0 */
   if((insn&~31u)==0xd50b7e20u){uintptr_t a=rt==31?0:(uintptr_t)u->uc_mcontext->__ss.__x[rt];sys_dcache_flush((void *)(a&~(uintptr_t)127),128);u->uc_mcontext->__ss.__pc+=4;in_crash=0;return;}   /* dc civac, Xt */
  }
- if((num==SIGBUS||num==SIGSEGV)){char b[64];int n=0;const char *h="[emio] fault guard=";while(*h)b[n++]=*h++;uint64_t av=(uint64_t)runtime_fault_guard;
-  for(int i=7;i>=0;i--)b[n++]="0123456789abcdef"[(av>>(i*4))&15];b[n++]='\n';write(2,b,n);
+ if((num==SIGBUS||num==SIGSEGV)){char b[96];int n=0;const char *h="[emio] fault guard=";while(*h)b[n++]=*h++;uint64_t av=(uint64_t)runtime_fault_guard;
+  for(int i=7;i>=0;i--)b[n++]="0123456789abcdef"[(av>>(i*4))&15];
+  const char *h2=" pc-off=";while(*h2)b[n++]=*h2++;uint64_t pv=u->uc_mcontext->__ss.__pc-host_image_base;
+  for(int i=7;i>=0;i--)b[n++]="0123456789abcdef"[(pv>>(i*4))&15];b[n++]='\n';write(2,b,n);
   if(runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;in_crash=0;siglongjmp(*g,1);}}   /* guarded host read of guest memory (uniform snapshot copies) */
  if(runtime_gfx_fault(info->si_addr,(u->uc_mcontext->__es.__esr>>6)&1,context)){in_crash=0;return;}
  /* TEMP-DIAG: snap crash diagnostics re-enter (nested fault) on this path; skip to get raw fault. */
@@ -426,6 +430,7 @@ static void *probe_thread(void *unused) {
 static void probe(void) {
  uintptr_t slot;memcpy(&slot,modules[0].base+PROBE_SLOT,8);
  need(slot==(uintptr_t)required("_ZN2nn2os13GetSystemTickEv"),"main PLT GOT resolution");
+ {Dl_info di;if(dladdr((void*)&runtime_fault_guard,&di)&&di.dli_fbase)host_image_base=(uint64_t)di.dli_fbase;}
  pthread_t threads[4];for(unsigned i=0;i<4;i++)need(pthread_create(&threads[i],NULL,probe_thread,NULL)==0,"probe thread");
  for(unsigned i=0;i<4;i++)need(pthread_join(threads[i],NULL)==0,"join probe");need(timer_calls==4000,"timer gate count");
  printf("{\"status\":\"pass\",\"execution\":\"native arm64 main PLT -> sdk -> host timer -> return\",\"calls\":4000,\"threads\":4,\"modules\":[");
