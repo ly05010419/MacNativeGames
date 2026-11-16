@@ -48,6 +48,8 @@ static struct {
  {0x10f1b0, 0, K_EMU, 0, "pool-init"},
  {0x1108e0, 0, K_EMU, 0, "pool1108e0"},
  {0x94100, 0, K_EMU, 0, "pool94100"},
+ {0x1cc710, 0, K_ONESHOT, 1, "create-applet"},
+ {0x35f630, 0, K_ONESHOT, 1, "start-applet"},
  {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
@@ -222,6 +224,12 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
+ if (sites[id].off == 0x1cc710 && hits[id] <= 3) {
+  fprintf(stderr, "[snap] CreateLibraryApplet appletId=%llx\n", (unsigned long long)x[1]);
+ }
+ if (sites[id].off == 0x35f630 && hits[id] <= 3) {
+  fprintf(stderr, "[snap] StartLibraryAppletEasy appletId=%llx\n", (unsigned long long)x[0]);
+ }
  if ((sites[id].off == 0x1108e0 || sites[id].off == 0x94100) && hits[id] <= 5) {
   uint64_t tid=0; pthread_threadid_np(NULL,&tid);
   fprintf(stderr, "[snap] pool1108e0/94100 off=%x tid=%llx\n", sites[id].off, (unsigned long long)tid);
