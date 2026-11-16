@@ -42,6 +42,8 @@ static struct {
 // DISABLED-FOR-CLEAN-BOOT  {0x94100,  0, K_ONESHOT, 0, "bl-94100"},
  {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
  {0x110038, 0, K_EMU, 0, "alloc-entry"},
+ {0x11061c, 0, K_ONESHOT, 0, "pool-ready-32"},
+ {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd810,  0, K_KEEP_STP16, 0, "zero-fd810"},
@@ -213,6 +215,20 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
+ if ((sites[id].off == 0x11061c || sites[id].off == 0x110708) && hits[id] <= 2) {
+  uint64_t pt = x[19];
+  uint64_t base=0,sz=0,mp=0; uint32_t cnt=0;
+  read_mem(pt+0x20,&base,8); read_mem(pt+0x28,&sz,8); read_mem(pt+0x38,&cnt,4); read_mem(pt+0x68,&mp,8);
+  fprintf(stderr, "[snap] pool-ready off=%x this=%llx base=%llx size=%llx cnt=%u map=%llx\n",
+   sites[id].off, (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,cnt,(unsigned long long)mp);
+  if (mp && cnt && cnt < 2000) {
+   uint8_t mbuf[64]; if (read_mem(mp, mbuf, 64)) {
+    char b[160];int n=0;const char *h="[snap] pristine-map ";while(*h)b[n++]=*h++;
+    for(unsigned i=0;i<32;i++){b[n++]="0123456789abcdef"[(mbuf[i]>>4)&15];b[n++]="0123456789abcdef"[mbuf[i]&15];}
+    b[n++]='\n';write(2,b,n);
+   }
+  }
+ }
  if (sites[id].off == 0x110038) {
   g_wp2a_this = x[0];
   { static _Atomic unsigned c=0; unsigned k=++c;
