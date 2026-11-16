@@ -45,6 +45,7 @@ def select_version(version):
     os.environ['DREAD_VERSION'] = version
 
 APP_NAME = GAME['name']
+ICON = None   # --icon: an icon to use instead of the game's own (set in main); see package_dread.package
 SPACE_GB = 11   # the merged RomFS image (5.3 GB), the shader cache and the rest of the work folder; the app itself is small
 TOOL_PATHS = []   # git and make: the Xcode command line tools' (/usr/bin); no Homebrew prefix is searched
 BUILD_INFO = 'Contents/Resources/build-info.json'
@@ -418,7 +419,7 @@ def step_app(py, work, game, keys, out, logs, inputs):
     from package_dread import package
     from types import SimpleNamespace
     package(SimpleNamespace(run=run, build_info=build_info, EXPECTED=EXPECTED, VERSION=VERSION, BUILD_INFO=BUILD_INFO),
-            py, work, out, logs, inputs)
+            py, work, out, logs, inputs, game=game, keys=keys, icon=ICON)
 
 
 def update(app, work):
@@ -497,6 +498,8 @@ def parse_args(argv):
     ap.add_argument('--mod', type=Path, help=argparse.SUPPRESS)
     ap.add_argument('--install-mod-romfs', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--no-shader-reminder', action='store_true', help=argparse.SUPPRESS)
+    ap.add_argument('--icon', type=Path, help="a square .icns, .png or .jpg for the App's icon, instead of the game's "
+                                              "own 256x256 one from its control data")
     ap.add_argument('--json-progress', action='store_true', help='one JSON event per line on stdout')
     ap.add_argument('--inspect', action='store_true', help='identify the game files and what the build needs, then stop')
     return ap.parse_args(argv)
@@ -507,8 +510,12 @@ def cancelled(signum, frame):
 
 
 def main(argv):
-    global EVENTS
+    global EVENTS, ICON
     args = parse_args(argv)
+    if args.icon:
+        ICON = args.icon.expanduser().resolve()
+        if not ICON.is_file():
+            raise BuildError(f'no such file: {ICON}', code='input')
     if args.json_progress:
         EVENTS = True
         signal.signal(signal.SIGTERM, cancelled)

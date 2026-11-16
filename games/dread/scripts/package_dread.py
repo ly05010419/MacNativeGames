@@ -10,6 +10,39 @@ from dread_pipelines import mac_pipelines, check_archive_lists
 
 GAME = Path(__file__).resolve().parents[1]
 
+# The sizes an .icns carries, as iconutil names them. macOS picks one per place it draws the App.
+ICON_SIZES = ((16, 'icon_16x16'), (32, 'icon_16x16@2x'), (32, 'icon_32x32'), (64, 'icon_32x32@2x'),
+              (128, 'icon_128x128'), (256, 'icon_128x128@2x'), (256, 'icon_256x256'), (512, 'icon_256x256@2x'),
+              (512, 'icon_512x512'), (1024, 'icon_512x512@2x'))
+
+
+def write_icns(source, target, logs):
+    """The player's own picture as the App's icon (--icon), instead of the game's 256x256 one.
+
+    An .icns is taken as it is; any picture sips can read becomes one at every size, so it stays sharp where the
+    game's own is not (its control data holds a 256x256 JPEG). A picture that is not square is refused rather than
+    squashed: an icon is drawn square, and cropping would be this script guessing which part the player meant."""
+    import subprocess
+    source = Path(source)
+    if source.suffix.lower() == '.icns':
+        shutil.copy2(source, target)
+        return
+    size = subprocess.run(['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', str(source)],
+                          capture_output=True, text=True)
+    dims = [int(w.split(':')[1]) for w in size.stdout.split('\n') if ':' in w and 'pixel' in w]
+    if len(dims) != 2:
+        raise ValueError(f'--icon: not a picture macOS can read: {source}')
+    if dims[0] != dims[1]:
+        raise ValueError(f'--icon: the picture must be square; {source.name} is {dims[0]}x{dims[1]}')
+    iconset = Path(logs).parent/'AppIcon.iconset'
+    shutil.rmtree(iconset, ignore_errors=True)
+    iconset.mkdir(parents=True)
+    for px, name in ICON_SIZES:
+        subprocess.run(['sips', '-s', 'format', 'png', '-z', str(px), str(px), str(source),
+                        '--out', str(iconset/f'{name}.png')], capture_output=True, check=True)
+    subprocess.run(['iconutil', '-c', 'icns', str(iconset), '-o', str(target)], capture_output=True, check=True)
+    shutil.rmtree(iconset, ignore_errors=True)
+
 
 def shader_identity(work):
     """Actual translator, SPIRV-Cross, rules and seed inputs; not runtime code."""
@@ -27,12 +60,19 @@ def shader_identity(work):
     return values
 
 
-def package(builder, py, work, out, logs, inputs):
+def package(builder, py, work, out, logs, inputs, game=None, keys=None, icon=None):
     check_output(out)
     partial = out.with_name(out.stem+'.partial.app')
     if partial.exists(): raise ValueError(f'partial output exists; inspect it first: {partial}')
     # make compiles the host and launcher into work; it executes neither inside App.
-    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={work}', f'PY={py}', f'APP={partial}'], logs/'app.log')
+    # GAME= and KEYS= are what the Makefile's AppIcon.icns rule needs to pull the game's own icon out of its control
+    # data (scripts/extract_app_icon.py, a 256x256 JPEG). Without them that rule takes its else branch and says "the
+    # app gets no icon", while the same Makefile writes CFBundleIconFile into the plist anyway, so the App shipped
+    # promising an icon it did not carry and Finder and MNG Launcher showed the generic one (2026-11-16). An express
+    # update has no game file, passes neither, and keeps the icon the App already has (below).
+    icon_args = [f'GAME={game}', f'KEYS={keys}'] if game and keys else []
+    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={work}', f'PY={py}', f'APP={partial}', *icon_args],
+                logs/'app.log')
     profile = work/'build'
     seed = profile/'shader-seed'
     # These are the same lists imported by the runtime; packaging and warm-up share them.
@@ -68,6 +108,8 @@ def package(builder, py, work, out, logs, inputs):
     report['shader_identity'] = shader_identity(work)
     report['seed_manifest_sha256'] = digests.sha256(seed/'seed-manifest.json')
     (partial/builder.BUILD_INFO).write_text(json.dumps(report, indent=2)+'\n')
+    if icon:
+        write_icns(icon, partial/'Contents/Resources/AppIcon.icns', logs)
     if not (partial/'Contents/Resources/AppIcon.icns').exists() and (out/'Contents/Resources/AppIcon.icns').is_file():
         shutil.copy2(out/'Contents/Resources/AppIcon.icns', partial/'Contents/Resources/AppIcon.icns')
     builder.run(['codesign', '--force', '--sign', '-', partial], logs/'codesign.log')
