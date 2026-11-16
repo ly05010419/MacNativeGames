@@ -357,7 +357,8 @@ def move(ctx, target, confirmed=False):
 
 
 def memory_saver(ctx):
-    """The card's "开启省内存模式" switch (tools/builder_jobs/memory_saver.py): {'available', 'on', 'file', 'unknown_word'}.
+    """The card's "开启省内存模式" switch (tools/builder_jobs/memory_saver.py), on by default: {'available', 'on', 'default',
+    'file', 'unknown_word'}.
     On this page's module because every game with a card has a Storage page; it is about what the game keeps in memory."""
     from tools.builder_jobs import memory_saver as model
     return model.state(ctx)

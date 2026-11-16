@@ -7476,16 +7476,17 @@ static NSMutableSet<NSNumber *> *g_pso_shipped_seen;   // !warm_shared(): the sh
    warm_fill_archive): kept, 6,813 render pipelines put an iPhone 14 in the world at 3.82-3.89 GB with p99 117-200 ms
    (2026-10-23). One drawn comes from the archive. TOTK_WARM_SHARED=1 / 0 forces either. */
 extern int runtime_setting_word(const char *name, char *word, size_t size) __attribute__((weak));   // runtime/gamepad.m
-static int warm_resident_mode(void) {   // nvn_warm_resident.h: everything on the Mac; Ocarina of Time's memory saver keeps the title and the kinds
+static int warm_resident_mode(void) {   // nvn_warm_resident.h: everything on the Mac; Ocarina of Time's memory saver (on by default) keeps the title and the kinds
     static int v = -1;
     if (v < 0) {
 #if TARGET_OS_IPHONE
         const int fallback = WARM_RESIDENT_TITLE_LOCAL;
 #elif defined(GAME_OOT)
-        /* user 2026-11-16: "改成 默认 常驻 … launcher 里 增加一个 CheckBox 叫 开启省内存模式 我可以随时打开和关闭" */
+        /* user 2026-11-16: "launcher 里 增加一个 CheckBox 叫 开启省内存模式 我可以随时打开和关闭", then "默认 打开省内存模式"
+           (on this 16 GB Mac keeping every list swapped 3.7 GB out in 90 s of play: nvn_warm_resident.h) */
         char word[32] = "";
-        int saver = runtime_setting_word && runtime_setting_word(WARM_SAVER_FILE, word, sizeof word) ? warm_saver_word(word) : 0;
-        if (saver < 0) MLOG("【红】%s 写的是“%s”：只认 on / off，按关（全部常驻）", WARM_SAVER_FILE, word);
+        int saver = runtime_setting_word && runtime_setting_word(WARM_SAVER_FILE, word, sizeof word) ? warm_saver_word(word) : WARM_SAVER_DEFAULT;
+        if (saver < 0) { MLOG("【红】%s 写的是“%s”：只认 on / off，按默认（开）", WARM_SAVER_FILE, word); saver = WARM_SAVER_DEFAULT; }
         const int fallback = saver > 0 ? WARM_RESIDENT_TITLE_KINDS : WARM_RESIDENT_ALL;
         MLOG("预热：省内存模式%s（MNG Launcher 的“开启省内存模式”，%s）", saver > 0 ? "开，常驻标题清单和计算、网格、贴图读取管线" : "关，全部常驻", WARM_SAVER_FILE);
 #else

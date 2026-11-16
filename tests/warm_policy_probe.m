@@ -102,9 +102,10 @@ int main(int argc, char **argv) { @autoreleasepool {
         NSArray *archive = nil;
         NSArray *keep = warm_resident_lists(@[title, @"/seed/pso_manifest.tsv", user], title, nil, YES, NO, &archive);
         expect([keep isEqual:@[title]] && [archive containsObject:user] && archive.count == 2, "without a user list the device's list only fills the archive");
-        // memory-saver.txt (MNG Launcher's 开启省内存模式, user 2026-11-16): "on" only turns it on
+        // memory-saver.txt (MNG Launcher's 开启省内存模式, user 2026-11-16; on by default the same evening: "默认 打开省内存模式")
         expect(warm_saver_word("on\n") == 1 && warm_saver_word(" on \r\n") == 1, "\"on\" with blanks and a newline is on");
-        expect(warm_saver_word(NULL) == 0 && warm_saver_word("") == 0 && warm_saver_word("off\n") == 0 && warm_saver_word("\n") == 0, "no file, empty or off is off");
+        expect(warm_saver_word("off\n") == 0 && warm_saver_word(" off ") == 0, "\"off\" is off");
+        expect(WARM_SAVER_DEFAULT == 1 && warm_saver_word(NULL) == 1 && warm_saver_word("") == 1 && warm_saver_word("\n") == 1, "no file or an empty one is the default, on");
         expect(warm_saver_word("yes") == -1 && warm_saver_word("ON") == -1 && warm_saver_word("onn") == -1, "an unknown word is reported, not guessed");
     } else return 2;
     printf("%d checks, %d failures\n", checks, failures);

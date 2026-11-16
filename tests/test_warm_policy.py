@@ -38,12 +38,14 @@ class WarmPolicyTests(unittest.TestCase):
         result = subprocess.run([self.binary, 'resident'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_oot_mac_keeps_everything_unless_memory_saver(self):   # user 2026-11-16: "改成 默认 常驻 … 开启省内存模式"
+    def test_oot_mac_saves_memory_unless_switched_off(self):   # user 2026-11-16: "开启省内存模式", then "默认 打开省内存模式"
         source = (NVN / 'nvn_mtl.m').read_text()
         mode = source[source.index('static int warm_resident_mode(void)'):source.index('static int warm_shared(void)')]
         iphone, oot, other = mode.index('#if TARGET_OS_IPHONE'), mode.index('#elif defined(GAME_OOT)'), mode.index('#else')
         self.assertIn('WARM_RESIDENT_TITLE_LOCAL', mode[iphone:oot])
-        self.assertIn('runtime_setting_word(WARM_SAVER_FILE, word, sizeof word) ? warm_saver_word(word) : 0', mode[oot:other])
+        # no file: the default, on (a 16 GB Mac keeping every list swapped 3.7 GB out in 90 s of play)
+        self.assertIn('runtime_setting_word(WARM_SAVER_FILE, word, sizeof word) ? warm_saver_word(word) : WARM_SAVER_DEFAULT', mode[oot:other])
+        self.assertIn('saver = WARM_SAVER_DEFAULT; }', mode[oot:other])   # an unknown word: the default too
         self.assertIn('const int fallback = saver > 0 ? WARM_RESIDENT_TITLE_KINDS : WARM_RESIDENT_ALL;', mode[oot:other])
         self.assertIn('WARM_RESIDENT_ALL', mode[other:mode.index('#endif')])
         # the Launcher writes the file the runtime reads
