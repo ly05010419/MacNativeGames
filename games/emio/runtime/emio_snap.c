@@ -46,6 +46,8 @@ static struct {
  {0x110310, 0, K_EMU, 0, "free-cand"},
  {0x11061c, 0, K_ONESHOT, 0, "pool-ready-32"},
  {0x10f1b0, 0, K_EMU, 0, "pool-init"},
+ {0x1108e0, 0, K_EMU, 0, "pool1108e0"},
+ {0x94100, 0, K_EMU, 0, "pool94100"},
  {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
@@ -91,6 +93,7 @@ static void poke_rx(uint8_t *p, uint32_t w) {
 static uint64_t g_wp2a_this = 0;
 uint8_t g_wp2a_map0[64]; uint64_t g_wp2a_mapaddr = 0;
 uint64_t wp2a_pool_this(void) { return g_wp2a_this; }
+uint64_t wp2a_apts[16]; unsigned wp2a_anpt = 0;
 static int read_mem(uint64_t a, void *dst, size_t n) {
  mach_vm_size_t got = 0;
  return a && mach_vm_read_overwrite(mach_task_self(), a, n, (uintptr_t)dst, &got) == KERN_SUCCESS && got == n;
@@ -219,8 +222,16 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
- if (sites[id].off == 0x10f1b0 && hits[id] <= 10) {
-  fprintf(stderr, "[snap] pool-init#%u base=%llx size=%llx\n", hits[id], (unsigned long long)x[1], (unsigned long long)x[2]);
+ if ((sites[id].off == 0x1108e0 || sites[id].off == 0x94100) && hits[id] <= 5) {
+  uint64_t tid=0; pthread_threadid_np(NULL,&tid);
+  fprintf(stderr, "[snap] pool1108e0/94100 off=%x tid=%llx\n", sites[id].off, (unsigned long long)tid);
+ }
+ if (sites[id].off == 0x10f1b0 && hits[id] <= 12) {
+  fprintf(stderr, "[snap] pool-init#%u this=%llx base=%llx size=%llx\n", hits[id], (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
+  static uint64_t apts[16]; static unsigned anpt=0;
+  if (anpt<16) apts[anpt++]=x[0];
+  extern uint64_t wp2a_apts[]; extern unsigned wp2a_anpt;
+  for(unsigned i=0;i<anpt;i++) wp2a_apts[i]=apts[i]; wp2a_anpt=anpt;
  }
  if ((sites[id].off == 0x11061c || sites[id].off == 0x110708) && hits[id] <= 2) {
   uint64_t pt = x[19];
@@ -242,7 +253,8 @@ int runtime_emio_snap_trap(int num, void *context) {
  if (sites[id].off == 0x110038) {
   g_wp2a_this = x[0];
   { static _Atomic unsigned c=0; unsigned k=++c;
-   if (x[1] >= 0x10000 || (k%500)==1) fprintf(stderr, "[snap] AllocAlign-entry#%u this=%llx size=%llx\n", k, (unsigned long long)x[0], (unsigned long long)x[1]);
+   if (x[1] >= 0x100000 || (k%500)==1) { fprintf(stderr, "[snap] AllocAlign-entry#%u this=%llx size=%llx\n", k, (unsigned long long)x[0], (unsigned long long)x[1]);
+    if (x[1] >= 0x100000) symbolize("AllocAlign-large-caller", u->uc_mcontext->__ss.__lr); }
    if (k==1) { uint64_t mp=0; read_mem(x[0]+0x68,&mp,8);
     extern uint8_t g_wp2a_map0[64]; extern uint64_t g_wp2a_mapaddr;
     if (mp) { read_mem(mp, g_wp2a_map0, 64); g_wp2a_mapaddr=mp; } }
@@ -275,6 +287,10 @@ int runtime_emio_snap_trap(int num, void *context) {
    {uint32_t v=0; read_mem(pt+0x40,&v,4); bsz=v;}
    read_mem(pt+0x68,&map,8);
    { uint16_t fc=0; read_mem(map,&fc,2);
+   { extern uint64_t wp2a_apts[]; extern unsigned wp2a_anpt;
+    for(unsigned pi=0; pi<wp2a_anpt && pi<16; pi++){ uint64_t ppt=wp2a_apts[pi], pmap=0; uint16_t pfc=0; uint64_t psz=0;
+     read_mem(ppt+0x68,&pmap,8); if(pmap) read_mem(pmap,&pfc,2); read_mem(ppt+0x28,&psz,8);
+     fprintf(stderr, "[snap] pool-all pi=%u this=%llx size=%llx freecnt=%u\n", pi,(unsigned long long)ppt,(unsigned long long)psz,pfc); } }
    fprintf(stderr, "[snap] pool this=%llx base=%llx size=%llx count=%llu blksz=%llu map=%llx freecnt=%u\n",
     (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,(unsigned long long)cnt,(unsigned long long)bsz,(unsigned long long)map,fc); }
    if (map && cnt && cnt < 100000 && bsz) {
@@ -574,8 +590,10 @@ int runtime_emio_snap_trap(int num, void *context) {
    uint64_t rv = (rt == 31) ? 0 : x[rt];
    int set = ((rv >> bit) & 1) != 0;
    if ((!set) != is_tbnz) npc = pc + d;
-  } else if (o == 0xFD7BBEA9u || o == 0xA9BF7BFDu) { /* stp x29,x30,[sp,#-0xN]! (keep armed, generic) */
-   unsigned sub = (o == 0xFD7BBEA9u) ? 0x20 : 0x10;
+  } else if (((o & 0xFFC07FFFu) == 0xA9807BFDu) || o == 0xFD7BBEA9u) { /* stp x29,x30,[sp,#-N]! (keep armed, generic) */
+   unsigned sub;
+   if (o == 0xFD7BBEA9u) sub = 0x20;
+   else { int imm7 = (int)((o >> 15) & 0x7F); if (imm7 & 0x40) imm7 -= 0x80; sub = (unsigned)(-imm7 * 8); }
    uint64_t sp = u->uc_mcontext->__ss.__sp - sub;
    uint64_t fp = u->uc_mcontext->__ss.__fp, lr = u->uc_mcontext->__ss.__lr;
    memcpy((void *)(uintptr_t)sp, &fp, 8);
