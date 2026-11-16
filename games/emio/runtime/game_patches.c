@@ -7,19 +7,21 @@ _Atomic int runtime_survey_pending;
 
 void runtime_game_patches(Module *m) {
  uint32_t original, replacement;
- /* SetMemoryHeapSize(X) then AllocateMemoryBlock(X) leaves SDK memalign nothing:
-    CAllocator pool tables call memalign on leftover OS heap. 3 GiB heap, 2 GiB block. */
+ /* Authentic block restored (was CUT to 2 GiB): six pools sum to 2.25 GiB,
+    need the game's 2.5 GiB AllocateMemoryBlock. SetMemoryHeapSize stays at
+    3 GiB for host headroom (0.5 GiB leftover for SDK malloc). Rationale
+    for the old CUT (leftover-heap memalign) falsified: tables/backings
+    come from SDK malloc on the block itself. */
  memcpy(&original, m->base+0x9520, 4);
  if(original!=0x52b40013)
   runtime_fail("AllocateMemoryBlock size mov differs from pinned 1.0.0");
- replacement=0x52b00013; /* mov w19, #0x80000000 */
- memcpy(m->base+0x9520, &replacement, 4);
+ fprintf(stderr, "[emio] AllocateMemoryBlock authentic 2.5 GiB (revert of 2.0 GiB CUT)\n");
  memcpy(&original, m->base+0x9524, 4);
  if(original!=0xaa1303e0)
   runtime_fail("SetHeapSize mov x0,x19 differs from pinned 1.0.0");
  replacement=0x52b80000; /* mov w0, #0xc0000000 */
  memcpy(m->base+0x9524, &replacement, 4);
- fprintf(stderr, "[emio] heap 3.0 GiB, AllocateMemoryBlock 2.0 GiB (1 GiB leftover for memalign)\n");
+ fprintf(stderr, "[emio] heap 3.0 GiB (0.5 GiB leftover for memalign)\n");
  /* BRING-UP CUT (expires when display/mode init is understood): force the display-mode validation
     at main+0xE1BC0 to succeed. The w25/w20 mode fields stay -1 (unset); with the real check the game
     aborts before reaching the title screen. Revisit once input/display init is mapped. */

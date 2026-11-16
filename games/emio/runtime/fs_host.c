@@ -136,6 +136,10 @@ static unsigned char save_exists(uint64_t application, const uint64_t *uid) {
     ready(); uint64_t me[2]; runtime_account_uid(me);
     return application == TOTK_APPLICATION_ID && uid && uid[0] == me[0] && uid[1] == me[1];
 }
+/* EnsureSaveData without the library-applet detour: launcher already created the save dirs at init.
+   The SDK default starts a system applet (data management) which this host does not implement (spin).
+   First boot with empty saves just needs the directories, which exist. */
+static unsigned ensure_save(const uint64_t *uid) { fprintf(stderr, "[emio-fs] EnsureSaveData uid=%llx%llx (stubbed success)\n", (unsigned long long)(uid?uid[1]:0), (unsigned long long)(uid?uid[0]:0)); (void)uid; ready(); return 0; }
 /* Other titles' save data (e.g. data-link bonuses) is not present on this host. */
 static unsigned mount_save_ro(const char *name, uint64_t application, const uint64_t *uid) {
     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
@@ -375,6 +379,7 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
         {"_ZN2nn2fs18CreateCacheStorageEill", create_cache}, {"_ZN2nn2fs18DeleteCacheStorageEi", delete_cache},
         {"_ZN2nn2fs17MountCacheStorageEPKci", mount_cache},

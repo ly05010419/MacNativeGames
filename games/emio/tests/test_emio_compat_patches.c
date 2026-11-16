@@ -18,7 +18,7 @@ int main(int argc, char **argv) {
     if(argc>1 && !strcmp(argv[1],"wrong-instruction")) put(image+0x9520, 0xd503201f);
     runtime_game_patches(&module);
     assert(argc==1);
-    assert(word(image+0x9520)==0x52b00013);
+    assert(word(image+0x9520)==0x52b40013); /* authentic 2.5 GiB block restored (no CUT) */
     assert(word(image+0x9524)==0x52b80000);
     assert(word(image+0xe1bc0)==0x52800020);
     assert(word(image+0xe1bc4)==0xd65f03c0);

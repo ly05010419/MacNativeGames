@@ -44,7 +44,7 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal4"):
         environment["TOTK_INPUT_LOG"]="1"
         import os as _os2
         _s=_os2.path.join(str(session),"wshot-%d.png")
-        environment["TOTK_WINDOW_SHOT"]="1,2,3:"+_s
+        environment["TOTK_WINDOW_SHOT"]="1,2,3,300,600,900:"+_s
         import os as _os
         if _os.getenv("EMIO_RAW_FAULT"): environment["EMIO_RAW_FAULT"]="1"
         environment["TOTK_ATT_SNAPSHOT"]="1"
@@ -54,7 +54,7 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal4"):
         environment["TOTK_ASYNC_REPLAY"]="0"
         environment["TOTK_GPU_KEEPALIVE"]="0"
         environment["TOTK_GPU_MIDCLEAR"]="1"
-        environment["DM_NVN_SHOT"]=f"1,10,60,180:{session}/frame-%d.png"
+        environment["DM_NVN_SHOT"]=f"1,10,60,180,300,600,900,1200,1800:{session}/frame-%d.png"
         environment["DM_NVN_SHOT_FRAME"]="1"
         environment["TOTK_MEM_LOG"]="1"
         if app_pool_mib is not None:environment["TOTK_APP_POOL"]=str(app_pool_mib<<20)

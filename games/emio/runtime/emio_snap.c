@@ -235,10 +235,11 @@ int runtime_emio_snap_trap(int num, void *context) {
  }
  if ((sites[id].off == 0x11061c || sites[id].off == 0x110708) && hits[id] <= 2) {
   uint64_t pt = x[19];
-  uint64_t base=0,sz=0,mp=0; uint32_t cnt=0;
+  uint64_t base=0,sz=0,mp=0; uint32_t cnt=0; uint16_t fc=0;
   read_mem(pt+0x20,&base,8); read_mem(pt+0x28,&sz,8); read_mem(pt+0x38,&cnt,4); read_mem(pt+0x68,&mp,8);
-  fprintf(stderr, "[snap] pool-ready off=%x this=%llx base=%llx size=%llx cnt=%u map=%llx\n",
-   sites[id].off, (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,cnt,(unsigned long long)mp);
+  if (mp) read_mem(mp,&fc,2);
+  fprintf(stderr, "[snap] pool-ready off=%x this=%llx base=%llx size=%llx cnt=%u map=%llx free=%u\n",
+   sites[id].off, (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,cnt,(unsigned long long)mp,fc);
   if (mp && cnt && cnt < 2000) {
    uint8_t mbuf[64]; if (read_mem(mp, mbuf, 64)) {
     char b[160];int n=0;const char *h="[snap] pristine-map ";while(*h)b[n++]=*h++;
