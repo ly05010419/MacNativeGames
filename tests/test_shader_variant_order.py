@@ -81,6 +81,14 @@ int main(void) { @autoreleasepool {
     if (![totk_row_map_variants(m, map) isEqual:[@"M\t-\t" stringByAppendingString:hex(state(app, other))]]) { puts("FAIL M row"); return 1; }
     NSString *plain = [NSString stringWithFormat:@"C\t%%@_b", app];
     if (![totk_row_map_variants(plain, map) isEqual:plain]) { puts("FAIL unchanged row"); return 1; }
+    // 2026-11-16: an M row naming its task variant in the plain second field, inside a whole list
+    NSString *mt = [NSString stringWithFormat:@"M\t%%@_b\t%%@", quick, hex(state(app, other))];
+    NSString *mtNow = [NSString stringWithFormat:@"M\t%%@_b\t%%@", app, hex(state(app, other))];
+    NSString *list = [NSString stringWithFormat:@"# header\n%%@\n\n%%@\n%%@\n", s, mt, plain];
+    NSUInteger changed = 0;
+    NSString *listNow = totk_list_map_rows(list, ^NSString *(NSString *row) { return totk_row_map_variants(row, map); }, &changed);
+    NSString *want = [NSString stringWithFormat:@"# header\nS\t%%@_b\t1\n\n%%@\n%%@\n", app, mtNow, plain];
+    if (![listNow isEqual:want] || changed != 2) { printf("FAIL list %%lu\n%%s\n", (unsigned long)changed, listNow.UTF8String); return 1; }
     puts("OK"); return 0;
 } }
 '''
@@ -120,7 +128,26 @@ class SeedVariantsFirst(unittest.TestCase):
         self.assertIn('NSString *row = own ? totk_rt_row_prefer_seed(line) : line;', mtl)
         rt = SOURCE.read_text()
         self.assertIn('#include "totk_variant_rows.h"', rt)
-        self.assertIn('totk_superseding_variant(variant, seed, variants_file(index_path(shader)))', rt)
+        body = function(rt, 'NSString *totk_rt_row_prefer_seed(NSString *line) {')
+        self.assertIn('NSMutableArray *cache = [variants_file([g_dir stringByAppendingPathComponent:seedIndex]) mutableCopy];', body)
+        # it also runs inside totk_rt_dir's dispatch_once: calling totk_rt_dir() there traps (2026-11-16, signal 5)
+        self.assertNotIn('totk_rt_dir()', body)
+        self.assertNotIn('index_path(', body)
+        self.assertNotIn('totk_rt_dir()', function(rt, 'static NSUInteger rt_list_put_on_seed(void) {'))
+        self.assertIn('totk_superseding_variant(variant, seed, cache)', body)
+
+    def test_a_carried_list_finds_its_deps_in_the_old_folders_and_is_written_back(self):
+        # 2026-11-16: the list came along to a new folder (another translator); 100 mesh rows named a task variant whose
+        # deps were only in the set-aside folder, so they built nothing a draw takes (226 ms, 855 ms at the draw)
+        rt = SOURCE.read_text()
+        body = function(rt, 'NSString *totk_rt_row_prefer_seed(NSString *line) {')
+        self.assertIn('siblings = totk_rt_siblings(g_dir);', body)
+        self.assertIn('for (NSString *dir in siblings)', body)
+        put = function(rt, 'static NSUInteger rt_list_put_on_seed(void) {')
+        self.assertIn('totk_list_map_rows(text', put)
+        self.assertIn('writeToFile:path atomically:YES', put)
+        # once the seed is known (g_seed_dir) and before the iOS fill import / the warm-up
+        self.assertLess(rt.index('g_seed_dir = source;'), rt.index('NSUInteger mapped = rt_list_put_on_seed();'))
 
     def test_the_devices_collected_list_is_not_an_app_list(self):
         # the same evening: the cache's pso_collected.tsv (this device's, never archived at packaging) was counted as an

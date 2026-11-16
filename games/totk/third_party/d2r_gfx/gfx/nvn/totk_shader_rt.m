@@ -16,6 +16,7 @@
 #include "totk_rt_carry.h"
 #include "totk_rt_translator.h"
 #include "dmsh_chain.h"
+static NSUInteger rt_list_put_on_seed(void);   // below totk_rt_row_prefer_seed; called once the seed is known
 /* Test launch preflight reads the compiled identity, never a source header
    standing in for the binary it is about to execute. */
 __attribute__((used)) static const char g_test_shader_chain[] = "MNG_SHADER_CHAIN=" DMSH_CHAIN;
@@ -199,6 +200,9 @@ NSString *totk_rt_dir(void) {
                     : TOTK_UI("本机缓存已存在，无需重新导入；开始预热","Local cache already present, nothing to import; starting warm-up"));
             } else if (runtime_boot_status && ![seed[@"failed"] boolValue]) runtime_boot_status(TOTK_UI("着色器缓存已就绪","Shader cache ready"),TOTK_UI("没有内置着色器种子，继续初始化图形","No bundled shader seed; continuing graphics setup"));
         }
+        { NSUInteger mapped = rt_list_put_on_seed();   // with the seed known, before the warm-up reads the list
+          if (mapped) LOG("[shader-cache] 本机收集清单：%lu 行换成 App 的变体（变体的依赖在旧缓存目录里，与 App 的相同），已写回",
+                          (unsigned long)mapped); }
 #if TARGET_OS_IPHONE
         // Variants that ios/tools/fill_shaders.py translated on the Mac for this device's earlier misses (shader-requests/).
         NSDictionary *fill = totk_fill_import(@"shader-fill", g_dir);
@@ -963,22 +967,45 @@ void totk_rt_variant_broken(NSString *key) {
     pthread_mutex_unlock(&g_rt_lock);
 }
 /* A row of this device's warm-up lists with its variants put on the app's own (totk_variant_rows.h): the one a draw takes
-   now. Each variant is looked up once. */
+   now. Each variant is looked up once. A variant's deps come from this folder's index, else from the other rt-* folders
+   beside it (totk_rt_siblings): a carried list names the variants of the folder it came from (2026-11-16). */
 NSString *totk_rt_row_prefer_seed(NSString *line) {
     static NSMutableDictionary<NSString *, NSString *> *done;
+    static NSArray<NSString *> *siblings;
     return totk_row_map_variants(line, ^NSString *(NSString *variant) {
         pthread_mutex_lock(&g_rt_lock);
-        if (!done) done = [NSMutableDictionary dictionary];
+        // g_dir, not a call of totk_rt_dir: this also runs inside its dispatch_once (rt_list_put_on_seed), and a
+        // dispatch_once entered again from its own block traps (the 2026-11-16 seed run: signal 5 at start)
+        if (!done) { done = [NSMutableDictionary dictionary]; siblings = totk_rt_siblings(g_dir); }
         NSString *now = done[variant];
         if (!now) {
             NSString *shader = [variant substringToIndex:64], *seedIndex = [shader stringByAppendingString:@".variants"];
             NSArray *seed = g_seed_dir && [g_seed_names containsObject:seedIndex]
                 ? variants_file([g_seed_dir stringByAppendingPathComponent:seedIndex]) : @[];
-            now = done[variant] = totk_superseding_variant(variant, seed, variants_file(index_path(shader)));
+            NSMutableArray *cache = [variants_file([g_dir stringByAppendingPathComponent:seedIndex]) mutableCopy];   // index_path, without totk_rt_dir
+            for (NSString *dir in siblings) [cache addObjectsFromArray:variants_file([dir stringByAppendingPathComponent:seedIndex])];
+            now = done[variant] = totk_superseding_variant(variant, seed, cache);
         }
         pthread_mutex_unlock(&g_rt_lock);
         return now;
     });
+}
+/* This device's collected list rewritten once with its rows put on the app's variants (totk_rt_row_prefer_seed), before
+   the warm-up reads it and before play appends to it: a carried list keeps naming the old folder's variants otherwise,
+   and their deps go when that folder is removed. Returns the rows changed. */
+static NSUInteger rt_list_put_on_seed(void) {
+    NSString *path = [g_dir stringByAppendingPathComponent:@"pso_collected.tsv"];   // inside totk_rt_dir's dispatch_once
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (!text.length) return 0;
+    NSUInteger changed = 0;
+    NSString *now = totk_list_map_rows(text, ^NSString *(NSString *row) { return totk_rt_row_prefer_seed(row); }, &changed);
+    if (!changed) return 0;
+    NSError *e = nil;
+    if (![now writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&e]) {
+        LOG("[shader-cache] 【红】本机收集清单改写失败（%s），这一局按原样预热", e.localizedDescription.UTF8String);
+        return 0;
+    }
+    return changed;
 }
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
