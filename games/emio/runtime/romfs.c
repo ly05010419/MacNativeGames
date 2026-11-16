@@ -208,6 +208,10 @@ static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
  if(!strcmp(name,mount_name))return 0;
  for(unsigned i=0;i<nmount_alias;i++)if(!strcmp(name,mount_alias[i]))return 0;
  if(nmount_alias>=sizeof mount_alias/sizeof mount_alias[0])runtime_fail("RomFS mount table full");
+ { char b[112];int n=0;const char *h="[emio] mount_rom name=";while(*h)b[n++]=*h++;
+  for(unsigned j=0;j<31&&name[j];j++)b[n++]=name[j];
+  const char *h2=" nmount_before=";while(*h2)b[n++]=*h2++;unsigned m=nmount_alias;char t2[12];int k=0;
+  do{t2[k++]='0'+m%10;m/=10;}while(m);while(k)b[n++]=t2[--k];b[n++]='\n';write(2,b,n); }
  strcpy(mount_alias[nmount_alias++],name);
  fprintf(stderr,"[totk] RomFS alias mount %s: (same image)\n",name);return 0;
 }
@@ -216,10 +220,10 @@ static unsigned cache_size(uint64_t *out) {if(!out)return INVALID;*out=0x4000;re
 static void fs_log(const char *what,const char *path){static int on=-1;static uint64_t t0;if(on<0){on=getenv("TOTK_FS_LOG")!=NULL;t0=runtime_now_ns();}if(on)fprintf(stderr,"[totk-fs] %8.3f %s %s\n",(runtime_now_ns()-t0)/1e9,what,path);}
 void runtime_fs_log(const char *what,const char *path){fs_log(what,path);}
 unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) {
- { static _Atomic unsigned c2=0; unsigned k=c2++; if(k<10) { char b[80];int n=0;const char *h="[emio] open file_count=";while(*h)b[n++]=*h++;
-  uint64_t m=file_count;char t2[24];int j=0;do{t2[j++]='0'+m%10;m/=10;}while(m);while(j)b[n++]=t2[--j];b[n++]='\n';write(2,b,n); } }
+ { sigjmp_buf jbo; runtime_fault_guard=&jbo;
+  if(sigsetjmp(jbo,1)){ runtime_fault_guard=NULL; return NOT_FOUND; } }
  fs_log("rom",path?path:"(null)");
- if(!out||mode!=1)return UNSUPPORTED;const char *p=rom_path(path);if(!p)return NOT_FOUND;uint64_t i=lower(p);if(i>=file_count||strcmp(p,entry_name(entry(i))))return NOT_FOUND;
+ if(!out||mode!=1){ runtime_fault_guard=NULL; return UNSUPPORTED; }const char *p=rom_path(path);if(!p){ runtime_fault_guard=NULL; return NOT_FOUND; }uint64_t i=lower(p);if(i>=file_count||strcmp(p,entry_name(entry(i)))){ runtime_fault_guard=NULL; return NOT_FOUND; }runtime_fault_guard=NULL;
  uint8_t ov=0;for(unsigned k=0;k<noverlay;k++)if(overlays[k].index==i)ov=(uint8_t)(k+1);
  pthread_mutex_lock(&lock);for(unsigned j=1;j<NH;j++)if(!handles[j]){handles[j]=i+1;handle_ovl[j]=ov;*out=0x100000000ULL+j;pthread_mutex_unlock(&lock);return 0;}pthread_mutex_unlock(&lock);runtime_fail("file handle table full");return INVALID;
 }
@@ -261,6 +265,10 @@ int runtime_romfs_owns(const char *path) {
  else { if(owns_one(mount_name,path))r=1; else if(nmount_alias<1000) for(unsigned i=0;i<nmount_alias;i++)if(owns_one(mount_alias[i],path)){r=1;break;}
   if(!r){ if(owns_one("app0",path))r=1; else if(owns_one("rom",path))r=1; } }
  runtime_fault_guard=NULL;
+ { static _Atomic unsigned h=0; unsigned k=h++; if((k%200)==0) { char b[96];int n=0;const char *hh="[emio] owns health nmount=";while(*hh)b[n++]=*hh++;
+  unsigned m=nmount_alias;char t2[12];int j=0;do{t2[j++]='0'+m%10;m/=10;}while(m);while(j)b[n++]=t2[--j];
+  const char *h2=" files=";while(*h2)b[n++]=*h2++;uint64_t f=file_count;char t3[24];j=0;do{t3[j++]='0'+f%10;f/=10;}while(f);while(j)b[n++]=t3[--j];
+  b[n++]='\n';write(2,b,n); } }
  if(!r) { char b[128];int n=0;const char *h="[emio] owns MISS nmount=";while(*h)b[n++]=*h++;
   unsigned m=nmount_alias;char t2[12];int k=0;do{t2[k++]='0'+m%10;m/=10;}while(m);while(k)b[n++]=t2[--k];
   const char *h2=" alias0=";while(*h2)b[n++]=*h2++;

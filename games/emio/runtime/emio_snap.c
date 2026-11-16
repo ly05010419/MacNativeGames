@@ -39,7 +39,8 @@ static struct {
 // DISABLED-FOR-CLEAN-BOOT  {0x10f2a8, 0, K_ONESHOT, 0, "after-10f2a8"},
 // DISABLED-FOR-CLEAN-BOOT  {0x94074,  0, K_ONESHOT, 0, "tbnz-94074"},
 // DISABLED-FOR-CLEAN-BOOT  {0x94100,  0, K_ONESHOT, 0, "bl-94100"},
-// DISABLED-FOR-CLEAN-BOOT  {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
+ {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
+ {0x110038, 0, K_ONESHOT, 0, "alloc-entry"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd810,  0, K_KEEP_STP16, 0, "zero-fd810"},
@@ -209,6 +210,10 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
+ if (sites[id].off == 0x110038) {
+  fprintf(stderr, "[snap] AllocAlign-entry this=%llx size=%llx\n", (unsigned long long)x[0], (unsigned long long)x[1]);
+  dump_words("alloc-this", x[0], 0x80);
+ }
  if (sites[id].off == 0x1100b8) {
   fail_n++;
   fprintf(stderr, "[snap] AllocAlign-fail #%u this=%llx w1=%llx w2=%llx\n",
