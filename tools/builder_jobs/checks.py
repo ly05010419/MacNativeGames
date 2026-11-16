@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 
+from tools.builder_jobs import toolchain
 from tools.builder_jobs.text import t
 
 # No game's build takes a library or tool from Homebrew: opus, libvpx and dav1d are built from pinned sources by
@@ -46,6 +47,14 @@ def checks(work_root):
     cxx = clang and _ok(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input=b'#include <string>\n')
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
+    # The shader libraries are built with `metal`, which the Command Line Tools do not carry: a Mac whose xcode-select
+    # points at them has no Metal compiler, and the build used to die in the middle of step 3 (Metroid Dread,
+    # 2026-11-16). It passes when `metal` is reachable now or when an Xcode here has the toolchain, because the build's
+    # environment then names that Xcode in DEVELOPER_DIR (build_job.job_env, toolchain.py).
+    add('metal', toolchain.metal_ready() or bool(toolchain.developer_dir_for_metal()),
+        t('the Metal compiler, which builds every game\'s shader libraries', 'Metal 编译器（每个游戏的着色器库都要用它编译）'),
+        t('install it with Xcode: xcodebuild -downloadComponent MetalToolchain',
+          '用 Xcode 安装：xcodebuild -downloadComponent MetalToolchain'))
     add('git', shutil.which('git', path=os.pathsep.join(['/opt/homebrew/bin', '/usr/bin'])), 'git', 'xcode-select --install')
     add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))
     free = _free_gb(work_root)
