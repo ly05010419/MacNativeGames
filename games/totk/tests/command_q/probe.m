@@ -151,6 +151,7 @@ uint64_t dm_nvn_frame_count(void){return 0;}
 void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
+int hud_line_shown(int line){(void)line;return 1;}   /* fps_overlay.c: which lines the overlay choice shows */
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
 void runtime_aspect_view(double w,double h){(void)w;(void)h;}
