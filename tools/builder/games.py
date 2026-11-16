@@ -75,9 +75,30 @@ OOT = GameSpec(
 # The games MNG Launcher's game pages serve, and which pages each has (tools/builder_jobs/tabs.py TABS; the window shows
 # these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
-PAGE_GAMES = {**GAMES, OOT.id: OOT}
+# Metroid Dread (Switch 1): built by games/dread/build.py, not build_app.py, so not in GAMES, as Ocarina of Time is
+# not. MNG Launcher's game pages serve it (PAGES). Its build.py already speaks the launcher's contract (--inspect,
+# --json-progress, --keys, --update, --work, --mod) and reads games/dread/game.json for its own metadata, which is
+# where these values come from. Its data folder is its own (Dread/), so it takes no other game's slot.
+DREAD = GameSpec(
+    id='dread',
+    display_name='Metroid Dread',
+    title_id='010093801237C000',
+    app_name='Metroid Dread',
+    bundle_id='org.macnativegames.dread',
+    data_folder='Dread',
+    assets_dir='games/dread/assets',
+    versions=(VersionSpec('v100', '1.0.0', 'expected-v1.0.0.json'),
+              VersionSpec('v210', '2.1.0', 'expected-v2.1.0.json')),
+)
+
+PAGE_GAMES = {**GAMES, OOT.id: OOT, DREAD.id: DREAD}
 # 诊断模式 (2026-11-13) was removed 2026-11-15 (user: "去掉诊断模式 快速启动 默认带诊断"): a quick App starts with its
 # diagnostics itself (games/oot/app/launcher.m).
 PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
-         'oot': ('controls', 'storage', 'saves')}
+         'oot': ('controls', 'storage', 'saves'),
+         'dread': ('controls',)}
+# Metroid Dread has Controls only: its launcher (games/dread/app/launcher.m) reads DREAD_WORK and DREAD_DISPLAY and
+# neither TOTK_PROFILE_DIR nor TOTK_SHADER_CACHE, which are what the Saves and Storage pages point at
+# (saves.PROFILE_ENV, storage.SHADER_ENV). Giving it those pages would show pages with nothing behind them.
+# Settings and Mods are not written for it either, as for Ocarina of Time.

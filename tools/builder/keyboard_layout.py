@@ -42,7 +42,7 @@ TITLES = {
 # A game whose buttons' uses are not confirmed yet names them by the button alone (Ocarina of Time, 2026-11-13; the uses
 # in TITLES are Zelda TotK / BotW's).
 PLAIN = {'a': 'A', 'b': 'B', 'x': 'X', 'y': 'Y', 'plus': 'Plus', 'minus': 'Minus'}
-PLAIN_GAMES = ('oot',)
+PLAIN_GAMES = ('oot', 'dread')   # Metroid Dread too: TITLES names Zelda's uses
 
 
 def titles(game):

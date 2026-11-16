@@ -91,6 +91,7 @@ final class Model: ObservableObject {
         "totk": ["settings", "mods", "controls", "storage", "saves"],
         "botw": ["settings", "mods", "controls", "storage", "saves"],
         "oot": ["controls", "storage", "saves"],
+        "dread": ["controls"],   // Metroid Dread: its launcher reads neither TOTK_PROFILE_DIR nor TOTK_SHADER_CACHE, so Saves and Storage have nothing behind them
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.
