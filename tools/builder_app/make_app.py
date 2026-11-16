@@ -109,15 +109,21 @@ def licenses(scratch, resources):
     return done
 
 
-def check_release_source(repo):
+SOURCE_REPO = 'ly05010419/MacNativeGames'   # where signed source releases (tag source-*) are published
+SOURCE_KEY = HERE / 'source_signing.pub'      # their Ed25519 public key; the private key stays in the release tool's keychain
+
+
+def check_release_source(repo, commit='HEAD'):
     """Only a committed tree is distributable: no ignored notes, keys, build data or unrelated untracked files.
     Archive the source as data so signing the app cannot change the pinned translator executables inside it.
+    commit: HEAD for a Launcher (its window and source must match the checkout), or the commit of a source release.
     """
-    if subprocess.run(['git', '-C', repo, 'diff', '--quiet', 'HEAD', '--']).returncode:
+    if commit == 'HEAD' and subprocess.run(['git', '-C', repo, 'diff', '--quiet', 'HEAD', '--']).returncode:
         raise ValueError('Portable builds require committed source changes; the window and bundled source must match.')
-    names = set(subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', 'HEAD'], text=True).splitlines())
+    names = set(subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', commit], text=True).splitlines())
     required = {
         'build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
+        'tools/builder_app/source_updates.py', 'tools/builder_app/source_signing.pub',
         'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
         'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py',
     }
@@ -129,10 +135,21 @@ def check_release_source(repo):
         raise ValueError('Local-only files in release source: ' + ', '.join(sorted(forbidden)))
 
 
-def source_archive(repo, destination):
-    check_release_source(repo)
-    run(['git', '-C', repo, 'archive', '--format=tar.gz', '-o', destination, 'HEAD'])
+def source_archive(repo, destination, commit='HEAD'):
+    check_release_source(repo, commit)
+    run(['git', '-C', repo, 'archive', '--format=tar.gz', '-o', destination, commit])
     return sha256(destination)
+
+
+def source_settings(repo, commit='HEAD'):
+    """What a Release Launcher needs for signed code updates (tools/builder_app/source_updates.py): the public key, the
+    repository its source releases are on, and its own source's commit time (a release is newer only by that)."""
+    key = SOURCE_KEY.read_text().strip()
+    return {
+        'MNGSourcePublicKey': key, 'MNGSourceRepo': SOURCE_REPO,
+        'MNGSourceCommitTime': int(subprocess.check_output(['git', '-C', str(repo), 'show', '-s', '--format=%ct', commit],
+                                                           text=True).strip()),
+    }
 
 
 def icon(resources):
@@ -197,7 +214,10 @@ def main(argv):
         plist.pop('MNGRepo')
         plist['MNGSourceCommit'] = subprocess.check_output(['git', '-C', REPO, 'rev-parse', 'HEAD'], text=True).strip()
         plist['MNGSourceArchiveSHA256'] = source_archive(REPO, stage / 'Contents/Resources/source.tar.gz')
-        shutil.copy2(HERE / 'bundled_job.py', stage / 'Contents/Resources/bundled_job.py')
+        plist.update(source_settings(REPO))
+        # the code that trusts or refuses downloaded source lives in the signed app, never in a source archive
+        for name in ('bundled_job.py', 'source_updates.py'):
+            shutil.copy2(HERE / name, stage / 'Contents/Resources' / name)
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:
             t.extractall(stage / 'Contents/Resources', filter='data') if sys.version_info >= (3, 12) else t.extractall(stage / 'Contents/Resources')
