@@ -3,6 +3,7 @@
 #include "runtime.h"
 #include "game_patches.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -211,8 +212,10 @@ int runtime_emio_snap_trap(int num, void *context) {
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
  if (sites[id].off == 0x110038) {
-  fprintf(stderr, "[snap] AllocAlign-entry this=%llx size=%llx\n", (unsigned long long)x[0], (unsigned long long)x[1]);
-  dump_words("alloc-this", x[0], 0x80);
+  static _Atomic unsigned long long atot=0; static _Atomic unsigned acnt=0;
+  unsigned long long tot=atomic_fetch_add(&atot, x[1]) + x[1]; unsigned c=atomic_fetch_add(&acnt, 1)+1;
+  if ((c%200)==1) fprintf(stderr, "[snap] AllocAlign-entry #%u this=%llx size=%llx total=%llu\n", c, (unsigned long long)x[0], (unsigned long long)x[1], tot);
+  if (c==1) dump_words("alloc-this", x[0], 0x80);
  }
  if (sites[id].off == 0x1100b8) {
   fail_n++;
