@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*_build/
+ios/Gen/
+ios/Gen
+ios/Sources/Info.plist
+ios/*.xcodeproj/
+ios/DerivedData/
+ios/build/
+ios/*.ipa

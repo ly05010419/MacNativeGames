@@ -136,6 +136,7 @@ Only shader and pipeline identifiers, the game and app versions, the device mode
 ## What's new
 
 - **2026-11-14: WORLDEND SYNDROME 1.0.0 on Mac, experimental.** Built from your own base files; title through ADV, saves and the first loop were played ([games/worldend](games/worldend/README.md)).
+- **2026-11-13: experimental TMNT Mac source port.** Private-input build tools and host source are available under [`games/tmnt`](games/tmnt/README.md); complete playability and iOS are not validated.
 - **2026-11-11: Rankings, an anonymous frame-rate board (Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Mac).**
   A settings tab of its own (key 1) shows the latest board, one group per frame lock and interpolation setting. **Join the
   board** is off by default and never asked; once on, the session is kept on your Mac every 5 minutes and sent at start and

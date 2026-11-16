@@ -23,7 +23,7 @@ from .pins import BUILD_TOOLS, SOURCES
 # tools/deps) through MNG_REPO, which every process that imported tools/deps passes on to the ones it starts.
 os.environ.setdefault('MNG_REPO', str(Path(__file__).resolve().parents[2]))
 
-__all__ = ['DepsError', 'cache', 'env', 'path', 'prefix', 'program', 'build_tools', 'python_environment', 'LIBRARIES', 'PROGRAMS']
+__all__ = ['DepsError', 'cache', 'env', 'path', 'prefix', 'program', 'build_tools', 'python_environment', 'source', 'LIBRARIES', 'PROGRAMS']
 
 # library or tool name: (folder under the cache, the file whose presence means it is installed)
 def _folder(name):
@@ -164,6 +164,22 @@ def venv_python():
 
 
 # ---- recipes: each installs into stage (install() renames it to the prefix when it finished) ----
+def source(name):
+    """Pinned source for out-of-tree cross-compilation, shared by device targets."""
+    version, url, pin = SOURCES[name]
+    with locked():
+        if url.endswith('.git'):
+            return _checkout(name)
+        folder = cache() / 'src' / _folder(name)
+        marker = folder / '.mng-source-pin'
+        if not marker.is_file() or marker.read_text().strip() != pin:
+            archive = fetch(url, pin, url.rsplit('/', 1)[1])
+            unpack(archive, folder)
+            marker.write_text(pin + '\n')
+        inside = [p for p in folder.iterdir() if not p.name.startswith('.')]
+        return inside[0] if len(inside) == 1 and inside[0].is_dir() else folder
+
+
 def _source(name):
     """A fresh unpacked copy of a release archive: the folder it holds (one top folder) or the unpacked folder."""
     version, url, want = SOURCES[name]
@@ -248,6 +264,12 @@ def _cmake_install(name, src, stage, *options, extra_env=None):
          '-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++', *options], f'{name}-cmake.log', env=env)
     run([tools / 'cmake', '--build', build, '--parallel', jobs()], f'{name}-build.log', env=env)
     run([tools / 'cmake', '--install', build], f'{name}-install.log', env=env)
+
+
+def spirv_cross_source():
+    """Pinned source tree for targets that cross-compile the in-process translator."""
+    with locked():
+        return _checkout('spirv-cross')
 
 
 def _spirv_cross(stage):

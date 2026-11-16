@@ -1,0 +1,14 @@
+{
+  "title_id": "0100FE701475A000",
+  "version": "1.0.0",
+  "romfs_sha256": "8ed3fdd08805272df937659053c0c53d540db24e1933d564ae52b73c48f7cc25",
+  "files": {
+    "main": "cc2ce61a94ee933a31423abae8017b36bcf5b95861acf54b22d551e4a4f9d73a",
+    "main.npdm": "a4d76c46c9a4c8ab0ef105099dc2a1cc07bb125d8ba88721d02feee2bdb19fc2",
+    "rtld": "8e08c8cf2e4d6b39d69643af10ce765d39c06860878224c68f8cafc45a2636aa",
+    "sdk": "2a89fa1c0e677710e89ed29b578162affef530a0c9b8c93cda15d50a57a20d28",
+    "subsdk0": "f38d30e8241ee208cbf3090f44613e328af517ad199eb5985619416bb2cbcb55",
+    "subsdk1": "2a89fa1c0e677710e89ed29b578162affef530a0c9b8c93cda15d50a57a20d28",
+    "subsdk2": "276103c20119d638f4dc601a4cc3ae80587c36a92d76076e45e685ef9df54c6e"
+  }
+}

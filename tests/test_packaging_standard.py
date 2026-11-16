@@ -49,6 +49,9 @@ PATHS = {
     'switch 2 dumps (Bananza, Pokopia)': (
         ['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_ns2_seed.py', GFX.format('totk')], {}),
     'oot': (['games/oot/build.py', 'update_runtime.py', 'games/oot/scripts/prepare_ns2_seed.py', GFX.format('oot')], {}),
+    'tmnt': (['games/tmnt/build.py', 'games/tmnt/scripts/build_private_bundle.py', 'games/tmnt/scripts/package_private.py',
+              'games/tmnt/scripts/tmnt_bundle.py', 'games/tmnt/scripts/tmnt_update.py', 'games/tmnt/scripts/tmnt_pipelines.py',
+              GFX.format('tmnt')], {}),
     'ss': (['games/ss/build.py', 'games/ss/scripts/package_ss.py', 'games/ss/scripts/ss_bundle.py',
             'games/ss/scripts/ss_pipelines.py', 'games/ss/scripts/ss_update.py', 'games/ss/app/launcher.c'], {}),
     'dread': (['games/dread/build.py', 'games/dread/scripts/package_dread.py', 'games/dread/scripts/dread_bundle.py',
@@ -58,7 +61,7 @@ PATHS = {
                   'games/worldend/app/launcher.c'], {}),
 }
 
-BUILD_SCRIPTS = {'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
+BUILD_SCRIPTS = {'games/tmnt/build.py': 'tmnt', 'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
                  'games/worldend/build.py': 'worldend'}
 
 

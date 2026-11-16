@@ -45,7 +45,7 @@ from shader_list import KEY, NAME, ShaderList, answers_suffix, canonical, listed
 from prepare_shader_seed import builtin_serves  # noqa: E402
 from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, list_key_rule  # noqa: E402
 
-TITLES = {'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
+TITLES = {'tmnt': "Teenage Mutant Ninja Turtles: Shredder's Revenge", 'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
           'ssbu': 'Super Smash Bros. Ultimate', 'wonder': 'Super Mario Bros. Wonder', 'mvdk': 'Mario vs. Donkey Kong',
           'dkb': 'Donkey Kong Bananza', 'pokopia': 'Pokémon Pokopia', 'oot': 'Ocarina of Time'}
 # Each game's list, by the game's id in the inbox (its lib/validate.js GAMES and the apps' GAME_INBOX_ID)

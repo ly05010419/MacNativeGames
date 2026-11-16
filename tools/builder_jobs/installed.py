@@ -23,7 +23,7 @@ OOT_BUNDLE = 'org.macnativegames.oot'   # games/oot/build.py
 
 def bundle_ids():
     """The Mac bundle IDs of the games (build_app.APPS, and Ocarina of Time's)."""
-    return {bundle for _, bundle, _ in repo.build_app().APPS.values()} | {OOT_BUNDLE, 'org.macnativegames.ss', 'org.macnativegames.dread', 'org.macnativegames.worldend'}
+    return {bundle for _, bundle, _ in repo.build_app().APPS.values()} | {OOT_BUNDLE, 'org.macnativegames.ss', 'org.macnativegames.dread', 'org.macnativegames.worldend', 'org.macnativegames.tmnt.private'}
 
 
 # LaunchServices asked by bundle ID (NSWorkspace URLsForApplicationsWithBundleIdentifier, macOS 12+) through osascript's
