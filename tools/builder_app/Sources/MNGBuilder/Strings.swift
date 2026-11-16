@@ -78,6 +78,7 @@ enum T {
         case "botw": return s("Zelda: Breath of the Wild", "塞尔达传说 旷野之息")
         case "dkb": return s("Donkey Kong Bananza", "大金刚 Bananza")
         case "pkp": return s("Pokémon Pokopia", "宝可梦 Pokopia")
+        case "dread": return s("Metroid Dread", "密特罗德 生存恐惧")
         default: return g
         }
     }
@@ -86,6 +87,7 @@ enum T {
         case "totk": return "Mac · iPhone · iPad · Vision Pro"
         case "botw": return "Mac · iPhone · iPad"
         case "oot": return "Switch 2 · Mac"
+        case "dread": return "Switch 1 · Mac"   // not the default's Switch 2: Dread is a Switch 1 game (games/dread/build.py)
         default: return s("Switch 2 · Mac · early", "Switch 2 · Mac · 早期")
         }
     }
@@ -95,6 +97,7 @@ enum T {
         case "totk": return [Color(red: 0.20, green: 0.55, blue: 0.62), Color(red: 0.06, green: 0.20, blue: 0.30)]
         case "botw": return [Color(red: 0.35, green: 0.45, blue: 0.62), Color(red: 0.10, green: 0.14, blue: 0.24)]
         case "dkb": return [Color(red: 0.85, green: 0.42, blue: 0.12), Color(red: 0.40, green: 0.12, blue: 0.08)]
+        case "dread": return [Color(red: 0.72, green: 0.14, blue: 0.14), Color(red: 0.16, green: 0.05, blue: 0.08)]
         default: return [Color(red: 0.45, green: 0.70, blue: 0.35), Color(red: 0.14, green: 0.32, blue: 0.16)]
         }
     }
@@ -103,6 +106,9 @@ enum T {
         case "totk": return s("Drop the base game (XCI or NSP) and the 1.4.3 update (NSP); an NSP base also needs your unpacked firmware folder.", "拖入游戏本体（XCI 或 NSP）和 1.4.3 更新（NSP）；本体是 NSP 时还要解开的固件文件夹。")
         case "botw": return s("Drop the 1.6.0 card image (XCI), or the base NSP with the 1.9.0 update and its DLC, and a firmware or shared-fonts folder.", "拖入 1.6.0 卡带（XCI），或本体 NSP 加 1.9.0 更新和 DLC，再加固件或系统字体文件夹。")
         case "oot": return s("Drop the Switch 2 dump folder (or the .nup package) and a shared-fonts folder.", "拖入 Switch 2 的游戏文件夹（或 .nup 包）和系统字体文件夹。")
+        // Not the default's Switch 2 dump folder: Dread takes the base game and the 2.1.0 update as files, and needs
+        // the system fonts like any NSP (games/dread/build.py).
+        case "dread": return s("Drop the base game (XCI or NSP) and the 2.1.0 update (NSP), and your unpacked firmware folder.", "拖入游戏本体（XCI 或 NSP）和 2.1.0 更新（NSP），再加解开的固件文件夹。")
         default: return s("Drop the Switch 2 dump folder with its updates/ folder.", "拖入带 updates/ 文件夹的 Switch 2 游戏文件夹。")
         }
     }

@@ -9,7 +9,7 @@ struct HomePage: View {
     @State private var selected: String?
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
 
-    static let games = ["oot", "totk", "botw", "dkb", "pkp"]
+    static let games = ["oot", "totk", "botw", "dkb", "pkp", "dread"]
 
     /// The first built game, in the cards' order, is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {
