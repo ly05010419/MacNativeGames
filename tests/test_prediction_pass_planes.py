@@ -42,6 +42,13 @@ class PredictionPassPlanes(unittest.TestCase):
         # targets prediction cannot read give no keys (a key with zeroed formats is never drawn)
         self.assertIn('if (cf_src == 2) continue;', rest)
 
+    def test_sample_count_is_the_replays(self):
+        # rp_begin_ex clears g_pass and takes samples from the attachments only: 0 for a pass with no render target
+        formats = body('pred_rt_formats')
+        self.assertIn('*samples = 0;', formats)
+        self.assertNotIn('*samples = 1;', formats)
+        self.assertIn('memset(&g_pass, 0, sizeof g_pass)', SOURCE)
+
     def test_replay_look_ahead_uses_the_same_rule(self):
         scan = body('ds_scan')
         self.assertIn('ds_op_ends_pass(h.op)', scan)

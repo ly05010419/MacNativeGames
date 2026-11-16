@@ -7453,17 +7453,16 @@ static void pso_record(const char *fmt, ...) {
     if (!f) return;
     va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap); fflush(f);
 }
-// 用户清单：本机运行中提交线程同步新建的着色器 / 管线，下次启动与种子清单一起预热。
-// 路径 = DM_PSO_USER，或 DM_SAVE 的父目录，或 TOTK_PROFILE_DIR 下的 pso_user.tsv；每个本机档案独立记录。
-// User manifest: shaders / pipelines created synchronously on the submit thread while running on this machine, warmed up at the next launch together with the seed manifest.
-// Path = DM_PSO_USER, the parent of DM_SAVE, or TOTK_PROFILE_DIR/pso_user.tsv; each local profile records its own additions.
+// 旧的档案清单 pso_user.tsv：2026-11-16 起不再写，启动时合并进本机唯一的清单 pso_collected.tsv 一次（device_list）。
+// 路径 = DM_PSO_USER，或 DM_SAVE 的父目录，或 TOTK_PROFILE_DIR 下的 pso_user.tsv。
+// The old profile list pso_user.tsv: no longer written since 2026-11-16; merged once into this device's one list,
+// pso_collected.tsv (device_list). Path = DM_PSO_USER, the parent of DM_SAVE, or TOTK_PROFILE_DIR/pso_user.tsv.
 static NSString *pso_user_path(void) {
     const char *u = getenv("DM_PSO_USER"), *save = getenv("DM_SAVE"), *profile = getenv("TOTK_PROFILE_DIR");
     if (u && *u) return @(u);
     if (save && *save) return [[@(save) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"pso_user.tsv"];
     return [(profile && *profile ? @(profile) : @"user-data") stringByAppendingPathComponent:@"pso_user.tsv"];
 }
-static FILE *g_pso_user; static int g_pso_user_checked;
 /* Lines already in the warm lists, as 64-bit hashes of the line (seen_key): the lines themselves were ~190,000 strings,
    53 MB on the Mac (a render pipeline's key is 1,088 hex digits; the iPhone also carries the shared list's 12,000 in
    pso_list.tsv, 2026-10-23). A collision only leaves one line unrecorded. */
@@ -7479,21 +7478,30 @@ static int warm_shared(void) {
     static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WARM_SHARED"); v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE; }
     return v;
 }
-static FILE *pso_user_file(void) {
-    if (g_pso_user_checked) return g_pso_user;
-    g_pso_user_checked = 1;
-    NSString *path = pso_user_path();
-    if (path) g_pso_user = fopen(path.fileSystemRepresentation, "a");
-    return g_pso_user;
-}
 /* TOTK automatic shader collection (user, 2026-10-16 night: "新着色器发现后自动预热、自动使用、自动放入缓存"): a new shader variant
    is translated, used and written to the translation cache at once (totk_rt_variant), every cached variant is compiled
-   by the next start's warm-up, and every shader / pipeline built on the submit thread goes into the warm lists. Besides
-   the per-profile list, those lines also go into one shared list next to the translation cache, so what any session
-   finds (the user's game, an agent's test session on a save copy) is warmed by every later start of either checkout
-   (the cache directory is shared). g_collect_new: lines added this run (S shaders, R render, C compute pipelines);
-   the bottom-left box shows them (shader_overlay_prepare). */
+   by the next start's warm-up, and every shader / pipeline built on the submit thread goes into this device's warm list,
+   pso_collected.tsv next to the translation cache, so what any session finds (the user's game, an agent's test session
+   on a save copy) is warmed by every later start (the cache directory is shared). It is the device's only list since
+   2026-11-16 (totk_device_list.h; it was also written to each profile's pso_user.tsv). g_collect_new: lines added this
+   run, every kind (S shader libraries, R render, C compute, M mesh, T tile-read pipelines, B border recipes); the box
+   shows them all (shader_overlay_prepare). */
 static NSString *pso_shared_path(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pso_collected.tsv"]; }
+#include "totk_device_list.h"
+/* This device's warm list (totk_device_list.h): pso_collected.tsv, with the profile's old pso_user.tsv merged in at the
+   first use of a run (rows the app's lists hold left out), so the warm-up reads one list and pso_user_record writes one. */
+static NSString *device_list(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
+        NSMutableArray<NSString *> *app = [NSMutableArray array];
+        for (NSString *name in @[@"pso_title.tsv", @"pso_manifest.tsv", @"pso_list.tsv"]) if (dir) [app addObject:[dir stringByAppendingPathComponent:name]];
+        long n = totk_device_list_merge(pso_user_path(), pso_shared_path(), app);
+        if (n > 0) MLOG("本机清单：把档案里的旧清单 %s 并进 %s，新增 %ld 行（App 清单已有的不收）；旧文件改名为 .merged 留着", pso_user_path().UTF8String, pso_shared_path().UTF8String, n);
+        else if (n < 0) MLOG("【红】本机清单：旧清单 %s 没能并进 %s，这次照旧只用后者，下次启动再试", pso_user_path().UTF8String, pso_shared_path().UTF8String);
+    });
+    return pso_shared_path();
+}
 static FILE *g_pso_shared; static int g_pso_shared_checked;
 static _Atomic uint64_t g_collect_new[3], g_collect_last_ns;
 /* TOTK_PSO_CAPTURE=<file> (a diagnostic, off unless set; 2026-11-13): every warm row this run builds, in the order it
@@ -7515,9 +7523,8 @@ static void pso_capture(const char *line) {
 static void pso_user_record(const char *fmt, ...) {
     char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
     pso_capture(line);
-    FILE *f = pso_user_file();
-    if (!g_pso_shared_checked) { g_pso_shared_checked = 1; g_pso_shared = fopen(pso_shared_path().fileSystemRepresentation, "a"); }
-    if (!f && !g_pso_shared) return;
+    if (!g_pso_shared_checked) { g_pso_shared_checked = 1; g_pso_shared = fopen(device_list().fileSystemRepresentation, "a"); }
+    if (!g_pso_shared) return;
     if (!g_pso_user_seen) {
         g_pso_user_seen = [NSMutableSet set];
         // the app's lists count as seen too: iOS carries the shared list's pipelines in pso_list.tsv (build_ipa.py), and
@@ -7525,15 +7532,14 @@ static void pso_user_record(const char *fmt, ...) {
         NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
         NSMutableArray<NSString *> *paths = [NSMutableArray array];
         // without warm_shared() the shared list is not kept warm, so one of its pipelines drawn here is written to
-        // pso_user.tsv like any other and kept warm from the next start
+        // this device's list like any other and kept warm from the next start
         for (NSString *name in warm_shared() ? @[@"pso_manifest.tsv", @"pso_list.tsv"] : @[@"pso_manifest.tsv"]) if (dir) [paths addObject:[dir stringByAppendingPathComponent:name]];
         if (!warm_shared() && dir) @autoreleasepool {   // drawn here, one is new to this device's list but not to the game (the box's count)
             g_pso_shipped_seen = [NSMutableSet set];
             NSString *txt = [NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:@"pso_list.tsv"] encoding:NSUTF8StringEncoding error:nil];
             for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_shipped_seen addObject:seen_key_str(old)];
         }
-        NSString *user = pso_user_path(); if (user) [paths addObject:user];
-        [paths addObject:pso_shared_path()];
+        [paths addObject:device_list()];
         for (NSString *path in paths) @autoreleasepool { NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             for (NSString *old in [txt componentsSeparatedByString:@"\n"]) if (old.length && ![old hasPrefix:@"#"]) [g_pso_user_seen addObject:seen_key_str(old)]; }
     }
@@ -7541,8 +7547,7 @@ static void pso_user_record(const char *fmt, ...) {
     NSNumber *k = seen_key(line, ll && line[ll - 1] == '\n' ? ll - 1 : ll);   // 与清单文件按行（不含换行）比 | Compared with the manifest file line by line (without the newline)
     if ([g_pso_user_seen containsObject:k]) return;
     [g_pso_user_seen addObject:k];
-    if (f) { fputs(line, f); fflush(f); }
-    if (g_pso_shared) { fputs(line, g_pso_shared); fflush(g_pso_shared); }
+    fputs(line, g_pso_shared); fflush(g_pso_shared);
     int kind = line[0] == 'S' ? 0 : line[0] == 'R' ? 1 : line[0] == 'C' ? 2 : -1;
     if (kind >= 0 && [g_pso_shipped_seen containsObject:k]) kind = -1;   // from the shared list (and its archive): not new
     if (kind >= 0) { atomic_fetch_add(&g_collect_new[kind], 1); atomic_store(&g_collect_last_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }
@@ -10394,7 +10399,7 @@ static void par_count(int hit) {
 /* Every pipeline-archive lookup, classified (user 2026-11-15: "如果没有命中 记录下来 是否真的没有缓存或者预热"): a quick
    App's cold start compiled 929 of 1,000 pipelines (118 of 128 mesh ones) although its packaging had reported every
    listed one in the archive, and nothing said why. Where: the warm-up of the App's own lists (pso_title / pso_manifest,
-   archived at packaging: a miss there is a defect, logged red), of the player's list (pso_user.tsv, never packaged: a
+   archived at packaging: a miss there is a defect, logged red), of the device's list (pso_collected.tsv, never packaged: a
    miss only means it was not prepared), or a draw. Why: no file (the archive index lacks the key: nothing was archived
    under it) or refused (a file holds the key and Metal does not take the descriptor: functions or state differ from the
    archived ones; Metal's own reason is logged). A first start's background fill (par_filling) is not counted; the
@@ -11590,7 +11595,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         MLOG("后台预热：着色器库用 %d 个线程编（TOTK_WARM_THREADS），进世界后最多 2 个", warm_threads());
         totk_rt_service_prestart();   // the first translation in play does not start the translator (totk_shader_rt.m)
         g_variant_bg = 1;   // patched variants pso_desc and warm_border compile here are no stall (variant_library)
-        /* A pipeline the archive lacks (one met in play last time, from pso_user.tsv) goes into it as soon as this compiled
+        /* A pipeline the archive lacks (one met in play last time, from the device's list) goes into it as soon as this compiled
            it, so the next start takes it from there (par_add). Before, play-time pipelines waited for an idle moment in the
            world, which an iPhone never reported, and every start compiled them again (763, 2026-10-22). */
         par_write_in_place = 1;
@@ -11746,7 +11751,7 @@ static void warm_filled(void) {
 }
 /* TOTK (iOS): the full warm-up keeps every built pipeline (about 600 MB on the phone) and is off there, so a pipeline met
    for the first time in play is compiled on the submit thread (50-700 ms hitches while turning the camera). This light
-   warm-up builds the pipelines recorded in this profile's pso_user.tsv in the background, newest first, and drops each
+   warm-up builds the pipelines recorded in this device's list (device_list) in the background, newest first, and drops each
    one at once: the point is the system Metal shader cache (on disk, per app), so that the in-game creation becomes a
    cache hit. Libraries are kept only for a batch of rows. It runs at background priority on the title and loading
    screens only and stops at the first world frame: on the A15 (two performance cores) it doubled the replay time
@@ -11757,7 +11762,7 @@ void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
-    NSString *path = pso_user_path();
+    NSString *path = device_list();
     NSString *txt = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     if (!txt) return;
     NSArray<NSString *> *lines = [txt componentsSeparatedByString:@"\n"];
@@ -11971,7 +11976,7 @@ static void warm_start(void) {
     if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
     NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
     NSString *title = [dir stringByAppendingPathComponent:@"pso_title.tsv"];
-    NSString *user = pso_user_path();
+    NSString *user = device_list();   // this device's one list (totk_device_list.h): the "user" list of warm_resident_lists
     NSArray<NSString *> *paths;
     if (e && *e) {
         paths = @[@(e)];
@@ -11990,9 +11995,7 @@ static void warm_start(void) {
         NSString *list = [dir stringByAppendingPathComponent:@"pso_list.tsv"];
         if ([fm fileExistsAtPath:list]) [all addObject:list];
         if ([fm fileExistsAtPath:seed]) [all addObject:seed];
-        if (user && [fm fileExistsAtPath:user]) [all addObject:user];
-        NSString *shared = pso_shared_path();   // what every session collected (pso_user_record)
-        if ([fm fileExistsAtPath:shared]) [all addObject:shared];
+        if (user && [fm fileExistsAtPath:user]) [all addObject:user];   // what every session collected (pso_user_record)
         // The selected version's prepared shaders (real MSL, also on a fresh install) come last: they are shader libraries
         // only, while the lists above also build the pipelines the first scenes need.
         const char *seedMode = getenv("TOTK_SHADER_SEED");
@@ -14621,7 +14624,10 @@ static int rt_same(const p_set_rt *a, const p_set_rt *b);
    0 for targets prediction leaves alone (a block-compressed colour: such passes are handled, or reported, when they begin).
    Prediction must not acquire, recreate or upload textures on the active GPU timeline: descriptors only. */
 static int pred_rt_formats(const p_set_rt *r, uint32_t cf[8], uint32_t *dfull, uint32_t *sfull, uint32_t *samples) {
-    memset(cf, 0, 8 * sizeof *cf); *dfull = *sfull = 0; *samples = 1;
+    /* samples as the replay's pass has it (rp_begin_ex: g_pass cleared, then the last colour's, or the depth's, count): 0
+       for targets with no attachment. It was 1 here, so a pass with no render target got a key the archive lacks
+       (Ocarina of Time 2026-11-16: 2 such pipelines compiled 3 times in a route, never drawn; the app's rows say 0). */
+    memset(cf, 0, 8 * sizeof *cf); *dfull = *sfull = 0; *samples = 0;
     for (int i = 0; i < r->n && i < 8; i++) { MTLTextureDescriptor *d = r->color[i] ? tex_desc(r->color[i], tex_mirrored(r->color[i])) : nil;
         if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); *samples = (uint32_t)d.sampleCount; } } NVN_RT_DUP_PREDICT(r, cf)
     for (int i = 0; i < 8; i++) if (pf_block_compressed(cf[i])) { memset(cf, 0, 8 * sizeof *cf); return 0; }

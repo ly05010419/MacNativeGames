@@ -5,7 +5,8 @@ The packaged App warms the pipelines games/oot/assets/shader_list.tsv names; eve
 so far came from play in the world (the village, the forest). A player's first start runs through the title, the file
 select, the opening and Link's house first, and none of that was recorded. This script runs the App the way a new player
 does (an empty profile, an empty runtime shader cache, its own contribution file), drives it with the input file, and
-leaves the recordings in the run folder: `profile/pso_user.tsv` (S / C / R / T rows, this build's names), the
+leaves the recordings in the run folder: `shader-cache/rt/pso_collected.tsv` (the device's one list since 2026-11-16,
+nvn_mtl.m device_list: S / C / R / T rows, this build's names), the
 contribution file (V rows with bind states, portable R / T rows) and the runtime cache folders (variant indexes that let
 `shader_list.py merge` rename the rows). With --merge the rows go into the list at once.
 
@@ -127,13 +128,14 @@ def main():
             result['exit'] = proc.returncode
     if LOG.exists():
         shutil.copy2(LOG, D / 'game.log')
-    result['pso_user'] = count_rows(profile / 'pso_user.tsv'); result['contribution'] = count_rows(contrib)
+    device_list = cache / 'rt/pso_collected.tsv'   # TOTK_SHADER_CACHE above: the device's one list (nvn_mtl.m device_list)
+    result['device_list'] = count_rows(device_list); result['contribution'] = count_rows(contrib)
     result['cache_dirs'] = sorted(d.name for d in cache.iterdir() if d.is_dir()) if cache.exists() else []
-    print('recorded: pso_user', result['pso_user'], 'contribution', result['contribution'], flush=True)
+    print('recorded: device list', result['device_list'], 'contribution', result['contribution'], flush=True)
     if a.merge:
         lst = GAME / 'assets/shader_list.tsv'
         caches = [str(d) for d in cache.iterdir() if d.is_dir() and any(d.glob('*.variants'))]
-        cmd = [sys.executable, '-I', str(GAME / 'scripts/shader_list.py'), 'merge', str(lst), *caches, str(seed), str(contrib), str(profile / 'pso_user.tsv')]
+        cmd = [sys.executable, '-I', str(GAME / 'scripts/shader_list.py'), 'merge', str(lst), *caches, str(seed), str(contrib), str(device_list)]
         merged = subprocess.run(cmd, capture_output=True, text=True)
         result['merge'] = dict(returncode=merged.returncode, out=merged.stdout.strip()[-800:], err=merged.stderr.strip()[-800:])
         print('merge:', merged.stdout.strip().splitlines()[-1:] or merged.stderr.strip()[-300:], flush=True)

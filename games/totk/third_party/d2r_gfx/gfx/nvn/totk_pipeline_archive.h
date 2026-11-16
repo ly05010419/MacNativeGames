@@ -402,7 +402,7 @@ static void par_stale(NSString *key) {
     pthread_mutex_unlock(&g_par_mu);
 }
 // Called after a pipeline the archive did not have was compiled. The warm-up writes it at once; one compiled in play is in
-// pso_user.tsv, so the next start's warm-up builds it and writes it then.
+// the device's list (pso_collected.tsv), so the next start's warm-up builds it and writes it then.
 static void par_add(id<MTLDevice> dev, NSString *key, id desc) {
     if (g_par_on && key && par_write_in_place) par_write(dev, key, desc);
 }

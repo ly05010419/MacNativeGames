@@ -405,7 +405,7 @@ class CaptureSwitch(unittest.TestCase):
         text = (ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
         body = text[text.index('static void pso_user_record(const char *fmt, ...) {'):]
         body = body[:body.index('\n}\n')]
-        self.assertLess(body.index('pso_capture(line);'), body.index('if (!f && !g_pso_shared) return;'))
+        self.assertLess(body.index('pso_capture(line);'), body.index('if (!g_pso_shared) return;'))   # one device list (device_list)
         self.assertLess(body.index('pso_capture(line);'), body.index('if ([g_pso_user_seen containsObject:k]) return;'))
         self.assertIn('getenv("TOTK_PSO_CAPTURE")', text)
 
