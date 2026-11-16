@@ -56,6 +56,24 @@ static void put_word(Module *m, uint64_t off, uint32_t word, const char *what) {
 #include "botw_vr_projection.h"
 #include "botw_vr_ui_profile.h"
 #include "botw_stereo.h"
+#ifdef GAME_BOTW190
+#if TARGET_OS_OSX
+/* 1.9.0 camera input sites, documented by BreathWindRecomp's tools/game_sites.py.
+   Check the neighbouring instructions where a veneer depends on their operands. */
+static const struct { uint32_t off, original; } mouse_camera_sites[] = {
+    {0x151d494u, 0xb9407a68u}, /* VFR has just set the frame ratio */
+    {0x0d57fe0u, 0xd100c3ffu}, /* Camera stick input, writes a Vector2f to x0 */
+    {0x0d57fe4u, 0xfd000be8u},
+    {0x0bf5330u, 0x1e200801u}, {0x0bf5334u, 0x1e208803u}, /* chase pitch */
+    {0x0c1a528u, 0x1e200801u}, {0x0c1a52cu, 0x1e208803u}, /* shield surfing */
+    {0x0c22100u, 0x1e200801u}, {0x0c22104u, 0x1e208803u}, /* wakeboarding */
+    {0x0bf0becu, 0xf9416668u}, {0x0bf0bfcu, 0xbd400101u}, /* bow / scope scale */
+    {0x0bf2c04u, 0xf9415e68u}, {0x0bf2c0cu, 0xbd400101u}, /* held item scale */
+    {0x0d17024u, 0x94007ab3u}, {0x0d1703cu, 0x94007ab5u}, /* game axis inversion */
+};
+#include "botw_mouse_camera.h"
+#endif
+#endif
 
 /* Real-time frame step (TOTK_REALTIME=0: as shipped). ksys::VFR (singleton pointer main+0x2d1e170, built at main+0x183eb98)
    keeps one frame ratio at +0x3c: the frame's length in 30 fps frames. Every per-core step the game reads derives from it:
@@ -1328,6 +1346,11 @@ void runtime_game_patches(Module *m) {
     botw_vr_ui_profile_install(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
+#ifdef GAME_BOTW190
+#if TARGET_OS_OSX
+    botw_mouse_camera_install(m);
+#endif
+#endif
     { const char *a = getenv("TOTK_EXCL_ACQUIRE");
       if (ios_code() || !a || strcmp(a, "0")) {
           const int w = !CODE_PATCHED_AT_BUILD;   /* the device: the export set them all, in the text and the patch area */
