@@ -16,12 +16,12 @@
                 TITLE_KINDS 9.06. Then the player's own run: the rest came from the archive on the submit thread in
                 play (12 pipelines + 6 libraries in one 386 ms frame) and its footprint still reached 11.2-11.9 GiB, so
                 ALL became Ocarina of Time's Mac default (user 2026-11-16: "改成 默认 常驻") and TITLE_KINDS its memory
-                saver mode, MNG Launcher's "开启省内存模式". The same evening the memory saver became the default (user:
-                "默认 打开省内存模式"): one autoload route on this 16 GB M4, 90 s in the world each, ALL footprint
-                12.1-13.5 GB with 240,924 pages swapped out and 276 long frames (6.4 %, p99 59.2 ms), TITLE_KINDS
-                9.7-9.9 GB, 11,384 pages and 35 long frames (0.7 %, p99 20.9 ms); its world entry took one 4.5 s frame
-                (the libraries from the archive), ALL's 1.1 s. memory-saver.txt next to controls.txt says "off" to keep
-                every list.
+                saver mode, MNG Launcher's "开启省内存模式": "on" in memory-saver.txt next to controls.txt. Measured the
+                same evening, one autoload route on this 16 GB M4, 90 s in the world each: ALL footprint 12.1-13.5 GB with
+                240,924 pages swapped out and 276 long frames (6.4 %, p99 59.2 ms), TITLE_KINDS 9.7-9.9 GB, 11,384 pages
+                and 35 long frames (0.7 %, p99 20.9 ms), but its world entry took one 4.5 s frame (the libraries from the
+                archive), ALL's 1.1 s. The saver was the default for an hour ("默认 打开省内存模式"), then off again (user:
+                "默认 不用 省内存模式").
    TOTK_WARM_RESIDENT=all|title-local|title-kinds chooses; TOTK_WARM_SHARED=1/0 still means all / title-local. */
 enum { WARM_RESIDENT_ALL, WARM_RESIDENT_TITLE_LOCAL, WARM_RESIDENT_TITLE_KINDS };
 static const char *const WARM_RESIDENT_NAME[] = {"all", "title-local", "title-kinds"};
@@ -36,11 +36,11 @@ __attribute__((unused)) static int warm_resident_parse(const char *resident, con
     return fallback;
 }
 
-/* memory-saver.txt's word (MNG Launcher writes "off" to keep every list, "on", or removes the file for the default): 1 on,
-   0 off, WARM_SAVER_DEFAULT (on, user 2026-11-16 "默认 打开省内存模式") for no file or an empty one, -1 a word it does
-   not know. Blanks and a newline around the word do not count. */
+/* memory-saver.txt's word (MNG Launcher writes "on", or removes the file for the default): 1 on, 0 off,
+   WARM_SAVER_DEFAULT (off, user 2026-11-16 "默认 不用 省内存模式") for no file or an empty one, -1 a word it does not
+   know. Blanks and a newline around the word do not count. */
 #define WARM_SAVER_FILE "memory-saver.txt"
-#define WARM_SAVER_DEFAULT 1
+#define WARM_SAVER_DEFAULT 0
 __attribute__((unused)) static int warm_saver_word(const char *word) {
     if (!word) return WARM_SAVER_DEFAULT;
     while (*word == ' ' || *word == '\t') word++;
