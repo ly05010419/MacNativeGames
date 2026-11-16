@@ -112,7 +112,7 @@ class OotIosMipDrop(unittest.TestCase):
         note = function_body(par, 'static void par_open_note(NSString *name) {')
         self.assertIn('[g_par_open removeObjectForKey:old];', note)
         get = function_body(par, 'static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {')
-        self.assertIn('if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name);', get)
+        self.assertIn('else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name);', get)   # opened outside g_par_mu since f0bb4fd5
         self.assertIn('if (a) PAR_OPEN_NOTE(name);', get)
 
     def test_ios_warm_up_uses_several_threads(self):

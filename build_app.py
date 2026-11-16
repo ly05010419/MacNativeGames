@@ -1957,22 +1957,118 @@ def app_shader_bundle(app, version):
 
 
 def clone_app_except(src, dst, skip):
-    """src cloned to dst as copy_tree does, but for `skip` (a folder inside src), which becomes a link to src's: what
-    update_runtime.py assembles beside the installed app, with the installed shader data read through the link (the
-    probe, the pipeline tool) instead of 117,000 files cloned (31 s) and deleted again."""
+    """src cloned to dst as copy_tree does, but for `skip` (a folder inside src, or several), which becomes a link to
+    src's: what update_runtime.py assembles beside the installed app, with the installed shader data and pipeline archive
+    read through the link (the probe, the pipeline tool) instead of 117,000 files cloned (31 s) and deleted again."""
+    skips = (skip,) if isinstance(skip, (str, os.PathLike)) else tuple(skip)
     dst.mkdir(parents=True)
     for child in src.iterdir():
         target = dst / child.name
-        if child == skip:
+        if child in skips:
             target.symlink_to(child.resolve())
         elif child.is_symlink():
             target.symlink_to(os.readlink(child))
-        elif child.is_dir() and skip.is_relative_to(child):
-            clone_app_except(child, target, skip)
+        elif child.is_dir() and any(s.is_relative_to(child) for s in skips):
+            clone_app_except(child, target, skips)
         elif child.is_dir():
             copy_tree(child, target)
         else:
             clone(child, target)
+
+
+def app_pipeline_bundle(app, version):
+    """The app's Pipelines bundle (pipeline_bundle), or None for an app made before it (build/pipelines in its Resources)."""
+    bundle = Path(app) / f'Contents/Helpers/Pipelines-{version}.bundle'
+    return bundle if (bundle / 'Contents/Resources/pipelines').is_dir() and not bundle.is_symlink() else None
+
+
+HELPER_SIGNATURE = ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')
+
+
+def pipeline_files_stamp(folder):
+    """What an app's pipeline archive is (pipeline_bundle): each pipelines-* file's name and size, an archive file also by
+    its modification time (mac_pipeline_files clones it, keeping the time of the file the tool wrote, so an archive the
+    tool did not write again keeps its stamp), the small index files by their bytes (written on every packaging)."""
+    h = hashlib.sha256()
+    for p in sorted(p for p in Path(folder).iterdir() if p.is_file() and p.name.startswith('pipelines-')):
+        st = p.stat()
+        h.update(f'{p.name} {st.st_size} {st.st_mtime_ns if p.suffix == ".metalarchive" else sha256(p)}\n'.encode())
+    return h.hexdigest()
+
+
+def pipeline_bundle(files, bundle, bundle_id, logs):
+    """The Mac's pipeline archive (mac_pipelines; the files mac_pipeline_files wrote into `files`) as a signed bundle of its
+    own at `bundle` in the work folder, like the shader data (shader_bundle), signed again only when an archive file
+    changed. In the app's Resources it was sealed on every update: Ocarina of Time's 6.8 GB took 59 of its 69 s of
+    signing and 10.5 s of every seal check, Tears of the Kingdom's 2.3 GB 25 s (2026-11-16,
+    scratch/runs/2026-11/express-speed). The app reads it through build/pipelines (link_pipelines)."""
+    stamp = bundle.with_name(bundle.name + '.json')
+    want = {'format': 1, 'files': pipeline_files_stamp(files)}
+    try:
+        have = json.loads(stamp.read_text()) if (bundle / 'Contents/_CodeSignature/CodeResources').is_file() else None
+    except (OSError, ValueError):
+        have = None
+    if have == want:
+        return bundle
+    say('   the pipeline archive bundle is signed again (' + ('none in this work folder' if have is None else 'an archive file changed') + ')')
+    tmp = bundle.with_name(bundle.name + f'.partial-{os.getpid()}')
+    if tmp.exists():
+        remove_tree(tmp)
+    dest = tmp / 'Contents/Resources/pipelines'
+    dest.mkdir(parents=True)
+    for p in sorted(Path(files).iterdir()):
+        if p.is_file() and p.name.startswith('pipelines-'):
+            clone(p, dest / p.name)
+    import plistlib
+    (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier=bundle_id, CFBundleName='Pipelines', CFBundlePackageType='BNDL',
+        CFBundleShortVersionString='1', CFBundleVersion='1')))
+    run(['codesign', '--force', '--sign', '-', tmp], logs / 'sign-pipelines.log')   # nested: not the app
+    run(['codesign', '--verify', '--strict', tmp], logs / 'verify-pipelines.log')
+    stamp.unlink(missing_ok=True)
+    if bundle.exists():
+        remove_tree(bundle)
+    tmp.rename(bundle)
+    stamp.write_text(json.dumps(want) + '\n')
+    return bundle
+
+
+def place_helper(bundle, app, installed):
+    """A signed helper bundle (shader data, pipelines) in the new app's Contents/Helpers. When the installed app
+    (`installed`, or None) carries the same one (the same signature and Info.plist), only its signature goes in and
+    install_app moves the installed bundle in (keep_game_data), as update_runtime.py does for the shader data
+    (shader_signature_only); else the whole bundle is cloned. Whatever was at its place (a link clone_app_except left, an
+    older copy) is replaced. Returns whether only the signature went in."""
+    target = Path(app) / 'Contents/Helpers' / bundle.name
+    before = Path(installed) / 'Contents/Helpers' / bundle.name if installed else None
+    same = before is not None and not before.is_symlink() and all(
+        (before / rel).is_file() and (before / rel).read_bytes() == (bundle / rel).read_bytes() for rel in HELPER_SIGNATURE)
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        remove_tree(target)
+    if same:
+        shader_signature_only(app, bundle)
+    else:
+        copy_tree(bundle, target)
+    return same
+
+
+def link_pipelines(app, res, name):
+    """build/pipelines: a link to the app's Pipelines bundle (relative: the app moves), where the game reads its archive
+    (totk_pipeline_archive.h par_load_prebuilt, exe_rel("pipelines")). An older app's own folder goes out of the app and
+    is deleted later, as link_shader_data does."""
+    link = res / 'build/pipelines'
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    elif link.is_dir():
+        aside = app.with_name(f'{app.name}.pipelines.old')
+        if aside.exists():
+            remove_tree(aside)
+        link.rename(aside)
+        remove_in_background(aside)
+    link.symlink_to(os.path.relpath(app / 'Contents/Helpers' / name / 'Contents/Resources/pipelines', link.parent))
 
 
 def shader_signature_only(app, installed):
@@ -2215,7 +2311,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
     place_runtime(tree, tmp, version, logs, game=game)
-    mac_pipelines(tree, res, version, logs)   # before the seal: the files go into the app (build/pipelines)
+    mac_pipelines(tree, res, version, logs, installed=out if out.exists() else None)   # before the seal: the Pipelines bundle (build/pipelines)
     if game_data == 'library':
         folder = library_game_data(game, version, game_data_folder)
         say(f'4/4 app: the game data goes to {folder}, not into the app (put there once; later builds reuse it)')
@@ -2297,7 +2393,7 @@ def mac_pipeline_files(made, seed, arch, chain):
     return len(index)
 
 
-def mac_pipelines(tree, res, version, logs):
+def mac_pipelines(tree, res, version, logs, installed=None):
     """The Mac's pipeline archive, made while packaging (user 2026-10-29: "mac的 管线 预热 和iPhone 一样 放在打包阶段做 不在app里做了"):
     the game binary's pipeline-archive mode (TOTK_PIPELINE_ARCHIVE_HOST=1) makes every pipeline of the warm-up lists from
     the libraries the game itself loads (the app's shader-libs) on this Mac's GPU, so the first start takes them from the
@@ -2352,7 +2448,23 @@ def mac_pipelines(tree, res, version, logs):
     if not arch or not chain:
         say(f'   no GPU architecture or chain in the report, the first start fills it instead (see {logs / "mac-pipelines.log"})')
         return
-    n = mac_pipeline_files(work / 'cache/pipelines', build / 'pipelines', arch, chain)
+    # Into the work folder, then the app as a signed bundle of its own (pipeline_bundle), read through build/pipelines
+    # (link_pipelines): unchanged, it goes in as its signature and the installed app's bundle is moved in (place_helper,
+    # install_app). `installed`: the app being replaced (update_runtime.py, shader_update.py, a rebuild over it), or None.
+    files = work / 'files'
+    n = mac_pipeline_files(work / 'cache/pipelines', files, arch, chain)
+    app = res.parents[2]
+    if not n:   # no archive: none in the app either, as before (its build/pipelines held no pipelines-* then)
+        for old in (app / 'Contents/Helpers').glob('Pipelines-*.bundle'):
+            old.unlink() if old.is_symlink() else remove_tree(old)
+        if (build / 'pipelines').is_symlink():
+            (build / 'pipelines').unlink()
+    else:
+        bundle = pipeline_bundle(files, tree / f'build/pipeline-bundles/Pipelines-{version}.bundle',
+                                 f'org.macnativegames.pipelines.{version}', logs)
+        kept = place_helper(bundle, app, installed)
+        link_pipelines(app, res, bundle.name)
+        say('   pipeline archive: ' + ('unchanged, the installed app\'s bundle is moved in' if kept else 'its bundle goes into the app'))
     say(f"   {n:,} pipelines for {arch} in {time.time() - t0:.0f} s ({report.get('failed', 0)} failed); "
         "another Mac's GPU fills its own on the first start")
 

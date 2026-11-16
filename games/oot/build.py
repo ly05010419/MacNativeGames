@@ -283,57 +283,20 @@ def shader_bundle(tree,record,mode='full'):
     temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
     return bundle
 
+# The App's pipeline archive as a signed bundle of its own and the helper bundles placed by signature: build_app.py's
+# (pipeline_bundle, place_helper), shared with Tears of the Kingdom, Breath of the Wild, Bananza and Pokopia since
+# 2026-11-16 (user: "四个游戏 都要支持"). The archive's record (compute-manifest.json, which names this runtime) stays out
+# of the bundle: build/compute-manifest.json.
 def pipeline_files_stamp(pipelines):
-    """What the App's pipeline archive is (pipeline_bundle): each pipelines-* file's name and size, an archive file also by
-    its modification time (mac_pipeline_files clones it, keeping the time of the file the tool wrote, so an archive the
-    tool did not write again keeps its stamp), the small index files by their bytes (written on every packaging)."""
-    h=hashlib.sha256()
-    for p in sorted(p for p in Path(pipelines).iterdir() if p.is_file() and p.name.startswith('pipelines-')):
-        st=p.stat()
-        h.update(f'{p.name} {st.st_size} {st.st_mtime_ns if p.suffix==".metalarchive" else sha(p)}\n'.encode())
-    return h.hexdigest()
+    return build_helpers().pipeline_files_stamp(pipelines)
 
 def pipeline_bundle(tree,pipelines,suffix=''):
-    """The App's pipeline archive (compute_pipeline_archive, 6.8 GB in 3,791 files) as a signed bundle of its own, like the
-    shader data (shader_bundle), kept in the work folder and signed again only when an archive file changed. In the App's
-    Resources every update sealed it again: 59 of the 69 s of signing and 10.5 s of every seal check (2026-11-16,
-    scratch/runs/2026-11/express-speed/sign-test.log: an App clone without it signed in 9.6 s, checked in 0.4 s). The
-    archive's record (compute-manifest.json, which names this runtime) stays out of it: build/compute-manifest.json."""
-    bundle=tree/f'build/pipeline-bundles/Pipelines-oot{suffix}.bundle'
-    stamp=bundle.with_name(bundle.name+'.json')
-    want={'format':1,'files':pipeline_files_stamp(pipelines)}
-    if (bundle/'Contents/_CodeSignature/CodeResources').is_file() and stamp.exists() and json.loads(stamp.read_text())==want:
-        return bundle
-    print('pipeline archive bundle: signed again ('+('none in this work folder' if not stamp.exists() else 'an archive file changed')+')',flush=True)
-    temporary=bundle.with_name(bundle.name+'.partial-'+str(os.getpid()))
-    if temporary.exists():raise ValueError('unfinished pipeline bundle: '+str(temporary))
-    files=temporary/'Contents/Resources/pipelines';files.mkdir(parents=True)
-    for p in sorted(Path(pipelines).iterdir()):
-        if p.is_file() and p.name.startswith('pipelines-'):clone_file(p,files/p.name)
-    (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
-        CFBundleIdentifier=f'org.macnativegames.oot.pipelines.oot{suffix.replace("-",".")}',CFBundleName='Pipelines',
-        CFBundlePackageType='BNDL',CFBundleShortVersionString='131072',CFBundleVersion='1')))
-    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)   # nested: not the app
-    subprocess.run(['codesign','--verify','--strict',temporary],check=True)
-    stamp.unlink(missing_ok=True)
-    if bundle.exists():build_helpers().remove_tree(bundle)
-    temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
-    return bundle
-
-HELPER_SIGNATURE=('Contents/_CodeSignature/CodeResources','Contents/Info.plist')
+    logs=tree.parent/'logs';logs.mkdir(exist_ok=True)
+    return build_helpers().pipeline_bundle(pipelines,tree/f'build/pipeline-bundles/Pipelines-oot{suffix}.bundle',
+                                           f'org.macnativegames.oot.pipelines.oot{suffix.replace("-",".")}',logs)
 
 def place_helper(bundle,app,installed):
-    """A signed helper bundle (game data, shader data, pipelines) in the new App's Contents/Helpers. When the installed App
-    (`installed`) carries the same one (the same signature and Info.plist), only its signature goes in, and install_app
-    moves the installed bundle in (build_app.keep_game_data), as update_runtime.py does for Tears of the Kingdom
-    (clone_app_except, shader_signature_only); else the whole bundle is cloned. The shader data's 193,375 files were
-    cloned on every update (~100 s) and, the installed ones being moved in, deleted again. Returns whether only the
-    signature went in."""
-    shared=build_helpers();before=Path(installed)/'Contents/Helpers'/bundle.name
-    same=all((before/rel).is_file() and (before/rel).read_bytes()==(bundle/rel).read_bytes() for rel in HELPER_SIGNATURE)
-    if same:shared.shader_signature_only(app,bundle)
-    else:shared.copy_tree(bundle,app/'Contents/Helpers'/bundle.name)
-    return same
+    return build_helpers().place_helper(bundle,app,installed)
 
 def pipeline_cache(folder, suffix):
     """The pipeline-archive tool's folder for one kind of App ('archive' full, 'archive-title' quick), kept from one chain

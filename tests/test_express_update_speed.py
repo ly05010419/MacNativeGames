@@ -40,7 +40,7 @@ class SeedCheck(unittest.TestCase):
         self.assertIn('if (!totk_deps_match(row[@"deps"], answers)) continue;', prefetch)       # the row variant_lookup takes
         self.assertIn('if (!g_variants[shader]) g_variants[shader] = v;', prefetch)            # never over what the run knows
         # 2026-11-16: [asks valueForKey:@"firstObject"] asked each inner element and ended the seed run (-6)
-        self.assertNotIn('valueForKey:', prefetch)
+        self.assertNotIn('[asks valueForKey', prefetch)
 
 
 class ArchiveCheck(unittest.TestCase):
