@@ -41,7 +41,7 @@ static struct {
 // DISABLED-FOR-CLEAN-BOOT  {0x94074,  0, K_ONESHOT, 0, "tbnz-94074"},
 // DISABLED-FOR-CLEAN-BOOT  {0x94100,  0, K_ONESHOT, 0, "bl-94100"},
  {0x1100b8, 0, K_ADRP,  0, "allocfail-1100b8"},
- {0x110038, 0, K_ONESHOT, 0, "alloc-entry"},
+ {0x110038, 0, K_EMU, 0, "alloc-entry"},
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd810,  0, K_KEEP_STP16, 0, "zero-fd810"},
@@ -83,6 +83,8 @@ static void poke_rx(uint8_t *p, uint32_t w) {
  mprotect((void *)page, 0x4000, PROT_READ | PROT_EXEC);
 }
 
+static uint64_t g_wp2a_this = 0;
+uint64_t wp2a_pool_this(void) { return g_wp2a_this; }
 static int read_mem(uint64_t a, void *dst, size_t n) {
  mach_vm_size_t got = 0;
  return a && mach_vm_read_overwrite(mach_task_self(), a, n, (uintptr_t)dst, &got) == KERN_SUCCESS && got == n;
@@ -212,17 +214,42 @@ int runtime_emio_snap_trap(int num, void *context) {
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
  if (sites[id].off == 0x110038) {
-  static _Atomic unsigned long long atot=0; static _Atomic unsigned acnt=0;
-  unsigned long long tot=atomic_fetch_add(&atot, x[1]) + x[1]; unsigned c=atomic_fetch_add(&acnt, 1)+1;
-  if ((c%200)==1) fprintf(stderr, "[snap] AllocAlign-entry #%u this=%llx size=%llx total=%llu\n", c, (unsigned long long)x[0], (unsigned long long)x[1], tot);
-  if (c==1) dump_words("alloc-this", x[0], 0x80);
+  g_wp2a_this = x[0];
+  { static _Atomic unsigned c=0; unsigned k=++c;
+   if (x[1] >= 0x10000 || (k%500)==1) fprintf(stderr, "[snap] AllocAlign-entry#%u this=%llx size=%llx\n", k, (unsigned long long)x[0], (unsigned long long)x[1]); }
  }
  if (sites[id].off == 0x1100b8) {
   fail_n++;
   fprintf(stderr, "[snap] AllocAlign-fail #%u this=%llx w1=%llx w2=%llx\n",
    fail_n, (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2]);
   symbolize("AllocAlign-caller-lr", u->uc_mcontext->__ss.__lr);
-  dump_words("fail-this", x[0], 0x98);
+  /* WP2a: dump pool struct + map for free/contiguity. this is NULL here (return value);
+     recover pool via first-seen instance (title uses one allocator). */
+  extern uint64_t wp2a_pool_this(void);
+  uint64_t pt = wp2a_pool_this();
+  if (pt) {
+   uint64_t base=0,sz=0,cnt=0,bsz=0,map=0;
+   read_mem(pt+0x20,&base,8); read_mem(pt+0x28,&sz,8);
+   {uint32_t v=0; read_mem(pt+0x38,&v,4); cnt=v;}
+   {uint32_t v=0; read_mem(pt+0x40,&v,4); bsz=v;}
+   read_mem(pt+0x68,&map,8);
+   fprintf(stderr, "[snap] pool this=%llx base=%llx size=%llx count=%llu blksz=%llu map=%llx\n",
+    (unsigned long long)pt,(unsigned long long)base,(unsigned long long)sz,(unsigned long long)cnt,(unsigned long long)bsz,(unsigned long long)map);
+   if (map && cnt && cnt < 100000 && bsz) {
+    /* count free + longest run. Map format unknown: try byte-per-block then bit-per-block. */
+    uint8_t mbuf[1024]; uint64_t got=0;
+    if (read_mem(map, mbuf, cnt<1024?cnt:1024)) {
+     unsigned free1=0, run1=0, best1=0;
+     for (uint64_t i=0;i<cnt&&i<1024;i++) { if(mbuf[i]==0){free1++;run1++;if(run1>best1)best1=run1;} else run1=0; }
+     fprintf(stderr, "[snap] map-as-bytes free=%u best-run=%u of %llu\n", free1, best1, (unsigned long long)cnt);
+     { unsigned fb=0, rb=0, bb=0; for (uint64_t i=0;i<96&&i<1024;i++) for(int b=0;b<8;b++){ int z=((mbuf[i]>>b)&1)==0; if(z){fb++;rb++;if(rb>bb)bb=rb;} else rb=0; }
+      fprintf(stderr, "[snap] map-as-bits free=%u best-run=%u (96 bytes)\n", fb, bb); }
+     { char b[128];int n=0;const char *h="[snap] map-raw ";while(*h)b[n++]=*h++;
+      for(unsigned i=0;i<32&&n<120;i++){ unsigned v=mbuf[i]; b[n++]="0123456789abcdef"[(v>>4)&15]; b[n++]="0123456789abcdef"[v&15]; }
+      b[n++]='\n';write(2,b,n); }
+    }
+   }
+  }
  }
  if (sites[id].off == 0xfd80c) {
   fprintf(stderr, "[snap] madd x2=x13*x17+x12 x0=%llx x12=%llx x13=%llx x15=%llx x16=%llx x17=%llx\n",
@@ -505,6 +532,13 @@ int runtime_emio_snap_trap(int num, void *context) {
    uint64_t rv = (rt == 31) ? 0 : x[rt];
    int set = ((rv >> bit) & 1) != 0;
    if ((!set) != is_tbnz) npc = pc + d;
+  } else if (o == 0xFD7BBEA9u && sites[id].off == 0x110038) { /* stp x29,x30,[sp,#-0x20]! (keep armed) */
+   uint64_t sp = u->uc_mcontext->__ss.__sp - 0x20;
+   uint64_t fp = u->uc_mcontext->__ss.__fp, lr = u->uc_mcontext->__ss.__lr;
+   memcpy((void *)(uintptr_t)sp, &fp, 8);
+   memcpy((void *)(uintptr_t)(sp+8), &lr, 8);
+   u->uc_mcontext->__ss.__sp = sp;
+   npc = pc + 4;
   } else {
    fprintf(stderr, "[snap] K_EMU unknown orig %08x at %s\n", o, sites[id].name);
    poke_rx((sites[id].mod ? sdk_base : main_base) + sites[id].off, sites[id].orig);
