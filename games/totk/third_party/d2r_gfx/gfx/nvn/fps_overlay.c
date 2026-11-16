@@ -182,7 +182,7 @@ int hud_compact(void) {
 }
 
 static pthread_mutex_t g_hud_mu = PTHREAD_MUTEX_INITIALIZER;
-static char g_hud_text[HUD_LINES][128];
+static char g_hud_text[HUD_LINES][HUD_TEXT_MAX];
 static int g_hud_hl[HUD_LINES], g_hud_set[HUD_LINES];
 void hud_publish(int line, const char *text, int highlight) {
     if (line < 0 || line >= HUD_LINES) return;
@@ -227,6 +227,82 @@ void pso_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total) {
     char t[16];
     if (total < 0) snprintf(t, sizeof t, "--"); else snprintf(t, sizeof t, "%lld", (long long)(total > 999999 ? 999999 : total));
     snprintf(out, n, TOTK_UI("新渲染管线 %llu / 总计 %s", "New render pipelines %llu / total %s"), (unsigned long long)(fresh > 99999 ? 99999 : fresh), t);
+}
+/* The rest of what the box once left out (user 2026-11-16: "都要显示 不要有隐藏"): a count < 0 is "--" (not known yet). */
+static const char *count_word(char *t, size_t n, int64_t v) {
+    if (v < 0) snprintf(t, n, "--"); else snprintf(t, n, "%lld", (long long)(v > 999999 ? 999999 : v));
+    return t;
+}
+void lib_overlay_text(char *out, size_t n, uint64_t fresh, int64_t played, int64_t compiled) {
+    char a[16], b[16];
+    snprintf(out, n, TOTK_UI("着色器库 本机新 %llu · 游玩中加载 %s（现编 %s）", "Shader libraries new here %llu · loaded in play %s (compiled %s)"),
+             (unsigned long long)(fresh > 99999 ? 99999 : fresh), count_word(a, sizeof a, played), count_word(b, sizeof b, compiled));
+}
+void play_overlay_text(char *out, size_t n, int64_t built, int64_t archived, int64_t compiled) {
+    char a[16], b[16], c[16];
+    snprintf(out, n, TOTK_UI("游玩中建管线 %s（存档取 %s · 现编 %s）", "Pipelines made in play %s (archive %s · compiled %s)"),
+             count_word(a, sizeof a, built), count_word(b, sizeof b, archived), count_word(c, sizeof c, compiled));
+}
+void kinds_overlay_text(char *out, size_t n, uint64_t compute, uint64_t mesh, uint64_t tileread, uint64_t border) {
+    char a[16], b[16], c[16], d[16];
+    snprintf(out, n, TOTK_UI("本机新 计算 %s · 网格 %s · 贴图读取 %s · 边框 %s", "New here: compute %s · mesh %s · tile-read %s · border %s"),
+             count_word(a, sizeof a, (int64_t)compute), count_word(b, sizeof b, (int64_t)mesh), count_word(c, sizeof c, (int64_t)tileread), count_word(d, sizeof d, (int64_t)border));
+}
+/* Hitches (fps_overlay.h hitch_info). How long one held the picture: the frame interval or, when the submit and present
+   of the frame took longer (a pipeline made while it was replayed), that. The parts are the long-frame line's own; the
+   rest of the submit and present is shown as it is, not split further, so the parts always add up to what was measured. */
+void hitch_text(char *out, size_t n, const hitch_info *h) {
+    double held = h->frame_ms > h->submit_ms ? h->frame_ms : h->submit_ms;
+    double rest = h->submit_ms - h->make_ms - h->upload_ms;
+    if (rest < 0) rest = 0;
+    snprintf(out, n, TOTK_UI("卡顿 %.0f ms @%.1f s：建管线 %u + 库 %u 共 %.0f ms · 贴图 %u 张 %.0f ms · 其余提交 %.0f ms · GPU %.0f ms%s",
+                             "Hitch %.0f ms @%.1f s: pipelines %u + libraries %u %.0f ms · textures %u %.0f ms · rest of submit %.0f ms · GPU %.0f ms%s"),
+             held, h->at_s, h->pipelines, h->libraries, h->make_ms, h->uploads + h->reuploads, h->upload_ms, rest, h->gpu_ms,
+             h->hidden ? TOTK_UI("（读取画面里）", " (loading screen)") : "");
+}
+void hitch_count_text(char *out, size_t n, uint64_t all, uint64_t shown, uint64_t hidden, double shown_ms) {
+    snprintf(out, n, TOTK_UI("长帧 %llu 次 · ≥%.0f ms 的卡顿 %llu 次（读取画面里 %llu 次）", "Long frames %llu · hitches of %.0f ms or more %llu (%llu on the loading screen)"),
+             (unsigned long long)all, shown_ms, (unsigned long long)shown, (unsigned long long)hidden);
+}
+static pthread_mutex_t g_hitch_mu = PTHREAD_MUTEX_INITIALIZER;
+static hitch_info g_hitch[HITCH_KEEP];   // [0] the newest
+static uint64_t g_hitch_all, g_hitch_shown, g_hitch_hidden, g_hitch_ns, g_hitch_kept;
+static double hitch_shown_ms(void) {
+    static double ms = -1;
+    if (ms < 0) { const char *e = getenv("TOTK_HITCH_MS"); ms = e && atof(e) > 0 ? atof(e) : HITCH_SHOWN_MS; }
+    return ms;
+}
+void hitch_overlay_note(const hitch_info *h, uint64_t now_ns) {
+    double held = h->frame_ms > h->submit_ms ? h->frame_ms : h->submit_ms;
+    pthread_mutex_lock(&g_hitch_mu);
+    g_hitch_all++;
+    if (held >= hitch_shown_ms()) {
+        memmove(&g_hitch[1], &g_hitch[0], sizeof g_hitch - sizeof *g_hitch);
+        g_hitch[0] = *h; g_hitch_shown++; g_hitch_hidden += h->hidden != 0; g_hitch_ns = now_ns;
+        if (g_hitch_kept < HITCH_KEEP) g_hitch_kept++;
+    }
+    pthread_mutex_unlock(&g_hitch_mu);
+}
+void hitch_overlay_publish(uint64_t now_ns) {
+    char t[HUD_TEXT_MAX];
+    pthread_mutex_lock(&g_hitch_mu);
+    int fresh = g_hitch_ns && now_ns - g_hitch_ns < 3000000000ull;
+    hitch_count_text(t, sizeof t, g_hitch_all, g_hitch_shown, g_hitch_hidden, hitch_shown_ms());
+    hud_publish(HUD_HITCHES, t, fresh);
+    for (unsigned i = 0; i < g_hitch_kept; i++) { hitch_text(t, sizeof t, &g_hitch[i]); hud_publish(HUD_HITCH0 + (int)i, t, fresh && i == 0); }
+    pthread_mutex_unlock(&g_hitch_mu);
+}
+void miss_overlay_text(char *out, size_t n, uint64_t draw_none, uint64_t draw_refused, uint64_t app_list, uint64_t device_list) {
+    char a[16], b[16], c[16], d[16];
+    snprintf(out, n, TOTK_UI("存档没命中 绘制时 没存过 %s · 不认 %s · 预热 App 清单 %s · 本机清单 %s",
+                             "Archive misses: draw not archived %s · refused %s · App lists %s · device list %s"),
+             count_word(a, sizeof a, (int64_t)draw_none), count_word(b, sizeof b, (int64_t)draw_refused),
+             count_word(c, sizeof c, (int64_t)app_list), count_word(d, sizeof d, (int64_t)device_list));
+}
+void misc_overlay_text(char *out, size_t n, uint64_t unlisted, int64_t fill_failed) {
+    char a[16], b[16];
+    snprintf(out, n, TOTK_UI("不进清单的 HDR / 宿主管线 %s · 存档填充失败 %s", "HDR / host pipelines (in no list) %s · archive fill failed %s"),
+             count_word(a, sizeof a, (int64_t)unlisted), count_word(b, sizeof b, fill_failed));
 }
 
 /* A count's rate, re-measured every half second (game presents; interpolated frames shown). stale_s > 0: a gap longer

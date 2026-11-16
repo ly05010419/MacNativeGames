@@ -1,4 +1,5 @@
 #pragma once
+#include "nvn_warm_resident.h"   /* which pipelines stay in memory: the modes and the kinds' rows */
 
 /* List identity is its role, not its basename: a seed's manifest can contain exactly the same pipelines as the shared
    list. With a low-memory archive only the title and this device's observed pipelines stay resident. All other lists

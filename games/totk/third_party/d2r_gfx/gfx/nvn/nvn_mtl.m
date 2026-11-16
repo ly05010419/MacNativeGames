@@ -60,6 +60,7 @@ static _Atomic int g_mesh_trace_frames;
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "totk_shader_rt.h"
+#include "nvn_warm_resident.h"   /* warm_resident_mode: which pipelines stay in memory after the warm-up */
 #include "totk_shader_contrib.h"   // totk_contrib_list_row (pso_contribute)
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
@@ -7474,10 +7475,29 @@ static NSMutableSet<NSNumber *> *g_pso_shipped_seen;   // !warm_shared(): the sh
    Mac. On an iPhone / iPad they are compiled into the pipeline archive before the title and dropped (warm_start,
    warm_fill_archive): kept, 6,813 render pipelines put an iPhone 14 in the world at 3.82-3.89 GB with p99 117-200 ms
    (2026-10-23). One drawn comes from the archive. TOTK_WARM_SHARED=1 / 0 forces either. */
-static int warm_shared(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WARM_SHARED"); v = e && *e ? atoi(e) != 0 : !TARGET_OS_IPHONE; }
+extern int runtime_setting_word(const char *name, char *word, size_t size) __attribute__((weak));   // runtime/gamepad.m
+static int warm_resident_mode(void) {   // nvn_warm_resident.h: everything on the Mac; Ocarina of Time's memory saver keeps the title and the kinds
+    static int v = -1;
+    if (v < 0) {
+#if TARGET_OS_IPHONE
+        const int fallback = WARM_RESIDENT_TITLE_LOCAL;
+#elif defined(GAME_OOT)
+        /* user 2026-11-16: "改成 默认 常驻 … launcher 里 增加一个 CheckBox 叫 开启省内存模式 我可以随时打开和关闭" */
+        char word[32] = "";
+        int saver = runtime_setting_word && runtime_setting_word(WARM_SAVER_FILE, word, sizeof word) ? warm_saver_word(word) : 0;
+        if (saver < 0) MLOG("【红】%s 写的是“%s”：只认 on / off，按关（全部常驻）", WARM_SAVER_FILE, word);
+        const int fallback = saver > 0 ? WARM_RESIDENT_TITLE_KINDS : WARM_RESIDENT_ALL;
+        MLOG("预热：省内存模式%s（MNG Launcher 的“开启省内存模式”，%s）", saver > 0 ? "开，常驻标题清单和计算、网格、贴图读取管线" : "关，全部常驻", WARM_SAVER_FILE);
+#else
+        const int fallback = WARM_RESIDENT_ALL;
+#endif
+        const char *r = getenv("TOTK_WARM_RESIDENT");
+        v = warm_resident_parse(r, getenv("TOTK_WARM_SHARED"), fallback);
+        if (v < 0) { MLOG("【红】TOTK_WARM_RESIDENT=%s：只认 all / title-local / title-kinds，按默认 %s", r, WARM_RESIDENT_NAME[fallback]); v = fallback; }
+    }
     return v;
 }
+static int warm_shared(void) { return warm_resident_mode() == WARM_RESIDENT_ALL; }
 /* TOTK automatic shader collection (user, 2026-10-16 night: "新着色器发现后自动预热、自动使用、自动放入缓存"): a new shader variant
    is translated, used and written to the translation cache at once (totk_rt_variant), every cached variant is compiled
    by the next start's warm-up, and every shader / pipeline built on the submit thread goes into this device's warm list,
@@ -7503,7 +7523,15 @@ static NSString *device_list(void) {
     return pso_shared_path();
 }
 static FILE *g_pso_shared; static int g_pso_shared_checked;
-static _Atomic uint64_t g_collect_new[3], g_collect_last_ns;
+/* g_collect_new / g_collect_ns: per kind (COLLECT_*), the rows new to this device's list this run and when the last came;
+   every kind has its own line in the box and turns only that line yellow (user 2026-11-16: "都要显示 不要有隐藏"). Before,
+   S and C rows turned the box yellow with no number for them, and M, T and B rows were not counted at all. */
+enum { COLLECT_S, COLLECT_R, COLLECT_C, COLLECT_M, COLLECT_T, COLLECT_B, COLLECT_KINDS };
+static _Atomic uint64_t g_collect_new[COLLECT_KINDS], g_collect_ns[COLLECT_KINDS];
+static int collect_kind(char c) {
+    switch (c) { case 'S': return COLLECT_S; case 'R': return COLLECT_R; case 'C': return COLLECT_C;
+                 case 'M': return COLLECT_M; case 'T': return COLLECT_T; case 'B': return COLLECT_B; default: return -1; }
+}
 /* TOTK_PSO_CAPTURE=<file> (a diagnostic, off unless set; 2026-11-13): every warm row this run builds, in the order it
    builds them, also the rows the lists hold already (pso_user_record leaves those out). How a game's title rows are
    recorded when its lists hold them all (Ocarina of Time had none, so its quick build had nothing to take): a session
@@ -7548,9 +7576,9 @@ static void pso_user_record(const char *fmt, ...) {
     if ([g_pso_user_seen containsObject:k]) return;
     [g_pso_user_seen addObject:k];
     fputs(line, g_pso_shared); fflush(g_pso_shared);
-    int kind = line[0] == 'S' ? 0 : line[0] == 'R' ? 1 : line[0] == 'C' ? 2 : -1;
+    int kind = collect_kind(line[0]);
     if (kind >= 0 && [g_pso_shipped_seen containsObject:k]) kind = -1;   // from the shared list (and its archive): not new
-    if (kind >= 0) { atomic_fetch_add(&g_collect_new[kind], 1); atomic_store(&g_collect_last_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }
+    if (kind >= 0) { atomic_fetch_add(&g_collect_new[kind], 1); atomic_store(&g_collect_ns[kind], clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }
 }
 // 从 .metallib 文件建库，不常驻占文件描述符：newLibraryWithURL 在库对象活着期间一直开着那个文件（每个游戏着色器一个——iOS 包进局常驻 258 个描述符里 213 个是它，
 // 而 iOS 进程缺省软上限 256；别的幕新建着色器还会涨）。这里把文件映射进内存后立刻关掉，用内存数据建库；映射随库的数据对象释放时解除
@@ -10390,7 +10418,7 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
 /* A pipeline is first asked of its own archive file alone (MTLPipelineOptionFailOnBinaryArchiveMiss). Found: done. Not
    found (no file yet): it is compiled as usual and written to its file when the game is idle (totk_pipeline_archive.h).
    key: pso_archive_key / cs_archive_key; nil = not archived. */
-static _Atomic uint64_t g_par_hits, g_par_misses;
+static _Atomic uint64_t g_par_hits, g_par_misses;   // also the box's in-play line (play_base_take, play_overlay_text)
 static NSArray<NSString *> *g_par_fill_lists;   // the first run's pipeline lists for the background fill (warm_fill_archive)
 static void par_count(int hit) {
     uint64_t h = hit ? atomic_fetch_add(&g_par_hits, 1) + 1 : atomic_load(&g_par_hits), m = hit ? atomic_load(&g_par_misses) : atomic_fetch_add(&g_par_misses, 1) + 1;
@@ -10998,9 +11026,14 @@ static void pso_trace(const char *what, const char *how, const pso_key *k, NvSha
     fflush(f);
     os_unfair_lock_unlock(&lk);
 }
+static _Atomic uint64_t g_pso_unlisted;   // HDR / host pipelines built this run: in no list, so the box counts them here
 static void pso_adopt(const pso_key *k, NvShader *vs, NvShader *fs, int border, int merged, id<MTLRenderPipelineState> ps, uint64_t bt, int bg, NSString *brec) {
     pso_trace("put", (k->a2c & (PSO_HDR | PSO_HOST_BITS)) ? "adopt-hdr-or-host" : bg ? "adopt-background" : "adopt", k, vs, fs, ps);
-    if (k->a2c & (PSO_HDR | PSO_HOST_BITS)) { hm_put_id(&g_pso, k, ps); g_pso_gen++; return; }   // HDR pipelines (PR #1129) and host ones (PSO_HOST_BITS): built on use, never recorded in the lists
+    if (k->a2c & (PSO_HDR | PSO_HOST_BITS)) {   // HDR pipelines (PR #1129) and host ones (PSO_HOST_BITS): built on use, never recorded in the lists
+        hm_put_id(&g_pso, k, ps); g_pso_gen++;
+        atomic_fetch_add(&g_pso_unlisted, 1);   // the box shows them (misc_overlay_text)
+        return;
+    }
     pso_key rk = *k; rk.a2c &= ~PSO_VBORDER; if (border) rk.fsfn = NULL;   // the warm-up list records the plain pipeline: a border variant is built from the draw's samplers
     pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&rk, vs, fs, merged, merged ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
     if (survey_shader_log()) MLOG("[survey-shader] frame %llu render pipeline %s in %.2f ms%s%s%s%s", (unsigned long long)atomic_load(&g_cur_frame), shex, (bp_now() - bt) / 1e6, bg ? " (background, from queued to adopted)" : "",
@@ -11969,11 +12002,20 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
     return atomic_load(&g_par_write_failed) || g_fill_last.failed ? 1 : 0;
 }
 #endif
+/* Where the box's "in play" counts start: the pipelines (archive or compiled, par_count) and shader libraries
+   (g_rt_prebuilt / g_rt_compiled) made from the title on (user 2026-11-16: "都要显示 不要有隐藏"; in the player's run
+   12 pipelines + 6 libraries came from the archive in one 386 ms frame and the box showed nothing). */
+static struct { _Atomic int set; _Atomic uint64_t hits, misses, libs_pre, libs_com; } g_play_base;
+static void play_base_take(void) {
+    atomic_store(&g_play_base.hits, atomic_load(&g_par_hits)); atomic_store(&g_play_base.misses, atomic_load(&g_par_misses));
+    atomic_store(&g_play_base.libs_pre, atomic_load(&g_rt_prebuilt)); atomic_store(&g_play_base.libs_com, atomic_load(&g_rt_compiled));
+    atomic_store(&g_play_base.set, 1);
+}
 static void warm_start(void) {
     if (g_warm_started++) return;
     warm_filled();
     const char *e = getenv("DM_PSO_MANIFEST");
-    if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
+    if (e && !strcmp(e, "off")) { warm_light(); play_base_take(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
     NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
     NSString *title = [dir stringByAppendingPathComponent:@"pso_title.tsv"];
     NSString *user = device_list();   // this device's one list (totk_device_list.h): the "user" list of warm_resident_lists
@@ -12020,12 +12062,28 @@ static void warm_start(void) {
        Only the title list first (2026-10-20: 866 ms frames on entering the world when the lists were skipped too). */
     if (g_par_valid || (g_par_on && par_fill_light())) {
         NSArray<NSString *> *archive = nil;
-        paths = warm_resident_lists(paths, title, user, g_par_valid, warm_shared(), &archive);
+        const int mode = warm_resident_mode(), kinds = mode == WARM_RESIDENT_TITLE_KINDS;
+        paths = warm_resident_lists(paths, title, kinds ? nil : user, g_par_valid, warm_shared(), &archive);
+        if (kinds && archive.count) {   // nvn_warm_resident.h: the App's lists' compute, mesh and tile-read rows stay as well
+            /* the App's own lists only: this device's (pso_user.tsv, pso_collected.tsv) fill the archive and are not kept
+               ("不留 本机清单"). 2026-11-16: taken from every list, the kinds file held the device's 149 + 128 mesh rows beside
+               the App's 124, warmed as an App list, so one the archive lacked showed red as an App list's miss. */
+            NSMutableArray<NSString *> *app_lists = [NSMutableArray array];
+            for (NSString *p in archive) if (![p isEqualToString:user] && ![p isEqualToString:pso_shared_path()]) [app_lists addObject:p];
+            NSArray<NSString *> *rows = warm_kind_rows(app_lists);
+            NSString *file = [totk_rt_dir() stringByAppendingPathComponent:@"pso_resident_kinds.tsv"];   // made at each start
+            NSString *text = [[@"# made at start from the warm lists' C / M / T rows (nvn_warm_resident.h)\n"
+                               stringByAppendingString:[rows componentsJoinedByString:@"\n"]] stringByAppendingString:@"\n"];
+            if (rows.count && [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]) paths = [paths arrayByAddingObject:file];
+            else if (rows.count) MLOG("【红】预热：写不了 %s，计算、网格、贴图读取管线不常驻，用到时从存档取", file.UTF8String);
+            MLOG("预热：常驻标题清单和 App 清单的计算、网格、贴图读取管线 %lu 行；本机清单和其余 %lu 份只填存档（TOTK_WARM_RESIDENT=%s）",
+                 (unsigned long)rows.count, (unsigned long)archive.count, WARM_RESIDENT_NAME[mode]);
+        }
         g_warm_pipelines_only = 1;
         cached = @[];
         if (g_par_valid) {
             g_shared_fill = archive;
-            if (archive) MLOG("预热：标题和本机清单驻留，其余 %lu 份只填存档（TOTK_WARM_SHARED=1 全部驻留）", (unsigned long)archive.count);
+            if (archive && !kinds) MLOG("预热：标题和本机清单驻留，其余 %lu 份只填存档（TOTK_WARM_RESIDENT=all 全部驻留）", (unsigned long)archive.count);
             MLOG("预热：有管线存档，只建管线清单里的 %lu 份（不单独加载着色器库），其余用到时从存档取", (unsigned long)paths.count);
         } else {   // first run, memory short: only the title's pipelines are kept; the rest go into the archive in the background
             g_par_fill_lists = archive ?: @[];   // even with no lists, low-memory mode must not warm the whole shader cache
@@ -12077,6 +12135,7 @@ static void warm_start(void) {
         if (fill) { dispatch_semaphore_t d = dispatch_semaphore_create(0); warm_fill_archive(fill, d); dispatch_semaphore_wait(d, DISPATCH_TIME_FOREVER); g_par_fill_lists = g_shared_fill = nil; }
         MLOG("预热和管线存档完成后才进标题：又等了 %.1f s，可用渲染管线 %llu / 计算管线 %llu", (bp_now() - t1) / 1e9, g_warm_claim_rps, g_warm_claim_cps);
     } else if (g_par_fill_lists || g_shared_fill) warm_fill_archive(g_par_fill_lists ? g_par_fill_lists : g_shared_fill, nil);
+    play_base_take();   // the box's "in play" counts start here
     if (runtime_audio_hold) runtime_audio_hold(0);   // the game's sound, silent until here (audio_mixer.c)
     if (runtime_warm_title) runtime_warm_title();   // and its picture: the start-up screen goes with the first frame (frontend.m)
 }
@@ -20941,12 +21000,39 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
 /* TOTK automatic shader collection, bottom-left box (user, 2026-10-16 night: "is anything new being found and collected"):
    "SHADER +<variants new to the translation cache this run>/<variants in the cache> PSO +<pipelines added to the warm
    lists this run>", yellow for 3 s after something new was collected. Same texture size, font and scale as the FPS box. */
+/* A corner-panel line, yellow for 3 s after its text (its numbers) changed: each line for its own kind (user 2026-11-16).
+   Before, one "something was collected" time turned the box yellow, so a shader library or compute pipeline row made it
+   yellow with no number that changed. The first text of a line is not a change. */
+static void hud_line_publish(int line, const char *text, uint64_t now) {
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    static char prev[HUD_LINES][HUD_TEXT_MAX]; static uint64_t changed[HUD_LINES];
+    if (line < 0 || line >= HUD_LINES) return;
+    pthread_mutex_lock(&mu);
+    if (strcmp(prev[line], text)) { if (prev[line][0]) changed[line] = now; snprintf(prev[line], sizeof prev[line], "%s", text); }
+    int hl = changed[line] && now - changed[line] < 3000000000ull;
+    pthread_mutex_unlock(&mu);
+    hud_publish(line, text, hl);
+}
+/* TOTK_HUD_LOG=<seconds> (a diagnostic, off unless set; 2026-11-16): every so often the corner panel's lines go into the
+   game log as the panel shows them, "（黄）" for a yellow one. The panel is a view over the game's picture, so wshot does
+   not see it; a test reads what the player would read here. */
+static void hud_log_lines(uint64_t now) {
+    static double every = -1; static uint64_t next;
+    if (every < 0) { const char *e = getenv("TOTK_HUD_LOG"); every = e ? atof(e) : 0; }
+    if (every <= 0 || now < next) return;
+    next = now + (uint64_t)(every * 1e9);
+    static const int order[] = HUD_ORDER;
+    for (size_t o = 0; o < sizeof order / sizeof *order; o++) {
+        char t[HUD_TEXT_MAX]; int hl = 0;
+        if (hud_snapshot(order[o], t, sizeof t, &hl)) MLOG("[面板] %s%s", hl ? "（黄）" : "", t);
+    }
+}
 static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
     if (!fps_overlay_full_hud() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     static uint8_t px[LOAD_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
     uint64_t fresh = 0, last = 0; int64_t total = -1; totk_rt_counts(&fresh, &total, &last);
-    uint64_t pso = atomic_load(&g_collect_new[1]) + atomic_load(&g_collect_new[2]), plast = atomic_load(&g_collect_last_ns);
+    uint64_t pso = atomic_load(&g_collect_new[COLLECT_R]) + atomic_load(&g_collect_new[COLLECT_C]), plast = atomic_load(&g_collect_ns[COLLECT_R]);
 #if TARGET_OS_IPHONE
     {   // the phone translates nothing: show the shaders it is missing, yellow for 3 s after a new one
         static _Atomic uint64_t seen, seen_ns; uint64_t m = totk_rt_missed();
@@ -20962,9 +21048,28 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     uint64_t pso_new = atomic_load(&g_collect_new[1]); int64_t in_archive = par_total(), pso_all = (int64_t)g_pso.n;
     if (in_archive >= 0 && in_archive + (int64_t)pso_new > pso_all) pso_all = in_archive + (int64_t)pso_new;
     char line[64]; pso_overlay_text(line, sizeof line, pso_new, pso_all);
-    if (hud_compact()) {
-        hud_publish(HUD_SHADER, text, hl);
-        hud_publish(HUD_PSO, line, newest == plast && hl);   // yellow while a new render or compute pipeline was just collected
+    if (hud_compact()) {   // the window's corner panel: every kind on its own line (hud_line_publish)
+        hud_line_publish(HUD_SHADER, text, now); hud_line_publish(HUD_PSO, line, now);
+        char l[HUD_TEXT_MAX]; int based = atomic_load(&g_play_base.set);
+        int64_t pre = (int64_t)atomic_load(&g_rt_prebuilt), com = (int64_t)atomic_load(&g_rt_compiled);
+        int64_t hits = (int64_t)atomic_load(&g_par_hits), misses = (int64_t)atomic_load(&g_par_misses);
+        int64_t lib_com = based ? com - (int64_t)atomic_load(&g_play_base.libs_com) : -1;
+        int64_t lib_all = based ? pre - (int64_t)atomic_load(&g_play_base.libs_pre) + lib_com : -1;
+        lib_overlay_text(l, sizeof l, atomic_load(&g_collect_new[COLLECT_S]), lib_all, lib_com); hud_line_publish(HUD_LIB, l, now);
+        int64_t ph = based ? hits - (int64_t)atomic_load(&g_play_base.hits) : -1, pm = based ? misses - (int64_t)atomic_load(&g_play_base.misses) : -1;
+        play_overlay_text(l, sizeof l, based ? ph + pm : -1, ph, pm); hud_line_publish(HUD_PLAY, l, now);
+        kinds_overlay_text(l, sizeof l, atomic_load(&g_collect_new[COLLECT_C]), atomic_load(&g_collect_new[COLLECT_M]),
+                           atomic_load(&g_collect_new[COLLECT_T]), atomic_load(&g_collect_new[COLLECT_B]));
+        hud_line_publish(HUD_KINDS, l, now);
+        misc_overlay_text(l, sizeof l, atomic_load(&g_pso_unlisted), g_fill_last.seconds > 0 ? (int64_t)g_fill_last.failed : -1);
+        hud_line_publish(HUD_MISC, l, now);
+        uint64_t miss[PAR_AT_N][3] = {{0}};   // par_lookup_note's counts, every kind (render, compute, mesh) added up
+        for (int at = 0; at < PAR_AT_N; at++) for (int k = 0; k < PAR_KINDS; k++) for (int w = 1; w < 3; w++) miss[at][w] += atomic_load(&g_par_look[at][k][w]);
+        miss_overlay_text(l, sizeof l, miss[PAR_AT_DRAW][1], miss[PAR_AT_DRAW][2], miss[PAR_AT_APP_LIST][1] + miss[PAR_AT_APP_LIST][2],
+                          miss[PAR_AT_USER_LIST][1] + miss[PAR_AT_USER_LIST][2]);
+        hud_line_publish(HUD_MISS, l, now);
+        hitch_overlay_publish(now);   // every long frame (hle_nvn.c notes them), the last ones split into their parts
+        hud_log_lines(now);
         return 0;
     }
     size_t at = strlen(text); snprintf(text + at, sizeof text - at, "   %s", line);   // picture corners (the iPhone): one line

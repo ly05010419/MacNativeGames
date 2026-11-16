@@ -140,6 +140,14 @@ enum T {
     static let quickApp = s("Quick app: the title menu's shaders and the compute, tile-read and mesh pipelines; starts with every diagnostic on",
                             "快速版：带标题菜单的着色器和计算、读帧缓冲、网格管线；启动时带全部诊断")
     static let fillShaders = s("Fill in shaders", "补全着色器")
+    // the card's memory saver switch (user 2026-11-16: "CheckBox 叫 开启省内存模式"; tools/builder_jobs/memory_saver.py)
+    static let memorySaver = s("Memory saver mode", "开启省内存模式")
+    static let memorySaverHelp = s("Off (the default): every pipeline stays in memory after the warm-up, so nothing is fetched while you play. On: only the title menu's pipelines and every compute, mesh and tile-read pipeline stay; the rest come from the pipeline archive the first time they are drawn (a short hitch each time), and the memory saved shrinks the further you play. Counts from the game's next start; you can change it while the game runs.",
+                                   "关（默认）：预热后全部管线常驻内存，游玩中不用临时从存档取。开：只常驻标题菜单的管线和全部计算、网格、贴图读取管线，其余第一次画到时从管线存档取（每次会小卡一下），玩得越远省下的内存越少。下次启动游戏时生效，游戏开着也能改。")
+    static let memorySaverNext = s("Counts from the game's next start.", "下次启动游戏时生效。")
+    static func memorySaverUnknown(_ word: String) -> String {
+        s("memory-saver.txt says \"\(word)\", which the game reads as off", "memory-saver.txt 里写的是“\(word)”，游戏按关处理")
+    }
     static let doneElsewhere = s("Done (started elsewhere; the game is not started from here).", "完成（这个任务是在别处开始的，这里不替它开游戏）。")
     static let workAuto = s("Automatic: MacNativeGames-work beside the apps folder (or the folder an app records)",
                             "自动：App 文件夹旁的 MacNativeGames-work（App 记录了工作目录就用它记录的）")

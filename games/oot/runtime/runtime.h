@@ -144,7 +144,7 @@ void runtime_aspect_view(double w, double h);   /* frontend.m: the window's draw
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 void runtime_front_resize_aspect(double ratio);   /* Mac: resize the window to a selected picture ratio */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
-int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..3: FPS, shaders, render pipelines, load; 0 = not published */
+int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line: fps_overlay.h HUD_* (drawn in HUD_ORDER); 0 = not published */
 
 void *runtime_account_override(const char *name);
 
