@@ -36,8 +36,10 @@ REPO = Path(__file__).resolve().parent
 SCRIPTS = REPO / 'games/totk/scripts'
 RAW = 'https://raw.githubusercontent.com/ly05010419/MacNativeGames/main'
 LISTS = {'totk': 'games/totk/assets/shader_list.tsv', 'botw': 'games/botw/assets/shader_list.tsv',
-         'oot': 'games/oot/assets/shader_list.tsv'}
-TOOLS = {'oot': REPO / 'games/oot/scripts'}   # a game with its own list tools; the others use games/totk/scripts
+         'oot': 'games/oot/assets/shader_list.tsv', 'dread': 'games/dread/assets/shader_list.tsv'}
+# A game with its own list tools; the others use games/totk/scripts. Metroid Dread has its own shader_list.py and
+# prepare_shader_seed.py, as Ocarina of Time does, and its own list in games/dread/assets.
+TOOLS = {'oot': REPO / 'games/oot/scripts', 'dread': REPO / 'games/dread/scripts'}
 
 
 def scripts(game='totk'):
@@ -69,7 +71,20 @@ def download(game, folder):
 
 
 def identity(app):
-    """(game, version): Ocarina of Time's app ('oot', 'oot'), else a build_app.py app's (update_runtime.app_identity)."""
+    """(game, version): from the App's own build-info.json when it has one, else Ocarina of Time's app ('oot', 'oot'),
+    else a build_app.py app's (update_runtime.app_identity).
+
+    A game built by its own build.py (games/dread, games/ss, games/worldend) writes build-info.json beside its
+    resources and lays its bundle out its own way, so app_identity refuses it: "not an app build_app.py made
+    (expected Contents/MacOS/TOTK or BotW ...)". The file names the game and the version outright, so it is read
+    first. Apps build_app.py made carry no such file and keep the old path."""
+    info = Path(app) / 'Contents/Resources/build-info.json'
+    try:
+        got = json.loads(info.read_text())
+        if got.get('game') and got.get('version'):
+            return got['game'], got['version']
+    except (OSError, ValueError):
+        pass
     _, ur = tools()
     if ur.ocarina_app(Path(app)):
         return 'oot', 'oot'
