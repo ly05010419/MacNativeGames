@@ -50,7 +50,7 @@ struct HomePage: View {
     }
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: false) {   // no scroll bar beside the stage (user 2026-11-18: "去掉 滚动条")
             VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 14) {
                     Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
@@ -80,6 +80,14 @@ struct HomePage: View {
                         } else {
                             EmptyBack(ready: model.installedLoaded, live: live) { open(game) }
                         }
+                    }
+                } detail: { i, live in
+                    // the case opened over the stage ("左边是封面 右边现在的 按钮"): the same actions, laid out wide
+                    let game = cases[i]
+                    if let app = model.installed.first(where: { $0.game == game }) {
+                        GameActions(app: app, section: $gamePage, live: live, wide: true) { launches += 1 }.id(app.app)
+                    } else {
+                        EmptyBack(ready: model.installedLoaded, live: live, wide: true, name: T.gameName(game)) { open(game) }
                     }
                 }
                 // what the middle cover is, as the iPod writes it under the cover
@@ -304,10 +312,18 @@ struct GameActions: View {
     let started: () -> Void   // the game is being started: its case grows over the stage (CoverFlow.launches)
     @ObservedObject private var state: GameCardState
 
-    init(app: InstalledReport.App, section: Binding<String?>, live: Bool, started: @escaping () -> Void = {}) {
+    /// Laid out for the case opened over the stage (CaseDetail): the game's name and platforms on top, larger type and
+    /// controls, the pages in one row; on the case's back (false) small, in one narrow column.
+    let wide: Bool
+    /// The big buttons' width: opened, 200 points (user 2026-11-17: "按钮 不要 无限长 … 200px就行"), at the left like the
+    /// text ("极速更新 不要居中了"; the start alone sits bottom right); on the narrow back, its whole width.
+    private var buttonWidth: CGFloat { wide ? 200 : .infinity }
+
+    init(app: InstalledReport.App, section: Binding<String?>, live: Bool, wide: Bool = false, started: @escaping () -> Void = {}) {
         self.app = app
         self._section = section
         self.live = live
+        self.wide = wide
         self.started = started
         self._state = ObservedObject(wrappedValue: GameCardState.of(app.app))
     }
@@ -375,25 +391,62 @@ struct GameActions: View {
         }
     }
 
+    /// The big green start (user 2026-11-12); Return on the turned-over case. Opened, it sits in the bottom-right corner
+    /// (user 2026-11-17: "启动游戏按钮 放在 黑色背景 右下角"); on the narrow back, first under the version.
+    private var startButton: some View {
+        Button(action: start) {
+            Label(T.startGame, systemImage: "play.fill").font((wide ? Font.title3 : .callout).weight(.semibold))
+                .frame(maxWidth: buttonWidth).padding(.vertical, wide ? 4 : 0)
+        }
+        .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
+        .disabled(starting || (model.jobRunning && model.updating == app.app))
+        .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)
+    }
+
     var body: some View {
-        // a case's back is small (232 x 375 before its 8%): small controls, one column, scrolling if a reason is long
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 7) {
+        Group {
+            if wide {   // the opened case: its details from the top, the start in the bottom-right corner
+                VStack(alignment: .trailing, spacing: 8) {
+                    ScrollView(.vertical, showsIndicators: false) { details }
+                    if !startStatus.isEmpty { Text(startStatus).font(.caption).foregroundStyle(.secondary) }
+                    startButton
+                }
+            } else {    // a case's back is small (232 x 375 before its 8%): one column, scrolling if a reason is long
+                ScrollView(.vertical, showsIndicators: false) { details }
+            }
+        }
+        .task {
+            guard live, startsWithSettings else { return }
+            struct Probe: Decodable { let gpu: String }
+            gpu = (try? await TabClient.decode(Probe.self, "settings", "probe", app: app.app).gpu) ?? "unknown"
+        }
+        .task(id: app.app) { await loadSaver() }   // the backend says which games have the switch (memory_saver.GAMES)
+    }
+
+    private var details: some View {
+            VStack(alignment: .leading, spacing: wide ? 12 : 7) {
+                if wide {   // the opened case: the game's name and platforms over its actions
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(T.gameName(app.game ?? "")).font(.title.weight(.bold)).padding(.trailing, 40)
+                        HStack(spacing: 6) {
+                            ForEach(T.gamePlatforms(app.game ?? "").components(separatedBy: " · "), id: \.self) { p in
+                                Text(p).font(.caption).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 8).padding(.vertical, 2).background(.white.opacity(0.1), in: Capsule())
+                            }
+                        }
+                    }
+                }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(app.name) \(T.version(app.version))").font(.caption.weight(.semibold)).lineLimit(2)
+                    Text("\(app.name) \(T.version(app.version))").font((wide ? Font.callout : .caption).weight(.semibold)).lineLimit(2)
                         .help(app.app)   // where the app is
-                    Text(T.kind(app.kind)).font(.caption2.weight(.semibold))
+                    Text(T.kind(app.kind)).font((wide ? Font.callout : .caption2).weight(.semibold))
                         .foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
-                    if app.kind != "express" { Text(app.reason).font(.caption2).foregroundStyle(.secondary).lineLimit(4) }
+                    if app.kind != "express" { Text(app.reason).font(wide ? .caption : .caption2).foregroundStyle(.secondary).lineLimit(4) }
                 }
-                // the big green start, first on the back (user 2026-11-12); Return on the turned-over case
-                Button(action: start) {
-                    Label(T.startGame, systemImage: "play.fill").font(.callout.weight(.semibold)).frame(maxWidth: .infinity)
+                if !wide {   // the start, first on the narrow back (opened: the bottom-right corner, body)
+                    startButton
+                    if !startStatus.isEmpty { Text(startStatus).font(.caption2).foregroundStyle(.secondary) }
                 }
-                .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                .disabled(starting || (model.jobRunning && model.updating == app.app))
-                .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)
-                if !startStatus.isEmpty { Text(startStatus).font(.caption2).foregroundStyle(.secondary) }
                 // under the start, any time, game running or not: it counts from the game's next start (user 2026-11-16)
                 if let saver, saver.available {
                     Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))
@@ -412,16 +465,16 @@ struct GameActions: View {
                 let busy = model.phase == .building || model.phase == .cancelling
                 switch app.kind {
                 case "express", "fast":
-                    Button { model.update(app) } label: { Text(T.updateButton(app.kind)).frame(maxWidth: .infinity) }
+                    Button { model.update(app) } label: { Text(T.updateButton(app.kind)).frame(maxWidth: buttonWidth) }
                         .buttonStyle(.borderedProminent).disabled(busy)
                 case "full":
-                    Button { if let g = app.game { model.buildGame(g) } } label: { Text(T.updateButton(app.kind)).frame(maxWidth: .infinity) }
+                    Button { if let g = app.game { model.buildGame(g) } } label: { Text(T.updateButton(app.kind)).frame(maxWidth: buttonWidth) }
                         .buttonStyle(.borderedProminent).disabled(busy)
                 default:
                     EmptyView()   // the reason above says why it cannot be updated now
                 }
                 if app.shaders == "title" {   // a quick app: the rest of its shaders, made while it is not played (user 2026-11-13)
-                    Button { model.updateShaders(app) } label: { Text(T.fillShaders).frame(maxWidth: .infinity) }
+                    Button { model.updateShaders(app) } label: { Text(T.fillShaders).frame(maxWidth: buttonWidth) }
                         .buttonStyle(.borderedProminent).disabled(busy)
                     Text(T.quickApp).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -438,7 +491,7 @@ struct GameActions: View {
                     if !said.isEmpty { Text(said).font(.caption2).foregroundStyle(.secondary) }
                 }
                 if model.pageApps.contains(where: { $0.app == app.app }) {   // the pages serve these games only
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: 5) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: wide ? 6 : 3), spacing: wide ? 8 : 5) {
                         ForEach(T.gamePages.filter { Model.pages(app.game).contains($0.0) }, id: \.0) { id, label in
                             // under the Cover Flow, not a page of its own (user 2026-11-12); pressed again, it closes
                             Button { section = section == id ? nil : id } label: { Text(label).frame(maxWidth: .infinity) }
@@ -451,15 +504,8 @@ struct GameActions: View {
                     }
                 }
             }
-            .controlSize(.small)
+            .controlSize(wide ? .regular : .small)
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .task {
-            guard live, startsWithSettings else { return }
-            struct Probe: Decodable { let gpu: String }
-            gpu = (try? await TabClient.decode(Probe.self, "settings", "probe", app: app.app).gpu) ?? "unknown"
-        }
-        .task(id: app.app) { await loadSaver() }   // the backend says which games have the switch (memory_saver.GAMES)
     }
 
     private func start() {
@@ -487,15 +533,18 @@ struct GameActions: View {
 private struct EmptyBack: View {
     let ready: Bool          // the installed apps were scanned: the game is known to be missing
     let live: Bool           // the back on top: Return adds the game
+    var wide = false         // the case opened over the stage: its name on top, larger type (GameActions.wide)
+    var name = ""
     let add: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(T.notBuiltYet).font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: wide ? 14 : 8) {
+            if wide { Text(name).font(.title.weight(.bold)).padding(.trailing, 40) }
+            Text(T.notBuiltYet).font((wide ? Font.body : .caption).weight(.semibold))
             ForEach(Array([T.page1, T.page2, T.page3].enumerated()), id: \.offset) { n, step in
-                Label { Text(step).font(.caption) } icon: { Image(systemName: "\(n + 1).circle.fill").foregroundStyle(.secondary) }
+                Label { Text(step).font(wide ? .body : .caption) } icon: { Image(systemName: "\(n + 1).circle.fill").foregroundStyle(.secondary) }
             }
-            Button(action: add) { Label(T.addGame, systemImage: "plus").font(.callout.weight(.semibold)).frame(maxWidth: .infinity) }
+            Button(action: add) { Label(T.addGame, systemImage: "plus").font((wide ? Font.title3 : .callout).weight(.semibold)).frame(maxWidth: wide ? 200 : .infinity) }
                 .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 4)
                 .disabled(!ready)
                 .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)

@@ -13,17 +13,19 @@ import SwiftUI
 /// to the middle.
 ///
 /// The middle box turns over (user 2026-11-17, scheme A of the sketch: "先做 a"): a click on it or Return turns it round
-/// in place, a little towards the player, the others stepping back; its back holds the game's actions (`back`). Esc, a
-/// click beside or on the back's empty part, or a move to another box turns it back. A view drawn through projectionEffect
-/// takes no clicks, so once the turn has settled the back is laid on top as a live view at the same place and size: the
-/// turned box faces the camera, so the projection there is a scale and a move (CoverFlowGeometry.backScale, backCenter).
-/// `back(i, live)`: live is the one on top (Return starts the game there); the drawn copies show it only.
+/// in place (the left edge going back first, so its opening edge shows; "这个方向好"), a little towards the player, the
+/// others stepping back; its back holds the game's actions (`back`, drawn). Once the turn has settled the case opens over
+/// the whole stage ("翻转后 放大 全屏 然后 左边是封面 右边现在的 按钮"): CaseDetail grows from the back's place and size
+/// (the turned box faces the camera, so the projection there is a scale and a move: CoverFlowGeometry.backScale,
+/// backCenter) to the stage, its front on the left and the live actions on the right (`detail`; Return starts the game
+/// there). Esc or its close button closes it back to the case's back and turns the case round.
+/// `back(i, live)`: the drawn back during the turn (live false).
 ///
 /// How it feels, as in the sketch's A page (user 2026-11-17: "web页面 a 很好 有鼠标 光影 和 盒子动的特效"): the middle case
 /// leans away under the pointer and a light follows it over the front; a drag or a two-finger swipe on the trackpad
 /// carries on with its speed and settles on a case, held back past either end and let go; a game started from the back
 /// grows out of its case over the stage and fades (`launches` counts the starts).
-struct CoverFlow<Front: View, Spine: View, Back: View>: View {
+struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     let count: Int
     @Binding var index: Int
     var size: CGFloat = 375   // the case's height (user 2026-11-17: half again as big)
@@ -32,11 +34,16 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
     @ViewBuilder let back: (Int, Bool) -> Back
+    @ViewBuilder let detail: (Int, Bool) -> Detail   // (case, live): live false for its reflection
 
     @State private var drag: CGFloat = 0
     @State private var dragging = false
     @State private var flipped = false     // the middle box shows its back
-    @State private var backLive = false    // the turn has settled: the live back lies on top
+    @State private var expanded = false    // the middle case is (being) opened over the stage: CaseDetail draws it
+    @State private var open: CGFloat = 0   // how far, turning and growing at once: 0 its front at rest, 1 the stage
+    @State private var coverLean = CGPoint.zero   // the pointer over the opened case's cover, -1...1 (leanCover)
+    @State private var coverLit: CGFloat = 0
+    @State private var zoomFromCover = false   // a start from the opened case: the zoom begins at its cover
     @State private var tilt = CGPoint.zero // the pointer over the middle front, -1...1 from its centre
     @State private var lit = 0.0           // 1 while the pointer is over the middle front: its light shows
     @State private var pulls = CaseAmounts()   // the folded case under the pointer, pulled out a little (1), the rest 0
@@ -70,9 +77,10 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
                                           pulls: pulls)
             ZStack(alignment: .topLeading) {
                 CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
-                               flip: flipped ? 1 : 0, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
+                               flip: Double(open), hideCenter: expanded, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
                                pulls: pulls, pulledLight: pulledLight,
                                front: front, spine: spine, back: back)
+                    .opacity(Double(1 - open))   // the opened case covers the stage
                     .contentShape(Rectangle())
                     .gesture(SpatialTapGesture().onEnded { tap in
                         guard !dragging else { return }
@@ -98,22 +106,46 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
                         .allowsHitTesting(false)
                         .transition(.opacity)
                 }
-                if zooming {   // a start: the case grows out over the stage, then fades
+                if expanded {
+                    // its reflection on the floor, as every case has: turning and growing, shrinking and settling with
+                    // it (user 2026-11-17: "返回的时候 底下阴影 没有跟上 要真实 阴影 也是从大变小"); upside down about
+                    // the line the stage's reflections turn about (boxTransform: floorY + gap/2), faint and fading
+                    CaseDetail(stage: stage, open: open, close: {}) {
+                        front(index)
+                    } panel: {
+                        detail(index, false)
+                    }
+                    .frame(width: geo.size.width, height: height)
+                    .scaleEffect(x: 1, y: -1, anchor: UnitPoint(x: 0.5, y: (stage.floorY + stage.gap / 2) / height))
+                    .compositingGroup()
+                    .opacity(0.32)
+                    .mask(LinearGradient(stops: [.init(color: .black, location: (stage.floorY + stage.gap) / height),
+                                                 .init(color: .clear, location: min(1, (stage.floorY + stage.gap + size * 0.42) / height))],
+                                         startPoint: .top, endPoint: .bottom))
+                    .allowsHitTesting(false)
+                    // the middle case turning and growing into the opened case: cover left, actions right
+                    CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, close: { turn(false) }) {
+                        front(index)
+                    } panel: {
+                        detail(index, true)
+                    }
+                    .onContinuousHover(coordinateSpace: .local) { phase in   // the stage's coordinates (it fills it)
+                        switch phase {
+                        case .active(let p): leanCover(at: p, stage)
+                        case .ended: leanCover(at: nil, stage)
+                        }
+                    }
+                }
+                if zooming {   // a start: the case grows out over the stage (from the opened case's cover), then fades
+                    let from = zoomFromCover ? stage.coverScale : stage.backScale
+                    let start = zoomFromCover ? stage.coverCenter : stage.backCenter
                     front(index).frame(width: stage.w, height: stage.h)
                         .overlay(CaseFront())
                         .clipShape(RoundedRectangle(cornerRadius: stage.corner * (1 - zoom), style: .continuous))
-                        .scaleEffect(stage.backScale + (stage.fill - stage.backScale) * zoom)
-                        .position(x: stage.backCenter.x, y: stage.backCenter.y + (height / 2 - stage.backCenter.y) * zoom)
+                        .scaleEffect(from + (stage.fill - from) * zoom)
+                        .position(x: start.x + (geo.size.width / 2 - start.x) * zoom, y: start.y + (height / 2 - start.y) * zoom)
                         .opacity(zoomFade)
                         .allowsHitTesting(false)
-                }
-                if backLive {
-                    back(index, true).frame(width: stage.w, height: stage.h)
-                        .overlay(CaseRim())
-                        .clipShape(RoundedRectangle(cornerRadius: stage.corner, style: .continuous))
-                        .contentShape(Rectangle()).onTapGesture { turn(false) }   // its empty part turns it back
-                        .scaleEffect(stage.backScale)
-                        .position(stage.backCenter)
                 }
             }
             .frame(width: geo.size.width, height: height, alignment: .topLeading)
@@ -129,7 +161,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
                 let to = min(max(Int(thrown.rounded()), 0), count - 1)
                 go(to: to)
                 DispatchQueue.main.async { dragging = false }   // the click a drag ends with is not a tap
-            })
+            }, including: flipped ? .subviews : .all)   // turned or opened: its own controls take the pointer
         .overlay(alignment: .leading) { arrow("chevron.left", by: -1) }
         .overlay(alignment: .trailing) { arrow("chevron.right", by: 1) }
         .focusable().focused($focused).focusEffectDisabled()
@@ -172,6 +204,19 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
         }
     }
 
+    /// The opened case's cover leans and lights under the pointer as the middle case does (user 2026-11-18: "封面 要依然
+    /// 支持 鼠标效果"): only once it has opened (open 1), the cover where CaseDetail draws it (coverCenter, coverScale).
+    private func leanCover(at p: CGPoint?, _ stage: CoverFlowGeometry) {
+        var to = CGPoint.zero, on: CGFloat = 0
+        if let p, flipped, open >= 1 {
+            let x = (p.x - stage.coverCenter.x) / (stage.w * stage.coverScale / 2)
+            let y = (p.y - stage.coverCenter.y) / (stage.h * stage.coverScale / 2)
+            if abs(x) <= 1, abs(y) <= 1 { to = CGPoint(x: x, y: y); on = 1 }
+        }
+        guard to != coverLean || on != coverLit else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { coverLean = to; coverLit = on }
+    }
+
     /// A new middle (a click, the arrows, a drag or a swipe): the case pulled out under the pointer goes back with the
     /// same spring as the move and none is pulled out until the move has settled (2026-11-17, the frame record: a clicked
     /// case kept its pull all the way to the middle, and the pointer's next move took it back, a jump after the move).
@@ -203,7 +248,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
     }
 
     private func swipe(dx: CGFloat, dy: CGFloat, fine: Bool) -> Bool {
-        guard hovering, fine, abs(dx) > abs(dy) * 1.2 || (dragging && abs(dx) >= abs(dy)) else { return false }
+        guard hovering, fine, !flipped, abs(dx) > abs(dy) * 1.2 || (dragging && abs(dx) >= abs(dy)) else { return false }
         turn(false); lean(at: nil, nil)
         dragging = true
         drag += dx
@@ -219,10 +264,13 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
         return true
     }
 
-    /// A game started from the back: its case grows over the stage and fades, then turns back to its front.
+    /// A game started from the opened case: its cover grows over the stage and fades; the case is then closed and shows
+    /// its front again, with no turn (the stage was covered all along).
     private func grow() {
+        zoomFromCover = expanded
         zoom = 0; zoomFade = 1; zooming = true
         withAnimation(.easeInOut(duration: 0.5)) { zoom = 1 } completion: {
+            if zoomFromCover { expanded = false; open = 0; flipped = false }   // under the zoom: unseen
             withAnimation(.easeOut(duration: 0.45).delay(0.3)) { zoomFade = 0 } completion: {
                 zooming = false
                 turn(false)
@@ -230,12 +278,20 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
         }
     }
 
-    /// Turns the middle box over (true) or back; the live back is laid on once the turn has fully settled.
+    /// Opens the middle case (true): it turns and grows over the stage at once ("翻转的同时 放大 不是翻转完"), one spring
+    /// for both, CaseDetail drawing it from its front at rest (the stage hides its own copy of it), the others stepping
+    /// back as it goes. Closes it (false): the same backwards, ending on its front where it stands.
     private func turn(_ over: Bool) {
-        guard over != flipped else { return }
-        backLive = false
-        withAnimation(turnSpring, completionCriteria: .removed) { flipped = over } completion: {
-            if flipped { backLive = true }
+        if over {
+            guard !flipped else { return }
+            open = 0; expanded = true; flipped = true
+            DispatchQueue.main.async { withAnimation(turnSpring) { open = 1 } }   // inserted at 0 first, then it moves
+        } else {
+            guard flipped else { return }
+            flipped = false
+            withAnimation(turnSpring, completionCriteria: .removed) { open = 0; coverLean = .zero; coverLit = 0 } completion: {
+                if !flipped { expanded = false }
+            }
         }
     }
 
@@ -246,10 +302,11 @@ struct CoverFlow<Front: View, Spine: View, Back: View>: View {
                 .frame(width: 36, height: 36).background(.white.opacity(0.85), in: Circle()).shadow(radius: 4)
         }
         .buttonStyle(.plain).padding(.horizontal, 10)
-        .opacity(possible ? 1 : 0).disabled(!possible)
+        .opacity(possible && !flipped ? 1 : 0).disabled(!possible || flipped)
     }
 
     private func move(_ step: Int) {
+        guard !expanded else { return }   // the opened case keeps the arrow keys for itself
         turn(false)
         let to = min(max(index + step, 0), count - 1)
         go(to: to)
@@ -267,6 +324,9 @@ struct CoverFlowGeometry {
     var flip: Double = 0   // the middle box turned over: 0 its front, 1 its back (CoverFlow.turn)
     var pointer = CGPoint.zero   // the pointer over the middle front, -1...1 from its centre (CoverFlow.lean)
     var pulls = CaseAmounts()    // how far each folded case is pulled out under the pointer (CoverFlow.lean)
+    /// Which way the middle case turns over: +1 its right edge going back first (half way its spine shows), -1 the other
+    /// way (its opening edge shows; user 2026-11-17: "试一试 相反的 翻转方向"). Its back ends the same either way.
+    static let turnWay: Double = -1
 
     // a Switch game case: 105 x 170 x 11 mm; the depth shown a little more, so the turned ones read as boxes
     var w: CGFloat { size * 0.62 }
@@ -296,6 +356,12 @@ struct CoverFlowGeometry {
     var backCenter: CGPoint { CGPoint(x: width / 2, y: floorY - h / 2) }
     /// The scale at which a case covers the whole stage (a start's case grows to it).
     var fill: CGFloat { max(width / w, height / h) * 1.02 }
+    /// The opened case's cover (CaseDetail): as large as its left 44% and the stage's height let it be, and its centre.
+    var coverScale: CGFloat { min(height * 0.84 / h, width * 0.44 * 0.82 / w) }
+    var coverCenter: CGPoint { CGPoint(x: width * 0.22, y: height / 2) }
+    /// The middle case's front at rest is at depth/2 towards the camera: its scale on the stage (centred at backCenter),
+    /// where CaseDetail starts.
+    var frontScale: CGFloat { 1 / (1 - (depth / 2) / eye) }
 
     /// The middle case leaning away under the pointer (the sketch's: up to 9° sideways, 7° up and down): the part under
     /// the pointer goes back, as if pressed. Rotations as `boxTransform`'s (row vectors).
@@ -333,7 +399,7 @@ struct CoverFlowGeometry {
             + aside * (CGFloat(pushed(i)) * w * 0.2 + pull * w * 0.02)
         let y = -pull * h * 0.015
         let z = -CGFloat(abs(side)) * w * 0.6 + lift * CGFloat(over) - w * 0.5 * CGFloat(away) + pull * w * 0.1
-        let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over
+        let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over * Self.turnWay
         var r = CATransform3DIdentity
         r.m11 = CGFloat(cos(a)); r.m13 = CGFloat(-sin(a))
         r.m31 = CGFloat(sin(a)); r.m33 = CGFloat(cos(a))
@@ -441,6 +507,7 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
     let height: CGFloat
     var position: Double
     var flip: Double
+    let hideCenter: Bool     // the middle case is drawn by CaseDetail (turning and growing over the stage)
     var lit: Double          // the light over the middle front (0 off, 1 on)
     var tiltX: Double        // the middle case's lean (CoverFlow.lean)
     var tiltY: Double
@@ -469,7 +536,7 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
         ZStack(alignment: .topLeading) {
             // the reflections: the boxes upside down under the floor, fading into it
             ZStack(alignment: .topLeading) {
-                ForEach(g.drawOrder, id: \.self) { i in box(i, g, mirrored: true) }
+                ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in box(i, g, mirrored: true) }
             }
             .frame(width: width, height: height, alignment: .topLeading)   // the mask covers the whole stage, not one face
             // one picture first, then faint: an opacity on a plain ZStack is given to every face on its own, and the
@@ -479,7 +546,7 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
             .mask(LinearGradient(stops: [.init(color: .black, location: (g.floorY + g.gap) / height),
                                          .init(color: .clear, location: min(1, (g.floorY + g.gap + size * 0.42) / height))],
                                  startPoint: .top, endPoint: .bottom))
-            ForEach(g.drawOrder, id: \.self) { i in box(i, g, mirrored: false) }
+            ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in box(i, g, mirrored: false) }
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .allowsHitTesting(false)
@@ -514,11 +581,11 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
                     .offset(x: bounds.minX, y: bounds.minY)
                 }
             }
-            if side < -0.02 || turning || leaning > 0.02 {
+            if side < -0.02 || (turning && CoverFlowGeometry.turnWay > 0) || leaning > 0.02 {
                 spine(i).frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: true), m)))
-            } else if side > 0.02 || leaning < -0.02 {
+            } else if side > 0.02 || (turning && CoverFlowGeometry.turnWay < 0) || leaning < -0.02 {
                 CaseEdge().frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: false), m)))
@@ -587,7 +654,7 @@ let caseRed = Color(red: 0.86, green: 0.07, blue: 0.1)
 
 /// A game case's front: the red plastic rim round the insert and the clear sleeve's shine over it; `light` (0...1) adds
 /// the pointer's light on the sleeve, centred `at` (the sketch's moving highlight).
-private struct CaseFront: View {
+struct CaseFront: View {
     var light = 0.0
     var at = UnitPoint(x: 0.3, y: 0.2)
 

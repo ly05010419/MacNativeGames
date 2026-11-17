@@ -107,18 +107,52 @@ class Pages(unittest.TestCase):
         # its pages open under the Cover Flow; the drawn back takes no clicks, so a live one is laid on top once settled
         flow = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
         for part in ('if i == index { turn(true) }', '.onKeyPress(.escape)', 'if flipped { return .ignored }',
-                     'withAnimation(turnSpring, completionCriteria: .removed)', 'back(index, true)',
-                     '.scaleEffect(stage.backScale)', '.position(stage.backCenter)',
-                     'let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over'):
+                     'withAnimation(turnSpring, completionCriteria: .removed)',
+                     'let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over * Self.turnWay',
+                     'static let turnWay: Double = -1'):   # "这个方向好": the opening edge shows half way
             self.assertIn(part, flow)
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertIn('GameActions(app: app, section: $gamePage, live: live) { launches += 1 }', home)
+        # it opens over the stage ("翻转后 放大 全屏 然后 左边是封面 右边现在的 按钮"), turning and growing at once ("翻转的
+        # 同时 放大 不是翻转完"): from its front at rest to the stage, half a circle the case's way, its front until edge-on,
+        # then the opened case (cover left, live actions right, laid out wide); closing plays it backwards
+        detail = (REPO / 'tools/builder_app/Sources/MNGBuilder/CaseDetail.swift').read_text()
+        for part in ('let fromW = stage.w * stage.frontScale', 'stage.backCenter.x + (stage.width / 2 - stage.backCenter.x) * p',
+                     '.rotation3DEffect(.degrees(settled ? 0 : 180 * Double(p) * CoverFlowGeometry.turnWay)', 'if p < 0.5 {',
+                     '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
+            self.assertIn(part, detail)
+        for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, close: { turn(false) })',
+                     'DispatchQueue.main.async { withAnimation(turnSpring) { open = 1 } }',
+                     'withAnimation(turnSpring, completionCriteria: .removed) { open = 0; coverLean = .zero; coverLit = 0 } completion: {',
+                     'flip: Double(open), hideCenter: expanded',
+                     "including: flipped ? .subviews : .all", 'guard !expanded else { return }'):
+            self.assertIn(part, flow)
+        self.assertNotIn('openSpring', flow)
+        # its reflection grows and shrinks with it ("返回的时候 底下阴影 没有跟上"), upside down about the stage's floor
+        # line, never live; one ground behind cover and actions ("不要 这样 隔开"); big buttons 200 points, centred
+        self.assertIn('.scaleEffect(x: 1, y: -1, anchor: UnitPoint(x: 0.5, y: (stage.floorY + stage.gap / 2) / height))', flow)
+        self.assertIn('detail(index, false)', flow)
+        self.assertIn('LinearGradient(colors: [Color(white: 0.17), Color(white: 0.03)], startPoint: .top, endPoint: .bottom)', detail)
+        self.assertNotIn('Color(red: 0.12, green: 0.12, blue: 0.13)', detail)
+        self.assertIn('private var buttonWidth: CGFloat { wide ? 200 : .infinity }', home)
+        self.assertNotIn('.frame(maxWidth: wide ? .infinity : nil)', home)   # "极速更新 不要居中了"
+        # "封面 要依然支持 鼠标效果": the opened cover leans and lights, laid flat once settled; "去掉 滚动条"
+        for part in ('.rotation3DEffect(.degrees(Double(lean.x) * 9)', 'private var settled: Bool { open >= 0.999 }',
+                     'CaseFront(light: Double(lit), at: UnitPoint(x: (1 + lean.x) / 2'):
+            self.assertIn(part, detail)
+        self.assertIn('case .active(let p): leanCover(at: p, stage)', flow)
+        self.assertIn('ScrollView(.vertical, showsIndicators: false) {   // no scroll bar beside the stage', home)
+        # "文字 高度对齐 启动游戏按钮 放在 黑色背景 右下角": the column level with the cover, the start bottom right
+        self.assertIn('let margin = max(12, (height - stage.h * scale) / 2)', detail)
+        self.assertIn('VStack(alignment: .trailing, spacing: 8) {', home)
+        self.assertNotIn('backLive', flow)
+        self.assertIn('GameActions(app: app, section: $gamePage, live: live, wide: true) { launches += 1 }', home)
         # how it feels, as the sketch's A page (user 2026-11-17: "有鼠标 光影 和 盒子动的特效"): lean and light under the
         # pointer, rubber band and throw on a drag, two-finger swipes, and the start's case growing over the stage
         for part in ('.onContinuousHover(coordinateSpace: .local)', 'i == center ? CATransform3DConcat(lean, r) : r',
                      'RadialGradient(colors: [.white.opacity(0.42 * light)', 'func pull(_ x: Double)',
                      'v.predictedEndTranslation.width', 'NSEvent.addLocalMonitorForEvents(matching: .scrollWheel)',
-                     '.onChange(of: launches) { grow() }', 'stage.backScale + (stage.fill - stage.backScale) * zoom'):
+                     '.onChange(of: launches) { grow() }', '.scaleEffect(from + (stage.fill - from) * zoom)'):
             self.assertIn(part, flow)
         self.assertIn('started()', home)
         # the folded cases answer the pointer too (user 2026-11-17: "其他收起来的 应该也有相应的互动效果"): the one under
