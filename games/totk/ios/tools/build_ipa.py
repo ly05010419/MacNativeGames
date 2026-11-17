@@ -13,7 +13,7 @@ def settings_without_totk(root):
     """The pane for Breath of the Wild, in place: every row Root.plist marks TOTKApp=totk (its picture modes and scene
     sizes, the custom picture tier, MetalFX, and the aspect-ratio row, whose key means ultrawide in Breath of the Wild),
     and any group they leave empty. The Full HD switch stays: botw_pane describes it for Breath of the Wild and adds
-    its docked scene row. The mark sits on the row itself, so this list is not kept
+    its docked scene row, and its own custom picture under the same keys (botw_custom_rows). The mark sits on the row itself, so this list is not kept
     a second time here; tests/test_ios_packaging.py checks that every marked row is gone from the pane."""
     specs=[s for s in root['PreferenceSpecifiers'] if s.get('TOTKApp')!='totk']
     kept=[]
@@ -40,7 +40,8 @@ def seed_fingerprint(seed, lists):
 def botw_pane(root):
     """Breath of the Wild's pane, in place: the Full HD switch described for this game, its docked scene row right after
     it (TOTK_BOTW_SCENE, game_patches_botw.c patch_render_phone: original is the Switch's 1600x900 scene upscaled into
-    the 1920x1080 canvas, HD the scene at 1920x1080; user 2026-11-01), then settings_without_totk."""
+    the 1920x1080 canvas, HD the scene at 1920x1080; user 2026-11-01), then settings_without_totk, then its custom picture
+    after the docked scene row (botw_custom_rows)."""
     specs=root['PreferenceSpecifiers']
     at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
     specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
@@ -51,7 +52,48 @@ def botw_pane(root):
     specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
                        'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
                        'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
-    return settings_without_totk(root)
+    custom=botw_custom_rows(specs)   # from Tears of the Kingdom's rows, before settings_without_totk drops them
+    root=settings_without_totk(root)
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_BOTW_SCENE')
+    specs[at+1:at+1]=custom
+    return root
+
+# The custom scene sizes game_patches_botw.c phone_scene_custom takes: at most the 1280x720 handheld canvas (above it the
+# game cannot make its heaps), for docked and handheld play alike.
+BOTW_SCENES=['1280x720','960x540','800x450','640x360']
+
+def botw_custom_rows(specs):
+    """Breath of the Wild's custom picture (user 2026-11-17): the scene resolution, MetalFX's scene upscale (scene into the
+    canvas only; no output stage) and edge smoothing (MetalFX TAA), unlocked by "Use custom settings". Tears of the
+    Kingdom's rows for the same keys, unmarked, with this game's sizes and texts. The switch does not replace the presets
+    here (settings_map.c totk_custom_layer_on): Breath of the Wild has no picture-mode or frame-cap rows, so Full HD, the
+    docked scene and the frame rate stay, and the three keys are handed over only while it is on (TOTK_KEY_EXTRA)."""
+    row={s['Key']:dict(s) for s in specs if s.get('Key') in ('TOTK_CUSTOM_PICTURE','TOTK_RENDER_RES','TOTK_MFX_UPSCALE','TOTK_TAA')}
+    for r in row.values(): r.pop('TOTKApp',None)
+    scene=row['TOTK_RENDER_RES']
+    titles=dict(zip(scene['Values'],scene['Titles']))
+    titles['1280x720']='1280x720（最清晰，畫布大小）· 1280x720 (sharpest, the canvas size)'
+    scene['Values']=BOTW_SCENES; scene['Titles']=[titles[v] for v in BOTW_SCENES]
+    scene['FooterText']=('只影響 3D 世界；GPU 開銷約與像素數成正比：越低越涼、越省電，畫面也越軟。底座和掌機都用這個大小（取代底座畫面的原始／高清），'
+                         '最高 1280×720，也就是掌機畫布的大小。重新啟動遊戲後生效 · '
+                         'affects the 3D world only; GPU cost is roughly proportional to the pixels: lower runs cooler and uses less '
+                         'battery, with a softer picture. Docked and handheld play both use this size (instead of the docked scene\'s '
+                         'original / HD), at most 1280×720, the handheld canvas. Takes effect after relaunching the game')
+    row['TOTK_MFX_UPSCALE']['Title']='MetalFX 場景超分 · MetalFX scene upscaling'
+    return [{'Type':'PSGroupSpecifier','Title':'自訂畫面 · Custom picture',
+             'FooterText':('開啟：下面的場景解析度、MetalFX 場景超分與邊緣平滑生效，Full HD、底座畫面和幀率照常使用。關閉：這三項都不生效。重新啟動遊戲後生效 · '
+                           'on: the scene resolution, MetalFX scene upscaling and edge smoothing below apply, and Full HD, the docked '
+                           'scene and the frame rate still do. Off: none of the three apply. Takes effect after relaunching the game')},
+            row['TOTK_CUSTOM_PICTURE'],scene,
+            {'Type':'PSGroupSpecifier','Title':'MetalFX',
+             'FooterText':('場景超分：MetalFX 取代遊戲自己把場景放大到畫布（掌機 1280×720、底座 1920×1080）的那一步，更清晰；場景和畫布一樣大時不起作用。'
+                           '邊緣平滑：MetalFX 時間抗鋸齒，邊緣更穩，可能有輕微拖影。兩項只在「使用自訂設定」開啟時生效。重新啟動遊戲後生效 · '
+                           'scene upscaling: MetalFX replaces the game\'s own upscale of the scene into the canvas (1280×720 handheld, '
+                           '1920×1080 docked), for a sharper picture; no effect when the scene is the canvas\'s size. Edge smoothing: '
+                           'MetalFX temporal anti-aliasing, steadier edges, slight ghosting possible. Both apply only while "Use custom '
+                           'settings" is on. Takes effect after relaunching the game')},
+            row['TOTK_MFX_UPSCALE'],row['TOTK_TAA']]
 
 def bananza_pane(root):
     """Bananza's own engine size; TOTK/BotW's docked presets describe other engines."""

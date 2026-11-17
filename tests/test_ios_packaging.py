@@ -162,6 +162,38 @@ class FullHD(unittest.TestCase):
         self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
         self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
 
+    def test_botw_pane_has_its_custom_picture(self):
+        """Breath of the Wild's custom picture (user 2026-11-17): after the docked scene row, "Use custom settings" with
+        the scene resolution, then MetalFX's scene upscale and edge smoothing; the aspect ratio stays out (in this game
+        its key means ultrawide). The sizes are exactly those the runtime takes, or a pane choice would silently keep
+        the presets' scene. Tears of the Kingdom's rows under the same keys are left as they are."""
+        import plistlib, re
+        root = build_ipa.botw_pane(plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes()))
+        specs = root['PreferenceSpecifiers']
+        keys = [s.get('Key') for s in specs]
+        at = keys.index('TOTK_BOTW_SCENE')
+        self.assertEqual(keys[at+1:at+7], [None, 'TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', None, 'TOTK_MFX_UPSCALE', 'TOTK_TAA'])
+        self.assertNotIn('TOTK_ASPECT', keys)
+        for key in ('TOTK_IOS_PICTURE_MODE', 'TOTK_FPS_CAP', 'TOTK_DOCKED_SCENE'):
+            self.assertNotIn(key, keys, 'Breath of the Wild has its own rows for these')
+        rows = {s['Key']: s for s in specs if s.get('Key')}
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+            self.assertIs(rows[key]['DefaultValue'], False, f'{key}: off until the player turns it on')
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+            self.assertNotIn('TOTKApp', rows[key])
+            self.assertTrue(rows[key]['TOTKPhone'])
+        scene = rows['TOTK_RENDER_RES']
+        runtime = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
+        sizes = re.search(r'static unsigned phone_scene_custom\(void\) \{.*?sizes\[\] = \{(.*?)\};', runtime, re.S).group(1)
+        self.assertEqual(scene['Values'], re.findall(r'\{"(\d+x\d+)", \d+\}', sizes))
+        self.assertIn(scene['DefaultValue'], scene['Values'])
+        self.assertEqual(len(scene['Titles']), len(scene['Values']))
+        self.assertIn('MetalFX', specs[at+4]['Title'])
+        totk = {s.get('Key'): s for s in plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']}
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+            self.assertEqual(totk[key]['TOTKApp'], 'totk')
+        self.assertIn('1600x900', totk['TOTK_RENDER_RES']['Values'])
+
     def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
         """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
         must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""
