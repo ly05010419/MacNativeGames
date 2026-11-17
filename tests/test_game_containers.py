@@ -421,6 +421,23 @@ class Containers(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'missing shared-font'):
                 firmware_data_ncas(folder, load_keys(self.keys))
 
+    def test_firmware_on_exfat_skips_appledouble_files(self):
+        # macOS writes a 4 KB "._<name>" AppleDouble file beside every file it copies to an exFAT / FAT disk.
+        # They sort before the real NCAs and are no NCAs, so a firmware folder on such a disk must still work...
+        folder = self.path / 'exfat'
+        folder.mkdir()
+        appledouble = b'\x00\x05\x16\x07\x00\x02\x00\x00' + bytes(4088)
+        for title in {title for _, _, title, _ in FONTS}:
+            (folder / f'{title}.nca').write_bytes(nca(title=int(title, 16), content=4))
+            (folder / f'._{title}.nca').write_bytes(appledouble)
+        found = firmware_data_ncas(folder, load_keys(self.keys))
+        self.assertEqual(set(found), {title for _, _, title, _ in FONTS})
+        self.assertFalse(any(p.name.startswith('._') for p in found.values()))
+        # ...while a real NCA that does not decrypt (wrong keys, a damaged dump) still stops the build.
+        (folder / 'damaged.nca').write_bytes(appledouble)
+        with self.assertRaisesRegex(ValueError, 'Invalid firmware NCA header'):
+            firmware_data_ncas(folder, load_keys(self.keys))
+
     def test_mac_only(self):
         with patch('build_app.platform.system', return_value='iOS'), self.assertRaisesRegex(build_app.BuildError, 'Mac'):
             build_app.prerequisites(None)
