@@ -6,28 +6,26 @@ import SwiftUI
 /// yet shows a plus that goes to the Build page with that game chosen (user 2026-11-12).
 struct HomePage: View {
     @EnvironmentObject var model: Model
-    @State private var selected: String?
+    @State private var center = 0          // the cover in the middle of the Cover Flow: the chosen game
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
-    @State private var shelf = ScrollPosition(idType: String.self)
-    @State private var inView = 0...(HomePage.games.count - 1)   // the cards fully in the row's view, by their place in games
 
     static let games = ["oot", "totk", "botw", "eow", "acnh", "dkb", "pkp"]
+    private var selected: String { Self.games[center] }
 
     /// The first built game, in the cards' order, is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {
         guard !defaulted, model.installedLoaded else { return }
-        guard let first = Self.games.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
-        selected = first
+        guard let first = Self.games.firstIndex(where: { g in model.installed.contains { $0.game == g } }) else { return }
+        center = first
         defaulted = true
     }
 
-    private func shelfArrow(_ symbol: String, to game: String, _ anchor: UnitPoint) -> some View {
-        Button { withAnimation { shelf.scrollTo(id: game, anchor: anchor) } } label: {
-            Image(systemName: symbol).font(.title3.weight(.bold)).foregroundStyle(.black)
-                .frame(width: 40, height: 40).background(.white.opacity(0.9), in: Circle()).shadow(radius: 4)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 8)
+    /// The middle cover clicked (or Return): a game not built yet opens the Build page with it chosen; a built one is
+    /// already open below.
+    private func open(_ game: String) {
+        guard model.installedLoaded, !model.installed.contains(where: { $0.game == game }) else { return }
+        model.buildFor = game
+        model.openBuild()
     }
 
     /// Whose job a box at the bottom shows (its own line says what the job is doing): the updated app's game, else
@@ -53,41 +51,31 @@ struct HomePage: View {
                     // the terminal with an AI helper (TerminalTab.swift; user 2026-11-13)
                     Button { model.page = "terminal" } label: { Label(T.terminal, systemImage: "terminal") }
                 }
-                // A mouse wheel scrolls the page, not this row: past a narrow window's edge the cards are reached by
-                // the scroll bar or the arrows, one card a click
-                ScrollView(.horizontal) {
-                    HStack(spacing: 14) {
-                        ForEach(Self.games, id: \.self) { game in
-                            let app = model.installed.first { $0.game == game }
-                            GameCard(game: game, app: app, loading: !model.installedLoaded, selected: selected == game) {
-                                if !model.installedLoaded { return }
-                                if app != nil { selected = game }   // a second click keeps it chosen (user 2026-11-13)
-                                else { model.buildFor = game; model.openBuild() }
-                            }
-                        }
-                    }
-                    .scrollTargetLayout()
-                    .padding(.vertical, 4)
-                }
-                .scrollPosition($shelf)
-                .scrollTargetBehavior(.viewAligned)
-                .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.9) { shown in
-                    let at = shown.compactMap { Self.games.firstIndex(of: $0) }
-                    inView = (at.min() ?? 0)...(at.max() ?? Self.games.count - 1)
-                }
-                .overlay(alignment: .leading) {
-                    if inView.lowerBound > 0 { shelfArrow("chevron.left", to: Self.games[inView.lowerBound - 1], .leading) }
-                }
-                .overlay(alignment: .trailing) {
-                    if inView.upperBound < Self.games.count - 1 {
-                        shelfArrow("chevron.right", to: Self.games[inView.upperBound + 1], .trailing)
+                // The games as the iPod classic's Cover Flow (user 2026-11-17): every one is reached by the arrows,
+                // the arrow keys, a drag or a click on a side cover, at any window width
+                CoverFlow(count: Self.games.count, index: $center) { i in
+                    let game = Self.games[i]
+                    GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
+                             selected: false, cover: true, tap: {})
+                } spine: { i in
+                    CaseSpine(game: Self.games[i])
+                } open: { open(Self.games[$0]) }
+                // what the middle cover is, as the iPod writes it under the cover
+                VStack(spacing: 4) {
+                    Text(T.gameName(selected)).font(.title2.weight(.semibold))
+                    Text(T.gamePlatforms(selected)).font(.callout).foregroundStyle(.secondary)
+                    if model.installedLoaded, !model.installed.contains(where: { $0.game == selected }) {
+                        Button { open(selected) } label: { Label(T.addGame, systemImage: "plus") }
+                            .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 6)
+                            .help(T.addGameHelp(T.gameName(selected)))
                     }
                 }
+                .frame(maxWidth: .infinity)
                 if let error = model.installedError {
                     Label(T.appsScanFailed(error), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                         .textSelection(.enabled)
                 }
-                let shown = selected.flatMap { g in model.installed.first(where: { $0.game == g }) }
+                let shown = model.installed.first(where: { $0.game == selected })
                 if let app = shown { GameActions(app: app).id(app.app) }
                 // an update running for another game, or one another program started: its progress shows here too, until
                 // it ends well or is cancelled (the game opened, or the player chose so); a failure stays, with its log
@@ -118,6 +106,8 @@ struct GameCard: View {
     let app: InstalledReport.App?
     let loading: Bool
     let selected: Bool
+    /// A cover of the Cover Flow: square, the picture alone (the name is written under the middle cover).
+    var cover = false
     let tap: () -> Void
 
     private var picture: NSImage? {
@@ -126,6 +116,49 @@ struct GameCard: View {
     }
 
     var body: some View {
+        if cover { coverBody } else { cardBody }
+    }
+
+    /// The picture on a case's front in the Cover Flow (CoverFlow handles the clicks: it knows which case is where).
+    private var coverBody: some View {
+        ZStack {
+            if let picture {
+                // a case's insert is tall, the game's picture square: the whole picture at the top, the same picture
+                // blurred behind it all, the game's name at the bottom (nothing of the picture is cut off)
+                GeometryReader { geo in
+                    ZStack(alignment: .top) {
+                        Image(nsImage: picture).resizable().scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height).blur(radius: 18).clipped()
+                            .overlay(Color.black.opacity(0.35))
+                        VStack(spacing: 0) {
+                            Image(nsImage: picture).resizable().scaledToFit().frame(width: geo.size.width)
+                            Spacer(minLength: 0)
+                            Text(T.gameName(game)).font(.system(size: geo.size.width * 0.075, weight: .bold))
+                                .foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2)
+                                .padding(.horizontal, 10).shadow(radius: 3)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            } else {
+                LinearGradient(colors: T.gameColors(game), startPoint: .topLeading, endPoint: .bottomTrailing)
+                if loading {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "plus").font(.system(size: 36, weight: .semibold)).foregroundStyle(.white)
+                            .frame(width: 76, height: 76).background(.white.opacity(0.22), in: Circle())
+                        Text(T.gameName(game)).font(.callout.weight(.semibold)).foregroundStyle(.white)
+                            .multilineTextAlignment(.center).padding(.horizontal, 12)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)   // the case's front (CoverFlow sizes it)
+        .clipped()
+    }
+
+    private var cardBody: some View {
         Button(action: tap) {
             // The text sets the card's size; the picture sits behind it so a wide picture can't widen the card.
             VStack(alignment: .leading, spacing: 4) {
