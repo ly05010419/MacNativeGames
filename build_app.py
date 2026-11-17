@@ -310,6 +310,12 @@ def _bfttf_valid(path):
 
 
 # ---- prerequisites ----
+def sdk_major(version):
+    """26 for '26.0' (xcrun --show-sdk-version); 0 when it says nothing readable."""
+    head = version.split('.')[0]
+    return int(head) if head.isdigit() else 0
+
+
 def prerequisites(args):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise BuildError('needs a Mac with Apple silicon')
@@ -318,6 +324,14 @@ def prerequisites(args):
         raise BuildError(f'needs macOS 26 or later (Metal 4); this is macOS {platform.mac_ver()[0]}')
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install')
+    # Metal 4 and MetalFX frame interpolation come with the macOS 26 SDK: an older Xcode on macOS 26 passes the checks
+    # here and the build stops minutes later at "cannot find protocol declaration for 'MTL4CommandBuffer'" (#2250)
+    sdk = subprocess.run(['xcrun', '--show-sdk-version'], capture_output=True, text=True).stdout.strip()
+    if sdk_major(sdk) < 26:
+        raise BuildError(f'the developer tools use the macOS {sdk or "?"} SDK, which has no Metal 4; the build needs the macOS 26 '
+                         'SDK or later. Update Xcode from the App Store, or use the command line tools: sudo xcode-select -s '
+                         '/Library/Developer/CommandLineTools (if they are old too: sudo rm -rf /Library/Developer/CommandLineTools '
+                         '&& xcode-select --install). xcode-select -p and xcrun --show-sdk-version show what is used')
     # SPIRV-Cross is C++: without the SDK's libc++ headers the build stops much later at "'string' file not found" (#41)
     cxx = subprocess.run(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input='#include <string>\n',
                          capture_output=True, text=True)

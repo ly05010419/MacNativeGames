@@ -147,7 +147,7 @@ class ExpressUpdateArguments(unittest.TestCase):
         import argparse
         args = argparse.Namespace(app=Path('/x.app'), work=None, seed=False, vr=False, native_5k=None, plan=False)
         with mock.patch.object(build_app, 'codec_libraries') as codecs, \
-             mock.patch.object(build_app.subprocess, 'run', return_value=mock.Mock(returncode=0, stderr='')), \
+             mock.patch.object(build_app.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='26.0', stderr='')), \
              mock.patch.object(build_app.shutil, 'which', return_value='/usr/bin/x'):
             build_app.prerequisites(args)
         codecs.assert_called_once_with('macos')
