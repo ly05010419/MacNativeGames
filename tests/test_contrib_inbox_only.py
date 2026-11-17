@@ -33,6 +33,8 @@ class InboxOnly(unittest.TestCase):
 
     def test_uploading_games_name_the_inbox_in_the_file(self):
         for upload in tracked('games/*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'):
+            if 'totk_inbox_send(' not in upload.read_text():
+                continue   # games/acnh: only the site's identity for its board and screenshots, no shader upload
             contrib = (upload.parent / 'totk_shader_contrib.h').read_text()
             self.assertIn('# This game sends it to the shader inbox', contrib, upload.relative_to(REPO))
 

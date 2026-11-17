@@ -16,7 +16,8 @@ SWITCH = {"A": ["a"], "B": ["b"], "X": ["x"], "Y": ["y"], "ZL": ["zl"], "ZR": ["
           "L3": ["lstick"], "R3": ["rstick"], "+": ["plus"], "−": ["minus"],
           "left stick": ["move_up", "move_left", "move_down", "move_right"],
           "right stick": ["camera_up", "camera_left", "camera_down", "camera_right"],
-          "d-pad up": ["up"], "d-pad down": ["down"], "d-pad left": ["left"], "d-pad right": ["right"]}
+          "d-pad up": ["up"], "d-pad down": ["down"], "d-pad left": ["left"], "d-pad right": ["right"],
+          "capture": ["screenshot"]}   # not a Switch input: the capture button's picture (keyboard_map.h KEYMAP_SCREENSHOT)
 # How the README writes an input -> keyboard_map.h's label.
 WRITTEN = {"W A S D": ["W", "A", "S", "D"], "arrow keys": ["↑", "←", "↓", "→"], "left button": ["Left click"],
            "right button": ["Right click"], "wheel click": ["Wheel click"], "side button 4": ["Mouse 4"],
@@ -70,7 +71,8 @@ class InputLayoutTests(unittest.TestCase):
 
 
 class SettingsPanelSourceTests(unittest.TestCase):
-    panel = (RUNTIME / "settings_panel.h").read_text()
+    # The panel is shared (runtime/settings_panel.h links shared/runtime/settings_panel.h); this game's rows are its own.
+    panel = (RUNTIME / "settings_game.h").read_text()
 
     def test_languages_are_codes_the_runtime_accepts(self):
         table = self.panel[self.panel.index("settings_languages[][2]="):self.panel.index("enum { SETTINGS_LANGUAGES")]
@@ -84,13 +86,16 @@ class SettingsPanelSourceTests(unittest.TestCase):
         self.assertFalse(set(accepted) - set(system), "every language is one the game's settings service lists")
 
     def test_no_contribution_or_star(self):
-        # ACNH has no shader-list contribution flow; its panel carries neither that action nor the project-star link.
-        for word in ("contribute:", "star:", "TOTK_REPO_URL", "contrib_submit", "totk_shader_contrib"):
+        # ACNH has no shader-list contribution flow: its rows carry neither that action nor the project-star link, and the
+        # shared panel's 着色器贡献 page is left out (SETTINGS_HAS_CONTRIB 0, no contrib_tab.h of its own).
+        for word in ("contribute:", "star:", "TOTK_REPO_URL", "contrib_submit", "totk_shader_contrib", "totk_inbox_start"):
             self.assertNotIn(word, self.panel)
+        self.assertIn("#define SETTINGS_HAS_CONTRIB 0", self.panel)
+        self.assertFalse((RUNTIME / "contrib_tab.h").exists())
 
     def test_no_other_game_includes(self):
         # games/acnh is self-contained: its build does not read another game's implementation.
-        for path in [RUNTIME / "settings_panel.h", RUNTIME / "bindings_diagram.h", RUNTIME / "keyboard_map.h", RUNTIME / "frontend.m"]:
+        for path in [RUNTIME / "settings_game.h", RUNTIME / "bindings_diagram.h", RUNTIME / "keyboard_map.h", RUNTIME / "frontend.m"]:
             for line in path.read_text().splitlines():
                 if line.startswith("#include") or line.startswith("#import"):
                     self.assertNotIn("games/", line, f"{path.name}: {line}")

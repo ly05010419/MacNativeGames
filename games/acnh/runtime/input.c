@@ -60,17 +60,28 @@ static void user_input(const char *what){
    layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
    not toggle it. Keys 2-4 are no shortcuts any more (reported in play, PR #1305: the panel replaces them, as in games/totk). */
 enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
+/* The screenshot action (keyboard_map.h KEYMAP_SCREENSHOT, P by default; as games/totk, user 2026-11-11): a press of one of
+   its inputs takes the capture button's picture (gamepad.m runtime_capture_press -> screenshot.h). Its inputs drive nothing
+   in the game (keymap_apply). */
+static int screenshot_input_locked(int input){return keymap_action_of(&keyMap,input,NULL)==KEYMAP_SCREENSHOT;}
+static void screenshot_input(int input){
+ const char *name=keymap_input_name(input);fprintf(stderr,"[totk-input] screenshot: %s\n",name?name:"?");
+ if(runtime_capture_press)runtime_capture_press();
+}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
 void runtime_input_key(unsigned code,int down){
  if(code>=128)return;if(down)user_input("keyboard");
- pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int shot=press&&screenshot_input_locked((int)code);pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
+ if(shot)screenshot_input((int)code);
 }
 /* A mouse button over the game window (frontend.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
  if(button<0||button>=KEYMAP_MOUSE_BUTTONS)return;if(down)user_input("mouse");
- pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[KEYMAP_MOUSE_FIRST+button];held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();
+ int shot=press&&screenshot_input_locked(KEYMAP_MOUSE_FIRST+button);pthread_mutex_unlock(&inputLock);
+ if(shot)screenshot_input(KEYMAP_MOUSE_FIRST+button);
 }
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
@@ -300,7 +311,7 @@ __attribute__((constructor)) static void input_script_start(void) {
 
 /* Optional local integration-test command stream. Appending complete lines lets tests inspect each
    actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally.
-   Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, wshot <path>, passdump <frames>, gpucapture <path>.gputrace, querylog <frames>, anomdump,
+   Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, capture, wshot <path>, passdump <frames>, gpucapture <path>.gputrace, querylog <frames>, anomdump,
    kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), panelshot <page 0-3> <path> (the settings panel), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), close. */
 extern void dm_gfx_shot_at(long frames, const char *path);
 extern void runtime_front_request_close(void);
@@ -343,6 +354,8 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "shot ", 5)) {
             line[strcspn(line, "\r\n")] = 0; if (!line[5]) runtime_fail("diagnostic screenshot path");
             dm_gfx_shot_at(2, line + 5);
+        } else if (!strncmp(line, "capture", 7) && (!line[7] || line[7] == '\n' || line[7] == '\r')) {   /* "capture": the capture button once (screenshot.h; screenshot sharing tests) */
+            if (runtime_capture_press) runtime_capture_press();
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);

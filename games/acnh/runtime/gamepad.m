@@ -1,6 +1,7 @@
 /* Native macOS controllers feed the same FullKey state as the keyboard. */
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
+#include <TargetConditionals.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -11,6 +12,7 @@
 #include "runtime.h"
 #include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
 #include "controller_map.h"   // the player's button layout (controls.txt)
+#include "dsu_client.h"       // DSU (cemuhook) motion and input over UDP, off by default (shared/runtime, as games/totk)
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
@@ -37,6 +39,28 @@ static uint64_t tapUntil[CONTROLLER_BUTTONS];   /* ns, for tap */
 static int toggleOn[CONTROLLER_BUTTONS];        /* for toggle */
 static int toggleMoved[CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
 static void refresh_gamepads(void);
+static void (*captureHook)(void);
+static int captureDown, captureSeen;   /* the capture button as the reports say, and as refresh_gamepads last saw it */
+/* The screenshot button (controller_map.h CONTROLLER_SCREENSHOT_*, games/totk user 2026-11-11): the physical button whose
+   3-second hold takes the capture button's picture, -1 none; chosen in the key bindings and kept in
+   controller-screenshot.txt. */
+static _Atomic int screenshotButton = CONTROLLER_SCREENSHOT_DEFAULT;
+static ControllerHold screenshotHold;   /* gamepadLock */
+
+/* The capture button (the window's screenshot, runtime/screenshot.h; as games/odyssey): macOS's Share button on a controller
+   GameController reports, or bit 5 of a Switch controller's 0x30 HID report (a Pro Controller's square button below the
+   D-pad, gamepad_feedback.m, while it reads that controller's motion from its reports). Both only set a flag, and the
+   refresh that follows calls the hook once per press. A macOS shortcut already bound to the button keeps it (System
+   Settings > Game Center): the button then takes no picture. */
+void runtime_capture_set_hook(void (*hook)(void)) { captureHook = hook; }
+/* The input file's "capture" (runtime/input.c) and the screenshot key: the capture button pressed once. */
+void runtime_capture_press(void) { if (captureHook) captureHook(); }
+/* A Switch 0x30 report: 1 while its button 5 is down, which arrives every few milliseconds while it is held. */
+void runtime_gamepad_switch_capture(void *controller, int pressed) {
+    if (!controller) captureDown = 0;
+    else if (pressed && !captureDown) { captureDown = 1; refresh_gamepads(); }   /* the refresh calls the hook once */
+    else if (!pressed && captureDown) captureDown = 0;
+}
 
 /* The player's button layout (controller_map.h): TOTK_CONTROLS names the file (the launcher: <data>/controls.txt, which
    the settings panel's key bindings write). No file: the default layout. A file that does not parse leaves the default
@@ -173,6 +197,39 @@ void runtime_gamepad_settings_button_set(int physical) {
     refresh_gamepads();
 }
 
+/* The screenshot button (key bindings): CONTROLLER_SCREENSHOT_DEFAULT (the touchpad) without a file; the file names another
+   by its controls.txt name, or "none". */
+static void load_screenshot_button(void) {
+    char path[4096], word[32] = {0};
+    if (!setting_read("controller-screenshot.txt", word, sizeof word, path, sizeof path)) return;
+    word[strcspn(word, " \t\r\n")] = 0;
+    if (!strcasecmp(word, "none")) {
+        atomic_store(&screenshotButton, -1);
+        fprintf(stderr, "[totk-input] screenshot button: none (%s)\n", path);
+        return;
+    }
+    for (int i = 0; i <= CONTROLLER_SWITCH_BUTTONS; i++)   /* the controller's buttons and the touchpad */
+        if (!strcasecmp(word, controller_physical_names[i])) {
+            atomic_store(&screenshotButton, i);
+            fprintf(stderr, "[totk-input] screenshot button: %s held %d s (%s)\n", controller_physical_names[i], CONTROLLER_SCREENSHOT_HOLD_MS / 1000, path);
+            return;
+        }
+    fprintf(stderr, "[totk-input] %s: not a controller button; the screenshot stays on the %s\n", path,
+            controller_physical_names[CONTROLLER_SCREENSHOT_DEFAULT]);
+}
+int runtime_gamepad_screenshot_button(void) { return atomic_load(&screenshotButton); }
+void runtime_gamepad_screenshot_button_set(int physical) {
+    if (physical > CONTROLLER_SWITCH_BUTTONS) return;
+    if (physical < 0) physical = -1;
+    atomic_store(&screenshotButton, physical);
+    pthread_mutex_lock(&gamepadLock);
+    screenshotHold = (ControllerHold){0};   /* a hold of the old button does not carry over */
+    pthread_mutex_unlock(&gamepadLock);
+    if (physical == CONTROLLER_SCREENSHOT_DEFAULT) runtime_setting_remove("controller-screenshot.txt");
+    else setting_write("controller-screenshot.txt", physical < 0 ? "none" : controller_physical_names[physical], "screenshot button");
+    fprintf(stderr, "[totk-input] screenshot button: %s\n", physical < 0 ? "none" : controller_physical_names[physical]);
+}
+
 static int32_t stick_axis(float value) {
     const float deadzone = 0.12f;
     float magnitude = fabsf(value);
@@ -214,18 +271,34 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
 static void refresh_gamepads(void) {
     RuntimeGamepadState next = {0};
     uint64_t physical = 0;
+    int capture = captureDown;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
+        if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
         next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
         next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
         next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
         next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
     }
+#if TARGET_OS_OSX
+    /* A DSU server's pad (dsu_client.h): its buttons (the physical order, controller_map.h) and sticks join the controllers'. */
+    if (dsuInput.connected && dsuAt && runtime_now_ns() - dsuAt < 500000000ull) {
+        next.connected = 1;
+        physical |= dsuInput.buttons & ((1ull << CONTROLLER_BUTTONS) - 1);
+        float axes[4];
+        for (int i = 0; i < 4; i++) axes[i] = (dsuInput.axes[i] - 128) / (dsuInput.axes[i] >= 128 ? 127.f : 128.f);
+        next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
+        next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
+    }
+#endif
+    if (capture && !captureSeen && captureHook) captureHook();
+    captureSeen = capture;
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
+    int shotButton = atomic_load(&screenshotButton), shotHeld = shotButton >= 0 && (physical >> shotButton & 1), shotFire = 0;
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
     if (atomic_load(&settingsButton) >= 0) suppressed |= trigger;   /* a picked button is the panel's only */
     int shortcut = settingsShortcutEnabled && (physical & trigger) == trigger;
@@ -270,7 +343,18 @@ static void refresh_gamepads(void) {
     textPad = next; textPad.buttons = physical & all;
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
+    /* The screenshot button held CONTROLLER_SCREENSHOT_HOLD_MS: one picture per hold. A button held still sends no report,
+       so the refresh comes again when the time is up. What else the button does is untouched. */
+    int shotStarted = shotHeld && !screenshotHold.down;
+    screenshotHold = controller_hold_next(screenshotHold, shotHeld, now, CONTROLLER_SCREENSHOT_HOLD_MS * 1000000ull, &shotFire);
+    uint64_t shotWait = shotStarted ? controller_hold_wait(screenshotHold, now, CONTROLLER_SCREENSHOT_HOLD_MS * 1000000ull) : UINT64_MAX;
     pthread_mutex_unlock(&gamepadLock);
+    if (shotWait != UINT64_MAX)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(shotWait + 20 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
+    if (shotFire) {
+        fprintf(stderr, "[totk-input] screenshot: %s held %d s\n", controller_physical_names[shotButton], CONTROLLER_SCREENSHOT_HOLD_MS / 1000);
+        if (captureHook) captureHook();   /* the capture button's own path (screenshot.h screenshot_request) */
+    }
 }
 
 /* The settings panel: auto, Xbox, PlayStation or Switch; the held buttons are read again at once. */
@@ -300,6 +384,8 @@ int runtime_gamepad_type(int *detected) {
     return atomic_load(&controllerType);
 }
 
+/* The left Joy-Con of a pair for the corner box (shared/runtime/hud_box.h): not read from HID reports here, so unknown. */
+int runtime_gamepad_battery_left_percent(void) { return -1; }
 /* For the overlay (main thread): the first controller's battery as a whole percent, -1 none or unknown. */
 int runtime_gamepad_battery_percent(void) {
     for (GCController *controller in GCController.controllers)
@@ -318,6 +404,16 @@ static void attach_gamepad(GCController *controller) {
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
+    /* The capture button takes this game's picture (runtime_capture_set_hook). macOS keeps a Share button for its own
+       gesture -- a screenshot to the Desktop -- while a system gesture has it; asked off, the button reaches the game.
+       A shortcut the player bound to it in System Settings > Game Center keeps it, and then it takes no picture. */
+    GCControllerButtonInput *capture = pad.buttons[GCInputButtonShare];
+    if (capture) {
+        BOOL reserved = capture.isBoundToSystemGesture;
+        capture.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        fprintf(stderr, "[totk-input] %s: the capture button (%s) saves a screenshot%s\n", (controller.vendorName ?: @"controller").UTF8String,
+                capture.localizedName.UTF8String ?: "share", reserved ? "; macOS had a system gesture on it, asked off" : "");
+    }
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }
@@ -328,6 +424,8 @@ void runtime_gamepad_start(void) {
     load_controller_map();
     load_controller_type();
     load_settings_button();
+    load_screenshot_button();
+    dsu_start();   /* subscribe without taking motion away from native controllers */
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_gamepad(notification.object); }];

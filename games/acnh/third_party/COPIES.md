@@ -14,6 +14,22 @@ to another game never changes this one.
 | `tools/prepare_shader_seed.py` | `games/totk/scripts/prepare_shader_seed.py` at `032a05d` | Container parsing and the seed manifest, adapted to this game's data and request format |
 | `tools/build_hactool.py` | Root `build_app.py` at `1dcf40d` | Pinned hactool build, private ticket file, bounded base NCA and checked BKTR padding support; standalone copy |
 
+Since 2026-11-17 some of these are no longer copies: `third_party/d2r_gfx/gfx/nvn/fps_overlay.{c,h}`,
+`third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h` (which now follows the Mac's first preferred language, not the app
+bundle's locale) and `runtime/settings_panel.h` are symlinks into the repository's `shared/` folder (shared/README.md), the
+same files the Zelda games and Super Mario Odyssey use; the corner box and FPS graph that `runtime/frontend.m` had are the
+shared `runtime/hud_box.h`. This game's own settings rows and restore code are in `runtime/settings_game.h`. Also linked from
+`shared/` since then, for the panel's other pages: `runtime/screenshot.h`, `board_upload.h`, `board_tab.h`, `nick_row.h`,
+`shot_upload.h`, `shot_tab.h`, `dsu_client.h`, `dsu_protocol.h`, `dsu_settings_rows.h`, and
+`third_party/d2r_gfx/gfx/nvn/fps_board.{c,h}` and `nvn_capture_region.h`. `runtime/account.c` stays this game's own
+(one user: Animal Crossing keeps one island per console).
+
+| Component | Copied from | Description |
+|---|---|---|
+| `runtime/playtime.h` | `games/totk/runtime/playtime.h` at `b704821` | The corner box's session and total playtime (`profile/playtime.json`) |
+| `third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` | the identity part of `games/odyssey/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` at `b704821` | `GAME_INBOX_ID` (`acnh`), the build, device and system names and the board id's file for the 性能排行榜 and 截图分享 pages; no shader upload |
+| The screenshot action and hold (`runtime/keyboard_map.h`, `controller_map.h`, `gamepad.m`, `input.c`, `bindings_diagram.h`), DSU in `gamepad.m` and `gamepad_feedback.m`, `runtime_feedback_*` in `hid_feedback.c`, the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m` `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and the long-frame lines (`hitch_overlay_note`, `hitch_overlay_publish`) | `games/odyssey` at `b704821` (from games/totk) | Adapted to this game: no mouse lines in `controls.txt`, the capture button through GameController's Share button and, while motion is read from a Switch controller's HID reports, its capture button; the board counts new game frames (what the FPS box counts); no frame lock or interpolation on the board (the 30 / 60 / 120 mode is the game's own clock for the run) |
+
 ## Optional local ACNH 3.0.1 speed-correction inputs
 
 `tools/prepare_fps.py` and `runtime/frame_rate.c` are original host-side adapters.

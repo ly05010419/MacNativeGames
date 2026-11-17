@@ -286,20 +286,41 @@ nothing to aim and no camera to turn with it.
 | Put the tool away | d-pad down | 5 | |
 | D-pad left | d-pad left | 2 | side button 4 |
 | D-pad right | d-pad right | 4 | side button 5 |
+| Screenshot (the game's picture, saved as a PNG) | capture | P | |
 
 The layout, the settings panel and the host functions behind the crash fixes are the same for 1.2.1 and 3.0.1.
-Key 1, or L3 + R3 together on a controller, opens the settings panel; Esc or key 1 closes it. It has three pages:
+Key 1, or L3 + R3 together on a controller, opens the settings panel; Esc or key 1 closes it. Since 2026-11-17 it is
+the Zelda games' panel (`shared/runtime/settings_panel.h`, this game's rows in `runtime/settings_game.h`), with the
+pages this game supports:
 
-- **Display:** the overlay (FPS, shaders and load; FPS only; off), an FPS graph, the frame rate (30 or experimental
-  60 fps for 3.0.1 builds with speed-correction data, applied after restarting; otherwise 30 fps), MetalFX frame interpolation (shown as not
-  available: its hooks do not find this game's scene, depth, camera and UI yet), the picture (1080p, or 1080p with MetalFX upscaling for a larger window or full screen) and the game language
-  (follow the Mac or one of the game's 14 languages; it applies at the next launch).
-- **Input:** the controller type (auto, Xbox, PlayStation, Switch) and rumble.
+- **Display:** the overlay (all: FPS, shaders, load and playtime; FPS full information, which adds every long frame
+  (hitch), shader libraries, pipelines and archive misses; FPS and playtime; off), an FPS graph, the frame rate (30, or
+  experimental 60 fps (3.0.1, 3.0.3) and 120 fps (3.0.3) for builds with speed-correction data, applied after
+  restarting; 120 is offered only while a 120 Hz screen is connected, and a saved 120 starts at 60 on a 60 Hz one;
+  otherwise 30 fps), MetalFX frame interpolation (shown as not available: its hooks do not find this game's scene,
+  depth, camera and UI yet) and the game language (follow the Mac or one of the game's 14 languages; it applies at the
+  next launch). The window opens at the game's 1920x1080 picture, pixel for pixel.
+- **Input:** the controller type (auto, Xbox, PlayStation, Switch), rumble, and DSU (cemuhook) input over UDP: a switch,
+  the server, the slot and its status (off by default).
+- **Effects:** the picture (1080p, or 1080p with MetalFX upscaling for a larger window or full screen), and **Reset to
+  defaults** (plain scaling).
 - **Key bindings:** drawings of the keyboard and mouse and of the controller. Click a key or button and pick what it
-  does; a list view is also available. Each device has its own reset button.
+  does; a list view is also available. Each device has its own reset button. The last row is the screenshot: P, or
+  on a controller the touchpad held for 3 seconds (any button can take the hold); the controller's capture or Share
+  button takes one too. A screenshot is the game's next frame without the panel or the corner box, saved as a PNG on
+  the Desktop or in the folder chosen on the 截图分享 page.
+- **性能排行榜** (Performance) and **截图分享** (Screenshots): the frame-rate board and the shared screenshots of this game
+  (`acnh` at mac-native-games.com), with the player's nickname. Their switches 我要上榜 and 分享我的截图 are off by default;
+  nothing is sent unless the player turns them on.
 
-The choices are saved next to the app in `Animal Crossing Data` (`controls.txt`, `keyboard.txt` and one small file per
-setting, including `frame-rate.txt`). Scripted input (`commands.txt`, `TOTK_INPUT_SCRIPT`) keeps the fixed test layout, so scripts mean the same keys
+Left out: the User page (on a console Animal Crossing keeps one island for every user; this host would give a second
+user a save folder, and so an island, of its own, so the saves stay with the one account they always had), the shader
+contribution page (this game's shaders have no shared list to contribute to), VR, rumble strength, gyro aiming and
+mouse sensitivity. The corner box is the Zelda games' too: FPS, the other lines the overlay choice shows, the session's
+and the total playtime (`profile/playtime.json`), the controller's battery and how to open the panel.
+
+The choices are saved in the app's data folder (`controls.txt`, `keyboard.txt` and one small file per setting,
+including `frame-rate.txt`). Scripted input (`commands.txt`, `TOTK_INPUT_SCRIPT`) keeps the fixed test layout, so scripts mean the same keys
 whatever the player picks. `TOTK_LANG`, `TOTK_MFX_UPSCALE` / `TOTK_MFX_OUTPUT` and `TOTK_RUMBLE` decide
 before the panel's choices; the panel then shows their value greyed out. `ACNH_FPS` likewise takes priority over the frame-rate choice.
 

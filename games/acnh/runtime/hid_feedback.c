@@ -70,6 +70,13 @@ void runtime_rumble_choose(int on) {
     }
     fprintf(stderr, "[hid] rumble %s (settings)%s\n", on ? "on" : "off", on && !runtime_rumble_enabled() ? ", from the next launch" : "");
 }
+/* The shared settings panel's rumble row (settings_feedback_row(0)) is the switch above, unchanged: locked by TOTK_RUMBLE or
+   an agent's test session, "from the next launch" while the game has no vibration devices. Motion (1) has no switch in
+   this game: TOTK_GYRO decides at the launch, so it reads as locked. */
+int runtime_feedback_locked(int gyro) { return gyro ? 1 : runtime_rumble_locked(); }
+int runtime_feedback_present(int gyro) { return gyro ? runtime_gyro_enabled() : runtime_rumble_enabled(); }
+int runtime_feedback_choice(int gyro) { return gyro ? runtime_gyro_enabled() && !atomic_load(&gyro_muted) : runtime_rumble_choice(); }
+void runtime_feedback_choose(int gyro, int on) { if (!gyro) runtime_rumble_choose(on); }
 static pthread_mutex_t lastLock = PTHREAD_MUTEX_INITIALIZER;
 static VibrationValue last[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   /* lastLock */
 static _Atomic uint64_t values_in, reads;

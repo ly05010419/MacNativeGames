@@ -124,6 +124,10 @@ int main(int argc, char **argv) {
     setenv("TOTK_GAME_SLOT_DIR", slot, 1);
     setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_CONTROLS", controls, 1);
+    /* The leaderboard's and the shared screenshots' folder (runtime/board_upload.h, shot_upload.h): their switches and what
+       waits to be sent; the board's random id is one folder up, MacNativeGames/leaderboard-id.txt, the other games' too.
+       Nothing is sent unless the player turns 我要上榜 or 分享我的截图 on in the settings panel. */
+    setenv("TOTK_BOARD_DIR", data, 0);
     setenv("TOTK_SLOT_OWNER", "user", 1);
     setenv("TOTK_SLOT_PURPOSE", "Animal Crossing New Horizons.app", 1);
     setenv("TOTK_MOVIE_PACE", "0", 1);
@@ -137,17 +141,26 @@ int main(int argc, char **argv) {
     snprintf(stamp, sizeof stamp, "%s-%ld", date, (long)getpid());
     back_up_saves(profile, data, stamp);
 
-    pid_t child = fork();
-    if (child < 0) return 1;
-    if (child == 0) {
-        char previous[PATH_MAX]; join(previous, data, "previous-run.log");
-        rename(log, previous);
-        int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
-        execl(runtime, "acnh-native", modules, "boot", (char *)NULL);
-        perror("Animal Crossing: could not start the game"); _exit(127);
+    /* The settings panel's "Restart now" (a new frame rate goes into the game as it starts): the game writes
+       restart-requested.txt and closes; the launcher removes it and starts the game again, saves backed up again. */
+    char restart[PATH_MAX]; join(restart, data, "restart-requested.txt"); unlink(restart);
+    for (;;) {
+        pid_t child = fork();
+        if (child < 0) return 1;
+        if (child == 0) {
+            char previous[PATH_MAX]; join(previous, data, "previous-run.log");
+            rename(log, previous);
+            int fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
+            execl(runtime, "acnh-native", modules, "boot", (char *)NULL);
+            perror("Animal Crossing: could not start the game"); _exit(127);
+        }
+        int status;
+        waitpid(child, &status, 0);
+        int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+        if (unlink(restart)) return code;   /* no restart asked: the game's own end */
+        launched = time(NULL); strftime(date, sizeof date, "%Y%m%d-%H%M%S", localtime(&launched));
+        snprintf(stamp, sizeof stamp, "%s-%ld", date, (long)getpid());
+        back_up_saves(profile, data, stamp);
     }
-    int status;
-    waitpid(child, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }

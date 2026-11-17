@@ -163,6 +163,34 @@ void runtime_gamepad_settings_enable(int enabled);
 int runtime_gamepad_settings_requested(void);
 void runtime_gamepad_text_capture(int on);
 void runtime_gamepad_text_read(RuntimeGamepadState *out);
+int runtime_gamepad_battery_left_percent(void);   /* runtime/gamepad.m: a Joy-Con pair's left one, -1 none or unknown (the corner box) */
+int runtime_gamepad_screenshot_button(void);               /* the button held 3 s for a screenshot (controller_map.h), -1 none */
+void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; saved in controller-screenshot.txt (none: "none"), the touchpad the default */
+/* The controller's capture button (runtime/gamepad.m, as games/odyssey): the Share button of a controller GameController
+   reports, or bit 5 of a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The hook is
+   called once per press, on the main queue; the window (frontend.m) sets it to save a picture of the game's next frame
+   (runtime/screenshot.h). */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_capture_press(void) __attribute__((weak));   /* gamepad.m (weak: probes that link input.c alone): the capture button pressed once (the input file's "capture") */
+void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
+/* DSU (cemuhook) motion and input over UDP, as games/totk (runtime/dsu_client.h, included by gamepad.m; the input page's
+   DSU rows, runtime/dsu_settings_rows.h). Off by default. */
+int runtime_dsu_motion_active(void);     /* fresh DSU six-axis samples currently own motion, not just an open socket */
+typedef struct {
+    int enabled, slot, locked;
+    char endpoint[264];
+} RuntimeDSUSettings;
+typedef struct {
+    int connected, sensor;
+    double acc[3], gyro[3];   /* gyro in degrees/second for the settings display */
+    uint32_t buttons;
+    uint8_t axes[4];
+    char error[160];
+} RuntimeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out);   /* main queue; environment overrides saved preferences */
+void runtime_dsu_status(RuntimeDSUStatus *out);       /* main queue; passive snapshot */
+int runtime_dsu_apply(const RuntimeDSUSettings *settings); /* 0 applied and saved, -1 invalid, -2 environment locked */
+void runtime_feedback_motion_source_changed(void);   /* gamepad_feedback.m: switch between DSU and native motion without changing rumble */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
@@ -174,6 +202,21 @@ int runtime_gyro_enabled(void);
 int runtime_rumble_locked(void);
 int runtime_rumble_choice(void);
 void runtime_rumble_choose(int on);
+/* The shared settings panel's rumble and gyro rows (shared/runtime/settings_panel.h settings_feedback_row): gyro 0 is the
+   rumble switch above; gyro 1 is motion, which TOTK_GYRO alone decides here (locked). runtime/hid_feedback.c. */
+int runtime_feedback_locked(int gyro);
+int runtime_feedback_present(int gyro);
+int runtime_feedback_choice(int gyro);
+void runtime_feedback_choose(int gyro, int on);
+/* Named by the shared panel's rumble strength and mouse sensitivity rows, which this game does not have (its rumble has no
+   strength setting and its mouse only clicks): declared for the panel's helpers, defined nowhere, so a row that used them
+   would fail to link instead of doing nothing. */
+int runtime_rumble_gain_locked(void);
+float runtime_rumble_gain(void);
+void runtime_rumble_gain_set(float gain);
+int runtime_mouse_sensitivity(void);
+int runtime_mouse_sensitivity_locked(void);
+void runtime_mouse_sensitivity_set(int value);
 void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);

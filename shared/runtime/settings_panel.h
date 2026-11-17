@@ -16,7 +16,10 @@
      SETTINGS_HAS_VR        the VR page while VR is on (zeldaVR), and the panel in the headset
      SETTINGS_HAS_AA_ROWS   effects rows that follow the anti-aliasing method: the panel is made again in place (the game's
                             settings_aa_rebuild, Tears of the Kingdom 1.4.3)
+     SETTINGS_HAS_CONTRIB   the 着色器贡献 page (contrib_tab.h); unset is 1, every game had it before this switch. A game
+                            whose shaders have no list to contribute to sets 0 (Animal Crossing): no tab, no contrib_tab.h
      SETTINGS_GAME_VERSION  the version the bottom-left corner shows (TOTK_GAME_VERSION unless the game sets it)
+     SETTINGS_PANEL_ALPHA   the panel's background opacity (0.9 unless the game sets it)
    A page the game does not have has no tab, and L1 / R1 skip it; every page keeps its SETTINGS_PAGE_* number all the same
    (the input file's "settings <page>", self.pages[SETTINGS_PAGE_*]): settings_page_present, settings_page_tab and
    settings_tab_page go between the two.
@@ -128,7 +131,8 @@ static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
 }
 static NSString *settings_on_off(int on) { return on?settings_text("开","On"):settings_text("关","Off"); }
 
-static NSString *settings_ratio_text(float r) {
+/* Helpers a game may leave unused (unused: no warning for a game without such a row, Animal Crossing). */
+__attribute__((unused)) static NSString *settings_ratio_text(float r) {
  if(fabsf(r*9-16)<0.02f)return @"16:9";
  if(fabsf(r*9-21)<0.05f)return @"21:9";
  if(fabsf(r*9-32)<0.05f)return @"32:9";
@@ -145,7 +149,7 @@ static TOTKSettingRow *settings_feedback_row(int gyro) {
 }
 /* Rumble strength in thousandths: 0.5x to 4x, and the strength in force when rumble-gain.txt holds another one. */
 static int settings_gain_now(void) { return (int)fmax(1, lroundf(runtime_rumble_gain()*1000)); }
-static TOTKSettingRow *settings_gain_row(void) {
+__attribute__((unused)) static TOTKSettingRow *settings_gain_row(void) {
  NSString *t=settings_text("震动强度","Rumble strength");
  int now=settings_gain_now();
  NSString *(^text)(int)=^NSString *(int v){NSString *x=[NSString stringWithFormat:@"%g×",v/1000.0];
@@ -157,7 +161,7 @@ static TOTKSettingRow *settings_gain_row(void) {
  return settings_row(t,choices,values,^int{return settings_gain_now();},^(int v){runtime_rumble_gain_set(v/1000.0f);});
 }
 /* Mouse mode's sensitivity: a slider from 1 to 100 (50: 20 points of movement turn the camera at full speed). */
-static TOTKSettingRow *settings_sensitivity_row(void) {
+__attribute__((unused)) static TOTKSettingRow *settings_sensitivity_row(void) {
  NSString *t=settings_text("鼠标灵敏度","Mouse sensitivity");
  if(runtime_mouse_sensitivity_locked())return settings_fixed(t,[NSString stringWithFormat:@"%d",runtime_mouse_sensitivity()]);
  TOTKSettingRow *r=settings_row(t,nil,nil,^int{return runtime_mouse_sensitivity();},^(int v){runtime_mouse_sensitivity_set(v);});
@@ -208,8 +212,14 @@ enum { SETTINGS_BIND_PANEL = 100 };
 #ifndef SETTINGS_HAS_AA_ROWS
 #define SETTINGS_HAS_AA_ROWS 0
 #endif
+#ifndef SETTINGS_HAS_CONTRIB
+#define SETTINGS_HAS_CONTRIB 1
+#endif
 #ifndef SETTINGS_GAME_VERSION
 #define SETTINGS_GAME_VERSION TOTK_GAME_VERSION
+#endif
+#ifndef SETTINGS_PANEL_ALPHA
+#define SETTINGS_PANEL_ALPHA 0.9
 #endif
 #if SETTINGS_HAS_BOARD
 #include "board_upload.h"   /* the leaderboard: the 排行榜 page (board_tab.h) */
@@ -231,6 +241,7 @@ static BOOL settings_page_present(NSInteger page) {
   case SETTINGS_PAGE_EFFECTS:return SETTINGS_HAS_EFFECTS;
   case SETTINGS_PAGE_BOARD:return SETTINGS_HAS_BOARD;
   case SETTINGS_PAGE_SHOTS:return SETTINGS_HAS_SHOTS;
+  case SETTINGS_PAGE_CONTRIB:return SETTINGS_HAS_CONTRIB;
 #if SETTINGS_HAS_VR
   case SETTINGS_PAGE_VR:return vr_enabled()!=0;
 #else
@@ -397,7 +408,18 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(void)rightMouseDown:(NSEvent *)e{(void)e;if(self.enabled)[self.panel clearBinding:self];}
 @end
 
+#if SETTINGS_HAS_CONTRIB
 #include "contrib_tab.h"   /* the 着色器贡献 page */
+#else
+/* No 着色器贡献 page: 访问主页 (below) still opens the site's root (TOTK_STATS_URL for a test: a local one), and there is
+   no contributor pseudonym to name. */
+static NSURLComponents *contrib_tab_root(void) {
+ const char *e=getenv("TOTK_STATS_URL");NSURLComponents *u=e&&*e?[NSURLComponents componentsWithString:@(e)]:nil;
+ if(!u.host)return nil;
+ u.path=@"/";u.query=nil;return u;
+}
+static NSString *contrib_tab_pseudonym(NSString *path) { (void)path; return nil; }
+#endif
 #if SETTINGS_HAS_BOARD || SETTINGS_HAS_SHOTS
 #include "nick_row.h"   /* the player's nickname: a row on the 排行榜 and 截图分享 pages */
 #endif
@@ -481,7 +503,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 #endif
  self.drawings=drawings;self.panelW=W;self.bindingButtons=[NSMutableArray array];self.bindingTargets=[NSMutableArray array];
  self.allRows=rows;self.controllerTargets=[NSMutableArray array];self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
- self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
+ self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:SETTINGS_PANEL_ALPHA].CGColor;
  self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.12].CGColor;
  self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
  NSTextField *title=[NSTextField labelWithString:settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
@@ -541,7 +563,11 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  for(NSInteger p=0;p<SETTINGS_PAGE_BINDINGS;p++)[pages addObject:rowPage(p)];
  NSRect bindingsFrame=NSMakeRect(0,SETTINGS_BOTTOM,W,body);
  NSView *bindings=drawings?[self drawingsPageWithFrame:bindingsFrame]:[self bindingsPageWithFrame:bindingsFrame];[self addSubview:bindings];[pages addObject:bindings];
+#if SETTINGS_HAS_CONTRIB
  NSView *contrib=[self contribPageWithFrame:bindingsFrame];[self addSubview:contrib];[pages addObject:contrib];   /* contrib_tab.h */
+#else
+ [pages addObject:[[NSView alloc] initWithFrame:NSZeroRect]];   /* no 着色器贡献 page: its place kept */
+#endif
 #if SETTINGS_HAS_BOARD
  NSView *board=[self boardPageWithFrame:bindingsFrame];[self addSubview:board];[pages addObject:board];   /* board_tab.h */
 #else
@@ -661,7 +687,9 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  for(TOTKSettingRow *r in self.allRows)if(r.page==page)[rows addObject:r];
  self.rows=rows;self.controllerIndex=0;
+#if SETTINGS_HAS_CONTRIB
  if(page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];   /* the number now, not at the next tick */
+#endif
 #if SETTINGS_HAS_BOARD
  if(page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];   /* the board now (read again at most once a minute) */
 #endif
@@ -734,7 +762,11 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
    switch, the controller's buttons (the controller drawing) and the buttons below. */
 -(void)updateTargets{
  [self.controllerTargets removeAllObjects];self.padOrder=@[];
- if(self.page==SETTINGS_PAGE_CONTRIB)[self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
+ if(self.page==SETTINGS_PAGE_CONTRIB){
+#if SETTINGS_HAS_CONTRIB
+  [self.controllerTargets addObjectsFromArray:[self contribPageTargets]];
+#endif
+ }
 #if SETTINGS_HAS_BOARD
  else if(self.page==SETTINGS_PAGE_BOARD)[self.controllerTargets addObjectsFromArray:[self boardPageTargets]];
 #endif
@@ -848,7 +880,10 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
   self.aaMethod=dm_gfx_aa_method();dispatch_async(dispatch_get_main_queue(),^{settings_aa_rebuild();});
  }
 #endif
- for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];
+ for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];
+#if SETTINGS_HAS_CONTRIB
+ if(self.page==SETTINGS_PAGE_CONTRIB)[self refreshContribPage];
+#endif
 #if SETTINGS_HAS_BOARD
  if(self.page==SETTINGS_PAGE_BOARD)[self refreshBoardPage];
 #endif
