@@ -88,6 +88,15 @@ class Pages(unittest.TestCase):
         titles = {a['id']: a['title'] for a in answer['result']['actions']}
         self.assertEqual([titles[b] for b in 'abxy'], ['A', 'B', 'X', 'Y'])
 
+    def test_the_cards_past_a_narrow_window_s_edge_can_be_reached(self):
+        # a mouse wheel scrolls the page, not the row of cards: the row needs a scroll bar and arrows
+        swift = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        shelf = swift[swift.index('ScrollView(.horizontal'):swift.index('struct GameCard')]
+        self.assertNotIn('showsIndicators: false', shelf)
+        self.assertIn('scrollPosition(', shelf)
+        self.assertIn('chevron.left', shelf)
+        self.assertIn('chevron.right', shelf)
+
 
 if __name__ == '__main__':
     unittest.main()

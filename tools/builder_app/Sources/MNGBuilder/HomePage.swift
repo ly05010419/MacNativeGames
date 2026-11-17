@@ -8,6 +8,8 @@ struct HomePage: View {
     @EnvironmentObject var model: Model
     @State private var selected: String?
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
+    @State private var shelf = ScrollPosition(idType: String.self)
+    @State private var inView = 0...(HomePage.games.count - 1)   // the cards fully in the row's view, by their place in games
 
     static let games = ["oot", "totk", "botw", "dkb", "pkp"]
 
@@ -17,6 +19,15 @@ struct HomePage: View {
         guard let first = Self.games.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
         selected = first
         defaulted = true
+    }
+
+    private func shelfArrow(_ symbol: String, to game: String, _ anchor: UnitPoint) -> some View {
+        Button { withAnimation { shelf.scrollTo(id: game, anchor: anchor) } } label: {
+            Image(systemName: symbol).font(.title3.weight(.bold)).foregroundStyle(.black)
+                .frame(width: 40, height: 40).background(.white.opacity(0.9), in: Circle()).shadow(radius: 4)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
     }
 
     var body: some View {
@@ -32,7 +43,9 @@ struct HomePage: View {
                     // the terminal with an AI helper (TerminalTab.swift; user 2026-11-13)
                     Button { model.page = "terminal" } label: { Label(T.terminal, systemImage: "terminal") }
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
+                // A mouse wheel scrolls the page, not this row: past a narrow window's edge the cards are reached by
+                // the scroll bar or the arrows, one card a click
+                ScrollView(.horizontal) {
                     HStack(spacing: 14) {
                         ForEach(Self.games, id: \.self) { game in
                             let app = model.installed.first { $0.game == game }
@@ -43,7 +56,22 @@ struct HomePage: View {
                             }
                         }
                     }
+                    .scrollTargetLayout()
                     .padding(.vertical, 4)
+                }
+                .scrollPosition($shelf)
+                .scrollTargetBehavior(.viewAligned)
+                .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.9) { shown in
+                    let at = shown.compactMap { Self.games.firstIndex(of: $0) }
+                    inView = (at.min() ?? 0)...(at.max() ?? Self.games.count - 1)
+                }
+                .overlay(alignment: .leading) {
+                    if inView.lowerBound > 0 { shelfArrow("chevron.left", to: Self.games[inView.lowerBound - 1], .leading) }
+                }
+                .overlay(alignment: .trailing) {
+                    if inView.upperBound < Self.games.count - 1 {
+                        shelfArrow("chevron.right", to: Self.games[inView.upperBound + 1], .trailing)
+                    }
                 }
                 if let error = model.installedError {
                     Label(T.appsScanFailed(error), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
