@@ -180,6 +180,56 @@ def _supported(game):
             if str(v.get('version', '')).isdigit() and repo.game_of_title(str(v.get('title_id', '0' * 16))) == game}
 
 
+def _hfs0_names(f, offset, length):
+    """(name, absolute offset) of each entry of the HFS0 table at offset (the layout extract_exefs.partition_entries
+    reads, bounded the same way), or [] when there is no table there."""
+    import struct
+    f.seek(offset)
+    hdr = f.read(16)
+    if len(hdr) < 16 or hdr[:4] != b'HFS0':
+        return []
+    count, strings_size = struct.unpack_from('<II', hdr, 4)
+    if count > 4096 or strings_size > 1024 * 1024:
+        return []
+    size = 16 + count * 64 + strings_size
+    if offset + size > length:
+        return []
+    f.seek(offset)
+    raw = f.read(size)
+    strings = raw[16 + count * 64:]
+    out = []
+    for i in range(count):
+        off, _, nameoff = struct.unpack_from('<QQI', raw, 16 + i * 64)
+        end = strings.find(b'\0', nameoff)
+        if nameoff >= len(strings) or end < 0:
+            return []
+        out.append((strings[nameoff:end].decode('utf-8', 'replace'), offset + size + off))
+    return out
+
+
+def card_update_ncas(path):
+    """How many NCAs (besides metadata) a game card image's system update partition holds, read from its HFS0 tables,
+    which need no keys: 0 for a merged or trimmed card ("1G+1U"), whose missing or empty update partition has no system
+    fonts (#2242), None when the file does not read as a card image (an .xcz, a damaged file: left to the build)."""
+    import struct
+    try:
+        with open(path, 'rb') as f:
+            length = f.seek(0, 2)
+            f.seek(0x100)
+            if f.read(4) != b'HEAD':
+                return None
+            f.seek(0x130)
+            root = struct.unpack('<Q', f.read(8))[0]
+            update = [o for n, o in _hfs0_names(f, root, length) if n == 'update']
+            if not _hfs0_names(f, root, length):
+                return None
+            if not update:
+                return 0
+            return sum(1 for n, _ in _hfs0_names(f, update[0], length) if n.endswith('.nca') and not n.endswith('.cnmt.nca'))
+    except (OSError, struct.error, ValueError):
+        return None
+
+
 def plan(items, work=None):
     """The build these items make. work: the work folder the build will use (fonts extracted there count)."""
     p = Plan()
@@ -253,6 +303,14 @@ def plan(items, work=None):
         p.blocks.append(t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
                           'an earlier build) too',
                           '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来'))
+    # a card image whose system update partition is missing or empty (merged / trimmed, "1G+1U") has no fonts either: said
+    # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same)
+    elif (p.game not in ('ss', 'dread', 'worldend') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
+          and not has_fonts and card_update_ncas(p.base) == 0):
+        p.blocks.append(t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
+                          'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too',
+                          '这个卡带镜像没有系统更新分区（合并或精简过的卡带，“1G+1U”），所以没有系统字体：把解开的固件文件夹'
+                          '（或以前打包留下的 shared-fonts 文件夹）也放进来'))
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
     if p.game in ('dread', 'worldend') and p.dlc:
