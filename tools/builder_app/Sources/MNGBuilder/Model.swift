@@ -20,6 +20,7 @@ final class Model: ObservableObject {
     @Published var stepIndex = 0              // the running step's number (its log is the n-th the build started)
     @Published var stepsLast: Int?            // the steps the same kind of build took on this Mac last time
     @Published var stepCount: (Int, Int)?
+    @Published var stepLeft: Double?      // the running step's seconds left (its counter's rate, else last time)
     @Published var fraction = 0.0
     @Published var left: Double?
     @Published var elapsed = 0.0
@@ -268,7 +269,7 @@ final class Model: ObservableObject {
             failure = nil; lines = [error.localizedDescription]; phase = .failed; return
         }
         phase = .building; stage = ""; stageText = ""; step = ""; fraction = 0; left = nil; elapsed = 0; lines = []; failure = nil
-        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil
+        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil; stepLeft = nil
         do {
             job = try Job(["build", file.path], onLine: { [weak self] in self?.handle($0) },
                           ended: { [weak self] code in self?.ended(code) })
@@ -295,7 +296,7 @@ final class Model: ObservableObject {
         eventsPath = r["events"] as? String; offset = 0; pending = Data()
         updating = r["app"] as? String ?? externalSource
         phase = .building; stage = ""; stageText = ""; step = ""; fraction = 0; left = nil; elapsed = 0; lines = []
-        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil
+        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil; stepLeft = nil
         failure = nil; note = ""
         follower = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.readExternal() }
@@ -337,10 +338,11 @@ final class Model: ObservableObject {
         case "stage":
             stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
             if let i = e.index, let n = e.total { stageNumber = (i, n) }
-        case "step": step = e.name ?? ""; stepIndex = e.index ?? stepIndex + 1; stepCount = nil
+        case "step": step = e.name ?? ""; stepIndex = e.index ?? stepIndex + 1; stepCount = nil; stepLeft = nil
         case "progress":
             fraction = e.fraction ?? fraction; left = e.left; elapsed = e.elapsed ?? elapsed; measured = e.measured ?? measured
             if let d = e.step_done, let t = e.step_total { stepCount = (d, t) } else { stepCount = nil }
+            stepLeft = e.step_left
         case "log": append(e.text ?? "")
         case "cancelling": phase = .cancelling
         case "done":

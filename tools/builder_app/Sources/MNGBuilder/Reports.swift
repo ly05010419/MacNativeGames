@@ -83,7 +83,7 @@ struct BuildEvent: Decodable {
     // stage / step
     let index: Int?, total: Int?, name: String?, text: String?
     // progress
-    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?
+    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?, step_left: Double?
     // done
     let ok: Bool?, cancelled: Bool?, message: String?, detail: String?, step_log: String?, note: String?
 }

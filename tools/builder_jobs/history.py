@@ -40,23 +40,47 @@ def record(path, steps, end):
     tmp.replace(path)
 
 
+# A running step's own counter ("400 / 42848 shaders translated") is its time left once it has run this long and counted
+# something; before that its rate is the start-up, not the work.
+RATE_AFTER = 5.0
+
+
+def counted_left(since, count):
+    """Seconds the running step still needs at the rate it has gone so far, or None without a usable counter."""
+    if not count or since < RATE_AFTER:
+        return None
+    done, total = count
+    return since * (total - done) / done if 0 < done <= total else None
+
+
 class Estimator:
+    """The time left of a build (user 2026-11-17: "预估 时间 也不对 没有根据 真实情况来 总是上次的情况"): the running step
+    from its own counter, else from last time while it has not run longer than that; the steps after it from last time,
+    until they start and count. A step with neither (new to the record, or past last time without a counter) has no
+    honest total left: None, not a number that stands still."""
+
     def __init__(self, last):
         self.last = last                        # [(name, seconds)] or None
         self.order = {n: i for i, (n, _) in enumerate(last or [])}
         self.total = sum(s for _, s in last or [])
         self.fraction = 0.0
 
-    def update(self, current, since, stage):
-        """current: the running step's name (or None), since: seconds it has run, stage: build_app.py's stage (1-4)
-        -> (fraction 0..1, seconds left or None, measured: whether the fraction comes from this Mac's record)."""
+    def update(self, current, since, stage, count=None):
+        """current: the running step's name (or None), since: seconds it has run, stage: build_app.py's stage (1-4),
+        count: the step's (done, total) counter or None -> (fraction 0..1, seconds left or None, measured: whether the
+        fraction comes from this Mac's record, the running step's seconds left or None)."""
+        step_left = counted_left(since, count)
         if self.last and current in self.order:
             i = self.order[current]
+            expected = self.last[i][1]
+            if step_left is None and since <= expected:
+                step_left = expected - since
             before = sum(s for _, s in self.last[:i])
-            now = before + min(since, self.last[i][1])
+            now = before + min(since, expected)
             self.fraction = max(self.fraction, min(0.99, now / self.total))
-            return self.fraction, max(0.0, self.total - now), True
-        if self.last:   # a step last time did not run: hold the fraction, no time left to promise
-            return self.fraction, None, True
+            after = sum(s for _, s in self.last[i + 1:])
+            return self.fraction, None if step_left is None else step_left + after, True, step_left
+        if self.last:   # a step last time did not run: hold the fraction, no total left to promise
+            return self.fraction, None, True, step_left
         self.fraction = max(self.fraction, STAGE_STARTS.get(stage, 0.0))
-        return self.fraction, None, False
+        return self.fraction, None, False, step_left

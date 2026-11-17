@@ -304,5 +304,7 @@ enum T {
     }
 
     static func left(_ text: String) -> String { zh ? "还剩 \(text)" : "\(text) left" }
+    /// The running step's own time left, from its counter's rate (user 2026-11-17: the estimate "没有根据 真实情况来").
+    static func stepLeft(_ text: String) -> String { zh ? "这一步还剩\(text)" : "this step: \(text) left" }
     static func elapsed(_ text: String) -> String { zh ? "已用 \(text)" : "\(text) elapsed" }
 }

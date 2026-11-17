@@ -241,11 +241,12 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
             if now - last >= 1:
                 last = now
                 since = now - seen[-1][1] if seen else 0
-                fraction, left, measured = estimator.update(state['step'], since, state['stage'])
                 counted = steps.count(state['step']) if state['step'] else None
+                fraction, left, measured, step_left = estimator.update(state['step'], since, state['stage'], counted)
                 emit('progress', fraction=round(fraction, 4), left=None if left is None else round(left),
                      elapsed=round(now - start), measured=measured,
-                     step_done=counted and counted[0], step_total=counted and counted[1])
+                     step_done=counted and counted[0], step_total=counted and counted[1],
+                     step_left=None if step_left is None else round(step_left))
             time.sleep(0.25)
     ticker = threading.Thread(target=tick, daemon=True)
     ticker.start()

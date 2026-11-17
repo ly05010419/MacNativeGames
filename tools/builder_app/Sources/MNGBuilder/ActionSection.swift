@@ -70,6 +70,9 @@ struct ActionSection: View {
                 if let (done, total) = model.stepCount {
                     Text(T.counted(done, total, T.stepUnit(model.step))).font(.title3.monospacedDigit())
                 }
+                if let stepLeft = model.stepLeft {   // from the step's own rate when it counts (user 2026-11-17)
+                    Text(T.stepLeft(T.minutes(stepLeft))).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                }
                 if !model.step.isEmpty {
                     Text(model.step).font(.caption.monospaced()).foregroundStyle(.secondary)   // the log's name, for the log folder
                 }
