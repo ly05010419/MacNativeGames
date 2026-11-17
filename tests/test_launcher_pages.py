@@ -92,10 +92,24 @@ class Pages(unittest.TestCase):
         # the games as the iPod classic's Cover Flow (user 2026-11-17): a mouse wheel scrolls the page, so every cover is
         # reached by the arrows, the arrow keys and a drag, whatever the window's width
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('CoverFlow(count: Self.games.count, index: $center)', home)
-        flow = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
+        self.assertIn('CoverFlow(count: cases.count, index: center)', home)
+        # the built games first, then the ones not built yet (user 2026-11-17); the chosen one is kept by game, not place
+        self.assertIn('return built + Self.games.filter { !built.contains($0) }', home)
+        self.assertIn('let cases = order', home)
+        self.assertIn('set: { chosen = order[$0] }', home)
+        flow =(REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
         for way in ('chevron.left', 'chevron.right', '.onKeyPress(.leftArrow)', '.onKeyPress(.rightArrow)', 'DragGesture('):
             self.assertIn(way, flow)
+
+    def test_a_case_s_picture_is_cut_tall_round_its_title(self):
+        # user 2026-11-17: "图片 重新裁剪 要合适的 长方形": the square picture is cut to a tall rectangle whose middle is
+        # the middle of the title's words and what draws the eye (Vision), not shown whole with a blur under it
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertIn('CroppedPicture(picture: picture, center: crops.center(of: picturePath))', home)
+        art = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverArt.swift').read_text()
+        for part in ('VNRecognizeTextRequest()', 'VNGenerateAttentionBasedSaliencyImageRequest()', 'Task.detached'):
+            self.assertIn(part, art)
+        self.assertIn('Text(T.gamePlatforms(game))', (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text())
 
 
 class HomeShowsABuild(unittest.TestCase):

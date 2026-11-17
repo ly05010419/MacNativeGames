@@ -3,8 +3,9 @@ import SwiftUI
 
 /// The games as an iPod classic's Cover Flow of real game cases (user 2026-11-17: "改成 苹果 ipod 音乐封面 那种效果",
 /// "ipod classic", "Carousel 效果", "最好 有厚度 想一个 真正的 游戏cd盒子 一样", "不是 cd 盒 是 Switch 游戏盒子"): every
-/// game is a Switch-style game case with depth (105 x 170 x 11 mm, red plastic, rounded; no Nintendo logo or header: the
-/// repository carries nothing of theirs). The chosen one faces the player in the middle;
+/// game is a Switch-style game case with depth (105 x 170 x 11 mm, red plastic, rounded all the way through; a red band
+/// across the top saying what the game runs on, no Nintendo logo: the repository carries nothing of theirs). The chosen
+/// one faces the player in the middle;
 /// the others stand turned towards it on both sides, packed close, so their spine shows; each has its reflection on a
 /// dark floor. The faces are flat views placed in 3D by one camera (projectionEffect with the same matrices), so the
 /// spine's width is what the turn shows, not drawn by guess. A side box, an arrow, the arrow keys or a drag brings a box
@@ -12,7 +13,7 @@ import SwiftUI
 struct CoverFlow<Front: View, Spine: View>: View {
     let count: Int
     @Binding var index: Int
-    var size: CGFloat = 250   // the case's height
+    var size: CGFloat = 375   // the case's height (user 2026-11-17: half again as big)
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
     let open: (Int) -> Void
@@ -22,7 +23,7 @@ struct CoverFlow<Front: View, Spine: View>: View {
     @FocusState private var focused: Bool
 
     private var position: Double { Double(index) - Double(drag / (size * 0.35)) }
-    private var height: CGFloat { size * 1.42 }
+    private var height: CGFloat { CoverFlowGeometry.top(size) + size * 1.38 }   // the room above, the box, its reflection
     private let spring = Animation.spring(response: 0.45, dampingFraction: 0.86)
 
     var body: some View {
@@ -86,7 +87,11 @@ struct CoverFlowGeometry {
     var w: CGFloat { size * 0.62 }
     var h: CGFloat { size }
     var depth: CGFloat { size * 0.075 }
-    var floorY: CGFloat { 16 + h }          // the boxes stand on it; their reflections hang below it
+    /// The room above the middle box (user 2026-11-17: "和 上面 保持一点距离").
+    static func top(_ size: CGFloat) -> CGFloat { size * 0.09 }
+    var floorY: CGFloat { Self.top(size) + h }   // the boxes stand on it; their reflections hang below it
+    /// Between a box and its reflection (user 2026-11-17: "阴影 和上面的盒子 保持一点距离").
+    var gap: CGFloat { size * 0.025 }
     private let tilt = 64.0 * Double.pi / 180
     private var eye: CGFloat { size * 3.2 } // the camera's distance: the perspective
 
@@ -107,9 +112,9 @@ struct CoverFlowGeometry {
         r.m11 = CGFloat(cos(a)); r.m13 = CGFloat(-sin(a))
         r.m31 = CGFloat(sin(a)); r.m33 = CGFloat(cos(a))
         var m = r
-        if mirrored {   // upside down about the floor (the box's bottom, y = h/2 from its middle)
+        if mirrored {   // upside down about the floor (the box's bottom, y = h/2 from its middle), a gap below it
             var flip = CATransform3DIdentity
-            flip.m22 = -1; flip.m42 = h
+            flip.m22 = -1; flip.m42 = h + gap
             m = CATransform3DConcat(flip, m)
         }
         m = CATransform3DConcat(m, CATransform3DMakeTranslation(x, 0, z))
@@ -122,13 +127,25 @@ struct CoverFlowGeometry {
     /// The front: its view (w x h) on the box's front plane.
     var frontPlacement: CATransform3D { CATransform3DMakeTranslation(-w / 2, -h / 2, depth / 2) }
 
-    /// A side: its view (depth x h) on the box's left (the spine) or right side, front edge at the front.
+    /// The case's corner radius, the same on the front and all the way through the box.
+    var corner: CGFloat { w * 0.05 }
+
+    /// A side's flat part: its view (depth x (h - 2 corner)) on the box's left (the spine) or right side, front edge at
+    /// the front; above and below it the side turns into the rounded corners (`slicePlacement`).
     func sidePlacement(left: Bool) -> CATransform3D {
         var m = CATransform3DIdentity
         m.m11 = 0; m.m13 = left ? 1 : -1      // the view's x runs along the box's depth
         m.m31 = left ? -1 : 1; m.m33 = 0
-        m.m41 = left ? -w / 2 : w / 2; m.m42 = -h / 2; m.m43 = left ? -depth / 2 : depth / 2
+        m.m41 = left ? -w / 2 : w / 2; m.m42 = -h / 2 + corner; m.m43 = left ? -depth / 2 : depth / 2
         return m
+    }
+
+    /// The rounded outline's layers through the box (user 2026-11-17: "盒子 上面和下面 有缺角"): a case is its front's
+    /// rounded rectangle carried back through its depth, so the outline is drawn at `slices` depths from back to front
+    /// and the corners are solid and round, not a square side beside a rounded front.
+    static let slices = 12
+    func slicePlacement(_ k: Int) -> CATransform3D {
+        CATransform3DMakeTranslation(-w / 2, -h / 2, -depth / 2 + depth * CGFloat(k) / CGFloat(Self.slices - 1))
     }
 
     /// The order to draw in: the farthest first.
@@ -187,9 +204,12 @@ private struct CoverFlowStage<Front: View, Spine: View>: View, Animatable {
                 ForEach(g.drawOrder, id: \.self) { i in box(i, g, mirrored: true) }
             }
             .frame(width: width, height: height, alignment: .topLeading)   // the mask covers the whole stage, not one face
+            // one picture first, then faint: an opacity on a plain ZStack is given to every face on its own, and the
+            // farther boxes' reflections showed through the nearer ones (user 2026-11-17: "阴影 透视了")
+            .compositingGroup()
             .opacity(0.32)
-            .mask(LinearGradient(stops: [.init(color: .black, location: g.floorY / height),
-                                         .init(color: .clear, location: min(1, (g.floorY + size * 0.42) / height))],
+            .mask(LinearGradient(stops: [.init(color: .black, location: (g.floorY + g.gap) / height),
+                                         .init(color: .clear, location: min(1, (g.floorY + g.gap + size * 0.42) / height))],
                                  startPoint: .top, endPoint: .bottom))
             ForEach(g.drawOrder, id: \.self) { i in box(i, g, mirrored: false) }
         }
@@ -206,19 +226,28 @@ private struct CoverFlowStage<Front: View, Spine: View>: View, Animatable {
             // only the side that faces the camera: a box turned towards the middle shows its outer side, so one on the
             // left shows its spine (the hinge side), one on the right its opening edge (each side's normal against the
             // line of sight)
+            if abs(side) > 0.02 {
+                ForEach(0..<CoverFlowGeometry.slices, id: \.self) { k in
+                    RoundedRectangle(cornerRadius: g.corner, style: .continuous)
+                        .fill(Color(red: 0.6, green: 0.03, blue: 0.06))
+                        .overlay(RoundedRectangle(cornerRadius: g.corner, style: .continuous).fill(Color.black.opacity(shade)))
+                        .frame(width: g.w, height: g.h)
+                        .projectionEffect(ProjectionTransform(CATransform3DConcat(g.slicePlacement(k), m)))
+                }
+            }
             if side < -0.02 {
-                spine(i).frame(width: g.depth, height: g.h)
+                spine(i).frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: true), m)))
             } else if side > 0.02 {
-                CaseEdge().frame(width: g.depth, height: g.h)
+                CaseEdge().frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: false), m)))
             }
             front(i).frame(width: g.w, height: g.h)
                 .overlay(CaseFront())
                 .overlay(Color.black.opacity(shade))
-                .clipShape(RoundedRectangle(cornerRadius: g.w * 0.05, style: .continuous))   // the case's rounded corners
+                .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
                 .projectionEffect(ProjectionTransform(CATransform3DConcat(g.frontPlacement, m)))
         }
     }
@@ -241,6 +270,26 @@ private struct CaseFront: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+/// The red band across the top of a case's front, as on a Switch case; it says what the game runs on (as the cards did,
+/// user 2026-11-17: Ocarina of Time "Switch 2 · Mac"), never a maker's logo.
+struct CaseHeader: View {
+    /// The band's share of the front's height (a Switch 2 case: about an eighth).
+    static let share: CGFloat = 0.12
+    let game: String
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                LinearGradient(colors: [caseRed, Color(red: 0.74, green: 0.04, blue: 0.08)], startPoint: .top, endPoint: .bottom)
+                Text(T.gamePlatforms(game))
+                    .font(.system(size: geo.size.height * 0.36, weight: .heavy)).foregroundStyle(.white)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                    .padding(.horizontal, geo.size.width * 0.08)
+            }
+        }
     }
 }
 

@@ -6,17 +6,28 @@ import SwiftUI
 /// yet shows a plus that goes to the Build page with that game chosen (user 2026-11-12).
 struct HomePage: View {
     @EnvironmentObject var model: Model
-    @State private var center = 0          // the cover in the middle of the Cover Flow: the chosen game
+    @State private var chosen = HomePage.games[0]   // the case in the middle of the Cover Flow, by game (not by place:
+                                                    // a game built moves forward and stays the chosen one)
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
 
     static let games = ["oot", "totk", "botw", "eow", "acnh", "dkb", "pkp"]
-    private var selected: String { Self.games[center] }
 
-    /// The first built game, in the cards' order, is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
+    /// The cases' order (user 2026-11-17: "已经安装的游戏 放前面，没有安装的游戏盒子 放后面"): the built games, then the
+    /// ones not built yet, each in the catalog's order.
+    private var order: [String] {
+        let built = Self.games.filter { g in model.installed.contains { $0.game == g } }
+        return built + Self.games.filter { !built.contains($0) }
+    }
+    private var selected: String { order.contains(chosen) ? chosen : order[0] }
+    private var center: Binding<Int> {
+        Binding(get: { order.firstIndex(of: selected) ?? 0 }, set: { chosen = order[$0] })
+    }
+
+    /// The first built game is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {
         guard !defaulted, model.installedLoaded else { return }
-        guard let first = Self.games.firstIndex(where: { g in model.installed.contains { $0.game == g } }) else { return }
-        center = first
+        guard let first = order.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
+        chosen = first
         defaulted = true
     }
 
@@ -53,13 +64,14 @@ struct HomePage: View {
                 }
                 // The games as the iPod classic's Cover Flow (user 2026-11-17): every one is reached by the arrows,
                 // the arrow keys, a drag or a click on a side cover, at any window width
-                CoverFlow(count: Self.games.count, index: $center) { i in
-                    let game = Self.games[i]
+                let cases = order
+                CoverFlow(count: cases.count, index: center) { i in
+                    let game = cases[i]
                     GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
                              selected: false, cover: true, tap: {})
                 } spine: { i in
-                    CaseSpine(game: Self.games[i])
-                } open: { open(Self.games[$0]) }
+                    CaseSpine(game: cases[i])
+                } open: { open(cases[$0]) }
                 // what the middle cover is, as the iPod writes it under the cover
                 VStack(spacing: 4) {
                     Text(T.gameName(selected)).font(.title2.weight(.semibold))
@@ -106,14 +118,18 @@ struct GameCard: View {
     let app: InstalledReport.App?
     let loading: Bool
     let selected: Bool
-    /// A cover of the Cover Flow: square, the picture alone (the name is written under the middle cover).
+    /// A case's front in the Cover Flow: the red band and the picture (the name is written under the middle case).
     var cover = false
     let tap: () -> Void
 
-    private var picture: NSImage? {
+    @ObservedObject var crops = CoverCrops.shared   // not private: the memberwise init stays usable
+
+    private var picturePath: String? {
         guard let app else { return nil }
-        return NSImage(contentsOf: URL(fileURLWithPath: app.app).appendingPathComponent("Contents/Resources/AppIcon.icns"))
+        return URL(fileURLWithPath: app.app).appendingPathComponent("Contents/Resources/AppIcon.icns").path
     }
+
+    private var picture: NSImage? { picturePath.flatMap { NSImage(contentsOfFile: $0) } }
 
     var body: some View {
         if cover { coverBody } else { cardBody }
@@ -121,22 +137,39 @@ struct GameCard: View {
 
     /// The picture on a case's front in the Cover Flow (CoverFlow handles the clicks: it knows which case is where).
     private var coverBody: some View {
+        // as a real case (user 2026-11-17, a Switch 2 case): the red band across the top, the insert's picture under it
+        GeometryReader { geo in
+            let band = geo.size.height * CaseHeader.share
+            VStack(spacing: 0) {
+                CaseHeader(game: game).frame(height: band)
+                coverArt.frame(width: geo.size.width, height: geo.size.height - band).clipped()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)   // the case's front (CoverFlow sizes it)
+        .clipped()
+    }
+
+    /// The insert under the band: the game's square picture cut to a tall rectangle round its title (CoverCrops), its
+    /// lower edge fading into the same picture lightly blurred, which carries on to the bottom with the game's name.
+    private var coverArt: some View {
         ZStack {
-            if let picture {
-                // a case's insert is tall, the game's picture square: the whole picture at the top, the same picture
-                // blurred behind it all, the game's name at the bottom (nothing of the picture is cut off)
+            if let picture, let picturePath {
                 GeometryReader { geo in
+                    let tall = min(geo.size.height, geo.size.width / CoverCrops.keep)
                     ZStack(alignment: .top) {
                         Image(nsImage: picture).resizable().scaledToFill()
-                            .frame(width: geo.size.width, height: geo.size.height).blur(radius: 18).clipped()
-                            .overlay(Color.black.opacity(0.35))
-                        VStack(spacing: 0) {
-                            Image(nsImage: picture).resizable().scaledToFit().frame(width: geo.size.width)
+                            .frame(width: geo.size.width, height: geo.size.height).blur(radius: 10).clipped()
+                            .overlay(Color.black.opacity(0.25))
+                        CroppedPicture(picture: picture, center: crops.center(of: picturePath))
+                            .frame(width: geo.size.width, height: tall)
+                            .mask(LinearGradient(stops: [.init(color: .black, location: 0.88), .init(color: .clear, location: 1)],
+                                                 startPoint: .top, endPoint: .bottom))
+                        VStack {
                             Spacer(minLength: 0)
                             Text(T.gameName(game)).font(.system(size: geo.size.width * 0.075, weight: .bold))
-                                .foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2)
-                                .padding(.horizontal, 10).shadow(radius: 3)
-                            Spacer(minLength: 0)
+                                .foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.6)
+                                .padding(.horizontal, geo.size.width * 0.06).shadow(color: .black.opacity(0.6), radius: 3)
+                                .frame(height: max(0, geo.size.height - tall * 0.96))
                         }
                     }
                 }
@@ -154,8 +187,6 @@ struct GameCard: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)   // the case's front (CoverFlow sizes it)
-        .clipped()
     }
 
     private var cardBody: some View {
