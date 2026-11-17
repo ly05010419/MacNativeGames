@@ -103,6 +103,11 @@ class HomeShowsABuild(unittest.TestCase):
         shown = home[home.index('if model.updating == nil, model.phase == .building'):]
         self.assertIn('ActionSection()', shown[:shown.index('}\n')])
 
+    def test_a_job_shown_under_another_game_names_its_game(self):
+        # switched to another card, a job's progress shows at the bottom: its box says whose job it is
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertEqual(home.count('} label: { Text(jobGame'), 2)
+
 
 if __name__ == '__main__':
     unittest.main()
