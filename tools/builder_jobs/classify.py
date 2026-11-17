@@ -45,6 +45,7 @@ class Plan:
     needs_keys: bool = True    # a Switch 2 dump and a .nup need none
     keys_problems: list = field(default_factory=list)   # the blocks about the keys (the window shows them at the keys)
     blocks: list = field(default_factory=list)
+    tool_blocks: list = field(default_factory=list)   # the blocks about this Mac's tools, not the files (also in blocks)
     notes: list = field(default_factory=list)
 
 
@@ -286,6 +287,7 @@ def plan(items, work=None):
                              '想用王国之泪或旷野之息打包留下的固件字体，把那个 shared-fonts 文件夹也放进来'))
         if p.game == 'oot' and no_metal_compiler():
             p.blocks.append(oot_needs_metal())
+            p.tool_blocks.append(p.blocks[-1])   # the Launcher shows it with this Mac's other needs, at the build
         return p
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))

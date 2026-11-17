@@ -62,7 +62,7 @@ struct HomePage: View {
                             GameCard(game: game, app: app, loading: !model.installedLoaded, selected: selected == game) {
                                 if !model.installedLoaded { return }
                                 if app != nil { selected = game }   // a second click keeps it chosen (user 2026-11-13)
-                                else { model.buildFor = game; model.page = "build" }
+                                else { model.buildFor = game; model.openBuild() }
                             }
                         }
                     }
@@ -289,7 +289,7 @@ struct GameActions: View {
                 case "express", "fast":
                     Button(T.updateButton(app.kind)) { model.update(app) }.buttonStyle(.borderedProminent).disabled(busy)
                 case "full":
-                    Button(T.updateButton(app.kind)) { model.buildFor = app.game; model.page = "build" }
+                    Button(T.updateButton(app.kind)) { model.buildFor = app.game; model.openBuild() }
                         .buttonStyle(.borderedProminent).disabled(busy)
                 default:
                     EmptyView()   // the reason above says why it cannot be updated now

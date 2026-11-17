@@ -25,6 +25,7 @@ struct ClassifyReport: Codable {
         var needs_keys: Bool
         var keys_problems: [String]
         var blocks: [String]
+        var tool_blocks: [String]?   // the blocks about this Mac's tools (page 3), also in blocks
         var notes: [String]
     }
     let items: [Item]

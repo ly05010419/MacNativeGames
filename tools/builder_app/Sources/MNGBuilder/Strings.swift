@@ -38,6 +38,7 @@ enum T {
     }
     /// The Launcher's version, bottom right of the window (user 2026-11-17: "launcher 右下角 显示 版本号").
     static func version(_ v: String) -> String { "MNG Launcher \(v)" }
+    static func devVersion(_ commit: String) -> String { zh ? "MNG Launcher 开发版 · \(commit)" : "MNG Launcher development build · \(commit)" }
     static func versionHelp(_ commit: String) -> String { zh ? "自带代码提交 \(commit)" : "Bundled code commit \(commit)" }
     static let thisMac = s("This Mac", "这台 Mac")
     static let fix = s("Fix", "修复")
@@ -189,6 +190,21 @@ enum T {
     }
 
     static func stepTitle(_ n: Int) -> String { zh ? "第\(["一", "二", "三"][n - 1])步" : "Step \(n)" }
+    // The build's three pages (user 2026-11-17: "第一步 检查 所有工具 … 第二步 选择 文件 包括key，第三部 打包。 每个步骤 一个页面")
+    static let page1 = s("Check this Mac", "检查这台 Mac")
+    static let page2 = s("Game files and keys", "游戏文件和密钥")
+    static let page3 = s("Build", "打包")
+    static let page1Hint = s("What a build needs on this Mac. A red line has a button or a command that fixes it.",
+                             "打包需要这台 Mac 具备的东西。红色的一行旁边有修复按钮或命令。")
+    static let checking = s("Checking this Mac…", "正在检查这台 Mac…")
+    static let next = s("Next", "下一步")
+    static let back = s("Back", "上一步")
+    static let gameFiles = s("Game files", "游戏文件")
+    static let chooseAgain = s("Choose Again…", "重新选择…")
+    static let keys = s("Keys", "密钥")
+    static let getXcode = s("Get Xcode", "获取 Xcode")
+    static let copyCommand = s("Copy Command", "拷贝命令")
+    static let metalCommand = "xcodebuild -downloadComponent MetalToolchain"
     static let step1 = s("Choose the game", "选择游戏")
     static let step1Hint = s("Drop the game here, or choose it: an XCI or NSP with its update (a folder that holds them works too), or a Switch 2 dump folder. An NSP also needs your unpacked firmware folder. Nothing is copied.",
                              "把游戏拖到这里，或点“选择…”：XCI 或 NSP 和它的更新（放在一个文件夹里，直接选文件夹也行），或 Switch 2 的游戏文件夹。NSP 还要解开的固件文件夹。文件不会被复制。")
@@ -197,7 +213,7 @@ enum T {
     static let step2Hint = s("The prod.keys dumped from your own Switch. It is remembered for every game.",
                              "从你自己的 Switch 导出的 prod.keys。选一次，以后每个游戏都用它。")
     static let chooseKeys = s("Choose prod.keys…", "选择 prod.keys…")
-    static let noKeysNeeded = s("This game needs no keys: go on to step 3.", "这个游戏不需要密钥，直接做第三步。")
+    static let noKeysNeeded = s("This game needs no keys.", "这个游戏不需要密钥。")
     static let keysOK = s("These keys open the game.", "这份密钥能打开这个游戏。")
     static let step3 = s("Build and play", "打包并游玩")
     static let step3Hint = s("Builds the app (20–40 minutes the first time, much less after), signs it and starts the game.",

@@ -92,7 +92,7 @@ final class Model: ObservableObject {
         if let k = keys.last { keysPath = k.path }
         let rest = urls.filter { $0.pathExtension.lowercased() != "keys" }
         if !rest.isEmpty { paths = rest.map { $0.path } }
-        page = "build"   // files given to the app (open -a, the Dock): the steps they fill in
+        openBuild()   // files given to the app (open -a, the Dock): the steps they fill in
         save()
         Task { await classify() }
     }
@@ -166,6 +166,14 @@ final class Model: ObservableObject {
         Task { await classify() }
     }
 
+    /// Choose Again: these files in place of the ones chosen before (the keys stay).
+    func replace(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        paths = urls.map { $0.path }; report = nil; classifyError = nil
+        save()
+        Task { await classify() }
+    }
+
     func clear() {
         paths = []; report = nil; classifyError = nil; save()
     }
@@ -179,9 +187,26 @@ final class Model: ObservableObject {
 
     /// Step 1 is done: the base game was found (a game card without a title ID in its name is told by the keys of
     /// step 2). Step 2 is done: the game needs no keys, or the keys open it.
-    var gameReady: Bool { plan?.base != nil && (plan?.blocks ?? []).allSatisfy { (plan?.keys_problems ?? []).contains($0) } }
+    var gameReady: Bool {
+        plan?.base != nil && (plan?.blocks ?? []).allSatisfy { (plan?.keys_problems ?? []).contains($0) || toolBlocks.contains($0) }
+    }
     var keysReady: Bool { plan.map { !$0.needs_keys || ($0.keys != nil && $0.keys_problems.isEmpty) } ?? false }
     var macReady: Bool { checks.allSatisfy { $0.ok || $0.id == "disk" } && !checks.isEmpty }
+    /// The plan's blocks about this Mac's tools for this game (Ocarina of Time's Metal compiler): shown on page 3.
+    var toolBlocks: [String] { plan?.tool_blocks ?? [] }
+
+    /// The Build page's three pages (user 2026-11-17: "每个步骤 一个页面"): 1 this Mac, 2 the files and keys, 3 the build.
+    @Published var buildStep = 1
+    /// A page opens when the ones before it are done; a running build keeps page 3.
+    func canOpen(_ step: Int) -> Bool {
+        if jobRunning { return step == 3 }
+        return step == 1 || (macReady && (step == 2 || (gameReady && keysReady)))
+    }
+    /// The page the Build page opens on: this Mac's checks only when something is missing.
+    func openBuild() {
+        buildStep = jobRunning ? 3 : (macReady ? 2 : 1)
+        page = "build"
+    }
 
     func classify() async {
         guard !paths.isEmpty else { report = nil; return }

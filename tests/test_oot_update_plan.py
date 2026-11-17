@@ -88,6 +88,8 @@ class OotNeedsMetal(unittest.TestCase):
                         mock.patch.object(classify, 'no_metal_compiler', return_value=found is None):
                     p = classify.plan([classify.Item(dump, 'ns2_dump', game)])
                     self.assertEqual(any('Metal' in b for b in p.blocks), blocked, p.blocks)
+                    # the Launcher shows it on its build page, with this Mac's needs, not with the files (tool_blocks)
+                    self.assertEqual(p.tool_blocks, [b for b in p.blocks if 'Metal' in b])
 
 
 def oot_build():
