@@ -35,6 +35,7 @@
 #if TARGET_OS_VISION
 /* visionOS has no MetalFX frame interpolator. Keep every entry point off, including environment initialization. */
 int mfx_enabled(void) { return 0; }
+void mfx_cutscene(int on) { (void)on; }
 const char *mfx_mode_name(int mode) { return mode == MFX_OFF ? "off" : "not available on visionOS"; }
 void mfx_set(int mode) { if (mode) MLOG("frame interpolation is not available on visionOS"); }
 void mfx_set_mv_dyn(int on) { (void)on; }
@@ -135,7 +136,11 @@ static void mfx_init(void) {
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
-int mfx_enabled(void) { if(totk_hdr_active())return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+/* A cutscene the game holds at its own rate (hle_nvn.c runtime_cutscene_fps: Ocarina of Time's movies at 60, user
+   2026-11-17 "和设置无关") is shown as decoded, without interpolation; the player's mode comes back after it. */
+static _Atomic int g_cutscene;
+void mfx_cutscene(int on) { atomic_store_explicit(&g_cutscene, on != 0, memory_order_relaxed); }
+int mfx_enabled(void) { if(totk_hdr_active()||atomic_load_explicit(&g_cutscene, memory_order_relaxed))return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
 int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);

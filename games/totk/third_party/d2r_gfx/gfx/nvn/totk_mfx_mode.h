@@ -6,3 +6,4 @@ enum { MFX_OFF, MFX_30, MFX_40, MFX_50, MFX_MAX, MFX_60, MFX_NMODES };   // MFX_
 static inline int mfx_hold_fps(int m) { return m == MFX_30 ? 30 : m == MFX_40 ? 40 : m == MFX_50 ? 50 : m == MFX_60 ? 60 : 0; }   // the game's rate, 0 = not held
 int mfx_enabled(void);   // the mode of this game frame (0 = off)
 int mfx_requested(void);   // the mode the player picked (the settings panel), taken over at the next game frame
+void mfx_cutscene(int on);   // hle_nvn.c, each present: a cutscene held at its own rate (runtime_cutscene_fps) has no interpolation

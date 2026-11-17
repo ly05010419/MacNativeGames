@@ -54,6 +54,26 @@ static void destroy_event(void *e) {
     destroy(e);
 }
 
+/* Movie cutscenes at 60 fps whatever the settings (user 2026-11-17: "要求过场动画 锁帧60，和设置无关 ， 只是过场动画 锁帧60";
+   asked, the movies only: Event/Movie/Dm_*.webm, 26 files, AV1 at 60 pictures a second, all through these decoders. The
+   scenes the engine plays, Event/EventFlow/Dm_*, keep the settings). Without it a 30 fps lock showed every second picture
+   (skip_late_pictures keeps the movie on its sound's time). A movie plays while a decoder handed the game a picture in the
+   last 0.5 s, as nxnative's dm_movie_hz (PR #2622); its end of stream or its decoder's end stops it at once. The shared
+   graphics layer holds the rate and turns interpolation off for it (hle_nvn.c game_hold_fps, totk_mfx.m).
+   OOT_CUTSCENE_FPS=0: the settings also during movies (an A/B switch). */
+static _Atomic uint64_t g_movie_picture_ns;   /* when a decoder last handed the game a picture; 0: no movie playing */
+static void movie_picture(void) { atomic_store(&g_movie_picture_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }
+static void movie_stopped(void) { atomic_store(&g_movie_picture_ns, 0); }
+static int cutscene_rate(void) {
+    static int rate = -1;
+    if (rate < 0) { const char *e = getenv("OOT_CUTSCENE_FPS"); rate = e && !strcmp(e, "0") ? 0 : 60; }
+    return rate;
+}
+int runtime_cutscene_fps(void) {
+    uint64_t at = atomic_load(&g_movie_picture_ns), now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    return at && (now < at || now - at < 500000000ull) ? cutscene_rate() : 0;
+}
+
 /* ---------- YUV (libvpx's I420) to what the game reads; from nxnative hle_movie.c md_nv12 / md_rgba (MIT) ---------- */
 static void yuv_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     int cw = (int)im->d_w < w ? (int)im->d_w : w, ch = (int)im->d_h < h ? (int)im->d_h : h;
@@ -294,6 +314,7 @@ static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t i
 static Result cv_dec_fin(void *t) {
     cv_dec *d = cv_of(t); if (!d) return 0;
     pthread_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&g_cv_mu);
+    movie_stopped();
     opening_end(d);
     if (d->av1) mav1_free(d->av1); else if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
@@ -439,7 +460,8 @@ static Result cv_dec_props(uint16_t *w, uint16_t *h, uint16_t *cw, uint16_t *ch,
     pthread_mutex_lock(&d->mu);
     int ok = d->buf[i].filled;
     if (ok) { *w = *cw = d->buf[i].w; *h = *ch = d->buf[i].h; *ts = d->buf[i].ts; *eos = d->buf[i].eos != 0; }
-    if (ok && !*eos) ns2_movie_clock_start(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), *ts);
+    if (ok && !*eos) { ns2_movie_clock_start(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW), *ts); movie_picture(); }
+    if (ok && *eos) movie_stopped();
     if (ok && getenv("OOT_MOVIE_TRACE")) {
         uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         if (!d->trace_at || now - d->trace_at >= 1000000000ull) {

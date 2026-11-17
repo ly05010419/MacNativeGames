@@ -3052,6 +3052,10 @@ static int g_paced_hz;   // the display-following rate, used instead of the unca
    pre-rendered movie, which advances one movie frame per game frame). The game is then paced exactly as in the 30+30
    mode, without the interpolation. Weak: Tears of the Kingdom has none. */
 __attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
+/* A rate a cutscene is held at whatever the settings (frame lock, uncapped, interpolation): Ocarina of Time holds 60 while
+   one of its movies plays (runtime/ns2_codec.c; user 2026-11-17: "过场动画 锁帧60，和设置无关"). The interpolation is off
+   for those frames too (totk_mfx.m). Weak: 0, nothing held, in every other game. */
+__attribute__((weak)) int runtime_cutscene_fps(void) { return 0; }
 /* TOTK_PHONE_FPS=30: the phone holds 30 fps the same way, presenting every second refresh of its 60 Hz screen, frame
    step and present interval agreeing (lowering the uncapped clock to 30 Hz instead left the game's interval in 60 Hz
    units: it raised it to 3 and the title ran at about 10 fps). The default is the screen's rate, at most 60 on an iPhone
@@ -3081,9 +3085,11 @@ void nvn_fps_lock_set(int fps) {
     if (atomic_exchange(&g_fps_lock, fps) != fps) { if (fps) LOG("[nvn] 锁帧：%d 帧", fps); else LOG("[nvn] 锁帧：关"); }
 }
 int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
-/* The rate the game is held at now (0: not held): 30 for a movie or the phone's hold, then 30 / 40 / 50 / 60 for interpolation
-   30+30 / 40+40 / 50+50 / 60+60, else the frame lock. */
+/* The rate the game is held at now (0: not held): a cutscene's own rate first (runtime_cutscene_fps), then 30 for a movie or
+   the phone's hold, then 30 / 40 / 50 / 60 for interpolation 30+30 / 40+40 / 50+50 / 60+60, else the frame lock. */
 static int game_hold_fps(void) {
+    int cut = runtime_cutscene_fps();
+    if (cut > 0) return cut;
     if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
     int m = mfx_hold_fps(mfx_enabled());
     return m ? m : atomic_load(&g_fps_lock);
@@ -3516,6 +3522,9 @@ static uint64_t present_period(const win_t *o) {
                                     mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : m == MFX_60 ? "60 帧（60+60）" : "50 帧（50+50）") :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
+    { static int cut_was; int cut = runtime_cutscene_fps();
+      mfx_cutscene(cut > 0);
+      if (cut != cut_was) { if (cut) LOG("[nvn] 过场影片：锁 %d 帧（不看锁帧、补帧设置）", cut); else LOG("[nvn] 过场影片结束：回到设置的帧率"); cut_was = cut; } }
     { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
@@ -3524,7 +3533,7 @@ static uint64_t present_period(const win_t *o) {
    game's present interval unless that is ignored), else the game's interval at the display's rate. Game thread. */
 static void sr_frame(const win_t *o) {
     int hold = game_hold_fps(), src, cap = hold;
-    if (hold) src = runtime_game_fps_limit() == 30 ? SR_CAP_MOVIE : phone_holds_30() ? SR_CAP_PHONE : mfx_hold_fps(mfx_enabled()) ? SR_CAP_INTERP : SR_CAP_LOCK;
+    if (hold) src = runtime_cutscene_fps() > 0 || runtime_game_fps_limit() == 30 ? SR_CAP_MOVIE : phone_holds_30() ? SR_CAP_PHONE : mfx_hold_fps(mfx_enabled()) ? SR_CAP_INTERP : SR_CAP_LOCK;
     else if (!g_hz) src = SR_CAP_NONE;
     else if (g_display_mode) { src = SR_CAP_DISPLAY; cap = g_hz; }
     else if (uncapped_now()) { cap = g_hz; src = !dm_detclock_enabled() && uncapped_interval_on() ? SR_CAP_UNCAPPED : SR_CAP_UNCAPPED_INTERVAL; }
