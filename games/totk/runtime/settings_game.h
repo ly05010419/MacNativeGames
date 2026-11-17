@@ -776,6 +776,10 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
  settings_dsu_rows(rows);
+ /* The stick-calibration tool (user 2026-11-13): a full-width block at the foot of the Input page. It always shows (its
+    own buttons grey out with no controller), so the page keeps a fixed, discoverable spot for it. */
+ {TOTKSettingRow *cal=[TOTKSettingRow new];cal.title=@"";
+  cal.customView=[TOTKStickCalibrationView new];cal.customRows=11;[rows addObject:cal];}
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */

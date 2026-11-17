@@ -80,10 +80,15 @@ static void hid_pad_compute(void) {
     }
     hidPad.present = 1;
     hidPad.buttons = buttons;
-    hidPad.lx = stick_axis(gamepad_game_stick(0, lx));   /* the game's own scaling (gamepad_game.h), then the dead zone */
-    hidPad.ly = stick_axis(gamepad_game_stick(1, -ly));  /* HID Y grows downwards, the game's grows upwards */
-    hidPad.rx = stick_axis(gamepad_game_stick(2, rx));
-    hidPad.ry = stick_axis(gamepad_game_stick(3, -ry));
+    float cx = gamepad_game_stick(0, lx), cy = gamepad_game_stick(1, -ly);
+    float crx = gamepad_game_stick(2, rx), cry = gamepad_game_stick(3, -ry);
+    hidPad.lx = native_stick_component(0, cx, cy);
+    hidPad.ly = native_stick_component(1, cx, cy);
+    hidPad.rx = native_stick_component(2, crx, cry);
+    hidPad.ry = native_stick_component(3, crx, cry);
+#ifdef RUNTIME_STICK_CALIBRATION
+    hidRawLx = cx; hidRawLy = cy; hidRawRx = crx; hidRawRy = cry;
+#endif
 }
 
 static void hid_value(void *context, IOReturn result, void *sender, IOHIDValueRef value) {
@@ -125,6 +130,9 @@ static void hid_pad_reset(void) {
     memset(hidReach, 0, sizeof hidReach);
     memset(hidReachLogged, 0, sizeof hidReachLogged);
     hidPad = (HIDPadState){0};
+#ifdef RUNTIME_STICK_CALIBRATION
+    hidRawLx = hidRawLy = hidRawRx = hidRawRy = 0;
+#endif
 }
 
 /* 1: the pad's right stick is Rx/Ry (it has both and neither Z nor Rz). */

@@ -58,6 +58,9 @@ static void refresh_gamepads(void) {
     RuntimeGamepadState next = {0};
     uint64_t physical = mouse_physical();
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
+#ifdef RUNTIME_STICK_CALIBRATION
+    float rawLx=0, rawLy=0, rawRx=0, rawRy=0, rawLT=0, rawRT=0;
+#endif
     uint64_t rawAt = 0, rawRightAt = 0;
     int capture = captureDown;
     for (GCController *controller in GCController.controllers) {
@@ -71,8 +74,8 @@ static void refresh_gamepads(void) {
         next.connected = 1;
         physical |= padPhysical;
         if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
-        nativeLx = stronger_axis(nativeLx, stick_axis(lx));
-        nativeLy = stronger_axis(nativeLy, stick_axis(ly));
+        nativeLx = stronger_axis(nativeLx, native_stick_component(0, lx, ly));
+        nativeLy = stronger_axis(nativeLy, native_stick_component(1, lx, ly));
         int wasActive = rawLeft.active;
         float rawX, rawY;
         if (controller == rawLeftController && switch_left_get(&rawLeft, lx, ly, runtime_now_ns(), &rawX, &rawY)) {
@@ -80,10 +83,10 @@ static void refresh_gamepads(void) {
             rawAt = rawLeft.at;
             if (!wasActive) fprintf(stderr, "[totk-input] Switch left stick: native axes stuck at zero; using live HID input\n");
         }
-        next.lx = stronger_axis(next.lx, stick_axis(lx));
-        next.ly = stronger_axis(next.ly, stick_axis(ly));
-        nativeRx = stronger_axis(nativeRx, stick_axis(rx));
-        nativeRy = stronger_axis(nativeRy, stick_axis(ry));
+        next.lx = stronger_axis(next.lx, native_stick_component(0, lx, ly));
+        next.ly = stronger_axis(next.ly, native_stick_component(1, lx, ly));
+        nativeRx = stronger_axis(nativeRx, native_stick_component(2, rx, ry));
+        nativeRy = stronger_axis(nativeRy, native_stick_component(3, rx, ry));
         int rightWasActive = rawRight.active;
         float rawRX, rawRY;
         if (controller == rawRightController && switch_left_get(&rawRight, rx, ry, runtime_now_ns(), &rawRX, &rawRY)) {
@@ -91,8 +94,16 @@ static void refresh_gamepads(void) {
             rawRightAt = rawRight.at;
             if (!rightWasActive) fprintf(stderr, "[totk-input] Switch right stick: native axes stuck at zero; using live HID input\n");
         }
-        next.rx = stronger_axis(next.rx, stick_axis(rx));
-        next.ry = stronger_axis(next.ry, stick_axis(ry));
+        next.rx = stronger_axis(next.rx, native_stick_component(2, rx, ry));
+        next.ry = stronger_axis(next.ry, native_stick_component(3, rx, ry));
+#ifdef RUNTIME_STICK_CALIBRATION
+        if (fabsf(lx) > fabsf(rawLx)) rawLx = lx;
+        if (fabsf(ly) > fabsf(rawLy)) rawLy = ly;
+        if (fabsf(rx) > fabsf(rawRx)) rawRx = rx;
+        if (fabsf(ry) > fabsf(rawRy)) rawRy = ry;
+        if (pad.leftTrigger.value > rawLT) rawLT = pad.leftTrigger.value;
+        if (pad.rightTrigger.value > rawRT) rawRT = pad.rightTrigger.value;
+#endif
     }
     if (hidPad.present) {
         const float axes[] = {hidPad.lx / 32767.f, hidPad.ly / 32767.f, hidPad.rx / 32767.f, hidPad.ry / 32767.f};
@@ -103,7 +114,19 @@ static void refresh_gamepads(void) {
         next.ly = stronger_axis(next.ly, hidPad.ly);
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
+#ifdef RUNTIME_STICK_CALIBRATION
+        if (fabsf(hidRawLx) > fabsf(rawLx)) rawLx = hidRawLx;
+        if (fabsf(hidRawLy) > fabsf(rawLy)) rawLy = hidRawLy;
+        if (fabsf(hidRawRx) > fabsf(rawRx)) rawRx = hidRawRx;
+        if (fabsf(hidRawRy) > fabsf(rawRy)) rawRy = hidRawRy;
+        if (hidPad.buttons & (1ULL << 8)) rawLT = 1.0f;   /* the HID fallback's triggers are buttons */
+        if (hidPad.buttons & (1ULL << 9)) rawRT = 1.0f;
+#endif
     }
+#ifdef RUNTIME_STICK_CALIBRATION
+    stick_response_limit(&next.lx, &next.ly);
+    stick_response_limit(&next.rx, &next.ry);
+#endif
 #if TARGET_OS_OSX
     /* A DSU server's pad (dsu_client.h): its buttons (the physical order, controller_map.h) and sticks join the controllers'. */
     if (dsuInput.connected && dsuAt && runtime_now_ns() - dsuAt < 500000000ull) {
@@ -184,6 +207,10 @@ static void refresh_gamepads(void) {
     gamepadState = next;
     gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
     gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
+#ifdef RUNTIME_STICK_CALIBRATION
+    gamepadRawLx=rawLx; gamepadRawLy=rawLy; gamepadRawRx=rawRx; gamepadRawRy=rawRy;
+    gamepadRawLT=rawLT; gamepadRawRT=rawRT;
+#endif
     pthread_mutex_unlock(&gamepadLock);
     if (changed) {
         uint64_t trace = gamepad_game_trace_row();
@@ -236,6 +263,10 @@ void runtime_gamepad_clear(void) {
     gamepadState = (RuntimeGamepadState){0};
     gamepadRawLeftAt = 0; gamepadRawRightAt = 0;
     gamepadNativeLx = gamepadNativeLy = 0;
+#ifdef RUNTIME_STICK_CALIBRATION
+    gamepadRawLx = gamepadRawLy = gamepadRawRx = gamepadRawRy = 0;
+    gamepadRawLT = gamepadRawRT = 0;
+#endif
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
     settingsShortcutDown = settingsShortcutPending = 0;
     captureDown = captureSeen = 0;   /* a button held at focus loss must not shoot on the way back */

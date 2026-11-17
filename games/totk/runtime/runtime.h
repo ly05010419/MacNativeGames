@@ -1,3 +1,4 @@
+#define RUNTIME_STICK_CALIBRATION 1
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
@@ -172,6 +173,21 @@ void *runtime_ns2_opus_ms_override(const char *name);   /* nn::codec Opus multis
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
+/* A stick's calibration (runtime/gamepad.m, the settings panel's stick-calibration tool): center is where the stick
+   actually rests when released, in game coordinates (-1..1, up positive); scale stretches the real travel to full
+   range (>= 1). The default center 0, scale 1 leaves the stick unchanged. */
+typedef struct { float centerX, centerY, scaleX, scaleY; } RuntimeStickCalibration;
+typedef struct { RuntimeStickCalibration left, right; } RuntimeGamepadCalibration;
+void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the calibration in force */
+void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* set and save (controller-calibration.txt) */
+void runtime_gamepad_calibration_reset(void);   /* back to the default and remove the file */
+float runtime_gamepad_stick_deadzone_get(int right); /* 0: left, nonzero: right */
+void runtime_gamepad_stick_deadzone_set(int right, float value); /* independent radial deadzone, 0..0.5, saved */
+float runtime_gamepad_deadzone_get(void); /* compatibility: left value */
+void runtime_gamepad_deadzone_set(float value); /* compatibility: set both sticks, 0..0.5, saved */
+void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY); /* actual calibrated radial response */
+void runtime_gamepad_stick_raw(float *lx, float *ly, float *rx, float *ry, int *connected);   /* the raw sticks (before calibration), game coordinates; the calibration tool's live picture */
+void runtime_gamepad_trigger_raw(float *lt, float *rt);   /* the analog triggers (0..1), the calibration tool's live bars */
 void runtime_gamepad_start(void);
 int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in; default off */
 void runtime_gamepad_background_set(int on);    /* main thread: apply and save */
