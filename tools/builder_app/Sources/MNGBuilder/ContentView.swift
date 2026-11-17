@@ -203,7 +203,7 @@ struct BuildStep: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(T.step3Hint).font(.callout).foregroundStyle(.secondary)
             ChecksList()
-            FoldersSection()
+            LocationSection()
             ActionSection()
         }
     }
@@ -236,31 +236,40 @@ struct ChecksList: View {
     }
 }
 
-struct FoldersSection: View {
+/// Step 3's location (user 2026-11-17: "让用户 自己选择位置 不要有默认位置，用户选一个位置 自动生成app目录和build目录
+/// 然后打包"): no default, a new app is not built before one is chosen; the app and build folders under it are shown and
+/// made when the build starts (Model.start). A game already installed is updated where it is, so it needs none.
+struct LocationSection: View {
     @EnvironmentObject var model: Model
 
     var body: some View {
-        DisclosureGroup(T.settings) {
-            VStack(alignment: .leading, spacing: 6) {
-                row(T.output, $model.outputDir)
-                row(T.work, $model.workRoot, empty: T.workAuto)
+        VStack(alignment: .leading, spacing: 6) {
+            if let app = model.installedAppForPlan {
+                Label(T.updatesInPlace(app), systemImage: "arrow.triangle.2.circlepath").font(.callout).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            } else {
+                Text(T.locationHint).font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Text(T.location).frame(width: 60, alignment: .leading).foregroundStyle(.secondary)
+                    Text(model.location.isEmpty ? T.locationNone : model.location).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(model.location.isEmpty ? Color.orange : Color.primary).textSelection(.enabled)
+                    Spacer()
+                    Button(model.location.isEmpty ? T.chooseLocation : T.change, action: choose)
+                        .buttonStyle(.borderedProminent).tint(model.location.isEmpty ? .accentColor : .secondary)
+                }
+                if !model.location.isEmpty {
+                    Text(T.locationParts(model.outputDir, (model.workRoot as NSString).appendingPathComponent(model.plan?.game ?? "")))
+                        .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                }
             }
-            .padding(.top, 4)
         }
-        .disabled(model.phase == .building)
+        .disabled(model.phase == .building || model.phase == .cancelling)
     }
 
-    private func row(_ label: String, _ value: Binding<String>, empty: String? = nil) -> some View {
-        HStack {
-            Text(label).frame(width: 110, alignment: .leading).foregroundStyle(.secondary)
-            Text(value.wrappedValue.isEmpty ? (empty ?? "") : value.wrappedValue).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-            Spacer()
-            if empty != nil && !value.wrappedValue.isEmpty { Button(T.automatic) { value.wrappedValue = "" } }
-            Button(T.change) {
-                let panel = NSOpenPanel()
-                panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-                if panel.runModal() == .OK, let url = panel.url { value.wrappedValue = url.path }
-            }
-        }
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.prompt = T.chooseLocation
+        if panel.runModal() == .OK, let url = panel.url { model.location = url.path }
     }
 }

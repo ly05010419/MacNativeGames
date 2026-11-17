@@ -43,8 +43,17 @@ final class Model: ObservableObject {
     @Published var quickStart = false    // 快速启动: build with only the title's shaders (Model.quickGames)
     /// The log of the job that failed last, which the terminal page's AI is asked about.
     var failureLog: String? { failure.flatMap { $0.step_log ?? $0.log } }
-    @Published var outputDir: String { didSet { save() } }
-    @Published var workRoot: String { didSet { save(); Task { await runChecks() } } }
+    /// Step 3's place, chosen by the player, no default (user 2026-11-17: "让用户 自己选择位置 不要有默认位置，用户选一个
+    /// 位置 自动生成app目录和build目录 然后打包"): a new app goes into <location>/app, its build's work files into
+    /// <location>/build/<game>; both are made when the build starts. Empty until chosen, and a new app is not built then.
+    /// An installed app is updated where it is, with the work folder it records (build_app.default_work), as before.
+    @Published var location: String { didSet { save(); Task { await runChecks() } } }
+    var outputDir: String { location.isEmpty ? "" : (location as NSString).appendingPathComponent("app") }
+    var workRoot: String { location.isEmpty ? "" : (location as NSString).appendingPathComponent("build") }
+    /// The installed app of the current plan's game, which a build updates in place.
+    var installedAppForPlan: String? { plan?.game.flatMap { g in installed.first(where: { $0.game == g })?.app } }
+    /// A new app would be made and no location is chosen yet.
+    var needsLocation: Bool { location.isEmpty && installedAppForPlan == nil }
 
     private var job: Job?
     // A build or update started elsewhere (tools/mng.py in a terminal, an AI): followed through tools/builder_jobs/shared.py
@@ -59,12 +68,8 @@ final class Model: ObservableObject {
     private let defaults = UserDefaults.standard
 
     init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        outputDir = defaults.string(forKey: "outputDir") ?? home + "/Applications"
-        // Empty: the one folder rule (build_app.default_work, MacNativeGames-work beside the apps folder). The window's
-        // first default (Application Support/…/Builder/work) counts as empty, so its apps keep the folder they record.
-        let saved = defaults.string(forKey: "workRoot") ?? ""
-        workRoot = saved == Paths.support.appendingPathComponent("work").path ? "" : saved
+        // No default: the old apps folder (~/Applications) and work folder settings are not taken over as a location.
+        location = defaults.string(forKey: "location") ?? ""
         paths = defaults.stringArray(forKey: "paths") ?? []
         keysPath = defaults.string(forKey: "keys")
         NotificationCenter.default.addObserver(forName: .mngOpenFiles, object: nil, queue: .main) { [weak self] note in
@@ -117,7 +122,8 @@ final class Model: ObservableObject {
 
     func loadInstalled() async {
         do {
-            let data = try await Job.collect(["apps", "--apps-dir", outputDir])
+            // the installed games are found by bundle ID (tools/builder_jobs/installed.py); the chosen app folder is looked in too
+            let data = try await Job.collect(["apps"] + (outputDir.isEmpty ? [] : ["--apps-dir", outputDir]))
             installed = try JSONDecoder().decode(InstalledReport.self, from: data).apps
             installedError = nil
             try? FileManager.default.createDirectory(at: Paths.support, withIntermediateDirectories: true)
@@ -129,8 +135,7 @@ final class Model: ObservableObject {
     }
 
     private func save() {
-        defaults.set(outputDir, forKey: "outputDir")
-        defaults.set(workRoot, forKey: "workRoot")
+        defaults.set(location, forKey: "location")
         defaults.set(paths, forKey: "paths")
         defaults.set(keysPath, forKey: "keys")
     }
@@ -138,13 +143,15 @@ final class Model: ObservableObject {
     var plan: ClassifyReport.Plan? { report?.plan }
     var blocks: [String] {
         (plan?.blocks ?? []) + checks.filter { !$0.ok && $0.id != "disk" }.map { $0.text }
+            + (plan?.game != nil && needsLocation ? [T.locationNeeded] : [])
     }
     var canBuild: Bool { phase != .building && phase != .cancelling && plan?.game != nil && blocks.isEmpty }
 
     /// The app a build of the current plan writes, when it is already there.
     var existingApp: String? {
         guard let name = plan?.app_name else { return nil }
-        if let game = plan?.game, let app = installed.first(where: { $0.game == game })?.app { return app }
+        if let app = installedAppForPlan { return app }
+        guard !outputDir.isEmpty else { return nil }
         let path = (outputDir as NSString).appendingPathComponent(name + ".app")
         return FileManager.default.fileExists(atPath: path) ? path : nil
     }
@@ -263,7 +270,10 @@ final class Model: ObservableObject {
         startedHere = true
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("mng-build-request.json")
         do {
-            try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+            // the chosen location's app and build folders (an update of an installed app has none and needs none)
+            for folder in [outputDir, workRoot] where !folder.isEmpty {
+                try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            }
             try JSONEncoder().encode(request).write(to: file)
         } catch {
             failure = nil; lines = [error.localizedDescription]; phase = .failed; return

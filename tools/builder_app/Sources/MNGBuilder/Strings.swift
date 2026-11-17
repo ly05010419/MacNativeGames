@@ -25,6 +25,20 @@ enum T {
     static let output = s("Apps go to", "App 放在")
     static let work = s("Work folders in", "工作目录放在")
     static let change = s("Change…", "更改…")
+    /// Step 3's place (user 2026-11-17: "让用户 自己选择位置 不要有默认位置 … 自动生成app目录和build目录").
+    static let location = s("Location", "位置")
+    static let chooseLocation = s("Choose a Location…", "选择位置…")
+    static let locationNone = s("Not chosen yet", "还没选")
+    static let locationHint = s("Choose a folder for this game. The app goes into its app folder, the build's work files into its build folder; both are made when the build starts.",
+                                "选一个文件夹放这个游戏：App 放进它里面的 app 文件夹，打包的中间文件放进 build 文件夹，开始打包时自动建好。")
+    static let locationNeeded = s("Step 3: choose a location first", "第三步：先选一个位置")
+    static func locationParts(_ app: String, _ work: String) -> String { zh ? "App：\(app)\n中间文件：\(work)" : "App: \(app)\nWork files: \(work)" }
+    static func updatesInPlace(_ app: String) -> String {
+        zh ? "这个游戏已经装在 \(app)，会原地更新，用它自己记录的工作目录；不用选位置。" : "This game is installed at \(app) and is updated where it is, with the work folder it records; no location needed."
+    }
+    /// The Launcher's version, bottom right of the window (user 2026-11-17: "launcher 右下角 显示 版本号").
+    static func version(_ v: String) -> String { "MNG Launcher \(v)" }
+    static func versionHelp(_ commit: String) -> String { zh ? "自带代码提交 \(commit)" : "Bundled code commit \(commit)" }
     static let thisMac = s("This Mac", "这台 Mac")
     static let fix = s("Fix", "修复")
     static let recheck = s("Check Again", "重新检查")
