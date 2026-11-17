@@ -82,3 +82,26 @@ Broader picture accuracy, long gameplay sessions, save round-trips, incomplete
 services/audio effects, and guarded Mii/cloth heap changes still need review.
 The contribution remains experimental with these gaps. Normal packaged diagnostics
 are off by default (`EMIO_DEBUG_LOG=1` opts in).
+
+## Interactive title bring-up (Emio 1.0.0)
+
+Autoplay to title only (A advances the system-data dialog; no input on the title menu itself; stop at title, do not enter Begin Investigation/Settings as stages). Private evidence (frame PNGs, logs) stays out of git; described here by log hash, not attached.
+
+- System-data creation dialog → A → `SAVEDATA_JPN.DAT` written (13 MB) → title movie (62 VP9 frames, libvpx, 0 errors, EOS, no loop) → movie-pipeline teardown (`SendMessageQueue(quit=2)` → consumer exits → `WaitThread` join → `DestroyThread` → `FinalizeMessageQueue`) → interactive title (`Begin Investigation / Settings`, 1920×1080, frames sustain, main running not parked).
+- Dialogs render (system-data prompts), BGM/voice packs open (silent output), input polls (controller disconnect reads), A advances state machine through dialogs. Title responds to input polling (menu present; A on title not pressed per stop-at-title bound).
+- No faults, no aborts on the title path. RomFS serves title assets with no fallback and no NOT_FOUND. `0xFF` writer canary clean on title path (writer still at large globally — entry blocker for config/save/load stages, listed below).
+
+### Host correctness fix (shipped, validated by title)
+
+`SVC 0x1C WaitProcessWideKeyAtomic` previously called `lock_handoff(addr)` (transfer semantics: write waiter's tag into the guest word + wake one). For condvar waits this clobbers the guest futex (`m=0x1001` with waiter bit stripped on a free mutex), the SDK gated-signal (`ldr;cbz→ret`) then skips, and quit Send blocks forever. Fix: release instead of transfer (`st32(addr,0)` + wake-all by address; spurious wakes are legal, SDK re-checks under mutex) plus a free-predicate guard (skip park if `[addr]==0` so a stale LINE-of-sight read retries CAS instead of parking). Validated: quit Send returns, consumer exits, join completes, title presents; existing host tests green, no bypass, no stub-return, no force-signal. Refining to exact waiter-bit preservation is a follow-up, not a blocker.
+
+### CUTs (flagged, peripheral for docked title)
+
+- `main+0xE1BC0` display-mode validation bypassed (`mov w0,#1;ret`). Removing it aborts during init (mode fields unset); `GetNpadStyleSet` correctly returns the docked pad style, but the game's mode dispatch needs full applet operation/performance-mode mapping to pass without the CUT. Title presents correctly at 1920×1080 regardless. Revisit with mode mapping.
+- `main+0xE2450` motion-sensor init skipped (`ret`). Removing it aborts (host provides no SixAxis sensors; docked title uses buttons, not motion). Dead-on-path not claimed (it is called); limitation: motion unsupported, bypassed, title does not need it.
+
+### Known issues (stop conditions for later stages)
+
+- Quit-delivery scheduling race: teardown occasionally stalls pre-quit (post-movie) or quit blocks; measured title-reach rate across a 6-boot batch (see commit body). Present with and without the fix; the fix strictly improves quit success.
+- `0xFF` wild writer still at large (canary armed, never fired on title path). Entry blocker for config/save/load (D) and choice/ending (E) per mission ladder.
+- BGM/voice silent output (packs open, decode ok). Applet library never starts (stubbed success, dialog advances). `0xE1BC0`/`0xE2450` CUTs above.

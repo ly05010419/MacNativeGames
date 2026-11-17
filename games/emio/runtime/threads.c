@@ -23,6 +23,8 @@
 // All waits hang on one global lock G, with one condition variable per thread; correctness first, performance to be measured later.
 #include "thread_compat.h"
 #include "ipc.h"
+int emio_pred_check=1;
+int emio_freehandoff=1;
 #include <errno.h>
 #include <setjmp.h>
 extern __thread sigjmp_buf *runtime_fault_guard;
@@ -344,6 +346,7 @@ int svc_thread(int num, uint64_t *regs) {
         if (pthread_create(&t->pt, &a, thread_main, t)) die("pthread_create");
         pthread_attr_destroy(&a);
         LOG("CreateThread h=%#x entry=%#llx sp=%#llx", t->handle,t->entry,t->stack_top);
+        { static _Atomic unsigned cc=0; unsigned k=++cc; if(k<=80) fprintf(stderr,"[emio-thread] create h=%x entry=%llx prio=%d\n",t->handle,(unsigned long long)t->entry,t->prio); }
         regs[0] = 0; regs[1] = t->handle; return 1;
     }
     case 0x09: {  // StartThread(w0)
@@ -351,13 +354,18 @@ int svc_thread(int num, uint64_t *regs) {
         thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
         if (t) { t->started = 1; pthread_cond_signal(&t->cv); }
         pthread_mutex_unlock(&G);
+        { static _Atomic unsigned sc2=0; unsigned k=++sc2; if(k<=80) fprintf(stderr,"[emio-thread] start h=%x\n",(unsigned)regs[0]); }
         regs[0] = t ? 0 : R_BAD_HANDLE; return 1;
     }
-    case 0x0A: thread_exit(cur()); return 1;
+    case 0x0A: { thr_t *ex = cur(); fprintf(stderr,"[emio-thread] exit h=%x\n",ex?ex->handle:0); thread_exit(ex); return 1; }
     case 0x0B: {  // SleepThread(x0 ns)；0/-1/-2 = 各类让出 | SleepThread(x0 ns); 0/-1/-2 = the various kinds of yield
         int64_t ns = (int64_t)regs[0];
-
         thr_t *self = cur();
+        { static _Atomic unsigned scnt=0; unsigned k=++scnt;
+         if (k<=3 || (k%200000)==0) { fprintf(stderr,"[emio-sleep] #%u tid=%x ns=%lld lr=%llx",k,self?self->handle:0,(long long)ns,(unsigned long long)regs[30]);
+          { uint64_t fp=(uint64_t)regs[29]; for(int d=0;d<6&&fp&&!(fp&15);d++){ uint64_t fr[2]={0,0}; sigjmp_buf jw; runtime_fault_guard=&jw; int ok=1;
+           if(sigsetjmp(jw,1)) ok=0; else { volatile uint64_t *pp=(volatile uint64_t *)(uintptr_t)fp; fr[0]=pp[0]; fr[1]=pp[1]; }
+           runtime_fault_guard=NULL; if(!ok)break; fprintf(stderr," %llx",(unsigned long long)fr[1]); if(fr[0]==fp)break; fp=fr[0]; } fprintf(stderr,"\n"); } } }
         if (ns > 0) { pthread_mutex_lock(&G); core_put(self); pthread_mutex_unlock(&G); }
         if (ns > 0 && dm_detclock_enabled()) {
             uint64_t deadline = guest_ns() + (uint64_t)ns;
@@ -401,7 +409,13 @@ int svc_thread(int num, uint64_t *regs) {
     case 0x1B: pthread_mutex_lock(&G); lock_handoff(regs[0]); pthread_mutex_unlock(&G); regs[0] = 0; return 1;
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 锁地址, x1 条件键, w2 标签, x3 超时) | WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
-        { static _Atomic unsigned wc=0; unsigned k=++wc; if(t->handle==0x1001) { fprintf(stderr,"[emio-wait-MAIN] #%u addr=%llx key=%llx tag=%u timeout=%lld lr=%llx\n",k,(unsigned long long)addr,(unsigned long long)key,(unsigned)regs[2],(long long)regs[3],(unsigned long long)regs[30]);
+        /* B5 predicate: futex wait only if locked. If [addr]==0 (free), guest saw stale; return so it retries CAS. Flagged A/B via EMIO_PRED. */
+        { extern int emio_pred_check; if (emio_pred_check<0) emio_pred_check=getenv("EMIO_PRED")?1:0; uint32_t _pv=0xdeadbeef; { sigjmp_buf _jw; runtime_fault_guard=&_jw;
+           if(!sigsetjmp(_jw,1)) _pv=*(volatile uint32_t *)(uintptr_t)addr; runtime_fault_guard=NULL; }
+         if (emio_pred_check && _pv==0) { static _Atomic unsigned pc=0; unsigned k=++pc; if(k<=5) fprintf(stderr,"[emio-pred] skip-park addr=%llx key=%llx tid=%x\n",(unsigned long long)addr,(unsigned long long)key,t->handle); regs[0]=0; return 1; } }
+        { static _Atomic unsigned wc=0; unsigned k=++wc; if(t->handle==0x1001 || k<=100) { uint32_t mv=0xdeadbeef; { sigjmp_buf jw2; runtime_fault_guard=&jw2;
+           if(!sigsetjmp(jw2,1)) mv=*(volatile uint32_t *)(uintptr_t)addr; runtime_fault_guard=NULL; }
+         fprintf(stderr,"[emio-wait] #%u tid=%x addr=%llx key=%llx tag=%u timeout=%lld lr=%llx m=%x\n",k,t->handle,(unsigned long long)addr,(unsigned long long)key,(unsigned)regs[2],(long long)regs[3],(unsigned long long)regs[30],mv);
          { uint64_t fp=(uint64_t)regs[29]; fprintf(stderr,"[emio] guest-stack"); 
           for(int d=0;d<10&&fp&&!(fp&15);d++){ uint64_t fr[2]={0,0}; sigjmp_buf jw; runtime_fault_guard=&jw; int ok=1;
            if(sigsetjmp(jw,1)) ok=0; else { volatile uint64_t *pp=(volatile uint64_t *)(uintptr_t)fp; fr[0]=pp[0]; fr[1]=pp[1]; }
@@ -425,7 +439,9 @@ int svc_thread(int num, uint64_t *regs) {
 #ifndef DM_TEST_CV_OLD_ORDER
         st32(key, 1);
         t->wkey = key; t->waddr = addr; t->wtag = (uint32_t)regs[2];
-        lock_handoff(addr); CV_TEST_HOOK();
+        { extern int emio_freehandoff; if (emio_freehandoff<0) emio_freehandoff=getenv("EMIO_FREE")?1:0;
+          if (emio_freehandoff) { st32(addr, 0); for (thr_t *ww=g_wait; ww;) { thr_t *nx=ww->next; if (ww->waddr==addr) wake(ww, 0); ww=nx; } } else { lock_handoff(addr); } }
+        CV_TEST_HOOK();
 #else   // 仅单测 t_condvar 的负对照：还原修复前「先放锁、后置键」的顺序 | Negative control for the unit test t_condvar only: restores the pre-fix order "release the lock first, set the key after"
         lock_handoff(addr); CV_TEST_HOOK();
         st32(key, 1);
@@ -437,7 +453,10 @@ int svc_thread(int num, uint64_t *regs) {
     }
     case 0x1D: {  // SignalProcessWideKey(x0 条件键, w1 个数，<=0 全部) | SignalProcessWideKey(x0 condition key, w1 count, <=0 all)
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
-        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=3000) fprintf(stderr,"[emio-signal] #%u key=%llx cnt=%d lr=%llx\n",k,(unsigned long long)key,cnt,(unsigned long long)regs[30]); }
+        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=3000) { thr_t *st = cur(); fprintf(stderr,"[emio-signal] #%u tid=%x key=%llx cnt=%d lr=%llx",k,st?st->handle:0,(unsigned long long)key,cnt,(unsigned long long)regs[30]);
+         { uint64_t fp=(uint64_t)regs[29]; for(int d=0;d<6&&fp&&!(fp&15);d++){ uint64_t fr[2]={0,0}; sigjmp_buf jw; runtime_fault_guard=&jw; int ok=1;
+          if(sigsetjmp(jw,1)) ok=0; else { volatile uint64_t *pp=(volatile uint64_t *)(uintptr_t)fp; fr[0]=pp[0]; fr[1]=pp[1]; }
+          runtime_fault_guard=NULL; if(!ok)break; fprintf(stderr," %llx",(unsigned long long)fr[1]); if(fr[0]==fp)break; fp=fr[0]; } fprintf(stderr,"\n"); } } }
         pthread_mutex_lock(&G);
         for (thr_t *w; (cnt <= 0 || n < cnt) && (w = pick(2, key)); n++) lock_acquire_for(w, w->waddr, w->wtag);   // 按内核顺序；转为锁等待或被唤醒后不再是 kind 2 | In kernel order; once turned into a lock wait or woken it is no longer kind 2
         int left = 0; for (thr_t *w = g_wait; w; w = w->next) if (w->wkind == 2 && w->wkey == key) { left = 1; break; }

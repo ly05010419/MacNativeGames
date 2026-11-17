@@ -1,6 +1,6 @@
 # Emio – The Smiling Man: Famicom Detective Club — experimental native Mac port
 
-**Status: experimental / first boot.** Isolated Apple silicon port of **Emio** (`0100A9501759E000`, base v0 / 1.0.0). The game's ARM64 code is rewritten ahead of time and runs through a native NVN-on-Metal host. **Mac only.** Not a claim of complete gameplay, every ending, or save compatibility.
+**Status: experimental / interactive title.** Isolated Apple silicon port of **Emio** (`0100A9501759E000`, base v0 / 1.0.0). The game's ARM64 code is rewritten ahead of time and runs through a native NVN-on-Metal host. Boots through system-data creation, the title movie, and movie-pipeline teardown to the interactive title menu (Begin Investigation / Settings). **Mac only.** Not a claim of complete gameplay, every ending, or save compatibility.
 
 **No game content is in this repository.** You need a legal dump of your own base-v0 NSP or XCI and keys from your own Switch.
 

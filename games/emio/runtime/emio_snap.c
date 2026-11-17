@@ -51,6 +51,12 @@ static struct {
  {0x1cc710, 0, K_ONESHOT, 1, "create-applet"},
  {0x35f630, 0, K_ONESHOT, 1, "start-applet"},
  {0x110708, 0, K_ONESHOT, 0, "pool-ready-96"},
+ {0xefe7c, 0, K_EMU, 0, "quit-send"},
+ {0xefe80, 0, K_ONESHOT, 0, "quit-ret"},
+ {0xf0208, 0, K_EMU, 0, "prod-send"},
+ {0xf00e8, 0, K_EMU, 0, "echo-send"},
+ {0xf0098, 0, K_ONESHOT, 0, "cons-recv"},
+
 // DISABLED-FOR-CLEAN-BOOT  {0x10fc30, 0, K_ONESHOT, 0, "walk-10fc30"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd80c,  0, K_KEEP_MADD, 0, "madd-fd80c"},
 // DISABLED-FOR-CLEAN-BOOT  {0xfd810,  0, K_KEEP_STP16, 0, "zero-fd810"},
@@ -224,6 +230,30 @@ int runtime_emio_snap_trap(int num, void *context) {
   fprintf(stderr, "[snap] bl 10f1b0 x0=%llx x1=%llx x2=%llx w3=%llx w4=%llx w5=%llx w6=%llx\n",
    (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2],
    (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6]);
+ if (sites[id].off == 0xefe7c) {
+  uint64_t q40=0; read_mem(x[0]+0x40, &q40, 8);
+  fprintf(stderr, "[snap] quit-send queue=%llx msg=%llu q40=%llx lr=%llx\n", (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)q40, (unsigned long long)u->uc_mcontext->__ss.__lr);
+  { uint64_t qw[8]={0}; if (read_mem(x[0], qw, sizeof qw)) fprintf(stderr, "[snap] queue-words %llx %llx %llx %llx %llx %llx %llx %llx\n", (unsigned long long)qw[0],(unsigned long long)qw[1],(unsigned long long)qw[2],(unsigned long long)qw[3],(unsigned long long)qw[4],(unsigned long long)qw[5],(unsigned long long)qw[6],(unsigned long long)qw[7]); }
+  { uint64_t mw[3]={0}; if (read_mem(x[0]+0x38, mw, sizeof mw)) fprintf(stderr, "[snap] mutex-words m38=%llx count40=%llx owner48=%llx\n", (unsigned long long)mw[0],(unsigned long long)mw[1],(unsigned long long)mw[2]); }
+  { if (sdk_base) { uint64_t slots[5]={0}; const uint64_t off[5]={0xd3c578ULL,0xd3c580ULL,0xd3c588ULL,0xd3c590ULL,0xd3c5c8ULL}; const char *nm[5]={"lock","wait","unlock","signal","walk"};
+   for (int i=0;i<5;i++) { uint64_t v=0; if (read_mem((uint64_t)(sdk_base+off[i]), &v, 8)) slots[i]=v;
+    fprintf(stderr, "[snap] got-%s slot=%llx target=%llx\n", nm[i], (unsigned long long)off[i], (unsigned long long)slots[i]);
+    if (slots[i]) { uint8_t cb[128]={0}; if (read_mem(slots[i], cb, 128)) { char hb[264]; int n=0; for (int b=0;b<128;b++){ hb[n++]="0123456789abcdef"[(cb[b]>>4)&15]; hb[n++]="0123456789abcdef"[cb[b]&15]; } hb[n]=0; fprintf(stderr, "[snap] code-%s %s\n", nm[i], hb); } } } } }
+ }
+ if (sites[id].off == 0xefe80) {
+  fprintf(stderr, "[snap] quit-ret Result=%llu (x0)\n", (unsigned long long)x[0]);
+ }
+ if (sites[id].off == 0xf0098 && hits[id] <= 5) {
+  fprintf(stderr, "[snap] cons-recv#%u queue=%llx out=%llx\n", hits[id], (unsigned long long)x[1], (unsigned long long)x[0]);
+ }
+ if (sites[id].off == 0xf0208) {
+  uint64_t q40=0; read_mem(x[0]+0x40, &q40, 8);
+  fprintf(stderr, "[snap] prod-send#%u queue=%llx msg=%llu q40=%llx\n", hits[id], (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)q40);
+ }
+ if (sites[id].off == 0xf00e8) {
+  uint64_t q40=0; read_mem(x[0]+0x40, &q40, 8);
+  fprintf(stderr, "[snap] echo-send#%u queue=%llx msg=%llu q40=%llx\n", hits[id], (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)q40);
+ }
  if (sites[id].off == 0x1cc710 && hits[id] <= 3) {
   fprintf(stderr, "[snap] CreateLibraryApplet appletId=%llx\n", (unsigned long long)x[1]);
  }

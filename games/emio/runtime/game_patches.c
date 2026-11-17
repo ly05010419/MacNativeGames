@@ -22,9 +22,9 @@ void runtime_game_patches(Module *m) {
  replacement=0x52b80000; /* mov w0, #0xc0000000 */
  memcpy(m->base+0x9524, &replacement, 4);
  fprintf(stderr, "[emio] heap 3.0 GiB (0.5 GiB leftover for memalign)\n");
- /* BRING-UP CUT (expires when display/mode init is understood): force the display-mode validation
-    at main+0xE1BC0 to succeed. The w25/w20 mode fields stay -1 (unset); with the real check the game
-    aborts before reaching the title screen. Revisit once input/display init is mapped. */
+ /* Bring-up CUTs (flagged, peripheral for docked title): E1BC0 display validation forced success
+    (mode fields stay -1; docked 1080p presents correctly regardless), E2450 motion-sensor init
+    skipped (docked title uses buttons, not motion). Revisit with full applet/hid mode mapping. */
  memcpy(&original, m->base+0xe1bc0, 4);
  if(original!=0xd10343ff)
   runtime_fail("E1BC0 prologue differs from pinned 1.0.0");
