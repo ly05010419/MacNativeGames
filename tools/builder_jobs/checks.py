@@ -24,6 +24,13 @@ def _ok(cmd, **kw):
         return False
 
 
+def _out(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+
 def _free_gb(path):
     path = Path(path).expanduser()
     while not path.exists() and path != path.parent:
@@ -43,6 +50,13 @@ def checks(work_root):
           f'Apple 芯片的 Mac，macOS 26 或更新（这台：{platform.machine()}，macOS {platform.mac_ver()[0]}）'))
     clang = _ok(['xcrun', '--find', 'clang'])
     add('clt', clang, t('Xcode command line tools', 'Xcode 命令行工具'), 'xcode-select --install', 'install-clt')
+    sdk = _out(['xcrun', '--show-sdk-version']) if clang else ''
+    head = sdk.split('.')[0]
+    add('sdk', head.isdigit() and int(head) >= 26,
+        t(f'the macOS 26 SDK or later, with Metal 4 (the developer tools use: {sdk or "?"})',
+          f'macOS 26 或更新的 SDK，带 Metal 4（开发工具现在用的是：{sdk or "?"}）'),
+        t('update Xcode from the App Store, or use the command line tools: sudo xcode-select -s /Library/Developer/CommandLineTools',
+          '在 App Store 更新 Xcode，或改用命令行工具：sudo xcode-select -s /Library/Developer/CommandLineTools'))
     cxx = clang and _ok(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input=b'#include <string>\n')
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
