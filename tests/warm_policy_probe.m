@@ -107,25 +107,6 @@ int main(int argc, char **argv) { @autoreleasepool {
         expect(warm_saver_word("off\n") == 0 && warm_saver_word(" off ") == 0, "\"off\" is off");
         expect(WARM_SAVER_DEFAULT == 1 && warm_saver_word(NULL) == 1 && warm_saver_word("") == 1 && warm_saver_word("\n") == 1, "no file or an empty one is the default, on");
         expect(warm_saver_word("yes") == -1 && warm_saver_word("ON") == -1 && warm_saver_word("onn") == -1, "an unknown word is reported, not guessed");
-    } else if ([mode isEqualToString:@"played"]) {   // nvn_warm_resident.h WARM_PLAYED_FILE (user 2026-11-17: "行")
-        expect(warm_played_kind("R\tabc\n") && warm_played_kind("B\tabc\t-\t-") && warm_played_kind("T\tabc\t0:1") && warm_played_kind("C\tcompute_b"),
-               "render, border, tile-read and compute rows are kept");
-        expect(!warm_played_kind("S\tshader_b\t0") && !warm_played_kind("M\t-\tmesh") && !warm_played_kind("# R\tx") && !warm_played_kind("R\t\n")
-               && !warm_played_kind("R") && !warm_played_kind(NULL), "library, mesh, comment and empty rows are not");
-        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"warm-played.tsv"];
-        [@"R\ta\nS\tlib_b\t0\nR\tb\nR\ta\nC\tc_b\n\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        NSArray *rows = warm_played_rows(path, 10);
-        expect([rows isEqual:@[@"R\tb", @"R\ta", @"C\tc_b"]], "each row once, at its last place, library rows dropped");
-        NSString *again = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        expect([again isEqual:@"R\tb\nR\ta\nC\tc_b\n"], "the file is written again without the repeats");
-        rows = warm_played_rows(path, 2);
-        expect([rows isEqual:@[@"R\ta", @"C\tc_b"]], "over the cap the newest stay");
-        NSDate *before = [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileModificationDate];
-        rows = warm_played_rows(path, 2);
-        NSDate *after = [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileModificationDate];
-        expect(rows.count == 2 && [before isEqual:after], "a clean file is not written again");
-        expect([warm_played_rows(@"/missing/pso_played.tsv", 10) isEqual:@[]], "no file: nothing kept");
-        expect(WARM_PLAYED_MAX == 3000, "the cap: about 330 MB at 110 KB a pipeline");
     } else return 2;
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

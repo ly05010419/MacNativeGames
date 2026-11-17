@@ -57,42 +57,6 @@ __attribute__((unused)) static int warm_saver_word(const char *word) {
     return -1;
 }
 
-/* What this device built in play with the memory saver, kept with the title list from the next start (user 2026-11-17:
-   "行", on keeping the player's own pipelines). Measured that day in Castle Town (same save and 5-minute route, three
-   runs): 409-467 render pipelines were built in play each run, 2.8-5.0 s on the submit thread, the biggest cause of the
-   frames over 100 ms, and 324-340 of them were the same in any two runs: TITLE_KINDS warmed none of the App list's
-   render pipelines, so every start built the same ones again. At about 110 KB a pipeline (ALL 12.06 GiB against
-   TITLE_KINDS 9.06 GiB for about 27,000) the town's set is about 50 MB. The newest WARM_PLAYED_MAX rows are kept. */
-#define WARM_PLAYED_FILE "pso_played.tsv"
-#define WARM_PLAYED_MAX 3000
-/* A row the played list takes: render (R), border (B), tile-read (T) and compute (C) rows; not the shader-library (S)
-   rows, which the archive's pipelines do not need. */
-__attribute__((unused)) static BOOL warm_played_kind(const char *line) {
-    return line && (line[0] == 'R' || line[0] == 'B' || line[0] == 'T' || line[0] == 'C') && line[1] == '\t' && line[2] && line[2] != '\n';
-}
-/* The played list's rows to keep: those warm_played_kind takes, each once (its last place counts), the newest `max`.
-   The file is written again when it held anything else (repeats, other rows, more than `max`). */
-__attribute__((unused)) static NSArray<NSString *> *warm_played_rows(NSString *path, NSUInteger max) {
-    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-    if (!text) return @[];
-    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
-    NSMutableOrderedSet<NSString *> *rows = [NSMutableOrderedSet orderedSet];
-    NSUInteger kept = 0;
-    for (NSString *line in lines) {
-        if (!line.length) continue;
-        kept++;
-        if (!warm_played_kind(line.UTF8String)) continue;
-        [rows removeObject:line]; [rows addObject:line];   // the last place counts: what was used most recently
-    }
-    NSArray<NSString *> *out = rows.array;
-    if (out.count > max) out = [out subarrayWithRange:NSMakeRange(out.count - max, max)];
-    if (out.count != kept) {
-        NSString *again = out.count ? [[out componentsJoinedByString:@"\n"] stringByAppendingString:@"\n"] : @"";
-        [again writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
-    return out;
-}
-
 /* The compute (C), mesh (M) and tile-read (T) rows of `lists`, each once, in list order (TITLE_KINDS keeps them). */
 __attribute__((unused)) static NSArray<NSString *> *warm_kind_rows(NSArray<NSString *> *lists) {
     NSMutableArray<NSString *> *rows = [NSMutableArray array];

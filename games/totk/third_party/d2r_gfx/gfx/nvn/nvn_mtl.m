@@ -7626,39 +7626,9 @@ static void pso_capture(const char *line) {
     if ([seen containsObject:k]) return;
     [seen addObject:k]; fputs(line, f); fflush(f);
 }
-/* The memory saver's played list (nvn_warm_resident.h WARM_PLAYED_FILE): every pipeline row this device builds in play,
-   the App's list's too, each once; warm_start keeps the list resident from the next start. pso_user_record is reached
-   only from the draw and dispatch paths (pso_adopt, the tile-read and compute builds), never from the warm-up, which
-   builds through warm_build_rows. Written on a serial queue: a file write on the submit thread cost 10-30 ms
-   (pso_contribute), and 2026-11-17's long frames were the submit thread waiting on the external drive. */
-static _Atomic uint64_t g_played_new;
-static void pso_played_record(const char *line) {
-    if (warm_resident_mode() != WARM_RESIDENT_TITLE_KINDS || !warm_played_kind(line)) return;
-    static dispatch_queue_t q; static dispatch_once_t once;
-    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.pso-played", DISPATCH_QUEUE_SERIAL); });
-    size_t n = strlen(line); while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
-    NSString *row = [[NSString alloc] initWithBytes:line length:n encoding:NSUTF8StringEncoding];
-    if (!row) return;
-    dispatch_async(q, ^{ @autoreleasepool {
-        static NSMutableSet<NSString *> *seen; static NSString *path;
-        if (!seen) {
-            path = [totk_rt_dir() stringByAppendingPathComponent:@WARM_PLAYED_FILE];
-            seen = [NSMutableSet set];
-            NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *old in [text componentsSeparatedByString:@"\n"]) if (old.length) [seen addObject:old];
-        }
-        if ([seen containsObject:row]) return;
-        [seen addObject:row];
-        FILE *f = fopen(path.fileSystemRepresentation, "a");
-        if (!f) { static int told; if (!told) { told = 1; MLOG("【红】省内存模式：写不了 %s，游玩中用过的管线下次不常驻", path.UTF8String); } return; }
-        fprintf(f, "%s\n", row.UTF8String); fclose(f);
-        atomic_fetch_add(&g_played_new, 1);
-    } });
-}
 static void pso_user_record(const char *fmt, ...) {
     char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
     pso_capture(line);
-    pso_played_record(line);
     if (!g_pso_shared_checked) { g_pso_shared_checked = 1; g_pso_shared = fopen(device_list().fileSystemRepresentation, "a"); }
     if (!g_pso_shared) return;
     if (!g_pso_user_seen) {
@@ -12211,12 +12181,6 @@ static void warm_start(void) {
                                stringByAppendingString:[rows componentsJoinedByString:@"\n"]] stringByAppendingString:@"\n"];
             if (rows.count && [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil]) paths = [paths arrayByAddingObject:file];
             else if (rows.count) MLOG("【红】预热：写不了 %s，计算、网格、贴图读取管线不常驻，用到时从存档取", file.UTF8String);
-            /* what this device built in play before (pso_played_record): kept too, so a place visited again builds none */
-            NSString *played = [totk_rt_dir() stringByAppendingPathComponent:@WARM_PLAYED_FILE];
-            NSArray<NSString *> *prow = warm_played_rows(played, WARM_PLAYED_MAX);
-            if (prow.count) paths = [paths arrayByAddingObject:played];
-            MLOG("预热：省内存模式另常驻本机游玩中用过的管线 %lu 行（%s，最多 %d 行，最新的留下）",
-                 (unsigned long)prow.count, played.lastPathComponent.UTF8String, WARM_PLAYED_MAX);
             MLOG("预热：常驻标题清单和 App 清单的计算、网格、贴图读取管线 %lu 行；本机清单和其余 %lu 份只填存档（TOTK_WARM_RESIDENT=%s）",
                  (unsigned long)rows.count, (unsigned long)archive.count, WARM_RESIDENT_NAME[mode]);
         }

@@ -38,23 +38,6 @@ class WarmPolicyTests(unittest.TestCase):
         result = subprocess.run([self.binary, 'resident'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_played_list_rows(self):   # user 2026-11-17: "行" (the saver keeps what the player used)
-        result = subprocess.run([self.binary, 'played'], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_saver_records_play_and_keeps_it_next_start(self):
-        source = (NVN / 'nvn_mtl.m').read_text()
-        record = source[source.index('static void pso_played_record(const char *line) {'):source.index('static void pso_user_record(')]
-        self.assertIn('warm_resident_mode() != WARM_RESIDENT_TITLE_KINDS', record)   # the saver only
-        self.assertIn('dispatch_async(q,', record)                                    # never a file write on the submit thread
-        user = source[source.index('static void pso_user_record('):]
-        self.assertLess(user.index('pso_played_record(line);'), user.index('if (!g_pso_shared) return;'))   # before the App-list filter
-        start = source[source.index('static void warm_start(void) {'):]
-        kinds = start[start.index('if (kinds && archive.count) {'):start.index('g_warm_pipelines_only = 1;')]
-        self.assertIn('warm_played_rows(played, WARM_PLAYED_MAX)', kinds)
-        self.assertIn('if (prow.count) paths = [paths arrayByAddingObject:played];', kinds)
-        self.assertLess(start.index('warm_played_rows(played,'), start.index('warm_plan(paths,'))
-
     def test_oot_mac_saves_memory_unless_switched_off(self):   # user 2026-11-16: "开启省内存模式"; night: "目标 12g"
         source = (NVN / 'nvn_mtl.m').read_text()
         mode = source[source.index('static int warm_resident_mode(void)'):source.index('static int warm_shared(void)')]
