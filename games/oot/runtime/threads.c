@@ -428,16 +428,18 @@ static long core_diag_ns(void) { static long v; if (!v) { const char *e = getenv
 #define CORE_DIAG_NS ((uint64_t)core_diag_ns())
 static int core_diag_on(void) { return dm_core_diag_enabled(); }
 static int g_core_reports;
+void runtime_hle_describe(unsigned i, char *out, size_t n);   // hle_stack.c (a weak fallback below)
 /* Enter/return holding G. Snapshot retained Mach ports, then drop G before suspending or formatting:
    an owner may be in host code holding an allocator/dyld lock, or may next need the scheduler lock. */
 static void core_wait_report(thr_t *w, uint64_t since) {
     if (g_core_reports++ >= 400) return;
-    struct { mach_port_t port; uint32_t handle; int prio; uint64_t mask, held; int svc; } owners[NCORE] = {0};
+    struct { mach_port_t port; uint32_t handle; int prio; uint64_t mask, held; int svc, hle; } owners[NCORE] = {0};
     uint64_t now = now_ns(), mask = w->mask; uint32_t handle = w->handle; int prio = w->prio;
     for (int i=0;i<NCORE;i++) {
         thr_t *o = g_core_owner[i]; if (!o) continue;
         owners[i].handle=o->handle; owners[i].prio=o->prio; owners[i].mask=o->mask;
         owners[i].held=o->core_since ? now-o->core_since : 0; owners[i].svc=o->last_svc;
+        owners[i].hle=o->last_hle;   // with "hletrace 1": the host function it called last (2026-11-17: an owner waited in a host lock, its name not on the stack)
         if (o->mport && mach_port_mod_refs(mach_task_self(), o->mport, MACH_PORT_RIGHT_SEND, 1) == KERN_SUCCESS) owners[i].port=o->mport;
     }
     pthread_mutex_unlock(&G);
@@ -469,9 +471,10 @@ static void core_wait_report(thr_t *w, uint64_t since) {
     fprintf(stderr, "[core-wait] frame %llu thread %#x (priority %d, mask %#llx) waited %.1f ms:", (unsigned long long)dm_nvn_frame_count(), handle, prio, (unsigned long long)mask, (now-since)/1e6);
     for (int i=0;i<NCORE;i++) {
         if (!owners[i].handle) { fprintf(stderr, " core %d free;", i); continue; }
-        fprintf(stderr, " core %d%s: %#x (priority %d, mask %#llx, held %.1f ms, last svc %#x) at %s <- %s%s;", i,
+        char hle[160] = ""; if (owners[i].hle) { char nm[140]; runtime_hle_describe((unsigned)owners[i].hle - 1, nm, sizeof nm); snprintf(hle, sizeof hle, ", last host call %s", nm); }
+        fprintf(stderr, " core %d%s: %#x (priority %d, mask %#llx, held %.1f ms, last svc %#x%s) at %s <- %s%s;", i,
             (mask>>i&1) ? "" : " (not in mask)", owners[i].handle, owners[i].prio, (unsigned long long)owners[i].mask,
-            owners[i].held/1e6, owners[i].svc, pc[i], lr[i], up[i]);
+            owners[i].held/1e6, owners[i].svc, hle, pc[i], lr[i], up[i]);
     }
     fputc('\n',stderr);
     pthread_mutex_lock(&G);
