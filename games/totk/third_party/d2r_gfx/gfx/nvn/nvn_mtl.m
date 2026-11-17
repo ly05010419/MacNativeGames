@@ -7676,11 +7676,26 @@ static NSString *msl_fix_depth_gather(NSString *src) {
     return src;
 }
 #include "nvn_umul_diagnostic.h"
+#include "oot_mesh_size.h"
+static MTLCompileOptions *totk_source_opts(NSString *source) {
+    MTLCompileOptions *options = totk_precise_opts();
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+    NSData *raw = [source dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(raw.bytes, (CC_LONG)raw.length, md);
+    char hex[65]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2*i, 3, "%02x", md[i]);
+    if (oot_mesh_size_source(hex)) {
+        options = [options copy];   // never mutate the options shared by compile workers
+        options.optimizationLevel = MTLLibraryOptimizationLevelSize;
+    }
+#endif
+    return options;
+}
 static id<MTLLibrary> totk_msl_library(NSString *source, NSError **err) {
     NSError *e = nil;
+    MTLCompileOptions *options = totk_source_opts(source);
     NSString *src = oot_umul_diagnostic_source(msl_fix_depth_gather(source));
     for (int attempt = 1;; attempt++) {
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:options error:&e];
         BOOL interrupted = !lib && [e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"];
         if (lib || !interrupted || attempt == 4) { if (err) *err = e; return lib; }
         MLOG("【红】着色器编译服务连接中断（第 %d 次），%d ms 后重试", attempt, attempt * 100);

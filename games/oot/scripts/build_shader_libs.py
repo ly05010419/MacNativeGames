@@ -15,6 +15,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +35,15 @@ from game_slot import GameSlot
 # no GPU cost. The runtime's own compiles (nvn_mtl.m totk_precise_opts, a variant no library holds) go through
 # MTLCompileOptions, which has no such option: a shader first met in play is compiled without it until the next build.
 METAL_FLAGS = [*BASE_METAL_FLAGS, "-fpreserve-invariance", "-fwrapv"]
+
+# Shared with the Mac runtime. This is a complete source digest, not a prefix;
+# a changed translation must be investigated before it receives the workaround.
+SIZE_POLICY = REPO/'games/totk/third_party/d2r_gfx/gfx/nvn/oot_mesh_size.h'
+SIZE_SOURCE = re.search(r'#define OOT_MESH_SIZE_SOURCE_SHA256 "([0-9a-f]{64})"', SIZE_POLICY.read_text())[1]
+
+
+def optimization_flags(source_sha):
+    return ['-Os'] if source_sha == SIZE_SOURCE else []
 
 
 def digest(path):
@@ -116,6 +126,7 @@ def main():
     prior = json.loads(manifest.read_text()) if manifest.exists() else {}
     known = prior.get('files', {}) if prior.get('compiler') == identity else {}
     parser_depths = dict(prior.get('parser_depths', {})) if known else {}
+    prior_options = prior.get('optimization_flags', {}) if known else {}
     todo, source_hashes = {}, {}
     # A source the seed recorded as checked (prepare_ns2_seed.py record_verified) keeps that digest; the rest, and every
     # library not recorded as unchanged, are hashed on all cores (one thread took minutes per build).
@@ -135,6 +146,8 @@ def main():
             lib = a.out/f'{sha}.metallib'
             if not (lib.is_file() and lib.name in known):
                 return False
+            if prior_options.get(lib.name, []) != optimization_flags(sha):
+                return False   # source unchanged, but this library needs different compiler options
             entry = lib_record.get(lib.name)
             try:
                 if isinstance(entry, list) and len(entry) == 5 and entry[:4] == lib_identity(lib) and entry[4] == known[lib.name]:
@@ -157,14 +170,15 @@ def main():
     def compile_one(item):
         digest, src = item
         partial = a.out/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=env)
+        flags = [*METAL_FLAGS, *optimization_flags(digest)]
+        r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=env)
         parser_depth = None
         if r.returncode and 'bracket nesting level exceeded maximum of 256' in r.stderr:
             # Two genuine OOT shaders have deeper structured control flow. This
             # changes only the compiler's parser limit, not their code or math.
             partial.unlink(missing_ok=True)
             parser_depth = 1024
-            r = subprocess.run([metal, *METAL_FLAGS, '-fbracket-depth=1024', '-o', partial, src],
+            r = subprocess.run([metal, *flags, '-fbracket-depth=1024', '-o', partial, src],
                                capture_output=True, text=True, env=env)
         if r.returncode:
             partial.unlink(missing_ok=True)
@@ -211,6 +225,8 @@ def main():
         library = a.out/name
         if not library.is_file():
             return None
+        if prior_options.get(name, []) != optimization_flags(name.removesuffix('.metallib')):
+            return None
         entry = lib_record.get(name)
         try:
             if isinstance(entry, list) and len(entry) == 5 and entry[:4] == lib_identity(library) and entry[4] == expected:
@@ -224,6 +240,8 @@ def main():
                   if name not in files and Path(name).name == name and name.endswith('.metallib')]
         files.update({name: d for (name, _), d in zip(others, pool.map(variant_digest, others, chunksize=256)) if d})
     report = dict(schema=1, compiler=identity, complete=not failed, subset=bool(a.only), sources=source_hashes, files=files,
+                  optimization_flags={name: optimization_flags(name.removesuffix('.metallib')) for name in files
+                                      if optimization_flags(name.removesuffix('.metallib'))},
                   parser_depths={k: v for k, v in parser_depths.items() if k in files},
                   preparation_sha256=digest(Path(__file__).resolve()))
     partial = manifest.with_suffix('.partial')
