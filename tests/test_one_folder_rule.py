@@ -45,8 +45,11 @@ class DefaultWork(unittest.TestCase):
             self.assertEqual(build_app.default_work(out, 'totk')[0], Path(tmp) / 'MacNativeGames-work/totk')
 
     def test_apps_in_a_folder_whose_parent_cannot_be_written_go_to_the_home_folder(self):
-        self.assertEqual(build_app.default_work(Path('/Applications/Tears of the Kingdom.app'), 'totk')[0],
-                         Path.home() / 'MacNativeGames-work/totk')
+        with tempfile.TemporaryDirectory() as tmp:
+            out = app(Path(tmp) / 'disk/Applications')
+            with mock.patch.object(build_app.os, 'access', return_value=False) as access:
+                self.assertEqual(build_app.default_work(out, 'totk')[0], Path.home() / 'MacNativeGames-work/totk')
+            access.assert_called_once_with(out.parent.parent, os.W_OK)
 
 
 class Plan(unittest.TestCase):

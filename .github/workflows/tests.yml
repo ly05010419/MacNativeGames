@@ -12,7 +12,8 @@ jobs:
   source:
     name: Source tests (${{ matrix.group }})
     runs-on: macos-latest
-    timeout-minutes: 10
+    # Each AppKit settings case is bounded, but running every variant on a hosted VM can exceed ten minutes.
+    timeout-minutes: ${{ matrix.group == 'settings' && 20 || 15 }}
     strategy:
       fail-fast: false
       matrix:

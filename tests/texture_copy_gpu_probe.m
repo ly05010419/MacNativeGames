@@ -5,6 +5,7 @@
 #include <math.h>
 #include <unistd.h>
 #include "nvn.h"
+#include "metal_counted_probe.h"
 static id<MTLDevice> g_dev;
 static id<MTL4CommandBuffer> g_cb;
 static id<MTLResidencySet> residency;

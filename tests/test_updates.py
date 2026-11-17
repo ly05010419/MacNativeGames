@@ -344,7 +344,6 @@ class Updates(unittest.TestCase):
 
     def test_running_app_is_preserved_until_its_process_exits(self):
         import hashlib
-        from types import SimpleNamespace
         tree=self.root/'tree';out=self.root/'existing.app'
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
@@ -354,21 +353,18 @@ class Updates(unittest.TestCase):
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'new app')
-        checks=[]
-        def processes(args,*_args,**_kwargs):
-            if args[0]=='git':   # build_app.source_commit: the commit the app records (MNGSourceCommit)
-                return SimpleNamespace(returncode=0,stdout='abc1234\n')
-            if args[:2]==['ps','-ww']:   # build_app.wait_until_closed: the matching process's own command line
-                return SimpleNamespace(returncode=0,stdout=str(old.resolve())+'\n',check_returncode=lambda:None)
+        listing = iter(([(101, str(old.resolve()))], []))
+        def executables():
             self.assertEqual(old.read_bytes(),b'old running app')
-            checks.append(True)
-            return SimpleNamespace(stdout=f'  101 {old.resolve()}\n' if len(checks)==1 else '')
+            return next(listing)
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'shader_bundle',side_effect=fake_shader_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
              patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
-             patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause, \
+             patch.object(build_app,'running_executables',side_effect=executables) as checks, \
+             patch.object(build_app,'process_args',return_value=str(old.resolve())) as args, \
+             patch.object(build_app.time,'sleep') as pause, \
              patch.object(build_app,'prepare_prompt_assets'):
             build_app.step_app(tree,out,self.root/'logs',version='v143')
-        self.assertEqual(len(checks),2);pause.assert_called_once_with(2)
+        self.assertEqual(checks.call_count,2);args.assert_called_once_with(101);pause.assert_called_once_with(2)
         self.assertEqual(old.read_bytes(),b'new app')
 
     def test_remove_tree_retries_when_a_file_reappears(self):
