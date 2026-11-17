@@ -52,26 +52,28 @@ struct ActionSection: View {
         }
     }
 
+    /// Where the build is, in words (user 2026-11-16: "进度条 根本不动 改成 描述 比如 完成第一步 共五步 现在第三步
+    /// 400/40000 个着色器"): the stage, the step with what it does, the step's own counter, the times. No overall bar:
+    /// a first build has no record to measure it by, and a step skipped this time left it standing still.
     private var progress: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ProgressView(value: model.fraction)
             HStack {
                 Text(headline).font(.headline)
                 Spacer()
                 Text(times).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
             }
             if model.phase == .building || model.phase == .cancelling {
-                if !model.stageText.isEmpty { Text(model.stageText).font(.callout).foregroundStyle(.secondary) }
-                if !model.step.isEmpty {
-                    HStack {
-                        Text(model.step).font(.caption.monospaced()).foregroundStyle(.secondary)
-                        if let (done, total) = model.stepCount {
-                            ProgressView(value: Double(done), total: Double(total)).frame(maxWidth: 160)
-                            Text("\(done) / \(total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
-                    }
+                if let (i, n) = model.stageNumber { Text(T.stageOf(i, n, model.stage)).font(.callout) }
+                if model.stepIndex > 0 {
+                    Text(T.stepLine(model.stepIndex, model.stepsLast, T.stepName(model.step))).font(.title3)
                 }
-                if !model.measured { Text(T.firstBuild).font(.caption).foregroundStyle(.secondary) }
+                if let (done, total) = model.stepCount {
+                    Text(T.counted(done, total, T.stepUnit(model.step))).font(.title3.monospacedDigit())
+                }
+                if !model.step.isEmpty {
+                    Text(model.step).font(.caption.monospaced()).foregroundStyle(.secondary)   // the log's name, for the log folder
+                }
+                if model.stepsLast == nil { Text(T.firstBuild).font(.caption).foregroundStyle(.secondary) }
             }
             if model.phase == .cancelled { Text(T.cancelled).foregroundStyle(.secondary) }
         }

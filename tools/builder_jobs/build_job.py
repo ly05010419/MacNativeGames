@@ -197,8 +197,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
     script = script or chosen
+    # steps_last: how many steps the same kind of build took on this Mac last time (the window says "N steps last time")
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
-         command=[str(script), *argv], kind=kind)
+         command=[str(script), *argv], kind=kind, steps_last=len(estimator.last) if estimator.last else None)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True, env=env)
     cancelled = threading.Event()

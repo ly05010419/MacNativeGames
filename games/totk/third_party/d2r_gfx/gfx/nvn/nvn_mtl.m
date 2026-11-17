@@ -11952,6 +11952,10 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
                 if (dict.count > 256) [dict removeAllObjects];
             }
             if (done && runtime_warm_progress) { uint64_t d = at + processed; runtime_warm_progress(d, rows, 0, 0, d, rows); }
+            /* the packaging tool: "done / rows" each block, which MNG Launcher shows as the step's counter (user
+               2026-11-16: "400/40000 个着色器"); the tool has no start-up screen to report to */
+            if (done && g_compute_archive_tool)
+                MLOG("[pipeline-archive] %lu / %lu pipelines checked or built", (unsigned long)(at + processed), (unsigned long)rows);
         }
         [dict removeAllObjects];
         par_flush_thread(); atomic_store(&par_filling, 0); par_write_in_place = 0;
@@ -25418,10 +25422,14 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);
+    /* "done / asked" every 2 s while a round drains, which MNG Launcher shows as the step's counter (user 2026-11-16:
+       "400/40000 个着色器"); asked: the shaders this round asked for (the ones already translated answer at once). */
+    __block unsigned long asked = (unsigned long)keys.count;
     void (^drain)(void) = ^{
         for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
             usleep(500000);
-            if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
+            if (++said % 4 == 0) MLOG("[seed] %lu / %lu shaders translated (%d left, %.0f s)", asked > (unsigned long)left ? asked - (unsigned long)left : 0,
+                                      asked, left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
         }
     };
     drain();
@@ -25436,10 +25444,12 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
         const uint8_t *ctl = [j[3] pointerValue], *code = [j[4] pointerValue];
         totk_rt_variant(j[0], [j[2] intValue], ctl, code, j[1], rt_local(ctl, [j[2] intValue]), 1);
     }
+    asked = (unsigned long)listed_jobs.count;
     drain();
     for (long was = -1, now; ; was = now) {
         now = 0; for (NSArray *j in listed_jobs) if (totk_rt_variant_cached(j[0], j[1])) now++;
         if (now == (long)listed_jobs.count || now <= was) break;
+        asked = (unsigned long)(listed_jobs.count - (NSUInteger)now);
         for (NSArray *j in listed_jobs) if (!totk_rt_variant_cached(j[0], j[1])) {
             const uint8_t *ctl = [j[3] pointerValue], *code = [j[4] pointerValue];
             totk_rt_variant(j[0], [j[2] intValue], ctl, code, j[1], rt_local(ctl, [j[2] intValue]), 1);

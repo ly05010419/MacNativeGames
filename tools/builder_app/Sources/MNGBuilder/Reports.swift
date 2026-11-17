@@ -79,7 +79,7 @@ struct BuildEvent: Decodable {
     let event: String
     let t: Double?
     // plan
-    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?
+    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?, steps_last: Int?
     // stage / step
     let index: Int?, total: Int?, name: String?, text: String?
     // progress

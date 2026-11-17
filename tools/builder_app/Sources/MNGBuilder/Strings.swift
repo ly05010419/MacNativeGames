@@ -36,8 +36,8 @@ enum T {
     static let cancelled = s("Cancelled. Build again to go on where it stopped.", "已停止。再按一次打包会从停下的地方接着做。")
     static let cancelling = s("Stopping…", "正在停止…")
     static let log = s("Log", "日志")
-    static let firstBuild = s("First build on this Mac: the bar follows the build's four stages, no time estimate yet.",
-                              "这台 Mac 第一次打这个游戏：进度条按四个阶段走，还没有剩余时间。")
+    static let firstBuild = s("The first build of this kind on this Mac: how many steps and how long are not known yet.",
+                              "这台 Mac 第一次做这种打包：还不知道一共几步、要多久。")
     static let noRepo = s("This app does not know its MacNativeGames folder: make it again with tools/builder_app/make_app.py.",
                           "这个 App 不知道 MacNativeGames 源码在哪：用 tools/builder_app/make_app.py 重新生成它。")
     static let existing = s("Already built", "已经打包过")
@@ -206,6 +206,91 @@ enum T {
         case "app": return s("Assembling and signing the app", "组装并签名 App")
         default: return name
         }
+    }
+
+    /// "Stage 2 of 4: Extracting the game's data" (build_app.py's 'i/4' lines; Ocarina of Time and updates have none).
+    static func stageOf(_ i: Int, _ n: Int, _ name: String) -> String {
+        zh ? "第 \(i) 阶段，共 \(n) 阶段：\(name)" : "Stage \(i) of \(n): \(name)"
+    }
+
+    /// "Step 3: Translating the shaders (2 done; 7 steps last time)". A step is a tool the build ran (its log in the work
+    /// folder's logs/); the total is this Mac's last build of the same kind, which may skip or add a step this time.
+    static func stepLine(_ i: Int, _ last: Int?, _ what: String) -> String {
+        let done = i - 1
+        if zh {
+            var more = done > 0 ? "已完成 \(done) 步" : ""
+            if let n = last { more += (more.isEmpty ? "" : "，") + "上次共 \(n) 步" }
+            return "现在第 \(i) 步：\(what)" + (more.isEmpty ? "" : "（\(more)）")
+        }
+        var more = done > 0 ? ["\(done) done"] : []
+        if let n = last { more.append("\(n) steps last time") }
+        return "Step \(i): \(what)" + (more.isEmpty ? "" : " (\(more.joined(separator: "; ")))")
+    }
+
+    /// "400 / 42848 shaders": the running step's own counter.
+    static func counted(_ done: Int, _ total: Int, _ unit: String) -> String {
+        "\(done) / \(total)" + (unit.isEmpty ? "" : " " + unit)
+    }
+
+    /// What a step does, from its log's name (the names build_app.py, update_runtime.py and games/*/build.py give their
+    /// logs); an unknown one shows its name.
+    static func stepName(_ log: String) -> String {
+        let rules: [(String, String, String)] = [   // prefix, English, 中文; the first prefix that matches
+            ("native-runtime", "Compiling the game's runtime", "编译游戏运行时"),
+            ("runtime-probe", "Checking the runtime", "检查运行时"),
+            ("runtime", "Compiling the game's runtime", "编译游戏运行时"),
+            ("ns2-corpus", "Collecting the game's shaders", "收集游戏的着色器"),
+            ("prepare-shader-seed", "Translating the shaders", "翻译着色器"),
+            ("prepare-ns2-seed", "Translating the shaders", "翻译着色器"),
+            ("ns2-seed", "Translating the shaders", "翻译着色器"),
+            ("compile-shader-libraries", "Compiling the shader libraries", "编译着色器库"),
+            ("shader-libs", "Compiling the shader libraries", "编译着色器库"),
+            ("shader-list-resolve", "Sorting the warm-up lists", "整理预热清单"),
+            ("compute-pipelines", "Building the pipeline archive", "建管线存档"),
+            ("mac-pipelines", "Building the pipeline archive", "建管线存档"),
+            ("warm-metal-cache", "Warming Metal's cache", "预热 Metal 缓存"),
+            ("sign-pipelines", "Signing the pipeline archive", "签名管线存档"),
+            ("verify-pipelines", "Checking the pipeline archive", "核对管线存档"),
+            ("sign-shaders", "Signing the shader data", "签名着色器数据"),
+            ("verify-shaders", "Checking the shader data", "核对着色器数据"),
+            ("sign-data", "Signing the game data", "签名游戏数据"),
+            ("verify-data", "Checking the game data", "核对游戏数据"),
+            ("sign-app", "Signing the app", "签名 App"),
+            ("register-app", "Registering the app", "登记 App"),
+            ("import-original", "Importing the game files", "导入游戏文件"),
+            ("import_dump", "Importing the game files", "导入游戏文件"),
+            ("extract_romfs", "Extracting the game data", "解出游戏数据"),
+            ("update-romfs", "Merging the update's data", "合并更新的数据"),
+            ("verify-original-modules", "Checking the game's code", "核对游戏代码"),
+            ("prepare_modules", "Checking the game's code", "核对游戏代码"),
+            ("verify-rewrite", "Checking the rewritten code", "核对改写后的代码"),
+            ("rewrite", "Rewriting the game's code", "改写游戏代码"),
+            ("prepare_runtime", "Preparing the game's tables", "准备游戏数据表"),
+            ("prepare_romfs_backend", "Preparing the game data index", "准备游戏数据索引"),
+            ("prepare-shared-fonts", "Preparing the system fonts", "准备系统字体"),
+            ("shared_fonts", "Preparing the system fonts", "准备系统字体"),
+            ("app-icon", "Making the app icon", "做 App 图标"),
+            ("app_icon", "Making the app icon", "做 App 图标"),
+            ("python-", "Preparing Python", "准备 Python 环境"),
+            ("venv", "Preparing Python", "准备 Python 环境"),
+            ("pip", "Preparing Python", "准备 Python 环境"),
+            ("sources", "Copying the build scripts", "复制打包脚本"),
+            ("fetch-", "Downloading a tool", "下载工具"),
+            ("hactool", "Building a tool", "编译工具"),
+            ("output_res_overlay", "Making the resolution patch", "做分辨率补丁"),
+            ("romfs_patches", "Making the game data patches", "做游戏数据补丁"),
+            ("launcher", "Compiling the launcher", "编译启动器"),
+        ]
+        guard let r = rules.first(where: { log.hasPrefix($0.0) }) else { return log }
+        return zh ? r.2 : r.1
+    }
+
+    /// What a step's counter counts.
+    static func stepUnit(_ log: String) -> String {
+        if ["prepare-shader-seed", "prepare-ns2-seed", "ns2-seed", "ns2-corpus"].contains(where: log.hasPrefix) { return s("shaders", "个着色器") }
+        if ["compile-shader-libraries", "shader-libs"].contains(where: log.hasPrefix) { return s("shader libraries", "个着色器库") }
+        if ["compute-pipelines", "mac-pipelines", "warm-metal-cache"].contains(where: log.hasPrefix) { return s("pipelines", "条管线") }
+        return ""
     }
 
     static func minutes(_ seconds: Double) -> String {

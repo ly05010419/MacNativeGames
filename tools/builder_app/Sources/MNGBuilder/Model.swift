@@ -15,7 +15,10 @@ final class Model: ObservableObject {
     @Published var phase: Phase = .idle
     @Published var stage = ""
     @Published var stageText = ""
+    @Published var stageNumber: (Int, Int)?   // build_app.py's 'i/4' stage: (i, 4)
     @Published var step = ""
+    @Published var stepIndex = 0              // the running step's number (its log is the n-th the build started)
+    @Published var stepsLast: Int?            // the steps the same kind of build took on this Mac last time
     @Published var stepCount: (Int, Int)?
     @Published var fraction = 0.0
     @Published var left: Double?
@@ -261,6 +264,7 @@ final class Model: ObservableObject {
             failure = nil; lines = [error.localizedDescription]; phase = .failed; return
         }
         phase = .building; stage = ""; stageText = ""; step = ""; fraction = 0; left = nil; elapsed = 0; lines = []; failure = nil
+        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil
         do {
             job = try Job(["build", file.path], onLine: { [weak self] in self?.handle($0) },
                           ended: { [weak self] code in self?.ended(code) })
@@ -287,6 +291,7 @@ final class Model: ObservableObject {
         eventsPath = r["events"] as? String; offset = 0; pending = Data()
         updating = r["app"] as? String ?? externalSource
         phase = .building; stage = ""; stageText = ""; step = ""; fraction = 0; left = nil; elapsed = 0; lines = []
+        stageNumber = nil; stepIndex = 0; stepsLast = nil; stepCount = nil
         failure = nil; note = ""
         follower = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.readExternal() }
@@ -324,9 +329,11 @@ final class Model: ObservableObject {
             append(line); return
         }
         switch e.event {
-        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"
-        case "stage": stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
-        case "step": step = e.name ?? ""; stepCount = nil
+        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last
+        case "stage":
+            stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
+            if let i = e.index, let n = e.total { stageNumber = (i, n) }
+        case "step": step = e.name ?? ""; stepIndex = e.index ?? stepIndex + 1; stepCount = nil
         case "progress":
             fraction = e.fraction ?? fraction; left = e.left; elapsed = e.elapsed ?? elapsed; measured = e.measured ?? measured
             if let d = e.step_done, let t = e.step_total { stepCount = (d, t) } else { stepCount = nil }
