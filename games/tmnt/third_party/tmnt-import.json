@@ -977,7 +977,7 @@
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/totk_shader_rt.m",
       "commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
       "source_blob": "0771f207ef8bc37653f513fd37e00fff8f8ec5e3",
-      "sha256": "5697f1b9021dccc925026767902c8fa0531914bd418f5d60b7706dd0d3fdf301"
+      "sha256": "6484e9434c575a8e938d03ad4117c4df3203313de1194278ad0c0065c47c0c5d"
     },
     "third_party/d2r_gfx/gfx/nvn/totk_shader_scope.h": {
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/totk_shader_scope.h",
