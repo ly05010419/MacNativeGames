@@ -3981,7 +3981,11 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
 }
 static void dead_stat_print(unsigned long long frame);
 static void function_cache_set(int on);   // below, with function_cache_on
+/* Tears of the Kingdom 1.4.3's "4K, MetalFX to 5K" picture preset (game_patches_v143.c, PR #2240): set as a flag by
+   that runtime, read by output_upscale; 0 in every other game, which never sets it. */
+static _Atomic int g_mfx_5k_output;
 void dm_gfx_set_flag(const char *name, int v) {
+    if (!strcmp(name, "mfx_5k_output")) { atomic_store(&g_mfx_5k_output, v != 0); return; }
     if (!strcmp(name,"heap_reuse")) { atomic_store(&g_rt_heap_on,v!=0); retire_idle_kick(); MLOG("[heap-reuse] enabled=%d",v!=0); return; }
     if (!strcmp(name,"record_compact")) { extern void nvn_record_compact_set(int) __attribute__((weak_import)); if(nvn_record_compact_set)nvn_record_compact_set(v); MLOG("[record-compact] enabled=%d",v!=0); return; }
     if (!strcmp(name,"buffer_reuse")) { buffer_reuse_set(v); buffer_reuse_report(); return; }
@@ -6906,10 +6910,7 @@ static int mfx_ui_vs(const char *key) {
    that scene (squeezed, Link turns into a black silhouette). The canvas is learned as for TOTK_MFX (canvas_learn,
    uw_note_present); g_uw_ui: this frame's UI has begun. */
 extern float runtime_aspect_now(void) __attribute__((weak_import));
-extern int runtime_metalfx_5k_output(void) __attribute__((weak_import));
-static int metalfx_5k_output(void) {
-    return runtime_metalfx_5k_output && runtime_metalfx_5k_output();
-}
+static int metalfx_5k_output(void) { return atomic_load_explicit(&g_mfx_5k_output, memory_order_relaxed); }   // dm_gfx_set_flag
 #include "totk_ui_squeeze.h"
 static int g_uw_ui;
 _Atomic long g_uw_log;   // diagnostic "flag uw_log <frames>": log the canvas draws of that many frames

@@ -1697,7 +1697,14 @@ uint64_t runtime_output_res_extra_bytes(void){
    unset: nothing is kept, as before). A start with automatic output sizes restores the saved preset, falling back to
    the largest size that fits the swapchain when necessary. An explicit TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
 static _Atomic int picture_4k_to_5k;
-int runtime_metalfx_5k_output(void) { return atomic_load(&picture_4k_to_5k); }
+/* The graphics layer learns it as its flag "mfx_5k_output" (nvn_mtl.m), like mfx_output, instead of calling back here:
+   nvn_mtl.m is linked into every game's runtime and only Tears of the Kingdom 1.4.3 has this file, so a reference to a
+   function of it left 1.2.1, Breath of the Wild and the Switch 2 games with an undefined symbol (after PR #2240). */
+static void picture_4k_to_5k_set(int on) {
+    extern void dm_gfx_set_flag(const char *,int);
+    atomic_store(&picture_4k_to_5k,on!=0);dm_gfx_set_flag("mfx_5k_output",on!=0);
+}
+static int runtime_metalfx_5k_output(void) { return atomic_load(&picture_4k_to_5k); }
 
 static int picture_4k_to_5k_available(void) {
 #if TARGET_OS_OSX
@@ -1725,8 +1732,8 @@ static void picture_mode_restore(uint8_t *page){
     fclose(f);mode[strcspn(mode,"\r\n")]=0;
     unsigned w=1920,h=1080;
     if(!strcmp(mode,"4k-to-5k-metalfx")){
-        atomic_store(&picture_4k_to_5k, picture_4k_to_5k_available() &&
-                     !getenv("TOTK_MFX_OUTPUT") && !getenv("TOTK_MFX_UPSCALE"));
+        picture_4k_to_5k_set(picture_4k_to_5k_available() &&
+                             !getenv("TOTK_MFX_OUTPUT") && !getenv("TOTK_MFX_UPSCALE"));
         strcpy(mode,"native-4k");
     }
     if(!strcmp(mode,"native-4k-metalfx")){extern void dm_gfx_set_flag(const char *,int);dm_gfx_set_flag("mfx_output",1);dm_gfx_set_flag("mfx_upscale",1);strcpy(mode,"native-4k");}
@@ -1981,7 +1988,7 @@ int runtime_output_mode_set(int mode){
     output_size_set(pack_size(w,h));
     int mfx=mode==OUTPUT_MODE_METALFX||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_720P_METALFX;
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
-    atomic_store(&picture_4k_to_5k, mode==OUTPUT_MODE_4K_TO_5K_METALFX);
+    picture_4k_to_5k_set(mode==OUTPUT_MODE_4K_TO_5K_METALFX);
     fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_NATIVE_6K?"native 6K":mode==OUTPUT_MODE_NATIVE_4K_METALFX?"native 4K, MetalFX to the headset":mode==OUTPUT_MODE_4K_TO_5K_METALFX?"4K, MetalFX to 5K":mode==OUTPUT_MODE_NATIVE_5K?"native 5K":mode==OUTPUT_MODE_NATIVE_4K?"native 4K":mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_720P_METALFX?"720p, MetalFX to the window":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
             mode==OUTPUT_MODE_NATIVE?"native":mode==OUTPUT_MODE_METALFX?"MetalFX 2K":"off (1080p)");
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));

@@ -29,10 +29,12 @@ void settings_test_fov_refused(int refused); void settings_test_fov_init(void); 
 static uint32_t float_bits(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
 #endif
 
+static int fakeMfx5k = -1;   /* the 4K-to-5K preset's flag (game_patches_v143.c picture_4k_to_5k_set, after PR #2240) */
 void dm_gfx_set_flag(const char *name, int value) {
     if (!strcmp(name, "mfx_interp")) mfx_set(value);
     else if (!strcmp(name, "mfx_output")) mfxup_output_set(value);
     else if (!strcmp(name, "mfx_upscale")) mfxup_set(value);
+    else if (!strcmp(name, "mfx_5k_output")) fakeMfx5k = value;
     else abort();
 }
 /* gfx/nvn/totk_ssao.h's row calls (PR #1316): whether this run patched the AO shaders, and the level last set. */

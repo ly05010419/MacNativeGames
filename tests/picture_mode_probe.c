@@ -3,9 +3,12 @@
 #include "../games/totk/runtime/game_patches_v143.c"
 #include <assert.h>
 
-static int mfx_on;
+static int mfx_on, mfx_5k = -1;   /* mfx_5k: the graphics layer's "mfx_5k_output" flag as the runtime last set it */
 int mfxup_output_enabled(void) { return mfx_on; }
-void dm_gfx_set_flag(const char *name, int v) { if (!strcmp(name, "mfx_output")) mfx_on = v; }
+void dm_gfx_set_flag(const char *name, int v) {
+    if (!strcmp(name, "mfx_output")) mfx_on = v;
+    if (!strcmp(name, "mfx_5k_output")) mfx_5k = v;
+}
 
 static _Atomic uint64_t page[8];
 static const char *file;
@@ -67,16 +70,17 @@ int main(int argc, char **argv) {
     assert(runtime_output_mode_set(OUTPUT_MODE_4K_TO_5K_METALFX));
     expect_file("4k-to-5k-metalfx");
     assert(restart() == pack_size(3840, 2160) && runtime_metalfx_5k_output() && !mfx_on);
+    assert(mfx_5k == 1);   /* the graphics layer learns it through its flag, not by calling the runtime (after PR #2240) */
     assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX);
     setenv("TOTK_MFX_OUTPUT", "0", 1);
-    assert(restart() == pack_size(3840, 2160) && !runtime_metalfx_5k_output());
+    assert(restart() == pack_size(3840, 2160) && !runtime_metalfx_5k_output() && mfx_5k == 0);
     unsetenv("TOTK_MFX_OUTPUT");
     assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K));
-    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && !runtime_metalfx_5k_output());
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && !runtime_metalfx_5k_output() && mfx_5k == 0);
     expect_file("native-4k");
     output_w = 2560; output_h = 1440;
     write_file("4k-to-5k-metalfx");
-    assert(restart() == pack_size(2560, 1440) && !runtime_metalfx_5k_output());
+    assert(restart() == pack_size(2560, 1440) && !runtime_metalfx_5k_output() && mfx_5k == 0);
 
     write_file("sideways");                                            /* not a mode: the game's own start */
     assert(restart() == pack_size(1920, 1080) && !mfx_on);
