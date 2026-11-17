@@ -108,8 +108,8 @@ class HomeShowsABuild(unittest.TestCase):
         self.assertIn('private var mine: Bool { updateOnly == (model.updating != nil) }',
                       (swift / 'ActionSection.swift').read_text())   # so only ActionSection() shows its progress
         home = (swift / 'HomePage.swift').read_text()
-        self.assertIn('if model.updating == nil, model.phase == .building || model.phase == .cancelling {', home)
-        shown = home[home.index('if model.updating == nil, model.phase == .building'):]
+        self.assertIn('if model.updating == nil, model.jobRunning {', home)   # Model.jobRunning: building or cancelling
+        shown = home[home.index('if model.updating == nil, model.jobRunning'):]
         self.assertIn('ActionSection()', shown[:shown.index('}\n')])
 
     def test_a_job_shown_under_another_game_names_its_game(self):
@@ -132,10 +132,11 @@ class HomeShowsABuild(unittest.TestCase):
             said = strings[strings.index(line):].split('\n')[0]
             self.assertNotIn('Starting the game', said)
             self.assertNotIn('正在启动游戏', said)
-        # a job that ends without its 'done' line still opens the game, as that line would have
+        # a job that ends without its 'done' line (build_job.py always prints one) went wrong: no game started on a
+        # guess (after PR #2246, which started it there)
         ended = (swift / 'Model.swift').read_text()
         ended = ended[ended.index('private func ended('):ended.index('func play()')]
-        self.assertIn('play()', ended)
+        self.assertNotIn('play()', ended)
 
 
 if __name__ == '__main__':

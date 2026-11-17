@@ -98,7 +98,7 @@ struct HomePage: View {
                     }
                 }
                 // a build from the Build page: after 返回 its progress and its Cancel show here too (else greyed buttons, no word why)
-                if model.updating == nil, model.phase == .building || model.phase == .cancelling {
+                if model.updating == nil, model.jobRunning {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 10) { Text(jobGame).font(.title3.weight(.semibold)); ActionSection() }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(6)
