@@ -3,6 +3,7 @@ Time from a USB drive held its 5.7 GB archive as 2,946 NSData, a footprint of 18
 opens an archive, only on that thread and only for .metalarchive files; with real archives on an external drive the
 footprint they add is compared, read whole against mapped."""
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -40,10 +41,13 @@ class ArchiveMap(unittest.TestCase):
         self.assertEqual(lines[-1], 'done 0')
 
     def test_every_archive_open_is_in_a_window(self):
-        text = (NVN / 'totk_pipeline_archive.h').read_text()
-        opens = text.count('newBinaryArchiveWithDescriptor:d ')
-        self.assertEqual(opens, text.count('arch_map_begin(); a = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();'))
-        self.assertGreater(opens, 0)
+        text = re.sub(r'//[^\n]*|/\*.*?\*/', '', (NVN / 'totk_pipeline_archive.h').read_text(), flags=re.S)
+        # A named descriptor opens a file. The inline fresh descriptor creates an empty archive.
+        call = r'\[\s*\w+\s+newBinaryArchiveWithDescriptor:\s*\w+\s+error:\s*&\w+\s*\]'
+        opens = re.findall(call, text)
+        self.assertTrue(opens)
+        window = r'arch_map_begin\(\);\s*[^;]*?(' + call + r')\s*;\s*arch_map_end\(\);'
+        self.assertEqual(re.findall(window, text), opens)
 
 
 if __name__ == '__main__':
