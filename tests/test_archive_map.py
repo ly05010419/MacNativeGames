@@ -41,12 +41,13 @@ class ArchiveMap(unittest.TestCase):
         self.assertEqual(lines[-1], 'done 0')
 
     def test_every_archive_open_is_in_a_window(self):
-        text = (NVN / 'totk_pipeline_archive.h').read_text()
-        opens = text.count('newBinaryArchiveWithDescriptor:d ')
-        # f0bb4fd5 opens the file outside g_par_mu into `opened`; either spelling counts, each between begin and end
-        windowed = len(re.findall(r'arch_map_begin\(\); (?:id<MTLBinaryArchive> )?\w+ = \[dev newBinaryArchiveWithDescriptor:d error:&e\]; arch_map_end\(\);', text))
-        self.assertEqual(opens, windowed)
-        self.assertGreater(opens, 0)
+        text = re.sub(r'//[^\n]*|/\*.*?\*/', '', (NVN / 'totk_pipeline_archive.h').read_text(), flags=re.S)
+        # A named descriptor opens a file. The inline fresh descriptor creates an empty archive.
+        call = r'\[\s*\w+\s+newBinaryArchiveWithDescriptor:\s*\w+\s+error:\s*&\w+\s*\]'
+        opens = re.findall(call, text)
+        self.assertTrue(opens)
+        window = r'arch_map_begin\(\);\s*[^;]*?(' + call + r')\s*;\s*arch_map_end\(\);'
+        self.assertEqual(re.findall(window, text), opens)
 
 
 if __name__ == '__main__':
