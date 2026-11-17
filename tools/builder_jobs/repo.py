@@ -33,6 +33,7 @@ GAMES = {
     'worldend': 'Worldend Syndrome',
     'tmnt': "TMNT Shredder's Revenge",
     'acnh': 'Animal Crossing New Horizons',   # games/acnh/build.py APP_NAME
+    'eow': 'The Legend of Zelda Echoes of Wisdom',   # games/eow/build.py APP_NAME
 }
 OOT_TITLE = '0400486024DEC000'   # build_app.main_ns2
 
@@ -54,6 +55,8 @@ def game_of_title(title):
         return 'worldend'
     if application == '01006F8002326000':
         return 'acnh'
+    if application == '01008CF01BAAC000':
+        return 'eow'
     if application == '01002DA013484000':
         return 'ss'
     return b.TITLES.get(application)

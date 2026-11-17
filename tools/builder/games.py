@@ -86,13 +86,28 @@ ACNH = GameSpec(
     versions=(VersionSpec('v2228224', '3.0.3', 'expected-v2228224.json'),),
 )
 
+# The Legend of Zelda: Echoes of Wisdom (community port): built by games/eow/build.py; its launcher (games/eow/app/launcher.c)
+# keeps its data in EoW/. Storage and Saves pages; no Controls page: its keys are fixed in runtime/input.c (no keyboard_map.h),
+# so the page's keyboard drawing would show another game's.
+EOW = GameSpec(
+    id='eow',
+    display_name='The Legend of Zelda: Echoes of Wisdom',
+    title_id='01008CF01BAAC000',
+    app_name='The Legend of Zelda Echoes of Wisdom',
+    bundle_id='org.macnativegames.eow',
+    data_folder='EoW',
+    assets_dir='games/eow/assets',
+    versions=(VersionSpec('v196608', '1.1.0', 'expected-v1.1.0.json'),),
+)
+
 # The games MNG Launcher's game pages serve, and which pages each has (tools/builder_jobs/tabs.py TABS; the window shows
 # these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
-PAGE_GAMES = {**GAMES, OOT.id: OOT, ACNH.id: ACNH}
+PAGE_GAMES = {**GAMES, OOT.id: OOT, ACNH.id: ACNH, EOW.id: EOW}
 # 诊断模式 (2026-11-13) was removed 2026-11-15 (user: "去掉诊断模式 快速启动 默认带诊断"): a quick App starts with its
 # diagnostics itself (games/oot/app/launcher.m).
 PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'oot': ('controls', 'storage', 'saves'),
-         'acnh': ('controls', 'storage', 'saves')}
+         'acnh': ('controls', 'storage', 'saves'),
+         'eow': ('storage', 'saves')}

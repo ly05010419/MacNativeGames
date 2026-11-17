@@ -176,6 +176,8 @@ def _supported(game):
         return {0, 327680}
     if game in ('worldend', 'tmnt'):
         return {0}
+    if game == 'eow':   # games/eow/assets/expected-v1.1.0.json: base 0 and update 1.1.0
+        return {0, 196608}
     if game == 'acnh':   # games/acnh/prepare.py SUPPORTED_UPDATES; 3.0.3 is the newest, picked first
         return {0, 458752, 2097152, 2228224}
     return {int(v['version']) for v in repo.build_app().VERSIONS.values()
@@ -318,6 +320,10 @@ def plan(items, work=None):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
     if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
+    if p.game == 'eow' and p.update_version != 196608:
+        p.blocks.append(t('Echoes of Wisdom needs its 1.1.0 update next to the base game', '智慧的再现需要和本体一起放入 1.1.0 更新'))
+    if p.game == 'eow' and p.dlc:
+        p.blocks.append(t('Echoes of Wisdom does not accept add-on packages', '智慧的再现不接收附加内容包'))
     if p.game == 'acnh' and not p.update:
         p.blocks.append(t('Animal Crossing needs its 3.0.3 update (or 3.0.1 / 1.2.1) next to the base game',
                           '动物森友会需要和本体一起放入 3.0.3 更新（或 3.0.1 / 1.2.1）'))

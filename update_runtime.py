@@ -48,7 +48,7 @@ def standalone_game(app):
     try:
         bundle = plistlib.loads((Path(app)/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
         return {'org.macnativegames.dread': 'dread', 'org.macnativegames.worldend': 'worldend', 'org.macnativegames.tmnt.private': 'tmnt',
-                'org.macnativegames.acnh': 'acnh'}.get(bundle)
+                'org.macnativegames.acnh': 'acnh', 'org.macnativegames.eow': 'eow'}.get(bundle)
     except (OSError, ValueError):
         return None
 
@@ -58,7 +58,7 @@ def standalone_module(game):
     folder = build_app.REPO/f'games/{game}'
     scripts = folder/'scripts'
     if str(scripts) not in sys.path: sys.path.insert(0, str(scripts))
-    file = folder/'build.py' if game in ('dread', 'acnh') else scripts/f'{game}_update.py'
+    file = folder/'build.py' if game in ('dread', 'acnh', 'eow') else scripts/f'{game}_update.py'
     name = f'mng_update_{game}'
     spec = importlib.util.spec_from_file_location(name, file)
     module = importlib.util.module_from_spec(spec); sys.modules[name] = module; spec.loader.exec_module(module)
@@ -532,9 +532,9 @@ def plan(app, work=None):
             from package_dread import blocker
             problem = blocker(app, folder)
             version = info.get('MNGDreadVersion', 'v210')
-        elif game == 'acnh':   # games/acnh/build.py: the work folder's prepared game data, fonts and Python
+        elif game in ('acnh', 'eow'):   # games/<game>/build.py: the work folder's prepared game data, fonts and Python
             problem = module.blocker(app, folder)
-            version = {'1.2.1': 'v458752', '3.0.1': 'v2097152', '3.0.3': 'v2228224'}.get(info.get('CFBundleShortVersionString'), 'v0')
+            version = {'1.2.1': 'v458752', '3.0.1': 'v2097152', '3.0.3': 'v2228224', '1.1.0': 'v196608'}.get(info.get('CFBundleShortVersionString'), 'v0')
         else:
             problem = module.blocker(app)
             version = 'v0'
