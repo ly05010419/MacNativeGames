@@ -17,7 +17,7 @@ Base: `games/by3` (Bayonetta 3) of this repository at commit **5281186af56bdcce6
 | `prebuilt/macos-arm64/` | `prebuilt/macos-arm64/` | None (`totk_xlate`, checked against its SHA-256) |
 | `scripts/` | `scripts/` | `merge_romfs.py` reads NCA compression and a CTR-Ex table that stops at the indirect table; new `build_shader_libs.py`, `disasm.py`, `xref.py`, `callers.py`, `lldb/`; Bayonetta-only `make_res_patch.py` removed |
 | `Makefile`, `requirements.txt` | the same files | Names and paths; the app / install targets removed (no launcher yet) |
-| `app/` | not copied | No launcher yet |
+| `app/launcher.c` | `games/acnh/scripts/acnh_app_launcher.c` at `8d532cd3` (2026-11-17), this repository, MIT | Paths, environment and data folder of this game; the README's play settings; `TOTK_LOCALE` from the Mac's preferred languages |
 
 `assets/expected-v1.1.0.json` and `CHANGELOG.md` were written for this game.
 

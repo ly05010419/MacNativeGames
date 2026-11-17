@@ -11,6 +11,29 @@ what was found and what is still open: [CHANGELOG.md](CHANGELOG.md).
 You must own the game: use your own NSPs and the `prod.keys` dumped from your own Switch. Nothing from the game is in
 this repository; the work folder (`EoW_build`) and `mods/` are ignored by git.
 
+## One command, an app, or MNG Launcher
+
+`build.py` runs the steps below in order, reuses what an earlier run in the same work folder made from the same files,
+and packages **The Legend of Zelda Echoes of Wisdom.app**:
+
+```sh
+python3.14 games/eow/build.py base.xci -k prod.keys --update update-1.1.0.nsp \
+  [--firmware <unpacked firmware> | --shared-fonts <fonts folder of an earlier build>] [--work <folder>] [-o <app>]
+```
+
+The base may be the card image (XCI) or the NSP; the update needs key generation 17 in `prod.keys` (firmware 20 or
+newer). A card image whose system update partition lacks the fonts needs `--firmware` or `--shared-fonts`. The shaders
+are compiled with Xcode's Metal compiler (taken from `/Applications/Xcode.app` when `xcode-select` points at the command
+line tools). Every step logs to `<work>/logs/`; the app records its work folder. On an M4 MacBook Air a build that
+extracted and merged the game data again and reused the rewrite took 5 minutes; the shader seed alone takes about 4.
+
+The app (`app/launcher.c`, `scripts/package_app.py`) carries the runtime, the rewritten modules, the RomFS (an APFS
+clone of the work folder's), the fonts, the translator, the shader seed and the compiled libraries, all checked before
+packaging. It is signed ad hoc with its bundle ID `org.macnativegames.eow` as the designated requirement. The player's
+data is in `~/Library/Application Support/MacNativeGames/EoW` (`profile/` saves, `shader-cache/`, `last-run.log`); the
+game's language follows the Mac's first preferred language. MNG Launcher builds it from the dropped files and updates it
+without them (`update_runtime.py` calls `build.py`'s `update`); its card has the Storage and Saves pages.
+
 ## Inputs
 
 - Base `01008CF01BAAC000` (v0) and update 1.1.0 `01008CF01BAAC800` (v196608), both NSP.
@@ -88,7 +111,7 @@ TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_WIDEN=1 
 | Intro movie stop (`make test`; 36 runs) | the decoder's Stop / Reset with a frame still held answers `ST_ERROR` (55 checks under AddressSanitizer; main's `movie_host.c` reads a null frame there). In game, movie skipped or played to its end, with and without the seed: main crashed at `main+0x189714c` in 1 of 12 runs, 24 runs with the fix reached the load marker with no crash observed |
 | Played (Mac, M4 Pro, macOS 27.0.1) | title, prologue dungeon; about 1.5 hours over several sessions (longest about 40 minutes). Two early sessions ended in an unanswered `nn::fs::CleanDirectoryRecursively`, answered since (not yet seen in play) |
 
-Not done yet: a launcher app, iPhone / iPad, more than 60 fps (the game's logic follows its frame count), the stencil
+Not done yet: iPhone / iPad, more than 60 fps (the game's logic follows its frame count), the stencil
 plane in half-size depth copies, play past the prologue (untested).
 
 Tools for continuing: `scripts/disasm.py`, `scripts/xref.py`, `scripts/callers.py`, `scripts/symbolize.py`,

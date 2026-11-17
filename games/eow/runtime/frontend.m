@@ -210,12 +210,14 @@ void runtime_front_run(void(*callback)(void)){
   bootStartNS=runtime_now_ns();
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_gamepad_start();
-  /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
+  /* Default window: the docked output size, 1920x1080 in the screen's own pixels (960x540 points on a 2x Retina screen),
+     so the window shows the picture pixel for pixel instead of stretching it (as games/acnh, 2026-11-17); scaled down,
+     16:9 kept, when the screen's visible area is smaller. Resizing or full screen still scales the picture. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   /* EOW_DISPLAY=<n> (the launcher's monitor choice): NSScreen.screens[n] holds the window, and full screen opens there. */
   NSScreen *screen=NSScreen.mainScreen;
   {const char *d=getenv("EOW_DISPLAY");NSArray<NSScreen *> *all=NSScreen.screens;if(d&&*d){unsigned long i=strtoul(d,NULL,10);if(i<all.count)screen=all[i];}}
-  NSRect vis=screen?screen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
+  NSRect vis=screen?screen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat backing=screen&&screen.backingScaleFactor>0?screen.backingScaleFactor:1,ww=1920/backing,wh=1080/backing;
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
