@@ -312,6 +312,8 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
    scales it down for the screen. It lets a test exercise the 2K output path (a 2560x1440 picture) on a screen smaller than
    that (2026-10-17: the Mac reported a 1920x1080 display); the desktop launcher never sets it. */
 static CGFloat drawable_scale(void){static CGFloat f=-1;if(f<0){const char *e=getenv("TOTK_DRAWABLE_SCALE");f=e?atof(e):1;if(f<0.25||f>4)f=1;}return f;}
+/* frame_rate.c: the fastest refresh rate among the connected screens (120 on a ProMotion or 120 Hz external display). */
+int runtime_display_max_hz(void){NSInteger hz=0;for(NSScreen *sc in NSScreen.screens)hz=MAX(hz,sc.maximumFramesPerSecond);return (int)hz;}
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
@@ -405,12 +407,15 @@ void runtime_front_run(void(*callback)(void)){
   bootStartNS=runtime_now_ns();
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_gamepad_start();
-  /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
+  /* Default window: the docked output size, 1920x1080 in the screen's own pixels (960x540 points on a 2x Retina screen),
+     so the window shows the game picture pixel for pixel instead of stretching 1080p over a larger drawable (reported on
+     3.0.3, 2026-11-17: a 2940x1648 drawable for the 1920x1080 picture). Scaled down, 16:9 kept, when the screen's visible
+     area is smaller. Resizing or full screen still scales the picture (MetalFX in the settings panel sharpens that). */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   /* BY3_DISPLAY=<n> (the launcher's monitor choice): NSScreen.screens[n] holds the window, and full screen opens there. */
   NSScreen *screen=NSScreen.mainScreen;
   {const char *d=getenv("BY3_DISPLAY");NSArray<NSScreen *> *all=NSScreen.screens;if(d&&*d){unsigned long i=strtoul(d,NULL,10);if(i<all.count)screen=all[i];}}
-  NSRect vis=screen?screen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
+  NSRect vis=screen?screen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat backing=screen&&screen.backingScaleFactor>0?screen.backingScaleFactor:1,ww=1920/backing,wh=1080/backing;
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];

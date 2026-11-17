@@ -91,7 +91,11 @@ static void get_pseudo_device_id(uint8_t *uuid) {
     if (uuid) memcpy(uuid, k, 16);
 }
 static int get_region_code(void) {
-    const char *e = getenv("DM_LANG"); if (!e || !*e) e = "en-US";
+    /* The region follows the game language (DM_LANG still decides first): Animal Crossing offers Chinese and Korean
+       only in the Hong Kong / Taiwan / Korea region and falls back to English when the region is the Americas, so a
+       fixed "en-US" here made a Mac set to Chinese start the game in English (seen on 3.0.3, 2026-11-17). */
+    char lang[9] = {0}; const char *e = getenv("DM_LANG");
+    if (!e || !*e) { uint64_t code = runtime_desired_language(); memcpy(lang, &code, 8); e = lang; }
     return !strncmp(e, "ja", 2) ? 0 : !strncmp(e, "ko", 2) || !strncmp(e, "zh", 2) ? 4 : !strcmp(e, "en-US") || !strcmp(e, "fr-CA") || !strcmp(e, "es-419") || !strcmp(e, "pt-BR") ? 1 : 2;
 }
 static uint64_t desired_language(void) { return runtime_desired_language(); }

@@ -32,9 +32,11 @@ void runtime_swkbd_selftest(void);
 void runtime_dump_threads(void);   /* threads.c: every guest thread's wait state and guest return chain (TOTK_INPUT_FILE "threads") */   /* diagnostic "kbtest": show the text entry bar from a thread of its own */
 void runtime_frame_step_pin(double ms);                  /* game_patches.c: pin the real-time frame step (diagnostics), 0 = real time */
 void runtime_frame_step_update(uint64_t now_ns);
-/* 3.0.1 optional 60 FPS: original 30 by default; choice is saved for the next launch. */
+/* Optional 60 FPS (3.0.1, 3.0.3) and 120 FPS (3.0.3): original 30 by default; choice is saved for the next launch. */
 int runtime_frame_rate_active(void);
 int runtime_frame_rate_available(void);
+int runtime_display_max_hz(void);         /* frontend.m: the fastest refresh rate among the connected screens; 0 = unknown */
+int runtime_frame_rate_offers(int fps);   /* 30 always; 60 / 120 when this build and app carry that rate's data */
 int runtime_frame_rate_choice(void);
 int runtime_frame_rate_locked(void);
 int runtime_frame_rate_choose(int value);

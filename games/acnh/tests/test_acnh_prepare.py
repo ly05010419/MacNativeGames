@@ -35,9 +35,18 @@ class PrepareTests(unittest.TestCase):
         expected = acnh.profile(2097152)
         self.assertEqual(expected["display_version"], "3.0.1")
         self.assertEqual(expected["package_kind"], "update")
-        for version in (None, "2097152", 2031616, -1):
+        for version in (None, "2097152", 2031616, 2162688, -1):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "Unsupported ACNH"):
                 acnh.profile(version)
+
+    def test_3_0_3_shares_the_3_0_1_sdk_and_differs_only_in_main(self):
+        old, new = acnh.profile(2097152), acnh.profile(2228224)
+        self.assertEqual(new["display_version"], "3.0.3")
+        self.assertEqual(acnh.SDK_3_0_UPDATES, (2097152, 2228224))
+        for name in ("rtld", "sdk", "subsdk0"):
+            self.assertEqual(new["exefs_sha256"][name], old["exefs_sha256"][name])
+        for name in ("main", "main.npdm"):
+            self.assertNotEqual(new["exefs_sha256"][name], old["exefs_sha256"][name])
 
     def test_pinned_base_npdm_variant_never_allows_changed_code(self):
         expected = acnh.profile(0)

@@ -377,7 +377,7 @@ static void *probe_thread(void *unused) {
  (void)unused;runtime_thread_init();
  typedef uint64_t (*Fn)(void);Fn fn=(Fn)(void *)(modules[0].base+PROBE_PLT);uint64_t previous=0;
  for(unsigned i=0;i<1000;i++){uint64_t current=fn();need(current>=previous&&current>0,"cross-module clock result");previous=current;}
-#if ACNH_VERSION_RAW == 2097152
+#if ACNH_SDK_3_0
  /* Exercise the actual imported target used after the introductory movie.
     A missing binding would fall through to the SDK's unavailable pctl IPC. */
  unsigned checked=0;Module *m=&modules[0];

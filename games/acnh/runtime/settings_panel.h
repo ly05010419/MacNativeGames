@@ -6,7 +6,7 @@
    Display
      overlay              all / FPS + controller / off   fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c), graphics-overlay.txt
      FPS graph            switch                         fps-graph.txt
-     frame rate           30 / 60 fps, next launch        3.0.1 with prepared SpeedFix data: code and parameter corrections
+     frame rate           30 / 60 / 120 fps, next launch  3.0.1 (60) and 3.0.3 (60, 120) with prepared SpeedFix data: code and parameter corrections
                                                          must be loaded together, so changing modes requires a restart.
                                                          Builds without that data (including 1.2.1) retain 30 fps.
      frame interpolation  not available, greyed out      MetalFX frame interpolation (gfx/nvn/totk_mfx.m) needs the game's
@@ -149,12 +149,15 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
  if(runtime_frame_rate_available()&&!runtime_frame_rate_locked()) {
-  [rows addObject:settings_row(settings_text("帧率上限（重启生效）","Frame rate (restart required)"),
-   @[settings_text("30 帧","30 fps"),settings_text("60 帧（实验性）","60 fps (experimental)")],@[@30,@60],
+  NSMutableArray<NSString *> *rateNames=[NSMutableArray arrayWithObject:settings_text("30 帧","30 fps")];NSMutableArray<NSNumber *> *rateValues=[NSMutableArray arrayWithObject:@30];
+  if(runtime_frame_rate_offers(60)){[rateNames addObject:settings_text("60 帧（实验性）","60 fps (experimental)")];[rateValues addObject:@60];}
+  /* 120 is offered only with a 120 Hz screen connected (frame_rate.c display_holds): below a steady 120 the game slows down. */
+  if(runtime_frame_rate_offers(120)){[rateNames addObject:settings_text("120 帧（实验性）","120 fps (experimental)")];[rateValues addObject:@120];}
+  [rows addObject:settings_row(settings_text("帧率上限（重启生效）","Frame rate (restart required)"),rateNames,rateValues,
    ^int{return runtime_frame_rate_choice();},^(int v){runtime_frame_rate_choose(v);})];
  } else {
   [rows addObject:settings_fixed(settings_text("帧率上限","Frame rate"),
-   runtime_frame_rate_active()==60?settings_text("60 帧（启动配置）","60 fps (launch setting)"):settings_text("30 帧","30 fps"))];
+   runtime_frame_rate_active()==120?settings_text("120 帧（启动配置）","120 fps (launch setting)"):runtime_frame_rate_active()==60?settings_text("60 帧（启动配置）","60 fps (launch setting)"):settings_text("30 帧","30 fps"))];
  }
  [rows addObject:settings_fixed(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),settings_text("这个游戏暂不支持","Not available in this game yet"))];
  NSString *picture=settings_text("画面","Picture");

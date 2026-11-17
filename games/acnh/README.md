@@ -9,6 +9,41 @@ probes have been checked. Gameplay is still being investigated; a successful
 package or CPU probe does not establish a playable release. 3.0.0 and 2.x are
 not pinned by this build flow.
 
+**3.0.3 is an experimental target too, and the one MNG Launcher builds.** Its `rtld`, `sdk` and `subsdk0` are byte for
+byte 3.0.1's; only `main` differs (`assets/expected-v2228224.json`). On a Mac it was played into the opening, in
+Simplified Chinese, at 30 and 60 FPS (2026-11-17, MacBook Air M4, macOS 26.6); not further.
+
+## One command, or MNG Launcher
+
+`build.py` runs every step below in order and reuses what an earlier run in the same work folder made from the same
+files:
+
+```sh
+python3.14 games/acnh/build.py base-1.0.0.nsp -k prod.keys --update update-3.0.3.nsp \
+  [--dlc dlc.nsp ...] [--firmware <unpacked firmware> | --shared-fonts <fonts folder of an earlier build>] \
+  [--work <folder>] [-o "Animal Crossing New Horizons.app"]
+```
+
+It makes its own Python (`<work>/venv`) and hactool, verifies and prepares the game data, the fonts and the add-ons,
+fetches the pinned [tmouh/acnh-60fps](https://github.com/tmouh/acnh-60fps) checkout into the work folder for the frame
+rate options (`--fps-mod <checkout>` uses yours, `--no-fps-mod` keeps 30 FPS only), and packages the app, which records
+its work folder. Every step logs to `<work>/logs/`. MNG Launcher builds and updates the game the same way: drop the
+base, the update, any add-ons and a fonts or firmware folder on its Animal Crossing card. Its update (no game files)
+rebuilds the host and the app from the work folder (`update_runtime.py` calls `build.py`'s `update`).
+
+The app's bundle ID is `org.macnativegames.acnh`, signed ad hoc with the bundle ID as its designated requirement, so
+macOS keeps the "files on a removable volume" answer across builds. The player's data lives in
+`~/Library/Application Support/MacNativeGames/ACNH-<version>` (`ACNH` for 1.2.1); a `Animal Crossing Data` folder next to
+an older app is moved there at the first start.
+
+### 120 FPS (3.0.3)
+
+A 3.0.3 build with the frame-rate data also offers **120 FPS (experimental)** in the settings panel, from the mod's
+120 FPS files (7,068 code words and its parameter pack). It is offered only while a 120 Hz screen is connected: the
+host shows one picture per refresh, so on a 60 Hz screen the game would get 60 updates a second with every speed
+corrected for 120 and play at half speed (measured). A saved 120 then starts at 60 and says so in the log. 120 FPS was
+not played on a 120 Hz screen yet.
+
 ## Experimental 3.0.1 build
 
 Use base **1.0.0** and a **separate 3.0.1 update NSP**. The builder selects the

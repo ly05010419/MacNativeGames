@@ -21,9 +21,9 @@ GAME = HERE.parent
 REPO_ROOT = GAME.parents[1]
 WORKSPACE_ROOT = GAME.parents[2]
 sys.path.insert(0, str(REPO_ROOT))
-from games.acnh.prepare import prepared_profile
+from games.acnh.prepare import SDK_3_0_UPDATES, prepared_profile
 from games.acnh.tools.prepare_dlc import verify_assets as verify_dlc_assets
-from games.acnh.tools.prepare_fps import verify_assets
+from games.acnh.tools.prepare_fps import RATES as FPS_RATES, verify_assets
 # The shader translator is carried in this folder (prebuilt/macos-arm64/README.md) and pinned by its .sha256.
 TRANSLATOR = GAME / "prebuilt/macos-arm64/totk_xlate"
 TRANSLATOR_SHA256 = GAME / "prebuilt/macos-arm64/totk_xlate.sha256"
@@ -120,8 +120,8 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
     if dlc_marker not in runtime_bytes:
         raise ValueError("Runtime DLC configuration differs from host inputs; rebuild the host")
     if dlc_digest:
-        if expected["cnmt_version_raw"] != 2097152:
-            raise ValueError("DLC assets require ACNH 3.0.1")
+        if expected["cnmt_version_raw"] not in SDK_3_0_UPDATES:
+            raise ValueError("DLC assets require ACNH 3.0.1 or 3.0.3")
         dlc_dir = Path(host["dlc"])
         manifest, _ = verify_dlc_assets(dlc_dir)
         manifest_id = identity(dlc_dir / "manifest.json")
@@ -131,23 +131,26 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
         for row in manifest["entries"]:
             name = f'{row["title_id"]}.romfs'
             verified[f"dlc/{name}"] = {"size": row["romfs_size"], "sha256": row["romfs_sha256"]}
-    fps_sha = host.get("fps_manifest_sha256")
-    if fps_sha:
-        fps_dir = work / "build/fps60"
-        manifest = verify_assets(fps_dir)
-        if (expected["cnmt_version_raw"] != 2097152
-                or manifest["original_main_sha256"] != expected["exefs_sha256"]["main"]
-                or manifest["rewritten_main_sha256"] != expected["rewritten_sha256"]["main"]
-                or manifest["original_romfs_sha256"] != expected["romfs_sha256"]):
-            raise ValueError("FPS assets belong to another game/version")
-        fps_id = identity(fps_dir / "manifest.json")
-        if fps_id["sha256"] != fps_sha or ("MNG_ACNH_FPS_ASSETS:" + fps_sha).encode() not in runtime_bytes:
-            raise ValueError("Runtime and FPS asset identities differ")
-        verified["fps60/manifest.json"] = fps_id
-        for name, row in manifest["files"].items():
-            verified["fps60/" + name] = row
-    elif b"MNG_ACNH_FPS_ASSETS:" in runtime_bytes:
-        raise ValueError("FPS runtime needs its matching asset bundle")
+    for rate in FPS_RATES:
+        folder = f"fps{rate}"
+        marker = ("MNG_ACNH_FPS_ASSETS:" if rate == 60 else f"MNG_ACNH_FPS{rate}_ASSETS:").encode()
+        fps_sha = host.get("fps_manifest_sha256" if rate == 60 else f"fps{rate}_manifest_sha256")
+        if fps_sha:
+            fps_dir = work / "build" / folder
+            manifest = verify_assets(fps_dir)
+            if (manifest["version"] != expected["display_version"] or manifest["target_fps"] != rate
+                    or manifest["original_main_sha256"] != expected["exefs_sha256"]["main"]
+                    or manifest["rewritten_main_sha256"] != expected["rewritten_sha256"]["main"]
+                    or manifest["original_romfs_sha256"] != expected["romfs_sha256"]):
+                raise ValueError("FPS assets belong to another game/version")
+            fps_id = identity(fps_dir / "manifest.json")
+            if fps_id["sha256"] != fps_sha or marker + fps_sha.encode() not in runtime_bytes:
+                raise ValueError("Runtime and FPS asset identities differ")
+            verified[f"{folder}/manifest.json"] = fps_id
+            for name, row in manifest["files"].items():
+                verified[f"{folder}/" + name] = row
+        elif marker in runtime_bytes:
+            raise ValueError("FPS runtime needs its matching asset bundle")
 
     # 2. Shader translation tools
     verified["prebuilt/macos-arm64/totk_xlate"] = pinned_translator()
@@ -252,7 +255,16 @@ def seed_data(data_dir: Path, user_data_src: Path = None, cache_src: Path = None
                 clone(item, dst_cache / item.name)
 
 
-def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = None):
+BUNDLE_ID = "org.macnativegames.acnh"   # the other ports' form (tools/builder_jobs/installed.py finds the app by it)
+
+
+def data_folder(display_version):
+    """The player's folder under ~/Library/Application Support/MacNativeGames (runtime/game_version.h GAME_FOLDER)."""
+    return "ACNH" if display_version == "1.2.1" else f"ACNH-{display_version}"
+
+
+def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = None, record: dict = None):
+    """record: Info.plist keys naming what made the app (build.py: the work folder an update reuses)."""
     if output.suffix != ".app":
         raise ValueError("--output must end with .app")
     expected, verified, font_info = verify_inputs(work, prepared, fonts)
@@ -276,14 +288,15 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
         launcher_src = HERE / "acnh_app_launcher.c"
         launcher_bin = macos / "Animal Crossing"
         subprocess.run(
-            ["xcrun", "clang", "-O2", "-Wall", "-Wextra", str(launcher_src), "-o", str(launcher_bin)],
+            ["xcrun", "clang", "-O2", "-Wall", "-Wextra", f'-DACNH_DATA_FOLDER="{data_folder(expected["display_version"])}"',
+             str(launcher_src), "-o", str(launcher_bin)],
             check=True,
         )
 
         # 2. Bundle game runtime and tools
         clone(work / "build/acnh-native", game / "build/acnh-native")
         for name in verified:
-            if name.startswith("fps60/"):
+            if name.startswith(tuple(f"fps{rate}/" for rate in FPS_RATES)):
                 clone(work / "build" / name, game / name)
         clone(TRANSLATOR, game / "build/shader-service/totk_xlate")   # where totk_shader_rt.m looks for it
         if "build/spirv-cross/spirv-cross" in verified:
@@ -361,7 +374,7 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
             "CFBundleDisplayName": "Animal Crossing: New Horizons",
             "CFBundleExecutable": "Animal Crossing",
             "CFBundleIconFile": icon_file_name,
-            "CFBundleIdentifier": "com.nintendo.acnh.native",
+            "CFBundleIdentifier": BUNDLE_ID,
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": "Animal Crossing",
             "CFBundlePackageType": "APPL",
@@ -379,6 +392,7 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
                                    capture_output=True, text=True, check=False).stdout.strip()
             info["MNGSourceCommit"] = commit.stdout.strip()
             info["MNGSourceRevision"] = commit.stdout.strip() + ("-dirty" if dirty else "")
+        info.update(record or {})
         with (contents / "Info.plist").open("wb") as f:
             plistlib.dump(info, f)
 
@@ -398,19 +412,28 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
         (resources / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
         # 11. Codesign the bundle
-        subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(output)], check=True)
+        # Ad hoc, with the bundle ID as the designated requirement (as build_app.sign_app does): macOS keeps the
+        # player's "files on a removable volume" answer by that requirement. The ad hoc default is this build's code
+        # hash, so every packaging asked again (reported on 3.0.3, 2026-11-17).
+        bundle_id = plistlib.loads((output / "Contents/Info.plist").read_bytes())["CFBundleIdentifier"]
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
+                        f'-r=designated => identifier "{bundle_id}"', str(output)], check=True)
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(output)], check=True)
 
         # 12. Run launcher self-check
         subprocess.run([str(launcher_bin), "--check"], check=True)
 
-        # 13. Seed application data directory next to the app
-        app_data_dir = output.parent / "Animal Crossing Data"
+        # 13. Seed the player's data folder (acnh_app_launcher.c: Application Support/MacNativeGames/<version folder>).
+        # A folder still next to the app (before 2026-11-17) is left for the launcher to move there at the first start.
+        app_data_dir = Path.home() / "Library/Application Support/MacNativeGames" / data_folder(expected["display_version"])
+        if not app_data_dir.exists() and (output.parent / "Animal Crossing Data").is_dir():
+            app_data_dir = None
         # Newer versions start with an isolated profile. Save migration requires
         # its own compatibility check; never seed 3.x from an unrelated old save.
         user_data_local = WORKSPACE_ROOT / "user-data" if expected["cnmt_version_raw"] == 458752 else None
         cache_local = work / "build/shader-cache/rt-totk-native-v4-unverified"
-        seed_data(app_data_dir, user_data_local, cache_local)
+        if app_data_dir:
+            seed_data(app_data_dir, user_data_local, cache_local)
 
         # Finder and the Dock keep the icon they cached for this path (reported in play, PR #1305: the app showed the old, blank
         # icon in Finder while the running app's was right): a new modification date and Launch Services registration
@@ -439,6 +462,7 @@ def main():
     parser.add_argument("--output", type=Path, default=default_output, help="Path for output .app bundle")
     parser.add_argument("--icon", type=Path, default=default_icon if default_icon.is_file() else None, help="Path to .icns file")
     parser.add_argument("--verify-only", action="store_true", help="Verify inputs without packaging")
+    parser.add_argument("--record-work", type=Path, help="the build's work folder, recorded in Info.plist (build.py; an update reuses it)")
 
     args = parser.parse_args()
     work = args.work.resolve()
@@ -452,7 +476,11 @@ def main():
             expected, _, _ = verify_inputs(work, prepared, fonts)
             print(f'All required inputs match Animal Crossing: New Horizons {expected["display_version"]}.')
         else:
-            package(work, prepared, fonts, output, icon)
+            record = None
+            if args.record_work:   # the keys build_app.record_update_source writes (update_runtime.py reads them)
+                record = {"MNGSourceRepo": str(REPO_ROOT), "MNGWorkFolder": str(args.record_work.resolve()),
+                          "MNGBuildPython": sys.executable}
+            package(work, prepared, fonts, output, icon, record)
     except (OSError, ValueError, subprocess.CalledProcessError) as err:
         parser.exit(1, f"Packaging failed: {err}\n")
 

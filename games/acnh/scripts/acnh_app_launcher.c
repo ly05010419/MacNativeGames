@@ -15,6 +15,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef ACNH_DATA_FOLDER
+#error "ACNH_DATA_FOLDER: the packager passes the version's data folder name"
+#endif
+
 static void join(char *out, const char *dir, const char *name) {
     if (snprintf(out, PATH_MAX, "%s/%s", dir, name) >= PATH_MAX) { fputs("path too long\n", stderr); exit(1); }
 }
@@ -67,7 +71,24 @@ int main(int argc, char **argv) {
         if (override[0] != '/' || snprintf(data, sizeof data, "%s", override) >= (int)sizeof data) {
             fputs("ACNH_DATA_DIR must be an absolute directory path\n", stderr); return 1;
         }
-    } else join(data, home, "Animal Crossing Data");
+    } else {
+        /* ~/Library/Application Support/MacNativeGames/<ACNH_DATA_FOLDER> (one folder per game version, as the other
+           ports keep theirs; MNG Launcher's Storage and Saves pages look there). Until 2026-11-17 the data sat next
+           to the app as "Animal Crossing Data": a folder found there is moved once, never copied over newer data. */
+        const char *user = getenv("HOME"); char support[PATH_MAX], beside[PATH_MAX]; struct stat st;
+        if (!user || !*user) { fputs("Animal Crossing: HOME is not set\n", stderr); return 1; }
+        join(support, user, "Library/Application Support/MacNativeGames");
+        join(data, support, ACNH_DATA_FOLDER);
+        join(beside, home, "Animal Crossing Data");
+        if (stat(data, &st) && !stat(beside, &st) && S_ISDIR(st.st_mode)) {
+            if (run((const char *const[]){"/bin/mkdir", "-p", support, NULL})
+                || run((const char *const[]){"/bin/mv", beside, data, NULL})) {
+                fprintf(stderr, "Animal Crossing: could not move %s to %s; using it where it is\n", beside, data);
+                snprintf(data, sizeof data, "%s", beside);
+            }
+        }
+        run((const char *const[]){"/bin/mkdir", "-p", data, NULL});
+    }
     join(profile, data, "profile");
     join(cache, data, "shader-cache");
     join(slot, data, "game-slot");
@@ -88,6 +109,9 @@ int main(int argc, char **argv) {
     join(fps_assets, game, "fps60"); join(fps_manifest, fps_assets, "manifest.json");
     if (!access(fps_manifest, R_OK)) setenv("ACNH_FPS_ASSETS", fps_assets, 1);
     else unsetenv("ACNH_FPS_ASSETS");
+    join(fps_assets, game, "fps120"); join(fps_manifest, fps_assets, "manifest.json");
+    if (!access(fps_manifest, R_OK)) setenv("ACNH_FPS120_ASSETS", fps_assets, 1);
+    else unsetenv("ACNH_FPS120_ASSETS");
     setenv("DM_PRESERVE_INVARIANCE", "1", 1);
     setenv("DM_NVN_GPU_CODE_MAX_MINOR", "31", 1);
     setenv("TOTK_PROFILE_DIR", profile, 1);

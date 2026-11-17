@@ -106,7 +106,8 @@ class PackagingTests(unittest.TestCase):
             launcher_bin = macos / "Animal Crossing"
             launcher_src = GAME_DIR / "scripts/acnh_app_launcher.c"
             subprocess.run(
-                ["xcrun", "clang", "-O2", "-Wall", "-Wextra", str(launcher_src), "-o", str(launcher_bin)],
+                ["xcrun", "clang", "-O2", "-Wall", "-Wextra", '-DACNH_DATA_FOLDER="ACNH-3.0.3"', str(launcher_src),
+                 "-o", str(launcher_bin)],
                 check=True,
             )
             self.assertTrue(launcher_bin.is_file())
