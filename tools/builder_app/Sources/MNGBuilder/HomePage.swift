@@ -270,7 +270,9 @@ struct GameActions: View {
                                 .help(T.memorySaverHelp)
                             if let w = saver.unknown_word { Text(T.memorySaverUnknown(w)).font(.caption).foregroundStyle(.orange) }
                         }
-                        if let diagnostics, diagnostics.available {   // user 2026-11-16: "诊断模式 也改成 CheckBox"
+                        // user 2026-11-16: "诊断模式 也改成 CheckBox"; not in the players' download (user 2026-11-17: "正式下载版
+                        // 也去掉 诊断模式"), except while it is still on from an earlier Launcher, so it can be turned off
+                        if let diagnostics, diagnostics.available, !Paths.isRelease || diagnostics.on {
                             Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))
                                 .help(T.diagnosticsHelp)
                         }

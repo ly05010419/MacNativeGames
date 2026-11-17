@@ -236,13 +236,16 @@ final class Model: ObservableObject {
                            quick: quick ? true : nil))
     }
     /// The games a build can make quick: only the title's shaders, the rest translated at first use (user 2026-11-13).
-    static let quickGames: Set<String> = ["oot"]
+    /// None in the players' download (user 2026-11-17: "launcher 里 用户版本 去掉 快速启动，包括 打包安装的 快速启动"): the
+    /// Build page's switch and the card's button both read this, so neither shows there and no build asks for it. A
+    /// Launcher made from a checkout keeps it for development and tests (CLAUDE.md: tests start quick), as tools/mng.py does.
+    static var quickGames: Set<String> { Paths.isRelease ? [] : ["oot"] }
 
     /// 快速启动 of an installed app (its card; user 2026-11-15: after the game's pages, one function with the Build page's switch):
     /// the same quick request, so the app is made again with only the title's shaders, also when a new translator would
     /// otherwise need the full build. 补全着色器 on its card makes it full later.
     func quickStart(_ app: InstalledReport.App) {
-        guard phase != .building && phase != .cancelling else { return }
+        guard phase != .building && phase != .cancelling, Model.quickGames.contains(app.game ?? "") else { return }
         updating = app.app
         start(BuildRequest(update: app.app, quick: true))
     }

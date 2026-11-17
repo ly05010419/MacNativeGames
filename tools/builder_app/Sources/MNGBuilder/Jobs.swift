@@ -11,6 +11,10 @@ enum Paths {
         return Bundle.main.resourceURL?.appendingPathComponent("bundled_job.py")
     }
 
+    /// The players' download (make_app.py --portable, the signed release): it carries its source archive's digest. A
+    /// Launcher made from a checkout for development has none.
+    static var isRelease: Bool { Bundle.main.object(forInfoDictionaryKey: "MNGSourceArchiveSHA256") is String }
+
     /// The checkout this app was made from (make_app.py writes MNGRepo into Info.plist).
     static var repo: URL? {
         if let path = ProcessInfo.processInfo.environment["MNG_REPO"] { return URL(fileURLWithPath: path) }
