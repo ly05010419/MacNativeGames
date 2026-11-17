@@ -86,6 +86,10 @@ static void seed_mark_broken(NSString *name) {
     os_unfair_lock_unlock(&g_seed_broken_lock);
 }
 static BOOL g_seed_all_default;   // seed-manifest.json all_default: every shader has its default variant (contrib_wanted)
+/* The seed is the app's own, sealed by its signature (totk_shader_seed.h totk_seed_sealed): its Metal sources are whole, and
+   packaging compiled every one of them into its library (OOT 2026-11-17: libraries-manifest.json complete, failed.log
+   empty), so variant_lookup takes its variants without reading their source again. */
+static BOOL g_seed_sealed;
 static uint64_t g_translated;
 /* The bottom-left box (nvn_mtl.m shader_overlay_prepare): variants new to the cache this run, when the last one came,
    and the variants in the cache (counted once in the background, plus the new ones since). */
@@ -164,7 +168,7 @@ NSString *totk_rt_dir(void) {
             NSDictionary *seed = totk_seed_import(source, g_dir, &error);
             totk_seed_progress = NULL;
             if ([seed[@"overlay"] isKindOfClass:NSArray.class]) {
-                g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]];
+                g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]]; g_seed_sealed = [seed[@"sealed"] boolValue];
                 g_seed_prefix = [source stringByAppendingString:@"/"]; seed_image_open(&g_seed_img, source);
                 if (g_seed_img.parts) { uint64_t files = 0; for (int i = 0; i < g_seed_img.parts; i++) files += g_seed_img.p[i].count;
                     LOG("[shader-seed] 着色器文件在镜像里：%d 份，%llu 个文件（原地读取，不解包）", g_seed_img.parts, (unsigned long long)files); }
@@ -439,7 +443,11 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
         if (!totk_deps_match(v[@"deps"], answers)) continue;   // totk_shader_contrib.h: the contribution file's pruning picks so too
         NSString *found = v[@"variant"];
         if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
-        BOOL checked = [g_msl_checked containsObject:found];
+        /* A sealed seed's variant (g_seed_sealed) is taken as it is: reading its whole Metal source into a string here, on the
+           replay's thread, was the first cause of replays held over 100 ms in the world (img-1, 2026-11-17: 9 of 53). */
+        NSString *msl_name = [found stringByAppendingString:@"_b.metal"];
+        BOOL checked = [g_msl_checked containsObject:found] ||
+            (g_seed_sealed && [g_seed_names containsObject:msl_name] && !seed_broken(msl_name));
         NSString *msl = checked ? nil :
             totk_rt_text(totk_rt_file([found stringByAppendingString:@"_b.metal"]));
         /* missing, empty (a translation cut short: 0 bytes, 2026-10-30) or previously un-compilable: translated again */

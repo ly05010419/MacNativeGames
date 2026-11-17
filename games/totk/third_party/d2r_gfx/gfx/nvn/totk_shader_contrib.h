@@ -25,6 +25,8 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <os/lock.h>
+#include "totk_seed_image.h"   // totk_contrib_seed_file: the seed's image
 
 #ifndef TOTK_CONTRIB_STEP
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
@@ -322,10 +324,22 @@ static inline NSString *totk_contrib_app(NSString *seedDir, NSString *listDir) {
 
 /* The seed's variants of a shader (<shader>.variants: [{variant, deps}], as totk_shader_rt.m variants_of reads them), or
    nil when the seed has none (another game version's shader, or one it could not translate); cached by shader. */
+/* A seed file by name: the folder's, else its image's (<seed>.img.NNN, totk_seed_image.h: the Mac app's seed since
+   2026-11-17 and the iPad's keep the shaders' own files there). One image, opened for the first seed folder asked. */
+static inline NSData *totk_contrib_seed_file(NSString *seedDir, NSString *name) {
+    NSData *d = [NSData dataWithContentsOfFile:[seedDir stringByAppendingPathComponent:name]];
+    if (d || !seedDir) return d;
+    static seed_image img; static NSString *opened; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+    os_unfair_lock_lock(&lk);
+    if (!opened) { opened = [seedDir copy]; seed_image_open(&img, seedDir); }
+    BOOL same = [opened isEqualToString:seedDir];
+    os_unfair_lock_unlock(&lk);
+    return same ? seed_image_data(&img, name) : nil;
+}
 static inline NSArray<NSDictionary *> *totk_contrib_seed_variants(NSMutableDictionary *cache, NSString *seedDir, NSString *shader) {
     id vs = cache[shader];
     if (!vs) {
-        NSData *d = [NSData dataWithContentsOfFile:[seedDir stringByAppendingPathComponent:[shader stringByAppendingString:@".variants"]]];
+        NSData *d = totk_contrib_seed_file(seedDir, [shader stringByAppendingString:@".variants"]);
         NSMutableArray *rows = [NSMutableArray array];
         id parsed = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
         for (id v in [parsed isKindOfClass:NSArray.class] ? parsed : @[])

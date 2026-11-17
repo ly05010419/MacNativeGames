@@ -131,6 +131,11 @@ static NSString *par_hash(const void *bytes, size_t n) {
     for (int i = 0; i < 20; i++) [s appendFormat:@"%02x", d[i]];   // 160 bits name a file
     return s;
 }
+#ifdef PSO4_BUILT
+static NSUInteger par4_load_dir(id<MTLDevice> dev, uint64_t *bytes);   // nvn_pso4.h: the Metal 4 archive's own files
+static BOOL par4_name(NSString *name);                                 // a Metal 4 file's name (m4:<base>, m4-<stem>)
+static void par4_open_all(id<MTLDevice> dev);                          // every Metal 4 file opened in the background
+#endif
 #include "totk_pipeline_archive_folders.h"
 /* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
    (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
@@ -193,7 +198,12 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
            stale pipeline, which Metal refused (14 mesh pipelines compiled again at every start): red, so it is seen. */
         if ([listed containsObject:c[0]]) { twice++; continue; }
         [listed addObject:c[0]];
-        if (g_par_where[c[0]]) continue;   // the device's own file wins
+        NSString *own = g_par_where[c[0]];
+#ifdef PSO4_BUILT
+        if (own && !(par4_name(c[1]) && !par4_name(own))) continue;   // the device's own file wins, but not an old file over a Metal 4 one (nvn_pso4.h)
+#else
+        if (own) continue;   // the device's own file wins
+#endif
         [g_par_have addObject:c[0]]; g_par_where[c[0]] = c[1]; [g_par_pre addObject:c[1]]; n++;
     }
     if (twice) MLOG("【红】管线存档：App 带的索引里有 %lu 个键重复（每个键应只对应一个文件；用的是先列的那个，可能是旧的），重新打包", (unsigned long)twice);
@@ -240,8 +250,16 @@ static void par_open_dir(id<MTLDevice> dev) {
            writer: batches no longer hold g_par_wmu while Metal uses their build folders. Shared folders stay intact. */
         par_ga_cleanup_startup();
         if (!par_open_identity(dev)) return;
-        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files), own = g_par_have.count, pre = par_load_prebuilt(dev);
+        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files);
+#ifdef PSO4_BUILT
+        uint64_t bytes4 = 0; NSUInteger files4 = par4_load_dir(dev, &bytes4);   // after the old files: a key in both is the Metal 4 file's
+        if (files4) MLOG("Metal 4 管线存档：本机 %lu 个文件（共 %.1f MB）", (unsigned long)files4, bytes4 / 1048576.0);
+#endif
+        uint64_t own = g_par_have.count, pre = par_load_prebuilt(dev);
         g_par_on = 1; g_par_valid = g_par_have.count > 0;
+#ifdef PSO4_BUILT
+        par4_open_all(dev);   // the Metal 4 files, in the background (a first open from a USB drive took up to 0.8 s)
+#endif
         if (pre) MLOG("管线存档：App 带了 Mac 为这台设备的 GPU（%s）编好的 %llu 条管线，首次启动不用填充；本机自己的 %llu 条", dev.architecture.name.UTF8String,
                       (unsigned long long)pre, (unsigned long long)own);
         if (g_par_valid && own) MLOG("管线存档：%llu 条管线在 %lu 个文件里（共 %.1f MB），用到哪个才打开哪个", (unsigned long long)own, (unsigned long)files, bytes / 1048576.0);
@@ -288,6 +306,9 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     pthread_mutex_lock(&g_par_mu);
     if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     NSString *name = g_par_where[key];
+#ifdef PSO4_BUILT
+    if (name && par4_name(name)) { pthread_mutex_unlock(&g_par_mu); par_last_pre = 0; return nil; }   // a Metal 4 file (nvn_pso4.h): not this API's
+#endif
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
     if (a) PAR_OPEN_NOTE(name);

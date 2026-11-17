@@ -38,6 +38,30 @@ class WarmPolicyTests(unittest.TestCase):
         result = subprocess.run([self.binary, 'resident'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_played_list_rows(self):   # user 2026-11-17: "行" (the saver keeps what the player used)
+        result = subprocess.run([self.binary, 'played'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_saver_records_play_and_keeps_it_next_start(self):
+        source = (NVN / 'nvn_mtl.m').read_text()
+        record = source[source.index('static void pso_played_record(const char *line) {'):source.index('static void pso_user_record(')]
+        self.assertIn('warm_resident_mode() != WARM_RESIDENT_TITLE_KINDS', record)   # the saver only
+        self.assertIn('dispatch_async(q,', record)                                    # never a file write on the submit thread
+        user = source[source.index('static void pso_user_record('):]
+        self.assertLess(user.index('pso_played_record(line);'), user.index('if (!g_pso_shared) return;'))   # before the App-list filter
+        start = source[source.index('static void warm_start(void) {'):]
+        kinds = start[start.index('if (kinds && archive.count) {'):start.index('g_warm_pipelines_only = 1;')]
+        self.assertIn('warm_played_rows(played, WARM_PLAYED_MAX)', kinds)
+        # 2026-11-18 (user: "好 这样改吧"): kept as before, but built after the title, behind the menu; the title waits only
+        # for the title list and the kinds, and the first world frame waits for the played list (mtl_warm_wait)
+        self.assertIn('if (prow.count) g_warm_after_title = played;', kinds)
+        self.assertNotIn('arrayByAddingObject:played', kinds)
+        at = start.index('if (g_warm_after_title) {')
+        after = start[at:start.index('play_base_take();', at)]
+        self.assertIn('atomic_store(&g_warm_running, 1);', after)   # hle_nvn.c mtl_warm_wait waits for it before the world
+        self.assertIn('warm_worker(after,', after)
+        self.assertLess(start.index('while (atomic_load(&g_warm_running)) usleep(5000);'), start.index('if (g_warm_after_title) {'))
+
     def test_oot_mac_saves_memory_unless_switched_off(self):   # user 2026-11-16: "开启省内存模式"; night: "目标 12g"
         source = (NVN / 'nvn_mtl.m').read_text()
         mode = source[source.index('static int warm_resident_mode(void)'):source.index('static int warm_shared(void)')]

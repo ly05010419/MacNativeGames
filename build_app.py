@@ -2075,7 +2075,7 @@ def pipeline_files_stamp(folder):
     h = hashlib.sha256()
     for p in sorted(p for p in Path(folder).iterdir() if p.is_file() and p.name.startswith('pipelines-')):
         st = p.stat()
-        h.update(f'{p.name} {st.st_size} {st.st_mtime_ns if p.suffix == ".metalarchive" else sha256(p)}\n'.encode())
+        h.update(f'{p.name} {st.st_size} {st.st_mtime_ns if p.suffix in (".metalarchive", ".mtl4a") else sha256(p)}\n'.encode())
     return h.hexdigest()
 
 
@@ -2446,21 +2446,26 @@ def mac_pipeline_files(made, seed, arch, chain):
     # (par_stale) stays listed in its old file, which keeps its other keys; until 2026-11-15 the index listed such a key
     # twice, the old file first by name, and the game takes a key's first row (par_load_prebuilt): it used the stale
     # pipeline, which Metal refused (14 of a quick App's 124 mesh pipelines compiled again at every start).
-    batches = sorted((p.with_suffix('.keys') for p in made.glob('*.metalarchive') if p.with_suffix('.keys').is_file()),
-                     key=lambda k: (k.stat().st_mtime, k.stem))
+    # Ocarina of Time on the Mac also writes Metal 4 files (nvn_pso4.h: <made>/../pipelines-mtl4/<name>.mtl4a + .keys, GPU
+    # code only, up to 2,000 pipelines a file): named m4-<name> in the App (pipelines-<arch>-m4-<name>.mtl4a), which tells
+    # the runtime which API opens them. A key in both kinds goes to the newer file, as between two old files.
+    def kind(folder, ext, prefix):
+        return [(k, ext, prefix + k.stem) for k in (p.with_suffix('.keys') for p in folder.glob(f'*.{ext}')) if k.is_file()]
+    batches = sorted(kind(made, 'metalarchive', '') + kind(made.parent / 'pipelines-mtl4', 'mtl4a', 'm4-'),
+                     key=lambda b: (b[0].stat().st_mtime, b[2]))
     owner = {}
-    for keys in batches:
+    for keys, _, name in batches:
         for key in keys.read_text().split('\n'):
             if key:
-                owner[key] = keys.stem
+                owner[key] = name
     index = []
-    for keys in batches:
-        mine = [key for key in keys.read_text().split('\n') if key and owner.get(key) == keys.stem]
+    for keys, ext, name in batches:
+        mine = [key for key in keys.read_text().split('\n') if key and owner.get(key) == name]
         if not mine:
             continue   # every key it lists was written again later: the App does not carry it
         mine = list(dict.fromkeys(mine))
-        clone(keys.with_suffix('.metalarchive'), seed / f'pipelines-{arch}-{keys.stem}.metalarchive')
-        index += [f'{key}\t{keys.stem}' for key in mine]
+        clone(keys.with_suffix('.' + ext), seed / f'pipelines-{arch}-{name}.{ext}')
+        index += [f'{key}\t{name}' for key in mine]
     if not index:
         return 0
     # #2070: the compute shaders this GPU's Metal compiler built only with their float adds lowered (nvn_float_rmw.h): the

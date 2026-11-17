@@ -181,6 +181,7 @@ extern void totk_sr_view(int w,int h,int display_hz,int fullscreen) __attribute_
 extern void totk_sr_closing(void) __attribute__((weak_import));
 extern void totk_sr_settings(int open) __attribute__((weak_import));
 int runtime_front_window_visible(void);   /* below: 1 seen, 0 covered, -1 not known yet */
+__attribute__((weak)) void mtl_pipeline_archive_quit(void);   /* nvn_mtl.m (absent in builds without the graphics layer) */
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
 /* The display the window is on and its refresh rate (0 before the window exists): the pacing follows that rate
    (gfx/nvn mtl_display_hz), not the main display's. A BOTW window moved to a 75 Hz monitor while the 120 Hz built-in
@@ -578,6 +579,7 @@ void runtime_front_resize_aspect(double ratio){
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
+ if(mtl_pipeline_archive_quit)mtl_pipeline_archive_quit();   /* the Metal 4 pipeline archive's last pipelines (nvn_pso4.h) */
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");runtime_cloud_save_quit();_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{

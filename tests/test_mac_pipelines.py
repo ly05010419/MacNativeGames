@@ -60,6 +60,37 @@ class MacPipelineFiles(unittest.TestCase):
         self.assertEqual(n, 3)
         self.assertFalse((self.seed / 'pipelines-applegpu_g16s-bb.metalarchive').exists())   # it holds no key any more
 
+    def test_metal4_files_join_the_index_and_take_their_keys_when_newer(self):
+        # 2026-11-17 (nvn_pso4.h): Ocarina of Time on the Mac writes Metal 4 files (GPU code only, up to 2,000 pipelines a
+        # file) beside the old folder, in pipelines-mtl4/. The App carries them as pipelines-<arch>-m4-<name>.mtl4a, the
+        # m4- name telling the runtime which API opens them; a key in both kinds belongs to the newer file.
+        import os
+        m4 = self.made.parent / 'pipelines-mtl4'; m4.mkdir()
+        (self.made / 'aa.metalarchive').write_bytes(b'old batch')
+        (self.made / 'aa.keys').write_text('key1\nkey2\n')
+        (m4 / 'key2-2000.mtl4a').write_bytes(b'metal 4 period')
+        (m4 / 'key2-2000.keys').write_text('key2\nkey3\n')
+        (m4 / 'cut.mtl4a').write_bytes(b'no keys: a write cut short')
+        os.utime(self.made / 'aa.keys', (1000, 1000)); os.utime(m4 / 'key2-2000.keys', (2000, 2000))
+        n = build_app.mac_pipeline_files(self.made, self.seed, 'applegpu_g16s', 'c')
+        index = dict(line.split('\t') for line in (self.seed / 'pipelines-applegpu_g16s.tsv').read_text().splitlines())
+        self.assertEqual(index, {'key1': 'aa', 'key2': 'm4-key2-2000', 'key3': 'm4-key2-2000'})
+        self.assertEqual(n, 3)
+        self.assertEqual((self.seed / 'pipelines-applegpu_g16s-m4-key2-2000.mtl4a').read_bytes(), b'metal 4 period')
+        self.assertFalse(any(p.name.startswith('pipelines-applegpu_g16s-m4-cut') for p in self.seed.iterdir()))
+        # the stamp tells a file the tool did not write again by its time, for both kinds (pipeline_files_stamp)
+        before = build_app.pipeline_files_stamp(self.seed)
+        os.utime(self.seed / 'pipelines-applegpu_g16s-m4-key2-2000.mtl4a', (3000, 3000))
+        self.assertNotEqual(build_app.pipeline_files_stamp(self.seed), before)
+
+    def test_the_runtime_opens_m4_names_with_metal4_only(self):
+        nvn = HEADER.parent
+        pso4 = (nvn / 'nvn_pso4.h').read_text()
+        self.assertIn('[name hasPrefix:@"m4-"]', pso4)                       # the App's names (par4_name)
+        self.assertIn('stringByAppendingFormat:@"%@.mtl4a", name]', pso4)    # pipelines-<arch>-m4-<name>.mtl4a
+        self.assertIn('if (name && par4_name(name))', HEADER.read_text())    # the old API never opens them
+        self.assertIn('TOTK_SHADER_DEVICE_LIBS', pso4)                       # an iPad build's run keeps the old files
+
     def test_the_runtime_reports_a_key_listed_twice(self):
         self.assertIn('重复', HEADER.read_text())   # par_load_prebuilt: a duplicate key in the App's index is red
 
