@@ -218,7 +218,7 @@ class History(unittest.TestCase):
 class Checks(unittest.TestCase):
     def test_no_homebrew_package_is_needed(self):
         source = repo.BUILD_APP.read_text()
-        start = source.index('def prerequisites(')
+        start = source.index('def developer_tools(')   # the checks of a build that compiles (prerequisites calls it)
         body = source[start:source.index('\n\n\n', start)]   # the function alone, not the comment after it
         self.assertNotIn('libvpx', body)          # built from pinned sources (codec_libraries), not checked in Homebrew
         self.assertIn("codec_libraries(getattr(args, 'platform', 'macos'))", body)

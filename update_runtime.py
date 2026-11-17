@@ -400,7 +400,7 @@ def game_data(tree, res, version, logs, env):
         return installed
     say('the app has no game data folder yet (it was made before the game binary read one): making it from the work folder')
     try:
-        run(['make', f'game-data-{version}'], logs / 'game-data.log', cwd=tree, env=env)
+        build_app.make_game_data(tree, version, logs, env)   # make game-data-<version>'s steps, without make
     except BuildError as e:
         raise BuildError(f'the work folder {tree.parent} does not hold the files the build of this app extracted, so the game '
                          f'data folder cannot be made once (pass --work <the work folder of that build>, or do a full '
@@ -706,7 +706,7 @@ def main(argv):
         if not seed_after_runtime(game):
             make_seed(tree, work, game, version, logs, env)
     say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')
-    run(['make', f'-j{os.cpu_count() or 4}', 'binary' if version == 'v0' else f'binary-{version}'], logs / 'runtime.log', cwd=tree, env=env)
+    build_app.make_runtime(tree, version, logs, env, data=False)   # make binary-<version>, or the release's prebuilt binary
     if args.seed and seed_after_runtime(game):
         make_seed(tree, work, game, version, logs, env)
     if not (tree / 'build/spirv-cross/spirv-cross').exists():

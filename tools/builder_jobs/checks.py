@@ -48,6 +48,30 @@ def checks(work_root):
     add('mac', platform.machine() == 'arm64' and major >= 26,
         t(f'a Mac with Apple silicon and macOS 26 or later (this one: {platform.machine()}, macOS {platform.mac_ver()[0]})',
           f'Apple 芯片的 Mac，macOS 26 或更新（这台：{platform.machine()}，macOS {platform.mac_ver()[0]}）'))
+    if compile_free():   # build_app.compile_free: the Launcher's source has the release's prebuilt programs
+        add('tools', True, t('developer tools: not needed, this Launcher brings the programs a build compiles',
+                             '开发工具：不需要，这个 Launcher 自带打包要编的程序'))
+    else:
+        developer_tools(add)
+    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))
+    free = _free_gb(work_root)
+    add('disk', free is not None and free >= FREE_GB,
+        t(f'{FREE_GB} GB free for the work folder ({"unknown" if free is None else f"{free:.0f} GB"} free at {work_root})',
+          f'工作目录要 {FREE_GB} GB 空间（{work_root} 剩 {"未知" if free is None else f"{free:.0f} GB"}）'),
+        t('choose a work folder on a disk with more space', '换一个空间更大的盘放工作目录'))
+    return out
+
+
+def compile_free():
+    """Every program a Mac build compiles is the release's (tools/prebuilt.py): no developer tools are checked, and
+    none of xcrun, git or make is run, since on a Mac without them each opens Apple's install dialog."""
+    from tools import prebuilt
+    from tools.builder_jobs import repo
+    return prebuilt.complete(repo.REPO)
+
+
+def developer_tools(add):
+    """A source without the prebuilt programs (a checkout) compiles them: the command line tools and their SDK."""
     clang = _ok(['xcrun', '--find', 'clang'])
     add('clt', clang, t('Xcode command line tools', 'Xcode 命令行工具'), 'xcode-select --install', 'install-clt')
     sdk = _out(['xcrun', '--show-sdk-version']) if clang else ''
@@ -61,10 +85,3 @@ def checks(work_root):
     add('cxx', cxx, t('C++ headers of the developer tools', '开发工具里的 C++ 头文件'),
         'sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install')
     add('git', shutil.which('git', path=os.pathsep.join(['/opt/homebrew/bin', '/usr/bin'])), 'git', 'xcode-select --install')
-    add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))
-    free = _free_gb(work_root)
-    add('disk', free is not None and free >= FREE_GB,
-        t(f'{FREE_GB} GB free for the work folder ({"unknown" if free is None else f"{free:.0f} GB"} free at {work_root})',
-          f'工作目录要 {FREE_GB} GB 空间（{work_root} 剩 {"未知" if free is None else f"{free:.0f} GB"}）'),
-        t('choose a work folder on a disk with more space', '换一个空间更大的盘放工作目录'))
-    return out

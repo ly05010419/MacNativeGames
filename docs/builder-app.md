@@ -19,8 +19,20 @@ Players do not re-sign the downloaded Launcher, configure signing certificates o
 A portable build includes Python and its matching source snapshot; players do not compile the Launcher or
 need a checkout. At first use, the source is verified and extracted to
 `~/Library/Application Support/MacNativeGames/Builder/sources/<archive-sha256>`. Old source versions remain
-available to games that recorded them. Building a game still requires Apple's command line tools and the
-player's own game files and keys.
+available to games that recorded them. Building a game needs the player's own game files and keys.
+
+**No developer tools** (2026-11-17): the source snapshot carries `.prebuilt/`, the programs a Mac build would
+otherwise compile (each game version's runtime, SPIRV-Cross, the warm-up tool, the update unpacker), compiled by
+the release from the same commit (`tools/prebuilt.py`, with a manifest of the commit and each file's SHA-256). A
+build takes a program only when the folder belongs to the source's commit and the file matches; anything else is
+compiled as before, so a checkout, or a source with local changes, still needs the command line tools. The
+Launcher's first build page then shows "developer tools: not needed" and runs no `xcrun`, `git` or `make`, which
+on a Mac without them open Apple's install dialog. Ocarina of Time still needs the full Xcode with its Metal
+toolchain: it compiles the shaders translated from the player's own game; the build page says so and links Xcode.
+An iPhone / iPad build needs Xcode too.
+
+The Build page is three pages: 1 this Mac (what is missing, with its fix), 2 the game files and keys, 3 where the
+app goes and the build. Next opens when the page is done.
 
 ### Code updates without a new Launcher (1.0.2 and newer)
 

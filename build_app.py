@@ -322,6 +322,26 @@ def prerequisites(args):
     major = int(platform.mac_ver()[0].split('.')[0] or 0)
     if major < 26:
         raise BuildError(f'needs macOS 26 or later (Metal 4); this is macOS {platform.mac_ver()[0]}')
+    if compile_free(args):
+        say('   this source has the release\'s prebuilt programs (tools/prebuilt.py): no developer tools needed')
+    else:
+        developer_tools(args)
+    py = next((p for p in (shutil.which(n, path=os.pathsep.join(TOOL_PATHS)) for n in ('python3.14', 'python3.15')) if p), None)
+    if not py:
+        raise BuildError('Python 3.14 not found (the build reads zstd with the standard library): install it from '
+                         'https://www.python.org/downloads/macos/ (or brew install python@3.14)')
+    return Path(py)
+
+
+def compile_free(args):
+    """A Mac build of this source compiles nothing (tools/prebuilt.py: every program is the release's): it needs no
+    command line tools, and none of their programs (xcrun, git, make) is run, since on a Mac without them each asks to
+    install them."""
+    return getattr(args, 'platform', 'macos') == 'macos' and prebuilt.complete(REPO)
+
+
+def developer_tools(args):
+    """The command line tools a build that compiles needs, and the codec libraries it links."""
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install')
     # Metal 4 and MetalFX frame interpolation come with the macOS 26 SDK: an older Xcode on macOS 26 passes the checks
@@ -342,14 +362,9 @@ def prerequisites(args):
                          f'(xcode-select -p and xcrun --show-sdk-path show what is used). clang++ said: {cxx.stderr.strip()[:300]}')
     if not shutil.which('git', path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
         raise BuildError('git not found: xcode-select --install')
-    py = next((p for p in (shutil.which(n, path=os.pathsep.join(TOOL_PATHS)) for n in ('python3.14', 'python3.15')) if p), None)
-    if not py:
-        raise BuildError('Python 3.14 not found (the build reads zstd with the standard library): install it from '
-                         'https://www.python.org/downloads/macos/ (or brew install python@3.14)')
     # update_runtime.py passes its own arguments, which have no --platform: a Mac update (fa394da8 read args.platform and
     # every express update of Tears of the Kingdom and Breath of the Wild stopped with AttributeError)
     codec_libraries(getattr(args, 'platform', 'macos'))
-    return Path(py)
 
 
 # The runtime links opus (the games' audio), libvpx (VP8 / VP9 videos) and, for Ocarina of Time, dav1d statically. The
@@ -357,6 +372,7 @@ def prerequisites(args):
 # game, so a build needs no Homebrew (user 2026-11-12: "玩家完全不用装 Homebrew", "全部 24 款，用共用的 tools/deps").
 sys.path.insert(0, str(REPO))
 import tools.deps as deps  # noqa: E402
+import tools.prebuilt as prebuilt  # noqa: E402   the release's programs of this source: no compiler needed for them
 
 
 def codec_libraries(target='macos'):
@@ -468,10 +484,8 @@ def prepare_work(work, py, logs):
     if tooling.is_symlink():
         tooling.unlink()
     tooling.mkdir(exist_ok=True)
-    src = work / 'src'
-    say('fetching the pinned SPIRV-Cross sources')
-    git_fetch(*SPIRV_CROSS, src / 'SPIRV-Cross', logs / 'fetch-spirv-cross.log')
-    link(tooling / 'spirv-cross', src / 'SPIRV-Cross')
+    if prebuilt.program(REPO, 'spirv-cross') is None:   # the release's program needs no sources (tools/prebuilt.py)
+        spirv_cross_sources(tree, logs)
     venv = work / 'venv'
     if not (venv / 'bin/python').exists():
         say('Python environment for the build tools')
@@ -1038,6 +1052,10 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=N
 
 
 def build_hactool(tree, logs):
+    placed = tree.parent / 'src/hactool-prebuilt/hactool'
+    if prebuilt.place(REPO, 'hactool', placed):   # the release's, from the same pinned commit and hooks (tools/prebuilt.py)
+        return placed
+    prebuilt.compiler_needed('hactool')
     source = tree.parent / 'src/hactool'
     git_fetch(*HACTOOL, source, logs/'fetch-hactool.log')
     # Add an explicit private title-key file, so base NSP and update tickets do not
@@ -1239,8 +1257,24 @@ def step_update_data(tree, game, update, keys, logs, *, version, mod=None, nativ
             logs/(version+'-'+script+(f'-{i}' if i > 1 else '')+'.log'), cwd=tree)
 
 
+def spirv_cross_sources(tree, logs):
+    """The pinned SPIRV-Cross sources at tree/tooling/spirv-cross (git; for compiling the program, or an iPhone / iPad
+    build's in-app translator)."""
+    if (tree / 'tooling/spirv-cross').exists():
+        return
+    (tree / 'tooling').mkdir(exist_ok=True)
+    say('fetching the pinned SPIRV-Cross sources')
+    git_fetch(*SPIRV_CROSS, tree.parent / 'src/SPIRV-Cross', logs / 'fetch-spirv-cross.log')
+    link(tree / 'tooling/spirv-cross', tree.parent / 'src/SPIRV-Cross')
+
+
 def build_spirv_cross(tree, logs):
-    """The spirv-cross program with clang (the sources and flags of SPIRV-Cross's CMake Release build of it)."""
+    """The spirv-cross program with clang (the sources and flags of SPIRV-Cross's CMake Release build of it), or the
+    release's prebuilt one of this source (tools/prebuilt.py)."""
+    if prebuilt.place(REPO, 'spirv-cross', tree / 'build/spirv-cross/spirv-cross'):
+        return
+    prebuilt.compiler_needed('SPIRV-Cross')
+    spirv_cross_sources(tree, logs)
     src, out = tree / 'tooling/spirv-cross', tree / 'build/spirv-cross'
     objs = out / 'obj'
     objs.mkdir(parents=True, exist_ok=True)
@@ -1267,6 +1301,7 @@ def build_device_translator(tree, logs):
         if not lib.is_file() or sha256(lib) != want:
             raise BuildError(f'{lib}: not the file this repository ships (its SHA-256 differs from {lib.name}.sha256); '
                              f'check it out again, or rebuild both with games/totk/tools/totk_xlate/publish_ios_lib.sh')
+    spirv_cross_sources(tree, logs)
     src, out = tree / 'tooling/spirv-cross', tree / 'build/ios-xlate'
     objs = out / 'obj'
     objs.mkdir(parents=True, exist_ok=True)
@@ -1451,14 +1486,47 @@ def build_launcher(tree, version, logs, env):
 
 
 def build_warm_tool(tree, logs, env):
-    """build/warm-metal-cache: used only while packaging (step_warm_metal); not part of the app."""
+    """build/warm-metal-cache: used only while packaging (step_warm_metal); not part of the app. The release's prebuilt
+    one of this source when there is one (tools/prebuilt.py)."""
+    if prebuilt.place(REPO, 'warm-metal-cache', tree / 'build/warm-metal-cache'):
+        return
+    prebuilt.compiler_needed('the warm-up tool')
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
          '-framework', 'Foundation', '-o', 'build/warm-metal-cache'], logs / 'warm-metal-cache-build.log', cwd=tree, env=env)
 
 
+# games/totk/Makefile's SHADER_LIST ?= of each version (the list its pso_manifest.tsv / pso_title.tsv come from)
+SHADER_LISTS = {'botw160': '../botw/assets/shader_list.tsv', 'botw190': '../botw/assets/shader_list.tsv',
+                'dkb': '../dkb/assets/shader_list.tsv', 'pkp': '../pokopia/assets/shader_list.tsv'}
+
+
+def make_game_data(tree, version, logs, env):
+    """make game-data-<version> (games/totk/Makefile GAME_DATA): its three Python steps, so no make is needed."""
+    py = tree / '.venv/bin/python'
+    for script in ('prepare_runtime.py', 'prepare_romfs_backend.py', 'prepare_shared_fonts.py'):
+        run([py, f'scripts/{script}', '--version', version], logs / f'game-data-{script[:-3]}.log', cwd=tree, env=env)
+
+
+def make_runtime(tree, version, logs, env, *, data=True):
+    """make runtime-<version> (data) or binary-<version>: the game binary and its pso lists (and the game data folder).
+    The binary is the release's prebuilt one of this source when there is one (tools/prebuilt.py: a player needs no
+    command line tools); the rest are Python steps, run here without make then."""
+    name = prebuilt.runtime_name(version)
+    if not prebuilt.place(REPO, name, tree / 'build' / name):
+        prebuilt.compiler_needed(f'the {version} runtime')
+        target = ('runtime' if data else 'binary') + ('' if version == 'v0' else f'-{version}')
+        run(['make', f'-j{os.cpu_count() or 4}', target], logs / 'runtime.log', cwd=tree, env=env)
+        return
+    shader_list = (env or {}).get('SHADER_LIST') or SHADER_LISTS.get(version, 'assets/shader_list.tsv')
+    run([tree / '.venv/bin/python', 'scripts/shader_list.py', 'export', shader_list, 'build/pso_manifest.tsv',
+         'build/pso_title.tsv'], logs / 'pso-lists.log', cwd=tree, env=env)
+    if data:
+        make_game_data(tree, version, logs, env)
+
+
 def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115b6000'):
     say('4/4 app: building the game binary (the launcher, app/launcher.m, is part of it)')
-    run(['make', f'-j{os.cpu_count() or 4}', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
+    make_runtime(tree, version, logs, env)
     build_warm_tool(tree, logs, env)
     if game is not None and not (tree / 'build/AppIcon.icns').exists():   # the game's own icon from its control data; optional (none from a dump folder yet)
         try:
