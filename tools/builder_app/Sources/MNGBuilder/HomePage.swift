@@ -64,11 +64,17 @@ struct HomePage: View {
                 // an update running for another game, or one another program started: its progress shows here too, until
                 // it ends well or is cancelled (the game opened, or the player chose so); a failure stays, with its log
                 if let running = model.updating, running != shown?.app, model.phase != .done, model.phase != .cancelled {
-                    GroupBox { ActionSection(updateOnly: true).frame(maxWidth: .infinity, alignment: .leading).padding(6) } label: { Text(jobGame) }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) { Text(jobGame).font(.title3.weight(.semibold)); ActionSection(updateOnly: true) }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
                 }
                 // a build from the Build page: after 返回 its progress and its Cancel show here too (else greyed buttons, no word why)
                 if model.updating == nil, model.phase == .building || model.phase == .cancelling {
-                    GroupBox { ActionSection().frame(maxWidth: .infinity, alignment: .leading).padding(6) } label: { Text(jobGame) }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) { Text(jobGame).font(.title3.weight(.semibold)); ActionSection() }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
                 }
             }
             .padding(24)

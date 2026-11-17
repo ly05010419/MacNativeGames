@@ -104,9 +104,11 @@ class HomeShowsABuild(unittest.TestCase):
         self.assertIn('ActionSection()', shown[:shown.index('}\n')])
 
     def test_a_job_shown_under_another_game_names_its_game(self):
-        # switched to another card, a job's progress shows at the bottom: its box says whose job it is
+        # switched to another card, a job's progress shows at the bottom: its box says whose job it is, as its first
+        # line inside the box (a GroupBox label is drawn small, outside the box's top-left corner)
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertEqual(home.count('} label: { Text(jobGame'), 2)
+        self.assertEqual(home.count('Text(jobGame).font(.title3.weight(.semibold))'), 2)
+        self.assertNotIn('label: { Text(jobGame)', home)
 
     def test_a_finished_update_leaves_another_game_s_page(self):
         # the game opened (or the player cancelled): its box no longer sits under another game until the next job
