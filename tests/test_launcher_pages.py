@@ -108,6 +108,24 @@ class HomeShowsABuild(unittest.TestCase):
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertEqual(home.count('} label: { Text(jobGame'), 2)
 
+    def test_a_finished_update_leaves_another_game_s_page(self):
+        # the game opened (or the player cancelled): its box no longer sits under another game until the next job
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertIn('if let running = model.updating, running != shown?.app, model.phase != .done, model.phase != .cancelled {', home)
+
+    def test_a_finished_job_says_the_game_was_opened(self):
+        # the game is opened at once (play(), no wait): 'Starting the game…' would stay on the page for good
+        swift = REPO / 'tools/builder_app/Sources/MNGBuilder'
+        strings = (swift / 'Strings.swift').read_text()
+        for line in ('static let doneOK', 'static let updatedOK'):
+            said = strings[strings.index(line):].split('\n')[0]
+            self.assertNotIn('Starting the game', said)
+            self.assertNotIn('正在启动游戏', said)
+        # a job that ends without its 'done' line still opens the game, as that line would have
+        ended = (swift / 'Model.swift').read_text()
+        ended = ended[ended.index('private func ended('):ended.index('func play()')]
+        self.assertIn('play()', ended)
+
 
 if __name__ == '__main__':
     unittest.main()

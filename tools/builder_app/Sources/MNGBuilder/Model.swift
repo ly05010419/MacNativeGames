@@ -365,7 +365,9 @@ final class Model: ObservableObject {
     private func ended(_ code: Int32) {
         job = nil
         if phase == .building || phase == .cancelling {   // the job ended without its 'done' line
+            let open = phase == .building && code == 0 && startedHere   // as that line would have (not after a cancel)
             phase = code == 0 ? .done : .failed
+            if open { play() }
         }
         Task { await loadInstalled() }   // an app was made or updated: what it needs now
     }
