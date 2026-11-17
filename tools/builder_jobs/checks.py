@@ -49,8 +49,10 @@ def checks(work_root):
         t(f'a Mac with Apple silicon and macOS 26 or later (this one: {platform.machine()}, macOS {platform.mac_ver()[0]})',
           f'Apple 芯片的 Mac，macOS 26 或更新（这台：{platform.machine()}，macOS {platform.mac_ver()[0]}）'))
     if compile_free():   # build_app.compile_free: the Launcher's source has the release's prebuilt programs
-        add('tools', True, t('developer tools: not needed, this Launcher brings the programs a build compiles',
-                             '开发工具：不需要，这个 Launcher 自带打包要编的程序'))
+        # a game it does not cover says so at its build (classify.PREBUILT_GAMES, tool_blocks)
+        add('tools', True, t('developer tools: not needed for Zelda, Donkey Kong Bananza and Pokopia, this Launcher brings '
+                             'the programs their build compiles (a game that needs them says so at the build)',
+                             '开发工具：塞尔达、大金刚、Pokopia 不需要，这个 Launcher 自带打包要编的程序（需要的游戏在第三步会说明）'))
     else:
         developer_tools(add)
     add('python', sys.version_info >= (3, 14), t(f'Python 3.14 (running {platform.python_version()})', f'Python 3.14（现在是 {platform.python_version()}）'), t('install it from https://www.python.org/downloads/macos/', '从 https://www.python.org/downloads/macos/ 安装'))

@@ -316,14 +316,20 @@ struct BuildStep: View {
                 Spacer()
             }
             Text(T.step3Hint).font(.callout).foregroundStyle(.secondary)
-            ForEach(model.toolBlocks, id: \.self) { block in
+            // what this game needs on this Mac (classify tool_needs): the command line tools have an installer to start,
+            // Xcode's Metal toolchain the App Store and a command to copy
+            ForEach(Array(model.toolBlocks.enumerated()), id: \.offset) { i, block in
                 HStack(alignment: .firstTextBaseline) {
                     Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
                     Text(block).textSelection(.enabled)
                     Spacer()
-                    Button(T.getXcode) { NSWorkspace.shared.open(URL(string: "macappstore://apps.apple.com/app/id497799835")!) }
-                    Button(T.copyCommand) {
-                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(T.metalCommand, forType: .string)
+                    if model.toolNeed(i) == "clt" {
+                        Button(T.installCLT) { model.installCommandLineTools() }.buttonStyle(.borderedProminent)
+                    } else {
+                        Button(T.getXcode) { NSWorkspace.shared.open(URL(string: "macappstore://apps.apple.com/app/id497799835")!) }
+                        Button(T.copyCommand) {
+                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(T.metalCommand, forType: .string)
+                        }
                     }
                     Button(T.recheck) { Task { await model.classify() } }
                 }

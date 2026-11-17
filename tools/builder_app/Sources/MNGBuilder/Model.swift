@@ -192,8 +192,12 @@ final class Model: ObservableObject {
     }
     var keysReady: Bool { plan.map { !$0.needs_keys || ($0.keys != nil && $0.keys_problems.isEmpty) } ?? false }
     var macReady: Bool { checks.allSatisfy { $0.ok || $0.id == "disk" } && !checks.isEmpty }
-    /// The plan's blocks about this Mac's tools for this game (Ocarina of Time's Metal compiler): shown on page 3.
+    /// The plan's blocks about this Mac's tools for this game (Ocarina of Time's Metal compiler; the command line tools
+    /// of a game the release's prebuilt programs do not cover): shown on page 3.
     var toolBlocks: [String] { plan?.tool_blocks ?? [] }
+    func toolNeed(_ i: Int) -> String { (plan?.tool_needs ?? []).indices.contains(i) ? plan!.tool_needs![i] : "metal" }
+    /// Apple's installer of the command line tools; the plan is read again when it ends.
+    func installCommandLineTools() { run("/usr/bin/xcode-select", ["--install"]) }
 
     /// The Build page's three pages (user 2026-11-17: "每个步骤 一个页面"): 1 this Mac, 2 the files and keys, 3 the build.
     @Published var buildStep = 1

@@ -26,6 +26,7 @@ struct ClassifyReport: Codable {
         var keys_problems: [String]
         var blocks: [String]
         var tool_blocks: [String]?   // the blocks about this Mac's tools (page 3), also in blocks
+        var tool_needs: [String]?    // what each one is: "metal" (Xcode's Metal toolchain) or "clt" (the command line tools)
         var notes: [String]
     }
     let items: [Item]

@@ -9,6 +9,7 @@ and lists what still blocks a build."""
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
+import subprocess
 
 from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
@@ -46,6 +47,7 @@ class Plan:
     keys_problems: list = field(default_factory=list)   # the blocks about the keys (the window shows them at the keys)
     blocks: list = field(default_factory=list)
     tool_blocks: list = field(default_factory=list)   # the blocks about this Mac's tools, not the files (also in blocks)
+    tool_needs: list = field(default_factory=list)    # what each of them is: 'metal' (Xcode's) or 'clt' (the window's fix)
     notes: list = field(default_factory=list)
 
 
@@ -250,8 +252,41 @@ def card_update_ncas(path):
         return None
 
 
+# The games whose Mac build tools/prebuilt.py covers (build_app.py's runtimes of games/totk/Makefile), so a release's
+# Launcher builds them with no developer tools; Ocarina of Time needs Xcode (oot_needs_metal), which brings them. The
+# others (ss, dread, worldend, tmnt, acnh: their own games/<game>/build.py) compile on this Mac.
+PREBUILT_GAMES = {'totk', 'botw', 'dkb', 'pkp', 'oot'}
+
+
+def no_developer_tools():
+    """True when the folder xcode-select names has no clang. Read from the files, never by running xcrun, git or make,
+    which on a Mac without the tools open Apple's install dialog (/usr/bin/xcode-select is a program of its own)."""
+    try:
+        folder = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return not folder or not (Path(folder) / 'usr/bin/clang').is_file()
+
+
+def needs_developer_tools(game):
+    """A game a release's prebuilt programs do not cover compiles on this Mac (user 2026-11-17: page 1 says the developer
+    tools are not needed, true for the games tools/prebuilt.py covers only)."""
+    name = repo.GAMES.get(game, game)
+    return t(f'{name} is compiled on this Mac: install Apple\'s command line tools (xcode-select --install)',
+             f'{name}要在这台 Mac 上编译：请安装 Apple 的命令行工具（xcode-select --install）')
+
+
 def plan(items, work=None):
     """The build these items make. work: the work folder the build will use (fonts extracted there count)."""
+    p = _plan(items, work)
+    if p.game and p.game not in PREBUILT_GAMES and no_developer_tools():
+        p.blocks.append(needs_developer_tools(p.game))
+        p.tool_blocks.append(p.blocks[-1])
+        p.tool_needs.append('clt')
+    return p
+
+
+def _plan(items, work=None):
     p = Plan()
     by_role = lambda role, game=None: [i for i in items if i.role == role and (game is None or i.game in (game, None))]
     keys = by_role('keys')
@@ -288,6 +323,7 @@ def plan(items, work=None):
         if p.game == 'oot' and no_metal_compiler():
             p.blocks.append(oot_needs_metal())
             p.tool_blocks.append(p.blocks[-1])   # the Launcher shows it with this Mac's other needs, at the build
+            p.tool_needs.append('metal')
         return p
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))

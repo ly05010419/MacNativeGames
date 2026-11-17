@@ -170,6 +170,50 @@ class LauncherChecks(unittest.TestCase):
         self.assertEqual(Path(complete.call_args.args[0]), ROOT)
 
 
+class GamesTheProgramsDoNotCover(unittest.TestCase):
+    """Page 1 says the developer tools are not needed; the games with their own games/<game>/build.py (ss, dread,
+    worldend, tmnt, acnh) still compile on this Mac, so their build is held at page 3 with the installer, not left to fail
+    halfway (2026-11-17, found when origin's Animal Crossing commit met this change)."""
+
+    def plan(self, game):
+        from tools.builder_jobs import classify
+        return classify.plan([classify.Item('/tmp/none', 'ns2_dump' if game in ('dkb', 'pkp') else 'base', game)])
+
+    def test_held_at_page_three_without_the_tools(self):
+        from tools.builder_jobs import classify
+        with mock.patch.object(classify, 'no_developer_tools', return_value=True), \
+                mock.patch.object(classify, 'no_metal_compiler', return_value=False):
+            for game in ('acnh', 'tmnt', 'dread'):
+                with self.subTest(game=game):
+                    p = self.plan(game)
+                    self.assertTrue(any('command line tools' in b or '命令行工具' in b for b in p.blocks), p.blocks)
+                    self.assertEqual(p.tool_needs, ['clt'])
+                    self.assertEqual(len(p.tool_blocks), 1)
+            for game in ('totk', 'botw', 'dkb', 'pkp'):
+                with self.subTest(game=game):
+                    self.assertEqual(self.plan(game).tool_needs, [])
+
+    def test_with_the_tools_nothing_is_added(self):
+        from tools.builder_jobs import classify
+        with mock.patch.object(classify, 'no_developer_tools', return_value=False):
+            self.assertEqual(self.plan('acnh').tool_needs, [])
+
+    def test_the_check_reads_files_and_runs_no_xcrun(self):
+        from tools.builder_jobs import classify
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+
+            def fake(cmd, **kw):
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, tmp + '\n', '')
+            with mock.patch.object(classify.subprocess, 'run', side_effect=fake):
+                self.assertTrue(classify.no_developer_tools())
+                (Path(tmp) / 'usr/bin').mkdir(parents=True)
+                (Path(tmp) / 'usr/bin/clang').write_text('')
+                self.assertFalse(classify.no_developer_tools())
+            self.assertEqual({c[0] for c in calls}, {'/usr/bin/xcode-select'})
+
+
 class SourceArchive(unittest.TestCase):
     def test_the_archive_carries_the_folder(self):
         with tempfile.TemporaryDirectory() as tmp:

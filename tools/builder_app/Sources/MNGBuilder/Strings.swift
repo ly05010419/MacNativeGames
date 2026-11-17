@@ -203,6 +203,7 @@ enum T {
     static let chooseAgain = s("Choose Again…", "重新选择…")
     static let keys = s("Keys", "密钥")
     static let getXcode = s("Get Xcode", "获取 Xcode")
+    static let installCLT = s("Install Command Line Tools", "安装命令行工具")
     static let copyCommand = s("Copy Command", "拷贝命令")
     static let metalCommand = "xcodebuild -downloadComponent MetalToolchain"
     static let step1 = s("Choose the game", "选择游戏")
