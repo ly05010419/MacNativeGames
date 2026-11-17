@@ -28,7 +28,8 @@ from tools.builder_jobs.tabs import TabError
 from tools.builder_jobs.text import t
 
 KEYMAP = {'oot': 'games/oot/runtime/keyboard_map.h', 'acnh': 'games/acnh/runtime/keyboard_map.h',
-          'odyssey': 'games/odyssey/runtime/keyboard_map.h'}   # each game's own copy; the others build with games/totk's
+          'odyssey': 'games/odyssey/runtime/keyboard_map.h',
+          'eow': 'games/eow/runtime/keyboard_map.h'}   # each game's own copy; the others build with games/totk's
 KEYMAP_DEFAULT = 'games/totk/runtime/keyboard_map.h'
 KEYMAP_INPUT = re.compile(r'\{(\d+), "([a-z0-9_]+)", "')
 
@@ -346,11 +347,13 @@ def key_codes(repo, game='totk'):
 
 
 def layout(ctx):
-    """The game's keyboard.txt as the old page found it: the data folder's, then the app's, else the defaults."""
+    """The game's keyboard.txt as the old page found it: the data folder's, then the app's, else the defaults (the game's own
+    table: keyboard_layout.defaults_for)."""
+    defaults = kb.defaults_for(ctx.spec.id)
     for path in (ctx.data_dir / 'keyboard.txt', ctx.app / 'Contents/Resources/keyboard.txt'):
         if path.is_file():
-            return kb.read_layout(path), path
-    return kb.default_layout(ctx.data_dir / 'keyboard.txt'), None
+            return kb.read_layout(path, defaults), path
+    return kb.default_layout(ctx.data_dir / 'keyboard.txt', defaults), None
 
 
 def keyboard(ctx):

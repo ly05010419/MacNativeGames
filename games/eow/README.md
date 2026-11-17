@@ -2,7 +2,9 @@
 
 Echoes of Wisdom 1.1.0 running natively on Apple silicon the way `games/totk` runs Tears of the Kingdom: the game's own
 ARM64 code, rewritten ahead of time, a small Horizon host and NVN rebuilt on Metal. It started as a copy of `games/by3`
-and keeps its own copies of everything it builds and runs with ([third_party/COPIES.md](third_party/COPIES.md)).
+and keeps its own copies of what it builds and runs with ([third_party/COPIES.md](third_party/COPIES.md)), except the
+code every game uses: the FPS box, the settings panel and its pages come from [`shared/`](../../shared/README.md)
+through links.
 
 **Playable from the title into the game on the Mac**: the title screen with its movie, the prologue (Link in the dungeon,
 HUD, Chinese text), sound and music, keyboard and game controllers, saves. 60 fps as on the Switch. How it was done,
@@ -32,7 +34,7 @@ clone of the work folder's), the fonts, the translator, the shader seed and the 
 packaging. It is signed ad hoc with its bundle ID `org.macnativegames.eow` as the designated requirement. The player's
 data is in `~/Library/Application Support/MacNativeGames/EoW` (`profile/` saves, `shader-cache/`, `last-run.log`); the
 game's language follows the Mac's first preferred language. MNG Launcher builds it from the dropped files and updates it
-without them (`update_runtime.py` calls `build.py`'s `update`); its card has the Storage and Saves pages.
+without them (`update_runtime.py` calls `build.py`'s `update`); its card has the Controls, Storage and Saves pages.
 
 ## Inputs
 
@@ -92,11 +94,69 @@ TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_WIDEN=1 
 
 - Click the window once: macOS gives controller input only to the active app, and a window started from a terminal is
   not always activated.
-- Keyboard: J = A, WASD = left stick; game controllers work through GameController.
+- Keyboard and controllers: see [Keys](#keys); key 1 (or L3 + R3 on a controller) opens the [settings panel](#settings-panel).
 - Saves: `user-data/` in the work folder. Close the window to quit; the game finishes its save first.
 - Stutter: with `make shader-seed` every shader is translated and compiled before play; without it, shaders are
   translated once and cached, and `build_shader_libs.py` compiles them ahead of time into `build/shader-libs`, so only
   shaders never seen before are compiled during play (0.3-0.6 s each, once).
+
+## Settings panel
+
+Key 1, or L3 + R3 pressed together on a controller, opens and closes it; Esc and its ✕ close it too. While it is open the
+game gets no keyboard, mouse or controller input. It is the Zelda games' panel (`shared/runtime/settings_panel.h`) with
+this game's rows (`runtime/settings_game.h`); every row applies at once and is kept next to `controls.txt` in the data
+folder, so it holds for the next launch. A row this game cannot change shows its one value, greyed out.
+
+- **Display**: the overlay (all lines; FPS full information, which adds every long frame ("hitch") with what it spent
+  its time on, the shader libraries and pipelines made in play; FPS and playtime; off), the FPS graph under it, the
+  frame rate (60 fps, the game's own pace: fixed) and MetalFX frame interpolation (not available in this game yet).
+- **Input**: the controller type (auto, Xbox, PlayStation, Switch: which way the face buttons are read), rumble, and a
+  DSU (cemuhook) server for a controller's buttons and motion (off by default).
+- **Effects**: the picture, 1080p as the game draws it, or upscaled with MetalFX to a larger window or full screen
+  instead of the plain scaling (not checked in play yet); Reset to defaults gives the plain scaling back.
+- **Key bindings**: two keys or mouse buttons and the controller buttons for every Switch button and stick direction,
+  as a list or drawings of the keyboard and the controller; the screenshot (P, or the controller's touchpad held 3 s,
+  or its capture button) saves the game's next frame as a PNG, in a folder the 截图分享 page chooses. The settings
+  panel's own key is always 1.
+- **性能排行榜** (performance board) and **截图分享** (screenshot sharing) at mac-native-games.com, under the game id
+  `eow`: both off by default and never asked; nothing is sent unless the player turns 我要上榜 or 分享我的截图 on.
+
+Not in this game's panel: the User page (the saves keep the one account they have always had, `profile/save/<id>`; the
+game has its own save files in it), shader contributions (the shader list grows from a work folder's cache, see
+Shaders), VR, the game's language (it follows the Mac), aspect ratio and render resolution, gyro aiming. The old keys
+2-4 are gone: none of them did anything in this game.
+
+## Keys
+
+The default keyboard layout is the fixed one this game had before (the settings panel's key bindings change it, kept in
+`keyboard.txt`; the mouse drives nothing until a button is given an action there). Controllers use the Switch's own
+layout by position (east A, south B, north X, west Y); MNG Launcher's Controls page and the key bindings change it
+(`controls.txt`). A confirms and B goes back in the game's menus; its own button prompts say what each does in play.
+
+| Switch | Keys | Controller |
+|---|---|---|
+| A | J | east (Xbox B, PlayStation ○) |
+| B | K, Space | south (Xbox A, PlayStation ×) |
+| X | I | north (Xbox Y, PlayStation △) |
+| Y | U | west (Xbox X, PlayStation □) |
+| L | Q | L1 / LB |
+| R | E | R1 / RB |
+| ZL | Option | L2 / LT |
+| ZR | Shift | R2 / RT |
+| L3 | Z | left stick press |
+| R3 | C | right stick press |
+| + | Return | Menu / Options |
+| − | Tab, Esc | View / Create |
+| d-pad left | F | d-pad left |
+| d-pad up | T | d-pad up |
+| d-pad right | H | d-pad right |
+| d-pad down | G | d-pad down |
+| left stick | W A S D | left stick |
+| right stick | arrow keys | right stick |
+| capture | P | touchpad held 3 s, or the capture button |
+
+Key 1 opens the settings panel (on a controller L3 + R3, or the button picked in the key bindings). Scripted input
+(`TOTK_INPUT_SCRIPT`, `TOTK_INPUT_FILE`) always uses this default, whatever the player's layout.
 
 ## Checks
 
@@ -107,6 +167,7 @@ TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_WIDEN=1 
 | Rewrite structure (`structck.py`) | OK for all four modules, 0 violations |
 | Rewrite semantics (`equiv.py`) | 36,452 sites, 0 divergent; 1,200 of 1,200 mutation controls caught |
 | `probe`, `probe-audio` | pass |
+| Settings panel (`tests/test_eow_settings_panel.py`, `tests/test_eow_input.py`) | the panel built from the runtime's own frontend in AppKit without the game: six tabs, every row, restore at start, key bindings, the screenshot key and hold, the board and screenshot pages kept off the network; the default keys equal the old fixed layout |
 | Prepared shaders (`make shader-seed`, `make test`) | 9,856 of 9,858 shaders, 10,089 variants (233 listed bind states); every bind state in 14 played shader caches (the work folder's and 13 test arms') served; 9,233 libraries, 0 failures. A failed translation, or a failed compile of a new seed, leaves the installed seed and libraries unchanged (checked with the real translator and Metal compiler) |
 | Intro movie stop (`make test`; 36 runs) | the decoder's Stop / Reset with a frame still held answers `ST_ERROR` (55 checks under AddressSanitizer; main's `movie_host.c` reads a null frame there). In game, movie skipped or played to its end, with and without the seed: main crashed at `main+0x189714c` in 1 of 12 runs, 24 runs with the fix reached the load marker with no crash observed |
 | Played (Mac, M4 Pro, macOS 27.0.1) | title, prologue dungeon; about 1.5 hours over several sessions (longest about 40 minutes). Two early sessions ended in an unanswered `nn::fs::CleanDirectoryRecursively`, answered since (not yet seen in play) |

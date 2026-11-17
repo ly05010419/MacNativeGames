@@ -105,7 +105,7 @@ final class Model: ObservableObject {
         "botw": ["settings", "mods", "controls", "storage", "saves"],
         "oot": ["controls", "storage", "saves"],
         "acnh": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
-        "eow": ["storage", "saves"],   // its keys are fixed in the runtime: no Controls page
+        "eow": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
         "odyssey": ["controls", "storage", "saves"],
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }

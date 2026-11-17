@@ -116,6 +116,10 @@ int main(int argc, char **argv) {
     setenv("TOTK_GAME_SLOT_DIR", slot, 1);
     setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_CONTROLS", controls, 1);
+    /* The leaderboard's and the shared screenshots' folder (runtime/board_upload.h, shot_upload.h): their switches and what
+       waits to be sent; the board's random id is one folder up, MacNativeGames/leaderboard-id.txt, the other games' too.
+       Nothing is sent unless the player turns 我要上榜 or 分享我的截图 on in the settings panel (key 1). */
+    setenv("TOTK_BOARD_DIR", data, 0);
     setenv("TOTK_SLOT_OWNER", "user", 1);
     setenv("TOTK_SLOT_PURPOSE", "Echoes of Wisdom.app", 1);
     set_locale();

@@ -91,7 +91,7 @@ class Files(unittest.TestCase):
         (old / 'Contents/Resources/totk/extracted/botw160').mkdir(parents=True)
         self.assertEqual(icons_info(self.dirs['botw'], self.store, None, BOTW, old, self.tmp, self.tmp),
                          IconsInfo(False, 'not_latest'))                # 1.6.0's code points are not checked
-        # every game the Controls page serves (2026-11-13: OOT too; 2026-11-17: Echoes of Wisdom has no Controls page)
+        # every game the Controls page serves (2026-11-13: OOT too; 2026-11-17: Echoes of Wisdom too, with its key bindings)
         from tools.builder.games import PAGES
         self.assertEqual(sorted(NAMES), sorted(g for g in PAGE_GAMES if 'controls' in PAGES[g]))
         for game, names in NAMES.items():

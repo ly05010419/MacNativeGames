@@ -1,6 +1,6 @@
 """The Legend of Zelda: Echoes of Wisdom in MNG Launcher (user 2026-11-17: "继续做这个 一样放在 launcher里"): its files are
 recognised, the build runs games/eow/build.py, the installed app is found by its bundle ID and updated by the same script,
-its card has the Storage and Saves pages, and its app launcher (games/eow/app/launcher.c) refuses an app without its
+its card has the Controls (2026-11-17), Storage and Saves pages, and its app launcher (games/eow/app/launcher.c) refuses an app without its
 runtime or game data."""
 import json
 import os
@@ -50,7 +50,8 @@ class Wiring(unittest.TestCase):
         self.assertIn(games.EOW.bundle_id, installed.bundle_ids())
         self.assertIn(f"BUNDLE_ID = '{games.EOW.bundle_id}'", (ROOT / 'games/eow/scripts/package_app.py').read_text())
         self.assertIn(f'MacNativeGames/{games.EOW.data_folder}"', (ROOT / 'games/eow/app/launcher.c').read_text())
-        self.assertEqual(games.PAGES['eow'], ('storage', 'saves'))
+        self.assertEqual(games.PAGES['eow'], ('controls', 'storage', 'saves'))
+        self.assertIn('"eow": ["controls", "storage", "saves"]', (ROOT / 'tools/builder_app/Sources/MNGBuilder/Model.swift').read_text())
         swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertIn('"eow"', re.search(r'static let games = \[[^\]]*\]', swift).group(0))
 

@@ -18,6 +18,8 @@ NAMES = {
     'botw': dict(zip(ORDER, ('Action', 'Cancel / Sprint', 'Jump', 'Attack', 'Target', 'Bow', 'Rune',
                              'Throw Weapon', 'Map', 'Pause Menu', 'Crouch', 'Look', None, None, None, None))),
     'oot': dict.fromkeys(ORDER),
+    # Echoes of Wisdom (2026-11-17, games/eow/README.md Keys): no use confirmed in play yet, every row "to confirm"
+    'eow': dict.fromkeys(ORDER),
     # Super Mario Odyssey (games/odyssey/README.md, Keys): the uses that table names
     'odyssey': dict(zip(ORDER, ('Jump / Confirm', 'Jump / Cancel', 'Throw Cap', 'Throw Cap', 'Crouch / Ground Pound',
                                 'Crouch / Ground Pound', None, None, 'Map', 'Game Menu', None, None, None, None, None, None))),

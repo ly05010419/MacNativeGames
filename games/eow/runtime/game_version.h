@@ -6,3 +6,4 @@
 #define TOTK_GAME_VERSION "1.1.0"
 #define TOTK_GAME_DIR "v110"
 #define GAME_TITLE_ID 0x01008cf01baac000ULL
+#define GAME_NAME "Echoes of Wisdom"   /* the screenshots' file names and note (runtime/screenshot.h) */

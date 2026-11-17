@@ -87,8 +87,8 @@ ACNH = GameSpec(
 )
 
 # The Legend of Zelda: Echoes of Wisdom (community port): built by games/eow/build.py; its launcher (games/eow/app/launcher.c)
-# keeps its data in EoW/. Storage and Saves pages; no Controls page: its keys are fixed in runtime/input.c (no keyboard_map.h),
-# so the page's keyboard drawing would show another game's.
+# keeps its data in EoW/, controls.txt there. Controls (2026-11-17: its runtime has the settings panel's key bindings and its own
+# runtime/keyboard_map.h, which the page's key test reads), Storage and Saves pages.
 EOW = GameSpec(
     id='eow',
     display_name='The Legend of Zelda: Echoes of Wisdom',
@@ -123,5 +123,5 @@ PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'botw': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'oot': ('controls', 'storage', 'saves'),
          'acnh': ('controls', 'storage', 'saves'),
-         'eow': ('storage', 'saves'),
+         'eow': ('controls', 'storage', 'saves'),
          'odyssey': ('controls', 'storage', 'saves')}
