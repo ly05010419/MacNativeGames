@@ -20,6 +20,7 @@
 #include "input_prompts.h"
 #include "switch_left_fallback.h"
 #include "mouse_look.h"       // mouse mode: movement as the right stick and the gyro
+#include "dsu_client.h"
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
@@ -918,6 +919,16 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
     }
+#if TARGET_OS_OSX
+    if (dsuInput.connected && dsuAt && runtime_now_ns() - dsuAt < 500000000ull) {
+        next.connected = 1; physical |= dsuInput.buttons;
+        float axes[4];
+        for (int i = 0; i < 4; i++) axes[i] = (dsuInput.axes[i] - 128) / (dsuInput.axes[i] >= 128 ? 127.f : 128.f);
+        next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
+        next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
+        if (dsuInput.buttons || stick_axis(axes[0]) || stick_axis(axes[1]) || stick_axis(axes[2]) || stick_axis(axes[3])) runtime_prompt_note_input(PROMPT_SWITCH);
+    }
+#endif
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
     if (capture && !captureSeen && captureHook) captureHook();
@@ -1154,6 +1165,7 @@ void runtime_gamepad_start(void) {
 #if TARGET_OS_OSX
     load_gamepad_background();
 #endif
+    dsu_start();   /* subscribe without taking motion away from native controllers */
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_gamepad(notification.object); }];

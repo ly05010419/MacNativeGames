@@ -62,3 +62,18 @@ static NSString *totk_row_map_variants(NSString *line, NSString *(^map)(NSString
     }
     return [fields componentsJoinedByString:@"\t"];
 }
+
+/* A whole list's text with each row put through `row` (blank lines and "#" lines as they are, the last newline kept);
+   *changed counts the rows that came back different. */
+__attribute__((unused)) static NSString *totk_list_map_rows(NSString *text, NSString *(^row)(NSString *line), NSUInteger *changed) {
+    if (changed) *changed = 0;
+    NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:lines.count];
+    for (NSString *line in lines) {
+        if (!line.length || [line hasPrefix:@"#"]) { [out addObject:line]; continue; }
+        NSString *now = row(line) ?: line;
+        if (changed && ![now isEqualToString:line]) (*changed)++;
+        [out addObject:now];
+    }
+    return [out componentsJoinedByString:@"\n"];
+}

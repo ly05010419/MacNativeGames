@@ -44,6 +44,9 @@ void runtime_input_clear(void){}
 void runtime_input_clear_window(void){inputClears++;memset(heldInput,0,sizeof heldInput);}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_dsu_settings(RuntimeDSUSettings *out){*out=(RuntimeDSUSettings){.endpoint="127.0.0.1:26760"};}
+void runtime_dsu_status(RuntimeDSUStatus *out){*out=(RuntimeDSUStatus){0};}
+int runtime_dsu_apply(const RuntimeDSUSettings *settings){(void)settings;return 0;}
 void runtime_gamepad_focus(int on){(void)on;}
 int runtime_gamepad_background_enabled(void){return 0;}
 void runtime_gamepad_background_set(int on){(void)on;}
@@ -148,6 +151,7 @@ uint64_t dm_nvn_frame_count(void){return 0;}
 void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
+int hud_line_shown(int line){(void)line;return 1;}   /* fps_overlay.c: which lines the overlay choice shows */
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
 void runtime_aspect_view(double w,double h){(void)w;(void)h;}

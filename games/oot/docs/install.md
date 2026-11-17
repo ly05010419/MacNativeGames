@@ -18,7 +18,7 @@ Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · 
 
 The build checks the code and the game data against `expected-v131072.json`; another version is refused. No `prod.keys` is needed: the dump holds the decrypted files.
 
-**System fonts**: the six `.bfttf` files and their `manifest.json` that a Tears of the Kingdom or Breath of the Wild build of this repository extracted, in `TOTK_build/totk/extracted/firmware/shared-fonts` (or `BotW_build/botw/...`). Give that folder with `--shared-fonts`. This build has no `--firmware` option. After the first build the work folder keeps them, so later builds need no `--shared-fonts`.
+**System fonts** (optional): a dump holds none, and you do not need any. Without `--shared-fonts` the build downloads open-source Noto fonts (SIL OFL 1.1, about 50 MB, pinned by SHA-256) once per Mac and uses them. If a Tears of the Kingdom or Breath of the Wild build of this repository left its fonts, you can give that folder instead: `--shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>"` (or `BotW_build/botw/...`). The work folder keeps the fonts of the first build.
 
 **Tools** (once; an internet connection is needed):
 
@@ -42,11 +42,13 @@ The work folder is `OcarinaOfTime_build` next to the dump. Keep it and the app o
 
 ```sh
 # from a .nup file
-python3.14 build_app.py "<Ocarina of Time.nup>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Ocarina of Time.app"
-
+python3.14 build_app.py "<Ocarina of Time.nup>" -o "/Applications/Ocarina of Time.app"
 
 # from a dump folder (base/ and updates/131072/)
-python3.14 build_app.py "<dump folder>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
+python3.14 build_app.py "<dump folder>" -o "/Applications/Ocarina of Time.app"
+
+# either one, with the fonts of an earlier Tears of the Kingdom build (optional)
+python3.14 build_app.py "<dump folder>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Ocarina of Time.app"
 ```
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
@@ -97,7 +99,9 @@ Read the `ERROR:` line and the log file in `<work folder>/logs/`, fix the cause,
 | `… compute pipeline(s) could not be built on this Mac (…)` | The Metal compiler of this Mac failed on the shaders it names (seen on Apple M5 with macOS 26.6.2, #2070). Update macOS if an update is offered and build again; if it still fails, open an issue with the shader key and the lines of `logs/compute-pipelines.log` it names. |
 | `the pipeline archive was built from another pso_….tsv than the App carries`, `… planned N listed render/mesh pipelines, the App's lists name M`, `the pipeline archive holds none of the … listed mesh pipelines` | The archive and the app's warm-up lists do not match, so the app is not installed. Run the same command again; if it repeats, open an issue with the line and `logs/compute-pipelines.log`. |
 | `use the complete original update 131072 in the dump/NUP`, `leave out --update, --dlc and --mod` | Give only the `.nup` or the dump folder; it holds its update. |
-| `pass --shared-fonts with the six verified firmware fonts` | Add `--shared-fonts` (see [What you need](#what-you-need)). |
+| `pass --shared-fonts with the six verified firmware fonts` | An older checkout: `git pull` (or download the ZIP again) and run the same command; the build now uses open-source fonts when none are given. |
+| `--shared-fonts <folder>: …` | That folder is not the six fonts of a build of this repository: leave `--shared-fonts` out to use the open-source fonts. |
+| `does not match its pinned SHA-256` (in `[deps]` lines) | A download was cut off or changed: run the same command again; if it repeats, open an issue with the line. |
 | `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | Install the full Xcode and its Metal toolchain. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](../../../docs/install.md#folders)). A deleted work folder is made again by itself. |
 | `… must remain outside the source checkout` | Put `--work` and `-o` outside the `MacNativeGames` folder. |

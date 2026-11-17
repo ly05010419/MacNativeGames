@@ -15,6 +15,7 @@
 #import "playtime.h"
 #define TOTK_HDR_FRONTEND 1
 #include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
+#include "hdr_auto.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
@@ -22,10 +23,12 @@ uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented
 static CAMetalLayer *metalLayer;
 static _Atomic float hdrHeadroom=1;
 static _Atomic int hdrEnabled;
+static _Atomic int hdrChoice;   /* HDR_CHOICE_OFF / ON / AUTO (hdr_auto.h); hdrEnabled is what it means on the window's screen */
 static CGColorSpaceRef hdrSDRColorSpace;
 static int hdrSDRRemembered;
 int front_hdr_supported(void){return totk_hdr_available();}
 int front_hdr_enabled(void){return atomic_load(&hdrEnabled);}
+int front_hdr_choice(void){return atomic_load(&hdrChoice);}   /* the settings row shows the choice, not the switch */
 
 static pthread_mutex_t hdrParameterLock=PTHREAD_MUTEX_INITIALIZER;
 static float hdrParameters[TOTK_HDR_PARAMETER_COUNT];
@@ -72,9 +75,21 @@ static void front_hdr_parameters_load(void){
 }
 
 float front_hdr_headroom(void){return atomic_load_explicit(&hdrHeadroom,memory_order_relaxed);}
+/* hdrEnabled, the switch every reader takes (totk_hdr_active: the renderer latches it once a frame, frame interpolation
+   stays off while it is on), follows the choice on the window's screen. Main thread, from front_hdr_update: the start,
+   the window changing screen or backing, the 0.5 s timer (a screen's HDR turned on or off in System Settings) and the
+   settings row. Tests pass a potential. */
+static void front_hdr_auto(double potential,const char *screen){
+ static int shown=-1;int choice=atomic_load(&hdrChoice),on=totk_hdr_available()&&hdr_choice_effective(choice,potential);
+ atomic_store(&hdrEnabled,on);
+ if(choice!=HDR_CHOICE_AUTO){shown=-1;return;}
+ if(on!=shown){shown=on;fprintf(stderr,"[hdr] auto: %s, potential EDR %.2f: HDR %s\n",screen?:"no screen",potential,on?"on":"off");}
+}
 static void front_hdr_update(void){
  if(!totk_hdr_available())return;
  NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ /* auto keeps what it had while the window is on no screen (minimized, between screens) */
+ if(!window||window.screen||atomic_load(&hdrChoice)!=HDR_CHOICE_AUTO)front_hdr_auto(screen?screen.maximumPotentialExtendedDynamicRangeColorComponentValue:1,screen.localizedName.UTF8String);
  float h=front_hdr_enabled() && screen?(float)screen.maximumExtendedDynamicRangeColorComponentValue:1;
  if(!isfinite(h)||h<1)h=1;
  float old=atomic_exchange(&hdrHeadroom,h);
@@ -88,11 +103,10 @@ static void front_hdr_update(void){
 static void front_hdr_init(void){
  front_hdr_parameters_load();
  if(!totk_hdr_available()){atomic_store(&hdrEnabled,0);return;}
- char word[32]={0};int on=0;
+ char word[32]={0};
  const char *e=getenv("TOTK_HDR");
- if(e && *e)on=!strcmp(e,"1");
- else if(runtime_setting_word("hdr.txt",word,sizeof word))on=!strcmp(strtok(word," \t\r\n")?:"","on");
- atomic_store(&hdrEnabled,totk_hdr_available() && on);
+ atomic_store(&hdrChoice,hdr_choice_parse(e,!(e && *e) && runtime_setting_word("hdr.txt",word,sizeof word)?strtok(word," \t\r\n"):NULL));
+ front_hdr_update();   /* hdrEnabled from the choice on the window's screen, before the layer takes its format */
 }
 void front_hdr_present_mode(int enabled){
  if(!metalLayer || !totk_hdr_available())return;
@@ -106,10 +120,10 @@ void front_hdr_present_mode(int enabled){
 }
 static void front_hdr_apply(int enabled){
  if(!totk_hdr_available())return;
- atomic_store(&hdrEnabled,!!enabled);
- runtime_setting_save("hdr.txt",enabled?"on":"off","HDR / EDR");
+ atomic_store(&hdrChoice,enabled==HDR_CHOICE_AUTO?HDR_CHOICE_AUTO:!!enabled);   /* front_hdr_update sets hdrEnabled from it */
+ runtime_setting_save("hdr.txt",hdr_choice_word(front_hdr_choice()),"HDR / EDR");
  front_hdr_update();
- fprintf(stderr,"[hdr] EDR %s (settings panel); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
+ fprintf(stderr,"[hdr] EDR %s (settings panel: %s); display headroom %.3f\n",front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()),front_hdr_headroom());
 }
 void runtime_front_hdr_set(int enabled){if(NSThread.isMainThread)front_hdr_apply(enabled);else dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(enabled);});}
 void runtime_front_hdr_toggle(void){dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(!front_hdr_enabled());});}
@@ -400,8 +414,9 @@ static NSString *hud_settings_hint(void) {
   NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium];
   NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
   NSMutableAttributedString *a=[NSMutableAttributedString new];
-  int full=fps_overlay_full_hud();   // FPS only: the FPS line (line 0); the others keep their last text, so skip them
-  for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
+  // hud_line_shown: which lines the overlay choice shows (the hidden ones keep their last text, so they are skipped)
+  static const int order[]=HUD_ORDER;   // FPS, shaders, libraries, render pipelines, in play, the other kinds, the rest, load (user 2026-11-16: "都要显示")
+  for(int o=0;o<(int)(sizeof order/sizeof *order);o++){int i=order[o];char t[HUD_TEXT_MAX];int hl=0;if(!hud_line_shown(i)||!hud_snapshot(i,t,sizeof t,&hl))continue;
    [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
   if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
   if(playtime)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[playtime.text stringByAppendingString:@"\n"]
@@ -926,7 +941,7 @@ void runtime_front_run(void(*callback)(void)){
   if(totk_hdr_available()){
    front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
-   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s, FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off");
+   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s (choice %s), FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()));
   }
   metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;

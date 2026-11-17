@@ -138,6 +138,37 @@ struct GameActions: View {
     @State private var shaderLine = ""          // the Check shaders result, in words (tools/builder_jobs/shaders.py)
     @State private var shaderUpdate = false     // the newest list adds something: the Update shaders button shows
     @State private var checkingShaders = false
+    @State private var saver: MemorySaver?   // 开启省内存模式 (tools/builder_jobs/memory_saver.py), read when the card shows
+    @State private var diagnostics: MemorySaver?   // 诊断模式 (the same module, its 'diagnostics' switch)
+    @State private var saverNote = ""
+
+    /// A card switch's state (memory_saver.py state): the game reads its file at its next start.
+    struct MemorySaver: Decodable { let available: Bool; let on: Bool; let file: String; let unknown_word: String? }
+
+    /// The switches, as the game will read them at its next start (their files next to its controls.txt).
+    private func loadSaver() async {
+        do {
+            saver = try await TabClient.decode(MemorySaver.self, "storage", "memory_saver", app: app.app)
+            diagnostics = try await TabClient.decode(MemorySaver.self, "storage", "diagnostics", app: app.app)
+            saverNote = ""
+        } catch { saverNote = error.localizedDescription }
+    }
+    private func setSaver(_ on: Bool) {
+        Task {
+            do {
+                saver = try await TabClient.decode(MemorySaver.self, "storage", "set_memory_saver", app: app.app, args: ["on": on])
+                saverNote = T.memorySaverNext
+            } catch { saverNote = error.localizedDescription; await loadSaver() }
+        }
+    }
+    private func setDiagnostics(_ on: Bool) {
+        Task {
+            do {
+                diagnostics = try await TabClient.decode(MemorySaver.self, "storage", "set_diagnostics", app: app.app, args: ["on": on])
+                saverNote = T.memorySaverNext
+            } catch { saverNote = error.localizedDescription; await loadSaver() }
+        }
+    }
 
     /// Tears of the Kingdom and Breath of the Wild start through the Settings page's Play (tab_settings.play): the choices
     /// only Play passes (the 16x ground) go with it, and interpolation waits for the GPU check. The others open as apps.
@@ -182,6 +213,20 @@ struct GameActions: View {
                         .disabled(starting || model.updating == app.app)
                         if !startStatus.isEmpty {
                             Text(startStatus).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 260, alignment: .trailing)
+                        }
+                        // under the start, any time, game running or not: it counts from the game's next start (user 2026-11-16)
+                        if let saver, saver.available {
+                            Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))
+                                .help(T.memorySaverHelp)
+                            if let w = saver.unknown_word { Text(T.memorySaverUnknown(w)).font(.caption).foregroundStyle(.orange) }
+                        }
+                        if let diagnostics, diagnostics.available {   // user 2026-11-16: "诊断模式 也改成 CheckBox"
+                            Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))
+                                .help(T.diagnosticsHelp)
+                        }
+                        if !saverNote.isEmpty {
+                            Text(saverNote).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                                 .frame(maxWidth: 260, alignment: .trailing)
                         }
                     }
@@ -243,6 +288,7 @@ struct GameActions: View {
             struct Probe: Decodable { let gpu: String }
             gpu = (try? await TabClient.decode(Probe.self, "settings", "probe", app: app.app).gpu) ?? "unknown"
         }
+        .task(id: app.app) { await loadSaver() }   // the backend says which games have the switch (memory_saver.GAMES)
     }
 
     private func start() {

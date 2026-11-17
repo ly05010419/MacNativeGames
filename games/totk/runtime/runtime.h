@@ -144,7 +144,7 @@ void runtime_aspect_view(double w, double h);   /* frontend.m: the window's draw
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 void runtime_front_resize_aspect(double ratio);   /* Mac: resize the window to a selected picture ratio */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
-int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..3: FPS, shaders, render pipelines, load; 0 = not published */
+int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line: fps_overlay.h HUD_* (drawn in HUD_ORDER); 0 = not published */
 
 void *runtime_account_override(const char *name);
 
@@ -266,6 +266,22 @@ void runtime_motion_feed(const double acc_g[3], const double gyro_rad_s[3], uint
 int runtime_motion_axes(const char *spec);   /* TOTK_GYRO_AXES ("-x,y,-z"): 1 set, 0 unset, -1 malformed */
 void runtime_motion_deadzone_default(double deg_s);   /* when TOTK_GYRO_DEADZONE is unset: 1.2 for HID motion, else 0 */
 void runtime_motion_live(int on);   /* a controller with motion attached (1) / detached (0) */
+int runtime_dsu_motion_active(void);     /* fresh DSU six-axis samples currently own motion, not just an open socket */
+typedef struct {
+    int enabled, slot, locked;
+    char endpoint[264];
+} RuntimeDSUSettings;
+typedef struct {
+    int connected, sensor;
+    double acc[3], gyro[3];   /* gyro in degrees/second for the settings display */
+    uint32_t buttons;
+    uint8_t axes[4];
+    char error[160];
+} RuntimeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out);   /* main queue; environment overrides saved preferences */
+void runtime_dsu_status(RuntimeDSUStatus *out);       /* main queue; passive snapshot */
+int runtime_dsu_apply(const RuntimeDSUSettings *settings); /* 0 applied and saved, -1 invalid, -2 environment locked */
+void runtime_feedback_motion_source_changed(void);   /* switch between DSU and native motion without changing rumble */
 void runtime_motion_phone(int on);  /* the iPhone's own sensor feeds the six-axis device (1) / stops (0) */
 void runtime_motion_mouse(int on);  /* mouse mode (key 7) takes the sensor over (1) / gives it back to the controller (0) */
 void runtime_motion_feed_mouse(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* already in the reference frame */

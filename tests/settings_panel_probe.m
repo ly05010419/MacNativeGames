@@ -91,6 +91,11 @@ int runtime_gamepad_battery_percent(void) { return -1; }
 static int fakePadBackground;
 int runtime_gamepad_background_enabled(void) { return fakePadBackground; }
 void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
+static RuntimeDSUSettings fakeDSU = {.endpoint="127.0.0.1:26760"};
+static RuntimeDSUStatus fakeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out) { *out=fakeDSU; }
+void runtime_dsu_status(RuntimeDSUStatus *out) { *out=fakeDSUStatus; }
+int runtime_dsu_apply(const RuntimeDSUSettings *settings) { fakeDSU=*settings; return 0; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -270,6 +275,20 @@ static TOTKSettingRow *row(NSString *title) {
     fprintf(stderr, "no row %s\n", title.UTF8String); abort();
 }
 static NSPopUpButton *menu(NSString *title) { return (NSPopUpButton *)row(title).control; }
+static void footer_spacing_probe(void) {
+    NSUInteger counts[SETTINGS_PAGES] = {0};
+    for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page]++;
+    NSInteger previous = settingsPanel.page, longest = SETTINGS_PAGE_DISPLAY;
+    for (NSInteger p = 0; p < SETTINGS_PAGES; p++)
+        if (counts[p] > counts[longest]) longest = p;
+    [settingsPanel selectPage:longest]; tick();
+    NSView *band = settingsPanel.rows.lastObject.control.superview;
+    NSRect lastBand = [band convertRect:band.bounds toView:settingsPanel];
+    NSRect version = settingsPanel.versionLabel.frame;
+    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 &&
+           NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
+    [settingsPanel selectPage:previous]; tick();
+}
 static void pick(NSString *title, NSString *choice) {
     NSPopUpButton *p = menu(title);
     assert(p.enabled && [p indexOfItemWithTitle:choice] >= 0);
@@ -505,6 +524,77 @@ static void shots_share(int n, NSString *board) {
     __block NSInteger status = 0;
     dispatch_sync(totk_shot_worker(), ^{ status = totk_shot_post(json); });
     if (status != 200) { fprintf(stderr, "screenshots page: sharing picture %d answered %ld\n", n, (long)status); abort(); }
+}
+/* The HDR / EDR choice (runtime/hdr_auto.h, frontend.m front_hdr_auto): off, on, auto. No window: front_hdr_auto takes
+   the screen's potential EDR value from the test. */
+static void hdr_start(const char *env, const char *file) {
+    if (env) setenv("TOTK_HDR", env, 1); else unsetenv("TOTK_HDR");
+    if (file) runtime_setting_save("hdr.txt", file, "test"); else runtime_setting_remove("hdr.txt");
+    front_hdr_init();
+}
+static void hdr_probe(void) {
+    assert(getenv("SETTINGS_TEST_DIR"));
+    unsetenv("TOTK_HDR_CONTROL"); unsetenv("TOTK_MFX");
+#ifndef TOTK_GAME_V143
+    /* 1.2.1 and Breath of the Wild have no HDR: no row, and auto changes nothing */
+    hdr_start("auto", "auto"); front_hdr_auto(16, "probe XDR");
+    assert(!totk_hdr_available() && front_hdr_choice() == HDR_CHOICE_OFF && !front_hdr_enabled());
+    for (TOTKSettingRow *r in settings_rows()) assert(![r.title hasPrefix:@"HDR"]);
+#else
+    /* The start: TOTK_HDR, set and not empty, wins (1 on, auto auto, anything else off); otherwise hdr.txt's first word. */
+    static const struct { const char *env, *file; int choice; } starts[] = {
+        {NULL, NULL, HDR_CHOICE_OFF}, {NULL, "on", HDR_CHOICE_ON}, {NULL, " auto ", HDR_CHOICE_AUTO}, {NULL, "off", HDR_CHOICE_OFF},
+        {NULL, "1", HDR_CHOICE_OFF}, {NULL, "  ", HDR_CHOICE_OFF}, {"", "auto", HDR_CHOICE_AUTO}, {"", "on", HDR_CHOICE_ON},
+        {"1", NULL, HDR_CHOICE_ON}, {"1", "off", HDR_CHOICE_ON}, {"1", "auto", HDR_CHOICE_ON}, {"auto", NULL, HDR_CHOICE_AUTO},
+        {"auto", "off", HDR_CHOICE_AUTO}, {"auto", "on", HDR_CHOICE_AUTO}, {"0", "on", HDR_CHOICE_OFF}, {"0", "auto", HDR_CHOICE_OFF}};
+    for (size_t i = 0; i < sizeof starts / sizeof *starts; i++) { hdr_start(starts[i].env, starts[i].file); assert(front_hdr_choice() == starts[i].choice); }
+    /* On and off are the switch as before, whatever the screen. */
+    hdr_start(NULL, "on"); front_hdr_auto(1, "probe SDR monitor"); assert(front_hdr_enabled());
+    hdr_start(NULL, "off"); front_hdr_auto(16, "probe XDR"); assert(!front_hdr_enabled());
+    hdr_start(NULL, NULL); front_hdr_auto(16, "probe XDR"); assert(!front_hdr_enabled());   /* no setting: off, as before */
+    /* No window yet: auto starts from the main screen's own potential, whichever screen that is here. The switch is
+       put the other way first, so the start is seen to set it on an SDR screen and on an HDR one alike. */
+    int here = NSScreen.mainScreen && NSScreen.mainScreen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1;
+    hdr_start(NULL, here ? "off" : "on"); assert(front_hdr_enabled() == !here);
+    hdr_start("auto", NULL); assert(front_hdr_choice() == HDR_CHOICE_AUTO && front_hdr_enabled() == here);
+
+    /* Auto as the window moves: an SDR monitor (potential 1), an XDR screen (16), back. Frame interpolation follows the
+       switch (mfx_latch takes MFX_OFF while it is on), and the player's request stays for the SDR monitor. */
+    front_hdr_auto(1, "probe SDR monitor"); assert(!front_hdr_enabled());
+    mfx_set(MFX_30); mfx_latch(); assert(mfx_enabled() == MFX_30);
+    front_hdr_auto(16, "probe XDR"); assert(front_hdr_enabled() && !mfx_enabled());
+    mfx_latch(); assert(!mfx_enabled() && mfx_requested() == MFX_30);
+    front_hdr_auto(1, "probe SDR monitor"); mfx_latch(); assert(!front_hdr_enabled() && mfx_enabled() == MFX_30);
+    mfx_set(MFX_OFF); mfx_latch();
+
+    /* hdr.txt takes each choice's word and the start reads it back. */
+    unsetenv("TOTK_HDR");
+    for (int c = HDR_CHOICE_OFF; c <= HDR_CHOICE_AUTO; c++) {
+        runtime_front_hdr_set(c); front_hdr_auto(c == HDR_CHOICE_ON ? 1 : 16, "probe");
+        assert(!strcmp(savedName, "hdr.txt") && !strcmp(savedWord, hdr_choice_word(c)) && front_hdr_choice() == c);
+        assert(front_hdr_enabled() == (c != HDR_CHOICE_OFF));
+        front_hdr_init(); assert(front_hdr_choice() == c);
+    }
+
+    /* The row: Off / Auto / On, so a controller stepping from Off reaches Auto without passing On (On turns frame
+       interpolation off). It shows the choice, not the switch. */
+    TOTKSettingRow *hdr = frame_row(@"HDR / EDR"), *interp = frame_row(@"Frame interpolation (MetalFX)");
+    assert(([hdr.choices isEqualToArray:@[@"Off", @"Auto (on an HDR screen)", @"On"]]));
+    assert(([hdr.values isEqualToArray:@[@(HDR_CHOICE_OFF), @(HDR_CHOICE_AUTO), @(HDR_CHOICE_ON)]] && hdr.set));
+    NSUInteger rows = 0; for (TOTKSettingRow *r in settings_rows()) rows += [r.title hasPrefix:@"HDR"];
+    assert(rows == SETTINGS_HDR_ROWS);
+    hdr.set(HDR_CHOICE_OFF); interp.set(MFX_30);
+    hdr.set(HDR_CHOICE_AUTO); front_hdr_auto(1, "probe SDR monitor");
+    assert(hdr.get() == HDR_CHOICE_AUTO && !front_hdr_enabled() && !strcmp(savedWord, "auto") && mfx_requested() == MFX_30);   /* auto keeps interpolation */
+    interp.set(MFX_40); assert(hdr.get() == HDR_CHOICE_AUTO && mfx_requested() == MFX_40);   /* auto is off here: nothing to turn off */
+    front_hdr_auto(16, "probe XDR"); assert(hdr.get() == HDR_CHOICE_AUTO && front_hdr_enabled());
+    interp.set(MFX_30);   /* auto is on here: picking interpolation turns HDR off, as with On */
+    assert(hdr.get() == HDR_CHOICE_OFF && !front_hdr_enabled() && !strcmp(savedName, "hdr.txt") && !strcmp(savedWord, "off"));
+    hdr.set(HDR_CHOICE_ON); assert(hdr.get() == HDR_CHOICE_ON && front_hdr_enabled() && mfx_requested() == MFX_OFF);   /* On turns interpolation off, as before */
+    hdr.set(HDR_CHOICE_OFF); assert(hdr.get() == HDR_CHOICE_OFF && !front_hdr_enabled() && !strcmp(savedWord, "off"));
+    mfx_set(MFX_OFF); mfx_latch();
+#endif
+    puts("pass: HDR / EDR choice");
 }
 static void shots_probe(void) {
     const char *dir = getenv("SETTINGS_TEST_DIR"), *server = getenv("SHOTS_TEST_URL"); assert(dir);
@@ -996,6 +1086,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
+    if (argc==2 && !strcmp(argv[1],"hdr")) { setenv("TOTK_UI_LANG","en",1); hdr_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
     fakeUsersCount = 2; fakeUsersActive = 0;   /* the store the User page reads (tests/test_users.c covers the files) */
@@ -1005,6 +1096,37 @@ int main(int argc, const char **argv) { @autoreleasepool {
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts(getenv("CONTRIB_TEST_URL") ? "pass: contribution page with the server" : "pass: contribution page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "dsu")) {
+        window=probe_window();window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,1280,720)];
+        g_settings_page=SETTINGS_PAGE_INPUT;settings_show(1);
+        assert(row(@"DSU input") && row(@"DSU server").buttonAction);
+        pick(@"DSU controller slot", @"2");assert(fakeDSU.slot==2);
+        NSSwitch *toggle=(NSSwitch *)row(@"DSU input").control;toggle.state=NSControlStateValueOn;
+        [row(@"DSU input") changed:toggle];assert(fakeDSU.enabled);
+        settings_dsu_change(-1,0,@"localhost:1234");[settingsPanel refresh];
+        assert([row(@"DSU server").textLabel.stringValue isEqualToString:@"localhost:1234"]);
+        fakeDSUStatus=(RuntimeDSUStatus){.connected=1,.sensor=1,.buttons=1,.axes={128,255,0,128},.acc={0,0,-1},.gyro={10,-20,30}};
+        [settingsPanel refresh];assert([row(@"DSU status").textLabel.stringValue containsString:@"Connected"]);
+        assert([row(@"DSU status").textLabel.stringValue containsString:@"-20.0"]);
+        assert([row(@"DSU status").textLabel.stringValue containsString:@"L128,255 R0,128"]);
+        assert(row(@"DSU status").fullWidthText && row(@"DSU status").textLabel.bounds.size.width>600);
+        NSUInteger dsuRows=0;for(TOTKSettingRow *r in settingsPanel.rows)if([r.title hasPrefix:@"DSU "])dsuRows++;
+        assert(dsuRows==4);
+        footer_spacing_probe();
+        for(const char **language=(const char *[]){"en","zh",NULL};*language;language++){
+            setenv("TOTK_UI_LANG",*language,1);settings_rebuild();[settingsPanel selectPage:SETTINGS_PAGE_INPUT];[settingsPanel refresh];
+            const char *png=getenv("DSU_TEST_PNG");if(png){
+                NSBitmapImageRep *rep=[settingsPanel bitmapImageRepForCachingDisplayInRect:settingsPanel.bounds];
+                [settingsPanel cacheDisplayInRect:settingsPanel.bounds toBitmapImageRep:rep];
+                NSString *file=[NSString stringWithFormat:@"%s-%s.png",png,*language];
+                assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:file atomically:YES]);
+            }
+        }
+        fakeDSUStatus.connected=fakeDSUStatus.sensor=0;[settingsPanel refresh];
+        assert([row(@"DSU 状态").textLabel.stringValue containsString:@"等待"]);
+        fakeDSU.locked=1;settings_rebuild();assert(!row(@"DSU 输入（环境变量指定）").control.enabled && !row(@"DSU 服务器").buttonAction);
+        [settingsPanel.timer invalidate];puts("pass: DSU settings, live status, localization and environment lock");return 0;
+    }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1019,7 +1141,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 32 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1465,7 +1587,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(!starButton.hidden && settingsPanel.controllerTargets.lastObject == starButton);   /* every page */
-    assert(settingsPanel.rows.count == 8 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
+    assert(settingsPanel.rows.count == 12 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
@@ -1487,10 +1609,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
     /* The overlay keeps its build line too (user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
-    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();   /* the longest page sets the panel's height */
+    footer_spacing_probe();   /* the longest page keeps the original tight footer spacing */
+    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
-    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
+    assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6);
     for (NSView *view in settingsPanel.subviews)
         if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only the effects page's reset and 访问主页 */
             assert(view.hidden || [settingsPanel.effectsButtons containsObject:(NSButton *)view] || view == settingsPanel.homeButton);

@@ -41,6 +41,7 @@ void totk_rt_service_prestart(void);   // start the submit thread's translator s
 void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage));
 // The variant totk_rt_variant would return when the cache index already names one; nil otherwise (never translates).
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers);
+void totk_rt_prefetch(NSArray<NSArray *> *asks);   /* a seed run: (shader, answers) asks' indexes and sources read on all cores first */
 /* Seed runs (TOTK_SEED_VERIFY=1): the variants checked against this runtime's requests or made in the run, and how many
    cached ones were kept and made again (totk_shader_rt.m seed_verified). */
 NSArray<NSString *> *totk_rt_seed_verified(uint64_t *kept, uint64_t *dropped);

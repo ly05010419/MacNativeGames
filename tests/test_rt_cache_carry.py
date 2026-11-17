@@ -24,6 +24,15 @@ int main(int argc, char **argv) { @autoreleasepool {
 '''
 
 
+SIBLINGS = r'''#import <Foundation/Foundation.h>
+%s
+int main(int argc, char **argv) { @autoreleasepool {
+    for (NSString *p in totk_rt_siblings(@(argv[1]))) printf("%%s\n", p.UTF8String);
+    return 0;
+} }
+'''
+
+
 class CarryOver(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -82,6 +91,25 @@ class CarryOver(unittest.TestCase):
         other = self.cache / 'archive'; other.mkdir()
         self.assertEqual(self.run_carry(other), [])
         self.assertTrue((self.cache / 'rt-v28-bbb/pipelines/b.metalarchive').exists())
+
+    def test_the_other_folders_are_listed_newest_first(self):
+        # 2026-11-16: a carried list names the variants of the folder it came from; their deps stay in that folder
+        for name, age in (('rt-v28-old', 3000), ('rt-v29-ccc-retired-unrecorded-1', 100)):
+            d = self.folder(name)
+            os.utime(d, (time.time() - age, time.time() - age))
+        (self.cache / 'rt-file').write_text('not a folder')
+        (self.cache / 'other').mkdir(parents=True)
+        new = self.cache / 'rt-v29-ccc'; new.mkdir()
+        source = self.base / 'siblings.m'
+        source.write_text(SIBLINGS % (NVN / 'totk_rt_carry.h').read_text())
+        exe = self.base / 'siblings'
+        built = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-framework', 'Foundation', str(source), '-o', str(exe)],
+                               capture_output=True, text=True)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        listed = subprocess.run([str(exe), str(new)], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual([Path(p).name for p in listed], ['rt-v29-ccc-retired-unrecorded-1', 'rt-v28-old'])
+        other = subprocess.run([str(exe), str(self.cache / 'other')], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual(other, [])
 
     def test_the_runtime_calls_it_for_its_folder(self):
         rt = (NVN / 'totk_shader_rt.m').read_text()

@@ -271,6 +271,10 @@ static void par_open_note(NSString *name) {
 #else
 #define PAR_OPEN_NOTE(name) ((void)0)
 #endif
+/* The file is opened outside g_par_mu: Metal reads an archive's header when it opens it, and with the lock held every other
+   thread's lookup (fill_row's "is it there", pso_new) waited for it. The packaging's archive check opened its 3,791 files so,
+   one at a time, while 7 of its 8 threads waited on the lock (2026-11-16, scratch/runs/2026-11/express-speed/profiles-1:
+   12,000 of the busy samples in the lock). Two threads that open the same file at once keep the one registered first. */
 static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
@@ -280,17 +284,21 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
     if (a) PAR_OPEN_NOTE(name);
-    if (!a && name) {
-        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:pre ? par_pre_file(name) : par_file(name)];
-        NSError *e = nil; arch_map_begin(); a = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
-        if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
-        else {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
+    NSString *path = !a && name ? (pre ? par_pre_file(name) : par_file(name)) : nil;
+    pthread_mutex_unlock(&g_par_mu);
+    if (path) {
+        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:path];
+        NSError *e = nil; arch_map_begin(); id<MTLBinaryArchive> opened = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
+        pthread_mutex_lock(&g_par_mu);
+        if ((a = g_par_open[name])) PAR_OPEN_NOTE(name);   // another thread opened it meanwhile
+        else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
+        else if ([g_par_where[key] isEqualToString:name]) {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
             for (NSString *k in [g_par_where allKeysForObject:name]) { [g_par_have removeObject:k]; [g_par_where removeObjectForKey:k]; }
             if (pre) [g_par_pre removeObject:name];
             else { [NSFileManager.defaultManager removeItemAtPath:par_file(name) error:nil]; [NSFileManager.defaultManager removeItemAtPath:par_keys_file(name) error:nil]; }
         }
+        pthread_mutex_unlock(&g_par_mu);
     }
-    pthread_mutex_unlock(&g_par_mu);
     par_last_pre = a && pre;
     return a;
 }
@@ -402,7 +410,7 @@ static void par_stale(NSString *key) {
     pthread_mutex_unlock(&g_par_mu);
 }
 // Called after a pipeline the archive did not have was compiled. The warm-up writes it at once; one compiled in play is in
-// pso_user.tsv, so the next start's warm-up builds it and writes it then.
+// the device's list (pso_collected.tsv), so the next start's warm-up builds it and writes it then.
 static void par_add(id<MTLDevice> dev, NSString *key, id desc) {
     if (g_par_on && key && par_write_in_place) par_write(dev, key, desc);
 }

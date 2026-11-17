@@ -83,6 +83,30 @@ int main(int argc, char **argv) { @autoreleasepool {
         expect(rowkey([@"R\t" stringByAppendingString:hex(&sk)]) == nil, "host-only render rows cannot preload shaders");
         sk.k.a2c = 0; sk.fz = 1;
         expect(rowkey([@"R\t" stringByAppendingString:hex(&sk)]) == nil, "unreconstructable fragment variants stay excluded");
+    } else if ([mode isEqualToString:@"resident"]) {   // nvn_warm_resident.h (user 2026-11-16: title + compute, mesh, tile-read)
+        expect(warm_resident_parse(NULL, NULL, WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_TITLE_KINDS, "no setting keeps the game's default");
+        expect(warm_resident_parse("all", "0", WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_ALL, "TOTK_WARM_RESIDENT wins over TOTK_WARM_SHARED");
+        expect(warm_resident_parse("title-local", NULL, WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_LOCAL, "title-local by name");
+        expect(warm_resident_parse("title-kinds", NULL, WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_KINDS, "title-kinds by name");
+        expect(warm_resident_parse(NULL, "1", WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_ALL, "TOTK_WARM_SHARED=1 still means every list");
+        expect(warm_resident_parse(NULL, "0", WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_LOCAL, "TOTK_WARM_SHARED=0 still means title and local");
+        expect(warm_resident_parse("titlekinds", NULL, WARM_RESIDENT_ALL) == -1, "an unknown name is reported, not guessed");
+        NSString *dir = NSTemporaryDirectory();
+        NSString *a = [dir stringByAppendingPathComponent:@"warm-resident-a.tsv"], *b = [dir stringByAppendingPathComponent:@"warm-resident-b.tsv"];
+        [@"# list\nS\tshader_b\t0\nR\trender\nC\tcompute_b\nM\t-\tmesh\nT\ttile\t0:1\nB\tborder\tv\t-\n" writeToFile:a atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [@"C\tcompute_b\nC\tother_b\nR\trender2\n" writeToFile:b atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSArray *rows = warm_kind_rows(@[a, b, @"/missing/list.tsv"]);
+        expect([rows isEqual:@[@"C\tcompute_b", @"M\t-\tmesh", @"T\ttile\t0:1", @"C\tother_b"]], "only C / M / T rows, each once, in list order");
+        // TITLE_KINDS leaves this device's list out: warm_start passes no user list, so only the title stays
+        NSString *title = @"/seed/pso_title.tsv", *user = @"/profile/pso_user.tsv";
+        NSArray *archive = nil;
+        NSArray *keep = warm_resident_lists(@[title, @"/seed/pso_manifest.tsv", user], title, nil, YES, NO, &archive);
+        expect([keep isEqual:@[title]] && [archive containsObject:user] && archive.count == 2, "without a user list the device's list only fills the archive");
+        // memory-saver.txt (MNG Launcher's 开启省内存模式, user 2026-11-16; off by default: "默认 不用 省内存模式")
+        expect(warm_saver_word("on\n") == 1 && warm_saver_word(" on \r\n") == 1, "\"on\" with blanks and a newline is on");
+        expect(warm_saver_word("off\n") == 0 && warm_saver_word(" off ") == 0, "\"off\" is off");
+        expect(WARM_SAVER_DEFAULT == 0 && warm_saver_word(NULL) == 0 && warm_saver_word("") == 0 && warm_saver_word("\n") == 0, "no file or an empty one is the default, off");
+        expect(warm_saver_word("yes") == -1 && warm_saver_word("ON") == -1 && warm_saver_word("onn") == -1, "an unknown word is reported, not guessed");
     } else return 2;
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

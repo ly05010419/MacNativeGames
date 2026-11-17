@@ -383,7 +383,8 @@ def restore_replaced(app, replaced):
     helpers = app / 'Contents/Helpers'
     seal = app / 'Contents/_CodeSignature/CodeResources'
     sealed = seal.read_bytes() if seal.is_file() else b''
-    for bundle in sorted([*(failed / 'Contents/Helpers').glob('GameData-*.bundle'), *(failed / 'Contents/Helpers').glob('ShaderData-*.bundle')]):
+    for bundle in sorted([*(failed / 'Contents/Helpers').glob('GameData-*.bundle'), *(failed / 'Contents/Helpers').glob('ShaderData-*.bundle'),
+                          *(failed / 'Contents/Helpers').glob('Pipelines-*.bundle')]):
         # the bundles the restored app's seal names (an app made before the shader data bundle names none of those)
         if not (helpers / bundle.name).exists() and f'Helpers/{bundle.name}'.encode() in sealed:
             helpers.mkdir(parents=True, exist_ok=True)
@@ -701,8 +702,10 @@ def main(argv):
         build_app.remove_tree(tmp)
     bundle_id = plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') or APPS[game][1]
     shaders = None if args.seed else build_app.app_shader_bundle(app, version)
-    if shaders:   # its shader data stays where it is: read through a link now, moved into the new app at the end
-        build_app.clone_app_except(app, tmp, shaders)
+    pipes = build_app.app_pipeline_bundle(app, version)   # its pipeline archive (mac_pipelines places it again below)
+    skips = [b for b in (shaders, pipes) if b]
+    if skips:   # its shader data and pipeline archive stay where they are: read through links now, moved in at the end
+        build_app.clone_app_except(app, tmp, skips)
     else:
         build_app.copy_tree(app, tmp)   # one APFS clone of the whole app
     try:
@@ -727,9 +730,11 @@ def main(argv):
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists, prompt_app=app)
         record_commit(tmp, work, native_5k=preference)
         probe_runtime(tree, tmp, version, logs)
-        build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
+        build_app.mac_pipelines(tree, new_res, version, logs, installed=app)   # the new binary's pipeline keys, as a build makes them
         if shaders:
             build_app.shader_signature_only(tmp, shaders)
+        if pipes and (tmp / 'Contents/Helpers' / pipes.name).is_symlink():   # the tool made none this time: the installed one stays
+            build_app.shader_signature_only(tmp, pipes)
         t = time.time(); build_app.sign_app(tmp, logs); say(f'   signed ({time.time() - t:.0f} s)')
         build_app.wait_until_closed(app)
         t = time.time()

@@ -208,10 +208,13 @@ def plan(items, work=None):
         if base.role == 'ss_dump':
             p.update_version = 65536
         p.fonts = (by_role('fonts') or [Item('', '')])[-1].path or None
-        if base.game == 'oot' and not p.fonts:
-            p.notes.append(t('Ocarina of Time needs the six shared-font files of a Switch 2 firmware unless your work folder '
-                             'already has them: drop their folder too',
-                             '时之笛需要 Switch 2 固件的六个系统字体文件（工作目录里已有就不用）：把它们的文件夹也放进来'))
+        # a Switch 2 dump holds no fonts: games/oot/build.py prepare_fonts and build_app.py main_ns2 take open-source ones
+        if base.role in ('ns2_dump', 'nup') and not p.fonts:
+            p.notes.append(t('no system fonts given: the build uses open-source Noto fonts (downloaded once) unless your work '
+                             'folder already has fonts; to use the firmware fonts of a Tears of the Kingdom or Breath of the '
+                             'Wild build, drop their shared-fonts folder too',
+                             '没有放系统字体：打包会用开源的 Noto 字体（只下载一次），工作目录里已有字体就用已有的；'
+                             '想用王国之泪或旷野之息打包留下的固件字体，把那个 shared-fonts 文件夹也放进来'))
         return p
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))
