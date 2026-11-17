@@ -89,5 +89,20 @@ class Pages(unittest.TestCase):
         self.assertEqual([titles[b] for b in 'abxy'], ['A', 'B', 'X', 'Y'])
 
 
+class HomeShowsABuild(unittest.TestCase):
+    """A build started on the Build page (Model.build sets updating to nil) and left with 返回: the home page greys its
+    buttons while phase is building, so it must also show that build's progress and Cancel, not grey buttons alone."""
+
+    def test_the_home_page_shows_a_build_started_on_the_build_page(self):
+        swift = REPO / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertIn('updating = nil', (swift / 'Model.swift').read_text())   # a build is not an update
+        self.assertIn('private var mine: Bool { updateOnly == (model.updating != nil) }',
+                      (swift / 'ActionSection.swift').read_text())   # so only ActionSection() shows its progress
+        home = (swift / 'HomePage.swift').read_text()
+        self.assertIn('if model.updating == nil, model.phase == .building || model.phase == .cancelling {', home)
+        shown = home[home.index('if model.updating == nil, model.phase == .building'):]
+        self.assertIn('ActionSection()', shown[:shown.index('}\n')])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -55,6 +55,10 @@ struct HomePage: View {
                 if let running = model.updating, running != shown?.app {
                     GroupBox { ActionSection(updateOnly: true).frame(maxWidth: .infinity, alignment: .leading).padding(6) }
                 }
+                // a build from the Build page: after 返回 its progress and its Cancel show here too (else greyed buttons, no word why)
+                if model.updating == nil, model.phase == .building || model.phase == .cancelling {
+                    GroupBox { ActionSection().frame(maxWidth: .infinity, alignment: .leading).padding(6) }
+                }
             }
             .padding(24)
         }
