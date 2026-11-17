@@ -18,13 +18,19 @@ INBOX = Path(os.environ.get('SHADER_INBOX_DIR') or ROOT.parent / 'MacNativeGames
 class ShotShareSourceTests(unittest.TestCase):
     """The three Zelda games share the code: games/oot keeps byte-identical copies, and only the Mac front ends share."""
 
-    def test_oot_copies_are_identical(self):
+    def test_every_game_links_the_shared_copy(self):
+        """shared/runtime holds the one copy (2026-11-17); Tears of the Kingdom, Ocarina of Time and Super Mario Odyssey
+        link it at their runtime/ paths."""
         for name in ('shot_upload.h', 'shot_tab.h', 'screenshot.h', 'board_upload.h', 'board_tab.h', 'nick_row.h'):
-            with self.subTest(name=name):
-                self.assertEqual((GAMES / 'totk/runtime' / name).read_bytes(), (GAMES / 'oot/runtime' / name).read_bytes())
+            for game in ('totk', 'oot', 'odyssey'):
+                with self.subTest(name=name, game=game):
+                    link = GAMES / game / 'runtime' / name
+                    self.assertTrue(link.is_symlink())
+                    self.assertEqual(os.readlink(link), '../../../shared/runtime/' + name)
+                    self.assertEqual(link.resolve(), (GAMES.parent / 'shared/runtime' / name).resolve())
 
     def test_mac_front_ends_share_and_the_ios_one_does_not(self):
-        for game in ('totk', 'oot'):
+        for game in ('totk', 'oot', 'odyssey'):
             with self.subTest(game=game):
                 front = (GAMES / game / 'runtime/frontend.m').read_text(encoding='utf-8')
                 self.assertIn('#include "shot_upload.h"', front)

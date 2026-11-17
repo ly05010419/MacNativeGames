@@ -7,6 +7,7 @@
    controller's A flips the switch. */
 #pragma once
 #include <sys/stat.h>
+#include <CommonCrypto/CommonDigest.h>
 
 /* The rows still to send; the file is read again only when its size or modification time changed. */
 static NSUInteger contrib_tab_rows(NSString *path) {
@@ -16,6 +17,28 @@ static NSUInteger contrib_tab_rows(NSString *path) {
  if([seenPath isEqualToString:path]&&st.st_size==seenSize&&st.st_mtimespec.tv_sec==seenTime.tv_sec&&st.st_mtimespec.tv_nsec==seenTime.tv_nsec)return seenRows;
  seenRows=totk_contrib_read(path).count;seenPath=[path copy];seenSize=st.st_size;seenTime=st.st_mtimespec;
  return seenRows;
+}
+
+/* The shared panel's 访问主页 (shared/runtime/settings_panel.h settings_home_url) names the player and the site with these
+   two, as games/totk/runtime/contrib_tab.h has them; this page does not list the contributors yet.
+   The player's pseudonym for this contribution file: the first 8 hex of SHA-256("player:" + its install id), as the server
+   names a contributor (MacNativeGamesWeb lib/admin.js pseudonym); nil while it has no id (nothing sent yet). Read only:
+   no id is made here. The pseudonym is public; the id, which counts the rows sent, never leaves the Mac this way. */
+static NSString *contrib_tab_pseudonym(NSString *path) {
+ NSString *install=path?[[NSString stringWithContentsOfFile:totk_contrib_side(path,@"install") encoding:NSUTF8StringEncoding error:nil]
+  stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]:nil;
+ if(install.length!=36)return nil;
+ NSData *d=[[@"player:" stringByAppendingString:install] dataUsingEncoding:NSUTF8StringEncoding];unsigned char h[CC_SHA256_DIGEST_LENGTH];
+ CC_SHA256(d.bytes,(CC_LONG)d.length,h);
+ return [NSString stringWithFormat:@"%02x%02x%02x%02x",h[0],h[1],h[2],h[3]];
+}
+/* The site's root (TOTK_STATS_URL overrides it for a test: the root of a local inbox); nil without an inbox. */
+static NSURLComponents *contrib_tab_root(void) {
+ const char *e=getenv("TOTK_STATS_URL");
+ if(!(e&&*e)&&!totk_inbox_configured())return nil;
+ NSURLComponents *u=[NSURLComponents componentsWithString:e&&*e?@(e):@TOTK_CONTRIB_INBOX];
+ if(!u.host)return nil;
+ u.path=@"/";u.query=nil;return u;
 }
 
 @interface TOTKContribPage:NSView

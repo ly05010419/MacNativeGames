@@ -11,7 +11,7 @@ TOTK = Path(__file__).resolve().parents[1] / 'games/totk'
 NVN = TOTK / 'third_party/d2r_gfx/gfx/nvn'
 SSAO = (NVN / 'totk_ssao.h').read_text()
 FX = (NVN / 'totk_fx.h').read_text()
-PANEL = (TOTK / 'runtime/settings_panel.h').read_text()
+PANEL = (TOTK / 'runtime/settings_game.h').read_text()   # the game's part of the shared panel (shared/runtime/settings_panel.h)
 PAGE = (TOTK / 'runtime/botw_effects.h').read_text()
 
 

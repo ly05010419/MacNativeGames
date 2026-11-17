@@ -521,7 +521,7 @@ class OneContributionFilePerGameTests(unittest.TestCase):
         self.assertGreaterEqual(len(starts), 8)
         for path in starts:
             self.assertIn('totk_inbox_claim(', path.read_text(), f'{path}: sets the contribution file without claiming it')
-        odyssey = (TOTK.parent / 'odyssey/runtime/settings_panel.h').read_text()   # its launcher is C: the panel claims it
+        odyssey = (TOTK.parent / 'odyssey/runtime/settings_game.h').read_text()   # its launcher is C: the panel's restore claims it
         self.assertIn('totk_inbox_start(totk_inbox_claim(totk_contrib_path())', odyssey)
 
     def test_no_launcher_gives_every_other_game_one_file(self):

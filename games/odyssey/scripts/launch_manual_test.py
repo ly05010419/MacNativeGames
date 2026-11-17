@@ -89,6 +89,9 @@ def seed_save(profile: Path, baseline: Path) -> None:
     if (profile / "account.uid").is_file():
         shutil.copy2(profile / "account.uid", profile / "account.uid.before-seed")
     shutil.copy2(baseline / "account.uid", profile / "account.uid")
+    # The seeded identity becomes the user "Local" (runtime/account.c); an earlier run's users.txt would name another one.
+    if (profile / "users.txt").is_file():
+        (profile / "users.txt").replace(profile / "users.txt.before-seed")
     shutil.copytree(baseline / "save", saves, dirs_exist_ok=True)
     print("Test profile seeded with the Cap Kingdom save.")
 

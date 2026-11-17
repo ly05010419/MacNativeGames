@@ -39,3 +39,15 @@ at 4227378, including d3389b0 and the prior graph, persistence and controller re
 (95422a7, d8b16b1 and 95e04c0). Odyssey's stick calibration, keyboard defaults and input ABI are retained. Zelda-specific
 bow/Ultrahand key transforms and ability-wheel mouse pointing are omitted. Output-resolution scaling uses the standalone
 local BOTW helper, copied here; the build/runtime never reads another game's folder.
+
+Since 2026-11-17 some of these are no longer copies: `d2r_gfx/gfx/nvn/fps_overlay.{c,h}`, `d2r_gfx/gfx/nvn/include/totk_ui_lang.h`,
+`../runtime/hud_box.h` and `../runtime/settings_panel.h` are symlinks into the repository's `shared/` folder (shared/README.md),
+the same files the Zelda games use. Odyssey's own settings rows are in `../runtime/settings_game.h`.
+Also linked from `shared/` since then, for the settings panel's other tabs: `../runtime/screenshot.h`,
+`board_upload.h`, `board_tab.h`, `nick_row.h`, `shot_upload.h`, `shot_tab.h`, `users.h`, `account.c` (it replaces
+Odyssey's single-user copy; Odyssey's own account entries stay behind `GAME_ODYSSEY` there), `dsu_client.h`,
+`dsu_protocol.h`, `dsu_settings_rows.h`, and `d2r_gfx/gfx/nvn/fps_board.{c,h}` and `nvn_capture_region.h`. Adapted
+from games/totk in the same change, in Odyssey's own files: the screenshot action and hold (`keyboard_map.h`,
+`controller_map.h`, `gamepad.m`, `input.c`, `bindings_diagram.h`), DSU in `gamepad.m` and `gamepad_feedback.m`,
+the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m`
+`mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and `totk_leaderboard_id_file` in `totk_contrib_upload.h`.

@@ -9,6 +9,9 @@ _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "%s\n", messa
 uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW); }
 int runtime_rumble_enabled(void) { return 1; }
 int runtime_gyro_enabled(void) { return 1; }
+/* gamepad.m: no DSU server owns motion here (dsu_client.h), and the capture button goes nowhere. */
+int runtime_dsu_motion_active(void) { return 0; }
+void runtime_gamepad_switch_capture(void *controller, int pressed) { (void)controller; (void)pressed; }
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *reads) { *values = *reads = 0; }
 
 @interface TestMotion : NSObject

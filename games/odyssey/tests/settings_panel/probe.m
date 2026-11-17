@@ -7,7 +7,8 @@
 #import <MetalFX/MetalFX.h>
 #include "../../third_party/d2r_gfx/gfx/nvn/odyssey_gfx.h"
 
-int mtl_display_hz(void) { return 120; }
+static int fakeDisplayHz = 120;   /* the window's screen; 0 = not sampled yet */
+int mtl_display_hz(void) { return fakeDisplayHz; }
 void mfx_set(int mode);
 int mfx_latch(void);
 void mfxup_set(int on);
@@ -29,6 +30,7 @@ static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYS
 int runtime_gamepad_type_set(int type) { return fakePadType = type; }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 int runtime_gamepad_battery_percent(void) { return -1; }
+int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
@@ -53,7 +55,38 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
     size_t n = fread(word, 1, size - 1, f); word[n] = 0; fclose(f); return 1;
 }
 static char removedName[64];
-void runtime_setting_remove(const char *name) { snprintf(removedName, sizeof removedName, "%s", name); }
+void runtime_setting_remove(const char *name) {
+    snprintf(removedName, sizeof removedName, "%s", name);
+    const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
+    char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); unlink(path);
+}
+/* runtime/account.c's local users (shared/runtime/account.c), in memory: "Local" and the users the User page adds. */
+static RuntimeUser fakeUsers[RUNTIME_USERS_MAX] = {{0x1111, 0x2222, "Local"}};
+static int fakeUsersCount = 1, fakeUsersActive;
+int runtime_users_get(RuntimeUser *out, int max) { int n = 0; for (int i = 0; i < fakeUsersCount && n < max; i++) out[n++] = fakeUsers[i]; return n; }
+int runtime_users_active(RuntimeUser *out) { *out = fakeUsers[0]; return 0; }   /* the user this run opened with */
+int runtime_users_next(RuntimeUser *out) { *out = fakeUsers[fakeUsersActive]; return 0; }
+int runtime_users_add(const char *name) {
+    if (fakeUsersCount >= RUNTIME_USERS_MAX || !name || !*name) return -1;
+    RuntimeUser *u = &fakeUsers[fakeUsersCount]; snprintf(u->name, sizeof u->name, "%s", name); u->lo = 0x3333 + (uint64_t)fakeUsersCount; u->hi = 0x4444;
+    return fakeUsersCount++;
+}
+int runtime_users_choose(int index) { if (index < 0 || index >= fakeUsersCount) return -1; fakeUsersActive = index; return 0; }
+/* gamepad.m's screenshot button (held 3 s; -1 none) and the capture button's request (runtime/input.c's P,
+   gamepad.m runtime_capture_press, which screenshot.h answers in the game). */
+static int fakeShotButton = CONTROLLER_SCREENSHOT_DEFAULT, capturePresses;
+int runtime_gamepad_screenshot_button(void) { return fakeShotButton; }
+void runtime_gamepad_screenshot_button_set(int physical) { fakeShotButton = physical < 0 ? -1 : physical; }
+void runtime_capture_press(void) { capturePresses++; }
+/* gamepad.m's DSU client (dsu_client.h), its settings kept here. */
+static RuntimeDSUSettings fakeDSU = {.endpoint = "127.0.0.1:26760"}; static int dsuApplies;
+void runtime_dsu_settings(RuntimeDSUSettings *out) { *out = fakeDSU; }
+void runtime_dsu_status(RuntimeDSUStatus *out) { *out = (RuntimeDSUStatus){0}; }
+int runtime_dsu_apply(const RuntimeDSUSettings *settings) { fakeDSU = *settings; dsuApplies++; return 0; }
+/* The 排行榜 page (board_tab.h) picks the group of the game's pacing (hle_nvn.c nvn_board_pacing). */
+void nvn_board_pacing(int *lock, int *interp) { *lock = 0; *interp = 0; }
+/* The game's text bar's controller timer (the User page's add): a controller that is never connected. */
+void runtime_gamepad_text_read(RuntimeGamepadState *out) { *out = (RuntimeGamepadState){0}; }
 /* runtime/gamepad.m's controller layout and mouse sensitivity, kept here. */
 static uint16_t fakeMap[CONTROLLER_BUTTONS]; static uint8_t fakeModes[CONTROLLER_BUTTONS];
 void runtime_controller_map_get(uint16_t *map, uint8_t *modes) { memcpy(map, fakeMap, sizeof fakeMap); memcpy(modes, fakeModes, sizeof fakeModes); }
@@ -112,6 +145,9 @@ static void shows(NSString *title, NSString *choice) {
     NSString *now = menu(title).titleOfSelectedItem;
     if (![now isEqualToString:choice]) { fprintf(stderr, "%s shows %s, expected %s\n", title.UTF8String, now.UTF8String, choice.UTF8String); abort(); }
 }
+/* The panel's 访问主页 (settings_panel.h settings_home_open, pointed here by the probe): the address it would open. */
+static int homeOpens; static NSURL *homeOpened;
+static void probe_home_open(NSURL *url) { homeOpens++; homeOpened = url; }
 static void shaped(double ratio) {
     NSSize now = window.contentView.bounds.size;
     if (fabs(now.width / now.height - ratio) > 0.01) { fprintf(stderr, "window %.0fx%.0f, expected ratio %.3f\n", now.width, now.height, ratio); abort(); }
@@ -157,6 +193,11 @@ static void persistence_probe(const char *action) {
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
+    setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
+    setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
+    setenv("TOTK_NAME_URL", "http://127.0.0.1:9/v1/name", 1);     /* nor a real nickname */
+    setenv("TOTK_STATS_URL", "http://127.0.0.1:9", 1);            /* nor the 着色器贡献 page the real contributors */
+    unsetenv("TOTK_BOARD_DIR");                                   /* and this run takes part in neither */
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -171,7 +212,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 18);
+    /* Display 9 (+ Display, Session limit: the old window's rows), Input 11 (+ Controller A / B / X / Y, the 4 DSU rows),
+       User 2, Effects 5 (the picture filters and edge smoothing, moved from Display on 2026-11-17) */
+    assert(settingsPanel.allRows.count == 27);
 
     /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
     assert(!switched(@"FPS graph"));
@@ -182,7 +225,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
     shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
-    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nPlaytime  0 h 00 m"]); }
+    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue hasPrefix:@"FPS 60  2560x1440\nPlaytime  0 h 00 m\nSettings: key 1"]); }
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
     pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
@@ -194,6 +237,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Frame interpolation",@"Off");
     pick(@"Frame interpolation",@"60+60 (120 Hz)"); assert(mfx_requested()==MFX_HALF); mfx_latch(); assert(mfx_enabled()==([MTLFXFrameInterpolatorDescriptor supportsMetal4FX:MTLCreateSystemDefaultDevice()]?MFX_HALF:MFX_OFF));
     assert(menu(@"Frame interpolation").numberOfItems==2); pick(@"Frame interpolation",@"Off"); mfx_latch(); assert(!mfx_enabled());
+    /* A 60 Hz screen (user 2026-11-17: "设置没用"): the row is greyed and says why; the restore turns 60+60 off without
+       forgetting the choice. */
+    fakeDisplayHz = 60;
+    { NSArray<TOTKSettingRow *> *r60 = settings_rows(); TOTKSettingRow *interp = nil;
+      for (TOTKSettingRow *r in r60) if ([r.title hasPrefix:@"Frame interpolation"]) interp = r;
+      assert(interp && !interp.set && [interp.title containsString:@"60 Hz, needs 120 Hz"]); }
+    dm_gfx_set_flag("mfx_interp", MFX_HALF); settingsInterpChecked = NO; settings_restore_ready();
+    assert(mfx_requested() == MFX_OFF && settingsInterpChecked);
+    fakeDisplayHz = 120; settingsInterpChecked = NO;
     /* Render caps use production game_patches.c within the allocated canvas; output size is independent. */
     assert(menu(@"Render resolution").numberOfItems==4);
     pick(@"Render resolution",@"2560 × 1440"); unsigned w,h; runtime_scene_resolution(&w,&h); assert(w==2560 && h==1440);
@@ -265,22 +317,38 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Pages: Display, Input and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
-    assert(settingsPanel.rows.count == 12 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);
-    /* The display page's bottom right: star the project, after the rows for a controller (contributing is the shader
-       tab's switch since 585d0734, as games/totk's probe after PR #2069); the version stays clear of it; a result shows
-       for a moment where the version is. */
-    NSButton *starButton = settingsPanel.displayButtons[0];
-    assert(settingsPanel.displayButtons.count == 1 && [starButton.title isEqualToString:@"⭐ Star the project"]);
-    assert(!starButton.hidden && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
-    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(starButton.frame) && starButton.frame.origin.y < 34);
-    assert(settingsPanel.controllerTargets.count == settingsPanel.rows.count + 1 && settingsPanel.controllerTargets.lastObject == starButton);
+    assert(settingsPanel.rows.count == 9 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);
+    for (TOTKSettingRow *r in settingsPanel.rows) assert(![r.title hasPrefix:@"Anti-aliasing"] && ![r.title hasPrefix:@"Edge smoothing"] && ![r.title hasPrefix:@"Upscaler"]);
+    /* Every page's bottom right: 访问主页 (the shared panel's, games/totk user 2026-11-11: was the display page's star),
+       after the rows for a controller (contributing is the shader tab's switch since 585d0734); the version stays clear
+       of it; a result shows for a moment where the version is. It opens the site on this game. */
+    NSButton *homeButton = settingsPanel.homeButton;
+    assert(settingsPanel.displayButtons.count == 0 && [homeButton.title isEqualToString:@"Visit homepage"]);
+    assert(!homeButton.hidden && NSMaxX(homeButton.frame) <= settingsPanel.frame.size.width - 14);
+    assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(homeButton.frame) && homeButton.frame.origin.y < 34);
+    assert(settingsPanel.controllerTargets.count == settingsPanel.rows.count + 1 && settingsPanel.controllerTargets.lastObject == homeButton);
     NSString *versionText = settingsPanel.versionLabel.stringValue;
+    settings_home_open = probe_home_open; [homeButton performClick:nil]; settings_home_open = settings_home_open_default;
+    assert(homeOpens == 1 && [homeOpened isEqual:settings_home_url(SETTINGS_PAGE_DISPLAY)] && [homeOpened.query containsString:@"game=odyssey"] && settingsOpen);
+    assert([settingsPanel.versionLabel.stringValue isEqualToString:@"The homepage is open in the browser"]);
     [settingsPanel note:@"Thank you!"]; assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Thank you!"]);
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
-    assert(starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 6 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
-    assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
+    assert(!homeButton.hidden && settingsPanel.controllerTargets.lastObject == homeButton);   /* every page */
+    assert(settingsPanel.rows.count == 11 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
+    /* Its tabs (2026-11-17, as the Zelda games): Display, Input, User, Effects, Key bindings, 着色器贡献, 性能排行榜 and
+       截图分享 (no VR page). */
+    assert(settings_pages() == 8 && settingsPanel.tabs.segmentCount == 8);
+    { NSArray *labels = @[@"Display", @"Input", @"User", @"Effects", @"Key bindings", @"Shaders", @"Performance", @"Screenshots"];
+      for (NSInteger t = 0; t < 8; t++) assert([[settingsPanel.tabs labelForSegment:t] isEqualToString:labels[(NSUInteger)t]]); }
+    assert(settingsPanel.tabs.selectedSegment == settings_page_tab(SETTINGS_PAGE_INPUT) && settings_page_tab(SETTINGS_PAGE_INPUT) == 1);
+    assert(settings_tab_page(2) == SETTINGS_PAGE_USERS && settings_tab_page(3) == SETTINGS_PAGE_EFFECTS && settings_tab_page(4) == SETTINGS_PAGE_BINDINGS &&
+           settings_tab_page(5) == SETTINGS_PAGE_CONTRIB && settings_tab_page(6) == SETTINGS_PAGE_BOARD && settings_tab_page(7) == SETTINGS_PAGE_SHOTS);
+    assert(!settings_page_present(SETTINGS_PAGE_VR));
+    /* The DSU rows (shared dsu_settings_rows.h): a switch, the server with its Edit… button, the slot, the status line. */
+    assert(!switched(@"DSU input")); flip(@"DSU input", YES); assert(fakeDSU.enabled && dsuApplies == 1); flip(@"DSU input", NO); assert(!fakeDSU.enabled);
+    pick(@"DSU controller slot", @"2"); assert(fakeDSU.slot == 2); pick(@"DSU controller slot", @"0");
+    [settingsPanel.timer fire]; assert([row(@"DSU server").textLabel.stringValue isEqualToString:@"127.0.0.1:26760"] && [row(@"DSU status").textLabel.stringValue isEqualToString:@"DSU · Off"]);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
     /* Mouse sensitivity: a slider from 1 to 100, at once; greyed out while TOTK_MOUSE_SENSITIVITY decides. */
@@ -301,12 +369,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
     /* The overlay keeps its build line too (games/totk, user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT];   /* the tallest page (11 rows) sets the panel's height */
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
     assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 && NSMaxY(version) <= NSMinY(lastBand) - 6 && NSMinY(lastBand) - NSMaxY(version) <= 14);
     for (NSView *view in settingsPanel.subviews)
-        if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only the display page's two buttons */
-            assert(view.hidden || (settingsPanel.page == SETTINGS_PAGE_DISPLAY && [settingsPanel.displayButtons containsObject:(NSButton *)view]));
+        if ([view isKindOfClass:NSButton.class] && NSMaxY(view.frame) <= NSMinY(lastBand))   /* below the rows only 访问主页 and the display page's buttons */
+            assert(view.hidden || view == settingsPanel.homeButton || (settingsPanel.page == SETTINGS_PAGE_DISPLAY && [settingsPanel.displayButtons containsObject:(NSButton *)view]));
     for (NSView *view in settingsPanel.subviews)
         if ([view isKindOfClass:NSTextField.class] && view != settingsPanel.versionLabel) assert(NSMinY(view.frame) > NSMinY(lastBand));
 
@@ -314,7 +383,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
        swaps places), key 1 cancels, Command keys pass, a right-click clears, the two resets. */
     g_settings_bindings_list = YES; [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
     assert(!settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W);
-    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 20 && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
+    assert(settingsPanel.rows.count == 0 && settingsPanel.controllerTargets.count == 22 && settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton && !settingsPanel.resetButtons[0].hidden && !settingsPanel.resetButtons[1].hidden &&
            [settingsPanel.listToggle.title isEqualToString:@"Show drawings"] && settingsPanel.listToggle.enabled);
     fakePadDetected = -1; fakePadType = GAMEPAD_TYPE_AUTO; [settingsPanel refreshBindings];
     assert(titled(box(KEYMAP_X, 0), @"I") && titled(box(KEYMAP_X, 1), @"—") && titled(box(KEYMAP_X, 2), @"Y"));   /* Xbox names: Switch X sits where Xbox Y is */
@@ -335,6 +404,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel beginCapture:box(SETTINGS_BIND_PANEL, 2)]; [settingsPanel bindPad:10]; assert(fakeSettingsButton == 10);
     [settingsPanel beginCapture:box(KEYMAP_PLUS, 2)]; [settingsPanel bindPad:10]; assert(fakeSettingsButton == -1);
     [settingsPanel beginCapture:box(SETTINGS_BIND_PANEL, 2)]; [settingsPanel bindPad:16]; [settingsPanel resetController:nil]; assert(fakeSettingsButton == -1);
+    /* The screenshot row (shared with games/totk, user 2026-11-11): P, and on a controller the touchpad held 3 s; another
+       button can take the hold, a right-click clears it, the controller reset gives the touchpad back. */
+    assert(titled(box(KEYMAP_SCREENSHOT, 0), @"P") && titled(box(KEYMAP_SCREENSHOT, 1), @"—") && titled(box(KEYMAP_SCREENSHOT, 2), @"Touchpad held 3 s"));
+    [settingsPanel beginCapture:box(KEYMAP_SCREENSHOT, 2)]; [settingsPanel bindPad:11]; assert(fakeShotButton == 11);
+    [settingsPanel clearBinding:box(KEYMAP_SCREENSHOT, 2)]; assert(fakeShotButton == -1 && titled(box(KEYMAP_SCREENSHOT, 2), @"—"));
+    [settingsPanel resetController:nil]; assert(fakeShotButton == CONTROLLER_SCREENSHOT_DEFAULT);
+    /* P takes a picture once the panel is closed, and drives nothing in the game. */
+    press(18); assert(!settingsOpen); key_event(35, YES); assert(capturePresses == 1 && !heldOut.buttons && !heldOut.lx && !heldOut.ly); key_event(35, NO);
+    press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_BINDINGS);
     [settingsPanel beginCapture:box(KEYMAP_X, 0)]; assert(settingsPanel.capturing && titled(box(KEYMAP_X, 0), @"Press a key…"));
     assert([settingsPanel captured:key_down(12, 0)] == nil);   /* Q locked on: it jumps now, lock on takes Space */
     KeyMap keysNow; runtime_keymap_get(&keysNow);
@@ -379,15 +457,18 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.1 active:YES];
     assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB);   /* the shader tab follows the bindings (585d0734) */
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102.2 active:YES];
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.3 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);   /* R1 past the last tab wraps to the first */
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103 active:YES];
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.1 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_CONTRIB);   /* L1 from the first wraps to the last */
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103.2 active:YES];
-    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.3 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_BINDINGS);
+    { const NSInteger after[] = {SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_DISPLAY};   /* R1 past the last tab wraps to the first */
+      for (int k = 0; k < 3; k++) {
+        [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102.2 + k active:YES];
+        [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.3 + k active:YES];
+        assert(settingsPanel.page == after[k] && !settingsPanel.pages[(NSUInteger)after[k]].hidden);
+      } }
+    { const NSInteger before[] = {SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BINDINGS};   /* L1 from the first wraps to the last */
+      for (int k = 0; k < 4; k++) {
+        [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:106 + k active:YES];
+        [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:106.1 + k active:YES];
+        assert(settingsPanel.page == before[k]);
+      } }
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
 
     /* Key bindings as drawings (PR #1210): the panel made wider for them; the keyboard and mouse, or the controller,
@@ -397,7 +478,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     for (NSView *v in settingsPanel.controllerTargets) assert(v.layer.borderWidth == 0);   /* nothing looks picked at the opening */
     [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
     assert(settingsPanel.drawings && settingsPanel.page == SETTINGS_PAGE_BINDINGS && settingsPanel.frame.size.width == SETTINGS_WIDE_W);
-    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame) && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_BINDINGS);
+    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame) && settingsPanel.tabs.selectedSegment == settings_page_tab(SETTINGS_PAGE_BINDINGS));
     assert(!settingsPanel.keyboardDiagram.hidden && settingsPanel.padDiagram.hidden && !settingsPanel.resetButtons[0].hidden && settingsPanel.resetButtons[1].hidden);
     assert([settingsPanel.listToggle.title isEqualToString:@"Show as list"] && [settingsPanel.drawingsHelp.stringValue hasPrefix:@"Click a key"]);
     TOTKKeyboardDiagram *kb = settingsPanel.keyboardDiagram;
@@ -418,12 +499,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     TOTKControllerDiagram *pd = settingsPanel.padDiagram; NSRect north = [pd rectOfPhysical:3];
     assert([pd physicalAt:NSMakePoint(NSMidX(north), NSMidY(north)) rect:NULL] == 3 && [pd order].count == 16 && [pd order][0].intValue == 8);
     actions = [settingsPanel menuForInput:3 pad:YES]; int choices = 0; ticked = nil;
-    for (NSMenuItem *i in actions.itemArray) if (i.action) { choices++; assert(i.tag < KEYMAP_SWITCH_BUTTONS || i.tag == SETTINGS_BIND_PANEL); if (i.state == NSControlStateValueOn) ticked = i; }
-    assert(choices == 18 && ticked.tag == KEYMAP_X);   /* 16 buttons, the settings panel and none: no stick directions */
+    for (NSMenuItem *i in actions.itemArray) if (i.action) { choices++; assert(i.tag < KEYMAP_SWITCH_BUTTONS || i.tag == SETTINGS_BIND_PANEL || i.tag == KEYMAP_SCREENSHOT); if (i.state == NSControlStateValueOn) ticked = i; }
+    assert(choices == 19 && ticked.tag == KEYMAP_X);   /* 16 buttons, the settings panel, the screenshot hold and none: no stick directions */
     for (NSMenuItem *i in actions.itemArray) if (i.tag == SETTINGS_BIND_PANEL) [settingsPanel menuPicked:i];
     assert(fakeSettingsButton == 3); [settingsPanel assignPad:3 action:KEYMAP_X]; assert(fakeSettingsButton == -1 && fakeMap[3] == 1u << KEYMAP_X);
     [settingsPanel assignPad:3 action:KEYMAP_ZR]; assert(fakeMap[3] == 1u << KEYMAP_ZR && fakeMap[9] == 1u << KEYMAP_ZR && [diagram_missing(1) isEqualToString:@"No button: Throw cap"]);
-    assert(settingsPanel.controllerTargets.count == 19 && pd.selected == -1);
+    assert(settingsPanel.controllerTargets.count == 20 && settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton && pd.selected == -1);
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:200 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 15} time:200.1 active:YES];   /* shows where it is */
     assert(settingsPanel.controllerIndex == 0 && settingsPanel.deviceTabs.layer.borderWidth == 2 && pd.selected == -1);
@@ -442,6 +523,50 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsOpen && !settingsPanel.drawings && settingsPanel.frame.size.width == SETTINGS_W && !settingsPanel.listToggle.enabled);   /* too small: the list */
     press(18); [window setContentSize:NSMakeSize(1280, 720)]; g_settings_page = SETTINGS_PAGE_DISPLAY; press(18); assert(settingsOpen);
 
+    /* The User page (shared account.c, as the Zelda games): the user this run opened with (greyed), the next launch's, and
+       Add User… at the bottom right; a user named in the text bar is kept and can be picked for the next launch. */
+    [settingsPanel selectPage:SETTINGS_PAGE_USERS];
+    assert(settingsPanel.rows.count == 2 && !menu(@"User this run").enabled && [menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);
+    assert(menu(@"User (from the next launch)").numberOfItems == 1 && [menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Local"]);
+    assert(settingsPanel.userButtons.count == 1 && !settingsPanel.userButtons[0].hidden && [settingsPanel.userButtons[0].title isEqualToString:@"Add User…"]);
+    assert(settingsPanel.controllerTargets.count == 4 && settingsPanel.controllerTargets[2] == settingsPanel.userButtons[0] && settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton);
+    settings_show(0); settings_user_added(@"Peach"); assert(settingsOpen && fakeUsersCount == 2 && settingsPanel.page == SETTINGS_PAGE_USERS);
+    assert([settingsPanel.versionLabel.stringValue hasPrefix:@"User \"Peach\" added"] && menu(@"User (from the next launch)").numberOfItems == 2);
+    pick(@"User (from the next launch)", @"Peach"); tick(); tick(); assert(fakeUsersActive == 1);
+    assert([menu(@"User (from the next launch)").titleOfSelectedItem isEqualToString:@"Peach"] && [menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);
+    pick(@"User (from the next launch)", @"Local"); tick(); tick(); assert(fakeUsersActive == 0);
+
+    /* The Effects page (moved from Display, user 2026-11-17): anti-aliasing, sharpen, upscaler, texture filtering, edge
+       smoothing, and Reset to defaults, which sets each back to the game's own (a choice TOTK_TAA made stays). */
+    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];
+    { NSArray *titles = @[@"Anti-aliasing", @"Sharpen (CAS)", @"Upscaler", @"Texture filtering", @"Edge smoothing (MetalFX Temporal)"];
+      assert(settingsPanel.rows.count == 5);
+      for (NSUInteger i = 0; i < 5; i++) assert([settingsPanel.rows[i].title isEqualToString:titles[i]]); }
+    NSButton *resetEffects = settingsPanel.effectsButtons.firstObject;
+    assert(resetEffects && !resetEffects.hidden && [resetEffects.title isEqualToString:@"Reset to defaults"] && settingsPanel.controllerTargets.count == 7 &&
+           settingsPanel.controllerTargets[5] == resetEffects && settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton);
+    pick(@"Anti-aliasing", @"SMAA"); flip(@"Sharpen", YES); pick(@"Upscaler", @"Lanczos"); pick(@"Texture filtering", @"16×"); flip(@"Edge smoothing", YES);
+    assert(dm_gfx_opt_get(GX_AA) == GX_AA_SMAA && dm_gfx_opt_get(GX_CAS) == 1 && dm_gfx_opt_get(GX_UP) == GX_UP_LANCZOS && gx_aniso() == 16 && taa_enabled());
+    removedName[0] = 0; [resetEffects performClick:nil]; tick(); tick();
+    assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_EFFECTS);   /* made again so the rows say what is in force */
+    assert(dm_gfx_opt_get(GX_AA) == GX_AA_OFF && dm_gfx_opt_get(GX_CAS) == 0 && dm_gfx_opt_get(GX_UP) == GX_UP_METALFX && dm_gfx_opt_get(GX_TEX) == 0);
+    shows(@"Anti-aliasing", @"Off"); shows(@"Upscaler", @"MetalFX"); shows(@"Texture filtering", @"Game default"); assert(!switched(@"Sharpen"));
+    if (getenv("TOTK_TAA")) { assert(taa_enabled() && !removedName[0]); flip(@"Edge smoothing", NO); }
+    else assert(!taa_enabled() && !strcmp(removedName, "graphics-taa.txt"));
+    assert(!taa_enabled() && !switched(@"Edge smoothing"));
+
+    /* 性能排行榜 and 截图分享 (shared board_tab.h, shot_tab.h): a run without the launcher's folder takes part in neither,
+       and its switches cannot be turned on; the 截屏 button is the capture button's own request. */
+    [settingsPanel selectPage:SETTINGS_PAGE_BOARD];
+    { TOTKBoardPage *board = (TOTKBoardPage *)settingsPanel.pages[SETTINGS_PAGE_BOARD];
+      assert([board isKindOfClass:TOTKBoardPage.class] && !board.hidden && !board.toggle.enabled && [board.state.stringValue isEqualToString:@"This run takes no part in the board"]); }
+    [settingsPanel selectPage:SETTINGS_PAGE_SHOTS];
+    { TOTKShotsPage *shots = (TOTKShotsPage *)settingsPanel.pages[SETTINGS_PAGE_SHOTS];
+      assert([shots isKindOfClass:TOTKShotsPage.class] && !shots.hidden && !shots.toggle.enabled && [shots.state.stringValue isEqualToString:@"This run shares no screenshots"]);
+      assert(shot_tab_take == screenshot_request && [shots.takeButton.title isEqualToString:@"Take screenshot"]); }
+    assert([settings_home_url(SETTINGS_PAGE_BOARD).query containsString:@"game=odyssey"] && [settings_home_url(SETTINGS_PAGE_BOARD).query containsString:@"view=board"]);
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
+
     press(18); assert(!settingsOpen);
 
     /* Chinese labels also use Odyssey's safe choices. */
@@ -452,6 +577,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"震动强度",@"1×（默认）"); assert(switched(@"震动") && switched(@"体感瞄准"));
 
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, FPS graph, HUD, safe interpolation, render/output resolution, filters, aspect, input, controller navigation, drawings/list, remapping/reset, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, FPS graph, HUD, safe interpolation, render/output resolution, aspect, input, DSU, users, effects and their reset, board, screenshots, controller navigation, drawings/list, remapping/reset, screenshot key, Chinese)");
     return 0;
 }}
