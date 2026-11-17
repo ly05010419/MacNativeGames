@@ -17,7 +17,8 @@ static void expect_file(const char *want) {
 static void write_file(const char *mode) { FILE *f = fopen(file, "w"); assert(f); fprintf(f, "%s\n", mode); fclose(f); }
 /* A new start: the game's own state is back to 1080p with MetalFX off, then the kept mode is applied. */
 static uint64_t restart(void) {
-    mfx_on = 0; atomic_store(&page[4], pack_size(1920, 1080)); picture_mode_restore((uint8_t *)page);
+    mfx_on = 0; atomic_store(&picture_4k_to_5k, 0);
+    atomic_store(&page[4], pack_size(1920, 1080)); picture_mode_restore((uint8_t *)page);
     return atomic_load(&page[4]);
 }
 
@@ -59,6 +60,24 @@ int main(int argc, char **argv) {
     /* 2K + MetalFX: the 2K canvas with the MetalFX output stage (a 4K screen), kept as one word. */
     runtime_output_mode_set(OUTPUT_MODE_NATIVE_METALFX); expect_file("native-2k-metalfx");
     assert(restart() == pack_size(2560, 1440) && mfx_on && runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);
+    assert(!(runtime_output_modes() & 1 << OUTPUT_MODE_4K_TO_5K_METALFX));
+    assert(!runtime_output_mode_set(OUTPUT_MODE_4K_TO_5K_METALFX));
+    output_w = 3840; output_h = 2160;
+    assert(runtime_output_modes() & 1 << OUTPUT_MODE_4K_TO_5K_METALFX);
+    assert(runtime_output_mode_set(OUTPUT_MODE_4K_TO_5K_METALFX));
+    expect_file("4k-to-5k-metalfx");
+    assert(restart() == pack_size(3840, 2160) && runtime_metalfx_5k_output() && !mfx_on);
+    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX);
+    setenv("TOTK_MFX_OUTPUT", "0", 1);
+    assert(restart() == pack_size(3840, 2160) && !runtime_metalfx_5k_output());
+    unsetenv("TOTK_MFX_OUTPUT");
+    assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K));
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && !runtime_metalfx_5k_output());
+    expect_file("native-4k");
+    output_w = 2560; output_h = 1440;
+    write_file("4k-to-5k-metalfx");
+    assert(restart() == pack_size(2560, 1440) && !runtime_metalfx_5k_output());
+
     write_file("sideways");                                            /* not a mode: the game's own start */
     assert(restart() == pack_size(1920, 1080) && !mfx_on);
 

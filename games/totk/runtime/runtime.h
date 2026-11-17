@@ -114,10 +114,9 @@ int runtime_render_res(unsigned *w, unsigned *h);   /* TOTK_RENDER_RES above 160
    canvas and scene (game_patches_v143.c runtime_output_res).
    runtime_output_modes: a bit (1 << mode) for each this game and start offer; 0 when the resolution cannot change. */
 /* OUTPUT_MODE_NATIVE_4K_METALFX (4K + MetalFX to the headset) and OUTPUT_MODE_NATIVE_6K: VR only (zeldaVR,
-   game_patches_v143.c vr_big_mode); after NATIVE_5K, whose number players' graphics-output.txt keeps. OUTPUT_MODE_720P_METALFX
-   is last for the same reason. */
-enum { OUTPUT_MODE_OFF, OUTPUT_MODE_METALFX, OUTPUT_MODE_NATIVE, OUTPUT_MODE_NATIVE_METALFX, OUTPUT_MODE_720P, OUTPUT_MODE_NATIVE_4K, OUTPUT_MODE_NATIVE_5K, OUTPUT_MODE_NATIVE_4K_METALFX, OUTPUT_MODE_NATIVE_6K, OUTPUT_MODE_720P_METALFX };
-enum { OUTPUT_MODE_LAST = OUTPUT_MODE_720P_METALFX };
+   game_patches_v143.c vr_big_mode). Append new modes so old graphics-output.txt values keep their meaning. */
+enum { OUTPUT_MODE_OFF, OUTPUT_MODE_METALFX, OUTPUT_MODE_NATIVE, OUTPUT_MODE_NATIVE_METALFX, OUTPUT_MODE_720P, OUTPUT_MODE_NATIVE_4K, OUTPUT_MODE_NATIVE_5K, OUTPUT_MODE_NATIVE_4K_METALFX, OUTPUT_MODE_NATIVE_6K, OUTPUT_MODE_720P_METALFX, OUTPUT_MODE_4K_TO_5K_METALFX };
+enum { OUTPUT_MODE_LAST = OUTPUT_MODE_4K_TO_5K_METALFX };
 int runtime_output_modes(void);
 int runtime_output_mode(void);
 int runtime_output_mode_set(int mode);                  /* returns 0 where that mode is not offered */

@@ -6906,6 +6906,10 @@ static int mfx_ui_vs(const char *key) {
    that scene (squeezed, Link turns into a black silhouette). The canvas is learned as for TOTK_MFX (canvas_learn,
    uw_note_present); g_uw_ui: this frame's UI has begun. */
 extern float runtime_aspect_now(void) __attribute__((weak_import));
+extern int runtime_metalfx_5k_output(void) __attribute__((weak_import));
+static int metalfx_5k_output(void) {
+    return runtime_metalfx_5k_output && runtime_metalfx_5k_output();
+}
 #include "totk_ui_squeeze.h"
 static int g_uw_ui;
 _Atomic long g_uw_log;   // diagnostic "flag uw_log <frames>": log the canvas draws of that many frames
@@ -21233,8 +21237,17 @@ static NSUInteger g_outup_size[4];            // in and out size of the last ups
 static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
     static NSUInteger sw, sh; static int same;
     if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
-    if (!mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
+    int fixed_5k = metalfx_5k_output();
+    if (!fixed_5k && (!mfxup_enabled() || !mfxup_output_enabled())) { g_outup_skip[0]++; return nil; }
     NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
+    if (fixed_5k && ow && oh) {
+        // Fit within 5K even when the viewport is smaller. If fitting would shrink one axis,
+        // upscale to the full 5K texture and let the existing presentation pass fit it.
+        double scale = fmin(5120.0 / ow, 2880.0 / oh);
+        ow = (NSUInteger)llround(ow * scale);
+        oh = (NSUInteger)llround(oh * scale);
+        if (ow < cw + 16 || oh < ch + 9) { ow = 5120; oh = 2880; }
+    }
     if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
     if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
     if (same < 15) { same++; g_outup_skip[2]++; return nil; }
@@ -21282,7 +21295,7 @@ static void outup_note_gpu(int slot) {   // the present command buffer of this s
     int n = atomic_fetch_add(&g_outup_nms, 1); g_outup_ms[n % 512] = (t[1].timestamp - t[0].timestamp) / g_outup_hz * 1e3;
     if ((n + 1) % 1200 == 0) {
         double a[512]; memcpy(a, g_outup_ms, sizeof a); qsort(a, 512, sizeof *a, dcmp_out);
-        MLOG("[mfx-up] 出图放大（2K 输出）至帧 %llu：MetalFX %lux%lu → %lux%lu 共 %llu 次，每次 GPU p50 %.2f / p95 %.2f ms；没放大：关 %llu、不是放大或区域不在原点 %llu、窗口尺寸在变 %llu；换放大器 %llu 次（补帧 + 2K 时插帧和游戏帧尺寸不同，每帧换）",
+        MLOG("[mfx-up] 出图放大至帧 %llu：MetalFX %lux%lu → %lux%lu 共 %llu 次，每次 GPU p50 %.2f / p95 %.2f ms；没放大：关 %llu、不是放大或区域不在原点 %llu、窗口尺寸在变 %llu；换放大器 %llu 次（补帧 + 2K 时插帧和游戏帧尺寸不同，每帧换）",
              (unsigned long long)atomic_load(&g_cur_frame), (unsigned long)g_outup_size[0], (unsigned long)g_outup_size[1], (unsigned long)g_outup_size[2], (unsigned long)g_outup_size[3],
              (unsigned long long)g_outup_n, a[256], a[486], (unsigned long long)g_outup_skip[0], (unsigned long long)g_outup_skip[1], (unsigned long long)g_outup_skip[2],
              (unsigned long long)mfxup_switches(MFXUP_OUTPUT));
@@ -21375,7 +21388,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     double dw = dst.width, dh = dst.height;
     MTLViewport vp = present_viewport(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
-    id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // TOTK 2K output: MetalFX to the viewport, drawn 1:1 below
+    id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // MetalFX output: the viewport size or the 5K preset
     id<MTLTexture> pic = up ? up : src;
     if (up) { cx = 0; cy = 0; cw = up.width; ch = up.height; }
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
@@ -22410,7 +22423,7 @@ void mtl_sr_picture(totk_sr_gfx *s, uint64_t *upscaled_at, uint64_t *antialiased
     s->out_w = (int)atomic_load(&g_out_w); s->out_h = (int)atomic_load(&g_out_h);
     float a = runtime_aspect_now ? runtime_aspect_now() : 0;
     s->aspect_milli = a > 0 && fabsf(a - 16.0f / 9.0f) > 0.01f ? (int)lroundf(a * 1000) : 0;
-    s->upscale = mfxup_enabled() ? 1 + mfxup_output_enabled() : 0;
+    s->upscale = metalfx_5k_output() ? 2 : mfxup_enabled() ? 1 + mfxup_output_enabled() : 0;
     s->taa = taa_enabled(); s->fi_mode = mfx_enabled(); s->temporal = tup_enabled();
     s->present_path = __atomic_load_n(&g_rescue_mode, __ATOMIC_RELAXED) ? 2 : !__atomic_load_n(&g_dm_present_link, __ATOMIC_RELAXED);
     *upscaled_at = atomic_load(&g_mfxup_last); *antialiased_at = atomic_load(&g_taa_last);
