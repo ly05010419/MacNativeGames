@@ -41,9 +41,17 @@ const char *totk_picture_mode_default(void);
 const char *totk_frame_cap_default(void);
 
 /* Which layer of the pane owns a key. ALWAYS: the pane's other rows (overlays, controllers, ...), handed over whatever
-   the switch says. A key that moves to a layer must be listed here, so main.m's filter and the tests share one table. */
-typedef enum { TOTK_KEY_ALWAYS, TOTK_KEY_PRESET, TOTK_KEY_CUSTOM } totk_key_layer;
+   the switch says. A key that moves to a layer must be listed here, so main.m's filter and the tests share one table.
+   EXTRA (Breath of the Wild): handed over while the custom switch is on, on top of the presets, which stay in force there:
+   that game has no picture-mode or frame-cap rows, so its switch adds the scene size, MetalFX and edge smoothing instead
+   of replacing the presets (user 2026-11-17). */
+typedef enum { TOTK_KEY_ALWAYS, TOTK_KEY_PRESET, TOTK_KEY_CUSTOM, TOTK_KEY_EXTRA } totk_key_layer;
 totk_key_layer totk_key_layer_of(const char *key);
+/* custom_switch: the pane's "Use custom settings" (TOTK_CUSTOM_PICTURE). 1 when the custom layer replaces the presets
+   (Tears of the Kingdom with the switch on); Breath of the Wild never replaces them. */
+int totk_custom_layer_on(int custom_switch);
+/* Whether main.m hands a pane key over, given the switch: the one rule for every layer above. */
+int totk_key_handed(const char *key, int custom_switch);
 
 /* The in-game frame-rate button (touch_pad.m). The preset layer saves the choice under its own row; the custom layer
    keeps the cap in the pane, so the button only holds 30 until the next launch and saves nothing (NULL). */

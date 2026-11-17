@@ -159,8 +159,9 @@ static const CGFloat kFpsButtonSize = 34;
 - (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
 - (void)switchFrameRate {
     /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
-       cap in the pane, so this only holds 30 until the next launch and saves nothing. */
-    BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
+       cap in the pane, so this only holds 30 until the next launch and saves nothing. Breath of the Wild's switch keeps
+       the presets (totk_custom_layer_on), so its frame row is saved either way. */
+    BOOL custom = totk_custom_layer_on([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"]);
     int fps = totk_frame_button_target(runtime_phone_fps() == 30);
     runtime_phone_fps_set(fps);
     const char *key = totk_frame_button_key(custom);

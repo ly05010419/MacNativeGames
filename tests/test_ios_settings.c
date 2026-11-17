@@ -1,6 +1,7 @@
 /* The Settings pane's layer -> environment mapping (games/totk/ios/Sources/settings_map.c) without UIKit. */
 #include "settings_map.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -95,6 +96,10 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "--layer")) {
         totk_key_layer l = totk_key_layer_of(argv[2]);
         puts(l == TOTK_KEY_PRESET ? "preset" : l == TOTK_KEY_CUSTOM ? "custom" : "always");
+        return 0;
+    }
+    if (argc == 4 && !strcmp(argv[1], "--handed")) {   /* KEY SWITCH: 1 when main.m hands KEY over (test_ios_settings.py) */
+        printf("%d %d\n", totk_key_handed(argv[2], atoi(argv[3])), totk_custom_layer_on(atoi(argv[3])));
         return 0;
     }
     if (argc == 2 && !strcmp(argv[1], "--defaults")) {

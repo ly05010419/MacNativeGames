@@ -11,7 +11,7 @@ PLIST = ROOT / 'games/totk/ios/Settings.bundle/Root.plist'
 
 
 class IOSSettings(unittest.TestCase):
-    def _helper(self):
+    def _helper(self, *defines):
         compiler = shutil.which('cc')
         if not compiler:
             self.skipTest('A C compiler is required')
@@ -19,7 +19,7 @@ class IOSSettings(unittest.TestCase):
         self.addCleanup(shutil.rmtree, directory)
         executable = directory / 'ios-settings'
         build = subprocess.run(
-            [compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+            [compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', *defines,
              '-I', str(ROOT / 'games/totk/ios/Sources'),
              str(ROOT / 'tests/test_ios_settings.c'),
              str(ROOT / 'games/totk/ios/Sources/settings_map.c'),
@@ -87,6 +87,36 @@ class IOSSettings(unittest.TestCase):
             with self.subTest(key=key, layer=layer):
                 run = subprocess.run([str(executable), '--layer', key], capture_output=True, text=True)
                 self.assertEqual(run.stdout.strip(), layer, key)
+
+    def _handed(self, executable, key, switch):
+        run = subprocess.run([str(executable), '--handed', key, str(switch)], capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        handed, replaces = run.stdout.split()
+        return handed == '1', replaces == '1'
+
+    def test_totk_custom_switch_replaces_the_presets(self):
+        # Tears of the Kingdom: the switch moves the picture and frame keys from the presets to the custom rows; its
+        # MetalFX rows are handed over either way (the pane's MetalFX footer says so).
+        executable = self._helper()
+        for key, off, on in (('TOTK_DOCKED', True, False), ('TOTK_PHONE_FPS', True, False),
+                             ('TOTK_RENDER_RES', False, True), ('TOTK_IOS_PICTURE_MODE', False, True),
+                             ('TOTK_MFX_UPSCALE', True, True), ('TOTK_TAA', True, True), ('TOTK_FPS_OVERLAY', True, True)):
+            with self.subTest(key=key):
+                self.assertEqual(self._handed(executable, key, 0), (off, False))
+                self.assertEqual(self._handed(executable, key, 1), (on, True))
+
+    def test_botw_custom_switch_adds_to_the_presets(self):
+        # Breath of the Wild (user 2026-11-17): the switch unlocks the scene size, MetalFX's scene upscale and edge
+        # smoothing, and nothing else. Its presets (Full HD, the docked scene, 30 / 60) stay in force with it on: the
+        # game has no picture-mode or frame-cap rows, so replacing the presets would leave it without a picture.
+        executable = self._helper('-DGAME_BOTW=1')
+        for key in ('TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+            with self.subTest(key=key):
+                self.assertEqual(self._handed(executable, key, 0), (False, False), 'off until the switch is on')
+                self.assertEqual(self._handed(executable, key, 1), (True, False))
+        for key in ('TOTK_DOCKED', 'TOTK_BOTW_SCENE', 'TOTK_PHONE_FPS', 'TOTK_FPS_OVERLAY'):
+            with self.subTest(key=key):
+                self.assertEqual(self._handed(executable, key, 1), (True, False), 'the presets stay')
 
     def test_aspect_ratio_row_offers_only_valid_values(self):
         # aspect_parse takes "" (the game's own framing), "0" (16:9) and explicit ratios; "display" was dropped with

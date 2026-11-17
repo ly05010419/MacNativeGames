@@ -112,7 +112,8 @@ class FullHD(unittest.TestCase):
         # The presets' picture is handed over once, when the game starts (apply_display_settings, after the start
         # screen's pick), and not while the custom layer is on (after PR #433).
         body = re.search(r'static void apply_display_settings\(void\) \{.*?\n}', main, re.S).group(0)
-        self.assertIn('if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;', body)
+        # (Breath of the Wild's switch keeps the presets: settings_map.c totk_custom_layer_on)
+        self.assertIn('if (totk_custom_layer_on([d boolForKey:@"TOTK_CUSTOM_PICTURE"])) return;', body)
         self.assertIn('if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);', body)
         self.assertEqual(main.count('totk_preset_env_build('), 1, 'the presets\' picture goes in one place')
         # Both games have the switch (Breath of the Wild's docked scene is its own row, TOTK_BOTW_SCENE), so no

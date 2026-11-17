@@ -75,12 +75,34 @@ static const struct { const char *key; totk_key_layer layer; } LAYERS[] = {
     {"TOTK_DOCKED_SCENE",     TOTK_KEY_PRESET},
     {"TOTK_PHONE_FPS",        TOTK_KEY_PRESET},
     {"TOTK_IOS_PICTURE_MODE", TOTK_KEY_CUSTOM},
-    {"TOTK_RENDER_RES",       TOTK_KEY_CUSTOM},
     {"TOTK_FPS_CAP",          TOTK_KEY_CUSTOM},
+#ifdef GAME_BOTW
+    /* Breath of the Wild's custom switch (build_ipa.py botw_pane): the scene size, MetalFX's scene upscale and edge
+       smoothing, all off until it is on. Tears of the Kingdom hands its MetalFX rows over in both layers. */
+    {"TOTK_RENDER_RES",       TOTK_KEY_EXTRA},
+    {"TOTK_MFX_UPSCALE",      TOTK_KEY_EXTRA},
+    {"TOTK_TAA",              TOTK_KEY_EXTRA},
+#else
+    {"TOTK_RENDER_RES",       TOTK_KEY_CUSTOM},
+#endif
 };
 totk_key_layer totk_key_layer_of(const char *key) {
     if (key) for (unsigned i = 0; i < sizeof LAYERS / sizeof LAYERS[0]; i++) if (!strcmp(LAYERS[i].key, key)) return LAYERS[i].layer;
     return TOTK_KEY_ALWAYS;
+}
+int totk_custom_layer_on(int custom_switch) {
+#ifdef GAME_BOTW
+    (void)custom_switch;
+    return 0;
+#else
+    return custom_switch != 0;
+#endif
+}
+int totk_key_handed(const char *key, int custom_switch) {
+    totk_key_layer l = totk_key_layer_of(key);
+    if (l == TOTK_KEY_ALWAYS) return 1;
+    if (l == TOTK_KEY_EXTRA) return custom_switch != 0;
+    return l == (totk_custom_layer_on(custom_switch) ? TOTK_KEY_CUSTOM : TOTK_KEY_PRESET);
 }
 
 const char *totk_frame_button_key(int custom) { return custom ? NULL : "TOTK_PHONE_FPS"; }

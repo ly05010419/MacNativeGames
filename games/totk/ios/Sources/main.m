@@ -410,7 +410,7 @@ static void apply_display_settings(void) {
         char height[16];snprintf(height,sizeof height,"%u",h);setenv("TOTK_IOS_DRAWABLE_H",height,0);
     }
 #endif
-    if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;
+    if (totk_custom_layer_on([d boolForKey:@"TOTK_CUSTOM_PICTURE"])) return;
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
     if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);
@@ -469,11 +469,10 @@ static void apply_settings(void) {
     for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];
     /* One switch between the pane's layers (Root.plist, "Use custom settings"): the layer that is off is not handed
        over at all, so neither can overwrite the other. Which keys belong to which layer is settings_map.c's table. */
-    BOOL custom = [d boolForKey:@"TOTK_CUSTOM_PICTURE"];
-    totk_key_layer layer_of = custom ? TOTK_KEY_CUSTOM : TOTK_KEY_PRESET;
+    BOOL custom_switch = [d boolForKey:@"TOTK_CUSTOM_PICTURE"];
+    BOOL custom = totk_custom_layer_on(custom_switch);   // Breath of the Wild: the switch adds rows, the presets stay
     for (NSString *key in defaults) {
-        totk_key_layer owned = totk_key_layer_of(key.UTF8String);
-        if (owned != TOTK_KEY_ALWAYS && owned != layer_of) continue;
+        if (!totk_key_handed(key.UTF8String, custom_switch)) continue;
         id value = [d objectForKey:key];
         if ([value isKindOfClass:NSNumber.class]) {
             setenv(key.UTF8String, [value boolValue] ? "1" : "0", 0);
@@ -550,8 +549,9 @@ static void apply_settings(void) {
             totk_preset_frame_env_build(preset_fps.UTF8String, &pfenv);
         }
         apply_frame_env(&pfenv, 0);
-        layer = [NSString stringWithFormat:@"presets (%@, %@ fps)",
-                 [d boolForKey:@"TOTK_DOCKED"] ? @"Full HD docked" : @"handheld", preset_fps];
+        layer = [NSString stringWithFormat:@"presets (%@, %@ fps)%@",
+                 [d boolForKey:@"TOTK_DOCKED"] ? @"Full HD docked" : @"handheld", preset_fps,
+                 custom_switch ? @" + custom scene, MetalFX and edge smoothing" : @""];   // Breath of the Wild's switch
     }
     /* The pane's rows are handed over as they are. Two overlays are their own switches (the runtime reads them
        independently, gfx/nvn/fps_overlay.c); they come through this loop with every other row, so a pane that is
