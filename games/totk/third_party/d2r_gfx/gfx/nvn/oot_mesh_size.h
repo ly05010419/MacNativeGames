@@ -9,6 +9,7 @@
  * build_shader_libs.py reads this same constant for offline compilation.
  * See games/oot/docs/mesh-compiler-investigation.md. */
 #define OOT_MESH_SIZE_SOURCE_SHA256 "6e0e9e6f1fe97825fba77b0c4187256c6015c02845a3ff1c543bd0a1d090766d"
+#define OOT_MESH_SIZE_MACOS_MAJOR 27
 static inline int oot_mesh_size_source(const char *sha256) {
     return sha256 && !strcmp(sha256, OOT_MESH_SIZE_SOURCE_SHA256);
 }

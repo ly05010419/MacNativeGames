@@ -21,9 +21,13 @@ spec.loader.exec_module(libs)
 
 class OfflineOptions(unittest.TestCase):
     def test_only_exact_digest_uses_size(self):
-        self.assertEqual(libs.optimization_flags(libs.SIZE_SOURCE), ['-Os'])
-        self.assertEqual(libs.optimization_flags(libs.SIZE_SOURCE[:-1]), [])
-        self.assertEqual(libs.optimization_flags('0'*64), [])
+        with mock.patch.object(libs, 'HOST_MACOS_MAJOR', 27):
+            self.assertEqual(libs.optimization_flags(libs.SIZE_SOURCE), ['-Os'])
+            self.assertEqual(libs.optimization_flags(libs.SIZE_SOURCE[:-1]), [])
+            self.assertEqual(libs.optimization_flags('0'*64), [])
+        for major in (26, 28, 0):
+            with mock.patch.object(libs, 'HOST_MACOS_MAJOR', major):
+                self.assertEqual(libs.optimization_flags(libs.SIZE_SOURCE), [])
 
     def test_changed_policy_rebuilds_one_library_and_then_reuses_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -34,12 +38,14 @@ class OfflineOptions(unittest.TestCase):
             calls = []
 
             def compile_call(argv, **kwargs):
-                calls.append(argv)
+                calls.append((argv, kwargs.get('env')))
                 Path(argv[argv.index('-o')+1]).write_bytes((' '.join(map(str, argv[:argv.index('-o')]))).encode())
                 return subprocess.CompletedProcess(argv, 0, '', '')
 
             def run(policy):
                 with mock.patch.object(libs, 'SIZE_SOURCE', policy), \
+                     mock.patch.object(libs, 'HOST_MACOS_MAJOR', 27), \
+                     mock.patch.object(libs, 'mac_sdk_root', return_value='/fixture/MacOSX.sdk'), \
                      mock.patch.object(sys, 'argv', ['build_shader_libs.py', '--cache', str(cache), '--out', str(out)]), \
                      mock.patch.object(libs, 'metal_compiler', return_value=('metal-fixture', 'fixture', {})), \
                      mock.patch.object(libs, 'GameSlot', return_value=contextlib.nullcontext()), \
@@ -51,13 +57,18 @@ class OfflineOptions(unittest.TestCase):
             run('0'*64); self.assertEqual(len(calls), 2)
             calls.clear(); run(sha)
             self.assertEqual(len(calls), 1)
-            self.assertIn('-Os', calls[0]); self.assertEqual(calls[0][-1], source)
-            self.assertIn('-fmetal-math-mode=safe', calls[0]); self.assertIn('-fpreserve-invariance', calls[0])
+            self.assertIn('-Os', calls[0][0]); self.assertEqual(calls[0][0][-1], source)
+            self.assertEqual(calls[0][1]['SDKROOT'], '/fixture/MacOSX.sdk')
+            self.assertIn('-fmetal-math-mode=safe', calls[0][0]); self.assertIn('-fpreserve-invariance', calls[0][0])
             record = json.loads((out/'libraries-manifest.json').read_text())
             self.assertEqual(record['optimization_flags'], {sha+'.metallib': ['-Os']})
+            self.assertEqual(record['sdk_roots'], {sha+'.metallib': '/fixture/MacOSX.sdk'})
             calls.clear(); run(sha); self.assertEqual(calls, [])
+            # Missing SDK provenance cannot reuse an -Os library built by a bare driver.
+            record.pop('sdk_roots'); (out/'libraries-manifest.json').write_text(json.dumps(record))
+            run(sha); self.assertEqual(len(calls), 1); calls.clear()
             # Switching the policy back must not adopt the size binary as a default one.
-            run('0'*64); self.assertEqual(len(calls), 1); self.assertNotIn('-Os', calls[0])
+            run('0'*64); self.assertEqual(len(calls), 1); self.assertNotIn('-Os', calls[0][0])
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'Metal compile options require macOS')
@@ -87,7 +98,7 @@ int main(void) {{ @autoreleasepool {{
     MTLCompileOptions *base = totk_precise_opts();
     MTLCompileOptions *chosen = totk_source_opts(@"{fixture}");
     assert(base.optimizationLevel == MTLLibraryOptimizationLevelDefault);
-    assert(chosen.optimizationLevel == {('MTLLibraryOptimizationLevelSize' if oot and not ios else 'MTLLibraryOptimizationLevelDefault')});
+    assert(chosen.optimizationLevel == {('((NSProcessInfo.processInfo.operatingSystemVersion.majorVersion == 27) ? MTLLibraryOptimizationLevelSize : MTLLibraryOptimizationLevelDefault)' if oot and not ios else 'MTLLibraryOptimizationLevelDefault')});
     assert(chosen.preserveInvariance && chosen.mathMode == MTLMathModeSafe);
     assert(totk_source_opts(@"another source") == base);
     assert(base.optimizationLevel == MTLLibraryOptimizationLevelDefault);

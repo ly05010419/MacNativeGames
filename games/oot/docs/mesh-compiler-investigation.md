@@ -55,14 +55,31 @@ internal pass and the minimal MSL construct triggering it have not been reduced.
 
 ## Same-source A/B
 
-Only the mesh library was rebuilt with `-Os`; task and fragment libraries,
-runtime, pipeline row, and the mesh source bytes stayed the same. Both builds
-retain `-fmetal-math-mode=safe -fpreserve-invariance -fwrapv`.
+Task and fragment libraries, runtime, pipeline row, and mesh source bytes stayed
+the same. All builds retain
+`-fmetal-math-mode=safe -fpreserve-invariance -fwrapv`.
 
-| Mesh library options | First isolated pipeline | Repeat, fresh archive |
-|---|---|---|
-| original default optimization | compiler crash | compiler crash |
-| default flags plus `-Os` | success | success |
+An integration check exposed an important confound in the first experiment:
+the successful `xcrun --sdk macosx metal -Os` invocation also selected a macOS
+SDK, whereas the original build called the bare MetalToolchain driver. A
+factorial follow-up, using fresh pipeline archives, separated these settings:
+
+| Mesh compilation invocation | Pipeline result |
+|---|---|
+| original bare driver, default optimization | compiler crash, repeated |
+| `xcrun --sdk macosx metal`, default optimization | compiler crash |
+| `xcrun --sdk macosx metal -Os` | success, repeated |
+| bare driver plus `-Os`, official build environment | compiler crash |
+| same bare driver plus `-Os`, selected macOS `SDKROOT` | success |
+| bare driver plus `-Os` and deployment-minimum flag only (26.0 or 27.0) | compiler crash |
+
+The direct official driver emitted `air64_v29-apple-macosx28.0.0` with no
+SDKROOT; the selected SDK invocation emitted a macOS 27.0 target. A target
+label alone is not the explanation: forcing the deployment minimum without
+the SDK environment did not solve it. **Both size optimization and the selected
+macOS SDK environment are part of the tested offline workaround.** The same-SDK
+default-vs-size comparison supports the optimization-path diagnosis, but the
+exact internal compiler defect remains unknown.
 
 MSL SHA-256:
 `6e0e9e6f1fe97825fba77b0c4187256c6015c02845a3ff1c543bd0a1d090766d`.
@@ -72,15 +89,17 @@ in this repository or this report.
 
 ## Implementation scope
 
-`oot_mesh_size.h` holds the exact source digest. The OOT Mac library builder
-adds `-Os` for that digest only; its manifest records per-library options and
-invalidates a cached library if those options change. Other libraries retain
+`oot_mesh_size.h` holds the exact source digest and the tested macOS major (27).
+On that macOS major the OOT Mac library builder adds `-Os` for that digest only
+and sets SDKROOT from `xcrun --sdk macosx --show-sdk-path` with the selected
+compiler's developer environment. Its manifest records per-library options and
+SDK roots and invalidates a cached library if either changes. Other libraries retain
 their existing cache identities and compilation flags. Packaging checks the
 option record as well as the normal content digests.
 
-The Mac OOT runtime uses `MTLLibraryOptimizationLevelSize` for the same exact
-source when it must compile it itself. It copies the shared safe compile
-options instead of mutating them across workers. Other titles, iOS, other source
+The macOS 27 OOT runtime uses `MTLLibraryOptimizationLevelSize` for the same
+exact source when it must compile it itself. It copies the shared safe compile
+options instead of mutating them across workers. Other macOS majors, other titles, iOS, other source
 digests, and untested modified/binding variants keep their existing options.
 This single-source Mac policy has been tested on M1 Max; other Mac GPUs have
 not been exercised. It does not alter source semantics, reduce resolution,
@@ -103,7 +122,8 @@ correctness from a compilation-only test.
 ## Regression checks
 
 `tests/test_oot_mesh_size.py` uses synthetic source only: exact-digest policy,
-default -> size -> unchanged -> default cache transitions, and executable
+default -> size -> unchanged -> default cache transitions, missing SDK provenance,
+untested OS majors, and executable
 Objective-C probes of the production option selector for OOT Mac, another
 title, and the iOS branch. The probes verify safe math, invariance and the
 unchanged shared options. Related library, packaging, express update and

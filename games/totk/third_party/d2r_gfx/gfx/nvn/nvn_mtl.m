@@ -7683,7 +7683,8 @@ static MTLCompileOptions *totk_source_opts(NSString *source) {
     NSData *raw = [source dataUsingEncoding:NSUTF8StringEncoding];
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(raw.bytes, (CC_LONG)raw.length, md);
     char hex[65]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2*i, 3, "%02x", md[i]);
-    if (oot_mesh_size_source(hex)) {
+    if (NSProcessInfo.processInfo.operatingSystemVersion.majorVersion == OOT_MESH_SIZE_MACOS_MAJOR &&
+        oot_mesh_size_source(hex)) {
         options = [options copy];   // never mutate the options shared by compile workers
         options.optimizationLevel = MTLLibraryOptimizationLevelSize;
     }
