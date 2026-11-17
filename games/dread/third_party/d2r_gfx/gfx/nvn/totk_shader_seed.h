@@ -46,8 +46,12 @@ static NSDictionary *totk_seed_import_into(NSString *source, NSString *cache, NS
         NSString *fingerprint = totk_seed_fingerprint(m, names);
         NSData *oldData = marker ? [NSData dataWithContentsOfFile:marker] : nil;
         NSDictionary *old = oldData ? [NSJSONSerialization JSONObjectWithData:oldData options:0 error:nil] : nil;
+        // shader-keys.json: the game's whole shader inventory, which prepare_shader_seed.py writes beside the variants so
+        // the Launcher's "Check shaders" can tell this version's shared-list rows from another's. The runtime does not
+        // read it (Tears of the Kingdom's does, for its warm-up scope); it is named here only so a seed carrying it is
+        // not refused as a whole, which is what an unknown filename does below.
         NSRegularExpression *safe = [NSRegularExpression regularExpressionWithPattern:
-            @"^(?:[0-9a-f]{64}\\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\\.(?:metal|json|metallib)|pso_manifest\\.tsv)$" options:0 error:nil];
+            @"^(?:[0-9a-f]{64}\\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\\.(?:metal|json|metallib)|pso_manifest\\.tsv|shader-keys\\.json)$" options:0 error:nil];
         BOOL installed = [old isKindOfClass:NSDictionary.class] && [old[@"files_sha256"] isEqual:fingerprint];   // receipts from before 2026-10-18 (manifest_sha256) are checked once more
         for (id name in names) {
             if (![name isKindOfClass:NSString.class] || ![safe numberOfMatchesInString:name options:0 range:NSMakeRange(0, [name length])]) {

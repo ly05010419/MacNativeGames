@@ -31,8 +31,18 @@ finally:
         sys.modules.pop('shader_list', None)
     else:
         sys.modules['shader_list'] = _earlier
-# The names totk_shader_seed.h totk_seed_import_into accepts; anything else makes it refuse the whole seed.
-SAFE = re.compile(r'^(?:[0-9a-f]{64}\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\.(?:metal|json|metallib)|pso_manifest\.tsv)$')
+def safe_names():
+    """The names totk_seed_import_into accepts, taken from the runtime header itself. An unknown filename there makes it
+    refuse the whole seed, so a file added to the seed without widening that regex would ship one no iPhone or iPad can
+    import. Reading the pattern instead of copying it keeps the two from drifting apart."""
+    header = (ROOT/'games/dread/third_party/d2r_gfx/gfx/nvn/totk_shader_seed.h').read_text()
+    m = re.search(r'regularExpressionWithPattern:\s*@"(\^\(\?:.*?\)\$)"', header, re.S)
+    if not m:
+        raise AssertionError('totk_shader_seed.h: the seed filename check is not where this test looks for it')
+    return re.compile(m.group(1).replace('\\\\', '\\'))
+
+
+SAFE = safe_names()
 
 
 def control(stage, length, c1=0x30):
@@ -108,8 +118,9 @@ class PrepareTests(unittest.TestCase):
             dict(path='system/shd/test.bshdat', offset=len(other), size=len(blob))])))
         return romfs
 
-    def prepare(self, root, listed=()):
-        """prepare() with a synthetic translator service; returns (manifest, the variants it was asked for)."""
+    def prepare(self, root, listed=(), fail=()):
+        """prepare() with a synthetic translator service; returns (manifest, the variants it was asked for).
+        fail: shader keys whose translation the service refuses, as a real one does for a shader it cannot translate."""
         asked = []
 
         class Service:
@@ -127,6 +138,9 @@ class PrepareTests(unittest.TestCase):
                 base.with_name(base.name+'_b.metal').write_text('// synthetic '+request['variant'])
                 base.with_name(base.name+'_b.json').write_text(json.dumps(dict(stage=request['stage'], deps=deps)))
                 base.with_name(base.name+'.spv').write_bytes(b'spv')
+                if request['variant'].partition('-')[0] in self.refuse:
+                    self.reply = '{"ok":false,"error":"synthetic refusal"}\n'
+                    return
                 self.reply = '{"ok":true}\n'
 
             def flush(self): pass
@@ -134,6 +148,7 @@ class PrepareTests(unittest.TestCase):
             def wait(self): return 0
             def readline(self): return self.reply
         Service.requests = self.requests = []
+        Service.refuse = set(fail)
 
         translator, cross, shared = [root/name for name in ('translator', 'spirv-cross', 'list.tsv')]
         translator.write_text(''); cross.write_text('')
@@ -192,6 +207,63 @@ class PrepareTests(unittest.TestCase):
             self.assertEqual(asked, [seed.variant_name(ps, seed.answers_for(json.loads(cube)))])
             self.assertEqual(grown['shaders'], 4)
 
+
+
+class ShaderKeyScopeTests(PrepareTests):
+    """shader-keys.json: the game's whole shader inventory, which the Launcher's "Check shaders" reads to tell this
+    version's shared-list rows from another version's (shader_update.py new_shaders)."""
+
+    def test_the_seed_names_every_shader_found_even_one_translation_refused(self):
+        refused = key_of(*self.SHADERS[2])
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            manifest, _ = self.prepare(root, fail=[refused])
+            scope = json.loads((root/'shader-seed'/'shader-keys.json').read_text())
+            self.assertEqual(scope['keys'], sorted(key_of(*s) for s in self.SHADERS))
+            self.assertEqual((scope['schema'], scope['chain'], scope['version']), (1, seed.CHAIN, 'v100'))
+            self.assertEqual(scope['source_romfs_sha256'], 'c'*64)
+            # The refused shader has no variants of its own, so a scope derived from the seed's translations would
+            # leave it out and the check would pass its list rows over as another version's.
+            self.assertIn(refused, scope['keys'])
+            self.assertFalse((root/'shader-seed'/f'{refused}.variants').exists())
+            self.assertEqual(manifest['discovered'], 3)
+            self.assertEqual(hashlib.sha256((root/'shader-seed'/'shader-keys.json').read_bytes()).hexdigest(),
+                             manifest['files']['shader-keys.json'])
+
+    IDENTITY = ('schema', 'chain', 'version', 'game', 'source_romfs_sha256', 'translator_sha256',
+                'spirv_cross_sha256', 'preparation_sha256', 'shader_list_sha256')
+
+    def test_a_seed_prepared_before_the_inventory_is_made_again_rather_than_reused(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, out = Path(d), Path(d)/'shader-seed'
+            manifest, _ = self.prepare(root)
+            identity = {k: manifest[k] for k in self.IDENTITY}
+            reusable = lambda: seed.reusable_seed(out, identity)   # noqa: E731 - MIN_SHADERS as the test's prepare sets it
+            with mock.patch.object(seed, 'MIN_SHADERS', 1):
+                self.assertIsNotNone(reusable())   # as prepared, it is reused
+            old = json.loads((out/'seed-manifest.json').read_text())
+            old['files'].pop('shader-keys.json')
+            (out/'seed-manifest.json').write_text(json.dumps(old))
+            (out/'shader-keys.json').unlink()
+            # Its translations are untouched and still match, but without the inventory the check cannot tell this
+            # version's list rows from another's, so the seed is prepared again instead of shipped as it is.
+            with mock.patch.object(seed, 'MIN_SHADERS', 1):
+                self.assertIsNone(reusable())
+            again, _ = self.prepare(root)
+            self.assertIn('shader-keys.json', again['files'])
+            self.assertTrue((out/'shader-keys.json').is_file())
+
+    def test_the_scope_refuses_what_is_not_this_game_s_inventory(self):
+        keys, romfs = [key_of(*self.SHADERS[0])], 'c'*64
+        self.assertEqual(seed.shader_key_scope(keys, 'v100', romfs)['keys'], keys)
+        for bad in (lambda: seed.shader_key_scope([], 'v100', romfs),
+                    lambda: seed.shader_key_scope(['nope'], 'v100', romfs),
+                    lambda: seed.shader_key_scope(keys[0], 'v100', romfs),
+                    lambda: seed.shader_key_scope(keys, '', romfs),
+                    lambda: seed.shader_key_scope(keys, 'v100', 'nope'),
+                    lambda: seed.shader_key_scope(keys, 'v100', romfs, chain='another')):
+            with self.assertRaises(ValueError):
+                bad()
 
 
 class WarmPipelineTests(unittest.TestCase):

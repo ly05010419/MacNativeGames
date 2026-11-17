@@ -282,6 +282,78 @@ class ShaderList:
                     out.append(row); seen.add(row)
         return EXPORT.format(source) + ''.join('\t'.join(row) + '\n' for row in out)
 
+    def listed_answers(self):
+        """"<key>-<suffix>" -> the bind state that names it, from this list's own V rows.
+
+        Tears of the Kingdom's list carries its bind states as A rows; Dread's carries them as the deps of a V row, the
+        same ones prepare_shader_seed.plan translates listed variants with, so the names a warm row can carry are
+        exactly these. A row whose deps are not the translator's is left out rather than guessed at."""
+        from prepare_shader_seed import answers_for, variant_name   # it imports this module
+        out = {}
+        for key, deps in self.variants:
+            try:
+                answers = answers_for(json.loads(deps))
+            except ValueError:
+                continue
+            out[variant_name(key, answers)] = answers
+        return out
+
+    def resolve(self, seed, flag, given=()):
+        """The warm rows carrying this flag for the game version of a seed folder, each variant named as the seed serves
+        its bind state, without those in given (rows resolved before) and those naming a shader of another version
+        (neither in the seed's shader-keys.json nor in the seed) or one the seed cannot build. Returns rows and counts.
+
+        Tears of the Kingdom's resolve also accepts a variant the seed translated under another shader's name; Dread's
+        seed never writes one (prepare_shader_seed names every variant of a shader after that shader), so a name the
+        seed does not carry is answered by matching deps or not at all."""
+        from prepare_shader_seed import deps_match   # it imports this module
+        seed = Path(seed)
+        keys = set(json.loads((seed/'shader-keys.json').read_text())['keys'])
+        listed, index, names = self.listed_answers(), {}, {}
+
+        def variants_of(key):   # the seed's variants of a shader, as totk_shader_rt.m variants_of
+            if key not in index:
+                try:
+                    rows = json.loads((seed/f'{key}.variants').read_text())
+                except (OSError, ValueError):
+                    rows = []
+                index[key] = [r for r in rows if isinstance(r, dict) and isinstance(r.get('variant'), str)]
+            return index[key]
+
+        def served(name):   # "<key>-<suffix>_b" -> the seed's name for it, '' another version's, None the seed lacks it
+            if name not in names and not VARIANT.match(name):   # no variant name (a hand-made row): as it is
+                names[name] = name
+            if name not in names:
+                key = name[:-2].partition('-')[0]
+                mine = variants_of(key)
+                if not mine and key not in keys:
+                    names[name] = ''
+                elif any(r['variant'] == name[:-2] for r in mine):   # the seed carries it (its default or a listed one)
+                    names[name] = name
+                elif (answers := listed.get(name[:-2])) is None:
+                    names[name] = None   # the list does not say which bind state this name is: nothing to match against
+                else:
+                    hit = next((r['variant'] for r in mine if deps_match(r.get('deps') or {}, answers)), None)
+                    names[name] = hit+'_b' if hit else None
+            return names[name]
+
+        out, seen, counts = [], set(given), dict(other=0, missing=0, renamed=0, merged=0)
+        for row, have in self.warm.items():
+            if flag not in have:
+                continue
+            old = row_variants(row)
+            new = [served(name) for name in old]
+            if '' in new:
+                counts['other'] += 1; continue
+            if None in new:
+                counts['missing'] += 1; continue
+            renamed = rename_warm(row, dict(zip(old, new)))
+            counts['renamed'] += renamed != row
+            if renamed in seen:
+                counts['merged'] += 1; continue
+            seen.add(renamed); out.append(renamed)
+        return out, counts
+
     def counts(self):
         kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRBT'}
         title = sum(1 for flags in self.warm.values() if 't' in flags)
@@ -291,6 +363,29 @@ class ShaderList:
 
 
 NAME = 80   # nvn_pso_skey.h pso_skey: char vs[80], fs[80] lead the pipeline key, each a NUL-padded "<variant>_b"
+
+
+def row_variants(row):
+    """The variant names ("<key>-<suffix>_b") a warm row names: S / C its variant, R / B / T the two in the key."""
+    if row[0] in ('S', 'C'):
+        return [row[1]]
+    key = bytes.fromhex(row[1])
+    return [n for n in (key[at:at+NAME].split(b'\0')[0].decode('ascii', 'replace') for at in (0, NAME)) if n]
+
+
+def rename_warm(row, names):
+    """A warm row with the variants it names replaced (names: "<variant>_b" -> "<variant>_b")."""
+    if row[0] in ('S', 'C'):
+        return (row[0], names.get(row[1], row[1]), *row[2:])
+    key = bytearray.fromhex(row[1])
+    for at in (0, NAME):
+        old = bytes(key[at:at+NAME]).split(b'\0')[0].decode('ascii', 'replace')
+        new = names.get(old, old)
+        if new != old:
+            if len(new) >= NAME:
+                raise ValueError(f'variant name {new} does not fit a pipeline key')
+            key[at:at+NAME] = new.encode().ljust(NAME, b'\0')
+    return (row[0], key.hex(), *row[2:])
 
 
 def load_aliases(path):

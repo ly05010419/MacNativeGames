@@ -242,8 +242,10 @@ final class Model: ObservableObject {
         updating = app.app
         start(BuildRequest(update: app.app, shaders: true))
     }
-    /// The games whose shaders the Check shaders button compares with their newest list (shader_update.py LISTS).
-    static let shaderGames: Set<String> = ["totk", "botw", "oot"]
+    /// The games whose shaders the Check shaders button compares with their newest list: the same set as
+    /// shader_update.py LISTS, which is what the job itself reads (tests/test_shader_update.py keeps the two the
+    /// same). A game missing here gets no button at all, however well the backend answers for it.
+    static let shaderGames: Set<String> = ["totk", "botw", "oot", "dread"]
 
     /// work: a folder the Storage page moved the work folder to; the update records it in the app.
     func update(path: String, work: String? = nil) {
