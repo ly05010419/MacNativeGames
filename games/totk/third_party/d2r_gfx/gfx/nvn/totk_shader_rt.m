@@ -733,6 +733,11 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
     if (![refl isKindOfClass:[NSDictionary class]]) die("shader %s: reflection missing", variant.UTF8String);
 #if defined(GAME_OOT)
     if (!strcmp(stage, "ps")) refl = blend_zero_guard(variant, refl);
+    /* The SPIR-V is the translator's intermediate (Service.cs: spirv-cross makes _b.metal from it within the request);
+       nothing reads it afterwards (the seed takes .variants / _b.metal / _b.json, the runtime those and _b.metallib), and
+       at about 136 KB a shader it was half of each 9 GB translation folder (user 2026-11-17: "spv 一开始就不保留"). */
+    for (NSString *end in @[@".spv", @".reader.spv"])
+        unlink([totk_rt_dir() stringByAppendingFormat:@"/%@%@", variant, end].fileSystemRepresentation);
 #endif
     return refl;
 }

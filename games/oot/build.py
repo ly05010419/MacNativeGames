@@ -571,6 +571,13 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     while app_running(out):time.sleep(5)   # the build may have taken a while: the App is replaced only once it is closed
     build_app.install_app(temporary,out)
     took('installed, its seal checked')
+    # What this build replaced and no later one reads (old translation contexts, moved-aside bundles and libraries,
+    # chain-named pipeline folders): the work folder had grown to 256 GB by 2026-11-17 (work_prune.py; user: "每次 更新完
+    # 要清理 … 不影响极速更新"). Only after the App is in place, so a failed build keeps everything.
+    if str(GAME) not in sys.path:sys.path.insert(0,str(GAME))
+    from work_prune import prune
+    prune(tree,log=lambda line:print('   '+line,flush=True))
+    took('superseded work files removed')
     return out
 
 def missing_compute(rows,index_ids):
