@@ -707,16 +707,29 @@ enum { RENDER_MOVZ = 0x12660bc, RENDER_MOVK = 0x12660c8 };
    Switch's own 1600x900 scene, which the game upscales into the 1920x1080 canvas. Handheld play does not read the pair. */
 static uint64_t output_floats(unsigned screen, unsigned render);   /* {screen, render width} as two floats */
 static int phone_scene_hd(void) { const char *e = getenv("TOTK_BOTW_SCENE"); return e && !strcmp(e, "1920x1080"); }
+/* The custom scene size (user 2026-11-17: the pane's TOTK_RENDER_RES, handed over only while "Use custom settings" is on;
+   ios/tools/build_ipa.py botw_pane, ios/Sources/settings_map.c): its width, for docked and handheld play alike; 0 keeps
+   the presets' scene. Only sizes at or below the handheld 1280x720 canvas: above the canvas the game cannot make its
+   heaps (patch_render_1080). Lower sizes cost the GPU less, for heat and battery; MetalFX's scene upscale (TOTK_MFX_UPSCALE)
+   can then replace the game's own upscale into the canvas. Read at start, before the first display-mode run. */
+static unsigned phone_scene_custom(void) {
+    static const struct { const char *size; unsigned width; } sizes[] = {{"1280x720", 1280}, {"960x540", 960}, {"800x450", 800}, {"640x360", 640}};
+    const char *e = getenv("TOTK_RENDER_RES");
+    if (!e || !*e) return 0;
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) if (!strcmp(e, sizes[i].size)) return sizes[i].width;
+    fprintf(stderr, "[botw] scene %s is not one of the pane's sizes (1280x720, 960x540, 800x450, 640x360); the presets' scene\n", e);
+    return 0;
+}
 static void patch_render_phone(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size) runtime_fail("the docked scene size: no data page after the main module");
     const uint64_t page = (uintptr_t)m->base + data_off;
     put_word(m, RENDER_MOVZ, adrp_reg(8, (uintptr_t)m->base + RENDER_MOVZ, page), "docked render size");   /* adrp x8, page */
     put_word(m, RENDER_MOVK, 0xf9400908u, "docked render size");   /* ldr x8, [x8, #16]: {screen, render width} */
-    const unsigned render = phone_scene_hd() ? 1920 : 1600;
+    const unsigned custom = phone_scene_custom(), render = custom ? custom : phone_scene_hd() ? 1920 : 1600;
     atomic_store((_Atomic uint64_t *)(void *)(page + 16), output_floats(1920, render));
-    fprintf(stderr, "[botw] docked render size %ux%u into the 1920x1080 canvas (%s; TOTK_BOTW_SCENE)\n", render, render * 9 / 16,
-            render == 1920 ? "HD" : "as on the Switch");
+    fprintf(stderr, "[botw] docked render size %ux%u into the 1920x1080 canvas (%s)\n", render, render * 9 / 16,
+            custom ? "custom; TOTK_RENDER_RES" : render == 1920 ? "HD; TOTK_BOTW_SCENE" : "as on the Switch; TOTK_BOTW_SCENE");
 }
 static void patch_render_1080(Module *m) {
     const char *e = getenv("TOTK_RENDER_RES");
@@ -822,13 +835,16 @@ static uint32_t native_word(uint32_t original, int kind, int k) {   /* the same 
      main+0x18216c8  mov x8, #0x44a00000              (1280.0, the screen)
      main+0x18216cc  movk x8, #0x44a0, lsl #48        (1280.0, the render width) -> movk x8, #0x4470, lsl #48 (960.0)
    The renderer scales its targets by render / screen width, as docked play does at 1600 / 1920, so the scene is drawn at
-   960x540 and the game's own upscale draws it into the 1280x720 canvas (MetalFX does not replace it on the phone:
-   totk_mfx_up.m mfxup_enabled).
+   960x540 and the game's own upscale draws it into the 1280x720 canvas (MetalFX replaces it on the phone only with the
+   pane's custom switch and MetalFX row on: totk_mfx_up.m mfxup_enabled, TOTK_MFX_UPSCALE).
    1.9.0: the display-mode routine main+0x1266074 jumps by a byte table (main+0x1725916, base main+0x12660bc): mode 1 ->
    main+0x1266114, the same pair (str x8, [x19, #0x1210]); mode 3 (VR) computes its own and is left alone:
      main+0x1266114  mov x8, #0x44a00000
      main+0x1266118  movk x8, #0x44a0, lsl #48        -> movk x8, #0x4470, lsl #48 (960.0)
-   (its dynamic-resolution scale, main+0x12661e8, divides the render width +0x1214 by 1280.0 in handheld: 0.75). */
+   (its dynamic-resolution scale, main+0x12661e8, divides the render width +0x1214 by 1280.0 in handheld: 0.75).
+   The pair comes from the data page after main (+0x28; +16 is the docked pair, +0x20 the ultrawide word), as the docked
+   one does (patch_render_phone): mov x8 / movk x8 become adrp x8, <data page> / ldr x8, [x8, #0x28], and the start writes
+   {1280.0, render width} there: 960.0, or the custom scene's width (phone_scene_custom; user 2026-11-17). */
 #ifdef GAME_BOTW160
 enum { PHONE_RENDER = 0x18216c8u, PHONE_RENDER_STR = 0xf9094b88u };   /* str x8, [x28, #0x1290] */
 #else
@@ -844,8 +860,15 @@ static void patch_phone_render(Module *m) {
             runtime_fail("the phone's render size requires the " TOTK_GAME_VERSION " handheld display-mode instructions");
         }
     }
-    put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
-    fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
+    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (data_off + 0x4000 != m->size) runtime_fail("the handheld scene size: no data page after the main module");
+    const uint64_t page = (uintptr_t)m->base + data_off;
+    put_word(m, PHONE_RENDER, adrp_reg(8, (uintptr_t)m->base + PHONE_RENDER, page), "handheld render size");   /* adrp x8, page */
+    put_word(m, PHONE_RENDER + 4, 0xf9401508u, "handheld render size");   /* ldr x8, [x8, #0x28]: {screen, render width} */
+    const unsigned custom = phone_scene_custom(), render = custom ? custom : 960;
+    atomic_store((_Atomic uint64_t *)(void *)(page + 0x28), output_floats(1280, render));
+    fprintf(stderr, "[botw] handheld render size %ux%u, the game's own upscale to the 1280x720 canvas (phone%s)\n", render, render * 9 / 16,
+            custom ? "; custom, TOTK_RENDER_RES" : "");
 }
 #ifdef GAME_BOTW190
 /* The sun shadow map at 2048 per cascade (botw_shadow_res.h): TOTK_SHADOW_RES=2048, or 2048 in shadows.txt (the settings
