@@ -24893,7 +24893,7 @@ void botw_tiny_commit(void) {   // in mtl_sub_commit, after the last render pass
    lands. A learned target not rendered for LATE_IDLE submissions gives its slot to the next one (a recreated mask has
    a new serial).
    TOTK_BOTW_LATE_WB=0 keeps the waiting write-back. */
-#define LATE_MAX 8
+#define LATE_MAX 16   /* was 8: small every-frame targets took all 8 and the 512x512 mask got none, so its flush waited for the GPU */
 #define LATE_LEARN 120
 #define LATE_BYTES (1u << 20)
 #define LATE_RED 123   /* RED_ONCE slot */
@@ -24907,7 +24907,7 @@ static late_cand g_late_cand[16];
 static _Atomic int g_late_n;   /* learned slots */
 static late_job g_late_sub[LATE_MAX]; static __strong id<MTLTexture> g_late_tex[LATE_MAX]; static int g_late_nsub;   /* submit thread */
 static __strong id<MTLBuffer> g_late_buf[LATE_MAX][LATE_SLOTS]; static uint64_t g_late_bfence[LATE_MAX][LATE_SLOTS];   /* submit thread: a slot per submission */
-static late_job *g_late_fly[64]; static int g_late_nfly;   /* copied out, not landed yet */
+static late_job *g_late_fly[LATE_MAX * LATE_SLOTS]; static int g_late_nfly;   /* copied out, not landed yet */
 static uint8_t *g_late_post[LATE_MAX]; static size_t g_late_post_n[LATE_MAX]; static uint64_t g_late_lseq[LATE_MAX];   /* (g_late_mu) edge bytes after the last landing of each target, and the landings so far */
 static _Atomic uint64_t g_late_landed, g_late_skipped, g_late_freed, g_late_bytes, g_late_ns;
 static _Atomic uint64_t g_late_last[LATE_MAX];   /* the submission that last rendered each learned target */
@@ -25008,7 +25008,7 @@ void botw_late_commit(void) {
         if (!buf) { buf = g_late_buf[r][s] = [g_dev newBufferWithLength:LATE_BYTES options:MTLResourceStorageModeShared]; if (buf) { res_add(buf); res_commit(); } }
         late_job *c = buf ? malloc(sizeof *c) : NULL;
         int ok = 0;
-        if (c) { *c = *j; pthread_mutex_lock(&g_late_mu); if ((ok = g_late_nfly < 64)) g_late_fly[g_late_nfly++] = c; pthread_mutex_unlock(&g_late_mu); }
+        if (c) { *c = *j; pthread_mutex_lock(&g_late_mu); if ((ok = g_late_nfly < LATE_MAX * LATE_SLOTS)) g_late_fly[g_late_nfly++] = c; pthread_mutex_unlock(&g_late_mu); }
         if (!ok) { free(c); free(j->edge); j->edge = NULL; late_unclaim(j->t.serial, fence); continue; }
         j->edge = NULL;   /* owned by the job in flight */
         g_late_bfence[r][s] = fence;
