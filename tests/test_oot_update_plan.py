@@ -40,7 +40,69 @@ class OcarinaPlan(unittest.TestCase):
 
     def test_the_update_refuses_with_the_same_check(self):
         text = (ROOT / 'games/oot/build.py').read_text()
-        self.assertIn('blocker=update_blocker(work,mode)\n    if blocker:raise ValueError(blocker)', text)
+        self.assertIn('blocker=update_blocker(work,mode,remake=remake)\n    if blocker:raise ValueError(blocker)', text)
+
+    def test_a_new_chain_is_a_fast_update(self):
+        """User 2026-11-17 "oot 加上": when only the chain or translator stops the express update and the work folder can
+        translate every shader again, the plan is the fast update (--seed), not the full build."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); work = root / 'work'; work.mkdir()
+            app = oot_app(root, work)
+            chain = 'the translation chain or the translator changed'
+            def answer(folder, app=None, remake=False):
+                return '' if remake else chain
+            with mock.patch.object(update_runtime, 'oot_update_blocker', side_effect=answer):
+                plan = update_runtime.plan(app)
+            self.assertEqual(plan['kind'], 'fast', plan)
+            self.assertIn('translated again from the work folder', plan['reason'])
+            self.assertNotIn('full build', plan['reason'])
+
+
+def oot_build():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('oot_build_fast_test', ROOT / 'games/oot/build.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FastUpdateBlocker(unittest.TestCase):
+    """games/oot/build.py update_blocker(remake=True): the fast update needs the work folder's game files and this
+    repository's rewritten modules, not the old seed or the same chain."""
+
+    def work_folder(self, root, context='an older chain'):
+        import json
+        tree = root / 'work/oot'
+        (tree / 'extracted/oot/romfs').mkdir(parents=True)
+        (tree / 'extracted/oot/romfs/index.json').write_text('{}')
+        (tree / 'rewritten/oot').mkdir(parents=True)
+        build = oot_build()
+        seed, libraries, _ = build.shader_dirs(tree, 'full')
+        seed.mkdir(parents=True); libraries.mkdir(parents=True)
+        (seed / 'seed-manifest.json').write_text(json.dumps({'translation_context_sha256': context, 'nvn_depth_mode': 'minus-w'}))
+        (libraries / 'libraries-manifest.json').write_text('{}')
+        expected = json.loads((ROOT / 'games/oot/assets/expected-v131072.json').read_text())['rewritten_sha256']
+        return build, root / 'work', expected
+
+    def test_a_changed_chain_stops_the_express_update_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build, work, expected = self.work_folder(Path(tmp))
+            with mock.patch.object(build, 'sha', side_effect=lambda p: expected[Path(p).name]):
+                self.assertIn('translation chain', build.update_blocker(work, 'full'))
+                self.assertEqual(build.update_blocker(work, 'full', remake=True), '')
+
+    def test_the_fast_update_still_needs_the_game_files_and_the_rewritten_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build, work, expected = self.work_folder(Path(tmp))
+            with mock.patch.object(build, 'sha', side_effect=lambda p: 'other'):
+                self.assertIn('rewritten module differs', build.update_blocker(work, 'full', remake=True))
+            (work / 'oot/extracted/oot/romfs/index.json').unlink()
+            self.assertIn('is missing', build.update_blocker(work, 'full', remake=True))
+
+    def test_update_runtime_takes_seed_for_ocarina_of_time(self):
+        text = (ROOT / 'update_runtime.py').read_text()
+        self.assertIn('return update_ocarina(app, work, remake=args.seed)', text)
+        self.assertNotIn("'Ocarina of Time: --seed and --native-5k are not supported", text)
 
 
 if __name__ == '__main__':

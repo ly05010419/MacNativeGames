@@ -87,7 +87,7 @@ def ocarina_app(app):
         return False
 
 
-def update_ocarina(app, work):
+def update_ocarina(app, work, remake=False):
     """Ocarina of Time carries its own build, like build_app.build_oot. It gets the tool PATH main() gives the other games:
     an update started from the app inherits the Finder's PATH, which has no /opt/homebrew/bin, so the build's
     make_opening_overlay.py found no ffmpeg (#2074). It needs no ffmpeg since 2026-11-12 (webm_one_frame.py), and dav1d,
@@ -98,7 +98,7 @@ def update_ocarina(app, work):
     spec = importlib.util.spec_from_file_location('oot_build', build_app.REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.update_runtime(app, work)
+    module.update_runtime(app, work, remake=remake)
 
 
 def app_identity(app):
@@ -496,15 +496,15 @@ def replace_native_5k(res, action, made, version='v143'):
             build_app.copy_tree(folder, target)
 
 
-def oot_update_blocker(folder, app=None):
+def oot_update_blocker(folder, app=None, remake=False):
     """Why Ocarina of Time's update cannot run with this work folder ('' when it can): games/oot/build.py update_blocker,
     the checks its update_runtime makes before it touches anything, for the shaders the App carries (shader_mode: a
-    quick App's update keeps only the title's)."""
+    quick App's update keeps only the title's). remake: the fast update's (--seed), which translates every shader again."""
     import importlib.util
     spec = importlib.util.spec_from_file_location('oot_build_plan', build_app.REPO / 'games/oot/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.update_blocker(folder, module.shader_mode(app) if app is not None else 'full')
+    return module.update_blocker(folder, module.shader_mode(app) if app is not None else 'full', remake=remake)
 
 
 def plan(app, work=None):
@@ -551,6 +551,11 @@ def plan(app, work=None):
         except BuildError as e:
             return result('error', str(e), game='oot')
         blocker = oot_update_blocker(folder, app)   # the checks its update makes before it touches anything
+        # a new translation chain or translator: the work folder translates every shader again, no game files or keys
+        # (the fast update; user 2026-11-17: "oot 加上"); only what that cannot mend needs the full build
+        if blocker and not oot_update_blocker(folder, app, remake=True):
+            return result('fast', 'Ocarina of Time: the startup shaders are of another translation chain or translator: every shader '
+                          'is translated again from the work folder (no game files or keys)', game='oot', work=str(folder), work_why=why)
         if blocker:
             return result('full', f'Ocarina of Time: {blocker}', game='oot', work=str(folder), work_why=why)
         return result('express', 'Ocarina of Time: its shaders are of this repository\'s translation chain and its modules this repository\'s rewrites',
@@ -647,11 +652,11 @@ def main(argv):
         except ValueError as e:
             raise BuildError(str(e)) from e
     if ocarina_app(app):
-        if args.seed or args.native_5k:
-            raise BuildError('Ocarina of Time: --seed and --native-5k are not supported; run build_app.py for new shaders')
+        if args.native_5k:
+            raise BuildError('Ocarina of Time: --native-5k is not supported')
         work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.recorded_work_folder(app, 'OcarinaOfTime_build')
         say(f'work folder {work} ({why})')
-        return update_ocarina(app, work)
+        return update_ocarina(app, work, remake=args.seed)   # --seed: the fast update, every shader translated again
     game, version = app_identity(app)
     if args.native_5k and version not in ('v143', 'botw160', 'botw190'):
         raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 or Breath of the Wild 1.6.0 / 1.9.0 on Mac')

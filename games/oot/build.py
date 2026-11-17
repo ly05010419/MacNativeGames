@@ -608,20 +608,23 @@ def app_running(app):
         return True
     return False
 
-def update_blocker(work, mode='full'):
+def update_blocker(work, mode='full', remake=False):
     """Why this work folder cannot take an update without the full build ('' when it can): its last full build's files
     are missing, its shaders are of another translation chain or translator than this repository's (the seed's
     translation_context), or its rewritten modules are not this repository's. update_runtime refuses then, and
     update_runtime.py --plan (MNG Launcher, tools/mng.py) answers "full" instead of an express update that would stop
     (2026-11-13: chain v27 made the Launcher start an express update that refused at once).
     A 'title' App's update makes its few shaders again in a minute or two, so neither an earlier seed nor the same
-    translation chain is needed for it: only the game files and this repository's rewritten modules."""
+    translation chain is needed for it: only the game files and this repository's rewritten modules.
+    remake (the fast update, update_runtime.py --seed; user 2026-11-17: "oot 加上"): every shader is translated again
+    from the work folder's game files, as the full build does, so a changed chain or translator does not stop it either.
+    The seed's cache is a folder per translation context (prepare_ns2_seed.py), so nothing of the old chain is reused."""
     work=Path(work);tree=work/'oot';seed,libraries,_=shader_dirs(tree,'title' if mode=='title' else 'full')
     manifest=seed/'seed-manifest.json'
-    shaders=() if mode=='title' else (manifest,libraries/'libraries-manifest.json')
+    shaders=() if mode=='title' or remake else (manifest,libraries/'libraries-manifest.json')
     for needed in (*shaders,tree/'extracted/oot/romfs/index.json',tree/'rewritten/oot'):
         if not needed.exists():return f'{needed} is missing: run the full build once with this work folder'
-    if mode!='title':
+    if mode!='title' and not remake:
         scripts=str(GAME/'scripts')
         if scripts not in sys.path:sys.path.insert(0,scripts)
         from prepare_ns2_seed import translation_context
@@ -634,18 +637,20 @@ def update_blocker(work, mode='full'):
         if sha(tree/'rewritten/oot'/name)!=want:return 'rewritten module differs from this repository: run the full build: '+name
     return ''
 
-def update_runtime(app,work=None):
+def update_runtime(app,work=None,remake=False):
     """Put a new runtime into an App this build made, keeping its shaders: rebuild the runtime and its pipeline archive only.
     The translations and Metal libraries of the last full build are reused; a new translation chain, translator or request
-    code needs the full build. A running game is waited for, not closed."""
+    code needs remake (the fast update: every shader translated again from the work folder, no game files or keys) or the
+    full build. A running game is waited for, not closed."""
     app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]   # the app's own record first
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
     tree=work/'oot'
     mode=shader_mode(app)
     if mode=='none':mode='full'   # an update always carries shaders, as before (an App of OOT_BUNDLE_SHADERS=0 gets them all)
-    blocker=update_blocker(work,mode)
+    blocker=update_blocker(work,mode,remake=remake)
     if blocker:raise ValueError(blocker)
+    if remake and mode!='title':print('fast update: every shader is translated again from the work folder (a new translation chain or translator)',flush=True)
     told=False
     while app_running(app):
         if not told:print('waiting for the game to close',flush=True);told=True
