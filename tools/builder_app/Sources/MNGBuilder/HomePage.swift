@@ -30,6 +30,16 @@ struct HomePage: View {
         .padding(.horizontal, 8)
     }
 
+    /// Whose job a box at the bottom shows (its own line says what the job is doing): the updated app's game, else
+    /// its file name (an app another program updates may not be in the list); a build's game from the Build page.
+    private var jobGame: String {
+        if let running = model.updating {
+            return model.installed.first { $0.app == running }?.game.map(T.gameName)
+                ?? (running as NSString).lastPathComponent
+        }
+        return model.plan?.game.map(T.gameName) ?? ""
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -79,9 +89,20 @@ struct HomePage: View {
                 }
                 let shown = selected.flatMap { g in model.installed.first(where: { $0.game == g }) }
                 if let app = shown { GameActions(app: app).id(app.app) }
-                // an update running for another game, or one another program started: its progress shows here too
-                if let running = model.updating, running != shown?.app {
-                    GroupBox { ActionSection(updateOnly: true).frame(maxWidth: .infinity, alignment: .leading).padding(6) }
+                // an update running for another game, or one another program started: its progress shows here too, until
+                // it ends well or is cancelled (the game opened, or the player chose so); a failure stays, with its log
+                if let running = model.updating, running != shown?.app, model.phase != .done, model.phase != .cancelled {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) { Text(jobGame).font(.title3.weight(.semibold)); ActionSection(updateOnly: true) }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
+                }
+                // a build from the Build page: after 返回 its progress and its Cancel show here too (else greyed buttons, no word why)
+                if model.updating == nil, model.phase == .building || model.phase == .cancelling {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) { Text(jobGame).font(.title3.weight(.semibold)); ActionSection() }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
                 }
             }
             .padding(24)

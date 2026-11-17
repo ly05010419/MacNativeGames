@@ -98,5 +98,45 @@ class Pages(unittest.TestCase):
         self.assertIn('chevron.right', shelf)
 
 
+class HomeShowsABuild(unittest.TestCase):
+    """A build started on the Build page (Model.build sets updating to nil) and left with 返回: the home page greys its
+    buttons while phase is building, so it must also show that build's progress and Cancel, not grey buttons alone."""
+
+    def test_the_home_page_shows_a_build_started_on_the_build_page(self):
+        swift = REPO / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertIn('updating = nil', (swift / 'Model.swift').read_text())   # a build is not an update
+        self.assertIn('private var mine: Bool { updateOnly == (model.updating != nil) }',
+                      (swift / 'ActionSection.swift').read_text())   # so only ActionSection() shows its progress
+        home = (swift / 'HomePage.swift').read_text()
+        self.assertIn('if model.updating == nil, model.phase == .building || model.phase == .cancelling {', home)
+        shown = home[home.index('if model.updating == nil, model.phase == .building'):]
+        self.assertIn('ActionSection()', shown[:shown.index('}\n')])
+
+    def test_a_job_shown_under_another_game_names_its_game(self):
+        # switched to another card, a job's progress shows at the bottom: its box says whose job it is, as its first
+        # line inside the box (a GroupBox label is drawn small, outside the box's top-left corner)
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertEqual(home.count('Text(jobGame).font(.title3.weight(.semibold))'), 2)
+        self.assertNotIn('label: { Text(jobGame)', home)
+
+    def test_a_finished_update_leaves_another_game_s_page(self):
+        # the game opened (or the player cancelled): its box no longer sits under another game until the next job
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertIn('if let running = model.updating, running != shown?.app, model.phase != .done, model.phase != .cancelled {', home)
+
+    def test_a_finished_job_says_the_game_was_opened(self):
+        # the game is opened at once (play(), no wait): 'Starting the game…' would stay on the page for good
+        swift = REPO / 'tools/builder_app/Sources/MNGBuilder'
+        strings = (swift / 'Strings.swift').read_text()
+        for line in ('static let doneOK', 'static let updatedOK'):
+            said = strings[strings.index(line):].split('\n')[0]
+            self.assertNotIn('Starting the game', said)
+            self.assertNotIn('正在启动游戏', said)
+        # a job that ends without its 'done' line still opens the game, as that line would have
+        ended = (swift / 'Model.swift').read_text()
+        ended = ended[ended.index('private func ended('):ended.index('func play()')]
+        self.assertIn('play()', ended)
+
+
 if __name__ == '__main__':
     unittest.main()

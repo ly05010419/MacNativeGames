@@ -45,7 +45,7 @@ enum T {
     static let blocked = s("Not ready", "还不能打包")
     static let ready = s("Ready to build", "可以打包")
     static let building = s("Building", "正在打包")
-    static let doneOK = s("Done. Starting the game…", "打包完成，正在启动游戏…")
+    static let doneOK = s("Done. The game was opened.", "打包完成，已打开游戏。")   // play() does not wait: no "…ing" left on the page
     static let failed = s("The build stopped", "打包停下了")
     static let cancelled = s("Cancelled. Build again to go on where it stopped.", "已停止。再按一次打包会从停下的地方接着做。")
     static let cancelling = s("Stopping…", "正在停止…")
@@ -143,7 +143,7 @@ enum T {
         default: return s("Full build", "完整打包")
         }
     }
-    static let updatedOK = s("Updated. Starting the game…", "更新完成，正在启动游戏…")
+    static let updatedOK = s("Updated. The game was opened.", "更新完成，已打开游戏。")
     static let shadersDone = s("Shaders and pipelines updated.", "着色器和管线更新完成。")
     static let checkShaders = s("Check shaders", "检查着色器")
     static let checkingShaders = s("Downloading the newest shader list…", "正在下载最新的着色器清单…")
