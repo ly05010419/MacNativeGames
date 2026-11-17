@@ -32,6 +32,10 @@ final class Model: ObservableObject {
     @Published var installedLoaded = false   // the first scan finished: until then no game is shown as missing
     @Published var installedError: String?   // why the last scan failed (the home page shows it)
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
+    /// A job is running now. `updating` names the app the last job was for and stays after it ends (its card keeps the
+    /// result and the log), so it never means "busy": a reporter (2026-11-17) found Start grey after a `mng.py build`
+    /// until the Launcher was reopened, and the Storage page's buttons stayed off the same way.
+    var jobRunning: Bool { phase == .building || phase == .cancelling }
     @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var page = "home"         // the page shown: home (the games) or build
     @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)

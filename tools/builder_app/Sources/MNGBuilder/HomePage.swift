@@ -210,7 +210,7 @@ struct GameActions: View {
                                 .padding(.horizontal, 18).padding(.vertical, 8)
                         }
                         .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                        .disabled(starting || model.updating == app.app)
+                        .disabled(starting || (model.jobRunning && model.updating == app.app))
                         if !startStatus.isEmpty {
                             Text(startStatus).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                                 .frame(maxWidth: 260, alignment: .trailing)
