@@ -513,7 +513,8 @@ def plan(app, work=None):
       express  update_runtime.py "<app>"         no game files or keys
       fast     update_runtime.py "<app>" --seed  new startup shaders from the work folder's files
       full     build_app.py with the game files and keys
-      error    the app records a work folder on a disk that is not connected (reason says what to do)
+      error    the app records a work folder on a disk that is not connected, or an Ocarina of Time app on a Mac
+               without Xcode's Metal compiler (reason says what to do)
     with the reason in words, the game, its version and the work folder."""
     app = Path(app).expanduser().resolve()
     def result(kind, reason, **extra):
@@ -550,6 +551,12 @@ def plan(app, work=None):
             folder, why = work_folder('OcarinaOfTime_build')
         except BuildError as e:
             return result('error', str(e), game='oot')
+        # its update compiles shader libraries with Xcode's Metal compiler (build_shader_libs.py stops without it), which
+        # the command line tools alone do not have: said here, so no update starts that would stop there (user 2026-11-17)
+        if build_app.metal_compiler() is None:
+            return result('error', 'Ocarina of Time compiles its shaders with Xcode\'s Metal compiler: install the full Xcode '
+                          'and its Metal toolchain (Xcode > Settings > Components > Metal Toolchain, or xcodebuild '
+                          '-downloadComponent MetalToolchain)', game='oot', work=str(folder), work_why=why)
         blocker = oot_update_blocker(folder, app)   # the checks its update makes before it touches anything
         # a new translation chain or translator: the work folder translates every shader again, no game files or keys
         # (the fast update; user 2026-11-17: "oot 加上"); only what that cannot mend needs the full build

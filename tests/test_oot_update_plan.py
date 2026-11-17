@@ -22,6 +22,12 @@ def oot_app(root, work):
 
 
 class OcarinaPlan(unittest.TestCase):
+    def setUp(self):
+        # a Mac with Xcode's Metal compiler (the plan asks for it first: OotNeedsMetal below)
+        patch = mock.patch.object(update_runtime.build_app, 'metal_compiler', return_value=('metal', 'v', {}))
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_a_work_folder_without_its_build_files_needs_the_full_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); work = root / 'work'; work.mkdir()
@@ -56,6 +62,32 @@ class OcarinaPlan(unittest.TestCase):
             self.assertEqual(plan['kind'], 'fast', plan)
             self.assertIn('translated again from the work folder', plan['reason'])
             self.assertNotIn('full build', plan['reason'])
+
+
+class OotNeedsMetal(unittest.TestCase):
+    """Ocarina of Time compiles its shader libraries with Xcode's Metal compiler (build_shader_libs.py stops without it,
+    after the translation); the command line tools alone have none. MNG Launcher says so before a build or an update
+    starts (user 2026-11-17: "修"), and only for Ocarina of Time."""
+
+    def test_an_update_says_so_instead_of_starting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); work = root / 'work'; work.mkdir()
+            with mock.patch.object(update_runtime.build_app, 'metal_compiler', return_value=None), \
+                    mock.patch.object(update_runtime, 'oot_update_blocker', return_value='') as blocker:
+                plan = update_runtime.plan(oot_app(root, work))
+            self.assertEqual(plan['kind'], 'error', plan)
+            self.assertIn('Metal toolchain', plan['reason'])
+            blocker.assert_not_called()
+
+    def test_a_build_says_so_in_step_three_for_ocarina_of_time_only(self):
+        from tools.builder_jobs import classify
+        with tempfile.TemporaryDirectory() as tmp:
+            dump = str(Path(tmp) / 'dump')
+            for found, game, blocked in ((None, 'oot', True), (('metal', 'v', {}), 'oot', False), (None, 'dkb', False)):
+                with self.subTest(found=found, game=game), \
+                        mock.patch.object(classify, 'no_metal_compiler', return_value=found is None):
+                    p = classify.plan([classify.Item(dump, 'ns2_dump', game)])
+                    self.assertEqual(any('Metal' in b for b in p.blocks), blocked, p.blocks)
 
 
 def oot_build():

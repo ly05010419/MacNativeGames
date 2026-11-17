@@ -184,6 +184,21 @@ def _supported(game):
             if str(v.get('version', '')).isdigit() and repo.game_of_title(str(v.get('title_id', '0' * 16))) == game}
 
 
+def no_metal_compiler():
+    """True when no Xcode on this Mac has its Metal toolchain (build_app.metal_compiler, which the builds use)."""
+    return repo.build_app().metal_compiler() is None
+
+
+def oot_needs_metal():
+    """Ocarina of Time compiles its 40,000-odd shaders into libraries with Xcode's Metal compiler (games/oot/scripts/
+    build_shader_libs.py stops without it, after the translation), where the other games need only the command line
+    tools: said before its build or update starts (user 2026-11-17: "修")."""
+    return t('Ocarina of Time compiles its shaders with Xcode\'s Metal compiler: install the full Xcode and its Metal toolchain '
+             '(Xcode › Settings › Components › Metal Toolchain, or xcodebuild -downloadComponent MetalToolchain)',
+             '时之笛要用 Xcode 的 Metal 编译器编着色器：请安装完整的 Xcode 和它的 Metal 工具链'
+             '（Xcode › 设置 › 组件 › Metal Toolchain，或 xcodebuild -downloadComponent MetalToolchain）')
+
+
 def _hfs0_names(f, offset, length):
     """(name, absolute offset) of each entry of the HFS0 table at offset (the layout extract_exefs.partition_entries
     reads, bounded the same way), or [] when there is no table there."""
@@ -269,6 +284,8 @@ def plan(items, work=None):
                              'Wild build, drop their shared-fonts folder too',
                              '没有放系统字体：打包会用开源的 Noto 字体（只下载一次），工作目录里已有字体就用已有的；'
                              '想用王国之泪或旷野之息打包留下的固件字体，把那个 shared-fonts 文件夹也放进来'))
+        if p.game == 'oot' and no_metal_compiler():
+            p.blocks.append(oot_needs_metal())
         return p
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))
