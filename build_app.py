@@ -1710,12 +1710,13 @@ def place_game_data(tree, res, version):
         clone(data / name, dst / name)
 
 
-def resolve_lists(tree, res, game, logs):
+def resolve_lists(tree, res, game, logs, shared=None):
     """The warm-up lists of the app (build/pso_manifest.tsv, pso_title.tsv): the shared shader list's rows of this game
-    version, each variant named as the app's seed serves its bind state (shader_list.py resolve)."""
+    version, each variant named as the app's seed serves its bind state (shader_list.py resolve). shared: another list
+    than the work folder's copy (update_runtime.py: the newest from GitHub)."""
     ns2 = ns2_game(game)
-    shared = (tree.parent / 'botw/assets/shader_list.tsv' if game == 'botw' else
-              tree.parent / ns2['folder'].name / 'assets/shader_list.tsv' if ns2 else tree / 'assets/shader_list.tsv')
+    shared = shared or (tree.parent / 'botw/assets/shader_list.tsv' if game == 'botw' else
+                        tree.parent / ns2['folder'].name / 'assets/shader_list.tsv' if ns2 else tree / 'assets/shader_list.tsv')
     run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'resolve', res/'build/shader-seed', shared,
          res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
@@ -1732,12 +1733,12 @@ def prepare_prompt_assets(tree, app, version, logs, *, prompt_app=None):
              '--version', version, '--output', res / 'build/prompt-hud.tsv'], logs / 'prompt-hud.log')
 
 
-def place_runtime(tree, app, version, logs, *, game='totk', lists=True, prompt_app=None):
+def place_runtime(tree, app, version, logs, *, game='totk', lists=True, prompt_app=None, shared=None):
     """The parts of the app made from this repository alone, which update_runtime.py replaces in an installed app: the
     game binary, the launcher, the shader tools and the warm-up lists exported from the shared shader list. Everything
     else in the app comes from the player's game files (place_game_data, the rewritten modules, the RomFS, the seed).
     lists=False keeps the app's warm-up lists (update_runtime.py, when the app's seed predates its shader-keys.json);
-    else resolve_lists makes them anew."""
+    else resolve_lists makes them anew, from shared when given (update_runtime.py: the newest list)."""
     res = app / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
     # The FXAA reference requires its notice in binary distributions; runtime updates use this same packaging path.
     for name in ('fxaa', 'smaa'):
@@ -1749,7 +1750,7 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True, prompt_a
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
     prepare_prompt_assets(tree, app, version, logs, prompt_app=prompt_app)
     if lists:
-        resolve_lists(tree, res, game, logs)
+        resolve_lists(tree, res, game, logs, shared=shared)
     clone(res / 'build/totk-native', app / f'Contents/MacOS/{APPS[game][2]}')
 
 

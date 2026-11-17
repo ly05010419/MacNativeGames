@@ -135,7 +135,7 @@ class FastUpdateBlocker(unittest.TestCase):
 
     def test_update_runtime_takes_seed_for_ocarina_of_time(self):
         text = (ROOT / 'update_runtime.py').read_text()
-        self.assertIn('return update_ocarina(app, work, remake=args.seed)', text)
+        self.assertIn('return update_ocarina(app, work, remake=args.seed, shared=listfile)', text)
         self.assertNotIn("'Ocarina of Time: --seed and --native-5k are not supported", text)
 
 

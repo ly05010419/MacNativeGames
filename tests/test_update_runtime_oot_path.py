@@ -17,7 +17,7 @@ class OcarinaToolPath(unittest.TestCase):
     def run_update(self, path):
         seen = {}
         module = mock.Mock()
-        module.update_runtime.side_effect = lambda app, work, remake=False: seen.update(path=os.environ['PATH'])
+        module.update_runtime.side_effect = lambda app, work, remake=False, shared=None: seen.update(path=os.environ['PATH'])
         with mock.patch.dict(os.environ, {'PATH': path}), \
              mock.patch.object(update_runtime.build_app, 'codec_libraries') as codecs, \
              mock.patch('importlib.util.spec_from_file_location'), \

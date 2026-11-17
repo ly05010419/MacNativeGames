@@ -637,11 +637,13 @@ def update_blocker(work, mode='full', remake=False):
         if sha(tree/'rewritten/oot'/name)!=want:return 'rewritten module differs from this repository: run the full build: '+name
     return ''
 
-def update_runtime(app,work=None,remake=False):
+def update_runtime(app,work=None,remake=False,shared=None):
     """Put a new runtime into an App this build made, keeping its shaders: rebuild the runtime and its pipeline archive only.
     The translations and Metal libraries of the last full build are reused; a new translation chain, translator or request
     code needs remake (the fast update: every shader translated again from the work folder, no game files or keys) or the
-    full build. A running game is waited for, not closed."""
+    full build. A running game is waited for, not closed. shared: the shared list to bring the App up to (update_runtime.py
+    newest_shader_list: the newest on GitHub; user 2026-11-17 "极速更新也要补新着色器"): its variants the seed lacks are
+    translated and its pipelines made, as update_shaders does; else this repository's copy."""
     app=Path(app).resolve();work=Path(work).expanduser().resolve() if work else build_helpers().recorded_work_folder(app,'OcarinaOfTime_build')[0]   # the app's own record first
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
@@ -668,9 +670,9 @@ def update_runtime(app,work=None,remake=False):
     install_translator(tree)   # the seed below is this repository's translator's; so must the App's in-game one be
     # The new runtime asks for every translation again: the ones whose request is the same are kept, the others made again
     # (prepare_ns2_seed.py, totk_shader_rt.m seed_verified), and only the libraries whose source changed are compiled.
-    shader_steps(work,tree,logs,run,mode=mode)
+    shader_steps(work,tree,logs,run,shared=shared,mode=mode)
     folder=plistlib.loads((app/'Contents/Info.plist').read_bytes()).get('MNGGameDataFolder')
-    package_app(work,tree,app,'library' if folder else 'app',folder,mode=mode)
+    package_app(work,tree,app,'library' if folder else 'app',folder,shared=shared,mode=mode)
     print(f'updated {app} in {time.monotonic()-start:.0f} s',flush=True)
 
 def update_shaders(app,listfile,work=None):
