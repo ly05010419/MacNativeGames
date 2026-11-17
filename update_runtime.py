@@ -47,7 +47,7 @@ from build_app import APPS, VERSIONS, BuildError, clone, run, say, sha256
 def standalone_game(app):
     try:
         bundle = plistlib.loads((Path(app)/'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
-        return {'org.macnativegames.dread': 'dread', 'org.macnativegames.worldend': 'worldend'}.get(bundle)
+        return {'org.macnativegames.dread': 'dread', 'org.macnativegames.worldend': 'worldend', 'org.macnativegames.tmnt.private': 'tmnt'}.get(bundle)
     except (OSError, ValueError):
         return None
 
@@ -57,7 +57,7 @@ def standalone_module(game):
     folder = build_app.REPO/f'games/{game}'
     scripts = folder/'scripts'
     if str(scripts) not in sys.path: sys.path.insert(0, str(scripts))
-    file = folder/'build.py' if game == 'dread' else scripts/'worldend_update.py'
+    file = folder/'build.py' if game == 'dread' else scripts/f'{game}_update.py'
     name = f'mng_update_{game}'
     spec = importlib.util.spec_from_file_location(name, file)
     module = importlib.util.module_from_spec(spec); sys.modules[name] = module; spec.loader.exec_module(module)
