@@ -3,7 +3,6 @@
 import argparse
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 GAME = Path(__file__).resolve().parent
@@ -38,14 +37,29 @@ def main():
     def run(name, *arguments):
         subprocess.run([sys.executable, GAME / 'scripts' / name, *arguments], check=True)
 
-    work.mkdir(parents=True, exist_ok=True)
-    run_work = Path(tempfile.mkdtemp(prefix='full-', dir=work))
-    run('extract_exefs.py', args.game, '--keys', args.keys, '--output', run_work / 'exefs')
-    run('extract_romfs.py', '--keys', args.keys, '--manifest', run_work / 'extraction-manifest.json',
-        '--output', run_work / 'romfs')
-    run('build_private_bundle.py', '--exefs', run_work / 'exefs', '--romfs', run_work / 'romfs',
-        *(['--fonts', args.shared_fonts] if args.shared_fonts else []), '--work', run_work / 'build-work', '--out', out, '--app', '--record-work', work,
-        *(['--dotnet', args.dotnet] if args.dotnet else []))
+    from tmnt_work import Steps, digest, adopt_romfs, build_lock, protect_inputs
+    run_work = work / 'full'
+    if run_work.is_symlink():
+        raise ValueError('fixed build directory must not be a symlink')
+    protect_inputs([args.game, args.keys, args.shared_fonts], [run_work, out])
+    with build_lock(run_work):
+        steps = Steps(run_work)
+        # Hash the supplied container, not just its name or timestamp.
+        identity = {'source': str(args.game.resolve()), 'sha256': digest(args.game),
+                    'extractors': {name: digest(GAME / 'scripts' / name) for name in
+                                   ('extract_exefs.py', 'extract_romfs.py', 'expected_inputs.py')},
+                    'expected': digest(GAME / 'assets/expected-base-1.0.0.json')}
+        steps.run('exefs', identity, [run_work / 'exefs', run_work / 'extraction-manifest.json'],
+                  lambda: run('extract_exefs.py', args.game, '--keys', args.keys, '--output', run_work / 'exefs'))
+        def romfs():
+            if not adopt_romfs(out, run_work / 'romfs'):
+                run('extract_romfs.py', '--keys', args.keys, '--manifest', run_work / 'extraction-manifest.json',
+                    '--output', run_work / 'romfs')
+        steps.run('romfs', identity, [run_work / 'romfs'], romfs)
+        run('build_private_bundle.py', '--exefs', run_work / 'exefs', '--romfs', run_work / 'romfs',
+            *(['--fonts', args.shared_fonts] if args.shared_fonts else []), '--work', run_work / 'build-work', '--out', out, '--app', '--record-work', work,
+            *(['--dotnet', args.dotnet] if args.dotnet else []))
+
 
 
 if __name__ == '__main__':

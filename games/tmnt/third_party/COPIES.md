@@ -36,7 +36,7 @@
 
 - `scripts/extract_exefs.py` is copied from `games/dread/scripts/extract_exefs.py` at repository commit `edb17ab9`, with title selection and private-output checks added. The integrity checks remain intact.
 - `scripts/extract_romfs.py` is copied from `games/dread/scripts/extract_romfs.py` at the same commit, imports this port's own ExeFS reader and requires a private output directory.
-- `requirements.txt` uses the relevant pinned dependencies from `games/dread/requirements.txt` at the same commit; `nsz` is omitted because the current scripts do not support NSZ or updates.
+- `requirements.txt` uses the relevant pinned dependencies from `games/dread/requirements.txt` at the same commit; dependencies for unsupported compressed containers and updates are omitted.
 - `third_party/d2r/` is copied from `games/dread/third_party/d2r/` at the same commit; it retains its MIT license.
 - The NRO-to-NSO layout in `scripts/prepare_nro.py` derives from `games/ssbu/scripts/rewrite_nros.py` at the same commit, with explicit validation and private-output handling.
 - `scripts/module_metadata.py`, `scripts/survey_modules.py` and `tests/test_module_metadata.py` derive from the local `codex/isaac-port` work at commit `549af8c5`, adapted to this game's own rewrite reports. They contain no game data.

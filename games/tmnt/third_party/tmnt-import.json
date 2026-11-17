@@ -3473,7 +3473,7 @@
       "origin": "games/ss/scripts/ss_bundle.py",
       "commit": "49ff9ec3f16f9d83dd97af505ad3b88d6bd6f35d",
       "source_blob": "36207f68be8eb28419b11fe9a18de7b167c20236",
-      "sha256": "27e00a1c9193db2b675e62512fae5dce866afa9ee7918ddb516fa28ff6d7dbfb"
+      "sha256": "f3034067310b9cdd6af09b0c396f97fda6c372aef33954c7a847d015f2d2c8e3"
     }
   },
   "local_files": [
@@ -3517,6 +3517,7 @@
     "scripts/tmnt_pipelines.py",
     "scripts/tmnt_shaders.py",
     "scripts/tmnt_update.py",
+    "scripts/tmnt_work.py",
     "tests/graphics_phase_ambiguity_probe.c",
     "tests/graphics_phase_capacity_probe.c",
     "tests/graphics_phase_dispatch_probe.c",
@@ -3540,12 +3541,14 @@
     "tests/test_linkage_survey.py",
     "tests/test_package_selection.py",
     "tests/test_packaging_flow.py",
+    "tests/test_pipeline_cache.py",
     "tests/test_prepare_nro.py",
     "tests/test_prepare_resources.py",
     "tests/test_provenance.py",
     "tests/test_rewrite_inputs.py",
     "tests/test_rewrite_nro.py",
     "tests/test_symbols.py",
+    "tests/test_work_cache.py",
     "tests/tmnt_async_skip_policy_test.c",
     "tests/tmnt_romfs_read_exact_test.c",
     "tests/tmnt_settings_probe.m",

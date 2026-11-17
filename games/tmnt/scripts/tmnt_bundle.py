@@ -103,7 +103,7 @@ def signed_bundle(partial, old, name, sources, digests, env):
     (bundle/'Contents/Info.plist').write_bytes(plistlib.dumps({
         'CFBundleIdentifier': f'org.macnativegames.tmnt.private.{name.lower()}',
         'CFBundlePackageType': 'BNDL', 'CFBundleVersion': '1', 'MNGDataSHA256': ident}))
-    subprocess.run(['codesign', '--force', '--sign', '-', str(bundle)], env=env, check=True)
+    subprocess.run(['codesign', '--force', '--sign', '-', str(bundle)], env=env, check=True)  # nested: not the app
     if not verified_signature(bundle, digests, env):
         raise ValueError(f'data bundle signature failed: {bundle}')
     return bundle

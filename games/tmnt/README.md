@@ -22,8 +22,11 @@ python games/tmnt/build.py '<base game.nsp or .xci>' --keys '<prod.keys>' \
   --out '<private output>/TMNT.app'
 ```
 
-The container entry retains existing work files in the recorded work root, creates a new
-`full-*` directory for each extraction/rewrite, and updates an existing TMNT App in place.
+The container entry retains existing work files in the recorded work root, uses one fixed
+`full` directory, rehashes cached inputs/outputs before reuse, and rebuilds invalid steps
+with a logged reason. A supported RomFS may be adopted from the installed App after
+checking its exact pinned digest. Shader translations stay in this stable work tree. The builder updates an existing
+TMNT App in place and rejects simultaneous builds sharing that work directory.
 To include system fonts, pass `--shared-fonts` with the verified font directory and its manifest.
 The builder verifies and extracts the game and obtains the static Opus and VPX
 libraries, SPIRV-Cross CLI and .NET SDK from the repository's pinned dependencies.

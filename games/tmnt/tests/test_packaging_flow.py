@@ -70,25 +70,39 @@ class PackagingFlow(unittest.TestCase):
             marker=work/'old-result'; marker.write_text('keep')
             game=root/'game.nsp'; game.touch(); keys=root/'prod.keys'; keys.touch()
             argv=['build.py',str(game),'-k',str(keys),'--work',str(work),'-o',str(root/'TMNT.app')]
-            for _ in range(2):
-                with mock.patch.object(sys,'argv',argv), mock.patch('subprocess.run') as run:
+            def extract(argv, **kwargs):
+                name=Path(argv[1]).name
+                if name=='extract_exefs.py':
+                    output=Path(argv[argv.index('--output')+1]);output.mkdir()
+                    (output/'main').write_text('verified fixture')
+                    (output.parent/'extraction-manifest.json').write_text('{}')
+                if name=='extract_romfs.py':
+                    output=Path(argv[argv.index('--output')+1]);output.mkdir()
+                    (output/'romfs.bin').write_text('verified fixture')
+                    (output/'index.json').write_text('{}')
+            for iteration in range(2):
+                with mock.patch.object(sys,'argv',argv), mock.patch('subprocess.run',side_effect=extract) as run:
                     entry['main']()
                     calls=run.call_args_list
-                    self.assertEqual(len(calls),3)
+                    self.assertEqual(len(calls),3 if iteration==0 else 1)
                     args=calls[-1].args[0]
                     self.assertEqual(args[args.index('--record-work')+1],work.resolve())
             self.assertEqual(marker.read_text(),'keep')
-            self.assertEqual(len(list(work.glob('full-*'))),2)
+            self.assertEqual(len(list(work.glob('full-*'))),0)
+            self.assertTrue((work/'full/exefs/main').is_file())
 
     def test_fresh_build_stages_nro_before_external_link_check(self):
         import build_private_bundle as builder
         from argparse import Namespace
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); exefs=root/'exefs'; exefs.mkdir()
-            romfs=root/'romfs'; romfs.mkdir(); (romfs/'index.json').write_text('{"romfs_sha256":"test"}')
+            romfs=root/'romfs'; romfs.mkdir(); (romfs/'romfs.bin').write_bytes(b'fixture'); (romfs/'index.json').write_text('{"romfs_sha256":"test"}')
             work=root/'work'; out=root/'TMNT.app'; linked=[]
             def script(name,*args):
                 if name=='rewrite_modules.py': (work/'rewritten').mkdir()
+                if name in ('module_metadata.py','prepare_host_tables.py','prepare_nro_digest.py'):
+                    target=Path(args[args.index('--out')+1]); target.parent.mkdir(parents=True,exist_ok=True); target.write_text('header')
+                if name=='build_shader_tools.py': (work/'shader-tools').mkdir()
                 if name=='prepare_resources.py':
                     folder=work/'resources'; folder.mkdir()
                     for n in ('romfs_config.h','shared_fonts_config.h'): (folder/n).write_text('header')
@@ -105,7 +119,7 @@ class PackagingFlow(unittest.TestCase):
                     for suffix in ('patched.bin','fixups.tsv','gates.tsv'):
                         self.assertEqual((Path(args[1])/'nro'/f'{ident}.{suffix}').read_text(),suffix)
             args=Namespace(work=work,out=out,exefs=exefs,romfs=romfs,fonts=None,dotnet=None,app=True,link_romfs=False)
-            with mock.patch.object(builder,'script',side_effect=script), mock.patch.object(builder,'call',side_effect=call), mock.patch.object(builder,'check_supported_romfs'):
+            with mock.patch.object(builder,'script',side_effect=script), mock.patch.object(builder,'call',side_effect=call), mock.patch.object(builder,'check_supported_romfs'), mock.patch.object(builder,'verify_exefs'), mock.patch('tmnt_work.source_identity',return_value={'tools':'fixture'}):
                 builder.build(args)
             self.assertEqual(len(linked),1)
 

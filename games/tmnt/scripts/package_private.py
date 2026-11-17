@@ -230,12 +230,12 @@ def pack(args):
         shutil.copy2(spv / 'LICENSE', notices / 'SPIRV-Cross-LICENSE')
         if (spv / 'LICENSES').is_dir(): shutil.copytree(spv / 'LICENSES', notices / 'SPIRV-Cross-LICENSES')
         for binary in (resources / 'build/tmnt-native', resources / 'build/shader-service/totk_xlate', resources / 'build/spirv-cross/spirv-cross'):
-            subprocess.run(['codesign', '--force', '--sign', '-', str(binary)], check=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', str(binary)], check=True)  # nested: not the app
         manifest_path = resources / 'BUILD-MANIFEST.json'
         manifest = json.loads(manifest_path.read_text())
         manifest['runtime_sha256'] = digest(resources / 'build/tmnt-native')
         manifest_path.write_text(json.dumps(manifest, indent=2)+'\n')
-        subprocess.run(['codesign', '--force', '--sign', '-', str(partial)], check=True)
+        subprocess.run(['codesign', '--force', '--sign', '-', f'-r=designated => identifier "{info["CFBundleIdentifier"]}"', str(partial)], check=True)
         from build_app import wait_until_closed
         wait_until_closed(output)
         install_app(partial, output)

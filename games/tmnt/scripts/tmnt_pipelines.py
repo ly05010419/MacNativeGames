@@ -22,6 +22,10 @@ def check_archive_lists(archive, build):
         raise ValueError('pipeline archive was built from a different warm-up list')
     if report['requested'] != report['built'] or not report['built']:
         raise ValueError('pipeline archive incomplete')
+    expected = set(report['files'])
+    actual = {p.name for p in archive.iterdir() if p.suffix in ('.metalarchive', '.json') and p.name != 'lists.json'}
+    if actual != expected:
+        raise ValueError('pipeline archive contains missing or stale files')
     for name, digest in report['files'].items():
         if Path(name).name != name or hashlib.sha256((archive/name).read_bytes()).hexdigest() != digest:
             raise ValueError('pipeline archive changed')
@@ -46,11 +50,14 @@ def mac_pipelines(native, rewritten, build):
         selected = rows[index::min(4,len(rows))]
         manifest = folder / 'pso_manifest.tsv'; manifest.write_text('\n'.join(selected)+'\n')
         cache = folder / 'cache'
+        if (cache / 'pipelines').exists():
+            shutil.rmtree(cache / 'pipelines')
         env = dict(os.environ, TOTK_AUDIO_OFF='1', TOTK_CLOUD_SAVE_DIR='0', TOTK_PROFILE_DIR=str(folder/'profile'),
                    TOTK_SHADER_CACHE=str(cache), TOTK_SHADER_SEED='on', TOTK_SHADER_SEED_DIR=str(build/'shader-seed'),
                    DM_NVN_SHMAP=str(build/'shader-map.tsv'), DM_PSO_MANIFEST=str(manifest), TOTK_WARM_BEFORE_TITLE='1',
                    TOTK_PIPELINE_ARCHIVE='1', TOTK_PIPELINE_ARCHIVE_FILL='0')
         # All executions happen in the work folder, never inside the new .app.
+        observed = 0
         for check in range(2):
             with run_outside_bundle(native, folder / 'archive-tool', folder / 'outside') as program:
                 result = subprocess.run([str(program),str(rewritten),'pipeline-archive'], env=env, cwd=build,
@@ -60,12 +67,18 @@ def mac_pipelines(native, rewritten, build):
             reports=[json.loads(l) for l in result.stdout.splitlines() if l.startswith('{"render":')]
             if not reports or reports[-1]['render']+reports[-1]['compute'] != len(selected) or reports[-1]['write_failed']:
                 raise ValueError(f'pipeline partition incomplete; see {folder}')
-        return cache/'pipelines'
+            observed = reports[-1]['render'] + reports[-1]['compute']
+        return cache/'pipelines', observed
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         partitions=list(pool.map(run_partition,range(min(4,len(rows)))))
-    archive=build/'pipeline-archive'; archive.mkdir(exist_ok=True)
+    archive = build / 'pipeline-archive'
+    if archive.exists():
+        shutil.rmtree(archive)
+    archive.mkdir()
     files={}
-    for part in partitions:
+    built = 0
+    for part, observed in partitions:
+        built += observed
         for source in part.glob('*'):
             if source.suffix not in ('.metalarchive','.json'):continue
             sha=hashlib.sha256(source.read_bytes()).hexdigest()
@@ -73,6 +86,6 @@ def mac_pipelines(native, rewritten, build):
             shutil.copy2(source,archive/source.name);files[source.name]=sha
     if not any(n.endswith('.metalarchive') for n in files):raise ValueError('no pipeline archives written')
     if list_digest(build)!=want:raise ValueError('pipeline list changed during build')
-    (archive/'lists.json').write_text(json.dumps({'pso_manifest.tsv':want,'requested':len(rows),'built':len(rows),'files':files},sort_keys=True)+'\n')
+    (archive/'lists.json').write_text(json.dumps({'pso_manifest.tsv':want,'requested':len(rows),'built':built,'files':files},sort_keys=True)+'\n')
     check_archive_lists(archive,build)
     return archive

@@ -75,18 +75,20 @@ def update(app, work):
             archive = partial / 'Contents/Resources/game/build/pipeline-archive'
             shutil.rmtree(archive)
             shutil.copytree(generated / 'pipeline-archive', archive)
-            for name in ('pso_manifest.tsv', 'pso_title.tsv', 'shader-map.tsv'):
+            for name in ('pso_manifest.tsv', 'shader-map.tsv'):
                 shutil.copy2(generated / name, partial / 'Contents/Resources/game/build' / name)
+            # Do not retain the resolver's intermediate title list from older updates.
+            (partial / 'Contents/Resources/game/build/pso_title.tsv').unlink(missing_ok=True)
             from package_private import write_app_entry
             info_path = partial / 'Contents/Info.plist'
             info = plistlib.loads(info_path.read_bytes())
             write_app_entry(partial, sha256(target))
             record_update_source(info, work); info_path.write_bytes(plistlib.dumps(info))
             manifest = partial / 'Contents/Resources/game/BUILD-MANIFEST.json'
-            subprocess.run(['codesign', '--force', '--sign', '-', str(target)], check=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', str(target)], check=True)  # nested: not the app
             data = json.loads(manifest.read_text()); data['runtime_sha256'] = sha256(target)
             manifest.write_text(json.dumps(data, indent=2) + '\n')
-            subprocess.run(['codesign', '--force', '--sign', '-', str(partial)], check=True)
+            subprocess.run(['codesign', '--force', '--sign', '-', f'-r=designated => identifier "{info["CFBundleIdentifier"]}"', str(partial)], check=True)
             wait_until_closed(app)
             install_app(partial, app)
     print(f'TMNT runtime updated: {app}')

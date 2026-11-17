@@ -34,7 +34,7 @@ if [ ! -d "$PROFILE" ]; then
             fi
         done
         if [ -n "$NEWEST" ]; then
-            for ITEM in account.uid save host-settings.plist controller-type.txt controls.txt; do
+            for ITEM in account.uid save host-settings.plist controller-type.txt controls.txt mouse.txt cloud-sync.plist; do
                 [ ! -e "$NEWEST/$ITEM" ] || cp -pR "$NEWEST/$ITEM" "$STAGING/$ITEM"
             done
             printf '%s\n' "$NEWEST" > "$STAGING/migrated-from.txt"
