@@ -68,6 +68,7 @@ class CardUpdatePartition(unittest.TestCase):
         fonts = classify.Item(str(Path(self.tmp.name) / 'shared-fonts'), 'fonts')
         self.assertFalse([b for b in self.blocks(merged, extra=[fonts]) if '1G+1U' in b])   # fonts given: fine
         self.assertFalse([b for b in self.blocks(merged, game='dread') if '1G+1U' in b])     # a game without system fonts
+        self.assertFalse([b for b in self.blocks(merged, game='tmnt') if '1G+1U' in b])      # nor TMNT (PR #2125)
 
 
 if __name__ == '__main__':

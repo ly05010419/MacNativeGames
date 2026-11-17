@@ -49,6 +49,9 @@ PATHS = {
     'switch 2 dumps (Bananza, Pokopia)': (
         ['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_ns2_seed.py', GFX.format('totk')], {}),
     'oot': (['games/oot/build.py', 'update_runtime.py', 'games/oot/scripts/prepare_ns2_seed.py', GFX.format('oot')], {}),
+    # TMNT (PR #2125) also builds its pipeline archive anew on every update, where Tears of the Kingdom's keeps the files whose
+    # descriptions did not change (TOTK_PAR_RECHECK, "极速更新"); no check here tells that apart by the sources' words (its own
+    # copy of nvn_mtl.m has them), so it is noted, not tested (after PR #2125)
     'tmnt': (['games/tmnt/build.py', 'games/tmnt/scripts/build_private_bundle.py', 'games/tmnt/scripts/package_private.py',
               'games/tmnt/scripts/tmnt_bundle.py', 'games/tmnt/scripts/tmnt_update.py', 'games/tmnt/scripts/tmnt_pipelines.py',
               GFX.format('tmnt')], {}),

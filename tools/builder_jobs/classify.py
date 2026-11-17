@@ -304,8 +304,9 @@ def plan(items, work=None):
                           'an earlier build) too',
                           '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来'))
     # a card image whose system update partition is missing or empty (merged / trimmed, "1G+1U") has no fonts either: said
-    # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same)
-    elif (p.game not in ('ss', 'dread', 'worldend') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
+    # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same);
+    # the games that take no system fonts are left out, as in the check above (TMNT: after PR #2125)
+    elif (p.game not in ('ss', 'dread', 'worldend', 'tmnt') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
           and not has_fonts and card_update_ncas(p.base) == 0):
         p.blocks.append(t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
                           'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too',
