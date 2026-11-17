@@ -15,6 +15,7 @@ def main(argv):
     c.add_argument('--work', help='the work folder the build will use (its extracted fonts count)')
     k = sub.add_parser('checks', help="what this Mac still needs (one JSON object)")
     k.add_argument('--work', default=str(Path.home()))
+    k.add_argument('--game', help='the game the files make (classify): a check only one game needs is that game\'s')
     i = sub.add_parser('apps', help='the game apps on this Mac and the update each needs (one JSON object)')
     i.add_argument('--apps-dir', help="the Launcher's apps folder, looked in besides what macOS knows")
     tb = sub.add_parser('tab', help='a page besides building (settings, mods, controls, storage, saves); one JSON object')
@@ -34,7 +35,7 @@ def main(argv):
         return 0
     if a.job == 'checks':
         from tools.builder_jobs.checks import checks
-        print(json.dumps({'checks': checks(a.work)}, ensure_ascii=False))
+        print(json.dumps({'checks': checks(a.work, a.game)}, ensure_ascii=False))
         return 0
     if a.job == 'tab':
         from tools.builder_jobs.tabs import main as tab

@@ -81,7 +81,8 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.lookForExternal() }
         }
         loadRememberedInstalled()   // the games of the last look at once; the look below brings them up to date
-        Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
+        // The checks come after the dropped files: their game decides what this Mac needs (classify runs them again).
+        Task { await loadInstalled(); open(pending); if paths.isEmpty { await runChecks() } else { await classify() } }
     }
 
     /// Files given to the app (open -a "MNG Launcher" <files>, or dropped on its icon): keys go to step 2, the rest to
@@ -225,19 +226,23 @@ final class Model: ObservableObject {
     }
 
     func classify() async {
-        guard !paths.isEmpty else { report = nil; return }
-        do {
-            let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []))
-            report = try JSONDecoder().decode(ClassifyReport.self, from: data)
-            classifyError = nil
-        } catch {
-            classifyError = error.localizedDescription
+        if paths.isEmpty {
+            report = nil
+        } else {
+            do {
+                let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []))
+                report = try JSONDecoder().decode(ClassifyReport.self, from: data)
+                classifyError = nil
+            } catch {
+                classifyError = error.localizedDescription
+            }
         }
+        await runChecks()   // the game decides what this Mac needs (checks.py: the Metal toolchain is Ocarina's alone)
     }
 
     func runChecks() async {
         do {
-            let data = try await Job.collect(["checks", "--work", workRoot])
+            let data = try await Job.collect(["checks", "--work", workRoot] + (plan?.game.map { ["--game", $0] } ?? []))
             checks = try JSONDecoder().decode(ChecksReport.self, from: data).checks
         } catch {
             checks = [ChecksReport.Check(id: "job", ok: false, text: error.localizedDescription, fix: nil, action: nil)]
