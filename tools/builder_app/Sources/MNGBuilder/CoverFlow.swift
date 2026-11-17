@@ -1,3 +1,4 @@
+import AppKit
 import QuartzCore
 import SwiftUI
 
@@ -9,43 +10,124 @@ import SwiftUI
 /// the others stand turned towards it on both sides, packed close, so their spine shows; each has its reflection on a
 /// dark floor. The faces are flat views placed in 3D by one camera (projectionEffect with the same matrices), so the
 /// spine's width is what the turn shows, not drawn by guess. A side box, an arrow, the arrow keys or a drag brings a box
-/// to the middle; a click on the middle one (or Return) is `open`.
-struct CoverFlow<Front: View, Spine: View>: View {
+/// to the middle.
+///
+/// The middle box turns over (user 2026-11-17, scheme A of the sketch: "先做 a"): a click on it or Return turns it round
+/// in place, a little towards the player, the others stepping back; its back holds the game's actions (`back`). Esc, a
+/// click beside or on the back's empty part, or a move to another box turns it back. A view drawn through projectionEffect
+/// takes no clicks, so once the turn has settled the back is laid on top as a live view at the same place and size: the
+/// turned box faces the camera, so the projection there is a scale and a move (CoverFlowGeometry.backScale, backCenter).
+/// `back(i, live)`: live is the one on top (Return starts the game there); the drawn copies show it only.
+///
+/// How it feels, as in the sketch's A page (user 2026-11-17: "web页面 a 很好 有鼠标 光影 和 盒子动的特效"): the middle case
+/// leans away under the pointer and a light follows it over the front; a drag or a two-finger swipe on the trackpad
+/// carries on with its speed and settles on a case, held back past either end and let go; a game started from the back
+/// grows out of its case over the stage and fades (`launches` counts the starts).
+struct CoverFlow<Front: View, Spine: View, Back: View>: View {
     let count: Int
     @Binding var index: Int
     var size: CGFloat = 375   // the case's height (user 2026-11-17: half again as big)
+    var launches = 0          // bumped when a game starts from the back: its case grows over the stage
+    var name: (Int) -> String = { _ in "" }   // a case's game, floated over it while the pointer pulls it out
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
-    let open: (Int) -> Void
+    @ViewBuilder let back: (Int, Bool) -> Back
 
     @State private var drag: CGFloat = 0
     @State private var dragging = false
+    @State private var flipped = false     // the middle box shows its back
+    @State private var backLive = false    // the turn has settled: the live back lies on top
+    @State private var tilt = CGPoint.zero // the pointer over the middle front, -1...1 from its centre
+    @State private var lit = 0.0           // 1 while the pointer is over the middle front: its light shows
+    @State private var pulls = CaseAmounts()   // the folded case under the pointer, pulled out a little (1), the rest 0
+    @State private var pulled = -1             // which one that is (-1: none)
+    @State private var pulledLight = UnitPoint(x: 0.5, y: 0.3)   // where the pointer is on its front
+    @State private var moving = false          // the cases are moving to a new middle: the pointer pulls none out
+    @State private var hovering = false    // the pointer is over the stage: a sideways swipe moves the cases
+    @State private var swipeMonitor: Any?
+    @State private var swipes = 0          // swipe events so far: the last one's wait settles the cases
+    @State private var zooming = false     // a start's case growing over the stage
+    @State private var zoom: CGFloat = 0
+    @State private var zoomFade = 1.0
     @FocusState private var focused: Bool
 
-    private var position: Double { Double(index) - Double(drag / (size * 0.35)) }
+    /// Where the cases are: the index less the drag, held back past either end (half a case at most, as a rubber band).
+    private var position: Double {
+        let p = Double(index) - Double(drag / (size * 0.35)), n = Double(count - 1)
+        func pull(_ x: Double) -> Double { 0.55 * (1 - 1 / (1 + x * 1.8)) }
+        return p < 0 ? -pull(-p) : p > n ? n + pull(p - n) : p
+    }
     private var height: CGFloat { CoverFlowGeometry.top(size) + size * 1.38 }   // the room above, the box, its reflection
     private let spring = Animation.spring(response: 0.45, dampingFraction: 0.86)
+    private let turnSpring = Animation.spring(response: 0.55, dampingFraction: 0.84)
 
     var body: some View {
         GeometryReader { geo in
-            CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
-                           front: front, spine: spine)
-                .contentShape(Rectangle())
-                .gesture(SpatialTapGesture().onEnded { tap in
-                    guard !dragging else { return }
-                    let stage = CoverFlowGeometry(count: count, size: size, width: geo.size.width, height: height, position: position)
-                    guard let i = stage.cover(at: tap.location) else { return }
-                    if i == index { open(i) } else { withAnimation(spring) { index = i } }
-                })
+            // the stage as it is shown (with the pulled-out case where it goes): clicks, the pointer and the name follow
+            // what the player sees (2026-11-17: judged at rest, the case under the pointer and the one pulled out
+            // differed once the others moved aside, and the row jumped)
+            let stage = CoverFlowGeometry(count: count, size: size, width: geo.size.width, height: height, position: position,
+                                          pulls: pulls)
+            ZStack(alignment: .topLeading) {
+                CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
+                               flip: flipped ? 1 : 0, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
+                               pulls: pulls, pulledLight: pulledLight,
+                               front: front, spine: spine, back: back)
+                    .contentShape(Rectangle())
+                    .gesture(SpatialTapGesture().onEnded { tap in
+                        guard !dragging else { return }
+                        if flipped { turn(false); return }
+                        guard let i = stage.cover(at: tap.location) else { return }
+                        CoverFlowTrace.note("tap case \(i) (middle \(index)), pulled \(pulled)")
+                        if i == index { turn(true) } else { go(to: i) }
+                    })
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        switch phase {
+                        case .active(let p): hovering = true; lean(at: p, stage)
+                        case .ended: hovering = false; lean(at: nil, stage)
+                        }
+                    }
+                if pulled >= 0, pulled < count {   // the pulled-out case's game, floating over it
+                    let quad = stage.frontQuad(pulled)
+                    Text(name(pulled)).font(.caption.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(.black.opacity(0.78), in: Capsule())
+                        .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
+                        .fixedSize()
+                        .position(x: quad.map(\.x).reduce(0, +) / 4, y: max(14, (quad.map(\.y).min() ?? 0) - 22))
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+                if zooming {   // a start: the case grows out over the stage, then fades
+                    front(index).frame(width: stage.w, height: stage.h)
+                        .overlay(CaseFront())
+                        .clipShape(RoundedRectangle(cornerRadius: stage.corner * (1 - zoom), style: .continuous))
+                        .scaleEffect(stage.backScale + (stage.fill - stage.backScale) * zoom)
+                        .position(x: stage.backCenter.x, y: stage.backCenter.y + (height / 2 - stage.backCenter.y) * zoom)
+                        .opacity(zoomFade)
+                        .allowsHitTesting(false)
+                }
+                if backLive {
+                    back(index, true).frame(width: stage.w, height: stage.h)
+                        .overlay(CaseRim())
+                        .clipShape(RoundedRectangle(cornerRadius: stage.corner, style: .continuous))
+                        .contentShape(Rectangle()).onTapGesture { turn(false) }   // its empty part turns it back
+                        .scaleEffect(stage.backScale)
+                        .position(stage.backCenter)
+                }
+            }
+            .frame(width: geo.size.width, height: height, alignment: .topLeading)
         }
         .frame(height: height)
         .background(LinearGradient(colors: [Color(white: 0.17), Color(white: 0.03)], startPoint: .top, endPoint: .bottom))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 6)
-            .onChanged { v in dragging = true; drag = v.translation.width }
-            .onEnded { _ in
-                let to = min(max(Int(position.rounded()), 0), count - 1)
-                withAnimation(spring) { index = to; drag = 0 }
+            .onChanged { v in turn(false); lean(at: nil, nil); dragging = true; drag = v.translation.width }
+            .onEnded { v in
+                // it carries on with the drag's speed (where the drag would have ended), then settles on a case
+                let thrown = Double(index) - Double(v.predictedEndTranslation.width / (size * 0.35))
+                let to = min(max(Int(thrown.rounded()), 0), count - 1)
+                go(to: to)
                 DispatchQueue.main.async { dragging = false }   // the click a drag ends with is not a tap
             })
         .overlay(alignment: .leading) { arrow("chevron.left", by: -1) }
@@ -53,9 +135,108 @@ struct CoverFlow<Front: View, Spine: View>: View {
         .focusable().focused($focused).focusEffectDisabled()
         .onKeyPress(.leftArrow) { move(-1); return .handled }
         .onKeyPress(.rightArrow) { move(1); return .handled }
-        .onKeyPress(.return) { open(index); return .handled }
-        .onAppear { focused = true }
+        // turned over, Return is the back's own (its start button is the default action)
+        .onKeyPress(.return) { if flipped { return .ignored }; turn(true); return .handled }
+        .onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }
+        .onChange(of: index) { turn(false); settleMove() }
+        .onChange(of: launches) { grow() }
+        .onAppear { focused = true; watchSwipes() }
+        .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m) }; swipeMonitor = nil }
         .accessibilityIdentifier("cover-flow")
+    }
+
+    /// The pointer over the cases (nil: gone). The middle case leans away under it, its light where the pointer is; a
+    /// folded case under it is pulled out a little, as off a shelf, its game's name over it, the cases beyond it moving
+    /// aside (the sketch's, user 2026-11-17). Which case is under the pointer is the stage as shown (`stage.cover`, with
+    /// the current pull: from the middle outwards, the first whose front holds the point; a nearer case covers a farther
+    /// one), so the case that reacts is the one the player sees there. Only while the fronts show and nothing moves.
+    private func lean(at p: CGPoint?, _ stage: CoverFlowGeometry?) {
+        var to = CGPoint.zero, on = 0.0, side = -1
+        if let p, let stage, !flipped, !dragging, !moving, abs(position - Double(index)) < 0.01, let i = stage.cover(at: p) {
+            if i == index {
+                to = CGPoint(x: (p.x - stage.backCenter.x) / (stage.w / 2), y: (p.y - stage.backCenter.y) / (stage.h / 2))
+                on = 1
+            } else {
+                side = i
+                let q = stage.frontQuad(i), xs = q.map(\.x), ys = q.map(\.y)
+                let left = xs.min() ?? 0, right = xs.max() ?? 1, top = ys.min() ?? 0, bottom = ys.max() ?? 1
+                pulledLight = UnitPoint(x: (p.x - left) / max(1, right - left), y: (p.y - top) / max(1, bottom - top))
+            }
+        }
+        if to != tilt || on != lit {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { tilt = to; lit = on }
+        }
+        if side != pulled { CoverFlowTrace.note("pull case \(side) (was \(pulled)), middle \(index), position \(position)") }
+        if side != pulled {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { pulled = side; pulls = CaseAmounts.one(side, of: count) }
+        }
+    }
+
+    /// A new middle (a click, the arrows, a drag or a swipe): the case pulled out under the pointer goes back with the
+    /// same spring as the move and none is pulled out until the move has settled (2026-11-17, the frame record: a clicked
+    /// case kept its pull all the way to the middle, and the pointer's next move took it back, a jump after the move).
+    private func settleMove() {
+        withAnimation(spring) {
+            pulled = -1
+            pulls = CaseAmounts.one(-1, of: count)
+            tilt = .zero; lit = 0
+        }
+    }
+
+    /// Moves the cases to put case `to` in the middle (every way of moving comes here): `moving` until the move's own
+    /// animation is over, so the pointer pulls no case out of a row that is still sliding.
+    private func go(to: Int) {
+        moving = true
+        withAnimation(spring, completionCriteria: .removed) { index = to; drag = 0 } completion: { moving = false }
+    }
+
+    /// A two-finger sideways swipe on the trackpad moves the cases while the pointer is over the stage, with the
+    /// trackpad's own momentum after the fingers lift, and settles on a case when it stops; an up-and-down swipe still
+    /// scrolls the page. (SwiftUI has no scroll-wheel event of its own here: an app-local NSEvent monitor.)
+    private func watchSwipes() {
+        guard swipeMonitor == nil else { return }
+        swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY, fine = event.hasPreciseScrollingDeltas
+            let used = MainActor.assumeIsolated { swipe(dx: dx, dy: dy, fine: fine) }
+            return used ? nil : event
+        }
+    }
+
+    private func swipe(dx: CGFloat, dy: CGFloat, fine: Bool) -> Bool {
+        guard hovering, fine, abs(dx) > abs(dy) * 1.2 || (dragging && abs(dx) >= abs(dy)) else { return false }
+        turn(false); lean(at: nil, nil)
+        dragging = true
+        drag += dx
+        swipes += 1
+        let mine = swipes
+        Task { @MainActor in   // settles once the swipe and its momentum have stopped for a moment
+            try? await Task.sleep(for: .milliseconds(120))
+            guard mine == swipes else { return }
+            let to = min(max(Int(position.rounded()), 0), count - 1)
+            go(to: to)
+            dragging = false
+        }
+        return true
+    }
+
+    /// A game started from the back: its case grows over the stage and fades, then turns back to its front.
+    private func grow() {
+        zoom = 0; zoomFade = 1; zooming = true
+        withAnimation(.easeInOut(duration: 0.5)) { zoom = 1 } completion: {
+            withAnimation(.easeOut(duration: 0.45).delay(0.3)) { zoomFade = 0 } completion: {
+                zooming = false
+                turn(false)
+            }
+        }
+    }
+
+    /// Turns the middle box over (true) or back; the live back is laid on once the turn has fully settled.
+    private func turn(_ over: Bool) {
+        guard over != flipped else { return }
+        backLive = false
+        withAnimation(turnSpring, completionCriteria: .removed) { flipped = over } completion: {
+            if flipped { backLive = true }
+        }
     }
 
     private func arrow(_ symbol: String, by step: Int) -> some View {
@@ -69,8 +250,9 @@ struct CoverFlow<Front: View, Spine: View>: View {
     }
 
     private func move(_ step: Int) {
+        turn(false)
         let to = min(max(index + step, 0), count - 1)
-        withAnimation(spring) { index = to }
+        go(to: to)
     }
 }
 
@@ -82,6 +264,9 @@ struct CoverFlowGeometry {
     let width: CGFloat
     let height: CGFloat
     let position: Double
+    var flip: Double = 0   // the middle box turned over: 0 its front, 1 its back (CoverFlow.turn)
+    var pointer = CGPoint.zero   // the pointer over the middle front, -1...1 from its centre (CoverFlow.lean)
+    var pulls = CaseAmounts()    // how far each folded case is pulled out under the pointer (CoverFlow.lean)
 
     // a Switch game case: 105 x 170 x 11 mm; the depth shown a little more, so the turned ones read as boxes
     var w: CGFloat { size * 0.62 }
@@ -101,23 +286,64 @@ struct CoverFlowGeometry {
         return (d, max(-1, min(1, d)))
     }
 
+    /// The box in the middle (the one that turns over).
+    var center: Int { min(max(Int(position.rounded()), 0), count - 1) }
+    /// How far it comes towards the player as it turns over: its back then shows 8% larger than a front.
+    var lift: CGFloat { eye * (1 - 1 / 1.08) - depth / 2 }
+    /// The back of the turned-over box faces the camera at depth/2 + lift: its scale and centre on the stage, where the
+    /// live back is laid (camera.m34 = -1/eye, then the move to the stage's centre line).
+    var backScale: CGFloat { 1 / (1 - (depth / 2 + lift) / eye) }
+    var backCenter: CGPoint { CGPoint(x: width / 2, y: floorY - h / 2) }
+    /// The scale at which a case covers the whole stage (a start's case grows to it).
+    var fill: CGFloat { max(width / w, height / h) * 1.02 }
+
+    /// The middle case leaning away under the pointer (the sketch's: up to 9° sideways, 7° up and down): the part under
+    /// the pointer goes back, as if pressed. Rotations as `boxTransform`'s (row vectors).
+    var lean: CATransform3D {
+        let ay = Double(pointer.x) * 9 * Double.pi / 180, ax = -Double(pointer.y) * 7 * Double.pi / 180
+        var ry = CATransform3DIdentity
+        ry.m11 = CGFloat(cos(ay)); ry.m13 = CGFloat(-sin(ay)); ry.m31 = CGFloat(sin(ay)); ry.m33 = CGFloat(cos(ay))
+        var rx = CATransform3DIdentity
+        rx.m22 = CGFloat(cos(ax)); rx.m23 = CGFloat(sin(ax)); rx.m32 = CGFloat(-sin(ax)); rx.m33 = CGFloat(cos(ax))
+        return CATransform3DConcat(ry, rx)
+    }
+    /// How far box i is turned over (the middle one) and how far it steps back for it (the others).
+    func turned(_ i: Int) -> (over: Double, away: Double) { i == center ? (flip, 0) : (0, flip) }
+
+    /// How far the folded cases nearer the middle than i, on its side, are pulled out: i moves aside by that.
+    func pushed(_ i: Int) -> Double {
+        let d = Double(i) - position
+        return (0..<count).reduce(0) { sum, j in
+            let dj = Double(j) - position
+            return j != i && (dj > 0) == (d > 0) && abs(dj) < abs(d) ? sum + pulls[j] : sum
+        }
+    }
+
     /// The box's turn and place: turned towards the middle, the first beside it at a gap, the rest packed closer, the
-    /// turned ones set back.
+    /// turned ones set back. The middle box turned over spins round its upright axis and comes forward; the others
+    /// step back and apart for it. A folded case under the pointer is drawn a little out of the row, as a book on a
+    /// shelf: the cases beyond it move aside a fifth of a case, so more of its front shows, and it comes forward a
+    /// little (a tenth of a case), turns 15% towards the player and rises 1.5%, staying behind the nearer ones (user
+    /// 2026-11-17: "效果 太夸张 都出来了", after it came all the way out over its neighbours).
     func boxTransform(_ i: Int, mirrored: Bool) -> CATransform3D {
         let (d, side) = place(i)
-        let x = CGFloat(side) * w * 1.02 + CGFloat(d - side) * w * 0.3
-        let z = -CGFloat(abs(side)) * w * 0.6
-        let a = -side * tilt
+        let (over, away) = turned(i)
+        let pull = CGFloat(pulls[i]), aside: CGFloat = d > 0 ? 1 : d < 0 ? -1 : 0
+        let x = (CGFloat(side) * w * 1.02 + CGFloat(d - side) * w * 0.3) * (1 + 0.35 * CGFloat(away))
+            + aside * (CGFloat(pushed(i)) * w * 0.2 + pull * w * 0.02)
+        let y = -pull * h * 0.015
+        let z = -CGFloat(abs(side)) * w * 0.6 + lift * CGFloat(over) - w * 0.5 * CGFloat(away) + pull * w * 0.1
+        let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over
         var r = CATransform3DIdentity
         r.m11 = CGFloat(cos(a)); r.m13 = CGFloat(-sin(a))
         r.m31 = CGFloat(sin(a)); r.m33 = CGFloat(cos(a))
-        var m = r
+        var m = i == center ? CATransform3DConcat(lean, r) : r
         if mirrored {   // upside down about the floor (the box's bottom, y = h/2 from its middle), a gap below it
             var flip = CATransform3DIdentity
             flip.m22 = -1; flip.m42 = h + gap
             m = CATransform3DConcat(flip, m)
         }
-        m = CATransform3DConcat(m, CATransform3DMakeTranslation(x, 0, z))
+        m = CATransform3DConcat(m, CATransform3DMakeTranslation(x, y, z))
         var camera = CATransform3DIdentity
         camera.m34 = -1 / eye
         m = CATransform3DConcat(m, camera)
@@ -126,6 +352,13 @@ struct CoverFlowGeometry {
 
     /// The front: its view (w x h) on the box's front plane.
     var frontPlacement: CATransform3D { CATransform3DMakeTranslation(-w / 2, -h / 2, depth / 2) }
+    /// The back: its view (w x h) on the back plane, mirrored left to right so it reads the right way round once the box
+    /// has turned half a circle.
+    var backPlacement: CATransform3D {
+        var m = CATransform3DIdentity
+        m.m11 = -1; m.m41 = w / 2; m.m42 = -h / 2; m.m43 = -depth / 2
+        return m
+    }
 
     /// The case's corner radius, the same on the front and all the way through the box.
     var corner: CGFloat { w * 0.05 }
@@ -148,17 +381,36 @@ struct CoverFlowGeometry {
         CATransform3DMakeTranslation(-w / 2, -h / 2, -depth / 2 + depth * CGFloat(k) / CGFloat(Self.slices - 1))
     }
 
-    /// The order to draw in: the farthest first.
+    /// The order to draw in: the farthest first (a pulled-out case keeps its place: the nearer ones stay over it).
     var drawOrder: [Int] { (0..<count).sorted { abs(place($0).d) > abs(place($1).d) } }
+
+    /// The four corners of box i's front on the stage (top left, top right, bottom right, bottom left).
+    func frontQuad(_ i: Int) -> [CGPoint] {
+        let m = CATransform3DConcat(frontPlacement, boxTransform(i, mirrored: false))
+        return [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: h)].map { project($0, m) }
+    }
 
     /// The box whose front is under a point of the stage, the nearest first.
     func cover(at point: CGPoint) -> Int? {
-        for i in drawOrder.reversed() {
-            let m = CATransform3DConcat(frontPlacement, boxTransform(i, mirrored: false))
-            let corners = [CGPoint(x: 0, y: 0), CGPoint(x: w, y: 0), CGPoint(x: w, y: h), CGPoint(x: 0, y: h)].map { project($0, m) }
-            if inside(point, corners) { return i }
+        drawOrder.reversed().first { inside(point, frontQuad($0)) }
+    }
+
+    /// The rounded outline of a w x h view (the case's corner radius), placed by m and projected: a polygon on the stage.
+    /// The corner layers through a box are drawn from these in one Canvas (CoverFlowStage.box).
+    func outline(_ m: CATransform3D) -> Path {
+        var path = Path()
+        let r = corner, steps = 6
+        let centres = [CGPoint(x: w - r, y: r), CGPoint(x: w - r, y: h - r), CGPoint(x: r, y: h - r), CGPoint(x: r, y: r)]
+        for (k, c) in centres.enumerated() {   // top right, bottom right, bottom left, top left: a quarter circle each
+            let start = -Double.pi / 2 + Double(k) * Double.pi / 2
+            for s in 0...steps {
+                let t = start + Double(s) / Double(steps) * Double.pi / 2
+                let p = project(CGPoint(x: c.x + r * CGFloat(cos(t)), y: c.y + r * CGFloat(sin(t))), m)
+                if k == 0 && s == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
         }
-        return nil
+        path.closeSubpath()
+        return path
     }
 
     private func project(_ p: CGPoint, _ m: CATransform3D) -> CGPoint {
@@ -181,23 +433,39 @@ struct CoverFlowGeometry {
     }
 }
 
-/// The boxes for one position. Animatable by the position, so a move redraws every frame of the spring.
-private struct CoverFlowStage<Front: View, Spine: View>: View, Animatable {
+/// The boxes for one position and turn. Animatable by both, so a move or a turn redraws every frame of the spring.
+private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Animatable {
     let count: Int
     let size: CGFloat
     let width: CGFloat
     let height: CGFloat
     var position: Double
+    var flip: Double
+    var lit: Double          // the light over the middle front (0 off, 1 on)
+    var tiltX: Double        // the middle case's lean (CoverFlow.lean)
+    var tiltY: Double
+    var pulls: CaseAmounts   // the folded cases pulled out under the pointer
+    let pulledLight: UnitPoint   // where the pointer is on the pulled-out case's front
     let front: (Int) -> Front
     let spine: (Int) -> Spine
+    let back: (Int, Bool) -> Back
 
-    var animatableData: Double {
-        get { position }
-        set { position = newValue }
+    var animatableData: AnimatablePair<AnimatablePair<AnimatablePair<Double, Double>, AnimatablePair<Double, AnimatablePair<Double, Double>>>,
+                                       CaseAmounts> {
+        get { AnimatablePair(AnimatablePair(AnimatablePair(position, flip), AnimatablePair(lit, AnimatablePair(tiltX, tiltY))), pulls) }
+        set {
+            let a = newValue.first
+            position = a.first.first; flip = a.first.second
+            lit = a.second.first; tiltX = a.second.second.first; tiltY = a.second.second.second
+            pulls = newValue.second
+        }
     }
 
     var body: some View {
-        let g = CoverFlowGeometry(count: count, size: size, width: width, height: height, position: position)
+        let g = CoverFlowGeometry(count: count, size: size, width: width, height: height, position: position, flip: flip,
+                                  pointer: CGPoint(x: tiltX, y: tiltY), pulls: pulls)
+        let _ = CoverFlowTrace.frame(position: position, flip: flip, lit: lit, tilt: (tiltX, tiltY), pulls: pulls,
+                                     order: g.drawOrder)
         ZStack(alignment: .topLeading) {
             // the reflections: the boxes upside down under the floor, fading into it
             ZStack(alignment: .topLeading) {
@@ -220,44 +488,109 @@ private struct CoverFlowStage<Front: View, Spine: View>: View, Animatable {
     @ViewBuilder
     private func box(_ i: Int, _ g: CoverFlowGeometry, mirrored: Bool) -> some View {
         let side = g.place(i).side
+        let (over, away) = g.turned(i)
+        let turning = over > 0.02 && over < 0.98   // half way round, its spine faces the camera
+        let leaning = i == g.center ? Double(g.pointer.x) : 0   // leaning right shows its spine a little, left its edge
         let m = g.boxTransform(i, mirrored: mirrored)
-        let shade = abs(side) * 0.18   // the turned ones darker, as away from the light
+        // the turned ones darker, as away from the light, a pulled-out one lit again; dimmer behind a turned-over one
+        let shade = abs(side) * 0.18 * (1 - 0.85 * pulls[i]) + away * 0.45
         ZStack(alignment: .topLeading) {
             // only the side that faces the camera: a box turned towards the middle shows its outer side, so one on the
             // left shows its spine (the hinge side), one on the right its opening edge (each side's normal against the
-            // line of sight)
-            if abs(side) > 0.02 {
-                ForEach(0..<CoverFlowGeometry.slices, id: \.self) { k in
-                    RoundedRectangle(cornerRadius: g.corner, style: .continuous)
-                        .fill(Color(red: 0.6, green: 0.03, blue: 0.06))
-                        .overlay(RoundedRectangle(cornerRadius: g.corner, style: .continuous).fill(Color.black.opacity(shade)))
-                        .frame(width: g.w, height: g.h)
-                        .projectionEffect(ProjectionTransform(CATransform3DConcat(g.slicePlacement(k), m)))
+            // line of sight); the middle one turning over (rotated by π·over) shows its spine
+            if abs(side) > 0.02 || turning || abs(leaning) > 0.02 {
+                // the rounded outline's layers through the box in one Canvas, their projected outlines filled: as twelve
+                // projected views each they were 144 of the ~400 views SwiftUI placed again every frame (sample, 2026-11-17:
+                // the main thread busy 62% while the pointer moved over the cases, nearly all in its display list)
+                let layers = (0..<CoverFlowGeometry.slices).map { g.outline(CATransform3DConcat(g.slicePlacement($0), m)) }
+                let bounds = layers.reduce(CGRect.null) { $0.union($1.boundingRect) }.insetBy(dx: -1, dy: -1)
+                let plastic = Color(red: 0.6 * (1 - shade), green: 0.03 * (1 - shade), blue: 0.06 * (1 - shade))
+                if !bounds.isNull {
+                    Canvas { ctx, _ in
+                        ctx.translateBy(x: -bounds.minX, y: -bounds.minY)
+                        for layer in layers { ctx.fill(layer, with: .color(plastic)) }
+                    }
+                    .frame(width: bounds.width, height: bounds.height)
+                    .offset(x: bounds.minX, y: bounds.minY)
                 }
             }
-            if side < -0.02 {
+            if side < -0.02 || turning || leaning > 0.02 {
                 spine(i).frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: true), m)))
-            } else if side > 0.02 {
+            } else if side > 0.02 || leaning < -0.02 {
                 CaseEdge().frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: false), m)))
             }
-            front(i).frame(width: g.w, height: g.h)
-                .overlay(CaseFront())
-                .overlay(Color.black.opacity(shade))
-                .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
-                .projectionEffect(ProjectionTransform(CATransform3DConcat(g.frontPlacement, m)))
+            if over > 0.5 {   // past half way the back faces the camera
+                back(i, false).frame(width: g.w, height: g.h)
+                    .overlay(CaseRim())
+                    .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))
+                    .projectionEffect(ProjectionTransform(CATransform3DConcat(g.backPlacement, m)))
+            } else {
+                front(i).frame(width: g.w, height: g.h)
+                    .overlay(CaseFront(light: mirrored ? 0 : i == g.center ? lit : pulls[i],
+                                       at: i == g.center ? UnitPoint(x: (1 + tiltX) / 2, y: (1 + tiltY) / 2) : pulledLight))
+                    .overlay(Color.black.opacity(shade))
+                    .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
+                    .projectionEffect(ProjectionTransform(CATransform3DConcat(g.frontPlacement, m)))
+            }
         }
+    }
+}
+
+/// The case's red plastic rim round an insert (a back has no clear sleeve's shine).
+struct CaseRim: View {
+    var body: some View {
+        GeometryReader { geo in
+            RoundedRectangle(cornerRadius: geo.size.width * 0.05, style: .continuous)
+                .strokeBorder(caseRed, lineWidth: geo.size.width * 0.03)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// A case's back, turned over (scheme A): the red band with the game's name, and the dark insert holding `content` (the
+/// game's actions, HomePage GameActions; what a build needs, for a game not built yet).
+struct CaseBack<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                ZStack {
+                    LinearGradient(colors: [caseRed, Color(red: 0.74, green: 0.04, blue: 0.08)], startPoint: .top, endPoint: .bottom)
+                    Text(title)
+                        .font(.system(size: geo.size.height * CaseHeader.share * 0.36, weight: .heavy)).foregroundStyle(.white)
+                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .padding(.horizontal, geo.size.width * 0.08)
+                }
+                .frame(height: geo.size.height * CaseHeader.share)
+                VStack(alignment: .leading, spacing: 6) {
+                    content
+                    Spacer(minLength: 0)
+                    Text(T.turnBack).font(.system(size: 9)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, geo.size.width * 0.075).padding(.top, 9).padding(.bottom, geo.size.width * 0.05)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(LinearGradient(colors: [Color(white: 0.15), Color(white: 0.08)], startPoint: .top, endPoint: .bottom))
+            }
+        }
+        .environment(\.colorScheme, .dark)
     }
 }
 
 /// The case's red plastic (sides, rim).
 let caseRed = Color(red: 0.86, green: 0.07, blue: 0.1)
 
-/// A game case's front: the red plastic rim round the insert and the clear sleeve's shine over it.
+/// A game case's front: the red plastic rim round the insert and the clear sleeve's shine over it; `light` (0...1) adds
+/// the pointer's light on the sleeve, centred `at` (the sketch's moving highlight).
 private struct CaseFront: View {
+    var light = 0.0
+    var at = UnitPoint(x: 0.3, y: 0.2)
+
     var body: some View {
         GeometryReader { geo in
             let rim = geo.size.width * 0.03
@@ -267,6 +600,13 @@ private struct CaseFront: View {
                 LinearGradient(stops: [.init(color: .white.opacity(0.3), location: 0), .init(color: .white.opacity(0.07), location: 0.42),
                                        .init(color: .clear, location: 0.48)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     .padding(rim)
+                    .opacity(1 - 0.5 * light)
+                if light > 0.01 {
+                    RadialGradient(colors: [.white.opacity(0.42 * light), .white.opacity(0.12 * light), .clear],
+                                   center: at, startRadius: 0, endRadius: geo.size.width * 0.8)
+                        .blendMode(.screen)
+                        .padding(rim)
+                }
             }
         }
         .allowsHitTesting(false)

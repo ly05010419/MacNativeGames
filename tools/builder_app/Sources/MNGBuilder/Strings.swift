@@ -82,6 +82,9 @@ enum T {
         return v.allSatisfy(\.isNumber) ? "v\(v)" : v
     }
     static let addGame = s("Add this game", "添加这个游戏")
+    // a case's back (scheme A, user 2026-11-17): a game not built yet, and the hint under every back
+    static let notBuiltYet = s("Not built yet. A build takes three steps:", "还没打包。打包分三步：")
+    static let turnBack = s("Click outside or press Esc to turn it back", "点盒子外面或按 Esc 翻回")
     static func addGameHelp(_ name: String) -> String { s("Build \(name) from your own files", "用你自己的文件打包\(name)") }
     static let anyGame = s("Any game", "不限游戏")
     static func buildingFor(_ name: String) -> String { s("Build \(name)", "打包\(name)") }

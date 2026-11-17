@@ -92,7 +92,7 @@ class Pages(unittest.TestCase):
         # the games as the iPod classic's Cover Flow (user 2026-11-17): a mouse wheel scrolls the page, so every cover is
         # reached by the arrows, the arrow keys and a drag, whatever the window's width
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('CoverFlow(count: cases.count, index: center)', home)
+        self.assertIn('CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) })', home)
         # the built games first, then the ones not built yet (user 2026-11-17); the chosen one is kept by game, not place
         self.assertIn('return built + Self.games.filter { !built.contains($0) }', home)
         self.assertIn('let cases = order', home)
@@ -100,6 +100,54 @@ class Pages(unittest.TestCase):
         flow =(REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
         for way in ('chevron.left', 'chevron.right', '.onKeyPress(.leftArrow)', '.onKeyPress(.rightArrow)', 'DragGesture('):
             self.assertIn(way, flow)
+
+    def test_the_middle_case_turns_over_to_its_actions(self):
+        # scheme A of the sketch (user 2026-11-17: "先做 a"): a click on the middle case or Return turns it over, its back
+        # holds the game's actions (GameActions) or, for a game not built yet, the way to build it; Esc turns it back;
+        # its pages open under the Cover Flow; the drawn back takes no clicks, so a live one is laid on top once settled
+        flow = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
+        for part in ('if i == index { turn(true) }', '.onKeyPress(.escape)', 'if flipped { return .ignored }',
+                     'withAnimation(turnSpring, completionCriteria: .removed)', 'back(index, true)',
+                     '.scaleEffect(stage.backScale)', '.position(stage.backCenter)',
+                     'let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over'):
+            self.assertIn(part, flow)
+        home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
+        self.assertIn('GameActions(app: app, section: $gamePage, live: live) { launches += 1 }', home)
+        # how it feels, as the sketch's A page (user 2026-11-17: "有鼠标 光影 和 盒子动的特效"): lean and light under the
+        # pointer, rubber band and throw on a drag, two-finger swipes, and the start's case growing over the stage
+        for part in ('.onContinuousHover(coordinateSpace: .local)', 'i == center ? CATransform3DConcat(lean, r) : r',
+                     'RadialGradient(colors: [.white.opacity(0.42 * light)', 'func pull(_ x: Double)',
+                     'v.predictedEndTranslation.width', 'NSEvent.addLocalMonitorForEvents(matching: .scrollWheel)',
+                     '.onChange(of: launches) { grow() }', 'stage.backScale + (stage.fill - stage.backScale) * zoom'):
+            self.assertIn(part, flow)
+        self.assertIn('started()', home)
+        # the folded cases answer the pointer too (user 2026-11-17: "其他收起来的 应该也有相应的互动效果"): the one under
+        # it, found on the stage at rest, comes out a little, those beyond move aside, its name floats over it; it stays
+        # behind the nearer cases ("效果 太夸张 都出来了": it had come all the way out over them)
+        for part in ('let i = stage.cover(at: p)', 'pulls = CaseAmounts.one(side, of: count)',
+                     'pull * w * 0.1', 'CGFloat(pushed(i)) * w * 0.2', 'Text(name(pulled))'):
+            self.assertIn(part, flow)
+        self.assertIn('var drawOrder: [Int] { (0..<count).sorted { abs(place($0).d) > abs(place($1).d) } }', flow)
+        # "总是有 卡顿 和 重新调整 的 硬跳": the corner layers are one Canvas per box (not 12 projected views), and the
+        # pointer is judged on the stage as shown, with the current pull
+        self.assertIn('let layers = (0..<CoverFlowGeometry.slices).map { g.outline(', flow)
+        self.assertNotIn('ForEach(0..<CoverFlowGeometry.slices', flow)
+        self.assertIn('position: position,\n                                          pulls: pulls)', flow)
+        # "动画结束的时候 会有一次 硬跳 调整" (the frame record: a clicked case kept its pull to the middle and dropped it
+        # after): a new middle takes the pull back with the move's spring, and the pointer pulls nothing while it moves
+        self.assertIn('.onChange(of: index) { turn(false); settleMove() }', flow)
+        self.assertIn('withAnimation(spring, completionCriteria: .removed) { index = to; drag = 0 } completion: { moving = false }', flow)
+        self.assertNotIn('withAnimation(spring) { index =', flow)   # every move goes through go(to:)
+        self.assertIn('!dragging, !moving,', flow)
+        self.assertIn('MNG_COVERFLOW_TRACE', (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlowTrace.swift').read_text())
+        self.assertIn('struct CaseAmounts: VectorArithmetic', (REPO / 'tools/builder_app/Sources/MNGBuilder/CaseAmounts.swift').read_text())
+        self.assertIn('EmptyBack(ready: model.installedLoaded, live: live) { open(game) }', home)
+        self.assertIn('GamePage(id: id, app: app.app)', home)
+        self.assertNotIn('GameActions(app: app).id(app.app)', home)   # no actions box under the stage any more
+        # one state for the three views of a back, read only by the live one
+        self.assertIn('GameCardState.of(app.app)', home)
+        self.assertIn('guard live || !state.asked else { return }', home)   # read when the turn starts, no jump
+        self.assertIn('.keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)', home)
 
     def test_another_game_s_build_page_starts_without_the_files_chosen_before(self):
         # user 2026-11-17: "点击空盒子 安装的时候 应该过去的信息 清空": a case or a full update opens the Build page through

@@ -9,6 +9,8 @@ struct HomePage: View {
     @State private var chosen = HomePage.games[0]   // the case in the middle of the Cover Flow, by game (not by place:
                                                     // a game built moves forward and stays the chosen one)
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
+    @State private var gamePage: String?   // the page a case's back opened (T.gamePages), shown under the Cover Flow
+    @State private var launches = 0        // games started from a back: the Cover Flow grows the case over the stage
 
     static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp"]
 
@@ -31,8 +33,7 @@ struct HomePage: View {
         defaulted = true
     }
 
-    /// The middle cover clicked (or Return): a game not built yet opens the Build page with it chosen; a built one is
-    /// already open below.
+    /// Add this game (under the middle case, and on the back of a game not built yet): the Build page with it chosen.
     private func open(_ game: String) {
         guard model.installedLoaded, !model.installed.contains(where: { $0.game == game }) else { return }
         model.buildGame(game)
@@ -64,13 +65,23 @@ struct HomePage: View {
                 // The games as the iPod classic's Cover Flow (user 2026-11-17): every one is reached by the arrows,
                 // the arrow keys, a drag or a click on a side cover, at any window width
                 let cases = order
-                CoverFlow(count: cases.count, index: center) { i in
+                CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) }) { i in
                     let game = cases[i]
                     GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
                              selected: false, cover: true, tap: {})
                 } spine: { i in
                     CaseSpine(game: cases[i])
-                } open: { open(cases[$0]) }
+                } back: { i, live in
+                    // the case turned over (scheme A, user 2026-11-17): the game's actions on its back
+                    let game = cases[i]
+                    CaseBack(title: T.gameName(game)) {
+                        if let app = model.installed.first(where: { $0.game == game }) {
+                            GameActions(app: app, section: $gamePage, live: live) { launches += 1 }.id(app.app)
+                        } else {
+                            EmptyBack(ready: model.installedLoaded, live: live) { open(game) }
+                        }
+                    }
+                }
                 // what the middle cover is, as the iPod writes it under the cover
                 VStack(spacing: 4) {
                     Text(T.gameName(selected)).font(.title2.weight(.semibold))
@@ -87,7 +98,26 @@ struct HomePage: View {
                         .textSelection(.enabled)
                 }
                 let shown = model.installed.first(where: { $0.game == selected })
-                if let app = shown { GameActions(app: app).id(app.app) }
+                // a page the back opened (按键, 存储…): too big for a case, so under it; pressed again or ✕, it closes
+                if let app = shown, let id = gamePage, model.pageApps.contains(where: { $0.app == app.app }) {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text(T.gamePages.first { $0.0 == id }?.1 ?? id).font(.title3.weight(.semibold))
+                                Spacer()
+                                Button { gamePage = nil } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                            }
+                            GamePage(id: id, app: app.app)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(6)
+                    }
+                    .id(app.app + id)
+                }
+                // this game's update, started from its back: its progress and Cancel under the Cover Flow
+                if let app = shown, model.updating == app.app {
+                    GroupBox { ActionSection(updateOnly: true).frame(maxWidth: .infinity, alignment: .leading).padding(6) }
+                }
                 // an update running for another game, or one another program started: its progress shows here too, until
                 // it ends well or is cancelled (the game opened, or the player chose so); a failure stays, with its log
                 if let running = model.updating, running != shown?.app, model.phase != .done, model.phase != .cancelled {
@@ -107,6 +137,7 @@ struct HomePage: View {
             .padding(24)
         }
         .onAppear(perform: chooseFirst)
+        .onChange(of: selected) { gamePage = nil }   // another game in the middle: its own pages start closed
         .onChange(of: model.installed) { chooseFirst() }
         .onChange(of: model.installedLoaded) { chooseFirst() }
     }
@@ -240,25 +271,66 @@ struct GameCard: View {
 }
 
 /// What can be done with a built game: the fastest update that fits (or a full build), its pages; the update's progress.
+/// What a built game's case back shows, kept per app (scheme A, user 2026-11-17): the Cover Flow draws the back, its
+/// reflection, and lays the live one on top, three views that must show the same start status, switches and check.
+@MainActor final class GameCardState: ObservableObject {
+    private static var cards: [String: GameCardState] = [:]
+    static func of(_ app: String) -> GameCardState {
+        if let card = cards[app] { return card }
+        let card = GameCardState()
+        cards[app] = card
+        return card
+    }
+    @Published var gpu = "checking"   // MetalFX frame interpolation on this GPU (Tears of the Kingdom, Breath of the Wild)
+    @Published var starting = false
+    @Published var startStatus = ""
+    @Published var shaderLine = ""          // the Check shaders result, in words (tools/builder_jobs/shaders.py)
+    @Published var shaderUpdate = false     // the newest list adds something: the Update shaders button shows
+    @Published var checkingShaders = false
+    @Published var saver: GameActions.MemorySaver?         // 开启省内存模式 (tools/builder_jobs/memory_saver.py)
+    @Published var diagnostics: GameActions.MemorySaver?   // 诊断模式 (the same module, its 'diagnostics' switch)
+    @Published var saverNote = ""
+    var asked = false   // the switches were asked for: the first back drawn (as the case starts turning) asks once
+}
+
+/// A built game's actions, on its case's back (scheme A): start, the switches, its update, the shader check, and the
+/// buttons of its pages, which open under the Cover Flow (`section`).
 struct GameActions: View {
     @EnvironmentObject var model: Model
     let app: InstalledReport.App
-    @State private var section: String?   // the game page open under the buttons (T.gamePages), none at first
-    @State private var gpu = "checking"   // MetalFX frame interpolation on this GPU (Tears of the Kingdom, Breath of the Wild)
-    @State private var starting = false
-    @State private var startStatus = ""
-    @State private var shaderLine = ""          // the Check shaders result, in words (tools/builder_jobs/shaders.py)
-    @State private var shaderUpdate = false     // the newest list adds something: the Update shaders button shows
-    @State private var checkingShaders = false
-    @State private var saver: MemorySaver?   // 开启省内存模式 (tools/builder_jobs/memory_saver.py), read when the card shows
-    @State private var diagnostics: MemorySaver?   // 诊断模式 (the same module, its 'diagnostics' switch)
-    @State private var saverNote = ""
+    @Binding var section: String?   // the game page open under the Cover Flow (T.gamePages), none at first
+    /// The back laid on top, which takes clicks and Return; the Cover Flow's drawn copies only show the same state.
+    let live: Bool
+    let started: () -> Void   // the game is being started: its case grows over the stage (CoverFlow.launches)
+    @ObservedObject private var state: GameCardState
+
+    init(app: InstalledReport.App, section: Binding<String?>, live: Bool, started: @escaping () -> Void = {}) {
+        self.app = app
+        self._section = section
+        self.live = live
+        self.started = started
+        self._state = ObservedObject(wrappedValue: GameCardState.of(app.app))
+    }
+
+    private var gpu: String { get { state.gpu } nonmutating set { state.gpu = newValue } }
+    private var starting: Bool { get { state.starting } nonmutating set { state.starting = newValue } }
+    private var startStatus: String { get { state.startStatus } nonmutating set { state.startStatus = newValue } }
+    private var shaderLine: String { get { state.shaderLine } nonmutating set { state.shaderLine = newValue } }
+    private var shaderUpdate: Bool { get { state.shaderUpdate } nonmutating set { state.shaderUpdate = newValue } }
+    private var checkingShaders: Bool { get { state.checkingShaders } nonmutating set { state.checkingShaders = newValue } }
+    private var saver: MemorySaver? { get { state.saver } nonmutating set { state.saver = newValue } }
+    private var diagnostics: MemorySaver? { get { state.diagnostics } nonmutating set { state.diagnostics = newValue } }
+    private var saverNote: String { get { state.saverNote } nonmutating set { state.saverNote = newValue } }
 
     /// A card switch's state (memory_saver.py state): the game reads its file at its next start.
     struct MemorySaver: Decodable { let available: Bool; let on: Bool; let file: String; let unknown_word: String? }
 
-    /// The switches, as the game will read them at its next start (their files next to its controls.txt).
+    /// The switches, as the game will read them at its next start (their files next to its controls.txt): read as soon
+    /// as the case starts turning (the first back drawn), so they are there when the live back is laid on; the live back
+    /// reads them again.
     private func loadSaver() async {
+        guard live || !state.asked else { return }
+        state.asked = true
         do {
             saver = try await TabClient.decode(MemorySaver.self, "storage", "memory_saver", app: app.app)
             diagnostics = try await TabClient.decode(MemorySaver.self, "storage", "diagnostics", app: app.app)
@@ -304,82 +376,72 @@ struct GameActions: View {
     }
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("\(app.name) \(T.version(app.version))").font(.title2.weight(.semibold))
-                        Text(T.kind(app.kind)).foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
-                        if app.kind != "express" { Text(app.reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                        Text(app.app).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                    }
-                    Spacer()
-                    // the big green start, top right (user 2026-11-12)
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Button(action: start) {
-                            Label(T.startGame, systemImage: "play.fill")
-                                .font(.title3.weight(.semibold))
-                                .padding(.horizontal, 18).padding(.vertical, 8)
-                        }
-                        .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
-                        .disabled(starting || (model.jobRunning && model.updating == app.app))
-                        if !startStatus.isEmpty {
-                            Text(startStatus).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 260, alignment: .trailing)
-                        }
-                        // under the start, any time, game running or not: it counts from the game's next start (user 2026-11-16)
-                        if let saver, saver.available {
-                            Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))
-                                .help(T.memorySaverHelp)
-                            if let w = saver.unknown_word { Text(T.memorySaverUnknown(w)).font(.caption).foregroundStyle(.orange) }
-                        }
-                        // user 2026-11-16: "诊断模式 也改成 CheckBox"; not in the players' download (user 2026-11-17: "正式下载版
-                        // 也去掉 诊断模式"), except while it is still on from an earlier Launcher, so it can be turned off
-                        if let diagnostics, diagnostics.available, !Paths.isRelease || diagnostics.on {
-                            Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))
-                                .help(T.diagnosticsHelp)
-                        }
-                        if !saverNote.isEmpty {
-                            Text(saverNote).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 260, alignment: .trailing)
-                        }
-                    }
+        // a case's back is small (232 x 375 before its 8%): small controls, one column, scrolling if a reason is long
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(app.name) \(T.version(app.version))").font(.caption.weight(.semibold)).lineLimit(2)
+                        .help(app.app)   // where the app is
+                    Text(T.kind(app.kind)).font(.caption2.weight(.semibold))
+                        .foregroundStyle(app.kind == "express" || app.kind == "fast" ? .green : .secondary)
+                    if app.kind != "express" { Text(app.reason).font(.caption2).foregroundStyle(.secondary).lineLimit(4) }
                 }
+                // the big green start, first on the back (user 2026-11-12); Return on the turned-over case
+                Button(action: start) {
+                    Label(T.startGame, systemImage: "play.fill").font(.callout.weight(.semibold)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
+                .disabled(starting || (model.jobRunning && model.updating == app.app))
+                .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)
+                if !startStatus.isEmpty { Text(startStatus).font(.caption2).foregroundStyle(.secondary) }
+                // under the start, any time, game running or not: it counts from the game's next start (user 2026-11-16)
+                if let saver, saver.available {
+                    Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))
+                        .help(T.memorySaverHelp)
+                    if let w = saver.unknown_word { Text(T.memorySaverUnknown(w)).font(.caption2).foregroundStyle(.orange) }
+                }
+                // user 2026-11-16: "诊断模式 也改成 CheckBox"; not in the players' download (user 2026-11-17: "正式下载版
+                // 也去掉 诊断模式"), except while it is still on from an earlier Launcher, so it can be turned off
+                if let diagnostics, diagnostics.available, !Paths.isRelease || diagnostics.on {
+                    Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))
+                        .help(T.diagnosticsHelp)
+                }
+                if !saverNote.isEmpty { Text(saverNote).font(.caption2).foregroundStyle(.secondary) }
                 // One button named after the update this app can have (user 2026-11-12): express, fast, or a full build
                 // from its game files (the build page, this game chosen).
                 let busy = model.phase == .building || model.phase == .cancelling
                 switch app.kind {
                 case "express", "fast":
-                    Button(T.updateButton(app.kind)) { model.update(app) }.buttonStyle(.borderedProminent).disabled(busy)
+                    Button { model.update(app) } label: { Text(T.updateButton(app.kind)).frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).disabled(busy)
                 case "full":
-                    Button(T.updateButton(app.kind)) { if let g = app.game { model.buildGame(g) } }
+                    Button { if let g = app.game { model.buildGame(g) } } label: { Text(T.updateButton(app.kind)).frame(maxWidth: .infinity) }
                         .buttonStyle(.borderedProminent).disabled(busy)
                 default:
                     EmptyView()   // the reason above says why it cannot be updated now
                 }
                 if app.shaders == "title" {   // a quick app: the rest of its shaders, made while it is not played (user 2026-11-13)
-                    HStack(alignment: .firstTextBaseline) {
-                        Button(T.fillShaders) { model.updateShaders(app) }.buttonStyle(.borderedProminent).disabled(busy)
-                        Text(T.quickApp).font(.callout).foregroundStyle(.secondary)
-                    }
+                    Button { model.updateShaders(app) } label: { Text(T.fillShaders).frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent).disabled(busy)
+                    Text(T.quickApp).font(.caption2).foregroundStyle(.secondary)
                 }
                 if Model.shaderGames.contains(app.game ?? "") {   // only the shaders and pipelines, from the newest list (user 2026-11-13)
-                    HStack(alignment: .firstTextBaseline) {
+                    HStack(spacing: 6) {
                         Button(T.checkShaders) { Task { await checkShaders() } }.disabled(checkingShaders || busy)
                         if shaderUpdate {
                             Button(T.updateShaders) { shaderUpdate = false; shaderLine = ""; model.updateShaders(app) }
                                 .buttonStyle(.borderedProminent).disabled(busy)
                         }
-                        if checkingShaders { ProgressView().controlSize(.small) }
-                        Text(checkingShaders ? T.checkingShaders : shaderLine).font(.callout).foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                        if checkingShaders { ProgressView().controlSize(.mini) }
                     }
+                    let said = checkingShaders ? T.checkingShaders : shaderLine
+                    if !said.isEmpty { Text(said).font(.caption2).foregroundStyle(.secondary) }
                 }
                 if model.pageApps.contains(where: { $0.app == app.app }) {   // the pages serve these games only
-                    HStack {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: 5) {
                         ForEach(T.gamePages.filter { Model.pages(app.game).contains($0.0) }, id: \.0) { id, label in
-                            // under the buttons, not a page of its own (user 2026-11-12); pressed again, it closes
-                            Button(label) { section = section == id ? nil : id }
+                            // under the Cover Flow, not a page of its own (user 2026-11-12); pressed again, it closes
+                            Button { section = section == id ? nil : id } label: { Text(label).frame(maxWidth: .infinity) }
                                 .buttonStyle(.bordered).tint(section == id ? .accentColor : nil)
                         }
                         if Model.quickGames.contains(app.game ?? "") {   // 快速启动, after the game's pages (user 2026-11-15)
@@ -387,18 +449,13 @@ struct GameActions: View {
                                 .disabled(model.phase == .building || model.phase == .cancelling)
                         }
                     }
-                    if let section {
-                        Divider().padding(.vertical, 4)
-                        GamePage(id: section, app: app.app)
-                    }
                 }
-                if model.updating == app.app { ActionSection(updateOnly: true) }
             }
+            .controlSize(.small)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
         }
         .task {
-            guard startsWithSettings else { return }
+            guard live, startsWithSettings else { return }
             struct Probe: Decodable { let gpu: String }
             gpu = (try? await TabClient.decode(Probe.self, "settings", "probe", app: app.app).gpu) ?? "unknown"
         }
@@ -407,6 +464,7 @@ struct GameActions: View {
 
     private func start() {
         starting = true; startStatus = T.starting
+        started()
         if !startsWithSettings {
             NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: app.app), configuration: .init()) { _, error in
                 Task { @MainActor in startStatus = error?.localizedDescription ?? T.startedApp; starting = false }
@@ -421,6 +479,26 @@ struct GameActions: View {
                                    : [r.reason, r.detail].filter { !$0.isEmpty }.joined(separator: " ")
             } catch { startStatus = error.localizedDescription }
             starting = false
+        }
+    }
+}
+
+/// The back of a game not built yet (scheme A): the Build page's three steps, and the button that opens it.
+private struct EmptyBack: View {
+    let ready: Bool          // the installed apps were scanned: the game is known to be missing
+    let live: Bool           // the back on top: Return adds the game
+    let add: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(T.notBuiltYet).font(.caption.weight(.semibold))
+            ForEach(Array([T.page1, T.page2, T.page3].enumerated()), id: \.offset) { n, step in
+                Label { Text(step).font(.caption) } icon: { Image(systemName: "\(n + 1).circle.fill").foregroundStyle(.secondary) }
+            }
+            Button(action: add) { Label(T.addGame, systemImage: "plus").font(.callout.weight(.semibold)).frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 4)
+                .disabled(!ready)
+                .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)
         }
     }
 }
