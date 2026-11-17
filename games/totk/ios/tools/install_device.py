@@ -85,7 +85,9 @@ targets:
     log = proj/'xcodebuild.log'
     with log.open('w') as f:
         r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
-                            '-destination',f'generic/platform={project_platform}','-derivedDataPath',str(derived),
+                            # the device itself, not generic/platform=: a free Apple ID's team has no devices
+                            # until a build names one, and then Xcode registers it
+                            '-destination',f'platform={project_platform},id={udid}','-derivedDataPath',str(derived),
                             '-allowProvisioningUpdates','build'],
                            cwd=proj, stdout=f, stderr=subprocess.STDOUT)
     if r.returncode:
