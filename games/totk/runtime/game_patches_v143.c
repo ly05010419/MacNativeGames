@@ -1694,14 +1694,24 @@ uint64_t runtime_output_res_extra_bytes(void){
     uint64_t kib=(uint64_t)ceil(113664.0*(1+grow)/1024.0)*1024-113664;return kib<<10;
 }
 /* The settings panel's picture mode is kept between runs in the file TOTK_PICTURE_MODE names (the launcher: <data>/picture-mode.txt;
-   unset: nothing is kept, as before). It holds one word: off, metalfx, native-2k, native-2k-metalfx, native-4k, native-5k, 720p or 720p-metalfx. The next start with
-   automatic output sizes begins in that mode; a size larger than this app's swapchain falls back to the largest one it
-   has (native-4k on a 2K app starts at native 2K). An explicit TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
+   unset: nothing is kept, as before). A start with automatic output sizes restores the saved preset, falling back to
+   the largest size that fits the swapchain when necessary. An explicit TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
+static _Atomic int picture_4k_to_5k;
+int runtime_metalfx_5k_output(void) { return atomic_load(&picture_4k_to_5k); }
+
+static int picture_4k_to_5k_available(void) {
+#if TARGET_OS_OSX
+    return output_w >= 3840 && output_h >= 2160 && !vr_active() && vr_canvas_a() <= 0;
+#else
+    return 0;
+#endif
+}
+
 static void picture_mode_save(uint64_t size){
     const char *path=getenv("TOTK_PICTURE_MODE");if(!path||!*path)return;
     size=std_shape(size);   /* zeldaVR: the headset-shaped canvas is named by its 16:9 size */
     extern int mfxup_output_enabled(void);
-    const char *mode=mfxup_output_enabled()?(size==pack_size(2560,1440)?"native-2k-metalfx":size==pack_size(3840,2160)?"native-4k-metalfx":size==pack_size(1280,720)?"720p-metalfx":"metalfx"):
+    const char *mode=runtime_metalfx_5k_output()?"4k-to-5k-metalfx":mfxup_output_enabled()?(size==pack_size(2560,1440)?"native-2k-metalfx":size==pack_size(3840,2160)?"native-4k-metalfx":size==pack_size(1280,720)?"720p-metalfx":"metalfx"):
                      size==pack_size(5760,3240)?"native-6k":size==pack_size(5120,2880)?"native-5k":size==pack_size(2560,1440)?"native-2k":
                      size==pack_size(3840,2160)?"native-4k":size==pack_size(1280,720)?"720p":"off";
     FILE *f=fopen(path,"w");
@@ -1714,6 +1724,11 @@ static void picture_mode_restore(uint8_t *page){
     if(!fgets(mode,sizeof mode,f))mode[0]=0;
     fclose(f);mode[strcspn(mode,"\r\n")]=0;
     unsigned w=1920,h=1080;
+    if(!strcmp(mode,"4k-to-5k-metalfx")){
+        atomic_store(&picture_4k_to_5k, picture_4k_to_5k_available() &&
+                     !getenv("TOTK_MFX_OUTPUT") && !getenv("TOTK_MFX_UPSCALE"));
+        strcpy(mode,"native-4k");
+    }
     if(!strcmp(mode,"native-4k-metalfx")){extern void dm_gfx_set_flag(const char *,int);dm_gfx_set_flag("mfx_output",1);dm_gfx_set_flag("mfx_upscale",1);strcpy(mode,"native-4k");}
     if(!strcmp(mode,"native-6k")&&!vr_big_fits(OUTPUT_MODE_NATIVE_6K))strcpy(mode,"native-4k");   /* zeldaVR: a swapchain too small for 6K starts in 4K */
     if(!strcmp(mode,"native-6k")){w=5760;h=3240;}
@@ -1921,6 +1936,10 @@ int runtime_output_native(int mode,unsigned *w,unsigned *h){
     if(!output_page)return 0;
     if(vr_canvas_a()>0&&vr_big_mode(mode,w,h))return 1;   /* zeldaVR: offered in VR, maybe from the next start (vr_big_fits) */
     if(mode==OUTPUT_MODE_NATIVE_5K){if(output_w<5120||output_h<2880)return 0;*w=5120;*h=2880;return 1;}
+    if(mode==OUTPUT_MODE_4K_TO_5K_METALFX){
+        if(!picture_4k_to_5k_available())return 0;
+        *w=3840;*h=2160;return 1;
+    }
     if(mode==OUTPUT_MODE_NATIVE_4K){if(output_w<3840||output_h<2160)return 0;*w=3840;*h=2160;return 1;}   /* a native 4K app */
     if(mode!=OUTPUT_MODE_NATIVE&&mode!=OUTPUT_MODE_NATIVE_METALFX)return 0;
     if(output_w>2560){*w=2560;*h=1440;return 1;}   /* a 4K app's 2K stays 2560x1440 */
@@ -1932,6 +1951,7 @@ int runtime_output_modes(void){
     return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_720P_METALFX|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX|
            (output_w>=3840&&output_h>=2160?1<<OUTPUT_MODE_NATIVE_4K:0)|
            (output_w>=5120&&output_h>=2880?1<<OUTPUT_MODE_NATIVE_5K:0)|
+           (picture_4k_to_5k_available()?1<<OUTPUT_MODE_4K_TO_5K_METALFX:0)|
            (vr_canvas_a()>0?1<<OUTPUT_MODE_NATIVE_4K|1<<OUTPUT_MODE_NATIVE_4K_METALFX|1<<OUTPUT_MODE_NATIVE_6K:0);
 }
 int runtime_output_mode(void){
@@ -1941,6 +1961,7 @@ int runtime_output_mode(void){
     uint64_t now=std_shape(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));   /* zeldaVR: by its 16:9 size */
     if(now==pack_size(1280,720))return mfxup_output_enabled()?OUTPUT_MODE_720P_METALFX:OUTPUT_MODE_720P;
     if(now==pack_size(5760,3240))return OUTPUT_MODE_NATIVE_6K;
+    if(now==pack_size(3840,2160)&&runtime_metalfx_5k_output())return OUTPUT_MODE_4K_TO_5K_METALFX;
     if(now==pack_size(3840,2160)&&vr_canvas_a()>0&&mfxup_output_enabled())return OUTPUT_MODE_NATIVE_4K_METALFX;
     if(now==pack_size(5120,2880)&&!mfxup_output_enabled())return OUTPUT_MODE_NATIVE_5K;
     if(now==pack_size(3840,2160)&&!mfxup_output_enabled())return OUTPUT_MODE_NATIVE_4K;
@@ -1956,11 +1977,12 @@ int runtime_output_mode_set(int mode){
                 mode==OUTPUT_MODE_NATIVE_6K?"native 6K":mode==OUTPUT_MODE_NATIVE_4K?"native 4K":"4K + MetalFX",mode==OUTPUT_MODE_NATIVE_6K?"only":"in full",output_w,output_h);
         if(mode==OUTPUT_MODE_NATIVE_6K)return 1;   /* 4K: until then as large as the swapchain allows, as before */
     }
-    if(mode==OUTPUT_MODE_720P||mode==OUTPUT_MODE_720P_METALFX){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_5K||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K)runtime_output_native(mode,&w,&h);
+    if(mode==OUTPUT_MODE_720P||mode==OUTPUT_MODE_720P_METALFX){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_5K||mode==OUTPUT_MODE_4K_TO_5K_METALFX||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K)runtime_output_native(mode,&w,&h);
     output_size_set(pack_size(w,h));
     int mfx=mode==OUTPUT_MODE_METALFX||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_720P_METALFX;
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
-    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_NATIVE_6K?"native 6K":mode==OUTPUT_MODE_NATIVE_4K_METALFX?"native 4K, MetalFX to the headset":mode==OUTPUT_MODE_NATIVE_5K?"native 5K":mode==OUTPUT_MODE_NATIVE_4K?"native 4K":mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_720P_METALFX?"720p, MetalFX to the window":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
+    atomic_store(&picture_4k_to_5k, mode==OUTPUT_MODE_4K_TO_5K_METALFX);
+    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_NATIVE_6K?"native 6K":mode==OUTPUT_MODE_NATIVE_4K_METALFX?"native 4K, MetalFX to the headset":mode==OUTPUT_MODE_4K_TO_5K_METALFX?"4K, MetalFX to 5K":mode==OUTPUT_MODE_NATIVE_5K?"native 5K":mode==OUTPUT_MODE_NATIVE_4K?"native 4K":mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_720P_METALFX?"720p, MetalFX to the window":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
             mode==OUTPUT_MODE_NATIVE?"native":mode==OUTPUT_MODE_METALFX?"MetalFX 2K":"off (1080p)");
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
     return 1;
