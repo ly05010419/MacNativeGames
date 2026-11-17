@@ -104,6 +104,7 @@ final class Model: ObservableObject {
         "totk": ["settings", "mods", "controls", "storage", "saves"],
         "botw": ["settings", "mods", "controls", "storage", "saves"],
         "oot": ["controls", "storage", "saves"],
+        "acnh": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.

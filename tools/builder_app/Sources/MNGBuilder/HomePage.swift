@@ -11,7 +11,7 @@ struct HomePage: View {
     @State private var shelf = ScrollPosition(idType: String.self)
     @State private var inView = 0...(HomePage.games.count - 1)   // the cards fully in the row's view, by their place in games
 
-    static let games = ["oot", "totk", "botw", "dkb", "pkp"]
+    static let games = ["oot", "totk", "botw", "acnh", "dkb", "pkp"]
 
     /// The first built game, in the cards' order, is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {

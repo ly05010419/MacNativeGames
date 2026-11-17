@@ -176,6 +176,8 @@ def _supported(game):
         return {0, 327680}
     if game in ('worldend', 'tmnt'):
         return {0}
+    if game == 'acnh':   # games/acnh/prepare.py SUPPORTED_UPDATES; 3.0.3 is the newest, picked first
+        return {0, 458752, 2097152, 2228224}
     return {int(v['version']) for v in repo.build_app().VERSIONS.values()
             if str(v.get('version', '')).isdigit() and repo.game_of_title(str(v.get('title_id', '0' * 16))) == game}
 
@@ -316,6 +318,11 @@ def plan(items, work=None):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
     if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
+    if p.game == 'acnh' and not p.update:
+        p.blocks.append(t('Animal Crossing needs its 3.0.3 update (or 3.0.1 / 1.2.1) next to the base game',
+                          '动物森友会需要和本体一起放入 3.0.3 更新（或 3.0.1 / 1.2.1）'))
+    if p.game == 'acnh' and p.dlc and p.update_version not in (2097152, 2228224):
+        p.blocks.append(t('Animal Crossing\'s add-ons need the 3.0.1 or 3.0.3 update', '动物森友会的追加内容需要 3.0.1 或 3.0.3 更新'))
     if p.game == 'ss' and p.dlc:
         p.blocks.append(t('Skyward Sword HD does not accept add-on packages', '天空之剑 HD 不接收附加内容包'))
     p.blocks = p.keys_problems + p.blocks
