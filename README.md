@@ -47,7 +47,7 @@ Ocarina of Time and Pokopia package as a Mac app with `build_app.py`. Not yet: i
 | The Legend of Zelda: Tears of the Kingdom | 1.0.0, 1.2.1, 1.4.3 | Mac (up to native 4K on 1.2.1 and 1.4.3; 5K by default on 32 GB-plus Macs with 1.4.3), iPhone, iPad; Apple Vision Pro (windowed, early) | Supported | [`games/totk`](docs/install.md) ([Vision Pro](docs/install.md#apple-vision-pro)) |
 | The Legend of Zelda: Breath of the Wild | 1.6.0, 1.9.0 | Mac (up to native 4K); 1.6.0 also on iPhone and iPad | Supported | [`games/totk`](docs/install.md#breath-of-the-wild) (shared runtime), list in `games/botw` |
 | Super Smash Bros. Ultimate | 13.0.2, 13.0.5 | Mac | Community port | [`games/ssbu`](games/ssbu/README.md) |
-| Super Mario Odyssey | 1.3.0, 1.4.1 | Mac | Community port, early | [`games/odyssey`](games/odyssey/README.md) |
+| Super Mario Odyssey | 1.3.0, 1.4.1 | Mac | Community port, early; built from MNG Launcher | [`games/odyssey`](games/odyssey/README.md) |
 | Bayonetta 3 | 1.2.0 | Mac | Community port, work in progress | [`games/by3`](games/by3/README.md) |
 | Super Mario Bros. Wonder | 1.0.0, 1.2.1 | Mac | Community port, early | [`games/wonder`](games/wonder/README.md) |
 | Pokémon Legends: Arceus | 1.1.1 | Mac | Community port, early | [`games/pla`](games/pla/README.md) |
@@ -247,7 +247,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 塞尔达传说 王国之泪 | 1.0.0、1.2.1、1.4.3 | Mac（1.2.1 和 1.4.3 最高原生 4K，1.4.3 在 32 GB 及以上内存的 Mac 默认带 5K）、iPhone、iPad；Apple Vision Pro（窗口内游玩，早期） | 正式支持 | [`games/totk`](docs/install.zh-CN.md)（[Vision Pro](docs/install.zh-CN.md#apple-vision-pro)） |
 | 塞尔达传说 旷野之息 | 1.6.0、1.9.0 | Mac（最高原生 4K）；1.6.0 也能在 iPhone 和 iPad 上玩 | 正式支持 | [`games/totk`](docs/install.zh-CN.md#旷野之息)（共用运行时），清单在 `games/botw` |
 | 任天堂明星大乱斗 特别版 | 13.0.2、13.0.5 | Mac | 社区移植 | [`games/ssbu`](games/ssbu/README.md) |
-| 超级马力欧 奥德赛 | 1.3.0、1.4.1 | Mac | 社区移植，早期 | [`games/odyssey`](games/odyssey/README.md) |
+| 超级马力欧 奥德赛 | 1.3.0、1.4.1 | Mac | 社区移植，早期；可在 MNG Launcher 里打包 | [`games/odyssey`](games/odyssey/README.md) |
 | 猎天使魔女 3 | 1.2.0 | Mac | 社区移植，开发中 | [`games/by3`](games/by3/README.md) |
 | 超级马力欧兄弟 惊奇 | 1.0.0、1.2.1 | Mac | 社区移植，早期 | [`games/wonder`](games/wonder/README.md) |
 | 宝可梦传说 阿尔宙斯 | 1.1.1 | Mac | 社区移植，早期 | [`games/pla`](games/pla/README.md) |

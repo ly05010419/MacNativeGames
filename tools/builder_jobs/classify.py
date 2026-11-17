@@ -179,6 +179,8 @@ def _supported(game):
         return {0, 327680}
     if game in ('worldend', 'tmnt'):
         return {0}
+    if game == 'odyssey':   # 1.3.0 (262144) or 1.4.1, checked by hash in the build (scripts/inspect_version.py), not by number
+        return None
     if game == 'eow':   # games/eow/assets/expected-v1.1.0.json: base 0 and update 1.1.0
         return {0, 196608}
     if game == 'acnh':   # games/acnh/prepare.py SUPPORTED_UPDATES; 3.0.3 is the newest, picked first
@@ -343,7 +345,7 @@ def _plan(items, work=None):
     updates = by_role('update', p.game)
     if updates:
         supported = _supported(p.game)
-        usable = [u for u in updates if u.version in supported] or updates
+        usable = updates if supported is None else [u for u in updates if u.version in supported] or updates
         newest = _newest(usable)
         p.update, p.update_version = newest.path, newest.version
         skipped = [Path(u.path).name for u in updates if u not in usable]
@@ -377,6 +379,8 @@ def _plan(items, work=None):
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
     if p.game == 'eow' and p.update_version != 196608:
         p.blocks.append(t('Echoes of Wisdom needs its 1.1.0 update next to the base game', '智慧的再现需要和本体一起放入 1.1.0 更新'))
+    if p.game == 'odyssey' and p.dlc:
+        p.blocks.append(t('Super Mario Odyssey does not accept add-on packages', '超级马力欧 奥德赛不接收附加内容包'))
     if p.game == 'eow' and p.dlc:
         p.blocks.append(t('Echoes of Wisdom does not accept add-on packages', '智慧的再现不接收附加内容包'))
     if p.game == 'acnh' and not p.update:

@@ -226,7 +226,7 @@ def main():
         run([py, "scripts/extract_app_icon.py", args.game, *keyargs, "--output", icon])
     run([py, "scripts/package_native_app.py"], env={"ODYSSEY_WORK": str(work)})
     done(t)
-    print(f"\nBuilt {work / 'Odyssey.app'} in {(time.monotonic() - started) / 60:.0f} min. It contains game data from your "
+    print(f"\nBuilt {os.environ.get('ODYSSEY_APP') or work / 'Odyssey.app'} in {(time.monotonic() - started) / 60:.0f} min. It contains game data from your "
           "own dump: do not share it.")
 
 

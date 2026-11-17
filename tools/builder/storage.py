@@ -23,7 +23,8 @@ import shutil
 
 # Environment variables the game's launcher reads for the shader cache, in the order it checks them.
 SHADER_ENV = {'totk': ('TOTK_SHADER_CACHE',), 'botw': ('TOTK_SHADER_CACHE',), 'oot': ('TOTK_SHADER_CACHE',),
-              'acnh': ('TOTK_SHADER_CACHE',), 'eow': ('TOTK_SHADER_CACHE',)}   # games/acnh/scripts/acnh_app_launcher.c, games/eow/app/launcher.c   # OOT: games/oot/app/launcher.m
+              'acnh': ('TOTK_SHADER_CACHE',), 'eow': ('TOTK_SHADER_CACHE',),
+              'odyssey': ('TOTK_SHADER_CACHE',)}   # games/acnh/scripts/acnh_app_launcher.c, games/eow/app/launcher.c   # OOT: games/oot/app/launcher.m
 
 # Top-level folders a cache never lives under, so a bad path can never clean the system.
 SYSTEM = frozenset({'System', 'Library', 'Applications', 'usr', 'bin', 'sbin', 'etc', 'private', 'var', 'dev'})

@@ -95,6 +95,7 @@ enum T {
         case "pkp": return s("Pokémon Pokopia", "宝可梦 Pokopia")
         case "acnh": return s("Animal Crossing: New Horizons", "集合啦！动物森友会")
         case "eow": return s("Zelda: Echoes of Wisdom", "塞尔达传说 智慧的再现")
+        case "odyssey": return s("Super Mario Odyssey", "超级马力欧 奥德赛")
         default: return g
         }
     }
@@ -105,6 +106,7 @@ enum T {
         case "oot": return "Switch 2 · Mac"
         case "acnh": return s("Mac · experimental", "Mac · 实验性")
         case "eow": return s("Mac · early", "Mac · 早期")
+        case "odyssey": return s("Mac · early", "Mac · 早期")
         default: return s("Switch 2 · Mac · early", "Switch 2 · Mac · 早期")
         }
     }
@@ -114,6 +116,7 @@ enum T {
         case "totk": return [Color(red: 0.20, green: 0.55, blue: 0.62), Color(red: 0.06, green: 0.20, blue: 0.30)]
         case "botw": return [Color(red: 0.35, green: 0.45, blue: 0.62), Color(red: 0.10, green: 0.14, blue: 0.24)]
         case "dkb": return [Color(red: 0.85, green: 0.42, blue: 0.12), Color(red: 0.40, green: 0.12, blue: 0.08)]
+        case "odyssey": return [Color(red: 0.86, green: 0.20, blue: 0.18), Color(red: 0.30, green: 0.06, blue: 0.10)]
         case "eow": return [Color(red: 0.55, green: 0.42, blue: 0.78), Color(red: 0.16, green: 0.12, blue: 0.30)]
         case "acnh": return [Color(red: 0.36, green: 0.72, blue: 0.62), Color(red: 0.10, green: 0.32, blue: 0.30)]
         default: return [Color(red: 0.45, green: 0.70, blue: 0.35), Color(red: 0.14, green: 0.32, blue: 0.16)]
@@ -124,6 +127,7 @@ enum T {
         case "totk": return s("Drop the base game (XCI or NSP) and the 1.4.3 update (NSP); an NSP base also needs your unpacked firmware folder.", "拖入游戏本体（XCI 或 NSP）和 1.4.3 更新（NSP）；本体是 NSP 时还要解开的固件文件夹。")
         case "botw": return s("Drop the 1.6.0 card image (XCI), or the base NSP with the 1.9.0 update and its DLC, and a firmware or shared-fonts folder.", "拖入 1.6.0 卡带（XCI），或本体 NSP 加 1.9.0 更新和 DLC，再加固件或系统字体文件夹。")
         case "oot": return s("Drop the Switch 2 dump folder (or the .nup package) and a shared-fonts folder.", "拖入 Switch 2 的游戏文件夹（或 .nup 包）和系统字体文件夹。")
+        case "odyssey": return s("Drop the game with update 1.3.0 or 1.4.1 (a combined XCI or NSP, or the base NSP and the update NSP), and your firmware or the shared-fonts folder of an earlier build.", "拖入带 1.3.0 或 1.4.1 更新的游戏（合并的 XCI 或 NSP，或本体 NSP 加更新 NSP），以及固件或以前打包留下的系统字体文件夹。")
         case "eow": return s("Drop the base game (XCI or NSP), the 1.1.0 update (NSP), and your firmware or the shared-fonts folder of an earlier build.", "拖入游戏本体（XCI 或 NSP）、1.1.0 更新（NSP），以及固件或以前打包留下的系统字体文件夹。")
         case "acnh": return s("Drop the base game (NSP), the 3.0.3 update (NSP), any of the three add-ons, and your firmware or the shared-fonts folder of an earlier build.", "拖入游戏本体（NSP）、3.0.3 更新（NSP）、需要的追加内容，以及固件或以前打包留下的系统字体文件夹。")
         default: return s("Drop the Switch 2 dump folder with its updates/ folder.", "拖入带 updates/ 文件夹的 Switch 2 游戏文件夹。")

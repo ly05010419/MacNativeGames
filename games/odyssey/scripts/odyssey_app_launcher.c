@@ -6,7 +6,6 @@
    tools next to the real file. The game runs as the user's (TOTK_SLOT_OWNER=user), so it takes the one-game slot ahead
    of test runs. "Odyssey Data/session-minutes.txt" sets a session limit (default 20, 0 = none): the copied renderer
    has caused GPU driver panics in long sessions, so sessions stay bounded until longer runs are verified. */
-#include <CoreGraphics/CoreGraphics.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -53,23 +52,19 @@ static void back_up_saves(const char *profile, const char *data, const char *sta
         free(names[i]);
     }
 }
-int odyssey_settings_window(const char *data_dir);   /* scripts/odyssey_launcher_ui.m */
-/* The settings window (odyssey_launcher_ui.m) before the game: shown unless graphics.txt says launcher=skip and Option is
-   not held. It runs as a child (this executable with --settings) so the game starts from a process without a window.
-   Returns 0 to play, 1 when the player chose Quit. */
-static int settings_before_launch(const char *exe, const char *data, const char *gfx_path) {
-    int skip = 0; char line[128];
-    FILE *f = fopen(gfx_path, "r");
-    if (f) { while (fgets(line, sizeof line, f)) if (!strncmp(line, "launcher=skip", 13)) skip = 1; fclose(f); }
-    if (skip && !(CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState) & kCGEventFlagMaskAlternate)) return 0;
-    return run((const char *const[]){exe, "--settings", data, NULL}) == 0 ? 0 : 1;
+/* The session limit (minutes, 0 = none) in session-minutes.txt, read again while the game runs: the in-game settings
+   panel's row (runtime/settings_game.h) changes it during play. There is no window before the game any more (user
+   2026-11-17: "去掉这个 都放在设置里去设置"); every setting is in the panel (key 1). */
+static double session_minutes(const char *path) {
+    double minutes = 20; FILE *mf = fopen(path, "r");
+    if (mf) { if (fscanf(mf, "%lf", &minutes) != 1 || minutes < 0) minutes = 20; fclose(mf); }
+    return minutes;
 }
 static void append(const char *path, const char *line) {
     FILE *f = fopen(path, "a"); if (f) { fputs(line, f); fclose(f); }
 }
 
-int main(int argc, char **argv) {
-    if (argc == 3 && !strcmp(argv[1], "--settings")) return odyssey_settings_window(argv[2]);
+int main(void) {
     char exe[PATH_MAX], real[PATH_MAX]; uint32_t size = sizeof exe;
     if (_NSGetExecutablePath(exe, &size) || !realpath(exe, real)) return 1;
     char macos[PATH_MAX], contents[PATH_MAX], app[PATH_MAX], home[PATH_MAX];
@@ -84,12 +79,37 @@ int main(int argc, char **argv) {
     if (source_file) { if (fscanf(source_file, "%63s", source) == 1) setenv("TOTK_SOURCE_COMMIT", source, 1); fclose(source_file); }
 
     char data[PATH_MAX], profile[PATH_MAX], cache[PATH_MAX], commands[PATH_MAX], log[PATH_MAX], minutes_path[PATH_MAX];
-    join(data, home, "Odyssey Data"); join(profile, data, "profile");
+    /* ~/Library/Application Support/MacNativeGames/Odyssey (scripts/package_native_app.py DATA; MNG Launcher's Storage and
+       Saves pages look there). Until 2026-11-17 it was "Odyssey Data" next to the app: a folder found there is moved once,
+       never over data already in the new place. */
+    {
+        const char *user = getenv("HOME"); char support[PATH_MAX], beside[PATH_MAX]; struct stat old;
+        if (!user || !*user) { fputs("Odyssey: HOME is not set\n", stderr); return 1; }
+        join(support, user, "Library/Application Support/MacNativeGames"); join(data, support, "Odyssey");
+        join(beside, home, "Odyssey Data");
+        if (stat(data, &old) && !stat(beside, &old) && S_ISDIR(old.st_mode)) {
+            pid_t pid = fork();
+            if (pid == 0) { execl("/bin/mkdir", "mkdir", "-p", support, (char *)NULL); _exit(127); }
+            int status = 0; waitpid(pid, &status, 0);
+            pid = fork();
+            if (pid == 0) { execl("/bin/mv", "mv", beside, data, (char *)NULL); _exit(127); }
+            status = 0; waitpid(pid, &status, 0);
+            if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+                fprintf(stderr, "Odyssey: could not move %s to %s; using it where it is\n", beside, data);
+                snprintf(data, sizeof data, "%s", beside);
+            }
+        }
+        if (stat(data, &old)) {
+            pid_t pid = fork();
+            if (pid == 0) { execl("/bin/mkdir", "mkdir", "-p", data, (char *)NULL); _exit(127); }
+            int status = 0; waitpid(pid, &status, 0);
+        }
+    }
+    join(profile, data, "profile");
     join(cache, data, "shader-cache/rt-totk-native-v4-unverified");
     join(commands, data, "commands.txt"); join(log, data, "last-run.log"); join(minutes_path, data, "session-minutes.txt");
     mkdir(data, 0755); mkdir(profile, 0700);
     char gfx_path[PATH_MAX]; join(gfx_path, data, "graphics.txt");
-    if (settings_before_launch(real, data, gfx_path)) return 0;
 
     /* The project's slot directory when the app was packaged there (so test runs and the app never overlap),
        otherwise one next to the data. */
@@ -99,9 +119,7 @@ int main(int argc, char **argv) {
     struct stat st;
     if (!*slot || stat(slot, &st) || !S_ISDIR(st.st_mode)) { join(slot, data, "game-slot"); mkdir(slot, 0755); }
 
-    double minutes = 20;
-    FILE *mf = fopen(minutes_path, "r");
-    if (mf) { if (fscanf(mf, "%lf", &minutes) != 1 || minutes < 0) minutes = 20; fclose(mf); }
+    double minutes = session_minutes(minutes_path);
 
     FILE *cf = fopen(commands, "w"); if (cf) fclose(cf);
     setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1); setenv("TOTK_GPU_WIDEN", "1", 1); setenv("TOTK_GPU_BLOCKRT", "1", 1);
@@ -137,6 +155,10 @@ int main(int argc, char **argv) {
        shader inbox when the settings panel's switch is on (totk_contrib_upload.h): identifiers only. Without this the runtime writes no contribution file at all. */
     char contrib[PATH_MAX]; join(contrib, data, "shader-list-contribution.txt");
     setenv("TOTK_SHADER_CONTRIB", contrib, 0);
+    /* The leaderboard's and the shared screenshots' folder (runtime/board_upload.h, shot_upload.h): their switches and what
+       waits to be sent; the board's random id is one folder up, MacNativeGames/leaderboard-id.txt, the Zelda games' too.
+       Nothing is sent unless the player turns 我要上榜 or 分享我的截图 on in the settings panel. A test run keeps its own. */
+    setenv("TOTK_BOARD_DIR", data, 0);
     /* MetalFX spatial upscale of the 1600x900 game output to the window (Applier's A/B, 22 October: no artifacts, no
        measurable cost, slightly crisper edges). On unless "Odyssey Data/no-metalfx" exists. */
     char no_mfx[PATH_MAX]; join(no_mfx, data, "no-metalfx");
@@ -145,7 +167,9 @@ int main(int argc, char **argv) {
        windowed compositor path adds ~34 ms of display-link lead). ⌃⌘F or the green button leaves it. Windowed when
        "Odyssey Data/windowed" exists. */
     char windowed[PATH_MAX]; join(windowed, data, "windowed");
-    if (stat(windowed, &st)) setenv("BY3_FULLSCREEN", "1", 0);
+    char display_path[PATH_MAX], display[16] = ""; join(display_path, data, "display.txt");   /* the settings panel's Display row */
+    FILE *df = fopen(display_path, "r"); if (df) { if (fscanf(df, "%15s", display) != 1) display[0] = 0; fclose(df); }
+    if (strcmp(display, "window") && (!strcmp(display, "fullscreen") || stat(windowed, &st))) setenv("BY3_FULLSCREEN", "1", 0);
     /* The in-game panel and the launcher's graphics page share this file. Keep the build's largest verified canvas
        and heap allocation so the scene cap can change live; no launch setting forces a runtime override. */
     setenv("ODYSSEY_GFX_SETTINGS", gfx_path, 0);
@@ -177,6 +201,7 @@ int main(int argc, char **argv) {
         }
         if (r < 0 && errno != EINTR) return 1;
         time_t now = time(NULL);
+        if (!asked && (long)difftime(now, start) % 5 == 0) minutes = session_minutes(minutes_path);
         if (minutes > 0 && !asked && difftime(now, start) >= minutes * 60) {
             char note[160]; snprintf(note, sizeof note, "[Odyssey.app] %g-minute session limit: closing the game\n", minutes);
             append(log, note); append(commands, "close\n"); asked = now;

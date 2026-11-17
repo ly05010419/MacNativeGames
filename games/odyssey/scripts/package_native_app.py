@@ -16,8 +16,12 @@ import sys
 
 GAME = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("ODYSSEY_WORK", GAME / "Odyssey_build")).resolve()   # ODYSSEY_WORK: another build folder (scripts/build_odyssey.py)
-APP = BUILD / "Odyssey.app"
-DATA = BUILD / "Odyssey Data"
+APP = Path(os.environ.get("ODYSSEY_APP", BUILD / "Odyssey.app")).resolve()   # ODYSSEY_APP: MNG Launcher's output (games/odyssey/build.py)
+BUNDLE_ID = "org.macnativegames.odyssey"   # the other ports' form; tools/builder_jobs/installed.py finds the app by it
+# The player's data (odyssey_app_launcher.c): Application Support/MacNativeGames/Odyssey, as the other ports keep theirs. An
+# "Odyssey Data" folder next to an app packaged before 2026-11-17 is moved there by the launcher at its first start.
+DATA = Path.home() / "Library/Application Support/MacNativeGames/Odyssey"
+OLD_DATA = APP.parent / "Odyssey Data"
 ICON = BUILD / "app-assets/OdysseyIcon.jpg"
 CHAIN = "rt-totk-native-v4-unverified"
 
@@ -35,7 +39,10 @@ def save_time(profile: Path) -> float:
 
 
 def seed_data():
-    DATA.mkdir(exist_ok=True)
+    if not DATA.exists() and OLD_DATA.is_dir():
+        print(f"{OLD_DATA} is moved to {DATA} when the app starts; nothing seeded.")
+        return
+    DATA.mkdir(parents=True, exist_ok=True)
     profile = DATA / "profile"
     if save_time(profile):
         print("Odyssey Data already has a save; left as it is.")
@@ -45,6 +52,10 @@ def seed_data():
         if save_time(best):
             profile.mkdir(mode=0o700, exist_ok=True)
             shutil.copy2(best / "account.uid", profile / "account.uid")
+            # The seeded identity is the user "Local" (runtime/account.c): a users.txt left by an earlier run would name
+            # another user and hide this save, so it is kept aside.
+            if (profile / "users.txt").is_file():
+                (profile / "users.txt").replace(profile / "users.txt.before-seed")
             shutil.copytree(best / "save", profile / "save", dirs_exist_ok=True)
             print(f"Seeded the save from {best.relative_to(BUILD)}.")
     cache = DATA / "shader-cache"
@@ -86,6 +97,7 @@ def main():
             raise SystemExit(f"missing {need}; build the Odyssey Native target and prepare the local data first")
     if APP.exists():
         shutil.rmtree(APP)
+    APP.parent.mkdir(parents=True, exist_ok=True)
     contents = APP / "Contents"; macos = contents / "MacOS"; resources = contents / "Resources"; game = resources / "game"
     macos.mkdir(parents=True)
     clone(native, game / "build/odyssey-native")
@@ -128,10 +140,9 @@ def main():
     # Pipelines the title screen needs (Applier session, recorded 22 October): the first frame waits only for this list
     # (nvn_mtl.m warm_start reads it beside the shader map, i.e. the executable path, Contents/MacOS).
     package_warm_lists(macos, game)
-    # The launcher and its settings window (shown before the game; the game's icon, the graphics and play settings).
-    subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-fobjc-arc", "-o", str(macos / "Odyssey"),
-                    str(GAME / "scripts/odyssey_app_launcher.c"), str(GAME / "scripts/odyssey_launcher_ui.m"),
-                    "-framework", "Cocoa", "-framework", "CoreGraphics"], check=True)
+    # The launcher: no window of its own, every setting is in the game's settings panel (key 1).
+    subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(macos / "Odyssey"),
+                    str(GAME / "scripts/odyssey_app_launcher.c")], check=True)
     subprocess.run(["sips", "-s", "format", "icns", str(ICON), "--out", str(resources / "OdysseyIcon.icns")],
                    check=True, stdout=subprocess.DEVNULL)
     version = ICON.with_name("game-version.txt")   # extract_app_icon.py: the update's version, for the window title
@@ -146,14 +157,20 @@ def main():
     info = {
         "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": "Odyssey", "CFBundleName": "Odyssey",
         "CFBundleExecutable": "Odyssey", "CFBundleIconFile": "OdysseyIcon",
-        "CFBundleIdentifier": "local.projectidea.odyssey", "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleIdentifier": BUNDLE_ID, "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.2", "CFBundleVersion": "2",
         "LSApplicationCategoryType": "public.app-category.games", "LSMinimumSystemVersion": "26.0",
         "NSHighResolutionCapable": True,
     }
+    if os.environ.get("ODYSSEY_RECORD_WORK"):   # what made the app, for MNG Launcher's update (build_app.record_update_source)
+        info.update(MNGWorkFolder=os.environ["ODYSSEY_RECORD_WORK"], MNGSourceRepo=os.environ.get("ODYSSEY_RECORD_REPO", ""),
+                    MNGBuildPython=os.environ.get("ODYSSEY_RECORD_PYTHON", sys.executable))
     with (contents / "Info.plist").open("wb") as file:
         plistlib.dump(info, file)
-    subprocess.run(["codesign", "--force", "--sign", "-", str(APP)], check=True, stdout=subprocess.DEVNULL)
+    # Ad hoc, with the bundle ID as the designated requirement (build_app.sign_app): macOS keeps the player's answer to
+    # "files on a removable volume" by that requirement; the ad hoc default (the code hash) asked again after every build.
+    subprocess.run(["codesign", "--force", "--sign", "-", f'-r=designated => identifier "{BUNDLE_ID}"', str(APP)],
+                   check=True, stdout=subprocess.DEVNULL)
     seed_data()
     print(APP)
 

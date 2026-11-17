@@ -10,7 +10,7 @@ struct HomePage: View {
                                                     // a game built moves forward and stays the chosen one)
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
 
-    static let games = ["oot", "totk", "botw", "eow", "acnh", "dkb", "pkp"]
+    static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp"]
 
     /// The cases' order (user 2026-11-17: "已经安装的游戏 放前面，没有安装的游戏盒子 放后面"): the built games, then the
     /// ones not built yet, each in the catalog's order.

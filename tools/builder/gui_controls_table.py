@@ -18,6 +18,9 @@ NAMES = {
     'botw': dict(zip(ORDER, ('Action', 'Cancel / Sprint', 'Jump', 'Attack', 'Target', 'Bow', 'Rune',
                              'Throw Weapon', 'Map', 'Pause Menu', 'Crouch', 'Look', None, None, None, None))),
     'oot': dict.fromkeys(ORDER),
+    # Super Mario Odyssey (games/odyssey/README.md, Keys): the uses that table names
+    'odyssey': dict(zip(ORDER, ('Jump / Confirm', 'Jump / Cancel', 'Throw Cap', 'Throw Cap', 'Crouch / Ground Pound',
+                                'Crouch / Ground Pound', None, None, 'Map', 'Game Menu', None, None, None, None, None, None))),
     # Animal Crossing (games/acnh/README.md, its controls table); the D-pad's rows open the tool ring and the like
     'acnh': dict(zip(ORDER, ('Talk / Use Tool', 'Cancel / Run', 'Pockets', 'Pick Up', 'NookPhone', 'Reactions', None,
                              None, None, None, None, None, 'Tool Ring', 'Put Away Tool', None, None))),   # Ocarina of Time (2026-11-13): no use confirmed in play yet, every row "to confirm"

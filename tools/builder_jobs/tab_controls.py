@@ -27,7 +27,8 @@ from tools.builder.strings import EN
 from tools.builder_jobs.tabs import TabError
 from tools.builder_jobs.text import t
 
-KEYMAP = {'oot': 'games/oot/runtime/keyboard_map.h', 'acnh': 'games/acnh/runtime/keyboard_map.h'}   # each game's own copy; the others build with games/totk's
+KEYMAP = {'oot': 'games/oot/runtime/keyboard_map.h', 'acnh': 'games/acnh/runtime/keyboard_map.h',
+          'odyssey': 'games/odyssey/runtime/keyboard_map.h'}   # each game's own copy; the others build with games/totk's
 KEYMAP_DEFAULT = 'games/totk/runtime/keyboard_map.h'
 KEYMAP_INPUT = re.compile(r'\{(\d+), "([a-z0-9_]+)", "')
 

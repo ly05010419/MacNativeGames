@@ -106,6 +106,7 @@ final class Model: ObservableObject {
         "oot": ["controls", "storage", "saves"],
         "acnh": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
         "eow": ["storage", "saves"],   // its keys are fixed in the runtime: no Controls page
+        "odyssey": ["controls", "storage", "saves"],
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.
