@@ -256,8 +256,10 @@ struct KeysStep: View {
                 Text(T.step2Hint).font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Image(systemName: "key.fill").foregroundStyle(model.keysReady ? Color.green : Color.secondary)
-                    Text(model.plan?.keys.map { ($0 as NSString).lastPathComponent } ?? "—")
-                    if let keys = model.plan?.keys {
+                    // the plan's keys, or before any game file is chosen (no plan yet) the keys kept for every game
+                    let keys = model.plan?.keys ?? model.keysPath
+                    Text(keys.map { ($0 as NSString).lastPathComponent } ?? "—")
+                    if let keys {
                         Text((keys as NSString).deletingLastPathComponent).font(.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle)
                     }

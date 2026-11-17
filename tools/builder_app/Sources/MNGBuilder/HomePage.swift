@@ -35,8 +35,7 @@ struct HomePage: View {
     /// already open below.
     private func open(_ game: String) {
         guard model.installedLoaded, !model.installed.contains(where: { $0.game == game }) else { return }
-        model.buildFor = game
-        model.openBuild()
+        model.buildGame(game)
     }
 
     /// Whose job a box at the bottom shows (its own line says what the job is doing): the updated app's game, else
@@ -353,7 +352,7 @@ struct GameActions: View {
                 case "express", "fast":
                     Button(T.updateButton(app.kind)) { model.update(app) }.buttonStyle(.borderedProminent).disabled(busy)
                 case "full":
-                    Button(T.updateButton(app.kind)) { model.buildFor = app.game; model.openBuild() }
+                    Button(T.updateButton(app.kind)) { if let g = app.game { model.buildGame(g) } }
                         .buttonStyle(.borderedProminent).disabled(busy)
                 default:
                     EmptyView()   // the reason above says why it cannot be updated now

@@ -174,7 +174,10 @@ final class Model: ObservableObject {
         Task { await classify() }
     }
 
+    /// The files go; the keys stay, also a prod.keys that came in among the files (the plan found it there), which
+    /// becomes step 2's keys (2026-11-17: an empty case's Build page lost the keys chosen with Tears of the Kingdom).
     func clear() {
+        if keysPath == nil, let found = plan?.keys { keysPath = found }
         paths = []; report = nil; classifyError = nil; save()
     }
 
@@ -206,6 +209,15 @@ final class Model: ObservableObject {
         if jobRunning { return step == 3 }
         return step == 1 || (macReady && (step == 2 || (gameReady && keysReady)))
     }
+    /// The Build page for one game, from its case or its card's full update (user 2026-11-17: "点击空盒子 安装的时候 应该过去的
+    /// 信息 清空"): the files chosen before go unless they are this game's; the keys stay (one for every game). A running
+    /// build keeps its files.
+    func buildGame(_ game: String) {
+        if !jobRunning, plan?.game != game { clear() }
+        buildFor = game
+        openBuild()
+    }
+
     /// The page the Build page opens on: this Mac's checks only when something is missing.
     func openBuild() {
         buildStep = jobRunning ? 3 : (macReady ? 2 : 1)

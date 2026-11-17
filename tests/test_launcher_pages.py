@@ -101,6 +101,23 @@ class Pages(unittest.TestCase):
         for way in ('chevron.left', 'chevron.right', '.onKeyPress(.leftArrow)', '.onKeyPress(.rightArrow)', 'DragGesture('):
             self.assertIn(way, flow)
 
+    def test_another_game_s_build_page_starts_without_the_files_chosen_before(self):
+        # user 2026-11-17: "点击空盒子 安装的时候 应该过去的信息 清空": a case or a full update opens the Build page through
+        # Model.buildGame, which drops files of another game (the keys stay) unless a build is running
+        swift = REPO / 'tools/builder_app/Sources/MNGBuilder'
+        model = (swift / 'Model.swift').read_text()
+        self.assertIn('if !jobRunning, plan?.game != game { clear() }', model)
+        clear = model[model.index('func clear()'):]
+        clear = clear[:clear.index('\n    }')]
+        # a prod.keys picked among the game files is kept as the keys, not dropped with the files
+        self.assertIn('if keysPath == nil, let found = plan?.keys { keysPath = found }', clear)
+        self.assertNotIn('keysPath = nil', clear)
+        # and step 2 shows those keys before any game file is chosen (no plan yet)
+        self.assertIn('let keys = model.plan?.keys ?? model.keysPath', (swift / 'ContentView.swift').read_text())
+        home = (swift / 'HomePage.swift').read_text()
+        self.assertEqual(home.count('model.buildGame('), 2)
+        self.assertNotIn('model.buildFor = ', home)
+
     def test_a_case_s_picture_is_cut_tall_round_its_title(self):
         # user 2026-11-17: "图片 重新裁剪 要合适的 长方形": the square picture is cut to a tall rectangle whose middle is
         # the middle of the title's words and what draws the eye (Vision), not shown whole with a blur under it
