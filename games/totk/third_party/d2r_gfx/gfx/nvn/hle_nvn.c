@@ -40,6 +40,8 @@
 #include <mach/mach.h>
 #include <TargetConditionals.h>
 #include <unistd.h>
+#include <stdarg.h>
+#include <pthread.h>
 #if TARGET_OS_OSX
 #define DM_MEM_CAP_DEFAULT_GB 24
 #else
@@ -2698,12 +2700,19 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
 static pthread_mutex_t g_sync_replay_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 void mtl_take_submit_thread(void);   // nvn_mtl.m
 static int async_replay(void);
+/* TOTK_STALL_SAMPLE_MS (diagnostic, nvn_queue_order.inc qo_stall_sampler): who holds the section, so a replay that
+   waits for it is sampled together with the holder. Written only by the holder, under the lock. */
+static int replay_owner_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"); v = e && atoi(e) > 0; } return v; }
+static pthread_t g_rep_owner_th; static _Atomic mach_port_t g_rep_owner_port; static int g_rep_depth; static _Atomic uint64_t g_rep_since;
+static void replay_owner_in(void) { if (replay_owner_on() && g_rep_depth++ == 0) { g_rep_owner_th = pthread_self(); atomic_store(&g_rep_owner_port, pthread_mach_thread_np(pthread_self())); atomic_store(&g_rep_since, now_ns()); } }
+static void replay_owner_out(void) { if (replay_owner_on() && --g_rep_depth == 0) { atomic_store(&g_rep_since, 0); atomic_store(&g_rep_owner_port, 0); } }
 static void replay_enter(void) {
     if (async_replay()) { x_drain(); return; }
     { NVN_BLOCKING(); pthread_mutex_lock(&g_sync_replay_mu); }
+    replay_owner_in();
     mtl_take_submit_thread();
 }
-static void replay_leave(void) { if (!async_replay()) pthread_mutex_unlock(&g_sync_replay_mu); }
+static void replay_leave(void) { if (!async_replay()) { replay_owner_out(); pthread_mutex_unlock(&g_sync_replay_mu); } }
 void nvn_replay_enter(void) { replay_enter(); }   // for the graphics layer (memory-pool write-back)
 void nvn_replay_leave(void) { replay_leave(); }
 /* Idle residency maintenance must not race a replay or steal its upload owner.
@@ -2711,9 +2720,11 @@ void nvn_replay_leave(void) { replay_leave(); }
    keep submission-driven collection until it has an equivalent barrier. */
 int nvn_replay_idle_try(void) {
     if (async_replay()) return -1;
-    return pthread_mutex_trylock(&g_sync_replay_mu) == 0;
+    int got = pthread_mutex_trylock(&g_sync_replay_mu) == 0;
+    if (got) replay_owner_in();
+    return got;
 }
-void nvn_replay_idle_leave(void) { pthread_mutex_unlock(&g_sync_replay_mu); }
+void nvn_replay_idle_leave(void) { replay_owner_out(); pthread_mutex_unlock(&g_sync_replay_mu); }
 
 static _Thread_local int t_on_x_thread;   // set on the translation thread: x_drain there would wait for itself
 static void *x_thread(void *unused) {
@@ -3191,6 +3202,27 @@ NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow
 // Frame boundary: on each present, print / write to disk the call count of each NVN function for this frame
 static uint64_t g_prev[NVN_NFUNC];
 static FILE *g_tsv;
+/* DM_NVN_TSV rows go to memory and a writer thread puts them in the file once a second (2026-11-17): written and flushed
+   on the presenting thread every frame, a busy external drive held presents for 75-268 ms ([present-steps] dump-frame),
+   about 30 times in a 4-minute OOT route, the measurement making the long frames it measured. */
+static char *g_tb; static size_t g_tb_n, g_tb_cap; static pthread_mutex_t g_tb_mu = PTHREAD_MUTEX_INITIALIZER;
+static void tsv_put(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void tsv_put(const char *fmt, ...) {
+    char row[256]; va_list ap; va_start(ap, fmt); int n = vsnprintf(row, sizeof row, fmt, ap); va_end(ap);
+    if (n <= 0) return; if ((size_t)n >= sizeof row) n = (int)sizeof row - 1;
+    pthread_mutex_lock(&g_tb_mu);
+    if (g_tb_n + (size_t)n > g_tb_cap) { size_t cap = g_tb_cap ? g_tb_cap * 2 : (1u << 20); while (cap < g_tb_n + (size_t)n) cap *= 2;
+        char *b = realloc(g_tb, cap); if (b) { g_tb = b; g_tb_cap = cap; } }
+    if (g_tb_n + (size_t)n <= g_tb_cap) { memcpy(g_tb + g_tb_n, row, (size_t)n); g_tb_n += (size_t)n; }
+    pthread_mutex_unlock(&g_tb_mu);
+}
+static void tsv_flush(void) {   // the writer thread and exit only
+    static pthread_mutex_t io = PTHREAD_MUTEX_INITIALIZER; pthread_mutex_lock(&io);
+    pthread_mutex_lock(&g_tb_mu); char *b = g_tb; size_t n = g_tb_n; g_tb = NULL; g_tb_n = g_tb_cap = 0; pthread_mutex_unlock(&g_tb_mu);
+    if (b && n && g_tsv) { fwrite(b, 1, n, g_tsv); fflush(g_tsv); }
+    free(b); pthread_mutex_unlock(&io);
+}
+static void *tsv_writer(void *arg) { (void)arg; pthread_setname_np("frames-tsv"); for (;;) { sleep(1); tsv_flush(); } return NULL; }
 static void dump_frame(void) {
     static int inited, nframes = 3, calls = 1;
     if (!inited) {
@@ -3198,7 +3230,11 @@ static void dump_frame(void) {
         const char *e = getenv("DM_NVN_FRAMES"); if (e) nframes = atoi(e);
         const char *c = getenv("DM_NVN_TSV_CALLS"); if (c) calls = atoi(c);   // 0 = 只写 @ 计时行（真机拉文件有大小上限，调用计数行占约 2/3） | 0 = write only the @ timing rows (pulling files from a real device has a size limit, and the call-count rows take about 2/3)
         const char *t = getenv("DM_NVN_TSV"); if (t && !(g_tsv = fopen(t, "w"))) LOG("【红】打不开 %s", t);
-        if (g_tsv) fprintf(g_tsv, "# kind: nvn-per-frame  name 为 NVN 函数名时值 = 调用次数；@ 开头为计时埋点（ms / 个）\nframe\tname\tvalue\n");
+        if (g_tsv) {
+            fprintf(g_tsv, "# kind: nvn-per-frame  name 为 NVN 函数名时值 = 调用次数；@ 开头为计时埋点（ms / 个）\nframe\tname\tvalue\n"); fflush(g_tsv);
+            pthread_t th; if (!pthread_create(&th, NULL, tsv_writer, NULL)) pthread_detach(th);
+            atexit(tsv_flush);
+        }
     }
     uint64_t total = 0; unsigned nfn = 0;
     char line[8192]; size_t o = 0; line[0] = 0;
@@ -3207,10 +3243,9 @@ static void dump_frame(void) {
         g_prev[i] = c;
         if (!d) continue;
         total += d; nfn++;
-        if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
+        if (g_tsv && calls) tsv_put("%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
         if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
     }
-    if (g_tsv) fflush(g_tsv);
     if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu：%u 个函数 %llu 次调用 |%s", g_frame ? "帧" : "初始化", g_frame, nfn, total, line);
     else if (g_frame % 300 == 0) LOG("[nvn] 帧 %llu：%u 个函数 %llu 次调用", g_frame, nfn, total);
     g_frame++; g_frame_pub = g_frame; cs_dump();
@@ -3368,7 +3403,7 @@ static int g_slow = -1;
 static int slow_on(void) { if (g_slow < 0) g_slow = getenv("DM_SLOWFRAME") != NULL; return g_slow; }
 static int frame_rec(void) { return g_tsv || slow_on(); }
 static void trow(uint64_t f, const char *name, double v) {
-    if (g_tsv) fprintf(g_tsv, "%llu\t%s\t%.3f\n", f, name, v);
+    if (g_tsv) tsv_put("%llu\t%s\t%.3f\n", f, name, v);
     if (slow_on()) { __typeof__(g_sr[0]) *r = &g_sr[f % SRN]; if (r->f != f) { r->f = f; r->n = 0; } if (r->n < 64) { r->k[r->n] = name; r->v[r->n++] = v; } }
 }
 static double srow(uint64_t f, const char *name, double dflt) {
@@ -3631,14 +3666,38 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
     if (frame) mtl_set_frame(frame);
     gfx_leave();
 }
+/* [present-steps] (2026-11-17, OOT Castle Town: every 30 s one present call took 128 ms with nothing on its thread in the
+   timeline and outside nvn_ms): the clock at each step of nvnQueuePresentTexture; a call over 80 ms logs every step. */
+enum { PS_START, PS_FRAMESTEP, PS_MOVIE, PS_WORK, PS_WARM, PS_CFG, PS_PRESENT, PS_STATS, PS_LONG, PS_DUMP, PS_SUMMARY, PS_END, PS_N };
+static uint64_t g_ps[PS_N];
+static uint64_t g_ps_sub[3]; static int g_ps_path;   // inside "present": 1 queued behind the frame (qo_present), 2 drained then presented
+#define PSTEP(i) (g_ps[i] = now_ns())
+static void present_steps_report(uint64_t frame) {
+    if (g_ps[PS_END] - g_ps[PS_START] < 80000000ull) { g_ps_path = 0; return; }
+    if (g_ps_path == 1)
+        LOG("[present-steps] frame %llu present: queued behind the frame, qo_present %.1f ms", (unsigned long long)frame, (g_ps_sub[0] - g_ps[PS_CFG]) / 1e6);
+    else if (g_ps_path == 2)
+        LOG("[present-steps] frame %llu present: qo_present %.1f ms, qo_drain %.1f ms, present_exec %.1f ms", (unsigned long long)frame,
+            (g_ps_sub[0] - g_ps[PS_CFG]) / 1e6, (g_ps_sub[1] - g_ps_sub[0]) / 1e6, (g_ps_sub[2] - g_ps_sub[1]) / 1e6);
+    g_ps_path = 0;
+    static const char *const names[PS_N] = {"start", "frame-step", "movie", "work-tick", "warm-gate", "present-cfg", "present", "stats", "long-frame", "dump-frame", "summary", "end"};
+    char b[512]; size_t o = 0;
+    for (int i = 1; i < PS_N; i++)
+        if (g_ps[i] >= g_ps[i - 1]) o += (size_t)snprintf(b + o, sizeof b - o, " %s %.1f", names[i], (g_ps[i] - g_ps[i - 1]) / 1e6);
+    LOG("[present-steps] frame %llu present call %.1f ms:%s", (unsigned long long)frame, (g_ps[PS_END] - g_ps[PS_START]) / 1e6, b);
+}
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     NVN_BLOCKING();
+    PSTEP(PS_START);
     qtrace("present", q, idx, 0); win_t *o = (win_t *)w; o->presents++;
     if (runtime_frametrace_event) runtime_frametrace_event(9);
     totk_tl_frame(o->presents); totk_tl(TL_PRES_IN, (uint64_t)idx, 0);
     if (runtime_frame_step_update) runtime_frame_step_update(now_ns());
+    PSTEP(PS_FRAMESTEP);
     if (movie_host_tick) movie_host_tick();
+    PSTEP(PS_MOVIE);
     game_work_tick(o->presents);
+    PSTEP(PS_WORK);
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     // D2R installs g_nvn_loadscreen_up from its UI-message observer. The TOTK
     // native host has no such observer, so also recognize the first world frame
@@ -3662,16 +3721,18 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           gate = 1; extern void mtl_note_world(void); mtl_note_world(); int ms = mtl_warm_wait(warm_limit_ms);
           if (ms) LOG("[nvn] 首次进局等管线预热 %d ms（本帧绘制 %llu）", ms, (unsigned long long)this_draws);
       } }
+    PSTEP(PS_WARM);
     present_cfg(o);
     uint64_t t0 = now_ns();
+    PSTEP(PS_CFG);
     if (async_replay()) {   // TOTK: the present (and the replay frame number below) run on the translation thread, after this frame's submits
         xjob j = {.kind = XJ_PRESENT, .win = o, .idx = idx, .period = present_period(o) / 1e9};
         memcpy(j.crop, o->crop, sizeof j.crop);
         j.frame = g_frame + 1;   // dump_frame below advances g_frame before mtl_set_frame
         uint64_t no = x_push(&j);
         if (idx >= 0 && idx < 4) { g_xp_win = o; g_xp_job[idx] = no; }
-    } else if (qo_present(q, o, idx, present_period(o) / 1e9, o->crop, g_frame + 1)) g_qo_pdefer = 1;   // queued behind the frame (dump_frame below advances g_frame)
-    else { g_qo_pdefer = 0; qo_drain(q); replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); }
+    } else if (g_ps_path = 1, qo_present(q, o, idx, present_period(o) / 1e9, o->crop, g_frame + 1)) { g_qo_pdefer = 1; g_ps_sub[0] = now_ns(); }   // queued behind the frame (dump_frame below advances g_frame)
+    else { g_ps_sub[0] = now_ns(); g_ps_path = 2; g_qo_pdefer = 0; qo_drain(q); g_ps_sub[1] = now_ns(); replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); g_ps_sub[2] = now_ns(); }
     { static int fin = -1; if (fin < 0) { { const char *e = getenv("TOTK_PRESENT_FINISH"); fin = e ? (atoi(e) >= 2 && atoi(e) <= 3 ? atoi(e) : 1) : 0; } if (fin) LOG("[nvn] TOTK_PRESENT_FINISH: each present waits until its frame has run on the GPU (diagnostic)"); }
       if (fin == 1) { if (async_replay() && idx >= 0 && idx < 4) x_wait_job(g_xp_job[idx]); void mtl_finish(void); mtl_finish(); }
       /* TOTK_PRESENT_FINISH=2 (diagnostic): each present waits until the previous frame has run on the GPU: at most one frame in flight */
@@ -3679,6 +3740,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
       /* TOTK_PRESENT_FINISH=3 (diagnostic): the game's CPU runs on, but the next submission's replay waits until this frame has run on the GPU */
       if (fin == 3) atomic_store(&g_pf3_fence, mtl_last_fence()); }
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
+    PSTEP(PS_PRESENT);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
     trow(f, "@present_guest_ticks", o->interval);
     trow(f, "@present_effective_ticks", present_ticks(o));
@@ -3731,6 +3793,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           trow(f, "@rd_waits", (double)(rw_ - prw)); trow(f, "@rd_wait_ms", (rn_ - prn) / 1e6); prw = rw_; prn = rn_; }
         double up_ms = mtl_upload_ns_take() / 1e6; trow(f, "@upload_ms", up_ms);
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
+        { static uint64_t popen, popen_ns; uint64_t n_, ns_; void mtl_par_open_stats(uint64_t *, uint64_t *); mtl_par_open_stats(&n_, &ns_);   // pipeline archive files opened (totk_pipeline_archive.h)
+          trow(f, "@par_opens", (double)(n_ - popen)); trow(f, "@par_open_ms", (ns_ - popen_ns) / 1e6); popen = n_; popen_ns = ns_; }
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）
         // Accounting: number of synchronous creations on the submit thread this frame + a timestamp on the same clock as UIMSG (offline, frames are split into front end / loading / in-run by the loading screen intervals)
         static uint64_t plib, ppso; uint64_t lib_, pso_; mtl_create_stats(&lib_, &pso_);
@@ -3774,6 +3838,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         trow(f, "@sub_wall_ms", atomic_exchange(&g_sub_wall_ns, 0) / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
+    PSTEP(PS_STATS);
     if (f >= 8) { double g = mtl_gpu_ms(f - 8); if (g >= 0) { tpush(3, g); trow(f - 8, "@gpu_ms", g); g_hr[g_hn++ % HRN] = g; }   // GPU 时间滞后 8 帧取（已完成） | GPU time is taken 8 frames late (already completed)
         { lf_rec *r = &g_lf[(f - 8) % LFN];   // 长帧日志（缺省开，DM_LONGFRAME=0 关）：整帧 > 20 ms 或 GPU > 16.7 ms、且明显高于近况，才打一行 | long-frame log (on by default, DM_LONGFRAME=0 turns it off): a line is printed only when the whole frame > 20 ms or GPU > 16.7 ms, and it is clearly above recent conditions
           static int on = -1; if (on < 0) { const char *e = getenv("DM_LONGFRAME"); on = !(e && !strcmp(e, "0")); }
@@ -3796,8 +3861,10 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
               if (lf_detail()) { char d[384]; snprintf(d, sizeof d, "；绘制 %u 次、渲染通道 %u 个、新建贴图视图 %u 个；当场编译补丁变体 %u 个共 %.1f ms，读预编的补丁变体 %u 个，后台编补丁变体 %u 个，边框补丁没好先用原管线画 %u 次", r->draws, r->passes, r->views, r->variants, r->variant_ms, r->variants_pre, r->variants_bg, r->plain_draws); strlcat(b, d, sizeof b); }
               dm_longframe_note(b); } }
         uint64_t g0, g1; if (frame_rec() && mtl_gpu_span(f - 8, &g0, &g1)) { trow(f - 8, "@gpu_beg_ms", (g0 - g_t0_ns) / 1e6); trow(f - 8, "@gpu_end_ms", (g1 - g_t0_ns) / 1e6); } }
+    PSTEP(PS_LONG);
     prev_in = t0; prev_pass = ps; prev_draw = dr;
     dump_frame();
+    PSTEP(PS_DUMP);
     mtl_noread_mark_frame();   // OOT_NOREAD_PROBE (no-op unless set)
     if (sync_lag_frame_on()) { int tk; uint64_t fz = fence_now(&tk); if (!tk && fz) { g_pf_fence[g_pf_n++ & 15] = fz;   // the fence that ends this frame (TOTK_SYNC_LAG=2)
         if (synclog_env() && g_frame >= 1000) LOG("[rd-frame] F%llu present-fence=%llu", (unsigned long long)g_frame, (unsigned long long)fz); } }   // with TOTK_SYNC_LOG: the frame's last fence, for the [rd-wait] attribution
@@ -3813,6 +3880,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     else if (g_frame % 300 == 0) { uint64_t d = atomic_exchange(&g_x_drains, 0), dn = atomic_exchange(&g_x_drain_ns, 0);
         pthread_mutex_lock(&g_xq_mu); uint64_t q = g_xq_in - g_xq_done; pthread_mutex_unlock(&g_xq_mu);
         LOG("[nvn] 翻译线程 至帧 %llu：排空等待 %llu 次 / %.1f ms（近 300 帧），队列中 %llu 项", (unsigned long long)g_frame, (unsigned long long)d, dn / 1e6, (unsigned long long)q); }
+    PSTEP(PS_SUMMARY);
     // 真机语义：出图只入队、立即返回；本帧显示时刻按节拍器排，该贴图到「显示时刻 + 一个周期」才可再获取（阻塞在 AcquireTexture）
     // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
@@ -3831,6 +3899,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         dm_perf_present(a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0));   // 上屏间隔另存一圈，tsummary 每 300 帧报掉帧（M1 判据） | on-screen present intervals are also kept in a separate ring; tsummary reports dropped frames every 300 frames (M1 criterion)
         if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
+    PSTEP(PS_END); present_steps_report(f);
     prev_out = now_ns();
     totk_tl(TL_PRES_OUT, 0, 0);
 }

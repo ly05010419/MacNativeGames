@@ -421,7 +421,11 @@ static void wake_queue(thr_t *t) {
 }
 #endif
 void runtime_describe_address(uint64_t a, char *out, size_t n);
-#define CORE_DIAG_NS 4000000L
+/* TOTK_CORE_DIAG: a wait for a virtual core this long gets one report of the core owners. TOTK_CORE_DIAG_MS sets it
+   (default 4 ms; 2026-11-17 OOT: 30 finds the in-world waits of 150-300 ms a frame, which the 400 reports at 4 ms were
+   spent on before the world). */
+static long core_diag_ns(void) { static long v; if (!v) { const char *e = getenv("TOTK_CORE_DIAG_MS"); long ms = e && *e ? atol(e) : 4; v = (ms < 1 ? 1 : ms) * 1000000L; } return v; }
+#define CORE_DIAG_NS ((uint64_t)core_diag_ns())
 static int core_diag_on(void) { return dm_core_diag_enabled(); }
 static int g_core_reports;
 /* Enter/return holding G. Snapshot retained Mach ports, then drop G before suspending or formatting:
@@ -437,25 +441,37 @@ static void core_wait_report(thr_t *w, uint64_t since) {
         if (o->mport && mach_port_mod_refs(mach_task_self(), o->mport, MACH_PORT_RIGHT_SEND, 1) == KERN_SUCCESS) owners[i].port=o->mport;
     }
     pthread_mutex_unlock(&G);
-    char pc[NCORE][96], lr[NCORE][96];
+    char pc[NCORE][96], lr[NCORE][96], up[NCORE][640];
     for (int i=0;i<NCORE;i++) {
-        strcpy(pc[i], "?"); strcpy(lr[i], "?"); mach_port_t port=owners[i].port;
+        strcpy(pc[i], "?"); strcpy(lr[i], "?"); up[i][0]=0; mach_port_t port=owners[i].port;
         if (!port) continue;
         arm_thread_state64_t state; mach_msg_type_number_t count=ARM_THREAD_STATE64_COUNT; int ok=0;
+        uint64_t calls[8]; int ncalls=0;
         if (thread_suspend(port)==KERN_SUCCESS) {
             ok=thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&state, &count)==KERN_SUCCESS;
+            /* Further callers along the frame pointers (2026-11-17: owners waited 30-41 ms in a host mutex, and pc / lr
+               named only the pthread functions). Read with vm_read_overwrite: a bad frame fails, it does not fault. */
+            for (uint64_t fp = ok ? arm_thread_state64_get_fp(state) : 0; fp && !(fp & 7) && ncalls < 8; ) {
+                uint64_t fr[2]; vm_size_t got = 0;
+                if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof fr, (vm_address_t)(uintptr_t)fr, &got) != KERN_SUCCESS || got != sizeof fr) break;
+                if (fr[1]) calls[ncalls++] = fr[1] & 0x0000ffffffffffffull;
+                if (fr[0] <= fp || fr[0] - fp > (1u << 20)) break;
+                fp = fr[0];
+            }
             thread_resume(port);
         }
         mach_port_deallocate(mach_task_self(), port);
         if (ok) { runtime_describe_address(arm_thread_state64_get_pc(state), pc[i], sizeof pc[i]);
-                  runtime_describe_address(arm_thread_state64_get_lr(state), lr[i], sizeof lr[i]); }
+                  runtime_describe_address(arm_thread_state64_get_lr(state), lr[i], sizeof lr[i]);
+                  size_t o=0; for (int k=1;k<ncalls && o<sizeof up[i]-100;k++) { char d[96]; runtime_describe_address(calls[k], d, sizeof d); o+=(size_t)snprintf(up[i]+o, sizeof up[i]-o, " <- %s", d); } }
     }
-    fprintf(stderr, "[core-wait] thread %#x (priority %d, mask %#llx) waited %.1f ms:", handle, prio, (unsigned long long)mask, (now-since)/1e6);
+    uint64_t dm_nvn_frame_count(void);
+    fprintf(stderr, "[core-wait] frame %llu thread %#x (priority %d, mask %#llx) waited %.1f ms:", (unsigned long long)dm_nvn_frame_count(), handle, prio, (unsigned long long)mask, (now-since)/1e6);
     for (int i=0;i<NCORE;i++) {
         if (!owners[i].handle) { fprintf(stderr, " core %d free;", i); continue; }
-        fprintf(stderr, " core %d%s: %#x (priority %d, mask %#llx, held %.1f ms, last svc %#x) at %s <- %s;", i,
+        fprintf(stderr, " core %d%s: %#x (priority %d, mask %#llx, held %.1f ms, last svc %#x) at %s <- %s%s;", i,
             (mask>>i&1) ? "" : " (not in mask)", owners[i].handle, owners[i].prio, (unsigned long long)owners[i].mask,
-            owners[i].held/1e6, owners[i].svc, pc[i], lr[i]);
+            owners[i].held/1e6, owners[i].svc, pc[i], lr[i], up[i]);
     }
     fputc('\n',stderr);
     pthread_mutex_lock(&G);

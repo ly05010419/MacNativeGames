@@ -278,6 +278,10 @@ static void par_open_note(NSString *name) {
    thread's lookup (fill_row's "is it there", pso_new) waited for it. The packaging's archive check opened its 3,791 files so,
    one at a time, while 7 of its 8 threads waited on the lock (2026-11-16, scratch/runs/2026-11/express-speed/profiles-1:
    12,000 of the busy samples in the lock). Two threads that open the same file at once keep the one registered first. */
+/* Files actually opened by par_archive_for and the time it took (the frame record's @par_opens / @par_open_ms,
+   hle_nvn.c): 2026-11-17, OOT with the memory saver built 366 pipelines in the world at 4 ms each, up to 63 ms. */
+static _Atomic uint64_t g_par_opens, g_par_open_ns;
+void mtl_par_open_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_par_opens); *ns = atomic_load(&g_par_open_ns); }
 static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
@@ -291,7 +295,14 @@ static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     pthread_mutex_unlock(&g_par_mu);
     if (path) {
         MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:path];
+        uint64_t open_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         NSError *e = nil; arch_map_begin(); id<MTLBinaryArchive> opened = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
+        uint64_t open_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - open_t0;
+        atomic_fetch_add(&g_par_opens, 1); atomic_fetch_add(&g_par_open_ns, open_ns);
+        if (open_ns >= 20000000ull) {   // which file, how big, how long (2026-11-17 OOT: one open took 210 ms in the world)
+            struct stat st; long long bytes = stat(path.fileSystemRepresentation, &st) ? -1 : (long long)st.st_size;
+            MLOG("管线存档：打开 %s（%lld KB）用了 %.1f ms", name.UTF8String, bytes / 1024, open_ns / 1e6);
+        }
         pthread_mutex_lock(&g_par_mu);
         if ((a = g_par_open[name])) PAR_OPEN_NOTE(name);   // another thread opened it meanwhile
         else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }

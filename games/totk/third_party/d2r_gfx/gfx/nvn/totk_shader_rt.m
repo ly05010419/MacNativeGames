@@ -334,8 +334,23 @@ static NSData *seed_image_file(NSString *path) {
 }
 NSData *totk_rt_read(NSString *path) {
     if (!path) return nil;
-    NSData *d = seed_image_file(path);
-    return d ?: [NSData dataWithContentsOfFile:path];
+    /* TOTK_RT_READ_LOG=1 (diagnostic, default off; 2026-11-17 OOT: replays held the replay section 120-245 ms in an
+       open() under totk_rt_read on the external drive): reads over 20 ms, by file kind and source. */
+    static int slow_log = -1; if (slow_log < 0) { const char *e = getenv("TOTK_RT_READ_LOG"); slow_log = e && atoi(e) > 0; }
+    uint64_t t0 = slow_log ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
+    NSData *d = seed_image_file(path); int from_image = d != nil;
+    if (!d) d = [NSData dataWithContentsOfFile:path];
+    if (slow_log) {
+        uint64_t ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
+        if (ns >= 20000000ull) {
+            NSString *name = path.lastPathComponent; NSRange us = [name rangeOfString:@"_" options:NSBackwardsSearch];
+            NSString *kind = [name hasSuffix:@".variants"] ? @".variants" : us.location != NSNotFound ? [name substringFromIndex:us.location] : name.pathExtension;
+            LOG("[rt-read] frame %llu %s %s %s: %.1f ms (%lu bytes)", (unsigned long long)dm_nvn_frame_count(), kind.UTF8String,
+                from_image ? "seed image" : g_seed_prefix && [path hasPrefix:g_seed_prefix] ? "seed file" : "cache file",
+                d ? "found" : "missing", ns / 1e6, (unsigned long)d.length);
+        }
+    }
+    return d;
 }
 int totk_rt_exists(NSString *path) {
     if (!path) return 0;

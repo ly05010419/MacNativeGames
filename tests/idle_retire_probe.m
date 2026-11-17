@@ -23,6 +23,7 @@ static void res_commit(void){[residency commit];}
 static int rt_heap_on(void){return 0;}
 static void rt_heap_trim_at(uint64_t n,int all){}
 static int async_replay(void){return 0;}
+static void replay_owner_in(void){} static void replay_owner_out(void){}   // hle_nvn.c: TOTK_STALL_SAMPLE_MS bookkeeping only
 static void retire_idle_kick(void);
 // REPLAY_LOCK
 // DEFER_QUEUE

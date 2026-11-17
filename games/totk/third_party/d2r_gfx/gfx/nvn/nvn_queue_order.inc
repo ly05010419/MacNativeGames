@@ -363,16 +363,84 @@ static void qo_texrel_sweep(void) {
 static int qo_pending_locked(void) { return qo_pending(); }
 /* The queue-order thread: woken by a flush, a CPU signal, a sync wait or a present; otherwise every millisecond (events
    set by GPU completion, the safety valve). The replay section is released between items. */
+/* TOTK_STALL_SAMPLE_MS=N (diagnostic, default off; 2026-11-17 OOT: presents waited 270-830 ms in qo_drain while the
+   replay's CPU time was 27 ms and its counted pipeline builds 48 ms): once one item of this thread has run N ms, a
+   sampler suspends it, walks its frame pointers and logs the symbols; again every N ms while it lasts (4 per stall, 300
+   in all). Host frames only (the replay is host code). */
+#include <dlfcn.h>
+static _Atomic uint64_t g_qo_busy_since, g_qo_busy_item;
+static mach_port_t g_qo_port; static void *g_qo_stack_hi, *g_qo_stack_lo;
+static uint64_t qo_stall_ns(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"); v = e && atoi(e) > 0 ? (int64_t)atoi(e) * 1000000 : 0; } return (uint64_t)v; }
+static void qo_stall_stack(mach_port_t port, void *lo, void *hi, const char *what, uint64_t item, uint64_t ms) {
+    uintptr_t pcs[32]; int n = 0;
+    if (!port || thread_suspend(port) != KERN_SUCCESS) return;
+    arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+        pcs[n++] = (uintptr_t)arm_thread_state64_get_pc(st); pcs[n++] = (uintptr_t)arm_thread_state64_get_lr(st);
+        uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(st);
+        while (n < 32 && fp && !(fp & 7) && (void *)fp >= lo && (void *)(fp + 16) <= hi) {
+            uintptr_t next = ((uintptr_t *)fp)[0], lr = ((uintptr_t *)fp)[1];
+            if (lr) pcs[n++] = lr & 0x0000ffffffffffffull;
+            if (next <= fp) break;
+            fp = next;
+        }
+    }
+    thread_resume(port);
+    char line[3072]; size_t o = 0;
+    for (int i = 0; i < n && o < sizeof line - 160; i++) {
+        Dl_info di; const char *s = "?"; uintptr_t off = 0;
+        if (dladdr((void *)pcs[i], &di) && di.dli_sname) { s = di.dli_sname; off = pcs[i] - (uintptr_t)di.dli_saddr; }
+        else if (di.dli_fname) { const char *b = strrchr(di.dli_fname, '/'); s = b ? b + 1 : di.dli_fname; off = pcs[i] - (uintptr_t)di.dli_fbase; }
+        o += (size_t)snprintf(line + o, sizeof line - o, " %s+%#lx", s, (unsigned long)off);
+    }
+    LOG("[stall-sample] frame %llu queue-order item %llu running %llu ms, %s:%s", (unsigned long long)dm_nvn_frame_count(), (unsigned long long)item, (unsigned long long)ms, what, line);
+}
+static void qo_stall_sample(uint64_t item, uint64_t ms) {
+    qo_stall_stack(g_qo_port, g_qo_stack_lo, g_qo_stack_hi, "the queue-order thread", item, ms);
+    mach_port_t owner = atomic_load(&g_rep_owner_port); uint64_t since = atomic_load(&g_rep_since);
+    if (owner && owner != g_qo_port && since) {   // it waits for the replay section: whoever holds it (hle_nvn.c replay_owner_in)
+        pthread_t th = g_rep_owner_th; char *hi = pthread_get_stackaddr_np(th), *lo = hi - pthread_get_stacksize_np(th);
+        char what[96]; char name[48] = ""; pthread_getname_np(th, name, sizeof name);
+        snprintf(what, sizeof what, "replay section held %llu ms by \"%s\"", (unsigned long long)((now_ns() - since) / 1000000), name);
+        qo_stall_stack(owner, lo, hi, what, item, ms);
+    }
+}
+static void *qo_stall_sampler(void *unused) {
+    (void)unused; pthread_setname_np("NVN stall sampler");
+    uint64_t lim = qo_stall_ns(), last_item = 0, taken = 0, total = 0;
+    for (;;) {
+        usleep(10000);
+        uint64_t since = atomic_load(&g_qo_busy_since), item = atomic_load(&g_qo_busy_item), now = now_ns();
+        if (!since || now - since < lim * (taken + 1)) { if (item != last_item) taken = 0; continue; }
+        if (item != last_item) { last_item = item; taken = 0; }
+        if (taken >= 4 || total >= 300) continue;
+        taken++; total++;
+        qo_stall_sample(item, (now - since) / 1000000);
+    }
+    return NULL;
+}
 static void *qo_worker(void *unused) {
     (void)unused; pthread_setname_np("NVN queue order");
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);   // the replay is the frame's critical path
+    if (qo_stall_ns()) {
+        g_qo_port = pthread_mach_thread_np(pthread_self());
+        g_qo_stack_hi = pthread_get_stackaddr_np(pthread_self()); g_qo_stack_lo = (char *)g_qo_stack_hi - pthread_get_stacksize_np(pthread_self());
+        pthread_t s; if (!pthread_create(&s, NULL, qo_stall_sampler, NULL)) pthread_detach(s);
+        LOG("[stall-sample] on: the queue-order thread is sampled once an item has run %llu ms", (unsigned long long)(qo_stall_ns() / 1000000));
+    }
+    uint64_t items = 0;
     for (;;) {
         pthread_mutex_lock(&g_qo_mu);
         if (!g_qo_kick) { struct timespec ts = {0, 1000000}; pthread_cond_timedwait_relative_np(&g_qo_kick_cv, &g_qo_mu, &ts); }
         g_qo_kick = 0; int pend = qo_pending_locked();
         pthread_mutex_unlock(&g_qo_mu);
         if (!pend) continue;
-        for (;;) { replay_enter(); int r = qo_pump_n(1); if (g_qo_ntexrel) qo_texrel_sweep(); replay_leave(); if (!r) break; }
+        for (;;) {
+            if (g_qo_port) { atomic_store(&g_qo_busy_item, ++items); atomic_store(&g_qo_busy_since, now_ns()); }
+            replay_enter(); int r = qo_pump_n(1); if (g_qo_ntexrel) qo_texrel_sweep(); replay_leave();
+            if (g_qo_port) atomic_store(&g_qo_busy_since, 0);
+            if (!r) break;
+        }
     }
     return NULL;
 }
