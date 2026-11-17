@@ -21,7 +21,12 @@
                 240,924 pages swapped out and 276 long frames (6.4 %, p99 59.2 ms), TITLE_KINDS 9.7-9.9 GB, 11,384 pages
                 and 35 long frames (0.7 %, p99 20.9 ms), but its world entry took one 4.5 s frame (the libraries from the
                 archive), ALL's 1.1 s. The saver was the default for an hour ("默认 打开省内存模式"), then off again (user:
-                "默认 不用 省内存模式").
+                "默认 不用 省内存模式"). The same night it became the default for good (user: "目标 12g", "不要问我 自己决定";
+                Switch 2 has 12 GB): with the c1 list, the archive-file cap and the smaller NvShader, the user's save in
+                Castle Town, 2 minutes turning the camera and 2 walking, ALL 12.4-13.1 GB (peak 13.9) and TITLE_KINDS
+                10.5-11.6 GB (peak 11.8), neither with a Metal out-of-memory error (scratch/runs/2026-11/oot-mem10g par-2,
+                saver-1); the saver's cost is its world entry, about 830 pipelines from the archive on the submit thread
+                (frames of 2.1, 5.1, 1.5 and 0.4 s), none on the route after it. "off" in memory-saver.txt keeps every list.
    TOTK_WARM_RESIDENT=all|title-local|title-kinds chooses; TOTK_WARM_SHARED=1/0 still means all / title-local. */
 enum { WARM_RESIDENT_ALL, WARM_RESIDENT_TITLE_LOCAL, WARM_RESIDENT_TITLE_KINDS };
 static const char *const WARM_RESIDENT_NAME[] = {"all", "title-local", "title-kinds"};
@@ -36,11 +41,11 @@ __attribute__((unused)) static int warm_resident_parse(const char *resident, con
     return fallback;
 }
 
-/* memory-saver.txt's word (MNG Launcher writes "on", or removes the file for the default): 1 on, 0 off,
-   WARM_SAVER_DEFAULT (off, user 2026-11-16 "默认 不用 省内存模式") for no file or an empty one, -1 a word it does not
+/* memory-saver.txt's word (MNG Launcher writes "off" to keep every list, "on", or removes the file for the default): 1 on,
+   0 off, WARM_SAVER_DEFAULT (on, user 2026-11-16 night: "目标 12g") for no file or an empty one, -1 a word it does not
    know. Blanks and a newline around the word do not count. */
 #define WARM_SAVER_FILE "memory-saver.txt"
-#define WARM_SAVER_DEFAULT 0
+#define WARM_SAVER_DEFAULT 1
 __attribute__((unused)) static int warm_saver_word(const char *word) {
     if (!word) return WARM_SAVER_DEFAULT;
     while (*word == ' ' || *word == '\t') word++;

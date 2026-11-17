@@ -258,6 +258,18 @@ def verify_shader_resources(tree, mode='full'):
     (tree/'build/game-data/oot/precompiled-shaders.json').write_text(json.dumps(record,indent=2)+'\n')
     return record
 
+def c1_list(tree,mode='full'):
+    """build/c1_bounded<suffix>.tsv: the seed's shaders whose computed c1 indexes are proven inside their shared span
+    (tools/c1_bounds.py; 2026-11-16, 7,433 exclusive 64 KiB c1 buffers, 464 MB, in one session before). Made again only
+    when the seed manifest changes, so an express update that keeps the seed takes the list as it is."""
+    build_helpers()   # the repository on sys.path
+    from tools.c1_bounds import write_list
+    seed,_,suffix=shader_dirs(tree,mode)
+    out=tree/f'build/c1_bounded{suffix}.tsv'
+    rows,kept=write_list(str(seed),str(out),sha(seed/'seed-manifest.json'))
+    print(f'   c1 list: {rows} shaders proven'+(' (seed unchanged, kept)' if kept else ''),flush=True)
+    return out
+
 def shader_bundle(tree,record,mode='full'):
     """Seal the large immutable seed once, using the repository's nested-bundle layout."""
     seed,libraries,suffix=shader_dirs(tree,mode)
@@ -474,6 +486,8 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     suffix=shader_dirs(tree,mode)[2]
     lists=resolve_lists(tree,tree/f'build/warm-lists{suffix}',work/'logs',shared,mode)   # one resolve of the current list: the archive and the App's build/ use it
     took('warm-up lists resolved')
+    c1=c1_list(tree,mode) if shader_record else None
+    took('c1 list')
     pipelines=compute_pipeline_archive(work,tree,lists,mode) if shader_record else None
     took('pipeline archive')
     prepared=shader_bundle(tree,shader_record,mode) if shader_record else None
@@ -528,6 +542,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     clone_file(tree/'build/shader-map.tsv',data/'build/shader-map.tsv')
     title,manifest=lists   # the archive's lists, beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     clone_file(title,data/'build/pso_title.tsv');clone_file(manifest,data/'build/pso_manifest.tsv')
+    if c1:clone_file(c1,data/'build/c1_bounded.tsv')   # beside the shader map, where nvn_mtl.m c1_bounded_load reads it
     if pipelines:check_archive_lists(data/'build')   # never an App whose archive was built from other lists
     took('App assembled')
     # VideoToolbox is the primary AV1 decoder; the bounded dav1d fallback is linked statically (build_app.codec_libraries

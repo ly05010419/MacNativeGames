@@ -50,7 +50,7 @@ typedef struct {
     // 顶点——插值输出 locn 的 .x / .y = fma(属性 uv_aff_attr[locn] 的 .x / .y, 缩放, 偏移)，缩放 / 偏移引用 uniform：(槽 << 8) | (向量 << 2) | 分量
     // Vertex - .x / .y of interpolated output locn = fma(.x / .y of attribute uv_aff_attr[locn], scale, offset), where scale / offset reference a uniform: (slot << 8) | (vector << 2) | component
     int8_t uv_aff_attr[32]; uint16_t uv_aff[32][4];   // [sx, ox, sy, oy]
-    uint8_t c1[4096];        // c1 常数段原样（B） | c1 constant segment as-is (B)
+    uint8_t *c1;             // c1 常数段原样（B）：c1_len 字节，nvn_refl_from_json malloc（没有时 NULL），持有者释放（NvShader dealloc）| c1 constant segment as-is (B): c1_len bytes, malloc'd by nvn_refl_from_json (NULL without one), freed by its holder (NvShader's dealloc). It was a 4 KB array in every shader: Ocarina of Time 2026-11-16, 24,846 shaders, about 100 MB (mk8d's layer did the same first)
 } nvn_refl;
 
 #ifdef __OBJC__

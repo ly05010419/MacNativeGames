@@ -32,7 +32,7 @@ static int refl_rw(NSDictionary *b) {
 }
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);
-    #define FAIL(...) do { snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
+    #define FAIL(...) do { free(o->c1); o->c1 = NULL; o->c1_len = 0; o->has_c1 = 0; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("不是 B 反射（route ≠ B；A 路线 / PC 链反射已退役）");
     {   // Switch 原版翻译：种类与 NVN 槽号已由 dmsh_build.py 从 MSL 成员名解出 | Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
         NSArray *bs = j[@"bindings"];
@@ -88,7 +88,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         NSArray *uf = j[@"drv_unfillable"];
         if ([uf isKindOfClass:[NSArray class]] && uf.count) FAIL("运行时读驱动段的回放层填不了的位置：%s", [[uf componentsJoinedByString:@" "] UTF8String]);
         NSString *c1 = j[@"c1"];
-        if (c1.length % 2 || c1.length / 2 > sizeof o->c1) FAIL("c1 长 %lu 字节，超上限或不成对", (unsigned long)c1.length / 2);
+        if (c1.length % 2 || c1.length / 2 > 4096) FAIL("c1 长 %lu 字节，超上限或不成对", (unsigned long)c1.length / 2);
+        if (c1.length && !(o->c1 = malloc(c1.length / 2))) FAIL("c1 的 %lu 字节分配失败", (unsigned long)c1.length / 2);
         if (c1.length) { o->has_c1 = 1; o->c1_len = (uint16_t)(c1.length / 2); for (unsigned i = 0; i < o->c1_len; i++) o->c1[i] = (uint8_t)strtoul([[c1 substringWithRange:NSMakeRange(2 * i, 2)] UTF8String], NULL, 16); }
         for (NSDictionary *v in j[@"vertex_inputs"]) {   // [[attribute(n)]]：n 即 NVN 顶点属性号 | [[attribute(n)]]: n is the NVN vertex attribute number
             int loc = [v[@"location"] intValue]; NSString *t = v[@"msl_type"];

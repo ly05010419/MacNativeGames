@@ -249,15 +249,18 @@ static void par_open_dir(id<MTLDevice> dev) {
     });
 }
 // The archive with this pipeline's code, or nil (no file yet; off).
-#if TARGET_OS_IPHONE && defined(GAME_OOT)
-/* Ocarina of Time on iOS: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first. An
-   open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole device: with the
-   device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and the system ended
-   the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). A pipeline already made does
-   not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
+#if defined(GAME_OOT)
+/* Ocarina of Time: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first; 0 keeps every
+   one (A/B). iOS: an open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole
+   device: with the device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and
+   the system ended the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). The Mac
+   (2026-11-16): each open archive keeps about 116 KB of Metal's flatbuffers on the heap, 3,878 of them 452 MB after the
+   warm-up opened the App's 3,800 files (heap with MallocStackLogging, scratch/runs/2026-11/oot-mem10g/msl-1). A pipeline
+   already made does not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
 static NSMutableArray<NSString *> *g_par_open_lru; static uint64_t g_par_open_closed;
 static void par_open_note(NSString *name) {
-    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = (NSUInteger)(v < 8 ? 8 : v); }
+    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = v == 0 ? NSUIntegerMax : (NSUInteger)(v < 8 ? 8 : v); }
+    if (cap == NSUIntegerMax) return;
     if (!g_par_open_lru) g_par_open_lru = [NSMutableArray array];
     [g_par_open_lru removeObject:name]; [g_par_open_lru addObject:name];   // most recent last
     while (g_par_open_lru.count > cap) {

@@ -285,7 +285,7 @@ static int ssao_entry(const char *key) {
 static NSString *ssao_patch_src(NvShader *o, NSString *src, int i, const char **why) {
     const int slot = k_ssao_keys[i].slot;
     if ([src rangeOfString:[NSString stringWithFormat:@"_c1)._m0[%d]", slot]].location != NSNotFound) { *why = "the stock source reads the parameter slot"; return nil; }
-    for (int b = 0; b < 16; b++) if (o->rf.c1[slot * 16 + b]) { *why = "the parameter slot holds constant data"; return nil; }
+    for (int b = 0; b < 16; b++) if (slot * 16 + b < o->rf.c1_len && o->rf.c1[slot * 16 + b]) { *why = "the parameter slot holds constant data"; return nil; }   // past c1_len reads 0
     NSString *entry = @"fragment main0_out main0(", *store = @(k_ssao_keys[i].store);
     if ([src componentsSeparatedByString:entry].count != 2) { *why = "the fragment entry is not there exactly once"; return nil; }
     if ([src componentsSeparatedByString:store].count != 2) { *why = "the AO store line is not there exactly once"; return nil; }

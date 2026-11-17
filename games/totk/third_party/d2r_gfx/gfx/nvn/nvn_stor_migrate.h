@@ -13,7 +13,11 @@ static void stor_alias_migrate_to(stor_alias_heap *destination) {
         uint32_t count = detached ? (uint32_t)g_stor_ndet : g_by_storage.cap;
         for (uint32_t i = 0; i < count; i++) {
             stor_ent *entry = detached ? g_stor_det[i] : g_by_storage.vals[i];
-            if (!entry || !entry->tex || !entry->nser) continue;
+            /* Entries no serial holds move too (2026-11-17): they keep their content for STOR_IDLE_SUBMITS so a
+               texture re-created with the same layout finds it, and while they stayed behind they kept the earlier
+               generation alive. Entering the world in Ocarina of Time, 225-1,127 of them held 1.5 GB of earlier
+               heaps for a few hundred frames, the memory peak. Detached ones without a holder are on their way out. */
+            if (!entry || !entry->tex || (detached && !entry->nser)) continue;
             id<MTLTexture> base = (__bridge id)entry->tex;
             /* A serial owning a distinct format view needs its own rebinding
                transaction. Keep those entries intact until that path is tested. */
