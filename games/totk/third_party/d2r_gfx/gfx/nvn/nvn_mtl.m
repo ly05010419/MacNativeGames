@@ -17974,6 +17974,9 @@ static int tup_dock(__unsafe_unretained NvShader *fs) {
 /* TOTK_MFX_UPSCALE: the game's compose shader 0ac9a549 (tone mapping and bloom into the canvas) samples the scene at
    texture slot 0; when that scene is smaller than the canvas (TOTK_RENDER_RES below the canvas size), upscale it with
    MetalFX first and let encode_args bind the result. Runs before the draw opens its render encoder. Docked: mfxup_dock.
+   Breath of the Wild's handheld play composes the same way (TAA_COMPOSE: 1.9.0 f7ee6fe1, 1.6.0 d14b1c38) straight into
+   the 1280x720 canvas, so its phone scene (960x540 or the pane's custom size) takes this path too (user 2026-11-17);
+   docked, its compose writes the scene's own size and its upscale is bd7ffdd4 (mfxup_dock).
    Returns 1 when the draw was replaced (not to be encoded). */
 static _Atomic uint32_t g_scene_w, g_scene_h;   // the internal resolution: the scene the compose draw samples (fps_overlay)
 static _Atomic uint32_t g_out_w, g_out_h;       // the output resolution: the canvas rectangle the game presents (present_encode)
@@ -18046,7 +18049,7 @@ static int mfxup_draw(NvProg *pr) {
 #ifdef BOTW_FINISH
     if (botw_fin_upscale(fs, 0)) return 1;   // MetalFX on, but this draw kept (the picture is the canvas's size)
 #endif
-    if (strncmp(fs->key, "0ac9a54938974396", 16) || !R.rt.n || !R.rt.color[0]) return 0;
+    if (!TAA_COMPOSE(fs) || !R.rt.n || !R.rt.color[0]) return 0;   // TOTK: 0ac9a549, as before
     int tid = (int)(S.tex[1][0] & 0xfffff); if (tid <= 0) return 0;
     id<MTLTexture> src = (__bridge id<MTLTexture>)tex_fast_lk(tid), dst = g_hdr_draw_native ? attachment_texture(R.rt.color[0], &R.rt.cview[0], R.rt.has_cview[0]) : tex_mtl(R.rt.color[0]);   // HDR: its FP16 companion (PR #1129)
     if (!src || !dst || src.width >= dst.width || src.height >= dst.height) return 0;
