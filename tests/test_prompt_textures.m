@@ -12,6 +12,23 @@ int runtime_setting_word(const char *n, char *w, size_t s) { (void)n; (void)w; (
 void runtime_setting_save(const char *n, const char *w, const char *why) { (void)n; (void)w; (void)why; }
 static void resident(id<MTLResource> r) { assert(r); }
 static void retire(id object) { assert(object); }
+/* A renderer that stages the copy itself (nvn_mtl.m prompt_stage / prompt_upload): memory for the bytes, then a texture
+   made from the bytes staged last, or none when the width is 0. */
+static id<MTLDevice> stage_device; static uint8_t *stage_memory; static size_t stage_size; static int stage_calls, stage_made, stage_none;
+static uint8_t *stage(size_t bytes) { assert(!stage_memory); stage_calls++; stage_size = bytes; return stage_memory = malloc(bytes); }
+static id<MTLTexture> upload(MTLPixelFormat format, unsigned width, unsigned height) {
+    assert(stage_memory); id<MTLTexture> t = nil;
+    if (width) {
+        assert(format == MTLPixelFormatR8Unorm && (size_t)width * height == stage_size);
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:width height:height mipmapped:NO];
+        d.storageMode = MTLStorageModeShared;
+        t = [stage_device newTextureWithDescriptor:d]; assert(t);
+        [t replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:stage_memory bytesPerRow:width];
+        stage_made++;
+    } else stage_none++;
+    free(stage_memory); stage_memory = NULL;
+    return t;
+}
 static id<MTLTexture> texture(id<MTLDevice> device, unsigned size, const uint8_t *pixels) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:size height:size mipmapped:NO];
     d.storageMode = MTLStorageModeShared;
@@ -70,8 +87,24 @@ int main(void) { @autoreleasepool {
     assert(refreshed != ps && refreshed != updated);
     [refreshed getBytes:result bytesPerRow:32 fromRegion:MTLRegionMake2D(0, 0, 32, 32) mipmapLevel:0];
     assert(result[0] == 81);
+    /* With a renderer's staging the copy holds the same pixels, and a texture with no prompt gives the staging up. */
+    stage_device = device; totk_prompt_set_upload(stage, upload);
+    source[1] = 82;
+    id<MTLTexture> again = texture(device, 32, source);
+    id<MTLTexture> staged = totk_prompt_texture(&atlas, again, resident, retire);
+    assert(staged != again && staged != refreshed && stage_calls == 1 && stage_made == 1 && !stage_memory);
+    uint8_t staged_result[sizeof source]; [staged getBytes:staged_result bytesPerRow:32 fromRegion:MTLRegionMake2D(0, 0, 32, 32) mipmapLevel:0];
+    result[1] = 82; assert(!memcmp(staged_result, result, sizeof result));
+    assert(totk_prompt_texture(&atlas, again, resident, retire) == staged && stage_calls == 1);
+    totk_prompt_invalidate();   /* the renderer lost the upload that held the copy: built again */
+    id<MTLTexture> rebuilt = totk_prompt_texture(&atlas, again, resident, retire);
+    assert(rebuilt != staged && rebuilt != again && stage_calls == 2 && stage_made == 2);
+    guide.serial = 4;
+    id<MTLTexture> plain = texture(device, 108, hud);
+    assert(totk_prompt_texture(&guide, plain, resident, retire) == plain && stage_calls == 3 && stage_none == 1 && !stage_memory);
+    totk_prompt_set_upload(NULL, NULL);
     totk_prompt_remove_pool(source, sizeof source);
     assert(totk_prompt_texture(&atlas, original, resident, retire) == original);
     free(guide.mem);
-    puts("live atlas, HUD matching, texture caching and isolation passed");
+    puts("live atlas, HUD matching, texture caching, staged copy and isolation passed");
 } }
