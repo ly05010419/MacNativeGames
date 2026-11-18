@@ -58,6 +58,21 @@ class GpuError(unittest.TestCase):
         self.assertIn('gpu_trace_pipeline(p.label);', source)
         self.assertIn('setenv("OOT_GPU_ERROR_LOG"', (ROOT / 'games/oot/app/launcher.m').read_text())
 
+    def test_the_first_hang_reports_the_mesh_stage_memory_before_the_game_stops(self):
+        # M1 / M2 hangs (#2036 #2040 #2103 #2108 #2112 #2239) are in passes drawing mesh 3439aaa0, whose stage memory is
+        # claimed in a spin loop: the slots at the hang tell whether that claim is the cause (2026-11-18)
+        source = (NVN / 'nvn_mtl.m').read_text()
+        guard = source[source.index('static void gpu_hang_guard('):]
+        guard = guard[:guard.index('\n}\n')]
+        self.assertLess(guard.index('if (n == 1) mtk_scratch_hang_report();'), guard.index('if (n >= 2) MDIE('))
+        tasks = (NVN / 'nvn_mesh_tasks.inc').read_text()
+        report = tasks[tasks.index('static void mtk_scratch_hang_report(void) {'):]
+        report = report[:report.index('\n}\n')]
+        for words in ('slots held', 'forced takes', 'MTK_SCRATCH_FORCED', 'mtk_split_on()'):
+            self.assertIn(words, report)
+        # PR #2258: mesh draws in passes of their own by default only before Apple9 (M1 / M2); OOT_MESH_PASS_SPLIT forces it
+        self.assertIn('v=e&&*e?atoi(e)!=0:![g_dev supportsFamily:MTLGPUFamilyApple9];', tasks)
+
 
 if __name__ == '__main__':
     unittest.main()

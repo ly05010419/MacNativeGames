@@ -344,6 +344,19 @@ static void mtk_ring_dump(void) {
         MLOG("[mesh-ring] #%llu frame=%llu chunk=%d task %s mesh %s fs %s %s count %u first %u args %u %u %u %u",(unsigned long long)i,(unsigned long long)r->frame,r->chunk,r->ts,r->ms,r->fs,
              r->indirect?"indirect":"direct",r->count,r->first,a&&r->indirect?a[0]:0,a&&r->indirect?a[1]:0,a&&r->indirect?a[2]:0,a&&r->indirect?a[3]:0);}
 }
+/* At a GPU hang (gpu_hang_guard, before the game stops), always: the device stage memory as the GPU left it. The M1 / M2
+   hangs (#2036 #2040 #2103 #2108 #2112 #2239) are in passes drawing task a5288d0a + mesh 3439aaa0, and 3439aaa0 keeps its
+   stage memory here: a threadgroup claims a slot in a loop of up to 65,536 tries (MeshStage.cs ScratchSpinLimit), then
+   takes one still in use. Every slot held, or forced takes, at the hang points at that claim (nxnative gives up after 64
+   tries and skips the threadgroup's primitives); few slots held and no forced takes rule it out. The every-600-frames
+   report (mtk_scratch_report) said nothing about the moment of the hang: #2036's last one was 25 frames before it. */
+static void mtk_scratch_hang_report(void) {
+    if(!g_mtk_scratch){MLOG("[mesh] at the GPU hang: no mesh draw had used device stage memory");return;}
+    const uint32_t *h=g_mtk_scratch.contents;unsigned held=0;for(unsigned i=0;i<g_mtk_scratch_slots;i++)held+=h[MTK_SCRATCH_FLAGS+i]!=0;
+    MLOG("【红】[mesh] at the GPU hang (frame %llu): device stage memory slots held %u of %u, counter %u, forced takes %u; mesh draws %s",
+         (unsigned long long)atomic_load(&g_cur_frame),held,g_mtk_scratch_slots,h[0],h[MTK_SCRATCH_FORCED],
+         mtk_split_on()?"in render passes of their own":"share render passes");
+}
 static void mtk_ring_note(const p_draw *dw,NvShader *ts,NvShader *ms,NvShader *fs) {
     if(!mtk_ring_on())return;
     if(!g_mtk_ring_args){g_mtk_ring_args=[g_dev newBufferWithLength:MTK_RING*16 options:MTLResourceStorageModeShared];g_mtk_ring_args.label=@"OOT mesh ring";res_add(g_mtk_ring_args);memset(g_mtk_ring_args.contents,0xff,MTK_RING*16);}
