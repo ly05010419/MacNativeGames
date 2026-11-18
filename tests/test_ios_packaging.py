@@ -139,28 +139,6 @@ class FullHD(unittest.TestCase):
         self.assertIn('item[@"DefaultValuePad"] && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad', main)
         self.assertIn('for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];', main)
 
-    def test_botw_pane_has_the_docked_scene_after_full_hd(self):
-        import plistlib
-        root = build_ipa.botw_pane(plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes()))
-        specs = root['PreferenceSpecifiers']
-        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
-        row = specs[at+1]
-        self.assertEqual(row['Key'], 'TOTK_BOTW_SCENE')
-        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
-        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
-        self.assertTrue(row['TOTKPhone'])
-        # the runtime reads the same values, and the start screen's pick reaches it at game start
-        botw = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
-        self.assertIn('getenv("TOTK_BOTW_SCENE"); return e && !strcmp(e, "1920x1080")', botw)
-        main = (TOOLS.parent/'Sources/main.m').read_text()
-        self.assertIn('setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);', main)
-        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
-        self.assertIn('settingsPaneHas:@"TOTK_BOTW_SCENE"] ? @"TOTK_BOTW_SCENE"', screen)
-        self.assertIn('forKey:_sceneKey]', screen)
-        totk = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
-        self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
-        self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
-
     def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
         """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
         must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""
@@ -175,52 +153,75 @@ class FullHD(unittest.TestCase):
         self.assertIn("+host.read_bytes()).hexdigest()", ipa)
         self.assertLess(ipa.index("host=tree/"), ipa.index("+host.read_bytes()).hexdigest()"))
 
-    def test_totk_pane_has_the_docked_scene_after_full_hd(self):
-        """Tears of the Kingdom has the same three pictures (user 2026-11-03: "王国也一样"): its own TOTK_DOCKED_SCENE row
-        right after the Full HD switch, handed over as TOTK_RENDER_RES, and the start screen's original / HD."""
-        import plistlib
-        specs = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
-        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
-        row = specs[at+1]
-        self.assertEqual(row['Key'], 'TOTK_DOCKED_SCENE')
-        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
-        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
-        self.assertEqual(row['TOTKApp'], 'totk')
-        self.assertTrue(row['TOTKPhone'])
-        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
-        self.assertIn('[self settingsPaneHas:@"TOTK_DOCKED_SCENE"] ? @"TOTK_DOCKED_SCENE"', screen)
 
-    def test_botw_pane_drops_totk_only_rows(self):
-        import plistlib
-        root = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
-        # The TOTKApp mark on each row is the only list of what Breath of the Wild must not show; if the marks were
-        # dropped, the filtered pane would keep every row and the assertions below would pass vacuously.
-        marked = {s['Key'] for s in root['PreferenceSpecifiers'] if s.get('TOTKApp') == 'totk'}
-        self.assertTrue(marked, 'no row is marked TOTKApp=totk')
-        build_ipa.settings_without_totk(root)
-        specs = root['PreferenceSpecifiers']
-        keys = {s['Key'] for s in specs if 'Key' in s}
-        for key in marked:
-            self.assertNotIn(key, keys)
-        for key in ('TOTK_LANG', 'TOTK_PHONE_FPS', 'TOTK_FPS_OVERLAY', 'TOTK_SHADER_OVERLAY', 'TOTK_DEBUG_LOG'):
-            self.assertIn(key, keys)
-        # A group whose rows were all removed must not stay behind as an empty header.
-        for i, spec in enumerate(specs):
-            if spec.get('Type') == 'PSGroupSpecifier':
-                self.assertLess(i + 1, len(specs), spec.get('Title'))
-                self.assertNotEqual(specs[i+1].get('Type'), 'PSGroupSpecifier', spec.get('Title'))
 
-    def test_export_scene_is_a_pane_value(self):
-        # build_ipa.py embeds one scene size so the patch exists in the exported code; the pane's row must offer it, or
-        # the embedded patch and the panel disagree about what the device may select.
-        import plistlib, re
+class PicturePane(unittest.TestCase):
+    """The Settings app keeps only the picture profile and MetalFX for the two Zelda games (user 2026-11-17: "dentro do
+    jogo é o que vale"; spec "App Ajustes"); the picture rows of before go, so the pane and the game cannot disagree.
+    Bananza and Pokopia keep their own rows (Full HD / output size, frame rate)."""
+    PICTURE = {'TOTK_DOCKED', 'TOTK_DOCKED_SCENE', 'TOTK_BOTW_SCENE', 'TOTK_PHONE_FPS', 'TOTK_CUSTOM_PICTURE',
+               'TOTK_IOS_PICTURE_MODE', 'TOTK_RENDER_RES', 'TOTK_FPS_CAP', 'TOTK_MFX_UPSCALE', 'TOTK_TAA', 'TOTK_ASPECT',
+               'TOTK_OUTPUT_RES', 'TOTK_SWITCH_SIZE'}
+
+    def root(self):
+        import plistlib
+        return plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
+
+    def panes(self):
+        return {'totk': build_ipa.pane_for(self.root(), 'totk'), 'botw': build_ipa.botw_pane(self.root()),
+                'pokopia': build_ipa.pane_for(self.root(), 'ns2'), 'bananza': build_ipa.bananza_pane(self.root())}
+
+    def keys(self, pane):
+        return [s.get('Key') for s in pane['PreferenceSpecifiers'] if s.get('Key')]
+
+    def test_zelda_panes_have_only_the_profile_and_metalfx(self):
+        for game in ('totk', 'botw'):
+            with self.subTest(game=game):
+                keys = self.keys(self.panes()[game])
+                self.assertIn('TOTK_PICTURE_PROFILE', keys)
+                self.assertIn('TOTK_METALFX', keys)
+                self.assertEqual(self.PICTURE & set(keys), set(), 'no picture row of before')
+
+    def test_values_are_the_models_keys(self):
+        # The pane and the app store the same words (picture_profile.c pp_profile_key / pp_metalfx_key).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import test_picture_profile
+        profiles, metalfx = test_picture_profile.keys(self)
+        rows = {s['Key']: s for s in self.root()['PreferenceSpecifiers'] if s.get('Key')}
+        self.assertEqual(rows['TOTK_PICTURE_PROFILE']['Values'], profiles)
+        self.assertEqual(rows['TOTK_METALFX']['Values'], metalfx)
+        self.assertEqual(rows['TOTK_PICTURE_PROFILE']['DefaultValue'], 'performance', 'Desempenho on a new install')
+        self.assertEqual(rows['TOTK_METALFX']['DefaultValue'], 'off', 'the game\'s own upscale unless the player turns it on')
+        for key in ('TOTK_PICTURE_PROFILE', 'TOTK_METALFX'):
+            self.assertEqual(len(rows[key]['Titles']), len(rows[key]['Values']), key)
+            self.assertNotIn('DefaultValuePad', rows[key], 'the same default on iPad and iPhone')
+
+    def test_ns2_panes_keep_their_rows(self):
+        panes = self.panes()
+        for game, own in (('pokopia', 'TOTK_DOCKED'), ('bananza', 'TOTK_OUTPUT_RES')):
+            with self.subTest(game=game):
+                keys = self.keys(panes[game])
+                self.assertIn(own, keys)
+                self.assertIn('TOTK_PHONE_FPS', keys)
+                self.assertNotIn('TOTK_PICTURE_PROFILE', keys)
+                self.assertNotIn('TOTK_METALFX', keys)
+
+    def test_no_empty_group(self):
+        for game, pane in self.panes().items():
+            specs = pane['PreferenceSpecifiers']
+            for i, spec in enumerate(specs):
+                if spec.get('Type') == 'PSGroupSpecifier':
+                    with self.subTest(game=game, group=spec.get('Title')):
+                        self.assertLess(i + 1, len(specs))
+                        self.assertNotEqual(specs[i + 1].get('Type'), 'PSGroupSpecifier')
+
+    def test_export_scene_is_a_profile_size(self):
+        # build_ipa.py embeds one scene size so the scene patch exists in the exported code; it must be a size the
+        # profiles can ask for.
+        import re
         build = (TOOLS/'build_ipa.py').read_text()
-        match = re.search(r"TOTK_RENDER_RES='(\d+x\d+)'", build)
-        self.assertIsNotNone(match, 'the export scene size is missing')
-        values = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
-        scene = [s for s in values['PreferenceSpecifiers'] if s.get('Key') == 'TOTK_RENDER_RES'][0]
-        self.assertIn(match.group(1) if match else '', scene['Values'])
-
+        size = re.search(r"TOTK_RENDER_RES='(\d+x\d+)'", build).group(1)
+        self.assertIn(f'{{"{size}", ', (TOOLS.parent/'Sources/picture_profile.c').read_text())
 
 
 class StartScreen(unittest.TestCase):
