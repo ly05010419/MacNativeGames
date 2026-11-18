@@ -18320,6 +18320,14 @@ static void scene_size_note(__unsafe_unretained NvShader *fs) {   // the compose
 #include "botw_finish.h"   // the same rows on Breath of the Wild 1.9.0, around its FXAA / upscale draw
 #endif
 #include "totk_hdr_render.h"
+/* The compose draws whose smaller scene MetalFX upscales in mfxup_draw. Breath of the Wild on the Mac keeps what it had
+   (none: its compose writes the scene's own size there, and this path was Tears of the Kingdom's alone before
+   2026-11-17); on iOS its handheld compose is the upscale (1ae9bba7). */
+#if defined(GAME_BOTW) && !TARGET_OS_IPHONE
+#define MFXUP_COMPOSE(fs) 0
+#else
+#define MFXUP_COMPOSE(fs) TAA_COMPOSE(fs)
+#endif
 static int mfxup_draw(NvProg *pr) {
     if (g_mfxup_src || g_mfxup_out) { g_mfxup_src = nil; g_mfxup_out = nil; } g_mfxup_sh = nil;   // TOTK: nil stores were two objc_release calls on every draw
     if (!pr) return 0;
@@ -18374,7 +18382,7 @@ static int mfxup_draw(NvProg *pr) {
 #ifdef BOTW_FINISH
     if (botw_fin_upscale(fs, 0)) return 1;   // MetalFX on, but this draw kept (the picture is the canvas's size)
 #endif
-    if (!TAA_COMPOSE(fs) || !R.rt.n || !R.rt.color[0]) return 0;   // TOTK: 0ac9a549, as before
+    if (!MFXUP_COMPOSE(fs) || !R.rt.n || !R.rt.color[0]) return 0;   // TOTK: 0ac9a549, as before
     int tid = (int)(S.tex[1][0] & 0xfffff); if (tid <= 0) return 0;
     id<MTLTexture> src = (__bridge id<MTLTexture>)tex_fast_lk(tid), dst = g_hdr_draw_native ? attachment_texture(R.rt.color[0], &R.rt.cview[0], R.rt.has_cview[0]) : tex_mtl(R.rt.color[0]);   // HDR: its FP16 companion (PR #1129)
     if (!src || !dst || src.width >= dst.width || src.height >= dst.height) return 0;
