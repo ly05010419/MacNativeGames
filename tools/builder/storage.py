@@ -43,15 +43,16 @@ class Size:
         return not self.errors
 
 
-def measure(path):
+def measure(path, skip=None):
     """Walk a folder without following symlinks; a missing folder counts as empty. Errors are kept,
-    never raised: one unreadable file must not hide the rest of the count."""
+    never raised: one unreadable file must not hide the rest of the count. skip(folder path) -> True leaves a folder out
+    (a work folder's trash, which a background delete is emptying)."""
     path = Path(path)
     total, count, errors = 0, 0, []
     if not path.is_dir():
         return Size()
     for root, folders, files in os.walk(path, followlinks=False):
-        folders[:] = [f for f in folders if not Path(root, f).is_symlink()]
+        folders[:] = [f for f in folders if not Path(root, f).is_symlink() and not (skip and skip(Path(root, f)))]
         for name in files:
             item = Path(root, name)
             try:

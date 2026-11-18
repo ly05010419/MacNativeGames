@@ -6,6 +6,7 @@ struct StorageState: Decodable {
     struct Folder: Decodable, Identifiable {
         let id, label, path, kind, `where`, note: String
         let exists, movable: Bool
+        let prunable: Bool?   // the game has work_prune.py: the work folder's 安全清理空间 button
         let size: Size?
         let detail, confirm: String
     }
@@ -16,21 +17,19 @@ struct StorageState: Decodable {
 
 /// The words only this page's Swift side says (the rest comes from tab_storage.py, in the same language).
 enum StorageText {
-    static let clean = T.s("Clean", "清理")
-    static let cleanTitle = T.s("Clean the build cache?", "清理打包缓存？")
+    /// What a finished build does to its work folder (the game's work_prune.py), from this page (user 2026-11-18:
+    /// "做成一个按钮 放在 存储 里 替换 清理按钮 叫做安全清理空间"). Emptying the whole folder is `mng page storage clean`.
+    static let safeClean = T.s("Free space safely", "安全清理空间")
     static let measuring = T.s("Measuring…", "正在计算大小…")
     static let measure = T.s("Measure space used", "计算空间占用大小")
     static let cancel = T.s("Cancel", "取消")
     static let working = T.s("Working…", "处理中…")
     static let busy = T.s("A build or an update is running: cleaning and moving wait until it ends.",
                           "正在打包或更新：结束后才能清理或移动。")
-    static func cleanFallback(_ path: String) -> String {
-        T.s("Delete everything inside \(path)? Saves and the app are not touched.", "删除 \(path) 里的全部内容？存档和 App 不受影响。")
-    }
 }
 
 /// The work folder the app records and the game's shader cache (tab_storage.py over tools/builder/storage.py): where
-/// they are and their sizes; the work folder can be cleaned after a question saying what that costs the next update.
+/// they are and their sizes; the work folder sheds what no later build reads (安全清理空间), as each build does when it ends.
 struct StoragePage: View {
     let app: String
     @EnvironmentObject var model: Model
@@ -41,7 +40,6 @@ struct StoragePage: View {
     @State private var status = ""
     @State private var failed = false
     @State private var working = false
-    @State private var cleaning: StorageState.Folder?
 
     private var building: Bool { model.jobRunning }
 
@@ -65,11 +63,6 @@ struct StoragePage: View {
             }
         }
         .task { await load() }
-        .confirmationDialog(StorageText.cleanTitle, isPresented: Binding(get: { cleaning != nil }, set: { if !$0 { cleaning = nil } }),
-                            presenting: cleaning) { f in
-            Button(StorageText.clean, role: .destructive) { clean(f) }
-            Button(StorageText.cancel, role: .cancel) {}
-        } message: { f in Text(f.confirm.isEmpty ? StorageText.cleanFallback(f.path) : f.confirm) }
     }
 
     @ViewBuilder private func folderBox(_ f: StorageState.Folder) -> some View {
@@ -83,13 +76,16 @@ struct StoragePage: View {
                 } else if !f.detail.isEmpty {
                     Text(f.detail).font(.callout)
                 }
-                // Only the work folder can be cleaned here, after a question saying what it costs the next update; the
-                // shader cache shows where it is and its size (user 2026-11-12). `mng page storage clean|move` do more.
+                // The work folder sheds only what no later build reads, with no question: the next update stays an express
+                // one (user 2026-11-18, in place of 2026-11-12's clean, which emptied it). The shader cache shows where it
+                // is and its size. `mng page storage clean|move` do more.
                 if f.id == "work" {
                     Text(f.note).font(.caption2).foregroundStyle(.tertiary)
-                    Button(StorageText.clean) { cleaning = f }
-                        .disabled(working || building || measuring.contains(f.id) || !f.exists || f.kind == "unreachable")
-                        .padding(.top, 4)
+                    if f.prunable == true {
+                        Button(StorageText.safeClean) { safeClean() }
+                            .disabled(working || building || measuring.contains(f.id) || !f.exists)
+                            .padding(.top, 4)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,16 +116,17 @@ struct StoragePage: View {
 
     private func report(_ text: String, failed: Bool) { status = text; self.failed = failed }
 
-    private func clean(_ f: StorageState.Folder) {
-        struct Cleaned: Decodable { let message: String }
+    private func safeClean() {
+        struct Freed: Decodable { let message: String }
         working = true
         Task {
             do {
-                let r = try await TabClient.decode(Cleaned.self, "storage", "clean", app: app, args: ["folder": f.id])
+                let r = try await TabClient.decode(Freed.self, "storage", "safe_clean", app: app)
                 report(r.message, failed: false)
             } catch { report(error.localizedDescription, failed: true) }
             working = false
-            await load()   // the folders again, without the cleaned one's old size; the button measures it
-        }
+            await load()             // the folders again, without the old size
+            await measure("work")    // and the size now (the trash being deleted is not counted; user 2026-11-18: an old
+        }                            // size stayed after a clean, "清理完 还是这么多？")
     }
 }
