@@ -36,6 +36,10 @@ final class Model: ObservableObject {
     @Published var installedLoaded = false   // the first scan finished: until then no game is shown as missing
     @Published var installedError: String?   // why the last scan failed (the home page shows it)
     @Published var newerLauncher: (version: String, url: URL)?   // a newer MNG Launcher release (the version label turns blue)
+    // The Launcher replacing itself with that release (LauncherUpdate.swift: the button at the home page's top right)
+    @Published var launcherUpdate: LauncherUpdate.Phase = .idle
+    @Published var launcherUpdateManual: URL?   // where a person downloads it instead, offered when the update failed
+    var launcherUpdateJob: Job?
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     /// A job is running now. `updating` names the app the last job was for and stays after it ends (its card keeps the
     /// result and the log), so it never means "busy": a reporter (2026-11-17) found Start grey after a `mng.py build`
@@ -89,6 +93,7 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.lookForExternal() }
         }
         loadRememberedInstalled()   // the games of the last look at once; the look below brings them up to date
+        readLauncherUpdateOutcome()   // an update that could not put the new Launcher in place says so
         Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
     }
 
