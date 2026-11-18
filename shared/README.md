@@ -89,3 +89,16 @@ run `find games -lname '*shared/<path>'`. Game-specific behaviour belongs in the
 
 Note: `git mv` keeps a file's old modification time. After moving a file here, `touch` it, or make will keep
 the game's old object file.
+
+## Why the shader translator is not shared
+
+Each game pins its own build of `prebuilt/macos-arm64/totk_xlate`. Every one of these is a copy of `games/totk`'s at an
+earlier commit (EoW at d58cde0b, Odyssey at 92957c94, ACNH at f3e34052), and none carries a fix of its own. They were
+compared on 2026-11-18 by translating every seed variant of Odyssey (31,228), ACNH (7,937) and EoW (10,091) with both
+the game's translator and TotK's. All of TotK's outputs compiled. Still, 91%, 86% and 97% of them differ in meaning:
+`fast::` min/max/clamp become `precise::` (NaN behaviour), some control flow is restructured, and for EoW there are
+also vertex-output initialisation, attribute types and the depth-sampling rewrite. A game therefore keeps its own
+translator until someone has checked its picture with TotK's. A switch needs:
+- the game's shader libraries rebuilt;
+- its seed translated again (Odyssey's and EoW's express updates do not do this by themselves);
+- a runtime cache identity bump, because their `rt-totk-native-v4-unverified` cache has no translator in its name.
