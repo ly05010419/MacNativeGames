@@ -20979,6 +20979,7 @@ void mtl_grab_next_present(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_s
 // 玩家截图键（screenshot.h，前端 screenshot_picture）要的游戏帧：下一次上屏时把出图贴图 src（上屏放大之前、无黑边）整体拷进共享缓冲，GPU 完成后在反馈回调里交出 CGImage；HDR 或意外格式的源帧暂回退到整窗（上屏贴图）拷贝。
 // The game frame the player's capture button wants (screenshot.h, the front ends' screenshot_picture): at the next present the source texture src (before the output upscale, no letterbox bars) is copied whole into a shared buffer, and the feedback handler hands out a CGImage once the GPU is done; an HDR or unexpected source frame falls back to the whole-window (drawable) copy for now.
 #include "nvn_capture_region.h"
+#include "nvn_present_ring_region.h"
 static void (^g_grab_game_cb)(CGImageRef img);
 void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_game_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 /* The window picture re-rendered offscreen by the legacy encoder: only for presents that draw no drawable
@@ -22063,9 +22064,11 @@ static void cadence_note(double tt, int interp) {
    A slot is free once the queue has moved past its ticket (shown or dropped) and no present command buffer reads it. */
 #define PRING_N 4
 static id<MTLTexture> g_pring[PRING_N]; static uint64_t g_pring_tk[PRING_N]; static int g_pring_busy[PRING_N];   // g_pq_mu
+static int g_pring_pic[PRING_N];   // the slot is the present's crop alone (nvn_present_ring_region.h): written while the slot is being filled, read by the present of its ticket
 static __thread int t_pn_ring = -1;   // the slot present_now shows instead of the game's image (set by its callers)
 static uint64_t g_pring_n, g_pring_full;
 static int pring_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PRESENT_RING"); v = !(e && !strcmp(e, "0")); } return v; }
+static int pring_whole(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PRESENT_RING_WHOLE"); v = e && !strcmp(e, "1"); } return v; }   // =1: every slot the whole window image, as before 2026-11-18 (a comparison)
 /* The minimum display time of a picture (presentAfterMinimumDuration): the present period cut down to whole refreshes,
    less a millisecond. The period itself was too long wherever it is not a whole number of refreshes: a 90 or 72 fps
    frame lock on a 120 Hz display (11.1 / 13.9 ms) waited for the second refresh every time and ran at 60, and the 120
@@ -22103,6 +22106,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<MTLTexture> src = interp >= 0 ? mfx_output(interp) : ring >= 0 ? g_pring[ring] : tex_mtl(t);
     BOOL hdrFrame=NO;t_hdr_present_white=1;t_hdr_present_peak=1;
     if(interp<0){id<MTLTexture> linear=hdr_swap_texture(t->serial,frame,&t_hdr_present_white,&t_hdr_present_peak);if(linear){src=linear;hdrFrame=YES;}}
+    int ring_crop[4];   // a slot that is the picture alone is read from its origin; any other source keeps the game's crop
+    if (ring >= 0 && src == g_pring[ring]) crop = nvn_ring_present_crop(g_pring_pic[ring], src.width, src.height, crop, ring_crop);
     if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
     if (interp < 0) anom_present(src, frame);   // TOTK_ANOMALY
     /* One-frame temporal fallback (TOTK_FLASH_GUARD=1, off by default): a same-queue readback of the picture's centre
@@ -22571,13 +22576,13 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     pq_item it = *ip; g_link_it_tin = it.t_in;
     if (interp < 0) g_pdiag[ticket % PRING] = (pdiag_ent){ticket, it.t_in, CACurrentMediaTime(), tts, 0, (int)(ticket - first)};   // the pacing record (@pq_* columns)
     g_pq_read = interp >= 0 ? g_pq_in - 1 : g_pq_in;
+    int ring = interp < 0 ? it.ring : -1;
+    if (ring >= 0) g_pring_busy[ring] = 1;   // in the section that moves the queue past its ticket: never free in between (a present of another size replaces the slot's texture)
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // 被合并丢弃的旧帧记「未上屏」，上屏统计如实算掉帧 | Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     int submitted;
-    int ring = interp < 0 ? it.ring : -1;
-    if (ring >= 0) { pthread_mutex_lock(&g_pq_mu); g_pring_busy[ring] = 1; pthread_mutex_unlock(&g_pq_mu); }
     t_pn_ring = ring;
     @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp, interp); }
     t_pn_ring = -1;
@@ -22676,6 +22681,7 @@ static void *present_main(void *arg) {
         while (g_pq_read == g_pq_in || g_link_owns_layer) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 节拍模式下由节拍回调取；空队列看「已取出」；「已完成」要等上屏提交的 feedback，落后于取出 | In display-link mode the display-link callback takes them; an empty queue is judged by "taken"; "done" has to wait for the feedback of the present submit and lags behind taken
         pq_item it = g_pq[g_pq_read % PQ];
         uint64_t ticket = ++g_pq_read; g_classic_busy = 1;
+        if (it.ring >= 0) g_pring_busy[it.ring] = 1;   // as in the display link's callback
         pthread_mutex_unlock(&g_pq_mu);
         int submitted;
         /* TOTK_MFX without the display link: the interpolated picture for at least one refresh (at most half a game frame),
@@ -22686,7 +22692,6 @@ static void *present_main(void *arg) {
         pthread_mutex_lock(&g_pq_mu); int behind = g_pq_read < g_pq_in; pthread_mutex_unlock(&g_pq_mu);
         int show_interp = it.interp >= 0 && !behind;
         if (show_interp) { @autoreleasepool { (void)present_now(&it.t, fmin(it.period / 2, tick), it.frame, ticket, it.crop, nil, 0, it.interp); } }
-        if (it.ring >= 0) { pthread_mutex_lock(&g_pq_mu); g_pring_busy[it.ring] = 1; pthread_mutex_unlock(&g_pq_mu); }
         t_pn_ring = it.ring;
         @autoreleasepool { submitted = present_now(&it.t, show_interp ? it.period / 2 : it.period, it.frame, ticket, it.crop, nil, 0, -1); }
         t_pn_ring = -1;
@@ -22818,19 +22823,22 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         if (ring < 0) g_pring_full++;
         else {
             id<MTLTexture> r = g_pring[ring];
-            if (!r || r.width != rsrc.width || r.height != rsrc.height || r.pixelFormat != rsrc.pixelFormat) {
+            nvn_ring_region rr = nvn_ring_region_for(rsrc.width, rsrc.height, pring_whole() ? NULL : crop);   // the picture the display shows, not the whole window image
+            if (!r || r.width != rr.w || r.height != rr.h || r.pixelFormat != rsrc.pixelFormat) {
                 if (r) { res_remove(r); defer_obj_release(r); }
-                MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:rsrc.pixelFormat width:rsrc.width height:rsrc.height mipmapped:NO];
+                MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:rsrc.pixelFormat width:rr.w height:rr.h mipmapped:NO];
                 d.usage = MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
-                r = [g_dev newTextureWithDescriptor:d]; if (!r) MDIE("present ring texture %lux%lu", (unsigned long)rsrc.width, (unsigned long)rsrc.height);
+                r = [g_dev newTextureWithDescriptor:d]; if (!r) MDIE("present ring texture %zux%zu", rr.w, rr.h);
                 r.label = [NSString stringWithFormat:@"present ring %d", ring]; res_add(r); g_pring[ring] = r;
             }
+            g_pring_pic[ring] = rr.picture;
             mtl_sub_begin();
             id<MTL4ComputeCommandEncoder> b = blit();
-            enc_b_copy_texture(b, rsrc, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(rsrc.width, rsrc.height, 1), r, 0, 0, MTLOriginMake(0, 0, 0));
+            enc_b_copy_texture(b, rsrc, 0, 0, MTLOriginMake(rr.x, rr.y, 0), MTLSizeMake(rr.w, rr.h, 1), r, 0, 0, MTLOriginMake(0, 0, 0));
             enc_b_end(g_blit); g_blit = nil;
             mtl_sub_commit();
-            if (++g_pring_n == 1 || g_pring_n % 3600 == 0) MLOG("[present-ring] %llu presents copied (no free slot %llu times)", (unsigned long long)g_pring_n, (unsigned long long)g_pring_full);
+            if (++g_pring_n == 1 || g_pring_n % 3600 == 0) MLOG("[present-ring] %llu presents copied (no free slot %llu times); this one %zux%zu at %zu,%zu of the %lux%lu window image",
+                                                                (unsigned long long)g_pring_n, (unsigned long long)g_pring_full, rr.w, rr.h, rr.x, rr.y, (unsigned long)rsrc.width, (unsigned long)rsrc.height);
         }
     }
     pthread_mutex_lock(&g_pq_mu);
