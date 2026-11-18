@@ -34,7 +34,8 @@ class PhoneScene(unittest.TestCase):
         self.assertIsNotNone(store, f'{name}: the start writes the pair')
         self.assertEqual(int(store.group(1), 0), offset, f'{name}: the load reads the slot the start writes')
         self.assertEqual(int(store.group(2)), screen, f'{name}: the screen width of that mode\'s canvas')
-        self.assertIn('phone_scene_custom()', fn, f'{name}: the custom scene reaches this mode')
+        # the custom scene reaches this mode, held at this mode's canvas (the pair's screen width)
+        self.assertIn(f'phone_scene_custom({screen})', fn, f'{name}: the custom scene, held at the {screen}-wide canvas')
         return offset
 
     def test_both_modes_read_their_own_slot(self):
@@ -48,18 +49,22 @@ class PhoneScene(unittest.TestCase):
         for found in re.findall(r'\(page \+ (\w+)\)', self.text):
             self.assertIn(int(found, 0), taken | {docked, handheld}, f'a page slot nobody listed: +{found}')
 
-    def test_custom_sizes_stay_within_the_handheld_canvas(self):
-        # Above the canvas the game cannot make its heaps; handheld's canvas is 1280x720.
-        sizes = re.search(r'sizes\[\] = \{(.*?)\};', body_fn(self.text, 'phone_scene_custom'), re.S).group(1)
+    def test_custom_sizes_stay_within_each_modes_canvas(self):
+        # Above the canvas the game cannot make its heaps: docked's canvas is 1920x1080, handheld's 1280x720. The list
+        # goes up to the docked canvas for faster devices (user 2026-11-17); a size above a mode's canvas is held there.
+        fn = body_fn(self.text, 'phone_scene_custom')
+        sizes = re.search(r'sizes\[\] = \{(.*?)\};', fn, re.S).group(1)
         pairs = re.findall(r'\{"(\d+)x(\d+)", (\d+)\}', sizes)
-        self.assertEqual([p[0] for p in pairs], ['1280', '960', '800', '640'])
+        self.assertEqual([p[0] for p in pairs], ['1920', '1600', '1280', '960', '800', '640'])
         for w, h, width in pairs:
             self.assertEqual(w, width)
             self.assertEqual(int(w) * 9 // 16, int(h), '16:9, as the render height follows the width')
+        self.assertIn('if (sizes[i].width <= canvas_w) return sizes[i].width;', fn)
+        self.assertIn('return canvas_w;', fn, 'a size above the canvas is held at the canvas, never above it')
 
 
 def body_fn(text, name):
-    return re.search(r'static unsigned ' + name + r'\(void\) \{.*?\n}', text, re.S).group(0)
+    return re.search(r'static unsigned ' + name + r'\(unsigned canvas_w\) \{.*?\n}', text, re.S).group(0)
 
 
 if __name__ == '__main__':
