@@ -24,6 +24,9 @@ void totk_rt_note_set(NSString *shader);
 void totk_rt_dump_unseeded(const uint8_t *control, const void *code, uint32_t length, NSString *key);   // a shader the game set that the seed lacks: into the contribution file
 // The variants of a shader already in the translation cache (or the seed), without translating anything; empty when none.
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader);
+// A row of this device's warm-up lists (pso_user.tsv, pso_collected.tsv) with each variant the app's seed supersedes (same
+// deps) put on the seed's: the variant a draw takes now (totk_variant_rows.h). Other rows come back unchanged.
+NSString *totk_rt_row_prefer_seed(NSString *line);
 // Returns the variant name whose <dir>/<variant>_b.{metal,json} match the answers, translating when needed.
 // stage: NVN shader stage (0 vertex, 1 fragment, 5 compute). answers: {"tex","img","attr","fout"} dictionaries.
 // nil on iOS when the variant is not translated yet (request recorded). may_defer (Mac, async shaders): instead of
@@ -38,6 +41,7 @@ void totk_rt_service_prestart(void);   // start the submit thread's translator s
 void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage));
 // The variant totk_rt_variant would return when the cache index already names one; nil otherwise (never translates).
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers);
+void totk_rt_prefetch(NSArray<NSArray *> *asks);   /* a seed run: (shader, answers) asks' indexes and sources read on all cores first */
 /* Seed runs (TOTK_SEED_VERIFY=1): the variants checked against this runtime's requests or made in the run, and how many
    cached ones were kept and made again (totk_shader_rt.m seed_verified). */
 NSArray<NSString *> *totk_rt_seed_verified(uint64_t *kept, uint64_t *dropped);

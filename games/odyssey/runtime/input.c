@@ -68,17 +68,28 @@ static void user_input(const char *what){
    layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
    not toggle it. Keys 2-7 are no shortcuts any more (games/totk, user 2026-10-25: the panel replaces them). */
 enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
+/* The screenshot action (keyboard_map.h KEYMAP_SCREENSHOT, P by default; games/totk, user 2026-11-11): a press of one of its
+   inputs takes the capture button's picture (gamepad.m runtime_capture_press -> screenshot.h). Its inputs drive nothing in
+   the game (keymap_apply). */
+static int screenshot_input_locked(int input){return keymap_action_of(&keyMap,input,NULL)==KEYMAP_SCREENSHOT;}
+static void screenshot_input(int input){
+ const char *name=keymap_input_name(input);fprintf(stderr,"[totk-input] screenshot: %s\n",name?name:"?");
+ if(runtime_capture_press)runtime_capture_press();
+}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;held_buttons_locked();pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
 void runtime_input_key(unsigned code,int down){
  if(code>=128)return;if(down)user_input("keyboard");
- pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int shot=press&&screenshot_input_locked((int)code);pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
+ if(shot)screenshot_input((int)code);
 }
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
  if(button<0||button>=KEYMAP_MOUSE_BUTTONS)return;if(down)user_input("mouse");
- pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[KEYMAP_MOUSE_FIRST+button];held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();
+ int shot=press&&screenshot_input_locked(KEYMAP_MOUSE_FIRST+button);pthread_mutex_unlock(&inputLock);
+ if(shot)screenshot_input(KEYMAP_MOUSE_FIRST+button);
 }
 /* Both window focus loss and DisconnectNpad release held inputs and short presses. In 2P the
    guest can disconnect just one Npad, so leave the other player's latches and sticks intact. */
@@ -244,111 +255,15 @@ void *runtime_input_override(const char *name){
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 
-/* TOTK_INPUT_SCRIPT="sec:keycode:ms,...": press Mac key codes at given seconds after start (diagnostics without a
-   picture: does the game react to a button). Key codes go through the fixed script layout (J=38 is A, Return=36 is Plus). */
-#include <unistd.h>
-static void *input_script(void *arg) {
-    const char *p = arg; uint64_t t0 = runtime_now_ns();
-    while (p && *p) {
-        double at = strtod(p, (char **)&p); if (*p++ != ':') break;
-        unsigned code = (unsigned)strtoul(p, (char **)&p, 10); if (*p++ != ':') break;
-        unsigned ms = (unsigned)strtoul(p, (char **)&p, 10); if (*p == ',') p++;
-        while ((runtime_now_ns() - t0) / 1e9 < at) usleep(10000);
-        fprintf(stderr, "[totk-input] script: key %u down for %u ms at %.1f s\n", code, ms, at);
-        runtime_input_key_synthetic(code, 1); usleep(ms * 1000); runtime_input_key_synthetic(code, 0);
-    }
-    return NULL;
+/* This game's own TOTK_INPUT_FILE commands; the shared runtime/input_file.h (below) runs the rest: gpucapture
+   <path>.gputrace (a Metal capture of the next frame). 1: it was one. */
+static int input_game_command(char *line) {
+    if (!strncmp(line, "gpucapture ", 11) && line[11]) {   /* "gpucapture <path>.gputrace": a Metal capture of the next frame (needs MTL_CAPTURE_ENABLED=1) */
+        char *e = line + strlen(line); while (e > line + 11 && (e[-1] == '\n' || e[-1] == '\r')) *--e = 0;
+        extern void dm_gfx_gpucapture_next(const char *path); dm_gfx_gpucapture_next(line + 11);
+    } else return 0;
+    return 1;
 }
-__attribute__((constructor)) static void input_script_start(void) {
-    const char *e = getenv("TOTK_INPUT_SCRIPT"); if (!e) return;
-    pthread_t t; pthread_create(&t, NULL, input_script, (void *)e); pthread_detach(t);
-}
-
-/* Optional local integration-test command stream. Appending complete lines lets tests inspect each
-   actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally.
-   Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, wshot <path>, passdump <frames>, gpucapture <path>.gputrace, querylog <frames>, anomdump,
-   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), close. */
-extern void dm_gfx_shot_at(long frames, const char *path);
-extern void runtime_front_request_close(void);
-/* "mscan ...": memory scan and write watch (runtime/mem_scan.h, in services.c); this default answers in the probes that
-   link input.c alone, which have no game memory. */
-__attribute__((weak)) int runtime_mem_scan_command(const char *line) { (void)line; return 0; }
-static void *input_file(void *arg) {
-    FILE *f = fopen((const char *)arg, "r"); if (!f) runtime_fail("cannot open TOTK_INPUT_FILE");
-    char line[1200];
-    for (;;) {
-        if (!fgets(line, sizeof line, f)) {
-            if (ferror(f)) runtime_fail("diagnostic input read");
-            clearerr(f); usleep(100000);
-            /* A file replaced instead of appended to (devicectl device copy to an iPhone's Documents writes a new file, so
-               this stream would stay on the old one and never see another line): open the new one. The writer copies the
-               whole command list again, so it is read on from where the old one ended; a shorter file is a new list, read
-               from its start. */
-            struct stat now, held; FILE *n;
-            if (!stat((const char *)arg, &now) && !fstat(fileno(f), &held) && now.st_ino != held.st_ino && (n = fopen((const char *)arg, "r"))) {
-                long at = ftell(f); fclose(f); f = n;
-                if (at > 0 && now.st_size >= at) fseek(f, at, SEEK_SET);
-            }
-            continue;
-        }
-        if (runtime_survey_command(line)) continue;
-        unsigned code, ms; int used = 0;
-        if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
-            fprintf(stderr,"[totk-input] file: key %u down\n",code);runtime_input_key_synthetic(code,1);
-        } else if (sscanf(line, "up %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
-            fprintf(stderr,"[totk-input] file: key %u up\n",code);runtime_input_key_synthetic(code,0);
-        } else if (sscanf(line, "key %u %u %n", &code, &ms, &used) == 2 && used && !line[used] && code < 128 && ms > 0 && ms <= 5000) {
-            fprintf(stderr, "[totk-input] file: key %u for %u ms\n", code, ms);
-            runtime_input_key_synthetic(code, 1); usleep(ms * 1000); runtime_input_key_synthetic(code, 0);
-        } else if (sscanf(line, "passdump %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code < 16) {
-            extern void dm_gfx_passdump_next(long n); dm_gfx_passdump_next((long)code);
-        } else if (!strncmp(line, "gpucapture ", 11) && line[11]) {   /* "gpucapture <path>.gputrace": a Metal capture of the next frame (needs MTL_CAPTURE_ENABLED=1) */
-            char *e = line + strlen(line); while (e > line + 11 && (e[-1] == '\n' || e[-1] == '\r')) *--e = 0;
-            extern void dm_gfx_gpucapture_next(const char *path); dm_gfx_gpucapture_next(line + 11);
-        } else if (!strncmp(line, "anomdump", 8) && (line[8] == '\n' || line[8] == '\r' || !line[8])) {   /* TOTK_ANOMALY=<dir>: write the per-draw records (with GPU sample counts) of the last frames now */
-            extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
-        } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
-            extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
-        } else if (!strncmp(line, "flag ", 5)) {
-            /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
-            char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
-            extern void dm_gfx_set_flag(const char *name, int v); if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
-        } else if (!strncmp(line, "texdump ", 8)) {
-            extern void dm_gfx_texdump_next(const char *path);
-            line[strcspn(line, "\r\n")] = 0; if (!line[8] || !strstr(line + 8, "%d")) runtime_fail("diagnostic texdump path needs %d");
-            dm_gfx_texdump_next(line + 8);
-        } else if (sscanf(line, "shotn %u %n", &code, &used) == 1 && used && code > 0 && code <= 60) {
-            /* "shotn <n> <path with %d>": screenshots of n consecutive game frames (frame flicker); %d = 0..n-1 */
-            line[strcspn(line, "\r\n")] = 0; const char *fmt = line + used;
-            if (!*fmt || !strstr(fmt, "%d") || strchr(strstr(fmt, "%d") + 2, '%')) runtime_fail("diagnostic shotn path needs one %d");
-            for (unsigned i = 0; i < code; i++) { char p[1200]; snprintf(p, sizeof p, fmt, (int)i); dm_gfx_shot_at(2 + (long)i, p); }
-        } else if (!strncmp(line, "shot ", 5)) {
-            line[strcspn(line, "\r\n")] = 0; if (!line[5]) runtime_fail("diagnostic screenshot path");
-            dm_gfx_shot_at(2, line + 5);
-        } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
-            line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
-            extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
-        } else if (!strcmp(line, "kbtest\n")) {   /* text entry bar the way the game names a horse (runtime/swkbd_host.c) */
-            runtime_swkbd_selftest();
-        } else if (!strncmp(line, "kbtype ", 7)) {   /* "kbtype <text>": typed into the open bar */
-            line[strcspn(line, "\r\n")] = 0; runtime_front_text_test("type", line + 7);
-        } else if (!strncmp(line, "kbshot ", 7)) {   /* "kbshot <path>": the open bar as a PNG */
-            line[strcspn(line, "\r\n")] = 0; runtime_front_text_test("shot", line + 7);
-        } else if (!strcmp(line, "kbenter\n") || !strcmp(line, "kbesc\n")) {
-            runtime_front_text_test(line[2] == 'e' && line[3] == 'n' ? "enter" : "esc", NULL);
-        } else if (sscanf(line, "hletrace %u %n", &code, &used) == 1 && used && !line[used] && code <= 2) {
-            runtime_hle_trace_set((int)code);   /* 1 count host calls, 2 also log the first call of each, 0 stop and print the counts */
-        } else if (!strncmp(line, "framestep ", 10)) {   /* "framestep <ms>": pin the real-time frame step, 0 = back to real time */
-            char *end; double ms = strtod(line + 10, &end); if (end == line + 10 || ms < 0 || ms > 100) runtime_fail("framestep takes milliseconds (0 = real time)");
-            runtime_frame_step_pin(ms);
-        } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
-            runtime_dump_threads();
-        } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }
-        else runtime_fail("invalid diagnostic input command");
-    }
-    fclose(f); return NULL;
-}
-__attribute__((constructor)) static void input_file_start(void) {
-    const char *e = getenv("TOTK_INPUT_FILE"); if (!e || !*e) return;
-    pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
-}
+/* "flag <name> <v>": none of this game's own (rumble and gyro are hid_feedback.c's, the rest the graphics layer's). */
+static int input_game_flag(const char *name, int v) { (void)name; (void)v; return 0; }
+#include "input_file.h"   /* TOTK_INPUT_SCRIPT and TOTK_INPUT_FILE (shared/runtime) */

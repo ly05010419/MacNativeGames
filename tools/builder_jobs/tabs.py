@@ -20,7 +20,7 @@ import sys
 from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
 
-TABS = ('settings', 'mods', 'controls', 'storage', 'saves')
+TABS = ('settings', 'mods', 'controls', 'storage', 'saves')   # 诊断模式 removed 2026-11-15: a quick App carries it
 
 
 @dataclass(frozen=True)

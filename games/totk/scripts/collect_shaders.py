@@ -8,7 +8,9 @@ A player's game writes the shaders and pipelines its list lacks to a contributio
 keeps each row once per game with the installs and game versions that sent it. This is the only way contributions come
 in (user 2026-11-12: the GitHub issues players used to attach the file to are no longer read). --inbox <url> merges the
 rows the inbox holds; --mark-inbox <ref> (with --apply, after the lists are committed) tells the inbox those rows are done.
-The inbox's admin token is read from SHADER_INBOX_TOKEN.
+The inbox's admin token is read from SHADER_INBOX_TOKEN. --file <game>=<path> merges a contribution file at hand the same
+way (2026-11-18, user: "搜集 issue里的": players of older apps still post the file with their reports; it is fetched by
+hand, this script reads only the files it is given); <game> auto names the game whose keys hold most of the file's shaders.
 
 Which list a row goes to is decided by what it names, never by who sent it (user 2026-11-12: "根治"). A shader key is the
 SHA-256 of a shader's control section and code (the runtime's), so the keys a game's files hold say which game a shader is
@@ -45,7 +47,7 @@ from shader_list import KEY, NAME, ShaderList, answers_suffix, canonical, listed
 from prepare_shader_seed import builtin_serves  # noqa: E402
 from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, list_key_rule  # noqa: E402
 
-TITLES = {'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
+TITLES = {'tmnt': "Teenage Mutant Ninja Turtles: Shredder's Revenge", 'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
           'ssbu': 'Super Smash Bros. Ultimate', 'wonder': 'Super Mario Bros. Wonder', 'mvdk': 'Mario vs. Donkey Kong',
           'dkb': 'Donkey Kong Bananza', 'pokopia': 'Pokémon Pokopia', 'oot': 'Ocarina of Time'}
 # Each game's list, by the game's id in the inbox (its lib/validate.js GAMES and the apps' GAME_INBOX_ID)
@@ -402,6 +404,32 @@ def merge_inbox(base, token, lists, keys, seeds):
     return done
 
 
+def file_game(text, keys):
+    """The game whose keys hold the most of a contribution text's shaders (its V rows and pipelines), or None when no game
+    holds any or two hold as many: the default a file without its game takes (rows still go by owner)."""
+    shaders = {s for _, item in contribution_items(text)[0] for s in item_shaders(item)}
+    held = sorted(((sum(1 for s in shaders if s in k), g) for g, k in keys.items()), reverse=True)
+    if not held or not held[0][0] or (len(held) > 1 and held[1][0] == held[0][0]):
+        return None
+    return held[0][1]
+
+
+def merge_files(specs, lists, keys, seeds):
+    """Contribution files at hand (--file <game>=<path>, <game> auto: file_game): [report line]."""
+    done = []
+    for spec in specs:
+        game, _, path = spec.partition('=')
+        text = Path(path).read_text(errors='replace')
+        named = file_game(text, keys) if game == 'auto' else game
+        if named not in GAMES:
+            done.append(f'file {Path(path).name}: no game ({game}): left out')
+            continue
+        line, _ = merge_text(f'file {Path(path).name} ({named}{", by its shaders" if game == "auto" else ""})', text,
+                             named, lists, keys, seeds)
+        done.append(line)
+    return done
+
+
 def save_list(game, shared):
     """Write a game's list. Tears of the Kingdom's and Breath of the Wild's take shader_list.py's header; another game's
     keeps the header its file has (its own translation chain), or gets one naming the game when the list is new."""
@@ -432,6 +460,8 @@ def main():
     ap.add_argument('--seed', action='append', default=[], help='a prepared seed (build/shader-seed/<version>): its '
                     'shader keys, and its built-in variants drop default rows; one for each game version collected')
     ap.add_argument('--keys', action='append', default=[], help='<game>=<file>: more shader keys of a game (a JSON list)')
+    ap.add_argument('--file', action='append', default=[], metavar='GAME=PATH',
+                    help='a contribution file at hand (an issue\'s attachment); GAME auto: by its shaders')
     ap.add_argument('--apply', action='store_true', help='write the merged rows to the lists')
     ap.add_argument('--mark-inbox', metavar='REF', help='with --apply: tell the inbox the merged rows are done, naming the '
                     'merge (the commit of the lists)')
@@ -477,6 +507,8 @@ def main():
             print(line)
     inbox = merge_inbox(args.inbox, token, lists, keys, seeds)
     for line, _, _ in inbox:
+        print(line)
+    for line in merge_files(args.file, lists, keys, seeds):
         print(line)
     for game, s in lists.items():   # a later source may bring the bind state an earlier one's warm rows name (OoT's own merge)
         took = s.retry_refused() if hasattr(s, 'retry_refused') else 0

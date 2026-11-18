@@ -30,8 +30,231 @@ static void alias_probe_read(tex_t *t, id<MTLBuffer> rb, float red) {
     for (NSUInteger i = 0; i < w * h; i++) if (memcmp(p + i * 4, e, 4))
         MDIE("alias probe: disjoint neighbour corrupted %lux%lu at texel %lu: %u,%u,%u,%u, cleared to %u,64,128,255", (unsigned long)w, (unsigned long)h, (unsigned long)i, p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3], e[0]);
 }
+/* A growing region must preserve already-written neighbours and rebind their
+   live serials. Old GPU commands keep their original resources until completion.
+   OOT_STOR_MIGRATE_TEST=1 runs this assertion even when the fix is disabled. */
+static int alias_probe_migration_subresources(void) {
+    int checked=0;
+    const uint32_t formats[]={0x25,0x32,0x34,0x3f,0x3d};
+    for(unsigned mode=0;mode<10;mode++) { @autoreleasepool {
+        const uint32_t format=formats[mode%5];const int array=mode>=5;
+        void *mem=NULL;const size_t span=8u<<20;
+        if(posix_memalign(&mem,(size_t)getpagesize(),span))MDIE("migration subresource memory");
+        pool_t pool={.mem=mem,.size=span,.flags=0xa1};
+        tex_t small={0};small.serial=UINT64_C(0xfffd5400)+mode*2;small.mem=mem;small.pool=&pool;
+        small.d=(nvn_texdesc){.width=64,.height=64,.depth=array?2:1,.levels=3,.target=array?4:1,.format=format,.flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE,
+            .swizzle_r=2,.swizzle_g=3,.swizzle_b=4,.swizzle_a=5};
+        nvn_tex_layout(&small.d,&small.L);tex_t big=small;big.serial++;big.d.width=big.d.height=256;nvn_tex_layout(&big.d,&big.L);
+        int bw,bh,bpp=nvn_fmt_bpb(format,&bw,&bh);if(!bpp||bw!=1||bh!=1)MDIE("migration format fixture");
+        id<MTLBuffer> upload=probe_buf(1u<<20),readback=probe_buf(1u<<20);
+        const unsigned layers=array?2:1;size_t offsets[2][3],rows[3],total=0;
+        for(unsigned layer=0;layer<layers;layer++)for(unsigned level=0;level<3;level++) {
+            size_t row=(((64u>>level)*(unsigned)bpp)+255u)&~255u;rows[level]=row;offsets[layer][level]=total;
+            size_t size=row*(64u>>level);uint32_t value=UINT32_C(0x3e000000)+(layer*3+level)*UINT32_C(0x00100000);
+            for(size_t p=0;p<size;p+=4)memcpy((uint8_t *)upload.contents+total+p,&value,4);total+=size;
+        }
+        op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+        id<MTLTexture> old=tex_mtl(&small);
+        for(unsigned layer=0;layer<layers;layer++)for(unsigned level=0;level<3;level++)
+            enc_b_copy_buffer_texture(blit(),upload,offsets[layer][level],rows[level],rows[level]*(64u>>level),MTLSizeMake(64u>>level,64u>>level,1),old,layer,level,MTLOriginMake(0,0,0));
+        /* Growth occurs in the same submission as the writes: copying CPU
+           memory or waiting only for the preceding fence would lose them. */
+        id<MTLTexture> bigger=tex_mtl(&big),moved=tex_mtl(&small);
+        if ((moved!=old && alias_probe_heap(moved)!=alias_probe_heap(bigger)) ||
+            (stor_alias_mode()==2 && moved==old)) MDIE("migration subresources not moved mode %u",mode);
+        MLOG("migration subresource mode %u: %s",mode,moved==old?"kept compatible original":"moved");
+        for(unsigned layer=0;layer<layers;layer++)for(unsigned level=0;level<3;level++)
+            enc_b_copy_texture_buffer(blit(),moved,layer,level,MTLOriginMake(0,0,0),MTLSizeMake(64u>>level,64u>>level,1),readback,offsets[layer][level],rows[level],rows[level]*(64u>>level));
+        mtl_sub_commit();mtl_finish();
+        for(unsigned layer=0;layer<layers;layer++)for(unsigned level=0;level<3;level++) {
+            for(unsigned y=0;y<(64u>>level);y++) {
+                size_t at=offsets[layer][level]+y*rows[level];
+                if(memcmp((uint8_t *)upload.contents+at,(uint8_t *)readback.contents+at,(64u>>level)*(unsigned)bpp))
+                    MDIE("migration lost pixels mode %u layer %u level %u row %u",mode,layer,level,y);
+            }checked++;
+        }
+        old=nil;bigger=nil;moved=nil;mtl_tex_release(&small);mtl_tex_release(&big);
+        stor_drop_range((uintptr_t)mem,(uintptr_t)mem+span);
+        for(int round=0;round<4;round++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();defer_drain();}
+        stor_alias_collect();res_remove(upload);res_remove(readback);free(mem);
+    } }
+    MLOG("heap migration subresources passed: %d color/depth/mip/layer checks",checked);
+    return checked;
+}
+static int alias_probe_growth_migration(void) {
+    const char *test=getenv("OOT_STOR_MIGRATE_TEST");
+    if (!test || !atoi(test)) return 0;
+    const size_t span=4u<<20; void *mem=NULL;
+    if (posix_memalign(&mem,(size_t)getpagesize(),span)) MDIE("migration probe memory");
+    tex_t t[3]={{0}};
+    for (int i=0;i<3;i++) {
+        t[i].serial=UINT64_C(0xfffd5300)+(uint64_t)i;
+        t[i].d=(nvn_texdesc){.width=i==2?512:256,.height=i==2?512:256,.depth=1,.levels=1,.target=1,.format=0x25,
+            .swizzle_r=2,.swizzle_g=3,.swizzle_b=4,.swizzle_a=5};
+        nvn_tex_layout(&t[i].d,&t[i].L);t[i].mem=mem;
+    }
+    t[1].mem=(uint8_t *)mem+t[0].L.size;
+    id<MTLBuffer> out=probe_buf(512*512*4), before=probe_buf(256*256*4);
+    __weak id<MTLHeap> old[2];
+    @autoreleasepool {
+        old[0]=alias_probe_heap(alias_probe_clear_read(&t[0],out,0.25f,0));
+        old[1]=alias_probe_heap(alias_probe_clear_read(&t[1],out,0.75f,0));
+    }
+    mtl_reg_tex(101,&t[0],NULL);
+    @autoreleasepool {
+        op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+        registry_lock();id<MTLTexture> a=(__bridge id)tex_fast(101);registry_unlock();
+        enc_b_copy_texture_buffer(blit(),a,0,0,MTLOriginMake(0,0,0),MTLSizeMake(256,256,1),before,0,1024,256*1024);
+        id<MTLTexture> big=tex_mtl(&t[2]);
+        id<MTLTexture> moved=tex_mtl(&t[0]), neighbour=tex_mtl(&t[1]);
+        if (alias_probe_heap(moved)!=alias_probe_heap(big)||alias_probe_heap(neighbour)!=alias_probe_heap(big))
+            MDIE("migration probe: live owners still retain old heaps");
+        if (!old[0]||!old[1]) MDIE("migration probe: released a heap before its GPU read completed");
+        registry_lock();id<MTLTexture> view=(__bridge id)tex_fast(101);registry_unlock();
+        if (alias_probe_heap(view)!=alias_probe_heap(big)) MDIE("migration probe: descriptor view retained old storage");
+        mtl_sub_commit();mtl_finish();
+    }
+    const uint8_t expected[4]={64,64,128,255};
+    for (size_t i=0;i<256*256;i++) if(memcmp((uint8_t *)before.contents+i*4,expected,4)) MDIE("migration probe: in-flight source content changed");
+    alias_probe_read(&t[0],out,0.25f);alias_probe_read(&t[1],out,0.75f);
+    for (int round=0;round<4;round++) {op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();defer_drain();}
+    stor_alias_collect();
+    if (old[0]||old[1]) MDIE("migration probe: old heap not freed after GPU completion");
+    pthread_mutex_lock(&g_smu);
+    uint64_t key=obj_key((__bridge id)nvn_hm_get(&g_by_serial,&t[0].serial));stor_ent *entry=nvn_hm_get(&g_stor_of_obj,&key);
+    int owned=entry&&entry->nser>0;pthread_mutex_unlock(&g_smu);
+    if (!owned) MDIE("migration probe: live descriptor became idle storage");
+    mtl_reg_tex(101,NULL,NULL);
+    for(int i=0;i<3;i++)mtl_tex_release(&t[i]);
+    stor_drop_range((uintptr_t)mem,(uintptr_t)mem+span);
+    for(int i=0;i<4;i++){op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();defer_drain();}
+    stor_alias_collect();res_remove(out);res_remove(before);free(mem);
+    MLOG("heap growth migration probe passed: contents, neighbour, in-flight read, views, owners, release");
+    return 7+alias_probe_migration_subresources();
+}
+/* 2026-11-18 (Ocarina of Time, the user's recorded route):
+   Room. A region holding many textures that a texture reaches out of is replaced by a heap with room on that side
+   (nvn_alias_plan.h), so the next textures there land on it and nothing moves again: the exact union replaced a 59 MiB
+   region 3-7 frames in a row, 4.2 GiB of copies each. Here: C (512x512) opens a region, Q (256x256, written last) is
+   the witness and 20 small layouts make it one that takes room; X reaches past its top, then Y lies above X; W reaches
+   below its bottom, then V lies below W. Expected: one replacement for X and one for W, none for Y and V, the room is
+   ALIAS_ROOM_MIN on that side, Q reads as written after both.
+   Order. A migration copies the layout the game made last last (nvn_stor_migrate.h): the layouts on a heap overlap and
+   each copy writes its layout's whole content, so in hash order a layout of an earlier frame could land over this
+   frame's (two frames of white blocks entering the world). Here: 12 pairs, S (512x512) written first and L (256x256)
+   written second at the same address, then G reaches past S and the pair moves. Expected: every L reads as written. */
+static int alias_probe_room_and_order(void) {
+    if (stor_alias_mode() != 1 || !stor_alias_migrate_on() || !stor_alias_room()) return 0;
+    int checked = 0; op_hdr end = {OP_END, 8};
+    id<MTLBuffer> rb = probe_buf(512 * 512 * 4);
+    uint64_t heaps0 = g_alias_heaps_live;
+    {   enum { SMALL = 20, KQ = 1, KX = SMALL + 2, KY, KW, KV, KN };   // 0 C, 1 the witness, 2..21 small
+        const size_t span = 16u << 20; void *mem = NULL;
+        if (posix_memalign(&mem, (size_t)getpagesize(), span)) MDIE("room probe memory");
+        memset(mem, 0, span);
+        static tex_t t[KN]; memset(t, 0, sizeof t);
+        for (int i = 0; i < KN; i++) {
+            uint32_t side = i == 0 ? 512 : (i == KQ || i >= KX) ? 256 : 64;
+            t[i].serial = UINT64_C(0xfffd5500) + (uint64_t)i;
+            t[i].d = (nvn_texdesc){.width = side, .height = side, .depth = 1, .levels = 1, .target = 1, .format = 0x25, .swizzle_r = 2, .swizzle_g = 3, .swizzle_b = 4, .swizzle_a = 5};
+            nvn_tex_layout(&t[i].d, &t[i].L);
+        }
+        const uint64_t c = t[0].L.size, s = t[2].L.size, x = t[KX].L.size; uint8_t *base = (uint8_t *)mem + (6u << 20);
+        if (x + s * SMALL > c || x % 4 || (x / 4) % 65536) MDIE("room probe fixture: region %llu, small %llu, larger %llu", (unsigned long long)c, (unsigned long long)s, (unsigned long long)x);
+        t[0].mem = base; t[KQ].mem = base;
+        for (int i = 0; i < SMALL; i++) t[2 + i].mem = base + x + (uint64_t)i * s;
+        t[KX].mem = base + c - x / 4;            // a quarter inside the region, the rest past its top
+        t[KY].mem = base + c + x;                // above X, inside the room
+        t[KW].mem = base - 3 * x / 4;            // a quarter inside the region, the rest below its bottom
+        t[KV].mem = t[KW].mem - x - x / 4;        // below W, inside the room
+        id<MTLHeap> first = alias_probe_heap(alias_probe_clear_read(&t[0], rb, 3.0f / 8.0f, 0));
+        alias_probe_clear_read(&t[KQ], rb, 7.0f / 8.0f, 0);
+        mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+        for (int i = 0; i < SMALL; i++) { id<MTLTexture> m = tex_mtl(&t[2 + i]); if (!m || alias_probe_heap(m) != first) MDIE("room probe: small layout %d is not on the region's heap", i); }
+        mtl_sub_commit(); mtl_finish();
+        NSUInteger region = first.size; first = nil;
+        uint64_t made = g_alias_heaps_made, moved = g_alias_migrated;
+        id<MTLTexture> px = alias_probe_clear_read(&t[KX], rb, 5.0f / 8.0f, 0);
+        id<MTLHeap> up = alias_probe_heap(px);
+        if (g_alias_heaps_made - made != 1 || g_alias_migrated - moved != SMALL + 2) MDIE("room probe: growing up made %llu heaps and moved %llu textures", (unsigned long long)(g_alias_heaps_made - made), (unsigned long long)(g_alias_migrated - moved));
+        { NSUInteger want = region + 3 * (NSUInteger)x / 4 + ALIAS_ROOM_MIN;
+          if (up.size < want || up.size > want + 65536) MDIE("room probe: %lu bytes after growing up, expected %lu", (unsigned long)up.size, (unsigned long)want); }
+        checked += 2;
+        alias_probe_read(&t[KQ], rb, 7.0f / 8.0f); checked++;
+        made = g_alias_heaps_made; moved = g_alias_migrated;
+        id<MTLTexture> py = alias_probe_clear_read(&t[KY], rb, 6.0f / 8.0f, 0);
+        if (alias_probe_heap(py) != up || g_alias_heaps_made != made || g_alias_migrated != moved) MDIE("room probe: the texture in the room above replaced the region again");
+        if (alias_probe_offset(py) - alias_probe_offset(px) != (NSUInteger)(t[KY].mem - t[KX].mem)) MDIE("room probe: offsets above do not follow guest offsets");
+        checked += 2;
+        NSUInteger before = up.size; up = nil; px = nil; py = nil;
+        id<MTLTexture> pw = alias_probe_clear_read(&t[KW], rb, 1.0f / 8.0f, 0);
+        id<MTLHeap> down = alias_probe_heap(pw);
+        if (g_alias_heaps_made - made != 1) MDIE("room probe: growing down made %llu heaps", (unsigned long long)(g_alias_heaps_made - made));
+        { NSUInteger want = before + 3 * (NSUInteger)x / 4 + ALIAS_ROOM_MIN;
+          if (down.size < want || down.size > want + 65536) MDIE("room probe: %lu bytes after growing down, expected %lu", (unsigned long)down.size, (unsigned long)want); }
+        if (alias_probe_offset(pw) != ALIAS_ROOM_MIN) MDIE("room probe: the texture below is at offset %lu, expected the room %llu", (unsigned long)alias_probe_offset(pw), (unsigned long long)ALIAS_ROOM_MIN);
+        checked += 3;
+        made = g_alias_heaps_made; moved = g_alias_migrated;
+        id<MTLTexture> pv = alias_probe_clear_read(&t[KV], rb, 2.0f / 8.0f, 0);
+        if (alias_probe_heap(pv) != down || g_alias_heaps_made != made || g_alias_migrated != moved) MDIE("room probe: the texture in the room below replaced the region again");
+        checked++;
+        /* W wrote the region's first bytes, the witness's own; Y, written before the region grew down, is far from them */
+        mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+        { id<MTLTexture> q = tex_mtl(&t[KQ]); if (alias_probe_heap(q) != down) MDIE("room probe: the witness did not move with its region"); }
+        mtl_sub_commit(); mtl_finish();
+        alias_probe_read(&t[KY], rb, 6.0f / 8.0f);
+        checked += 2;
+        down = nil; pw = nil; pv = nil;
+        for (int i = 0; i < KN; i++) mtl_tex_release(&t[i]);
+        stor_drop_range((uintptr_t)mem, (uintptr_t)mem + span);
+        for (int round = 0; round < 4; round++) { mtl_sub_begin(); mtl_exec((const uint8_t *)&end); mtl_sub_commit(); mtl_finish(); defer_drain(); }
+        stor_alias_collect(); free(mem);
+    }
+    {   /* 1000x561 and 720x405: sizes like the game's scaled targets, whose Metal size with lossless compression fits their
+           guest size, so they keep it on a region heap (the 512x512 above does not) */
+        enum { PAIRS = 12 }; const size_t stride = 4u << 20, span = PAIRS * stride; void *mem = NULL;
+        if (posix_memalign(&mem, (size_t)getpagesize(), span)) MDIE("order probe memory");
+        memset(mem, 0, span);
+        id<MTLBuffer> big = probe_buf(1000 * 561 * 4);
+        static tex_t t[PAIRS][3]; memset(t, 0, sizeof t);   // S, L, G
+        for (int k = 0; k < PAIRS; k++) for (int i = 0; i < 3; i++) {
+            t[k][i].serial = UINT64_C(0xfffd5600) + (uint64_t)(k * 3 + i);
+            t[k][i].d = (nvn_texdesc){.width = i == 0 ? 1000 : i == 1 ? 720 : 256, .height = i == 0 ? 561 : i == 1 ? 405 : 256, .depth = 1, .levels = 1, .target = 1, .format = 0x25,
+                                      .swizzle_r = 2, .swizzle_g = 3, .swizzle_b = 4, .swizzle_a = 5};
+            nvn_tex_layout(&t[k][i].d, &t[k][i].L);
+            t[k][i].mem = (uint8_t *)mem + (uint64_t)k * stride;
+        }
+        int optimized = 0;
+        for (int k = 0; k < PAIRS; k++) {
+            id<MTLTexture> ms = alias_probe_clear_read(&t[k][0], big, 2.0f / 8.0f, 0), ml = alias_probe_clear_read(&t[k][1], big, 6.0f / 8.0f, 0);
+            id<MTLHeap> heap = alias_probe_heap(ms);
+            if (!heap || alias_probe_heap(ml) != heap) MDIE("order probe: pair %d is not on one region heap", k);
+            if (heap.size < 131072 || heap.size + (192u << 10) > stride) MDIE("order probe: pair %d on a heap of %lu bytes", k, (unsigned long)heap.size);
+            t[k][2].mem += heap.size - 65536;   // G: a quarter inside the pair's region, the rest past its top
+            optimized += ms.allowGPUOptimizedContents + ml.allowGPUOptimizedContents;
+        }
+        uint64_t moved = g_alias_migrated;
+        for (int k = 0; k < PAIRS; k++) alias_probe_clear_read(&t[k][2], rb, 4.0f / 8.0f, 0);
+        if (g_alias_migrated - moved != 2 * PAIRS) MDIE("order probe: %llu textures moved, expected %d", (unsigned long long)(g_alias_migrated - moved), 2 * PAIRS);
+        checked++;
+        for (int k = 0; k < PAIRS; k++) alias_probe_read(&t[k][1], big, 6.0f / 8.0f);   // MDIEs on the first texel that is not the later layout's
+        checked++;
+        MLOG("order probe: %d pairs moved, the layout made last reads as written in each (%d of %d textures keep lossless compression)", PAIRS, optimized, 2 * PAIRS);
+        res_remove(big);
+        for (int k = 0; k < PAIRS; k++) for (int i = 0; i < 3; i++) mtl_tex_release(&t[k][i]);
+        stor_drop_range((uintptr_t)mem, (uintptr_t)mem + span);
+        for (int round = 0; round < 4; round++) { mtl_sub_begin(); mtl_exec((const uint8_t *)&end); mtl_sub_commit(); mtl_finish(); defer_drain(); }
+        stor_alias_collect(); free(mem);
+    }
+    if (g_alias_heaps_live != heaps0) MDIE("room and order probe: %llu heaps live after the pools were finalised", (unsigned long long)(g_alias_heaps_live - heaps0));
+    checked++;
+    res_remove(rb);
+    MLOG("room and order probe passed: growth with room on both sides without a second replacement, migration in the order the layouts were made");
+    return checked;
+}
 int mtl_probe_stor_alias(void) {
     mtl_init(); int checked = 0;
+    if (getenv("OOT_STOR_MIGRATE_SUBRESOURCES_ONLY")) return alias_probe_migration_subresources();
     const size_t page = (size_t)getpagesize(), span = 4u << 20;
     void *mem = NULL; if (posix_memalign(&mem, page, span)) MDIE("alias probe memory"); memset(mem, 0, span);
     const uint32_t sides[] = {512, 384, 448, 256, 640}, formats[] = {0x25, 0x25, 0x25, 0x25, 0x25};
@@ -126,5 +349,6 @@ int mtl_probe_stor_alias(void) {
     MLOG("storage alias probe: %llu heaps made and freed, device allocation +%llu bytes for %llu bytes of shared layouts",
          (unsigned long long)(g_alias_heaps_made - made0), (unsigned long long)grew, (unsigned long long)sum);
     res_remove(rb); free(mem);
-    return checked;
+    checked+=alias_probe_growth_migration();
+    return checked+alias_probe_room_and_order();
 }

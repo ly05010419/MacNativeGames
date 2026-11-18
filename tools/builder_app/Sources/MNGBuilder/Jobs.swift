@@ -11,6 +11,10 @@ enum Paths {
         return Bundle.main.resourceURL?.appendingPathComponent("bundled_job.py")
     }
 
+    /// The players' download (make_app.py --portable, the signed release): it carries its source archive's digest. A
+    /// Launcher made from a checkout for development has none.
+    static var isRelease: Bool { Bundle.main.object(forInfoDictionaryKey: "MNGSourceArchiveSHA256") is String }
+
     /// The checkout this app was made from (make_app.py writes MNGRepo into Info.plist).
     static var repo: URL? {
         if let path = ProcessInfo.processInfo.environment["MNG_REPO"] { return URL(fileURLWithPath: path) }
@@ -61,6 +65,22 @@ final class Job {
 
     init(_ arguments: [String], onLine: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws {
         try Paths.configure(process, arguments: arguments)
+        try start(onLine: onLine, ended: ended)
+    }
+
+    /// A script of the app itself, outside tools/builder_jobs (launcher_update.py: the code that replaces the Launcher
+    /// is the signed app's own, never a source archive's): the app's Python runs it as it is.
+    init(script: URL, arguments: [String], onLine: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws {
+        process.executableURL = Paths.python
+        process.arguments = ["-u", "-B", script.path] + arguments
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["MNG_LANG"] = T.zh ? "zh" : "en"
+        process.environment = env
+        try start(onLine: onLine, ended: ended)
+    }
+
+    private func start(onLine: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

@@ -23,7 +23,7 @@ class Drift(unittest.TestCase):
         """The window writes the settings panel's own files (after PR #1184), and only words its restore takes:
         settings_panel.h settings_restore_begin reads graphics-frame.txt interp-<MFX_*>, graphics-output.txt an
         OUTPUT_MODE_* number, graphics-taa.txt 0 / 1 and graphics-aspect.txt a ratio in 0.5..8."""
-        panel = source(RUNTIME / 'settings_panel.h')
+        panel = source(RUNTIME / 'settings_game.h')   # the game's part of the shared panel: its restore at start
         restore = panel[panel.index('static void settings_restore_begin'):]
         restore = restore[:restore.index('\n}\n')]
         for name, _ in PANEL.values():

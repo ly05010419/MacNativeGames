@@ -13,6 +13,7 @@ def main(argv):
     c = sub.add_parser('classify', help='what the dropped files are, and the build they make (one JSON object)')
     c.add_argument('paths', nargs='+')
     c.add_argument('--work', help='the work folder the build will use (its extracted fonts count)')
+    c.add_argument('--open-fonts', action='store_true', help='a game file without system fonts uses the open-source ones')
     k = sub.add_parser('checks', help="what this Mac still needs (one JSON object)")
     k.add_argument('--work', default=str(Path.home()))
     i = sub.add_parser('apps', help='the game apps on this Mac and the update each needs (one JSON object)')
@@ -30,7 +31,7 @@ def main(argv):
     a = ap.parse_args(argv)
     if a.job == 'classify':
         from tools.builder_jobs.classify import report
-        print(json.dumps(report(a.paths, a.work), ensure_ascii=False))
+        print(json.dumps(report(a.paths, a.work, a.open_fonts), ensure_ascii=False))
         return 0
     if a.job == 'checks':
         from tools.builder_jobs.checks import checks

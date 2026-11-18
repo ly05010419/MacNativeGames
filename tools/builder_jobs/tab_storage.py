@@ -9,9 +9,14 @@ Launcher's update and update_runtime.py use; docs/install.md, Folders), no longe
 window never sends a path to clean: every action finds the folder again here.
 
 Actions: state() -> both folders without sizes (instant); measure(folder) -> one folder with its size (walks it: seconds
-to a minute for a big work folder); clean(folder) -> what was removed; move(target, confirmed) -> the question to ask
-first (confirmed false), then what was moved and how the app records the new folder."""
+to a minute for a big work folder); clean(folder) -> what was removed (the whole contents: `mng page storage clean`
+only since 2026-11-18); safe_clean() -> what the page's 安全清理空间 moved out (the game's work_prune.py: only what no
+later build reads); move(target, confirmed) -> the question to ask
+first (confirmed false), then what was moved and how the app records the new folder; memory_saver() /
+set_memory_saver(on) -> the card's "开启省内存模式" switch; diagnostics() / set_diagnostics(on) -> its "诊断模式" switch
+(memory_saver.py SWITCHES)."""
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -111,6 +116,20 @@ def shader_folder(ctx):
     return storage.shader_dir(ctx.spec, ctx.home)
 
 
+def pruner(ctx):
+    """(the game's work_prune module, the game's folder in the work folder) or (None, None): games/<game>/work_prune.py
+    names what a finished build leaves in the work folder that no later build reads (Ocarina of Time's, 2026-11-17, which
+    its build.py runs after each build). A game without one has nothing a safe clean may take."""
+    game = ctx.repo / Path(ctx.spec.assets_dir).parent
+    path = game / 'work_prune.py'
+    if not path.is_file():
+        return None, None
+    loaded = importlib.util.spec_from_file_location(f'work_prune_{ctx.spec.id}', path)
+    module = importlib.util.module_from_spec(loaded)
+    loaded.loader.exec_module(module)
+    return module, game.name
+
+
 def folder_view(ctx, folder):
     """One folder: its label, path, where the path comes from, and what cleaning it means."""
     if folder == 'work':
@@ -133,6 +152,14 @@ def folder_view(ctx, folder):
                  '里面是打包解出的游戏文件、翻译好的着色器、管线缓存和日志。清理不影响 App 和存档，但更新要用里面的东西：'
                  '清理之后，下次更新会重新生成（更慢）；还需要打包文件的旧 App，或快速更新（--seed），要重新提供游戏文件和'
                  '密钥（完整打包）。只在反正要重新打包时再清理（docs/install.md 的 Folders 一节）。')
+        if pruner(ctx)[0] is not None:   # the page's button is the safe clean, not this one (user 2026-11-18)
+            note = t('It holds the extracted game files, translated shaders, pipeline caches and logs of the build, which '
+                     'an update reuses. Free space safely removes only what earlier builds left that no later build or '
+                     'express update reads (old translations, replaced shader bundles and libraries, old pipeline '
+                     'folders), as each build does when it ends; the next update is still an express one.',
+                     '里面是打包解出的游戏文件、翻译好的着色器、管线缓存和日志，更新会接着用。安全清理空间只删除以前的打包留下、'
+                     '以后的打包和极速更新都不再读的东西（旧的翻译、被换下的着色器包和库、旧的管线文件夹），和每次打包结束时'
+                     '做的一样；下次更新照样是极速更新。')
         label = t('Build cache (work folder)', '打包缓存（工作文件夹）')
     elif folder == 'shader':
         path, kind = shader_folder(ctx), 'shader'
@@ -147,6 +174,7 @@ def folder_view(ctx, folder):
         raise TabError(t(f'no folder {folder!r}: one of {", ".join(FOLDERS)}', f'没有 {folder!r} 这个文件夹：只有 {", ".join(FOLDERS)}'))
     return {'id': folder, 'label': label, 'path': str(path), 'kind': kind, 'where': where, 'note': note,
             'exists': path.is_dir(), 'movable': folder == 'work' and kind != 'unreachable',
+            'prunable': folder == 'work' and kind != 'unreachable' and pruner(ctx)[0] is not None,
             'size': None, 'detail': '', 'confirm': confirm_work() if folder == 'work' else ''}
 
 
@@ -172,6 +200,11 @@ def size_line(path, size):
     if not Path(path).is_dir():
         return t('Does not exist yet.', '还不存在。')
     line = t(f'{storage.human(size.bytes)} in {size.files} files', f'{size.files} 个文件，共 {storage.human(size.bytes)}')
+    own = getattr(size, 'own', None)
+    if own is not None and own < size.bytes:   # clones and hard links share their blocks (user 2026-11-18: "改成实际占用")
+        line += t(f'; on disk only {storage.human(own)} is its own: the rest are the same blocks as the app or other files, '
+                  'so removing it frees about that much',
+                  f'；实际独占 {storage.human(own)}：其余和 App 或别的文件是同一批磁盘块，删掉它大约只能腾出这么多')
     if size.errors:
         line += ' ' + t(f'Some files could not be read: {size.errors[0]}', f'有些文件读不了：{size.errors[0]}')
     return line
@@ -199,7 +232,9 @@ def write_sizes(ctx, sizes):
 
 
 def size_json(size):
-    return {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes), 'errors': list(size.errors[:5])}
+    own = getattr(size, 'own', None)
+    return {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes), 'errors': list(size.errors[:5]),
+            'own': own}
 
 
 def with_size(view, size, measured_at=None):
@@ -218,7 +253,9 @@ def remembered(ctx, view):
     if not isinstance(record, dict) or not view['exists']:
         return view
     try:
-        size = SimpleNamespace(bytes=int(record['bytes']), files=int(record['files']), errors=list(record.get('errors', [])))
+        own = record.get('own')
+        size = SimpleNamespace(bytes=int(record['bytes']), files=int(record['files']), errors=list(record.get('errors', [])),
+                               own=int(own) if own is not None else None)
         return with_size(view, size, float(record['at']))
     except (KeyError, TypeError, ValueError):
         return view
@@ -234,7 +271,10 @@ def state(ctx):
 
 def measure(ctx, folder):
     view = folder_view(ctx, folder)
-    size = storage.measure(view['path'])
+    module = pruner(ctx)[0] if folder == 'work' else None
+    # a safe clean's trash (build/.trash-*) is being deleted in the background: it is not counted, so the size shows
+    # what stays right after the clean
+    size = storage.measure(view['path'], skip=module and (lambda p: p.name.startswith(module.TRASH)))
     if view['exists']:
         at = time.time()
         write_sizes(ctx, {**read_sizes(ctx), view['path']: {**size_json(size), 'at': at}})
@@ -267,6 +307,47 @@ def clean(ctx, folder):
     return {'folder': folder, 'path': view['path'], 'bytes': removed.bytes, 'files': removed.files,
             'message': t(f'Removed {storage.human(removed.bytes)} in {removed.files} files.',
                          f'删除了 {removed.files} 个文件，共 {storage.human(removed.bytes)}。')}
+
+
+def safe_clean(ctx, folder='work'):
+    """安全清理空间 (user 2026-11-18): what the game's build does to the work folder when it ends (work_prune.prune), now
+    from the Storage page: only what no later build or express update reads leaves; it is moved aside at once and deleted
+    in a detached process (hundreds of thousands of files take minutes). Refused while the game or a build runs, as a
+    clean is."""
+    module, name = pruner(ctx)
+    if folder != 'work' or module is None:
+        raise TabError(t(f'{ctx.spec.display_name} has nothing a safe clean may remove: its builds leave nothing behind '
+                         'that later builds no longer read.',
+                         f'{ctx.spec.display_name} 没有可以安全清理的东西：它的打包不会留下以后不再读的文件。'))
+    view = folder_view(ctx, 'work')
+    if view['kind'] == 'unreachable':
+        raise TabError(refusal('unreachable'))
+    reason = busy_reason(ctx, 'work')
+    if reason:
+        raise TabError(t('Could not free space: ', '没能清理空间：') + refusal(reason))
+    tree = Path(view['path']) / name
+    if not (tree / 'build').is_dir():
+        return {'moved': [], 'message': t('Nothing to remove: the work folder holds no build yet.',
+                                          '没有要删除的：工作文件夹里还没有打包的文件。')}
+    lines = []
+    moved = module.prune(tree, log=lines.append)
+    sizes = read_sizes(ctx)
+    if view['path'] in sizes:   # the page measures again after a safe clean: an old size (2026-11-18: one of 11-13, 165.9
+        write_sizes(ctx, {k: v for k, v in sizes.items() if k != view['path']})   # GB, stayed under a 77.5 GB folder)
+    shown = [str(p.relative_to(tree)) for p in moved]
+    if moved:
+        message = t(f'Moved out {len(moved)} folders no later build reads ({", ".join(shown[:4])}{" …" if len(shown) > 4 else ""}); '
+                    'they are being deleted in the background, which can take several minutes. Express updates are '
+                    'not affected.',
+                    f'移出了 {len(moved)} 个以后的打包不再读的文件夹（{"、".join(shown[:4])}{" …" if len(shown) > 4 else ""}），'
+                    '正在后台删除，可能要几分钟。极速更新不受影响。')
+    elif module.trash_folders(tree):
+        message = t('Nothing new to remove; what an earlier clean moved out is being deleted in the background.',
+                    '没有新的可删内容；之前移出的文件正在后台删除。')
+    else:
+        message = t('Nothing to remove: everything in the work folder is still used by updates.',
+                    '没有要删除的：工作文件夹里的东西更新都还要用。')
+    return {'moved': shown, 'message': message}
 
 
 def target_reason(ctx, target, source):
@@ -354,4 +435,30 @@ def move(ctx, target, confirmed=False):
                          f'重新生成那些文件。运行一次：{command}')}
 
 
-ACTIONS = {'state': state, 'measure': measure, 'clean': clean, 'move': move}
+def memory_saver(ctx):
+    """The card's "开启省内存模式" switch (tools/builder_jobs/memory_saver.py), on by default: {'available', 'on', 'default',
+    'file', 'unknown_word'}.
+    On this page's module because every game with a card has a Storage page; it is about what the game keeps in memory."""
+    from tools.builder_jobs import memory_saver as model
+    return model.state(ctx)
+
+
+def set_memory_saver(ctx, on=False):
+    from tools.builder_jobs import memory_saver as model
+    return model.choose(ctx, on)
+
+
+def diagnostics(ctx):
+    """The card's "诊断模式" switch (memory_saver.py SWITCHES 'diagnostics'): a full App's start with the diagnostics."""
+    from tools.builder_jobs import memory_saver as model
+    return model.state(ctx, 'diagnostics')
+
+
+def set_diagnostics(ctx, on=False):
+    from tools.builder_jobs import memory_saver as model
+    return model.choose(ctx, on, 'diagnostics')
+
+
+ACTIONS = {'state': state, 'measure': measure, 'clean': clean, 'safe_clean': safe_clean, 'move': move,
+           'memory_saver': memory_saver, 'set_memory_saver': set_memory_saver,
+           'diagnostics': diagnostics, 'set_diagnostics': set_diagnostics}

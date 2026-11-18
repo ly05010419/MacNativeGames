@@ -186,8 +186,36 @@ probe-gfx: runtime
 
 .PHONY: probe-gpu-vr-ui-layout probe-gpu-visibility probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-pipeline-archive probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias
 # GPU paths isolated after a kernel panic: each probe runs alone, under the Metal API validation layer.
-probe-gpu-vr-ui-layout probe-gpu-visibility probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-pipeline-archive probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: runtime
-	MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert TOTK_HEADLESS=1 build/totk-native rewritten/v0 $@ > analysis/native-$@.json
+# They need a version's game code (rewritten/<version>) and game data (build/game-data/<version>), which a checkout
+# usually lacks (2026-11-15: they named 1.0.0 only, and this Mac holds 1.4.3). PROBE_VERSION picks the version, else the
+# first of v0, v121, v143 whose game code is under PROBE_ROOT. PROBE_ROOT is this folder by default (its game data is
+# made by runtime-<version>, as before), or a work folder's copy of games/totk holding both, used as it is through
+# TOTK_GAME_DATA: make probe-gpu-drv-c0 PROBE_ROOT=<work>/totk/
+PROBE_ROOT ?=
+# A version is usable with its game code, and under a named PROBE_ROOT also its game data (a work folder can hold 1.0.0's
+# code without its data: 2026-11-15 on this Mac).
+PROBE_HAS = $(and $(wildcard $(PROBE_ROOT)rewritten/$(1)/main.patched.bin),$(if $(PROBE_ROOT),$(wildcard $(PROBE_ROOT)build/game-data/$(1)/runtime-tables.bin),here))
+PROBE_VERSION ?= $(firstword $(foreach v,v0 v121 v143,$(if $(call PROBE_HAS,$(v)),$(v))))
+PROBE_BIN = build/totk-native$(if $(filter-out v0,$(PROBE_VERSION)),-$(PROBE_VERSION))
+PROBE_NEEDS = $(if $(PROBE_ROOT),$(PROBE_BIN),runtime$(if $(filter-out v0,$(PROBE_VERSION)),-$(PROBE_VERSION)))
+# Checked while the Makefile is read, so nothing starts building (make -j ran the build beside a checking recipe).
+ifneq ($(filter probe-gpu-%,$(MAKECMDGOALS)),)
+ifeq ($(filter v0 v121 v143,$(PROBE_VERSION)),)
+$(error GPU probes need a version's game code$(if $(PROBE_ROOT), and game data): none of v0, v121, v143 under '$(or $(PROBE_ROOT),.)' (PROBE_VERSION='$(PROBE_VERSION)'); name a work folder with PROBE_ROOT=<work>/totk/)
+endif
+ifneq ($(PROBE_ROOT),)
+ifeq ($(wildcard $(PROBE_ROOT)build/game-data/$(PROBE_VERSION)/runtime-tables.bin),)
+$(error GPU probes: no game data at $(PROBE_ROOT)build/game-data/$(PROBE_VERSION)/runtime-tables.bin)
+endif
+endif
+$(info GPU probe: $(PROBE_VERSION), $(PROBE_BIN), game code $(PROBE_ROOT)rewritten/$(PROBE_VERSION))
+endif
+.PHONY: probe-gpu-version
+probe-gpu-version:
+	@true
+probe-gpu-vr-ui-layout probe-gpu-visibility probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-pipeline-archive probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: probe-gpu-version $(if $(filter v0 v121 v143,$(PROBE_VERSION)),$(PROBE_NEEDS))
+	@mkdir -p analysis
+	MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert TOTK_HEADLESS=1 $(if $(PROBE_ROOT),TOTK_GAME_DATA="$(PROBE_ROOT)build/game-data/$(PROBE_VERSION)") $(PROBE_BIN) "$(PROBE_ROOT)rewritten/$(PROBE_VERSION)" $@ > analysis/native-$@.json
 	cat analysis/native-$@.json
 .PHONY: desktop-launcher
 # One desktop alias opens the packaged app, with its standard user-data folder.

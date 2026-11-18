@@ -363,16 +363,210 @@ static void qo_texrel_sweep(void) {
 static int qo_pending_locked(void) { return qo_pending(); }
 /* The queue-order thread: woken by a flush, a CPU signal, a sync wait or a present; otherwise every millisecond (events
    set by GPU completion, the safety valve). The replay section is released between items. */
+/* TOTK_STALL_SAMPLE_MS=N (diagnostic, default off; 2026-11-17 OOT: presents waited 270-830 ms in qo_drain while the
+   replay's CPU time was 27 ms and its counted pipeline builds 48 ms): once one item of this thread has run N ms, a
+   sampler suspends it, walks its frame pointers and logs the symbols; again every N ms while it lasts (4 per stall, 300
+   in all). Host frames only (the replay is host code). */
+#include <dlfcn.h>
+static _Atomic uint64_t g_qo_busy_since, g_qo_busy_item;
+static mach_port_t g_qo_port; static void *g_qo_stack_hi, *g_qo_stack_lo;
+static uint64_t qo_stall_ns(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"); v = e && atoi(e) > 0 ? (int64_t)atoi(e) * 1000000 : 0; } return (uint64_t)v; }
+/* The thread suspended for the walk: its pc, its lr and the return addresses of its frame-pointer chain inside its stack
+   (max >= 2). 0 when it could not be suspended. */
+static int qo_walk(mach_port_t port, void *lo, void *hi, uintptr_t *pcs, int max) {
+    int n = 0;
+    if (!port || thread_suspend(port) != KERN_SUCCESS) return 0;
+    arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+    if (thread_get_state(port, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+        pcs[n++] = (uintptr_t)arm_thread_state64_get_pc(st); pcs[n++] = (uintptr_t)arm_thread_state64_get_lr(st);
+        uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(st);
+        while (n < max && fp && !(fp & 7) && (void *)fp >= lo && (void *)(fp + 16) <= hi) {
+            uintptr_t next = ((uintptr_t *)fp)[0], lr = ((uintptr_t *)fp)[1];
+            if (lr) pcs[n++] = lr & 0x0000ffffffffffffull;
+            if (next <= fp) break;
+            fp = next;
+        }
+    }
+    thread_resume(port);
+    return n;
+}
+static void qo_stall_stack(mach_port_t port, void *lo, void *hi, const char *what, uint64_t item, uint64_t ms) {
+    uintptr_t pcs[32]; int n = qo_walk(port, lo, hi, pcs, 32);
+    if (!n) return;
+    char line[3072]; size_t o = 0;
+    for (int i = 0; i < n && o < sizeof line - 160; i++) {
+        Dl_info di; const char *s = "?"; uintptr_t off = 0;
+        if (dladdr((void *)pcs[i], &di) && di.dli_sname) { s = di.dli_sname; off = pcs[i] - (uintptr_t)di.dli_saddr; }
+        else if (di.dli_fname) { const char *b = strrchr(di.dli_fname, '/'); s = b ? b + 1 : di.dli_fname; off = pcs[i] - (uintptr_t)di.dli_fbase; }
+        o += (size_t)snprintf(line + o, sizeof line - o, " %s+%#lx", s, (unsigned long)off);
+    }
+    LOG("[stall-sample] frame %llu queue-order item %llu running %llu ms, %s:%s", (unsigned long long)dm_nvn_frame_count(), (unsigned long long)item, (unsigned long long)ms, what, line);
+}
+static void qo_stall_sample(uint64_t item, uint64_t ms) {
+    qo_stall_stack(g_qo_port, g_qo_stack_lo, g_qo_stack_hi, "the queue-order thread", item, ms);
+    mach_port_t owner = atomic_load(&g_rep_owner_port); uint64_t since = atomic_load(&g_rep_since);
+    if (owner && owner != g_qo_port && since) {   // it waits for the replay section: whoever holds it (hle_nvn.c replay_owner_in)
+        pthread_t th = g_rep_owner_th; char *hi = pthread_get_stackaddr_np(th), *lo = hi - pthread_get_stacksize_np(th);
+        char what[96]; char name[48] = ""; pthread_getname_np(th, name, sizeof name);
+        snprintf(what, sizeof what, "replay section held %llu ms by \"%s\"", (unsigned long long)((now_ns() - since) / 1000000), name);
+        qo_stall_stack(owner, lo, hi, what, item, ms);
+    }
+}
+static void *qo_stall_sampler(void *unused) {
+    (void)unused; pthread_setname_np("NVN stall sampler");
+    uint64_t lim = qo_stall_ns(), last_item = 0, taken = 0, total = 0;
+    for (;;) {
+        usleep(10000);
+        uint64_t since = atomic_load(&g_qo_busy_since), item = atomic_load(&g_qo_busy_item), now = now_ns();
+        if (!since || now - since < lim * (taken + 1)) { if (item != last_item) taken = 0; continue; }
+        if (item != last_item) { last_item = item; taken = 0; }
+        if (taken >= 4 || total >= 300) continue;
+        taken++; total++;
+        qo_stall_sample(item, (now - since) / 1000000);
+    }
+    return NULL;
+}
+/* TOTK_REPLAY_PROFILE_MS=N (diagnostic, default off; 2026-11-18 OOT: about 280 frames into the world one frame's replay
+   ran 73-131 ms instead of 15, with five times the instructions for the usual number of draws, and the stall sampler's
+   four stacks a stall do not say where that went). The thread holding the replay section is sampled every millisecond
+   from the start of each hold (qo_walk; host frames only). A hold of N ms or more is logged as a profile: the functions
+   by the share of samples they are in and that they are the top of, then its commonest stacks. Shorter holds add up to
+   a baseline logged every 4,000 samples, to compare a long hold with the usual ones. */
+#define QO_PROF_DEPTH 24
+#define QO_PROF_SAMPLES 1024
+#define QO_PROF_FNS 1024
+#define QO_PROF_KEY 7
+typedef struct { uintptr_t pc, start; const char *name; } qo_prof_sym;
+typedef struct { uintptr_t start; const char *name; uint32_t in, top; } qo_prof_fn;
+typedef struct { qo_prof_fn fn[QO_PROF_FNS]; int nfn; uint32_t samples; } qo_prof_set;
+static qo_prof_sym g_qo_prof_syms[8192];
+static uintptr_t g_qo_prof_pcs[QO_PROF_SAMPLES][QO_PROF_DEPTH]; static uint8_t g_qo_prof_n[QO_PROF_SAMPLES];
+static uint64_t qo_profile_ns(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("TOTK_REPLAY_PROFILE_MS"); v = e && atoi(e) > 0 ? (int64_t)atoi(e) * 1000000 : 0; } return (uint64_t)v; }
+static const qo_prof_sym *qo_prof_resolve(uintptr_t pc) {   // the function a pc is in (an image without symbols counts as one)
+    qo_prof_sym *s = &g_qo_prof_syms[(pc >> 2) & 8191];
+    if (s->pc != pc || !s->name) {
+        Dl_info di; memset(&di, 0, sizeof di);
+        s->pc = pc; s->start = pc; s->name = "?";
+        if (dladdr((void *)pc, &di)) {
+            if (di.dli_sname) { s->start = (uintptr_t)di.dli_saddr; s->name = di.dli_sname; }
+            else if (di.dli_fname) { const char *b = strrchr(di.dli_fname, '/'); s->start = (uintptr_t)di.dli_fbase; s->name = b ? b + 1 : di.dli_fname; }
+        }
+    }
+    return s;
+}
+static int qo_prof_key(const uintptr_t *pcs, int n, uintptr_t *key) {   // the stack's first QO_PROF_KEY different functions, top first
+    int nk = 0;
+    for (int i = 0; i < n && nk < QO_PROF_KEY; i++) {
+        uintptr_t start = qo_prof_resolve(pcs[i])->start; int dup = 0;
+        for (int k = 0; k < nk; k++) if (key[k] == start) { dup = 1; break; }
+        if (!dup) key[nk++] = start;
+    }
+    for (int k = nk; k < QO_PROF_KEY; k++) key[k] = 0;
+    return nk;
+}
+static void qo_prof_add(qo_prof_set *set, const uintptr_t *pcs, int n) {
+    uintptr_t seen[QO_PROF_DEPTH]; int ns = 0;
+    for (int i = 0; i < n; i++) {
+        const qo_prof_sym *s = qo_prof_resolve(pcs[i]); int dup = 0;
+        for (int k = 0; k < ns; k++) if (seen[k] == s->start) { dup = 1; break; }
+        if (dup) continue;   // the lr of a function with a frame, or recursion: the function once a sample
+        seen[ns++] = s->start;
+        qo_prof_fn *f = NULL;
+        for (int k = 0; k < set->nfn; k++) if (set->fn[k].start == s->start) { f = &set->fn[k]; break; }
+        if (!f) { if (set->nfn == QO_PROF_FNS) continue; f = &set->fn[set->nfn++]; *f = (qo_prof_fn){s->start, s->name, 0, 0}; }
+        f->in++; if (i == 0) f->top++;
+    }
+    set->samples++;
+}
+static int qo_prof_by_in(const void *a, const void *b) { const qo_prof_fn *x = a, *y = b; return x->in < y->in ? 1 : x->in > y->in ? -1 : x->top < y->top ? 1 : x->top > y->top ? -1 : 0; }
+static int qo_prof_by_top(const void *a, const void *b) { const qo_prof_fn *x = a, *y = b; return x->top < y->top ? 1 : x->top > y->top ? -1 : 0; }
+static void qo_prof_log(qo_prof_set *set, const char *what) {
+    if (!set->samples) return;
+    LOG("[replay-profile] %s: %u samples a millisecond apart; share of the samples a function is in / is the top of", what, set->samples);
+    qsort(set->fn, (size_t)set->nfn, sizeof set->fn[0], qo_prof_by_in);
+    for (int i = 0; i < set->nfn && i < 45 && set->fn[i].in * 100 >= set->samples; i++)
+        LOG("[replay-profile]   in %5.1f%%  top %5.1f%%  %s", 100.0 * set->fn[i].in / set->samples, 100.0 * set->fn[i].top / set->samples, set->fn[i].name);
+    qsort(set->fn, (size_t)set->nfn, sizeof set->fn[0], qo_prof_by_top);
+    for (int i = 0; i < set->nfn && i < 15 && set->fn[i].top * 100 >= set->samples; i++)
+        LOG("[replay-profile]   top %5.1f%%  %s", 100.0 * set->fn[i].top / set->samples, set->fn[i].name);
+}
+static void qo_prof_report(qo_prof_set *set, uint64_t held_ns, int n) {   // the hold whose samples g_qo_prof_pcs[0..n) are
+    memset(set, 0, sizeof *set);
+    for (int i = 0; i < n; i++) qo_prof_add(set, g_qo_prof_pcs[i], g_qo_prof_n[i]);
+    char what[96]; snprintf(what, sizeof what, "frame %llu, the replay section held %llu ms", (unsigned long long)dm_nvn_frame_count(), (unsigned long long)(held_ns / 1000000));
+    qo_prof_log(set, what);
+    static uint8_t done[QO_PROF_SAMPLES]; memset(done, 0, sizeof done);
+    for (int shown = 0; shown < 12; shown++) {   // the commonest stacks, by their first QO_PROF_KEY functions
+        int best = -1, best_count = 0;
+        for (int i = 0; i < n; i++) {
+            if (done[i]) continue;
+            uintptr_t ki[QO_PROF_KEY]; qo_prof_key(g_qo_prof_pcs[i], g_qo_prof_n[i], ki); int count = 0;
+            for (int j = i; j < n; j++) { if (done[j]) continue; uintptr_t kj[QO_PROF_KEY]; qo_prof_key(g_qo_prof_pcs[j], g_qo_prof_n[j], kj); if (!memcmp(ki, kj, sizeof ki)) count++; }
+            if (count > best_count) { best_count = count; best = i; }
+        }
+        if (best < 0 || best_count * 50 < n) break;   // under 2% of the hold
+        uintptr_t kb[QO_PROF_KEY]; qo_prof_key(g_qo_prof_pcs[best], g_qo_prof_n[best], kb);
+        for (int j = 0; j < n; j++) { if (done[j]) continue; uintptr_t kj[QO_PROF_KEY]; qo_prof_key(g_qo_prof_pcs[j], g_qo_prof_n[j], kj); if (!memcmp(kb, kj, sizeof kb)) done[j] = 1; }
+        char line[2048]; size_t o = 0; uintptr_t last = 0;
+        for (int i = 0; i < g_qo_prof_n[best] && o < sizeof line - 160; i++) {
+            const qo_prof_sym *s = qo_prof_resolve(g_qo_prof_pcs[best][i]);
+            if (s->start == last) continue;
+            last = s->start;
+            o += (size_t)snprintf(line + o, sizeof line - o, "%s%s+%#lx", i ? " <- " : "", s->name, (unsigned long)(g_qo_prof_pcs[best][i] - s->start));
+        }
+        LOG("[replay-profile]   stack %4.1f%%: %s", 100.0 * best_count / n, line);
+    }
+}
+static void *qo_prof_sampler(void *unused) {
+    (void)unused; pthread_setname_np("NVN replay profile");
+    static qo_prof_set hold, base;
+    uint64_t lim = qo_profile_ns(), cur = 0, last = 0; int n = 0;
+    for (;;) {
+        usleep(1000);
+        uint64_t since = atomic_load(&g_rep_since); mach_port_t owner = atomic_load(&g_rep_owner_port);
+        if (since != cur) {   // the hold that was being sampled is over
+            if (cur && n) {
+                if (last - cur >= lim) qo_prof_report(&hold, last - cur, n);
+                else {
+                    for (int i = 0; i < n; i++) qo_prof_add(&base, g_qo_prof_pcs[i], g_qo_prof_n[i]);
+                    if (base.samples >= 4000) { qo_prof_log(&base, "baseline (holds under the limit)"); memset(&base, 0, sizeof base); }
+                }
+            }
+            cur = since; n = 0;
+        }
+        if (!since || !owner) continue;
+        pthread_t th = g_rep_owner_th; char *hi = pthread_get_stackaddr_np(th), *lo = hi - pthread_get_stacksize_np(th);
+        if (n < QO_PROF_SAMPLES) { int d = qo_walk(owner, lo, hi, g_qo_prof_pcs[n], QO_PROF_DEPTH); if (d > 0) g_qo_prof_n[n++] = (uint8_t)d; }
+        last = now_ns();
+    }
+    return NULL;
+}
 static void *qo_worker(void *unused) {
     (void)unused; pthread_setname_np("NVN queue order");
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);   // the replay is the frame's critical path
+    if (qo_profile_ns()) {
+        pthread_t s; if (!pthread_create(&s, NULL, qo_prof_sampler, NULL)) pthread_detach(s);
+        LOG("[replay-profile] on: the holder of the replay section is sampled every millisecond; holds of %llu ms or more are logged", (unsigned long long)(qo_profile_ns() / 1000000));
+    }
+    if (qo_stall_ns()) {
+        g_qo_port = pthread_mach_thread_np(pthread_self());
+        g_qo_stack_hi = pthread_get_stackaddr_np(pthread_self()); g_qo_stack_lo = (char *)g_qo_stack_hi - pthread_get_stacksize_np(pthread_self());
+        pthread_t s; if (!pthread_create(&s, NULL, qo_stall_sampler, NULL)) pthread_detach(s);
+        LOG("[stall-sample] on: the queue-order thread is sampled once an item has run %llu ms", (unsigned long long)(qo_stall_ns() / 1000000));
+    }
+    uint64_t items = 0;
     for (;;) {
         pthread_mutex_lock(&g_qo_mu);
         if (!g_qo_kick) { struct timespec ts = {0, 1000000}; pthread_cond_timedwait_relative_np(&g_qo_kick_cv, &g_qo_mu, &ts); }
         g_qo_kick = 0; int pend = qo_pending_locked();
         pthread_mutex_unlock(&g_qo_mu);
         if (!pend) continue;
-        for (;;) { replay_enter(); int r = qo_pump_n(1); if (g_qo_ntexrel) qo_texrel_sweep(); replay_leave(); if (!r) break; }
+        for (;;) {
+            if (g_qo_port) { atomic_store(&g_qo_busy_item, ++items); atomic_store(&g_qo_busy_since, now_ns()); }
+            replay_enter(); int r = qo_pump_n(1); if (g_qo_ntexrel) qo_texrel_sweep(); replay_leave();
+            if (g_qo_port) atomic_store(&g_qo_busy_since, 0);
+            if (!r) break;
+        }
     }
     return NULL;
 }

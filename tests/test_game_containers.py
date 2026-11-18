@@ -311,6 +311,23 @@ class Containers(unittest.TestCase):
             with self.assertRaises(build_app.BuildError):
                 build_app.font_report(folder)
 
+    def test_card_without_fonts_names_the_other_font_sources(self):
+        """#2242: a merged card image ("1G+1U") has an empty or no update partition, so no fonts to take."""
+        secure = ('secure', partition([('program.nca', nca())], hfs=True))
+        empty_update = [('update', partition([], hfs=True)), secure]
+        for name, root in (('empty update partition', empty_update), ('no update partition', [secure])):
+            with self.subTest(name):
+                head = bytearray(0x200)
+                head[0x100:0x104] = b'HEAD'
+                struct.pack_into('<Q', head, 0x130, 0x200)
+                game = self.path / f'{name}.xci'
+                game.write_bytes(head + partition(root, hfs=True))
+                p = subprocess.run([sys.executable, SCRIPTS / 'extract_shared_fonts.py', '--keys', self.keys,
+                                    '--xci', game, '--output', self.path / name / 'fonts'], capture_output=True, text=True)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn('--firmware', p.stderr)
+                self.assertIn('--shared-fonts', p.stderr)
+
     def test_npdm_signature_accepts_another_genuine_dump(self):
         # The pinned hash names one dump; Nintendo's signature over the ACID block names every genuine one.
         from cryptography.hazmat.primitives import hashes
@@ -403,6 +420,23 @@ class Containers(unittest.TestCase):
             next(iter(found.values())).unlink()
             with self.assertRaisesRegex(ValueError, 'missing shared-font'):
                 firmware_data_ncas(folder, load_keys(self.keys))
+
+    def test_firmware_on_exfat_skips_appledouble_files(self):
+        # macOS writes a 4 KB "._<name>" AppleDouble file beside every file it copies to an exFAT / FAT disk.
+        # They sort before the real NCAs and are no NCAs, so a firmware folder on such a disk must still work...
+        folder = self.path / 'exfat'
+        folder.mkdir()
+        appledouble = b'\x00\x05\x16\x07\x00\x02\x00\x00' + bytes(4088)
+        for title in {title for _, _, title, _ in FONTS}:
+            (folder / f'{title}.nca').write_bytes(nca(title=int(title, 16), content=4))
+            (folder / f'._{title}.nca').write_bytes(appledouble)
+        found = firmware_data_ncas(folder, load_keys(self.keys))
+        self.assertEqual(set(found), {title for _, _, title, _ in FONTS})
+        self.assertFalse(any(p.name.startswith('._') for p in found.values()))
+        # ...while a real NCA that does not decrypt (wrong keys, a damaged dump) still stops the build.
+        (folder / 'damaged.nca').write_bytes(appledouble)
+        with self.assertRaisesRegex(ValueError, 'Invalid firmware NCA header'):
+            firmware_data_ncas(folder, load_keys(self.keys))
 
     def test_mac_only(self):
         with patch('build_app.platform.system', return_value='iOS'), self.assertRaisesRegex(build_app.BuildError, 'Mac'):

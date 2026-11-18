@@ -141,7 +141,7 @@ def firmware_data_ncas(folder, keys):
     for path in sorted(folder.iterdir()):
         if path.is_dir():
             path = path / '00'
-        if not path.is_file() or (path.name != '00' and path.suffix.lower() != '.nca'):
+        if path.name.startswith('._') or not path.is_file() or (path.name != '00' and path.suffix.lower() != '.nca'):   # ._ : macOS AppleDouble files on exFAT / FAT disks
             continue
         with path.open('rb') as f:
             hdr = nca_header(f, keys)

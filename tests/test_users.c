@@ -42,7 +42,12 @@ static int marked_line(const char *text) {
 }
 /* scenario: the body runs in a forked child with TOTK_PROFILE_DIR set (a child that fails stops loudly); the
    parent waits for it, so its own process stays uninitialized and reads only the files the child left */
-static void new_dir(void) { snprintf(dir, sizeof dir, "/tmp/mng-users-XXXXXX"); assert(mkdtemp(dir)); }
+/* Under TMPDIR when it is set: this machine's storage guard lets tests write there, not to /tmp. */
+static void new_dir(void) {
+    const char *tmp = getenv("TMPDIR"); size_t n = tmp && *tmp ? strlen(tmp) : 0;
+    snprintf(dir, sizeof dir, "%.*s%smng-users-XXXXXX", n ? (int)n : 5, n ? tmp : "/tmp/", n && tmp[n - 1] != '/' ? "/" : "");
+    assert(mkdtemp(dir));
+}
 static void scenario(void (*body)(void)) {
     pid_t pid = fork();
     assert(pid >= 0);
@@ -130,6 +135,37 @@ static void from_saves(void) {
     assert(me[0] == u[0].lo && me[1] == u[0].hi);
 }
 
+#ifdef TEST_ODYSSEY
+/* Super Mario Odyssey (games/odyssey/runtime/account.c, the same shared file built with its game_version.h): the profile it
+   had before the users -- account.uid and the save area named after it -- keeps that save area as the user "Local", and
+   the game gets the account entries its single-user account.c gave it, no others (its SDK is linked in, so an entry
+   replaces game code). */
+typedef struct { uint64_t lo, hi; } TestUid;
+typedef struct { TestUid uid; uint64_t token; } TestHandle;
+static void odyssey_profile(void) {
+    RuntimeUser u[RUNTIME_USERS_MAX];
+    assert(runtime_users_get(u, RUNTIME_USERS_MAX) == 1 && !strcmp(u[0].name, "Local"));
+    assert(u[0].lo == 0x0807060504030201ull && u[0].hi == 0x2827262524232221ull);
+    uint64_t me[2]; runtime_account_uid(me); assert(me[0] == u[0].lo && me[1] == u[0].hi);
+    char area[64]; snprintf(area, sizeof area, "%016llx%016llx", (unsigned long long)me[1], (unsigned long long)me[0]);
+    assert(!strcmp(area, "28272625242322210807060504030201"));   /* fs_host.c's save folder: the one already there */
+    uint32_t (*open_user)(TestHandle *) = runtime_account_override("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE");
+    uint32_t (*user_id)(TestUid *, const TestHandle *) = runtime_account_override("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE");
+    uint32_t (*last)(TestUid *) = runtime_account_override("_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE");
+    TestHandle h; TestUid id;
+    assert(open_user && open_user(&h) == 0 && user_id(&id, &h) == 0 && id.lo == me[0] && id.hi == me[1]);
+    assert(last && last(&id) == 0 && id.lo == me[0]);
+    for (const char *const *n = (const char *const[]){"_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi",
+             "_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE",
+             "_ZN2nn7account12AsyncContextC1Ev", "_ZN2nn7account12AsyncContext9GetResultEv", NULL}; *n; n++)
+        assert(!runtime_account_override(*n));
+    int n = 0; for (const char *const *e = (const char *const[]){"_ZN2nn7account10InitializeEv",
+             "_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE", "_ZN2nn7account9CloseUserERKNS0_10UserHandleE",
+             "_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", "_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE", NULL}; *e; e++)
+        n += runtime_account_override(*e) != NULL;
+    assert(n == 5);
+}
+#endif
 int main(int argc, char **argv) {
     /* recovery phase, re-execed with a corrupt users.txt: the valid lines survive in order, the marked one is in
        force, the garbage is skipped */
@@ -202,6 +238,19 @@ int main(int argc, char **argv) {
     }
     scenario(from_saves);
 
+#ifdef TEST_ODYSSEY
+    new_dir();   /* the Odyssey profile of before: its identity and the save area named after it */
+    {
+        const uint64_t uid[2] = {0x0807060504030201ull, 0x2827262524232221ull};
+        write_file("account.uid", uid, sizeof uid);
+        char path[512]; snprintf(path, sizeof path, "%s/save", dir); assert(!mkdir(path, 0700));
+        snprintf(path, sizeof path, "%s/save/28272625242322210807060504030201", dir); assert(!mkdir(path, 0700));
+    }
+    scenario(odyssey_profile);
+    read_file("users.txt", text, sizeof text);
+    assert(!strcmp(text, "*28272625242322210807060504030201\tLocal\n"));
+    puts("pass: odyssey's profile of before keeps its save area as the user Local; its account entries are its own");
+#endif
     puts("pass: users (fresh profile, legacy identity, add / choose and the running user, names cleaned, 8 the most, the game's view, restart, corrupt file, unparsable file, users from their save areas)");
     return 0;
 }

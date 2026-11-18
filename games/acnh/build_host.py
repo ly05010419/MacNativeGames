@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
-from games.acnh.prepare import check_exefs, prepared_profile, require
+from games.acnh.prepare import SDK_3_0_UPDATES, check_exefs, prepared_profile, require
 from games.acnh.tools.common import clone_file, outside_repository, verified_file
 from games.acnh.tools.runtime_preflight import prepare as preflight
 from games.acnh.tools.prepare_fps import prepare_fps
@@ -155,13 +155,15 @@ def prepare_host(prepared, work, fonts, fps_mod=None, dlc=None, forget=()):
             "prepared": str(prepared), "work": str(work), "shared_fonts": str(fonts),
             "scope": "Diagnostic host build; execution is a separate validation step"}
     if fps_mod is not None:
-        prepare_fps(prepared, work, fps_mod)
+        rates = prepare_fps(prepared, work, fps_mod)
         info["fps_mod"] = str(fps_mod.expanduser().resolve())
-        info["fps_manifest_sha256"] = hashlib.sha256((work / "build/fps60/manifest.json").read_bytes()).hexdigest()
+        for rate in rates:   # 60 keeps its original key; further rates carry theirs in the name
+            key = "fps_manifest_sha256" if rate == 60 else f"fps{rate}_manifest_sha256"
+            info[key] = hashlib.sha256((work / f"build/fps{rate}/manifest.json").read_bytes()).hexdigest()
     else:
         write_changed(work / "build/fps_config.h", "#define ACNH_FPS_ENABLED 0\n")
     if dlc is not None:
-        require(expected["cnmt_version_raw"] == 2097152, "DLC support is currently scoped to 3.0.1")
+        require(expected["cnmt_version_raw"] in SDK_3_0_UPDATES, "DLC support is currently scoped to 3.0.1 and 3.0.3")
         dlc = outside_repository(dlc, ROOT)
         header, digest = dlc_config_header(dlc)
         write_changed(work / "build/dlc_config.h", header)
@@ -177,7 +179,7 @@ def main():
     for flag in ("prepared", "work", "shared-fonts"):
         parser.add_argument(f"--{flag}", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=3)
-    parser.add_argument("--fps-mod", type=Path, help="Optional pinned tmouh/acnh-60fps source folder; enables experimental 3.0.1 60 FPS")
+    parser.add_argument("--fps-mod", type=Path, help="Optional pinned tmouh/acnh-60fps source folder; enables experimental 60 FPS on 3.0.1, and 60 and 120 FPS on 3.0.3")
     parser.add_argument("--dlc", type=Path, help="Optional directory from tools/prepare_dlc.py; remembered for rebuilds")
     parser.add_argument("--no-fps-mod", action="store_true", help="Forget the remembered --fps-mod input (original 30 FPS only)")
     parser.add_argument("--no-dlc", action="store_true", help="Forget the remembered --dlc input (zero DLCs)")

@@ -18,7 +18,7 @@
 
 打包会按 `expected-v131072.json` 核对游戏代码和数据，别的版本会被拒绝。不需要 `prod.keys`：导出的文件已经解密。
 
-**系统字体**：本仓库打包《王国之泪》或《旷野之息》时解出的 6 个 `.bfttf` 文件和它们的 `manifest.json`，在 `TOTK_build/totk/extracted/firmware/shared-fonts`（或 `BotW_build/botw/...`）。用 `--shared-fonts` 指定这个目录。时之笛的打包没有 `--firmware` 选项。第一次打包后工作目录会保留字体，以后再打包不用再给 `--shared-fonts`。
+**系统字体**（可选）：导出的游戏里没有，也不需要你提供。不给 `--shared-fonts` 时，打包会在每台 Mac 上下载一次开源的 Noto 字体（SIL OFL 1.1，约 50 MB，按 SHA-256 核对）来用。如果以前用本仓库打包过《王国之泪》或《旷野之息》，也可以用它们留下的字体：`--shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>"`（或 `BotW_build/botw/...`）。第一次打包后工作目录会保留字体。
 
 **工具**（装一次，需要联网）：
 
@@ -42,10 +42,13 @@ xcode-select --install
 
 ```sh
 # 用 .nup 文件
-python3.14 build_app.py "<Ocarina of Time.nup>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Ocarina of Time.app"
+python3.14 build_app.py "<Ocarina of Time.nup>" -o "/Applications/Ocarina of Time.app"
 
 # 用导出目录（base/ 和 updates/131072/）
-python3.14 build_app.py "<导出目录>" --shared-fonts "<…/shared-fonts>" -o "/Applications/Ocarina of Time.app"
+python3.14 build_app.py "<导出目录>" -o "/Applications/Ocarina of Time.app"
+
+# 任一种，用以前打包王国之泪留下的字体（可选）
+python3.14 build_app.py "<导出目录>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Ocarina of Time.app"
 ```
 
 如果 `/Applications` 和工作目录不在同一个盘，就选工作目录所在盘上的一个目录。
@@ -92,7 +95,9 @@ python3.14 build_app.py "<导出目录>" --shared-fonts "<…/shared-fonts>" -o 
 | `unsupported or damaged original ExeFS`、`RomFS is not update 131072: missing … / different …` | 不是 v131072 更新，或导出文件损坏：重新导出游戏。RomFS 按文件逐个核对，报错会列出是哪些文件；清单里没有的多余文件不算错（同一个 131072 的两份导出可能差几个文件）。 |
 | `… compute pipeline(s) could not be built on this Mac (…)` | 这台 Mac 的 Metal 编译器编不过报错里列出的着色器（Apple M5 + macOS 26.6.2 上见过，#2070）。有系统更新就先更新再打包；仍然失败的话，开 issue 附上着色器键和报错指出的 `logs/compute-pipelines.log` 里的那几行。 |
 | `use the complete original update 131072 in the dump/NUP`、`leave out --update, --dlc and --mod` | 只给 `.nup` 或导出目录，它已经包含更新。 |
-| `pass --shared-fonts with the six verified firmware fonts` | 加上 `--shared-fonts`（见[需要什么](#需要什么)）。 |
+| `pass --shared-fonts with the six verified firmware fonts` | 源码是旧版：`git pull`（或重新下载 ZIP）后再运行同一条命令；新版没给字体时会用开源字体。 |
+| `--shared-fonts <目录>: …` | 那个目录不是本仓库打包留下的 6 个字体：去掉 `--shared-fonts`，用开源字体。 |
+| `does not match its pinned SHA-256`（`[deps]` 开头的行） | 下载中断或内容变了：再运行同一条命令；还是这样就开 issue 并贴上这一行。 |
 | `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | 安装完整的 Xcode 和它的 Metal 工具链。 |
 | `… must remain outside the source checkout` | 把 `--work` 和 `-o` 放到 `MacNativeGames` 目录外面。 |
 | `unfinished App staging directory exists; left untouched` | 上次打包在写 App 时停下了：删掉 App 旁边的 `.Ocarina of Time.app.ready` 目录，再打包。 |

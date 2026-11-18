@@ -5,6 +5,7 @@ import json
 import os
 import plistlib
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -193,6 +194,46 @@ class Installed(unittest.TestCase):
         for bundle in ('org.macnativegames.totk', 'org.macnativegames.botw', 'org.macnativegames.oot'):
             self.assertIn(bundle, ids)
 
+    def test_the_launcher_s_own_list_comes_first_and_keeps_its_games(self):
+        # user 2026-11-18: "launcher 要自己 记住 不是靠 macOS 的应用索引 ... 优先自己记住，然后 靠 macOS 的应用索引"; that day
+        # LaunchServices named Tears of the Kingdom but not the Odyssey, Animal Crossing and Echoes of Wisdom next to it
+        with tempfile.TemporaryDirectory() as tmp:
+            def make(rel, bundle):
+                app = Path(tmp) / rel
+                (app / 'Contents').mkdir(parents=True)
+                (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': bundle}))
+                return os.path.realpath(app)
+            totk = make('games/Tears of the Kingdom.app', 'org.macnativegames.totk')
+            odyssey = make('games/Super Mario Odyssey.app', 'org.macnativegames.odyssey')
+            oot = make('elsewhere/Ocarina of Time.app', 'org.macnativegames.oot')
+            botw = make('third/Breath of the Wild.app', 'org.macnativegames.botw')
+            make('games/Other.app', 'com.example.other')
+            known, last = Path(tmp) / 'known-apps.json', Path(tmp) / 'installed.json'
+            last.write_text(json.dumps({'apps': [{'app': oot}]}))
+            self.assertEqual(installed.known_apps(known, last), [oot])          # a first list from the window's last one
+            known.write_text(json.dumps({'apps': [oot, '/Volumes/not-connected/Old.app']}))
+            asked = []
+            plan = lambda app, python: {'game': Path(app).stem, 'kind': 'express'}
+            def macos(ids):
+                asked.append(True)
+                return [totk]                                                  # macOS leaves out what it leaves out
+            with mock.patch.object(installed, 'registered', side_effect=macos), \
+                 mock.patch.object(installed, 'plan', side_effect=plan):
+                found = sorted(a['app'] for a in installed.apps(known_file=known))
+            self.assertEqual(found, sorted([totk, odyssey, oot]))
+            kept = json.loads(known.read_text())['apps']
+            self.assertEqual(kept[:2], [oot, '/Volumes/not-connected/Old.app'])  # its own list first; a disk not connected stays
+            self.assertEqual(sorted(kept[2:]), sorted([totk, odyssey]))
+            with mock.patch.object(installed, 'registered', return_value=[]), \
+                 mock.patch.object(installed, 'plan', side_effect=plan):          # macOS forgets them all: still found
+                self.assertEqual(sorted(a['app'] for a in installed.apps(known_file=known)), sorted([totk, odyssey, oot]))
+            installed.remember([botw], known)                                  # a build adds its app
+            shutil.rmtree(Path(tmp) / 'elsewhere/Ocarina of Time.app')          # a deleted app leaves the list
+            installed.remember([], known)
+            kept = json.loads(known.read_text())['apps']
+            self.assertIn(botw, kept)
+            self.assertNotIn(oot, kept)
+
 
 class History(unittest.TestCase):
     def test_measured_fraction_and_skipped_steps(self):
@@ -200,11 +241,11 @@ class History(unittest.TestCase):
         self.assertEqual(e.update('a', 5, 1)[:2], (0.05, 95.0))
         self.assertEqual(e.update('c', 0, 3)[:2], (0.4, 60.0))   # b skipped (inputs unchanged): counted as done
         self.assertEqual(e.update('c', 600, 3)[0], 0.99)         # never 1 before the build ends
-        self.assertEqual(e.update('zzz', 1, 3), (0.99, None, True))
+        self.assertEqual(e.update('zzz', 1, 3), (0.99, None, True, None))
 
     def test_without_a_record_the_stage(self):
         e = history.Estimator(None)
-        self.assertEqual(e.update('x', 5, 3), (history.STAGE_STARTS[3], None, False))
+        self.assertEqual(e.update('x', 5, 3), (history.STAGE_STARTS[3], None, False, None))
 
     def test_record_and_load(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,7 +259,7 @@ class History(unittest.TestCase):
 class Checks(unittest.TestCase):
     def test_no_homebrew_package_is_needed(self):
         source = repo.BUILD_APP.read_text()
-        start = source.index('def prerequisites(')
+        start = source.index('def developer_tools(')   # the checks of a build that compiles (prerequisites calls it)
         body = source[start:source.index('\n\n\n', start)]   # the function alone, not the comment after it
         self.assertNotIn('libvpx', body)          # built from pinned sources (codec_libraries), not checked in Homebrew
         self.assertIn("codec_libraries(getattr(args, 'platform', 'macos'))", body)

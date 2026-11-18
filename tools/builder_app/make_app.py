@@ -84,24 +84,54 @@ def python_archive(cache):
 
 def binary(scratch):
     env = dict(os.environ)
-    run(['swift', 'build', '-c', 'release', '--package-path', HERE, '--scratch-path', scratch], env=env)
-    out = subprocess.run(['swift', 'build', '-c', 'release', '--package-path', str(HERE), '--scratch-path', str(scratch),
-                          '--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
+    # --disable-sandbox: SwiftPM compiles a dependency's manifest (SwiftTerm, pinned in Package.swift) in a sandbox of
+    # its own, which cannot be made inside another one (this Mac's storage_guard runs every build in sandbox-exec)
+    run(['swift', 'build', '-c', 'release', '--disable-sandbox', '--package-path', HERE, '--scratch-path', scratch], env=env)
+    out = subprocess.run(['swift', 'build', '-c', 'release', '--disable-sandbox', '--package-path', str(HERE),
+                          '--scratch-path', str(scratch), '--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
     return Path(out) / 'MNGBuilder'
 
 
-def check_release_source(repo):
+def licenses(scratch, resources):
+    """The licence and notice files of every package SwiftPM checked out (SwiftTerm, MIT; swift-argument-parser,
+    Apache-2.0, which only SwiftTerm's own tools use), into Contents/Resources/licenses/<package>/: the app carries
+    their code. Returns the packages."""
+    done = []
+    for package in sorted(p for p in (Path(scratch) / 'checkouts').glob('*') if p.is_dir()):
+        files = [f for f in package.iterdir() if f.is_file() and re.match(r'(LICEN[CS]E|NOTICE|COPYING)', f.name, re.I)]
+        if not files:
+            raise SystemExit(f'{package.name}: no licence file in its checkout; the app cannot carry its code without one')
+        target = resources / 'licenses' / package.name
+        target.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            shutil.copy2(f, target / f.name)
+        done.append(package.name)
+    return done
+
+
+SOURCE_REPO = 'ly05010419/MacNativeGames'   # where signed source releases (tag source-*) are published
+SOURCE_KEY = HERE / 'source_signing.pub'      # their Ed25519 public key; the private key stays in the release tool's keychain
+
+
+def check_release_source(repo, commit='HEAD'):
     """Only a committed tree is distributable: no ignored notes, keys, build data or unrelated untracked files.
     Archive the source as data so signing the app cannot change the pinned translator executables inside it.
+    commit: HEAD for a Launcher (its window and source must match the checkout), or the commit of a source release.
     """
-    if subprocess.run(['git', '-C', repo, 'diff', '--quiet', 'HEAD', '--']).returncode:
+    if commit == 'HEAD' and subprocess.run(['git', '-C', repo, 'diff', '--quiet', 'HEAD', '--']).returncode:
         raise ValueError('Portable builds require committed source changes; the window and bundled source must match.')
-    names = set(subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', 'HEAD'], text=True).splitlines())
+    names = set(subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', commit], text=True).splitlines())
     required = {
         'build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
+        'tools/builder_app/source_updates.py', 'tools/builder_app/source_signing.pub',
         'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
         'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py',
     }
+    if commit == 'HEAD':
+        # the Launcher's own updater goes into the signed app from this checkout (main below), so it must be committed
+        # with it. A source release carries none: asking it of every commit refused the release of one from before the
+        # file existed (2026-11-18, source-20261118-7a158084 with this file still uncommitted in the checkout).
+        required.add('tools/builder_app/launcher_update.py')
     missing = required - names
     if missing:
         raise ValueError('Release source is incomplete; commit these dependencies first: ' + ', '.join(sorted(missing)))
@@ -110,22 +140,90 @@ def check_release_source(repo):
         raise ValueError('Local-only files in release source: ' + ', '.join(sorted(forbidden)))
 
 
-def source_archive(repo, destination):
-    check_release_source(repo)
-    run(['git', '-C', repo, 'archive', '--format=tar.gz', '-o', destination, 'HEAD'])
+def build_python():
+    """The Python 3.14 the prebuilt programs are made with (build_app.py reads zstd with the standard library)."""
+    for name in ('python3.14', 'python3.15'):
+        found = shutil.which(name, path=os.pathsep.join(['/usr/local/bin', '/opt/homebrew/bin', '/Library/Frameworks/Python.framework/Versions/Current/bin']))
+        if found:
+            return found
+    raise SystemExit('the prebuilt programs need Python 3.14 (python.org)')
+
+
+def prebuilt_programs(repo, commit, scratch):
+    """tools/prebuilt.py build in an unpacked copy of the commit, in scratch (outside the checkout): the folder of
+    programs a source archive carries so a player's build compiles nothing (user 2026-11-17). Reused when scratch
+    already holds this commit's complete folder."""
+    full = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', '--verify', commit + '^{commit}'], text=True).strip()
+    if subprocess.run(['git', '-C', str(repo), 'cat-file', '-e', f'{full}:tools/prebuilt.py'], capture_output=True).returncode:
+        return None   # a commit before tools/prebuilt.py: its archive is the source alone, as it was
+    copy = Path(scratch) / f'prebuilt-{full[:12]}'
+    sys.path.insert(0, str(repo))
+    try:
+        import tools.prebuilt as prebuilt
+    finally:
+        sys.path.remove(str(repo))
+    if copy.is_dir() and prebuilt.complete(copy):
+        return copy / prebuilt.FOLDER
+    shutil.rmtree(copy, ignore_errors=True)
+    copy.mkdir(parents=True)
+    archive = subprocess.run(['git', '-C', str(repo), 'archive', '--format=tar', full], check=True, capture_output=True).stdout
+    import io
+    with tarfile.open(fileobj=io.BytesIO(archive)) as t:
+        t.extractall(copy, filter='data') if sys.version_info >= (3, 12) else t.extractall(copy)
+    (copy / '.mng-source-commit').write_text(full + '\n')
+    say(f'prebuilt programs of {full[:12]} (tools/prebuilt.py, a few minutes)')
+    run([build_python(), '-B', copy / 'tools/prebuilt.py', 'build', copy])
+    if not prebuilt.complete(copy):
+        raise SystemExit(f'{copy}: tools/prebuilt.py did not make every program')
+    return copy / prebuilt.FOLDER
+
+
+def source_archive(repo, destination, commit='HEAD', prebuilt=None):
+    """git archive of the commit (tar.gz), with prebuilt (a .prebuilt folder of this commit, prebuilt_programs) added
+    as .prebuilt when given."""
+    check_release_source(repo, commit)
+    if prebuilt is None:
+        run(['git', '-C', repo, 'archive', '--format=tar.gz', '-o', destination, commit])
+        return sha256(destination)
+    import gzip
+    tar = Path(str(destination) + '.tar')
+    run(['git', '-C', repo, 'archive', '--format=tar', '-o', tar, commit])
+
+    def plain(info):   # no owner or build machine names in the archive
+        info.uid = info.gid = 0
+        info.uname = info.gname = ''
+        return info
+    with tarfile.open(tar, 'a') as t:
+        t.add(prebuilt, arcname='.prebuilt', filter=plain)
+    with open(tar, 'rb') as src, gzip.open(destination, 'wb') as dst:
+        shutil.copyfileobj(src, dst)
+    tar.unlink()
     return sha256(destination)
+
+
+def source_settings(repo, commit='HEAD'):
+    """What a Release Launcher needs for signed code updates (tools/builder_app/source_updates.py): the public key, the
+    repository its source releases are on, and its own source's commit time (a release is newer only by that)."""
+    key = SOURCE_KEY.read_text().strip()
+    return {
+        'MNGSourcePublicKey': key, 'MNGSourceRepo': SOURCE_REPO,
+        'MNGSourceCommitTime': int(subprocess.check_output(['git', '-C', str(repo), 'show', '-s', '--format=%ct', commit],
+                                                           text=True).strip()),
+    }
 
 
 def icon(resources):
     """Resources/AppIcon.icns from tools/builder_app/Resources/AppIcon.png (the project's own artwork, 1024 px, the shape
-    on the macOS icon grid), every size iconutil wants, made with sips."""
+    on the macOS icon grid), every size iconutil wants, drawn with AppKit (resize_icon.js; sips writes through the
+    user's temporary folder, which this Mac's build sandbox refuses)."""
     art = HERE / 'Resources/AppIcon.png'
     iconset = resources / 'AppIcon.iconset'
     iconset.mkdir()
     for size in (16, 32, 128, 256, 512):
         for scale in (1, 2):
             name = f'icon_{size}x{size}{"@2x" if scale == 2 else ""}.png'
-            run(['sips', '-z', str(size * scale), str(size * scale), art, '--out', iconset / name], stdout=subprocess.DEVNULL)
+            run(['/usr/bin/osascript', '-l', 'JavaScript', HERE / 'resize_icon.js', art, str(size * scale), iconset / name],
+                stdout=subprocess.DEVNULL)
     run(['iconutil', '-c', 'icns', iconset, '-o', resources / 'AppIcon.icns'])
     shutil.rmtree(iconset)
 
@@ -147,13 +245,18 @@ def main(argv):
     ap.add_argument('--scratch', type=Path, default=CACHE / 'swift', help='the Swift build folder')
     ap.add_argument('--no-python', action='store_true', help='use /opt/homebrew/bin/python3.14 instead of carrying one')
     ap.add_argument('--portable', action='store_true', help='bundle committed source for download and installation on another Mac')
-    ap.add_argument('--version', default='1.0.0', help='release version (major.minor.patch)')
+    # No default (user 2026-11-17: "版本号 不对？？？"): a default of 1.0.0 made every Launcher built from a checkout show
+    # "1.0.0", a release that is not it. A release (--portable) names its version; one built here has none and says so
+    # (App.swift VersionLabel: 开发版 and its commit).
+    ap.add_argument('--version', help='release version (major.minor.patch); --portable needs it')
     ap.add_argument('--zip', type=Path, help='also write a ZIP download containing the app')
     a = ap.parse_args(argv)
     out = a.out.expanduser().resolve()
     if out.suffix != '.app':
         raise SystemExit('-o must end in .app')
-    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', a.version):
+    if a.portable and a.version is None:
+        raise SystemExit('--portable needs --version (major.minor.patch)')
+    if a.version is not None and not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', a.version):
         raise SystemExit('--version must be major.minor.patch')
     if a.portable and (a.no_python or platform.machine() != 'arm64'):
         raise SystemExit('Portable releases require Apple silicon and the bundled Python (no --no-python).')
@@ -167,15 +270,23 @@ def main(argv):
     (stage / 'Contents/MacOS').mkdir(parents=True)
     (stage / 'Contents/Resources').mkdir()
     shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
+    say('licences: ' + ', '.join(licenses(a.scratch.expanduser(), stage / 'Contents/Resources')))
     icon(stage / 'Contents/Resources')
     plist = info(REPO)
-    plist['CFBundleShortVersionString'] = a.version
-    plist['CFBundleVersion'] = a.version
+    if a.version is not None:   # a checkout's build keeps info()'s placeholder; its window says 开发版, not a version
+        plist['CFBundleShortVersionString'] = a.version
+        plist['CFBundleVersion'] = a.version
     if a.portable:
         plist.pop('MNGRepo')
         plist['MNGSourceCommit'] = subprocess.check_output(['git', '-C', REPO, 'rev-parse', 'HEAD'], text=True).strip()
-        plist['MNGSourceArchiveSHA256'] = source_archive(REPO, stage / 'Contents/Resources/source.tar.gz')
-        shutil.copy2(HERE / 'bundled_job.py', stage / 'Contents/Resources/bundled_job.py')
+        # with the programs a build compiles, made from this commit (tools/prebuilt.py): players need no command line tools
+        programs = prebuilt_programs(REPO, 'HEAD', a.scratch.expanduser().parent / 'prebuilt')
+        plist['MNGSourceArchiveSHA256'] = source_archive(REPO, stage / 'Contents/Resources/source.tar.gz', prebuilt=programs)
+        plist.update(source_settings(REPO))
+        # the code that trusts or refuses downloaded source lives in the signed app, never in a source archive; so does
+        # the code that replaces the Launcher with a newer release (launcher_update.py, the update button)
+        for name in ('bundled_job.py', 'source_updates.py', 'launcher_update.py'):
+            shutil.copy2(HERE / name, stage / 'Contents/Resources' / name)
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:
             t.extractall(stage / 'Contents/Resources', filter='data') if sys.version_info >= (3, 12) else t.extractall(stage / 'Contents/Resources')
@@ -185,7 +296,10 @@ def main(argv):
         plist['MNGPython'] = '/opt/homebrew/bin/python3.14'
     with open(stage / 'Contents/Info.plist', 'wb') as f:
         plistlib.dump(plist, f)
-    run(['codesign', '--force', '--deep', '--sign', '-', stage])
+    # The designated requirement is the bundle ID, not the ad-hoc default (this build's code hash): macOS keeps the
+    # "removable volume" permission by it, so a rebuilt Launcher is not asked again (2026-11-15: TCC.db held a cdhash for
+    # org.macnativegames.launcher; build_app.sign_app does the same for the game apps).
+    run(['codesign', '--force', '--deep', '--sign', '-', f'-r=designated => identifier "{BUNDLE_ID}"', stage])
     run(['codesign', '--verify', '--deep', '--strict', stage])
     if out.exists():
         shutil.rmtree(out)

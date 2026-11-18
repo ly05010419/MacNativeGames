@@ -19,6 +19,24 @@ GAME = ROOT / 'games/oot'
 SCRIPTS = GAME / 'scripts'
 
 
+class OotScripts:
+    """games/oot/scripts on the path for a test, and at its end every module it loaded from there taken out again: the
+    scripts import ns2_shader_corpus / shader_list, which other tests import from games/totk/scripts under the same
+    names (2026-11-15: collect_shaders then took Ocarina of Time's ns2_shader_corpus and failed to import)."""
+
+    def __enter__(self):
+        sys.path.insert(0, str(SCRIPTS))
+        self.before = set(sys.modules)
+        return self
+
+    def __exit__(self, *exc):
+        sys.path.remove(str(SCRIPTS))
+        for name in set(sys.modules) - self.before:
+            where = getattr(sys.modules[name], '__file__', None) or ''
+            if where.startswith(str(SCRIPTS)):
+                del sys.modules[name]
+
+
 def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -39,7 +57,7 @@ class QuickList(unittest.TestCase):
     """shader_list.py: the shaders of the title rows, and the list cut to some shaders."""
 
     def setUp(self):
-        sys.path.insert(0, str(SCRIPTS))
+        self.scripts = OotScripts().__enter__()
         self.shader_list = load('oot_shader_list_quick', SCRIPTS / 'shader_list.py')
         self.lst = self.shader_list.ShaderList()
         self.lst.add_warm(('R', render_key(variant(1), variant(2))), 't')
@@ -48,10 +66,26 @@ class QuickList(unittest.TestCase):
         self.lst.add_warm(('R', render_key(variant(1), variant(4))), 'm')   # one of its shaders is not a title one
 
     def tearDown(self):
-        sys.path.remove(str(SCRIPTS))
+        self.scripts.__exit__(None, None, None)
 
     def test_the_title_rows_name_the_quick_build_s_shaders(self):
         self.assertEqual(self.lst.title_keys(), {variant(n)[:64] for n in (1, 2, 5)})
+
+    def test_a_quick_build_also_takes_the_mesh_rows_shaders(self):
+        # user 2026-11-15: "快速启动 默认 预热 网格管线" -- a quick App compiled every mesh pipeline at its first draw
+        # (a cold world entry: 32 of them, 75 s); their shaders (task, mesh, fragment) go into the quick seed so the
+        # packaging warms them into the pipeline archive
+        self.lst.add_warm(('M', variant(7), render_key(variant(8), variant(9))), 'm')
+        self.lst.add_warm(('M', '-', render_key(variant(10), variant(2))), 'm')
+        self.assertEqual(self.lst.quick_keys(), {variant(n)[:64] for n in (1, 2, 5, 7, 8, 9, 10)})
+        self.assertEqual(self.lst.title_keys(), {variant(n)[:64] for n in (1, 2, 5)})   # the title rows alone, as before
+
+    def test_a_quick_build_also_takes_every_compute_and_tile_read_pipeline(self):
+        # user 2026-11-15: the compute (C) and tile-read (T) pipelines are warmed by default too, as the mesh ones
+        self.lst.add_warm(('C', variant(11)), 'm')
+        self.lst.add_warm(('T', render_key(variant(12), variant(13))), 'm')
+        self.assertEqual(self.lst.quick_keys(), {variant(n)[:64] for n in (1, 2, 5, 11, 12, 13)})
+        self.assertNotIn(variant(3)[:64], self.lst.quick_keys())   # an R row's shaders still only when it is a title row
 
     def test_a_list_without_title_rows_names_none(self):
         lst = self.shader_list.ShaderList()
@@ -73,14 +107,14 @@ class QuickCorpus(unittest.TestCase):
     """prepare_ns2_seed.py: the corpus cut to some shaders, in the corpus's own form."""
 
     def setUp(self):
-        sys.path.insert(0, str(SCRIPTS))
+        self.scripts = OotScripts().__enter__()
         self.seed = load('oot_ns2_seed_quick', SCRIPTS / 'prepare_ns2_seed.py')
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
 
     def tearDown(self):
         self.tmp.cleanup()
-        sys.path.remove(str(SCRIPTS))
+        self.scripts.__exit__(None, None, None)
 
     def corpus(self, n):
         records, keys = [], []
@@ -166,6 +200,35 @@ class ShaderMode(unittest.TestCase):
             self.build.title_shader_file(Path(self.tmp.name) / 'tree', shared)
         self.assertIn('no title rows', str(e.exception))
 
+    def test_the_quick_seed_file_names_the_mesh_rows_shaders(self):
+        name = lambda v: v.encode().ljust(80, b'\0')
+        mesh_key = (name(variant(8)) + name(variant(9)) + bytes(544 - 160)).hex()
+        title_key = (name(variant(1)) + name(variant(2)) + bytes(544 - 160)).hex()
+        shared = Path(self.tmp.name) / 'shader_list.tsv'
+        shared.write_text(f'# list\nR\t{title_key}\tt\nM\t{variant(7)}\t{mesh_key}\tm\n')
+        written = self.build.title_shader_file(Path(self.tmp.name) / 'tree', shared).read_text().split()
+        self.assertEqual(set(written), {variant(n)[:64] for n in (1, 2, 7, 8, 9)})
+
+    def test_the_archive_is_built_from_the_libraries_the_app_carries(self):
+        # 2026-11-15: the packaging tool loaded the full build's libraries (TOTK_NATIVE_DIR/shader-libs) for a quick App,
+        # whose own are shader-libs-title: 494 of its 537 libraries differ in bytes, and the game's Metal refused 531 of
+        # 602 archived pipelines ("Unable to find function main0"). The tool now takes the mode's libraries and names
+        # them in its report, and packaging stops when they are not the ones the App carries.
+        tree = Path(self.tmp.name)
+        libraries = self.build.shader_dirs(tree, 'title')[1]
+        libraries.mkdir(parents=True)
+        self.build.check_archive_libraries({'libs': str(libraries)}, libraries)
+        with self.assertRaisesRegex(ValueError, 'libraries'):
+            self.build.check_archive_libraries({'libs': str(tree / 'build/shader-libs')}, libraries)
+        with self.assertRaisesRegex(ValueError, 'libraries'):
+            self.build.check_archive_libraries({}, libraries)   # a tool that does not say which ones it took
+        text = (GAME / 'build.py').read_text()
+        self.assertIn("TOTK_SHADER_LIBS_DIR=str(libraries)", text)
+        self.assertIn("check_archive_libraries(report,libraries)", text)
+        gfx = (ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
+        self.assertIn('getenv("TOTK_SHADER_LIBS_DIR")', gfx)
+        self.assertIn('\\"libs\\": \\"%s\\"', gfx)
+
     def test_a_title_build_keeps_its_own_folders(self):
         # 2026-11-13: a title build in the full build's work folder deleted 3,081 pipeline archive files of the full
         # build and put all 64,607 libraries into the quick app's 2.7 GB shader bundle
@@ -175,7 +238,9 @@ class ShaderMode(unittest.TestCase):
         self.assertTrue(set(full[:2]).isdisjoint(title[:2]))
         self.assertEqual(title[2], '-title')
         text = (GAME / 'build.py').read_text()
-        for used in ("cache=folder/(chain+suffix)", "target=tree/f'build/pipelines{suffix}'",
+        # the pipeline cache: one per kind, kept across chains (test_oot_archive_lists.CacheKeptAcrossChains)
+        self.assertEqual(self.build.pipeline_cache(tree, '-title'), tree / 'archive-title')
+        for used in ("cache=pipeline_cache(folder,suffix)","target=tree/f'build/pipelines{suffix}'",
                      "bundle=tree/f'build/shader-bundles/ShaderData-oot{suffix}.bundle'", "'--output',seed,", "'--out',libraries,"):
             self.assertIn(used, text)
 
@@ -209,13 +274,144 @@ class QuickAppContributesNothing(unittest.TestCase):
             self.assertGreater(text.index(call, guard), quick, call)   # only in the else branch, after the guard
         self.assertEqual(text.count('totk_inbox_start(contrib'), 1)
 
+    def test_a_quick_app_does_not_turn_background_translation_on(self):
+        # tried 2026-11-15 and taken back the same day: in the background its translator service crashed (user: "不用
+        # 后台编译了 这个 有问题"); a quick app makes its shaders as every app does
+        self.assertNotIn('TOTK_ASYNC_SHADERS', (GAME / 'app/launcher.m').read_text())
+
+
+class LauncherQuickStart(unittest.TestCase):
+    """MNG Launcher's 快速启动: a build request with quick makes the job's build carry only the title's shaders, only for
+    Ocarina of Time; the installed list says which apps are quick (their cards offer 补全着色器)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        from tools.builder_jobs import build_job
+        self.build_job = build_job
+
+    def tearDown(self):
+        sys.path.remove(str(ROOT))
+
+    def test_a_quick_build_of_ocarina_of_time_carries_the_title_s_shaders(self):
+        with mock.patch.dict(os.environ, {'OOT_SHADERS': ''}):
+            self.assertEqual(self.build_job.job_env({'quick': True}, 'oot')['OOT_SHADERS'], 'title')
+            self.assertEqual(self.build_job.job_env({}, 'oot')['OOT_SHADERS'], '')   # a normal build as before
+
+    def test_another_game_refuses_a_quick_build(self):
+        with self.assertRaises(self.build_job.Refused):
+            self.build_job.job_env({'quick': True}, 'totk')
+
+    def test_the_job_runs_the_build_with_that_environment_and_its_own_history(self):
+        text = (ROOT / 'tools/builder_jobs/build_job.py').read_text()
+        self.assertIn('start_new_session=True, env=env)', text)
+        self.assertIn("'macos-quick' if request.get('quick')", text)
+
+    def test_a_card_s_quick_start_is_judged_as_a_quick_build(self):
+        # user 2026-11-15: the card's 快速启动 and the Build page's switch are one function; an installed app whose
+        # translator changed (a full build otherwise) takes it as an update that makes only the title's shaders
+        seen = {}
+        def plan(app, python, work=None, env=None):
+            seen['env'] = env
+            return {'kind': 'express', 'work': '/w', 'game': 'oot'}
+        with mock.patch('tools.builder_jobs.installed.plan', plan), mock.patch.dict(os.environ, {'OOT_SHADERS': ''}):
+            script, argv, work, app, kind, game = self.build_job.command({'update': '/Apps/Ocarina of Time.app', 'quick': True})
+        self.assertEqual(seen['env']['OOT_SHADERS'], 'title')
+        self.assertEqual((kind, game), ('express', 'oot'))
+        with mock.patch('tools.builder_jobs.installed.plan', plan):
+            self.build_job.command({'update': '/Apps/Ocarina of Time.app'})
+        self.assertIsNone(seen['env'])   # an ordinary update is judged as before
+
+    def test_the_card_button_follows_the_game_pages_and_sends_the_same_request(self):
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        home = (swift / 'HomePage.swift').read_text()
+        self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button(T.quickStart) { model.quickStart(app) }'))
+        model = (swift / 'Model.swift').read_text()
+        self.assertIn('start(BuildRequest(update: app.app, quick: true))', model)
+        self.assertIn('quick: quick ? true : nil))', model)   # the Build page's switch: the same field
+        self.assertIn('Toggle(T.quickStart', (swift / 'ActionSection.swift').read_text())
+
+    def test_the_installed_list_names_a_quick_app(self):
+        text = (ROOT / 'tools/builder_jobs/installed.py').read_text()
+        self.assertIn("'shaders': info.get('MNGShaders') or 'full'", text)
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertIn('if app.shaders == "title"', (swift / 'HomePage.swift').read_text())
+        self.assertIn('model.updateShaders(app)', (swift / 'HomePage.swift').read_text())
+        self.assertIn('var quick: Bool? = nil', (swift / 'Reports.swift').read_text())
+
+
+class QuickStartCarriesDiagnostics(unittest.TestCase):
+    """user 2026-11-15: "去掉诊断模式 快速启动 默认带诊断": the Launcher's 诊断模式 page is gone; a quick App (MNGShaders 'title')
+    starts with every diagnostic of a debug session however it is opened (app/launcher.m start_diagnostics), with a run
+    folder of its own for the per-frame record. user 2026-11-16: "诊断模式 也改成 CheckBox， 正常启动 可以带上 诊断模式": a full
+    App's start carries them too while the card's 诊断模式 switch is on (diagnostics.txt), and none while it is off."""
+    SWITCHES = ('TOTK_DEBUG_LOG', 'TOTK_LONGFRAME_DETAIL', 'TOTK_SVC_STATS', 'TOTK_SURVEY_SHADER_LOG', 'DM_NVN_TSV', 'DM_NVN_UPTIME')
+
+    def parts(self):
+        text = (GAME / 'app/launcher.m').read_text()
+        start = text.index('static void start_diagnostics(NSString *home, const char *why) {')
+        end = text.index('\n}\n', start)
+        return text[start:end], text[:start] + text[end:]
+
+    def test_the_diagnostics_set_every_switch(self):
+        diag, _ = self.parts()
+        for name in self.SWITCHES:
+            # overwrite 0: a test start's own choice (its record path, a switch it turns off) is kept
+            self.assertRegex(diag, rf'setenv\("{name}", [^;]*, 0\)', name)
+        self.assertIn('Logs/MacNativeGames/diagnostics', diag)   # the run folder of its per-frame record
+        self.assertIn('frames.tsv', diag)
+
+    def test_a_quick_app_always_and_a_full_app_only_with_the_switch(self):
+        _, rest = self.parts()
+        self.assertIn('if (quick) start_diagnostics(home, "quick App");', rest)
+        self.assertIn('else if (diagnostics_switch(data)) start_diagnostics(home,', rest)
+        for name in self.SWITCHES:   # nowhere else: a full App with the switch off starts with none
+            self.assertNotIn(f'setenv("{name}"', rest, name)
+        switch = rest[rest.index('static BOOL diagnostics_switch(NSString *data) {'):]
+        switch = switch[:switch.index('\n}\n')]
+        from tools.builder_jobs import memory_saver
+        self.assertIn(f'@"{memory_saver.SWITCHES["diagnostics"][0]}"', switch)   # the file the Launcher's card writes
+        self.assertIn('isEqualToString:@"on"', switch)
+
+    def test_the_diagnostic_page_is_gone(self):
+        from tools.builder import games
+        from tools.builder_jobs import tabs
+        self.assertNotIn('diag', tabs.TABS)
+        self.assertTrue(all('diag' not in pages for pages in games.PAGES.values()))
+        self.assertFalse((ROOT / 'tools/builder_jobs/tab_diag.py').exists())
+        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+        self.assertFalse((swift / 'DiagTab.swift').exists())
+        for name in ('Model.swift', 'HomePage.swift', 'Strings.swift'):
+            text = (swift / name).read_text()
+            self.assertNotIn('"diag"', text, name)
+            self.assertNotIn('DiagPage', text, name)
+
+    def test_the_quick_start_says_it_carries_the_diagnostics(self):
+        strings = (ROOT / 'tools/builder_app/Sources/MNGBuilder/Strings.swift').read_text()
+        start = strings.index('static let quickStartHelp')
+        definition = strings[start:strings.index('static let', start + 1)]   # both languages, over two lines
+        self.assertIn('诊断', definition)
+        self.assertIn('diagnostic', definition)
+
+
+class NoSetuidPs(unittest.TestCase):
+    def test_the_build_finds_the_running_game_without_ps(self):
+        # /bin/ps is setuid and cannot run under this Mac's storage guard (2026-11-15: the quick app's update stopped at
+        # "Operation not permitted: 'ps'"); the processes are read with libproc / sysctl as build_app.py reads them
+        text = (GAME / 'build.py').read_text()
+        self.assertNotIn("['ps'", text)
+        self.assertIn('build_app.running_executables()', text)
+        self.assertIn('build_app.process_args(pid)', text)
+        build = load('oot_build_ps', GAME / 'build.py')
+        with mock.patch.object(build.build_helpers(), 'running_executables', return_value=[(1, '/x/Contents/MacOS/Other')]):
+            self.assertFalse(build.app_running('/x'))
+
 
 class CaptureSwitch(unittest.TestCase):
     def test_the_capture_records_before_the_lists_leave_rows_out(self):
         text = (ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
         body = text[text.index('static void pso_user_record(const char *fmt, ...) {'):]
         body = body[:body.index('\n}\n')]
-        self.assertLess(body.index('pso_capture(line);'), body.index('if (!f && !g_pso_shared) return;'))
+        self.assertLess(body.index('pso_capture(line);'), body.index('if (!g_pso_shared) return;'))   # one device list (device_list)
         self.assertLess(body.index('pso_capture(line);'), body.index('if ([g_pso_user_seen containsObject:k]) return;'))
         self.assertIn('getenv("TOTK_PSO_CAPTURE")', text)
 

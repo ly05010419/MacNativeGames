@@ -50,7 +50,7 @@ class InstallProgress(unittest.TestCase):
             install_device.write_pack(seed, names, out, 'f', 512, parts.append)
             sent = sum(p.stat().st_size for p in parts)
             source = SOURCE.read_text()
-            self.assertIn("pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in names) + 2", source)
+            self.assertIn("pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in loose) + 2", source)
             expected = 9 + sum(2 + len(n.encode()) + 8 + (seed / n).stat().st_size for n in names) + 2
             self.assertEqual(sent, expected)
             self.assertEqual(len(parts), (expected + 511) // 512)
@@ -58,7 +58,7 @@ class InstallProgress(unittest.TestCase):
     def test_both_copies_report_through_it(self):
         source = SOURCE.read_text()
         self.assertIn("prog = Progress('game data', size)", source)
-        self.assertIn("prog = Progress('shaders', pack)", source)
+        self.assertIn("prog = Progress('shaders', pack + image)", source)
         self.assertIn("prog.part(f'part {i + 1}/{parts}', length, lambda: copy(part, part.name))", source)
         self.assertIn("prog.part(f'part {made[0]}/{parts}', n, lambda: copy(local, local.name))", source)
 

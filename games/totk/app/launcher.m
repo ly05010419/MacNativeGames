@@ -355,6 +355,10 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
+        /* The MNG Launcher that built or last updated the app (build_app.py MNGLauncherVersion): before the commit in the
+           HUD box's build line (shared/runtime/hud_box.h hud_build_text). */
+        NSString *builder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGLauncherVersion"];
+        if ([builder isKindOfClass:NSString.class] && builder.length) setenv("TOTK_LAUNCHER_VERSION", builder.UTF8String, 1);
         NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         { const char *seed = getenv("TOTK_SHADER_SEED_DIR");   // what this app serves leaves the file before the reminder counts it

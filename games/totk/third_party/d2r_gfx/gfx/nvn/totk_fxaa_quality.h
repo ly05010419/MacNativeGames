@@ -14,11 +14,11 @@ static id<MTLRenderPipelineState> fxq_ps(MTLPixelFormat format) {
     for(int i=0;i<g_fxq.nps;i++)if(g_fxq.ps[i].format==format)return g_fxq.ps[i].state;
     if(g_fxq.failed||g_fxq.nps==8)return nil;
     NSError *err=nil;
-    if(!g_fxq.lib)g_fxq.lib=[g_dev newLibraryWithSource:@(totk_fxaa_quality_msl) options:spatial_aa_compile_options() error:&err];
+    if(!g_fxq.lib)g_fxq.lib=mtl_counted_library(g_dev, @(totk_fxaa_quality_msl), spatial_aa_compile_options(), &err);
     if(!g_fxq.lib){MLOG("[fxaa-quality] shader failed: %s",err.localizedDescription.UTF8String);g_fxq.failed=1;return nil;}
     MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];d.vertexFunction=[g_fxq.lib newFunctionWithName:@"fxq_vs"];
     d.fragmentFunction=[g_fxq.lib newFunctionWithName:@"fxq_fs"];d.colorAttachments[0].pixelFormat=format;
-    id<MTLRenderPipelineState> p=[g_dev newRenderPipelineStateWithDescriptor:d error:&err];
+    id<MTLRenderPipelineState> p=mtl_counted_render(g_dev, d, &err);
     if(!p){MLOG("[fxaa-quality] pipeline failed: %s",err.localizedDescription.UTF8String);g_fxq.failed=1;return nil;}
     int i=g_fxq.nps++;g_fxq.ps[i].format=format;g_fxq.ps[i].state=p;return p;
 }

@@ -43,10 +43,15 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     stamp.write_text(identity)
     todo = {}
-    for src in sources:
+    # Each source read and its library looked for on all cores, then taken in the sources' order as one thread did
+    # (2026-11-16: a small file read took 649 us on the external disk, 73 us with 16 threads; express-speed/io-probe.log).
+    def state(src):
         digest = hashlib.sha256(src.read_bytes()).hexdigest()
-        if not (a.out/f'{digest}.metallib').is_file():
-            todo.setdefault(digest, src)
+        return digest, (a.out/f'{digest}.metallib').is_file()
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        for src, (digest, built) in zip(sources, pool.map(state, sources, chunksize=256)):
+            if not built:
+                todo.setdefault(digest, src)
     print(f'{len(sources)} translated shaders, {len(todo)} to compile with {compiler}', flush=True)
 
     def compile_one(item):

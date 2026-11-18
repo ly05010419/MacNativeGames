@@ -45,8 +45,11 @@ class DefaultWork(unittest.TestCase):
             self.assertEqual(build_app.default_work(out, 'totk')[0], Path(tmp) / 'MacNativeGames-work/totk')
 
     def test_apps_in_a_folder_whose_parent_cannot_be_written_go_to_the_home_folder(self):
-        self.assertEqual(build_app.default_work(Path('/Applications/Tears of the Kingdom.app'), 'totk')[0],
-                         Path.home() / 'MacNativeGames-work/totk')
+        with tempfile.TemporaryDirectory() as tmp:
+            out = app(Path(tmp) / 'disk/Applications')
+            with mock.patch.object(build_app.os, 'access', return_value=False) as access:
+                self.assertEqual(build_app.default_work(out, 'totk')[0], Path.home() / 'MacNativeGames-work/totk')
+            access.assert_called_once_with(out.parent.parent, os.W_OK)
 
 
 class Plan(unittest.TestCase):
@@ -59,7 +62,8 @@ class Plan(unittest.TestCase):
             work = Path(tmp) / 'work/oot'
             work.mkdir(parents=True)
             out = app(tmp, 'Ocarina of Time.app', CFBundleExecutable='OcarinaOfTime', MNGWorkFolder=str(work))
-            with mock.patch.object(update_runtime, 'oot_update_blocker', return_value='') as blocker:   # its build files: tests/test_oot_update_plan.py
+            with mock.patch.object(update_runtime, 'oot_update_blocker', return_value='') as blocker, \
+                    mock.patch.object(update_runtime.build_app, 'metal_compiler', return_value=('metal', 'v', {})):   # its build files: tests/test_oot_update_plan.py
                 p = update_runtime.plan(out)
             blocker.assert_called_once_with(work.resolve(), out.resolve())
         self.assertEqual((p['kind'], p['game'], p['work']), ('express', 'oot', str(work.resolve())))
@@ -144,7 +148,7 @@ class ExpressUpdateArguments(unittest.TestCase):
         import argparse
         args = argparse.Namespace(app=Path('/x.app'), work=None, seed=False, vr=False, native_5k=None, plan=False)
         with mock.patch.object(build_app, 'codec_libraries') as codecs, \
-             mock.patch.object(build_app.subprocess, 'run', return_value=mock.Mock(returncode=0, stderr='')), \
+             mock.patch.object(build_app.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='26.0', stderr='')), \
              mock.patch.object(build_app.shutil, 'which', return_value='/usr/bin/x'):
             build_app.prerequisites(args)
         codecs.assert_called_once_with('macos')

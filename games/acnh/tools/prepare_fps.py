@@ -1,4 +1,4 @@
-"""Prepare an optional, pinned 3.0.1 speed correction from the player's local inputs.
+"""Prepare optional, pinned speed corrections (60 FPS; 120 FPS too on 3.0.3) from the player's local inputs.
 
 The external mod remains CC BY-NC 4.0 local data, never vendored source. We do
 not run its tools or modify the original NSOs, rewritten modules or RomFS.
@@ -15,18 +15,56 @@ from games.acnh.prepare import prepared_profile, require
 from games.acnh.tools.common import verified_file
 
 SOURCE_URL = "https://github.com/tmouh/acnh-60fps"
-SOURCE_COMMIT = "e5e03e64739334c9fbd36f19658b98e805f8ba8d"
-MOD = "ryujinx/mods/contents/01006F8002326000/ACNH 60 FPS + SpeedFix/"
-PINS = {
-    MOD + "exefs/speedfix_main_301.pchtxt": "37947a9fd64ee93882173bbe104dccef024d18f23b74315f4801d7330c6f3cf3",
-    "pack/StaticParam.pack.ips": "05a169b3ffeb00818a55c329dbee7999c9bc4f990447111882bd5d5e5dcd953d",
-    MOD + "romfs/Bcsv/NpcInterest.bcsv": "eed347d2511367bfdb7803e12d1314fb36a18c873e95306ea05ae473ecf6c7e9",
-    MOD + "romfs/Bcsv/ItemNpcFtrActionParam.bcsv": "fa285b04f48774dadf6bcf1d8c608f8751c1825d1635870ec6e7f274e8e6688d",
-    MOD + "romfs/Bcsv/ItemNpcWherearenFtrActionParam.bcsv": "c61bf2046ffcb46d3dc6c005c44abbf7584ed9cd43e40ab7c73e720c127188a3",
-    "LICENSE": "41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0",
-}
+MOD60 = "ryujinx/mods/contents/01006F8002326000/ACNH 60 FPS + SpeedFix/"
+MOD120 = "ryujinx/mods/contents/01006F8002326000/ACNH 120 FPS + SpeedFix/"
 PACK_ORIGINAL = "4a3d6530d6430b6b967467f16784f91700a3cd8baad5f5b28fe3c6cfe4983298"
-PACK_RESULT = "7ea1622e9367b063ffe98d2acb03f1acd375b752d2a1024e8825607972e7c572"
+BCSV = ("NpcInterest.bcsv", "ItemNpcFtrActionParam.bcsv", "ItemNpcWherearenFtrActionParam.bcsv")
+# One entry per game version: the mod commit it was checked against, and per frame rate the mod's code patch for that
+# version's main, its parameter-pack patch, the files' SHA-256, the number of words the code patch replaces and the
+# SHA-256 of the patched parameter pack. 3.0.1 stays on the commit its 60 FPS was verified with (v1.4.2); 3.0.3 uses
+# v1.4.5, the first whose default files are for 3.0.3, and also takes its 120 FPS files. At 120 the mod's own enabler
+# (in main) asks for present interval 1 on every frame and the host paces at 120 Hz; at 60 the mod's SDK patch is
+# replaced by the host's present policy.
+PROFILES = {
+    2097152: {"display": "3.0.1", "commit": "e5e03e64739334c9fbd36f19658b98e805f8ba8d", "rates": {
+        60: {"mod": MOD60, "pchtxt": "exefs/speedfix_main_301.pchtxt", "ips": "pack/StaticParam.pack.ips",
+             "patch_count": 6417, "pack_result": "7ea1622e9367b063ffe98d2acb03f1acd375b752d2a1024e8825607972e7c572",
+             "pins": {
+            MOD60 + "exefs/speedfix_main_301.pchtxt": "37947a9fd64ee93882173bbe104dccef024d18f23b74315f4801d7330c6f3cf3",
+            "pack/StaticParam.pack.ips": "05a169b3ffeb00818a55c329dbee7999c9bc4f990447111882bd5d5e5dcd953d",
+            MOD60 + "romfs/Bcsv/NpcInterest.bcsv": "eed347d2511367bfdb7803e12d1314fb36a18c873e95306ea05ae473ecf6c7e9",
+            MOD60 + "romfs/Bcsv/ItemNpcFtrActionParam.bcsv": "fa285b04f48774dadf6bcf1d8c608f8751c1825d1635870ec6e7f274e8e6688d",
+            MOD60 + "romfs/Bcsv/ItemNpcWherearenFtrActionParam.bcsv": "c61bf2046ffcb46d3dc6c005c44abbf7584ed9cd43e40ab7c73e720c127188a3",
+            "LICENSE": "41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0",
+        }}}},
+    2228224: {"display": "3.0.3", "commit": "e8ddd8ac107ae02ccb5d236cec95937535f13d06", "rates": {
+        60: {"mod": MOD60, "pchtxt": "exefs/speedfix_main.pchtxt", "ips": "pack/StaticParam.pack.ips",
+             "patch_count": 6810, "pack_result": "0ac83f400c56185f96258ecf484e41408cca22c541fa701fdbbf2dfdf166fdcb",
+             "pins": {
+            MOD60 + "exefs/speedfix_main.pchtxt": "6c1796d858c8608673277a4cd5796b6305de3ea43e495be0111e72dc853303c1",
+            "pack/StaticParam.pack.ips": "d2b0cbe172f966d1294e9850f6c9903b56864aedb9a2e5c729eec32d9fd25ddc",
+            MOD60 + "romfs/Bcsv/NpcInterest.bcsv": "eed347d2511367bfdb7803e12d1314fb36a18c873e95306ea05ae473ecf6c7e9",
+            MOD60 + "romfs/Bcsv/ItemNpcFtrActionParam.bcsv": "fa285b04f48774dadf6bcf1d8c608f8751c1825d1635870ec6e7f274e8e6688d",
+            MOD60 + "romfs/Bcsv/ItemNpcWherearenFtrActionParam.bcsv": "c61bf2046ffcb46d3dc6c005c44abbf7584ed9cd43e40ab7c73e720c127188a3",
+            "LICENSE": "41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0",
+        }},
+        120: {"mod": MOD120, "pchtxt": "exefs/speedfix120_main.pchtxt", "ips": "pack120/StaticParam120.pack.ips",
+              "patch_count": 7068, "pack_result": "e3d41ae94d2d97e5158be7dac31f91dc18dd59d67acfbd0dd9d0a74f4c7f37d7",
+              "pins": {
+            MOD120 + "exefs/speedfix120_main.pchtxt": "7e5e9df93fb754dd9818bad35c59d309e21ef3aa30d9a1ab517100d4ff1c5e2d",
+            "pack120/StaticParam120.pack.ips": "e3886da462b539120dfb67c6b9f353dde8b661f4c2ab96bdd82d0ce3a7b1d926",
+            MOD120 + "romfs/Bcsv/NpcInterest.bcsv": "69c0041ff5e927aaad96c696b03293e0cb370ec3a7689688b387118baab5399e",
+            MOD120 + "romfs/Bcsv/ItemNpcFtrActionParam.bcsv": "055c8a7a2e9ea320efd68808b25d097aca69fbec844c6659dbd898d969d40ede",
+            MOD120 + "romfs/Bcsv/ItemNpcWherearenFtrActionParam.bcsv": "ac2983b2cf20d6e96c476543467f52b6c64717ba4cd8aeb8bb09c30d88468cd3",
+            "LICENSE": "41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0",
+        }},
+    }},
+}
+RATES = (60, 120)
+
+
+def assets_dir(work, rate):
+    return work / f"build/fps{rate}"
 
 
 def digest(data):
@@ -148,13 +186,22 @@ def original_image(path):
     return image
 
 
+def profile_of(version):
+    rows = [(raw, row) for raw, row in PROFILES.items() if row["display"] == version]
+    require(len(rows) == 1, "Unknown FPS asset profile")
+    return rows[0]
+
+
 def verify_assets(directory):
     """Verify the complete generated bundle before packaging or reusing it."""
     manifest = json.loads((directory / "manifest.json").read_text())
-    require(manifest.get("schema") == 1 and manifest.get("version") == "3.0.1"
-            and manifest.get("source_commit") == SOURCE_COMMIT, "Unknown FPS asset profile")
+    require(manifest.get("schema") == 1, "Unknown FPS asset profile")
+    _, row = profile_of(manifest.get("version"))
+    rate = row["rates"].get(manifest.get("target_fps"))
+    require(rate is not None and manifest.get("source_commit") == row["commit"]
+            and directory.name == f'fps{manifest["target_fps"]}', "Unknown FPS asset profile")
     required = {"patches.tsv", "romfs/manifest.tsv", "romfs/Pack/StaticParam.pack", "LICENSE", "NOTICE"}
-    required.update("romfs/Bcsv/" + Path(k).name for k in PINS if k.endswith(".bcsv"))
+    required.update("romfs/Bcsv/" + name for name in BCSV)
     require(set(manifest["files"]) == required, "Incomplete FPS asset bundle")
     for name, row in manifest["files"].items():
         path = PurePosixPath(name)
@@ -166,21 +213,13 @@ def verify_assets(directory):
     return manifest
 
 
-def prepare_fps(prepared, work, source):
-    profile = prepared_profile(prepared)
-    require(profile["cnmt_version_raw"] == 2097152, "SpeedFix is supported only for ACNH 3.0.1")
-    source = source.expanduser().resolve()
-    for name, sha in PINS.items():
+def prepare_rate(prepared, work, source, profile, commit, fps, rate, image, rewritten, code_end):
+    for name, sha in rate["pins"].items():
         verified_file(source / name, sha)
-    original_path = prepared / "update/exefs/main"
-    verified_file(original_path, profile["exefs_sha256"]["main"])
-    rewritten_path = work / "rewritten/main.patched.bin"
-    verified_file(rewritten_path, profile["rewritten_sha256"]["main"])
-    image, rewritten = original_image(original_path), rewritten_path.read_bytes()
     main = next(m for m in profile["modules"] if m["name"] == "main")
-    words = parse_pchtxt((source / (MOD + "exefs/speedfix_main_301.pchtxt")).read_text(), main["build_id"])
-    require(len(words) == 6417, "Unexpected SpeedFix patch count")
-    lines, code_end = ["MNG_ACNH_FPS1"], text_end(original_path)
+    words = parse_pchtxt((source / (rate["mod"] + rate["pchtxt"])).read_text(), main["build_id"])
+    require(len(words) == rate["patch_count"], f"Unexpected SpeedFix patch count: {len(words)}")
+    lines = ["MNG_ACNH_FPS1"]
     for offset, value in words:
         require(offset + 4 <= len(image), "FPS patch outside original module")
         before = bytes(image[offset:offset + 4])
@@ -188,40 +227,41 @@ def prepare_fps(prepared, work, source):
         check_replacement(offset, int.from_bytes(value, "little"), image, rewritten, code_end)
         lines.append(f"{offset:x} {int.from_bytes(before, 'little'):08x} {int.from_bytes(value, 'little'):08x}")
 
-    dest = work / "build/fps60"
+    dest = assets_dir(work, fps)
     write_changed(dest / "patches.tsv", "\n".join(lines) + "\n")
     romfs = prepared / "update/romfs"
     index = {row["path"]: row for row in json.loads((romfs / "index.json").read_text())["files"]}
     overlays = []
     with (romfs / "romfs.bin").open("rb") as stream:
-        for name in ("Pack/StaticParam.pack", "Bcsv/NpcInterest.bcsv", "Bcsv/ItemNpcFtrActionParam.bcsv",
-                     "Bcsv/ItemNpcWherearenFtrActionParam.bcsv"):
+        for name in ("Pack/StaticParam.pack", *("Bcsv/" + n for n in BCSV)):
             row = index[name]
             stream.seek(row["offset"])
             before = stream.read(row["size"])
             require(len(before) == row["size"], "Short original RomFS file")
             if name == "Pack/StaticParam.pack":
-                require(digest(before) == PACK_ORIGINAL, "Unknown original StaticParam.pack")
-                value = apply_ips(before, (source / "pack/StaticParam.pack.ips").read_bytes())
-                require(digest(value) == PACK_RESULT, "SpeedFix parameter result hash mismatch")
+                require(digest(before) == PACK_ORIGINAL, f"Unknown original StaticParam.pack: {digest(before)}")
+                value = apply_ips(before, (source / rate["ips"]).read_bytes())
+                require(digest(value) == rate["pack_result"], f"SpeedFix parameter result hash mismatch: {digest(value)}")
             else:
-                value = (source / (MOD + "romfs/" + name)).read_bytes()
+                value = (source / (rate["mod"] + "romfs/" + name)).read_bytes()
             require(len(value) == len(before), "SpeedFix changed an overlay's structure/size")
             write_changed(dest / "romfs" / name, value)
             overlays.append(f"{name}\t{len(value)}\t{digest(value)}\t{digest(before)}")
     write_changed(dest / "romfs/manifest.tsv", "\n".join(sorted(overlays)) + "\n")
     write_changed(dest / "LICENSE", (source / "LICENSE").read_bytes())
-    write_changed(dest / "NOTICE", f"ACNH 60 FPS + SpeedFix by tmouh\n{SOURCE_URL}\n"
-                  f"Source commit: {SOURCE_COMMIT}\nLicense: CC BY-NC 4.0 (see LICENSE).\n"
+    presentation = ("The SDK display patch is replaced by the host's 60 Hz presentation policy." if fps == 60 else
+                    "The mod's own enabler asks for present interval 1; the host paces presentation at 120 Hz.")
+    write_changed(dest / "NOTICE", f"ACNH {fps} FPS + SpeedFix by tmouh\n{SOURCE_URL}\n"
+                  f"Source commit: {commit}\nLicense: CC BY-NC 4.0 (see LICENSE).\n"
                   "Local adaptation: checked main-module word replacements and RomFS overlays for the native Mac host.\n"
-                  "The SDK display patch is replaced by the host's 60 Hz presentation policy.\n"
+                  f"{presentation}\n"
                   "Generated parameter files derive from the owner's verified game data. Do not commit them.\n")
-    manifest = {"schema": 1, "version": "3.0.1", "title_id": profile["title_id"], "build_id": main["build_id"],
-                "source_url": SOURCE_URL, "source_commit": SOURCE_COMMIT, "source_directory": str(source),
+    manifest = {"schema": 1, "version": profile["display_version"], "title_id": profile["title_id"], "build_id": main["build_id"],
+                "source_url": SOURCE_URL, "source_commit": commit, "source_directory": str(source),
                 "adapter": {"path": "games/acnh/tools/prepare_fps.py", "sha256": digest(Path(__file__).read_bytes())},
-                "target_fps": 60, "sdk_enabler": "native host present interval at 60 Hz",
+                "target_fps": fps, "sdk_enabler": f"native host presentation at {fps} Hz",
                 "license": "CC BY-NC 4.0", "support_level": "experimental", "patch_count": len(words),
-                "input_pins": PINS, "original_main_sha256": profile["exefs_sha256"]["main"],
+                "input_pins": rate["pins"], "original_main_sha256": profile["exefs_sha256"]["main"],
                 "rewritten_main_sha256": profile["rewritten_sha256"]["main"],
                 "original_romfs_sha256": profile["romfs_sha256"], "files": {}}
     for file in sorted(dest.rglob("*")):
@@ -229,9 +269,33 @@ def prepare_fps(prepared, work, source):
             manifest["files"][file.relative_to(dest).as_posix()] = {"size": file.stat().st_size, "sha256": digest(file.read_bytes())}
     write_changed(dest / "manifest.json", json.dumps(manifest, indent=2) + "\n")
     verify_assets(dest)
-    write_changed(work / "build/fps_config.h", '#define ACNH_FPS_ENABLED 1\n'
-                  f'#define ACNH_FPS_MANIFEST_SHA "{digest((dest / "manifest.json").read_bytes())}"\n'
-                  f'#define ACNH_FPS_PATCH_SHA "{manifest["files"]["patches.tsv"]["sha256"]}"\n'
-                  f'#define ACNH_FPS_ROMFS_SHA "{manifest["files"]["romfs/manifest.tsv"]["sha256"]}"\n'
-                  f'#define ACNH_FPS_PATCH_COUNT {len(words)}\n')
     return manifest
+
+
+def prepare_fps(prepared, work, source):
+    """Prepare every frame rate the version's profile has; returns {rate: manifest}."""
+    profile = prepared_profile(prepared)
+    row = PROFILES.get(profile["cnmt_version_raw"])
+    require(row is not None, "SpeedFix is supported only for ACNH 3.0.1 and 3.0.3")
+    source = source.expanduser().resolve()
+    original_path = prepared / "update/exefs/main"
+    verified_file(original_path, profile["exefs_sha256"]["main"])
+    rewritten_path = work / "rewritten/main.patched.bin"
+    verified_file(rewritten_path, profile["rewritten_sha256"]["main"])
+    image, rewritten, code_end = original_image(original_path), rewritten_path.read_bytes(), text_end(original_path)
+    manifests = {fps: prepare_rate(prepared, work, source, profile, row["commit"], fps, rate, image, rewritten, code_end)
+                 for fps, rate in row["rates"].items()}
+    require(60 in manifests, "A frame-rate profile needs its 60 FPS entry")
+    header = "#define ACNH_FPS_ENABLED 1\n"
+    for fps in RATES:
+        prefix = "ACNH_FPS" if fps == 60 else f"ACNH_FPS{fps}"
+        if fps != 60:
+            header += f"#define {prefix}_ENABLED {int(fps in manifests)}\n"
+        if fps in manifests:
+            files = manifests[fps]["files"]
+            header += (f'#define {prefix}_MANIFEST_SHA "{digest((assets_dir(work, fps) / "manifest.json").read_bytes())}"\n'
+                       f'#define {prefix}_PATCH_SHA "{files["patches.tsv"]["sha256"]}"\n'
+                       f'#define {prefix}_ROMFS_SHA "{files["romfs/manifest.tsv"]["sha256"]}"\n'
+                       f'#define {prefix}_PATCH_COUNT {manifests[fps]["patch_count"]}\n')
+    write_changed(work / "build/fps_config.h", header)
+    return manifests

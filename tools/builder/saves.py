@@ -27,7 +27,8 @@ FORMAT = 1
 BACKUP_JSON = 'backup.json'
 HASH_LIMIT = 2 * 1024 * 1024 * 1024       # larger single files are listed by size only, never read whole
 
-PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR', 'oot': 'TOTK_PROFILE_DIR'}   # games/totk/app/launcher.m (both games), games/oot/app/launcher.m
+PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR', 'oot': 'TOTK_PROFILE_DIR', 'acnh': 'TOTK_PROFILE_DIR', 'eow': 'TOTK_PROFILE_DIR',
+               'odyssey': 'TOTK_PROFILE_DIR'}   # games/totk/app/launcher.m (both games), games/oot/app/launcher.m
 NXNATIVE = 'nxnative'
 
 
@@ -79,6 +80,32 @@ def timestamp(now):
 
 def default_backup_root(home):
     return Path(home) / 'Documents' / 'MacNativeGames-Backups'
+
+
+def game_backup_root(home, spec):
+    """Where one game's backups go: a folder of its own, named as its app, under the backups folder (user 2026-11-18:
+    "所有游戏的 存档备份 都在一起 必须分开 放在 自己游戏的 固定位置")."""
+    return default_backup_root(home) / spec.app_name
+
+
+def sort_backups(home, specs):
+    """Move the backups made straight into the shared backups folder (before 2026-11-18) into their game's folder, by the
+    game their backup.json names; a backup of another game or of none stays. A rename on the same disk: nothing is
+    copied or rewritten, and a folder already there is never replaced. Returns ((old, new), ...)."""
+    root = default_backup_root(home)
+    by_id = {spec.id: spec for spec in specs}
+    moved = []
+    for item in find_backups(root):
+        spec = by_id.get(item.game)
+        if spec is None:
+            continue
+        target = game_backup_root(home, spec) / item.directory.name
+        if target.exists() or target.is_symlink():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        item.directory.rename(target)
+        moved.append((item.directory, target))
+    return tuple(moved)
 
 
 def profile_dir(spec, home, environ=None):

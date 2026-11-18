@@ -25,7 +25,11 @@ struct ClassifyReport: Codable {
         var needs_keys: Bool
         var keys_problems: [String]
         var blocks: [String]
+        var tool_blocks: [String]?   // the blocks about this Mac's tools (page 3), also in blocks
+        var tool_needs: [String]?    // what each one is: "metal" (Xcode's Metal toolchain) or "clt" (the command line tools)
         var notes: [String]
+        var font_block: String?   // the block about missing system fonts: 用开源字体 is offered under it
+        var open_fonts: Bool?     // the build makes open-source Noto fonts in place of firmware ones (build_job.py)
     }
     let items: [Item]
     let plan: Plan
@@ -55,6 +59,7 @@ struct InstalledReport: Codable {
         let reason: String
         let work: String?
         let commit: String?
+        let shaders: String?    // "title": a quick app (only the title's shaders), offered 补全着色器
     }
     let apps: [App]
 }
@@ -70,6 +75,7 @@ struct BuildRequest: Codable {
     var update: String? = nil
     var work: String? = nil       // with update: a work folder moved on the Storage page, which the app records from then on
     var shaders: Bool? = nil      // with update: only its shaders and pipelines, from the game's newest list (shader_update.py)
+    var quick: Bool? = nil        // 快速启动: only the title's shaders (Ocarina of Time; build_job.job_env OOT_SHADERS=title)
 }
 
 /// One line `build` prints (tools/builder_jobs/events.py); fields a kind does not have are nil.
@@ -77,11 +83,11 @@ struct BuildEvent: Decodable {
     let event: String
     let t: Double?
     // plan
-    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?
+    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?, steps_last: Int?
     // stage / step
     let index: Int?, total: Int?, name: String?, text: String?
     // progress
-    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?
+    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?, step_left: Double?
     // done
     let ok: Bool?, cancelled: Bool?, message: String?, detail: String?, step_log: String?, note: String?
 }

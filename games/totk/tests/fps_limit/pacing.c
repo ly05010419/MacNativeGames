@@ -2,9 +2,10 @@
    No GPU, game files, sleeps or runtime-only test switches are needed. */
 #include "../../third_party/d2r_gfx/gfx/nvn/hle_nvn.c"
 #include <assert.h>
-extern int test_game_hold;
-static int test_mode, test_detclock;
+extern int test_game_hold, test_cutscene;
+static int test_mode, test_detclock, test_mfx_cut = -1;
 int mfx_enabled(void) { return test_mode; }
+void mfx_cutscene(int on) { test_mfx_cut = on; }
 int dm_detclock_enabled(void) { return test_detclock; }
 int main(void) {
  const int rates[]={60,100,120,144};
@@ -30,8 +31,17 @@ int main(void) {
   assert(nvn_fps_lock()==limits[i]);
   test_game_hold=0;
   assert(present_period(&w)==expected && nvn_fps_lock()==limits[i]);
+  /* a movie cutscene (Ocarina of Time, user 2026-11-17 "过场动画 锁帧60，和设置无关"): 60 whatever the lock, the
+     interpolation mode or uncapped, interpolation off; the settings back after it */
+  test_cutscene=60;
+  assert(game_hold_fps()==60 && !uncapped_now());
+  assert(present_period(&w)==1000000000ull/60 && test_mfx_cut==1);
+  test_game_hold=30;
+  assert(game_hold_fps()==60);   /* above a game's own 30 fps movie hold too */
+  test_game_hold=0;test_cutscene=0;
+  assert(present_period(&w)==expected && test_mfx_cut==0 && nvn_fps_lock()==limits[i]);
   cases++;
  }
  nvn_fps_lock_set(72);nvn_fps_lock_set(73);assert(nvn_fps_lock()==72);
- printf("PASS: %d production pacing scenarios: game hold/release, all modes, 60/100/120/144 Hz, 72 FPS display ticks, invalid limit\n",cases);
+ printf("PASS: %d production pacing scenarios: game hold/release, cutscene 60, all modes, 60/100/120/144 Hz, 72 FPS display ticks, invalid limit\n",cases);
 }

@@ -29,6 +29,8 @@ class PipelineArchive(unittest.TestCase):
                     finally:
                         if proc.poll() is None:
                             proc.kill(); proc.wait()
+                    if proc.returncode == 3:   # metal_archive_probe.m: no Metal 4 GPU (GitHub's macOS virtual machines)
+                        self.skipTest('needs a Metal 4 GPU')
                     self.assertEqual(proc.returncode, 0, out+err)
                     return out
             self.assertIn('16 checks', run('build'))

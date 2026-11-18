@@ -76,6 +76,14 @@ static inline void totk_inbox_answer(NSString *path, totk_inbox_answer_t answer)
     if (answer == TOTK_INBOX_NEVER) totk_contrib_never(path);
 }
 
+/* Where the board's random id is kept (games/totk): MacNativeGames/leaderboard-id.txt, the folder above the game's
+   (TOTK_BOARD_DIR, which the launcher names; runtime/board_upload.h totk_board_id makes and moves it). nil without that
+   folder (a development run). The shader rows do not carry it here: Odyssey's upload sends what it sent before. */
+static inline NSString *totk_leaderboard_id_file(void) {
+    const char *e = getenv("TOTK_BOARD_DIR");
+    return e && *e ? [@(e).stringByDeletingLastPathComponent stringByAppendingPathComponent:@"leaderboard-id.txt"] : nil;
+}
+
 /* A random id for this contribution file, made once: the inbox counts a row once per install. Nothing about the device. */
 static inline NSString *totk_inbox_install(NSString *path) {
     NSString *file = totk_contrib_side(path, @"install");

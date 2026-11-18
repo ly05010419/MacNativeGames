@@ -21,6 +21,9 @@
 #include <strings.h>
 
 enum { CONTROLLER_BUTTONS = 17, CONTROLLER_SWITCH_BUTTONS = 16 };
+/* The mouse buttons' lines that games/totk's layout has after the touchpad (the shared settings panel names them from
+   here): none in this game, whose mouse only clicks as the keyboard layout says (keyboard_map.h). */
+enum { CONTROLLER_MOUSE_FIRST = CONTROLLER_BUTTONS };
 static const char *const controller_physical_names[CONTROLLER_BUTTONS] = {
     "south", "east", "west", "north", "l3", "r3", "l1", "r1", "l2", "r2", "menu", "view", "left", "up", "right", "down",
     "touchpad"};
@@ -135,6 +138,28 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
     }
     memcpy(map, next, sizeof next); memcpy(modes, nextMode, sizeof nextMode);
     return 0;
+}
+
+/* The controller's screenshot button (games/totk, user 2026-11-11: "手柄 ps5 触摸板 长按3秒"): held CONTROLLER_SCREENSHOT_HOLD_MS it takes
+   the capture button's picture, once per hold; the touchpad by default, any of buttons 0-16 picked in the key bindings
+   (runtime/gamepad.m, controller-screenshot.txt), or none. It is in no layout file: the button keeps what it drives (a
+   Switch button, the settings panel) and the hold only adds the picture. */
+enum { CONTROLLER_SCREENSHOT_DEFAULT = 16, CONTROLLER_SCREENSHOT_HOLD_MS = 3000 };
+typedef struct { uint64_t since; int down, fired; } ControllerHold;   /* since: ns, when this hold began */
+/* The hold after one look at the button (pressed, at now ns): *fire is 1 the first time it has been down need ns, once per
+   hold; letting go starts the next hold afresh. */
+static inline ControllerHold controller_hold_next(ControllerHold h, int pressed, uint64_t now, uint64_t need, int *fire) {
+    *fire = 0;
+    if (!pressed) return (ControllerHold){0};
+    ControllerHold next = h.down ? h : (ControllerHold){.since = now, .down = 1};
+    if (!next.fired && now - next.since >= need) { next.fired = 1; *fire = 1; }
+    return next;
+}
+/* ns until the hold fires (0: now), or UINT64_MAX when it never will (up, or fired already). */
+static inline uint64_t controller_hold_wait(ControllerHold h, uint64_t now, uint64_t need) {
+    if (!h.down || h.fired) return UINT64_MAX;
+    uint64_t held = now - h.since;
+    return held >= need ? 0 : need - held;
 }
 
 /* The Switch buttons held, from the physical buttons held (bit i = physical button i). */

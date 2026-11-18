@@ -26,6 +26,8 @@ void runtime_setting_save(const char *name, const char *word, const char *what) 
     char path[1024]; setting_path(path, sizeof path);
     FILE *f = fopen(path, "w"); if (!f) abort(); fprintf(f, "%s\n", word); fclose(f);
 }
+/* The fastest connected screen (frontend.m in the app): TEST_DISPLAY_HZ, 60 when unset. */
+int runtime_display_max_hz(void) { const char *e = getenv("TEST_DISPLAY_HZ"); return e ? atoi(e) : 60; }
 unsigned runtime_present_interval(unsigned interval);
 int main(int argc, char **argv) {
     if (argc != 3) return 1;
@@ -34,13 +36,16 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[2], "mismatch")) { image[2] = 9; observed = image; }
     Module m = {.name="main", .file_size=sizeof image, .key_off=sizeof image, .base=(void *)image};
     if (runtime_frame_rate_active() != want || runtime_frame_rate_choice() != want) return 2;
+    int patched = want != 30;
+    /* 60 always presents every tick; 120 passes the patched game's own interval (1, or 2 in its 60 FPS console games). */
     if (runtime_present_interval(2) != (want == 60 ? 1u : 2u)) return 3;
     /* Only a build offering the selector locks 30 FPS; others keep the game's interval. */
-    unsigned one = want == 60 || !runtime_frame_rate_available() ? 1u : 2u;
+    unsigned one = patched || !runtime_frame_rate_available() ? 1u : 2u;
     if (!strcmp(argv[2], "unlocked") && one != 1u) return 10;
     if (runtime_present_interval(1) != one || runtime_present_interval(3) != (want == 60 ? 1u : 3u)) return 9;
+    if (want == 120 && strcmp(getenv("DM_PRESENT_HZ") ? getenv("DM_PRESENT_HZ") : "", "120")) return 11;
     runtime_frame_rate_install(&m);
-    if (image[0] != (want == 60 ? 10u : 1u) || image[2] != (want == 60 ? 30u : 3u)) return 4;
+    if (image[0] != (patched ? 10u : 1u) || image[2] != (patched ? 30u : 3u)) return 4;
     if (!strcmp(argv[2], "choose")) {
         if (!runtime_frame_rate_available() || runtime_frame_rate_choose(120)) return 5;
         if (!runtime_frame_rate_choose(want == 60 ? 30 : 60)) return 6;

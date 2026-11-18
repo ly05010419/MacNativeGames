@@ -5,6 +5,7 @@
 #undef main
 #include "../../runtime/gamepad.m"
 #include <assert.h>
+int mtl_display_hz(void) { return 120; }   /* gfx/nvn/nvn_mtl.m: the window's screen (the interpolation row asks) */
 void runtime_feedback_attach(GCController *c){(void)c;}
 void runtime_feedback_detach(GCController *c){(void)c;}
 void runtime_feedback_quiet(void){}
@@ -12,6 +13,16 @@ int runtime_gyro_enabled(void){return 0;}
 void runtime_motion_mouse(int on){(void)on;}
 void runtime_motion_feed_mouse(const double a[3],const double g[3],uint64_t n){(void)a;(void)g;(void)n;}
 uint64_t runtime_keyboard_buttons(void){return 0;}
+/* runtime/account.c's users (the User page) and hle_nvn.c's pacing (the 排行榜 page), as the panel probe has them. */
+static RuntimeUser probeUsers[1]={{1,2,"Local"}};
+int runtime_users_get(RuntimeUser *out,int max){if(max<1)return 0;out[0]=probeUsers[0];return 1;}
+int runtime_users_active(RuntimeUser *out){*out=probeUsers[0];return 0;}
+int runtime_users_next(RuntimeUser *out){*out=probeUsers[0];return 0;}
+int runtime_users_add(const char *name){(void)name;return -1;}
+int runtime_users_choose(int index){return index?-1:0;}
+void nvn_board_pacing(int *lock,int *interp){*lock=0;*interp=0;}
+static int probeCaptures;
+static void probe_capture(void){probeCaptures++;}
 static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
 static RuntimeGamepadState pad(uint64_t b){return (RuntimeGamepadState){.connected=1,.buttons=b};}
@@ -24,6 +35,9 @@ static void press(uint64_t b){[settingsPanel controllerPad:pad(0) time:instant+=
 @end
 int main(int argc,char **argv){@autoreleasepool{
  if(argc<2)return 2;start=clock_ns();
+ /* no network in a test: the 排行榜, 截图分享 and 着色器贡献 pages read a closed port, and no data folder takes part */
+ setenv("TOTK_BOARD_URL","http://127.0.0.1:9/v1/board",1);setenv("TOTK_SHOT_URL","http://127.0.0.1:9/v1/shots",1);
+ setenv("TOTK_NAME_URL","http://127.0.0.1:9/v1/name",1);setenv("TOTK_STATS_URL","http://127.0.0.1:9",1);unsetenv("TOTK_BOARD_DIR");unsetenv("TOTK_DSU");
  NSString *controls=[@(argv[1]) stringByAppendingPathComponent:@"controls.txt"];setenv("TOTK_CONTROLS",controls.UTF8String,1);
  [NSApplication sharedApplication];controller_map_default(controllerMap,controllerModes);
  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1000,760) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
@@ -60,10 +74,35 @@ int main(int argc,char **argv){@autoreleasepool{
  CHECK(runtime_gamepad_settings_button()==-1&&![NSFileManager.defaultManager fileExistsAtPath:saved]);
  hidPad.buttons=1ull<<10;refresh_gamepads();CHECK(!runtime_gamepad_settings_requested());runtime_gamepad_read(&out);CHECK(out.buttons);
  hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ /* The screenshot button (shared screenshot.h, as games/totk): the touchpad held 3 s takes one picture per hold through the
+    capture hook, the game still gets what the button drives; another button can take the hold (controller-screenshot.txt),
+    "none" turns it off, the default removes the file. The probe's clock runs 100 times faster (mode 2). */
+ runtime_capture_set_hook(probe_capture);mode=2;
+ CHECK(runtime_gamepad_screenshot_button()==CONTROLLER_SCREENSHOT_DEFAULT&&CONTROLLER_SCREENSHOT_DEFAULT==16);
+ hidPad.buttons=1ull<<16;refresh_gamepads();CHECK(probeCaptures==0);
+ usleep(40000);refresh_gamepads();CHECK(probeCaptures==1);
+ usleep(40000);refresh_gamepads();CHECK(probeCaptures==1);   /* once per hold */
+ hidPad.buttons=0;refresh_gamepads();hidPad.buttons=1ull<<16;refresh_gamepads();usleep(40000);refresh_gamepads();CHECK(probeCaptures==2);
+ hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ NSString *shotSaved=[@(argv[1]) stringByAppendingPathComponent:@"controller-screenshot.txt"];
+ runtime_gamepad_screenshot_button_set(3);CHECK(runtime_gamepad_screenshot_button()==3&&[NSFileManager.defaultManager fileExistsAtPath:shotSaved]);
+ hidPad.buttons=1ull<<16;refresh_gamepads();usleep(40000);refresh_gamepads();CHECK(probeCaptures==2);   /* the touchpad no longer */
+ hidPad.buttons=1ull<<3;refresh_gamepads();usleep(40000);refresh_gamepads();CHECK(probeCaptures==3);
+ hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ atomic_store(&screenshotButton,16);load_screenshot_button();CHECK(runtime_gamepad_screenshot_button()==3);   /* the next start reads it */
+ runtime_gamepad_screenshot_button_set(-1);CHECK([[NSString stringWithContentsOfFile:shotSaved encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"none\n"]);
+ hidPad.buttons=1ull<<3;refresh_gamepads();usleep(40000);refresh_gamepads();CHECK(probeCaptures==3);hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ runtime_gamepad_screenshot_button_set(CONTROLLER_SCREENSHOT_DEFAULT);CHECK(![NSFileManager.defaultManager fileExistsAtPath:shotSaved]);
+ runtime_capture_press();CHECK(probeCaptures==4);   /* the input file's "capture" and the P key */
+ runtime_capture_set_hook(NULL);
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+(settingsPanel.page==SETTINGS_PAGE_DISPLAY?settingsPanel.displayButtons.count:0));   /* the display page: its buttons after the rows */
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+(settingsPanel.page==SETTINGS_PAGE_DISPLAY?settingsPanel.displayButtons.count:0)+1&&settingsPanel.controllerTargets.lastObject==settingsPanel.homeButton);   /* the display page: its buttons after the rows; every page: 访问主页 last (the shared panel, as games/totk) */
+ /* The effects page (2026-11-17: the picture filters and edge smoothing, moved from Display): its rows, then Reset to
+    defaults, then 访问主页. The row tests below run there: a menu first, then switches. */
+ [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];
+ CHECK(settingsPanel.rows.count==5&&settingsPanel.controllerTargets.count==settingsPanel.rows.count+2&&settingsPanel.controllerTargets[5]==settingsPanel.effectsButtons[0]&&settingsPanel.controllerTargets.lastObject==settingsPanel.homeButton);
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
  TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};

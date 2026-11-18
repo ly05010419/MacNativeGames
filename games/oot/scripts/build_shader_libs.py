@@ -58,16 +58,17 @@ def seed_record(seed):
         files = record['files'] if record.get('schema') == 1 else {}
     except (OSError, ValueError, KeyError):
         return {}
-    out = {}
-    for name, entry in files.items():
+    def same(item):   # a stat each, on all cores (2026-11-16: 117 us a stat on the external disk, 42,910 sources)
+        name, entry = item
         if not name.endswith('_b.metal') or not isinstance(entry, list) or len(entry) != 6:
-            continue
+            return None
         try:
-            if entry[:4] == lib_identity(seed / name):
-                out[name] = entry[5]
+            return entry[5] if entry[:4] == lib_identity(seed / name) else None
         except OSError:
-            pass
-    return out
+            return None
+    items = list(files.items())
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        return {name: sha for (name, _), sha in zip(items, pool.map(same, items, chunksize=512)) if sha}
 
 
 def recorded_libraries(out):
@@ -151,6 +152,8 @@ def main():
     print(f'{len(sources)} translated shaders, {len(todo)} to compile with {compiler} '
           f'({read[0]} sources and {read[1]} libraries read; the rest kept the digests recorded with them)', flush=True)
 
+    made = set()   # the libraries compiled now: only they are hashed again for the manifest below
+
     def compile_one(item):
         digest, src = item
         partial = a.out/f'{digest}.partial'
@@ -180,6 +183,8 @@ def main():
                     parser_depths[source_hash + '.metallib'] = parser_depth
                 if f:
                     failed.append(f)
+                else:
+                    made.add(source_hash)
                 if done % 250 == 0:
                     print(f'  {done} / {len(todo)}', flush=True)
     log = a.out/'failed.log'
@@ -187,16 +192,37 @@ def main():
     print(f'{len(todo) - len(failed)} compiled, {len(failed)} failed' + (f' (incomplete; {log})' if failed else ''))
     # Preserve verified successes even when another shader failed; a retry only
     # compiles the missing/changed outputs. Incomplete manifests cannot be packed.
-    files = {sha + '.metallib': digest(a.out/(sha + '.metallib')) for sha in sorted(set(source_hashes.values()))
-             if (a.out/(sha + '.metallib')).is_file()}
+    # The manifest's digests. A library lib_ok checked above (against libraries-verified.json or by its digest) and not
+    # compiled now keeps the digest it was checked with; only the ones compiled now are read, on all cores. Until
+    # 2026-11-16 every library was read again here, one thread, also when none was compiled (most of this step's 41 s).
+    def library_digest(sha):
+        lib = a.out/(sha + '.metallib')
+        if not lib.is_file():
+            return None
+        if sha not in made and lib_states.get(sha):
+            return known[lib.name]
+        return digest(lib)
+    present = sorted(set(source_hashes.values()))
     # Keep previously verified binding variants too. Runtime lookup requires the
-    # exact MSL hash, so unrelated libraries cannot be selected by a shader.
-    for name, expected in known.items():
-        if name in files or Path(name).name != name or not name.endswith('.metallib'):
-            continue
+    # exact MSL hash, so unrelated libraries cannot be selected by a shader. One still the file libraries-verified.json
+    # recorded keeps its digest without being read (as lib_ok does).
+    def variant_digest(item):
+        name, expected = item
         library = a.out/name
-        if library.is_file() and digest(library) == expected:
-            files[name] = expected
+        if not library.is_file():
+            return None
+        entry = lib_record.get(name)
+        try:
+            if isinstance(entry, list) and len(entry) == 5 and entry[:4] == lib_identity(library) and entry[4] == expected:
+                return expected
+        except OSError:
+            return None
+        return expected if digest(library) == expected else None
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        files = {sha + '.metallib': d for sha, d in zip(present, pool.map(library_digest, present, chunksize=256)) if d}
+        others = [(name, expected) for name, expected in known.items()
+                  if name not in files and Path(name).name == name and name.endswith('.metallib')]
+        files.update({name: d for (name, _), d in zip(others, pool.map(variant_digest, others, chunksize=256)) if d})
     report = dict(schema=1, compiler=identity, complete=not failed, subset=bool(a.only), sources=source_hashes, files=files,
                   parser_depths={k: v for k, v in parser_depths.items() if k in files},
                   preparation_sha256=digest(Path(__file__).resolve()))

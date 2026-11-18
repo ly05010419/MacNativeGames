@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import plistlib
+import shlex
 import shutil
 import sys
 import tempfile
@@ -176,7 +177,9 @@ class StorageTab(unittest.TestCase):
         self.assertTrue((target / 'romfs/a.bin').is_file())
         self.assertEqual(list(self.work.iterdir()), [])
         self.assertIn('update_runtime.py', moved['command'])
-        self.assertIn(f'--work {target}', moved['command'])
+        # quoted as a shell argument: a temporary folder under a non-ASCII path (this machine's external drive) is
+        # printed in quotes, which is right for the command the player copies
+        self.assertIn(f'--work {shlex.quote(str(target))}', moved['command'])
         self.assertIn('still records', moved['message'])
 
     def test_move_refuses_the_places_a_work_folder_may_not_be(self):
@@ -195,6 +198,76 @@ class StorageTab(unittest.TestCase):
         answer = self.ok('move', target=str(self.tmp / 'Other'), confirmed=True)
         self.assertEqual((answer['moved'], answer['confirm']), (0, ''))
         self.assertIn('nothing', answer['message'])
+
+    # --- 安全清理空间 (user 2026-11-18: the build's own clean-up as the Storage page's button, in place of Clean) ---
+    def test_a_game_without_work_prune_has_no_safe_clean(self):
+        self.assertFalse((REPO / 'games/totk/work_prune.py').exists())
+        work = self.ok('state')['folders'][0]
+        self.assertFalse(work['prunable'])
+        self.assertIn('nothing a safe clean may remove', self.refused('safe_clean'))
+        self.assertTrue((self.work / 'romfs/a.bin').is_file())
+
+    def oot(self):
+        """An Ocarina of Time app recording a work folder whose build/ holds a moved-aside bundle and the current one."""
+        app = fake_app(self.tmp / 'OOT', bundle='org.macnativegames.oot')
+        work = self.tmp / 'MacNativeGames-work/oot'
+        record(app, work)
+        build = work / 'oot/build'
+        write(build / 'shader-bundles/ShaderData.bundle/x', b'now')
+        write(build / 'shader-bundles/ShaderData.bundle.previous-1/x', b'old')
+        write(build / 'extracted/romfs.bin', b'game')
+        return app, work, build
+
+    def test_safe_clean_moves_out_only_what_no_later_build_reads(self):
+        app, work, build = self.oot()
+        state = tabs.call('storage', 'state', app, home=self.home)['result']['folders'][0]
+        self.assertTrue(state['prunable'])
+        self.assertIn('express', state['note'])
+        with mock.patch('subprocess.Popen') as detached:                    # the background delete, not run here
+            answer = tabs.call('storage', 'safe_clean', app, home=self.home)
+        self.assertTrue(answer['ok'], answer)
+        self.assertEqual(answer['result']['moved'], ['build/shader-bundles/ShaderData.bundle.previous-1'])
+        self.assertIn('Moved out 1 folders', answer['result']['message'])
+        self.assertTrue(detached.called)
+        self.assertFalse((build / 'shader-bundles/ShaderData.bundle.previous-1').exists())
+        self.assertEqual((build / 'shader-bundles/ShaderData.bundle/x').read_bytes(), b'now')   # what updates use stays
+        self.assertEqual((build / 'extracted/romfs.bin').read_bytes(), b'game')
+        with mock.patch('subprocess.Popen'):
+            again = tabs.call('storage', 'safe_clean', app, home=self.home)['result']
+        self.assertEqual(again['moved'], [])
+        self.assertIn('being deleted in the background', again['message'])   # the trash the first one left
+        # the size measured now leaves the trash out: it shows what stays (b'now' + b'game', 2 files)
+        size = tabs.call('storage', 'measure', app, home=self.home, args={'folder': 'work'})['result']['size']
+        self.assertEqual((size['bytes'], size['files']), (7, 2))
+
+    def test_a_safe_clean_drops_the_old_size_even_with_nothing_to_remove(self):
+        # 2026-11-18: a size of 11-13 (165.9 GB) stayed on the page over a 77.5 GB folder after a clean that found nothing
+        app, work, build = self.oot()
+        shutil.rmtree(build / 'shader-bundles/ShaderData.bundle.previous-1')
+        tabs.call('storage', 'measure', app, home=self.home, args={'folder': 'work'})
+        self.assertIsNotNone(tabs.call('storage', 'state', app, home=self.home)['result']['folders'][0]['size'])
+        with mock.patch('subprocess.Popen'):
+            answer = tabs.call('storage', 'safe_clean', app, home=self.home)['result']
+        self.assertEqual(answer['moved'], [])
+        self.assertIn('still used by updates', answer['message'])
+        self.assertIsNone(tabs.call('storage', 'state', app, home=self.home)['result']['folders'][0]['size'])
+
+    def test_safe_clean_waits_for_a_build(self):
+        app, work, build = self.oot()
+        with mock.patch.object(tab_storage, 'running_builds', lambda: ['python update_runtime.py x']):
+            answer = tabs.call('storage', 'safe_clean', app, home=self.home)
+        self.assertIn('build or an update is running', answer['error'])
+        self.assertTrue((build / 'shader-bundles/ShaderData.bundle.previous-1').is_dir())
+
+    def test_the_page_s_button_is_the_safe_clean(self):
+        page = (REPO / 'tools/builder_app/Sources/MNGBuilder/StorageTab.swift').read_text()
+        self.assertIn('static let safeClean = T.s("Free space safely", "安全清理空间")', page)
+        self.assertIn('"storage", "safe_clean"', page)
+        self.assertIn('if f.prunable == true', page)
+        clean = page[page.index('private func safeClean()'):]
+        self.assertLess(clean.index('await load()'), clean.index('await measure("work")'))   # the size now, after it
+        self.assertNotIn('"storage", "clean"', page)                          # emptying it is the command line's only
+        self.assertNotIn('confirmationDialog', page)
 
     def test_the_page_speaks_chinese(self):
         with mock.patch.dict(os.environ, {'MNG_LANG': 'zh'}):

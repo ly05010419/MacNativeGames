@@ -63,6 +63,7 @@ Display:
   The choice uses the existing `graphics-frame.txt` beside `controls.txt`: `lock-72` (or another listed rate), `interp-<mode>` or `off`. Lock and interpolation share this one file and exclude each other. An explicit `TOTK_MFX` (including `0`) takes priority at startup and greys out the lock row. No frame-lock shortcut is assigned.
 - **Frame interpolation (MetalFX):** off, 30+30, 40+40, 50+50, 60+60 (the game held at 30 / 40 / 50 / 60 fps; 60+60 suits a 120 Hz display, MetalFX makes a frame between each two) or unlimited. Picking frame interpolation turns the frame lock off and the other way round.
 - **Resolution:** 720p, 720p + MetalFX upscaling to a 1080p window (the scene still renders at 1280×720; for Macs that cannot hold 1080p), 1080p, 1080p + MetalFX upscaling to the window, 2K (2560×1440, the game's canvas and UI) or 2K + MetalFX upscaling (for 4K screens); 1.4.3 and 1.2.1 also offer **native 4K**: a 3840×2160 canvas, UI and 3D scene (on 1.2.1 the 3D scene follows the canvas at every resolution, as on 1.4.3, in an app built since 2026-11-01). An app built with it reserves its swapchain and texture heaps for 4K at every start (about 1.4 GiB more memory than a 2K app's 416 MiB, whatever is shown), so `build_app.py` builds it by default only on a Mac with 16 GB of memory or more; `--no-native-4k` leaves it out, `--native-4k` builds it on a smaller Mac. On an Apple M4 native 4K took the GPU about 24 ms a frame at Lookout Landing (about 41 fps). The game starts at 1080p until a choice is saved. In a window, the window takes that size at once (as far as the screen holds it). Breath of the Wild (1.6.0 and 1.9.0) has 720p, 1080p, 1080p + MetalFX, 2K, 2K + MetalFX and, in an app built with it (the same rule: by default on a Mac with 16 GB or more), native 4K, its 3D scene at the canvas size; its heaps are sized for 4K in the game code at every start (1.6.0: render targets 912 MiB, memory heap +864 MiB; 1.9.0: GPU heap 448 MiB, memory heap +960 MiB). On 1.9.0, `TOTK_OUTPUT_RES=screen` makes the largest 16:9 size of the main display (up to 5120×2880, limited by the display’s native size) the native choice. Native 5K (5120×2880 canvas, UI and scene) is included in a Tears of the Kingdom 1.4.3 or Breath of the Wild 1.6.0 / 1.9.0 Mac app by default on a build Mac with 32 GB of memory or more; `--native-5k` / `--no-native-5k` override this. A 16 GB or 24 GB Mac keeps the 4K default. A Tears of the Kingdom 5K app reserves about 2.7 GiB more again at every start, even with a lower resolution selected. Adding the option keeps the saved selection; it does not select 5K automatically.
+- **4K + MetalFX to 5K (Mac, Tears of the Kingdom 1.4.3):** renders the scene and interface at 3840×2160, then uses MetalFX spatial scaling for the final picture. On a 16:9 display the scaler targets 5120×2880. It fits other aspect ratios and resizes to the window when needed. The preset requires a build with native 4K support and is saved when selected.
 - **Aspect ratio:** 16:9, 16:10, 21:9 or 32:9 (1.2.1 and 1.4.3, Breath of the Wild 1.6.0 and 1.9.0). The camera sees more at the sides (or, at 16:10, keeps its vertical view; `TOTK_ASPECT_VERT=1`, 1.4.3, experimental, sees more above and below instead, with some UI effects in the wrong place); the HUD, menus and map keep their shape in the middle 16:9; markers that follow objects in the world are not moved yet. In a window the window takes the shape; in full screen the picture keeps it, with black bars. `TOTK_ASPECT=2.39` (or `3440x1440`) starts on that ratio and adds it to the list.
 - **Edge smoothing (MetalFX Temporal):** temporal anti-aliasing of the 3D scene, off until enabled (`TOTK_TAA=1` starts it on; 1.4.3 and Breath of the Wild); `TOTK_ANISO=16` also turns on 16x anisotropic filtering.
 - **Anisotropic filtering:** off (the game's 1×), 2×, 4×, 8× or 16× for the ground, walls and foliage seen at a slant. Applies at once. Kept in `graphics-aniso.txt`; `TOTK_ANISO` decides first.
@@ -111,6 +112,56 @@ The menu bar shows the live frame rate as the game's own menu, on the left after
 Native 2K changes the game's composition canvas and UI to 2560×1440. The 3D scene still follows the game's separate render scaling; this does not force every internal render target to 1440p. The manual MetalFX mode also works in smaller windows and scales to the actual output size, including 4K.
 
 Language: the game and the launcher's own text (startup screen, shader warm-up progress, overlays, keyboard prompt) follow the Mac's language. The launcher text is Chinese on a Chinese Mac and English otherwise. Regional variants follow the console: English outside the Americas (en-GB, en-AU, ...) selects British English, which shows temperatures in Celsius (American English shows Fahrenheit), French in Canada selects Canadian French, Spanish in the Americas Latin American Spanish, and in a 1.4.3 build Brazilian Portuguese selects the game's official pt-BR text. Simplified and Traditional Chinese are told apart by the script (zh-Hans / zh-Hant) or, without one, by the region (Taiwan, Hong Kong and Macau are Traditional). To give only this game another language, choose it in System Settings › General › Language & Region › Applications, or set its preferred language, for example `defaults write org.macnativegames.totk AppleLanguages -array pt-BR` (`defaults delete org.macnativegames.totk AppleLanguages` removes it). To override, launch with `TOTK_LANG` for the game (for example `open --env TOTK_LANG=en-US "Tears of the Kingdom.app"`) or `TOTK_UI_LANG=zh` / `en` for the launcher text.
+
+### DSU / Cemuhook input on Mac (optional)
+
+Tears of the Kingdom and Breath of the Wild can receive one controller's buttons,
+sticks and native six-axis motion from a DSU protocol 1001 server. This is off by
+default and does not depend on a controller brand. Press **1 → Input** and scroll
+to the DSU rows to enable it, edit `host:port` and select slot 0–3. DSU always
+receives buttons, sticks and motion. Changes apply immediately and are kept next
+to `controls.txt` in `dsu.txt` (`on`/`off`), `dsu-server.txt` and `dsu-slot.txt`.
+Turning DSU off restores the native controller motion source;
+rumble is not restarted by these changes. Hostname lookup runs off the UI thread.
+
+One status line shows the live connection state, buttons, both sticks,
+acceleration (g) and rotation (degrees/s).
+No controller data is shown while disconnected; stale motion shows no sensor values. The raw sensor readout remains available
+when gyro aiming is off. Values refresh twice a second. A socket waiting for data does
+not count as a connected controller.
+
+Alternatively, quit the game and override the saved preferences for one launch:
+
+```sh
+open --env TOTK_DSU=127.0.0.1:26760 --env TOTK_DSU_SLOT=0 "/Applications/Tears of the Kingdom.app"
+```
+
+- `TOTK_DSU=host:port` selects a server; `1` means `127.0.0.1:26760`. Hostnames and
+  bracketed IPv6 (`[::1]:26760`) are accepted. Empty or `0` disables DSU; unset
+  uses saved settings (off when never configured).
+- Either `TOTK_DSU` or `TOTK_DSU_SLOT` locks the DSU settings
+  for that launch; remove them and relaunch to edit the saved choices in the UI.
+- `TOTK_DSU_SLOT=0` selects a zero-based slot, `0` through `3` (default `0`).
+- Buttons and sticks follow the existing controller layout and foreground/background input policy.
+- DSU replaces native controller **motion** only after a valid six-axis sample
+  arrives, keeping the sensors separate. Opening a socket or receiving buttons
+  alone does not take motion over. Empty sensor payloads and zero sensor timestamps
+  do not count as motion. A missing server leaves native motion available.
+  Native controller rumble stays on its existing path; DSU rumble extensions
+  are not implemented.
+- Both the game's own motion setting and the port's gyro setting must be on.
+  Existing `TOTK_GYRO_AXES`, dead-zone and bias settings apply. Server timestamp
+  intervals are mapped to the local monotonic clock; the server may run on another
+  machine and need not share the game's uptime or wall clock.
+- Sensor silence returns motion to the native controller after 200 ms; a fresh
+  DSU sensor sample takes over again. Missing controller packets release
+  its input after 500 ms. Disconnects and server/device restarts reset the source.
+  No packets from another server endpoint or unselected slot are used.
+
+DSU is unauthenticated UDP. Prefer a local server or a trusted LAN. The receiver
+opens no public listener and sends registration only to the configured server.
+This support is macOS-only; iPhone/iPad keep their existing input paths. Protocol
+and receiver checks: `python -m unittest discover -s tests -p test_dsu.py -v`.
 
 ## Screenshots
 

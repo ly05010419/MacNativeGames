@@ -1,5 +1,6 @@
-/* Fixture for tests/test_oot_gpu_span.py: the per-frame GPU accounting of games/oot is spliced in from nvn_mtl.m and
-   totk_sysload.c as written, and driven with synthetic command-buffer completions. No Metal, no device, no game data.
+/* Fixture for tests/test_oot_gpu_span.py: the per-frame GPU accounting and the watchdog's elapsed-time helper gpu_stall_ns
+   of games/oot are spliced in from nvn_mtl.m and totk_sysload.c as written, and driven with synthetic command-buffer
+   completions. No Metal, no device, no game data.
    The markers below are replaced by production source; everything else is the harness. */
 #include <stdatomic.h>
 #include <stdint.h>
@@ -12,6 +13,7 @@ typedef struct { double last_end, busy; } sysload_busy;   /* totk_sysload.h */
 /* SYSLOAD_ADD */
 /* RING */
 /* COUNTERS */
+/* WATCHDOG */
 static void gpu_watchdog_start(void) {}   /* the watchdog thread itself is not under test */
 static void sysload_note_gpu(double start_s, double end_s);
 /* TAG_BEGIN */
@@ -106,6 +108,17 @@ static void slot_already_reused(void) {
     expect(pending_before == 1, "the frame had one buffer outstanding");
     expect_eq(mtl_gpu_ms(7), -1.0, "the frame that left reports nothing");
 }
+/* The watchdog's elapsed time. The reference is stamped by the submit and completion threads and can be newer than the
+   watchdog's own reading; without the guard now - ref underflows and a 10 s limit fires at once. Captured 2026-11-14,
+   twice in one hour: 18446744074 s printed, and a healthy game aborted. */
+static void watchdog_elapsed_never_wraps(void) {
+    expect_eq((double)gpu_stall_ns(1000000000ull, 0, 500000000ull), 500000000.0, "the commit that started the wait is the reference");
+    expect_eq((double)gpu_stall_ns(1000000000ull, 600000000ull, 500000000ull), 400000000.0, "a later completion is the reference");
+    expect_eq((double)gpu_stall_ns(1000000000ull, 0, 0), 0.0, "nothing submitted: no elapsed time");
+    expect_eq((double)gpu_stall_ns(1000000000ull, 1290000000ull, 0), 0.0, "a reference newer than the reading is no elapsed time");
+    expect_eq((double)gpu_stall_ns(1000000000ull, 0, 1000000001ull), 0.0, "a reference one nanosecond newer is no elapsed time");
+    expect_eq((double)gpu_stall_ns(21000000000ull, 0, 10000000000ull), 11000000000.0, "a real hang keeps counting past the limit");
+}
 
 int main(void) {
     valid_interval_counted();
@@ -114,7 +127,8 @@ int main(void) {
     empty_interval_dropped();
     load_line_after_a_gap();
     slot_already_reused();
+    watchdog_elapsed_never_wraps();
     if (failures) { fprintf(stderr, "%d checks failed\n", failures); return 1; }
-    printf("GPU span accounting: 6 cases passed\n");
+    printf("GPU span accounting: 7 cases passed\n");
     return 0;
 }

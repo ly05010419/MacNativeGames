@@ -156,8 +156,8 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 设备属性：Tegra X1 实测值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐项调 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
-#if defined(GAME_ACNH) && ACNH_VERSION_RAW == 2097152
-    [0x00] = 55, [0x01] = 15,   // 3.0.1 main+0x37b6eec checks major 55, minor >= 15. Unsupported calls still stop.
+#if defined(GAME_ACNH) && (ACNH_VERSION_RAW == 2097152 || ACNH_VERSION_RAW == 2228224)   // the 3.0 line: one SDK
+    [0x00] = 55, [0x01] = 15,   // 3.0.1 main+0x37b6eec checks major 55, minor >= 15 (3.0.3: same SDK). Unsupported calls still stop.
 #elif defined(GAME_ACNH)
     [0x00] = 53, [0x01] = 312,  // ACNH 1.2.1 main+0x1a845e4 requires minor >= 312 (0x138).
 #elif defined(GAME_BOTW) || defined(GAME_ODYSSEY) || defined(GAME_KIRBY)
@@ -2562,6 +2562,14 @@ static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
+/* The leaderboard's pacing (runtime/board_upload.h, as games/odyssey): no frame lock and no interpolation. The frame rate
+   Animal Crossing plays at (30, 60 or 120, runtime/frame_rate.c) is the game's own clock, picked before the launch and
+   fixed for the run, as Super Mario Odyssey's 60 Hz is, not a cap the player sets while playing; MetalFX frame
+   interpolation is not offered for this game (the settings panel's Display page). */
+void nvn_board_pacing(int *lock, int *interp) {
+    *lock = 0;
+    *interp = 0;
+}
 static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m == MFX_OFF || m == MFX_MAX); }
 /* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
    30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
@@ -2706,6 +2714,8 @@ __attribute__((weak)) int dm_thermal_now(void) { return -1; }   // 缺省（Mac�
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
 typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup; int ls; } lf_rec;   // ls：这一帧出图时读取画面是否盖着 | ls: whether the loading screen was covering the picture when this frame was presented
+#include "fps_overlay.h"   // hitch_info: every long frame on the corner panel (shared fps_overlay.c; as games/odyssey)
+extern void hitch_overlay_note(const hitch_info *h, uint64_t now_ns) __attribute__((weak));
 static lf_rec g_lf[LFN];
 __attribute__((weak)) void dm_longframe_note(const char *what) { LOG("[长帧] %s", what); DM_SP_EVENT("long-frame", "%{public}s", what);   /* public: Instruments shows the text instead of <private> */ }   // 缺省（图形单测）；宿主 diag.c 的强定义补上场景上下文并写 perf.txt | Default (graphics unit tests); the strong definition in the host's diag.c adds scene context and writes perf.txt
 extern void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern uint64_t mtl_upload_bytes(void); extern void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
@@ -3132,6 +3142,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           // "Long" is relative to recent conditions: when running steadily at 30 fps (menus / windowless host) or under sustained overload, every frame is > 20 ms; those are not long frames and must not flood the log - a frame has to be 40% above the sliding mean of the last 16 frames to count
           static double ef = 16.7, eg = 8; int lf = r->fr > 20.0 && r->fr > 1.4 * ef, lg = g > 16.7 && g > 1.3 * eg;
           if (r->f == f - 8) { ef += ((r->fr < 3 * ef ? r->fr : 3 * ef) - ef) / 16; eg += ((g < 3 * eg ? g : 3 * eg) - eg) / 16; }
+          if (r->f == f - 8 && f - 8 > 0 && (lf || lg) && hitch_overlay_note) {   // every long frame on the panel too ("FPS 全信息", as games/odyssey)
+              const lf_rec *pv = &g_lf[(f - 9) % LFN];
+              hitch_info h = {r->t_s, r->fr, r->nv, g, r->make_ms, r->up_ms, r->up_mb, r->pso, r->lib, r->up, r->rup, r->ls || (f >= 9 && pv->f == f - 9 && pv->ls)};
+              hitch_overlay_note(&h, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));   // the panel's clock (nvn_mtl.m shader_overlay_prepare)
+          }
           if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[512];
               snprintf(b, sizeof b, "帧 %llu（%.2f s）整帧 %.1f ms，提交+出图 %.1f ms，GPU %.1f ms；新建管线 %u 条 + 着色器库 %u 个共 %.1f ms；上传贴图 首传 %u 张 + 重传 %u 次 %.1f MB / %.1f ms",
                        (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms);
