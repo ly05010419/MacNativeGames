@@ -269,7 +269,10 @@ def no_developer_tools():
         folder = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True, text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return True
-    return not folder or not (Path(folder) / 'usr/bin/clang').is_file()
+    # Command Line Tools keep clang in usr/bin; a full Xcode (xcode-select -s /Applications/Xcode.app) keeps it in its
+    # default toolchain, and its Developer/usr/bin has none (issue #2284)
+    return not folder or not any((Path(folder) / sub).is_file()
+                                 for sub in ('usr/bin/clang', 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang'))
 
 
 def needs_developer_tools(game):

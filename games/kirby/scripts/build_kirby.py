@@ -34,6 +34,9 @@ import time
 from pathlib import Path
 
 GAME_DIR = Path(__file__).resolve().parents[1]
+if str(GAME_DIR.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(GAME_DIR.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 EXPECTED = json.loads((GAME_DIR / 'assets/expected-v1.0.0.json').read_text())
 FILES = EXPECTED['files']
 TITLE_ID = '01004D300C5AE000'
@@ -236,7 +239,7 @@ def step_binary(work, py, game, keys, logs):
     translator = work / 'build/shader-service/totk_xlate'
     translator.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(GAME_DIR / 'prebuilt/macos-arm64/totk_xlate', translator)
-    run(['make', f'-j{os.cpu_count() or 4}', f'WORK={work}'], logs / 'runtime.log')
+    run(['make', f'-j{os.cpu_count() or 4}', f'WORK={make_path(work, "kirby")}'], logs / 'runtime.log')
     icon = work / 'build/AppIcon.icns'
     if not icon.exists():   # the game's own icon from its control data; optional
         try:

@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 from games.tomodachi.prepare import TITLE_ID, check_exefs
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 def require(condition, message):
     if not condition: raise ValueError(message)
@@ -172,7 +173,7 @@ def main():
         work = args.work.expanduser().resolve()
         prepare_host(args.prepared, work, args.shared_fonts, args.spirv_cross.expanduser().resolve())
         with (work / "logs/build.log").open("w") as log:
-            result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={work}", f"BACKEND={args.backend}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+            result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={make_path(work, 'tomodachi')}", f"BACKEND={args.backend}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
         require(result.returncode == 0, f"Host compilation failed; see {work / 'logs/build.log'}")
         print(work / "build" / ("tomodachi-native-metal4"))
     except (OSError, ValueError, KeyError) as error:

@@ -11,6 +11,9 @@ import tempfile
 
 from tmnt_bundle import check_output, install_app, record_update_source
 from rewrite_modules import GAME, REPO, TOOL_SOURCES, sha256
+if str(REPO) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(REPO))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 
 def blocker(app):
@@ -57,7 +60,7 @@ def update(app, work):
         generated = work / 'build'; generated.mkdir(exist_ok=True)
         for header in (resources / 'runtime-update').glob('*.h'):
             shutil.copy2(header, generated / header.name)
-        subprocess.run(['make', '-C', str(GAME), '-j8', 'runtime', f'WORK={work}', f'PY={sys.executable}'], check=True)
+        subprocess.run(['make', '-C', str(GAME), '-j8', 'runtime', f'WORK={make_path(work, "tmnt")}', f'PY={sys.executable}'], check=True)
         subprocess.run([str(generated / 'tmnt-native'), str(resources / 'rewritten'), 'link'], check=True,
                        env=dict(os.environ, TOTK_AUDIO_OFF='1', TOTK_CLOUD_SAVE_DIR='0'))
         # Recheck the retained translations and exact pipeline list with the new host.
