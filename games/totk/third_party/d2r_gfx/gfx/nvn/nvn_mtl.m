@@ -3325,6 +3325,7 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
    the same work every frame, WindowServer starves and the Mac kernel-panics through its watchdog (2026-11-07: a translated
    float-atomic loop that never terminated took the whole Mac down). An "InnocentVictim" error (our buffer was discarded
    because another one hung) counts too: with one game on the GPU, the hang is ours. */
+static void mtk_ring_dump(void);   // nvn_mesh_tasks.inc: OOT_MESH_RING's record of the last mesh draws
 static void gpu_hang_guard(NSError *error) {
     static _Atomic int hangs;
     NSString *d = error.description ?: @"";
@@ -3332,6 +3333,7 @@ static void gpu_hang_guard(NSError *error) {
     if (!hang) return;
     int n = atomic_fetch_add(&hangs, 1) + 1;
     MLOG("【红】GPU 超时 / 挂起（第 %d 次）：%s", n, d.UTF8String);
+    mtk_ring_dump();
     if (n >= 2) MDIE("GPU 连续超时 / 挂起，停止游戏以保护系统（WindowServer 看门狗会让整机重启）：%s", d.UTF8String);
 }
 static void rp_flush_(int from);
