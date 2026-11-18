@@ -66,7 +66,7 @@ own process group and can be cancelled (`cancellable.py`).
 | `~/Library/Application Support/MacNativeGames/Builder/` | `start-options.json` (what only Play passes), `controls-tab.json` (the controller answered with type auto), `icons-venv/` (fontTools for the button icons), `mods-tab.lock`, `history/` (the build job's step times) |
 | `~/Library/Application Support/MacNativeGames/<TOTK or BotW>/mod-library/<version>/` | The player's mods, cloned when added, and `library.json` (order, switches, checks, what was applied, the code mods in each app) |
 | `~/Library/Application Support/MacNativeGames/<TOTK or BotW>/` | `controls.txt`, `controller-type.txt`, `keyboard.txt` and the game's settings, which the game reads |
-| `~/Documents/MacNativeGames-Backups/` | The Saves page's backups (another folder when the player picks one) |
+| `~/Documents/MacNativeGames-Backups/<game>/` | The Saves page's backups, one folder per game named as its app (another folder when the player picks one); backups left directly in `MacNativeGames-Backups/` move into their game's folder when the page opens |
 
 ## Tests
 

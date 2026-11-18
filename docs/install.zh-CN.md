@@ -284,7 +284,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 
    App 不记录的另一份旧工作目录，之后可以删掉；**存储**页会显示 App 实际用的是哪一个。
 6. **更新提示“要完整打包”时**（换了游戏版本、工作目录没了；大金刚和 Pokopia 一直如此）：在第一步拖入游戏文件、第二步选密钥，点**重新打包**。它会打进原来那个 App，保留存档和 App 记录的工作目录，并复用这个 App 里已经核对过的游戏数据。
-7. **旧窗口保存的东西都还在**，各页直接读原来的位置：模组（`<游戏数据目录>/mod-library`，**模组**页；如果提示模组和新 App 对不上，点一次**应用模组**）、手柄选择（**按键**页）、开局选项（**设置**页）、存档备份（`~/Documents/MacNativeGames-Backups`，**存档**页）。只有旧窗口记住的文件路径（`Builder/settings.json`）不再读取：需要完整打包时，重新拖一次文件就行。
+7. **旧窗口保存的东西都还在**，各页直接读原来的位置：模组（`<游戏数据目录>/mod-library`，**模组**页；如果提示模组和新 App 对不上，点一次**应用模组**）、手柄选择（**按键**页）、开局选项（**设置**页）、存档备份（`~/Documents/MacNativeGames-Backups`，**存档**页；现在每个游戏在里面有自己的文件夹，以 App 名命名，旧的备份在打开存档页时移进去）。只有旧窗口记住的文件路径（`Builder/settings.json`）不再读取：需要完整打包时，重新拖一次文件就行。
 8. **可选的清理。** 只为这个项目装的 Homebrew 包可以卸掉（`brew uninstall opus libvpx dav1d ffmpeg llvm xcodegen cmake ninja`，前提是你别的东西不用它们）。在 App 还没有图标时建的程序坞或桌面快捷方式可能一直是空白图标：删掉重建即可。
 
 帮你的 AI 可以替你做完这些：install-zelda skill 会读每个 App 的 `MNGWorkFolder`，运行 `update_runtime.py "<App>" --plan`，并用 `open -a "MNG Launcher" "<文件>" "<prod.keys>"` 打开 Launcher。

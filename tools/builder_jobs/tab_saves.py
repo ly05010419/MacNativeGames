@@ -7,6 +7,9 @@ what it leaves, what already matches) is shown before the player confirms, the c
 addition: restore takes the plan's id and refuses when the plan read again differs (the game saved in between, or the
 backup changed), so what is written is what the player confirmed.
 
+Each game's backups are in a folder of its own, ~/Documents/MacNativeGames-Backups/<its app name> (user 2026-11-18); the
+backups made into the shared folder before are moved into their games' folders when the page opens.
+
 Actions: state() -> the save sources and the backups; backup(kind, title_id, root, label) -> the new backup;
 plan(backup) -> what a restore of that folder does; restore(backup, plan_id) -> what it did; reveal(path) -> opens the
 backup folder (or a backup) in the Finder."""
@@ -45,7 +48,8 @@ def human(size):
 
 
 def backup_root(ctx):
-    return saves.default_backup_root(ctx.home)
+    """This game's own backups folder (saves.game_backup_root): backups, pre-restore copies and the Finder's folder."""
+    return saves.game_backup_root(ctx.home, ctx.spec)
 
 
 def sources(ctx):
@@ -97,8 +101,16 @@ def backup_view(item):
 
 
 def state(ctx):
-    """Reads only: the sources, the backups under the default folder, and whether the game is running."""
+    """The sources, this game's backups, and whether the game is running. Writes only to sort backups left in the shared
+    folder into their games' folders (saves.sort_backups, every game the pages serve: renames, nothing copied)."""
     root = backup_root(ctx)
+    try:
+        saves.sort_backups(ctx.home, GAMES.values())
+        unsorted = ''
+    except OSError as error:   # the page still shows: what could not move stays where it was, and says why
+        unsorted = t(f'Some backups in {saves.default_backup_root(ctx.home)} could not be moved into their game\'s folder: '
+                     f'{error.strerror or error}', f'{saves.default_backup_root(ctx.home)} 里有备份没能移进各自游戏的文件夹：'
+                     f'{error.strerror or error}')
     found = saves.find_backups(root)
     busy = running(ctx)
     return {'game': ctx.spec.id, 'game_name': ctx.spec.display_name, 'note': NOTE, 'hash_note': HASH_NOTE,
@@ -108,8 +120,9 @@ def state(ctx):
             'backups_line': t(f'Backups in {root}  ({len(found)})', f'{root} 里的备份（{len(found)} 个）') if found
             else t(f'No backups in {root} yet.', f'{root} 里还没有备份。'),
             'running': busy,
-            'running_line': t('The game is running: restore waits until it is closed.', '游戏开着：要先关掉游戏才能恢复。')
-            if busy else ''}
+            'running_line': ' '.join(filter(None, [
+                t('The game is running: restore waits until it is closed.', '游戏开着：要先关掉游戏才能恢复。') if busy else '',
+                unsorted]))}
 
 
 def reason(code):
