@@ -30,6 +30,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
+if str(REPO) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(REPO))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 GAME = json.loads((HERE / 'game.json').read_text())
 EXPECTED = json.loads((HERE / 'assets/expected-v2.1.0.json').read_text())
 VERSION = 'v210'
@@ -407,11 +410,12 @@ def step_shaders(py, work, logs):
     compiled into Metal libraries (build/shader-libs, all or nothing). The runtime imports the seed at the first start
     and loads the libraries instead of compiling, so no shader is translated or compiled while playing."""
     say('3/4 shaders: the shader translator (checked against its SHA-256) and SPIRV-Cross')
-    run(['make', 'shader-tools', f'WORK={work}', f'PY={py}'], logs / 'shader-tools.log')
+    mk = make_path(work, 'dread')
+    run(['make', 'shader-tools', f'WORK={mk}', f'PY={py}'], logs / 'shader-tools.log')
     say('3/4 shaders: preparing every shader of the game (a few seconds)')
-    run(['make', 'shader-seed', f'WORK={work}', f'PY={py}'], logs / 'shader-seed.log')
+    run(['make', 'shader-seed', f'WORK={mk}', f'PY={py}'], logs / 'shader-seed.log')
     say('3/4 shaders: compiling them into Metal libraries (about a minute the first time)')
-    run(['make', 'shader-libs', f'WORK={work}', f'PY={py}'], logs / 'shader-libs.log')
+    run(['make', 'shader-libs', f'WORK={mk}', f'PY={py}'], logs / 'shader-libs.log')
 
 
 def step_app(py, work, game, keys, out, logs, inputs):
@@ -471,7 +475,7 @@ def step_ios(py, work, out, logs):
     assets/shader_list.tsv names (scripts/prepare_shader_seed.py, a few seconds; reused while nothing changed), and the
     app also takes what the Mac translated while playing (build/shader-cache)."""
     say('4/4 iPhone / iPad app: generating the runtime tables, compiling the Mac runtime, the shader seed, then the app (Xcode)')
-    run(['make', 'prepare', 'mods', 'runtime', f'WORK={work}', f'PY={py}'], logs / 'runtime.log')
+    run(['make', 'prepare', 'mods', 'runtime', f'WORK={make_path(work, "dread")}', f'PY={py}'], logs / 'runtime.log')
     run([py, HERE / 'scripts/prepare_shader_seed.py', '--romfs', work / f'extracted/{VERSION}/romfs',
          '--output', work / 'build/shader-seed', '--translator', work / 'build/shader-service/totk_xlate',
          '--spirv-cross', work / 'build/spirv-cross/spirv-cross', '--version', VERSION], logs / 'shader-seed.log')

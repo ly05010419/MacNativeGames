@@ -180,12 +180,17 @@ class Pages(unittest.TestCase):
         self.assertNotIn('backLive', flow)
         self.assertIn('GameActions(app: app, section: $gamePage, live: live, wide: true) { launches += 1 }', home)
         # how it feels, as the sketch's A page (user 2026-11-17: "有鼠标 光影 和 盒子动的特效"): lean and light under the
-        # pointer, rubber band and throw on a drag, two-finger swipes, and the start's case growing over the stage
+        # pointer, rubber band and throw on a drag, two-finger swipes
         for part in ('.onContinuousHover(coordinateSpace: .local)', 'i == center ? CATransform3DConcat(lean, r) : r',
                      'RadialGradient(colors: [.white.opacity(0.42 * light)', 'func pull(_ x: Double)',
-                     'v.predictedEndTranslation.width', 'NSEvent.addLocalMonitorForEvents(matching: .scrollWheel)',
-                     '.onChange(of: launches) { grow() }', '.scaleEffect(from + (stage.fill - from) * zoom)'):
+                     'v.predictedEndTranslation.width', 'NSEvent.addLocalMonitorForEvents(matching: .scrollWheel)'):
             self.assertIn(part, flow)
+        # a start turns the opened case back to its front, the page of the games, the way Esc closes it; its cover no
+        # longer grows over the whole stage first (user 2026-11-18: "点击 启动游戏 就翻页返回主页 不要放大封面")
+        self.assertIn('.onChange(of: launches) { turn(false) }', flow)
+        self.assertIn('.onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }', flow)
+        for gone in ('func grow()', 'zooming', 'zoomFade', 'zoomFromCover', 'stage.fill'):
+            self.assertNotIn(gone, flow)
         self.assertIn('started()', home)
         # the folded cases answer the pointer too (user 2026-11-17: "其他收起来的 应该也有相应的互动效果"): the one under
         # it, found on the stage at rest, comes out a little, those beyond move aside, its name floats over it; it stays

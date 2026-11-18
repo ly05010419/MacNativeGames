@@ -192,6 +192,26 @@ def job_env(request, game):
     return env
 
 
+def with_open_fonts(argv, emit, make=None):
+    """用开源字体 (user 2026-11-18): the build's arguments with --shared-fonts <the open-source Noto fonts of
+    tools/deps/open_fonts.py>, made once per Mac, as Ocarina of Time takes them (games/oot/build.py prepare_fonts). Every
+    build that takes --shared-fonts (build_app.py, games/<game>/build.py) accepts the folder: its manifest has the six
+    rows build_app.py validate_fonts checks, and each runtime decodes a BFTTF by its header's key (0 here). A folder the
+    player gave (--firmware, --shared-fonts) wins. make stands in for open_fonts in the tests."""
+    if '--firmware' in argv or '--shared-fonts' in argv:
+        return argv
+    if make is None:
+        from tools.deps.open_fonts import open_fonts as make
+    emit('log', text=t('making the system fonts from open-source Noto fonts (downloaded once for this Mac)',
+                       '正在用开源 Noto 字体制作系统字体（这台 Mac 只下载一次）'))
+    try:
+        folder = Path(make())
+    except Exception as e:   # tools/deps DepsError (a download or fontTools step), or an OSError
+        raise Refused(t(f'the open-source fonts could not be made: {e}', f'开源字体没做成：{e}')) from None
+    at = argv.index('--work')
+    return argv[:at] + ['--shared-fonts', str(folder)] + argv[at:]
+
+
 def run(request, emit, history_dir, python=sys.executable, script=None, record=None):
     chosen, argv, work, out, kind, game = command(request, python)
     env = job_env(request, game)
@@ -212,8 +232,11 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     start = time.time()
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
+    real_build = script is None   # tests pass a script of their own: nothing of theirs goes into the Launcher's list
     script = script or chosen
     # steps_last: how many steps the same kind of build took on this Mac last time (the window says "N steps last time")
+    if kind == 'full' and (request.get('plan') or {}).get('open_fonts'):
+        argv = with_open_fonts(argv, emit)
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
          command=[str(script), *argv], kind=kind, steps_last=len(estimator.last) if estimator.last else None)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
@@ -294,6 +317,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
         history.record(record, steps.poll(end), end)
         if record_mods:
             record_mods(out)
+        if real_build:   # the app goes into the Launcher's own list (installed.py known-apps.json)
+            from tools.builder_jobs.installed import remember
+            remember([str(out)])
         emit('progress', fraction=1.0, left=0, elapsed=round(end - start), measured=True)
         emit('done', ok=True, app=str(out), elapsed=round(end - start), note=mods_note(game, out, True, ''))
         return 0

@@ -21,3 +21,27 @@ Ampere opcode semantics were cross-checked against NVIDIA CUDA Binary Utilities 
 The typed pool-array MSL layout follows ChiefSZ13/nxnative ee9b7765 (MIT, dmsh_build.py pool_arrays); immutable Metal descriptor snapshots and their host state integration are implemented in this game's native backend.
 
 Ampere surface reduction uses this project's existing surface atomic IR and native Metal image atomics. Addressing and reduction semantics were checked against NVIDIA PTX and CUDA Binary Utilities; ordering encodings were cross-checked against official Mesa NAK. Concurrent GPU fixtures use an independent CPU oracle. Unsupported increment/decrement modes are rejected rather than assuming their bounded semantics match ordinary atomic add/subtract.
+
+Shared files (2026-11-18): `runtime/playtime.h`, `gamepad_layout.h`, `feedback_settings.h`, `hid_feedback.c` (this
+game's answer to `nn::hid::IsOunceVibrationDeviceMounted` is in the shared file, for every game), `motion_fusion.c`,
+`swkbd_host.c`, `ipc.{c,h}` (with CMIF domains; `runtime/threads.c` gained `runtime_handle_take_session` for them),
+`bindings_diagram.h` (Tears of the Kingdom's words and kinds, as before, in `runtime/bindings_game.h`), `shared_font.c`,
+`game_slot.c` and `agent_slot_limit.h` are symlinks into the repository's `shared/` folder (shared/README.md). Except
+for the Ounce answer, these copies were older versions of games/totk's. `third_party/d2r_gfx` is still the link to
+games/totk's, whose `totk_mfx_up.{m,h}` and `totk_sysload.{c,h}` are now in `shared/` too. Still this game's own:
+`runtime/time_host.c` (the POSIX clock providers for the SDK's `clock_gettime` are not proven in the other games yet,
+whose SDKs reference the same functions), `keyboard_map.h` and `third_party/d2r` (`controller_map.h` is shared since, below).
+
+
+Input stack (2026-11-18): `runtime/gamepad.m`, `gamepad_feedback.m`, `controller_map.h`, `hid_imu.h`, `mouse_look.h`,
+`switch_left_fallback.h`, the new `gamepad_core.h`, `gamepad_settings.h`, `gamepad_hid_pad.h`, `gamepad_mouse.h` and
+`input_file.h`, and `dsu_client.h` and `dsu_protocol.h` (the shared core reads DSU; this game has no DSU rows, so it stays
+off) are symlinks into the repository's `shared/` folder (shared/README.md). The copies were games/totk's but for this
+game's start of GameController off the main thread (a wedged gamecontrollerd no longer hangs the start), now in the
+shared core for every game. This game's own: `runtime/gamepad_game.h` (mouse mode, the pointing while L is held that the
+copy had, zeldaVR's linkage, and the input trace `OOT_INPUT_TRACE`), `runtime/feedback_game.h` (no bow triggers: the
+settings row says "Not in this version", as before), and in `runtime/input.c` the key table, the HID answers, the
+`settings`, `ashot`, `ashotn` and stereo B2 commands and its flags (`input_trace`, the resolution rows, `fps_lock`).
+
+
+Platform layer (2026-11-18): `runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `audio_ramp.h` and `text_keyboard.h` were byte-identical to games/totk's and are symlinks into the repository's `shared/` folder (shared/README.md); nothing compiled changes. Still this game's own: `runtime/threads.c` (its core-wait diagnostics and experiments), `fs_host.{c,h}` (game file reads and save writes give the virtual core up, b1b65908), `romfs.c` and `romfs_path.h` (several RomFS mounts, `//` collapsed), the audio mixer and renderer, `loader.c`, `services.c` and the other service files.

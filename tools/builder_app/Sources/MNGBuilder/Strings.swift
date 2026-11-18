@@ -39,6 +39,31 @@ enum T {
     /// The Launcher's version, bottom right of the window (user 2026-11-17: "launcher 右下角 显示 版本号").
     static func version(_ v: String) -> String { "MNG Launcher \(v)" }
     static func devVersion(_ commit: String) -> String { zh ? "MNG Launcher 开发版 · \(commit)" : "MNG Launcher development build · \(commit)" }
+    static func versionNewer(_ v: String, _ newer: String) -> String {
+        zh ? "MNG Launcher \(v) · 可更新到 \(newer)" : "MNG Launcher \(v) · \(newer) is out"
+    }
+    static let versionNewerHelp = s("Downloads the new MNG Launcher", "下载新版 MNG Launcher")
+    // The update button at the home page's top right (LauncherUpdate.swift; user 2026-11-18: "点一下就自动下载、替换、重开")
+    static func updateTo(_ v: String) -> String {
+        v.isEmpty ? s("Update MNG Launcher", "更新 MNG Launcher") : (zh ? "更新到 \(v)" : "Update to \(v)")
+    }
+    static let updateHelp = s("Downloads the new MNG Launcher, puts it in this one's place and opens it again",
+                              "下载新版 MNG Launcher，替换这一个，然后重新打开")
+    static let updateBlocked = s("A build or a game's update is running: update MNG Launcher when it has ended",
+                                 "正在打包或更新游戏：结束后再更新 MNG Launcher")
+    static func updateProgress(_ phase: LauncherUpdate.Phase) -> String {
+        switch phase {
+        case .downloading(let part): return zh ? "正在下载 \(Int(part * 100))%" : "Downloading \(Int(part * 100))%"
+        case .verifying: return s("Checking the signature…", "正在核对签名…")
+        case .installing: return s("Opening the new one…", "正在打开新版…")
+        default: return s("Looking for the release…", "正在查找新版…")
+        }
+    }
+    static let updateFailed = s("The update did not finish.", "更新没有完成。")
+    static let updateNoScript = s("This MNG Launcher carries no updater.", "这个 MNG Launcher 不带更新程序。")
+    static let updateNotReplaced = s("The last update could not put the new MNG Launcher in place; this is still the old one. Try again, or download it.",
+                                     "上次更新没能把新版 MNG Launcher 放到位，现在还是原来的版本。可以再试一次，或者手动下载。")
+    static let updateManual = s("Download it", "手动下载")
     static func versionHelp(_ commit: String) -> String { zh ? "自带代码提交 \(commit)" : "Bundled code commit \(commit)" }
     static let thisMac = s("This Mac", "这台 Mac")
     static let fix = s("Fix", "修复")
@@ -214,6 +239,7 @@ enum T {
     static let back = s("Back", "上一步")
     static let gameFiles = s("Game files", "游戏文件")
     static let chooseAgain = s("Choose Again…", "重新选择…")
+    static let useOpenFonts = s("Use Open-Source Fonts", "用开源字体")
     static let keys = s("Keys", "密钥")
     static let getXcode = s("Get Xcode", "获取 Xcode")
     static let installCLT = s("Install Command Line Tools", "安装命令行工具")

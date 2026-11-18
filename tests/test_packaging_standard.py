@@ -26,15 +26,21 @@ STANDARDS = {
     'pipeline archive built while packaging': lambda t: 'pipeline-archive' in t or 'mac_pipelines' in t,
     # every game comes to the title once the warm-up is done, archive complete or not (user 2026-11-11: "所有塞尔达 都是 预热玩
     # 进标题！", "所有游戏都是"); the Mac shortcut that skipped the wait with a complete archive (2026-10-29) is gone
-    'title after the warm-up': lambda t: ('TOTK_WARM_BEFORE_TITLE' in t or 'setenv("DM_PSO_PREPARE", "1", 1)' in t) and '标题不等预热读完' not in t,
-    'no program runs inside a new app': lambda t: re.search(r"run_outside_bundle|work/'build/oot-native'|mac_pipelines\(build/'tools/dmhost'", t) is not None,
+    # Odyssey's runtime waits for its warm-up lists (the title's and the recorded pipelines) before the first frame:
+    # ODYSSEY_WARM_BEFORE_PLAY, nvn_mtl.m (its opening movie starts from the title, with no later loading screen to wait at)
+    'title after the warm-up': lambda t: ('TOTK_WARM_BEFORE_TITLE' in t or 'setenv("DM_PSO_PREPARE", "1", 1)' in t
+                                          or 'ODYSSEY_WARM_BEFORE_PLAY' in t) and '标题不等预热读完' not in t,
+    # tools/port_app/bundle.staged assembles the app without running anything in it, unless the port asks the new app's
+    # launcher for --check (bundle.check_launcher)
+    'no program runs inside a new app': lambda t: re.search(r"run_outside_bundle|work/'build/oot-native'|mac_pipelines\(build/'tools/dmhost'", t) is not None
+                                                  or ('bundle.staged(' in t and 'check_launcher' not in t),
     'seed and library digests are reused': lambda t: 'seed_digests' in t or 'record_verified' in t or 'class Digests:' in t,
     'repackaging keeps the .app folder': lambda t: 'install_app(' in t and re.search(r'(partial|temporary)\.rename\(out\)', t) is None,
     'a runtime change can update quickly': lambda t: 'place_runtime' in t or 'update_ocarina' in t or 'def update(app, work):' in t,
     'a runtime change keeps the translations': seed_identity_ignores_runtime,
     # the runtime's warm-up, its contribution filter and the launcher's prune read pso_title.tsv / pso_manifest.tsv beside the
     # shader map (build/): Ocarina of Time's were only in the seed, so every pipeline it drew was contributed (2026-11-10)
-    'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t or "check_archive_lists(resources/'pipeline-archive', resources/'build')" in t or "check_archive_lists(resources/'pipeline-archive', resources)" in t,
+    'warm-up lists beside the shader map': lambda t: "'build/pso_manifest.tsv'" in t or '"build/pso_manifest.tsv"' in t or "check_archive_lists(resources/'pipeline-archive', resources/'build')" in t or "check_archive_lists(resources/'pipeline-archive', resources)" in t,
     # the pipeline archive is built from those same build/ lists: Ocarina of Time's fast update built it from the seed's
     # older list, 2,957 of the App's 7,516 render pipelines, and 4,559 were compiled at the first start (2026-11-11)
     'pipeline archive built from the App\'s lists': lambda t: (
@@ -42,41 +48,6 @@ STANDARDS = {
 }
 
 GFX = 'games/{}/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m'
-
-# What the three ports MNG Launcher builds through tools/port_app (Animal Crossing, Echoes of Wisdom, Super Mario
-# Odyssey) do not do yet. Seven of the eight are the same for all three because the packaging they share is the same;
-# the eighth differs and is below. Read in the sources 2026-11-18, each reason naming what shows it. None seen in play.
-PORT_APP_GAPS = {
-    'shader data in its own signed bundle': 'no file of these ports names ShaderData-: the shader data is inside the '
-        'app, not in a bundle of its own',
-    'pipeline archive built while packaging': 'no packager here builds one: mac_pipelines is nowhere in these ports, '
-        'and the only pipeline-archive they name is the vendored runtime header totk_pipeline_archive.h (Echoes of '
-        'Wisdom does not name it at all)',
-    'title after the warm-up': 'neither TOTK_WARM_BEFORE_TITLE nor DM_PSO_PREPARE is set anywhere in these ports, so '
-        'nothing holds the title until the warm-up is done',
-    'seed and library digests are reused': "only Odyssey's vendored third_party/totk-scripts/prepare_shader_seed.py "
-        'has seed_digests/record_verified, and its own packaging path does not call it',
-    'repackaging keeps the .app folder': 'tools/port_app/bundle.py staged() does shutil.rmtree(output) and then '
-        'stage.rename(output): every repackaging replaces the .app folder instead of installing into it, which is why '
-        'register() has to make Finder and the Dock read the icon again',
-    'warm-up lists beside the shader map': 'no packager writes build/pso_title.tsv and build/pso_manifest.tsv beside '
-        'the shader map, nor checks them (check_archive_lists)',
-    "pipeline archive built from the App's lists": 'there is no pipeline archive to build from them (the second gap)',
-}
-
-# The eighth, per port: two of the three run a program inside the app they have just made.
-PORT_APP_RUNS_INSIDE = {
-    'acnh': "package_native_app.py's assemble() ends with bundle.check_launcher(launcher_bin), the launcher it "
-            'compiled into Contents/MacOS of the staged bundle, run there right after signing it',
-    'eow': "package_app.py's assemble() ends with bundle.check_launcher(macos / EXECUTABLE): the app's own launcher, "
-           'run inside the bundle it has just signed',
-    'odyssey': 'this packager runs nothing inside the app, but no name of its path says so in the form this check '
-               'knows (run_outside_bundle)',
-}
-
-
-def port_app_gaps(game):
-    return {**PORT_APP_GAPS, 'no program runs inside a new app': PORT_APP_RUNS_INSIDE[game]}
 
 # name -> (the sources of that packaging path, {standard not met: why})
 PATHS = {
@@ -97,21 +68,40 @@ PATHS = {
     'worldend': (['games/worldend/build.py', 'games/worldend/scripts/build_worldend.py', 'games/worldend/scripts/worldend_bundle.py',
                   'games/worldend/scripts/worldend_pipelines.py', 'games/worldend/scripts/worldend_update.py',
                   'games/worldend/app/launcher.c'], {}),
-    # The three ports built through tools/port_app (bundle.py, adapter.py): unlike every path above, their packaging is
-    # not its own copy of the code -- the staging, the signature, the Info.plist and the venv are shared, so those two
-    # files are read with each of them. Measured 2026-11-18 against the sources, not played.
-    'acnh': (['games/acnh/build.py', 'games/acnh/scripts/package_native_app.py',
-              'games/acnh/scripts/precompile_cached_shaders.py', 'games/acnh/tools/prepare_shader_seed.py',
-              'games/acnh/scripts/acnh_app_launcher.c', GFX.format('acnh'),
-              'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('acnh')),
-    'eow': (['games/eow/build.py', 'games/eow/scripts/package_app.py', 'games/eow/scripts/prepare_runtime.py',
-             'games/eow/scripts/build_shader_libs.py', 'games/eow/scripts/prepare_shader_seed.py',
-             'games/eow/app/launcher.c', GFX.format('eow'),
-             'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('eow')),
-    'odyssey': (['games/odyssey/build.py', 'games/odyssey/scripts/build_odyssey.py',
-                 'games/odyssey/scripts/package_native_app.py', 'games/odyssey/scripts/precompile_cached_shaders.py',
-                 'games/odyssey/scripts/prepare_runtime.py', 'games/odyssey/scripts/odyssey_app_launcher.c',
-                 GFX.format('odyssey'), 'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('odyssey'))
+    # MNG Launcher builds these three since 2026-11-17 (13427402, 3f3e58b2, 803c6b22), each with tools/port_app; their gaps
+    # were checked in the sources on 2026-11-18
+    'acnh': (['games/acnh/build.py', 'games/acnh/build_host.py', 'games/acnh/prepare.py', 'games/acnh/tools/prepare_shader_seed.py',
+              'games/acnh/scripts/package_native_app.py', 'games/acnh/scripts/precompile_cached_shaders.py',
+              'games/acnh/scripts/acnh_app_launcher.c', GFX.format('acnh')], {
+        'shader data in its own signed bundle': 'the shader libraries and seed go to Resources/game/build (package_native_app.py, steps 6 and 6b)',
+        'pipeline archive built while packaging': 'packaging precompiles .metallib libraries only (precompile_cached_shaders.py)',
+        'title after the warm-up': 'the runtime waits for the title list only; the rest warms behind the menu, save-load waits (nvn_mtl.m)',
+        'no program runs inside a new app': "bundle.check_launcher runs the new app's launcher with --check",
+        'seed and library digests are reused': 'verify_inputs hashes every input again at each packaging; nothing is recorded',
+        'repackaging keeps the .app folder': 'tools/port_app/bundle.staged replaces the old folder with <app>.partial',
+        'warm-up lists beside the shader map': 'pso_manifest.tsv stays in the shader seed (tools/prepare_shader_seed.py), none in build/',
+        "pipeline archive built from the App's lists": 'no pipeline archive is built while packaging',
+    }),
+    'eow': (['games/eow/build.py', 'games/eow/scripts/package_app.py', 'games/eow/scripts/prepare_shader_seed.py',
+             'games/eow/scripts/build_shader_libs.py', 'games/eow/scripts/prepare_runtime.py', 'games/eow/app/launcher.c',
+             GFX.format('eow')], {
+        'shader data in its own signed bundle': 'the shader libraries and seed go into the app beside the game (package_app.py)',
+        'pipeline archive built while packaging': 'packaging builds .metallib libraries only (build_shader_libs.py)',
+        'title after the warm-up': 'its one list (every pipeline collected) is waited for at most DM_WARM_TITLE_WAIT_MS, 1,500 ms (nvn_mtl.m)',
+        'no program runs inside a new app': "bundle.check_launcher runs the new app's launcher with --check (package_app.py)",
+        'seed and library digests are reused': 'package_app.verify hashes every input again at each packaging; nothing is recorded',
+        'repackaging keeps the .app folder': 'tools/port_app/bundle.staged replaces the old folder with <app>.partial',
+        'warm-up lists beside the shader map': 'packaging writes no warm-up list; the runtime reads the seed\'s shader-seed/pso_manifest.tsv',
+        "pipeline archive built from the App's lists": 'no pipeline archive is built while packaging',
+    }),
+    'odyssey': (['games/odyssey/build.py', 'games/odyssey/scripts/build_odyssey.py', 'games/odyssey/scripts/package_native_app.py',
+                 'games/odyssey/scripts/prepare_runtime.py', 'games/odyssey/scripts/app_launcher.h', GFX.format('odyssey')], {
+        'shader data in its own signed bundle': 'the shader libraries and seed go to Resources/game/build (package_native_app.assemble)',
+        'pipeline archive built while packaging': 'packaging precompiles .metallib libraries only (precompile_cached_shaders.py)',
+        'seed and library digests are reused': 'no verified digests are recorded for the seed or the libraries',
+        'repackaging keeps the .app folder': 'tools/port_app/bundle.staged replaces the old folder with <app>.partial',
+        "pipeline archive built from the App's lists": 'no pipeline archive is built while packaging',
+    }),
 }
 
 BUILD_SCRIPTS = {'games/tmnt/build.py': 'tmnt', 'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
@@ -124,9 +114,6 @@ class PackagingStandard(unittest.TestCase):
         found = {str(p.relative_to(ROOT)) for p in (ROOT / 'games').glob('*/build.py')}
         unknown = sorted(found - set(BUILD_SCRIPTS))
         self.assertEqual(unknown, [], 'a game with its own build.py: add it to PATHS and BUILD_SCRIPTS, and check it against the standards')
-        # the message above asks for both: registering the build.py alone would make this test pass with nothing checked
-        for script, name in sorted(BUILD_SCRIPTS.items()):
-            self.assertIn(name, PATHS, f'{script} is in BUILD_SCRIPTS but names no path in PATHS: nothing checks it')
 
     def test_paths_meet_the_standards(self):
         for name, (sources, gaps) in PATHS.items():

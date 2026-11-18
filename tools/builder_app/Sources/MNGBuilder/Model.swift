@@ -11,6 +11,9 @@ final class Model: ObservableObject {
     @Published var keysPath: String?
     @Published var report: ClassifyReport?
     @Published var classifyError: String?
+    /// 用开源字体 (user 2026-11-18): a game file without system fonts builds with the open-source Noto fonts; chosen
+    /// files of another game, or Choose Again, ask again.
+    @Published var openFonts = false
     @Published var checks: [ChecksReport.Check] = []
     @Published var phase: Phase = .idle
     @Published var stage = ""
@@ -32,6 +35,11 @@ final class Model: ObservableObject {
     @Published var installed: [InstalledReport.App] = []
     @Published var installedLoaded = false   // the first scan finished: until then no game is shown as missing
     @Published var installedError: String?   // why the last scan failed (the home page shows it)
+    @Published var newerLauncher: (version: String, url: URL)?   // a newer MNG Launcher release (the version label turns blue)
+    // The Launcher replacing itself with that release (LauncherUpdate.swift: the button at the home page's top right)
+    @Published var launcherUpdate: LauncherUpdate.Phase = .idle
+    @Published var launcherUpdateManual: URL?   // where a person downloads it instead, offered when the update failed
+    var launcherUpdateJob: Job?
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     /// A job is running now. `updating` names the app the last job was for and stays after it ends (its card keeps the
     /// result and the log), so it never means "busy": a reporter (2026-11-17) found Start grey after a `mng.py build`
@@ -39,6 +47,10 @@ final class Model: ObservableObject {
     var jobRunning: Bool { phase == .building || phase == .cancelling }
     @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var page = "home"         // the page shown: home (the games) or build
+    /// The game a build from the Build page just made: the home page opens with its case in the middle (user 2026-11-18:
+    /// "安装 完了 不返回首页").
+    @Published var homeGame: String?
+    private var jobGameId: String?       // the running job's game (its 'plan' event)
     @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)
     @Published var quickStart = false    // 快速启动: build with only the title's shaders (Model.quickGames)
     /// The log of the job that failed last, which the terminal page's AI is asked about.
@@ -81,6 +93,7 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.lookForExternal() }
         }
         loadRememberedInstalled()   // the games of the last look at once; the look below brings them up to date
+        readLauncherUpdateOutcome()   // an update that could not put the new Launcher in place says so
         Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
     }
 
@@ -136,7 +149,25 @@ final class Model: ObservableObject {
             installedError = error.localizedDescription   // the games of the last look stay; the page says why this failed
         }
         installedLoaded = true
+        newerLauncher = Self.newerLauncher(than: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")
     }
+
+    /// The newest MNG Launcher release the home page's read of the release list found (source_updates.check keeps it in
+    /// update-check.json), when it is newer than this one. Only a release has updates: a build from a checkout says nothing.
+    static func newerLauncher(than own: String) -> (version: String, url: URL)? {
+        guard Paths.isRelease,
+              let data = try? Data(contentsOf: Paths.support.appendingPathComponent("sources/update-check.json")),
+              let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let found = state["launcher"] as? [String: Any], let version = found["version"] as? String,
+              let url = URL(string: found["url"] as? String ?? ""), url.scheme == "https",
+              launcherHosts.contains(url.host ?? ""),
+              version.compare(own, options: .numeric) == .orderedDescending else { return nil }
+        return (version, url)
+    }
+
+    /// Where the label's click may go (source_updates.LAUNCHER_HOSTS, user 2026-11-18 "直接下载 DMG"): the disk image on
+    /// GitHub, as the website's Download button links it, or the website; any other address opens nothing.
+    static let launcherHosts: Set<String> = ["github.com", "mac-native-games.com", "www.mac-native-games.com"]
 
     private func save() {
         defaults.set(location, forKey: "location")
@@ -171,7 +202,7 @@ final class Model: ObservableObject {
     /// Choose Again: these files in place of the ones chosen before (the keys stay).
     func replace(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        paths = urls.map { $0.path }; report = nil; classifyError = nil
+        paths = urls.map { $0.path }; report = nil; classifyError = nil; openFonts = false
         save()
         Task { await classify() }
     }
@@ -180,10 +211,16 @@ final class Model: ObservableObject {
     /// becomes step 2's keys (2026-11-17: an empty case's Build page lost the keys chosen with Tears of the Kingdom).
     func clear() {
         if keysPath == nil, let found = plan?.keys { keysPath = found }
-        paths = []; report = nil; classifyError = nil; save()
+        paths = []; report = nil; classifyError = nil; openFonts = false; save()
     }
 
     /// Step 2: the keys are chosen on their own and kept for every game (a path, never the file).
+    /// 用开源字体: the plan is read again with the open-source fonts standing in for the missing system fonts.
+    func useOpenFonts() {
+        openFonts = true
+        Task { await classify() }
+    }
+
     func setKeys(_ url: URL?) {
         keysPath = url?.path
         save()
@@ -229,7 +266,7 @@ final class Model: ObservableObject {
     func classify() async {
         guard !paths.isEmpty else { report = nil; return }
         do {
-            let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []))
+            let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []) + (openFonts ? ["--open-fonts"] : []))
             report = try JSONDecoder().decode(ClassifyReport.self, from: data)
             classifyError = nil
         } catch {
@@ -394,7 +431,7 @@ final class Model: ObservableObject {
             append(line); return
         }
         switch e.event {
-        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last
+        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last; jobGameId = e.game
         case "stage":
             stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
             if let i = e.index, let n = e.total { stageNumber = (i, n) }
@@ -410,6 +447,11 @@ final class Model: ObservableObject {
             if e.ok == true {
                 phase = .done; fraction = 1; appPath = e.app ?? appPath
                 if startedHere { play() }   // a job started elsewhere ends without starting the game
+                if startedHere && page == "build" {   // back to the games, this one in the middle; its files are done with
+                    homeGame = jobGameId ?? plan?.game
+                    buildFor = nil; clear(); buildStep = 1
+                    page = "home"
+                }
             } else {
                 failure = e; phase = (e.cancelled ?? false) ? .cancelled : .failed
             }

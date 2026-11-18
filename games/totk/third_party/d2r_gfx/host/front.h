@@ -1,5 +1,1 @@
-#pragma once
-#include <stdint.h>
-void *front_metal_layer(void);
-void front_frame_presented(void);
-uint64_t front_game_res(int docked);
+../../../../../shared/third_party/d2r_gfx/host/front.h

@@ -450,6 +450,36 @@ def say_left_game_files(copy):
             'and reads the game files from where you pass them, so these copies can be deleted (unless you pass them from there).')
 
 
+def outside_links(folder):
+    """The files in folder (relative paths) that are links to a file outside it, as the checkout's shared/ (b7048211)."""
+    inside, found = folder.resolve(), []
+    for root, dirs, files in os.walk(folder):
+        if Path(root) == folder:
+            dirs[:] = [d for d in dirs if d not in WORK_COPY_SKIP]   # the build's own output, never copied
+        for name in files:
+            path = Path(root) / name
+            if path.is_symlink() and path.is_file() and not path.resolve().is_relative_to(inside):
+                found.append(path.relative_to(folder))
+    return found
+
+
+def sync_folder(source, copy, excludes, log):
+    """copy mirrors source (prepare_work). A link out of source arrives as the file it names: from the work folder its
+    relative path points beside it (#2270, 19 links into shared/ dangled and every build and express update stopped
+    at the runtime's make). rsync leaves those paths alone, as macOS's rsync (openrsync) cannot follow a link while it
+    compares by --checksum ("Too many levels of symbolic links", for --copy-unsafe-links and -L alike); they are
+    written here by the same rule: a changed file gets the time of this copy, an unchanged one keeps its own."""
+    links = outside_links(source)
+    run(['rsync', '-rlpD', '--checksum', '--delete', *excludes, *(f'--exclude=/{rel}' for rel in links),
+         f'{source}/', f'{copy}/'], log)
+    for rel in links:
+        data, out = (source / rel).read_bytes(), copy / rel
+        if out.is_symlink() or not out.is_file() or out.read_bytes() != data:
+            out.unlink(missing_ok=True)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+
+
 def prepare_work(work, py, logs):
     """work/totk: the game folder of this repository with the generated files inside it (the build scripts write
     extracted/, rewritten/, build/ and analysis/ next to themselves); its tooling/ points at the fetched sources."""
@@ -467,15 +497,14 @@ def prepare_work(work, py, logs):
     # that built here before) was compiled by the Makefile's wildcards with this checkout's headers (2026-11-13: an express
     # update from main stopped on a branch's nvn_pool_sources.m). The excluded folders (WORK_COPY_SKIP: the build's own
     # output) and game files are never deleted: rsync leaves excluded paths alone.
-    sync = ['rsync', '-rlpD', '--checksum', '--delete', *excludes]
-    run([*sync, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
+    sync_folder(GAME, tree, excludes, logs / 'sources.log')
     # zeldaVR's modules (games/totk/zeldaVR links to them in the repository): into the tree, where the Makefile and the
     # iOS project take them; VR stays off unless TOTK_VR_CONTROL is set
-    run([*sync, f'{REPO / "zeldaVR"}/', f'{tree / "zeldaVR"}/'], logs / 'sources-zeldavr.log')
+    sync_folder(REPO / 'zeldaVR', tree / 'zeldaVR', excludes, logs / 'sources-zeldavr.log')
     # games/botw: its scripts find the shared ones at ../totk/scripts (work/botw next to work/totk)
-    run([*sync, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
+    sync_folder(BOTW, work / 'botw', excludes, logs / 'sources-botw.log')
     for g in NS2.values():   # the Switch 2 games' expected values and shared lists (games/totk/Makefile: ../pokopia/assets/...)
-        run([*sync, f'{g["folder"]}/', f'{work / g["folder"].name}/'], logs / f'sources-{g["folder"].name}.log')
+        sync_folder(g['folder'], work / g['folder'].name, excludes, logs / f'sources-{g["folder"].name}.log')
     for copy in (tree, work / 'botw', *(work / g['folder'].name for g in NS2.values())):
         say_left_game_files(copy)
     tooling = tree / 'tooling'
@@ -2348,6 +2377,47 @@ def source_commit():
     return result.stdout.strip() if result.returncode == 0 else ''
 
 
+LAUNCHER_BUNDLE_ID = 'org.macnativegames.launcher'
+
+
+def launcher_app():
+    """The MNG Launcher that runs this build, or None: the app bundled_job.py names (MNG_LAUNCHER_APP), else the one
+    whose bundled Python runs this script (an express update started from a terminal with the Python an app recorded)."""
+    named = os.environ.get('MNG_LAUNCHER_APP')
+    candidates = [Path(named)] if named else []
+    for python in (Path(sys.executable).absolute(), Path(sys.executable).resolve()):   # a virtual environment's links to it
+        candidates += [folder for folder in python.parents if folder.suffix == '.app']
+    for app in candidates:
+        try:
+            info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        if info.get('CFBundleIdentifier') == LAUNCHER_BUNDLE_ID:
+            return info
+    return None
+
+
+def launcher_version():
+    """For the HUD's build line (user 2026-11-18: "版本号 旁边 显示 launcher的版本号（launcher版本号放第一）"): the version of
+    the released MNG Launcher that runs this build (it carries its source archive, as the Launcher's own isRelease).
+    'dev' for a development build: a Launcher made from a checkout runs it (its version string is a placeholder, and the
+    Launcher's own label says 开发版 there), or it is run from a git checkout without a Launcher. '' otherwise."""
+    info = launcher_app()
+    if info is not None and isinstance(info.get('MNGSourceArchiveSHA256'), str):
+        return str(info.get('CFBundleShortVersionString') or '')
+    return 'dev' if info is not None or (REPO / '.git').exists() else ''
+
+
+def record_launcher_version(info):
+    """MNGLauncherVersion in an app's Info.plist (app/launcher.m -> TOTK_LAUNCHER_VERSION, shared/runtime/hud_box.h):
+    the Launcher of this build, not of an earlier one."""
+    version = launcher_version()
+    if version:
+        info['MNGLauncherVersion'] = version
+    else:
+        info.pop('MNGLauncherVersion', None)
+
+
 def write_main_build_id(nso, target):
     if not nso.is_file():
         return
@@ -2417,6 +2487,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
+    record_launcher_version(info)          # and, before it, the Launcher that built it
     record_update_source(info, tree.parent)
     if version in ('v143', 'botw160', 'botw190') and native_5k is not None:
         info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic

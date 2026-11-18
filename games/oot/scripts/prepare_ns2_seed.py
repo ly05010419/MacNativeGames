@@ -43,6 +43,40 @@ def sha256(path):
     return h.hexdigest()
 
 
+MH_MAGIC_64, LC_SEGMENT_64, LC_CODE_SIGNATURE = 0xfeedfacf, 0x19, 0x1d
+
+
+def code_sha256(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize). MNG Launcher
+    ships this repository's translator signed with a Developer ID, whose signature carries a time stamp, so every release
+    is another file of the same code (2026-11-18: 9845718d ad-hoc here, 1113882b in the Launcher's 1.0.7 source; the
+    11-11 translator signed three times on 11-13: d9f3d149, 3f116d35, eb92d16e). Hashed whole, that made a Launcher build
+    and a command-line build of one work folder translate all 42,848 shaders again for each other, and every code update
+    do it for players. Anything else (no signature, another format) is hashed whole."""
+    data = bytearray(Path(path).read_bytes())
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != MH_MAGIC_64:
+        return hashlib.sha256(data).hexdigest()
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return hashlib.sha256(data).hexdigest()
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return hashlib.sha256(data).hexdigest()
+        if cmd == LC_SEGMENT_64 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == LC_CODE_SIGNATURE:
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def translation_context(translator, depth_mode):
     """The cache folder: what decides every translation at once, the chain, the device depth mode and the translator (its
     spirv-cross runs inside it, TOTK_XLATE_SPIRV_CROSS=inproc). Not the runtime code that makes the requests: each
@@ -50,12 +84,40 @@ def translation_context(translator, depth_mode):
     seed run of another runtime keeps those it would ask for the same way and makes only the others again
     (TOTK_SEED_VERIFY, seed_verified; user 2026-11-11: "如何让 快速更新 不要这么容易失效"). Until then the source of the
     request functions counted, and removing a fallback for starting the translator (4b308d25) made all 42,891 translate again.
+    The translator is its code (code_sha256), not its file: another signature is the same translator (schema 4, 2026-11-18).
 
     The shader/bind-state key alone does not describe device depth mode. The old unversioned seed cache kept vertex
     shaders made with near=0 after the runtime was corrected to NVN's near=-w default.
     """
+    inputs = dict(schema=4, chain=CHAIN, depth_mode=depth_mode, translator_code_sha256=code_sha256(translator))
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def legacy_translation_context(translator, depth_mode):
+    """translation_context before 2026-11-18 (schema 3: the translator's whole file), to recognise the folders and seeds
+    made then (adopt_legacy_cache, games/oot/build.py seed_context_matches)."""
     inputs = dict(schema=3, chain=CHAIN, depth_mode=depth_mode, translator_sha256=sha256(translator))
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def adopt_legacy_cache(root, translator, depth_mode):
+    """The cache folder of translation_context(translator) does not exist yet: take over the newest folder made before
+    schema 4 by the same code, so the change to code identity (and a translator signed again) translates nothing again.
+    Each folder keeps the program it translated with (tool/build/shader-service/totk_xlate); one of the same code under
+    the old name of that program is renamed. Returns the folder taken over, or None."""
+    want, code = translation_context(translator, depth_mode), code_sha256(translator)
+    if (root / want).exists() or not root.is_dir():
+        return None
+    found = []
+    for folder in root.iterdir():
+        tool = folder / 'tool/build/shader-service/totk_xlate'
+        if folder.is_dir() and tool.is_file() and code_sha256(tool) == code and folder.name == legacy_translation_context(tool, depth_mode):
+            found.append(folder)
+    if not found:
+        return None
+    best = max(found, key=lambda f: f.stat().st_mtime)
+    best.rename(root / want)
+    return best
 
 
 def run(cmd, log, env=None):
@@ -292,6 +354,10 @@ def main():
 
     prebuilt = Path('prebuilt/macos-arm64/totk_xlate')
     context = translation_context(prebuilt, a.depth_mode)
+    adopted = adopt_legacy_cache(cache, prebuilt, a.depth_mode)
+    if adopted:
+        print(f'translation cache {adopted.name[:12]} taken over as {context[:12]}: the same translator code (another '
+              f'signature, or the cache was named by the whole file before 2026-11-18); nothing is translated again', flush=True)
     cache = cache / context
     cache.mkdir(parents=True, exist_ok=True)
     # A concurrent App package may replace the shared build/shader-service binary.
@@ -342,7 +408,7 @@ def main():
     shaders = sum(n.endswith('_b.metal') for n in files)
     here = Path(__file__).resolve().parent
     inputs = dict(chain=CHAIN, version=v, source_romfs_sha256=romfs_sha, translation_context_sha256=context,
-                  nvn_depth_mode=a.depth_mode, translator_sha256=sha256(prebuilt),
+                  nvn_depth_mode=a.depth_mode, translator_sha256=sha256(prebuilt), translator_code_sha256=code_sha256(prebuilt),
                   shader_list_sha256=sha256(a.list) if a.list else None, corpus_sha256=sha256(corpus),
                   scripts_sha256={n: sha256(here / n) for n in ('prepare_ns2_seed.py', 'prepare_shader_seed.py', 'shader_list.py')},
                   only_sha256=sha256(a.only) if only else None)
@@ -380,7 +446,7 @@ def main():
     report = dict(schema=1, chain=CHAIN, version=v, game=v, source_romfs_sha256=romfs_sha,
                   translation_context_sha256=context,
                   nvn_depth_mode=a.depth_mode,
-                  runtime_sha256=sha256(a.binary), translator_sha256=sha256(prebuilt),
+                  runtime_sha256=sha256(a.binary), translator_sha256=sha256(prebuilt), translator_code_sha256=code_sha256(prebuilt),
                   shader_list_sha256=sha256(a.list) if a.list else None,
                   corpus_sha256=sha256(corpus), corpus_inputs=want, all_default=True,
                   only=len(only) if only else None,   # a quick seed: only these shaders (the rest translated at first use)

@@ -78,6 +78,37 @@ def answers_for(deps):
     return answers
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -143,9 +174,10 @@ def record_verified(output, files):
     path.with_name(path.name+'.tmp').replace(path)
 
 
-def reusable_seed(output, identity, min_shaders=MIN_SHADERS):
+def reusable_seed(output, identity, min_shaders=MIN_SHADERS, translator_file=None):
     """Return a verified seed manifest, or None when it must be prepared again; the reason is printed (2026-11-11: a
-    whole seed prepared again said nothing about why)."""
+    whole seed prepared again said nothing about why). A seed from before 2026-11-18 names its translator by the whole
+    file (translator_sha256): that of translator_file, the same program, is this translator."""
     def again(why):
         print(f'the startup seed is prepared again: {why}', flush=True)
         return None
@@ -159,6 +191,9 @@ def reusable_seed(output, identity, min_shaders=MIN_SHADERS):
         if not isinstance(files, dict) or 'shader-keys.json' not in files:
             return again('the seed there is of an older format')
         changed = sorted(k for k, v in identity.items() if old.get(k) != v)
+        if changed == ['translator_code_sha256'] and 'translator_code_sha256' not in old and translator_file and \
+                old.get('translator_sha256') == translator_file:
+            changed = []   # named by this very file before 2026-11-18
         if changed:
             return again('it was made with another ' + ', '.join(changed))
         if old.get('shaders', 0) < min_shaders:
@@ -270,7 +305,7 @@ class TranslationCache:
     that no job of the last preparation asked for are removed after it. digests.json keeps the SHA-256 of each file, so
     the seed manifest does not read tens of thousands of unchanged files again."""
 
-    def __init__(self, folder, identity, shared=False):
+    def __init__(self, folder, identity, shared=False, legacy=None):
         self.folder, self.shared = folder, shared   # shared (translations_folder): other work folders' entries stay
         try:
             old = json.loads((folder/'cache.json').read_text())
@@ -279,6 +314,10 @@ class TranslationCache:
         except (OSError, ValueError):
             old = {}
         same = old == identity
+        if not same and legacy and old == legacy:   # named by the same translator's whole file before 2026-11-18: kept
+            (folder/'cache.json').write_text(json.dumps(identity))
+            print('translation cache: kept, its translator named by its code now (the same program)', flush=True)
+            same = True
         if not same:   # said in the log, so a full translation is never left unexplained (2026-11-11)
             print('translation cache: ' + ('none in this work folder yet' if old is None else
                   'emptied, it was made with another ' + ', '.join(sorted(k for k in set(old) | set(identity)
@@ -740,11 +779,12 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     listed = shared.variants
     identity = dict(schema=1, chain=CHAIN, version=version, game=game,
                     source_romfs_sha256=json.loads((romfs/'index.json').read_text())['romfs_sha256'],
-                    translator_sha256=digest(translator.read_bytes()),
+                    translator_code_sha256=code_digest(translator),   # its code, any signature (2026-11-18)
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
                     preparation_sha256=digest(Path(__file__).read_bytes()),
                     shader_list_sha256=digest(Path(shader_list).read_bytes()) if Path(shader_list).is_file() else None)
-    old = reusable_seed(output, identity, min_shaders)
+    translator_file = digest(translator.read_bytes())   # what seeds and caches named before; the manifest keeps it too
+    old = reusable_seed(output, identity, min_shaders, translator_file=translator_file)
     if old is not None:
         print(f'reusing {old["shaders"]} verified prepared startup shaders', flush=True)
         return old
@@ -764,12 +804,14 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                    modules={p.name: digest(p.read_bytes()) for p in sorted(Path(modules).glob('*.patched.bin'))} if modules else {},
                    inventory_sha256=INVENTORY_SHA256)
     _, shaders, startup, archives = cached_inventory(romfs, modules, game, output.with_name(output.name+'.inventory'), scanned)
-    translations = dict(schema=TRANSLATIONS_SCHEMA, chain=CHAIN, translator_sha256=identity['translator_sha256'],
+    translations = dict(schema=TRANSLATIONS_SCHEMA, chain=CHAIN, translator_code_sha256=identity['translator_code_sha256'],
                         spirv_cross_sha256=identity['spirv_cross_sha256'],
                         request_sha256=digest((inspect.getsource(translation_request) +
                                                inspect.getsource(early_fragment_tests)).encode()))
+    legacy = {k: v for k, v in translations.items() if k != 'translator_code_sha256'}
+    legacy['translator_sha256'] = translator_file   # a cache named by this very file before 2026-11-18 is this translator's
     folder, common = translations_folder(output.with_name(output.name+'.translations'), translations)
-    cache = TranslationCache(folder, translations, shared=common)
+    cache = TranslationCache(folder, translations, shared=common, legacy=legacy)
     extra = located({where for where in shared.locators if where[0] not in shaders}, source_reader(romfs, modules, game), game)
     shaders.update(extra)
     print(f'{len(extra)} more shaders read where the shared list locates them (agl .sharcb, game module)', flush=True)
@@ -921,7 +963,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     wanted_final = wanted | {'pso_manifest.tsv', 'shader-keys.json'}
     # Each completed variant's two files are links to the translation cache, whose digests it keeps; the rest are read.
     linked = {variant+end for variant in completed for end in ('_b.metal', '_b.json')}
-    report = dict(**identity, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
+    report = dict(**identity, translator_sha256=translator_file, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
                   served_by_another=sum(1 for key in served if key in produced),   # translation_input: no files of their own
                   all_default=GAMES[game]['all_default'],   # every shader has its default variant: the runtime contributes only other states
                   listed_variants=sum(1 for _, _, _, why in jobs if why == 'listed'), skipped=failed,

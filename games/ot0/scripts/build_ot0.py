@@ -13,6 +13,9 @@ from pathlib import Path
 OT0 = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OT0 / 'scripts'))
 import versions
+if str(OT0.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(OT0.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 APP_NAME = 'Octopath Traveler 0'
 MODULES = ('sdk', 'subsdk0', 'main')
@@ -245,7 +248,7 @@ def main(argv):
     data(py, game, update, keys, work, version, logs)
     rewrite(py, work, version, logs)
 
-    make = ['make', f'WORK={work}', f'VERSION={version}', f'PY={py}']
+    make = ['make', f'WORK={make_path(work, "ot0")}', f'VERSION={version}', f'PY={py}']
     say('4/5 runtime: building the runtime and the shader tools')
     run([*make, 'prepare'], logs / 'prepare.log')
     run([*make, '-j8', 'runtime', 'shader-tools'], logs / 'runtime.log')

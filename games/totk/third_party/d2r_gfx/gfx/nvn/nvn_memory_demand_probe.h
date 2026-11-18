@@ -19,14 +19,70 @@ static int pool_ids_probe(void) {
     if(!(ids[0]>>17&1)||!(ids[0]>>5&1)||!(ids[0]>>9&1))MDIE("pool ids: the set lost or missed an ID: %#llx",(unsigned long long)ids[0]);checked++;
     uint64_t inc1=g_pool_ids_words_inc;p=pool_input_get(&u,64);
     if(g_pool_ids_words_inc!=inc1||g_pool_ids_full!=full0+1)MDIE("pool ids: an unchanged table was scanned again");checked++;
+    /* 2026-11-18: the set is exact. An ID leaves it with the last word that names it, without a scan of the table, and
+       the captures before keep the set they were given (OOT_POOL_IDS_EXACT=0, the union, fails here). */
+    const uint64_t *before=ids;                        // the set so far: 5, 9, 17
+    ((volatile uint32_t *)w)[page/4+1]=9;             // a second word names 9
+    p=pool_input_get(&u,64);
+    ((volatile uint32_t *)w)[page/4]=0xfffffu;        // the first no longer does
+    p=pool_input_get(&u,64);ids=p->ids.bytes;
+    if(!(ids[0]>>9&1))MDIE("pool ids: an ID another word still names left the set");checked++;
+    ((volatile uint32_t *)w)[page/4+1]=0xfffffu;      // nor the second
+    p=pool_input_get(&u,64);ids=p->ids.bytes;
+    if(ids[0]>>9&1)MDIE("pool ids: an ID no longer named stayed in the set");checked++;
+    if(!(ids[0]>>5&1)||!(ids[0]>>17&1)||g_pool_ids_full!=full0+1)MDIE("pool ids: removing an ID lost another or scanned the whole table");checked++;
+    if(ids==before||!(before[0]>>9&1))MDIE("pool ids: the set of an earlier capture changed under it");checked++;
     atomic_fetch_add(&g_pool_input_hostwrite,1);   // a host write-back marks no page
     p=pool_input_get(&u,64);
     if(g_pool_ids_full!=full0+2)MDIE("pool ids: a host write-back did not rescan the whole table");checked++;
+    /* 2026-11-18: a pool made or removed elsewhere is not a change of this table (pool_input_epoch). Keyed on the global
+       pool generation, each one captured the whole table and scanned it again (OOT_POOL_INPUT_EPOCH=0 fails here). */
+    void *other=NULL;if(posix_memalign(&other,page,page))MDIE("pool ids probe allocation");memset(other,0,page);
+    uint64_t full1=g_pool_ids_full,miss1=g_pool_input_misses,whole1=g_pool_cap_full+g_pool_cap_arena;inc1=g_pool_ids_words_inc;
+    mtl_pool_add(other,page);nvn_dirty_add_range(other,page);
+    p=pool_input_get(&u,64);
+    if(g_pool_input_misses!=miss1||g_pool_cap_full+g_pool_cap_arena!=whole1||g_pool_ids_full!=full1||g_pool_ids_words_inc!=inc1)MDIE("pool ids: a pool made elsewhere captured the table again");checked++;
+    nvn_dirty_remove_range(other);mtl_pool_del(other);free(other);
+    p=pool_input_get(&u,64);
+    if(g_pool_input_misses!=miss1||g_pool_cap_full+g_pool_cap_arena!=whole1||g_pool_ids_full!=full1||g_pool_ids_words_inc!=inc1)MDIE("pool ids: a pool removed elsewhere captured the table again");checked++;
+    /* The table's own range registered again (its pool finalized and made again): its page generations start over, so a
+       word written meanwhile is in no generation and only a whole copy and a full scan can find it. */
+    nvn_dirty_remove_range(m);mtl_pool_del(m);
+    ((volatile uint32_t *)w)[3*page/4]=33;
+    mtl_pool_add(m,span);nvn_dirty_add_range(m,span);
+    p=pool_input_get(&u,64);ids=p->ids.bytes;
+    if(g_pool_cap_full+g_pool_cap_arena!=whole1+1||g_pool_ids_full!=full1+1||p->cpu[3*page/4]!=33||!(ids[0]>>33&1))MDIE("pool ids: the table's range registered again kept the earlier copy");checked++;
     mtl_sub_commit();mtl_finish();nvn_dirty_remove_range(m);mtl_pool_del(m);free(m);
     return checked;
 }
+/* The raw pool table while a command list is replayed (gmem_map_gpu, 2026-11-18): a pool another thread makes and gets an
+   address of meanwhile does not build the table again (OOT_GMEM_LIST_GEN=0 fails here), the next list gets it, and a pool
+   taken away builds it again at once. The list is the state mtl_exec sets (g_exec_depth, g_exec_pool_gen). */
+static int gmem_list_gen_probe(void) {
+    int checked=0,owner_a=0,owner_b=0;size_t page=(size_t)getpagesize();void *a=NULL,*b=NULL;
+    if(posix_memalign(&a,page,page)||posix_memalign(&b,page,page))MDIE("raw table list probe allocation");
+    memset(a,0,page);memset(b,0,page);
+    mtl_pool_add(a,page);mtl_pool_addressed(&owner_a,a,page);
+    op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+    if(g_exec_depth||g_exec_pool_gen!=UINT64_MAX)MDIE("raw table: a finished list left its generation behind");checked++;
+    (void)gmem_map_gpu(1);
+    g_exec_depth=1;g_exec_pool_gen=atomic_load(&g_pool_gen);   // a list's replay starts
+    uint64_t builds=g_gmem_builds;
+    mtl_pool_add(b,page);mtl_pool_addressed(&owner_b,b,page);(void)gmem_map_gpu(1);
+    if(g_gmem_builds!=builds)MDIE("raw table: a pool made while a list is replayed built the table again");checked++;
+    g_exec_pool_gen=atomic_load(&g_pool_gen);   // the next list
+    (void)gmem_map_gpu(1);
+    if(g_gmem_builds!=builds+1||!pidx_find(&g_pools,(uintptr_t)b,1)->res)MDIE("raw table: the next list did not get the pool made before it");checked++;
+    (void)gmem_map_gpu(1);
+    if(g_gmem_builds!=builds+1)MDIE("raw table: built again with nothing changed");checked++;
+    mtl_pool_forget_address(&owner_b);mtl_pool_del(b);(void)gmem_map_gpu(1);
+    if(g_gmem_builds!=builds+2)MDIE("raw table: a removed pool stayed in the table of the list being replayed");checked++;
+    g_exec_depth=0;g_exec_pool_gen=UINT64_MAX;
+    mtl_sub_commit();mtl_finish();mtl_pool_forget_address(&owner_a);mtl_pool_del(a);free(a);free(b);
+    return checked;
+}
 int mtl_probe_memory_demand(void) {
-    mtl_init();int checked=raw_write_domain_probe()+upstream_probe()+pool_ids_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
+    mtl_init();int checked=raw_write_domain_probe()+upstream_probe()+pool_ids_probe()+gmem_list_gen_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
     size_t page=(size_t)getpagesize();void *raw=NULL;
     if(posix_memalign(&raw,page,page*2))MDIE("memory demand probe allocation");memset(raw,0,page*2);
     int owner_a=0,owner_b=0;mtl_pool_add(raw,page);mtl_pool_add((char *)raw+page,page);

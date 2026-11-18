@@ -19,7 +19,10 @@ struct ActionSection: View {
             if let f = model.failure, model.phase == .failed, mine { failure(f) }
             if !model.note.isEmpty && mine { Label(model.note, systemImage: "puzzlepiece.extension").foregroundStyle(.orange) }
             if !model.lines.isEmpty && mine {
-                DisclosureGroup(T.log, isExpanded: $showLog) { logView }
+                // the word opens it too: on macOS only the triangle does, and a click on 日志 seemed to do nothing
+                DisclosureGroup(isExpanded: $showLog) { logView } label: {
+                    Text(T.log).contentShape(Rectangle()).onTapGesture { withAnimation { showLog.toggle() } }
+                }
             }
         }
     }

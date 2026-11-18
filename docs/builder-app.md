@@ -58,6 +58,38 @@ two days earlier). From 1.0.2 the Launcher also runs newer code from signed sour
 
 `MNG_SOURCE_UPDATES=0` in the Launcher's environment keeps it on its own source.
 
+### The Launcher updates itself (the button at the top right)
+
+Code updates change what a build is made from, not the window: a new Launcher still had to be downloaded and dragged into
+Applications, and the only sign of one was the version label turning blue (its click downloads the disk image). A
+Launcher with the update button does it in one click:
+
+- **The button.** At the home page's top right, only while a newer `launcher-v*` release is out (the same read of the
+  release list as above, no other request). It is off while a build or a game's update runs: those use the Python
+  inside the app.
+- **What a click does.** `tools/builder_app/launcher_update.py`, shipped inside the signed app beside
+  `source_updates.py`, downloads the release's `MNG-Launcher-<version>-macOS-arm64.zip` from GitHub, unpacks it and
+  takes the app only when all of this holds: the archive is the size the release list names and holds the app alone (no
+  name or link that would land outside it); the app says this bundle ID and that version, higher than the running one;
+  its code signature is whole and satisfies the designated requirement of the Launcher that is running (the same
+  Developer ID team and bundle ID); and macOS accepts it as notarized. The window shows the download, the check, then
+  quits.
+- **The swap.** A small shell script outside the app waits for the Launcher to quit, moves the old app aside, moves the
+  new one in and opens it; when the new one cannot be put in place the old one comes back and says so at its next
+  start. The design is Sparkle's (verify before replacing, replace after the app has quit, from outside the bundle).
+- **When it cannot.** A refused download, a folder that cannot be written (a disk image, another account's
+  Applications), or macOS running the Launcher from a translocated copy: the window says why under the button and
+  offers the plain download. Nothing was changed.
+- **A first time by hand.** A Launcher from before the button (1.0.6 and older) has no updater: it is replaced once the
+  old way.
+
+For tests, `MNG_LAUNCHER_UPDATE_TEST` in the Launcher's environment shows the button without a newer release and lets
+the same version be installed again: `1` reads the Launcher's own release list, an address
+(`http://127.0.0.1:8000/releases.json`) another one; `MNG_LAUNCHER_UPDATE_CLICK=1` with it presses the button two seconds
+after the start. No check of the download changes: a Developer ID Launcher still takes only a notarized app of its own
+team. `tests/test_launcher_self_update.py` runs the whole update and every refusal with small apps signed ad hoc, and
+with `MNG_TEST_LAUNCHER_RELEASES=<folder of <version>/release/>` with two real signed releases.
+
 ## Build a portable copy locally
 
 Local compilation is supported independently of the maintainer's signing credentials and release tools.

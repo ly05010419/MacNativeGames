@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include "input_tape.h"   /* the user's route recorded and replayed (OOT_INPUT_RECORD / OOT_INPUT_REPLAY) */
 typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attributes,pad;} NpadState;
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
@@ -76,8 +77,8 @@ static void input_trace_set(int on) {
  fprintf(stderr,"[oot-input-trace] enabled=%d row_limit=16384 (diagnostic only)\n",on!=0);
 }
 /* runtime/game_slot.c: an agent's test game closes itself after a while with neither an input-file command nor real user
-   input (agent_slot_limit.h). This default answers where game_slot.c is not linked (input probes, iOS). */
-__attribute__((weak)) void runtime_slot_activity(int user){(void)user;}
+   input (agent_slot_limit.h). Where game_slot.c is not linked (input probes, iOS), runtime/input_file.h has a default. */
+void runtime_slot_activity(int user);
 static void user_input(const char *what){
  runtime_slot_activity(1);
  runtime_survey_cancel_user();
@@ -161,7 +162,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
  if(runtime_vr_stick_pitch_locked())state.ry=0;   /* zeldaVR: up / down is the headset's (game_patches_v143.c) */
- }uint64_t trace=runtime_input_trace_next();if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu guest id=%#x want=%#x styles=%#x enabled=%d allowed=%d ignored=%d sample=%lld attr=%#x buttons=%#llx axes=%d,%d,%d,%d\n",(unsigned long long)trace,(unsigned long long)runtime_now_ns(),*id,want_style,styles,enabled,allowed,ignore_user(),(long long)state.sampling,state.attributes,(unsigned long long)state.buttons,state.lx,state.ly,state.rx,state.ry);
+ }input_tape(&state.buttons,&state.lx,&state.ly,&state.rx,&state.ry);   /* OOT_INPUT_RECORD / OOT_INPUT_REPLAY (input_tape.h) */
+ uint64_t trace=runtime_input_trace_next();if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu guest id=%#x want=%#x styles=%#x enabled=%d allowed=%d ignored=%d sample=%lld attr=%#x buttons=%#llx axes=%d,%d,%d,%d\n",(unsigned long long)trace,(unsigned long long)runtime_now_ns(),*id,want_style,styles,enabled,allowed,ignore_user(),(long long)state.sampling,state.attributes,(unsigned long long)state.buttons,state.lx,state.ly,state.rx,state.ry);
  if(getenv("TOTK_INPUT_LOG")){static int left=120;static uint64_t previous;if(previous!=state.buttons&&left-->0){previous=state.buttons;fprintf(stderr,"[oot-input] id=%#x style=%#x enabled=%d allowed=%d buttons=%#llx sample=%lld\n",*id,styles,enabled,allowed,(unsigned long long)state.buttons,(long long)state.sampling); }}*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
@@ -253,245 +255,146 @@ void *runtime_input_override(const char *name){
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 
-/* TOTK_INPUT_SCRIPT="sec:keycode:ms,...": press Mac key codes at given seconds after start (diagnostics without a
-   picture: does the game react to a button). Key codes go through the fixed script layout (J=38 is A, Return=36 is Plus). */
-#include <unistd.h>
-static void *input_script(void *arg) {
-    const char *p = arg; uint64_t t0 = runtime_now_ns();
-    while (p && *p) {
-        double at = strtod(p, (char **)&p); if (*p++ != ':') break;
-        unsigned code = (unsigned)strtoul(p, (char **)&p, 10); if (*p++ != ':') break;
-        unsigned ms = (unsigned)strtoul(p, (char **)&p, 10); if (*p == ',') p++;
-        while ((runtime_now_ns() - t0) / 1e9 < at) usleep(10000);
-        fprintf(stderr, "[totk-input] script: key %u down for %u ms at %.1f s\n", code, ms, at);
-        runtime_input_key_synthetic(code, 1); usleep(ms * 1000); runtime_input_key_synthetic(code, 0);
-    }
-    return NULL;
-}
-__attribute__((constructor)) static void input_script_start(void) {
-    const char *e = getenv("TOTK_INPUT_SCRIPT"); if (!e) return;
-    pthread_t t; pthread_create(&t, NULL, input_script, (void *)e); pthread_detach(t);
-}
-
-/* Optional local integration-test command stream. Appending complete lines lets tests inspect each
-   actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally.
-   Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, wshot <path>, passdump <frames>, querylog <frames>, anomdump,
-   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), mscan ... (memory scan and write watch, runtime/mem_scan.h), close. */
-extern void dm_gfx_shot_at(long frames, const char *path);
-extern void runtime_front_request_close(void);
-/* "mscan ...": memory scan and write watch (runtime/mem_scan.h, in services.c); this default answers in the probes that
-   link input.c alone, which have no game memory. */
-__attribute__((weak)) int runtime_mem_scan_command(const char *line) { (void)line; return 0; }
-static void *input_file(void *arg) {
-    FILE *f = fopen((const char *)arg, "r"); if (!f) runtime_fail("cannot open TOTK_INPUT_FILE");
-    char line[1200];
-    for (;;) {
-        if (!fgets(line, sizeof line, f)) {
-            if (ferror(f)) runtime_fail("diagnostic input read");
-            clearerr(f); usleep(100000);
-            /* A file replaced instead of appended to (devicectl device copy to an iPhone's Documents writes a new file, so
-               this stream would stay on the old one and never see another line): open the new one. The writer copies the
-               whole command list again, so it is read on from where the old one ended; a shorter file is a new list, read
-               from its start. */
-            struct stat now, held; FILE *n;
-            if (!stat((const char *)arg, &now) && !fstat(fileno(f), &held) && now.st_ino != held.st_ino && (n = fopen((const char *)arg, "r"))) {
-                long at = ftell(f); fclose(f); f = n;
-                if (at > 0 && now.st_size >= at) fseek(f, at, SEEK_SET);
-            }
-            continue;
-        }
-        runtime_slot_activity(0);   /* any command keeps an agent's game open (a line the reader refuses ends the game) */
-        if (runtime_survey_command(line)) continue;
-        unsigned code, ms; int used = 0;
-        int page;
-        if (sscanf(line, "settings %d %n", &page, &used) == 1 && used && !line[used]) {   /* "settings <page>": the panel on that page, -1 closed (tests) */
-            fprintf(stderr, "[totk-input] file: settings page %d\n", page); runtime_settings_page(page);
-        } else if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
-            fprintf(stderr,"[totk-input] file: key %u down\n",code);runtime_input_key_synthetic(code,1);
-        } else if (sscanf(line, "up %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
-            fprintf(stderr,"[totk-input] file: key %u up\n",code);runtime_input_key_synthetic(code,0);
-        } else if (sscanf(line, "key %u %u %n", &code, &ms, &used) == 2 && used && !line[used] && code < 128 && ms > 0 && ms <= 5000) {
-            fprintf(stderr, "[totk-input] file: key %u for %u ms\n", code, ms);
-            runtime_input_key_synthetic(code, 1); usleep(ms * 1000); runtime_input_key_synthetic(code, 0);
-        } else if (sscanf(line, "passdump %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code < 16) {
-            extern void dm_gfx_passdump_next(long n); dm_gfx_passdump_next((long)code);
-        } else if (!strncmp(line, "anomdump", 8) && (line[8] == '\n' || line[8] == '\r' || !line[8])) {   /* TOTK_ANOMALY=<dir>: write the per-draw records (with GPU sample counts) of the last frames now */
-            extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
-        } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
-            extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
+/* This game's own TOTK_INPUT_FILE commands; the shared runtime/input_file.h (below) runs the rest: settings <page> (the
+   panel on that page, -1 closed; tests), ashot <path> and ashotn <n> <path with %d> (game frames written in the
+   background), and the diagnostics copied with games/totk's (resolution, Tears of the Kingdom 1.4.3's, zeldaVR's stereo
+   B2), which this game's switches leave out. 1: it was one. */
+static int input_game_command(char *line) {
+    int page, used = 0;
+    unsigned code = 0;
+    if (sscanf(line, "settings %d %n", &page, &used) == 1 && used && !line[used]) {   /* "settings <page>": the panel on that page, -1 closed (tests) */
+        fprintf(stderr, "[totk-input] file: settings page %d\n", page); runtime_settings_page(page);
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
-        } else if (!strncmp(line,"resolution ",11)) {
-            unsigned w,h;int n=0;
-            if(sscanf(line+11,"%ux%u %n",&w,&h,&n)==2&&n&&!line[11+n]) {
-                if(!runtime_output_size_set(w,h))fprintf(stderr,"[totk] " GAME_NAME " live resolution rejected: %ux%u\n",w,h);
-            } else fprintf(stderr,"[totk] resolution command needs widthxheight\n");
+    } else if (!strncmp(line,"resolution ",11)) {
+        unsigned w,h;int n=0;
+        if(sscanf(line+11,"%ux%u %n",&w,&h,&n)==2&&n&&!line[11+n]) {
+            if(!runtime_output_size_set(w,h))fprintf(stderr,"[totk] " GAME_NAME " live resolution rejected: %ux%u\n",w,h);
+        } else fprintf(stderr,"[totk] resolution command needs widthxheight\n");
 #endif
-        } else if (!strncmp(line, "flag ", 5)) {
-            /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
-            char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
-            extern void dm_gfx_set_flag(const char *name, int v);
-            if (!strcmp(name,"input_trace")) input_trace_set(v);
-#if defined(GAME_OOT) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
-            else if (!strcmp(name,"oot_internal_res")) { extern void runtime_oot_internal_res_set(int); runtime_oot_internal_res_set(v); }   /* what the settings panel's resolution row does */
-            else if (!strcmp(name,"oot_scale")) { extern void runtime_oot_scale_set(float); runtime_oot_scale_set((float)v / 10000.0f); }   /* render scale * 10000, at once */
-            else if (!strcmp(name,"oot_canvas")) { extern void runtime_oot_canvas_set(int,int); runtime_oot_canvas_set(v,1); }   /* what the settings panel's resolution row does */
-            else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
-            else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
-            else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
-#endif
-            else if (!strcmp(name,"fps_lock")) { extern void nvn_fps_lock_set(int); nvn_fps_lock_set(v); }   /* the frame lock (0 = off), as the settings panel's row: one run can try every lock */
-            else if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
-        } else if (!strncmp(line, "texdump ", 8)) {
-            extern void dm_gfx_texdump_next(const char *path);
-            line[strcspn(line, "\r\n")] = 0; if (!line[8] || !strstr(line + 8, "%d")) runtime_fail("diagnostic texdump path needs %d");
-            dm_gfx_texdump_next(line + 8);
-        } else if (sscanf(line, "shotn %u %n", &code, &used) == 1 && used && code > 0 && code <= 60) {
-            /* "shotn <n> <path with %d>": screenshots of n consecutive game frames (frame flicker); %d = 0..n-1 */
-            line[strcspn(line, "\r\n")] = 0; const char *fmt = line + used;
-            if (!*fmt || !strstr(fmt, "%d") || strchr(strstr(fmt, "%d") + 2, '%')) runtime_fail("diagnostic shotn path needs one %d");
-            for (unsigned i = 0; i < code; i++) { char p[1200]; snprintf(p, sizeof p, fmt, (int)i); dm_gfx_shot_at(2 + (long)i, p); }
-        } else if (!strncmp(line, "shot ", 5)) {
-            line[strcspn(line, "\r\n")] = 0; if (!line[5]) runtime_fail("diagnostic screenshot path");
-            dm_gfx_shot_at(2, line + 5);
-        } else if (!strncmp(line, "capture", 7) && (!line[7] || line[7] == '\n' || line[7] == '\r')) {   /* "capture": the capture button once (screenshot.h; screenshot sharing tests) */
-            if (runtime_capture_press) runtime_capture_press();
-        } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
-            line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
-            extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
 #if defined(GAME_BOTW) || defined(GAME_OOT)
-        } else if (sscanf(line, "ashotn %u %n", &code, &used) == 1 && used && code > 0 && code <= 60) {
-            /* "ashotn <n> <path with %d>": n consecutive game frames written in the background (OOT flicker measurements at the real frame rate) */
-            line[strcspn(line, "\r\n")] = 0; const char *fmt = line + used;
-            if (!*fmt || !strstr(fmt, "%d") || strchr(strstr(fmt, "%d") + 2, '%')) runtime_fail("diagnostic ashotn path needs one %d");
-            extern void dm_gfx_ashot_at(const char *path, long k);
-            for (unsigned i = 0; i < code; i++) { char p[1200]; snprintf(p, sizeof p, fmt, (int)i); dm_gfx_ashot_at(p, 1 + (long)i); }
-        } else if (!strncmp(line, "ashot ", 6)) {   /* "ashot <path>": the next game frame, written in the background, its present time logged (botw.md) */
-            line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic ashot path");
-            extern void dm_gfx_ashot(const char *path); dm_gfx_ashot(line + 6);
+    } else if (sscanf(line, "ashotn %u %n", &code, &used) == 1 && used && code > 0 && code <= 60) {
+        /* "ashotn <n> <path with %d>": n consecutive game frames written in the background (OOT flicker measurements at the real frame rate) */
+        line[strcspn(line, "\r\n")] = 0; const char *fmt = line + used;
+        if (!*fmt || !strstr(fmt, "%d") || strchr(strstr(fmt, "%d") + 2, '%')) runtime_fail("diagnostic ashotn path needs one %d");
+        extern void dm_gfx_ashot_at(const char *path, long k);
+        for (unsigned i = 0; i < code; i++) { char p[1200]; snprintf(p, sizeof p, fmt, (int)i); dm_gfx_ashot_at(p, 1 + (long)i); }
+    } else if (!strncmp(line, "ashot ", 6)) {   /* "ashot <path>": the next game frame, written in the background, its present time logged (botw.md) */
+        line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic ashot path");
+        extern void dm_gfx_ashot(const char *path); dm_gfx_ashot(line + 6);
 #endif
-        } else if (!strcmp(line, "kbtest\n")) {   /* text entry bar the way the game names a horse (runtime/swkbd_host.c) */
-            runtime_swkbd_selftest();
-        } else if (!strncmp(line, "kbtype ", 7)) {   /* "kbtype <text>": typed into the open bar */
-            line[strcspn(line, "\r\n")] = 0; runtime_front_text_test("type", line + 7);
-        } else if (!strncmp(line, "kbshot ", 7)) {   /* "kbshot <path>": the open bar as a PNG */
-            line[strcspn(line, "\r\n")] = 0; runtime_front_text_test("shot", line + 7);
-        } else if (!strcmp(line, "kbenter\n") || !strcmp(line, "kbesc\n")) {
-            runtime_front_text_test(line[2] == 'e' && line[3] == 'n' ? "enter" : "esc", NULL);
-        } else if (sscanf(line, "hletrace %u %n", &code, &used) == 1 && used && !line[used] && code <= 2) {
-            runtime_hle_trace_set((int)code);   /* 1 count host calls, 2 also log the first call of each, 0 stop and print the counts */
-        } else if (!strncmp(line, "framestep ", 10)) {   /* "framestep <ms>": pin the real-time frame step, 0 = back to real time */
-            char *end; double ms = strtod(line + 10, &end); if (end == line + 10 || ms < 0 || ms > 100) runtime_fail("framestep takes milliseconds (0 = real time)");
-            runtime_frame_step_pin(ms);
 #if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE   /* high-frame-rate diagnostics (game_patches_v143.c) */
-        } else if (!strncmp(line, "lodscale ", 9)) {   /* "lodscale <K>": model detail distance x K (the settings panel's effects page, game_patches_v143.c) */
-            extern void runtime_lod_scale_set(double k);
-            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.1 && k <= 1e6)) runtime_fail("lodscale takes 0.1 to 1000000 (1000000: always the finest)");
-            runtime_lod_scale_set(k);
-        } else if (!strncmp(line, "farscale ", 9)) {   /* "farscale <K>": render distance (camera far plane) x K, as the effects page */
-            extern void runtime_far_scale_set(double k);
-            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.001 && k <= 100)) runtime_fail("farscale takes 0.001 to 100");
-            runtime_far_scale_set(k);
-        } else if (!strncmp(line, "shadowscale ", 12)) {   /* "shadowscale <K>": the sun's shadow maps x K per side, as the effects page */
-            extern void runtime_shadow_scale_set(double k);
-            char *end; double k = strtod(line + 12, &end); if (end == line + 12 || !(k >= 0.25 && k <= 8)) runtime_fail("shadowscale takes 0.25 to 8");
-            runtime_shadow_scale_set(k);
-        } else if (!strncmp(line, "fovscale ", 9)) {   /* "fovscale <K>": the game camera's field of view x K, as the effects page */
-            extern void runtime_fov_scale_set(double k);
-            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.5 && k <= 2)) runtime_fail("fovscale takes 0.5 to 2");
-            runtime_fov_scale_set(k);
-        } else if (!strncmp(line, "frmwatch ", 9) || !strncmp(line, "frmwatchx ", 10)) {   /* "frmwatch[x] <seconds> [hex offset]": who reads a time value */
-            extern void runtime_diag_frm_watch(double secs, unsigned off, int in_x);
-            int in_x = line[8] == 'x'; double secs; unsigned off = 0x10;
-            if (sscanf(line + 9 + in_x, "%lf %x", &secs, &off) < 1 || secs <= 0 || off > 0x400 || off % 4) runtime_fail("frmwatch[x] <seconds> [hex offset, a multiple of 4]");
-            runtime_diag_frm_watch(secs, off, in_x);
-        } else if (!strncmp(line, "linkwatch ", 10)) {   /* "linkwatch <seconds>": who writes his body's palette buffer field (VR) */
-            extern void runtime_diag_link_watch(double secs);
-            double secs = atof(line + 10); if (!(secs > 0 && secs <= 60)) runtime_fail("linkwatch takes 1 to 60 seconds");
-            runtime_diag_link_watch(secs);
-        } else if (!strncmp(line, "linkup", 6)) {   /* "linkup": who owns his palette buffers' descriptors, up to his actor (VR) */
-            extern void runtime_diag_link_up(void);
-            runtime_diag_link_up();
-        } else if (!strncmp(line, "linkheap", 8)) {   /* "linkheap": his actor's heap range and the palette buffers named in it (VR) */
-            extern void runtime_diag_link_heap(void);
-            runtime_diag_link_heap();
-        } else if (!strncmp(line, "linkscan", 8)) {   /* "linkscan": the pointers from the player's actor to his palette buffers (VR) */
-            extern void runtime_diag_link_scan(void);
-            runtime_diag_link_scan();
-        } else if (!strncmp(line, "camsrc ", 7)) {   /* "camsrc <seconds>": which cameras the per-view record copies (VR) */
-            extern void runtime_diag_cam_src(double secs);
-            double secs = atof(line + 7); if (!(secs > 0 && secs <= 120)) runtime_fail("camsrc takes 1 to 120 seconds");
-            runtime_diag_cam_src(secs);
-        } else if (!strncmp(line, "watchw ", 7) || !strncmp(line, "watchr ", 7)) {   /* "watchw|watchr <hex address> <seconds>": who writes / reads those 4 bytes (VR stereo RE) */
-            extern void runtime_diag_watch_write(uint64_t addr, int secs, int load);
-            char *e; uint64_t a = strtoull(line + 7, &e, 16); runtime_diag_watch_write(a, (int)strtol(e, NULL, 10), line[5] == 'r');
-        } else if (!strncmp(line, "bpvals ", 7)) {   /* "bpvals <hex main offset> <register> <seconds>": the register's values there (VR stereo RE) */
-            extern void runtime_diag_bp_vals(uint64_t off, int reg, double secs);
-            char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10); runtime_diag_bp_vals(o, (int)r, strtod(e2, NULL));
-        } else if (!strncmp(line, "bpregs ", 7)) {   /* "bpregs <hex main offset>": registers at the first hit (VR stereo RE) */
-            extern void runtime_diag_bp_regs(uint64_t off);
-            extern void runtime_diag_bp_regs_if(uint64_t off, int reg, uint64_t lo, uint64_t hi);
-            char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10);
-            if (e2 != e) { char *e3; uint64_t lo = strtoull(e2, &e3, 16); runtime_diag_bp_regs_if(o, (int)r, lo, strtoull(e3, NULL, 16)); }   /* "bpregs <off> <reg> <lo> <hi>": only when x<reg> is in [lo, hi) */
-            else runtime_diag_bp_regs(o);
-        } else if (!strncmp(line, "b2pair", 6)) {   /* "b2pair": first / second run recordings paired by identity (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_pair(void);
-            runtime_vr_b2_pair();
-        } else if (!strncmp(line, "b2slots", 7)) {   /* "b2slots": where the game keeps the runs' handles (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_slots(void);
-            runtime_vr_b2_slots();
-        } else if (!strncmp(line, "b2calls", 7)) {   /* "b2calls": the next frame's calls of the runs' recordings (stereo B2 diagnostic) */
-            extern void runtime_vr_b2_calls(void);
-            runtime_vr_b2_calls();
-        } else if (!strncmp(line, "b2eye ", 6)) {   /* "b2eye <mm>": half the eye distance for stereo B2 (diagnostic until the VR thread sets it) */
-            extern void runtime_vr_b2_eye(float mm);
-            runtime_vr_b2_eye((float)atof(line + 6));
-        } else if (!strncmp(line, "b2 ", 3)) {   /* "b2 <0|1|2|3> [mask]": zeldaVR stereo B2, the second render run per game update (game_patches_v143.c) */
-            extern void runtime_vr_b2(int on);
-            extern void runtime_vr_b2_mask(unsigned m);
-            char *e; long mode = strtol(line + 3, &e, 10); if (*e == ' ') runtime_vr_b2_mask((unsigned)strtoul(e, NULL, 0));
-            runtime_vr_b2((int)mode);
-        } else if (!strncmp(line, "dumpmain ", 9)) {   /* "dumpmain <file>": main's loaded image, relocated (VR stereo RE) */
-            extern void runtime_diag_dump_main(const char *path);
-            char path[1024]; snprintf(path, sizeof path, "%s", line + 9); path[strcspn(path, "\r\n")] = 0;
-            runtime_diag_dump_main(path);
-        } else if (!strncmp(line, "peek", 4) && (line[4] == ' ' || (line[4] == 'm' && line[5] == ' '))) {   /* "peek <hex addr> [n]" / "peekm <hex main offset> [n]" */
-            extern void runtime_diag_peek(uint64_t a, int n, int rel);
-            const int rel = line[4] == 'm'; char *e; uint64_t a = strtoull(line + (rel ? 6 : 5), &e, 16);
-            runtime_diag_peek(a, (int)strtol(e, NULL, 10), rel);
-        } else if (!strncmp(line, "calctree", 8)) {   /* "calctree": the method tree the frame's calc walks (VR stereo) */
-            extern void runtime_diag_calc_tree(void);
-            runtime_diag_calc_tree();
-        } else if (!strncmp(line, "jobdump", 7)) {   /* "jobdump": the jobs of the frame's render job lists (VR stereo) */
-            extern void runtime_diag_job_dump(void);
-            runtime_diag_job_dump();
-        } else if (!strncmp(line, "frametrace ", 11)) {   /* "frametrace <seconds> <hex offset>...": threads and call chains per frame (VR) */
-            extern void runtime_diag_frame_trace(double secs, const char *offs);
-            char *rest; double secs = strtod(line + 11, &rest); if (!(secs > 0 && secs <= 30)) runtime_fail("frametrace takes 1 to 30 seconds and up to 4 hex offsets in main");
-            while (*rest == ' ') rest++;
-            runtime_diag_frame_trace(secs, rest);
-        } else if (!strncmp(line, "camwatch ", 9)) {   /* "camwatch <seconds>": who writes the main camera's matrix (VR) */
-            extern void runtime_diag_cam_watch(double secs, int src);   /* "camwatch <seconds> src": camsrc's copy source instead */
-            double secs = atof(line + 9); if (!(secs > 0 && secs <= 120)) runtime_fail("camwatch takes 1 to 120 seconds [src]");
-            runtime_diag_cam_watch(secs, strstr(line + 9, "src") != NULL);
-        } else if (!strncmp(line, "xpoke ", 6)) {   /* "xpoke <hex offset> <value>": a float into the game's time object */
-            extern void runtime_diag_xpoke(unsigned off, float value);
-            unsigned off; float value; if (sscanf(line + 6, "%x %f", &off, &value) != 2 || off > 0x400 || off % 4) runtime_fail("xpoke <hex offset, a multiple of 4> <value>");
-            runtime_diag_xpoke(off, value);
+    } else if (!strncmp(line, "lodscale ", 9)) {   /* "lodscale <K>": model detail distance x K (the settings panel's effects page, game_patches_v143.c) */
+        extern void runtime_lod_scale_set(double k);
+        char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.1 && k <= 1e6)) runtime_fail("lodscale takes 0.1 to 1000000 (1000000: always the finest)");
+        runtime_lod_scale_set(k);
+    } else if (!strncmp(line, "farscale ", 9)) {   /* "farscale <K>": render distance (camera far plane) x K, as the effects page */
+        extern void runtime_far_scale_set(double k);
+        char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.001 && k <= 100)) runtime_fail("farscale takes 0.001 to 100");
+        runtime_far_scale_set(k);
+    } else if (!strncmp(line, "shadowscale ", 12)) {   /* "shadowscale <K>": the sun's shadow maps x K per side, as the effects page */
+        extern void runtime_shadow_scale_set(double k);
+        char *end; double k = strtod(line + 12, &end); if (end == line + 12 || !(k >= 0.25 && k <= 8)) runtime_fail("shadowscale takes 0.25 to 8");
+        runtime_shadow_scale_set(k);
+    } else if (!strncmp(line, "fovscale ", 9)) {   /* "fovscale <K>": the game camera's field of view x K, as the effects page */
+        extern void runtime_fov_scale_set(double k);
+        char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.5 && k <= 2)) runtime_fail("fovscale takes 0.5 to 2");
+        runtime_fov_scale_set(k);
+    } else if (!strncmp(line, "frmwatch ", 9) || !strncmp(line, "frmwatchx ", 10)) {   /* "frmwatch[x] <seconds> [hex offset]": who reads a time value */
+        extern void runtime_diag_frm_watch(double secs, unsigned off, int in_x);
+        int in_x = line[8] == 'x'; double secs; unsigned off = 0x10;
+        if (sscanf(line + 9 + in_x, "%lf %x", &secs, &off) < 1 || secs <= 0 || off > 0x400 || off % 4) runtime_fail("frmwatch[x] <seconds> [hex offset, a multiple of 4]");
+        runtime_diag_frm_watch(secs, off, in_x);
+    } else if (!strncmp(line, "linkwatch ", 10)) {   /* "linkwatch <seconds>": who writes his body's palette buffer field (VR) */
+        extern void runtime_diag_link_watch(double secs);
+        double secs = atof(line + 10); if (!(secs > 0 && secs <= 60)) runtime_fail("linkwatch takes 1 to 60 seconds");
+        runtime_diag_link_watch(secs);
+    } else if (!strncmp(line, "linkup", 6)) {   /* "linkup": who owns his palette buffers' descriptors, up to his actor (VR) */
+        extern void runtime_diag_link_up(void);
+        runtime_diag_link_up();
+    } else if (!strncmp(line, "linkheap", 8)) {   /* "linkheap": his actor's heap range and the palette buffers named in it (VR) */
+        extern void runtime_diag_link_heap(void);
+        runtime_diag_link_heap();
+    } else if (!strncmp(line, "linkscan", 8)) {   /* "linkscan": the pointers from the player's actor to his palette buffers (VR) */
+        extern void runtime_diag_link_scan(void);
+        runtime_diag_link_scan();
+    } else if (!strncmp(line, "camsrc ", 7)) {   /* "camsrc <seconds>": which cameras the per-view record copies (VR) */
+        extern void runtime_diag_cam_src(double secs);
+        double secs = atof(line + 7); if (!(secs > 0 && secs <= 120)) runtime_fail("camsrc takes 1 to 120 seconds");
+        runtime_diag_cam_src(secs);
+    } else if (!strncmp(line, "watchw ", 7) || !strncmp(line, "watchr ", 7)) {   /* "watchw|watchr <hex address> <seconds>": who writes / reads those 4 bytes (VR stereo RE) */
+        extern void runtime_diag_watch_write(uint64_t addr, int secs, int load);
+        char *e; uint64_t a = strtoull(line + 7, &e, 16); runtime_diag_watch_write(a, (int)strtol(e, NULL, 10), line[5] == 'r');
+    } else if (!strncmp(line, "bpvals ", 7)) {   /* "bpvals <hex main offset> <register> <seconds>": the register's values there (VR stereo RE) */
+        extern void runtime_diag_bp_vals(uint64_t off, int reg, double secs);
+        char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10); runtime_diag_bp_vals(o, (int)r, strtod(e2, NULL));
+    } else if (!strncmp(line, "bpregs ", 7)) {   /* "bpregs <hex main offset>": registers at the first hit (VR stereo RE) */
+        extern void runtime_diag_bp_regs(uint64_t off);
+        extern void runtime_diag_bp_regs_if(uint64_t off, int reg, uint64_t lo, uint64_t hi);
+        char *e; uint64_t o = strtoull(line + 7, &e, 16); char *e2; long r = strtol(e, &e2, 10);
+        if (e2 != e) { char *e3; uint64_t lo = strtoull(e2, &e3, 16); runtime_diag_bp_regs_if(o, (int)r, lo, strtoull(e3, NULL, 16)); }   /* "bpregs <off> <reg> <lo> <hi>": only when x<reg> is in [lo, hi) */
+        else runtime_diag_bp_regs(o);
+    } else if (!strncmp(line, "b2pair", 6)) {   /* "b2pair": first / second run recordings paired by identity (stereo B2 diagnostic) */
+        extern void runtime_vr_b2_pair(void);
+        runtime_vr_b2_pair();
+    } else if (!strncmp(line, "b2slots", 7)) {   /* "b2slots": where the game keeps the runs' handles (stereo B2 diagnostic) */
+        extern void runtime_vr_b2_slots(void);
+        runtime_vr_b2_slots();
+    } else if (!strncmp(line, "b2calls", 7)) {   /* "b2calls": the next frame's calls of the runs' recordings (stereo B2 diagnostic) */
+        extern void runtime_vr_b2_calls(void);
+        runtime_vr_b2_calls();
+    } else if (!strncmp(line, "b2eye ", 6)) {   /* "b2eye <mm>": half the eye distance for stereo B2 (diagnostic until the VR thread sets it) */
+        extern void runtime_vr_b2_eye(float mm);
+        runtime_vr_b2_eye((float)atof(line + 6));
+    } else if (!strncmp(line, "b2 ", 3)) {   /* "b2 <0|1|2|3> [mask]": zeldaVR stereo B2, the second render run per game update (game_patches_v143.c) */
+        extern void runtime_vr_b2(int on);
+        extern void runtime_vr_b2_mask(unsigned m);
+        char *e; long mode = strtol(line + 3, &e, 10); if (*e == ' ') runtime_vr_b2_mask((unsigned)strtoul(e, NULL, 0));
+        runtime_vr_b2((int)mode);
+    } else if (!strncmp(line, "dumpmain ", 9)) {   /* "dumpmain <file>": main's loaded image, relocated (VR stereo RE) */
+        extern void runtime_diag_dump_main(const char *path);
+        char path[1024]; snprintf(path, sizeof path, "%s", line + 9); path[strcspn(path, "\r\n")] = 0;
+        runtime_diag_dump_main(path);
+    } else if (!strncmp(line, "peek", 4) && (line[4] == ' ' || (line[4] == 'm' && line[5] == ' '))) {   /* "peek <hex addr> [n]" / "peekm <hex main offset> [n]" */
+        extern void runtime_diag_peek(uint64_t a, int n, int rel);
+        const int rel = line[4] == 'm'; char *e; uint64_t a = strtoull(line + (rel ? 6 : 5), &e, 16);
+        runtime_diag_peek(a, (int)strtol(e, NULL, 10), rel);
+    } else if (!strncmp(line, "calctree", 8)) {   /* "calctree": the method tree the frame's calc walks (VR stereo) */
+        extern void runtime_diag_calc_tree(void);
+        runtime_diag_calc_tree();
+    } else if (!strncmp(line, "jobdump", 7)) {   /* "jobdump": the jobs of the frame's render job lists (VR stereo) */
+        extern void runtime_diag_job_dump(void);
+        runtime_diag_job_dump();
+    } else if (!strncmp(line, "frametrace ", 11)) {   /* "frametrace <seconds> <hex offset>...": threads and call chains per frame (VR) */
+        extern void runtime_diag_frame_trace(double secs, const char *offs);
+        char *rest; double secs = strtod(line + 11, &rest); if (!(secs > 0 && secs <= 30)) runtime_fail("frametrace takes 1 to 30 seconds and up to 4 hex offsets in main");
+        while (*rest == ' ') rest++;
+        runtime_diag_frame_trace(secs, rest);
+    } else if (!strncmp(line, "camwatch ", 9)) {   /* "camwatch <seconds>": who writes the main camera's matrix (VR) */
+        extern void runtime_diag_cam_watch(double secs, int src);   /* "camwatch <seconds> src": camsrc's copy source instead */
+        double secs = atof(line + 9); if (!(secs > 0 && secs <= 120)) runtime_fail("camwatch takes 1 to 120 seconds [src]");
+        runtime_diag_cam_watch(secs, strstr(line + 9, "src") != NULL);
+    } else if (!strncmp(line, "xpoke ", 6)) {   /* "xpoke <hex offset> <value>": a float into the game's time object */
+        extern void runtime_diag_xpoke(unsigned off, float value);
+        unsigned off; float value; if (sscanf(line + 6, "%x %f", &off, &value) != 2 || off > 0x400 || off % 4) runtime_fail("xpoke <hex offset, a multiple of 4> <value>");
+        runtime_diag_xpoke(off, value);
 #endif
-        } else if (!strncmp(line, "mscan ", 6) && runtime_mem_scan_command(line + 6)) {   /* results in memscan.txt */
-        } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
-            runtime_dump_threads();
-        } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }
-        else runtime_fail("invalid diagnostic input command");
-    }
-    fclose(f); return NULL;
+    } else return 0;
+    (void)code;
+    return 1;
 }
-/* loader.c has the real one; the input and autoload probes link this file without it and are never the app. */
-__attribute__((weak)) int runtime_app_mode(void) { return 0; }
-void runtime_input_file_start(void) {
-    static int started; if (started) return;
-    const char *e = getenv("TOTK_INPUT_FILE"); if (!e || !*e) return;
-    started = 1; pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
+/* "flag <name> <v>": this game's own (the input trace, the resolution rows, the frame lock) before the shared ones. */
+static int input_game_flag(const char *name, int v) {
+    if (!strcmp(name,"input_trace")) input_trace_set(v);
+#if defined(GAME_OOT) && !(defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+    else if (!strcmp(name,"oot_internal_res")) { extern void runtime_oot_internal_res_set(int); runtime_oot_internal_res_set(v); }   /* what the settings panel's resolution row does */
+    else if (!strcmp(name,"oot_scale")) { extern void runtime_oot_scale_set(float); runtime_oot_scale_set((float)v / 10000.0f); }   /* render scale * 10000, at once */
+    else if (!strcmp(name,"oot_canvas")) { extern void runtime_oot_canvas_set(int,int); runtime_oot_canvas_set(v,1); }   /* what the settings panel's resolution row does */
+    else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
+    else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
+    else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
+#endif
+    else if (!strcmp(name,"fps_lock")) { extern void nvn_fps_lock_set(int); nvn_fps_lock_set(v); }   /* the frame lock (0 = off), as the settings panel's row: one run can try every lock */
+    else return 0;
+    return 1;
 }
-/* Started as the Mac app, the launcher part (runtime_app_launch) names the file only later: main starts it then. */
-__attribute__((constructor)) static void input_file_start(void) { if (!runtime_app_mode()) runtime_input_file_start(); }
+#include "input_file.h"   /* TOTK_INPUT_SCRIPT and TOTK_INPUT_FILE (shared/runtime) */

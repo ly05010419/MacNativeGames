@@ -8,6 +8,12 @@ void nvn_dirty_add_range(const void *mem, size_t size);           // 登记一�
 void nvn_dirty_stat(int *live, int *peak, int *cap);                // 在册的内存池数、峰值、跟踪表容量（内存读数行用） | number of registered memory pools, peak, tracking table capacity (for the memory readout line)
 void nvn_dirty_remove_range(const void *mem);                     // 池销毁：受保护页还原可写并标失效 | Pool destruction: restore protected pages to writable and mark invalid
 int nvn_dirty_tracked(const void *addr, size_t len);
+/* Which registration of its tracking range(s) the span is under: 0 when part of it is untracked, else a number that
+   changes whenever a range holding it is removed and registered again. A range's page generations start over at its
+   registration, so nvn_dirty_since / nvn_dirty_runs_since against a stamp answer for a copy only while this number is the
+   one the copy was taken under. Pools registered or removed elsewhere do not change it (2026-11-18 OOT: handle table
+   captures were keyed on the global pool generation and copied 5 MB again for every pool the game made). */
+uint64_t nvn_dirty_span_epoch(const void *addr, size_t len);
 void nvn_dirty_protect(const void *addr, size_t len);              // 覆盖页设只读 | Set the covered pages read-only
 uint64_t nvn_dirty_now(void);                                      // 当前代号：上传前取，作为该份内容的戳 | Current generation: taken before upload, as the stamp of that content
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp);

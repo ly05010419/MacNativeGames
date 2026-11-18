@@ -417,6 +417,36 @@ class ListFileTests(unittest.TestCase):
                 self.assertIn('1 naming bind states the file does not give', part)
 
 
+class FileInputTests(unittest.TestCase):
+    """--file <game>=<path> (2026-11-18, user: "搜集 issue里的"): a contribution file at hand goes through the same merge as
+    the inbox's rows; auto takes the game whose keys hold most of its shaders, and the rows still go by owner."""
+
+    def rows(self, *keys):
+        return ''.join(f'V\t{k}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}\n' for k in keys)
+
+    def test_auto_takes_the_game_holding_most_of_its_shaders(self):
+        a, b, c = 'a' * 64, 'b' * 64, 'c' * 64
+        keys = {'totk': {a, b}, 'botw': {c}}
+        self.assertEqual(collect_shaders.file_game(self.rows(a, b, c), keys), 'totk')
+        self.assertEqual(collect_shaders.file_game(self.rows(c), keys), 'botw')
+        self.assertIsNone(collect_shaders.file_game(self.rows(a, c), keys))          # as many: no default
+        self.assertIsNone(collect_shaders.file_game(self.rows('d' * 64), keys))      # no game holds any
+
+    def test_a_file_merges_like_the_inbox_and_an_unknown_game_is_left_out(self):
+        a = 'a' * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'shader-list-contribution.txt'
+            path.write_text('# a player\'s file\n' + self.rows(a))
+            lists = lists_for(('totk', 'botw'))
+            keys = {'totk': set(), 'botw': set()}
+            with mock.patch.object(collect_shaders, 'GAMES', {g: collect_shaders.GAMES[g] for g in ('totk', 'botw')}):
+                lines = collect_shaders.merge_files([f'totk={path}', f'nope={path}'], lists, keys, {})
+        self.assertEqual(len(lists['totk'].variants), 1)
+        self.assertEqual(len(lists['botw'].variants), 0)
+        self.assertIn('(totk)', lines[0])
+        self.assertIn('no game (nope): left out', lines[1])
+
+
 class NoIssueRouteTests(unittest.TestCase):
     """User 2026-11-12: contributions come only through the apps' upload; nothing reads or asks for GitHub issues."""
 

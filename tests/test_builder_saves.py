@@ -42,6 +42,9 @@ class Locations(unittest.TestCase):
     def test_the_default_backup_root_is_in_documents(self):
         self.assertEqual(saves.default_backup_root('/Users/me'),
                          Path('/Users/me/Documents/MacNativeGames-Backups'))
+        # each game in a folder of its own, named as its app (user 2026-11-18)
+        self.assertEqual(saves.game_backup_root('/Users/me', GAMES['botw']),
+                         Path('/Users/me/Documents/MacNativeGames-Backups/Breath of the Wild'))
 
     def test_a_missing_profile_is_reported_not_guessed(self):
         with tempfile.TemporaryDirectory() as folder:

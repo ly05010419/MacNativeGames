@@ -2701,8 +2701,9 @@ static pthread_mutex_t g_sync_replay_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 void mtl_take_submit_thread(void);   // nvn_mtl.m
 static int async_replay(void);
 /* TOTK_STALL_SAMPLE_MS (diagnostic, nvn_queue_order.inc qo_stall_sampler): who holds the section, so a replay that
-   waits for it is sampled together with the holder. Written only by the holder, under the lock. */
-static int replay_owner_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"); v = e && atoi(e) > 0; } return v; }
+   waits for it is sampled together with the holder. Written only by the holder, under the lock.
+   TOTK_REPLAY_PROFILE_MS (qo_prof_sampler) samples the holder through the same record. */
+static int replay_owner_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"), *p = getenv("TOTK_REPLAY_PROFILE_MS"); v = (e && atoi(e) > 0) || (p && atoi(p) > 0); } return v; }
 static pthread_t g_rep_owner_th; static _Atomic mach_port_t g_rep_owner_port; static int g_rep_depth; static _Atomic uint64_t g_rep_since;
 static void replay_owner_in(void) { if (replay_owner_on() && g_rep_depth++ == 0) { g_rep_owner_th = pthread_self(); atomic_store(&g_rep_owner_port, pthread_mach_thread_np(pthread_self())); atomic_store(&g_rep_since, now_ns()); } }
 static void replay_owner_out(void) { if (replay_owner_on() && --g_rep_depth == 0) { atomic_store(&g_rep_since, 0); atomic_store(&g_rep_owner_port, 0); } }
@@ -3384,6 +3385,12 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] uniform 换副本 至帧 %llu：每帧更新 %.1f 次（内容未变跳过 %.1f 次），新副本 %.1f 个 / %.1f KB，提前写回 %.2f 次，开编码器后才发现重叠 %.2f 次，表满回退 %.2f 次", frame,
                 (v[0] - pr[0]) / nf, (v[6] - pr[6]) / nf, (v[1] - pr[1]) / nf, (v[2] - pr[2]) / nf / 1024, (v[3] - pr[3]) / nf, (v[4] - pr[4]) / nf, (v[5] - pr[5]) / nf); }
           memcpy(pr, v, sizeof pr); }
+        { static uint64_t pv[8]; uint64_t v[8]; void mtl_pend_overlay_stats(uint64_t[8]); mtl_pend_overlay_stats(v);   // nvn_mtl.m pend_overlay_x
+          if (pf && frame > pf) { double nf = (double)(frame - pf);
+            for (int t = 0; t < 2; t++) { const uint64_t *c = v + 4 * t, *p = pv + 4 * t; double calls = (double)(c[0] - p[0]);
+              LOG("[nvn] 待写叠加（%s）至帧 %llu：每帧 %.1f 次，每次扫描 %.1f 条、跳过已完成前缀 %.1f 条、应用 %.2f 条 | pending-write overlays (%s): per frame, scanned / completed prefix skipped / applied per call",
+                  t ? "拷贝例程" : "回放", frame, calls / nf, calls ? (c[1] - p[1]) / calls : 0, calls ? (c[2] - p[2]) / calls : 0, calls ? (c[3] - p[3]) / calls : 0, t ? "copy routine" : "replay"); } }
+          memcpy(pv, v, sizeof pv); }
         if (frame % 300 == 0) { unsigned wn = 0; uint32_t wq = dm_guest_work_qos(&wn); thread_extended_info_data_t xi; mach_msg_type_number_t xc = THREAD_EXTENDED_INFO_COUNT; int okx = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_EXTENDED_INFO, (thread_info_t)&xi, &xc) == KERN_SUCCESS;
             thread_time_constraint_policy_data_t tp; mach_msg_type_number_t tc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0; int rt_live = thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tp, &tc, &def) == KERN_SUCCESS && !def;   // def = 1：实时策略没在生效（没设上 / 被撤） | def = 1: the real-time policy is not in effect (never set / revoked)
             LOG("[nvn] 线程策略：主线程 实时 计算 %.2f ms / 周期 %.2f ms，实时策略%s，当前优先级 %d（基础 %d，调度类 %d）；工作线程 %u 条 QoS %#x；出图 QoS %#x", g_rt_comp_ms, g_rt_period_ms, rt_live ? "在生效" : "未生效", okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }
@@ -3793,6 +3800,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           trow(f, "@rd_waits", (double)(rw_ - prw)); trow(f, "@rd_wait_ms", (rn_ - prn) / 1e6); prw = rw_; prn = rn_; }
         double up_ms = mtl_upload_ns_take() / 1e6; trow(f, "@upload_ms", up_ms);
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
+        { static uint64_t pn, pr, pb, pns; uint64_t n_, r_, b_, ns_; void mtl_migrate_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *); mtl_migrate_stats(&n_, &r_, &b_, &ns_);   // alias heap growth migrations (nvn_stor_migrate.h)
+          trow(f, "@mig_n", (double)(n_ - pn)); trow(f, "@mig_rows", (double)(r_ - pr)); trow(f, "@mig_mb", (b_ - pb) / 1048576.0); trow(f, "@mig_ms", (ns_ - pns) / 1e6); pn = n_; pr = r_; pb = b_; pns = ns_; }
+        { static uint64_t prev[9]; uint64_t now_[9]; void mtl_pool_gen_stats(uint64_t out[9]); mtl_pool_gen_stats(now_);   // what a change of the pool set made the replay do again (nvn_mtl.m)
+          static const char *const names[9] = {"@pool_gen", "@pool_adds", "@cap_whole", "@cap_whole_mb", "@ids_full", "@gmem_builds", "@gmem_build_ms", "@cbc_miss", "@dpool_miss"};
+          for (int k = 0; k < 9; k++) { double d = (double)(now_[k] - prev[k]); trow(f, names[k], k == 3 ? d / 1048576.0 : k == 6 ? d / 1e6 : d); prev[k] = now_[k]; } }
         { static uint64_t popen, popen_ns; uint64_t n_, ns_; void mtl_par_open_stats(uint64_t *, uint64_t *); mtl_par_open_stats(&n_, &ns_);   // pipeline archive files opened (totk_pipeline_archive.h)
           trow(f, "@par_opens", (double)(n_ - popen)); trow(f, "@par_open_ms", (ns_ - popen_ns) / 1e6); popen = n_; popen_ns = ns_; }
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）
@@ -3835,6 +3847,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);
         trow(f, "@drawable_ms", mtl_drawable_ns_take() / 1e6);
+        trow(f, "@scan_ms", mtl_shader_scan_ns_take() / 1e6);   // shader loads' scans of the MSL text (nvn_mtl.m shader_load_mode)
         trow(f, "@sub_wall_ms", atomic_exchange(&g_sub_wall_ns, 0) / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
@@ -3897,7 +3910,17 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         g_pres_iv[g_presn++ % TWIN] = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0);
         { double iv_ = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0); mtl_ub_present(iv_); }   // 同进程交替测量（DM_NVN_UB）按相统计上屏间隔；没开时只是一次原子读 | same-process alternating measurement (DM_NVN_UB) tallies on-screen present intervals per phase; when off it is just one atomic read
         dm_perf_present(a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0));   // 上屏间隔另存一圈，tsummary 每 300 帧报掉帧（M1 判据） | on-screen present intervals are also kept in a separate ring; tsummary reports dropped frames every 300 frames (M1 criterion)
-        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
+        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6);
+        /* the display link's pacing of the same present (nvn_mtl.m mtl_present_diag): queued, taken at the tick, the
+           tick's target, the drawable copy's GPU end (ms since process start), older frames merged away */
+        double q_in, q_tick, q_tgt, q_blit; int q_merged;
+        if (frame_rec() && mtl_present_diag(n, &q_in, &q_tick, &q_tgt, &q_blit, &q_merged)) {
+            double z = g_t0_ns / 1e6;
+            trow(f - 8, "@pq_in_ms", q_in * 1e3 - z); trow(f - 8, "@pq_tick_ms", q_tick * 1e3 - z);
+            if (q_tgt > 0) trow(f - 8, "@pq_target_ms", q_tgt * 1e3 - z);
+            if (q_blit > 0) trow(f - 8, "@pq_blit_end_ms", q_blit * 1e3 - z);
+            trow(f - 8, "@pq_merged", q_merged);
+        } }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     PSTEP(PS_END); present_steps_report(f);
     prev_out = now_ns();

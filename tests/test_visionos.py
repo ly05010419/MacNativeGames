@@ -75,6 +75,48 @@ class VisionOS(unittest.TestCase):
                 self.assertEqual(app.parent.name, 'Debug-'+sdk)
                 self.assertEqual(prov, app/'embedded.mobileprovision')
 
+    def profile_runs(self, platform, outputs):
+        """profile()'s xcodebuild calls, each one answering with the next (returncode, log text) of outputs."""
+        calls = []
+        with tempfile.TemporaryDirectory() as d, patch.object(install_device, 'CACHE', Path(d)), \
+                patch.object(install_device, 'run'), patch.object(install_device, 'xcodegen', return_value='xcodegen'), \
+                patch('builtins.print'):
+            def fake(cmd, cwd, stdout, stderr):
+                code, text = outputs[len(calls)]
+                calls.append(cmd); stdout.write(text)
+                return subprocess.CompletedProcess(cmd, code)
+            with patch.object(install_device.subprocess, 'run', side_effect=fake):
+                try:
+                    install_device.profile('TEAM', 'org.macnativegames.botw', '00008120-000179541E00032', platform)
+                except SystemExit:
+                    pass
+        return calls
+
+    def test_a_team_with_the_device_builds_generic(self):
+        # naming the device copies its system symbols to iOS DeviceSupport (several GB on the system disk; 3b1aef95)
+        for platform, name in [('ios', 'iOS'), ('visionos', 'visionOS')]:
+            calls = self.profile_runs(platform, [(0, 'BUILD SUCCEEDED')])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][calls[0].index('-destination') + 1], f'generic/platform={name}')
+            self.assertNotIn('-allowProvisioningDeviceRegistration', calls[0])
+
+    def test_a_free_apple_id_without_devices_registers_this_one(self):
+        # #2268: a free (Personal Team) Apple ID has no devices until a build names one, and a generic destination
+        # fails with "Your team has no devices from which to generate a provisioning profile"
+        no_device = 'error: Your team has no devices from which to generate a provisioning profile.'
+        for platform, name in [('ios', 'iOS'), ('visionos', 'visionOS')]:
+            calls = self.profile_runs(platform, [(65, no_device), (0, 'BUILD SUCCEEDED')])
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][calls[1].index('-destination') + 1], f'platform={name},id=00008120-000179541E00032')
+            self.assertIn('-allowProvisioningDeviceRegistration', calls[1])
+        # another failure is not retried with the device
+        self.assertEqual(len(self.profile_runs('ios', [(65, 'error: Signing certificate is invalid')])), 1)
+
+    def test_both_install_device_copies_are_the_same(self):
+        # games/oot carries the same tool (#2268 had changed only games/totk's)
+        self.assertEqual((ROOT/'games/totk/ios/tools/install_device.py').read_bytes(),
+                         (ROOT/'games/oot/ios/tools/install_device.py').read_bytes())
+
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'requires macOS SDK')
     def test_unavailable_metalfx_modes_stay_off_even_when_requested_by_environment(self):
         # Exercise the visionOS branches on the host without launching a game or requiring a headset.

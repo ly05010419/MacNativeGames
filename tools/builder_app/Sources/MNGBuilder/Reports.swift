@@ -28,6 +28,8 @@ struct ClassifyReport: Codable {
         var tool_blocks: [String]?   // the blocks about this Mac's tools (page 3), also in blocks
         var tool_needs: [String]?    // what each one is: "metal" (Xcode's Metal toolchain) or "clt" (the command line tools)
         var notes: [String]
+        var font_block: String?   // the block about missing system fonts: 用开源字体 is offered under it
+        var open_fonts: Bool?     // the build makes open-source Noto fonts in place of firmware ones (build_job.py)
     }
     let items: [Item]
     let plan: Plan

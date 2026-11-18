@@ -23,13 +23,14 @@ import SwiftUI
 ///
 /// How it feels, as in the sketch's A page (user 2026-11-17: "web页面 a 很好 有鼠标 光影 和 盒子动的特效"): the middle case
 /// leans away under the pointer and a light follows it over the front; a drag or a two-finger swipe on the trackpad
-/// carries on with its speed and settles on a case, held back past either end and let go; a game started from the back
-/// grows out of its case over the stage and fades (`launches` counts the starts).
+/// carries on with its speed and settles on a case, held back past either end and let go; a game started from the opened
+/// case turns the case back to its front, the page of the games, as closing it does (`launches` counts the starts; user
+/// 2026-11-18: "点击 启动游戏 就翻页返回主页 不要放大封面" — until then its cover grew over the whole stage and faded).
 struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     let count: Int
     @Binding var index: Int
     var size: CGFloat = 375   // the case's height (user 2026-11-17: half again as big)
-    var launches = 0          // bumped when a game starts from the back: its case grows over the stage
+    var launches = 0          // bumped when a game starts from the opened case: the case turns back to its front
     var name: (Int) -> String = { _ in "" }   // a case's game, floated over it while the pointer pulls it out
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
@@ -47,7 +48,6 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     @State private var press = 0.0             // the middle case pressed down by a click (pressDown / release)
     @State private var pressing = false        // the mouse button is down (the press gesture has begun)
     @State private var pressedMiddle = false   // ...and it went down on the middle case
-    @State private var zoomFromCover = false   // a start from the opened case: the zoom begins at its cover
     @State private var tilt = CGPoint.zero // the pointer over the middle front, -1...1 from its centre
     @State private var lit = 0.0           // 1 while the pointer is over the middle front: its light shows
     @State private var pulls = CaseAmounts()   // the folded case under the pointer, pulled out a little (1), the rest 0
@@ -57,9 +57,6 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     @State private var hovering = false    // the pointer is over the stage: a sideways swipe moves the cases
     @State private var swipeMonitor: Any?
     @State private var swipes = 0          // swipe events so far: the last one's wait settles the cases
-    @State private var zooming = false     // a start's case growing over the stage
-    @State private var zoom: CGFloat = 0
-    @State private var zoomFade = 1.0
     @FocusState private var focused: Bool
 
     /// Where the cases are: the index less the drag, held back past either end (half a case at most, as a rubber band).
@@ -169,17 +166,6 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                         }
                     }
                 }
-                if zooming {   // a start: the case grows out over the stage (from the opened case's cover), then fades
-                    let from = zoomFromCover ? stage.coverScale : stage.backScale
-                    let start = zoomFromCover ? stage.coverCenter : stage.backCenter
-                    front(index).frame(width: stage.w, height: stage.h)
-                        .overlay(CaseFront())
-                        .clipShape(RoundedRectangle(cornerRadius: stage.corner * (1 - zoom), style: .continuous))
-                        .scaleEffect(from + (stage.fill - from) * zoom)
-                        .position(x: start.x + (geo.size.width / 2 - start.x) * zoom, y: start.y + (height / 2 - start.y) * zoom)
-                        .opacity(zoomFade)
-                        .allowsHitTesting(false)
-                }
             }
             .frame(width: geo.size.width, height: height, alignment: .topLeading)
         }
@@ -212,7 +198,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         }
         .onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }
         .onChange(of: index) { turn(false); settleMove() }
-        .onChange(of: launches) { grow() }
+        .onChange(of: launches) { turn(false) }   // a game was started: back to the games, the way the case was opened
         .onAppear { focused = true; watchSwipes() }
         .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m) }; swipeMonitor = nil }
         .accessibilityIdentifier("cover-flow")
@@ -303,20 +289,6 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             dragging = false
         }
         return true
-    }
-
-    /// A game started from the opened case: its cover grows over the stage and fades; the case is then closed and shows
-    /// its front again, with no turn (the stage was covered all along).
-    private func grow() {
-        zoomFromCover = expanded
-        zoom = 0; zoomFade = 1; zooming = true
-        withAnimation(.easeInOut(duration: 0.5)) { zoom = 1 } completion: {
-            if zoomFromCover { expanded = false; open = 0; flipped = false }   // under the zoom: unseen
-            withAnimation(.easeOut(duration: 0.45).delay(0.3)) { zoomFade = 0 } completion: {
-                zooming = false
-                turn(false)
-            }
-        }
     }
 
     /// Opens the middle case (true): it turns and grows over the stage at once ("翻转的同时 放大 不是翻转完"), one spring
@@ -413,8 +385,6 @@ struct CoverFlowGeometry {
     /// live back is laid (camera.m34 = -1/eye, then the move to the stage's centre line).
     var backScale: CGFloat { 1 / (1 - (depth / 2 + lift) / eye) }
     var backCenter: CGPoint { CGPoint(x: width / 2, y: floorY - h / 2) }
-    /// The scale at which a case covers the whole stage (a start's case grows to it).
-    var fill: CGFloat { max(width / w, height / h) * 1.02 }
     /// The opened case's cover (CaseDetail): as large as its left 44% and the stage's height let it be, and its centre.
     var coverScale: CGFloat { min(height * 0.84 / h, width * 0.44 * 0.82 / w) }
     var coverCenter: CGPoint { CGPoint(x: width * 0.22, y: height / 2) }

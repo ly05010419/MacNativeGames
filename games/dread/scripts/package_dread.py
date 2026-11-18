@@ -9,6 +9,9 @@ from dread_bundle import Digests, check_output, signed_bundle, link_data, publis
 from dread_pipelines import mac_pipelines, check_archive_lists
 
 GAME = Path(__file__).resolve().parents[1]
+if str(GAME.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(GAME.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 # The sizes an .icns carries, as iconutil names them. macOS picks one per place it draws the App.
 ICON_SIZES = ((16, 'icon_16x16'), (32, 'icon_16x16@2x'), (32, 'icon_32x32'), (64, 'icon_32x32@2x'),
@@ -71,8 +74,10 @@ def package(builder, py, work, out, logs, inputs, game=None, keys=None, icon=Non
     # promising an icon it did not carry and Finder and MNG Launcher showed the generic one (2026-11-16). An express
     # update has no game file, passes neither, and keeps the icon the App already has (below).
     icon_args = [f'GAME={game}', f'KEYS={keys}'] if game and keys else []
-    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={work}', f'PY={py}', f'APP={partial}', *icon_args],
-                logs/'app.log')
+    # WORK goes through make_path: make splits names at spaces, so a work folder with one is handed over as a link
+    # without one (tools/port_app/make_path.py, issue #2284).
+    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={make_path(work, "dread")}', f'PY={py}',
+                 f'APP={partial}', *icon_args], logs/'app.log')
     profile = work/'build'
     seed = profile/'shader-seed'
     # These are the same lists imported by the runtime; packaging and warm-up share them.

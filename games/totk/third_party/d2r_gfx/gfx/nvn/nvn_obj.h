@@ -460,6 +460,7 @@ void mtl_stats(uint64_t *passes, uint64_t *draws);
 void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
 void mtl_use_stats(uint64_t *call, uint64_t *skip);
 uint64_t mtl_ds_omit(void);   // 前瞻证明不用深度模板、未挂深度附件的通道累计数 | Cumulative number of passes with no depth attachment because the lookahead proved depth-stencil unused
+uint64_t mtl_shader_scan_ns_take(void);   // take and zero: ns shader loads spent scanning their MSL text (@scan_ms)
 uint64_t mtl_drawable_ns_take(void);   // 取走并清零：出图里等 nextDrawable 的累计 ns   // useResource 实发 / 同编码器去重跳过累计次数   // 参数缓冲新编 / 复用累计次数 | Take and zero: cumulative ns spent waiting for nextDrawable in present   // Cumulative useResource calls actually issued / skipped by same-encoder dedup   // Cumulative argument buffer new-encode / reuse counts
 void mtl_bw(uint64_t *load, uint64_t *store, uint64_t *full_rw_passes);   // 附件读入 / 写出累计字节、全量读写通道累计数 | Cumulative attachment load / store bytes, cumulative number of full load-store passes
 uint64_t mtl_udc_saved_bytes(void);                                      // DM_NVN_UNWRITTEN_DC 实际省下的写回字节 | Write-back bytes actually saved by DM_NVN_UNWRITTEN_DC
@@ -469,6 +470,7 @@ int mtl_link_active(void);
 /* frame_ticks: 60 Hz ticks one game frame occupies (the game's present interval; 1 in display mode). */
 int mtl_link_wait_tick(uint64_t timeout_ns, unsigned frame_ticks);
 double mtl_presented_time(uint64_t n);
+int mtl_present_diag(uint64_t n, double *t_in, double *tick, double *target, double *blit_end, int *merged);   // the display link's pacing of present n (DM_NVN_TSV @pq_*)
    // 第 n 次出图（从 1 计）的实际呈现时刻（秒）；0 = 未就绪，−1 = 被丢弃
    // Actual presentation time (seconds) of the n-th present (counted from 1); 0 = not ready, −1 = dropped
 // 贴图释放（Finalize 时）

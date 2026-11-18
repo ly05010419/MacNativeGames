@@ -35,8 +35,8 @@ class MigrationDefault(unittest.TestCase):
                          ('MNG_OOT_PROBE', 'MNG_OOT_GAME_DATA', 'MNG_OOT_REWRITTEN')),
                      'requires the built OOT Metal runtime and verified local data')
 class HeapMigrationTests(unittest.TestCase):
-    def run_probe(self, *, enabled, exact=False, probe='probe-gpu-stor-alias'):
-        env = dict(os.environ, OOT_STOR_MIGRATE=str(int(enabled)), OOT_STOR_ALIAS='2' if exact else '1',
+    def run_probe(self, *, enabled, exact=False, probe='probe-gpu-stor-alias', **switches):
+        env = dict(os.environ, **switches, OOT_STOR_MIGRATE=str(int(enabled)), OOT_STOR_ALIAS='2' if exact else '1',
                    OOT_STOR_MIGRATE_TEST='1', TOTK_GAME_DATA=os.environ['MNG_OOT_GAME_DATA'],
                    TOTK_SLOT_OWNER='codex', TOTK_SLOT_PURPOSE='heap-migration-regression', TOTK_SLOT_EXPECT_S='30')
         env.pop('OOT_STOR_MIGRATE_SUBRESOURCES_ONLY', None)
@@ -56,8 +56,21 @@ class HeapMigrationTests(unittest.TestCase):
 
     def test_regions_preserve_pixels_and_release_old_heaps(self):
         result, log = self.run_probe(enabled=True)
-        self.assert_pass(result, log, 77)
+        self.assert_pass(result, log, 91)
         self.assertIn('heap growth migration probe passed:', log)
+        # 2026-11-18, 14 checks: a region with many textures grows with room on either side and the next textures there
+        # do not replace it again; a migration copies the layout made last last (12 pairs)
+        self.assertIn('room and order probe passed:', log)
+        # the pairs are layouts that keep lossless compression on a region heap, as the game's scaled targets do: with
+        # plain ones every copy order gives the same bytes and the check would say nothing
+        self.assertIn('order probe: 12 pairs moved, the layout made last reads as written in each (24 of 24 textures keep lossless compression)', log)
+
+    def test_the_copy_order_before_loses_the_layout_made_last(self):
+        """Negative control (2026-11-18): by heap only, the layouts of one heap in hash order, as before. With 12 pairs
+        at least one earlier layout is copied after the later one (4 of 4 runs): the later one reads another colour."""
+        result, log = self.run_probe(enabled=True, OOT_MIGRATE_ORDER='0')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('FATAL alias probe: disjoint neighbour corrupted 720x405', log)
         self.assertIn('heap migration subresources passed: 45', log)
 
     def test_all_depth_color_mips_and_layers_migrate(self):
