@@ -34,6 +34,7 @@ FORMAT = 1
 MANIFEST = 'mng-source.json'
 SIGNATURE = MANIFEST + '.sig'
 TAG_PREFIX = 'source-'
+LAUNCHER_TAG = 'launcher-v'      # MNG Launcher's own releases (launcher-v1.0.6)
 CHECK_EVERY = 600                 # seconds between two release-list reads by the home page
 MAX_ARCHIVE = 1 << 30             # a source archive is about 140 MB; refuse anything near a gigabyte
 FIELDS = {'format', 'commit', 'commit_time', 'archive', 'archive_sha256', 'archive_size', 'min_launcher'}
@@ -196,6 +197,23 @@ def releases(listing):
     return sorted(out, key=lambda r: r['published'], reverse=True)
 
 
+def newest_launcher(listing):
+    """The highest MNG Launcher release in the list, {'version', 'url'} (its page), or None: the window's version label
+    turns blue when it is newer than this Launcher (a player had no other way to know one was out)."""
+    best = None
+    for r in listing if isinstance(listing, list) else []:
+        tag = str(r.get('tag_name', '')) if isinstance(r, dict) else ''
+        if not tag.startswith(LAUNCHER_TAG) or r.get('draft'):
+            continue
+        try:
+            version = version_tuple(tag[len(LAUNCHER_TAG):])
+        except SourceError:
+            continue
+        if best is None or version > best[0]:
+            best = (version, {'version': tag[len(LAUNCHER_TAG):], 'url': str(r.get('html_url') or '')})
+    return best[1] if best else None
+
+
 def _state_path(support):
     return Path(support) / 'sources' / 'update-check.json'
 
@@ -219,6 +237,7 @@ def check(support, conf, now=None):
     except ValueError as error:   # SourceError is one too, and passes as it is
         raise error if isinstance(error, SourceError) else SourceError(f'the release list is not JSON: {error}') from None
     have = current_time(support, conf)
+    launcher = newest_launcher(listing)   # kept with the check for the window's version label (App.swift VersionLabel)
     needs_launcher = None
     for r in releases(listing)[:10]:
         try:
@@ -236,9 +255,9 @@ def check(support, conf, now=None):
             needs_launcher = needs_launcher or m
             continue
         found = {'tag': r['tag'], 'manifest': base64.b64encode(data).decode(), 'signature': signature, 'archive_url': url}
-        _save_state(support, {'checked_at': now, 'found': found})
+        _save_state(support, {'checked_at': now, 'found': found, 'launcher': launcher})
         return 'new', found
-    _save_state(support, {'checked_at': now, 'found': None})
+    _save_state(support, {'checked_at': now, 'found': None, 'launcher': launcher})
     return ('launcher', needs_launcher) if needs_launcher else ('none', None)
 
 
