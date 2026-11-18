@@ -23,7 +23,8 @@ class InboxOnly(unittest.TestCase):
 
     def test_no_game_names_an_issue_route(self):
         files = tracked('games/*/third_party/d2r_gfx/gfx/nvn/*_shader_contrib.h', 'games/*/runtime/game_version.h',
-                        'games/*/runtime/settings_panel.h', 'games/*/app/launcher.m', 'games/*/ios/tools/fill_shaders.py')
+                        'games/*/runtime/settings_panel.h', 'games/*/runtime/settings_game.h', 'shared/runtime/*.h',
+                        'games/*/app/launcher.m', 'games/*/ios/tools/fill_shaders.py')
         # 20 copies: Ocarina of Time builds the shared layer (games/oot/third_party/d2r_gfx links to games/totk's, 图形层统一)
         self.assertGreaterEqual(len([f for f in files if f.name.endswith('_shader_contrib.h')]), 20)
         found = [f'{f.relative_to(REPO)}:{n}' for f in files for n, line in enumerate(f.read_text().splitlines(), 1)
@@ -32,6 +33,8 @@ class InboxOnly(unittest.TestCase):
 
     def test_uploading_games_name_the_inbox_in_the_file(self):
         for upload in tracked('games/*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'):
+            if 'totk_inbox_send(' not in upload.read_text():
+                continue   # games/acnh: only the site's identity for its board and screenshots, no shader upload
             contrib = (upload.parent / 'totk_shader_contrib.h').read_text()
             self.assertIn('# This game sends it to the shader inbox', contrib, upload.relative_to(REPO))
 

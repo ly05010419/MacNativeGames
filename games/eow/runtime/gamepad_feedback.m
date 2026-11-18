@@ -25,6 +25,7 @@ void runtime_feedback_attach(GCController *c) { (void)c; }
 void runtime_feedback_detach(GCController *c) { (void)c; }
 void runtime_feedback_quiet(void) {}
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
+void runtime_feedback_motion_source_changed(void) {}
 #else
 #import <CoreHaptics/CoreHaptics.h>
 
@@ -165,6 +166,10 @@ static void rumble_start(void) {
 
 /* ---- motion: the math is in runtime/motion_fusion.c ---- */
 static GCController *motionPad;  /* main queue */
+/* Keep native input streams attached while DSU owns the six-axis fusion (runtime/dsu_client.h, as games/odyssey): Switch
+   HID reports also carry the capture button. */
+static void native_motion_live(int on) { if (!runtime_dsu_motion_active()) runtime_motion_live(on); }
+static void native_motion_deadzone_default(double deg) { if (!runtime_dsu_motion_active()) runtime_motion_deadzone_default(deg); }
 static void hid_motion_start(void);
 static void hid_motion_stop(void);
 static uint64_t zeroSince;          /* the controller's handler queue */
@@ -182,7 +187,7 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
         }
         motionSeen = YES;
     }
-    runtime_motion_feed(acc, gyro, runtime_now_ns());
+    if (!runtime_dsu_motion_active()) runtime_motion_feed(acc, gyro, runtime_now_ns());
 }
 
 /* ---- motion straight from a Switch Pro Controller's HID reports (2026-10-19) ----
@@ -234,6 +239,11 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         return;
     }
     if (id != 0x30) return;
+    /* Button 5 on its own, the square button below the D-pad (a Pro Controller's capture button): the game's picture, as a
+       DualSense's Share button does through GameController (runtime/gamepad.m runtime_capture_set_hook). Home (bit 4) is
+       left alone: macOS keeps that one for its own screen. */
+    runtime_gamepad_switch_capture((__bridge void *)motionPad, p[4] & 0x20);
+    if (runtime_dsu_motion_active()) return;   /* only six-axis samples yield to DSU */
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
     for (int k = 0; k < 3; k++) {
@@ -262,7 +272,7 @@ static void hid_motion_start(void) {   /* main queue */
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
     IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, NULL);
-    runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
+    native_motion_deadzone_default(1.2); native_motion_live(1);
     fprintf(stderr, "[gyro] %s: GameController's motion is all zeros; reading the six-axis sensor from its HID reports\n", name);
     /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back */
     static const uint8_t imuOn[1] = {0x01}, factory[5] = {0x20, 0x60, 0, 0, 24}, user[5] = {0x26, 0x80, 0, 0, 26};
@@ -272,6 +282,7 @@ static void hid_motion_start(void) {   /* main queue */
 }
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidDevice) return;
+    runtime_gamepad_switch_capture(NULL, 0);
     IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);
     IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     IOHIDDeviceClose(hidDevice, kIOHIDOptionsTypeNone);
@@ -300,9 +311,9 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
         GCMotion *m = c.motion;
         if (!m || !m.hasRotationRate) { fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name); return; }
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
-        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
+        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; native_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
-        motionPad = c; runtime_motion_live(1);
+        motionPad = c; native_motion_live(1);
         fprintf(stderr, "[gyro] %s: motion sensors on (gyro%s)\n", name, m.hasGravityAndUserAcceleration ? ", gravity" : ", acceleration");
     }
 }
@@ -310,7 +321,14 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (runtime_rumble_enabled() && rumbleQueue)
         dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
     if (motionPad == c) {
-        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
+        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; native_motion_live(0);
     }
+}
+/* DSU changes only the fusion source, never the native controller lifecycle. */
+void runtime_feedback_motion_source_changed(void) {
+    runtime_motion_live(0);
+    if (runtime_dsu_motion_active() || !motionPad) return;
+    runtime_motion_deadzone_default(hidDevice ? 1.2 : 0);
+    runtime_motion_live(1);
 }
 #endif

@@ -27,7 +27,8 @@ FORMAT = 1
 BACKUP_JSON = 'backup.json'
 HASH_LIMIT = 2 * 1024 * 1024 * 1024       # larger single files are listed by size only, never read whole
 
-PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR', 'oot': 'TOTK_PROFILE_DIR'}   # games/totk/app/launcher.m (both games), games/oot/app/launcher.m
+PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR', 'oot': 'TOTK_PROFILE_DIR', 'acnh': 'TOTK_PROFILE_DIR', 'eow': 'TOTK_PROFILE_DIR',
+               'odyssey': 'TOTK_PROFILE_DIR'}   # games/totk/app/launcher.m (both games), games/oot/app/launcher.m
 NXNATIVE = 'nxnative'
 
 

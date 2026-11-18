@@ -127,6 +127,25 @@ static void ownership_and_reset(void) {
     c = (Ns2MovieClock){0, 0, 1}; CHECK(ns2_movie_clock_target(&c, UINT64_MAX) == INT64_MAX);
 }
 
+/* Movie cutscenes are held at 60 fps (user 2026-11-17): from a picture handed to the game, for 0.5 s after the last one,
+   and not after the movie's end of stream. */
+static void cutscene_signal(void) {
+    cv_dec d; cv_pool pool; fixture(&d, &pool, 2);
+    virtual_ns = 50000000000ull;
+    CHECK(runtime_cutscene_fps() == 0);
+    cv_hold(&d, vpx_img_alloc(NULL, VPX_IMG_FMT_I420, 2, 2, 1), 0); drain(&d);
+    int eos = 0; consume(&d, &eos);
+    CHECK(!eos && runtime_cutscene_fps() == 60);
+    virtual_ns += 400000000ull; CHECK(runtime_cutscene_fps() == 60);    /* a late frame: still the movie */
+    virtual_ns += 200000000ull; CHECK(runtime_cutscene_fps() == 0);     /* no picture for 0.6 s: the settings again */
+    /* the movie's next picture, on its time (an older one would be skipped as late: drain, skip_late_pictures) */
+    cv_hold(&d, vpx_img_alloc(NULL, VPX_IMG_FMT_I420, 2, 2, 1), 600000000); drain(&d);
+    consume(&d, &eos); CHECK(!eos && runtime_cutscene_fps() == 60);
+    d.eos_pending = 1; drain(&d);
+    consume(&d, &eos); CHECK(eos && runtime_cutscene_fps() == 0);       /* the end of stream ends it at once */
+    cleanup(&d, &pool);
+}
+
 int main(int argc, char **argv) {
     int enabled = argc < 2 || strcmp(argv[1], "off");
     setenv("OOT_MOVIE_SYNC", enabled ? "1" : "0", 1);
@@ -137,7 +156,7 @@ int main(int argc, char **argv) {
             simulate(120, 0, 1, buffers); simulate(30, 1, 1, buffers);
         }
     }
-    if (enabled) ownership_and_reset();
+    if (enabled) { ownership_and_reset(); cutscene_signal(); }
     printf("{\"status\":\"pass\",\"checks\":%u,\"sync\":%s}\n", checks, enabled ? "true" : "false");
     return 0;
 }

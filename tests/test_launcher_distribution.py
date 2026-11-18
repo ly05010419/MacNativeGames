@@ -110,6 +110,7 @@ class Distribution(unittest.TestCase):
             return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
         git('init', '-q')
         files = ('build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
+                 'tools/builder_app/source_updates.py', 'tools/builder_app/source_signing.pub',
                  'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
                  'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py')
         for name in files:

@@ -200,11 +200,11 @@ class History(unittest.TestCase):
         self.assertEqual(e.update('a', 5, 1)[:2], (0.05, 95.0))
         self.assertEqual(e.update('c', 0, 3)[:2], (0.4, 60.0))   # b skipped (inputs unchanged): counted as done
         self.assertEqual(e.update('c', 600, 3)[0], 0.99)         # never 1 before the build ends
-        self.assertEqual(e.update('zzz', 1, 3), (0.99, None, True))
+        self.assertEqual(e.update('zzz', 1, 3), (0.99, None, True, None))
 
     def test_without_a_record_the_stage(self):
         e = history.Estimator(None)
-        self.assertEqual(e.update('x', 5, 3), (history.STAGE_STARTS[3], None, False))
+        self.assertEqual(e.update('x', 5, 3), (history.STAGE_STARTS[3], None, False, None))
 
     def test_record_and_load(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -218,7 +218,7 @@ class History(unittest.TestCase):
 class Checks(unittest.TestCase):
     def test_no_homebrew_package_is_needed(self):
         source = repo.BUILD_APP.read_text()
-        start = source.index('def prerequisites(')
+        start = source.index('def developer_tools(')   # the checks of a build that compiles (prerequisites calls it)
         body = source[start:source.index('\n\n\n', start)]   # the function alone, not the comment after it
         self.assertNotIn('libvpx', body)          # built from pinned sources (codec_libraries), not checked in Homebrew
         self.assertIn("codec_libraries(getattr(args, 'platform', 'macos'))", body)

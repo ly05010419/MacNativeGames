@@ -17,9 +17,12 @@ int main(void) {
     char snapshot[160]; int highlight=0;
     assert(hud_snapshot(HUD_PSO, snapshot, sizeof snapshot, &highlight) && highlight && !strcmp(snapshot,text));
     assert(fps_overlay_full_hud());
-    assert(fps_overlay_toggle_hints()==HUD_MODE_MINIMAL && fps_overlay_hints_enabled() && !fps_overlay_full_hud());
-    assert(fps_overlay_toggle_hints()==HUD_MODE_OFF && !fps_overlay_hints_enabled());
-    assert(fps_overlay_toggle_hints()==HUD_MODE_ALL && fps_overlay_full_hud());
-    fps_overlay_set_hud_mode(99); assert(fps_overlay_hud_mode()==HUD_MODE_ALL);
+    /* The settings panel's four choices (shared fps_overlay.c): FPS only, off, all, and FPS full information. */
+    fps_overlay_set_hud_mode(HUD_MODE_MINIMAL); assert(fps_overlay_hints_enabled() && !fps_overlay_full_hud());
+    assert(hud_line_shown(HUD_FPS) && !hud_line_shown(HUD_PSO));
+    fps_overlay_set_hud_mode(HUD_MODE_OFF); assert(!fps_overlay_hints_enabled() && !hud_line_shown(HUD_FPS));
+    fps_overlay_set_hud_mode(HUD_MODE_ALL); assert(fps_overlay_full_hud() && hud_line_shown(HUD_PSO) && !hud_line_shown(HUD_HITCHES));
+    fps_overlay_set_hud_mode(HUD_MODE_FULL); assert(fps_overlay_full_hud() && hud_line_shown(HUD_HITCHES));
+    fps_overlay_set_hud_mode(99); assert(fps_overlay_hud_mode()==HUD_MODE_FULL);   /* not a choice: ignored */
     return 0;
 }

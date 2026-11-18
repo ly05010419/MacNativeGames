@@ -39,7 +39,13 @@ int main(void) {@autoreleasepool{
     }
     require(alive(&weakView),"retired views wait for their submission");
     [retired removeAllObjects];require(!alive(&weakView),"old views leave the owner after retirement");
-    @autoreleasepool { id<MTLTexture> v=stor_sampling_view(pkg->tex,d.pixelFormat,d.textureType,NSMakeRange(1,2),NSMakeRange(0,2),MTLTextureSwizzleChannelsDefault,pkg);
-        require(v.gpuResourceID._impl!=rid,"replacement storage has a new view identity");pkg_views_drop(pkg); }
+    @autoreleasepool {
+        // Metal can reuse GPU resource IDs once their previous views have been released.
+        uint64_t misses=g_stor_sampling_misses;
+        id<MTLTexture> v=stor_sampling_view(pkg->tex,d.pixelFormat,d.textureType,NSMakeRange(1,2),NSMakeRange(0,2),MTLTextureSwizzleChannelsDefault,pkg);
+        require(v && g_stor_sampling_misses==misses+1 && pkg->view_base==pkg->tex,
+                "replacement storage creates a view for the new base");
+        pkg_views_drop(pkg);
+    }
     [retired removeAllObjects];printf("PASS package views: 100 requests / 1 creation; layout, swizzle and replacement lifetime checked\n");return 0;
 }}

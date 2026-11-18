@@ -22,6 +22,14 @@ class MigrationDefault(unittest.TestCase):
         self.assertIn('if (mt && stor_alias_migrate_on() && g_alias_heaps_made != before)', text,
                       'a new heap triggers the migration')
 
+    def test_entries_without_a_holder_move_too(self):
+        """2026-11-17: entering the world, entries no serial held stayed on earlier generations (681 of 687 textures
+        there) and kept 1.5 GB of earlier heaps; they move with the held ones now (OOT peak 11.9 -> 11.2 GB). Detached
+        entries without a holder are on their way out and stay."""
+        text = (NVN / 'nvn_stor_migrate.h').read_text()
+        self.assertIn('if (!entry || !entry->tex || (detached && !entry->nser)) continue;', text)
+        self.assertNotIn('if (!entry || !entry->tex || !entry->nser) continue;', text)
+
 
 @unittest.skipUnless(all(os.environ.get(k) for k in
                          ('MNG_OOT_PROBE', 'MNG_OOT_GAME_DATA', 'MNG_OOT_REWRITTEN')),

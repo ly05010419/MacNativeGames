@@ -2,6 +2,7 @@
    mouse lines in controls.txt, the controller layout; movement as the right stick and the gyro; the sensitivity slider;
    release, and the saved on / off. The real file is compiled in; the 10 ms ticks are driven here (mouseTicksByHand). */
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 static uint64_t clockNow = 1000000000ull;

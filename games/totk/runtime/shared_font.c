@@ -1,6 +1,11 @@
 /* nn::pl shared fonts: the verified system BFTTF files laid out back to back as in the pl shared memory.
    GetSharedFontAddress points 8 bytes past each file start (after the BFTTF header), as the SDK adds the
-   service-provided offset to the shared memory base; the size is the decoded font size. */
+   service-provided offset to the shared memory base; the size is the decoded font size.
+   Firmware files contain XOR-encoded BFTTF payloads. The pl service exposes plain sfnt data after the
+   header, so decode the in-memory payload after verifying the original file's hash (as in games/eow).
+   Otherwise TOTK mistakes the ciphertext for an encoded font starting at the payload, Decode returns
+   NULL, and LoadFont leaves the face name empty. SetFont then fails with 301 and the previous face's
+   glyphs get combined with the failed face's layout metrics (#1398 / PR #2145). */
 #include "runtime.h"
 #include "game_data.h"
 #include "../zeldaVR/gfx/vr_labo.h"
@@ -35,6 +40,13 @@ static void load(void){
   need(fread(region+at,1,rows[i].file_bytes,f)==rows[i].file_bytes&&fgetc(f)==EOF,"shared font size");fclose(f);
   uint8_t d[32];char hex[65];CC_SHA256(region+at,(CC_LONG)rows[i].file_bytes,d);for(int k=0;k<32;k++)snprintf(hex+k*2,3,"%02x",d[k]);
   need(!strcmp(hex,rows[i].sha256),"shared font integrity mismatch");
+  uint8_t *file=region+at;
+  need(rows[i].font_bytes>=12&&rows[i].font_bytes%4==0,"shared font payload size");
+  uint32_t key=((uint32_t)file[0]<<24|(uint32_t)file[1]<<16|(uint32_t)file[2]<<8|file[3])^0x7f9a0218u;
+  uint32_t decoded=((uint32_t)file[4]<<24|(uint32_t)file[5]<<16|(uint32_t)file[6]<<8|file[7])^key;
+  need(decoded==rows[i].font_bytes,"shared font header");
+  for(uint64_t k=8;k<rows[i].file_bytes;k+=4)for(int b=0;b<4;b++)file[k+b]^=(uint8_t)(key>>(24-8*b));
+  need(!memcmp(file+8,"\0\1\0\0",4)||!memcmp(file+8,"OTTO",4),"shared font is not sfnt after decoding");
   offsets[i]=at+8;at+=rows[i].file_bytes;
  }
  fprintf(stderr,"[totk] shared fonts loaded: %d fonts, %llu bytes\n",SHARED_FONT_COUNT,(unsigned long long)total);

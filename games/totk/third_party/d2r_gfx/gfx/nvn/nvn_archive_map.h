@@ -30,11 +30,27 @@ static id arch_map_read(id self, SEL sel, NSURL *url, NSDataReadingOptions optio
     }
     return g_arch_map_orig(self, sel, url, options, error);
 }
+/* The Metal 4 archive (MTL4Archive, nvn_pso4.h, .mtl4a) opens its file through -[NSData initWithContentsOfFile:options:
+   maxLength:error:] instead, a method Foundation does not publish (2026-11-17 probe, scratch/runs/2026-11/par-probe: one
+   such read per .mtl4a opened; forced to a mapping, a 1,024-pipeline file cost +1.0 MB instead of +16.8 MB from the USB
+   drive). The same window and rule; when a system has no such method, those files are read as before. As nxnative's
+   arch_read_mapped (dm/gfx/nvn/nvn_mtl.m). */
+typedef id (*arch_map_file_t)(id, SEL, NSString *, NSUInteger, NSUInteger, NSError **);
+static arch_map_file_t g_arch_map_file_orig;
+static id arch_map_read_file(id self, SEL sel, NSString *path, NSUInteger options, NSUInteger max, NSError **error) {
+    if (g_arch_map_depth > 0 && [path.pathExtension isEqualToString:@"mtl4a"]) {
+        options = (options & ~(NSUInteger)NSDataReadingMappedIfSafe) | NSDataReadingMappedAlways;
+        atomic_fetch_add(&g_arch_mapped, 1);
+    }
+    return g_arch_map_file_orig(self, sel, path, options, max, error);
+}
 static void arch_map_install(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         Method m = class_getInstanceMethod(NSData.class, @selector(initWithContentsOfURL:options:error:));
         if (m) g_arch_map_orig = (arch_map_init_t)method_setImplementation(m, (IMP)arch_map_read);
+        Method f = class_getInstanceMethod(NSData.class, sel_registerName("initWithContentsOfFile:options:maxLength:error:"));
+        if (f) g_arch_map_file_orig = (arch_map_file_t)method_setImplementation(f, (IMP)arch_map_read_file);
     });
 }
 static inline void arch_map_begin(void) { arch_map_install(); if (g_arch_map_orig) g_arch_map_depth++; }

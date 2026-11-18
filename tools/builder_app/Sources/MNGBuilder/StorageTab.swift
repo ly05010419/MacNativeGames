@@ -43,7 +43,7 @@ struct StoragePage: View {
     @State private var working = false
     @State private var cleaning: StorageState.Folder?
 
-    private var building: Bool { model.phase == .building || model.phase == .cancelling || model.updating != nil }
+    private var building: Bool { model.jobRunning }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

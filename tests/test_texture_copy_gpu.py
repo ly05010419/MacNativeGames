@@ -17,7 +17,7 @@ class TextureCopies(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work=Path(tmp); probe=work/'probe.m'; binary=work/'probe'
             probe.write_text((ROOT/'tests/texture_copy_gpu_probe.m').read_text().replace('// PRODUCTION_COPY',functions))
-            subprocess.run(['xcrun','clang','-std=gnu11','-O1','-fobjc-arc','-I'+str(nvn/'include'),str(probe),
+            subprocess.run(['xcrun','clang','-std=gnu11','-O1','-fobjc-arc','-I'+str(nvn/'include'),'-I'+str(ROOT/'tests'),str(probe),
                 '-framework','Metal','-framework','Foundation','-o',str(binary)],check=True)
             with GameSlot(owner='tests',purpose='scaled texture copy pixels',expect_seconds=60) as slot:
                 p=slot.popen([str(binary)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)

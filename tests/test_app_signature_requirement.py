@@ -8,7 +8,7 @@ Tears of the Kingdom, Breath of the Wild and Pokopia, signed by build_app.sign_a
 build_app.sign_app had it since 2026-10-31, but Ocarina of Time's own packaging and the MNG Launcher, written later, signed
 without it and nothing checked them; so the same prompt came back.
 
-Scope (user: "不要 管其他 社区游戏"): build_app.py, update_runtime.py, games/totk, games/oot and tools/, Mac only (iOS apps
+Scope (user: "不要 管其他 社区游戏"): build_app.py, update_runtime.py, games/totk, games/oot, games/tmnt and tools/, Mac only (iOS apps
 are signed by Xcode with a real identity). Every codesign call there that signs must name the bundle ID, or say on its line
 that it signs something inside the app ("# nested: not the app"): a new signing call without either fails here."""
 from pathlib import Path
@@ -16,7 +16,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCOPE = [ROOT / 'build_app.py', ROOT / 'update_runtime.py', ROOT / 'games/totk', ROOT / 'games/oot', ROOT / 'tools']
+SCOPE = [ROOT / 'build_app.py', ROOT / 'update_runtime.py', ROOT / 'games/totk', ROOT / 'games/oot', ROOT / 'games/tmnt', ROOT / 'tools']
 KINDS = {'.py', '.sh', '.mk', '.command'}
 SIGN = re.compile(r"""codesign\W.*(--sign|\W-s\W)""")
 MARK = '# nested: not the app'
@@ -54,6 +54,13 @@ class SignedByBundleId(unittest.TestCase):
         self.assertGreater(found, 3, 'the scan found no signing calls: its pattern is wrong')
         self.assertEqual(bad, [], 'sign the app with -r=designated => identifier "<bundle id>" (build_app.sign_app), or mark '
                                   f'a nested bundle "{MARK}":\n' + '\n'.join(bad))
+
+    def test_tmnt_packaging_and_update_name_the_plist_bundle_id(self):
+        for name in ('package_private.py', 'tmnt_update.py'):
+            source = (ROOT / 'games/tmnt/scripts' / name).read_text()
+            self.assertIn('designated => identifier', source)
+            self.assertIn('info["CFBundleIdentifier"]', source)
+        self.assertIn(ROOT / 'games/tmnt', SCOPE)
 
     def test_build_app_sign_app_names_the_bundle_id(self):
         source = (ROOT / 'build_app.py').read_text()

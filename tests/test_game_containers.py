@@ -311,6 +311,23 @@ class Containers(unittest.TestCase):
             with self.assertRaises(build_app.BuildError):
                 build_app.font_report(folder)
 
+    def test_card_without_fonts_names_the_other_font_sources(self):
+        """#2242: a merged card image ("1G+1U") has an empty or no update partition, so no fonts to take."""
+        secure = ('secure', partition([('program.nca', nca())], hfs=True))
+        empty_update = [('update', partition([], hfs=True)), secure]
+        for name, root in (('empty update partition', empty_update), ('no update partition', [secure])):
+            with self.subTest(name):
+                head = bytearray(0x200)
+                head[0x100:0x104] = b'HEAD'
+                struct.pack_into('<Q', head, 0x130, 0x200)
+                game = self.path / f'{name}.xci'
+                game.write_bytes(head + partition(root, hfs=True))
+                p = subprocess.run([sys.executable, SCRIPTS / 'extract_shared_fonts.py', '--keys', self.keys,
+                                    '--xci', game, '--output', self.path / name / 'fonts'], capture_output=True, text=True)
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn('--firmware', p.stderr)
+                self.assertIn('--shared-fonts', p.stderr)
+
     def test_npdm_signature_accepts_another_genuine_dump(self):
         # The pinned hash names one dump; Nintendo's signature over the ACID block names every genuine one.
         from cryptography.hazmat.primitives import hashes

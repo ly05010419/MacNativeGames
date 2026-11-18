@@ -83,6 +83,49 @@ int main(int argc, char **argv) { @autoreleasepool {
         expect(rowkey([@"R\t" stringByAppendingString:hex(&sk)]) == nil, "host-only render rows cannot preload shaders");
         sk.k.a2c = 0; sk.fz = 1;
         expect(rowkey([@"R\t" stringByAppendingString:hex(&sk)]) == nil, "unreconstructable fragment variants stay excluded");
+    } else if ([mode isEqualToString:@"resident"]) {   // nvn_warm_resident.h (user 2026-11-16: title + compute, mesh, tile-read)
+        expect(warm_resident_parse(NULL, NULL, WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_TITLE_KINDS, "no setting keeps the game's default");
+        expect(warm_resident_parse("all", "0", WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_ALL, "TOTK_WARM_RESIDENT wins over TOTK_WARM_SHARED");
+        expect(warm_resident_parse("title-local", NULL, WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_LOCAL, "title-local by name");
+        expect(warm_resident_parse("title-kinds", NULL, WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_KINDS, "title-kinds by name");
+        expect(warm_resident_parse(NULL, "1", WARM_RESIDENT_TITLE_KINDS) == WARM_RESIDENT_ALL, "TOTK_WARM_SHARED=1 still means every list");
+        expect(warm_resident_parse(NULL, "0", WARM_RESIDENT_ALL) == WARM_RESIDENT_TITLE_LOCAL, "TOTK_WARM_SHARED=0 still means title and local");
+        expect(warm_resident_parse("titlekinds", NULL, WARM_RESIDENT_ALL) == -1, "an unknown name is reported, not guessed");
+        NSString *dir = NSTemporaryDirectory();
+        NSString *a = [dir stringByAppendingPathComponent:@"warm-resident-a.tsv"], *b = [dir stringByAppendingPathComponent:@"warm-resident-b.tsv"];
+        [@"# list\nS\tshader_b\t0\nR\trender\nC\tcompute_b\nM\t-\tmesh\nT\ttile\t0:1\nB\tborder\tv\t-\n" writeToFile:a atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [@"C\tcompute_b\nC\tother_b\nR\trender2\n" writeToFile:b atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSArray *rows = warm_kind_rows(@[a, b, @"/missing/list.tsv"]);
+        expect([rows isEqual:@[@"C\tcompute_b", @"M\t-\tmesh", @"T\ttile\t0:1", @"C\tother_b"]], "only C / M / T rows, each once, in list order");
+        // TITLE_KINDS leaves this device's list out: warm_start passes no user list, so only the title stays
+        NSString *title = @"/seed/pso_title.tsv", *user = @"/profile/pso_user.tsv";
+        NSArray *archive = nil;
+        NSArray *keep = warm_resident_lists(@[title, @"/seed/pso_manifest.tsv", user], title, nil, YES, NO, &archive);
+        expect([keep isEqual:@[title]] && [archive containsObject:user] && archive.count == 2, "without a user list the device's list only fills the archive");
+        // memory-saver.txt (MNG Launcher's 开启省内存模式, user 2026-11-16; on by default since the night: "目标 12g")
+        expect(warm_saver_word("on\n") == 1 && warm_saver_word(" on \r\n") == 1, "\"on\" with blanks and a newline is on");
+        expect(warm_saver_word("off\n") == 0 && warm_saver_word(" off ") == 0, "\"off\" is off");
+        expect(WARM_SAVER_DEFAULT == 1 && warm_saver_word(NULL) == 1 && warm_saver_word("") == 1 && warm_saver_word("\n") == 1, "no file or an empty one is the default, on");
+        expect(warm_saver_word("yes") == -1 && warm_saver_word("ON") == -1 && warm_saver_word("onn") == -1, "an unknown word is reported, not guessed");
+    } else if ([mode isEqualToString:@"played"]) {   // nvn_warm_resident.h WARM_PLAYED_FILE (user 2026-11-17: "行")
+        expect(warm_played_kind("R\tabc\n") && warm_played_kind("B\tabc\t-\t-") && warm_played_kind("T\tabc\t0:1") && warm_played_kind("C\tcompute_b"),
+               "render, border, tile-read and compute rows are kept");
+        expect(!warm_played_kind("S\tshader_b\t0") && !warm_played_kind("M\t-\tmesh") && !warm_played_kind("# R\tx") && !warm_played_kind("R\t\n")
+               && !warm_played_kind("R") && !warm_played_kind(NULL), "library, mesh, comment and empty rows are not");
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"warm-played.tsv"];
+        [@"R\ta\nS\tlib_b\t0\nR\tb\nR\ta\nC\tc_b\n\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSArray *rows = warm_played_rows(path, 10);
+        expect([rows isEqual:@[@"R\tb", @"R\ta", @"C\tc_b"]], "each row once, at its last place, library rows dropped");
+        NSString *again = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        expect([again isEqual:@"R\tb\nR\ta\nC\tc_b\n"], "the file is written again without the repeats");
+        rows = warm_played_rows(path, 2);
+        expect([rows isEqual:@[@"R\ta", @"C\tc_b"]], "over the cap the newest stay");
+        NSDate *before = [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileModificationDate];
+        rows = warm_played_rows(path, 2);
+        NSDate *after = [[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil] fileModificationDate];
+        expect(rows.count == 2 && [before isEqual:after], "a clean file is not written again");
+        expect([warm_played_rows(@"/missing/pso_played.tsv", 10) isEqual:@[]], "no file: nothing kept");
+        expect(WARM_PLAYED_MAX == 3000, "the cap: about 330 MB at 110 KB a pipeline");
     } else return 2;
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

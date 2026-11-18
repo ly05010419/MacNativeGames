@@ -131,6 +131,11 @@ static NSString *par_hash(const void *bytes, size_t n) {
     for (int i = 0; i < 20; i++) [s appendFormat:@"%02x", d[i]];   // 160 bits name a file
     return s;
 }
+#ifdef PSO4_BUILT
+static NSUInteger par4_load_dir(id<MTLDevice> dev, uint64_t *bytes);   // nvn_pso4.h: the Metal 4 archive's own files
+static BOOL par4_name(NSString *name);                                 // a Metal 4 file's name (m4:<base>, m4-<stem>)
+static void par4_open_all(id<MTLDevice> dev);                          // every Metal 4 file opened in the background
+#endif
 #include "totk_pipeline_archive_folders.h"
 /* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
    (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
@@ -193,7 +198,12 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
            stale pipeline, which Metal refused (14 mesh pipelines compiled again at every start): red, so it is seen. */
         if ([listed containsObject:c[0]]) { twice++; continue; }
         [listed addObject:c[0]];
-        if (g_par_where[c[0]]) continue;   // the device's own file wins
+        NSString *own = g_par_where[c[0]];
+#ifdef PSO4_BUILT
+        if (own && !(par4_name(c[1]) && !par4_name(own))) continue;   // the device's own file wins, but not an old file over a Metal 4 one (nvn_pso4.h)
+#else
+        if (own) continue;   // the device's own file wins
+#endif
         [g_par_have addObject:c[0]]; g_par_where[c[0]] = c[1]; [g_par_pre addObject:c[1]]; n++;
     }
     if (twice) MLOG("【红】管线存档：App 带的索引里有 %lu 个键重复（每个键应只对应一个文件；用的是先列的那个，可能是旧的），重新打包", (unsigned long)twice);
@@ -240,8 +250,16 @@ static void par_open_dir(id<MTLDevice> dev) {
            writer: batches no longer hold g_par_wmu while Metal uses their build folders. Shared folders stay intact. */
         par_ga_cleanup_startup();
         if (!par_open_identity(dev)) return;
-        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files), own = g_par_have.count, pre = par_load_prebuilt(dev);
+        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files);
+#ifdef PSO4_BUILT
+        uint64_t bytes4 = 0; NSUInteger files4 = par4_load_dir(dev, &bytes4);   // after the old files: a key in both is the Metal 4 file's
+        if (files4) MLOG("Metal 4 管线存档：本机 %lu 个文件（共 %.1f MB）", (unsigned long)files4, bytes4 / 1048576.0);
+#endif
+        uint64_t own = g_par_have.count, pre = par_load_prebuilt(dev);
         g_par_on = 1; g_par_valid = g_par_have.count > 0;
+#ifdef PSO4_BUILT
+        par4_open_all(dev);   // the Metal 4 files, in the background (a first open from a USB drive took up to 0.8 s)
+#endif
         if (pre) MLOG("管线存档：App 带了 Mac 为这台设备的 GPU（%s）编好的 %llu 条管线，首次启动不用填充；本机自己的 %llu 条", dev.architecture.name.UTF8String,
                       (unsigned long long)pre, (unsigned long long)own);
         if (g_par_valid && own) MLOG("管线存档：%llu 条管线在 %lu 个文件里（共 %.1f MB），用到哪个才打开哪个", (unsigned long long)own, (unsigned long)files, bytes / 1048576.0);
@@ -249,15 +267,18 @@ static void par_open_dir(id<MTLDevice> dev) {
     });
 }
 // The archive with this pipeline's code, or nil (no file yet; off).
-#if TARGET_OS_IPHONE && defined(GAME_OOT)
-/* Ocarina of Time on iOS: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first. An
-   open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole device: with the
-   device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and the system ended
-   the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). A pipeline already made does
-   not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
+#if defined(GAME_OOT)
+/* Ocarina of Time: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first; 0 keeps every
+   one (A/B). iOS: an open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole
+   device: with the device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and
+   the system ended the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). The Mac
+   (2026-11-16): each open archive keeps about 116 KB of Metal's flatbuffers on the heap, 3,878 of them 452 MB after the
+   warm-up opened the App's 3,800 files (heap with MallocStackLogging, scratch/runs/2026-11/oot-mem10g/msl-1). A pipeline
+   already made does not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
 static NSMutableArray<NSString *> *g_par_open_lru; static uint64_t g_par_open_closed;
 static void par_open_note(NSString *name) {
-    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = (NSUInteger)(v < 8 ? 8 : v); }
+    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = v == 0 ? NSUIntegerMax : (NSUInteger)(v < 8 ? 8 : v); }
+    if (cap == NSUIntegerMax) return;
     if (!g_par_open_lru) g_par_open_lru = [NSMutableArray array];
     [g_par_open_lru removeObject:name]; [g_par_open_lru addObject:name];   // most recent last
     while (g_par_open_lru.count > cap) {
@@ -271,26 +292,48 @@ static void par_open_note(NSString *name) {
 #else
 #define PAR_OPEN_NOTE(name) ((void)0)
 #endif
+/* The file is opened outside g_par_mu: Metal reads an archive's header when it opens it, and with the lock held every other
+   thread's lookup (fill_row's "is it there", pso_new) waited for it. The packaging's archive check opened its 3,791 files so,
+   one at a time, while 7 of its 8 threads waited on the lock (2026-11-16, scratch/runs/2026-11/express-speed/profiles-1:
+   12,000 of the busy samples in the lock). Two threads that open the same file at once keep the one registered first. */
+/* Files actually opened by par_archive_for and the time it took (the frame record's @par_opens / @par_open_ms,
+   hle_nvn.c): 2026-11-17, OOT with the memory saver built 366 pipelines in the world at 4 ms each, up to 63 ms. */
+static _Atomic uint64_t g_par_opens, g_par_open_ns;
+void mtl_par_open_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_par_opens); *ns = atomic_load(&g_par_open_ns); }
 static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
     pthread_mutex_lock(&g_par_mu);
     if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     NSString *name = g_par_where[key];
+#ifdef PSO4_BUILT
+    if (name && par4_name(name)) { pthread_mutex_unlock(&g_par_mu); par_last_pre = 0; return nil; }   // a Metal 4 file (nvn_pso4.h): not this API's
+#endif
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
     if (a) PAR_OPEN_NOTE(name);
-    if (!a && name) {
-        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:pre ? par_pre_file(name) : par_file(name)];
-        NSError *e = nil; arch_map_begin(); a = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
-        if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
-        else {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
+    NSString *path = !a && name ? (pre ? par_pre_file(name) : par_file(name)) : nil;
+    pthread_mutex_unlock(&g_par_mu);
+    if (path) {
+        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:path];
+        uint64_t open_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        NSError *e = nil; arch_map_begin(); id<MTLBinaryArchive> opened = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
+        uint64_t open_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - open_t0;
+        atomic_fetch_add(&g_par_opens, 1); atomic_fetch_add(&g_par_open_ns, open_ns);
+        if (open_ns >= 20000000ull) {   // which file, how big, how long (2026-11-17 OOT: one open took 210 ms in the world)
+            struct stat st; long long bytes = stat(path.fileSystemRepresentation, &st) ? -1 : (long long)st.st_size;
+            MLOG("管线存档：打开 %s（%lld KB）用了 %.1f ms", name.UTF8String, bytes / 1024, open_ns / 1e6);
+        }
+        pthread_mutex_lock(&g_par_mu);
+        if ((a = g_par_open[name])) PAR_OPEN_NOTE(name);   // another thread opened it meanwhile
+        else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
+        else if ([g_par_where[key] isEqualToString:name]) {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
             for (NSString *k in [g_par_where allKeysForObject:name]) { [g_par_have removeObject:k]; [g_par_where removeObjectForKey:k]; }
             if (pre) [g_par_pre removeObject:name];
             else { [NSFileManager.defaultManager removeItemAtPath:par_file(name) error:nil]; [NSFileManager.defaultManager removeItemAtPath:par_keys_file(name) error:nil]; }
         }
+        pthread_mutex_unlock(&g_par_mu);
     }
-    pthread_mutex_unlock(&g_par_mu);
     par_last_pre = a && pre;
     return a;
 }
@@ -402,7 +445,7 @@ static void par_stale(NSString *key) {
     pthread_mutex_unlock(&g_par_mu);
 }
 // Called after a pipeline the archive did not have was compiled. The warm-up writes it at once; one compiled in play is in
-// pso_user.tsv, so the next start's warm-up builds it and writes it then.
+// the device's list (pso_collected.tsv), so the next start's warm-up builds it and writes it then.
 static void par_add(id<MTLDevice> dev, NSString *key, id desc) {
     if (g_par_on && key && par_write_in_place) par_write(dev, key, desc);
 }

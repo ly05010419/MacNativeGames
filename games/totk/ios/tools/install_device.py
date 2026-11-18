@@ -27,6 +27,13 @@ def xcodegen():
     return program('xcodegen')
 
 def run(cmd, **kw): return subprocess.run([str(x) for x in cmd], check=True, **kw)
+
+def profile_plist(prov):
+    """The provisioning profile's plist. Not `security cms -D`: it imports the signer's certificates into the login
+    keychain, a write to the system disk that the confined install refuses ("cert import failed: Operation not
+    permitted", 2026-11-16). openssl checks the CMS signature over the content and writes nothing."""
+    return subprocess.run(['openssl','smime','-inform','der','-verify','-noverify','-in',str(prov)],
+                          check=True, capture_output=True).stdout
 def out(cmd): return subprocess.run([str(x) for x in cmd], check=True, capture_output=True, text=True).stdout
 
 def teams():
@@ -327,7 +334,7 @@ def main():
     if platform == 'visionos' and dev['hardwareProperties'].get('platform') != 'visionOS':
         sys.exit('this is a native Vision Pro app: choose a paired Vision Pro with --device')
     prov, signed = profile(team, bundle_id, udid, platform)
-    info = plistlib.loads(out(['security','cms','-D','-i',prov]).encode())
+    info = plistlib.loads(profile_plist(prov))
     if udid not in info.get('ProvisionedDevices', []) and not info.get('ProvisionsAllDevices'):
         sys.exit('this device is not registered in the provisioning profile; register it with your Apple developer team first')
     ents = info['Entitlements']

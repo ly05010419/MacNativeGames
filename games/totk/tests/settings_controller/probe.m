@@ -4,6 +4,7 @@
 #include "../command_q/probe.m"
 #undef main
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 #include <assert.h>
 void runtime_feedback_attach(GCController *c){(void)c;}
 void runtime_feedback_detach(GCController *c){(void)c;}

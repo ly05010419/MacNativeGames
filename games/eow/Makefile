@@ -2,7 +2,8 @@
 # rewriter (third_party/d2r), the NVN-on-Metal layer (third_party/d2r_gfx), the shader translator (prebuilt/) and the
 # scripts are this folder's own copies, forked from games/by3 (itself forked from games/totk); nothing here reads another
 # game's folder. Everything generated goes to the work folder.
-# Inputs come from scripts/extract_code.py, scripts/merge_romfs.py and the rewrite (see README.md), then:
+# build.py runs every step and packages the app (README.md); by hand, inputs come from scripts/extract_code.py,
+# scripts/merge_romfs.py and the rewrite (see README.md), then:
 #   make prepare   # scripts/prepare_runtime.py: tables, RomFS index, fonts config
 #   make runtime   # EoW_build/build/eow-native
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)

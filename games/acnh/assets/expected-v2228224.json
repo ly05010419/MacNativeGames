@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "game": "Animal Crossing: New Horizons",
+  "title_id": "01006F8002326000",
+  "package_kind": "update",
+  "cnmt_version_raw": 2228224,
+  "display_version": "3.0.3",
+  "support_level": "bringup",
+  "exefs_sha256": {
+    "main": "68c7fbeda353f8e4a283eac6a9b99e713e72a327048214bf6a4e7214616b87c1",
+    "main.npdm": "0fc17cae37a3ff9337301b30cc2dc8a785248b0a0011503ca197f46d996e6a94",
+    "rtld": "ff7ca6f5d242a79d31aa9d271c177169aa2a19e8a70ec2dac27102585b663c71",
+    "sdk": "ba21e47098e046eb1a74c6498a10bb996566e41abfce796f2dff1aa59c8aef21",
+    "subsdk0": "3cdbe2b9d49dc072ea8e0d84b490210472237d6749e7aab8b80fd735e551710b"
+  },
+  "modules": [
+    {
+      "build_id": "283033deea3fc0b60104a4790098b9ccdb62d006000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "rtld"
+    },
+    {
+      "build_id": "ff1d1c05670db6021c85b624a710b96300000000000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "main"
+    },
+    {
+      "build_id": "a226048605d3597f90cb1067d141cd36647b90cd000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "sdk"
+    },
+    {
+      "build_id": "6c6ceace7be94107a8bd440bc2d6070469bc90ce000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "subsdk0"
+    }
+  ],
+  "control_nacp_sha256": "bee8d0fabbb9dd5e68245ac740563165fea720ddbb58849085cdb649c44989fd",
+  "rewritten_sha256": {
+    "main": "a637e4e9dc5692416516aad839ef8540090f439aa7e7e8491f3b10f4c7f6c317",
+    "sdk": "f4860dc99274ef092eaedd3a9c0be157f02bba978825945b1911c043243da63a",
+    "subsdk0": "c0135ade43b26b2ef32b4ae5909d40751fcfde1bcf664d74e90a6e7cd90cee5c"
+  },
+  "romfs_size": 10424488708,
+  "romfs_sha256": "7b9b80493c0b220354a1c8cbb8b97c8e51c8126c71f484a718c1d9ba9989c5bb",
+  "romfs_file_count": 103400,
+  "scope": "Input hash chains, NSO segments, generic instruction rewrite and static loader preflight verified; rtld, sdk and subsdk0 are byte-identical to 3.0.1; runtime and gameplay under bring-up."
+}

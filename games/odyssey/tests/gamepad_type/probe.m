@@ -11,6 +11,13 @@ void runtime_input_mouse(int button, int down) { (void)button; (void)down; }   /
 int runtime_gyro_enabled(void) { return 0; }
 void runtime_motion_mouse(int on) { (void)on; }
 void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) { (void)acc; (void)gyro; (void)now; }
+/* gamepad.m's DSU client (dsu_client.h) feeds motion_fusion.c and gamepad_feedback.m, which this probe does not link: never
+   called while DSU is off (the default). */
+void runtime_feedback_motion_source_changed(void) {}
+int runtime_motion_axes(const char *spec) { (void)spec; return 0; }
+void runtime_motion_deadzone_default(double deg) { (void)deg; }
+void runtime_motion_feed(const double acc[3], const double gyro[3], uint64_t now) { (void)acc; (void)gyro; (void)now; }
+void runtime_motion_live(int on) { (void)on; }
 uint64_t runtime_keyboard_buttons(void) { return 0; }
 
 static int failures, checked;

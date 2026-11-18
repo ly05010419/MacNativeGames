@@ -181,6 +181,89 @@ class Download(unittest.TestCase):
                 su.download('totk', d)
 
 
+class ExpressUpdateBringsTheNewestList(unittest.TestCase):
+    """User 2026-11-17: "极速更新也要补新着色器（包含 检查着色器的功能）": update_runtime.py takes the game's newest list
+    as Check shaders does, translates the shaders it adds and makes its pipelines, in the same update."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        import update_runtime
+        self.ur = update_runtime
+
+    def test_the_newest_list_from_github_else_the_repository_s_copy(self):
+        got = self.tmp / 'got.tsv'
+        with mock.patch.object(su, 'download', return_value=got) as download:
+            self.assertEqual(self.ur.newest_shader_list('totk', self.tmp), (got, 'the newest on GitHub'))
+        download.assert_called_once_with('totk', self.tmp / 'shader-list')
+        with mock.patch.object(su, 'download', side_effect=RuntimeError('could not download: offline')):
+            path, where = self.ur.newest_shader_list('botw', self.tmp)
+        self.assertEqual(path, REPO / 'games/botw/assets/shader_list.tsv')
+        self.assertIn('offline', where)   # the log says why the code's own list was used
+        self.assertEqual(self.ur.newest_shader_list('oot', self.tmp, self.tmp / 'mine.tsv'),
+                         ((self.tmp / 'mine.tsv').resolve(), 'given with --list'))
+        self.assertEqual(self.ur.shared_list_games(), {'totk', 'botw', 'oot'})
+
+    def test_new_shaders_are_translated_when_the_work_folder_can(self):
+        app, listfile = fake_app(self.tmp), make_list(self.tmp)   # KEY_A's depth state is new
+        tree, logs = self.tmp / 'totk', self.tmp / 'logs'
+        with mock.patch.object(self.ur, 'work_files_from_app') as taken:
+            with mock.patch.object(su, 'can_translate', return_value=''):
+                self.assertTrue(self.ur.list_adds_shaders(app, 'v143', tree, listfile, logs))
+            taken.assert_called_once_with(tree, app, 'v143', logs)   # what the work folder lacks, from the app first
+            with mock.patch.object(su, 'can_translate', return_value='the build\'s work folder is not there'):
+                self.assertFalse(self.ur.list_adds_shaders(app, 'v143', tree, listfile, logs))
+            (app / 'Contents/Resources/totk/build/shader-seed/shader-keys.json').unlink()
+            self.assertFalse(self.ur.list_adds_shaders(app, 'v143', tree, listfile, logs))   # its shaders stay
+
+    def test_a_work_folder_without_its_game_files_takes_the_app_s_verified_ones(self):
+        # 2026-11-17: scratch/build/botw19 held only the sources, so the 7 new shaders of BotW 1.9 were left out
+        import hashlib, struct
+        app = fake_app(self.tmp)
+        res = app / 'Contents/Resources/totk'
+        module = res / 'rewritten/v143/main.patched.bin'
+        module.write_bytes(b'the rewritten main module')
+        digest = hashlib.sha256(module.read_bytes()).hexdigest()
+        tables = bytearray(64 + 208)
+        struct.pack_into('<8s8sI', tables, 0, b'TOTKTAB1', b'v143', 1)
+        struct.pack_into('<16s72s', tables, 64, b'main', digest.encode())
+        (res / 'build/game-data/v143').mkdir(parents=True)
+        (res / 'build/game-data/v143/runtime-tables.bin').write_bytes(bytes(tables))
+        libs = self.tmp / 'ShaderData.bundle/shader-libs'
+        libs.mkdir(parents=True)
+        (libs / 'abc.metallib').write_bytes(b'lib')
+        (res / 'build/shader-libs').symlink_to(libs)
+        tree = self.tmp / 'work/totk'
+        with mock.patch.object(self.ur.build_app, 'romfs_mismatch', return_value='there is none'), \
+             mock.patch.object(self.ur.build_app, 'adopt_game_data') as adopt:
+            self.ur.work_files_from_app(tree, app, 'v143', self.tmp / 'logs')
+        self.assertEqual((tree / 'rewritten/v143/main.patched.bin').read_bytes(), b'the rewritten main module')
+        adopt.assert_called_once_with(tree, app, 'v143', tree / 'extracted/v143/romfs', self.tmp / 'logs')
+        self.assertEqual((tree / 'build/shader-libs/abc.metallib').read_bytes(), b'lib')
+        # a module that is not the one the game data names is never taken
+        module.write_bytes(b'another module')
+        (tree / 'rewritten/v143/main.patched.bin').unlink()
+        with mock.patch.object(self.ur.build_app, 'romfs_mismatch', return_value=None):
+            self.ur.work_files_from_app(tree, app, 'v143', self.tmp / 'logs')
+        self.assertFalse((tree / 'rewritten/v143/main.patched.bin').exists())
+
+    def test_the_update_uses_that_list_for_shaders_lists_and_pipelines(self):
+        text = (REPO / 'update_runtime.py').read_text()
+        main = text[text.index('def main('):]
+        for part in ("translate = args.seed or bool(listfile and list_adds_shaders(app, version, tree, listfile, logs))",
+                     'make_seed(tree, work, game, version, logs, env, shader_list=listfile)',
+                     'shaders = None if translate else build_app.app_shader_bundle(app, version)',
+                     'if translate:\n            replace_seed(',
+                     'prompt_app=app, shared=listfile)',
+                     'if translate:\n        build_app.step_warm_metal(',
+                     'return update_ocarina(app, work, remake=args.seed, shared=listfile)'):
+            self.assertIn(part, main)
+        oot = (REPO / 'games/oot/build.py').read_text()
+        oot = oot[oot.index('def update_runtime('):oot.index('def update_shaders(')]
+        self.assertIn('shader_steps(work,tree,logs,run,shared=shared,mode=mode)', oot)
+        self.assertIn("package_app(work,tree,app,'library' if folder else 'app',folder,shared=shared,mode=mode)", oot)
+
+
 class Job(unittest.TestCase):
     def test_the_launcher_s_update_shaders_runs_shader_update_in_the_app_s_work_folder(self):
         from tools.builder_jobs import build_job, repo

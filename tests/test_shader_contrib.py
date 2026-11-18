@@ -427,6 +427,13 @@ class NoIssueRouteTests(unittest.TestCase):
         self.assertFalse((TOTK / 'scripts/collect_shader_issues.py').exists())
 
 
+def upload_copies():
+    """Every game's copy of the shader upload (totk_contrib_upload.h with totk_inbox_send). games/acnh's file of that name
+    holds only the site's identity for its board and screenshots: it sends no shaders, so it is none of these."""
+    return [c for c in sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'))
+            if 'totk_inbox_send(' in c.read_text()]
+
+
 class ShaderInboxScheduleTests(unittest.TestCase):
     """Every game's copy of the upload (user 2026-11-10): the question has no row threshold, one upload at each start,
     then one an hour."""
@@ -434,7 +441,7 @@ class ShaderInboxScheduleTests(unittest.TestCase):
     def test_every_copy_asks_without_rows_and_uploads_at_start_then_on_a_timer(self):
         # The three Zelda games (games/totk: TotK and BotW; games/oot) send every half hour (user 2026-11-11: "开机和半小时间隔"),
         # the other games every hour.
-        copies = sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h'))
+        copies = upload_copies()
         self.assertGreaterEqual(len(copies), 7)
         for copy in copies:
             text = copy.read_text()
@@ -521,7 +528,7 @@ class OneContributionFilePerGameTests(unittest.TestCase):
         self.assertGreaterEqual(len(starts), 8)
         for path in starts:
             self.assertIn('totk_inbox_claim(', path.read_text(), f'{path}: sets the contribution file without claiming it')
-        odyssey = (TOTK.parent / 'odyssey/runtime/settings_panel.h').read_text()   # its launcher is C: the panel claims it
+        odyssey = (TOTK.parent / 'odyssey/runtime/settings_game.h').read_text()   # its launcher is C: the panel's restore claims it
         self.assertIn('totk_inbox_start(totk_inbox_claim(totk_contrib_path())', odyssey)
 
     def test_no_launcher_gives_every_other_game_one_file(self):
@@ -546,7 +553,7 @@ class ContributionOwnerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.probes = {}
-        for copy in sorted(TOTK.parent.glob('*/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h')):
+        for copy in upload_copies():
             game = copy.relative_to(TOTK.parent).parts[0]
             out = Path(cls.tmp.name) / f'probe-{game}'
             build = subprocess.run(['xcrun', 'clang', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',

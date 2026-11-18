@@ -45,13 +45,19 @@ static int seed_image_part_open(const char *path, seed_image_part *out) {
     *out = (seed_image_part){ fd, count, e, (const char *)m + (names - start), m, (size_t)(size - start) };
     return 1;
 }
-/* <folder>.img.000, .001, ... as long as they are there; 0 parts when there is none (a folder of files, as before). */
+/* <folder>.img.000, .001, ... as long as they are there; 0 parts when there is none (a folder of files, as before). A folder
+   that is a link (the Mac app's build/shader-seed and build/shader-libs point into its ShaderData bundle) has its image
+   beside the folder it points to, inside the bundle (games/oot/build.py shader_bundle, 2026-11-17). */
 static void seed_image_open(seed_image *img, NSString *folder) {
     img->parts = 0;
-    for (int i = 0; i < SEED_IMAGE_PARTS; i++) {
-        NSString *path = [folder stringByAppendingFormat:@".img.%03d", i];
-        if (!seed_image_part_open(path.fileSystemRepresentation, &img->p[img->parts])) break;
-        img->parts++;
+    for (int pass = 0; pass < 2 && !img->parts; pass++) {
+        NSString *base = pass ? folder.stringByResolvingSymlinksInPath : folder;
+        if (pass && [base isEqualToString:folder]) break;
+        for (int i = 0; i < SEED_IMAGE_PARTS; i++) {
+            NSString *path = [base stringByAppendingFormat:@".img.%03d", i];
+            if (!seed_image_part_open(path.fileSystemRepresentation, &img->p[img->parts])) break;
+            img->parts++;
+        }
     }
 }
 static const seed_image_ent *seed_image_find_part(const seed_image_part *p, const char *name, size_t len) {

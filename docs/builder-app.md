@@ -19,8 +19,44 @@ Players do not re-sign the downloaded Launcher, configure signing certificates o
 A portable build includes Python and its matching source snapshot; players do not compile the Launcher or
 need a checkout. At first use, the source is verified and extracted to
 `~/Library/Application Support/MacNativeGames/Builder/sources/<archive-sha256>`. Old source versions remain
-available to games that recorded them. Building a game still requires Apple's command line tools and the
-player's own game files and keys.
+available to games that recorded them. Building a game needs the player's own game files and keys.
+
+**No developer tools** (2026-11-17): the source snapshot carries `.prebuilt/`, the programs a Mac build would
+otherwise compile (each game version's runtime, SPIRV-Cross, the warm-up tool, the update unpacker), compiled by
+the release from the same commit (`tools/prebuilt.py`, with a manifest of the commit and each file's SHA-256). A
+build takes a program only when the folder belongs to the source's commit and the file matches; anything else is
+compiled as before, so a checkout, or a source with local changes, still needs the command line tools. The
+Launcher's first build page then shows "developer tools: not needed" and runs no `xcrun`, `git` or `make`, which
+on a Mac without them open Apple's install dialog. Ocarina of Time still needs the full Xcode with its Metal
+toolchain: it compiles the shaders translated from the player's own game; the build page says so and links Xcode.
+An iPhone / iPad build needs Xcode too.
+
+The Build page is three pages: 1 this Mac (what is missing, with its fix), 2 the game files and keys, 3 where the
+app goes and the build. Next opens when the page is done.
+
+### Code updates without a new Launcher (1.0.2 and newer)
+
+Before 1.0.2 a Launcher only ever ran the source it shipped with: an express update rebuilt the same code, and a fix
+reached players only through a new Launcher download (2026-11-16: a 1.0.0 player kept the Ocarina of Time grass bug fixed
+two days earlier). From 1.0.2 the Launcher also runs newer code from signed source releases:
+
+- **Published by hand.** The maintainer picks a pushed commit and publishes it as a GitHub release tagged `source-*`
+  with three files: `mng-source.json` (commit, commit time, archive name, SHA-256 and size, the oldest Launcher it works
+  with), `mng-source.json.sig` (its Ed25519 signature) and `mng-source-<commit>.tar.gz` (`git archive` of the commit).
+  The private key stays in the maintainer's keychain; nothing is published automatically.
+- **Checked by the signed app.** `tools/builder_app/source_updates.py` and `bundled_job.py` ship inside the signed
+  Launcher, never inside a source archive. A release is used only when the signature verifies with the public key in the
+  Launcher's own `Info.plist` (`MNGSourcePublicKey`, from `tools/builder_app/source_signing.pub`), the archive has the
+  size and SHA-256 the manifest names, its commit is newer than the Launcher's own source, and it asks for no newer
+  Launcher (otherwise the update's log says which Launcher to download).
+- **When.** The home page reads the release list at most once in ten minutes and downloads new code in the background;
+  pressing any update (express, fast or full) first makes sure the newest code is here, and its log names the code it
+  builds with (`Code: <commit>`). No network or a bad release leaves the code already on the Mac.
+- **Where.** Downloaded code goes to the same `sources/<archive-sha256>` folders with its manifest beside it; the game's
+  overlay then shows that commit as its build.
+- **Privacy.** GitHub is asked with the User-Agent `MNG-Launcher` and nothing about the player.
+
+`MNG_SOURCE_UPDATES=0` in the Launcher's environment keeps it on its own source.
 
 ## Build a portable copy locally
 

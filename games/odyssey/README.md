@@ -48,7 +48,7 @@ stick or D-pad selects controls. The three pages include the later TOTK/BOTW pan
 - **Key bindings:** keyboard/mouse and controller diagrams, a list for smaller windows, two key assignments per action,
   binding capture, a custom controller settings button and separate resets.
 
-Choices are saved beside `controls.txt` in **Odyssey Data** and restored at launch. The graph can stay visible with the
+Choices are saved beside `controls.txt` in the data folder (**~/Library/Application Support/MacNativeGames/Odyssey**) and restored at launch. The graph can stay visible with the
 text HUD off. Picture filters apply during ordinary 60 fps play as well as interpolation. Render choices are limited
 to the verified canvas allocated by that build; output resolution scales independently. Keys 2–7 no longer change
 settings.
@@ -107,8 +107,8 @@ The script runs eight steps (nine with `--update`) and stops with a clear messag
 5. verify the modules, the rewrite and the game data against the pinned hashes;
 6. build the shader tools (pinned SPIRV-Cross) and the runtime;
 7. prepare the whole-game shader seed, so first play stutters much less (`--skip-seed` leaves it out);
-8. extract the game's icon and version and package `Odyssey.app`, with saves, shader cache and logs in `Odyssey Data`
-   beside it.
+8. extract the game's icon and version and package `Odyssey.app`, with saves, shader cache and logs in
+   `~/Library/Application Support/MacNativeGames/Odyssey`.
 
 Each step is skipped when its verified output is already there, so after an error you fix the cause and run the same
 command again. Other options: `--work FOLDER` (a folder outside the repository, or one inside `games/odyssey` whose
@@ -136,19 +136,33 @@ ever translated) keeps warming behind the game; `ODYSSEY_WARM_BEFORE_PLAY=all` w
 the Mac's Metal cache is cold), `ODYSSEY_WARM_BEFORE_PLAY=0` restores the earlier title-only wait for comparison. Draw-skipping shader translation is off by default, as in the newer TOTK/BOTW host;
 `TOTK_SHADER_ASYNC=1` opts back in. New pipelines absent from every warm-up list can still cause first-use pauses.
 
+### With MNG Launcher
+
+MNG Launcher builds and updates the game too: drop the game (a combined XCI or NSP, or the base NSP and the update
+NSP), your `prod.keys` and a firmware or shared-fonts folder on its Super Mario Odyssey card. It runs `build.py` in this
+folder, which gives `scripts/build_odyssey.py` a Python of the work folder's, writes the app where the Launcher chose
+(`ODYSSEY_APP`) and records the work folder in it. The Launcher's update needs no game files: the loader tables are
+checked against the pinned hashes again, the runtime compiled again and the app packaged again (`build.py` `update`).
+What `build.py`, the packager and the app launcher share with the other ports MNG Launcher builds this way is
+`tools/port_app/` and `shared/app/app_launcher.h` (shared/README.md).
+The card has the Controls, Storage and Saves pages.
+
+The app's bundle ID is `org.macnativegames.odyssey`, signed ad hoc with the bundle ID as its designated requirement, so
+macOS keeps the "files on a removable volume" answer across builds. Its data folder is
+`~/Library/Application Support/MacNativeGames/Odyssey`; an `Odyssey Data` folder next to an app built before
+17 November 2026 is moved there at the first start.
+
 ## Playing
 
-- Opening Odyssey.app shows a settings window first, with the game's icon (made from your dump when the app is
-  packaged): render size, anti-aliasing, upscaler, texture filtering, sharpening, 60+60 at start, full screen or
-  window, the session limit and the controller's A/B/X/Y layout. **Play** saves them in `Odyssey Data` and starts the
-  game. Untick "Show this window at every launch" to go straight in; hold ⌥ Option while opening the app to see it again.
+- Opening Odyssey.app starts the game directly. Every setting is in the settings panel inside the game: press 1,
+  or both stick buttons (L3 + R3) on a controller. The panel is the one the Zelda ports use (`shared/README.md`).
 - Keyboard: WASD move, J jump (A), K (B), U throw cap (Y), I (X), arrows camera, Return pause (+). Game controllers
   supported by macOS work too.
-- Full screen by default; ⌃⌘F or the green button leaves it. Create an empty file `windowed` in `Odyssey Data` to
-  start in a window, or `no-metalfx` to turn off MetalFX upscaling.
+- Full screen by default; ⌃⌘F or the green button leaves it, and the panel's Display row decides how the next launch
+  starts. An empty file `no-metalfx` in the data folder turns off MetalFX upscaling.
 - The app is built from your own game files: do not share it.
 
-### The settings window
+### The settings panel (key 1)
 
 | Setting | Choices | What it does |
 |---|---|---|
@@ -158,14 +172,36 @@ the Mac's Metal cache is cold), `ODYSSEY_WARM_BEFORE_PLAY=0` restores the earlie
 | Texture filtering | Game default / 4× / 8× / 16× anisotropic | Keeps floors and walls sharp at an angle |
 | Sharpen the picture (CAS) | on / off | Counters softness from upscaling and 60+60 |
 | Frame rate | 60 fps / 60+60 frame generation | 60+60 adds a generated picture between game frames on a 120 Hz screen |
-| Display | Full screen / Window | How the game starts |
-| Session limit | 20 / 60 / 90 / 120 minutes / No limit | Closes the game after this time (it saves first) |
-| Controller A / B / X / Y | By label / By position | "By position" makes an Xbox-style layout match the printed letters on a Nintendo controller |
+| Display | Full screen / Window | Switches now, and is how the next launch starts |
+| Session limit | 20 / 60 / 90 / 120 minutes / No limit | Closes the game after this time (it saves first); a change counts at once |
+| Controller A / B / X / Y | By label / By position | "By position" makes an Xbox-style layout match the printed letters on a Nintendo controller; from the next launch |
 
-Return plays, Esc quits. Everything is kept in `Odyssey Data`: `graphics.txt` (`aa`, `cas`, `upscaler`, `textures`,
-`resolution`, `frame_generation`, `launcher`, one `name=value` per line), `windowed`, `session-minutes.txt` and
+Everything is kept in the data folder: `graphics.txt` (`aa`, `cas`, `upscaler`, `textures`,
+`resolution`, `frame_generation`, one `name=value` per line), `windowed`, `session-minutes.txt` and
 `face-buttons.txt`; editing them by hand works too. If the game stutters, watch the GPU line in the overlay and try, in
 order: resolution back to 1600 × 900, sharpening off, FSR 1 instead of MetalFX.
+
+Since 17 November 2026 the panel has the Zelda games' tabs too (their code is shared, `shared/README.md`); only their
+VR tab is theirs alone:
+
+- **Effects**: anti-aliasing, sharpen (CAS), upscaler, texture filtering and edge smoothing (MetalFX temporal), moved
+  here from Display, which keeps the resolutions, the frame rows, Display and Session limit. **Reset to defaults** sets
+  them back to the game's own (`graphics.txt` keeps its other lines; `graphics-taa.txt` is removed); a choice an
+  `ODYSSEY_AA` / `_CAS` / `_UPSCALER` / `_TEXTURES` / `ODYSSEY_POST` or `TOTK_TAA` variable made stays.
+- **User**: one save area per user, as on a console (`docs/users.md`). The user this run plays as (greyed), the user
+  the next launch opens with, and **Add User…**. Your saves so far stay yours: the profile's `account.uid` becomes the
+  user "Local", whose save area is the folder the game has used until now (`profile/save/<id>`); `users.txt` lists the
+  users.
+- **Input** also has the DSU rows (a cemuhook server's motion, buttons and sticks; off by default).
+- **Key bindings** has a screenshot row: **P**, and on a controller the touchpad (or the button picked) held 3 seconds.
+  A controller's Share / capture button takes one too. The picture is the game's own frame at its render size, before
+  the upscale and the effects, without the panel or the FPS box, saved as a PNG on the Desktop or in the folder the
+  截图分享 tab names.
+- **性能排行榜** (performance board) and **截图分享** (screenshot sharing): the latest frame-rate board and shared
+  screenshots of Odyssey (game id `odyssey`). Their switches, 我要上榜 and 分享我的截图, are off by default and never
+  asked; nothing is sent while they are off. Uncapped play without 60+60 is ranked. Both pages set the optional
+  nickname. Their files are in the data folder (`leaderboard.txt`, `screenshot-share.txt`), the board's random id one
+  folder up (`MacNativeGames/leaderboard-id.txt`, the Zelda games' too).
 
 ### Keys
 
@@ -184,6 +220,7 @@ available for bindings and no longer change graphics. Default gameplay keys reta
 | Return | Game menu (+) |
 | Tab / Esc | Map (−), while settings are closed |
 | L3 + R3 | Open settings (a controller button can replace this chord) |
+| P | Screenshot (on a controller: the touchpad held 3 s, or the capture / Share button) |
 
 Anti-aliasing, sharpening and the upscaler work during ordinary 60 fps play as well as 60+60. Render resolution
 changes the live scene cap within the maximum canvas allocated at launch, retaining the checked render-pool,

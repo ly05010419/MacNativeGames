@@ -42,7 +42,9 @@ TITLES = {
 # A game whose buttons' uses are not confirmed yet names them by the button alone (Ocarina of Time, 2026-11-13; the uses
 # in TITLES are Zelda TotK / BotW's).
 PLAIN = {'a': 'A', 'b': 'B', 'x': 'X', 'y': 'Y', 'plus': 'Plus', 'minus': 'Minus'}
-PLAIN_GAMES = ('oot', 'dread')   # Metroid Dread too: TITLES names Zelda's uses
+# Echoes of Wisdom (2026-11-17): its uses are not all confirmed either (games/eow/README.md). Metroid Dread
+# (2026-11-16) too: the uses TITLES names are Zelda's.
+PLAIN_GAMES = ('oot', 'eow', 'dread')
 
 
 def titles(game):
@@ -87,6 +89,27 @@ DEFAULT = {
     'camera_left': ('arrow_left',), 'camera_right': ('arrow_right',),
     'screenshot': ('p',),
 }
+# A game whose runtime starts from another table (its own keyboard_map.h keymap_default): Echoes of Wisdom keeps the fixed
+# layout it had before it had key bindings (games/eow/runtime/keyboard_map.h; tests/test_builder_keyboard_eow.py compares
+# the two). The other games use DEFAULT, as before.
+DEFAULTS = {
+    'eow': {
+        'a': ('j',), 'b': ('k', 'space'), 'x': ('i',), 'y': ('u',),
+        'lstick': ('z',), 'rstick': ('c',), 'l': ('q',), 'r': ('e',),
+        'zl': ('option',), 'zr': ('shift',),
+        'plus': ('return',), 'minus': ('tab', 'escape'),
+        'left': ('f',), 'up': ('t',), 'right': ('h',), 'down': ('g',),
+        'move_up': ('w',), 'move_down': ('s',), 'move_left': ('a',), 'move_right': ('d',),
+        'camera_up': ('arrow_up',), 'camera_down': ('arrow_down',),
+        'camera_left': ('arrow_left',), 'camera_right': ('arrow_right',),
+        'screenshot': ('p',),
+    },
+}
+
+
+def defaults_for(game):
+    """The default table of this game's runtime."""
+    return DEFAULTS.get(game, DEFAULT)
 
 @dataclass(frozen=True)
 class Layout:
@@ -109,14 +132,14 @@ class Layout:
         return tuple(seen)
 
 
-def default_layout(source: Path | None = None) -> Layout:
+def default_layout(source: Path | None = None, defaults: dict = DEFAULT) -> Layout:
     """The table the runtime starts from when keyboard.txt is missing or unreadable."""
-    return Layout({action: DEFAULT[action] for action in ACTIONS}, (), source)
+    return Layout({action: defaults[action] for action in ACTIONS}, (), source)
 
 
-def parse_layout(text: str, source: Path | None = None) -> Layout:
+def parse_layout(text: str, source: Path | None = None, defaults: dict = DEFAULT) -> Layout:
     """Read the file the way the runtime does: a bad line ignores the whole file."""
-    bindings = {action: list(DEFAULT[action]) for action in ACTIONS}
+    bindings = {action: list(defaults[action]) for action in ACTIONS}
     order = []
     problems = []
     for number, raw in enumerate(text.splitlines(), 1):
@@ -160,7 +183,7 @@ def parse_layout(text: str, source: Path | None = None) -> Layout:
             bindings[action] = bound
             order.append(action)
     if problems:
-        return Layout({action: DEFAULT[action] for action in ACTIONS}, tuple(problems), source)
+        return Layout({action: defaults[action] for action in ACTIONS}, tuple(problems), source)
     # Explicit bindings take their inputs away from omitted defaults. Conflicts
     # between explicit lines were rejected above, exactly as keymap_parse does.
     taken = {}
@@ -175,16 +198,16 @@ def parse_layout(text: str, source: Path | None = None) -> Layout:
     return Layout({action: tuple(names) for action, names in bindings.items()}, (), source)
 
 
-def read_layout(path: Path) -> Layout:
+def read_layout(path: Path, defaults: dict = DEFAULT) -> Layout:
     """The layout beside controls.txt; a missing file is the default table, as at runtime."""
     try:
         text = Path(path).read_text(encoding='utf-8', errors='replace')
     except OSError as error:
         if not Path(path).exists():
-            return default_layout(Path(path))
-        return Layout({action: DEFAULT[action] for action in ACTIONS},
+            return default_layout(Path(path), defaults)
+        return Layout({action: defaults[action] for action in ACTIONS},
                       (f'could not read {path}: {error.strerror or error}',), Path(path))
-    return parse_layout(text, Path(path))
+    return parse_layout(text, Path(path), defaults)
 
 
 def owner(layout: Layout, name: str) -> tuple:

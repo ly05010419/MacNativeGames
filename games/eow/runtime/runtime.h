@@ -93,19 +93,16 @@ void runtime_boot_count(const char *stage,uint64_t done,uint64_t total);   /* a 
 int runtime_output_res(unsigned *w,unsigned *h);
 uint64_t runtime_output_res_extra_bytes(void);
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
-int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
-uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
-void runtime_shortcut_help_toggle(void);
-int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
-int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
-float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
+float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 (always here: game_patches.c) */
+int fps_overlay_hud_mode(void);     /* gfx/nvn/fps_overlay.c (shared): the settings panel's overlay mode, HUD_MODE_* */
+int fps_overlay_full_hud(void);
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
-int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..2: FPS, shaders, load; 0 = not published */
+int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* a HUD_* line (fps_overlay.h); 0 = not published */
 
 void *runtime_account_override(const char *name);
 
@@ -115,7 +112,19 @@ void runtime_vpool_probe(void);
 void runtime_memory_probe(void);
 
 void runtime_input_key(unsigned code,int down);
+void runtime_input_key_synthetic(unsigned code,int down);   /* scripted input: the fixed test layout (runtime/input.c) */
+void runtime_input_mouse(int button,int down);   /* a mouse button over the game window: 0 left, 1 right, 2 middle, 3-4 side */
 void runtime_input_clear(void);
+struct KeyMap;
+void runtime_keymap_get(struct KeyMap *out);   /* the keyboard and mouse layout in force (keyboard_map.h) */
+void runtime_keymap_set(const struct KeyMap *map);   /* in force at once, saved in keyboard.txt */
+void runtime_keymap_reset(void);   /* the default, keyboard.txt removed */
+void runtime_settings_toggle(void);   /* key 1 / the controller shortcut: open or close the settings panel (frontend.m) */
+/* The settings panel's files, one word each next to controls.txt (TOTK_CONTROLS): runtime/gamepad.m. A run without
+   TOTK_CONTROLS (a test) neither reads nor writes them. */
+int runtime_setting_word(const char *name, char *word, size_t size);
+void runtime_setting_save(const char *name, const char *word, const char *what);
+void runtime_setting_remove(const char *name);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 void *runtime_game_override(const char *name);   /* runtime/system_services.c: network and system functions answered by name (from games/by3) */
@@ -126,12 +135,74 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
+/* The settings panel (runtime/settings_panel.h) and runtime/gamepad.m (from games/acnh): the controller layout
+   (controller_map.h), the controller type (gamepad_layout.h GAMEPAD_TYPE_*), the controller's way to the panel (L3 + R3,
+   or one button), and the controller read by the panel while it owns the input. */
+void runtime_controller_map_get(uint16_t *map, uint8_t *modes);
+void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes);
+void runtime_controller_map_reset(void);
+int runtime_gamepad_type(int *detected);
+int runtime_gamepad_type_set(int type);
+int runtime_gamepad_battery_percent(void);
+int runtime_gamepad_battery_left_percent(void);   /* a Joy-Con pair's left one, -1 none or unknown (the corner box) */
+int runtime_gamepad_settings_button(void);
+void runtime_gamepad_settings_button_set(int physical);
+void runtime_gamepad_settings_enable(int enabled);
+int runtime_gamepad_settings_requested(void);
+void runtime_gamepad_text_capture(int on);
+void runtime_gamepad_text_read(RuntimeGamepadState *out);
+int runtime_gamepad_screenshot_button(void);               /* the button held 3 s for a screenshot (controller_map.h), -1 none */
+void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; saved in controller-screenshot.txt (none: "none"), the touchpad the default */
+/* The controller's capture button (runtime/gamepad.m): the Share button of a controller GameController reports, or bit 5
+   of a Switch controller's 0x30 HID report. The hook is called once per press, on the main queue; the window (frontend.m)
+   sets it to save a picture of the game's next frame (runtime/screenshot.h). */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_capture_press(void) __attribute__((weak));   /* gamepad.m (weak: probes that link input.c alone): the capture button pressed once (the input file's "capture") */
+void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
+/* DSU (cemuhook) motion and input over UDP, as games/totk (runtime/dsu_client.h, included by gamepad.m; the input page's
+   DSU rows, runtime/dsu_settings_rows.h). Off by default. */
+int runtime_dsu_motion_active(void);     /* fresh DSU six-axis samples currently own motion, not just an open socket */
+typedef struct {
+    int enabled, slot, locked;
+    char endpoint[264];
+} RuntimeDSUSettings;
+typedef struct {
+    int connected, sensor;
+    double acc[3], gyro[3];   /* gyro in degrees/second for the settings display */
+    uint32_t buttons;
+    uint8_t axes[4];
+    char error[160];
+} RuntimeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out);   /* main queue; environment overrides saved preferences */
+void runtime_dsu_status(RuntimeDSUStatus *out);       /* main queue; passive snapshot */
+int runtime_dsu_apply(const RuntimeDSUSettings *settings); /* 0 applied and saved, -1 invalid, -2 environment locked */
+void runtime_feedback_motion_source_changed(void);   /* gamepad_feedback.m: switch between DSU and native motion without changing rumble */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
 typedef struct { uint64_t sampling, delta_ns; float acc[3], gyro[3], angle[3], dir[9]; } RuntimeMotionState;   /* G, rev/s, rev, 3 axes */
 int runtime_rumble_enabled(void);
 int runtime_gyro_enabled(void);
+/* The settings panel's rumble switch: in force at once when the game has the vibration devices (it got them at start), else
+   from the next launch; saved in rumble.txt. TOTK_RUMBLE or an agent's test session decide first (locked). */
+int runtime_rumble_locked(void);
+int runtime_rumble_choice(void);
+void runtime_rumble_choose(int on);
+/* The shared settings panel's rumble and gyro rows (shared/runtime/settings_panel.h settings_feedback_row): gyro 0 is the
+   rumble switch above; gyro 1 is motion, which TOTK_GYRO alone decides here (locked). runtime/hid_feedback.c. */
+int runtime_feedback_locked(int gyro);
+int runtime_feedback_present(int gyro);
+int runtime_feedback_choice(int gyro);
+void runtime_feedback_choose(int gyro, int on);
+/* Named by the shared panel's rumble strength and mouse sensitivity rows, which this game does not have (its rumble has no
+   strength setting and its mouse only clicks): declared for the panel's helpers, defined nowhere, so a row that used them
+   would fail to link instead of doing nothing. */
+int runtime_rumble_gain_locked(void);
+float runtime_rumble_gain(void);
+void runtime_rumble_gain_set(float gain);
+int runtime_mouse_sensitivity(void);
+int runtime_mouse_sensitivity_locked(void);
+void runtime_mouse_sensitivity_set(int value);
 void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);

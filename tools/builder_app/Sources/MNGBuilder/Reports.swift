@@ -25,6 +25,8 @@ struct ClassifyReport: Codable {
         var needs_keys: Bool
         var keys_problems: [String]
         var blocks: [String]
+        var tool_blocks: [String]?   // the blocks about this Mac's tools (page 3), also in blocks
+        var tool_needs: [String]?    // what each one is: "metal" (Xcode's Metal toolchain) or "clt" (the command line tools)
         var notes: [String]
     }
     let items: [Item]
@@ -79,11 +81,11 @@ struct BuildEvent: Decodable {
     let event: String
     let t: Double?
     // plan
-    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?
+    let game: String?, app: String?, work: String?, log: String?, measured: Bool?, kind: String?, steps_last: Int?
     // stage / step
     let index: Int?, total: Int?, name: String?, text: String?
     // progress
-    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?
+    let fraction: Double?, left: Double?, elapsed: Double?, step_done: Int?, step_total: Int?, step_left: Double?
     // done
     let ok: Bool?, cancelled: Bool?, message: String?, detail: String?, step_log: String?, note: String?
 }

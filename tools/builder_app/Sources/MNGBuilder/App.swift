@@ -11,8 +11,29 @@ struct BuilderApp: App {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 640, minHeight: 620)
+                .overlay(alignment: .bottomTrailing) { VersionLabel() }
         }
         .windowResizability(.contentMinSize)
+    }
+}
+
+/// The Launcher's version at the window's bottom right (user 2026-11-17: "launcher 右下角 显示 版本号"), from its
+/// Info.plist (make_app.py: the release's --version); the bundled code's commit shows on hover.
+struct VersionLabel: View {
+    private let info = Bundle.main.infoDictionary ?? [:]
+
+    var body: some View {
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let commit = (info["MNGSourceCommit"] as? String).map { String($0.prefix(8)) } ?? "?"
+        // Only a release has a version (user 2026-11-17: "版本号 不对？？？" — a Launcher built from a checkout said
+        // 1.0.0); one built here says it is a development build and of which commit.
+        Text(Paths.isRelease ? T.version(version) : T.devVersion(commit))
+            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(.regularMaterial, in: Capsule())
+            .padding(8)
+            .help(T.versionHelp(commit))
+            .accessibilityIdentifier("launcher-version")
     }
 }
 

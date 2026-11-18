@@ -26,6 +26,9 @@ FONTS = [
     (5, 'nintendo-extension', '0100000000000810', 'nintendo_ext_003.bfttf'),
 ]
 BFTTF_DECODED_MAGIC = 0x7f9a0218
+# a merged or trimmed card image ("1G+1U") keeps no system update partition, so no fonts (#2242)
+OTHER_SOURCES = ('; a merged or trimmed card image ("1G+1U") carries none. Supply --firmware <unpacked firmware NCA directory> or '
+                 '--shared-fonts <the shared-fonts folder of an earlier build> (in MNG Launcher: drop that folder too)')
 
 
 class Slice:
@@ -64,7 +67,7 @@ def xci_data_ncas(xci, keys):
         require(read_at(f, 0x100, 4) == b'HEAD', 'Not a game card image (XCI)')
         root = struct.unpack('<Q', read_at(f, 0x130, 8))[0]
         update = [e for e in hfs0_entries(f, root) if e[0] == 'update']
-        require(update, 'The game card image has no system update partition')
+        require(update, 'The game card image has no system update partition' + OTHER_SOURCES)
         for name, offset, size in hfs0_entries(f, update[0][1]):
             if not name.endswith('.nca') or name.endswith('.cnmt.nca'):
                 continue
@@ -164,7 +167,7 @@ def main():
     if args.xci:
         card = xci_data_ncas(args.xci, keys)
         missing = sorted({t for _, _, t, _ in FONTS} - card.keys())
-        require(not missing, f'Shared font data missing from the card update partition: {", ".join(missing)}')
+        require(not missing, f'Shared font data missing from the card update partition: {", ".join(missing)}' + OTHER_SOURCES)
         source = lambda title: Slice(args.xci, card[title])
     elif args.firmware:
         firmware = firmware_data_ncas(args.firmware, keys)

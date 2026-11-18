@@ -9,6 +9,7 @@ and lists what still blocks a build."""
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
+import subprocess
 
 from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
@@ -45,6 +46,8 @@ class Plan:
     needs_keys: bool = True    # a Switch 2 dump and a .nup need none
     keys_problems: list = field(default_factory=list)   # the blocks about the keys (the window shows them at the keys)
     blocks: list = field(default_factory=list)
+    tool_blocks: list = field(default_factory=list)   # the blocks about this Mac's tools, not the files (also in blocks)
+    tool_needs: list = field(default_factory=list)    # what each of them is: 'metal' (Xcode's) or 'clt' (the window's fix)
     notes: list = field(default_factory=list)
 
 
@@ -174,14 +177,118 @@ def _supported(game):
         return {65536}
     if game == 'dread':
         return {0, 327680}
-    if game == 'worldend':
+    if game in ('worldend', 'tmnt'):
         return {0}
+    if game == 'odyssey':   # 1.3.0 (262144) or 1.4.1, checked by hash in the build (scripts/inspect_version.py), not by number
+        return None
+    if game == 'eow':   # games/eow/assets/expected-v1.1.0.json: base 0 and update 1.1.0
+        return {0, 196608}
+    if game == 'acnh':   # games/acnh/prepare.py SUPPORTED_UPDATES; 3.0.3 is the newest, picked first
+        return {0, 458752, 2097152, 2228224}
     return {int(v['version']) for v in repo.build_app().VERSIONS.values()
             if str(v.get('version', '')).isdigit() and repo.game_of_title(str(v.get('title_id', '0' * 16))) == game}
 
 
+def no_metal_compiler():
+    """True when no Xcode on this Mac has its Metal toolchain (build_app.metal_compiler, which the builds use)."""
+    return repo.build_app().metal_compiler() is None
+
+
+def oot_needs_metal():
+    """Ocarina of Time compiles its 40,000-odd shaders into libraries with Xcode's Metal compiler (games/oot/scripts/
+    build_shader_libs.py stops without it, after the translation), where the other games need only the command line
+    tools: said before its build or update starts (user 2026-11-17: "修")."""
+    return t('Ocarina of Time compiles its shaders with Xcode\'s Metal compiler: install the full Xcode and its Metal toolchain '
+             '(Xcode › Settings › Components › Metal Toolchain, or xcodebuild -downloadComponent MetalToolchain)',
+             '时之笛要用 Xcode 的 Metal 编译器编着色器：请安装完整的 Xcode 和它的 Metal 工具链'
+             '（Xcode › 设置 › 组件 › Metal Toolchain，或 xcodebuild -downloadComponent MetalToolchain）')
+
+
+def _hfs0_names(f, offset, length):
+    """(name, absolute offset) of each entry of the HFS0 table at offset (the layout extract_exefs.partition_entries
+    reads, bounded the same way), or [] when there is no table there."""
+    import struct
+    f.seek(offset)
+    hdr = f.read(16)
+    if len(hdr) < 16 or hdr[:4] != b'HFS0':
+        return []
+    count, strings_size = struct.unpack_from('<II', hdr, 4)
+    if count > 4096 or strings_size > 1024 * 1024:
+        return []
+    size = 16 + count * 64 + strings_size
+    if offset + size > length:
+        return []
+    f.seek(offset)
+    raw = f.read(size)
+    strings = raw[16 + count * 64:]
+    out = []
+    for i in range(count):
+        off, _, nameoff = struct.unpack_from('<QQI', raw, 16 + i * 64)
+        end = strings.find(b'\0', nameoff)
+        if nameoff >= len(strings) or end < 0:
+            return []
+        out.append((strings[nameoff:end].decode('utf-8', 'replace'), offset + size + off))
+    return out
+
+
+def card_update_ncas(path):
+    """How many NCAs (besides metadata) a game card image's system update partition holds, read from its HFS0 tables,
+    which need no keys: 0 for a merged or trimmed card ("1G+1U"), whose missing or empty update partition has no system
+    fonts (#2242), None when the file does not read as a card image (an .xcz, a damaged file: left to the build)."""
+    import struct
+    try:
+        with open(path, 'rb') as f:
+            length = f.seek(0, 2)
+            f.seek(0x100)
+            if f.read(4) != b'HEAD':
+                return None
+            f.seek(0x130)
+            root = struct.unpack('<Q', f.read(8))[0]
+            update = [o for n, o in _hfs0_names(f, root, length) if n == 'update']
+            if not _hfs0_names(f, root, length):
+                return None
+            if not update:
+                return 0
+            return sum(1 for n, _ in _hfs0_names(f, update[0], length) if n.endswith('.nca') and not n.endswith('.cnmt.nca'))
+    except (OSError, struct.error, ValueError):
+        return None
+
+
+# The games whose Mac build tools/prebuilt.py covers (build_app.py's runtimes of games/totk/Makefile), so a release's
+# Launcher builds them with no developer tools; Ocarina of Time needs Xcode (oot_needs_metal), which brings them. The
+# others (ss, dread, worldend, tmnt, acnh: their own games/<game>/build.py) compile on this Mac.
+PREBUILT_GAMES = {'totk', 'botw', 'dkb', 'pkp', 'oot'}
+
+
+def no_developer_tools():
+    """True when the folder xcode-select names has no clang. Read from the files, never by running xcrun, git or make,
+    which on a Mac without the tools open Apple's install dialog (/usr/bin/xcode-select is a program of its own)."""
+    try:
+        folder = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return not folder or not (Path(folder) / 'usr/bin/clang').is_file()
+
+
+def needs_developer_tools(game):
+    """A game a release's prebuilt programs do not cover compiles on this Mac (user 2026-11-17: page 1 says the developer
+    tools are not needed, true for the games tools/prebuilt.py covers only)."""
+    name = repo.GAMES.get(game, game)
+    return t(f'{name} is compiled on this Mac: install Apple\'s command line tools (xcode-select --install)',
+             f'{name}要在这台 Mac 上编译：请安装 Apple 的命令行工具（xcode-select --install）')
+
+
 def plan(items, work=None):
     """The build these items make. work: the work folder the build will use (fonts extracted there count)."""
+    p = _plan(items, work)
+    if p.game and p.game not in PREBUILT_GAMES and no_developer_tools():
+        p.blocks.append(needs_developer_tools(p.game))
+        p.tool_blocks.append(p.blocks[-1])
+        p.tool_needs.append('clt')
+    return p
+
+
+def _plan(items, work=None):
     p = Plan()
     by_role = lambda role, game=None: [i for i in items if i.role == role and (game is None or i.game in (game, None))]
     keys = by_role('keys')
@@ -208,10 +315,17 @@ def plan(items, work=None):
         if base.role == 'ss_dump':
             p.update_version = 65536
         p.fonts = (by_role('fonts') or [Item('', '')])[-1].path or None
-        if base.game == 'oot' and not p.fonts:
-            p.notes.append(t('Ocarina of Time needs the six shared-font files of a Switch 2 firmware unless your work folder '
-                             'already has them: drop their folder too',
-                             '时之笛需要 Switch 2 固件的六个系统字体文件（工作目录里已有就不用）：把它们的文件夹也放进来'))
+        # a Switch 2 dump holds no fonts: games/oot/build.py prepare_fonts and build_app.py main_ns2 take open-source ones
+        if base.role in ('ns2_dump', 'nup') and not p.fonts:
+            p.notes.append(t('no system fonts given: the build uses open-source Noto fonts (downloaded once) unless your work '
+                             'folder already has fonts; to use the firmware fonts of a Tears of the Kingdom or Breath of the '
+                             'Wild build, drop their shared-fonts folder too',
+                             '没有放系统字体：打包会用开源的 Noto 字体（只下载一次），工作目录里已有字体就用已有的；'
+                             '想用王国之泪或旷野之息打包留下的固件字体，把那个 shared-fonts 文件夹也放进来'))
+        if p.game == 'oot' and no_metal_compiler():
+            p.blocks.append(oot_needs_metal())
+            p.tool_blocks.append(p.blocks[-1])   # the Launcher shows it with this Mac's other needs, at the build
+            p.tool_needs.append('metal')
         return p
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))
@@ -231,7 +345,7 @@ def plan(items, work=None):
     updates = by_role('update', p.game)
     if updates:
         supported = _supported(p.game)
-        usable = [u for u in updates if u.version in supported] or updates
+        usable = updates if supported is None else [u for u in updates if u.version in supported] or updates
         newest = _newest(usable)
         p.update, p.update_version = newest.path, newest.version
         skipped = [Path(u.path).name for u in updates if u not in usable]
@@ -246,14 +360,34 @@ def plan(items, work=None):
     b = repo.build_app()
     has_fonts = p.firmware or p.fonts or (work and b.fonts_valid(Path(work) / 'totk/extracted/firmware/shared-fonts'))
     # build_app.py: an NSP holds no system fonts, nor does a Breath of the Wild card image (step_data_botw)
-    if p.game not in ('ss', 'dread', 'worldend') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
+    if p.game not in ('ss', 'dread', 'worldend', 'tmnt') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
         p.blocks.append(t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
                           'an earlier build) too',
                           '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来'))
+    # a card image whose system update partition is missing or empty (merged / trimmed, "1G+1U") has no fonts either: said
+    # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same);
+    # the games that take no system fonts are left out, as in the check above (TMNT: after PR #2125)
+    elif (p.game not in ('ss', 'dread', 'worldend', 'tmnt') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
+          and not has_fonts and card_update_ncas(p.base) == 0):
+        p.blocks.append(t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
+                          'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too',
+                          '这个卡带镜像没有系统更新分区（合并或精简过的卡带，“1G+1U”），所以没有系统字体：把解开的固件文件夹'
+                          '（或以前打包留下的 shared-fonts 文件夹）也放进来'))
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
-    if p.game in ('dread', 'worldend') and p.dlc:
+    if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
+    if p.game == 'eow' and p.update_version != 196608:
+        p.blocks.append(t('Echoes of Wisdom needs its 1.1.0 update next to the base game', '智慧的再现需要和本体一起放入 1.1.0 更新'))
+    if p.game == 'odyssey' and p.dlc:
+        p.blocks.append(t('Super Mario Odyssey does not accept add-on packages', '超级马力欧 奥德赛不接收附加内容包'))
+    if p.game == 'eow' and p.dlc:
+        p.blocks.append(t('Echoes of Wisdom does not accept add-on packages', '智慧的再现不接收附加内容包'))
+    if p.game == 'acnh' and not p.update:
+        p.blocks.append(t('Animal Crossing needs its 3.0.3 update (or 3.0.1 / 1.2.1) next to the base game',
+                          '动物森友会需要和本体一起放入 3.0.3 更新（或 3.0.1 / 1.2.1）'))
+    if p.game == 'acnh' and p.dlc and p.update_version not in (2097152, 2228224):
+        p.blocks.append(t('Animal Crossing\'s add-ons need the 3.0.1 or 3.0.3 update', '动物森友会的追加内容需要 3.0.1 或 3.0.3 更新'))
     if p.game == 'ss' and p.dlc:
         p.blocks.append(t('Skyward Sword HD does not accept add-on packages', '天空之剑 HD 不接收附加内容包'))
     p.blocks = p.keys_problems + p.blocks

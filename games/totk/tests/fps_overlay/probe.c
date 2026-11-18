@@ -134,6 +134,51 @@ int main(void) {
     CHECK(!strcmp(line, "新渲染管线 12 / 总计 3128"), "render pipeline line \"%s\"", line);
     pso_overlay_text(line, sizeof line, 0, -1);
     CHECK(!strcmp(line, "新渲染管线 0 / 总计 --"), "render pipeline line before counting \"%s\"", line);
+    /* The lines with the rest (user 2026-11-16: "都要显示 不要有隐藏"): the player's run had 2,201 libraries loaded and 3,000
+       pipelines made (2,995 from the archive) that no line showed. */
+    { char l[256];   // wider than a panel line (HUD_TEXT_MAX), so an over-long line is measured, not cut
+      lib_overlay_text(l, sizeof l, 12, 2201, 0);
+      CHECK(!strcmp(l, "着色器库 本机新 12 · 游玩中加载 2201（现编 0）"), "library line \"%s\"", l);
+      lib_overlay_text(l, sizeof l, 0, -1, -1);
+      CHECK(!strcmp(l, "着色器库 本机新 0 · 游玩中加载 --（现编 --）"), "library line before the title \"%s\"", l);
+      play_overlay_text(l, sizeof l, 3000, 2995, 5);
+      CHECK(!strcmp(l, "游玩中建管线 3000（存档取 2995 · 现编 5）"), "in-play line \"%s\"", l);
+      kinds_overlay_text(l, sizeof l, 3, 1, 0, 2);
+      CHECK(!strcmp(l, "本机新 计算 3 · 网格 1 · 贴图读取 0 · 边框 2"), "kinds line \"%s\"", l);
+      misc_overlay_text(l, sizeof l, 7, 272);
+      CHECK(!strcmp(l, "不进清单的 HDR / 宿主管线 7 · 存档填充失败 272"), "misc line \"%s\"", l);
+      misc_overlay_text(l, sizeof l, 0, -1);
+      CHECK(!strcmp(l, "不进清单的 HDR / 宿主管线 0 · 存档填充失败 --"), "misc line before a fill \"%s\"", l);
+      /* every hitch (user 2026-11-16: "每个卡顿 都有 可视化的 了解"): the player's frame 9413 as the long-frame line logged it */
+      hitch_info h = {191.76, 18.7, 386.4, 31.8, 151.0, 7.8, 5.6, 12, 6, 11, 4, 0};   // (386.5 / 7.9 logged; no .5 to round)
+      hitch_text(l, sizeof l, &h);
+      CHECK(!strcmp(l, "卡顿 386 ms @191.8 s：建管线 12 + 库 6 共 151 ms · 贴图 15 张 8 ms · 其余提交 228 ms · 提交外 0 ms · GPU 32 ms"), "hitch line \"%s\"", l);
+      h.hidden = 1; h.frame_ms = 500; h.submit_ms = 20; h.make_ms = 30;
+      hitch_text(l, sizeof l, &h);
+      CHECK(!strcmp(l, "卡顿 500 ms @191.8 s：建管线 12 + 库 6 共 30 ms · 贴图 15 张 8 ms · 其余提交 0 ms · 提交外 480 ms · GPU 32 ms（读取画面里）"), "hitch line, frame interval, loading screen \"%s\"", l);
+      hitch_info wide = {9999.9, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 9999, 1};   // ~10 s, 10,000 of each
+      hitch_text(l, sizeof l, &wide);
+      CHECK(strlen(l) < HUD_TEXT_MAX, "a wide hitch line fits a panel line (%zu of %d bytes)", strlen(l), HUD_TEXT_MAX);
+      hitch_count_text(l, sizeof l, 521, 23, 2, 50);
+      CHECK(!strcmp(l, "长帧 521 次 · ≥50 ms 的卡顿 23 次（读取画面里 2 次）"), "hitch count line \"%s\"", l);
+      miss_overlay_text(l, sizeof l, 4, 0, 0, 1);
+      CHECK(!strcmp(l, "存档没命中 绘制时 没存过 4 · 不认 0 · 预热 App 清单 0 · 本机清单 1"), "archive miss line \"%s\"", l);
+      miss_overlay_text(l, sizeof l, 9999999, 9999999, 9999999, 9999999);
+      CHECK(strlen(l) < HUD_TEXT_MAX, "the widest archive miss line fits a panel line (%zu)", strlen(l));
+      kinds_overlay_text(l, sizeof l, 9999999, 9999999, 9999999, 9999999);
+      CHECK(strlen(l) < HUD_TEXT_MAX, "the widest kinds line fits a panel line (%zu)", strlen(l));
+      hitch_count_text(l, sizeof l, 9999999, 9999999, 9999999, 9999);
+      CHECK(strlen(l) < HUD_TEXT_MAX, "the widest hitch count line fits a panel line (%zu)", strlen(l)); }
+    /* Which lines each overlay choice shows (user 2026-11-16: "fps 全信息" holds the new lines; 全部 keeps its four). */
+    { static const int lines[] = HUD_ORDER; int n = (int)(sizeof lines / sizeof *lines), shown[4] = {0}, modes[4] = {HUD_MODE_OFF, HUD_MODE_ALL, HUD_MODE_MINIMAL, HUD_MODE_FULL};
+      for (int m = 0; m < 4; m++) { fps_overlay_set_hud_mode(modes[m]); for (int i = 0; i < n; i++) shown[m] += hud_line_shown(lines[i]); }
+      CHECK(shown[0] == 0 && shown[2] == 1 && shown[3] == n && shown[3] == HUD_LINES, "lines shown off / minimal / full = %d / %d / %d of %d", shown[0], shown[2], shown[3], n);
+      fps_overlay_set_hud_mode(HUD_MODE_ALL);
+      CHECK(shown[1] == 4 && hud_line_shown(HUD_FPS) && hud_line_shown(HUD_SHADER) && hud_line_shown(HUD_PSO) && hud_line_shown(HUD_LOAD)
+            && !hud_line_shown(HUD_HITCH0) && !hud_line_shown(HUD_LIB) && !hud_line_shown(HUD_MISS), "全部 shows FPS, shaders, render pipelines and load only (%d)", shown[1]);
+      fps_overlay_set_hud_mode(HUD_MODE_FULL);
+      CHECK(fps_overlay_hud_mode() == HUD_MODE_FULL && fps_overlay_full_hud(), "FPS 全信息 is kept and still draws the shader / load boxes");
+      fps_overlay_set_hud_mode(HUD_MODE_ALL); }
     { char fl[96];   /* output resolution, then the internal (scene) one in brackets (2026-10-23) */
       fps_overlay_text(&(fps_overlay_info){60, 1920, 1080, 0, 0, 0, 1600, 900}, fl, sizeof fl);
       CHECK(!strcmp(fl, "FPS 60  1920x1080 (1600x900)"), "fps line with the internal resolution \"%s\"", fl);

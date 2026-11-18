@@ -94,10 +94,12 @@ class OotIosMipDrop(unittest.TestCase):
 
     def test_ios_eviction_follows_what_the_residency_set_holds(self):
         """The app's allowance cannot see file pages wired by residency (the iPad's IOGPUFamily panic, 2026-11-10): on iOS
-        the texture eviction also runs once the set passes 85 % of Metal's working set; the Mac never asks."""
+        the texture eviction also runs once the set passes 95 % of Metal's working set (85 % until 2026-11-16, user:
+        "超过上限的 95% 才行"); the Mac never asks."""
         cap = function_body(self.src, 'static uint64_t res_over_working_set(void) {')
         ios, mac = cap.split('#else', 1)
         self.assertIn('#if TARGET_OS_IPHONE && defined(GAME_OOT)', ios)
+        self.assertIn('strtoull(e, NULL, 10) : 95;', ios)
         self.assertIn('recommendedMaxWorkingSetSize', ios)
         self.assertIn('g_res_live_bytes', ios)
         self.assertIn('return 0;', mac)
@@ -105,14 +107,15 @@ class OotIosMipDrop(unittest.TestCase):
         self.assertIn('res_over_working_set()', sweep)
 
     def test_ios_keeps_few_pipeline_archives_open(self):
-        """The iPad ran out of vnodes with one open archive per pipeline (jetsam vnode-limit, 2026-11-13): on iOS
-        Ocarina of Time keeps at most TOTK_PAR_OPEN_MAX archive files open, least recently used closed first."""
+        """The iPad ran out of vnodes with one open archive per pipeline (jetsam vnode-limit, 2026-11-13): Ocarina of
+        Time keeps at most TOTK_PAR_OPEN_MAX archive files open, least recently used closed first. Since 2026-11-16 on
+        the Mac too (each open archive kept about 116 KB of Metal's heap, 452 MB for 3,878 files)."""
         par = (NVN / 'totk_pipeline_archive.h').read_text()
-        self.assertIn('#if TARGET_OS_IPHONE && defined(GAME_OOT)\n/* Ocarina of Time on iOS: at most TOTK_PAR_OPEN_MAX', par)
+        self.assertIn('#if defined(GAME_OOT)\n/* Ocarina of Time: at most TOTK_PAR_OPEN_MAX', par)
         note = function_body(par, 'static void par_open_note(NSString *name) {')
         self.assertIn('[g_par_open removeObjectForKey:old];', note)
         get = function_body(par, 'static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {')
-        self.assertIn('if (a) { g_par_open[name] = a; PAR_OPEN_NOTE(name);', get)
+        self.assertIn('else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name);', get)   # opened outside g_par_mu since f0bb4fd5
         self.assertIn('if (a) PAR_OPEN_NOTE(name);', get)
 
     def test_ios_warm_up_uses_several_threads(self):

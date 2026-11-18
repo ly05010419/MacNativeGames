@@ -237,8 +237,10 @@ def update(app, listfile, work=None):
         ba.remove_tree(tmp)
     bundle_id = plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') or ba.APPS[game][1]
     shaders = None if translate else ba.app_shader_bundle(app, version)
-    if shaders:
-        ba.clone_app_except(app, tmp, shaders)
+    pipes = ba.app_pipeline_bundle(app, version)   # its pipeline archive (mac_pipelines places it again below)
+    skips = [b for b in (shaders, pipes) if b]
+    if skips:
+        ba.clone_app_except(app, tmp, skips)
     else:
         ba.copy_tree(app, tmp)
     replaced = []
@@ -248,9 +250,11 @@ def update(app, listfile, work=None):
             ur.replace_seed(tree, tmp, version, game, logs, bundle_id)
         ba.run([sys.executable, SCRIPTS / 'shader_list.py', 'resolve', new_res / 'build/shader-seed', listfile,
                 new_res / 'build/pso_manifest.tsv', new_res / 'build/pso_title.tsv'], logs / 'shader-list-resolve.log')
-        ba.mac_pipelines(tree, new_res, version, logs)
+        ba.mac_pipelines(tree, new_res, version, logs, installed=app)
         if shaders:
             ba.shader_signature_only(tmp, shaders)
+        if pipes and (tmp / 'Contents/Helpers' / pipes.name).is_symlink():   # the tool made none this time: the installed one stays
+            ba.shader_signature_only(tmp, pipes)
         ba.sign_app(tmp, logs)
         ba.wait_until_closed(app)
         ba.install_app(tmp, app, remove=replaced.append)

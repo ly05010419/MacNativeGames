@@ -16,6 +16,13 @@ static double lastYaw, lastAcc;
 int runtime_gyro_enabled(void) { return gyroOn; }
 void runtime_motion_mouse(int on) { motionMouse = on; }
 void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) { (void)now; feeds++; lastYaw = gyro[2]; lastAcc = acc[2]; }
+/* gamepad.m's DSU client (dsu_client.h) feeds motion_fusion.c and gamepad_feedback.m, which this probe does not link: never
+   called while DSU is off (the default). */
+void runtime_feedback_motion_source_changed(void) {}
+int runtime_motion_axes(const char *spec) { (void)spec; return 0; }
+void runtime_motion_deadzone_default(double deg) { (void)deg; }
+void runtime_motion_feed(const double acc[3], const double gyro[3], uint64_t now) { (void)acc; (void)gyro; (void)now; }
+void runtime_motion_live(int on) { (void)on; }
 static void hook(void) { hookCalls++; }
 static unsigned layoutHeld; static int layoutCalls;   /* runtime/input.c's mouse buttons: what reached the layout */
 void runtime_input_mouse(int button, int down) { layoutCalls++; layoutHeld = down ? layoutHeld | 1u << button : layoutHeld & ~(1u << button); }

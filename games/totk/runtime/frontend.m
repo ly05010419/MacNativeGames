@@ -15,6 +15,7 @@
 #import "playtime.h"
 #define TOTK_HDR_FRONTEND 1
 #include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
+#include "hdr_auto.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
@@ -22,10 +23,12 @@ uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented
 static CAMetalLayer *metalLayer;
 static _Atomic float hdrHeadroom=1;
 static _Atomic int hdrEnabled;
+static _Atomic int hdrChoice;   /* HDR_CHOICE_OFF / ON / AUTO (hdr_auto.h); hdrEnabled is what it means on the window's screen */
 static CGColorSpaceRef hdrSDRColorSpace;
 static int hdrSDRRemembered;
 int front_hdr_supported(void){return totk_hdr_available();}
 int front_hdr_enabled(void){return atomic_load(&hdrEnabled);}
+int front_hdr_choice(void){return atomic_load(&hdrChoice);}   /* the settings row shows the choice, not the switch */
 
 static pthread_mutex_t hdrParameterLock=PTHREAD_MUTEX_INITIALIZER;
 static float hdrParameters[TOTK_HDR_PARAMETER_COUNT];
@@ -72,9 +75,21 @@ static void front_hdr_parameters_load(void){
 }
 
 float front_hdr_headroom(void){return atomic_load_explicit(&hdrHeadroom,memory_order_relaxed);}
+/* hdrEnabled, the switch every reader takes (totk_hdr_active: the renderer latches it once a frame, frame interpolation
+   stays off while it is on), follows the choice on the window's screen. Main thread, from front_hdr_update: the start,
+   the window changing screen or backing, the 0.5 s timer (a screen's HDR turned on or off in System Settings) and the
+   settings row. Tests pass a potential. */
+static void front_hdr_auto(double potential,const char *screen){
+ static int shown=-1;int choice=atomic_load(&hdrChoice),on=totk_hdr_available()&&hdr_choice_effective(choice,potential);
+ atomic_store(&hdrEnabled,on);
+ if(choice!=HDR_CHOICE_AUTO){shown=-1;return;}
+ if(on!=shown){shown=on;fprintf(stderr,"[hdr] auto: %s, potential EDR %.2f: HDR %s\n",screen?:"no screen",potential,on?"on":"off");}
+}
 static void front_hdr_update(void){
  if(!totk_hdr_available())return;
  NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ /* auto keeps what it had while the window is on no screen (minimized, between screens) */
+ if(!window||window.screen||atomic_load(&hdrChoice)!=HDR_CHOICE_AUTO)front_hdr_auto(screen?screen.maximumPotentialExtendedDynamicRangeColorComponentValue:1,screen.localizedName.UTF8String);
  float h=front_hdr_enabled() && screen?(float)screen.maximumExtendedDynamicRangeColorComponentValue:1;
  if(!isfinite(h)||h<1)h=1;
  float old=atomic_exchange(&hdrHeadroom,h);
@@ -88,11 +103,10 @@ static void front_hdr_update(void){
 static void front_hdr_init(void){
  front_hdr_parameters_load();
  if(!totk_hdr_available()){atomic_store(&hdrEnabled,0);return;}
- char word[32]={0};int on=0;
+ char word[32]={0};
  const char *e=getenv("TOTK_HDR");
- if(e && *e)on=!strcmp(e,"1");
- else if(runtime_setting_word("hdr.txt",word,sizeof word))on=!strcmp(strtok(word," \t\r\n")?:"","on");
- atomic_store(&hdrEnabled,totk_hdr_available() && on);
+ atomic_store(&hdrChoice,hdr_choice_parse(e,!(e && *e) && runtime_setting_word("hdr.txt",word,sizeof word)?strtok(word," \t\r\n"):NULL));
+ front_hdr_update();   /* hdrEnabled from the choice on the window's screen, before the layer takes its format */
 }
 void front_hdr_present_mode(int enabled){
  if(!metalLayer || !totk_hdr_available())return;
@@ -106,10 +120,10 @@ void front_hdr_present_mode(int enabled){
 }
 static void front_hdr_apply(int enabled){
  if(!totk_hdr_available())return;
- atomic_store(&hdrEnabled,!!enabled);
- runtime_setting_save("hdr.txt",enabled?"on":"off","HDR / EDR");
+ atomic_store(&hdrChoice,enabled==HDR_CHOICE_AUTO?HDR_CHOICE_AUTO:!!enabled);   /* front_hdr_update sets hdrEnabled from it */
+ runtime_setting_save("hdr.txt",hdr_choice_word(front_hdr_choice()),"HDR / EDR");
  front_hdr_update();
- fprintf(stderr,"[hdr] EDR %s (settings panel); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
+ fprintf(stderr,"[hdr] EDR %s (settings panel: %s); display headroom %.3f\n",front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()),front_hdr_headroom());
 }
 void runtime_front_hdr_set(int enabled){if(NSThread.isMainThread)front_hdr_apply(enabled);else dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(enabled);});}
 void runtime_front_hdr_toggle(void){dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(!front_hdr_enabled());});}
@@ -369,178 +383,7 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  }
  fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
 }
-enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
-@interface TOTKHudBox:NSView
-@property(strong) NSTextField *label;
-@property(strong) NSTimer *timer;
-@property NSSize textSize;
--(void)position;
--(void)refresh;
-@end
-/* Compact HUD (default): one small box in the window's top-right corner with the FPS, shader and load lines (published by
-   gfx/nvn/fps_overlay.c, refreshed twice a second); the settings panel's overlay row picks all, FPS + playtime or none.
-   TOTK_HUD=corners: the lines stay in the picture's corners and there is no box. */
-static int settings_pad_family(void);                 /* settings_panel.h: the controller family button names follow */
-static NSString *settings_panel_pad_text(int family);  /* settings_panel.h: the controller's way to the panel */
-/* The box's last line (user 2026-10-30): how to open the settings panel, as it is bound now: key 1, and with a
-   controller connected its button or chord (L3 + R3 unless the key bindings set one). */
-static NSString *hud_settings_hint(void) {
- int detected=-1;runtime_gamepad_type(&detected);
- if(detected<=GAMEPAD_TYPE_AUTO)return @(TOTK_UI("设置：键盘 1","Settings: key 1"));
- return [NSString stringWithFormat:@(TOTK_UI("设置：键盘 1 · 手柄 %@","Settings: key 1 · controller %@")),settings_panel_pad_text(settings_pad_family())];
-}
-@implementation TOTKHudBox
--(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.72].CGColor;self.layer.cornerRadius=7;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor;
- self.label=[NSTextField labelWithString:@""];self.label.alignment=NSTextAlignmentLeft;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByClipping;[self addSubview:self.label];
- [self refresh];if(hud_compact()){__weak TOTKHudBox *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}}return self;}
--(void)refresh{
- BOOL showText=hud_compact()&&fps_overlay_hud_mode()!=HUD_MODE_OFF;
- self.hidden=!showText&&!fpsGraphEnabled;self.label.hidden=!showText;
- if(showText){
-  NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium];
-  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
-  NSMutableAttributedString *a=[NSMutableAttributedString new];
-  int full=fps_overlay_full_hud();   // FPS only: the FPS line (line 0); the others keep their last text, so skip them
-  for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
-   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
-  if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
-  if(playtime)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[playtime.text stringByAppendingString:@"\n"]
-   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
-  int bpct=runtime_gamepad_battery_percent(),bleft=runtime_gamepad_battery_left_percent();
-  if(bpct>=0)[a appendAttributedString:[[NSAttributedString alloc] initWithString:bleft>=0?[NSString stringWithFormat:@(TOTK_UI("手柄电量 左 %d%% 右 %d%%\n","Controller L %d%% R %d%%\n")),bleft,bpct]:[NSString stringWithFormat:@(TOTK_UI("手柄电量 %d%%\n","Controller %d%%\n")),bpct]
-   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
-  /* The commit the app was built from (user 2026-10-25), last and grey: TOTK_SOURCE_COMMIT from the launcher. */
-  const char *commit=getenv("TOTK_SOURCE_COMMIT");
-  if(commit&&*commit)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@(TOTK_UI("版本 %s\n","build %s\n")),commit]
-   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
-  [a appendAttributedString:[[NSAttributedString alloc] initWithString:[hud_settings_hint() stringByAppendingString:@"\n"]
-   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
-  [a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the last one
-  BOOL changed=![a isEqualToAttributedString:self.label.attributedStringValue];
-  if(changed)self.label.attributedStringValue=a;
-  if(changed||self.textSize.height==0){
-   NSSize z=[self.label sizeThatFits:NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX)];
-   self.textSize=NSMakeSize(ceil(z.width),ceil(z.height));
-  }
- }else self.textSize=NSZeroSize;
- [self position];}
--(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
--(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self position];}
--(void)layout{[super layout];[self position];}
--(void)position{if(!self.superview)return;
- CGFloat graphH=fpsGraphEnabled?FPS_GRAPH_HEIGHT:0,graphW=fpsGraphEnabled?FPS_GRAPH_WIDTH:0;
- CGFloat contentW=fmax(self.textSize.width,graphW);
- CGFloat w=contentW+16,h=self.textSize.height+graphH+10,m=10;
- NSRect f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);
- if(!NSEqualRects(self.frame,f))self.frame=f;
- self.label.frame=NSMakeRect(8,graphH+5,self.textSize.width,self.textSize.height);
- if(fpsGraphEnabled)fpsGraphBox.frame=NSMakeRect(8,5,contentW,FPS_GRAPH_HEIGHT);}
-@end
-@interface TOTKFpsGraph:NSView {
- int _samples[FPS_GRAPH_SAMPLES];
- NSUInteger _sampleCount;
-}
-@property(strong) NSTimer *timer;
--(void)setEnabled:(BOOL)enabled;
--(void)sample;
-@end
-@implementation TOTKFpsGraph
--(instancetype)initWithFrame:(NSRect)frame {
- if((self=[super initWithFrame:frame]))self.hidden=YES;
- return self;
-}
--(void)setEnabled:(BOOL)enabled {
- self.hidden=!enabled;
- [self.timer invalidate];
- self.timer=nil;
- _sampleCount=0;
- if(!enabled)return;
-
- [self sample];
- __weak TOTKFpsGraph *weak=self;
- self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak sample];}];
-}
--(void)sample {
- int fps=fps_overlay_value();
- if(_sampleCount<FPS_GRAPH_SAMPLES)_samples[_sampleCount++]=fps;
- else {
-  for(NSUInteger i=1;i<FPS_GRAPH_SAMPLES;i++)_samples[i-1]=_samples[i];
-  _samples[FPS_GRAPH_SAMPLES-1]=fps;
- }
- [self setNeedsDisplay:YES];
-}
--(void)drawRect:(NSRect)dirtyRect {
- (void)dirtyRect;
- int minFPS=-1,maxFPS=-1;
- for(NSUInteger i=0;i<_sampleCount;i++) {
-  int fps=_samples[i];
-  if(fps<0)continue;
-  if(minFPS<0||fps<minFPS)minFPS=fps;
-  if(fps>maxFPS)maxFPS=fps;
- }
-
- int currentFPS=_sampleCount?_samples[_sampleCount-1]:-1;
- NSString *currentText=currentFPS<0?@"--":[NSString stringWithFormat:@"%d",currentFPS];
- NSString *stats=maxFPS<0?@"min --   max --   cur --":
-  [NSString stringWithFormat:@"min %d   max %d   cur %@",minFPS,maxFPS,currentText];
- NSDictionary *statsStyle=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:9 weight:NSFontWeightMedium],
-  NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.88 alpha:1]};
- [stats drawAtPoint:NSMakePoint(8,58) withAttributes:statsStyle];
- if(maxFPS<0)return;
-
- NSRect plot=NSMakeRect(40,12,self.bounds.size.width-50,36);
- double axisLow=0,axisHigh=fmax(30,ceil(maxFPS*1.10/30)*30);
- double axisMid=(axisLow+axisHigh)/2;
-
- NSColor *axisColor=[NSColor colorWithCalibratedWhite:0.75 alpha:0.65];
- NSColor *gridColor=[NSColor colorWithCalibratedWhite:0.75 alpha:0.18];
- NSBezierPath *grid=[NSBezierPath bezierPath];
- CGFloat midY=NSMinY(plot)+(axisMid-axisLow)/(axisHigh-axisLow)*plot.size.height;
- [grid moveToPoint:NSMakePoint(NSMinX(plot),midY)];
- [grid lineToPoint:NSMakePoint(NSMaxX(plot),midY)];
- [gridColor setStroke];
- grid.lineWidth=0.5;
- [grid stroke];
-
- NSBezierPath *axis=[NSBezierPath bezierPath];
- [axis moveToPoint:NSMakePoint(35,NSMinY(plot))];
- [axis lineToPoint:NSMakePoint(35,NSMaxY(plot))];
- NSDictionary *axisStyle=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:8 weight:NSFontWeightRegular],
-  NSForegroundColorAttributeName:axisColor};
- double axisLabels[]={axisLow,axisMid,axisHigh};
- for(int i=0;i<3;i++) {
-  CGFloat y=NSMinY(plot)+(axisLabels[i]-axisLow)/(axisHigh-axisLow)*plot.size.height;
-  [axis moveToPoint:NSMakePoint(35,y)];
-  [axis lineToPoint:NSMakePoint(39,y)];
-  [[NSString stringWithFormat:@"%.0f",axisLabels[i]] drawAtPoint:NSMakePoint(8,y-5) withAttributes:axisStyle];
- }
- [axisColor setStroke];
- axis.lineWidth=0.75;
- [axis stroke];
-
- NSBezierPath *line=[NSBezierPath bezierPath];
- NSPoint last=NSZeroPoint;
- NSUInteger points=0;
- for(NSUInteger i=0;i<_sampleCount;i++) {
-  int fps=_samples[i];
-  if(fps<0)continue;
-  double xFraction=(double)i/(FPS_GRAPH_SAMPLES-1);
-  double yFraction=fmax(0,fmin(1,(fps-axisLow)/(axisHigh-axisLow)));
-  NSPoint point=NSMakePoint(NSMinX(plot)+xFraction*plot.size.width,
-                            NSMinY(plot)+yFraction*plot.size.height);
-  if(points)[line lineToPoint:point];else[line moveToPoint:point];
-  last=point;
-  points++;
- }
-
- NSColor *totk_colour=[NSColor colorWithCalibratedRed:0.541 green:0.969 blue:0.588 alpha:1];
- [totk_colour setStroke];
- [totk_colour setFill];
- line.lineWidth=1.5;
- [line stroke];
- if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
-}
-@end
+#include "hud_box.h"   /* shared/runtime/hud_box.h: the corner box and the FPS graph */
 /* zeldaVR: the headset's picture on the Mac window (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes side by side,
    the newest image the VR thread handed to the streamer (gfx/nvn/totk_vr.m vr_mirror_copy, an IOSurface, +1), as this
    view's layer contents over the game's picture, 60 times a second; hidden while there is none (VR off, not connected,
@@ -926,7 +769,7 @@ void runtime_front_run(void(*callback)(void)){
   if(totk_hdr_available()){
    front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
-   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s, FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off");
+   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s (choice %s), FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()));
   }
   metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;

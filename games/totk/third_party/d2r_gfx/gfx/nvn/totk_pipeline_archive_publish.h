@@ -46,15 +46,15 @@ static NSString *par_pub_temp(NSString *dir) {   // a reserved, empty temp file 
 /* Publishes one batch under base (or base-2, -3, ... when taken): write(temp) fills the archive file, keys its key list.
    Returns the name published, or nil with nothing of this writer left in dir. between (tests only, else NULL) runs after
    the archive file is published and before its key list; NO from it abandons the batch. */
-static NSString *par_pub_batch(NSString *dir, NSString *lock, NSString *base, BOOL (^write)(NSString *temp), NSString *keys,
-                               BOOL (^between)(NSString *name)) {
+static NSString *par_pub_batch_ext(NSString *dir, NSString *lock, NSString *base, NSString *ext, BOOL (^write)(NSString *temp),
+                                   NSString *keys, BOOL (^between)(NSString *name)) {
     int fd = par_pub_lock(lock, LOCK_SH);
     if (fd < 0) return nil;
     NSString *ta = par_pub_temp(dir), *tl = par_pub_temp(dir), *name = nil, *archive = nil;
     BOOL ok = ta && tl && write(ta) && [keys writeToFile:tl atomically:NO encoding:NSUTF8StringEncoding error:nil];
     for (int i = 1; ok && !name && i < 1000; i++) {
         NSString *n = i == 1 ? base : [base stringByAppendingFormat:@"-%d", i];
-        NSString *a = [dir stringByAppendingPathComponent:[n stringByAppendingPathExtension:@"metalarchive"]];
+        NSString *a = [dir stringByAppendingPathComponent:[n stringByAppendingPathExtension:ext]];
         NSString *l = [dir stringByAppendingPathComponent:[n stringByAppendingPathExtension:@"keys"]];
         if (renamex_np(ta.fileSystemRepresentation, a.fileSystemRepresentation, RENAME_EXCL)) { ok = errno == EEXIST; continue; }
         archive = a;
@@ -72,11 +72,15 @@ static NSString *par_pub_batch(NSString *dir, NSString *lock, NSString *base, BO
     par_pub_unlock(fd);
     return name;
 }
+static NSString *par_pub_batch(NSString *dir, NSString *lock, NSString *base, BOOL (^write)(NSString *temp), NSString *keys,
+                               BOOL (^between)(NSString *name)) {   // the old archive's files (<name>.metalarchive)
+    return par_pub_batch_ext(dir, lock, base, @"metalarchive", write, keys, between);
+}
 
 /* The folder's complete batches, oldest first (the key list's modification time, then the name: a later batch wins a
    key both list). With clean, files that are no complete batch (writes cut short, temp files) are removed, but only
    when no one publishes (the exclusive lock, not waited for); keep: names never removed (identity.json). */
-static NSArray<NSString *> *par_pub_scan(NSString *dir, NSString *lock, BOOL clean, NSSet<NSString *> *keep) {
+static NSArray<NSString *> *par_pub_scan_ext(NSString *dir, NSString *lock, BOOL clean, NSSet<NSString *> *keep, NSString *want) {
     NSFileManager *fm = NSFileManager.defaultManager;
     int fd = clean ? par_pub_lock(lock, LOCK_EX | LOCK_NB) : -1;   // before listing: a batch seen half-published while
     NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:dir error:nil] ?: @[];   // unlocked may be complete by now
@@ -85,10 +89,10 @@ static NSArray<NSString *> *par_pub_scan(NSString *dir, NSString *lock, BOOL cle
     NSMutableDictionary<NSString *, NSDate *> *when = [NSMutableDictionary dictionary];
     for (NSString *name in names) {
         NSString *base = name.stringByDeletingPathExtension, *ext = name.pathExtension;
-        if ([ext isEqualToString:@"keys"] && [present containsObject:[base stringByAppendingPathExtension:@"metalarchive"]]) {
+        if ([ext isEqualToString:@"keys"] && [present containsObject:[base stringByAppendingPathExtension:want]]) {
             [bases addObject:base];
             when[base] = [[fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:name] error:nil] fileModificationDate] ?: NSDate.distantPast;
-        } else if (!([ext isEqualToString:@"metalarchive"] && [present containsObject:[base stringByAppendingPathExtension:@"keys"]]) && ![keep containsObject:name])
+        } else if (!([ext isEqualToString:want] && [present containsObject:[base stringByAppendingPathExtension:@"keys"]]) && ![keep containsObject:name])
             [junk addObject:name];
     }
     if (fd >= 0) for (NSString *name in junk) [fm removeItemAtPath:[dir stringByAppendingPathComponent:name] error:nil];
@@ -98,6 +102,9 @@ static NSArray<NSString *> *par_pub_scan(NSString *dir, NSString *lock, BOOL cle
         return r != NSOrderedSame ? r : [x compare:y];
     }];
     return bases;
+}
+static NSArray<NSString *> *par_pub_scan(NSString *dir, NSString *lock, BOOL clean, NSSet<NSString *> *keep) {
+    return par_pub_scan_ext(dir, lock, clean, keep, @"metalarchive");
 }
 
 /* Removes dir (its files are another identity's) unless someone publishes there now: YES when it is gone. */

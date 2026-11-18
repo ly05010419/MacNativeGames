@@ -1,0 +1,57 @@
+name: TMNTiPad
+options:
+  bundleIdPrefix: org.macnativegames
+  deploymentTarget:
+    iOS: "26.0"
+configFiles:
+  Debug: Gen/tmnt.xcconfig
+  Release: Gen/tmnt.xcconfig
+targets:
+  TMNTiPad:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: ../runtime
+        excludes:
+          - frontend.m
+          - loader.c
+      - path: ../third_party/d2r_gfx/gfx/nvn
+      - path: ../third_party/d2r_gfx/gfx/tex
+      - path: Gen/embed.S
+      - path: Gen/nro_embed.S
+      - path: Gen/TMNT
+        type: folder
+      - path: ../runtime/loader.c
+        compilerFlags: "-Dmain=tmnt_host_main"
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: TMNT
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.macnativegames.tmnt.ipad
+      PRODUCT_NAME: TMNTiPad
+      TARGETED_DEVICE_FAMILY: "2"
+      IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+      CODE_SIGNING_ALLOWED: NO
+      ENABLE_DEBUG_DYLIB: NO
+      CLANG_ENABLE_OBJC_ARC: YES
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      HEADER_SEARCH_PATHS:
+        - $(inherited)
+        - ../runtime
+        - ../third_party/d2r_gfx/gfx/nvn
+        - ../third_party/d2r_gfx/gfx/nvn/include
+        - Gen
+        - Gen/deps/include
+      OTHER_CFLAGS: $(inherited) -DTMNT_DEVICE_XLATE=1

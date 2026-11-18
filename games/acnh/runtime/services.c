@@ -273,7 +273,14 @@ uint64_t runtime_desired_language(void) {
  }
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
  else {
-  char language[16]={0},region[4]={0};const char *tag=getenv("TOTK_LOCALE");
+  char language[16]={0},region[4]={0},preferred[32]={0};const char *tag=getenv("TOTK_LOCALE");
+  /* Without TOTK_LOCALE (this game's launcher sets none): the Mac's first preferred language. The current locale is
+     no substitute: inside an app bundle its language is the bundle's own localization, "en" here, so a Mac set to
+     Chinese started the game in English (seen on 3.0.3, 2026-11-17). */
+  if(!tag||!*tag){CFArrayRef list=CFLocaleCopyPreferredLanguages();
+   if(list){if(CFArrayGetCount(list)>0)CFStringGetCString(CFArrayGetValueAtIndex(list,0),preferred,sizeof preferred,kCFStringEncodingUTF8);CFRelease(list);}
+   if(preferred[0])tag=preferred;}
+  int hant=tag&&strstr(tag,"Hant");
   if(tag&&*tag){
    size_t n=strcspn(tag,"-_");if(n<sizeof(language))memcpy(language,tag,n);
    for(const char *p=tag+n;*p;){p+=strspn(p,"-_");size_t k=strcspn(p,"-_");
@@ -291,8 +298,9 @@ uint64_t runtime_desired_language(void) {
 #else
   const char *portuguese="pt";
 #endif
-  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?portuguese:"en-US";
+  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?(hant||!strcmp(region,"TW")||!strcmp(region,"HK")||!strcmp(region,"MO")?"zh-Hant":"zh-Hans"):!strcmp(language,"pt")?portuguese:"en-US";
   memcpy(code,selected,strlen(selected));
+  static int once;if(!once++)fprintf(stderr,"[totk] game language: %s (from %s)\n",selected,tag&&*tag?tag:"the current locale");
  }
  uint64_t result;memcpy(&result,code,8);return result;
 }

@@ -29,9 +29,9 @@ planes a pass attaches is decided only when it begins, `ds_scan`); wrong guesses
   not finished is never reused: its worker still writes into it.
 - **Follow-ups (MacNativeGames):** a program with a stage not translated yet (`missing`, iOS) is not predicted
   (its draws are skipped, and its fragment stage may be absent); a fragment function that exports depth gets no
-  guesses without the depth buffer (`pred_guess_wanted`: `ds_scan` attaches the depth buffer for it, so those
-  guesses were never used, and `pso_desc` compiled their depth-less library on the submission thread); a
-  statistics line every 100 scans (`并行预编 至提交 …`: scans and the budget that ended them, pipelines started,
+  guesses without the depth buffer (`ds_scan` attaches the depth buffer for it, so those guesses were never used,
+  and `pso_desc` compiled their depth-less library on the submission thread; since 2026-11-16 there are no guesses
+  at all, see "The planes of the pass" below); a statistics line every 100 scans (`并行预编 至提交 …`: scans and the budget that ended them, pipelines started,
   pipelines taken by draws and how long draws waited for them, guesses refused because the table was full, stale
   guesses freed).
 
@@ -216,3 +216,25 @@ On an Apple M3 (24 GB, macOS 27.2, game 1.0.0) one session logged 32 long frames
 library or pipeline creation; the worst was 10,384.9 ms of submission and presentation with 17.5 ms of GPU time.
 With a broader local build (it also prefetched shaders, which is not part of this change) the player found severe
 stalls much reduced. That was not a same-route comparison of this change alone.
+
+## The planes of the pass (2026-11-16)
+
+Prediction used to give each draw up to four attach modes: the pass's own depth and stencil, and guesses without
+them, because the replay leaves out the planes a pass does not use (`pass_ds_need`, `ds_scan`) and that is decided
+for the whole pass, from the draw that opens it to the op that ends it. A guess without depth for a draw that does
+not test depth is never drawn when another draw of the same pass tests depth: the replay attaches depth for the pass.
+Ocarina of Time 1.0.1 on an M4 Mac, with the app's pipeline lists in the archive only (`TOTK_WARM_SHARED=0`), compiled
+8 such pipelines 64 times in a 4.5-minute route (`TOTK_PAR_MISS_LOG`: all with depth format 0, one byte from the app's
+row), and none of them was ever drawn (`TOTK_PSO_TRACE`: no draw and no table entry with their state); the default
+setting (every list resident) compiled none, because nothing missed and prediction never ran.
+
+Now prediction follows the passes the replay makes (`nvn_pred_pass.h`): the pass being drawn keeps its planes; a
+later pass's keys are held until the pass ends (or a same-target SetRenderTargets continues it, or a clear or wait
+makes it unprovable), then get the planes the replay's rule gives it and are compiled. `ds_scan` and prediction use
+the same helpers for which ops end a pass and which planes a draw needs. Limits: a draw whose program prediction cannot
+resolve counts by its depth-stencil state alone (whether its fragment function exports depth is not known without
+loading it); a scan stopped by a budget drops the held keys of its last pass (the next scan, from a draw inside that
+pass, predicts them with the pass's planes); merged and fused passes are still not predicted. A pass whose targets
+prediction cannot read (a block-compressed colour, a format Metal lacks) gets no keys: they had zeroed formats and were
+never drawn (the last unused compile of the route above, `TOTK_PSO_TRACE` "kick now/set-rt-unreadable"). The probe
+(`dm_nvn_probe_prediction`) checks the rule on the cases above.

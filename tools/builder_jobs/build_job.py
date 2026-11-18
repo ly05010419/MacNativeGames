@@ -46,13 +46,19 @@ def same_version(plan, update_plan):
         return False
     if plan['game'] == 'oot':   # one version is built (131072), checked by the build itself
         return True
-    if plan['game'] == 'worldend':
+    if plan['game'] in ('worldend', 'tmnt'):
         return update_plan.get('version') == 'v0' and not plan.get('update')
     if plan['game'] == 'dread':
         expected = 327680 if update_plan.get('version') == 'v210' else 0 if update_plan.get('version') == 'v100' else None
         return expected is not None and (plan.get('update_version') if plan.get('update') else 0) == expected
     if plan['game'] == 'ss':
         return update_plan.get('version') == 'v65536' and plan.get('update_version') == 65536
+    if plan['game'] == 'odyssey':   # 1.3.0 and 1.4.1 build the same app (the same code and merged data)
+        return True
+    if plan['game'] == 'eow':   # one version is built (1.1.0)
+        return plan.get('update_version') == 196608
+    if plan['game'] == 'acnh':   # update_runtime.plan: 'v<update version>' of the app
+        return plan.get('update') is not None and update_plan.get('version') == f'v{plan.get("update_version")}'
     app_version = repo.build_app().VERSIONS.get(update_plan.get('version') or '', {}).get('version')
     dropped = plan.get('update_version') if plan.get('update') else 0
     return dropped is not None and app_version is not None and str(app_version) == str(dropped)
@@ -106,18 +112,18 @@ def command(request, python=sys.executable):
             return (repo.UPDATE_RUNTIME, [str(out)] + (['--seed'] if up['kind'] == 'fast' else []), Path(up['work']), out,
                     up['kind'], plan['game'])
     argv = [plan['base']]
-    if plan.get('keys') and plan['game'] in ('totk', 'botw', 'ss', 'dread', 'worldend'):
+    if plan.get('keys') and plan['game'] in ('totk', 'botw', 'ss', 'dread', 'worldend', 'tmnt', 'acnh', 'eow', 'odyssey'):
         argv += ['-k', plan['keys']]
     if plan.get('update'):
         argv += ['--update', plan['update']]
     for dlc in plan.get('dlc') or []:
         argv += ['--dlc', dlc]
-    if plan.get('firmware') and plan['game'] not in ('ss', 'worldend'):
+    if plan.get('firmware') and plan['game'] not in ('ss', 'worldend', 'tmnt'):
         argv += ['--firmware', plan['firmware']]
-    elif plan.get('fonts') and plan['game'] not in ('ss', 'worldend'):
+    elif plan.get('fonts') and plan['game'] not in ('ss', 'worldend', 'tmnt'):
         argv += ['--shared-fonts', plan['fonts']]
     argv += ['--work', str(work), '-o', str(out)]
-    script = repo.REPO/f'games/{plan["game"]}/build.py' if plan['game'] in ('ss', 'dread', 'worldend') else repo.BUILD_APP
+    script = repo.REPO/f'games/{plan["game"]}/build.py' if plan['game'] in ('ss', 'dread', 'worldend', 'tmnt', 'acnh', 'eow', 'odyssey') else repo.BUILD_APP
     return script, argv, work, out, 'full', plan['game']
 
 
@@ -206,8 +212,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
     script = script or chosen
+    # steps_last: how many steps the same kind of build took on this Mac last time (the window says "N steps last time")
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
-         command=[str(script), *argv], kind=kind)
+         command=[str(script), *argv], kind=kind, steps_last=len(estimator.last) if estimator.last else None)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True, env=env)
     cancelled = threading.Event()
@@ -249,11 +256,12 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
             if now - last >= 1:
                 last = now
                 since = now - seen[-1][1] if seen else 0
-                fraction, left, measured = estimator.update(state['step'], since, state['stage'])
                 counted = steps.count(state['step']) if state['step'] else None
+                fraction, left, measured, step_left = estimator.update(state['step'], since, state['stage'], counted)
                 emit('progress', fraction=round(fraction, 4), left=None if left is None else round(left),
                      elapsed=round(now - start), measured=measured,
-                     step_done=counted and counted[0], step_total=counted and counted[1])
+                     step_done=counted and counted[0], step_total=counted and counted[1],
+                     step_left=None if step_left is None else round(step_left))
             time.sleep(0.25)
     ticker = threading.Thread(target=tick, daemon=True)
     ticker.start()

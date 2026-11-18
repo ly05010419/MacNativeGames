@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <unistd.h>
+#include "metal_counted_probe.h"
 static id<MTLDevice> g_dev;
 static id<MTLResidencySet> residency;
 static NSMutableArray *retired;

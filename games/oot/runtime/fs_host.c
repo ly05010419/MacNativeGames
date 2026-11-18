@@ -229,7 +229,16 @@ static void unmount(const char *name) {
     pthread_mutex_unlock(&lock);
     BOTW_AOC_UNMOUNT(name) if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
 }
+/* Reads, writes, size changes and flushes give the virtual core up while they wait on the drive, as on the Switch, where
+   nn::fs calls are requests to the file system service and the thread blocks without its core (threads.c "Virtual
+   cores": blocking host services). OOT 2026-11-17 (lf-diag-3, TOTK_CORE_DIAG_MS=30): thread 0x1035, allowed core 1 only,
+   held it 35-88 ms in pread under runtime_romfs_read while threads of core 1 waited and the other five cores stood idle,
+   150-300 ms of core waits in a frame; with reads away (lf-fs-4) the next was ftruncate under set_file_size. No runtime
+   lock is held across the I/O (lock is taken and released inside file_of and the table lookups). */
+int runtime_core_away(void); void runtime_core_back(int *away);
+#define FS_AWAY __attribute__((cleanup(runtime_core_back))) int fs_away_ = runtime_core_away()
 static unsigned commit(const char *name) {
+    FS_AWAY;
     pthread_mutex_lock(&lock); int found = 0, save = 0;
     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { found = 1; save = mounts[i].kind == M_SAVE; }
     pthread_mutex_unlock(&lock);
@@ -266,6 +275,7 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     pthread_mutex_unlock(&lock); runtime_fail("host file handle table full");
 }
 static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
+    FS_AWAY;
     if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size); BOTW_AOC_READ(out, h, offset, buffer, size)
     int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
@@ -277,6 +287,7 @@ static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffe
 static unsigned read_options(uint64_t *out, uint64_t h, int64_t off, void *buf, uint64_t size, const void *options) { (void)options; return read_file(out, h, off, buf, size); }
 static unsigned read_exact(uint64_t h, int64_t off, void *buf, uint64_t size) { uint64_t n = 0; unsigned r = read_file(&n, h, off, buf, size); return r ? r : n == size ? 0 : R_INVALID_ARGUMENT; }
 static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint64_t size, const int32_t *option) {
+    FS_AWAY;
     int fd, mode; File *f = offset < 0 || (!buffer && size) ? NULL : file_of(h, &fd, &mode); if (!f) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_WRITE)) return R_OPEN_MODE;
     struct stat st; if (fstat(fd, &st)) runtime_fail("host save stat");
@@ -297,12 +308,13 @@ static unsigned file_size(int64_t *out, uint64_t h) {
     *out = st.st_size; return 0;
 }
 static unsigned set_file_size(uint64_t h, int64_t size) {
+    FS_AWAY;
     int fd, mode; if (size < 0 || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_WRITE)) return R_OPEN_MODE;
     if (files[h - FILE_BASE].save) save_touched();
     return ftruncate(fd, size) ? errno_result() : 0;
 }
-static unsigned flush_file(uint64_t h) { int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; fcntl(fd, F_FULLFSYNC); return 0; }
+static unsigned flush_file(uint64_t h) { FS_AWAY; int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; fcntl(fd, F_FULLFSYNC); return 0; }
 static void close_file(uint64_t h) {
     if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; } BOTW_AOC_CLOSE(h)
     if (!file_of(h, NULL, NULL)) runtime_fail("close invalid file handle");
