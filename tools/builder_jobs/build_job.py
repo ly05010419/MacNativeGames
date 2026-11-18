@@ -178,8 +178,9 @@ def job_env(request, game):
     DEVELOPER_DIR is set when `metal` is not reachable but an Xcode here has the Metal toolchain (toolchain.py): the
     Launcher is opened from Finder, so it inherits no shell's environment, and a Mac whose xcode-select points at the
     Command Line Tools has no Metal compiler. Without this a cold build dies in step 3 after minutes of work. A Mac
-    where `metal` is already reachable is left alone, and one with no Xcode gets nothing to set -- checks.py refuses
-    before the build starts, with the command that fixes it."""
+    where `metal` is already reachable is left alone, and one with no Xcode gets nothing to set -- the game's own
+    block says so before the build starts, with the command that fixes it (classify.dread_needs_metal, as Ocarina of
+    Time's oot_needs_metal does; page 1's checks are the developer tools', which carry no Metal compiler)."""
     env = dict(os.environ)
     developer = toolchain.developer_dir_for_metal(env)
     if developer:

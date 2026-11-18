@@ -204,6 +204,17 @@ def oot_needs_metal():
              '（Xcode › 设置 › 组件 › Metal Toolchain，或 xcodebuild -downloadComponent MetalToolchain）')
 
 
+def dread_needs_metal():
+    """Metroid Dread compiles its shaders into libraries with Xcode's Metal compiler too (games/dread/scripts/
+    build_shader_libs.py, which looks for `metal` with xcrun as Ocarina of Time's does): said before its build starts
+    instead of in the middle of it, where it used to stop after minutes of work (2026-11-16). The command line tools
+    carry no Metal compiler, so a Mac that passed every check on page 1 could still fail here."""
+    return t('Metroid Dread compiles its shaders with Xcode\'s Metal compiler: install the full Xcode and its Metal toolchain '
+             '(Xcode › Settings › Components › Metal Toolchain, or xcodebuild -downloadComponent MetalToolchain)',
+             'Metroid Dread 要用 Xcode 的 Metal 编译器编着色器：请安装完整的 Xcode 和它的 Metal 工具链'
+             '（Xcode › 设置 › 组件 › Metal Toolchain，或 xcodebuild -downloadComponent MetalToolchain）')
+
+
 def _hfs0_names(f, offset, length):
     """(name, absolute offset) of each entry of the HFS0 table at offset (the layout extract_exefs.partition_entries
     reads, bounded the same way), or [] when there is no table there."""
@@ -375,6 +386,10 @@ def _plan(items, work=None):
                           '（或以前打包留下的 shared-fonts 文件夹）也放进来'))
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
+    if p.game == 'dread' and no_metal_compiler():
+        p.blocks.append(dread_needs_metal())
+        p.tool_blocks.append(p.blocks[-1])   # the Launcher shows it with this Mac's other needs, at the build
+        p.tool_needs.append('metal')
     if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
     if p.game == 'eow' and p.update_version != 196608:
