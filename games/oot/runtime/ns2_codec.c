@@ -37,7 +37,8 @@ void hle_signal_system_event(void *event);   /* runtime/threads.c */
 #define CV_MAGIC 0x56436d44u        /* 'DmCV' */
 #define CV_SYNC 0x53436d44u         /* 'DmCS': a sync handle the host made (decoder id, index, generation) */
 #define CV_BUFS 32
-#define CV_HOLD 4                   /* decoded pictures waiting for a released buffer */
+#define CV_HOLD 4                   /* decoded pictures waiting for a released buffer: a submit is taken while fewer wait */
+#define CV_HOLD_CAP 12              /* room for them: a working-ahead AV1 decoder (mav1_pipelined) gives up to its depth more at once */
 #define CV_EVENT_OFF 0x100          /* the submission-ready SystemEventType inside the decoder type */
 #define CV_R(desc) ((Result)(0x6f | ((desc) << 9)))   /* nn::codec results (module 111) */
 #define CV_BUSY CV_R(3603)
@@ -118,7 +119,7 @@ typedef struct {
     cv_buf buf[CV_BUFS];
     uint32_t fifo[8], fhead, fcount;          /* acquirable indices */
     uint32_t pend[CV_BUFS], phead, pcount;    /* released, waiting for a picture */
-    vpx_image_t *held[CV_HOLD]; int64_t held_ts[CV_HOLD]; uint8_t held_eos[CV_HOLD]; int nheld;
+    vpx_image_t *held[CV_HOLD_CAP]; int64_t held_ts[CV_HOLD_CAP]; uint8_t held_eos[CV_HOLD_CAP]; int nheld;
     int eos_pending;
     int opening_packet_seen,opening_ready;uint64_t opening_token,opening_picture_start;
     uint64_t trace_at;
@@ -200,9 +201,9 @@ static void spt_unarm(void *e) { pthread_mutex_lock(&g_spt_mu); for (int k = 0; 
 
 static int movie_sync(void);
 static void pop_held(cv_dec *d) {
-    memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD - 1));
-    memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD - 1));
-    memmove(d->held_eos, d->held_eos + 1, CV_HOLD - 1);
+    memmove(d->held, d->held + 1, sizeof d->held[0] * (CV_HOLD_CAP - 1));
+    memmove(d->held_ts, d->held_ts + 1, sizeof d->held_ts[0] * (CV_HOLD_CAP - 1));
+    memmove(d->held_eos, d->held_eos + 1, CV_HOLD_CAP - 1);
     d->nheld--;
 }
 
@@ -364,7 +365,7 @@ static Result cv_dec_reset(void *t) {   /* Stop / Flush: undelivered pictures an
 }
 static Result cv_dec_event(void **out, void *t) { cv_dec *d = cv_of(t); *out = d ? d->event : NULL; return d ? 0 : CV_R(2004); }
 static int cv_hold(cv_dec *d, vpx_image_t *c, int64_t ts) {
-    if (d->nheld >= CV_HOLD) { static int n; if (n++ < 4) LOG("[RED] %s: a packet gave more pictures than the host holds: one dropped", k_name[d->codec]); vpx_img_free(c); return 0; }
+    if (d->nheld >= CV_HOLD_CAP) { static int n; if (n++ < 4) LOG("[RED] %s: a packet gave more pictures than the host holds: one dropped", k_name[d->codec]); vpx_img_free(c); return 0; }
     if (d->have_decoded_pts && ts > d->decoded_pts && (uint64_t)ts - (uint64_t)d->decoded_pts <= 1000000000ull)
         d->picture_step = (uint64_t)ts - (uint64_t)d->decoded_pts;
     d->decoded_pts = ts; d->have_decoded_pts = 1;
@@ -386,7 +387,14 @@ static Result cv_dec_submit(uint64_t *out, void *t, const void *data, uint64_t s
     if (d->nheld >= CV_HOLD) { if (d->event) clear_event(d->event); pthread_mutex_unlock(&d->mu); return CV_BUSY; }
     opening_packet(d,data,size);
     int got = 0;
-    if(size && d->codec==CV_AV1){mav1_picture pic;if(mav1_decode(d->av1,data,(size_t)size,&pic)==1){vpx_image_t *c=av1_i420(&pic);if(c)got+=cv_hold(d,c,ts);}}
+    if(d->codec==CV_AV1&&mav1_pipelined(d->av1)&&(size||eos)){   /* working ahead: the pictures ready so far, each with its own timestamp; end of stream drains the rest */
+        if(size)mav1_send(d->av1,data,(size_t)size,ts);
+        if(eos)mav1_drain(d->av1);
+        mav1_picture pic;int64_t pts;
+        while(d->nheld<CV_HOLD_CAP&&mav1_receive(d->av1,&pic,&pts)==1){vpx_image_t *c=av1_i420(&pic);if(c)got+=cv_hold(d,c,pts);}
+        if(!mav1_drained(d->av1)){static int n;if(n++<4)LOG("[RED] AV1: more pictures than the host holds: the rest waits in the decoder");}
+    }
+    else if(size && d->codec==CV_AV1){mav1_picture pic;if(mav1_decode(d->av1,data,(size_t)size,&pic)==1){vpx_image_t *c=av1_i420(&pic);if(c)got+=cv_hold(d,c,ts);}}
     else if (size && d->vpx_ok) {
         if (vpx_codec_decode(&d->vpx, data, (unsigned)size, NULL, 0) != VPX_CODEC_OK) { static int n; if (n++ < 4) LOG("[RED] %s: %s", k_name[d->codec], vpx_codec_error(&d->vpx)); }
         vpx_codec_iter_t it = NULL; const vpx_image_t *im;
@@ -414,7 +422,7 @@ static int movie_sync(void) {
 static void skip_late_pictures(cv_dec *d) {
     if (d->codec != CV_AV1 || !d->clock.started || !movie_sync()) return;
     int64_t target = ns2_movie_clock_target(&d->clock, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    for (unsigned n = 0; n < CV_BUFS + CV_HOLD && d->fcount; n++) {
+    for (unsigned n = 0; n < CV_BUFS + CV_HOLD_CAP && d->fcount; n++) {
         uint32_t i = d->fifo[d->fhead]; cv_buf *b = &d->buf[i];
         if (!b->filled || b->eos) break;
         int64_t newer_ts;
