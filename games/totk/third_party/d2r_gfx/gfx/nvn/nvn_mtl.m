@@ -1491,7 +1491,7 @@ static void memory_inventory_report(uint64_t frame) { @autoreleasepool {
 
 // ---------- 提交 ----------
 // ---------- Submission ----------
-static void defer_reset(void); static void defer_fallback(void);
+static void defer_reset(void); static void defer_fallback(void); static void defer_flush_q(void);
 typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; void *vis; int qlog; float sph[4]; } post_op;   // vis：kind 3 的可见性槽表 | vis: the visibility slot table for kind 3; qlog / sph: "querylog" diagnostic
 static _Atomic int g_occl_vis; static _Atomic long g_ql_until = -1;   // TOTK occlusion diagnostics (see dm_gfx_querylog_next)
 void dm_gfx_querylog_next(long n); void dm_gfx_passdump_next(long n); void dm_gfx_texdump_next(const char *path);
@@ -3540,6 +3540,7 @@ static void usnap_check_commit(void) {
 uint64_t mtl_sub_commit(void) {
     copy_sites_report();   // OOT_COPY_SITES=1 only
     cg_flush();   // TOTK: cube-face-set groups still pending at the end of the submission (reason 4 in the stats line)
+    defer_flush_q();    // the pass chain: a last Q that drew nothing
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     usnap_finish();   // TOTK: the helper threads must be done with the copies (they are, long before this)
@@ -4238,6 +4239,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "pkg_final_cache")) { atomic_store(&g_pkg_final_cache, v != 0); MLOG("[flag] pkg_final_cache = %d", v != 0); return; }
     if (!strcmp(name, "pend_arena_pin")) { atomic_store(&g_pend_arena_pin, v != 0); MLOG("[flag] pend_arena_pin = %d", v != 0); return; }
     if (!strcmp(name, "eye_share")) { atomic_store(&g_eye_share, v < 0 ? 0 : v > 2 ? 2 : v); MLOG("[flag] eye_share = %d (0 off, 1 eye-independent passes judged and logged, 2 left out of the right eye's replay)", v); return; }
+    if (!strcmp(name, "pass_chain")) { extern void dm_gfx_pass_chain_set(int on); dm_gfx_pass_chain_set(v); return; }   // defer_chain_on
     if (!strcmp(name, "stereo_replay")) { atomic_store(&g_stereo_replay, v < 0 ? 0 : v > 2 ? 2 : v); MLOG("[flag] stereo_replay = %d (0 off, 1 each submission replayed once per eye, 2 with the eye's projection)", v); return; }
     if (!strncmp(name, "skipfs_", 7)) {
         const char *p = name + 7;
@@ -14716,6 +14718,7 @@ typedef struct {
     uint8_t clear_d, clear_s;
     double cd; uint32_t cs;
     uint64_t p_reads[512]; int nreads, p_dw, p_st;
+    int chain, p_dtest;   // chain: made by the pass chain alone (defer_chain_on), Q has P's own targets; p_dtest: a draw of P tests depth or stencil
     defer_snap snap[64];
 } defer_t;
 static defer_t g_defer_slots[4];
@@ -14723,6 +14726,7 @@ static defer_t *g_defer_cur = &g_defer_slots[0];
 #define g_defer (*g_defer_cur)
 static int sub_eq(const p_set_rt *a, int ka, const p_set_rt *b, int kb);
 static uint64_t g_defer_n, g_defer_draws, g_defer_fallbacks;
+static uint64_t g_chain_passes, g_chain_draws, g_chain_flushes;   // the pass chain: merged passes replayed, their deferred draws, groups whose Q drew nothing
 static const uint8_t *g_defer_pend;   // 在 P 区间那一组的 P 区间结束操作（没有则 NULL）：执行循环每条操作只比这一个指针 | The P-range end op of the group that is in its P range (NULL if none): the exec loop compares each op against just this one pointer
 static int g_defer_nact, g_defer_natq;   // 活动组数、已到 Q 等回放的组数（热路径只看计数，不逐槽扫） | Number of active groups, number of groups that reached Q and await replay (the hot path only looks at the counts, no per-slot scan)
 static int g_defer_ab = -1, g_defer_ab_on;
@@ -16156,6 +16160,39 @@ static int prog_samples_ser(const prog_t *pg, uint64_t tex[6][128], uint64_t img
 }
 static int g_defer_env_ab, g_defer_env_off;   // 环境开关：每次提交开始（defer_reset）读一次，热路径不调 getenv | Environment switches: read once at the start of each submit (defer_reset); the hot path does not call getenv
 static void defer_env(void) { const char *x = getenv("DM_NVN_DEFER_AB"), *e = getenv("DM_NVN_DEFER"); g_defer_env_ab = x && !strcmp(x, "1"); g_defer_env_off = e && !strcmp(e, "0"); }
+/* The pass chain (TOTK_PASS_CHAIN; "flag pass_chain <0|1>" at run time): the deferral alone, without the other pass
+   rewrites of DM_NVN_TBDR, for a pass the game keeps leaving and coming back to. Ocarina of Time draws each character's
+   shadow as "a 384x384 depth map of its own, then one box (36 vertices) into a 1920x1080 RGBA8 buffer that samples
+   that map and the scene depth": 25 of them in Castle Town are 25 passes that load and store the 1920x1080 buffer for
+   one draw each (2.06-2.39 ms of GPU time a frame, 2026-11-18), though no depth-map pass touches that buffer or
+   anything an earlier box reads. The boxes are deferred from pass to pass and drawn together in the last one, after
+   every depth map: one pass (150 -> 121 render passes a frame, those passes 2.39 -> 0.53 ms, the frame about 0.85 ms
+   less, switched in one session).
+   Stricter than the deferral under DM_NVN_TBDR, which stays as it was: Q has P's own targets (so the deferred draws
+   take their own pipelines, g_pso_lmap stays NULL), P neither writes depth nor samples its own colours from its first
+   draw on and is a plain direct draw, a pass in between has no depth attachment P samples and does not clear a depth P
+   tests, the groups that join bring what their draws read, there is one chain at a time, and a Q whose draws are all
+   left out at run time gets P's draws in a pass of their own (defer_flush_q).
+   On for Ocarina of Time on the Mac (TOTK_PASS_CHAIN=0 off); every other game and iOS: off unless TOTK_PASS_CHAIN=1
+   (not measured there). */
+static _Atomic int g_defer_chain = -1;
+static int defer_chain_on(void) {
+    int v = atomic_load_explicit(&g_defer_chain, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("TOTK_PASS_CHAIN");
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+        v = !(e && !strcmp(e, "0"));
+#else
+        v = e && !strcmp(e, "1");
+#endif
+        int expected = -1; atomic_compare_exchange_strong(&g_defer_chain, &expected, v); v = atomic_load_explicit(&g_defer_chain, memory_order_relaxed);
+        if (v) MLOG("[pass-chain] on: a pass the game leaves for passes that touch none of it and comes back to is drawn once (TOTK_PASS_CHAIN=0 off)"); }
+    return v;
+}
+void dm_gfx_pass_chain_set(int on) {
+    atomic_store(&g_defer_chain, on != 0);
+    MLOG("[flag] pass_chain = %d (so far: %llu merged passes, %llu deferred draws, %llu flushed alone)", on != 0,
+         (unsigned long long)g_chain_passes, (unsigned long long)g_chain_draws, (unsigned long long)g_chain_flushes);
+}
 static int defer_on(void) {
     if (!g_defer_env_ab) return tbdr_on() && !g_defer_env_off;
     if (g_defer_ab < 0) { g_defer_ab = 0; g_defer_ab_on = 0; }
@@ -16241,7 +16278,8 @@ static void defer_replay(void) {
         g_defer_cur = d; if (d->reset_between) g_vis_counting = 0;
         { static int once; if (!once++) MLOG("推迟合并通道：首例 通道 %llu，组 %d 回放绘制 %d 次", g_stat_pass, gi, d->n); }   // 多组时首个回放前可能已建多组，不能按 g_defer_n == 1 判 | With multiple groups, several groups may already have been created before the first replay, so it cannot be judged by g_defer_n == 1
         for (int i = 0; i < d->n; i++) { defer_snap *z = &d->snap[i]; static uint8_t lm[8]; for (int j = 0; j < 8; j++) lm[j] = d->lmap[j] == 0xff || d->lmap[j] >= 8 ? 0xff : z->pm[d->lmap[j]];
-            memcpy(&S, z->S_, sizeof S); args_dirty_all(); R.sc = z->sc; R.has_sc = z->has_sc; g_pso_dirty = g_dss_dirty = 1; g_pso_lmap = lm; draw(z->idx ? NULL : &z->dw, z->idx ? &z->di : NULL); }
+            memcpy(&S, z->S_, sizeof S); args_dirty_all(); R.sc = z->sc; R.has_sc = z->has_sc; g_pso_dirty = g_dss_dirty = 1; g_pso_lmap = d->chain ? NULL : lm; draw(z->idx ? NULL : &z->dw, z->idx ? &z->di : NULL); }   // the chain: Q has P's own targets, the draws keep their own pipelines
+        if (d->chain) { g_chain_passes++; g_chain_draws += (uint64_t)d->n; }
         defer_release_one(d);
     }
     g_vis_counting = vis; memcpy(&S, &save, sizeof S); args_dirty_all(); R.sc = sc; R.has_sc = has_sc; g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = g_dss_dirty = 1; g_exec_next = en0; g_defer_replaying = 0; g_defer_cur = &g_defer_slots[0];
@@ -16257,6 +16295,29 @@ static void defer_fallback(void) {
         rp_end(); defer_release_one(d);
     }
     memcpy(&S, &save, sizeof S); args_dirty_all(); R.rt = rt; g_defer_replaying = 0; g_defer_cur = &g_defer_slots[0];
+}
+/* Groups waiting at their Q when the targets change again or the submission ends: Q's draws were all left out at run
+   time (a shader not there yet, rendering disabled), so nothing replayed them and the next pass to open would take
+   them. Each group is drawn in a pass of its own with P's targets and clears, as the game drew it. */
+static void defer_flush_q(void) {
+    if (g_defer_replaying || g_defer_natq <= 0) return;
+    for (int i = 0; i < 4; i++) if (g_defer_slots[i].active && g_defer_slots[i].at_q && !g_defer_slots[i].chain) return;   // the deferral under DM_NVN_TBDR stays as it was
+    if (g_enc) rp_end();
+    typeof(S) save; memcpy(&save, &S, sizeof S); p_set_rt rt = R.rt; p_scissor sc = R.sc; int has_sc = R.has_sc, vis = g_vis_counting;
+    const uint8_t *en0 = g_exec_next; g_exec_next = NULL; g_defer_replaying = 1;
+    for (int gi, after = 0; (gi = defer_next(1, after)) >= 0;) { defer_t *d = &g_defer_slots[gi]; after = d->born; g_defer_cur = d;
+        R.rt = d->p_rt; R.has_rt = 1; memcpy(R.clear_c, d->clear_c, 8); memcpy(R.cc, d->cc, sizeof R.cc);
+        R.clear_d = d->clear_d; R.clear_s = d->clear_s; R.cd = d->cd; R.cs = d->cs;
+        if (d->reset_between) g_vis_counting = 0;
+        for (int i = 0; i < d->n; i++) { defer_snap *z = &d->snap[i]; memcpy(&S, z->S_, sizeof S); args_dirty_all(); R.sc = z->sc; R.has_sc = z->has_sc; g_pso_dirty = g_dss_dirty = 1;
+            g_pso_lmap = d->chain ? NULL : z->pm; draw(z->idx ? NULL : &z->dw, z->idx ? &z->di : NULL); }
+        rp_flush();   // the pass, or P's clears alone when its draws were left out too
+        g_vis_counting = vis; g_chain_flushes++; PD("G %llu 组 %d 的 Q 没有绘制：P 的 %d 次绘制单独成通道", g_stat_pass, gi, d->n);
+        defer_release_one(d);
+    }
+    memcpy(&S, &save, sizeof S); args_dirty_all(); R.rt = rt; R.has_rt = 1; R.sc = sc; R.has_sc = has_sc;
+    memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;   // the groups' clears (defer_begin_q put them here for Q) are done
+    g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = g_dss_dirty = 1; g_exec_next = en0; g_defer_replaying = 0; g_defer_cur = &g_defer_slots[0];
 }
 static const uint8_t *defer_cont(int *ci) {   // 列表结束后的下一段（同一次提交内）：先调用方返回栈，再本次提交余下的句柄；没有了返回 NULL | The next segment after a list ends (within the same submit): first the caller return stack, then the remaining handles of this submit; returns NULL when there are none left
     for (;;) { int k = (*ci)++;
@@ -16293,23 +16354,113 @@ static int defer_pre(void) {
         if (!ok && !same) return 0; }
     return 1;
 }
+/* The pass chain's pre-screen, without the store index (a bounded walk from this draw): within 63 draws the targets
+   change to ones that share nothing with this pass's, and the change after that one (or the one after) is back to
+   exactly this pass's targets, with only draws, state and clears in between. The full look-ahead decides. */
+static int defer_chain_pre(void) {
+    const uint8_t *p = g_exec_next; int ci = 0, seg = 0, draws = 0;
+    for (int guard = 0; guard < 4096; guard++) {
+        op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
+        switch (h.op) {
+            case OP_END: { const uint8_t *nx = defer_cont(&ci); if (!nx) return 0; p = nx; continue; }
+            case OP_JUMP: memcpy(&p, a, 8); continue;
+            case OP_CALL: case OP_WAIT_EVENT: case OP_SIGNAL_EVENT: case OP_FENCE_SYNC: case OP_REPORT_COUNTER: case OP_UPDATE_UB: case OP_CLEAR_BUF:
+            case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_DISPATCH: return 0;
+            case OP_DRAW: case OP_DRAW_IDX: if (!seg && ++draws > 63) return 0; break;
+            case OP_SET_RT: { const p_set_rt *r = a;
+                if (rt_same(r, &R.rt)) { if (seg) return 1; break; }
+                for (int i = 0; i < R.rt.n; i++) for (int j = 0; j < r->n; j++) if (R.rt.color[i] && r->color[j] && sub_eq(&R.rt, i, r, j)) return 0;
+                if (r->depth && R.rt.depth && r->depth->serial == R.rt.depth->serial) return 0;
+                if (++seg > 2) return 0; break; }
+            default: break;
+        }
+        p += h.size;
+    }
+    return 0;
+}
+/* The pass chain defers plain draws only: a vertex and a fragment stage (a mesh or geometry draw prepares buffers of its
+   own before its pass), drawn directly (an indirect draw's record may be written in between). */
+static int defer_chain_plain(const prog_t *pg, uint64_t ind) {
+    __unsafe_unretained NvProg *pr = pg ? prog_get(pg) : nil;
+    if (ind || !pr || pr->missing || pr->geo) return 0;
+    for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st];
+        if (sh && ((sh->stage != 0 && sh->stage != 1) || pool_shader_writes(sh))) return 0; }   // nor a stage that may store to memory: a store has no place in a draw that moves
+    return 1;
+}
+/* A draw between P and Q may store nothing to memory either (a writable storage buffer, an image, raw stores): P's
+   draws read buffers the look-ahead does not follow. */
+static int defer_chain_stores(const prog_t *pg) {
+    __unsafe_unretained NvProg *pr = pg ? prog_get(pg) : nil;
+    if (!pr || pr->missing) return 1;
+    for (int st = 0; st < 5; st++) if (pool_shader_writes(pr->sh[st])) return 1;
+    return 0;
+}
+/* The same texture, or memory in common. Ocarina of Time puts new textures on the same addresses of its render target
+   pool again and again within a frame (2026-11-18: a 256x144 depth, a 128x128 depth and an 80x44 colour texture all at
+   the pool's first byte, where the 1920x1080 scene depth lives): another serial there is the same pages, so a pass
+   that renders into it writes what a draw of P reads. A texture with no pool memory shares with nothing; one whose
+   size is not known counts as sharing with everything in its pool. */
+static int defer_tex_alias(const tex_t *a, const tex_t *b) {
+    if (!a || !b) return 0;
+    if (a->serial == b->serial) return 1;
+    if (!a->mem || !b->mem) return 0;
+    if (!a->L.size || !b->L.size) return a->pool == b->pool;
+    uint64_t la = (uintptr_t)a->mem, lb = (uintptr_t)b->mem;
+    return la < lb + b->L.size && lb < la + a->L.size;
+}
+/* The pass chain: targets set between P and Q hold nothing of P's, by memory: none of P's attachments under another
+   name, and no texture its draws (or the joined groups') sample, whatever level or layer. */
+static int defer_chain_rt_conflict(const p_set_rt *r) {
+    for (int k = 0; k < 9; k++) { const tex_t *t = k < 8 ? (k < r->n ? r->color[k] : NULL) : r->depth; if (!t) continue;
+        for (int j = 0; j < 9; j++) { const tex_t *p = j < 8 ? (j < g_defer.p_rt.n ? g_defer.p_rt.color[j] : NULL) : g_defer.p_rt.depth;
+            if (p && p->serial != t->serial && defer_tex_alias(p, t)) return 1; }
+        for (int i = 0; i < g_defer.nreads && i < 512; i++) { int tid = (int)(g_defer.p_reads[i] & 0xfffff);
+            if (tid && tid < g_ntreg && g_treg[tid].ok && defer_tex_alias(&g_treg[tid].t, t)) return 1; } }
+    return 0;
+}
+/* The pass chain: what Q's segment may hold besides plain draws: state. Anything that reads or writes memory, clears,
+   waits, signals or reports there would run before P's draws (they are replayed at the first of Q's draws that is not
+   left out at run time), where the game had it after them. */
+static int defer_chain_state_op(uint32_t op) {
+    switch (op) {
+        case OP_BEGIN: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM:
+        case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BARRIER:
+        case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_BLEND_COLOR: case OP_BIND_IMG: case OP_DEPTH_CLAMP: case OP_RENDER_ENABLE: case OP_RASTER_DISCARD:
+        case OP_RENDER_COND: case OP_PUSH_CONST: case OP_COPY_STRIDE:
+            return 1;
+        default: return 0;
+    }
+}
 static void defer_try(const p_draw *dw, const p_draw_idx *di) {
-    if (!defer_on() || defer_has_in_p() || g_defer_replaying || g_fz.active || g_fz_checking || !g_exec_next || !R.rt.n) return;
+    const int chain = !tbdr_on();   // the pass chain alone (defer_chain_on): no store index, and the stricter conditions listed there
+    if ((chain ? !defer_chain_on() : !defer_on()) || defer_has_in_p() || g_defer_replaying || g_fz.active || g_fz_checking || !g_exec_next || !R.rt.n) return;
     int slot = defer_slot_free(); if (slot < 0) return;
     g_defer_cur = &g_defer_slots[slot];
     int ncol = 0; for (int i = 0; i < R.rt.n; i++) ncol += R.rt.color[i] != NULL; if (!ncol) return;   // 只挂深度模板的通道（阴影图等）：Q 的定义是覆盖 P 的颜色，无颜色的 P 不可能推迟——原先预筛对它空转放行、完整前瞻白扫几十次绘制 | Render passes with only depth-stencil attached (shadow maps etc.): Q is defined as covering P's colors, so a P without color can never be deferred -- previously the pre-screen let it through idly and the full lookahead scanned dozens of draws for nothing
-    int has_clear = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) has_clear |= R.clear_c[i]; if (!has_clear) return;
-    if (!defer_pre()) return;
-    memset(&g_defer, 0, sizeof g_defer); g_defer.p_rt = R.rt; memcpy(g_defer.clear_c, R.clear_c, 8); memcpy(g_defer.cc, R.cc, sizeof R.cc);
+    int has_clear = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) has_clear |= R.clear_c[i];
+    if (chain) { for (int i = 0; i < 4; i++) if (g_defer_slots[i].active && !g_defer_slots[i].at_q) return;   // one chain at a time: every other group is waiting at this pass and joins
+                 if (S.ds.dw || !defer_chain_plain(S.prog, dw ? dw->ind : di ? di->ind : 1) || !defer_chain_pre()) return; }   // this first draw must not write depth (the look-ahead checks the later ones); a pass that loads its targets may be deferred
+    else { if (!has_clear) return; if (!defer_pre()) return; }
+    memset(&g_defer, 0, sizeof g_defer); g_defer.chain = chain; g_defer.p_dtest = S.ds.dt || S.ds.st; g_defer.p_st = chain && S.ds.st;   // the chain: this first draw's stencil test counts as a stencil write
+    g_defer.p_rt = R.rt; memcpy(g_defer.clear_c, R.clear_c, 8); memcpy(g_defer.cc, R.cc, sizeof R.cc);
     g_defer.clear_d = R.clear_d; g_defer.clear_s = R.clear_s; g_defer.cd = R.cd; g_defer.cs = R.cs;
     uint64_t tex[6][128], img[6][32]; memcpy(tex, S.tex, sizeof tex); memcpy(img, S.img, sizeof img); const prog_t *pg = S.prog; ds_st ds = S.ds;
     const uint8_t *p = g_exec_next, *p_end = NULL, *qop = NULL; const p_set_rt *q = NULL; p_set_rt scan_rt = R.rt; int srt_hit = -1, ci = 0, draws = 1, p_has_draw = 1; defer_collect_reads(&g_defer, pg, tex, img);   // 当前这次绘制就是 P 的第一次 | The current draw is P's first
+    if (chain) {   // the groups waiting at this pass join this one when it is deferred: what their draws read and test counts from here on
+        for (int i = 0; i < 4; i++) { const defer_t *u = &g_defer_slots[i]; if (u == &g_defer || !u->active || !u->at_q) continue;
+            if (u->nreads > 512) g_defer.nreads = 513;
+            for (int k = 0; k < u->nreads && k < 512 && g_defer.nreads <= 512; k++) { int seen = 0; for (int j = 0; j < g_defer.nreads; j++) seen |= g_defer.p_reads[j] == u->p_reads[k];
+                if (!seen) { if (g_defer.nreads < 512) g_defer.p_reads[g_defer.nreads++] = u->p_reads[k]; else g_defer.nreads = 513; } }
+            g_defer.p_dtest |= u->p_dtest; g_defer.p_st |= u->p_st; }
+        if (g_defer.nreads > 512 || defer_prog_hits(pg, tex, img, &g_defer.p_rt, 1, 1)) { g_defer.reason = 7; goto fail; }   // an unknown program, too many textures, or this draw samples its own colours
+    }
     for (int guard = 0; guard < 200000; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
         if (g_hoist_n && hoist_skipped(p)) { p += h.size; continue; }
         switch (h.op) {
             case OP_END: { const uint8_t *nx = defer_cont(&ci); if (!nx) { g_defer.reason = 1; goto fail; } p = nx; continue; }
             case OP_CALL: case OP_WAIT_EVENT: g_defer.reason = 2; goto fail;
+            case OP_SIGNAL_EVENT: case OP_FENCE_SYNC: if (g_defer.chain) { g_defer.reason = 2; g_defer.reason_op = h.op; goto fail; } break;   // the chain: the queue may stop there, and the CPU may take the frame's results as done
             case OP_JUMP: memcpy(&p, a, 8); continue;
             case OP_BIND_PROGRAM: if (bind_graphics(a)) pg = ((const p_bind_program *)a)->prog; break;
             case OP_BIND_TEX: case OP_BIND_IMG: { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128;
@@ -16318,13 +16469,17 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
             case OP_DRAW: case OP_DRAW_IDX:
                 if (defer_prog_hits(pg, tex, img, &g_defer.p_rt, 1, 1)) { /* 建议在这里识别需要输出映射但缺少 _bf 后调用 bf_want_note。 | Suggestion: here, after identifying that an output mapping is needed but _bf is missing, call bf_want_note. */ g_defer.reason = 7; goto fail; }
                 if (p_end) {   // 中间区间的绘制：不得写 P 读的贴图、不得写 P 的深度模板（P 写模板时也不得测模板） | Draws in the intermediate range: must not write textures P reads, must not write P's depth-stencil (and must not test stencil when P writes stencil)
-                    if (srt_hit < 0) { srt_hit = 0; for (int k = 0; k < scan_rt.n && !srt_hit; k++) if (scan_rt.color[k] && defer_rt_hits_reads(&scan_rt, k)) srt_hit = 1; }   // 附件只在 SetRenderTargets 变：每段算一次 | Attachments change only at SetRenderTargets: computed once per segment
+                    if (srt_hit < 0) { srt_hit = 0; for (int k = 0; k < scan_rt.n && !srt_hit; k++) if (scan_rt.color[k] && defer_rt_hits_reads(&scan_rt, k)) srt_hit = 1;   // 附件只在 SetRenderTargets 变：每段算一次 | Attachments change only at SetRenderTargets: computed once per segment
+                        if (g_defer.chain && scan_rt.depth) for (int i = 0; i < g_defer.nreads && !srt_hit; i++) srt_hit = defer_handle_sub(g_defer.p_reads[i], &scan_rt, 8, 1); }   // the chain: nor a depth attachment P samples (a shadow map drawn again)
                     if (srt_hit) { g_defer.reason = 12; goto fail; }
                     if (scan_rt.depth && g_defer.p_rt.depth && scan_rt.depth->serial == g_defer.p_rt.depth->serial && (ds.dw || (g_defer.p_st && ds.st))) { g_defer.reason = 13; goto fail; }
+                    if (g_defer.chain && defer_chain_stores(pg)) { g_defer.reason = 24; goto fail; }   // the chain: nor may it store to memory
                     break; }
-                draws++; if (draws > 64) { g_defer.reason = 20; goto fail; } p_has_draw = 1; defer_collect_reads(&g_defer, pg, tex, img); g_defer.p_dw |= ds.dw; g_defer.p_st |= ds.st && ((S.st_wmask[0] | S.st_wmask[1]) != 0) && (ds.fail_f != NVN_STENCIL_OP_KEEP || ds.zfail_f != NVN_STENCIL_OP_KEEP || ds.zpass_f != NVN_STENCIL_OP_KEEP || ds.fail_b != NVN_STENCIL_OP_KEEP || ds.zfail_b != NVN_STENCIL_OP_KEEP || ds.zpass_b != NVN_STENCIL_OP_KEEP); if (g_defer.p_dw) { g_defer.reason = 8; goto fail; } break;
+                draws++; if (draws > 64) { g_defer.reason = 20; goto fail; } p_has_draw = 1; defer_collect_reads(&g_defer, pg, tex, img); g_defer.p_dtest |= ds.dt || ds.st;
+                if (g_defer.chain && (g_defer.nreads > 512 || !defer_chain_plain(pg, h.op == OP_DRAW ? ((const p_draw *)a)->ind : ((const p_draw_idx *)a)->ind))) { g_defer.reason = 21; goto fail; }
+                g_defer.p_dw |= ds.dw; g_defer.p_st |= ds.st && ((S.st_wmask[0] | S.st_wmask[1]) != 0) && (ds.fail_f != NVN_STENCIL_OP_KEEP || ds.zfail_f != NVN_STENCIL_OP_KEEP || ds.zpass_f != NVN_STENCIL_OP_KEEP || ds.fail_b != NVN_STENCIL_OP_KEEP || ds.zfail_b != NVN_STENCIL_OP_KEEP || ds.zpass_b != NVN_STENCIL_OP_KEEP); if (g_defer.p_dw) { g_defer.reason = 8; goto fail; } break;
             case OP_RESET_COUNTER: g_defer.reset_between = 1; break;
-            case OP_COPY_T2T: { const p_copy_t2t *c = a;   // 贴图拷贝：两端都不碰 P 的附件、目标不是 P 采样的贴图才放行 | Texture copy: allowed only if neither end touches P's attachments and the destination is not a texture P samples
+            case OP_COPY_T2T: { const p_copy_t2t *c = a; if (g_defer.chain) { g_defer.reason = 3; g_defer.reason_op = h.op; goto fail; }   // the chain: no copy at all (its ends are compared by serial below, not by memory)   // 贴图拷贝：两端都不碰 P 的附件、目标不是 P 采样的贴图才放行 | Texture copy: allowed only if neither end touches P's attachments and the destination is not a texture P samples
                 uint64_t ss = c->src ? c->src->serial : 0, ds_ = c->dst ? c->dst->serial : 0; int bad = !ss || !ds_;
                 for (int k = 0; k < g_defer.p_rt.n && !bad; k++) if (g_defer.p_rt.color[k] && (g_defer.p_rt.color[k]->serial == ss || g_defer.p_rt.color[k]->serial == ds_)) bad = 1;
                 if (g_defer.p_rt.depth && (g_defer.p_rt.depth->serial == ss || g_defer.p_rt.depth->serial == ds_)) bad = 1;
@@ -16334,7 +16489,11 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
             case OP_REPORT_COUNTER: case OP_UPDATE_UB: case OP_CLEAR_BUF: case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_CLEAR_TEX: case OP_DISPATCH: g_defer.reason = 3; g_defer.reason_op = h.op; goto fail;
             case OP_CLEAR_COLOR: { const p_clear_color *c = a; if (!p_end) { g_defer.reason = 16; goto fail; }   // P 续段里的清除：不推迟 | A clear inside P's continuation segment: do not defer
                 if (c->index >= 0 && c->index < scan_rt.n && (defer_rt_hits_reads(&scan_rt, c->index) || (scan_rt.color[c->index] && defer_rt_hits_reads(&g_defer.p_rt, c->index)))) { g_defer.reason = 5; goto fail; } break; }
-            case OP_CLEAR_DS: if (!p_end) { g_defer.reason = 16; goto fail; } break;
+            case OP_CLEAR_DS: if (!p_end) { g_defer.reason = 16; goto fail; }
+                if (g_defer.chain && scan_rt.depth) {   // the chain: the depth cleared is neither the one P tests nor one P samples
+                    if (g_defer.p_dtest && g_defer.p_rt.depth && scan_rt.depth->serial == g_defer.p_rt.depth->serial) { g_defer.reason = 13; goto fail; }
+                    for (int i = 0; i < g_defer.nreads; i++) if (defer_handle_sub(g_defer.p_reads[i], &scan_rt, 8, 1)) { g_defer.reason = 12; goto fail; } }
+                break;
             case OP_SET_RT: { const p_set_rt *r = a;
                 if (!p_end && rt_same(r, &g_defer.p_rt)) break;   // 同目标再设一次（游戏常连发）：仍是 P 的续段，绘制一并推迟 | The same target set once more (the game often sends it repeatedly): still a continuation segment of P, and its draws are deferred together
                 if (!p_end) p_end = p; int shared = 0; for (int i = 0; i < g_defer.p_rt.n; i++) for (int j = 0; j < r->n; j++) if (g_defer.p_rt.color[i] && r->color[j] && sub_eq(&g_defer.p_rt, i, r, j)) shared = 1;
@@ -16347,10 +16506,11 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
                         if (he.op == OP_DRAW || he.op == OP_DRAW_IDX || he.op == OP_CLEAR_COLOR || he.op == OP_CLEAR_DS || he.op == OP_CALL || he.op == OP_DISPATCH || he.op == OP_CLEAR_TEX || he.op == OP_COPY_T2T || he.op == OP_COPY_B2T || he.op == OP_COPY_T2B) break;
                         e += he.size; }
                     if (empty) break; }
-                if (!shared) break; if (!p_has_draw || !defer_q_superset(r)) { g_defer.reason = 6; goto fail; } q = r; qop = p; goto q_found; }
+                if (!shared) break; if (!p_has_draw || !defer_q_superset(r) || (g_defer.chain && !rt_same(r, &g_defer.p_rt))) { g_defer.reason = 6; goto fail; } q = r; qop = p; goto q_found; }   // the chain: Q has exactly P's targets
             default: break;
         }
-        if (h.op == OP_SET_RT) { scan_rt = *(const p_set_rt *)a; srt_hit = -1; }
+        if (h.op == OP_SET_RT) { scan_rt = *(const p_set_rt *)a; srt_hit = -1;
+            if (g_defer.chain && p_end && defer_chain_rt_conflict(&scan_rt)) { g_defer.reason = 12; goto fail; } }   // the chain: by memory, whatever the pass then does
         p += h.size;
     }
 fail:
@@ -16360,13 +16520,19 @@ q_found:
     for (int guard = 0; guard < 200000; guard++) { op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8; if (h.op == OP_JUMP) { memcpy(&p, a, 8); continue; }
         // Q 整段（到下一个 SetRenderTargets / 列表结束）：任何绘制都不得按覆盖 P 级别的视图采样 P 的颜色附件——推迟后 P 的结果还在 tile 里没落主存，采样会读到旧内容
         // The whole Q segment (up to the next SetRenderTargets / end of list): no draw may sample P's color attachments through a view covering P's level -- after deferral P's result is still in the tile and has not landed in main memory, so sampling would read old content
-        if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) { if (defer_prog_hits(pg, tex, img, &g_defer.p_rt, 1, 1)) { g_defer.reason = 14; goto fail; } q_body = 1; p += h.size; continue; }
-        if (q_body && (h.op == OP_SET_RT || h.op == OP_END)) break;
-        if (!q_body && h.op == OP_END) { const uint8_t *nx = defer_cont(&ci); if (!nx) { g_defer.reason = 9; goto fail; } p = nx; continue; }
+        if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) { if (defer_prog_hits(pg, tex, img, &g_defer.p_rt, 1, 1)) { g_defer.reason = 14; goto fail; }
+            /* the chain: every draw of Q is a plain one. Whichever of them opens the pass replays P's draws from inside
+               its own draw, and a mesh or geometry draw has its own program and buffers bound at that moment. */
+            if (g_defer.chain && !defer_chain_plain(pg, h.op == OP_DRAW ? ((const p_draw *)a)->ind : ((const p_draw_idx *)a)->ind)) { g_defer.reason = 22; goto fail; }
+            q_body = 1; p += h.size; continue; }
+        if (q_body && (h.op == OP_SET_RT || (h.op == OP_END && !g_defer.chain))) break;
+        if (h.op == OP_END && (!q_body || g_defer.chain)) {   // the chain: Q's segment runs on into the submission's next list, up to the next change of targets
+            const uint8_t *nx = defer_cont(&ci); if (!nx) { if (q_body) break; g_defer.reason = 9; goto fail; } p = nx; continue; }
         if (h.op == OP_CALL) { g_defer.reason = 9; g_defer.reason_op = h.op; goto fail; }
         // Q 的 SetRenderTargets 之后、首次绘制与任何清除之前又来一次 SetRenderTargets（游戏重复设目标，前一次是空通道）：新目标仍覆盖 P 就以它为 Q，否则不推迟
         // After Q's SetRenderTargets and before its first draw and any clear, another SetRenderTargets arrives (the game sets targets repeatedly, the previous one being an empty render pass): if the new targets still cover P take it as Q, otherwise do not defer
-        if (!q_body && h.op == OP_SET_RT && !q_clears) { const p_set_rt *r2 = a; if (!defer_q_superset(r2)) { g_defer.reason = 15; goto fail; } q = r2; qop = p; p += h.size; continue; }
+        if (!q_body && h.op == OP_SET_RT && !q_clears) { const p_set_rt *r2 = a; if (!defer_q_superset(r2) || (g_defer.chain && !rt_same(r2, &g_defer.p_rt))) { g_defer.reason = 15; goto fail; } q = r2; qop = p; p += h.size; continue; }
+        if (g_defer.chain && !defer_chain_state_op(h.op)) { g_defer.reason = 19; g_defer.reason_op = h.op; goto fail; }   // the chain: nothing but state and plain draws in all of Q's segment (defer_chain_state_op): no clear, copy, wait, signal or report
         if (h.op == OP_CLEAR_COLOR || h.op == OP_CLEAR_DS) q_clears = 1;
         if (!q_body && (h.op == OP_END || h.op == OP_SET_RT || h.op == OP_UPDATE_UB || h.op == OP_CLEAR_BUF || h.op == OP_COPY_B2B || h.op == OP_DISPATCH)) { g_defer.reason = 9; g_defer.reason_op = h.op; goto fail; }
         if (h.op == OP_BIND_PROGRAM) { if (bind_graphics(a)) pg = ((const p_bind_program *)a)->prog; } else if (h.op == OP_BIND_TEX || h.op == OP_BIND_IMG) { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128; if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (h.op == OP_BIND_IMG) img[b->stage][b->first + k] = b->h[k]; else tex[b->stage][b->first + k] = b->h[k]; } }
@@ -16376,7 +16542,7 @@ q_found:
     if (!q || !defer_q_superset(q) || g_defer.n >= 64) { g_defer.reason = 11; goto fail; }
     for (int i = 0; i < 4; i++) if (&g_defer_slots[i] != &g_defer && g_defer_slots[i].active && g_defer_slots[i].q_op == qop && !defer_same_q_depth(&g_defer_slots[i], q)) { g_defer.reason = 17; goto fail; }
     g_defer.q_rt = *q; if (!q->depth && g_defer.p_rt.depth) { g_defer.q_rt.depth = g_defer.p_rt.depth; g_defer.q_rt.dview = g_defer.p_rt.dview; g_defer.q_rt.has_dview = g_defer.p_rt.has_dview; } { int na = 0; for (int i = 0; i < 4; i++) { const defer_t *d = &g_defer_slots[i]; if (d != &g_defer && d->active && d->at_q) na += d->n; }
-      if (na + 1 > 64) { g_defer.reason = 20; goto fail; } }
+      if (na + (g_defer.chain ? draws : 1) > 64) { g_defer.reason = 20; goto fail; } }   // the chain: with all of P's own draws (one that no longer fits would be drawn at once, before the ones deferred)
     g_defer.q_op = qop; g_defer.p_end_op = p_end; g_defer.in_p = 1; g_defer.active = 1; g_defer_nact++; g_defer_pend = p_end; g_defer_n++; g_defer.born = g_defer_n;
     // 链式：本通道正是上游组的 Q（它们 at_q、等本通道开通道时回放），本通道又整体推迟——上游组按创建先后并进新组：
     // 上游组的目标空间 = 本通道目标 = 新组 P 目标，快照的映射复合为 pm' = 上游 lmap ∘ pm；上游的清除已在 R 里，下面随新组带走
@@ -19126,7 +19292,7 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!g_enc && tbdr_on()) hoist_try();   // 先把夹在本通道与其续用之间的纯清除通道提前做掉（rp_begin_ex 之前，不占本通道） | First hoist and execute the pure-clear render passes sandwiched between this render pass and its continuation (before rp_begin_ex, not occupying this render pass)
     // 推迟判定在 hoist_try 之后：被提前的纯清除通道在前瞻里跳过，P 的同目标续段才认得出来
     // The deferral decision comes after hoist_try: hoisted pure-clear render passes are skipped in the lookahead, and only then can P's same-target continuation segment be recognized
-    if (!g_enc && tbdr_on() && !defer_has_in_p() && !g_defer_replaying && !g_fz.active && !g_fz_checking && g_exec_next) { defer_try(dw, di); if (g_defer_cur->active && g_defer_cur->in_p) { g_draw_skip[7]++; return; } }
+    if (!g_enc && (tbdr_on() || defer_chain_on()) && !defer_has_in_p() && !g_defer_replaying && !g_fz.active && !g_fz_checking && g_exec_next) { defer_try(dw, di); if (g_defer_cur->active && g_defer_cur->in_p) { g_draw_skip[7]++; return; } }
     if (!g_enc && tbdr_on() && !g_fz_checking) fuse_try();   // 可读 tile 通道合并缺省开；结构 / 本像素证明不成立仍退回普通通道，CHECK 重画时不重入 | Readable tile render pass merge is on by default; when the structure / same-pixel proof does not hold it still falls back to a normal render pass, and it is not re-entered during the CHECK redraw
 frz_plain:;
     int need = g_enc || !tbdr_on() ? 3 : pass_ds_need(), mode = defer_q_draw ? 0 : need == 0 ? 2 : need == 2 ? 3 : need == 1 ? 4 : 0;   // 2 都不挂 3 只挂模板 4 只挂深度 | 2 attach neither, 3 attach stencil only, 4 attach depth only
@@ -20845,6 +21011,7 @@ static void mtl_exec_list(const uint8_t *p) {
             case OP_SET_RT: {
                 const p_set_rt *r = a;
                 g_cg.rt_seq++; if (g_cg_pending && !cg_rt_match(r)) { g_cg.reason[0]++; cg_flush(); }   // TOTK: a target that is not a cube face set lands the pending groups
+                if (g_defer_natq > 0) defer_flush_q();   // the pass chain: the Q before this change of targets drew nothing
                 if (defer_begin_q(p)) break;
                 int pend = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
                 if (g_enc && g_lay.active && !pend && lay_continue(r)) break;   // TOTK: another layer of the layered pass
