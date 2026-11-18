@@ -164,7 +164,13 @@ struct GameCard: View {
 
     private var picturePath: String? {
         guard let app else { return nil }
-        return URL(fileURLWithPath: app.app).appendingPathComponent("Contents/Resources/AppIcon.icns").path
+        // the icon the app's Info.plist names (Odyssey: OdysseyIcon, Animal Crossing: AnimalCrossingIcon), else AppIcon
+        // (2026-11-18: Odyssey's case showed no picture, the Launcher looked only for AppIcon.icns)
+        let bundle = URL(fileURLWithPath: app.app)
+        let info = NSDictionary(contentsOf: bundle.appendingPathComponent("Contents/Info.plist"))
+        let name = (info?["CFBundleIconFile"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "AppIcon"
+        let file = (name as NSString).pathExtension.isEmpty ? name + ".icns" : name
+        return bundle.appendingPathComponent("Contents/Resources").appendingPathComponent(file).path
     }
 
     private var picture: NSImage? { picturePath.flatMap { NSImage(contentsOfFile: $0) } }
