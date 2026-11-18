@@ -36,18 +36,26 @@ class PhoneScene(unittest.TestCase):
         self.assertEqual(int(store.group(2)), screen, f'{name}: the screen width of that mode\'s canvas')
         # the custom scene reaches this mode, held at this mode's canvas (the pair's screen width)
         self.assertIn(f'phone_scene_custom({screen})', fn, f'{name}: the custom scene, held at the {screen}-wide canvas')
+        # and it is what the pair carries when given; otherwise the presets' scene
+        self.assertIn('render = custom ? custom :', fn, f'{name}: the custom width decides the render width')
         return offset
 
     def test_both_modes_read_their_own_slot(self):
         docked = self.check_pair('patch_render_phone', 1920)
         handheld = self.check_pair('patch_phone_render', 1280)
-        # The other slots of the page: real-time frame step +0, pad tick +8, ultrawide +0x20 (both modes run on the phone).
-        taken = {0, 8, 0x20}
+        # The other slots of the page: real-time frame step +0, pad tick +8, ultrawide +0x20 (both modes run on the phone),
+        # and the Mac's output size pair at +24 (g_out_page[1], not written as a (page + N) literal).
+        self.assertIn('g_out_page = (_Atomic uint64_t *)(void *)(page + 16);', self.text)
+        taken = {0, 8, 0x20, 24}
         for slot in (docked, handheld):
             self.assertNotIn(slot, taken)
         self.assertNotEqual(docked, handheld)
         for found in re.findall(r'\(page \+ (\w+)\)', self.text):
             self.assertIn(int(found, 0), taken | {docked, handheld}, f'a page slot nobody listed: +{found}')
+        self.assertIn('const unsigned custom = phone_scene_custom(1280), render = custom ? custom : 960;', self.text,
+                      'handheld without a custom scene keeps 960x540')
+        # the patch comment no longer describes the 960.0 movk as what the phone runs
+        self.assertNotIn('-> movk x8, #0x4470, lsl #48 (960.0)', self.text)
 
     def test_custom_sizes_stay_within_each_modes_canvas(self):
         # Above the canvas the game cannot make its heaps: docked's canvas is 1920x1080, handheld's 1280x720. The list
