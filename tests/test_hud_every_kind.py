@@ -44,8 +44,25 @@ class HudEveryKind(unittest.TestCase):
             with self.subTest(game=game):
                 panel = (ROOT / f'games/{game}/runtime/settings_game.h').read_text()   # its rows and restore (the shared panel reads it)
                 self.assertIn('settings_text("FPS 全信息', panel)
-                self.assertIn('@[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)]', panel)
-                self.assertIn('v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v)', panel)   # kept between runs
+                self.assertIn('@[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_BARE),@(HUD_MODE_OFF)]', panel)
+                self.assertIn('v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v)', panel)   # kept between runs
+
+    def test_bare_fps_is_a_settings_choice(self):
+        """User 2026-11-18: "fps 添加新布局 设置里 添加 极简fps 只显示 fps和分辨率， 放大3倍（只有这个 放大3倍）"."""
+        self.assertIn('HUD_MODE_BARE = 4', self.header)
+        self.assertIn('enum { HUD_BARE_SCALE = 3 };', self.header)
+        for game in ('oot', 'totk', 'odyssey', 'acnh', 'eow'):   # every game that links the shared corner box
+            with self.subTest(game=game):
+                panel = (ROOT / f'games/{game}/runtime/settings_game.h').read_text()
+                self.assertIn('settings_text("极简 FPS（只有 FPS 和分辨率，放大 3 倍）","Bare FPS (FPS and resolution only, 3x the size)")', panel)
+        overlay = (HUD_BOX.parents[1] / 'third_party/d2r_gfx/gfx/nvn/fps_overlay.c').read_text()
+        self.assertIn('case HUD_MODE_MINIMAL: case HUD_MODE_BARE: return line == HUD_FPS;', overlay)   # its one line
+        self.assertIn('snprintf(text, n, "FPS %s%s  %s", fps, gen, ss);', overlay)                     # the rate and the output size only
+        self.assertIn('if (fps_overlay_hud_mode() == HUD_MODE_BARE) s *= HUD_BARE_SCALE;', overlay)     # in the picture's corner
+        box = HUD_BOX.read_text()
+        self.assertIn('monospacedSystemFontOfSize:bare?10.5*HUD_BARE_SCALE:10.5', box)                  # this mode alone is larger
+        for line in ('if(playtime&&!bare)', 'int bpct=bare?-1:', 'NSString *build=bare?nil:', 'if(!bare)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[hud_settings_hint()'):
+            self.assertIn(line, box)   # nothing under the FPS line
 
     def test_every_line_but_fps_and_load_is_published_on_its_own(self):
         start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')

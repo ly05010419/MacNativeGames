@@ -2377,6 +2377,47 @@ def source_commit():
     return result.stdout.strip() if result.returncode == 0 else ''
 
 
+LAUNCHER_BUNDLE_ID = 'org.macnativegames.launcher'
+
+
+def launcher_app():
+    """The MNG Launcher that runs this build, or None: the app bundled_job.py names (MNG_LAUNCHER_APP), else the one
+    whose bundled Python runs this script (an express update started from a terminal with the Python an app recorded)."""
+    named = os.environ.get('MNG_LAUNCHER_APP')
+    candidates = [Path(named)] if named else []
+    for python in (Path(sys.executable).absolute(), Path(sys.executable).resolve()):   # a virtual environment's links to it
+        candidates += [folder for folder in python.parents if folder.suffix == '.app']
+    for app in candidates:
+        try:
+            info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        if info.get('CFBundleIdentifier') == LAUNCHER_BUNDLE_ID:
+            return info
+    return None
+
+
+def launcher_version():
+    """For the HUD's build line (user 2026-11-18: "版本号 旁边 显示 launcher的版本号（launcher版本号放第一）"): the version of
+    the released MNG Launcher that runs this build (it carries its source archive, as the Launcher's own isRelease).
+    'dev' for a development build: a Launcher made from a checkout runs it (its version string is a placeholder, and the
+    Launcher's own label says 开发版 there), or it is run from a git checkout without a Launcher. '' otherwise."""
+    info = launcher_app()
+    if info is not None and isinstance(info.get('MNGSourceArchiveSHA256'), str):
+        return str(info.get('CFBundleShortVersionString') or '')
+    return 'dev' if info is not None or (REPO / '.git').exists() else ''
+
+
+def record_launcher_version(info):
+    """MNGLauncherVersion in an app's Info.plist (app/launcher.m -> TOTK_LAUNCHER_VERSION, shared/runtime/hud_box.h):
+    the Launcher of this build, not of an earlier one."""
+    version = launcher_version()
+    if version:
+        info['MNGLauncherVersion'] = version
+    else:
+        info.pop('MNGLauncherVersion', None)
+
+
 def write_main_build_id(nso, target):
     if not nso.is_file():
         return
@@ -2446,6 +2487,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
+    record_launcher_version(info)          # and, before it, the Launcher that built it
     record_update_source(info, tree.parent)
     if version in ('v143', 'botw160', 'botw190') and native_5k is not None:
         info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic

@@ -1176,6 +1176,18 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nSession  0 h 00 m | Total  0 h 00 m\nSettings: key 1 · controller L3 + R3"]); }   /* the last line: how to open this panel (a DualSense connected) */
+    /* Bare FPS (user 2026-11-18: "极简fps 只显示 fps和分辨率， 放大3倍（只有这个 放大3倍）"): the FPS line alone, at three
+       times the font of the other modes. */
+    CGFloat usual = 0; if (hudBox) usual = [[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize];
+    pick(@"Overlay", @"Bare FPS (FPS and resolution only, 3x the size)"); assert(fps_overlay_hud_mode() == HUD_MODE_BARE);
+    assert(hud_line_shown(HUD_FPS) && !hud_line_shown(HUD_SHADER) && !hud_line_shown(HUD_LOAD));
+    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440"]);
+        NSFont *font = [b.label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL];
+        assert(usual > 0 && fabs(font.pointSize - HUD_BARE_SCALE * usual) < 0.01); }
+    { fps_overlay_info info = {.fps = 46, .screen_w = 2560, .screen_h = 1440, .mfx = 1, .gen = 0, .big = 1, .scene_w = 1707, .scene_h = 960}; char line[96];
+      fps_overlay_text(&info, line, sizeof line); assert(!strcmp(line, "FPS 46  2560x1440"));   /* no internal size, MetalFX or 2K mark */
+      pick(@"Overlay", @"FPS + playtime"); fps_overlay_text(&info, line, sizeof line); assert(strstr(line, "(1707x960)") && strstr(line, "MetalFX")); }
+    if (hudBox) assert(fabs([[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize] - usual) < 0.01);   /* only that mode is larger */
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
     pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
@@ -1611,6 +1623,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
     /* The overlay keeps its build line too (user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
+    /* The Launcher that built the app comes first (user 2026-11-18: "版本号 旁边 显示 launcher的版本号（launcher版本号放第一）"). */
+    assert([hud_build_text(NULL, "abc1234") isEqualToString:@"build abc1234"] && [hud_build_text("", "abc1234") isEqualToString:@"build abc1234"]);
+    assert([hud_build_text("1.0.6", "abc1234") isEqualToString:@"Launcher 1.0.6 · build abc1234"]);
+    assert([hud_build_text("dev", "abc1234") isEqualToString:@"dev · build abc1234"]);
+    assert(!hud_build_text("1.0.6", NULL) && !hud_build_text("1.0.6", ""));
+    setenv("TOTK_LAUNCHER_VERSION", "1.0.6", 1);
+    if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Launcher 1.0.6 · build abc1234"]); }
+    unsetenv("TOTK_LAUNCHER_VERSION");
     footer_spacing_probe();   /* the longest page keeps the original tight footer spacing */
     [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];

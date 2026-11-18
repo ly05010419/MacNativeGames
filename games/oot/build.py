@@ -582,6 +582,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     build_app.record_update_source(info,work)   # Settings > Update (#2055): the checkout, the work folder and the Python, as build_app.py records them
     commit=build_app.source_commit()
     if commit:info['MNGSourceCommit']=commit   # the HUD box and the Update page name the commit the app was built from
+    build_app.record_launcher_version(info)    # the HUD's build line: the Launcher that built the app, before the commit
     (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(info));(temporary/'Contents/PkgInfo').write_bytes(b'APPL????')
     # build_app.sign_app: the designated requirement is the bundle ID, so macOS keeps the player's "removable volume"
     # permission across updates. A plain ad-hoc signature made it this build's code hash: every update asked again, and an

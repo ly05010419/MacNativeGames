@@ -66,7 +66,7 @@ static void settings_picture_set(int on) { mfxup_set(on);mfxup_output_set(on);se
 /* Settings live alongside controls.txt and are restored before the guest starts. */
 static void settings_restore_start(void) {
  int v;
- if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v);
+ if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v);
  if(!settings_picture_locked()&&settings_read_int("graphics-output.txt",&v)&&(v==0||v==1))settings_picture_set(v);
 }
 /* What the shared panel asks of a game that this one does not have: no state reporting (gfx/nvn/totk_state_report.m),
@@ -96,8 +96,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),
   @[settings_text("全部（FPS、着色器、读取、游玩时间）","All (FPS, shaders, load, playtime)"),
     settings_text("FPS 全信息（另加卡顿、着色器库、管线、存档没命中）","FPS full information (also hitches, libraries, pipelines, archive misses)"),
-    settings_text("FPS 与游玩时间","FPS + playtime"),settings_on_off(0)],
-  @[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
+    settings_text("FPS 与游玩时间","FPS + playtime"),
+    settings_text("极简 FPS（只有 FPS 和分辨率，放大 3 倍）","Bare FPS (FPS and resolution only, 3x the size)"),settings_on_off(0)],   // user 2026-11-18
+  @[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_BARE),@(HUD_MODE_OFF)],
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];

@@ -441,6 +441,7 @@ def record_commit(tmp, work, *, native_5k=None):
         info['MNGSourceCommit'] = commit
     else:
         info.pop('MNGSourceCommit', None)
+    build_app.record_launcher_version(info)   # the Launcher of this update, beside the commit in the HUD's build line
     build_app.record_update_source(info, work)
     if native_5k is None:
         info.pop('MNGNative5K', None)

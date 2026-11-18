@@ -40,6 +40,10 @@ __attribute__((constructor)) static void input_script_start(void) {
    actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally. */
 extern void dm_gfx_shot_at(long frames, const char *path);
 extern void runtime_front_request_close(void);
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
+extern void runtime_front_hud_shot(const char *path);   /* hud_box.h: the Mac frontends' corner box */
+#endif
 /* The defaults below answer where a game, or a probe that links input.c alone, has no such part. */
 /* "mscan ...": memory scan and write watch (runtime/mem_scan.h, in services.c). */
 __attribute__((weak)) int runtime_mem_scan_command(const char *line) { (void)line; return 0; }
@@ -105,6 +109,10 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
+#if !TARGET_OS_IPHONE
+        } else if (!strncmp(line, "hudshot ", 8)) {   /* "hudshot <path>": the corner box (FPS lines, build line) as a PNG, its text in the log */
+            line[strcspn(line, "\r\n")] = 0; runtime_front_hud_shot(line + 8);
+#endif
         } else if (!strcmp(line, "kbtest\n")) {   /* text entry bar the way the game names a horse (runtime/swkbd_host.c) */
             runtime_swkbd_selftest();
         } else if (!strncmp(line, "kbtype ", 7)) {   /* "kbtype <text>": typed into the open bar */
