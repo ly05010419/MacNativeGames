@@ -198,8 +198,9 @@ def releases(listing):
 
 
 def newest_launcher(listing):
-    """The highest MNG Launcher release in the list, {'version', 'url'} (its page), or None: the window's version label
-    turns blue when it is newer than this Launcher (a player had no other way to know one was out)."""
+    """The highest MNG Launcher release in the list, {'version', 'url'}, or None: the window's version label turns blue
+    when it is newer than this Launcher (a player had no other way to know one was out), and its click downloads the
+    url: the release's disk image, as the website's Download button does (its page when it has none)."""
     best = None
     for r in listing if isinstance(listing, list) else []:
         tag = str(r.get('tag_name', '')) if isinstance(r, dict) else ''
@@ -210,7 +211,9 @@ def newest_launcher(listing):
         except SourceError:
             continue
         if best is None or version > best[0]:
-            best = (version, {'version': tag[len(LAUNCHER_TAG):], 'url': str(r.get('html_url') or '')})
+            dmg = [a.get('browser_download_url') for a in r.get('assets') or []
+                   if isinstance(a, dict) and str(a.get('name', '')).endswith('-macOS-arm64.dmg')]
+            best = (version, {'version': tag[len(LAUNCHER_TAG):], 'url': str((dmg and dmg[0]) or r.get('html_url') or '')})
     return best[1] if best else None
 
 

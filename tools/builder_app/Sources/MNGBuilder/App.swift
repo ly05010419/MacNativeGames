@@ -26,7 +26,7 @@ struct VersionLabel: View {
     var body: some View {
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
         let commit = (info["MNGSourceCommit"] as? String).map { String($0.prefix(8)) } ?? "?"
-        // a newer Launcher is out: the label turns blue and opens its release page (a player had no other way to know)
+        // a newer Launcher is out: the label turns blue and its click downloads it (a player had no other way to know)
         if let newer = model.newerLauncher {
             Button { NSWorkspace.shared.open(newer.url) } label: {
                 Label(T.versionNewer(version, newer.version), systemImage: "arrow.down.circle.fill")

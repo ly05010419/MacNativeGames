@@ -1,6 +1,6 @@
 """A downloaded Launcher says when a newer MNG Launcher is out: its version label at the window's bottom right turns blue
-("MNG Launcher 1.0.6 · 可更新到 1.0.7") and opens that release's page. A player had no way to know (1.0.3 stayed in use
-while 1.0.4, 1.0.5 and 1.0.6 came out with build fixes). The release list the home page already reads for source updates
+("MNG Launcher 1.0.6 · 可更新到 1.0.7") and a click downloads its disk image, as the website's Download button does. A
+player had no way to know (1.0.3 stayed in use while 1.0.4, 1.0.5 and 1.0.6 came out with build fixes). The release list the home page already reads for source updates
 (source_updates.check, at most once in ten minutes) names the newest launcher-v* release too: no other request."""
 import importlib
 import json
@@ -14,16 +14,25 @@ updates = importlib.import_module('tools.builder_app.source_updates')
 SWIFT = ROOT / 'tools/builder_app/Sources/MNGBuilder'
 
 
-def release(tag, draft=False):
-    return {'tag_name': tag, 'draft': draft, 'html_url': f'https://github.com/owner/repo/releases/tag/{tag}', 'assets': []}
+def release(tag, draft=False, dmg=True):
+    base = 'https://github.com/owner/repo/releases'
+    assets = [{'name': f'MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.zip', 'browser_download_url': f'{base}/download/{tag}/x.zip'}]
+    if dmg:
+        assets.append({'name': f'MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.dmg',
+                       'browser_download_url': f'{base}/download/{tag}/MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.dmg'})
+    return {'tag_name': tag, 'draft': draft, 'html_url': f'{base}/tag/{tag}', 'assets': assets}
 
 
 class NewestLauncher(unittest.TestCase):
     def test_the_highest_launcher_release_is_named(self):
         listing = [release('source-20261118-39be650b'), release('launcher-v1.0.9'), release('launcher-v1.0.10'),
                    release('launcher-v1.1.0', draft=True), release('launcher-vnext'), release('v2026.10.25')]
-        self.assertEqual(updates.newest_launcher(listing),
-                         {'version': '1.0.10', 'url': 'https://github.com/owner/repo/releases/tag/launcher-v1.0.10'})
+        self.assertEqual(updates.newest_launcher(listing),   # its disk image, as the website's Download button
+                         {'version': '1.0.10', 'url': 'https://github.com/owner/repo/releases/download/launcher-v1.0.10/MNG-Launcher-1.0.10-macOS-arm64.dmg'})
+
+    def test_a_release_without_a_disk_image_opens_its_page(self):
+        self.assertEqual(updates.newest_launcher([release('launcher-v1.0.7', dmg=False)])['url'],
+                         'https://github.com/owner/repo/releases/tag/launcher-v1.0.7')
 
     def test_a_list_without_one_names_none(self):
         self.assertIsNone(updates.newest_launcher([release('source-a')]))
@@ -43,7 +52,7 @@ class NewestLauncher(unittest.TestCase):
 
 
 class VersionLabel(unittest.TestCase):
-    def test_only_a_release_older_than_the_newest_turns_blue_and_opens_its_page(self):
+    def test_only_a_release_older_than_the_newest_turns_blue_and_downloads_it(self):
         model = (SWIFT / 'Model.swift').read_text()
         self.assertIn('guard Paths.isRelease', model)                          # a build from a checkout says nothing
         self.assertIn('options: .numeric) == .orderedDescending', model)        # 1.0.10 is newer than 1.0.9
