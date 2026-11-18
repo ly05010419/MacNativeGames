@@ -19,8 +19,10 @@ static void want(const pp_env *e, const char *name, const char *value, const cha
 
 static void profiles_are_the_spec_values(void) {
     pp_picture q, d, e, c;
-    CHECK(pp_profile_picture(PP_QUALITY, &q) && q.mode == PP_DOCKED && q.scene_w == 1600 && q.taa && q.fps == 60 &&
-          !q.switch_size && !q.aspect_169, "Qualidade: docked, 1600x900, TAA, 60, no Switch size, fill");
+    CHECK(pp_profile_picture(PP_QUALITY, &q) && q.mode == PP_DOCKED && q.scene_w == 1600 && q.taa && q.fps == 30 &&
+          !q.switch_size && !q.aspect_169, "Qualidade: docked, 1600x900, TAA, 30, no Switch size, fill");
+    /* 30, not 60 (owner 2026-11-18): on the iPad A16 docked 1600x900 + TAA ran at an unsteady 33 fps (GPU 28.6 ms);
+       held at 30 it is steady and cooler. */
     CHECK(pp_profile_picture(PP_PERFORMANCE, &d) && d.mode == PP_HANDHELD && d.scene_w == 0 && !d.taa && d.fps == 60 &&
           !d.switch_size, "Desempenho: handheld, automatic scene, no TAA, 60");
     CHECK(pp_profile_picture(PP_ECONOMY, &e) && e.mode == PP_HANDHELD && e.scene_w == 640 && !e.taa && e.fps == 30 &&
@@ -79,6 +81,7 @@ static void env_qualidade_docked(void) {
     const char *w = "Qualidade, BotW";
     want(&e, "TOTK_OPERATION_MODE", "docked", w); want(&e, "TOTK_IOS_DRAWABLE_H", "1080", w);
     want(&e, "TOTK_RENDER_RES", "1600x900", w);   want(&e, "TOTK_TAA", "1", w);
+    want(&e, "TOTK_PHONE_FPS", "30", w);
 }
 
 static void env_economia_botw_scene_mfx(void) {

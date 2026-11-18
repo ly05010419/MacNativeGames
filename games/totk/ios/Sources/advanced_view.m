@@ -170,7 +170,7 @@ static NSString *metalfx_title(pp_metalfx m) {
         ? T(@"再把画布放大到 Switch 大小的画面：最清晰，最耗 GPU。", @" It also enlarges the canvas to the Switch-sized picture: the sharpest, the heaviest on the GPU.")
         : T(@"再把画布放大到屏幕：最清晰，最耗 GPU。", @" It also enlarges the canvas to the screen: the sharpest, the heaviest on the GPU.")];
     [self effect:_metalfx text:[mfxText stringByAppendingString:T(@"（独立于画面设置）", @" (a setting of its own, kept by every profile)")]];
-    [self effect:_taa text:T(@"MetalFX 时间抗锯齿：边缘更稳，可能有轻微拖影，约 1 ms GPU。", @"MetalFX temporal anti-aliasing: steadier edges, slight ghosting possible, about 1 ms of GPU.")];
+    [self effect:_taa text:T(@"MetalFX 时间抗锯齿：边缘更稳，可能有轻微拖影。场景越大越吃 GPU：960×540 约 1 ms，1600×900 约 11 ms（iPad A16）。", @"MetalFX temporal anti-aliasing: steadier edges, slight ghosting possible. Its GPU cost grows with the scene: about 1 ms at 960×540, about 11 ms at 1600×900 (iPad A16).")];
     [self effect:_fps text:_pic.fps == 30 ? T(@"30 fps：更凉、更省电。", @"30 fps: cooler, easier on the battery.")
                                           : T(@"60 fps：不固定上限，最高到屏幕的刷新率。", @"60 fps: no fixed cap, up to the screen's rate.")];
     if (_switchSize) [self effect:_switchSize text:T(@"画面显示成 Switch 屏幕的大小（6.2 英寸），居中、四周黑边：更小、更清晰。",

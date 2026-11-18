@@ -62,7 +62,7 @@
 			<key>Title</key>
 			<string>畫面 · Picture</string>
 			<key>FooterText</key>
-			<string>品質：1080p，場景 1600×900，邊緣平滑，最清晰，會發熱。效能：720p，場景 960×540，60 fps，流暢。省電：720p，場景 640×360，30 fps，Switch 螢幕大小，發熱最少、最省電。自訂：遊戲開始畫面「進階」裡選的設定。MetalFX：放大場景，更清晰、幾乎不吃效能；「場景＋螢幕」再放大到螢幕，最吃 GPU。遊戲開始畫面也可以改 · Quality: 1080p, 1600×900 scene, edge smoothing; the sharpest, runs warm. Performance: 720p, 960×540 scene, 60 fps; smooth. Economy: 720p, 640×360 scene, 30 fps, at the Switch's screen size; the coolest and lightest on the battery. Custom: what you chose under Advanced on the game's start screen. MetalFX: upscales the scene, sharper at almost no cost; "Scene + screen" also enlarges it to the screen, the heaviest on the GPU. The game's start screen has these choices too</string>
+			<string>品質：1080p，場景 1600×900，邊緣平滑，30 fps，最清晰，會發熱。效能：720p，場景 960×540，60 fps，流暢。省電：720p，場景 640×360，30 fps，Switch 螢幕大小，發熱最少、最省電。自訂：遊戲開始畫面「進階」裡選的設定。MetalFX：放大場景，更清晰、幾乎不吃效能；「場景＋螢幕」再放大到螢幕，最吃 GPU。遊戲開始畫面也可以改 · Quality: 1080p, 1600×900 scene, edge smoothing, 30 fps; the sharpest, runs warm. Performance: 720p, 960×540 scene, 60 fps; smooth. Economy: 720p, 640×360 scene, 30 fps, at the Switch's screen size; the coolest and lightest on the battery. Custom: what you chose under Advanced on the game's start screen. MetalFX: upscales the scene, sharper at almost no cost; "Scene + screen" also enlarges it to the screen, the heaviest on the GPU. The game's start screen has these choices too</string>
 		</dict>
 		<dict>
 			<key>Type</key>

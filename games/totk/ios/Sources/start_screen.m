@@ -244,8 +244,8 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     pp_picture pic = totk_current_picture(NULL, NULL);
     switch ([self chosenProfile]) {
     case PP_QUALITY:
-        _profileNote.text = T(@"1080p，场景 1600×900，边缘平滑。最清晰；会发热，可能低于 60 fps。",
-                              @"1080p with a 1600×900 scene, smooth edges. The sharpest; runs warm and may drop below 60 fps."); break;
+        _profileNote.text = T(@"1080p，场景 1600×900，边缘平滑，30 fps。最清晰；会发热。",
+                              @"1080p with a 1600×900 scene, smooth edges, 30 fps. The sharpest; runs warm."); break;
     case PP_PERFORMANCE:
         _profileNote.text = T(@"720p，场景 960×540，60 fps。流畅、均衡。", @"720p with a 960×540 scene, 60 fps. Smooth and balanced."); break;
     case PP_ECONOMY:

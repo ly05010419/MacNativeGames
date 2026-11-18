@@ -11,7 +11,7 @@ static const struct { const char *size; unsigned width; } SCENES[] = {
 /* The profiles (spec "Os perfis"): Qualidade the sharpest, docked; Desempenho the default, handheld at the game's own
    phone scene; Economia the coolest, at the Switch's screen size. */
 static const pp_picture PROFILES[] = {
-    [PP_QUALITY]     = {PP_DOCKED,   1600, 1, 60, 0, 0},
+    [PP_QUALITY]     = {PP_DOCKED,   1600, 1, 30, 0, 0},   /* 30: steady where 1600x900 + TAA cannot hold 60 (iPad A16: 33) */
     [PP_PERFORMANCE] = {PP_HANDHELD, 0,    0, 60, 0, 0},
     [PP_ECONOMY]     = {PP_HANDHELD, 640,  0, 30, 1, 0},
 };
