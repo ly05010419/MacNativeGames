@@ -314,6 +314,24 @@ class Replacement(Served):
         self.assertEqual([p.name for p in self.apps.iterdir()], [APP])
         self.assertTrue((base / 'replace.sh').is_file())             # the support folder is left as it is
 
+    def test_the_reopened_launcher_does_not_get_the_tests_switches(self):
+        # `open` hands the script's environment to the app it starts, and the script's came from the Launcher that was
+        # replaced: 1.0.7, started with MNG_LAUNCHER_UPDATE_TEST for its release check, reopened with it every time
+        # ("1.0.7 为什么 一直可以更新 下载"). What the script would run is run here with a stand-in for `open`.
+        self.assertEqual(lu.REPLACE.count('/usr/bin/open'), 1)       # the one place the Launcher is opened from
+        start = lu.REPLACE.index('/usr/bin/env -u MNG_LAUNCHER_UPDATE_TEST')
+        command = lu.REPLACE[start:lu.REPLACE.index('\n', lu.REPLACE.index('/usr/bin/open', start))]
+        self.assertIn('/usr/bin/open -n "$app"', command)
+        seen = self.made / 'environment.txt'
+        stand_in = f'/usr/bin/env >"{seen}"; :'
+        script = 'app=x; ' + command.replace('/usr/bin/open -n "$app"', '/bin/sh -c \'' + stand_in + '\'').replace('\\\n', ' ')
+        env = dict(os.environ, MNG_LAUNCHER_UPDATE_TEST='1', MNG_LAUNCHER_UPDATE_CLICK='1', MNG_LANG='zh',
+                   PYTHONDONTWRITEBYTECODE='1', MNG_KEPT='yes')
+        subprocess.run(['/bin/sh', '-c', script], check=True, env=env)
+        names = {l.split('=', 1)[0] for l in seen.read_text().splitlines()}
+        self.assertFalse(names & {'MNG_LAUNCHER_UPDATE_TEST', 'MNG_LAUNCHER_UPDATE_CLICK', 'MNG_LANG', 'PYTHONDONTWRITEBYTECODE'})
+        self.assertTrue({'MNG_KEPT', 'HOME'} <= names)               # the rest of the environment is as it was
+
     def test_a_missing_new_app_leaves_the_old_one(self):
         running = make_app(self.apps, '1.0.6', self.program)
         self.assertEqual(self.script(self.quit_launcher(), self.made / 'nothing.app', running), {'ok': False, 'why': 'missing'})

@@ -58,8 +58,12 @@ exec >>"$log" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') replacing $app with $new once pid $pid has quit"
 finish() {
   printf '%s\n' "$1" >"$result"
-  # -n: this app at this place, also while another copy of MNG Launcher is open from somewhere else
-  [ "${MNG_LAUNCHER_UPDATE_NO_OPEN:-0}" = 1 ] || /usr/bin/open -n "$app"
+  # -n: this app at this place, also while another copy of MNG Launcher is open from somewhere else.
+  # The app `open` starts gets this script's environment, which came from the Launcher that was replaced: the tests'
+  # switches and what the window set for its Python must not go on into the new one (2026-11-18: a 1.0.7 started with
+  # MNG_LAUNCHER_UPDATE_TEST for the release check reopened with it every time, so its update button never went away).
+  [ "${MNG_LAUNCHER_UPDATE_NO_OPEN:-0}" = 1 ] || /usr/bin/env -u MNG_LAUNCHER_UPDATE_TEST -u MNG_LAUNCHER_UPDATE_CLICK \
+    -u MNG_LANG -u PYTHONDONTWRITEBYTECODE /usr/bin/open -n "$app"
   exit "$2"
 }
 n=0
