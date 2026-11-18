@@ -22,7 +22,7 @@
    at the game's 1920x1080 output, pixel for pixel (frontend.m), and resizing or full screen scales the picture.
    Input
      controller type      auto / Xbox / PlayStation / Switch   runtime_gamepad_type_set (gamepad.m), controller-type.txt
-     rumble               switch                         runtime_rumble_choose (hid_feedback.c), rumble.txt
+     rumble               switch                         runtime_feedback_choose (hid_feedback.c), rumble.txt
      DSU                  switch, server, slot, status   the shared DSU rows (dsu_settings_rows.h, gamepad.m dsu_client.h)
    Effects
      picture              1080p / 1080p + MetalFX        the game draws 1920x1080; MetalFX can upscale that picture to a
@@ -163,7 +163,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_PLAYSTATION),@(GAMEPAD_TYPE_SWITCH)],
   ^int{return runtime_gamepad_type(NULL);},^(int v){runtime_gamepad_type_set(v);});
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
- [rows addObject:settings_feedback_row(0)];   /* rumble: hid_feedback.c's switch (runtime_feedback_* with 0 is runtime_rumble_*) */
+ [rows addObject:settings_feedback_row(0)];   /* rumble: hid_feedback.c's switch (runtime_feedback_* with 0) */
  settings_dsu_rows(rows);
  NSUInteger input=rows.count;
  /* Effects */

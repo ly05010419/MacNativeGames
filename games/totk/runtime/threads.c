@@ -1326,6 +1326,20 @@ __attribute__((weak)) void runtime_ipc_session_closed(void *s) { (void)s; die("I
 __attribute__((weak)) void runtime_ipc_tmem_closed(void *t) { (void)t; die("transfer memory closed without ipc.c"); }
 uint32_t runtime_handle_new(int session, void *obj) { pthread_mutex_lock(&G); uint32_t h = h_new(session ? O_SESSION : O_TMEM, obj); pthread_mutex_unlock(&G); return h; }
 void *runtime_handle_get(uint32_t h, int session) { pthread_mutex_lock(&G); void *o = h_peek(h, session ? O_SESSION : O_TMEM); pthread_mutex_unlock(&G); return o; }
+/* Removes a session handle without closing the session (ipc.c, shared/: a session made inside a CMIF domain becomes a
+   domain object). */
+void *runtime_handle_take_session(uint32_t h) {
+    pthread_mutex_lock(&G); void *o = h_peek(h, O_SESSION);
+    if (o) {
+#ifdef GAME_BOTW
+        unsigned i = h_index(h);
+#else
+        unsigned i = h - 0x1000;
+#endif
+        g_h[i].type = O_FREE; g_h[i].obj = NULL;
+    }
+    pthread_mutex_unlock(&G); return o;
+}
 // Service-side event: returns the writable handle kept by the service.
 uint32_t runtime_event_new(void) {
     event_t *e = calloc(1, sizeof *e); if (!e) die("event allocation"); e->refs = 1;

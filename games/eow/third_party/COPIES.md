@@ -43,6 +43,18 @@ replaced by the shared corner box and the settings panel; this game's rows, rest
 | The key bindings, mouse buttons, key 1 and the screenshot key in `runtime/input.c`; the panel's wiring in `runtime/frontend.m`; the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m` `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`), the long-frame lines (`hitch_overlay_note`, `hitch_overlay_publish`) and the full-information-only shader and load lines | `games/acnh` (same) | The captured game frame is turned over for this game's lower-left origin (as `dm_gfx_shot_at` does); the board counts the game's presents (what this FPS box counts); keys 2-4 removed (none did anything here) |
 
 
+## Small runtime and graphics files linked from `shared/` (2026-11-18)
+
+These were older copies of games/totk's (or, for `ipc.{c,h}`, the same as Odyssey's newer one) and are now symlinks
+into the repository's `shared/` folder (shared/README.md): `third_party/d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}`,
+`totk_sysload.{c,h}`, and `runtime/playtime.h`, `gamepad_layout.h`, `feedback_settings.h` (new here), `hid_feedback.c`,
+`motion_fusion.c`, `swkbd_host.c`, `ipc.{c,h}`, `time_host.c`, `bindings_diagram.h`. The rumble switch is the shared
+`runtime_feedback_*` now (`runtime_rumble_locked`, `_choice` and `_choose` are gone). The key bindings drawings' words
+for this game (the Switch buttons, not their uses; the mouse moves nothing; the right stick's directions) are in
+`runtime/bindings_game.h`. Still this game's own: `runtime/controller_map.h` (no mouse lines),
+`keyboard_map.h`, `shared_font.c`, `game_slot.c` and `third_party/d2r`.
+
+
 ## The app launcher and the build plumbing (2026-11-18)
 
 `app/launcher.c` keeps this game's own launcher code (the README's play settings, the runtime started by its real path, the game data check); the plumbing every port's launcher shares is

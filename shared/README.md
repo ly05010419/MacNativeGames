@@ -30,6 +30,27 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `third_party/d2r_gfx/gfx/nvn/nvn_capture_region.h` | The present's crop as a capture region (the screenshot's game frame) | totk, oot, odyssey, acnh, eow |
 | `app/app_launcher.h` | The app launcher's plumbing: the bundle by the real executable path, the data folder in `~/Library/Application Support/MacNativeGames/<folder>` and its one-time move from next to the app, save backups (the newest five), the Mac's first preferred language, the common environment (profile, shader cache, RomFS, fonts, slot, input file, board folder), log rotation, and the run loop with the start again that `restart-requested.txt` asks for. Each game's launcher keeps its own `main()`: its tuning (GPU and presentation variables, Animal Crossing's frame rates and add-ons, Odyssey's session limit, display, face buttons and MetalFX, Echoes of Wisdom's start by the runtime's real path), its checks and its `TOTK_CONTROLS` line. Linked as `scripts/app_launcher.h` (odyssey, acnh) and `app/app_launcher.h` (eow) | odyssey, acnh, eow |
 
+| `third_party/d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}` | The MetalFX spatial upscaler: its scene, docked, output and VR contexts, background builds and kept scalers | totk, oot, odyssey, acnh, eow |
+| `third_party/d2r_gfx/gfx/nvn/totk_sysload.{c,h}` | The load line of FPS full information: the game's own GPU share, then the CPU cores and the busiest thread | totk, oot, odyssey, acnh, eow |
+| `runtime/playtime.h` | The corner box's playtime: this session and the total (`profile/playtime.json`) | totk, oot, odyssey, acnh, eow |
+| `runtime/gamepad_layout.h` | Where the face buttons sit for each controller family; a HID pad's button order and stick reach | totk, oot, odyssey, acnh, eow |
+| `runtime/hid_feedback.c`, `runtime/feedback_settings.h` | Rumble and motion on the game's side, their switches (`rumble.txt`, `gyro.txt`, the Input page) and the hid answers; Odyssey's Cappy (its second player) gets no host device, behind `GAME_ODYSSEY` | totk, oot, odyssey, acnh, eow |
+| `runtime/motion_fusion.c` | Controller, phone and mouse motion as the console's 5 ms sensor states, with the gyro's bias learned at rest | totk, oot, odyssey, acnh, eow |
+| `runtime/swkbd_host.c` | Text entry (`nn::swkbd::ShowKeyboard`) in a bar in the game window; its probe's addresses come from `GAME_ADDR` in a game with TotK's version table and are unmapped elsewhere | totk, oot, odyssey, acnh, eow |
+| `runtime/ipc.{c,h}` | The in-process HIPC / CMIF / TIPC server, with CMIF domains (from Odyssey); each game's `threads.c` has `runtime_handle_take_session` | totk, oot, odyssey, acnh, eow |
+| `runtime/time_host.c` | `nn::time` from the Mac's clock and time zone. Ocarina of Time keeps its own (its POSIX clock providers for the SDK's `clock_gettime`), and Animal Crossing keeps its own too (its extra `nn::time` answers). The other games' modules reference these names too, so sharing those answers would replace code those games run | totk, odyssey, eow |
+| `runtime/bindings_diagram.h` | The key bindings drawings of the panel; what each action is called on a key, its kind and colour, the legend's words and the mouse's and right stick's captions are in each game's `runtime/bindings_game.h` | totk, oot, odyssey, acnh, eow |
+| `runtime/shared_font.c` | The system fonts from `shared-fonts.txt` in the game data, decoded as the pl service gives them | totk, oot |
+| `runtime/game_slot.c`, `runtime/agent_slot_limit.h` | One of these games at a time on the Mac (`MacNativeGames/TOTK/game-slot`), and agents' test games closing themselves | totk, oot |
+
+Left in each game on purpose (2026-11-18): `runtime/keyboard_map.h` (each game's actions); `runtime/controller_map.h`
+(Animal Crossing's and Echoes of Wisdom's mouse buttons belong to the keyboard layout, and Odyssey's worn-stick `reach`
+lines are applied by its `gamepad.m`: both go with the input stack); `third_party/d2r` (its `patch_nso.py` holds each
+build's tables, and TotK and OoT record its SHA-256 with their rewritten modules, so any change to it means rewriting
+every game); and Odyssey's, Animal Crossing's and Echoes of Wisdom's `shared_font.c` (font rows from their generated
+`shared_fonts_config.h`) and `game_slot.c` (their own slot folder: joining the TotK one would keep them from running
+beside a Zelda game).
+
 The Python those three ports' `build.py` and packagers share is not linked but imported from the repository, as
 `build_app.py` is: `tools/port_app/` (`adapter.py`, MNG Launcher's side of `build.py`; `bundle.py`, the packaging steps).
 `tests/test_app_launcher_shared.py` runs each game's launcher in a fake bundle; `tests/test_port_app.py` covers the Python.

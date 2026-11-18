@@ -197,13 +197,10 @@ void runtime_feedback_motion_source_changed(void);   /* gamepad_feedback.m: swit
 typedef struct { uint64_t sampling, delta_ns; float acc[3], gyro[3], angle[3], dir[9]; } RuntimeMotionState;   /* G, rev/s, rev, 3 axes */
 int runtime_rumble_enabled(void);
 int runtime_gyro_enabled(void);
-/* The settings panel's rumble switch: in force at once when the game has the vibration devices (it got them at start), else
-   from the next launch; saved in rumble.txt. TOTK_RUMBLE or an agent's test session decide first (locked). */
-int runtime_rumble_locked(void);
-int runtime_rumble_choice(void);
-void runtime_rumble_choose(int on);
-/* The shared settings panel's rumble and gyro rows (shared/runtime/settings_panel.h settings_feedback_row): gyro 0 is the
-   rumble switch above; gyro 1 is motion, which TOTK_GYRO alone decides here (locked). runtime/hid_feedback.c. */
+/* The shared settings panel's rumble and gyro switches (shared/runtime/settings_panel.h settings_feedback_row; shared
+   runtime/hid_feedback.c): gyro 0 rumble, 1 motion. In force at once when the game has the device (it got its devices at
+   the start), else from the next launch; saved in rumble.txt / gyro.txt (runtime/feedback_settings.h). TOTK_RUMBLE /
+   TOTK_GYRO or an agent's test session decide first (locked). This panel shows the rumble row only. */
 int runtime_feedback_locked(int gyro);
 int runtime_feedback_present(int gyro);
 int runtime_feedback_choice(int gyro);

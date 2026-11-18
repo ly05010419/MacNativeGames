@@ -30,6 +30,16 @@ shared `runtime/hud_box.h`. This game's own settings rows and restore code are i
 | `third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` | the identity part of `games/odyssey/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` at `b704821` | `GAME_INBOX_ID` (`acnh`), the build, device and system names and the board id's file for the 性能排行榜 and 截图分享 pages; no shader upload |
 | The screenshot action and hold (`runtime/keyboard_map.h`, `controller_map.h`, `gamepad.m`, `input.c`, `bindings_diagram.h`), DSU in `gamepad.m` and `gamepad_feedback.m`, `runtime_feedback_*` in `hid_feedback.c`, the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m` `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and the long-frame lines (`hitch_overlay_note`, `hitch_overlay_publish`) | `games/odyssey` at `b704821` (from games/totk) | Adapted to this game: no mouse lines in `controls.txt`, the capture button through GameController's Share button and, while motion is read from a Switch controller's HID reports, its capture button; the board counts new game frames (what the FPS box counts); no frame lock or interpolation on the board (the 30 / 60 / 120 mode is the game's own clock for the run) |
 
+Since 2026-11-18 these are symlinks into `shared/` as well (shared/README.md): `third_party/d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}`,
+`totk_sysload.{c,h}`, and `runtime/playtime.h`, `gamepad_layout.h`, `feedback_settings.h` (new here), `hid_feedback.c`,
+`motion_fusion.c`, `swkbd_host.c`, `ipc.{c,h}`, `bindings_diagram.h`. Their copies above were older versions of the
+same code. The rumble switch is the shared `runtime_feedback_*` now (`runtime_rumble_locked`, `_choice` and `_choose`
+are gone). This game's key bindings words, kinds and legend (the tools on the d-pad, the NookPhone; the mouse
+moves nothing) are in `runtime/bindings_game.h`. Still this game's own: `runtime/time_host.c` (the `nn::time` answers its
+main imports, such as the adjustable user clock, the steady clock's time point, `IsValidDate` and the calendar
+comparisons: in the shared file they would also replace SDK code other games run), `controller_map.h` (no mouse lines:
+the mouse belongs to the keyboard layout), `keyboard_map.h`, `shared_font.c`, `game_slot.c` and `third_party/d2r`.
+
 ## Optional local ACNH 3.0.1 speed-correction inputs
 
 `tools/prepare_fps.py` and `runtime/frame_rate.c` are original host-side adapters.

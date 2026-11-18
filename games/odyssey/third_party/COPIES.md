@@ -53,6 +53,21 @@ the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record an
 `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and `totk_leaderboard_id_file` in `totk_contrib_upload.h`.
 
 
+## Small runtime and graphics files linked from `shared/` (2026-11-18)
+
+These were older copies of games/totk's (or, for `ipc.{c,h}`, the newer one) and are now symlinks into the repository's
+`shared/` folder (shared/README.md): `d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}`, `totk_sysload.{c,h}`, and
+`../runtime/playtime.h`, `gamepad_layout.h`, `feedback_settings.h`, `hid_feedback.c`, `motion_fusion.c`,
+`swkbd_host.c`, `ipc.{c,h}`, `time_host.c`, `bindings_diagram.h`. Odyssey's own parts stay its own: Cappy (the second
+player) gets no host rumble or motion in the shared `hid_feedback.c` behind `GAME_ODYSSEY`; this game's CMIF domains
+are the shared `ipc.c`'s; the motion handoff fix (`buffered`) is in the shared `motion_fusion.c`; the key bindings
+drawings' words and kinds are in `../runtime/bindings_game.h`.
+
+Still this game's own: `../runtime/controller_map.h` (the worn-stick `reach` lines, applied by `gamepad.m`),
+`keyboard_map.h`, `shared_font.c` (rows from the generated `shared_fonts_config.h`), `game_slot.c` (its own slot folder)
+and `third_party/d2r`.
+
+
 ## The app launcher and the build plumbing (2026-11-18)
 
 `scripts/odyssey_app_launcher.c` keeps this game's own launcher code (the session limit read again while the game runs, display.txt, face-buttons.txt, no-metalfx, the slot folder, the crash log); the plumbing every port's launcher shares is

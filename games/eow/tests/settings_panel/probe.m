@@ -189,8 +189,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
        off) and the DSU rows. */
     shows(@"Controller type", @"Auto (PlayStation)"); pick(@"Controller type", @"Switch"); assert(fakePadType == GAMEPAD_TYPE_SWITCH);
     pick(@"Controller type", @"Auto (PlayStation)");
-    assert(switched(@"Rumble")); flip(@"Rumble", NO); assert(!runtime_rumble_choice() && [setting_text("rumble.txt") isEqualToString:@"off\n"]);
-    flip(@"Rumble", YES); assert(runtime_rumble_choice() && [setting_text("rumble.txt") isEqualToString:@"on\n"]);
+    assert(switched(@"Rumble")); flip(@"Rumble", NO); assert(!runtime_feedback_choice(0) && [setting_text("rumble.txt") isEqualToString:@"off\n"]);
+    flip(@"Rumble", YES); assert(runtime_feedback_choice(0) && [setting_text("rumble.txt") isEqualToString:@"on\n"]);
     assert(!switched(@"DSU input")); flip(@"DSU input", YES); assert(fakeDSU.enabled && dsuApplies == 1); flip(@"DSU input", NO); assert(!fakeDSU.enabled);
     pick(@"DSU controller slot", @"2"); assert(fakeDSU.slot == 2); pick(@"DSU controller slot", @"0");
     [settingsPanel.timer fire]; assert([row(@"DSU status").textLabel.stringValue isEqualToString:@"DSU · Off"]);
