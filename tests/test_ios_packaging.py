@@ -185,8 +185,14 @@ class FullHD(unittest.TestCase):
         scene = rows['TOTK_RENDER_RES']
         runtime = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
         sizes = re.search(r'static unsigned phone_scene_custom\(unsigned canvas_w\) \{.*?sizes\[\] = \{(.*?)\};', runtime, re.S).group(1)
-        self.assertEqual(scene['Values'], re.findall(r'\{"(\d+x\d+)", \d+\}', sizes))
-        self.assertIn(scene['DefaultValue'], scene['Values'])
+        # "" follows the presets and is the default: turning the switch on for MetalFX or edge smoothing alone must not
+        # replace the docked scene (review 2026-11-17). main.m hands no empty value over, so the runtime keeps the presets.
+        self.assertEqual(scene['Values'], ['', *re.findall(r'\{"(\d+x\d+)", \d+\}', sizes)])
+        self.assertEqual(scene['DefaultValue'], '')
+        main_text = (TOOLS.parent/'Sources/main.m').read_text()
+        self.assertIn('} else if ([value isKindOfClass:NSString.class] && [value length] && [value length] < 64) {', main_text)
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_MFX_UPSCALE', 'TOTK_MFX_OUTPUT', 'TOTK_TAA'):
+            self.assertNotIn('FooterText', rows[key], f'{key}: no text copied from Tears of the Kingdom\'s layer')
         self.assertEqual(len(scene['Titles']), len(scene['Values']))
         self.assertIn('MetalFX', specs[at+4]['Title'])
         totk = {s.get('Key'): s for s in plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']}
