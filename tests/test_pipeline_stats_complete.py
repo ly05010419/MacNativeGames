@@ -7,8 +7,7 @@ A Metal call that makes a library or a pipeline may stand only in
 - the counted makers (nvn_mtl.m mtl_counted_*), which add to the counts themselves;
 - the game's own paths, counted where they are called: lib_from_file / totk_msl_library (shader_get, the variants'
   statistics), pso_new (pso_get), cs_new_ (the dispatch), mtk_build (mtk_pso);
-- a probe (a function or file named so): tests, never a frame;
-- a pipeline made again only to be written into the archive (RECOMPILES), which was counted when it was first made.
+- a probe (a function or file named so): tests, never a frame.
 Anything else fails here, so a new pass cannot be left out again."""
 from pathlib import Path
 import re
@@ -20,13 +19,12 @@ CALL = re.compile(r'\bnew(LibraryWithSource|LibraryWithData|LibraryWithURL|Rende
                   r'ComputePipelineStateWithDescriptor|ComputePipelineStateWithFunction):')
 FUNCTION = re.compile(r'^(?:static\s+|inline\s+)*[A-Za-z_][\w<>\s\*]*?\b(\w+)\s*\([^;]*$')
 COUNTED_MAKERS = {'mtl_counted_library', 'mtl_counted_render', 'mtl_counted_compute'}
-# par4_make (nvn_pso4_build.h, the Metal 4 path) is reached from pso_new and cs_new_ alone -- its two call sites, both in
-# nvn_mtl.m -- and returns the pipeline to them, so pso_get and the dispatch count it where they count theirs.
+# par4_make (nvn_pso4_build.h, the Metal 4 pipeline archive, 2026-11-17): the pipeline pso_new / cs_new_ are making, taken
+# from the archive or compiled by the period's compiler; reached only from those two, so it is counted with them
 GAME_PATHS = {'lib_from_file', 'totk_msl_library', 'pso_new', 'cs_new_', 'mtk_build', 'par4_make'}
-# Not a pipeline the frame gets: after a Metal 4 period's write failed (nvn_pso4.h par4_write -> par4_resplit), the
-# pipelines of that period are compiled again in halves only so they can be written, and the states are thrown away. They
-# were counted when par4_make first made them; counting them here would count the same pipelines twice.
-RECOMPILES = {'par4_capture_chunk'}
+# par4_capture_chunk: a period of the archive whose file could not be written is compiled again in halves, on the
+# archive's own queue (par4_write -> par4_resplit); the frame that first made each of those pipelines counted it
+ARCHIVE_REWRITES = {'par4_capture_chunk'}
 
 
 def calls():
@@ -48,9 +46,19 @@ def calls():
 class StatsComplete(unittest.TestCase):
     def test_every_library_and_pipeline_is_counted(self):
         loose = [f'{name}:{number} ({function or "?"})' for name, number, function in calls()
-                 if function not in COUNTED_MAKERS | GAME_PATHS | RECOMPILES
-                 and 'probe' not in function and 'probe' not in name]
+                 if function not in COUNTED_MAKERS | GAME_PATHS | ARCHIVE_REWRITES and 'probe' not in function and 'probe' not in name]
         self.assertEqual(loose, [], 'a Metal library or pipeline made outside the counted makers: use mtl_counted_*')
+
+    def test_the_archive_makes_pipelines_only_for_the_counted_paths(self):
+        mtl = (GFX / 'nvn_mtl.m').read_text()
+        callers = re.findall(r'par4_make\((PAR_\w+),', mtl)
+        self.assertEqual(sorted(callers), ['PAR_COMPUTE', 'PAR_RENDER'], 'par4_make is called from pso_new and cs_new_ only')
+        new = mtl[mtl.index('static id<MTLRenderPipelineState> pso_new('):]
+        self.assertIn('par4_make(PAR_RENDER,', new[:new.index('\n}\n')])
+        build = (GFX / 'nvn_pso4_build.h').read_text()
+        resplit = build[build.index('static void par4_resplit('):]
+        self.assertIn('par4_capture_chunk(', resplit[:resplit.index('\n}\n')])
+        self.assertEqual(len(re.findall(r'\bpar4_capture_chunk\(', mtl)), 0, 'the rewrite is the archive file\'s, not a draw\'s')
 
     def test_the_counted_makers_count(self):
         text = (GFX / 'nvn_mtl.m').read_text()
