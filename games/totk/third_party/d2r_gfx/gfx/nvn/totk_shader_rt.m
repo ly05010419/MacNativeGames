@@ -943,7 +943,7 @@ NSArray<NSString *> *totk_rt_seed_verified(uint64_t *kept, uint64_t *dropped) {
 
 NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, const uint8_t *code, NSDictionary *answers, NSArray *local, int may_defer) {
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    (void)totk_rt_dir();   // before the lock, as in totk_rt_known_variants: a first totk_rt_dir under it deadlocks (observed_keys_state; DM_PSO_MANIFEST=off reaches here first)
+    (void)totk_rt_dir();   // the folder made before the lock (#2267); its dispatch_once no longer takes g_rt_lock either (g_prefer_lock)
     pthread_mutex_lock(&g_rt_lock);
     // Called for the game's actual shader bytes, including when a prepared
     // variant already exists. Old cache files alone never become observed keys.
@@ -998,11 +998,16 @@ void totk_rt_variant_broken(NSString *key) {
 /* A row of this device's warm-up lists with its variants put on the app's own (totk_variant_rows.h): the one a draw takes
    now. Each variant is looked up once. A variant's deps come from this folder's index, else from the other rt-* folders
    beside it (totk_rt_siblings): a carried list names the variants of the folder it came from (2026-11-16). */
+/* Its own lock, never g_rt_lock (2026-11-18, #2267): it runs inside totk_rt_dir's dispatch_once (rt_list_put_on_seed), so
+   g_rt_lock here deadlocked every first totk_rt_dir call made under g_rt_lock (TOTK_SHADER_PREFETCH=1 stopped at boot;
+   totk_rt_variant, totk_rt_known_variants, totk_rt_portable_variant). It guards only its own done / siblings: the index
+   files it reads are written whole (writeToFile atomically, variant_record) and g_dir / g_seed_* are set before. */
+static pthread_mutex_t g_prefer_lock = PTHREAD_MUTEX_INITIALIZER;
 NSString *totk_rt_row_prefer_seed(NSString *line) {
     static NSMutableDictionary<NSString *, NSString *> *done;
     static NSArray<NSString *> *siblings;
     return totk_row_map_variants(line, ^NSString *(NSString *variant) {
-        pthread_mutex_lock(&g_rt_lock);
+        pthread_mutex_lock(&g_prefer_lock);
         // g_dir, not a call of totk_rt_dir: this also runs inside its dispatch_once (rt_list_put_on_seed), and a
         // dispatch_once entered again from its own block traps (the 2026-11-16 seed run: signal 5 at start)
         if (!done) { done = [NSMutableDictionary dictionary]; siblings = totk_rt_siblings(g_dir); }
@@ -1015,7 +1020,7 @@ NSString *totk_rt_row_prefer_seed(NSString *line) {
             for (NSString *dir in siblings) [cache addObjectsFromArray:variants_file([dir stringByAppendingPathComponent:seedIndex])];
             now = done[variant] = totk_superseding_variant(variant, seed, cache);
         }
-        pthread_mutex_unlock(&g_rt_lock);
+        pthread_mutex_unlock(&g_prefer_lock);
         return now;
     });
 }
@@ -1038,7 +1043,7 @@ static NSUInteger rt_list_put_on_seed(void) {
 }
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
-    (void)totk_rt_dir();   // its dispatch_once takes g_rt_lock (totk_rt_row_prefer_seed): run it before the lock, or a first call here deadlocks (TOTK_SHADER_PREFETCH=1 lanes, 2026-11-17)
+    (void)totk_rt_dir();   // the folder made before the lock (#2267, TOTK_SHADER_PREFETCH=1 lanes); its dispatch_once no longer takes g_rt_lock either (g_prefer_lock)
     pthread_mutex_lock(&g_rt_lock);
     for (NSDictionary *v in variants_of(shader))
         if ([v isKindOfClass:NSDictionary.class] && [v[@"variant"] isKindOfClass:NSString.class]) [out addObject:v[@"variant"]];
