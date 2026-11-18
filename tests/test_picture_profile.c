@@ -116,6 +116,36 @@ static void garbage_values_fall_back(void) {
     }
 }
 
+/* Migration (spec "Migração"): any saved old row becomes Personalizado with exactly the combination that ran before, so
+   the game looks the same after the update until the player picks a profile. Review focus 1: an iPad whose app wrote
+   "docked" on its own still opens docked. */
+static void migrate_case(const char *what, pp_old old, pp_game g, pp_picture want, pp_metalfx want_mfx) {
+    pp_picture got; pp_metalfx mfx = PP_MFX_SCENE;
+    pp_migrate(&old, g, &got, &mfx);
+    CHECK(got.mode == want.mode && got.scene_w == want.scene_w && got.taa == want.taa && got.fps == want.fps &&
+          got.switch_size == want.switch_size && got.aspect_169 == want.aspect_169 && mfx == want_mfx,
+          "%s: mode %d scene %u taa %d fps %d switch %d aspect %d mfx %d", what, got.mode, got.scene_w, got.taa, got.fps,
+          got.switch_size, got.aspect_169, mfx);
+}
+static void migration(void) {
+    migrate_case("migrate_ipad_auto_docked", (pp_old){.docked = 1}, PP_GAME_BOTW,
+                 (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0}, PP_MFX_OFF);
+    migrate_case("migrate_totk_custom_mfx", (pp_old){.custom_picture = 1, .picture_mode = "mfx", .render_res = "800x450", .fps_cap = "30"},
+                 PP_GAME_TOTK, (pp_picture){PP_HANDHELD, 800, 0, 30, 0, 0}, PP_MFX_SCREEN);
+    migrate_case("migrate_totk_custom_1080", (pp_old){.custom_picture = 1, .picture_mode = "1080", .render_res = "1600x900", .fps_cap = "60"},
+                 PP_GAME_TOTK, (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0}, PP_MFX_OFF);
+    migrate_case("migrate_botw_hd", (pp_old){.docked = 1, .docked_scene = "1920x1080", .phone_fps = "30"}, PP_GAME_BOTW,
+                 (pp_picture){PP_DOCKED, 1920, 0, 30, 0, 0}, PP_MFX_OFF);
+    migrate_case("migrate_handheld", (pp_old){.phone_fps = "60"}, PP_GAME_TOTK,
+                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0}, PP_MFX_OFF);
+    migrate_case("migrate_totk_old_handheld", (pp_old){.totk_old = 1}, PP_GAME_TOTK,
+                 (pp_picture){PP_HANDHELD, 1280, 0, 60, 0, 0}, PP_MFX_OFF);
+    migrate_case("migrate_mfx_and_taa", (pp_old){.mfx_upscale = 1, .taa = 1, .aspect = "16:9"}, PP_GAME_TOTK,
+                 (pp_picture){PP_HANDHELD, 960, 1, 60, 0, 1}, PP_MFX_SCENE);
+    migrate_case("migrate_botw_aspect_ignored", (pp_old){.aspect = "0"}, PP_GAME_BOTW,
+                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0}, PP_MFX_OFF);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--keys")) {   /* the Settings pane's values (tests/test_ios_packaging.py) */
         for (int i = PP_QUALITY; i <= PP_CUSTOM; i++) printf("%s%s", i ? " " : "", pp_profile_key((pp_profile)i));
@@ -134,6 +164,7 @@ int main(int argc, char **argv) {
     handheld_scene_above_canvas_env();
     aspect_only_totk();
     garbage_values_fall_back();
+    migration();
     if (failures) return 1;
     puts("picture profiles ok");
     return 0;

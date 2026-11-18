@@ -78,3 +78,22 @@ void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out) {
     put(out, "TOTK_SWITCH_SIZE", p->switch_size ? "1" : "0");
     put(out, "TOTK_ASPECT", g == PP_GAME_TOTK && p->aspect_169 ? "0" : NULL);
 }
+
+static int is(const char *s, const char *v) { return s && !strcmp(s, v); }
+void pp_migrate(const pp_old *old, pp_game g, pp_picture *custom, pp_metalfx *mfx) {
+    pp_picture p = {PP_HANDHELD, 0, old->taa != 0, 60, 0, 0};
+    *mfx = old->mfx_upscale ? PP_MFX_SCENE : PP_MFX_OFF;
+    if (g == PP_GAME_TOTK && old->custom_picture) {   /* the custom layer replaced the presets */
+        p.mode = is(old->picture_mode, "1080") ? PP_DOCKED : PP_HANDHELD;
+        if (is(old->picture_mode, "mfx")) *mfx = PP_MFX_SCREEN;
+        unsigned w = 0;
+        p.scene_w = pp_scene_parse(old->render_res, &w) && w ? w : 960;   /* its row's default was 960x540 */
+        p.fps = is(old->fps_cap, "30") ? 30 : 60;
+    } else {
+        p.mode = old->docked ? PP_DOCKED : PP_HANDHELD;
+        p.scene_w = old->docked ? (is(old->docked_scene, "1920x1080") ? 1920 : 1600) : old->totk_old && g == PP_GAME_TOTK ? 1280 : 960;
+        p.fps = is(old->phone_fps, "30") ? 30 : 60;
+    }
+    p.aspect_169 = g == PP_GAME_TOTK && (is(old->aspect, "0") || is(old->aspect, "16:9"));
+    *custom = p;
+}

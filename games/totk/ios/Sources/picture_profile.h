@@ -33,3 +33,20 @@ int pp_profile_picture(pp_profile p, pp_picture *out);  /* the fixed values; 0 f
 unsigned pp_scene_effective(const pp_picture *p);     /* Automática resolved, held at the mode's canvas */
 int pp_mfx_scene_acts(const pp_picture *p);           /* 0 when the scene is as wide as the canvas: nothing to upscale */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out);
+
+/* The old Settings rows (before the profiles) as they were saved, for the one-time migration to Personalizado. */
+typedef struct {
+    int docked;                /* TOTK_DOCKED */
+    const char *docked_scene;  /* TOTK_DOCKED_SCENE (TotK) or TOTK_BOTW_SCENE */
+    const char *phone_fps;     /* TOTK_PHONE_FPS */
+    int custom_picture;        /* TOTK_CUSTOM_PICTURE: Tears of the Kingdom's custom layer */
+    const char *picture_mode;  /* TOTK_IOS_PICTURE_MODE: "720" | "1080" | "mfx" */
+    const char *render_res;    /* TOTK_RENDER_RES (the custom layer's scene) */
+    const char *fps_cap;       /* TOTK_FPS_CAP */
+    int mfx_upscale;           /* TOTK_MFX_UPSCALE */
+    int taa;                   /* TOTK_TAA */
+    const char *aspect;        /* TOTK_ASPECT: "0" / "16:9" is 16:9 */
+    int totk_old;              /* Tears of the Kingdom 1.0 / 1.2.1: its handheld scene without a size is 1280x720 */
+} pp_old;
+/* Exactly the combination that ran before (spec "Migração"); MetalFX goes to its own setting. */
+void pp_migrate(const pp_old *old, pp_game g, pp_picture *custom, pp_metalfx *mfx);
