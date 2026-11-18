@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <sys/stat.h>
+#include "input_tape.h"   /* the user's route recorded and replayed (OOT_INPUT_RECORD / OOT_INPUT_REPLAY) */
 typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attributes,pad;} NpadState;
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
@@ -161,7 +162,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
  if(runtime_vr_stick_pitch_locked())state.ry=0;   /* zeldaVR: up / down is the headset's (game_patches_v143.c) */
- }uint64_t trace=runtime_input_trace_next();if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu guest id=%#x want=%#x styles=%#x enabled=%d allowed=%d ignored=%d sample=%lld attr=%#x buttons=%#llx axes=%d,%d,%d,%d\n",(unsigned long long)trace,(unsigned long long)runtime_now_ns(),*id,want_style,styles,enabled,allowed,ignore_user(),(long long)state.sampling,state.attributes,(unsigned long long)state.buttons,state.lx,state.ly,state.rx,state.ry);
+ }input_tape(&state.buttons,&state.lx,&state.ly,&state.rx,&state.ry);   /* OOT_INPUT_RECORD / OOT_INPUT_REPLAY (input_tape.h) */
+ uint64_t trace=runtime_input_trace_next();if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu guest id=%#x want=%#x styles=%#x enabled=%d allowed=%d ignored=%d sample=%lld attr=%#x buttons=%#llx axes=%d,%d,%d,%d\n",(unsigned long long)trace,(unsigned long long)runtime_now_ns(),*id,want_style,styles,enabled,allowed,ignore_user(),(long long)state.sampling,state.attributes,(unsigned long long)state.buttons,state.lx,state.ly,state.rx,state.ry);
  if(getenv("TOTK_INPUT_LOG")){static int left=120;static uint64_t previous;if(previous!=state.buttons&&left-->0){previous=state.buttons;fprintf(stderr,"[oot-input] id=%#x style=%#x enabled=%d allowed=%d buttons=%#llx sample=%lld\n",*id,styles,enabled,allowed,(unsigned long long)state.buttons,(long long)state.sampling); }}*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}

@@ -11962,7 +11962,14 @@ static void warm_filled(void) {
    while playing (14 -> 28 ms per frame, 30 -> 20 fps). The next start goes over the list again; rows already in the
    cache take a few ms each. TOTK_WARM_LIGHT=0 turns it off. */
 static _Atomic int g_world_on;   // set at the first world frame (hle_nvn.c, nvnQueuePresentTexture)
-void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }
+/* The frame the world was first entered on (games/oot/runtime/input_tape.h counts the user's recorded route from it), 0 before */
+static _Atomic uint64_t g_world_frame;
+uint64_t dm_nvn_frame_count(void);
+uint64_t mtl_world_frame(void) { return atomic_load(&g_world_frame); }
+void mtl_note_world(void) {
+    atomic_store(&g_world_on, 1); fps_board_start();
+    uint64_t none = 0; uint64_t now = dm_nvn_frame_count(); atomic_compare_exchange_strong(&g_world_frame, &none, now ? now : 1);
+}
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
