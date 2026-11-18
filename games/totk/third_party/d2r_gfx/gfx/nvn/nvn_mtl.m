@@ -18141,7 +18141,11 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
                  cover >= 0 ? g_ui2d_box[0] : 0, cover >= 0 ? g_ui2d_box[1] : 0, cover >= 0 ? g_ui2d_box[2] : 0, cover >= 0 ? g_ui2d_box[3] : 0); }
         }
     }
-        if (kept) ux = uy = 1;
+        if (kept) {
+            ux = 1;
+            // Full-width bands keep their width and share the widgets' vertical scale.
+            if (cover != 4) uy = 1;
+        }
     }
     *pux = ux; *puy = uy; *pedge = edge; *pworld = world;
 }
