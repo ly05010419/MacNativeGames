@@ -3691,10 +3691,15 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
    when its memory pool is finalised. TOTK_TEX_SHARE=0 restores one texture per serial. */
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 typedef struct { uint64_t mem, size; uint32_t w, h, d, levels, target, samples, bpb, depth_fmt; } stor_key;   // 48 bytes, no padding
-typedef struct { stor_key k; void *tex, *views; uint64_t idle_fence; uint64_t *ser; int nser, cser; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
+typedef struct { stor_key k; void *tex, *views; uint64_t idle_fence; uint64_t *ser; int nser, cser; uint64_t acq; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it; acq: when the game last made a texture of it (g_stor_acq_seq)
 static nvn_hmap g_by_storage = {.klen = sizeof(stor_key)};   // stor_key -> stor_ent *
 static nvn_hmap g_stor_of_obj = {.klen = 8};                  // base texture / view pointer -> stor_ent *
 static uint64_t g_stor_entries, g_stor_shared, g_stor_viewed, g_stor_recreated, g_stor_swept, g_stor_dropped;
+/* Counts the textures the game makes over storage entries (new or taken again). Where layouts overlap in memory, the one
+   made last owns the bytes: a game makes a texture over memory it has just allocated, then writes it. A heap migration
+   copies in this order, so the layout made last is written last (nvn_stor_migrate.h, 2026-11-18). g_smu. */
+static uint64_t g_stor_acq_seq;
+static uint64_t g_stor_again[6];   // entries taken again after nobody held them, by how long (stor_acquire; stor_memory_report prints them)
 /* Texture preparation runs before a draw captures its encoder. An upgrade discovered under the
    registry lock requests a pass split; the caller ends the pass outside that lock and retries. */
 static int g_tex_preparing, g_tex_prepare_split;
@@ -4821,6 +4826,7 @@ static id<MTLTexture> stor_acquire(const tex_t *t, MTLTextureDescriptor *d) {
     pthread_mutex_lock(&g_smu);
     stor_ent *e = nvn_hm_get(&g_by_storage, &k); id<MTLTexture> base = e ? (__bridge id<MTLTexture>)e->tex : nil;
     if (!base) { pthread_mutex_unlock(&g_smu); return nil; }
+    if (!e->nser) { uint64_t idle = g_fence > e->idle_fence ? g_fence - e->idle_fence : 0; g_stor_again[idle <= 1 ? 0 : idle <= 4 ? 1 : idle <= 16 ? 2 : idle <= 64 ? 3 : idle <= 256 ? 4 : 5]++; }
     int pfv = pf != base.pixelFormat && tex_need_pfv(base.pixelFormat, pf);
     if (pfv && stor_compressed(t) && !compressed_alias_on()) {   /* another format of compressed storage: it changes hands (see stor_compressed) */
         MTLPixelFormat bf = base.pixelFormat;
@@ -4833,6 +4839,7 @@ static id<MTLTexture> stor_acquire(const tex_t *t, MTLTextureDescriptor *d) {
                          back ? ", back on its earlier texture" : ", with a new texture", (unsigned long long)n);
         if (!back) { pthread_mutex_unlock(&g_smu); return nil; }   /* the caller creates the texture and publishes it as the storage's owner */
     }
+    e->acq = ++g_stor_acq_seq;
     MTLTextureUsage want = base.usage | d.usage | (pfv ? MTLTextureUsagePixelFormatView : 0);
     if (want == base.usage && pf == base.pixelFormat) { g_stor_shared++; pthread_mutex_unlock(&g_smu); goto logged; }
     pthread_mutex_unlock(&g_smu);
@@ -4862,7 +4869,7 @@ static void stor_publish(const tex_t *t, id<MTLTexture> mt) {
                 MLOG("storage %p (%llu bytes): serial %llu creates %ux%ux%u lv%u target %u samples %u bpb %u depth %u beside an existing %ux%ux%u lv%u target %u samples %u bpb %u depth %u (format %#x)", (void *)t->mem, (unsigned long long)k.size, (unsigned long long)t->serial,
                      k.w, k.h, k.d, k.levels, k.target, k.samples, k.bpb, k.depth_fmt, o->k.w, o->k.h, o->k.d, o->k.levels, o->k.target, o->k.samples, o->k.bpb, o->k.depth_fmt, t->d.format); break; } }
         stor_ent *e = calloc(1, sizeof *e); if (!e) MDIE("storage entry");
-        e->k = k; e->tex = (void *)CFBridgingRetain(mt); e->idle_fence = g_fence;
+        e->k = k; e->tex = (void *)CFBridgingRetain(mt); e->idle_fence = g_fence; e->acq = ++g_stor_acq_seq;
         nvn_hm_put(&g_by_storage, &e->k, e); uint64_t ok = obj_key(mt); nvn_hm_put(&g_stor_of_obj, &ok, e); g_stor_entries++;
     }
     pthread_mutex_unlock(&g_smu);
@@ -4932,6 +4939,9 @@ static void stor_alias_earlier_report(void) {
 static void stor_memory_report(uint64_t frame) {
     stor_alias_report();
     stor_alias_earlier_report();
+    MLOG("[storage] entries taken again after nobody held them, by submissions idle: 0-1 %llu, 2-4 %llu, 5-16 %llu, 17-64 %llu, 65-256 %llu, more %llu; a migration released %llu idle entries",
+         (unsigned long long)g_stor_again[0], (unsigned long long)g_stor_again[1], (unsigned long long)g_stor_again[2], (unsigned long long)g_stor_again[3],
+         (unsigned long long)g_stor_again[4], (unsigned long long)g_stor_again[5], (unsigned long long)g_alias_migrate_released);
     totk_texture_lifetime_flush();
     static int init; static const char *path;
     if (!init) { init = 1; path = getenv("OOT_STORAGE_MEMORY_FILE"); }
@@ -7655,10 +7665,25 @@ static void pso_played_record(const char *line) {
         atomic_fetch_add(&g_played_new, 1);
     } });
 }
+/* The device list's rows are filtered and written on this queue, in the order they were recorded: the first row reads
+   the App's lists to know what is already there (Ocarina of Time: 27 MB, 27,076 rows; 104 ms with the replay section
+   held, the one frame over 100 ms left in every session of the user's route, 2026-11-18), and every new row is a file
+   write (10-30 ms on the external drive). mtl_pipeline_archive_quit drains it when the window closes. */
+static dispatch_queue_t pso_user_queue(void) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.pso-user", DISPATCH_QUEUE_SERIAL);
+                            atexit_b(^{ dispatch_sync(q, ^{}); }); });   // rows recorded just before the process exits are written too
+    return q;
+}
 static void pso_user_record(const char *fmt, ...) {
-    char line[8192]; va_list ap; va_start(ap, fmt); vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    char text[8192]; va_list ap; va_start(ap, fmt); vsnprintf(text, sizeof text, fmt, ap); va_end(ap);
+    { const char *line = text;
     pso_capture(line);
-    pso_played_record(line);
+    pso_played_record(line); }
+    NSString *row = [[NSString alloc] initWithUTF8String:text];
+    if (!row) return;
+    dispatch_async(pso_user_queue(), ^{ @autoreleasepool {
+    const char *line = row.UTF8String;
     if (!g_pso_shared_checked) { g_pso_shared_checked = 1; g_pso_shared = fopen(device_list().fileSystemRepresentation, "a"); }
     if (!g_pso_shared) return;
     if (!g_pso_user_seen) {
@@ -7687,6 +7712,7 @@ static void pso_user_record(const char *fmt, ...) {
     int kind = collect_kind(line[0]);
     if (kind >= 0 && [g_pso_shipped_seen containsObject:k]) kind = -1;   // from the shared list (and its archive): not new
     if (kind >= 0) { atomic_fetch_add(&g_collect_new[kind], 1); atomic_store(&g_collect_ns[kind], clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }
+    } });
 }
 // 从 .metallib 文件建库，不常驻占文件描述符：newLibraryWithURL 在库对象活着期间一直开着那个文件（每个游戏着色器一个——iOS 包进局常驻 258 个描述符里 213 个是它，
 // 而 iOS 进程缺省软上限 256；别的幕新建着色器还会涨）。这里把文件映射进内存后立刻关掉，用内存数据建库；映射随库的数据对象释放时解除
@@ -11968,7 +11994,8 @@ uint64_t dm_nvn_frame_count(void);
 uint64_t mtl_world_frame(void) { return atomic_load(&g_world_frame); }
 void mtl_note_world(void) {
     atomic_store(&g_world_on, 1); fps_board_start();
-    uint64_t none = 0; uint64_t now = dm_nvn_frame_count(); atomic_compare_exchange_strong(&g_world_frame, &none, now ? now : 1);
+    uint64_t none = 0; uint64_t now = dm_nvn_frame_count();
+    if (atomic_compare_exchange_strong(&g_world_frame, &none, now ? now : 1)) MLOG("[world] entered at frame %llu", (unsigned long long)now);   // test scripts wait for this line
 }
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
@@ -12151,6 +12178,7 @@ static void offline_depth_mode(const char *depth) {
 /* The window closes (frontend.m, before _exit): what the Metal 4 archive captured and has not written yet (the timer
    writes 10 s after the last capture) is written now, waiting up to 10 s. Nothing to do for other games. */
 void mtl_pipeline_archive_quit(void) {
+    dispatch_sync(pso_user_queue(), ^{});   // the device list's last rows (pso_user_record)
 #ifdef PSO4_BUILT
     par4_flush(1, 10);
     if (par4_on()) MLOG("Metal 4 管线存档（这一局）：取 %llu 条，编 %llu 条（其中旧文件里的 %llu 条改存进来），写进 %llu 个文件 %llu 条，走旧路 %llu 条，捕获时让出 %llu 次",

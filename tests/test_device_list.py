@@ -45,6 +45,23 @@ class OneDeviceList(unittest.TestCase):
         self.assertNotIn('pso_user_file', SOURCE, 'the profile list is written again')
         self.assertNotIn('pso_user_path()', record)
 
+    def test_the_lists_are_read_and_written_off_the_recording_thread(self):
+        """2026-11-18: the first row recorded in play read the App's lists (Ocarina of Time: 27 MB, 27,076 rows) on the
+        submit thread with the replay section held: 104 ms, the one frame over 100 ms left in every session of the
+        user's recorded route. The filter and the file write run on a serial queue now, rows in their order; the
+        queue is drained when the window closes and when the process exits."""
+        record = body('pso_user_record')
+        queued = record.index('dispatch_async(pso_user_queue(), ^{')
+        for late in ('g_pso_shared = fopen(device_list()', 'componentsSeparatedByString', 'fputs(line, g_pso_shared)', 'atomic_fetch_add(&g_collect_new[kind], 1)'):
+            self.assertGreater(record.index(late), queued, late)
+        self.assertLess(record.index('pso_capture(line);'), queued)          # the capture diagnostic and the played list
+        self.assertLess(record.index('pso_played_record(line);'), queued)    # see every row, as before
+        queue = SOURCE[SOURCE.index('static dispatch_queue_t pso_user_queue(void) {'):SOURCE.index('static void pso_user_record(')]
+        self.assertIn('DISPATCH_QUEUE_SERIAL', queue)
+        self.assertIn('atexit_b(^{ dispatch_sync(q, ^{}); });', queue)
+        quit_ = SOURCE[SOURCE.index('void mtl_pipeline_archive_quit(void) {'):]
+        self.assertIn('dispatch_sync(pso_user_queue(), ^{});', quit_[:quit_.index('\n}\n')])
+
     def test_warm_up_takes_the_one_list_as_this_devices(self):
         start = body('warm_start')
         self.assertIn('NSString *user = device_list();', start)

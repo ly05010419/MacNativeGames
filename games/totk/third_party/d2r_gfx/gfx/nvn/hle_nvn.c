@@ -3793,6 +3793,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           trow(f, "@rd_waits", (double)(rw_ - prw)); trow(f, "@rd_wait_ms", (rn_ - prn) / 1e6); prw = rw_; prn = rn_; }
         double up_ms = mtl_upload_ns_take() / 1e6; trow(f, "@upload_ms", up_ms);
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
+        { static uint64_t pn, pr, pb, pns; uint64_t n_, r_, b_, ns_; void mtl_migrate_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *); mtl_migrate_stats(&n_, &r_, &b_, &ns_);   // alias heap growth migrations (nvn_stor_migrate.h)
+          trow(f, "@mig_n", (double)(n_ - pn)); trow(f, "@mig_rows", (double)(r_ - pr)); trow(f, "@mig_mb", (b_ - pb) / 1048576.0); trow(f, "@mig_ms", (ns_ - pns) / 1e6); pn = n_; pr = r_; pb = b_; pns = ns_; }
         { static uint64_t popen, popen_ns; uint64_t n_, ns_; void mtl_par_open_stats(uint64_t *, uint64_t *); mtl_par_open_stats(&n_, &ns_);   // pipeline archive files opened (totk_pipeline_archive.h)
           trow(f, "@par_opens", (double)(n_ - popen)); trow(f, "@par_open_ms", (ns_ - popen_ns) / 1e6); popen = n_; popen_ns = ns_; }
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）
