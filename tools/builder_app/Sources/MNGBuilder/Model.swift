@@ -36,6 +36,10 @@ final class Model: ObservableObject {
     @Published var installedLoaded = false   // the first scan finished: until then no game is shown as missing
     @Published var installedError: String?   // why the last scan failed (the home page shows it)
     @Published var newerLauncher: (version: String, url: URL)?   // a newer MNG Launcher release (the version label turns blue)
+    // The Launcher replacing itself with that release (LauncherUpdate.swift: the button at the home page's top right)
+    @Published var launcherUpdate: LauncherUpdate.Phase = .idle
+    @Published var launcherUpdateManual: URL?   // where a person downloads it instead, offered when the update failed
+    var launcherUpdateJob: Job?
     @Published var updating: String?     // the installed app being updated (its progress shows in its list)
     /// A job is running now. `updating` names the app the last job was for and stays after it ends (its card keeps the
     /// result and the log), so it never means "busy": a reporter (2026-11-17) found Start grey after a `mng.py build`
@@ -43,6 +47,10 @@ final class Model: ObservableObject {
     var jobRunning: Bool { phase == .building || phase == .cancelling }
     @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var page = "home"         // the page shown: home (the games) or build
+    /// The game a build from the Build page just made: the home page opens with its case in the middle (user 2026-11-18:
+    /// "安装 完了 不返回首页").
+    @Published var homeGame: String?
+    private var jobGameId: String?       // the running job's game (its 'plan' event)
     @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)
     @Published var quickStart = false    // 快速启动: build with only the title's shaders (Model.quickGames)
     /// The log of the job that failed last, which the terminal page's AI is asked about.
@@ -85,6 +93,7 @@ final class Model: ObservableObject {
             Task { @MainActor in self?.lookForExternal() }
         }
         loadRememberedInstalled()   // the games of the last look at once; the look below brings them up to date
+        readLauncherUpdateOutcome()   // an update that could not put the new Launcher in place says so
         Task { await runChecks(); await loadInstalled(); open(pending); if !paths.isEmpty { await classify() } }
     }
 
@@ -419,7 +428,7 @@ final class Model: ObservableObject {
             append(line); return
         }
         switch e.event {
-        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last
+        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last; jobGameId = e.game
         case "stage":
             stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
             if let i = e.index, let n = e.total { stageNumber = (i, n) }
@@ -435,6 +444,11 @@ final class Model: ObservableObject {
             if e.ok == true {
                 phase = .done; fraction = 1; appPath = e.app ?? appPath
                 if startedHere { play() }   // a job started elsewhere ends without starting the game
+                if startedHere && page == "build" {   // back to the games, this one in the middle; its files are done with
+                    homeGame = jobGameId ?? plan?.game
+                    buildFor = nil; clear(); buildStep = 1
+                    page = "home"
+                }
             } else {
                 failure = e; phase = (e.cancelled ?? false) ? .cancelled : .failed
             }

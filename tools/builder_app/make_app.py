@@ -127,6 +127,11 @@ def check_release_source(repo, commit='HEAD'):
         'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
         'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py',
     }
+    if commit == 'HEAD':
+        # the Launcher's own updater goes into the signed app from this checkout (main below), so it must be committed
+        # with it. A source release carries none: asking it of every commit refused the release of one from before the
+        # file existed (2026-11-18, source-20261118-7a158084 with this file still uncommitted in the checkout).
+        required.add('tools/builder_app/launcher_update.py')
     missing = required - names
     if missing:
         raise ValueError('Release source is incomplete; commit these dependencies first: ' + ', '.join(sorted(missing)))
@@ -278,8 +283,9 @@ def main(argv):
         programs = prebuilt_programs(REPO, 'HEAD', a.scratch.expanduser().parent / 'prebuilt')
         plist['MNGSourceArchiveSHA256'] = source_archive(REPO, stage / 'Contents/Resources/source.tar.gz', prebuilt=programs)
         plist.update(source_settings(REPO))
-        # the code that trusts or refuses downloaded source lives in the signed app, never in a source archive
-        for name in ('bundled_job.py', 'source_updates.py'):
+        # the code that trusts or refuses downloaded source lives in the signed app, never in a source archive; so does
+        # the code that replaces the Launcher with a newer release (launcher_update.py, the update button)
+        for name in ('bundled_job.py', 'source_updates.py', 'launcher_update.py'):
             shutil.copy2(HERE / name, stage / 'Contents/Resources' / name)
     if not a.no_python:
         with tarfile.open(python_archive(CACHE)) as t:

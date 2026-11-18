@@ -27,6 +27,10 @@ struct HomePage: View {
 
     /// The first built game is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {
+        if let built = model.homeGame {   // a build just finished: its game in the middle
+            chosen = built; defaulted = true; model.homeGame = nil
+            return
+        }
         guard !defaulted, model.installedLoaded else { return }
         guard let first = order.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
         chosen = first
@@ -61,7 +65,11 @@ struct HomePage: View {
                     Spacer()
                     // the terminal with an AI helper (TerminalTab.swift; user 2026-11-13)
                     Button { model.page = "terminal" } label: { Label(T.terminal, systemImage: "terminal") }
+                    // a newer MNG Launcher: one click downloads it, puts it in this one's place and opens it again
+                    // (LauncherUpdate.swift; user 2026-11-18: "放在 右上角，有更新 才显示")
+                    LauncherUpdateButton()
                 }
+                LauncherUpdateFailure()   // why the update did not happen, with the plain download
                 // The games as the iPod classic's Cover Flow (user 2026-11-17): every one is reached by the arrows,
                 // the arrow keys, a drag or a click on a side cover, at any window width
                 let cases = order
