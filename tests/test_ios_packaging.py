@@ -250,5 +250,38 @@ class StartScreen(unittest.TestCase):
             self.assertIn(key, screen)
         self.assertNotIn('PLAYSHELF', screen.upper(), 'no launcher name on the game\'s screen')
 
+class SwitchSize(unittest.TestCase):
+    """The game at the Switch's 6.2-inch screen on an iPad (TOTK_SWITCH_SIZE=1, user 2026-11-17), centred, so a
+    low-resolution picture looks sharper. The app's picture settings hand the variable over (2026-11-17 profiles); a
+    phone screen is already smaller, so there it changes nothing."""
+    def test_the_game_view_takes_the_switch_size_when_the_game_starts(self):
+        import re
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        start = re.search(r'void \(\^start\)\(void\) = \^\{(.*?)\n    \};', main, re.S).group(1)
+        # read after the picture settings are handed over, placed before the drawable takes the view's shape
+        self.assertLess(start.index('apply_display_settings()'), start.index('getenv("TOTK_SWITCH_SIZE")'))
+        self.assertLess(start.index('getenv("TOTK_SWITCH_SIZE")'), start.index('[weak placeGameView];'))
+        self.assertLess(start.index('[weak placeGameView];'), start.index('runtime_ios_sync_drawable(weak.gameView);'))
+        place = re.search(r'- \(void\)placeGameView \{.*?\n}', main, re.S).group(0)
+        self.assertIn('UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad', place, 'iPad only')
+        self.assertIn('totk_switch_size(b.size.width, b.size.height, totk_ipad_ppi(machine), scale, &w, &h)', place)
+        front = (TOOLS.parents[1]/'runtime/frontend_ios.m').read_text()
+        self.assertIn('bootStage.autoresizingMask=centred;bootDetail.autoresizingMask=centred;', front)
+
+    def test_not_on_vision_pro(self):
+        """visionOS has no UIScreen (the xros build failed, 2026-11-18) and no Switch-sized picture: the placement code
+        and its window-resize hook sit inside #if !TARGET_OS_VISION."""
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        at = main.index('- (void)placeGameView {')
+        guard = main.rindex('#if !TARGET_OS_VISION', 0, at)
+        self.assertNotIn('#endif', main[guard:at], 'placeGameView is inside the non-visionOS block')
+        self.assertLess(main.index('- (void)viewDidLayoutSubviews', at), main.index('#endif', at))
+
+    def test_no_pane_row(self):
+        import plistlib
+        root = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
+        self.assertNotIn('TOTK_SWITCH_SIZE', {s.get('Key') for s in root['PreferenceSpecifiers']},
+                         'the picture settings in the app own it (profiles)')
+
 if __name__ == '__main__':
     unittest.main()
