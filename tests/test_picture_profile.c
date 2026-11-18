@@ -106,6 +106,9 @@ static void garbage_values_fall_back(void) {
     CHECK(!pp_scene_parse("3840x2160", &w) && w == 123 && !pp_scene_parse(NULL, &w), "sizes outside the list are refused");
     CHECK(pp_scene_parse("", &w) && w == 0, "an empty scene is Automática");
     CHECK(pp_scene_parse("800x450", &w) && w == 800, "a listed size");
+    CHECK(!strcmp(pp_scene_key(0), "") && !strcmp(pp_scene_key(800), "800x450") && !strcmp(pp_scene_key(1920), "1920x1080"),
+          "a width is stored as the size the parser reads back");
+    CHECK(!strcmp(pp_scene_key(1234), ""), "a width outside the list is stored as Automática");
     for (int i = PP_QUALITY; i <= PP_CUSTOM; i++) {
         pp_profile back = PP_QUALITY;
         CHECK(pp_profile_parse(pp_profile_key((pp_profile)i), &back) && back == (pp_profile)i, "profile key %d round-trips", i);

@@ -15,6 +15,7 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#include "picture_settings.h"
 #include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #include "totk_contrib_upload.h"   // the shader inbox: asked once, sent while playing
@@ -393,7 +394,7 @@ static void audio_observe(void) {
     }];
 }
 
-#if !TARGET_OS_VISION
+#if !TARGET_OS_VISION && defined(GAME_NS2)
 /* apply_settings runs before the window scene exists, so there is no scene screen to ask yet. */
 static NSDictionary *pref_row(NSDictionary *root, NSString *key) {
     for (NSDictionary *item in root[@"PreferenceSpecifiers"] ?: @[])
@@ -401,9 +402,8 @@ static NSDictionary *pref_row(NSDictionary *root, NSString *key) {
     return nil;
 }
 #endif
-/* Both layers hand their operation mode and frame pacing over through these two, so the overwrite policy exists once.
-   Breath of the Wild has the same switch; its docked scene is the pane's TOTK_BOTW_SCENE (the Switch's 1600x900 or HD
-   1920x1080, game_patches_botw.c patch_render_phone). */
+#ifdef GAME_NS2
+/* Bananza's and Pokopia's presets hand their operation mode and frame pacing over through these two. */
 static void apply_operation_mode(const char *mode) {
     setenv("TOTK_OPERATION_MODE", mode, 1);
 }
@@ -414,15 +414,18 @@ static void apply_frame_env(const totk_frame_env *e, int overwrite) {
     if (e->phone_fps) setenv("TOTK_PHONE_FPS", e->phone_fps, overwrite);
     else if (overwrite) unsetenv("TOTK_PHONE_FPS");
 }
+#endif
 
 #if !TARGET_OS_VISION
-/* The presets' picture and frame rate, from the rows the Settings app and the start screen (start_screen.m) write;
-   applied once, just before the game thread starts, so the start screen's pick counts (after PR #433: applying them in
-   didFinishLaunching as well left a 1080 drawable behind when the start screen then turned Full HD off). The picture keys
-   keep a devicectl value (overwrite=0), as before the pane had layers. The custom layer was handed over in apply_settings
-   and the start screen does not write its rows, so it is left as it is. The mapping is settings_map.c's. */
+/* The picture and frame rate, applied once, just before the game thread starts, so the start screen's pick counts (after
+   PR #433: applying them in didFinishLaunching as well left a 1080 drawable behind when the start screen then turned
+   Full HD off). Tears of the Kingdom and Breath of the Wild: the picture profile, MetalFX and the custom combination
+   (picture_settings.m, picture_profile.c; spec 2026-11-17-ios-picture-profiles). Bananza and Pokopia: their presets
+   (settings_map.c). Every key keeps a devicectl value (overwrite=0). */
 static void apply_display_settings(void) {
+#ifdef GAME_NS2
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+#endif
 #ifdef GAME_DKB
     if (!outputResolutionFromEnvironment) {
         NSString *size=[d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
@@ -436,7 +439,20 @@ static void apply_display_settings(void) {
         char height[16];snprintf(height,sizeof height,"%u",h);setenv("TOTK_IOS_DRAWABLE_H",height,0);
     }
 #endif
-    if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;
+#ifndef GAME_NS2
+    pp_profile profile; pp_metalfx mfx;
+    pp_picture pic = totk_current_picture(&profile, &mfx);
+    pp_env env;
+#ifdef GAME_BOTW
+    pp_env_build(&pic, mfx, PP_GAME_BOTW, &env);
+#else
+    pp_env_build(&pic, mfx, PP_GAME_TOTK, &env);
+#endif
+    for (int i = 0; i < env.n; i++) if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);
+    fprintf(stderr, "[totk] picture: profile %s, metalfx %s; %s, scene %s, taa %s, %s fps, Switch size %s, drawable %s\n",
+            pp_profile_key(profile), pp_metalfx_key(mfx), getenv("TOTK_OPERATION_MODE") ?: "?", getenv("TOTK_RENDER_RES") ?: "?",
+            getenv("TOTK_TAA") ?: "?", pic.fps == 30 ? "30" : "60", getenv("TOTK_SWITCH_SIZE") ?: "?", getenv("TOTK_IOS_DRAWABLE_H") ?: "default");
+#else
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
     if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);
@@ -452,15 +468,15 @@ static void apply_display_settings(void) {
     NSString *fps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: @"60";
     totk_frame_env fe;
     if (totk_preset_frame_env_build(fps.UTF8String, &fe)) apply_frame_env(&fe, 1);
+#endif
 }
 #endif
 
 /* The Settings app pane is the single source of defaults: every TOTK_* row with a DefaultValue is registered, so the
    game sees the same defaults before the player changes anything, then handed to the runtime as an environment
-   variable (overwrite=0, so devicectl can still supply a plain key). The picture and frame keys belong to one of the
-   pane's two layers, chosen by TOTK_CUSTOM_PICTURE: the presets (Full HD, frame rate) when it is off, the custom
-   picture and frame rows when it is on. Only the chosen layer is handed over, so no key is written twice. visionOS is
-   the exception: its platform defaults own the picture and frame keys (the pane's rows describe a phone display). */
+   variable (overwrite=0, so devicectl can still supply a plain key). The picture itself goes when the game starts
+   (apply_display_settings). visionOS is the exception: its platform defaults own the picture and frame keys (the
+   pane's rows describe a phone display). */
 static void apply_settings(void) {
     NSBundle *settings = [NSBundle bundleWithPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Settings.bundle"]];
     NSString *path = [settings pathForResource:@"Root" ofType:@"plist"];
@@ -493,13 +509,11 @@ static void apply_settings(void) {
        changed is stored once: the pane then shows what the game uses. */
     NSDictionary *stored = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier] ?: @{};
     for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];
-    /* One switch between the pane's layers (Root.plist, "Use custom settings"): the layer that is off is not handed
-       over at all, so neither can overwrite the other. Which keys belong to which layer is settings_map.c's table. */
-    BOOL custom = [d boolForKey:@"TOTK_CUSTOM_PICTURE"];
-    totk_key_layer layer_of = custom ? TOTK_KEY_CUSTOM : TOTK_KEY_PRESET;
+#if !TARGET_OS_VISION && !defined(GAME_NS2)
+    /* The picture rows of before the profiles become the custom profile, once (picture_settings.m). */
+    totk_migrate_picture_rows();
+#endif
     for (NSString *key in defaults) {
-        totk_key_layer owned = totk_key_layer_of(key.UTF8String);
-        if (owned != TOTK_KEY_ALWAYS && owned != layer_of) continue;
         id value = [d objectForKey:key];
         if ([value isKindOfClass:NSNumber.class]) {
             setenv(key.UTF8String, [value boolValue] ? "1" : "0", 0);
@@ -515,70 +529,30 @@ static void apply_settings(void) {
             }
             setenv(key.UTF8String, [value UTF8String], 0);
         }
-        /* overwrite=0: a devicectl value for a plain key still wins. The layer block below owns the picture and frame
-           keys of the chosen layer. */
+        /* overwrite=0: a devicectl value for a plain key still wins. */
     }
 #if !TARGET_OS_VISION
     NSString *layer;
-    if (custom) {
-        /* The picture mode owns the drawable, the output upscale and the operation mode (the 1080 entry runs the
-           game's docked settings). The scene upscale stays the pane's own switch, except for the MetalFX entry: its
-           output upscale only runs while that switch is on, so the entry turns it on itself. */
-        NSString *picture = [d stringForKey:@"TOTK_IOS_PICTURE_MODE"];
-        totk_picture_env penv;
-        if (!totk_picture_env_build(picture.UTF8String, &penv)) {
-            fprintf(stderr, "[totk] settings: picture mode \"%s\" is not a pane value; using %s\n",
-                    picture.UTF8String ?: "", totk_picture_mode_default());
-            picture = [NSString stringWithUTF8String:totk_picture_mode_default()];
-            totk_picture_env_build(picture.UTF8String, &penv);
-        }
-        setenv("TOTK_IOS_DRAWABLE_H", penv.drawable, 1);
-        setenv("TOTK_MFX_OUTPUT", penv.output_upscale, 1);
-        if (penv.scene_upscale) setenv("TOTK_MFX_UPSCALE", penv.scene_upscale, 1);
-        apply_operation_mode(penv.operation);
-        /* Frame rate is one choice: the cap. */
-        NSString *cap = [d stringForKey:@"TOTK_FPS_CAP"];
-        totk_frame_env fenv;
-        if (!totk_frame_env_build(cap.UTF8String, &fenv)) {
-            fprintf(stderr, "[totk] settings: frame cap \"%s\" is not a pane value; using %s\n",
-                    cap.UTF8String ?: "", totk_frame_cap_default());
-            cap = [NSString stringWithUTF8String:totk_frame_cap_default()];
-            [d setObject:cap forKey:@"TOTK_FPS_CAP"];
-            totk_frame_env_build(cap.UTF8String, &fenv);
-        }
-        apply_frame_env(&fenv, 1);
-        /* A stored scene the pane no longer offers would leave the game at a size it cannot name; use the pane's
-           default and say so. A value from devicectl is this launch's input rather than the player's stored choice,
-           so it is left alone (the runtime validates it itself). */
-        NSDictionary *scene_row = pref_row(root, @"TOTK_RENDER_RES");
-        NSArray *scene_values = scene_row[@"Values"] ?: @[];
-        NSString *fallback = scene_row[@"DefaultValue"] ?: @"960x540";
-        NSString *scene_text = [d stringForKey:@"TOTK_RENDER_RES"];
-        if (scene_values.count && (!scene_text || ![scene_values containsObject:scene_text])) {
-            fprintf(stderr, "[totk] settings: scene \"%s\" is not a pane value; using %s\n",
-                    scene_text.UTF8String ?: "", fallback.UTF8String);
-            [d setObject:fallback forKey:@"TOTK_RENDER_RES"];
-            if (!getenv("TOTK_RENDER_RES")) setenv("TOTK_RENDER_RES", fallback.UTF8String, 1);
-        }
-        layer = [NSString stringWithFormat:@"custom (%@, scene %s, %@ fps)", picture, getenv("TOTK_RENDER_RES") ?: "?", cap];
-    } else {
-        /* The presets: the Full HD switch owns the drawable and the scene, the frame row owns the pacing. Their picture
-           is handed over by apply_display_settings when the game starts, after the start screen; here only the frame row
-           goes (overwrite 0) and is checked, and apply_display_settings sets it again. */
-        /* The row's own default, so the pane stays the only place it is written (the literal only covers a pane that
-           lost the row). */
-        NSDictionary *fps_row = pref_row(root, @"TOTK_PHONE_FPS");
-        NSString *preset_fps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: fps_row[@"DefaultValue"] ?: @"60";
-        totk_frame_env pfenv;
-        if (!totk_preset_frame_env_build(preset_fps.UTF8String, &pfenv)) {
-            fprintf(stderr, "[totk] settings: preset frame rate \"%s\" is not a pane value; using 60\n", preset_fps.UTF8String);
-            preset_fps = @"60";
-            totk_preset_frame_env_build(preset_fps.UTF8String, &pfenv);
-        }
-        apply_frame_env(&pfenv, 0);
-        layer = [NSString stringWithFormat:@"presets (%@, %@ fps)",
-                 [d boolForKey:@"TOTK_DOCKED"] ? @"Full HD docked" : @"handheld", preset_fps];
+#ifdef GAME_NS2
+    /* The presets: the Full HD switch owns the drawable and the scene, the frame row owns the pacing. Their picture
+       is handed over by apply_display_settings when the game starts, after the start screen; here only the frame row
+       goes (overwrite 0) and is checked, and apply_display_settings sets it again. */
+    /* The row's own default, so the pane stays the only place it is written (the literal only covers a pane that
+       lost the row). */
+    NSDictionary *fps_row = pref_row(root, @"TOTK_PHONE_FPS");
+    NSString *preset_fps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: fps_row[@"DefaultValue"] ?: @"60";
+    totk_frame_env pfenv;
+    if (!totk_preset_frame_env_build(preset_fps.UTF8String, &pfenv)) {
+        fprintf(stderr, "[totk] settings: preset frame rate \"%s\" is not a pane value; using 60\n", preset_fps.UTF8String);
+        preset_fps = @"60";
+        totk_preset_frame_env_build(preset_fps.UTF8String, &pfenv);
     }
+    apply_frame_env(&pfenv, 0);
+    layer = [NSString stringWithFormat:@"presets (%@, %@ fps)",
+             [d boolForKey:@"TOTK_DOCKED"] ? @"Full HD docked" : @"handheld", preset_fps];
+#else
+    layer = @"picture profile (handed over at game start)";
+#endif
     /* The pane's rows are handed over as they are. Two overlays are their own switches (the runtime reads them
        independently, gfx/nvn/fps_overlay.c); they come through this loop with every other row, so a pane that is
        missing leaves the runtime's own default (on) in place. */

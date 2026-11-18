@@ -28,6 +28,7 @@ int pp_profile_parse(const char *s, pp_profile *out); /* 0 for anything else (ou
 const char *pp_metalfx_key(pp_metalfx m);             /* "off" | "scene" | "screen" */
 int pp_metalfx_parse(const char *s, pp_metalfx *out);
 int pp_scene_parse(const char *s, unsigned *w);       /* "" → 0 (Automática); the six listed sizes → width; else 0 returned */
+const char *pp_scene_key(unsigned w);                 /* the stored form: "" for 0 (or a width not listed), else "<w>x<h>" */
 
 int pp_profile_picture(pp_profile p, pp_picture *out);  /* the fixed values; 0 for PP_CUSTOM (out untouched) */
 unsigned pp_scene_effective(const pp_picture *p);     /* Automática resolved, held at the mode's canvas */

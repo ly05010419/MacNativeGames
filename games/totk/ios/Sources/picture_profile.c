@@ -42,6 +42,11 @@ int pp_scene_parse(const char *s, unsigned *w) {
     return 0;
 }
 
+const char *pp_scene_key(unsigned w) {
+    for (unsigned i = 0; i < sizeof SCENES / sizeof *SCENES; i++) if (SCENES[i].width == w) return SCENES[i].size;
+    return "";
+}
+
 int pp_profile_picture(pp_profile p, pp_picture *out) {
     if (p == PP_CUSTOM) return 0;
     *out = PROFILES[p];

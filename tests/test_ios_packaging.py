@@ -112,7 +112,6 @@ class FullHD(unittest.TestCase):
         # The presets' picture is handed over once, when the game starts (apply_display_settings, after the start
         # screen's pick), and not while the custom layer is on (after PR #433).
         body = re.search(r'static void apply_display_settings\(void\) \{.*?\n}', main, re.S).group(0)
-        self.assertIn('if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;', body)
         self.assertIn('if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);', body)
         self.assertEqual(main.count('totk_preset_env_build('), 1, 'the presets\' picture goes in one place')
         # Both games have the switch (Breath of the Wild's docked scene is its own row, TOTK_BOTW_SCENE), so no
@@ -222,6 +221,53 @@ class PicturePane(unittest.TestCase):
         build = (TOOLS/'build_ipa.py').read_text()
         size = re.search(r"TOTK_RENDER_RES='(\d+x\d+)'", build).group(1)
         self.assertIn(f'{{"{size}", ', (TOOLS.parent/'Sources/picture_profile.c').read_text())
+
+
+class Profiles(unittest.TestCase):
+    """The picture profiles reach the runtime when the game starts (spec "Restrições"): main.m builds the environment
+    from the saved profile, MetalFX and custom combination (picture_settings.m), after a one-time migration of the old
+    rows; Tears of the Kingdom's custom layer is gone. Bananza and Pokopia keep their presets."""
+    def setUp(self):
+        import re
+        self.main = (TOOLS.parent/'Sources/main.m').read_text()
+        self.display = re.search(r'static void apply_display_settings\(void\) \{.*?\n}', self.main, re.S).group(0)
+        self.launch = re.search(r'static void apply_settings\(void\) \{.*?\n}', self.main, re.S).group(0)
+
+    def test_picture_settings_interface(self):
+        header = (TOOLS.parent/'Sources/picture_settings.h').read_text()
+        for decl in ('pp_picture totk_current_picture(pp_profile *profile, pp_metalfx *mfx);', 'BOOL totk_has_custom_picture(void);',
+                     'void totk_choose_profile(pp_profile p);', 'void totk_save_custom_picture(const pp_picture *p);',
+                     'void totk_choose_metalfx(pp_metalfx m);', 'void totk_migrate_picture_rows(void);'):
+            self.assertIn(decl, header)
+
+    def test_the_profile_drives_the_runtime_at_game_start(self):
+        zelda = self.display[self.display.index('#ifndef GAME_NS2'):]
+        self.assertIn('pp_picture pic = totk_current_picture(&profile, &mfx);', zelda)
+        self.assertIn('pp_env_build(&pic, mfx, PP_GAME_BOTW, &env);', zelda)
+        self.assertIn('pp_env_build(&pic, mfx, PP_GAME_TOTK, &env);', zelda)
+        # overwrite 0: a devicectl value still wins; NULL leaves a variable alone
+        self.assertIn('if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);', zelda)
+
+    def test_migration_runs_once_before_the_rows_are_handed_over(self):
+        self.assertLess(self.launch.index('totk_migrate_picture_rows();'), self.launch.index('for (NSString *key in defaults)'))
+        settings = (TOOLS.parent/'Sources/picture_settings.m').read_text()
+        self.assertIn('TOTK_PICTURE_MIGRATED', settings)
+        self.assertIn('pp_migrate(&old, ', settings)
+        self.assertIn('persistentDomainForName', settings, 'only what the player\'s app stored counts, not the pane defaults')
+
+    def test_tears_of_the_kingdoms_custom_layer_is_gone(self):
+        self.assertNotIn('TOTK_CUSTOM_PICTURE', self.main, 'only the migration (picture_settings.m) reads the old switch')
+        self.assertNotIn('totk_key_layer_of', self.main)
+        self.assertNotIn('totk_picture_env_build', self.main)
+
+    def test_the_frame_button_holds_for_the_session(self):
+        # 2026-11-17: the 60/30 button in play does not change the saved profile (Zelda); Bananza / Pokopia save it.
+        pad = (TOOLS.parent/'Sources/touch_pad.m').read_text()
+        body = pad[pad.index('- (void)switchFrameRate {'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('#ifdef GAME_NS2', body)
+        self.assertLess(body.index('#ifdef GAME_NS2'), body.index('forKey:@"TOTK_PHONE_FPS"'))
+        self.assertNotIn('totk_frame_button_key', pad)
 
 
 class StartScreen(unittest.TestCase):
