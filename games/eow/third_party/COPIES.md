@@ -68,3 +68,13 @@ from another game.
 
 Copy newer code from another game explicitly into this folder, record the source commit here, and rebuild and play the
 game again (see `README.md`). Never make the Makefile or a script read another game's folder.
+
+
+## The input stack linked from `shared/` (2026-11-18)
+
+`runtime/gamepad.m`, `gamepad_feedback.m` and the new `gamepad_core.h`, `gamepad_settings.h`, `gamepad_hid_pad.h`,
+`gamepad_mouse.h`, `hid_imu.h`, `switch_left_fallback.h` and `input_file.h` are symlinks into the repository's `shared/`
+folder (shared/README.md). The copies were games/acnh's (above), older versions of games/totk's. This game's own:
+`runtime/gamepad_game.h` (no mouse mode: the mouse belongs to the keyboard layout), `runtime/feedback_game.h` (nothing
+beyond the shared rumble and motion), `runtime/controller_map.h` (no mouse lines), and in `runtime/input.c` the
+`button()` table scripted input uses, the HID answers and the `gpucapture` and `panelshot` commands.

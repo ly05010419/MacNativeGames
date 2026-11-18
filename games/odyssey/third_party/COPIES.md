@@ -76,3 +76,19 @@ and `third_party/d2r`.
 (`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
 Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
 from another game.
+
+
+## The input stack linked from `shared/` (2026-11-18)
+
+`../runtime/gamepad_feedback.m`, `hid_imu.h`, `mouse_look.h`, `switch_left_fallback.h` and the new `gamepad_core.h`,
+`gamepad_settings.h`, `gamepad_hid_pad.h`, `gamepad_mouse.h` and `input_file.h` are symlinks into the repository's
+`shared/` folder (shared/README.md). Except for this game's fixes below, its copies were older versions of games/totk's.
+This game's own parts stay its own: `../runtime/gamepad.m` keeps the two seats (Mario and Cappy), the layout per seat and
+the routing of rumble and motion to Mario's controller, on top of `gamepad_core.h`; `../runtime/gamepad_game.h` has mouse
+mode and the worn-stick `reach` lines (also applied to the generic HID pads, as before); `../runtime/feedback_game.h`
+keeps rumble and motion with the first capable controller (`FEEDBACK_KEEP_FIRST`) and the trigger stubs;
+`../runtime/input.c` keeps its key table, two players and `gpucapture`; `../runtime/controller_map.h` keeps its `reach`
+lines. Odyssey's fixes now in the shared files for every game: a queued motion sample of a controller that no longer
+feeds the fusion is dropped, a Switch HID sensor that does not open leaves motion free for the next controller, rumble
+and motion may belong to two controllers without sharing one HID device, reports of a closed device are ignored, a
+controller that leaves takes its last pulse and its HID stick fallback with it, and its sensors are switched off.

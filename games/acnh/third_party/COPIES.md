@@ -62,3 +62,15 @@ under `game/fps60/` and `Resources/Licenses/`. Default builds use the original
 (`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
 Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
 from another game.
+
+
+## The input stack linked from `shared/` (2026-11-18)
+
+`runtime/gamepad.m`, `gamepad_feedback.m` and the new `gamepad_core.h`, `gamepad_settings.h`, `gamepad_hid_pad.h`,
+`gamepad_mouse.h`, `hid_imu.h`, `switch_left_fallback.h` and `input_file.h` are symlinks into the repository's `shared/`
+folder (shared/README.md). The copies were older versions of games/totk's (from `032a05d`); the shared versions keep this
+game's two fixes: a layout file that does not parse leaves the default layout instead of stopping the game, and a DSU
+pad's buttons never reach the mouse's. This game's own: `runtime/gamepad_game.h` (no mouse mode: the mouse belongs to the
+keyboard layout), `runtime/feedback_game.h` (nothing beyond the shared rumble and motion), `runtime/controller_map.h` (no
+mouse lines), and in `runtime/input.c` the key table, the HID answers and the `gpucapture`, `panelshot` and `fps`
+commands.

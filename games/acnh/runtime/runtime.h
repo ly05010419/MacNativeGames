@@ -173,6 +173,13 @@ void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; s
 void runtime_capture_set_hook(void (*hook)(void));
 void runtime_capture_press(void) __attribute__((weak));   /* gamepad.m (weak: probes that link input.c alone): the capture button pressed once (the input file's "capture") */
 void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
+void runtime_gamepad_switch_left(void *controller, int x, int y);    /* gamepad_feedback.m: a Switch controller's sticks from its HID reports */
+void runtime_gamepad_switch_right(void *controller, int x, int y);
+int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in (controller-background.txt); default off */
+void runtime_gamepad_background_set(int on);    /* main thread: apply and save */
+void runtime_gamepad_focus(int on);             /* Mac window focus, independent of the guest's focus state */
+int runtime_gamepad_game_input(void);   /* any thread: 1 while the game gets the controllers (no capture, nor its release wait) */
+void runtime_gamepad_hid_battery(int left, int percent);   /* runtime/gamepad.m, any thread: a Switch controller's battery read from its HID reports (left: a paired set's left Joy-Con), -1 none */
 /* DSU (cemuhook) motion and input over UDP, as games/totk (runtime/dsu_client.h, included by gamepad.m; the input page's
    DSU rows, runtime/dsu_settings_rows.h). Off by default. */
 int runtime_dsu_motion_active(void);     /* fresh DSU six-axis samples currently own motion, not just an open socket */

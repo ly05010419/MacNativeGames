@@ -218,7 +218,10 @@ class AgentGameWatch(unittest.TestCase):
         for game in GAMES:
             source = (ROOT / f'games/{game}/runtime/input.c').read_text(encoding='utf-8')
             self.assertIn('runtime_slot_activity(1);', source, game)   # user_input()
-            self.assertIn('runtime_slot_activity(0);', source, game)   # every input-file command
+            # every input-file command: the shared reader (shared/runtime/input_file.h) that input.c includes
+            self.assertIn('#include "input_file.h"', source, game)
+            reader = (ROOT / f'games/{game}/runtime/input_file.h').read_text(encoding='utf-8')
+            self.assertIn('runtime_slot_activity(0);', reader, game)
 
     def test_agent_games_close_themselves(self):
         compiler = shutil.which('clang')

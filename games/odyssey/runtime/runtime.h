@@ -163,6 +163,11 @@ void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; s
 void runtime_capture_set_hook(void (*hook)(void));
 void runtime_capture_press(void) __attribute__((weak));   /* gamepad.m (weak: probes that link input.c alone): the capture button pressed once (the input file's "capture") */
 void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
+int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in (controller-background.txt); default off */
+void runtime_gamepad_background_set(int on);    /* main thread: apply and save */
+void runtime_gamepad_focus(int on);             /* Mac window focus, independent of the guest's focus state */
+int runtime_gamepad_game_input(void);   /* any thread: 1 while the game gets the controllers (no capture, nor its release wait) */
+void runtime_gamepad_hid_battery(int left, int percent);   /* runtime/gamepad.m, any thread: a Switch controller's battery read from its HID reports (left: a paired set's left Joy-Con), -1 none */
 /* Forget held buttons and sticks: macOS stops delivering controller events (including releases) while the app is in
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);

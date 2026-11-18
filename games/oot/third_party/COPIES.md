@@ -30,4 +30,15 @@ game's answer to `nn::hid::IsOunceVibrationDeviceMounted` is in the shared file,
 for the Ounce answer, these copies were older versions of games/totk's. `third_party/d2r_gfx` is still the link to
 games/totk's, whose `totk_mfx_up.{m,h}` and `totk_sysload.{c,h}` are now in `shared/` too. Still this game's own:
 `runtime/time_host.c` (the POSIX clock providers for the SDK's `clock_gettime` are not proven in the other games yet,
-whose SDKs reference the same functions), `controller_map.h`, `keyboard_map.h` and `third_party/d2r`.
+whose SDKs reference the same functions), `keyboard_map.h` and `third_party/d2r` (`controller_map.h` is shared since, below).
+
+
+Input stack (2026-11-18): `runtime/gamepad.m`, `gamepad_feedback.m`, `controller_map.h`, `hid_imu.h`, `mouse_look.h`,
+`switch_left_fallback.h`, the new `gamepad_core.h`, `gamepad_settings.h`, `gamepad_hid_pad.h`, `gamepad_mouse.h` and
+`input_file.h`, and `dsu_client.h` and `dsu_protocol.h` (the shared core reads DSU; this game has no DSU rows, so it stays
+off) are symlinks into the repository's `shared/` folder (shared/README.md). The copies were games/totk's but for this
+game's start of GameController off the main thread (a wedged gamecontrollerd no longer hangs the start), now in the
+shared core for every game. This game's own: `runtime/gamepad_game.h` (mouse mode, the pointing while L is held that the
+copy had, zeldaVR's linkage, and the input trace `OOT_INPUT_TRACE`), `runtime/feedback_game.h` (no bow triggers: the
+settings row says "Not in this version", as before), and in `runtime/input.c` the key table, the HID answers, the
+`settings`, `ashot`, `ashotn` and stereo B2 commands and its flags (`input_trace`, the resolution rows, `fps_lock`).
