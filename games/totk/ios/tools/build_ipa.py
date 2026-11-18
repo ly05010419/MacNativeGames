@@ -59,28 +59,33 @@ def botw_pane(root):
     specs[at+1:at+1]=custom
     return root
 
-# The custom scene sizes game_patches_botw.c phone_scene_custom takes: at most the 1280x720 handheld canvas (above it the
-# game cannot make its heaps), for docked and handheld play alike.
-BOTW_SCENES=['1280x720','960x540','800x450','640x360']
+# The custom scene sizes game_patches_botw.c phone_scene_custom takes, up to the 1920x1080 docked canvas for faster iPads
+# and iPhones (user 2026-11-17); handheld holds a bigger one at its 1280x720 canvas (above it the game cannot make its heaps).
+BOTW_SCENES=['1920x1080','1600x900','1280x720','960x540','800x450','640x360']
 
 def botw_custom_rows(specs):
     """Breath of the Wild's custom picture (user 2026-11-17): the scene resolution, MetalFX's scene upscale (scene into the
-    canvas only; no output stage) and edge smoothing (MetalFX TAA), unlocked by "Use custom settings". Tears of the
-    Kingdom's rows for the same keys, unmarked, with this game's sizes and texts. The switch does not replace the presets
+    canvas) and edge smoothing (MetalFX TAA), unlocked by "Use custom settings". Tears of the
+    Kingdom's rows for the same keys, unmarked, with this game's sizes and texts, and MetalFX to the screen (TOTK_MFX_OUTPUT:
+    the canvas enlarged to the panel's own pixels, off by default; user 2026-11-17). The switch does not replace the presets
     here (settings_map.c totk_custom_layer_on): Breath of the Wild has no picture-mode or frame-cap rows, so Full HD, the
-    docked scene and the frame rate stay, and the three keys are handed over only while it is on (TOTK_KEY_EXTRA)."""
+    docked scene and the frame rate stay, and the four MetalFX and scene keys are handed over only while it is on (TOTK_KEY_EXTRA)."""
     row={s['Key']:dict(s) for s in specs if s.get('Key') in ('TOTK_CUSTOM_PICTURE','TOTK_RENDER_RES','TOTK_MFX_UPSCALE','TOTK_TAA')}
     for r in row.values(): r.pop('TOTKApp',None)
     scene=row['TOTK_RENDER_RES']
     titles=dict(zip(scene['Values'],scene['Titles']))
-    titles['1280x720']='1280x720（最清晰，畫布大小）· 1280x720 (sharpest, the canvas size)'
+    titles['1920x1080']='1920x1080（僅底座，最清晰）· 1920x1080 (docked only, sharpest)'
+    titles['1600x900']='1600x900（僅底座）· 1600x900 (docked only)'
+    titles['1280x720']='1280x720（掌機畫布大小）· 1280x720 (the handheld canvas)'
     scene['Values']=BOTW_SCENES; scene['Titles']=[titles[v] for v in BOTW_SCENES]
-    scene['FooterText']=('只影響 3D 世界；GPU 開銷約與像素數成正比：越低越涼、越省電，畫面也越軟。底座和掌機都用這個大小（取代底座畫面的原始／高清），'
-                         '最高 1280×720，也就是掌機畫布的大小。重新啟動遊戲後生效 · '
-                         'affects the 3D world only; GPU cost is roughly proportional to the pixels: lower runs cooler and uses less '
-                         'battery, with a softer picture. Docked and handheld play both use this size (instead of the docked scene\'s '
-                         'original / HD), at most 1280×720, the handheld canvas. Takes effect after relaunching the game')
+    scene['FooterText']=('只影響 3D 世界；越低越涼、越省電，畫面也越軟。底座和掌機都用這個大小（取代底座畫面的原始／高清）；'
+                         '掌機最多 1280×720（它的畫布大小），所以 1600×900 和 1920×1080 只在底座生效。重新啟動遊戲後生效 · '
+                         'affects the 3D world only: lower runs cooler and uses less battery, with a softer picture. Docked and '
+                         'handheld play both use this size (instead of the docked scene\'s original / HD); handheld plays at most '
+                         '1280×720, its canvas, so 1600×900 and 1920×1080 are docked sizes. Takes effect after relaunching the game')
     row['TOTK_MFX_UPSCALE']['Title']='MetalFX 場景超分 · MetalFX scene upscaling'
+    output={'Type':'PSToggleSwitchSpecifier','Key':'TOTK_MFX_OUTPUT','TOTKPhone':True,'Title':'MetalFX 輸出到螢幕 · MetalFX to the screen',
+            'DefaultValue':False}   # settings_map.c totk_preset_metalfx_output
     return [{'Type':'PSGroupSpecifier','Title':'自訂畫面 · Custom picture',
              'FooterText':('開啟：下面的場景解析度、MetalFX 場景超分與邊緣平滑生效，Full HD、底座畫面和幀率照常使用。關閉：這三項都不生效。重新啟動遊戲後生效 · '
                            'on: the scene resolution, MetalFX scene upscaling and edge smoothing below apply, and Full HD, the docked '
@@ -88,12 +93,14 @@ def botw_custom_rows(specs):
             row['TOTK_CUSTOM_PICTURE'],scene,
             {'Type':'PSGroupSpecifier','Title':'MetalFX',
              'FooterText':('場景超分：MetalFX 取代遊戲自己把場景放大到畫布（掌機 1280×720、底座 1920×1080）的那一步，更清晰；場景和畫布一樣大時不起作用。'
-                           '邊緣平滑：MetalFX 時間抗鋸齒，邊緣更穩，可能有輕微拖影。兩項只在「使用自訂設定」開啟時生效。重新啟動遊戲後生效 · '
+                           '輸出到螢幕：MetalFX 再把畫布放大到螢幕的原生像素，並自動打開場景超分；最清晰，也最吃 GPU。'
+                           '邊緣平滑：MetalFX 時間抗鋸齒，邊緣更穩，可能有輕微拖影。這些只在「使用自訂設定」開啟時生效。重新啟動遊戲後生效 · '
                            'scene upscaling: MetalFX replaces the game\'s own upscale of the scene into the canvas (1280×720 handheld, '
-                           '1920×1080 docked), for a sharper picture; no effect when the scene is the canvas\'s size. Edge smoothing: '
-                           'MetalFX temporal anti-aliasing, steadier edges, slight ghosting possible. Both apply only while "Use custom '
-                           'settings" is on. Takes effect after relaunching the game')},
-            row['TOTK_MFX_UPSCALE'],row['TOTK_TAA']]
+                           '1920×1080 docked), for a sharper picture; no effect when the scene is the canvas\'s size. To the screen: '
+                           'MetalFX also enlarges the canvas to the screen\'s own pixels and turns scene upscaling on; the sharpest, '
+                           'and the heaviest on the GPU. Edge smoothing: MetalFX temporal anti-aliasing, steadier edges, slight '
+                           'ghosting possible. These apply only while "Use custom settings" is on. Takes effect after relaunching the game')},
+            row['TOTK_MFX_UPSCALE'],output,row['TOTK_TAA']]
 
 def bananza_pane(root):
     """Bananza's own engine size; TOTK/BotW's docked presets describe other engines."""

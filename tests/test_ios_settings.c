@@ -134,6 +134,23 @@ int main(int argc, char **argv) {
        the uncapped path and its 30 holds, exactly what the runtime did before the pane had a custom layer. */
     preset(1, "docked", "1080", "1600x900", "0");
     preset(0, "handheld", NULL, NULL, "0");
+    /* Breath of the Wild's "MetalFX to the screen" on top of a preset: the output stage only runs into a drawable bigger
+       than the canvas and only while the scene stage is on, so the row must take the panel's pixels and turn both stages
+       on, or it does nothing; the operation mode and the scene stay the player's picture. */
+    for (int docked = 0; docked < 2; docked++) {
+        totk_preset_env e;
+        totk_preset_env_build(docked, &e);
+        const char *operation = e.operation, *scene = e.scene;
+        if (e.scene_upscale) { failures++; fprintf(stderr, "preset %d: the scene stage stays the pane's (NULL)\n", docked); }
+        totk_preset_metalfx_output(&e);
+        if (wants(e.drawable, "0") || wants(e.output_upscale, "1") || wants(e.scene_upscale, "1") ||
+            e.operation != operation || e.scene != scene) {
+            failures++;
+            fprintf(stderr, "preset %d + MetalFX to the screen: drawable %s, output %s, scene stage %s; want 0/1/1, the preset's operation and scene\n",
+                    docked, e.drawable ? e.drawable : "(unset)", e.output_upscale ? e.output_upscale : "(unset)",
+                    e.scene_upscale ? e.scene_upscale : "(unset)");
+        }
+    }
     preset_frame("30", NULL, "30");
     preset_frame("60", NULL, NULL);
     totk_frame_env pf = {"keep", "keep"};

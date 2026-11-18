@@ -48,13 +48,18 @@ const char *totk_docked_scene(const char *choice) {
     return choice && !strcmp(choice, "1920x1080") ? "1920x1080" : "1600x900";
 }
 int totk_preset_env_build(int docked, totk_preset_env *out) {
-    *out = docked ? (totk_preset_env){"docked", "1080", "1600x900", "0"}
-                  : (totk_preset_env){"handheld", NULL, NULL, "0"};
+    *out = docked ? (totk_preset_env){"docked", "1080", "1600x900", "0", NULL}
+                  : (totk_preset_env){"handheld", NULL, NULL, "0", NULL};
 #ifdef GAME_BOTW
     out->scene = NULL;
 #endif
     return 1;
 }
+
+/* MetalFX's output stage only runs into a drawable bigger than the canvas and only while the scene stage is on
+   (nvn_mtl.m output_upscale), so the row takes the panel's own pixels and turns both stages on, as the custom layer's
+   mfx entry does for Tears of the Kingdom; without them the row would do nothing (user 2026-11-17). */
+void totk_preset_metalfx_output(totk_preset_env *e) { e->drawable = "0"; e->output_upscale = "1"; e->scene_upscale = "1"; }
 
 /* The preset row's "60" is NOT the custom cap's "60": the preset leaves the pacing to the uncapped path (ceiling: the
    display's rate), while the custom 60 paces the display link at 60. So the preset cannot reuse totk_frame_env_build,
@@ -78,10 +83,12 @@ static const struct { const char *key; totk_key_layer layer; } LAYERS[] = {
     {"TOTK_FPS_CAP",          TOTK_KEY_CUSTOM},
 #ifdef GAME_BOTW
     /* Breath of the Wild's custom switch (build_ipa.py botw_pane): the scene size, MetalFX's scene upscale and edge
-       smoothing, all off until it is on. Tears of the Kingdom hands its MetalFX rows over in both layers. */
+       smoothing (and MetalFX to the screen), all off until it is on. Tears of the Kingdom hands its MetalFX rows over in
+       both layers. */
     {"TOTK_RENDER_RES",       TOTK_KEY_EXTRA},
     {"TOTK_MFX_UPSCALE",      TOTK_KEY_EXTRA},
     {"TOTK_TAA",              TOTK_KEY_EXTRA},
+    {"TOTK_MFX_OUTPUT",       TOTK_KEY_EXTRA},   /* MetalFX to the screen (totk_preset_metalfx_output) */
 #else
     {"TOTK_RENDER_RES",       TOTK_KEY_CUSTOM},
 #endif

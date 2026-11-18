@@ -172,19 +172,19 @@ class FullHD(unittest.TestCase):
         specs = root['PreferenceSpecifiers']
         keys = [s.get('Key') for s in specs]
         at = keys.index('TOTK_BOTW_SCENE')
-        self.assertEqual(keys[at+1:at+7], [None, 'TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', None, 'TOTK_MFX_UPSCALE', 'TOTK_TAA'])
+        self.assertEqual(keys[at+1:at+8], [None, 'TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', None, 'TOTK_MFX_UPSCALE', 'TOTK_MFX_OUTPUT', 'TOTK_TAA'])
         self.assertNotIn('TOTK_ASPECT', keys)
         for key in ('TOTK_IOS_PICTURE_MODE', 'TOTK_FPS_CAP', 'TOTK_DOCKED_SCENE'):
             self.assertNotIn(key, keys, 'Breath of the Wild has its own rows for these')
         rows = {s['Key']: s for s in specs if s.get('Key')}
-        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_MFX_UPSCALE', 'TOTK_MFX_OUTPUT', 'TOTK_TAA'):
             self.assertIs(rows[key]['DefaultValue'], False, f'{key}: off until the player turns it on')
-        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+        for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_MFX_OUTPUT', 'TOTK_TAA'):
             self.assertNotIn('TOTKApp', rows[key])
             self.assertTrue(rows[key]['TOTKPhone'])
         scene = rows['TOTK_RENDER_RES']
         runtime = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
-        sizes = re.search(r'static unsigned phone_scene_custom\(void\) \{.*?sizes\[\] = \{(.*?)\};', runtime, re.S).group(1)
+        sizes = re.search(r'static unsigned phone_scene_custom\(unsigned canvas_w\) \{.*?sizes\[\] = \{(.*?)\};', runtime, re.S).group(1)
         self.assertEqual(scene['Values'], re.findall(r'\{"(\d+x\d+)", \d+\}', sizes))
         self.assertIn(scene['DefaultValue'], scene['Values'])
         self.assertEqual(len(scene['Titles']), len(scene['Values']))
@@ -193,6 +193,15 @@ class FullHD(unittest.TestCase):
         for key in ('TOTK_CUSTOM_PICTURE', 'TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
             self.assertEqual(totk[key]['TOTKApp'], 'totk')
         self.assertIn('1600x900', totk['TOTK_RENDER_RES']['Values'])
+        self.assertNotIn('TOTK_MFX_OUTPUT', totk, 'Tears of the Kingdom reaches the screen through its picture mode')
+        # MetalFX to the screen (user 2026-11-17): only with the custom switch on, and in prenv before the preset hands
+        # its drawable over (first writer wins), with the scene stage forced on (the output stage needs it).
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        body = re.search(r'static void apply_display_settings\(void\) \{.*?\n}', main, re.S).group(0)
+        switch = 'if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"] && [d boolForKey:@"TOTK_MFX_OUTPUT"]) totk_preset_metalfx_output(&prenv);'
+        self.assertIn(switch, body)
+        self.assertLess(body.index(switch), body.index('if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);'))
+        self.assertIn('if (prenv.scene_upscale) setenv("TOTK_MFX_UPSCALE", prenv.scene_upscale, 1);', body)
 
     def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
         """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it

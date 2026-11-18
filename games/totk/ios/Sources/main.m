@@ -413,10 +413,13 @@ static void apply_display_settings(void) {
     if (totk_custom_layer_on([d boolForKey:@"TOTK_CUSTOM_PICTURE"])) return;
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
+    /* Breath of the Wild's "MetalFX to the screen" row, unlocked by "Use custom settings" (build_ipa.py botw_pane). */
+    if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"] && [d boolForKey:@"TOTK_MFX_OUTPUT"]) totk_preset_metalfx_output(&prenv);
     if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);
     if (prenv.scene)   // docked Tears of the Kingdom: the Switch's 1600x900 or HD 1920x1080 (the pane's TOTK_DOCKED_SCENE row)
         setenv("TOTK_RENDER_RES", totk_docked_scene([d stringForKey:@"TOTK_DOCKED_SCENE"].UTF8String), 0);
     setenv("TOTK_MFX_OUTPUT", prenv.output_upscale, 0);
+    if (prenv.scene_upscale) setenv("TOTK_MFX_UPSCALE", prenv.scene_upscale, 1);   // the output stage needs it, whatever its own row says
     apply_operation_mode(prenv.operation);
     /* Breath of the Wild's docked scene (its pane's TOTK_BOTW_SCENE row; the start screen's 1080p original / HD), set
        again here as the frame rate is, so the start screen's pick counts. Tears of the Kingdom's is TOTK_DOCKED_SCENE, above. */

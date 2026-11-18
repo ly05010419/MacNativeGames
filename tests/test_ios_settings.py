@@ -110,7 +110,7 @@ class IOSSettings(unittest.TestCase):
         # smoothing, and nothing else. Its presets (Full HD, the docked scene, 30 / 60) stay in force with it on: the
         # game has no picture-mode or frame-cap rows, so replacing the presets would leave it without a picture.
         executable = self._helper('-DGAME_BOTW=1')
-        for key in ('TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA'):
+        for key in ('TOTK_RENDER_RES', 'TOTK_MFX_UPSCALE', 'TOTK_TAA', 'TOTK_MFX_OUTPUT'):
             with self.subTest(key=key):
                 self.assertEqual(self._handed(executable, key, 0), (False, False), 'off until the switch is on')
                 self.assertEqual(self._handed(executable, key, 1), (True, False))
