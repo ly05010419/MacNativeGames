@@ -39,6 +39,7 @@ static int g_aspect_named;                /* TOTK_ASPECT gave it */
 static atomic_int g_aspect_step;          /* ASPECT_STEP_GAME or _WIDE, _FIT (the phone: the screen's shape; the Mac: Auto) */
 static _Atomic(uint32_t) g_aspect_view;   /* the drawable's width / height (frontend.m, frontend_ios.m), float bits */
 static atomic_int g_aspect_full;          /* Mac: the window is in full screen (frontend.m); Auto follows the screen only then */
+static atomic_int g_aspect_vr_hold;       /* VR set the slot (runtime_aspect_vr): Auto's screen changes leave it alone */
 
 /* TOTK_ASPECT as a ratio (0 when unset or "0"). A malformed value stops the start. */
 static inline double aspect_requested(void) {
@@ -86,7 +87,7 @@ static void aspect_apply(void) {
 void runtime_aspect_view(double w, double h) {
     if (!(w > 0 && h > 0)) return;
     atomic_store(&g_aspect_view, aspect_float_bits((float)(w / h)));
-    if (atomic_load(&g_aspect_step) == ASPECT_STEP_FIT) aspect_apply();
+    if (atomic_load(&g_aspect_step) == ASPECT_STEP_FIT && !atomic_load(&g_aspect_vr_hold)) aspect_apply();
 }
 
 /* VR (third_party/d2r_gfx/gfx/nvn/totk_vr.m, stage 2): the game renders the headset's field of view. Puts ratio a and
@@ -94,6 +95,7 @@ void runtime_aspect_view(double w, double h) {
    gives the panel's choice back. Needs the Vert+ stubs, which VR turns on (game_patches_v143.c). 0 without them. */
 int runtime_aspect_vr(float a, float k) {
     if (!g_aspect_slot || !g_aspect_vert) return 0;
+    atomic_store(&g_aspect_vr_hold, a > 0);
     if (!(a > 0)) { aspect_apply(); return 1; }
     atomic_store(g_aspect_slot, aspect_float_bits(a));
     atomic_store(g_aspect_vert, aspect_float_bits(k));
@@ -108,7 +110,8 @@ int runtime_aspect_vr(float a, float k) {
    (TOTK_ASPECT=0: 16:9). frontend.m reports full screen (windowDidEnter/ExitFullScreen and each drawable change); the
    settings panel's Auto choice, saved as "auto" in graphics-aspect.txt, comes back to it. */
 void runtime_aspect_fullscreen(int on) {
-    if (atomic_exchange(&g_aspect_full, on != 0) != (on != 0) && atomic_load(&g_aspect_step) == ASPECT_STEP_FIT) aspect_apply();
+    if (atomic_exchange(&g_aspect_full, on != 0) != (on != 0) && atomic_load(&g_aspect_step) == ASPECT_STEP_FIT &&
+        !atomic_load(&g_aspect_vr_hold)) aspect_apply();
 }
 int runtime_aspect_set_auto(void) {
 #if TARGET_OS_IPHONE
