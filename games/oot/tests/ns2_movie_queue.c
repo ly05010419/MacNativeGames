@@ -16,6 +16,13 @@ mav1 *mav1_new(void) { return (mav1 *)calloc(1, 1); }
 void mav1_free(mav1 *a) { free(a); }
 void mav1_reset(mav1 *a) { (void)a; }
 const char *mav1_backend(const mav1 *a) { (void)a; return "test"; }
+/* The working-ahead path (dav1d without hardware AV1) is tested against the real decoder by tests/av1_pipeline.c. */
+int mav1_pipelined(const mav1 *a) { (void)a; return 0; }
+int mav1_pipeline_depth(void) { return 1; }
+int mav1_send(mav1 *a, const uint8_t *data, size_t n, int64_t ts) { (void)a; (void)data; (void)n; (void)ts; return -1; }
+void mav1_drain(mav1 *a) { (void)a; }
+int mav1_drained(const mav1 *a) { (void)a; return 1; }
+int mav1_receive(mav1 *a, mav1_picture *out, int64_t *ts) { (void)a; (void)out; (void)ts; return 0; }
 int mav1_decode(mav1 *a, const uint8_t *bytes, size_t n, mav1_picture *out) {
     (void)a; (void)bytes; (void)n; (void)out; abort();
 }
