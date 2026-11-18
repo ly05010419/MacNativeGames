@@ -6,15 +6,21 @@ clones, so they take no extra space). Saves, the shader cache and the log go to 
 (scripts/odyssey_app_launcher.c). Both stay in the ignored Odyssey_build folder; the app contains game data from the
 user's own dump and must not be shared. On first packaging "Odyssey Data" is seeded with the newest local save
 (the test app's profile or a baseline) and the warmed shader cache; existing data is never replaced.
+
+The steps every port's packager takes the same way (clones, the launcher, the icon, Info.plist, the signature, staging
+beside the app, Launch Services) are tools/port_app/bundle.py; what the app carries and its data are this file's.
 """
 from pathlib import Path
 import os
-import plistlib
 import shutil
 import subprocess
 import sys
 
 GAME = Path(__file__).resolve().parents[1]
+REPO = GAME.parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from tools.port_app import bundle  # noqa: E402
 BUILD = Path(os.environ.get("ODYSSEY_WORK", GAME / "Odyssey_build")).resolve()   # ODYSSEY_WORK: another build folder (scripts/build_odyssey.py)
 APP = Path(os.environ.get("ODYSSEY_APP", BUILD / "Odyssey.app")).resolve()   # ODYSSEY_APP: MNG Launcher's output (games/odyssey/build.py)
 BUNDLE_ID = "org.macnativegames.odyssey"   # the other ports' form; tools/builder_jobs/installed.py finds the app by it
@@ -27,10 +33,7 @@ CHAIN = "rt-totk-native-v4-unverified"
 
 
 def clone(source: Path, target: Path):
-    """APFS copy-on-write clone (no extra space); plain copy elsewhere."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if subprocess.run(["cp", "-c", str(source), str(target)]).returncode != 0:
-        shutil.copy2(source, target)
+    bundle.clone_file(source, target)
 
 
 def save_time(profile: Path) -> float:
@@ -89,16 +92,9 @@ def package_warm_lists(macos: Path, game: Path):
         os.symlink("../Resources/game/build/pso_title.tsv", macos / "pso_title.tsv")
 
 
-def main():
-    native = BUILD / "build/odyssey-native"
-    for need in (native, ICON, BUILD / "build/shader-service/totk_xlate", BUILD / "build/spirv-cross/spirv-cross",
-                 BUILD / "extracted/local/romfs/romfs.bin", BUILD / "extracted/firmware/shared-fonts"):
-        if not need.exists():
-            raise SystemExit(f"missing {need}; build the Odyssey Native target and prepare the local data first")
-    if APP.exists():
-        shutil.rmtree(APP)
-    APP.parent.mkdir(parents=True, exist_ok=True)
-    contents = APP / "Contents"; macos = contents / "MacOS"; resources = contents / "Resources"; game = resources / "game"
+def assemble(app: Path, native: Path):
+    """The bundle at app (the staging folder beside APP), signed."""
+    contents = app / "Contents"; macos = contents / "MacOS"; resources = contents / "Resources"; game = resources / "game"
     macos.mkdir(parents=True)
     clone(native, game / "build/odyssey-native")
     clone(BUILD / "build/shader-service/totk_xlate", game / "build/shader-service/totk_xlate")
@@ -130,21 +126,19 @@ def main():
             clone(lib, game / "build/shader-libs" / lib.name)
         os.symlink("../Resources/game/build/shader-libs", macos / "shader-libs")
     # The whole-game shader seed (scripts/prepare_odyssey_shader_seed.py): the runtime imports build/shader-seed beside its
-    # real executable (totk_shader_rt.m root_dir, symlinks resolved) into "Odyssey Data"'s cache on the first launch,
+    # real executable (totk_shader_rt.m root_dir, symlinks resolved) into the data folder's cache on the first launch,
     # checking every file against seed-manifest.json; later launches only compare the receipt.
     seed = BUILD / "build/shader-seed"
     if (seed / "seed-manifest.json").is_file():
-        subprocess.run(["cp", "-cR", str(seed), str(game / "build/shader-seed")], check=True)
+        bundle.clone_tree(seed, game / "build/shader-seed")
     # Export Odyssey's shared pipeline recipes, as the TOTK/BOTW packager does. The shader seed carries libraries,
     # not render pipelines: without these rows the first scene compiled hundreds of pipelines on the submit thread.
     # Pipelines the title screen needs (Applier session, recorded 22 October): the first frame waits only for this list
     # (nvn_mtl.m warm_start reads it beside the shader map, i.e. the executable path, Contents/MacOS).
     package_warm_lists(macos, game)
     # The launcher: no window of its own, every setting is in the game's settings panel (key 1).
-    subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(macos / "Odyssey"),
-                    str(GAME / "scripts/odyssey_app_launcher.c")], check=True)
-    subprocess.run(["sips", "-s", "format", "icns", str(ICON), "--out", str(resources / "OdysseyIcon.icns")],
-                   check=True, stdout=subprocess.DEVNULL)
+    bundle.compile_launcher(GAME / "scripts/odyssey_app_launcher.c", macos / "Odyssey", frameworks=("CoreFoundation",))
+    icon = bundle.icon(ICON, resources, "OdysseyIcon")
     version = ICON.with_name("game-version.txt")   # extract_app_icon.py: the update's version, for the window title
     if version.is_file():
         shutil.copyfile(version, resources / "game-version.txt")
@@ -154,23 +148,27 @@ def main():
         dirty = subprocess.run(["git", "-C", str(GAME), "status", "--porcelain", "--", "."],
                                capture_output=True, text=True)
         (resources / "source-commit.txt").write_text(revision.stdout.strip() + ("+local" if dirty.stdout else "") + "\n")
-    info = {
-        "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": "Odyssey", "CFBundleName": "Odyssey",
-        "CFBundleExecutable": "Odyssey", "CFBundleIconFile": "OdysseyIcon",
-        "CFBundleIdentifier": BUNDLE_ID, "CFBundleInfoDictionaryVersion": "6.0",
-        "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "0.2", "CFBundleVersion": "2",
-        "LSApplicationCategoryType": "public.app-category.games", "LSMinimumSystemVersion": "26.0",
-        "NSHighResolutionCapable": True,
-    }
+    info = bundle.bundle_info(executable="Odyssey", bundle_id=BUNDLE_ID, name="Odyssey", display_name="Odyssey",
+                              version="0.2", build="2", minimum_system="26.0", icon_file=icon)
     if os.environ.get("ODYSSEY_RECORD_WORK"):   # what made the app, for MNG Launcher's update (build_app.record_update_source)
-        info.update(MNGWorkFolder=os.environ["ODYSSEY_RECORD_WORK"], MNGSourceRepo=os.environ.get("ODYSSEY_RECORD_REPO", ""),
-                    MNGBuildPython=os.environ.get("ODYSSEY_RECORD_PYTHON", sys.executable))
-    with (contents / "Info.plist").open("wb") as file:
-        plistlib.dump(info, file)
-    # Ad hoc, with the bundle ID as the designated requirement (build_app.sign_app): macOS keeps the player's answer to
-    # "files on a removable volume" by that requirement; the ad hoc default (the code hash) asked again after every build.
-    subprocess.run(["codesign", "--force", "--sign", "-", f'-r=designated => identifier "{BUNDLE_ID}"', str(APP)],
-                   check=True, stdout=subprocess.DEVNULL)
+        info = {**info, **bundle.update_record(os.environ["ODYSSEY_RECORD_WORK"], os.environ.get("ODYSSEY_RECORD_REPO", ""),
+                                               os.environ.get("ODYSSEY_RECORD_PYTHON", sys.executable))}
+    bundle.write_info(app, info)
+    # Not deep: Odyssey's app has always been signed without --deep.
+    bundle.sign(app, BUNDLE_ID, deep=False)
+    bundle.verify_signature(app)
+
+
+def main():
+    native = BUILD / "build/odyssey-native"
+    for need in (native, ICON, BUILD / "build/shader-service/totk_xlate", BUILD / "build/spirv-cross/spirv-cross",
+                 BUILD / "extracted/local/romfs/romfs.bin", BUILD / "extracted/firmware/shared-fonts"):
+        if not need.exists():
+            raise SystemExit(f"missing {need}; build the Odyssey Native target and prepare the local data first")
+    APP.parent.mkdir(parents=True, exist_ok=True)
+    with bundle.staged(APP) as app:   # assembled beside APP, which it replaces only when complete
+        assemble(app, native)
+    bundle.register(APP)
     seed_data()
     print(APP)
 

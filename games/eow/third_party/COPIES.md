@@ -42,6 +42,16 @@ replaced by the shared corner box and the settings panel; this game's rows, rest
 | `third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` | `games/acnh/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` (same; the identity part of `games/odyssey`'s) | `GAME_INBOX_ID` `eow`; no shader upload |
 | The key bindings, mouse buttons, key 1 and the screenshot key in `runtime/input.c`; the panel's wiring in `runtime/frontend.m`; the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m` `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`), the long-frame lines (`hitch_overlay_note`, `hitch_overlay_publish`) and the full-information-only shader and load lines | `games/acnh` (same) | The captured game frame is turned over for this game's lower-left origin (as `dm_gfx_shot_at` does); the board counts the game's presents (what this FPS box counts); keys 2-4 removed (none did anything here) |
 
+
+## The app launcher and the build plumbing (2026-11-18)
+
+`app/launcher.c` keeps this game's own launcher code (the README's play settings, the runtime started by its real path, the game data check); the plumbing every port's launcher shares is
+`app/app_launcher.h`, a symlink to the repository's `shared/app/app_launcher.h` (shared/README.md). `build.py` and
+`scripts/package_app.py` keep this game's steps, checks and contents and import the shared Python from `tools/port_app/`
+(`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
+Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
+from another game.
+
 ## Updating
 
 Copy newer code from another game explicitly into this folder, record the source commit here, and rebuild and play the

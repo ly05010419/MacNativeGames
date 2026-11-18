@@ -83,8 +83,10 @@ class EchoesPanelSources(unittest.TestCase):
 
     def test_launcher_names_the_board_folder(self):
         launcher = (GAME / "app/launcher.c").read_text()
-        self.assertIn('setenv("TOTK_BOARD_DIR", data, 0);', launcher)
-        self.assertNotIn("TOTK_SHADER_CONTRIB", launcher)   # no contribution file: no 着色器贡献 page
+        shared = (GAME / "app/app_launcher.h").read_text()   # the link to shared/app/app_launcher.h
+        self.assertIn("launcher_common_env(", launcher)
+        self.assertIn('setenv("TOTK_BOARD_DIR", d->data, 0);', shared)
+        self.assertNotIn("TOTK_SHADER_CONTRIB", launcher + shared)   # no contribution file: no 着色器贡献 page
 
     def test_graphics_layer_feeds_the_box_board_and_screenshot(self):
         mtl, hle = (GFX / "nvn_mtl.m").read_text(), (GFX / "hle_nvn.c").read_text()

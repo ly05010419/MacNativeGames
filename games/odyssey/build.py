@@ -11,13 +11,11 @@ a Python of the work folder's (<work>/venv: capstone, cryptography, lz4), the fo
 scripts/package_native_app.py write the app to -o and record the work folder in it (MNGWorkFolder).
 
 The update an installed app gets without game files (update_runtime.py) is blocker(app, work) and update(app, work):
-the loader tables checked against the pinned hashes again, the runtime compiled again and the app packaged again."""
-import argparse
-import hashlib
-import json
-import os
+the loader tables checked against the pinned hashes again, the runtime compiled again and the app packaged again.
+What every port's build.py does the same way (the venv, the run inside it, the arguments, the work folder, the update's
+entry) is tools/port_app/adapter.py; this file keeps what is Odyssey's."""
 from pathlib import Path
-import plistlib
+import os
 import shutil
 import subprocess
 import sys
@@ -28,37 +26,19 @@ APP_NAME = 'Super Mario Odyssey'       # tools/builder_jobs/repo.py GAMES['odyss
 BUNDLE_ID = 'org.macnativegames.odyssey'   # scripts/package_native_app.py
 PACKAGES = ('capstone==5.0.9', 'cryptography==50.0.2', 'lz4==4.4.5')   # the README's three, at the pins the other ports use
 MODULES = ('main', 'sdk', 'subsdk0')   # scripts/build_odyssey.py MODULES
+STOPPED = 'the build stopped (its message above says why)'
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-
-
-def say(message):
-    print(message, flush=True)
+from tools.port_app import adapter  # noqa: E402  MNG Launcher's side every port's build.py shares
+from tools.port_app.adapter import say  # noqa: E402
 
 
 def python_for(work):
-    venv = work / 'venv'
-    python, marker = venv / 'bin/python', venv / '.packages'
-    if not python.is_file() or not marker.is_file() or marker.read_text().split() != list(PACKAGES):
-        base = shutil.which('python3.14') or sys.executable
-        subprocess.run([base, '-m', 'venv', str(venv)], check=True)
-        subprocess.run([str(python), '-m', 'pip', 'install', '-q', '--disable-pip-version-check', *PACKAGES], check=True)
-        marker.write_text('\n'.join(PACKAGES) + '\n')
-    return python
-
-
-def in_venv(work):
-    return Path(sys.prefix).resolve() == (work / 'venv').resolve()
-
-
-def reexec(python, argv, *extra):
-    if subprocess.run([str(python), str(Path(__file__).resolve()), *extra, *map(str, argv)]).returncode:
-        raise ValueError('the build stopped (its message above says why)')
+    return adapter.python_for(work, packages=PACKAGES)
 
 
 def checked_work(work, out):
-    if work == REPO or REPO in work.parents or work in REPO.parents or work == out or out in work.parents:
-        raise ValueError('the work folder must be outside the checkout and outside the app')
+    adapter.checked_work(work, out, REPO)
     if ' ' in os.path.relpath(work, GAME):
         raise ValueError(f'make cannot build into a folder whose path has a space: {work}')
     return work
@@ -84,40 +64,23 @@ def copy_fonts(given, work):
 
 
 def build(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('game', type=Path, help='a card image or NSP with update 1.3.0 or 1.4.1, or the base NSP with --update')
-    p.add_argument('-k', '--keys', type=Path, required=True)
-    p.add_argument('--update', type=Path, help='the 1.3.0 or 1.4.1 update NSP, when the game file is the base NSP alone')
-    fonts = p.add_mutually_exclusive_group()
-    fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA folder with the system fonts')
-    fonts.add_argument('--shared-fonts', type=Path, help='the shared-fonts folder of an earlier build')
-    p.add_argument('--work', type=Path, help='work folder (default: the one the app at -o records, else MacNativeGames-work/odyssey)')
-    p.add_argument('-o', '--out', '--output', dest='out', type=Path, help=f'the app to write (default: {APP_NAME}.app next to the game file)')
+    p = adapter.parser(__doc__)
+    adapter.add_inputs(p, game_help='a card image or NSP with update 1.3.0 or 1.4.1, or the base NSP with --update',
+                       update_help='the 1.3.0 or 1.4.1 update NSP, when the game file is the base NSP alone',
+                       update_required=False)
+    adapter.add_fonts(p)
+    adapter.add_output(p, APP_NAME, 'odyssey')
     args = p.parse_args(argv)
-    game, keys = args.game.expanduser().resolve(), args.keys.expanduser().resolve()
-    for path in (game, keys, *([args.update] if args.update else [])):
-        if not Path(path).expanduser().is_file():
-            raise ValueError(f'no such file: {path}')
-    out = (args.out.expanduser() if args.out else game.parent / f'{APP_NAME}.app').resolve()
-    if out.suffix != '.app':
-        raise ValueError(f'the output must end in .app: {out}')
-    if args.work:
-        work, why = args.work.expanduser().resolve(), 'given with --work'
-    else:
-        import build_app
-        work, why = build_app.default_work(out, 'odyssey')
-    work = checked_work(work, out)
-    say(f'work folder {work} ({why})')
-    work.mkdir(parents=True, exist_ok=True)
+    game, keys, update = adapter.inputs(args)
+    out, work = adapter.output_and_work(args, game, APP_NAME, 'odyssey', checked_work)
     python = python_for(work)
-    if not in_venv(work):
-        raw = list(sys.argv[1:] if argv is None else argv)
-        return reexec(python, [*raw, '--work', str(work), '-o', str(out)])
+    if adapter.rerun_in_venv(__file__, python, work, argv, out, STOPPED):
+        return None
     if args.shared_fonts:
         copy_fonts(args.shared_fonts.expanduser().resolve(), work)
     cmd = [sys.executable, GAME / 'scripts/build_odyssey.py', '--game', game, '--keys', keys, '--work', work]
-    if args.update:
-        cmd += ['--update', args.update.expanduser().resolve()]
+    if update:
+        cmd += ['--update', update]
     if args.firmware:
         cmd += ['--firmware', args.firmware.expanduser().resolve()]
     done = subprocess.run([str(c) for c in cmd], cwd=GAME, env={**os.environ, **package_env(work, out)})
@@ -130,9 +93,8 @@ def build(argv=None):
 
 def blocker(app, work):
     work = Path(work)
-    try:
-        info = plistlib.loads((Path(app) / 'Contents/Info.plist').read_bytes())
-    except (OSError, ValueError):
+    info = adapter.app_info(app)
+    if info is None:
         return 'the app has no readable Info.plist: a full build is required'
     if info.get('CFBundleIdentifier') != BUNDLE_ID:
         return 'an Odyssey app made before MNG Launcher builds it: a full build is required once'
@@ -140,47 +102,36 @@ def blocker(app, work):
               (work / 'extracted/extraction-manifest.json', 'program modules'),
               (work / 'app-assets/OdysseyIcon.jpg', 'app icon'),
               *((work / f'rewritten/{m}.patched.bin', 'rewritten code') for m in MODULES)]
-    for path, what in needed:
-        if not path.is_file():
-            return f'the work folder has no {what}: a full build is required'
+    missing = adapter.first_missing(needed)
+    if missing:
+        return missing
     if len(list((work / 'extracted/firmware/shared-fonts').glob('*.bfttf'))) < 6:
         return 'the work folder has no system fonts: a full build is required'
     return ''
 
 
 def update(app, work):
-    app, work = Path(app).resolve(), Path(work).resolve()
-    checked_work(work, app)
-    problem = blocker(app, work)
-    if problem:
-        raise ValueError(problem)
-    python = python_for(work)
-    if not in_venv(work):
-        return reexec(python, [app, work], '--update-app')
+    ready = adapter.update_in_venv(__file__, app, work, blocker=blocker, python=python_for, check=checked_work,
+                                   stopped=STOPPED)
+    if not ready:
+        return None
+    app, work, _ = ready
     env = {**os.environ, **package_env(work, app)}
     make_work = os.path.relpath(work, GAME)
-    steps = [('5/8 Loader tables (verifies every input against the pinned hashes)', [sys.executable, 'scripts/prepare_runtime.py', '--work', work], {}),
-             ('6/8 Shader tools and the runtime', ['make', f'-j{os.cpu_count() or 8}', 'runtime', f'WORK={make_work}', f'PY={sys.executable}'],
-              {'DEVELOPER_DIR': '/Applications/Xcode.app/Contents/Developer'} if Path('/Applications/Xcode.app').is_dir() else {}),
-             ('8/8 Package the app', [sys.executable, 'scripts/package_native_app.py'], {})]
-    for title, cmd, extra in steps:
-        say(title)
+    steps = [(5, 'Loader tables (verifies every input against the pinned hashes)', [sys.executable, 'scripts/prepare_runtime.py', '--work', work], {}),
+             (6, 'Shader tools and the runtime', ['make', f'-j{os.cpu_count() or 8}', 'runtime', f'WORK={make_work}', f'PY={sys.executable}'],
+              adapter.xcode_env()),
+             (8, 'Package the app', [sys.executable, 'scripts/package_native_app.py'], {})]
+    for number, words, cmd, extra in steps:
+        adapter.stage(number, 8, words)   # build_odyssey.py's numbering: the update runs its steps 5, 6 and 8
         if subprocess.run([str(c) for c in cmd], cwd=GAME, env={**env, **extra}).returncode:
-            raise ValueError(f'{title.split(" ", 1)[1]} failed')
+            raise ValueError(f'{words} failed')
     say(f'Built: {app}')
+    return None
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    try:
-        if argv[:1] == ['--update-app']:
-            update(Path(argv[1]), Path(argv[2]))
-        else:
-            build(argv)
-    except (ValueError, subprocess.CalledProcessError) as error:
-        print(f'ERROR: {error}', file=sys.stderr, flush=True)
-        return 1
-    return 0
+    return adapter.main(build, update, argv)
 
 
 if __name__ == '__main__':

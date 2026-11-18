@@ -51,3 +51,13 @@ from games/totk in the same change, in Odyssey's own files: the screenshot actio
 `controller_map.h`, `gamepad.m`, `input.c`, `bindings_diagram.h`), DSU in `gamepad.m` and `gamepad_feedback.m`,
 the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m`
 `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and `totk_leaderboard_id_file` in `totk_contrib_upload.h`.
+
+
+## The app launcher and the build plumbing (2026-11-18)
+
+`scripts/odyssey_app_launcher.c` keeps this game's own launcher code (the session limit read again while the game runs, display.txt, face-buttons.txt, no-metalfx, the slot folder, the crash log); the plumbing every port's launcher shares is
+`scripts/app_launcher.h`, a symlink to the repository's `shared/app/app_launcher.h` (shared/README.md). `build.py` and
+`scripts/package_native_app.py` keep this game's steps, checks and contents and import the shared Python from `tools/port_app/`
+(`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
+Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
+from another game.

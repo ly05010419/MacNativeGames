@@ -5,7 +5,8 @@ Everything the app carries is checked first: the rewritten modules and the RomFS
 the fonts against their manifest, the translator against its SHA-256, the shader seed and libraries with
 build_shader_libs.py --check. Large files are APFS clones of the work folder's (no second copy on the same volume).
 The app is assembled beside the output and replaces it only when complete, then signed ad hoc with its bundle ID as the
-designated requirement (macOS then keeps a removable-volume answer across builds) and asked --check.
+designated requirement (macOS then keeps a removable-volume answer across builds) and asked --check. Those common steps
+are tools/port_app/bundle.py; what the app carries and how it is checked are this file's.
 
     python3 scripts/package_app.py --work <work> --output "<folder>/The Legend of Zelda Echoes of Wisdom.app"
            [--icon <AppIcon.icns>] [--record-work <work>]"""
@@ -14,13 +15,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import shutil
 import subprocess
 import sys
 
 GAME = Path(__file__).resolve().parents[1]
 REPO = GAME.parents[1]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from tools.port_app import bundle  # noqa: E402
 EXPECTED = json.loads((GAME / 'assets/expected-v1.1.0.json').read_text())
 BUNDLE_ID = 'org.macnativegames.eow'
 EXECUTABLE = 'Echoes of Wisdom'
@@ -42,8 +45,7 @@ def sha256(path):
 
 def clone(source, target):
     """An APFS clone when source and target share a volume, else a copy (cp -c falls back by itself)."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(['cp', '-cRp', str(source), str(target)], check=True)
+    bundle.clone_tree(source, target)
 
 
 def verify(work):
@@ -78,63 +80,42 @@ def package(work, output, icon=None, record=None):
     work, output = work.resolve(), output.resolve()
     require(output.suffix == '.app', '--output must end in .app')
     romfs, fonts = verify(work)
-    stage = output.with_name(output.name + '.partial')
-    if stage.exists():
-        shutil.rmtree(stage)
-    contents, macos = stage / 'Contents', stage / 'Contents/MacOS'
-    game = contents / 'Resources/game'
-    try:
-        macos.mkdir(parents=True)
-        build = game / 'build'
-        for name in ('eow-native', 'shader-service', 'shader-seed', 'shader-libs'):
-            clone(work / 'build' / name, build / name)
-        if (work / 'build/spirv-cross/spirv-cross').is_file():
-            clone(work / 'build/spirv-cross/spirv-cross', build / 'spirv-cross/spirv-cross')
-        shutil.rmtree(build / 'shader-libs/src', ignore_errors=True)   # sources kept for offline builds, not played
-        for name in MODULES:
-            clone(work / f'rewritten/v110/{name}.patched.bin', game / f'rewritten/v110/{name}.patched.bin')
-        for name in ('romfs.bin', 'runtime-index.bin'):
-            clone(romfs / name, game / 'romfs' / name)
-        clone(fonts, game / 'fonts')
-        subprocess.run(['xcrun', 'clang', '-O2', '-Wall', '-Wextra', '-Werror', str(GAME / 'app/launcher.c'),
-                        '-framework', 'CoreFoundation', '-o', str(macos / EXECUTABLE)], check=True)
-        info = {
-            'CFBundleDevelopmentRegion': 'en',
-            'CFBundleDisplayName': 'The Legend of Zelda: Echoes of Wisdom',
-            'CFBundleExecutable': EXECUTABLE,
-            'CFBundleIdentifier': BUNDLE_ID,
-            'CFBundleInfoDictionaryVersion': '6.0',
-            'CFBundleName': 'Echoes of Wisdom',
-            'CFBundlePackageType': 'APPL',
-            'CFBundleShortVersionString': EXPECTED['display_version'],
-            'CFBundleVersion': '1',
-            'LSApplicationCategoryType': 'public.app-category.games',
-            'LSMinimumSystemVersion': os.environ.get('MACOSX_DEPLOYMENT_TARGET', '26.0'),
-            'NSHighResolutionCapable': True,
-        }
-        if icon and Path(icon).is_file():
-            clone(Path(icon), contents / 'Resources/AppIcon.icns')
-            info['CFBundleIconFile'] = 'AppIcon'
-        commit = subprocess.run(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], capture_output=True, text=True)
-        if commit.returncode == 0:
-            info['MNGSourceCommit'] = commit.stdout.strip()
-        info.update(record or {})
-        (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
-        subprocess.run(['codesign', '--force', '--deep', '--sign', '-', f'-r=designated => identifier "{BUNDLE_ID}"',
-                        str(stage)], check=True, capture_output=True)
-        subprocess.run(['codesign', '--verify', '--deep', '--strict', str(stage)], check=True)
-        subprocess.run([str(macos / EXECUTABLE), '--check'], check=True)
-    except BaseException:
-        shutil.rmtree(stage, ignore_errors=True)
-        raise
-    if output.exists():
-        shutil.rmtree(output)
-    stage.rename(output)
-    lsregister = ('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/'
-                  'lsregister')
-    subprocess.run([lsregister, '-f', str(output)], check=False)
+    with bundle.staged(output) as stage:   # assembled beside the output, which it replaces only when complete
+        assemble(stage, work, romfs, fonts, icon, record)
+    bundle.register(output)
     print(f'Packaged: {output}')
     return output
+
+
+def assemble(stage, work, romfs, fonts, icon, record):
+    """The bundle at stage, signed, verified and asked --check."""
+    contents, macos = stage / 'Contents', stage / 'Contents/MacOS'
+    game = contents / 'Resources/game'
+    macos.mkdir(parents=True)
+    build = game / 'build'
+    for name in ('eow-native', 'shader-service', 'shader-seed', 'shader-libs'):
+        clone(work / 'build' / name, build / name)
+    if (work / 'build/spirv-cross/spirv-cross').is_file():
+        clone(work / 'build/spirv-cross/spirv-cross', build / 'spirv-cross/spirv-cross')
+    shutil.rmtree(build / 'shader-libs/src', ignore_errors=True)   # sources kept for offline builds, not played
+    for name in MODULES:
+        clone(work / f'rewritten/v110/{name}.patched.bin', game / f'rewritten/v110/{name}.patched.bin')
+    for name in ('romfs.bin', 'runtime-index.bin'):
+        clone(romfs / name, game / 'romfs' / name)
+    clone(fonts, game / 'fonts')
+    bundle.compile_launcher(GAME / 'app/launcher.c', macos / EXECUTABLE, frameworks=['CoreFoundation'])
+    icon_file = None
+    if icon and Path(icon).is_file():
+        clone(Path(icon), contents / 'Resources/AppIcon.icns')
+        icon_file = 'AppIcon'
+    info = bundle.bundle_info(executable=EXECUTABLE, bundle_id=BUNDLE_ID, name='Echoes of Wisdom',
+                              display_name='The Legend of Zelda: Echoes of Wisdom', version=EXPECTED['display_version'],
+                              build='1', minimum_system=bundle.deployment_target(), icon_file=icon_file)
+    commit = bundle.source_commit(REPO)
+    bundle.write_info(stage, {**info, **({'MNGSourceCommit': commit} if commit else {}), **(record or {})})
+    bundle.sign(stage, BUNDLE_ID, deep=True)
+    bundle.verify_signature(stage)
+    bundle.check_launcher(macos / EXECUTABLE)
 
 
 def main():
@@ -146,8 +127,7 @@ def main():
     args = ap.parse_args()
     record = None
     if args.record_work:   # the keys build_app.record_update_source writes (update_runtime.py reads them)
-        record = {'MNGSourceRepo': str(REPO), 'MNGWorkFolder': str(args.record_work.resolve()),
-                  'MNGBuildPython': sys.executable}
+        record = bundle.update_record(args.record_work.resolve(), REPO)
     try:
         package(args.work, args.output, args.icon, record)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

@@ -143,6 +143,8 @@ NSP), your `prod.keys` and a firmware or shared-fonts folder on its Super Mario 
 folder, which gives `scripts/build_odyssey.py` a Python of the work folder's, writes the app where the Launcher chose
 (`ODYSSEY_APP`) and records the work folder in it. The Launcher's update needs no game files: the loader tables are
 checked against the pinned hashes again, the runtime compiled again and the app packaged again (`build.py` `update`).
+What `build.py`, the packager and the app launcher share with the other ports MNG Launcher builds this way is
+`tools/port_app/` and `shared/app/app_launcher.h` (shared/README.md).
 The card has the Controls, Storage and Saves pages.
 
 The app's bundle ID is `org.macnativegames.odyssey`, signed ad hoc with the bundle ID as its designated requirement, so

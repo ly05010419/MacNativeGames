@@ -29,7 +29,8 @@ are compiled with Xcode's Metal compiler (taken from `/Applications/Xcode.app` w
 line tools). Every step logs to `<work>/logs/`; the app records its work folder. On an M4 MacBook Air a build that
 extracted and merged the game data again and reused the rewrite took 5 minutes; the shader seed alone takes about 4.
 
-The app (`app/launcher.c`, `scripts/package_app.py`) carries the runtime, the rewritten modules, the RomFS (an APFS
+The app (`app/launcher.c` on the ports' shared `shared/app/app_launcher.h`, `scripts/package_app.py` on
+`tools/port_app/bundle.py`) carries the runtime, the rewritten modules, the RomFS (an APFS
 clone of the work folder's), the fonts, the translator, the shader seed and the compiled libraries, all checked before
 packaging. It is signed ad hoc with its bundle ID `org.macnativegames.eow` as the designated requirement. The player's
 data is in `~/Library/Application Support/MacNativeGames/EoW` (`profile/` saves, `shader-cache/`, `last-run.log`); the

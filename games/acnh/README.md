@@ -29,7 +29,9 @@ fetches the pinned [tmouh/acnh-60fps](https://github.com/tmouh/acnh-60fps) check
 rate options (`--fps-mod <checkout>` uses yours, `--no-fps-mod` keeps 30 FPS only), and packages the app, which records
 its work folder. Every step logs to `<work>/logs/`. MNG Launcher builds and updates the game the same way: drop the
 base, the update, any add-ons and a fonts or firmware folder on its Animal Crossing card. Its update (no game files)
-rebuilds the host and the app from the work folder (`update_runtime.py` calls `build.py`'s `update`).
+rebuilds the host and the app from the work folder (`update_runtime.py` calls `build.py`'s `update`). What `build.py`,
+the packager and the app launcher share with the other ports MNG Launcher builds this way is `tools/port_app/` and
+`shared/app/app_launcher.h` (shared/README.md).
 
 The app's bundle ID is `org.macnativegames.acnh`, signed ad hoc with the bundle ID as its designated requirement, so
 macOS keeps the "files on a removable volume" answer across builds. The player's data lives in

@@ -42,3 +42,13 @@ assets, and its tools are not run by this build. A locally built app with the
 optional inputs carries their original LICENSE and a source/adaptation NOTICE
 under `game/fps60/` and `Resources/Licenses/`. Default builds use the original
 30 FPS timing and do not require these assets.
+
+
+## The app launcher and the build plumbing (2026-11-18)
+
+`scripts/acnh_app_launcher.c` keeps this game's own launcher code (the data folder per version (`ACNH_DATA_FOLDER`), the GPU and presentation settings, the frame-rate and add-on files); the plumbing every port's launcher shares is
+`scripts/app_launcher.h`, a symlink to the repository's `shared/app/app_launcher.h` (shared/README.md). `build.py` and
+`scripts/package_native_app.py` keep this game's steps, checks and contents and import the shared Python from `tools/port_app/`
+(`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
+Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
+from another game.

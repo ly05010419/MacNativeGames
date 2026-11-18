@@ -28,6 +28,11 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/dsu_client.h`, `runtime/dsu_protocol.h`, `runtime/dsu_settings_rows.h` | DSU (cemuhook) motion and input over UDP, and its input-page rows | totk, odyssey, acnh, eow |
 | `third_party/d2r_gfx/gfx/nvn/fps_board.{c,h}` | The board's frame record: frame times after the world started | totk, oot, odyssey, acnh, eow |
 | `third_party/d2r_gfx/gfx/nvn/nvn_capture_region.h` | The present's crop as a capture region (the screenshot's game frame) | totk, oot, odyssey, acnh, eow |
+| `app/app_launcher.h` | The app launcher's plumbing: the bundle by the real executable path, the data folder in `~/Library/Application Support/MacNativeGames/<folder>` and its one-time move from next to the app, save backups (the newest five), the Mac's first preferred language, the common environment (profile, shader cache, RomFS, fonts, slot, input file, board folder), log rotation, and the run loop with the start again that `restart-requested.txt` asks for. Each game's launcher keeps its own `main()`: its tuning (GPU and presentation variables, Animal Crossing's frame rates and add-ons, Odyssey's session limit, display, face buttons and MetalFX, Echoes of Wisdom's start by the runtime's real path), its checks and its `TOTK_CONTROLS` line. Linked as `scripts/app_launcher.h` (odyssey, acnh) and `app/app_launcher.h` (eow) | odyssey, acnh, eow |
+
+The Python those three ports' `build.py` and packagers share is not linked but imported from the repository, as
+`build_app.py` is: `tools/port_app/` (`adapter.py`, MNG Launcher's side of `build.py`; `bundle.py`, the packaging steps).
+`tests/test_app_launcher_shared.py` runs each game's launcher in a fake bundle; `tests/test_port_app.py` covers the Python.
 
 When you change a file here, build and test every game that links it: `git grep` for the file name under `games/`, or
 run `find games -lname '*shared/<path>'`. Game-specific behaviour belongs in the game's own files, or behind its

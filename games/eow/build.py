@@ -16,15 +16,14 @@ from the same files is reused:
   7/7 app      scripts/package_app.py; the app records this work folder (MNGWorkFolder)
 
 MNG Launcher's update (update_runtime.py) is blocker(app, work) and update(app, work): the runtime is compiled again
-and the app packaged from the work folder, without game files or keys."""
-import argparse
+and the app packaged from the work folder, without game files or keys. What every port's build.py does the same way (the
+venv, the run inside it, the arguments, the work folder, the update's entry) is tools/port_app/adapter.py; this file
+keeps Echoes of Wisdom's steps and checks."""
 import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import shutil
-import subprocess
 import sys
 
 GAME = Path(__file__).resolve().parent
@@ -35,34 +34,19 @@ TITLE = '01008cf01baac000'
 STEPS = 7
 MODULES = ('sdk', 'subsdk0', 'subsdk1', 'main')
 EXPECTED = json.loads((GAME / 'assets/expected-v1.1.0.json').read_text())
-XCODE = Path('/Applications/Xcode.app/Contents/Developer')
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-
-
-def say(message):
-    print(message, flush=True)
+from tools.port_app import adapter  # noqa: E402  MNG Launcher's side every port's build.py shares
+from tools.port_app.adapter import metal_env, say, stamp  # noqa: E402
 
 
 def stage(number, words):
-    say(f'{number}/{STEPS} {words}')   # tools/builder/progress.py reads the 'i/N' lines as the build's stages
+    adapter.stage(number, STEPS, words)
 
 
 def run(cmd, work, name, env=None, cwd=GAME):
     """One step, its output in <work>/logs/<name>.log (MNG Launcher shows the logs a build starts as its steps)."""
-    log = work / 'logs' / f'{name}.log'
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open('w') as out:
-        result = subprocess.run([str(c) for c in cmd], cwd=cwd, stdout=out, stderr=subprocess.STDOUT,
-                                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', **(env or {})})
-    if result.returncode:
-        tail = log.read_text(errors='replace').strip().splitlines()[-12:]
-        raise ValueError(f'{name} failed (full output: {log})\n' + '\n'.join(tail))
-
-
-def stamp(path):
-    st = Path(path).stat()
-    return [str(Path(path).resolve()), st.st_size, st.st_mtime_ns]
+    adapter.run_logged(cmd, work, name, env, cwd)
 
 
 def sha256(path):
@@ -74,27 +58,7 @@ def sha256(path):
 
 
 def python_for(work):
-    venv = work / 'venv'
-    python = venv / 'bin/python'
-    marker = venv / '.requirements.sha256'
-    wanted = hashlib.sha256((GAME / 'requirements.txt').read_bytes()).hexdigest()
-    if not python.is_file() or not marker.is_file() or marker.read_text().strip() != wanted:
-        base = shutil.which('python3.14') or sys.executable
-        run([base, '-m', 'venv', venv], work, 'venv')
-        run([python, '-m', 'pip', 'install', '-q', '-r', GAME / 'requirements.txt'], work, 'pip')
-        marker.write_text(wanted + '\n')
-    return python
-
-
-def metal_env():
-    """The Metal compiler for the shader libraries: the selected developer folder's, else Xcode's."""
-    if subprocess.run(['xcrun', '-f', 'metal'], capture_output=True).returncode == 0:
-        return {}
-    if (XCODE / 'usr/bin').is_dir() and subprocess.run(['xcrun', '-f', 'metal'], capture_output=True,
-                                                       env={**os.environ, 'DEVELOPER_DIR': str(XCODE)}).returncode == 0:
-        return {'DEVELOPER_DIR': str(XCODE)}
-    raise ValueError('the shaders are compiled with the Metal compiler, which is not installed: install Xcode, then '
-                     'xcodebuild -downloadComponent MetalToolchain')
+    return adapter.python_for(work, requirements=GAME / 'requirements.txt')
 
 
 def same_inputs(work, name, inputs):
@@ -132,12 +96,7 @@ def extract(work, python, base, update, keys):
 
 
 def fonts_ready(folder):
-    try:
-        manifest = json.loads((folder / 'manifest.json').read_text())
-        return manifest.get('status') == 'pass' and [f['type'] for f in manifest['fonts']] == list(range(6)) and all(
-            (folder / f'{f["type"]}-{f["name"]}.bfttf').is_file() for f in manifest['fonts'])
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
+    return adapter.fonts_ready(folder)
 
 
 def prepare_fonts(work, python, keys, base, firmware=None, shared=None):
@@ -197,59 +156,29 @@ def package(work, python, out, update=None, keys=None):
     say(f'Built: {out}')
 
 
-def in_venv(work):
-    return Path(sys.prefix).resolve() == (work / 'venv').resolve()
-
-
-def reexec(python, argv, *extra):
-    result = subprocess.run([str(python), str(Path(__file__).resolve()), *extra, *map(str, argv)])
-    if result.returncode:
-        raise ValueError('the build stopped (its ERROR line above says why)')
-
-
 def checked_work(work, out):
-    if work == REPO or REPO in work.parents or work in REPO.parents or work == out or out in work.parents:
-        raise ValueError('the work folder must be outside the checkout and outside the app')
-    return work
+    return adapter.checked_work(work, out, REPO)
 
 
 def build(argv=None):
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('game', type=Path, help='the base game 1.0.0 (XCI or NSP)')
-    p.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys (the update needs key generation 17)')
-    p.add_argument('--update', type=Path, required=True, help='the 1.1.0 update NSP')
-    fonts = p.add_mutually_exclusive_group()
-    fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA folder with the system fonts')
-    fonts.add_argument('--shared-fonts', type=Path, help='the shared-fonts folder of an earlier build')
-    p.add_argument('--work', type=Path, help='work folder (default: the one the app at -o records, else MacNativeGames-work/eow)')
-    p.add_argument('-o', '--out', '--output', dest='out', type=Path, help=f'the app to write (default: {APP_NAME}.app next to the game file)')
+    p = adapter.parser(__doc__)
+    adapter.add_inputs(p, game_help='the base game 1.0.0 (XCI or NSP)',
+                       keys_help='your prod.keys (the update needs key generation 17)',
+                       update_help='the 1.1.0 update NSP', update_required=True)
+    adapter.add_fonts(p)
+    adapter.add_output(p, APP_NAME, 'eow')
     args = p.parse_args(argv)
 
-    base, keys, update = (path.expanduser().resolve() for path in (args.game, args.keys, args.update))
-    for path in (base, keys, update):
-        if not path.is_file():
-            raise ValueError(f'no such file: {path}')
-    out = (args.out.expanduser() if args.out else base.parent / f'{APP_NAME}.app').resolve()
-    if out.suffix != '.app':
-        raise ValueError(f'the output must end in .app: {out}')
-    if args.work:
-        work, why = args.work.expanduser().resolve(), 'given with --work'
-    else:
-        import build_app
-        work, why = build_app.default_work(out, 'eow')
-    work = checked_work(work, out)
-    say(f'work folder {work} ({why})')
-    work.mkdir(parents=True, exist_ok=True)
+    base, keys, update = adapter.inputs(args)
+    out, work = adapter.output_and_work(args, base, APP_NAME, 'eow', checked_work)
 
     stage(1, 'Preparing the build tools')
     python = python_for(work)
-    if not in_venv(work):   # the scripts need the venv's packages (cryptography, lz4, capstone)
-        raw = list(sys.argv[1:] if argv is None else argv)
-        return reexec(python, [*raw, '--work', str(work), '-o', str(out)])
+    if adapter.rerun_in_venv(__file__, python, work, argv, out):   # the scripts need the venv's packages (cryptography, lz4, capstone)
+        return None
     metal_env()   # before an hour of work: say now when the shaders cannot be compiled
     extract(work, python, base, update, keys)
-    prepare_fonts(work, python, keys, base, args.firmware.expanduser().resolve() if args.firmware else None,
-                  args.shared_fonts.expanduser().resolve() if args.shared_fonts else None)
+    prepare_fonts(work, python, keys, base, adapter.given(args.firmware), adapter.given(args.shared_fonts))
     rewrite(work, python)
     host(work, python)
     package(work, python, out, update, keys)
@@ -261,17 +190,16 @@ def build(argv=None):
 def blocker(app, work):
     """Why an update cannot remake the app from this work folder ('' when it can)."""
     work = Path(work)
-    try:
-        info = plistlib.loads((Path(app) / 'Contents/Info.plist').read_bytes())
-    except (OSError, ValueError):
+    info = adapter.app_info(app)
+    if info is None:
         return 'the app has no readable Info.plist: a full build is required'
     if info.get('CFBundleIdentifier') != BUNDLE_ID:
         return 'not an Echoes of Wisdom app of this repository'
-    for path, what in ((work / 'venv/bin/python', 'build Python'),
-                       (work / 'extracted/v110/romfs/romfs.bin', 'game data'),
-                       (work / 'build/shader-seed/seed-manifest.json', 'prepared shaders')):
-        if not path.is_file():
-            return f'the work folder has no {what}: a full build is required'
+    missing = adapter.first_missing([(work / 'venv/bin/python', 'build Python'),
+                                     (work / 'extracted/v110/romfs/romfs.bin', 'game data'),
+                                     (work / 'build/shader-seed/seed-manifest.json', 'prepared shaders')])
+    if missing:
+        return missing
     if not fonts_ready(work / 'extracted/firmware/shared-fonts'):
         return 'the work folder has no system fonts: a full build is required'
     for module in MODULES:
@@ -281,29 +209,17 @@ def blocker(app, work):
 
 
 def update(app, work):
-    app, work = Path(app).resolve(), Path(work).resolve()
-    checked_work(work, app)
-    problem = blocker(app, work)
-    if problem:
-        raise ValueError(problem)
-    python = python_for(work)
-    if not in_venv(work):
-        return reexec(python, [app, work], '--update-app')
+    ready = adapter.update_in_venv(__file__, app, work, blocker=blocker, python=python_for, check=checked_work)
+    if not ready:
+        return None
+    app, work, python = ready
     host(work, python, seed=False)   # make prepare checks every input against the pinned hashes again
     package(work, python, app)
+    return None
 
 
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    try:
-        if argv[:1] == ['--update-app']:
-            update(Path(argv[1]), Path(argv[2]))
-        else:
-            build(argv)
-    except ValueError as error:
-        print(f'ERROR: {error}', file=sys.stderr, flush=True)
-        return 1
-    return 0
+    return adapter.main(build, update, argv)
 
 
 if __name__ == '__main__':
