@@ -2701,8 +2701,9 @@ static pthread_mutex_t g_sync_replay_mu = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 void mtl_take_submit_thread(void);   // nvn_mtl.m
 static int async_replay(void);
 /* TOTK_STALL_SAMPLE_MS (diagnostic, nvn_queue_order.inc qo_stall_sampler): who holds the section, so a replay that
-   waits for it is sampled together with the holder. Written only by the holder, under the lock. */
-static int replay_owner_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"); v = e && atoi(e) > 0; } return v; }
+   waits for it is sampled together with the holder. Written only by the holder, under the lock.
+   TOTK_REPLAY_PROFILE_MS (qo_prof_sampler) samples the holder through the same record. */
+static int replay_owner_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_STALL_SAMPLE_MS"), *p = getenv("TOTK_REPLAY_PROFILE_MS"); v = (e && atoi(e) > 0) || (p && atoi(p) > 0); } return v; }
 static pthread_t g_rep_owner_th; static _Atomic mach_port_t g_rep_owner_port; static int g_rep_depth; static _Atomic uint64_t g_rep_since;
 static void replay_owner_in(void) { if (replay_owner_on() && g_rep_depth++ == 0) { g_rep_owner_th = pthread_self(); atomic_store(&g_rep_owner_port, pthread_mach_thread_np(pthread_self())); atomic_store(&g_rep_since, now_ns()); } }
 static void replay_owner_out(void) { if (replay_owner_on() && --g_rep_depth == 0) { atomic_store(&g_rep_since, 0); atomic_store(&g_rep_owner_port, 0); } }
@@ -3795,6 +3796,9 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         trow(f, "@upload_gpu_ms", mtl_upload_gpu_ns_take() / 1e6);
         { static uint64_t pn, pr, pb, pns; uint64_t n_, r_, b_, ns_; void mtl_migrate_stats(uint64_t *, uint64_t *, uint64_t *, uint64_t *); mtl_migrate_stats(&n_, &r_, &b_, &ns_);   // alias heap growth migrations (nvn_stor_migrate.h)
           trow(f, "@mig_n", (double)(n_ - pn)); trow(f, "@mig_rows", (double)(r_ - pr)); trow(f, "@mig_mb", (b_ - pb) / 1048576.0); trow(f, "@mig_ms", (ns_ - pns) / 1e6); pn = n_; pr = r_; pb = b_; pns = ns_; }
+        { static uint64_t prev[9]; uint64_t now_[9]; void mtl_pool_gen_stats(uint64_t out[9]); mtl_pool_gen_stats(now_);   // what a change of the pool set made the replay do again (nvn_mtl.m)
+          static const char *const names[9] = {"@pool_gen", "@pool_adds", "@cap_whole", "@cap_whole_mb", "@ids_full", "@gmem_builds", "@gmem_build_ms", "@cbc_miss", "@dpool_miss"};
+          for (int k = 0; k < 9; k++) { double d = (double)(now_[k] - prev[k]); trow(f, names[k], k == 3 ? d / 1048576.0 : k == 6 ? d / 1e6 : d); prev[k] = now_[k]; } }
         { static uint64_t popen, popen_ns; uint64_t n_, ns_; void mtl_par_open_stats(uint64_t *, uint64_t *); mtl_par_open_stats(&n_, &ns_);   // pipeline archive files opened (totk_pipeline_archive.h)
           trow(f, "@par_opens", (double)(n_ - popen)); trow(f, "@par_open_ms", (ns_ - popen_ns) / 1e6); popen = n_; popen_ns = ns_; }
         // 分账：本帧提交线程同步创建数 + 与 UIMSG 同一时钟的时刻（离线按读取画面区间把帧分成 前端 / 读取 / 局内）

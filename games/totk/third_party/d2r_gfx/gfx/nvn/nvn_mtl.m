@@ -847,6 +847,9 @@ typedef struct { uintptr_t lo, hi, base; void *buf; uint64_t gpu, gen; } pool_tl
 static _Thread_local pool_tls_ent g_ptls[POOL_TLS_N];
 static _Thread_local unsigned g_ptls_next, g_ptls_last;   // next slot to fill; slot of the last hit (looked at first)
 static _Atomic uint64_t g_pool_gen = 1;
+/* g_pool_gen as of the last change that took something away: a pool removed, an issued address forgotten, a pool
+   registered over another's range. What was built from the pool set since then only lacks pools made later (gmem_map_gpu). */
+static _Atomic uint64_t g_pool_drop_gen;
 static _Atomic int g_pool_tls_on = -1, g_pool_tls_check;
 static uint64_t g_pool_tls_hits, g_pool_tls_misses, g_pool_tls_verified;   // statistics (the replay thread does nearly all lookups)
 /* TOTK: the 8 recent pools above miss about one lookup in ten in the world (~22k lookups a frame over vertex, index and
@@ -1239,7 +1242,7 @@ void mtl_pool_code_address(const void *mem, uint64_t size) {
 }
 void mtl_pool_forget_address(const void *owner) {
     pthread_mutex_lock(&g_mu);
-    if(pidx_remove(&g_addressed,owner,NULL))atomic_fetch_add_explicit(&g_pool_gen,1,memory_order_release);
+    if(pidx_remove(&g_addressed,owner,NULL))atomic_store_explicit(&g_pool_drop_gen,atomic_fetch_add_explicit(&g_pool_gen,1,memory_order_release)+1,memory_order_release);
     pthread_mutex_unlock(&g_mu);
 }
 static int mtl_addr_known(uint64_t addr,uint64_t len) {
@@ -1281,11 +1284,14 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     }
     if (!buf) MDIE("内存池 %p+%#llx 建零拷贝缓冲失败", mem, (unsigned long long)size);
     pthread_mutex_lock(&g_mu);
-    if (pidx_overlaps(&g_pools, lo, hi)) { static int said; if (said++ < 8) MLOG("memory pool %p+%#llx overlaps a registered pool (%d live)", mem, (unsigned long long)size, g_pools.n); }
+    int over = pidx_overlaps(&g_pools, lo, hi);
+    if (over) { static int said; if (said++ < 8) MLOG("memory pool %p+%#llx overlaps a registered pool (%d live)", mem, (unsigned long long)size, g_pools.n); }
     pidx_ent ent = {lo, hi, a, (__bridge void *)buf, buf.gpuAddress, mem, 0};
     if (pool_res_all()) { res_add(buf); ent.res = 1; g_pool_res_n++; g_pool_res_bytes += hi - lo; }
     if (!pidx_insert(&g_pools, &ent)) MDIE("内存池表扩容失败（%d 个）", g_pools.n);
-    pidx_query_invalidate(&g_pool_queries); atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);
+    pidx_query_invalidate(&g_pool_queries);
+    { uint64_t gen = atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release) + 1;
+      if (over) atomic_store_explicit(&g_pool_drop_gen, gen, memory_order_release); }   // it changes what an address in the shared range resolves to
     g_pool_adds++; g_pool_bytes += hi - lo;
     [g_keep addObject:buf];
     pthread_mutex_unlock(&g_mu);
@@ -1300,7 +1306,7 @@ void mtl_pool_del(const void *mem) {
     pthread_mutex_lock(&g_mu);
     pidx_ent ent;
     if (pidx_remove(&g_pools, mem, &ent)) {
-        pidx_query_invalidate(&g_pool_queries); atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);
+        pidx_query_invalidate(&g_pool_queries); atomic_store_explicit(&g_pool_drop_gen, atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release) + 1, memory_order_release);
         __unsafe_unretained id<MTLBuffer> buf = (__bridge id<MTLBuffer>)ent.buf;
         lo = ent.lo; hi = ent.hi; g_pool_bytes -= hi - lo;
         if (ent.res) { res_remove(buf); g_pool_res_n--; g_pool_res_bytes -= hi - lo; }
@@ -1496,7 +1502,7 @@ static vis_list *vis_snapshot(void) {
 // 本次提交里已编码、尚未在 GPU 上执行的缓冲写（拷贝 / uniform 内联更新）的目标区间：编码期在 CPU 侧读这些地址读到的是旧值（uv_proof 读 uniform 时避开）
 // Target ranges of buffer writes (copies / inline uniform updates) already encoded in this submission but not yet executed on the GPU: reading these addresses on the CPU side at encode time yields old values (uv_proof avoids them when reading uniforms)
 typedef struct {
-    uint64_t lo,size,gpu,stamp,poolgen,hostwrite;const uint32_t *cpu;
+    uint64_t lo,size,gpu,stamp,epoch,hostwrite;const uint32_t *cpu;   // epoch: the table's dirty-range registration (pool_input_epoch)
     __strong NSMutableData *ids;int n;
 } pool_input;
 static pool_input g_pool_inputs[64];static unsigned g_pool_input_next;
@@ -7331,7 +7337,7 @@ static void shmap_load(void) {
    the time, keys by uniform values 99.5 %, of which 0.8 % had a different bitmap - the content check covers exactly those.
    Only bindings that actually prepare demand allocate a memo. */
 enum { POOL_MEMO_WAYS = 256, POOL_MEMO_SLOTS = 512 };   // 8 ways answered 23 % (mm1), 64 ways 54 % with evictions ~ fills (mm2): a shader drawn with more objects than ways cycles through them every frame
-struct pool_memo_src { uint64_t lo, size, gpu, stamp, poolgen, hostwrite; };
+struct pool_memo_src { uint64_t lo, size, gpu, stamp, epoch, hostwrite; };
 typedef struct { uint32_t src, idx, val; } pool_memo_word;   // an input word an exact proof read: source binding, word index, value
 /* What descriptor_pool_gpu_need needs to know about a demand bitmap besides its bits (2026-11-08): the words that are nonzero
    (an exact proof sets a few bits of a ~212-word bitmap; nnz = -1 when more than POOL_HINT_W words or a whole proof, then every
@@ -12539,6 +12545,17 @@ static uint64_t g_geo_bind[5];   // GPU addresses of the geometry helper buffers
    a table another encoded draw is using or rebuild it for every stage. */
 static id<MTLBuffer> g_gmem_buf[2]; static uint64_t g_gmem_gen[2];
 static int g_gmem_index_mode[2] = {-1,-1};
+static uint64_t g_gmem_builds, g_gmem_build_ns;   // the table built again and the time that took (mtl_pool_gen_stats)
+/* The pool generation the table must be as new as. While a command list is replayed (mtl_exec) that is the generation its
+   replay started under, and the last one that took a pool away (g_pool_drop_gen): a recorded command can only name
+   addresses of pools made before its list was submitted, so a table built since then holds every pool the list can
+   reach, and one built before a removal may still name the removed pool. Outside a replay (UINT64_MAX) it is the current
+   generation. 2026-11-18: the table was built again at the first draw after any change. About 280 frames into the world
+   the game makes 220 pools in six frames on other threads while the replay runs: 43 builds in one frame (30 ms, a third
+   of a replay that took 75-131 ms instead of 15), each for pools no command of the list could name.
+   OOT_GMEM_LIST_GEN=0: built again after every change, as before (A/B). */
+static uint64_t g_exec_pool_gen = UINT64_MAX; static int g_exec_depth;
+static int gmem_list_gen_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_GMEM_LIST_GEN");on=!(e&&!atoi(e));if(!on)MLOG("OOT_GMEM_LIST_GEN=0: the raw pool table is built again after every change of the pool set (A/B)");}return on;}
 static int raw_index_on(void) {
     int v=atomic_load_explicit(&g_raw_index,memory_order_relaxed);
     if(v<0){const char *e=getenv("OOT_RAW_INDEX");v=e?atoi(e)!=0:1;atomic_store(&g_raw_index,v);}
@@ -12552,7 +12569,10 @@ static int raw_range_cache_on(void) {
 static uint64_t gmem_map_gpu(int compatible) {
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     int indexed=raw_index_on(),cached=compatible&&raw_range_cache_on();
-    if (g_gmem_buf[cached] && g_gmem_gen[cached] == gen && g_gmem_index_mode[cached] == indexed) return g_gmem_buf[cached].gpuAddress;
+    uint64_t need = gen;   // built generations never exceed the current one: ">= gen" is "== gen"
+    if (g_exec_pool_gen != UINT64_MAX && gmem_list_gen_on()) { uint64_t drop = atomic_load_explicit(&g_pool_drop_gen, memory_order_acquire); need = MAX(g_exec_pool_gen, drop); }
+    if (g_gmem_buf[cached] && g_gmem_gen[cached] >= need && g_gmem_index_mode[cached] == indexed) return g_gmem_buf[cached].gpuAddress;
+    uint64_t build_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     pthread_mutex_lock(&g_mu);
     gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     size_t capacity=GMEM_MAP_ENTRIES;
@@ -12567,22 +12587,27 @@ static uint64_t gmem_map_gpu(int compatible) {
     for (size_t k=1;k<capacity;k++) memset(t+k*GMEM_MAP_ENTRY,0xff,8);
     // Header's start/end remain zero. Word 4 supplies the shader search size.
     ((uint32_t *)t)[4]=(uint32_t)capacity;
-    int n=1;uint64_t end=0;
+    int n=1,made_resident=0;uint64_t end=0;
     for(int k=0;k<g_pools.n;k++){
         pidx_ent *p=&g_pools.e[k];
         if(!pool_res_all()&&!pidx_overlaps(&g_addressed,p->lo,p->hi))continue;
-        pool_res(p, 3);
+        if(!p->res){   // as pool_res(p, 3), with one commit for all of this build's pools below (it was one kernel call a pool)
+            if(memory_inventory_path())objc_setAssociatedObject((__bridge id)p->buf,&g_pool_origin_key,@(3),OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            res_add((__bridge id<MTLBuffer>)p->buf);p->res=1;g_pool_res_n++;g_pool_res_bytes+=p->hi-p->lo;made_resident++;
+        }
         uint64_t lo=MAX((uint64_t)p->lo,end),hi=p->hi;
         if(lo>=hi)continue;
         uint64_t e[3]={lo,hi,p->gpu-(uint64_t)p->base};
         memcpy(t+(size_t)n++*GMEM_MAP_ENTRY,e,sizeof e);end=hi;
     }
+    if(made_resident)res_commit();   // still under g_mu: a pool marked resident is committed when the lock is released
     gmem_index_build((uint64_t *)t,(uint32_t)n,(uint32_t)capacity,buckets);
     if(cached)((uint32_t *)t)[4]|=UINT32_C(0x80000000);
     pthread_mutex_unlock(&g_mu);
     res_add(b);res_commit();
     if(g_gmem_buf[cached])table_buffer_put(g_gmem_buf[cached],g_fence+1);
     g_gmem_buf[cached]=b;g_gmem_gen[cached]=gen;g_gmem_index_mode[cached]=indexed;
+    g_gmem_builds++;g_gmem_build_ns+=clock_gettime_nsec_np(CLOCK_UPTIME_RAW)-build_t0;
     {static size_t last[2];static unsigned reports[2];static int last_mode[2]={-1,-1};
         if(last[cached]!=capacity || last_mode[cached]!=indexed || reports[cached]++<4)
             MLOG("raw global memory: %d ranges, capacity %zu, pool generation %llu, index mode %d range cache %d buckets %u span %#llx..%#llx",
@@ -13589,10 +13614,38 @@ static int pool_draw_writes(NvShader *sh) {
     if(pr)for(int i=0;i<5;i++)if(pool_shader_writes(pr->sh[i]))return 1;
     return 0;
 }
+/* Which registration of its dirty range a handle table is under (nvn_dirty_span_epoch; 0: untracked). A capture, the
+   buffer it was copied into and the table's ID set are good only under the registration they were made under: a range's
+   page generations start over when it is registered again (its pool finalized and made again, a virtual pool mapped
+   again), and then "not written since the stamp" says nothing about the copy. 2026-11-18: this was the global pool
+   generation, which every pool made or removed anywhere changes. About 280 frames into the world the game makes 220
+   pools in six frames on other threads while the replay runs, and each one made the next draw copy the whole 5 MB table
+   and scan it again: 38 copies (198 MB) in one frame, half of a replay that took 75-131 ms instead of 15.
+   OOT_POOL_INPUT_EPOCH=0: the global pool generation as before (A/B). */
+static int pool_input_epoch_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_INPUT_EPOCH");on=!(e&&!atoi(e));if(!on)MLOG("OOT_POOL_INPUT_EPOCH=0: handle table captures are keyed on the global pool generation (A/B)");}return on;}
+static uint64_t pool_input_epoch(const p_bind_buf *u){
+    if(!pool_input_epoch_on())return atomic_load_explicit(&g_pool_gen,memory_order_acquire);
+    return nvn_dirty_span_epoch((const void *)(uintptr_t)u->addr,(size_t)u->size);
+}
+/* OOT_POOL_VERIFY=1 (diagnostic, default off): in the running game, one capture found again in 64 is compared byte for
+   byte with the table in guest memory (counted as stale only if no write is recorded after the comparison either), and
+   every ID set brought up to date from written pages is compared with a full scan of its capture. Logged with the
+   [descriptor-ids] line. What the probe checks on made-up tables, on the game's own for a whole route. */
+static uint64_t g_pool_verify_caps,g_pool_verify_caps_bad,g_pool_verify_sets,g_pool_verify_sets_bad;
+static int pool_verify_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_VERIFY");on=e&&atoi(e)>0;if(on)MLOG("OOT_POOL_VERIFY=1: reused handle table captures and exact ID sets are checked against the table");}return on;}
 static pool_input *pool_input_find(const p_bind_buf *u) {
     for(int i=0;i<64;i++)if(g_pool_inputs[i].gpu&&g_pool_inputs[i].lo==u->addr&&g_pool_inputs[i].size==u->size){
         pool_input *p=&g_pool_inputs[i];
-        if(p->poolgen==atomic_load_explicit(&g_pool_gen,memory_order_acquire)&&p->hostwrite==atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire)&&nvn_dirty_tracked((const void *)(uintptr_t)u->addr,u->size)&&!nvn_dirty_since((const void *)(uintptr_t)u->addr,u->size,p->stamp))return p;
+        if(p->epoch==pool_input_epoch(u)&&p->hostwrite==atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire)&&nvn_dirty_tracked((const void *)(uintptr_t)u->addr,u->size)&&!nvn_dirty_since((const void *)(uintptr_t)u->addr,u->size,p->stamp)){
+            static uint64_t hits;
+            if(pool_verify_on()&&!(hits++&63)){
+                g_pool_verify_caps++;
+                if(memcmp(p->cpu,(const void *)(uintptr_t)u->addr,(size_t)u->size)&&!nvn_dirty_since((const void *)(uintptr_t)u->addr,u->size,p->stamp)&&p->hostwrite==atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire)){
+                    g_pool_verify_caps_bad++;RED_ONCE(202,"OOT_POOL_VERIFY: a handle table capture found again differs from the table (%#llx, %llu bytes) with no write recorded",(unsigned long long)u->addr,(unsigned long long)u->size);
+                }
+            }
+            return p;
+        }
         p->gpu=0;
     }
     return NULL;
@@ -13600,38 +13653,92 @@ static pool_input *pool_input_find(const p_bind_buf *u) {
 /* OOT (2026-11-08): the texture IDs a handle table may name, kept per table across captures. Every new capture of the
    table (about 3.5 a frame in the village, 4 MiB each) rescanned all of it: 3.6 M words a frame, 17 % of the replay
    thread. The game rewrites part of the table each frame; pages it did not write since the last scan hold the words that
-   scan saw, so only written pages (dirty-page generations, the capture's stamp) are scanned into the set. The set is a
-   union: an ID no longer named stays in it, which only prepares one more descriptor, as the whole-table path would.
-   A change of pool memory generation or a host write-back (which marks no page) starts the set again.
+   scan saw, so only written pages (dirty-page generations, the capture's stamp) are looked at again.
+   A new registration of the table's dirty range (pool_input_epoch) or a host write-back (which marks no page) starts
+   the set again.
+   2026-11-18: the set is exact. It was a union: an ID no longer named stayed in it until the set started again, which
+   every change of the global pool generation did, so its size depended on when the game last made a pool. On the user's
+   route the shaders that take the whole set (pool_demand_prepare) prepared 1.3, 3.5, 5.2, 6.6 and 7.9 million entries
+   in successive stretches of 300 frames, then 0.4 million after a restart; with captures no longer following the pool
+   generation there was no restart, 11.8 million and 40.5 fps instead of 43.9. The memo keeps the table's words as of
+   its stamp (shadow) and how many words name each ID (counts); a written page is compared word by word with what it
+   held, and an ID leaves the set with the last word that names it. A capture keeps the set it was given: a set that
+   changes becomes a new object. OOT_POOL_IDS_EXACT=0: the union as before (A/B).
    OOT_POOL_IDS_INCREMENTAL=0: full scan of every capture. */
-typedef struct { uint64_t lo,size,poolgen,hostwrite,stamp,used; int n; NSMutableData *ids; } pool_ids_memo;
+typedef struct { uint64_t lo,size,epoch,hostwrite,stamp,used; int n; NSMutableData *ids,*shadow,*counts; } pool_ids_memo;
 static pool_ids_memo g_pool_ids_memo[16]; static uint64_t g_pool_ids_use,g_pool_ids_words_inc,g_pool_ids_full;
 static int pool_ids_incremental_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_IDS_INCREMENTAL");on=!(e&&!atoi(e));}return on;}
 static void pool_ids_scan(const uint32_t *w,size_t nw,uint64_t *ids,uint32_t n){for(size_t i=0;i<nw;i++){uint32_t id_=w[i]&1048575u;if(id_<n)ids[id_/64]|=UINT64_C(1)<<(id_%64);}g_pool_demand_words+=nw;}
 typedef struct { const pool_input *p; uint64_t *ids; uint32_t n; } pool_ids_ctx;
 static void pool_ids_run(void *c,uintptr_t lo,uintptr_t hi){pool_ids_ctx *x=c;size_t a=(size_t)(lo-x->p->lo)/4,b=(size_t)(hi-x->p->lo+3)/4;if(b>x->p->size/4)b=x->p->size/4;if(a<b){pool_ids_scan(x->p->cpu+a,b-a,x->ids,x->n);g_pool_ids_words_inc+=b-a;}}
+static int pool_ids_exact_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_IDS_EXACT");on=!(e&&!atoi(e));if(!on)MLOG("OOT_POOL_IDS_EXACT=0: a handle table's ID set is a union until it starts again (A/B)");}return on;}
+enum { POOL_IDS_RUNS = 256 };
+typedef struct { const pool_input *p; size_t a[POOL_IDS_RUNS],b[POOL_IDS_RUNS]; int n,over; } pool_ids_runs;   // the written runs, in words of the table
+static void pool_ids_note(void *c,uintptr_t lo,uintptr_t hi){
+    pool_ids_runs *x=c;size_t a=(size_t)(lo-x->p->lo)/4,b=(size_t)(hi-x->p->lo+3)/4;if(b>x->p->size/4)b=x->p->size/4;
+    if(a>=b)return;
+    if(x->n==POOL_IDS_RUNS){x->over=1;return;}
+    x->a[x->n]=a;x->b[x->n]=b;x->n++;
+}
 static void pool_input_ids(pool_input *p,const p_bind_buf *u,int n) {
-    size_t words=((size_t)n+63)/64;
+    size_t words=((size_t)n+63)/64,nw=(size_t)u->size/4;int exact=pool_ids_exact_on();
     pool_ids_memo *m=NULL,*victim=&g_pool_ids_memo[0];
     if(pool_ids_incremental_on())for(int i=0;i<16;i++){pool_ids_memo *e=&g_pool_ids_memo[i];if(e->ids&&e->lo==u->addr&&e->size==u->size&&e->n==n){m=e;break;}if(e->used<victim->used)victim=e;}
-    if(m&&m->poolgen==p->poolgen&&m->hostwrite==p->hostwrite&&m->stamp<=p->stamp){
+    if(m&&m->epoch==p->epoch&&m->hostwrite==p->hostwrite&&m->stamp<=p->stamp&&!exact){
         pool_ids_ctx c={p,m->ids.mutableBytes,(uint32_t)n};
         if(nvn_dirty_runs_since((const void *)(uintptr_t)u->addr,(size_t)u->size,m->stamp,pool_ids_run,&c)){m->stamp=p->stamp;m->used=++g_pool_ids_use;p->ids=m->ids;p->n=n;return;}
     }
-    NSMutableData *d=[NSMutableData dataWithLength:words*8];pool_ids_scan(p->cpu,u->size/4,d.mutableBytes,(uint32_t)n);g_pool_ids_full++;
-    p->ids=d;p->n=n;
-    if(pool_ids_incremental_on()){if(!m)m=victim;*m=(pool_ids_memo){u->addr,u->size,p->poolgen,p->hostwrite,p->stamp,++g_pool_ids_use,n,[d mutableCopy]};p->ids=m->ids;}
+    if(m&&m->epoch==p->epoch&&m->hostwrite==p->hostwrite&&m->stamp<=p->stamp&&exact&&m->shadow&&m->counts){
+        pool_ids_runs r={.p=p};
+        if(nvn_dirty_runs_since((const void *)(uintptr_t)u->addr,(size_t)u->size,m->stamp,pool_ids_note,&r)&&!r.over){
+            uint32_t *was=m->shadow.mutableBytes,*count=m->counts.mutableBytes;uint64_t *bits=NULL;NSMutableData *changed=nil;
+            for(int k=0;k<r.n;k++){
+                for(size_t i=r.a[k];i<r.b[k];i++){
+                    uint32_t old=was[i],now=p->cpu[i];
+                    if(old==now)continue;
+                    was[i]=now;old&=1048575u;now&=1048575u;
+                    if(old==now)continue;
+                    if(old<(uint32_t)n&&!--count[old]){if(!bits){changed=[m->ids mutableCopy];bits=changed.mutableBytes;}bits[old/64]&=~(UINT64_C(1)<<(old%64));}
+                    if(now<(uint32_t)n&&!count[now]++){if(!bits){changed=[m->ids mutableCopy];bits=changed.mutableBytes;}bits[now/64]|=UINT64_C(1)<<(now%64);}
+                }
+                g_pool_ids_words_inc+=r.b[k]-r.a[k];g_pool_demand_words+=r.b[k]-r.a[k];
+            }
+            if(changed)m->ids=changed;   // the captures before keep theirs
+            if(pool_verify_on()){
+                NSMutableData *full=[NSMutableData dataWithLength:words*8];uint64_t *fb=full.mutableBytes;
+                for(size_t i=0;i<nw;i++){uint32_t id_=p->cpu[i]&1048575u;if(id_<(uint32_t)n)fb[id_/64]|=UINT64_C(1)<<(id_%64);}
+                g_pool_verify_sets++;
+                if(memcmp(fb,m->ids.bytes,words*8)){g_pool_verify_sets_bad++;RED_ONCE(203,"OOT_POOL_VERIFY: the exact ID set differs from a full scan of its capture (table %#llx, %llu bytes, %d IDs)",(unsigned long long)u->addr,(unsigned long long)u->size,n);}
+            }
+            m->stamp=p->stamp;m->used=++g_pool_ids_use;p->ids=m->ids;p->n=n;return;
+        }
+    }
+    NSMutableData *d=[NSMutableData dataWithLength:words*8];g_pool_ids_full++;
+    if(!exact||!pool_ids_incremental_on()){
+        pool_ids_scan(p->cpu,nw,d.mutableBytes,(uint32_t)n);
+        p->ids=d;p->n=n;
+        if(pool_ids_incremental_on()){if(!m)m=victim;*m=(pool_ids_memo){u->addr,u->size,p->epoch,p->hostwrite,p->stamp,++g_pool_ids_use,n,[d mutableCopy],nil,nil};p->ids=m->ids;}
+        return;
+    }
+    NSMutableData *shadow=[NSMutableData dataWithBytes:p->cpu length:nw*4],*counts=[NSMutableData dataWithLength:(size_t)n*4];
+    uint32_t *count=counts.mutableBytes;uint64_t *bits=d.mutableBytes;
+    for(size_t i=0;i<nw;i++){uint32_t id_=p->cpu[i]&1048575u;if(id_<(uint32_t)n&&!count[id_]++)bits[id_/64]|=UINT64_C(1)<<(id_%64);}
+    g_pool_demand_words+=nw;
+    if(!m)m=victim;*m=(pool_ids_memo){u->addr,u->size,p->epoch,p->hostwrite,p->stamp,++g_pool_ids_use,n,d,shadow,counts};
+    p->ids=m->ids;p->n=n;
+    {static unsigned reports;if(reports++<8){size_t kept=0;int live=0;for(int i=0;i<16;i++)if(g_pool_ids_memo[i].shadow){live++;kept+=g_pool_ids_memo[i].shadow.length+g_pool_ids_memo[i].counts.length;}
+        MLOG("[descriptor-ids] exact ID set for the table at %#llx (%llu bytes, %d IDs); %d sets keep %.1f MB of table words and counts",(unsigned long long)u->addr,(unsigned long long)u->size,n,live,(double)kept/1048576);}}
 }
 /* OOT (2026-11-08): captures of a handle table reuse dedicated buffers and copy only the pages written since the buffer's
    previous capture of the same table (nvn_dirty_runs_since: the generations pool_input_find already relies on). Before, every
    capture took arena memory and copied the whole table (5.8 MB, about 1.7 captures a frame in the village, 3,544 a game:
    pool_input_get 0.66 ms a frame of the replay), while the game rewrites about 9 KB of it a frame. A buffer is reused only
    when the GPU finished every submission that bound it (last_use, recorded at capture and at bind, <= g_done); a buffer of
-   another table, a pool generation or host write-back change, or an untracked range gets a whole copy; with no finished
+   another table, a new registration of its dirty range (pool_input_epoch), a host write-back change, or an untracked range gets a whole copy; with no finished
    buffer the capture takes arena memory as before. Entries of g_pool_inputs still pointing into a reused buffer are dropped.
    OOT_POOL_CAPTURE_INC=0: arena copies as before (A/B). */
 enum { POOL_CAP_BUFS = 8 };
-typedef struct { __strong id<MTLBuffer> buf; uint8_t *cpu; uint64_t gpu,cap,lo,size,stamp,poolgen,hostwrite,last_use; int valid; } pool_cap_buf;
+typedef struct { __strong id<MTLBuffer> buf; uint8_t *cpu; uint64_t gpu,cap,lo,size,stamp,epoch,hostwrite,last_use; int valid; } pool_cap_buf;
 static pool_cap_buf g_pool_caps[POOL_CAP_BUFS];
 static uint64_t g_pool_cap_inc,g_pool_cap_full,g_pool_cap_arena,g_pool_cap_evict,g_pool_cap_inc_bytes,g_pool_cap_full_bytes;
 static int pool_cap_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_CAPTURE_INC");on=!(e&&!atoi(e));if(!on)MLOG("OOT_POOL_CAPTURE_INC=0: handle-table captures copy the whole table into arena memory (A/B)");}return on;}
@@ -13670,16 +13777,16 @@ static pool_input *pool_input_get(const p_bind_buf *u,int n) {
         // Host writeback holds this lock and does not mark CPU pages dirty.
         // Capture its epoch and bytes together, after any in-progress landing.
         pthread_mutex_lock(&g_mu);
-        uint64_t poolgen=atomic_load_explicit(&g_pool_gen,memory_order_acquire),hostwrite=atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire);
-        // Same table, same pool generation and write-back epoch: the buffer holds the table as of its stamp; only the pages
-        // written since (generation > stamp, including the ones whose write the earlier copy may already have seen) are copied.
-        int inc=b&&b->valid&&b->lo==u->addr&&b->size==u->size&&b->poolgen==poolgen&&b->hostwrite==hostwrite;
+        uint64_t epoch=pool_input_epoch(u),hostwrite=atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire);
+        // Same table, same registration of its dirty range and write-back epoch: the buffer holds the table as of its stamp; only
+        // the pages written since (generation > stamp, including the ones whose write the earlier copy may already have seen) are copied.
+        int inc=b&&b->valid&&b->lo==u->addr&&b->size==u->size&&b->epoch==epoch&&b->hostwrite==hostwrite;
         if(inc){pool_cap_ctx c={cpu,u->addr};inc=nvn_dirty_runs_since((const void *)(uintptr_t)u->addr,(size_t)u->size,b->stamp,pool_cap_run,&c);}
         if(inc)g_pool_cap_inc++;
         else{memcpy(cpu,(const void *)(uintptr_t)u->addr,(size_t)u->size);g_pool_cap_full_bytes+=u->size;if(b)g_pool_cap_full++;else g_pool_cap_arena++;}
         pthread_mutex_unlock(&g_mu);
-        if(b){b->valid=1;b->lo=u->addr;b->size=u->size;b->stamp=stamp;b->poolgen=poolgen;b->hostwrite=hostwrite;b->last_use=g_fence+1;}
-        p->lo=u->addr;p->size=u->size;p->gpu=gpu;p->cpu=(const uint32_t *)cpu;p->stamp=stamp;p->poolgen=poolgen;p->hostwrite=hostwrite;p->ids=nil;p->n=0;g_pool_input_misses++;
+        if(b){b->valid=1;b->lo=u->addr;b->size=u->size;b->stamp=stamp;b->epoch=epoch;b->hostwrite=hostwrite;b->last_use=g_fence+1;}
+        p->lo=u->addr;p->size=u->size;p->gpu=gpu;p->cpu=(const uint32_t *)cpu;p->stamp=stamp;p->epoch=epoch;p->hostwrite=hostwrite;p->ids=nil;p->n=0;g_pool_input_misses++;
     }
     if(n&&(p->n!=n||!p->ids))pool_input_ids(p,u,n);
     return p;
@@ -13821,7 +13928,7 @@ static int pool_memo_lookup(NvShader *sh,NvPoolMemo *m,uint64_t n,const int *src
         pool_input *in[8];int ok=1;
         for(int t=0;ok&&t<nsrc;t++){
             int i=srcidx[t];in[t]=pool_input_get(&S.ssbo[sh->stage][sh->rf.b[i].reg],0);
-            if(e->whole&(UINT64_C(1)<<i)){struct pool_memo_src id={in[t]->lo,in[t]->size,in[t]->gpu,in[t]->stamp,in[t]->poolgen,in[t]->hostwrite};if(memcmp(&id,&e->src[t],sizeof id)){ok=0;g_pmemo_whole_diff++;}}
+            if(e->whole&(UINT64_C(1)<<i)){struct pool_memo_src id={in[t]->lo,in[t]->size,in[t]->gpu,in[t]->stamp,in[t]->epoch,in[t]->hostwrite};if(memcmp(&id,&e->src[t],sizeof id)){ok=0;g_pmemo_whole_diff++;}}
         }
         for(int j=0;ok&&j<e->nwords;j++){
             const pool_memo_word *x=&e->words[j];int t=0;while(t<nsrc&&srcidx[t]!=(int)x->src)t++;
@@ -13888,7 +13995,7 @@ static void pool_demand_prepare(NvShader *sh) {
             sh->pool_capture_gpu[i]=input->gpu;sh->pool_capture_mask|=UINT64_C(1)<<i;
             if(count>=0){for(int k=0;k<count;k++){uint32_t v=input->cpu[indices[k]],id_=v&1048575u;if(id_<(uint32_t)n){need[id_/64]|=UINT64_C(1)<<(id_%64);pool_hint_add(&hint,id_/64);}if(nw<(int)(sizeof wbuf/sizeof *wbuf))wbuf[nw++]=(pool_memo_word){(uint32_t)i,indices[k],v};}g_pool_demand_exact++;}
             else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];whole|=UINT64_C(1)<<i;hint.nnz=-1;g_pool_demand_whole++;}
-            if(nid<8)ident[nid++]=(struct pool_memo_src){input->lo,input->size,input->gpu,input->stamp,input->poolgen,input->hostwrite};
+            if(nid<8)ident[nid++]=(struct pool_memo_src){input->lo,input->size,input->gpu,input->stamp,input->epoch,input->hostwrite};
         }
         if(check){   // OOT_POOL_MEMO_CHECK=1: the memo's answer against the proof just made
             if([data isEqualToData:memo->need[hitw]])g_pool_memo_check_ok++;
@@ -13930,8 +14037,19 @@ static void prepare_shader_pools(NvShader *sh) {
     if(frame>=last+300&&pool_memo_check_on())MLOG("[descriptor-demand-check] memo answers verified against a fresh proof: same=%llu different=%llu; table coverage memo hits=%llu wrong=%llu; conditional-render index ok=%llu wrong=%llu",(unsigned long long)g_pool_memo_check_ok,(unsigned long long)g_pool_memo_check_bad,(unsigned long long)g_descriptor_pool_cover_hits,(unsigned long long)g_descriptor_pool_cover_bad,(unsigned long long)g_cpend_index_ok,(unsigned long long)g_cpend_index_bad);
     if(frame>=last+300)MLOG("[descriptor-demand-memo] hits=%llu fills=%llu evictions=%llu misses: no-entry=%llu uniform-read=%llu uniforms-differ=%llu words-differ=%llu whole-differ=%llu split=%llu",(unsigned long long)g_pmemo_hit,(unsigned long long)g_pmemo_fill,(unsigned long long)g_pmemo_evict,(unsigned long long)g_pmemo_none,(unsigned long long)g_pmemo_uread,(unsigned long long)g_pmemo_udiff,(unsigned long long)g_pmemo_wdiff,(unsigned long long)g_pmemo_whole_diff,(unsigned long long)g_pmemo_split);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu need-hits=%llu hits=%llu misses=%llu scanned=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips,(unsigned long long)g_descriptor_pool_need_hits,(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned);
+    if(frame>=last+300&&pool_verify_on())MLOG("[pool-verify] captures found again and compared with the table: %llu, stale %llu; exact ID sets compared with a full scan: %llu, different %llu",(unsigned long long)g_pool_verify_caps,(unsigned long long)g_pool_verify_caps_bad,(unsigned long long)g_pool_verify_sets,(unsigned long long)g_pool_verify_sets_bad);
     if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu captures: incremental=%llu (%.1f MB) whole=%llu (%.1f MB) arena=%llu evict=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc,
             (unsigned long long)g_pool_cap_inc,(double)g_pool_cap_inc_bytes/1048576,(unsigned long long)g_pool_cap_full,(double)g_pool_cap_full_bytes/1048576,(unsigned long long)g_pool_cap_arena,(unsigned long long)g_pool_cap_evict);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
+}
+/* Per frame in the per-frame record (hle_nvn.c: @pool_gen, @pool_adds, @cap_whole, @cap_whole_mb, @ids_full, @gmem_builds,
+   @gmem_build_ms, @cbc_miss, @dpool_miss): the changes of the pool set (g_pool_gen) and what the replay did again for
+   them. 2026-11-18 OOT: the game makes 220 memory pools in six frames about 280 frames into the world, and the replay's
+   instructions in those frames rise with the pools made in each (4-8 million a pool). Read without the locks: counters
+   for a diagnostic. */
+void mtl_pool_gen_stats(uint64_t out[9]) {
+    out[0] = atomic_load_explicit(&g_pool_gen, memory_order_relaxed); out[1] = g_pool_adds;
+    out[2] = g_pool_cap_full + g_pool_cap_arena; out[3] = g_pool_cap_full_bytes; out[4] = g_pool_ids_full;
+    out[5] = g_gmem_builds; out[6] = g_gmem_build_ns; out[7] = g_cbc_misses; out[8] = g_descriptor_pool_misses;
 }
 static int arg_epoch_safe(NvShader *sh) {
     if (!sh->ab_epoch_ok) {
@@ -20504,7 +20622,15 @@ static void race_draw(uint32_t op, const void *a) {
         uint64_t n = S.vbuf[st].size; if (!n && op == OP_DRAW) n = (uint64_t)S.stream[st].stride * (S.stream[st].divisor ? instances : count);
         if (n) gpu_read_input(S.vbuf[st].address, n, "vertex", 'v'); }
 }
+static void mtl_exec_list(const uint8_t *p);
+/* A command list replayed, with the lists it calls. The outermost call notes the pool generation its replay starts under
+   (g_exec_pool_gen, for gmem_map_gpu); a list resumed after it was parked starts under the generation of its resumption. */
 void mtl_exec(const uint8_t *p) {
+    if (g_exec_depth++ == 0) g_exec_pool_gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
+    mtl_exec_list(p);
+    if (--g_exec_depth == 0) g_exec_pool_gen = UINT64_MAX;
+}
+static void mtl_exec_list(const uint8_t *p) {
     /* Binding changes also invalidate argument buffers that already hold the
        previous prompt texture; the ordinary descriptor cache then rebuilds it. */
     static uint64_t prompt_revision;

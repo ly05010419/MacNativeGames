@@ -40,7 +40,7 @@ static const char *const g_busy_site_name[BUSY_SITE_N] = {
 // 跟踪区间 = 各内存池（MemoryPoolInitialize 登记）。池销毁后复用 live=0 的槽，信号处理里无锁扫描。
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
 #define MAX_RANGE 16384 // 原为 256：内存池多于它时超出的池不跟踪，里面的贴图每次取用都当成脏的重传（暗黑实测峰值见内存读数行的「内存池」；塞尔达约 300 个，踩过）。扫描只到已用的槽数，容量大不增加开销 | was 256: with more memory pools than that the excess pools are untracked and their textures are treated as dirty and re-uploaded on every use (for Diablo's measured peak see "memory pools" in the memory readout line; Zelda has about 300 and hit this). The scan only covers slots in use, so a larger capacity costs nothing. TOTK (2026-10-17): 4096 was full in the user's own games and most long test games (about 3,900 live pools in the world, more when moving between regions); now 16384
-typedef struct { uintptr_t base, end; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; _Atomic uint64_t *blk; _Atomic uint64_t *rd; uint16_t *rm; uint8_t *rk; _Atomic uint8_t *nr; } range_t;   // rd (OOT): per page, the fence of the latest GPU submission that reads it (nvn_dirty_read_mark)   // latest (TOTK): highest page generation in the range; blk: the same per block of BLK_PAGES pages
+typedef struct { uintptr_t base, end; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; _Atomic uint64_t *blk; _Atomic uint64_t *rd; uint16_t *rm; uint8_t *rk; _Atomic uint8_t *nr; _Atomic uint64_t birth; } range_t;   // birth: which registration of a range this is (nvn_dirty_span_epoch)   // rd (OOT): per page, the fence of the latest GPU submission that reads it (nvn_dirty_read_mark)   // latest (TOTK): highest page generation in the range; blk: the same per block of BLK_PAGES pages
 /* TOTK_DIRTY_FAST (default on; =0 off), 2026-10-23. Two lookups the replay makes for every CPU-mirrored texture at its
    check in each submission (tex_mtl: about 2.5% of the translate thread in the Korok Forest profile):
    - nvn_dirty_since walked every page of the texture whenever anything else in its pool had been written since the stamp
@@ -69,6 +69,7 @@ static _Atomic uint8_t g_rdying[MAX_RANGE];
 static _Atomic uint64_t g_ov_inside, g_ov_split, g_ov_same, g_ov_many, g_rm_none;
 #endif
 static range_t g_r[MAX_RANGE];
+static _Atomic uint64_t g_births;   // registrations of ranges so far (range_t.birth)
 static _Atomic int g_nr;
 static uintptr_t g_pg, g_shift;
 static _Atomic uint64_t g_now = 1;
@@ -331,6 +332,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk); memset((void *)rd, 0, np * sizeof *rd); memset(rm, 0, np * sizeof *rm); memset(rk, 0, np); memset((void *)nr, 0, np);
     }
     r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; r->rd = rd; r->rm = rm; r->rk = rk; r->nr = nr; atomic_store(&r->latest, 0);
+    atomic_store(&r->birth, atomic_fetch_add(&g_births, 1) + 1);   // its page generations start over: a new registration (before it goes live)
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
@@ -345,6 +347,9 @@ void nvn_dirty_remove_range(const void *mem) {
 }
 int nvn_dirty_tracked(const void *addr, size_t len) {
     range_t *r = find((uintptr_t)addr); return r && (uintptr_t)addr + len <= r->end;
+}
+uint64_t nvn_dirty_span_epoch(const void *addr, size_t len) {
+    range_t *r = find((uintptr_t)addr); return len && r && (uintptr_t)addr + len <= r->end ? atomic_load(&r->birth) : 0;
 }
 // 设只读：先把页标成 BUSY，mprotect 落地后才标 PROT（次序与不变式见文件头的状态说明）
 // Set read-only: mark the page BUSY first, and mark it PROT only after mprotect has landed (for the order and the invariant see the state notes at the top of the file)
@@ -465,6 +470,7 @@ static void range_put(int slot, int n, uintptr_t base, uintptr_t end, const void
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)blk, 0, blk_count(np) * sizeof *blk); memset((void *)rd, 0, np * sizeof *rd); memset(rm, 0, np * sizeof *rm); memset(rk, 0, np); memset((void *)nr, 0, np);
     }
     r->base = base; r->end = end; r->state = state; r->gen = gen; r->blk = blk; r->rd = rd; r->rm = rm; r->rk = rk; r->nr = nr; atomic_store(&r->latest, 0);
+    atomic_store(&r->birth, atomic_fetch_add(&g_births, 1) + 1);   // its page generations start over: a new registration (before it goes live)
     g_rmem[slot] = (uintptr_t)mem; atomic_store(&g_rdying[slot], 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
@@ -533,6 +539,12 @@ int nvn_dirty_tracked(const void *addr, size_t len) {
     uintptr_t a = (uintptr_t)addr, e = a + len;
     do { range_t *r = find(a); if (!r) return 0; a = r->end; } while (a < e);
     return 1;
+}
+uint64_t nvn_dirty_span_epoch(const void *addr, size_t len) {   // the newest registration among the ranges holding the span: births only grow
+    uintptr_t a = (uintptr_t)addr, e = a + len; uint64_t newest = 0;
+    if (!len) return 0;
+    do { range_t *r = find(a); if (!r) return 0; uint64_t b = atomic_load(&r->birth); if (b > newest) newest = b; a = r->end; } while (a < e);
+    return newest;
 }
 /* Set read-only the pages of [a, e) in range r (as nvn_dirty_protect above). A run is set read-only only if the range is not
    being removed: the remover sets g_rdying before it unprotects, so either this sees the flag or the remover meets the
