@@ -200,6 +200,11 @@ def size_line(path, size):
     if not Path(path).is_dir():
         return t('Does not exist yet.', '还不存在。')
     line = t(f'{storage.human(size.bytes)} in {size.files} files', f'{size.files} 个文件，共 {storage.human(size.bytes)}')
+    own = getattr(size, 'own', None)
+    if own is not None and own < size.bytes:   # clones and hard links share their blocks (user 2026-11-18: "改成实际占用")
+        line += t(f'; on disk only {storage.human(own)} is its own: the rest are the same blocks as the app or other files, '
+                  'so removing it frees about that much',
+                  f'；实际独占 {storage.human(own)}：其余和 App 或别的文件是同一批磁盘块，删掉它大约只能腾出这么多')
     if size.errors:
         line += ' ' + t(f'Some files could not be read: {size.errors[0]}', f'有些文件读不了：{size.errors[0]}')
     return line
@@ -227,7 +232,9 @@ def write_sizes(ctx, sizes):
 
 
 def size_json(size):
-    return {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes), 'errors': list(size.errors[:5])}
+    own = getattr(size, 'own', None)
+    return {'bytes': size.bytes, 'files': size.files, 'shown': storage.human(size.bytes), 'errors': list(size.errors[:5]),
+            'own': own}
 
 
 def with_size(view, size, measured_at=None):
@@ -246,7 +253,9 @@ def remembered(ctx, view):
     if not isinstance(record, dict) or not view['exists']:
         return view
     try:
-        size = SimpleNamespace(bytes=int(record['bytes']), files=int(record['files']), errors=list(record.get('errors', [])))
+        own = record.get('own')
+        size = SimpleNamespace(bytes=int(record['bytes']), files=int(record['files']), errors=list(record.get('errors', [])),
+                               own=int(own) if own is not None else None)
         return with_size(view, size, float(record['at']))
     except (KeyError, TypeError, ValueError):
         return view
