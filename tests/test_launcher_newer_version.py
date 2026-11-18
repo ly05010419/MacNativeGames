@@ -34,6 +34,26 @@ class NewestLauncher(unittest.TestCase):
         self.assertEqual(updates.newest_launcher([release('launcher-v1.0.7', dmg=False)])['url'],
                          'https://github.com/owner/repo/releases/tag/launcher-v1.0.7')
 
+    def test_only_github_or_the_website_is_opened(self):
+        elsewhere = release('launcher-v1.0.9')
+        for a in elsewhere['assets']:
+            a['browser_download_url'] = a['browser_download_url'].replace('https://github.com/', 'https://example.com/')
+        self.assertEqual(updates.newest_launcher([elsewhere])['url'],          # its page on GitHub instead
+                         'https://github.com/owner/repo/releases/tag/launcher-v1.0.9')
+        elsewhere['html_url'] = 'https://github.com.example.com/tag/launcher-v1.0.9'
+        self.assertEqual(updates.newest_launcher([elsewhere, release('launcher-v1.0.8')])['version'], '1.0.8')
+        site = release('launcher-v1.0.7', dmg=False)
+        site['html_url'] = 'https://mac-native-games.com/'
+        self.assertEqual(updates.newest_launcher([site])['url'], 'https://mac-native-games.com/')
+        plain = release('launcher-v1.0.7', dmg=False)
+        plain['html_url'] = 'http://github.com/owner/repo/releases/tag/launcher-v1.0.7'
+        self.assertIsNone(updates.newest_launcher([plain]))
+        hosts = '"github.com", "mac-native-games.com", "www.mac-native-games.com"'
+        self.assertEqual(tuple(json.loads(f'[{hosts}]')), updates.LAUNCHER_HOSTS)   # the Swift side checks the same
+        model = (SWIFT / 'Model.swift').read_text()
+        self.assertIn(f'static let launcherHosts: Set<String> = [{hosts}]', model)
+        self.assertIn('launcherHosts.contains(url.host ?? "")', model)
+
     def test_a_list_without_one_names_none(self):
         self.assertIsNone(updates.newest_launcher([release('source-a')]))
         self.assertIsNone(updates.newest_launcher({'message': 'API rate limit exceeded'}))

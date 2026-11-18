@@ -147,9 +147,14 @@ final class Model: ObservableObject {
               let state = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let found = state["launcher"] as? [String: Any], let version = found["version"] as? String,
               let url = URL(string: found["url"] as? String ?? ""), url.scheme == "https",
+              launcherHosts.contains(url.host ?? ""),
               version.compare(own, options: .numeric) == .orderedDescending else { return nil }
         return (version, url)
     }
+
+    /// Where the label's click may go (source_updates.LAUNCHER_HOSTS, user 2026-11-18 "直接下载 DMG"): the disk image on
+    /// GitHub, as the website's Download button links it, or the website; any other address opens nothing.
+    static let launcherHosts: Set<String> = ["github.com", "mac-native-games.com", "www.mac-native-games.com"]
 
     private func save() {
         defaults.set(location, forKey: "location")

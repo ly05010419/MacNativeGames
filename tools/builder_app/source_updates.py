@@ -29,12 +29,16 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.parse
 
 FORMAT = 1
 MANIFEST = 'mng-source.json'
 SIGNATURE = MANIFEST + '.sig'
 TAG_PREFIX = 'source-'
 LAUNCHER_TAG = 'launcher-v'      # MNG Launcher's own releases (launcher-v1.0.6)
+# Where the version label's click may take a player (user 2026-11-18, "直接下载 DMG"): the release's disk image on GitHub,
+# the same file the website's Download button links to, or the website. Any other address in the list opens nothing.
+LAUNCHER_HOSTS = ('github.com', 'mac-native-games.com', 'www.mac-native-games.com')
 CHECK_EVERY = 600                 # seconds between two release-list reads by the home page
 MAX_ARCHIVE = 1 << 30             # a source archive is about 140 MB; refuse anything near a gigabyte
 FIELDS = {'format', 'commit', 'commit_time', 'archive', 'archive_sha256', 'archive_size', 'min_launcher'}
@@ -200,7 +204,12 @@ def releases(listing):
 def newest_launcher(listing):
     """The highest MNG Launcher release in the list, {'version', 'url'}, or None: the window's version label turns blue
     when it is newer than this Launcher (a player had no other way to know one was out), and its click downloads the
-    url: the release's disk image, as the website's Download button does (its page when it has none)."""
+    url: the release's disk image, as the website's Download button does (its page when it has none). Only an https
+    address on LAUNCHER_HOSTS is kept; a release with none is left out."""
+    def ours(url):
+        parts = urllib.parse.urlsplit(str(url or ''))
+        return parts.scheme == 'https' and parts.hostname in LAUNCHER_HOSTS
+
     best = None
     for r in listing if isinstance(listing, list) else []:
         tag = str(r.get('tag_name', '')) if isinstance(r, dict) else ''
@@ -213,7 +222,9 @@ def newest_launcher(listing):
         if best is None or version > best[0]:
             dmg = [a.get('browser_download_url') for a in r.get('assets') or []
                    if isinstance(a, dict) and str(a.get('name', '')).endswith('-macOS-arm64.dmg')]
-            best = (version, {'version': tag[len(LAUNCHER_TAG):], 'url': str((dmg and dmg[0]) or r.get('html_url') or '')})
+            url = next((u for u in (*dmg, r.get('html_url')) if ours(u)), None)
+            if url:
+                best = (version, {'version': tag[len(LAUNCHER_TAG):], 'url': str(url)})
     return best[1] if best else None
 
 
