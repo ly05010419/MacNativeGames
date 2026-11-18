@@ -12,7 +12,8 @@
      GPU keep-alive       switch, default on                 dm_gfx_keepalive_set (gfx/nvn/nvn_mtl.m), at once;
                                                              gpu-keepalive.txt above the game's folder (both games);
                                                              TOTK_GPU_KEEPALIVE first (greyed out)
-     long-pass split      switch, default on                 dm_gfx_pass_split_set (gfx/nvn/nvn_mtl.m), at once;
+     long-pass split      switch, default on only in BotW    dm_gfx_pass_split_set (gfx/nvn/nvn_mtl.m), at once;
+                          1.9.0 (PASS_SPLIT_DEFAULT)
                                                              pass-split.txt above the game's folder (both games);
                                                              TOTK_PASS_SPLIT first (greyed out)
      resolution           720p / + MetalFX / 1080p /         runtime_output_mode_set (game_patches*.c); the player picks,
@@ -704,7 +705,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    ^(int v){dm_gfx_keepalive_set(v);runtime_shared_setting_save("gpu-keepalive.txt",v?"on":"off","GPU keep-alive");})];}
  /* Long-pass split (nvn_mtl.m pass_split_try): a long render pass is committed in parts while the GPU idles, so the GPU
     starts on it sooner. Breath of the Wild 1.9.0 uncapped on an M4 Max kept its GPU clock (641 MHz against 344-380 without)
-    and its frames (10.9 against 14-19 ms); the GPU then works more, so more power at an uncapped frame rate. */
+    and its frames (10.9 against 14-19 ms); the GPU then works more, so more power at an uncapped frame rate. On by default
+    only there (nvn_mtl.m PASS_SPLIT_DEFAULT); Tears of the Kingdom and Breath of the Wild 1.6.0 show it off until switched. */
  {NSString *t=settings_text("长通道拆分（GPU 少降频，帧更多）","Long-pass split (steadier GPU clock, more fps)");
   if(dm_gfx_pass_split_locked())[rows addObject:settings_fixed(t,settings_on_off(dm_gfx_pass_split()))];
   else [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_pass_split();},

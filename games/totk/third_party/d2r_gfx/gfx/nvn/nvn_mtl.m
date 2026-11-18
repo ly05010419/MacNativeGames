@@ -18830,32 +18830,41 @@ static void oot_bar_note_draw(NvProg *pr) {
    2,700 of its 4,100 draws a frame into one G-buffer pass, and the GPU, done with the shadow passes before it, waits for the
    whole pass to be translated (nxnative measured about 2.5 ms of a 9 ms frame; M4 Max at 120 fps, frame p50 / p90
    8.75 / 9.33 -> 8.34 / 8.68 ms). At a draw, with nothing committed still on the GPU (g_q4_inflight) and TOTK_PASS_SPLIT
-   draws (default 256, 0 off) since the last commit, the pass is ended, the chunk committed as chunk_maybe_split does, and
+   draws (PASS_SPLIT_DEFAULT, 0 off) since the last commit, the pass is ended, the chunk committed as chunk_maybe_split does, and
    the draw opens the pass again: its attachments were stored (always, here) and are loaded, so the pictures are the same.
    A split costs a store and a load of the attachments, so it is taken only while the GPU would otherwise wait, and at most
    TOTK_PASS_SPLIT_MAX (default 2) times per NVN pass (a SetRenderTargets, g_cg.rt_seq). Not split: passes opened without
    all their attachments (g_enc_mode), ranged, layered or cube-merged passes, hoisted or pending clears, the TBDR rewrites
    and geometry draws. "flag pass_split <draws>" sets it while the game runs (0 off; A/B). */
+#define PASS_SPLIT_DRAWS 256   // the threshold the settings switch turns on, and the default where the split is on
+/* On by default only where it was measured: Breath of the Wild 1.9.0 on the Mac (review of PR #2191). Other games, other
+   versions and iPhone / iPad start with it off; the settings switch and TOTK_PASS_SPLIT=256 turn it on there. Widen this
+   as more games are measured. */
+#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE
+#define PASS_SPLIT_DEFAULT PASS_SPLIT_DRAWS
+#else
+#define PASS_SPLIT_DEFAULT 0
+#endif
 static _Atomic int g_pass_split = -1;
 static uint64_t g_pass_splits, g_split_rtseq; static int g_split_n;
 static uint64_t g_split_busy[5];   // draws past the threshold in an open pass: [0..3] by command buffers still in flight (0, 1, 2, 3+), [4] the pass may not be split
 static int pass_split_draws(void) {
     int v = atomic_load_explicit(&g_pass_split, memory_order_relaxed);
-    if (v < 0) { const char *e = getenv("TOTK_PASS_SPLIT"); v = e ? atoi(e) : 256; if (v < 0) v = 0;
+    if (v < 0) { const char *e = getenv("TOTK_PASS_SPLIT"); v = e ? atoi(e) : PASS_SPLIT_DEFAULT; if (v < 0) v = 0;
                  int unset = -1; atomic_compare_exchange_strong(&g_pass_split, &unset, v); v = atomic_load(&g_pass_split); }
     return v;
 }
 static void pass_split_set(int draws) { atomic_store(&g_pass_split, draws > 0 ? draws : 0); }
 static int pass_split_max(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PASS_SPLIT_MAX"); v = e ? atoi(e) : 2; } return v; }
 uint64_t mtl_pass_splits(void) { return g_pass_splits; }
-/* The settings panel's display page switch (settings_panel.h, pass-split.txt; like the GPU keep-alive): on = the default
-   256 draws, off = 0. TOTK_PASS_SPLIT decides first and greys the switch out. */
+/* The settings panel's display page switch (settings_game.h, pass-split.txt; like the GPU keep-alive): on = PASS_SPLIT_DRAWS
+   draws, off = 0; with nothing saved it shows PASS_SPLIT_DEFAULT. TOTK_PASS_SPLIT decides first and greys the switch out. */
 int dm_gfx_pass_split_locked(void) { return getenv("TOTK_PASS_SPLIT") != NULL; }
 int dm_gfx_pass_split(void) { return pass_split_draws() > 0; }
-void dm_gfx_pass_split_start(int on) { if (!dm_gfx_pass_split_locked()) pass_split_set(on ? 256 : 0); }
+void dm_gfx_pass_split_start(int on) { if (!dm_gfx_pass_split_locked()) pass_split_set(on ? PASS_SPLIT_DRAWS : 0); }
 void dm_gfx_pass_split_set(int on) {
     if (dm_gfx_pass_split_locked() || dm_gfx_pass_split() == !!on) return;
-    pass_split_set(on ? 256 : 0);
+    pass_split_set(on ? PASS_SPLIT_DRAWS : 0);
     MLOG("长通道拆分：设置面板%s | long-pass split: %s from the settings panel", on ? "打开" : "关闭", on ? "on" : "off");
 }
 void mtl_pass_split_busy(uint64_t v[5]) { for (int i = 0; i < 5; i++) v[i] = g_split_busy[i]; }
