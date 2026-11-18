@@ -49,6 +49,8 @@ class Plan:
     tool_blocks: list = field(default_factory=list)   # the blocks about this Mac's tools, not the files (also in blocks)
     tool_needs: list = field(default_factory=list)    # what each of them is: 'metal' (Xcode's) or 'clt' (the window's fix)
     notes: list = field(default_factory=list)
+    font_block: str | None = None   # the block about missing system fonts: the Launcher offers 用开源字体 under it
+    open_fonts: bool = False        # the build makes open-source Noto fonts (build_job.py) in place of firmware ones
 
 
 def _hidden(path):
@@ -278,9 +280,10 @@ def needs_developer_tools(game):
              f'{name}要在这台 Mac 上编译：请安装 Apple 的命令行工具（xcode-select --install）')
 
 
-def plan(items, work=None):
-    """The build these items make. work: the work folder the build will use (fonts extracted there count)."""
-    p = _plan(items, work)
+def plan(items, work=None, open_fonts=False):
+    """The build these items make. work: the work folder the build will use (fonts extracted there count). open_fonts:
+    the player chose 用开源字体, so a game file without system fonts builds with the open-source Noto fonts."""
+    p = _plan(items, work, open_fonts)
     if p.game and p.game not in PREBUILT_GAMES and no_developer_tools():
         p.blocks.append(needs_developer_tools(p.game))
         p.tool_blocks.append(p.blocks[-1])
@@ -288,7 +291,7 @@ def plan(items, work=None):
     return p
 
 
-def _plan(items, work=None):
+def _plan(items, work=None, open_fonts=False):
     p = Plan()
     by_role = lambda role, game=None: [i for i in items if i.role == role and (game is None or i.game in (game, None))]
     keys = by_role('keys')
@@ -360,19 +363,28 @@ def _plan(items, work=None):
     b = repo.build_app()
     has_fonts = p.firmware or p.fonts or (work and b.fonts_valid(Path(work) / 'totk/extracted/firmware/shared-fonts'))
     # build_app.py: an NSP holds no system fonts, nor does a Breath of the Wild card image (step_data_botw)
+    font_block = None
     if p.game not in ('ss', 'dread', 'worldend', 'tmnt') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
-        p.blocks.append(t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
-                          'an earlier build) too',
-                          '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来'))
+        font_block = t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
+                       'an earlier build) too, or use the open-source fonts',
+                       '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来，或者用开源字体')
     # a card image whose system update partition is missing or empty (merged / trimmed, "1G+1U") has no fonts either: said
     # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same);
     # the games that take no system fonts are left out, as in the check above (TMNT: after PR #2125)
     elif (p.game not in ('ss', 'dread', 'worldend', 'tmnt') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
           and not has_fonts and card_update_ncas(p.base) == 0):
-        p.blocks.append(t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
-                          'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too',
-                          '这个卡带镜像没有系统更新分区（合并或精简过的卡带，“1G+1U”），所以没有系统字体：把解开的固件文件夹'
-                          '（或以前打包留下的 shared-fonts 文件夹）也放进来'))
+        font_block = t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
+                       'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too, or use '
+                       'the open-source fonts',
+                       '这个卡带镜像没有系统更新分区（合并或精简过的卡带，“1G+1U”），所以没有系统字体：把解开的固件文件夹'
+                       '（或以前打包留下的 shared-fonts 文件夹）也放进来，或者用开源字体')
+    # 用开源字体 (user 2026-11-18): Ocarina of Time's open-source stand-ins (tools/deps/open_fonts.py) for every game
+    if font_block and open_fonts:
+        p.open_fonts = True
+        p.notes.append(open_fonts_note())
+    elif font_block:
+        p.blocks.append(font_block)
+        p.font_block = font_block
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
     if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
@@ -394,6 +406,13 @@ def _plan(items, work=None):
     return p
 
 
-def report(paths, work=None):
+def report(paths, work=None, open_fonts=False):
     items = classify(paths)
-    return {'items': [asdict(i) for i in items], 'plan': asdict(plan(items, work))}
+    return {'items': [asdict(i) for i in items], 'plan': asdict(plan(items, work, open_fonts))}
+
+
+def open_fonts_note():
+    return t('open-source fonts: the build makes the system fonts from Noto fonts (SIL OFL 1.1, downloaded once); the '
+             'button icons of slot 5 have no open equivalent. Drop a firmware or shared-fonts folder to use the real ones',
+             '用开源字体：打包时用开源的 Noto 字体（SIL OFL 1.1，只下载一次）代替系统字体，手柄按键图标没有开源替代；'
+             '想用原版字体，把固件或 shared-fonts 文件夹放进来')
