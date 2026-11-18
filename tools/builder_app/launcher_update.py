@@ -56,7 +56,7 @@ REPLACE = r'''#!/bin/sh
 pid=$1; new=$2; app=$3; result=$4; log=$5
 exec >>"$log" 2>&1
 echo "$(date '+%Y-%m-%d %H:%M:%S') replacing $app with $new once pid $pid has quit"
-finish() {
+report() {
   printf '%s\n' "$1" >"$result"
   # -n: this app at this place, also while another copy of MNG Launcher is open from somewhere else.
   # The app `open` starts gets this script's environment, which came from the Launcher that was replaced: the tests'
@@ -64,6 +64,9 @@ finish() {
   # MNG_LAUNCHER_UPDATE_TEST for the release check reopened with it every time, so its update button never went away).
   [ "${MNG_LAUNCHER_UPDATE_NO_OPEN:-0}" = 1 ] || /usr/bin/env -u MNG_LAUNCHER_UPDATE_TEST -u MNG_LAUNCHER_UPDATE_CLICK \
     -u MNG_LANG -u PYTHONDONTWRITEBYTECODE /usr/bin/open -n "$app"
+}
+finish() {
+  report "$1"
   exit "$2"
 }
 n=0
@@ -93,14 +96,18 @@ tidy() {
 }
 if mv "$new" "$app"; then
   echo "replaced"
+  report '{"ok": true}'   # the new Launcher opens now; the old copy (hundreds of MB) is removed behind it
   rm -rf "$old"
   tidy
-  finish '{"ok": true}' 0
+  echo "tidied"
+  exit 0
 fi
 echo "the new app could not be put in place: the old one is back"
 mv "$old" "$app"
+report '{"ok": false, "why": "place"}'
 tidy
-finish '{"ok": false, "why": "place"}' 1
+echo "tidied"
+exit 1
 '''
 
 
