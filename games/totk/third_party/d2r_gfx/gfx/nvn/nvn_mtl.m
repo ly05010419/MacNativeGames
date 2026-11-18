@@ -6922,9 +6922,10 @@ static void uw_note_present(const tex_t *t) {
     g_mfx.swap_w = t->d.width; g_mfx.swap_h = t->d.height;
 }
 static int uw_on_canvas(void) { return g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas; }
-/* The TOTK_MFX UI vertex shaders and four more that draw UI quads (inventory tab labels, map icons). */
+/* The TOTK_MFX UI vertex shaders and other layout quads (inventory tabs, map icons and the equipped-item stripe).
+   The stripe's material uses dc77ca02 with the same pane projection as its backing quad. */
 static int uw_ui_vs(const char *vs) {
-    static const char *const more[] = {"1a40e5f5", "2117f58b", "8d4e36d0", "1469983f"};
+    static const char *const more[] = {"1a40e5f5", "2117f58b", "8d4e36d0", "1469983f", "dc77ca02"};
     if (mfx_ui_vs(vs)) return 1;
     for (size_t i = 0; i < sizeof more / sizeof *more; i++) if (!strncmp(vs, more[i], 8)) return 1;
     return 0;
@@ -18074,7 +18075,6 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
     if (ux != 1 || uy != 1) {   // a TOTK backdrop keeps the canvas: by where its quad lands, or else by the scene picture it samples
         static int off = -1; if (off < 0) { const char *e = getenv("TOTK_UI_COVER_WIDE"); off = e && !strcmp(e, "0"); }
         int cover = off ? 0 : ui2d_quad_covers_screen(), kept = cover == 1 || cover == 4 || (cover < 0 && ui_samples_scene_picture());
-        edge = cover == 2 ? -1 : cover == 3 ? 1 : cover == 5 ? -2 : cover == 6 ? 2 : 0;
         /* The map (user 2026-10-26: stretched, and its markers slid on it): its picture is wider than the Switch's screen
            (2250 x 1080, NDC -1.17..1.17), so squeezed like the markers over it, in its own proportions, it nearly fills the
            wide screen (+-0.96): it is squeezed, but its scissor is not, so the 16:9 middle does not cut it (nor the markers over it: a scissor of the whole canvas is never squeezed). */
@@ -18089,7 +18089,18 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
         g_uw_seq = seq0++;   // the draw's place among this frame's squeezed UI draws (catalogue)
         if (world) map_frame = fr;
         else if (map_frame == fr && cover >= 2) chrome_frame = fr;
-        int map_on = map_frame && map_frame + 2 >= fr, markers = map_frame == fr && chrome_frame != fr;   // between the map and its frame
+        int map_on = map_frame && map_frame == fr;
+        int markers = map_on && chrome_frame != fr;   // between the map and its frame
+        /* The map's side pieces follow the canvas edges after its picture has drawn in this frame.
+           Other menus have edge-touching widgets too: the pouch caption and footer art follow the centred layout. */
+        if (map_on) {
+            switch (cover) {
+            case 2: edge = -1; break;
+            case 3: edge = 1; break;
+            case 5: edge = -2; break;
+            case 6: edge = 2; break;
+            }
+        }
         *map_screen = map_on;
         g_uw_phase = !map_on ? 0 : world ? 1 : markers ? 2 : 3;
         if (!world && !kept && cover == 0 && map_on && !markers) {
