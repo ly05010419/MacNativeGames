@@ -607,9 +607,19 @@ static dispatch_source_t mouseTimer;
 static int mouseTicksByHand;                   /* tests/mouse/probe.m drives mouse_tick itself */
 static void (*mouseHook)(void);                /* the window: mouse mode changed */
 
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+/* The camera patch is optional (for example, when the original instructions do not match). */
+int runtime_botw_mouse_camera_active(void);
+int runtime_botw_mouse_camera_move(double dx, double dy, int sensitivity, int invert_y);
+void runtime_botw_mouse_camera_reset(void);
+#endif
+
 static void mouse_tick(void) {
     double gyro[3], acc[3]; int32_t rx, ry;
     pthread_mutex_lock(&gamepadLock);
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+    if (runtime_botw_mouse_camera_active()) mouse_look_reset(&mouseLook);
+#endif
 #ifndef GAME_BOTW
     /* L held (keys or controller): the ability wheel is open and the mouse points at an ability (mouse_look.h) */
     mouse_look_point(&mouseLook, (int)(((runtime_keyboard_buttons() | gamepadState.buttons) >> 6) & 1));
@@ -773,6 +783,9 @@ void runtime_mouse_move(double dx, double dy) {   /* the window, while it holds 
     if (!atomic_load(&mouseMode)) return;
     if (fabs(dx) + fabs(dy) >= 1) runtime_prompt_note_input(PROMPT_KEYBOARD);
     pthread_mutex_lock(&gamepadLock);
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+    if (!runtime_botw_mouse_camera_move(dx, dy, mouseSettings.sensitivity, mouseSettings.invert_y))
+#endif
     mouse_look_move(&mouseLook, dx, dy, &mouseSettings);
     pthread_mutex_unlock(&gamepadLock);
 }
@@ -789,6 +802,9 @@ void runtime_mouse_button(int button, int down) {   /* main thread */
 void runtime_mouse_release(void) {   /* main thread: the window let the pointer go (focus lost, text entry, mouse mode off) */
     pthread_mutex_lock(&gamepadLock);
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+    runtime_botw_mouse_camera_reset();
+#endif
     pthread_mutex_unlock(&gamepadLock);
     if (mouseButtons) {
         for (int i = 0; i < CONTROLLER_MOUSE_BUTTONS; i++) if (mouseButtons >> i & 1) runtime_input_mouse(i, 0);
@@ -1281,7 +1297,12 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
     out->buttons |= touchState.buttons | pressedEdges;
     out->lx = stronger_axis(out->lx, touchState.lx); out->ly = stronger_axis(out->ly, touchState.ly);
     out->rx = stronger_axis(out->rx, touchState.rx); out->ry = stronger_axis(out->ry, touchState.ry);
-    out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+    if (!runtime_botw_mouse_camera_active())
+#endif
+    {
+        out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
+    }
     if (touchState.connected) out->connected = 1;
     vr_pad_merge(out, 0);   /* zeldaVR: the Quest 3 controllers, merged like the touch screen */
     pressedEdges = 0;
