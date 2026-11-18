@@ -12,7 +12,7 @@ because seedds/nxnative (MIT) already runs it there and every step can be compar
 
 ## Reference
 
-- nxnative at `e52afc48`, local clone `/Volumes/mac-APFS/工具/nxnative`. Its Switch 2 work, in order: `8dd0c98a` (boot into
+- nxnative at `e52afc48`, local clone `<local nxnative clone>`. Its Switch 2 work, in order: `8dd0c98a` (boot into
   the frame loop, dump packing), `d3995ca4` (Ampere shaders translated natively, menu renders), `a7bd05f4` (tensor
   instructions for agl's upscaler, NVN2 compute c0 and push constants, mip chains), `fdb3710d` (Switch 2 GOB order),
   `5b2d4606` (`nn::codec` video decoder, sync point events), `5251763d` (jump tables, BRXU, REDUX), `c4b0618c` (plays:
@@ -25,8 +25,8 @@ because seedds/nxnative (MIT) already runs it there and every step can be compar
 - Our `vendor/ryujinx` is Ryujinx 1.3.2 unmodified; nxnative's copy before its Switch 2 work (`8dd0c98a^`) has 166 of the
   190 shader translator files identical to ours, the other 24 carry its own earlier fixes. Our translator changes stay in
   `games/totk/tools/totk_xlate/patches/*.patch`, applied by `publish_native.sh`.
-- The game: the dump `/Volumes/工作/SW2-dumpster/DonkeyKongBananza` (`base/`, `updates/458752/`, `dlc/`). nxnative's
-  build of it, with every translated shader for comparison: `/Volumes/mac-APFS/SW2-dumpster/040074A01BF12000_build`.
+- The game: the dump `<dump folder>/DonkeyKongBananza` (`base/`, `updates/458752/`, `dlc/`). nxnative's
+  build of it, with every translated shader for comparison: `<nxnative build folder>/040074A01BF12000_build`.
 
 ## Phases
 
@@ -235,7 +235,9 @@ Added for it (general where possible, each with its reason in the code):
   pool registering in some scenes (the table per pool); nvnCommandBufferDrawArraysIndirect and SetCopyImageStride.
 
 **Pokopia, 2026-11-04: packaged as a Mac app by build_app.py, its shaders prepared at packaging.**
-- `build_app.py <dump folder> --shared-fonts <folder>`: a folder as the game argument is a Switch 2 dump (base/,
+- `build_app.py <dump folder> [--shared-fonts <folder>]` (fonts optional since 2026-11-16: without them the build takes
+  open-source Noto fonts, `build_app.ns2_shared_fonts` / `tools/deps/open_fonts.py`; no Bananza or Pokopia log of this
+  Mac shows the game reading them): a folder as the game argument is a Switch 2 dump (base/,
   updates/<version>/ with exefs/ and romfs/); the title ID in its main.npdm picks the game (NS2 table: Pokopia
   0400A3A01EE4C000, update 655360), no keys. Steps: import_dump.py, the ExeFS / RomFS / rewrite checked against
   games/pokopia/assets/expected-v2.0.1.json (the verified rewrite), `make runtime-pkp` (launcher with GAME_POKOPIA /

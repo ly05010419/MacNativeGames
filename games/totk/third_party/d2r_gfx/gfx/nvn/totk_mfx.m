@@ -26,6 +26,7 @@
 #include <string.h>
 #include "totk_mfx.h"
 #include "totk_hdr.h"
+#include "nvn_counted.h"
 #include <TargetConditionals.h>
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
@@ -34,6 +35,7 @@
 #if TARGET_OS_VISION
 /* visionOS has no MetalFX frame interpolator. Keep every entry point off, including environment initialization. */
 int mfx_enabled(void) { return 0; }
+void mfx_cutscene(int on) { (void)on; }
 const char *mfx_mode_name(int mode) { return mode == MFX_OFF ? "off" : "not available on visionOS"; }
 void mfx_set(int mode) { if (mode) MLOG("frame interpolation is not available on visionOS"); }
 void mfx_set_mv_dyn(int on) { (void)on; }
@@ -134,7 +136,11 @@ static void mfx_init(void) {
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
-int mfx_enabled(void) { if(totk_hdr_active())return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+/* A cutscene the game holds at its own rate (hle_nvn.c runtime_cutscene_fps: Ocarina of Time's movies at 60, user
+   2026-11-17 "和设置无关") is shown as decoded, without interpolation; the player's mode comes back after it. */
+static _Atomic int g_cutscene;
+void mfx_cutscene(int on) { atomic_store_explicit(&g_cutscene, on != 0, memory_order_relaxed); }
+int mfx_enabled(void) { if(totk_hdr_active()||atomic_load_explicit(&g_cutscene, memory_order_relaxed))return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
 int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
@@ -246,9 +252,9 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
             "  mv.write(float4(m, 0.0, 0.0), g);\n"
             "}\n";
         MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
-        id<MTLLibrary> lib = [g.dev newLibraryWithSource:@(src) options:o error:&e];
+        id<MTLLibrary> lib = mtl_counted_library(g.dev, @(src), o, &e);
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"mfx_mv"] : nil;
-        g.mv_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
+        g.mv_ps = fn ? mtl_counted_compute(g.dev, fn, &e) : nil;
         if (!g.mv_ps) MDIE("motion vector kernel: %s", e.localizedDescription.UTF8String);
         MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 3;
         for (int i = 0; i < MFX_OUT; i++) {

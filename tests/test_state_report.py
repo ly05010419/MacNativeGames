@@ -121,7 +121,7 @@ class StateReportSources(unittest.TestCase):
         stores = re.findall(r'.*g_taa_last, ', mtl)   # key 5's encode and the temporal upscale (tup_dock)
         self.assertEqual(len(stores), 2)
         for s in stores: self.assertRegex(s, r'^\s+if \(totk_sr_on\(\)\) atomic_store\(&g_taa_last, $')
-        front = (TOTK/'runtime/frontend.m').read_text() + (TOTK/'runtime/settings_panel.h').read_text()   # weak, checked: tests include them
+        front = (TOTK/'runtime/frontend.m').read_text() + (TOTK/'runtime/settings_panel.h').read_text() + (TOTK/'runtime/settings_game.h').read_text()   # weak, checked: tests include them
         names = re.findall(r'extern void (totk_sr_\w+)\([^;]*\) __attribute__\(\(weak_import\)\);', front)
         self.assertEqual(sorted(names), sorted(set(re.findall(r'\b(totk_sr_\w+)\(', front))))
         for name in names:

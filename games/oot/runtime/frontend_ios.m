@@ -5,6 +5,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #include "runtime.h"
 #include "totk_ui_lang.h"
 static CAMetalLayer *metalLayer;
@@ -98,7 +99,19 @@ static void app_active_changed(int active){
  if(active)runtime_feedback_active();
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
-void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
+/* Explicit diagnostic close / agent watchdog only. UIKit backgrounding still just pauses GPU work. Like the Mac's
+   close path, wait for the save writer; a test must not leave its game running or terminate it during a save. */
+void runtime_front_request_close(void){
+ static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  fprintf(stderr,"[totk] close requested; waiting for pending save writes\n");
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+   while(runtime_fs_save_busy())usleep(20000);
+   fprintf(stderr,"[totk] save idle; closing iOS test session\n");
+   runtime_cloud_save_quit();fflush(NULL);_exit(0);
+  });
+ });
+}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
 
 /* The display link's rate, which paces the game (mtl_display_hz): 60 on every iPhone / iPad, also a ProMotion one, whose
@@ -174,8 +187,15 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
 #if TARGET_OS_IOS || TARGET_OS_VISION
 #import <Photos/Photos.h>
 extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
-/* The renderer's next frame, for screenshot.h: weak, so a build without the renderer answers with no picture. */
-static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+extern void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+/* The renderer's next frame -- the game's own, before the output upscale -- for screenshot.h: mtl_grab_next_game_frame
+   first, the window picture when the renderer only offers that; weak, so a build without the renderer answers with no
+   picture. */
+static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) {
+    if (mtl_grab_next_game_frame) mtl_grab_next_game_frame(cb);
+    else if (mtl_grab_next_present) mtl_grab_next_present(cb);
+    else cb(NULL);
+}
 #define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
 #endif
 #include "screenshot.h"   /* the album is GAME_NAME (game_version.h): the game whose frame it is */

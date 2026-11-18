@@ -12,7 +12,8 @@ jobs:
   source:
     name: Source tests (${{ matrix.group }})
     runs-on: macos-latest
-    timeout-minutes: 10
+    # Each AppKit settings case is bounded, but running every variant on a hosted VM can exceed ten minutes.
+    timeout-minutes: ${{ matrix.group == 'settings' && 20 || 15 }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,14 +26,37 @@ jobs:
         with:
           python-version: '3.14'
           cache: pip
-          cache-dependency-path: games/totk/requirements.txt
+          cache-dependency-path: |
+            games/totk/requirements.txt
+            tools/deps/pins.py
+      - name: Install build-tool test dependencies
+        run: |
+          UI_PYTHON="$(python tools/deps python ui-pack)"
+          "$UI_PYTHON" -m pip install -r games/totk/requirements.txt
+          echo "MNG_TEST_PYTHON=$UI_PYTHON" >> "$GITHUB_ENV"
+      - name: Run synthetic container, update and native path tests
+        run: '"$MNG_TEST_PYTHON" .github/run_source_tests.py ${{ matrix.group }}'
+
+  launcher-distribution:
+    name: Launcher local-build regressions
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
       - name: Install build-tool test dependencies
         run: python -m pip install -r games/totk/requirements.txt
-      - name: Run synthetic container, update and native path tests
-        run: python .github/run_source_tests.py ${{ matrix.group }}
+      - name: Test portable source and local ZIP packaging
+        run: python -m unittest discover -s tests -p 'test_launcher_*.py' -v
 
   test:
-    needs: source
+    needs: [source, launcher-distribution]
     if: ${{ always() }}
     runs-on: macos-latest
     timeout-minutes: 10
@@ -40,7 +64,10 @@ jobs:
       - name: Require all source test groups
         env:
           SOURCE_RESULT: ${{ needs.source.result }}
-        run: test "$SOURCE_RESULT" = success
+          LAUNCHER_RESULT: ${{ needs.launcher-distribution.result }}
+        run: |
+          test "$SOURCE_RESULT" = success
+          test "$LAUNCHER_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false

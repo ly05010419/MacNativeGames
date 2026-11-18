@@ -1,6 +1,9 @@
 /* Strong test fixture replaces NVN's weak game callback, as BotW does in production. */
 int test_game_hold;
 int runtime_game_fps_limit(void) { return test_game_hold; }
+/* ... and the cutscene callback, as Ocarina of Time does while a movie plays (runtime/ns2_codec.c). */
+int test_cutscene;
+int runtime_cutscene_fps(void) { return test_cutscene; }
 #include <stdint.h>
 /* Unused renderer data referenced by retained NVN registration entries. */
 uint64_t g_draw_skip[16], g_t0_ns;

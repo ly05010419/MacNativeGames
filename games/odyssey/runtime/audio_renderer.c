@@ -174,10 +174,20 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     take(&in, h.render_info, "render info");
     need(in.p == in.end, "unconsumed update input");
 
+    /* Channel resources are positional: record i is resource i, the one a voice's channel_ids name. An unused record
+       keeps a stale id (often 0), so copying by id overwrote resource 0 (the front-left mix of voice 0) with an unused
+       record's zero mix. The server keeps an unused resource's mix (Eglantine/yuzu InfoUpdater::UpdateVoiceChannelResources).
+       After christianfurr's fork (c68ce332), where Ocarina of Time lost its front-left voice. */
     for (uint32_t i = 0; i < h.voice_resources / sizeof(AudrenChannelIn); i++) {
-        need(chans[i].id < (uint32_t)vc * 6, "channel resource id");
-        r->channels[chans[i].id] = chans[i];
+        if (chans[i].in_use) r->channels[i] = chans[i];
+        else r->channels[i].in_use = 0;
     }
+    /* Voices: a record in use names its voice by id; a record not in use names nothing (its id is stale, often 0) and
+       is skipped, so it can no longer reset a playing voice (InfoUpdater::UpdateVoices). A voice in use before this
+       request that no record in use names any more was stopped by the game: it gets the stop it got before (reset, and
+       Breath of the Wild's fade-out), once all records are read. */
+    uint8_t was_used[vc], named[vc];
+    for (int i = 0; i < vc; i++) { was_used[i] = r->voices[i].in.in_use; named[i] = 0; }
     for (int i = 0; i < vc; i++) {
         AudrenVoiceIn v;
         AudrenVoiceInV2 v2;
@@ -193,10 +203,17 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
                 }
             }
         }else memcpy(&v,voices+i*voice_stride,sizeof v);
-        update_voice(r,&v);
+        if(!v.in_use){
+            static unsigned stale;   /* evidence: the case that used to reset a playing voice */
+            if(v.id<(uint32_t)vc&&(int)v.id!=i&&was_used[v.id]&&stale<3)
+                fprintf(stderr,"[totk-audio] voice record %d is not in use and names voice %u, which is (%u of 3; before the fix this reset that voice)\n",i,v.id,++stale);
+            continue;
+        }
+        update_voice(r,&v);named[v.id]=1;
         ServerVoice *server=&r->voices[v.id];server->use_float_biquads=float_voices;
         if(float_voices)memcpy(server->float_biquads,v2.biquads,sizeof v2.biquads);
     }
+    for (int i = 0; i < vc; i++) if (was_used[i] && !named[i]) { AudrenVoiceIn stop = {.id = (uint32_t)i}; update_voice(r, &stop); }
     for (int i = 0; i < ec; i++) r->effects[i] = effects[i];
     if (getenv("TOTK_AUDIO_DUMP")) { static unsigned dumped; unsigned active = 0; for (int i=0;i<ec;i++) if (effects[i].enabled && effects[i].type) active++;
         if (active > dumped) { dumped = active; FILE *f = fopen("analysis/audio-effects.bin", "wb"); if (f) { fwrite(effects, sizeof *effects, ec, f); fclose(f); } }

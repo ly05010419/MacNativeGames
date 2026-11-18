@@ -9,7 +9,9 @@ own one-word files beside controls.txt in the game's data folder (graphics-outpu
 graphics-taa.txt, graphics-aspect.txt; runtime/settings_panel.h settings_restore_begin), so the window and the panel
 show and change the same setting, a Finder start keeps it, and Play passes no variable that would override the panel
 (after PR #1184: environment variables win over the panel and grey its rows out). A value the panel set that the window
-has no choice for (a 72 fps lock, 40+40) reads as "auto" with a note and is left alone. Only the 16x ground filter,
+has no choice for (a 72 fps lock, 40+40, 1080p, 16:9) reads as "panel:<word>": the window shows that value as it is
+(user 2026-11-12) and keeps it unless another choice is made; "auto" (no file) shows as the game's default (DEFAULTS),
+and choosing it removes the file. Only the 16x ground filter,
 which the panel does not have, is passed by Play (`open --env`) and kept in Builder/start-options.json. Files are written
 only while the game is not running (the panel saves its own over them). A player who sets TOTK_CONTROLS or
 TOTK_GAME_SLOT_DIR by hand moves the game's files elsewhere; the builder keeps looking at the default places."""
@@ -50,6 +52,13 @@ PANEL = {'picture': ('graphics-output.txt', {'metalfx': '1', 'native-2k': '2'}),
          'interpolation': ('graphics-frame.txt', {'interp30': 'interp-1', 'interp': 'interp-3', 'interpmax': 'interp-4'}),
          'smoothing': ('graphics-taa.txt', {'on': '1'}),
          'aspect': ('graphics-aspect.txt', {'21:9': '2.3333333'})}
+# What the game uses when no file and no variable sets it, as the panel's word (None: the game's own, nothing set). From
+# the runtime: both games start at 1920x1080 without MetalFX (game_patches_v143.c output page, game_patches_botw.c
+# runtime_output_size_current), interpolation and edge smoothing are off unless TOTK_MFX / TOTK_TAA say otherwise
+# (totk_mfx.m mfx_init, totk_taa.m taa_enabled), the ground keeps the game's own filtering, the shape is 16:9
+# (aspect_math.h ASPECT_GAME).
+DEFAULTS = {'picture': '0', 'interpolation': 'off', 'smoothing': '0', 'ground': None, 'aspect': '1.7777778'}
+PANEL_CHOICE = 'panel:'   # + the panel's word: a value the panel set that no window choice is
 PICTURE_WORDS = {'metalfx': 'metalfx', 'native-2k': 'native-2k', 'native-4k': 'native-2k', 'off': 'auto'}
 
 
@@ -136,7 +145,7 @@ def _panel_word(path):
 
 def read_panel(spec, paths, option):
     """One option's choice from the panel's file: (choice, note). A word the window has no choice for is the panel's
-    own setting: "auto" here, with a note, and choose() leaves it alone unless another choice is made."""
+    own setting: "panel:<word>", shown as that value, and choose() leaves it alone unless another choice is made."""
     word, note = _panel_word(panel_file(spec, paths, option.id))
     if word is None:
         if option.id == 'picture' and spec.data_folder == 'TOTK':   # 1.4.3: the game's own picture-mode.txt
@@ -146,9 +155,9 @@ def read_panel(spec, paths, option):
     choice = next((c for c, w in words.items() if w == word), None)
     if choice in option.choices:
         return choice, ''
-    if word in ('', '0', 'off'):
+    if not word:
         return 'auto', ''
-    return 'auto', f'{option.id}: the game\'s settings panel set "{word[:40]}" ({PANEL[option.id][0]}), kept'
+    return PANEL_CHOICE + word[:40], ''
 
 
 def read_state(spec, app, paths):
@@ -182,18 +191,20 @@ def choose(spec, app, paths, option_id, choice):
     """Keep one choice; the new state. ValueError for an option or choice outside the table."""
     state = read_state(spec, app, paths)
     option = next((o for o in state.options if o.id == option_id), None)
-    if option is None or choice not in option.choices:
+    current = state.choices.get(option_id) if option else None
+    if option is None or (choice not in option.choices and not (choice.startswith(PANEL_CHOICE) and choice == current)):
         raise ValueError(f'no choice {choice!r} for {option_id!r} on {state.version}')
+    if choice == current and choice.startswith(PANEL_CHOICE):   # the panel's own value, kept as it is
+        return state
     if option.how == FILE:
         if game_state.game_running(paths.data / spec.data_folder):
             return _with_note(read_state(spec, app, paths), 'running')
         target = panel_file(spec, paths, option_id)
-        word, _ = _panel_word(target)
         if choice != 'auto':
             _write(target, PANEL[option_id][1][choice] + '\n')
-        elif word in PANEL[option_id][1].values():   # only a value the window wrote; the panel's own one stays
+        else:   # the game's default, shown as such: no file, whoever wrote it
             target.unlink(missing_ok=True)
-        if option_id == 'picture' and spec.data_folder == 'TOTK' and (choice != 'auto' or word in (None, *PANEL['picture'][1].values())):
+        if option_id == 'picture' and spec.data_folder == 'TOTK':
             picture_file(spec, paths).unlink(missing_ok=True)   # the game writes it again from the panel's choice
     else:
         games, _ = _load_store(paths.store)

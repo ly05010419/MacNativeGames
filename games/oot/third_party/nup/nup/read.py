@@ -215,12 +215,15 @@ class NupReader:
             if len(data) != esz:
                 raise F.NupError(f"short read for {name!r}")
         elif codec == F.CODEC_ZSTD:
-            import zstandard
             comp = self._mm[eoff:eoff + esz]
             if len(comp) != esz:
                 raise F.NupError(f"short read for {name!r}")
-            dctx = zstandard.ZstdDecompressor()
-            data = dctx.decompress(comp, max_output_size=size)
+            try:   # MacNativeGames: Python 3.14's standard library first, so no extra package is needed (#2009)
+                from compression import zstd
+                data = zstd.decompress(comp)
+            except ImportError:
+                import zstandard
+                data = zstandard.ZstdDecompressor().decompress(comp, max_output_size=size)
         else:
             raise F.NupError(f"unknown codec {codec}")
         assert len(F.Codec) == 2

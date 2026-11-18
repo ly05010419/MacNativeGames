@@ -13,7 +13,7 @@ usage: fill_shaders.py --tree <work tree> --device <id> [--bundle-id <id>] [--ga
 import argparse, concurrent.futures, hashlib, json, os, platform, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from xcode_dir import developer_dir
-from compile_seed import METAL_FLAGS
+from compile_seed import METAL_FLAGS, target_flags
 
 TOTK = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(TOTK/'scripts'))
@@ -23,7 +23,7 @@ CONTRIBUTION = Path(os.environ.get('MNG_CONTRIB_FOLDER') or TOTK.parent.parent/'
 CONTRIBUTION_HEADER = (
     '# Shaders and render pipelines this Mac and its iPhones / iPads met that the shared shader list does not have yet\n'
     '# (docs/shader-list.md). Only shader keys, bind states and pipeline descriptors: no game data or personal information.\n'
-    '# Send it in a GitHub issue: https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml\n')
+    '# The game sends it to the shader inbox when contributing is on in Settings (docs/shader-list.md).\n')
 VARIANT = re.compile(r'^([0-9a-f]{64})-[0-9a-f]{12}$')
 HEX = re.compile(r'^(?:[0-9a-f]{2})+$')
 MAX_CODE = 16 << 20   # the runtime's own limit on a shader's code area
@@ -64,7 +64,7 @@ def append_contribution(contrib, rows):
 
 def chain():
     for line in (TOTK/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().splitlines():
-        if line.startswith('#define DMSH_CHAIN'): return line.split('"')[1]
+        if line.startswith('#define DMSH_CHAIN') and '/* game: oot' in line: return line.split('"')[1]
     raise RuntimeError('DMSH_CHAIN not found')
 
 
@@ -139,7 +139,7 @@ def record(out, variant, write=True):
 def compile_metallib(pack, name, env):
     src = pack/f'{name}.metal'; air = pack/f'{name}.air'
     try:
-        subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', *METAL_FLAGS, '-c', str(src), '-o', str(air)], check=True, capture_output=True, env=env)
+        subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metal', *METAL_FLAGS, *target_flags('iphoneos'), '-c', str(src), '-o', str(air)], check=True, capture_output=True, env=env)
         subprocess.run(['xcrun', '-sdk', 'iphoneos', 'metallib', str(air), '-o', str(pack/f'{name}.metallib')], check=True, capture_output=True, env=env)
         return None
     except subprocess.CalledProcessError as e:   # the device then compiles the MSL source itself
@@ -226,7 +226,7 @@ def main():
         # game contributes when the player lets it (totk_contrib_upload.h). --update-list also writes the
         # shipped list, which every build reads, for someone who wants the next local build to carry the variant.
         # The pack's index rows are written by build_pack, so the list is merged from the pack after it is built.
-        # The contribution file is shared by both games (collect_shader_issues.py sorts each row by its shader key); the
+        # The contribution file is shared by both games (the inbox merge sorts each row by its shader key); the
         # game's own list decides which variants are new.
         shared = ShaderList.load(shader_list); before = set(shared.variants); shared.add_cache(pack)
         new = sorted(shared.variants - before)

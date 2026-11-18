@@ -2,6 +2,7 @@
    --preview opens a standalone panel with real controller input; an optional final argument writes a PNG. */
 #import <Cocoa/Cocoa.h>
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 #include "../../runtime/text_keyboard.h"
 #include <assert.h>
 _Noreturn void runtime_fail(const char *s){fprintf(stderr,"FAIL: %s\n",s);exit(1);}

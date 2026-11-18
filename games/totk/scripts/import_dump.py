@@ -26,6 +26,14 @@ ALIGN = 16
 CHUNK = 8 * 1024 * 1024
 
 
+def not_game_file(name):
+    """Files a dump folder may hold that are no game file: the dumper's own listing of each folder (.listing) and what
+    macOS writes into a folder Finder showed (.DS_Store, and ._<name> AppleDouble files on volumes without extended
+    attributes). 2026-11-12: Bananza's dump, opened in Finder after it was dumped, held 14 .DS_Store files, and the
+    packed RomFS no longer matched the verified one (2df8c87e... instead of 8982312b...); no file of the game differed."""
+    return name in ('.listing', '.DS_Store') or name.startswith('._')
+
+
 def walk(folder):
     """Every regular file under folder as (RomFS path, size), sorted as extract_romfs.py sorts them. Symbolic links,
     names with a backslash or a NUL, and anything that is not a regular file stop the pack."""
@@ -33,7 +41,7 @@ def walk(folder):
     for top, dirs, names in os.walk(folder, followlinks=False):
         dirs.sort()
         for name in names:
-            if name == '.listing':   # the dumper's own listing of the folder, not a game file
+            if not_game_file(name):
                 continue
             full = Path(top) / name
             rel = full.relative_to(folder).as_posix()
@@ -49,38 +57,64 @@ def walk(folder):
     return sorted(files)
 
 
+def layout(files):
+    """(rows, image size): where each file starts in the image, 16-byte aligned, in the given order. pack() writes the
+    files there and index_adopted() reads an image packed the same way, so the two cannot place a file differently."""
+    rows, offset = [], 0
+    for rel, size in files:
+        offset += -offset % ALIGN
+        rows.append(dict(path=rel, offset=offset, size=size))
+        offset += size
+    return rows, offset
+
+
 def pack(folder, output):
     files = walk(folder)
     if not files:
         raise SystemExit(f'{folder}: no files')
+    rows, total = layout(files)
     output.mkdir(parents=True, exist_ok=True)
     image = output / 'romfs.bin'
     partial = image.with_suffix('.partial')
     digest = hashlib.sha256()
-    rows = []
     offset = 0
     with partial.open('wb') as out:
-        for rel, size in files:
-            pad = -offset % ALIGN
+        for row in rows:
+            pad = row['offset'] - offset
             if pad:
                 out.write(bytes(pad))
                 digest.update(bytes(pad))
                 offset += pad
             done = 0
-            with (folder / rel).open('rb') as f:
+            with (folder / row['path']).open('rb') as f:
                 while chunk := f.read(CHUNK):
                     out.write(chunk)
                     digest.update(chunk)
                     done += len(chunk)
-            if done != size:
-                raise SystemExit(f'{rel}: changed while packing ({size} -> {done} bytes)')
-            rows.append(dict(path=rel, offset=offset, size=size))
-            offset += size
+            if done != row['size']:
+                raise SystemExit(f'{row["path"]}: changed while packing ({row["size"]} -> {done} bytes)')
+            offset += done
     partial.replace(image)
-    report = dict(status='pass', source=str(folder), romfs_size=offset, romfs_sha256=digest.hexdigest(), files=rows,
+    report = dict(status='pass', source=str(folder), romfs_size=total, romfs_sha256=digest.hexdigest(), files=rows,
                   integrity='dumped RomFS folder packed by pack_romfs_folder.py; no NCA, so no IVFC levels to verify')
     (output / 'index.json').write_text(json.dumps(report) + '\n')
-    return dict(status='pass', file_count=len(rows), size=offset, sha256=report['romfs_sha256'])
+    return dict(status='pass', file_count=len(rows), size=total, sha256=report['romfs_sha256'])
+
+
+def index_adopted(folder, output, sha256, source):
+    """The index of an image build_app.py took from an installed app (adopt_game_data, which checked that its SHA-256 is
+    the verified one): the rows pack() writes, from the folder's listing, without reading the files again. It also
+    records where the image came from, its size and modification time (build_app.py adoptable_bundle)."""
+    rows, total = layout(walk(folder))
+    image = output / 'romfs.bin'
+    if image.stat().st_size != total:
+        raise SystemExit(f'{image}: {image.stat().st_size} bytes, but {folder} packs to {total}: not this folder\'s image')
+    st = Path(source).stat()
+    report = dict(status='pass', source=str(folder), romfs_size=total, romfs_sha256=sha256, files=rows,
+                  adopted_from=str(source), adopted_size=st.st_size, adopted_mtime_ns=st.st_mtime_ns,
+                  integrity='taken from an installed app; its SHA-256 equals the verified image of this folder packed')
+    (output / 'index.json').write_text(json.dumps(report) + '\n')
+    return dict(status='pass', file_count=len(rows), size=total, sha256=sha256)
 
 
 def content_folder(dump, update):
@@ -118,13 +152,23 @@ def main():
     parser.add_argument('dump', type=Path, help='the dump folder (base/, updates/<version>/, dlc/)')
     parser.add_argument('--output', type=Path, required=True, help='extracted/<version>')
     parser.add_argument('--update', type=int, help='the update version to take (default: the highest one)')
+    parser.add_argument('--adopted-image', type=Path, help='the installed app\'s image already placed in --romfs-output '
+                        '(build_app.py adopt_game_data): index it instead of packing the folder again')
+    parser.add_argument('--sha256', help='with --adopted-image: the SHA-256 build_app.py checked it has')
+    parser.add_argument('--romfs-output', type=Path, help='where the RomFS image and index go (default: <output>/romfs)')
     args = parser.parse_args()
     if not args.dump.is_dir():
         parser.error(f'{args.dump}: not a folder')
     folder, version = content_folder(args.dump.resolve(), args.update)
     exefs = (folder / 'exefs') if (folder / 'exefs').is_dir() else (args.dump.resolve() / 'base/exefs')
     modules = import_exefs(exefs, args.output)
-    romfs = pack(folder / 'romfs', args.output / 'romfs')
+    romfs_output = args.romfs_output or args.output / 'romfs'
+    if args.adopted_image:
+        if not args.sha256:
+            parser.error('--adopted-image needs --sha256')
+        romfs = index_adopted(folder / 'romfs', romfs_output, args.sha256, args.adopted_image)
+    else:
+        romfs = pack(folder / 'romfs', romfs_output)
     print(json.dumps(dict(update=version, exefs=modules, romfs=romfs)))
 
 

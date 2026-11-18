@@ -66,3 +66,11 @@ void aoc_timing_scene_clock(double *seconds, uint64_t *updates) {
     uint8_t *p = state(); uint64_t bits=p?__atomic_load_n((uint64_t *)(p+AOC_SCENE_SECONDS),__ATOMIC_RELAXED):0;
     memcpy(seconds,&bits,8); *updates=p?__atomic_load_n((uint64_t *)(p+AOC_SCENE_UPDATES),__ATOMIC_RELAXED):0;
 }
+
+// Aspect ratio (front_mac.m, the panel's row): the cameras multiply their aspect by ratio / (16/9) (patches.py).
+void aoc_aspect_set(float ratio, int own_site) {
+    uint8_t *p = state();
+    if (!p) return;
+    float f = ratio > 0 ? ratio / (16.0f / 9.0f) : 0;
+    put_float(p + AOC_ASPECT, f); put_float(p + AOC_ASPECT_OWN, own_site ? f : 0);
+}

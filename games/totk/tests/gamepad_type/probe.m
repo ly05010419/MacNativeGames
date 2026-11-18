@@ -1,6 +1,7 @@
 /* runtime/gamepad.m's controller type (key 6): the cycle, the saved controller-type.txt next to controls.txt and reading it
    back at the next start. The real file is compiled in; no controller is needed (GameController lists none). */
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 uint64_t runtime_now_ns(void) { return 0; }

@@ -2,10 +2,12 @@
 xcrun clang reads length-prefixed texts on stdin and prints, for each, controller_map_parse's line, error, map and
 modes; parse() must give the same for every fixture and for thousands of random texts made of the names, the modes, '=',
 '#', the white space C and Python disagree on, NUL, a BOM, the Kelvin sign, 'ſ' and random bytes. The seed is fixed plus
-one per run, printed on a failure."""
+one per run, printed on a failure. The Controls page's table of inputs and buttons (gui_controls_table) and the model's
+default layout against the same header."""
 import json
 from pathlib import Path
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -13,7 +15,7 @@ import sys
 import tempfile
 import unittest
 
-from tools.builder import controls_file as cf
+from tools.builder import controls_file as cf, gui_controls_table as table
 
 RUNTIME = Path(__file__).resolve().parents[1] / 'games/totk/runtime'
 HARNESS = r'''
@@ -140,6 +142,32 @@ class Limits(unittest.TestCase):
         for data, word in ((None, 'auto'), (b'switch\n', 'switch'), (b' \tswitch\v\f\r\n', 'switch'),
                            (b'Switch', 'auto'), (b'xbox', 'xbox'), (b'playstation\n', 'playstation'), (b'', 'auto')):
             self.assertEqual(cf.read_type(data), word, data)
+
+
+def header_names(array):
+    """A name table of runtime/controller_map.h (controller_switch_names, controller_physical_names)."""
+    body = re.search(array + r'\[[A-Z_]+\] = \{(.*?)\};', (RUNTIME / 'controller_map.h').read_text(), re.S)[1]
+    return re.findall(r'"([a-z0-9_]+)"', body)
+
+
+class Table(unittest.TestCase):
+    """The Controls page's table (gui_controls_table) and the model's default against the header."""
+
+    def test_the_names_are_the_runtimes(self):
+        switch, physical = header_names('controller_switch_names'), header_names('controller_physical_names')
+        self.assertEqual(sorted(table.ORDER), sorted(switch))
+        self.assertEqual(sorted(p for p, _ in table.PHYSICAL), sorted(physical[:16]))   # no touchpad, no mouse
+        self.assertEqual((list(cf.PHYSICAL), list(cf.SWITCH)), (physical, switch))
+
+    def test_the_models_default_is_controller_map_default(self):
+        targets, modes = cf.default()
+        self.assertIn('map[0] = 1u << 1; map[1] = 1u << 0; map[2] = 1u << 3; map[3] = 1u << 2;',
+                      (RUNTIME / 'controller_map.h').read_text())
+        self.assertEqual(targets[:16], [1, 0, 3, 2] + list(range(4, 16)))
+        # the mouse's buttons drive nothing in the controller layout since PR #1210 (the keyboard and mouse layout has them)
+        self.assertEqual((targets[16:], set(modes)), ([cf.NONE] * 6, {cf.HOLD}))
+        for by_label in (False, True):                                   # B2: no custom row in the default layout
+            self.assertEqual(cf.layout(cf.parse(b''), by_label)[1], {})
 
 
 if __name__ == '__main__':

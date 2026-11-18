@@ -99,7 +99,7 @@ static NSDictionary *totk_seed_import_into(NSString *source, NSString *cache, NS
         NSData *oldData = marker ? [NSData dataWithContentsOfFile:marker] : nil;
         NSDictionary *old = oldData ? [NSJSONSerialization JSONObjectWithData:oldData options:0 error:nil] : nil;
         NSRegularExpression *safe = [NSRegularExpression regularExpressionWithPattern:
-            @"^(?:[0-9a-f]{64}\\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\\.(?:metal|json|metallib)|pso_manifest\\.tsv|shader-keys\\.json)$" options:0 error:nil];
+            @"^(?:[0-9a-f]{64}\\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\\.(?:metal|json|metallib)|pso_title\\.tsv|pso_manifest\\.tsv|shader-keys\\.json)$" options:0 error:nil];
         // shader-keys.json (the warm-up scope, PR #84) is checked with the rest but read from the seed folder itself
         // (totk_shader_rt.m shader_scope), so it is never copied into the writable cache.
         NSString *const scopeName = @"shader-keys.json";

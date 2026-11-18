@@ -2,7 +2,6 @@
 "只要 我一直用的 我收集的"), picked by games/oot/build.py itself, and the App carries its shaders by default."""
 import importlib.util
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path

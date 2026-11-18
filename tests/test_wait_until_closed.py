@@ -21,13 +21,12 @@ class WaitUntilClosed(unittest.TestCase):
         self.binary.parent.mkdir(parents=True)
         self.binary.touch()
 
-    def processes(self, *args, **kwargs):
-        result = subprocess.CompletedProcess(args, 0, stdout='', stderr='')
-        if args[0] == ['ps', '-axo', 'pid=,comm=']:
-            result.stdout = f'  101 {self.binary.resolve()}\n'
-        else:
-            result.stdout = self.command
-        return result
+    def listing(self):   # what running_executables() answers: one process running the app's binary
+        return [(101, str(self.binary.resolve()))]
+
+    def patched(self, args):
+        return (patch.object(build_app, 'running_executables', side_effect=self.listing),
+                patch.object(build_app, 'process_args', side_effect=args))
 
     def test_only_exact_update_modes_are_excluded(self):
         for options, should_wait in [
@@ -42,9 +41,9 @@ class WaitUntilClosed(unittest.TestCase):
             ('--other --update-install 12986', True),
         ]:
             with self.subTest(options=options):
-                self.command = f'{self.binary.resolve()} {options}\n'
-                with patch.object(build_app.subprocess, 'run', side_effect=self.processes), \
-                        patch.object(build_app.time, 'sleep', side_effect=InterruptedError), \
+                command = f'{self.binary.resolve()} {options}'.strip()
+                listing, args = self.patched(lambda pid: command)
+                with listing, args, patch.object(build_app.time, 'sleep', side_effect=InterruptedError), \
                         patch.object(build_app, 'say'):
                     if should_wait:
                         with self.assertRaises(InterruptedError):
@@ -53,34 +52,39 @@ class WaitUntilClosed(unittest.TestCase):
                         build_app.wait_until_closed(self.app)
 
     def test_exited_process_does_not_block_install(self):
-        results = [
-            subprocess.CompletedProcess([], 0, stdout=f'101 {self.binary.resolve()}\n'),
-            subprocess.CompletedProcess([], 1, stdout='', stderr=''),
-        ]
-        with patch.object(build_app.subprocess, 'run', side_effect=results), \
-                patch.object(build_app.time, 'sleep') as sleep:
+        listing, args = self.patched(lambda pid: None)   # exited between the listing and the argument query
+        with listing, args, patch.object(build_app.time, 'sleep') as sleep:
             build_app.wait_until_closed(self.app)
             sleep.assert_not_called()
 
     def test_process_query_error_is_not_treated_as_closed(self):
-        results = [
-            subprocess.CompletedProcess([], 0, stdout=f'101 {self.binary.resolve()}\n'),
-            subprocess.CompletedProcess([], 2, stdout='', stderr='ps failed'),
-        ]
-        with patch.object(build_app.subprocess, 'run', side_effect=results):
-            with self.assertRaises(subprocess.CalledProcessError):
+        def fail(pid):
+            raise OSError(1, 'cannot read the arguments')
+        listing, args = self.patched(fail)
+        with listing, args:
+            with self.assertRaises(OSError):
+                build_app.wait_until_closed(self.app)
+        with patch.object(build_app, 'running_executables', side_effect=OSError(1, 'cannot list processes')):
+            with self.assertRaises(OSError):
                 build_app.wait_until_closed(self.app)
 
     def test_resource_runtime_is_still_waited_for(self):
         self.binary = self.app / 'Contents/Resources/totk/build/totk-native'
         self.binary.parent.mkdir(parents=True)
         self.binary.touch()
-        self.command = f'{self.binary.resolve()} rewritten/botw160 boot\n'
-        with patch.object(build_app.subprocess, 'run', side_effect=self.processes), \
-                patch.object(build_app.time, 'sleep', side_effect=InterruptedError), \
+        command = f'{self.binary.resolve()} rewritten/botw160 boot'
+        listing, args = self.patched(lambda pid: command)
+        with listing, args, patch.object(build_app.time, 'sleep', side_effect=InterruptedError), \
                 patch.object(build_app, 'say'):
             with self.assertRaises(InterruptedError):
                 build_app.wait_until_closed(self.app)
+
+    def test_no_ps(self):
+        """/bin/ps is setuid and cannot run under this machine's storage guard: the process queries use libproc / sysctl."""
+        source = (ROOT / 'build_app.py').read_text()
+        body = source[source.index('def wait_until_closed('):source.index('def record_update_source(')]
+        self.assertNotIn("'ps'", body)
+        self.assertIn('running_executables()', body)
 
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('clang'), 'macOS process paths and clang required')
     def test_real_updater_and_game_share_executable(self):

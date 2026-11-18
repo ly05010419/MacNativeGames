@@ -17,3 +17,10 @@ outside this folder, and the app needs no .NET runtime and no Python.
   (where `third_party/d2r_gfx/gfx/nvn/totk_shader_rt.m` looks for it). Both refuse a file with a different hash.
 - NativeAOT builds are not byte-for-byte reproducible across folders, so a rebuild gets a different hash; replace both
   files together, and check the rebuild translates the same as described in Wonder's README.
+
+## Licences of what is compiled in
+
+`totk_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
+
+- SPIRV-Cross (Apache-2.0): `SPIRV-Cross.LICENSE` in this folder.
+- The .NET runtime of the NativeAOT build (MIT): `dotnet-runtime.LICENSE` in this folder.

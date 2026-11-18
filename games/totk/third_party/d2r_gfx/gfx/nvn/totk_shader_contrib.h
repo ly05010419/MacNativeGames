@@ -8,9 +8,9 @@
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
 // bind states and pipeline descriptors, no game data. Once the file holds TOTK_CONTRIB_STEP new rows, the Mac launcher and
 // the iPhone / iPad app ask once, before the game starts, whether to contribute them automatically over HTTPS
-// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shader_issues.py --inbox merges what
-// arrives, as it merges GitHub issues sent by hand. Header-only: the runtime and the Mac launcher share it.
-// The file holds only what still has to be sent (user 2026-11-01: every issue used to carry the whole file, 83% of its
+// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shaders.py --inbox merges what
+// arrives. Header-only: the runtime and the Mac launcher share it.
+// The file holds only what still has to be sent (user 2026-11-01: every contribution used to carry the whole file, 83% of its
 // shaders and 99% of its pipelines already in the list): before the reminder counts it, rows the app's own seed and warm
 // lists serve leave it (totk_contrib_prune, once per app), and rows the inbox took leave it (totk_contrib_upload.h
 // totk_inbox_send). Both go to a hidden done file beside it, which the game reads as rows it has, so it never writes or
@@ -25,17 +25,13 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <os/lock.h>
+#include "totk_seed_image.h"   // totk_contrib_seed_file: the seed's image
 
 #ifndef TOTK_CONTRIB_STEP
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
 #endif
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets Breath of the Wild's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
-#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
-#define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
+#define TOTK_REPO_URL "https://github.com/ly05010419/MacNativeGames"   // the star button (launcher, settings panel): the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */
@@ -109,6 +105,36 @@ static inline void totk_contrib_json(NSMutableString *out, id value) {
     [out appendString:@"\""];
 }
 
+/* The game a contribution file belongs to: its line "# Inbox game: <id>" (the shader inbox's id for the game, GAME_INBOX_ID),
+   or nil. Every game's shaders stay apart from writing to sending (user 2026-11-12: "每个游戏的着色器都独立"): the launcher
+   claims the file before the game starts (totk_contrib_upload.h totk_inbox_claim) and gives the game the id in
+   TOTK_CONTRIB_GAME_ID; the game writes only to a file of its own id (totk_contrib_writable) and the upload sends only such a
+   file (totk_inbox_send). Before, a file could hold several games' rows and the app that sent it named its own game for all
+   of them (2026-11-11: an Ocarina of Time install sent 418 Tears of the Kingdom pipelines; 2026-11-12: 464 Pokopia rows came
+   as Breath of the Wild's, the two games sharing one file). */
+#define TOTK_CONTRIB_OWNER "# Inbox game: "
+static inline NSString *totk_contrib_owner(NSString *path) {
+    NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    for (NSString *line in [text componentsSeparatedByString:@"\n"])
+        if ([line hasPrefix:@TOTK_CONTRIB_OWNER]) return [line substringFromIndex:strlen(TOTK_CONTRIB_OWNER)];
+    return nil;
+}
+/* This game's id as the launcher's claim gave it (TOTK_CONTRIB_GAME_ID), or nil (a development run: no check). */
+static inline NSString *totk_contrib_writer_id(void) {
+    const char *id = getenv("TOTK_CONTRIB_GAME_ID");
+    return id && *id && !strchr(id, '\n') ? @(id) : nil;
+}
+/* Whether this game may write to the file: it is this game's, or not there yet (the first row names the game). */
+static inline BOOL totk_contrib_writable(NSString *path) {
+    NSString *id = totk_contrib_writer_id();
+    if (!id || !path) return YES;
+    NSString *found = [NSFileManager.defaultManager fileExistsAtPath:path] ? totk_contrib_owner(path) : id;
+    if ([found isEqualToString:id]) return YES;
+    fprintf(stderr, "[shader-contrib] %s is %s, not %s's: nothing is written to it\n", path.UTF8String,
+            found.length ? [NSString stringWithFormat:@"%@'s", found].UTF8String : "no game's", id.UTF8String);
+    return NO;
+}
+
 /* The file opened with these flags and locked (flock, exclusive), or -1. totk_contrib_retire replaces the file by a rename,
    so a descriptor opened before it names the old one: then the file is opened again. */
 static inline int totk_contrib_lock(NSString *path, int flags) {
@@ -125,13 +151,13 @@ static inline int totk_contrib_lock(NSString *path, int flags) {
 /* Appends one row (a whole line without its newline), once: not when the file or its done file has it. Not thread-safe:
    the runtime calls it under its translation lock; the file's lock (flock) keeps it apart from totk_contrib_retire in
    another process (the launcher). TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a "# Game: " line, once per
-   file and game, so a device's file sent by hand in an issue names the game and version. */
+   file and game, so the file names the game and version its rows came from. */
 static inline void totk_contrib_add_line(NSString *line) {
     static NSString *path, *gameLine; static NSMutableSet<NSString *> *rows; static int off, tagged;
     if (off) return;
     if (!rows) {
         path = totk_contrib_path();
-        if (!path) { off = 1; return; }
+        if (!path || !totk_contrib_writable(path)) { off = 1; return; }
         rows = totk_contrib_read(path);
         [rows unionSet:totk_contrib_read(totk_contrib_side(path, @"done"))];
         const char *game = getenv("TOTK_CONTRIB_GAME");
@@ -146,10 +172,12 @@ static inline void totk_contrib_add_line(NSString *line) {
     FILE *f = fd < 0 ? NULL : fdopen(fd, "a");
     if (!f) { if (fd >= 0) close(fd); return; }
     fseek(f, 0, SEEK_END);
-    if (ftell(f) == 0)
+    int fresh = ftell(f) == 0;
+    if (fresh)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
               "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
-              "# Send it in a GitHub issue: " TOTK_CONTRIB_ISSUE_URL "\n", f);
+              "# This game sends it to the shader inbox when contributing is on in Settings (docs/shader-list.md).\n", f);
+    if (fresh && totk_contrib_writer_id()) fprintf(f, TOTK_CONTRIB_OWNER "%s\n", totk_contrib_writer_id().UTF8String);
     if (!tagged) { fprintf(f, "%s\n", gameLine.UTF8String); tagged = 1; }   /* an older file, or another version since */
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);   // the lock goes with the descriptor
@@ -173,7 +201,11 @@ static inline NSDictionary *totk_contrib_answers(NSDictionary *deps) {
     NSMutableDictionary *tex = [NSMutableDictionary dictionary];
     for (NSString *slot in answers[@"tex"]) {
         id kind = answers[@"tex"][slot];
+#ifdef GAME_OOT   /* Ocarina of Time: one translation per 2D slot (cdd24414); "*2d" is its list rows' wildcard */
+        tex[slot] = [kind isEqual:@"*"] || [kind isEqual:@"*2d"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
+#else
         tex[slot] = [kind isEqual:@"*"] ? @"2d" : [kind isEqual:@"*_depth"] ? @"2d_depth" : kind;
+#endif
     }
     answers[@"tex"] = tex;
     return answers;
@@ -203,10 +235,22 @@ static inline int totk_deps_match(NSDictionary *deps, NSDictionary *ans) {
         for (NSString *slot in want) {
             id w = want[slot], h = have[slot];
             if (!h) h = defaults[kind];
+#ifdef GAME_OOT   /* Ocarina of Time: a depth texture is no separate translation (cdd24414) */
+            if ([kind isEqual:@"tex"] && [h isKindOfClass:NSString.class] && [h hasSuffix:@"_depth"]) h = [h substringToIndex:[h length] - 6];   // a list row from before 2026-11-09
+            if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
+                if (![h isKindOfClass:NSString.class]) return 0;
+                continue;
+            }
+            if ([w isEqual:@"*2d"]) {
+                if (![h isEqual:@"2d"] && ![h isEqual:@"2darray"]) return 0;
+                continue;
+            }
+#else
             if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
                 if (![h isKindOfClass:NSString.class] || [h hasSuffix:@"_depth"] != [w isEqual:@"*_depth"]) return 0;
                 continue;
             }
+#endif
             if (![h isEqual:w]) return 0;
         }
     }
@@ -280,10 +324,22 @@ static inline NSString *totk_contrib_app(NSString *seedDir, NSString *listDir) {
 
 /* The seed's variants of a shader (<shader>.variants: [{variant, deps}], as totk_shader_rt.m variants_of reads them), or
    nil when the seed has none (another game version's shader, or one it could not translate); cached by shader. */
+/* A seed file by name: the folder's, else its image's (<seed>.img.NNN, totk_seed_image.h: the Mac app's seed since
+   2026-11-17 and the iPad's keep the shaders' own files there). One image, opened for the first seed folder asked. */
+static inline NSData *totk_contrib_seed_file(NSString *seedDir, NSString *name) {
+    NSData *d = [NSData dataWithContentsOfFile:[seedDir stringByAppendingPathComponent:name]];
+    if (d || !seedDir) return d;
+    static seed_image img; static NSString *opened; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+    os_unfair_lock_lock(&lk);
+    if (!opened) { opened = [seedDir copy]; seed_image_open(&img, seedDir); }
+    BOOL same = [opened isEqualToString:seedDir];
+    os_unfair_lock_unlock(&lk);
+    return same ? seed_image_data(&img, name) : nil;
+}
 static inline NSArray<NSDictionary *> *totk_contrib_seed_variants(NSMutableDictionary *cache, NSString *seedDir, NSString *shader) {
     id vs = cache[shader];
     if (!vs) {
-        NSData *d = [NSData dataWithContentsOfFile:[seedDir stringByAppendingPathComponent:[shader stringByAppendingString:@".variants"]]];
+        NSData *d = totk_contrib_seed_file(seedDir, [shader stringByAppendingString:@".variants"]);
         NSMutableArray *rows = [NSMutableArray array];
         id parsed = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
         for (id v in [parsed isKindOfClass:NSArray.class] ? parsed : @[])
@@ -314,6 +370,25 @@ static inline NSString *totk_contrib_seed_name(NSString *name, NSArray<NSDiction
     NSDictionary *answers = totk_contrib_answers(deps);
     for (NSDictionary *v in vs) if (totk_deps_match(totk_contrib_deps_of(v), answers)) return [v[@"variant"] stringByAppendingString:@"_b"];
     return nil;
+}
+
+/* The shader names a pipeline row's key carries (vs, fs: the first two 80-byte fields, hex), empty ones left out; nil when
+   the key is not one. */
+static inline NSArray<NSString *> *totk_contrib_key_names(NSString *row) {
+    enum { NAME = 80 };
+    NSArray<NSString *> *f = [row componentsSeparatedByString:@"\t"];
+    if (f.count < 2 || f[1].length < 4 * NAME) return nil;
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSUInteger at = 0; at < 2; at++) {
+        char bytes[NAME + 1] = {0};
+        for (NSUInteger i = 0; i < NAME; i++) {
+            unsigned b; if (sscanf([[f[1] substringWithRange:NSMakeRange((at * NAME + i) * 2, 2)] UTF8String], "%2x", &b) != 1) return nil;
+            bytes[i] = (char)b;
+        }
+        NSString *name = @(bytes);
+        if (name.length) [names addObject:name];
+    }
+    return names;
 }
 
 /* A pipeline row (R / B / T) with the two shaders its key names (nvn_pso_skey.h pso_skey: char vs[80], fs[80] lead the
@@ -348,9 +423,11 @@ static inline NSString *totk_contrib_seed_row(NSString *row, NSMutableDictionary
    variant of the app's seed serves (picked as the runtime picks one), an R / B / T row the app's warm lists hold, as it
    is or with its shaders named as the lists name them (totk_contrib_seed_row; 18,092 of the 26,628 rows of a 1.4.3
    build's pso_manifest.tsv are renamed so). Such rows were written by an older app, or another player's file brought
-   them into the list since; the game would not write them now, and an issue carrying them adds nothing. A shader the
+   them into the list since; the game would not write them now, and sending them adds nothing. A shader the
    seed does not have (another game version's) and a name the seed cannot tell stay: only what is certainly there
-   leaves. Called by the Mac launcher before its reminder counts the file and by the iPhone / iPad app before the game
+   leaves. A V row stays while a pipeline row left in the file names its variant: the merge needs the bind state behind
+   that name to take the pipeline row (2026-11-11: 79 OoT rows were refused, naming two bind states no upload carried,
+   their V rows pruned here as the seed served them). Called by the Mac launcher before its reminder counts the file and by the iPhone / iPad app before the game
    starts. Returns the rows moved. */
 static inline NSUInteger totk_contrib_prune(NSString *path, NSString *seedDir, NSString *listDir) {
     NSString *app = path ? totk_contrib_app(seedDir, listDir) : nil, *mark = path ? totk_contrib_side(path, @"pruned") : nil;
@@ -360,6 +437,7 @@ static inline NSUInteger totk_contrib_prune(NSString *path, NSString *seedDir, N
     // with this build's names and one with the portable ones become the same)
     NSMutableDictionary *seed = [NSMutableDictionary dictionary];
     NSMutableDictionary<NSString *, NSDictionary *> *states = [NSMutableDictionary dictionary];   // portable name -> deps
+    NSMutableDictionary<NSString *, NSString *> *named = [NSMutableDictionary dictionary];        // served V row -> its name
     NSMutableSet<NSString *> *rows = totk_contrib_read(path), *known = [rows mutableCopy];
     [known unionSet:totk_contrib_read(totk_contrib_side(path, @"done"))];   // a V row moved before still names its state
     for (NSString *row in known) @autoreleasepool {
@@ -378,7 +456,11 @@ static inline NSUInteger totk_contrib_prune(NSString *path, NSString *seedDir, N
         id deps = vs ? [NSJSONSerialization JSONObjectWithData:[f[2] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil] : nil;
         if (![deps isKindOfClass:NSDictionary.class]) continue;
         NSDictionary *answers = totk_contrib_answers(deps);
-        for (NSDictionary *v in vs) if (totk_deps_match(totk_contrib_deps_of(v), answers)) { [served addObject:row]; break; }
+        for (NSDictionary *v in vs) if (totk_deps_match(totk_contrib_deps_of(v), answers)) {
+            [served addObject:row];
+            named[row] = [totk_contrib_listed_name(f[1], deps) stringByAppendingString:@"_b"];
+            break;
+        }
     }
     for (NSString *name in pipes.count ? @[@"pso_title.tsv", @"pso_manifest.tsv", @"pso_list.tsv"] : @[]) {
         FILE *f = fopen([listDir stringByAppendingPathComponent:name].fileSystemRepresentation, "r");
@@ -392,6 +474,10 @@ static inline NSUInteger totk_contrib_prune(NSString *path, NSString *seedDir, N
         }
         free(line); if (f) fclose(f);
     }
+    NSMutableSet<NSString *> *still = [NSMutableSet set];   // the names the pipeline rows staying in the file carry
+    for (NSString *row in named.count ? rows : [NSSet set])
+        if (![row hasPrefix:@"V\t"] && ![served containsObject:row]) [still addObjectsFromArray:totk_contrib_key_names(row) ?: @[]];
+    for (NSString *row in named) if ([still containsObject:named[row]]) [served removeObject:row];
     NSUInteger moved = totk_contrib_retire(path, served);
     if (moved == served.count) [app writeToFile:mark atomically:YES encoding:NSUTF8StringEncoding error:nil];   // else again next time
     return moved;

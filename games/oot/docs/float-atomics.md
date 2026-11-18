@@ -38,3 +38,11 @@ Metal 的存储缓冲在翻译器里声明成 `uint[]`，合法 SPIR-V 无法从
 ## 规则
 
 改变 GPU 执行结构的翻译器改动（循环、原子、同步），先在隔离测试里按游戏实际规模（像素数 × 次数）证明耗时有上限，再进真实游戏。
+
+## Apple M5：编译器编不了的那一个着色器（#2070，2026-11-10）
+
+- 现象（报告者实测）：Apple M5（`applegpu_g17g`）、macOS 26.6.2，`MTLCompilerService` 把 AIR 编成 GPU 代码时崩溃（AGX3 `cannot select … llvm.agx3.disable.smashing.float`），只要 `device atomic_float` 上做 `atomic_fetch_add` / `atomic_exchange`；load / store / compare-exchange 和整数 fetch_add 正常。OOT 34 个用浮点原子的着色器里，M5 上只 `278f4837…_b` 一个计算着色器编不过（形状相关）；M4 / macOS 26.5.2 都能编。
+- 那个着色器：每个线程往 `cp_sf0._m0[0]` 加 0 或 1（统计像素数），16×16 一组。
+- 做法（运行时，`nvn_float_rmw.h` + `nvn_mtl.m` 的 `frmw_*`）：只在原生管线因编译服务中断建不出来时，把这个着色器的 MSL 里每个 `device` 浮点加法改写成“SIMD 组内同地址的车道先 `simd_sum`，一条车道用 uint compare-exchange（失败时重读）写一次”，每条车道拿回的旧值 = 组的旧值 + 排在它前面的车道之和（合法的原子顺序）。不需要屏障，任何位置都合法。改过的着色器按 GPU 记进 `pipelines/float-rmw-lowered.txt`，打包时由 `build_app.mac_pipeline_files` 写成 App 的 `pipelines-<arch>-lowered.txt`，之后不再先试原生写法（不再弄崩编译服务）。`OOT_FLOAT_RMW_LOWER=1` 强制改写所有带浮点加法的计算着色器（测试用）。
+- M4 隔离测试（1536×864 线程全加到同一个字，结果都精确）：原生 0.11 ms；改写后 26–29 ms；线程组级合并 3–5 ms（要往 main0 加线程组内存和参数，没做）；逐线程 CAS 约 9 s（不能用）。所以只改编不过的那一个，其余保持原生。
+- 已验证（M4）：改写文本测试；改写后的内核在 GPU 上总和与旧值都精确（`tests/float_rmw_gpu_test.m`）；种子里 12 个带浮点加法的计算着色器改写后全部编得过、建得出管线；运行时 `pipeline-archive` 强制改写建出 `278f4837…` 那条管线，0 失败。没验证：M5 上真的编过、实际耗时、画面曝光（交给 #2070 报告者）。

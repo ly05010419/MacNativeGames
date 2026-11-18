@@ -1,0 +1,86 @@
+# The UI texture pack of Tears of the Kingdom 1.4.3: the textures tools/ui_pack builds, with their draw scale and the options of the shape method.
+# key<TAB>scale<TAB>options (JSON)<TAB>where. A key is a hash of the texture's stored bytes, its size and format; no pixels and no game files are kept here.
+# scale: screen px per texel at the reference height, measured in game shots (empty: not found, the default applies).
+# reference-height: 1944
+# default-scale: 1.5
+0011f5472d0df382-108x108-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+02fd2e5658c66142-96x96-49	1.86	{}	measured in game at 1.86; filtered for 1.86
+04874a72a437a611-40x48-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+09d2fc1bbd38e358-108x108-49	0.90	{}	measured in game at 0.90 and 1.20; filtered for 0.90
+0a48fe7cce336143-24x24-01	1.14	{"param":"N"}	measured in game at 1.14; filtered for 1.14
+0b76d992d51179b2-192x48-49		{"K":16,"hard":30,"turd":1.5}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+0c58d079881b09b6-384x120-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+0d02016c1172744e-34x34-49	1.69	{}	measured in game at 1.69; filtered for 1.69
+0f0a96a0add0f459-108x108-49	1.20	{}	measured in game at 1.20; filtered for 1.20
+133df9eda823b568-54x54-49	1.36	{}	measured in game at 1.36; filtered for 1.36
+13d14d3b35510eb5-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+14cbffe5e6c0cc60-32x32-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+1550a297d3b5a8d2-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+171c83f06e3addf4-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+186d603a9c173fca-108x108-01	0.83	{}	measured in game at 0.83 and 0.99; filtered for 0.83
+197180ec249617c4-450x675-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+23c06ce41ce7ebe1-28x22-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+274949a988f3c76b-100x70-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+296f7e7fd8ab365f-108x108-49	0.89	{}	measured in game at 0.89 and 1.19; filtered for 0.89
+2cb06a24846fc104-330x675-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+32c95798b90579fd-20x135-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+35913941d188b573-96x96-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+35fb12c8c1cccde6-338x67-49		{"mode":"ea","T":128,"K":8}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+375dbe8c3ab13310-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+3cef4176d53dd2de-330x675-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+3ff22eba0fecd272-82x82-01		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+44afd64a2ec8b894-108x108-49	0.91	{}	measured in game at 0.91 and 1.22; filtered for 0.91
+459528414993a01b-6x36-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+481fb72e6f523395-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+4e709b0f84ce1eaf-192x192-49		{"mode":"ea","T":12,"S0":0}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+4e7f01e2868bad22-40x48-49	1.80	{"K":16,"hard":30}	measured in game at 1.80; filtered for 1.80
+4f2ff4435e9ac91e-225x225-49		{"levels0":[0,153],"hard":30,"accept":{"levels":"the source's +8..15 light rim (brightest plateau 173) is below the patch threshold and not kept: pack 153 (-20), the main plateau 153 is equal; owner approved 2026-11-13"}}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+5229bb6afe48b189-42x18-49	1.77	{}	measured in game at 1.77; filtered for 1.77
+527c4f219d719000-20x458-49		{"K":16,"hard":30,"turd":1.5,"sig":0.45}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+54ddd76b6c6b3dec-82x82-01		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+55cfaa8ff69de6f4-36x36-4b		{"reg0":0.0,"ctol":0.5,"cmin":2.0,"pix":[[2,8,2,8,0],[2,8,28,34,0],[28,34,2,8,0],[28,34,28,34,0],[15,21,15,21,0]]}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+585f65c1edbf5ab4-144x144-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+64d5742e30a1243a-440x160-49	1.54	{}	measured in game at 1.54; filtered for 1.54
+6dcf8126c583c212-512x512-49		{"K":8,"skip":"soft greyscale glow mask: one channel, values 0-30 (96% zero), star blobs peaking at 11 with 1-4 halos, 1-px lines at 8 with 2-3 halos, largest neighbour step 14 levels; every traced version turned the faint lines into dashes and the stars into rings"}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+6eba235263d7c0ec-108x108-49	1.20	{}	measured in game at 1.20; filtered for 1.20
+6f2062649b199631-570x772-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+70ccc08f4f1c55ad-108x108-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+72361d8f55488402-40x40-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+743ad88a6774e0d8-64x64-49	1.45	{}	measured in game at 1.45; filtered for 1.45
+7927559ad2c01e65-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+854cccd4211251cb-108x108-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+88e815ec01b9251a-32x28-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+88f48e82d073d83e-108x108-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+8d2db0abb7199824-82x82-01	0.79	{}	measured in game at 0.79 and 1.80; filtered for 0.79
+909bc10731941026-26x26-49	2.00	{}	measured in game at 2.00; filtered for 2.00
+92c436d3040c0c90-6x36-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+94364e0daee2cff8-48x48-49		{"mode":"ea","T":150,"P":208,"zdil":0}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+948d367fccaf7d89-72x72-49	1.09	{}	measured in game at 1.09; filtered for 1.09
+95aa06998d83af04-36x69-49		{"sym":"y"}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+97ff78f4aed2d8c0-108x108-49	1.22	{}	measured in game at 1.22; filtered for 1.22
+99de0642821c0f3a-50x50-49		{"accept":{"levels":"tiny dot: the source's brightest plateau is 230 and the pack's is 255 (+25); the pre-filtered dot's game-view mean ink matches the source (+0.03); owner approved 2026-11-13"}}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+9c57617344d9af67-56x56-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+9d3b223dc0f1725b-240x20-49		{"sig":0.0,"corner":40}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+a938e695bfe59ba6-338x67-49		{"mode":"ea","T":128,"K":8}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+ae1d07e8745cf44f-48x48-01	1.19	{}	measured in game at 1.19; filtered for 1.19
+b2a917f5fa4ee63a-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+b48a8b8cdbc651e4-20x135-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+b6a0dcf4a14e49f5-40x40-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+c07b2b0d368c9f65-72x72-0d		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+c604e941c3d068ac-48x48-4b		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+c6267d39e1a60eed-48x48-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+ca676b42a1b1f7f8-20x20-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+cdd2725736bdcf53-267x267-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+cece696911ff2ae0-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+cfe560b48591cc8a-96x96-49		{"accept":{"levels":"thin 1-px strokes peak at 252 after the pre-filter, source 255 (-3); owner approved 2026-11-13"}}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+d0e6e7442a6e0f4a-48x48-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+d3d83c7d32b7457a-72x72-49		{"mode":"ea","T":112,"P":128,"tau":0.2,"zdil":0}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+d4b4615228c479f3-338x67-49		{"mode":"ea","T":128,"K":8}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+dd0b5fba987da2aa-48x48-49		{"sig":0.0,"prim":0.1,"patch":[0.2,0.4],"hard":30}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+dd3bdba6b623d05b-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+ea02ddfa84d4fdfb-48x48-49	1.71	{}	measured in game at 1.71; filtered for 1.71
+ead81e31a061e4f3-108x108-49	1.19	{}	measured in game at 1.19; filtered for 1.19
+f40d6815469bd49f-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+f63353bb8854144d-72x72-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)
+f9645c7560bb3088-72x72-49	1.42	{}	measured in game at 1.42 and 1.58; filtered for 1.42
+fa9b44c86b1f4f54-168x12-49		{}	not found in the in-game shots; default 1.5 (between the 1.2 menu and 1.8 HUD scales)

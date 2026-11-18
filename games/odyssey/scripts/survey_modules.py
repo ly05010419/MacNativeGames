@@ -15,7 +15,10 @@ from pathlib import Path
 
 
 def decompress(payload, uncompressed_size):
-    lib = ctypes.CDLL(ctypes.util.find_library('lz4') or '/opt/homebrew/lib/liblz4.dylib')
+    found = ctypes.util.find_library('lz4')
+    if not found:
+        raise SystemExit('liblz4 not found: run this with a Python that has the lz4 package (the build\'s venv)')
+    lib = ctypes.CDLL(found)
     fn = lib.LZ4_decompress_safe
     fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
     fn.restype = ctypes.c_int
@@ -32,12 +35,13 @@ def main():
     parser.add_argument('exefs', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    shim = types.ModuleType('lz4')
-    block = types.ModuleType('lz4.block')
-    block.decompress = decompress
-    shim.block = block
-    sys.modules['lz4'] = shim
-    sys.modules['lz4.block'] = block
+    if importlib.util.find_spec('lz4') is None:   # the lz4 package when this Python has it, else the system's liblz4
+        shim = types.ModuleType('lz4')
+        block = types.ModuleType('lz4.block')
+        block.decompress = decompress
+        shim.block = block
+        sys.modules['lz4'] = shim
+        sys.modules['lz4.block'] = block
     script = Path(__file__).resolve().parents[1] / 'third_party/by3-scripts/prepare_modules.py'
     spec = importlib.util.spec_from_file_location('prepare_modules', script)
     analyzer = importlib.util.module_from_spec(spec)

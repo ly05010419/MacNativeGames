@@ -1,7 +1,7 @@
 /* Standalone host API integration test; no game data. Build from games/mkw:
  * xcrun clang -std=c11 -Wall -Wextra -Werror -Iruntime \
- * -I/opt/homebrew/opt/libvpx/include tests/codec_host.c \
- * /opt/homebrew/opt/libvpx/lib/libvpx.a -o build/codec-test
+ * -I"$(python3 ../../tools/deps prefix libvpx)/include" tests/codec_host.c \
+ * "$(python3 ../../tools/deps prefix libvpx)/lib/libvpx.a" -o build/codec-test
  */
 #include <assert.h>
 #include <vpx/vp8cx.h>

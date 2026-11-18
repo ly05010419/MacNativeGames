@@ -1,0 +1,90 @@
+"""A downloaded Launcher says when a newer MNG Launcher is out: its version label at the window's bottom right turns blue
+("MNG Launcher 1.0.6 · 可更新到 1.0.7") and a click downloads its disk image, as the website's Download button does. A
+player had no way to know (1.0.3 stayed in use while 1.0.4, 1.0.5 and 1.0.6 came out with build fixes). The release list the home page already reads for source updates
+(source_updates.check, at most once in ten minutes) names the newest launcher-v* release too: no other request."""
+import importlib
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+updates = importlib.import_module('tools.builder_app.source_updates')
+SWIFT = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+
+
+def release(tag, draft=False, dmg=True):
+    base = 'https://github.com/owner/repo/releases'
+    assets = [{'name': f'MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.zip', 'browser_download_url': f'{base}/download/{tag}/x.zip'}]
+    if dmg:
+        assets.append({'name': f'MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.dmg',
+                       'browser_download_url': f'{base}/download/{tag}/MNG-Launcher-{tag[len("launcher-v"):]}-macOS-arm64.dmg'})
+    return {'tag_name': tag, 'draft': draft, 'html_url': f'{base}/tag/{tag}', 'assets': assets}
+
+
+class NewestLauncher(unittest.TestCase):
+    def test_the_highest_launcher_release_is_named(self):
+        listing = [release('source-20261118-39be650b'), release('launcher-v1.0.9'), release('launcher-v1.0.10'),
+                   release('launcher-v1.1.0', draft=True), release('launcher-vnext'), release('v2026.10.25')]
+        self.assertEqual(updates.newest_launcher(listing),   # its disk image, as the website's Download button
+                         {'version': '1.0.10', 'url': 'https://github.com/owner/repo/releases/download/launcher-v1.0.10/MNG-Launcher-1.0.10-macOS-arm64.dmg'})
+
+    def test_a_release_without_a_disk_image_opens_its_page(self):
+        self.assertEqual(updates.newest_launcher([release('launcher-v1.0.7', dmg=False)])['url'],
+                         'https://github.com/owner/repo/releases/tag/launcher-v1.0.7')
+
+    def test_only_github_or_the_website_is_opened(self):
+        elsewhere = release('launcher-v1.0.9')
+        for a in elsewhere['assets']:
+            a['browser_download_url'] = a['browser_download_url'].replace('https://github.com/', 'https://example.com/')
+        self.assertEqual(updates.newest_launcher([elsewhere])['url'],          # its page on GitHub instead
+                         'https://github.com/owner/repo/releases/tag/launcher-v1.0.9')
+        elsewhere['html_url'] = 'https://github.com.example.com/tag/launcher-v1.0.9'
+        self.assertEqual(updates.newest_launcher([elsewhere, release('launcher-v1.0.8')])['version'], '1.0.8')
+        site = release('launcher-v1.0.7', dmg=False)
+        site['html_url'] = 'https://mac-native-games.com/'
+        self.assertEqual(updates.newest_launcher([site])['url'], 'https://mac-native-games.com/')
+        plain = release('launcher-v1.0.7', dmg=False)
+        plain['html_url'] = 'http://github.com/owner/repo/releases/tag/launcher-v1.0.7'
+        self.assertIsNone(updates.newest_launcher([plain]))
+        hosts = '"github.com", "mac-native-games.com", "www.mac-native-games.com"'
+        self.assertEqual(tuple(json.loads(f'[{hosts}]')), updates.LAUNCHER_HOSTS)   # the Swift side checks the same
+        model = (SWIFT / 'Model.swift').read_text()
+        self.assertIn(f'static let launcherHosts: Set<String> = [{hosts}]', model)
+        self.assertIn('launcherHosts.contains(url.host ?? "")', model)
+
+    def test_a_list_without_one_names_none(self):
+        self.assertIsNone(updates.newest_launcher([release('source-a')]))
+        self.assertIsNone(updates.newest_launcher({'message': 'API rate limit exceeded'}))
+
+    def test_the_home_page_check_records_it_for_the_window(self):
+        with tempfile.TemporaryDirectory() as d:
+            support = Path(d)
+            conf = {'api': 'https://api.github.com/repos/owner/repo/releases?per_page=30', 'public_key': '',
+                    'launcher': '1.0.6', 'bundled_time': 1000}
+            listing = json.dumps([release('launcher-v1.0.7'), release('launcher-v1.0.6')]).encode()
+            with mock.patch.object(updates, 'curl', return_value=listing) as curl:
+                self.assertEqual(updates.check(support, conf, now=5000), ('none', None))
+            curl.assert_called_once()                                            # the list alone: no other request
+            state = json.loads((support / 'sources/update-check.json').read_text())
+            self.assertEqual(state['launcher']['version'], '1.0.7')
+
+
+class VersionLabel(unittest.TestCase):
+    def test_only_a_release_older_than_the_newest_turns_blue_and_downloads_it(self):
+        model = (SWIFT / 'Model.swift').read_text()
+        self.assertIn('guard Paths.isRelease', model)                          # a build from a checkout says nothing
+        self.assertIn('options: .numeric) == .orderedDescending', model)        # 1.0.10 is newer than 1.0.9
+        self.assertIn('newerLauncher = Self.newerLauncher(', model[model.index('func loadInstalled'):])   # after each read
+        app = (SWIFT / 'App.swift').read_text()
+        label = app[app.index('struct VersionLabel'):]
+        self.assertIn('if let newer = model.newerLauncher', label)
+        self.assertIn('NSWorkspace.shared.open(newer.url)', label)
+        self.assertIn('Color.accentColor', label)
+        # the label is laid over the window's content: the model has to reach it there
+        self.assertLess(app.index('.overlay(alignment: .bottomTrailing) { VersionLabel() }'), app.index('.environmentObject(model)'))
+
+
+if __name__ == '__main__':
+    unittest.main()

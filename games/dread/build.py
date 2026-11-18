@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Build the Metroid Dread Mac app in one command: the steps of README.md, each checked against
-assets/expected-v1.0.0.json, with the work folder reused across runs.
+assets/expected-v2.1.0.json, with the work folder reused across runs.
 
-    python3.14 build.py <game.xci|nsp> -k <prod.keys> [--firmware DIR | --shared-fonts DIR] [-o OUT] [--work DIR]
+    python3.14 build.py <base.xci|nsp> --update <update.nsp> -k <prod.keys> [--firmware DIR | --shared-fonts DIR]
+                        [-o OUT] [--work DIR]
+
+The game is 2.1.0: the code comes from the update NSP, the RomFS is the base's merged with the update's.
 
 Run it from the top of the repository. --json-progress prints one JSON event per line for a front end, and --inspect only
 identifies the game files. The app it writes runs the game from the work folder (Info.plist DreadWorkFolder): do not move
@@ -28,11 +31,22 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 GAME = json.loads((HERE / 'game.json').read_text())
-EXPECTED = json.loads((HERE / 'assets/expected-v1.0.0.json').read_text())
-VERSION = 'v100'
+EXPECTED = json.loads((HERE / 'assets/expected-v2.1.0.json').read_text())
+VERSION = 'v210'
+
+
+def select_version(version):
+    global VERSION, EXPECTED
+    if version not in ('v100', 'v210'):
+        raise BuildError(f'unsupported Dread version: {version}', code='unsupported_version')
+    VERSION = version
+    display = '1.0.0' if version == 'v100' else '2.1.0'
+    EXPECTED = json.loads((HERE/f'assets/expected-v{display}.json').read_text())
+    os.environ['DREAD_VERSION'] = version
+
 APP_NAME = GAME['name']
-SPACE_GB = 10   # the RomFS image (4.4 GB), the shader cache and the rest of the work folder; the app itself is small
-TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin']
+SPACE_GB = 11   # the merged RomFS image (5.3 GB), the shader cache and the rest of the work folder; the app itself is small
+TOOL_PATHS = []   # git and make: the Xcode command line tools' (/usr/bin); no Homebrew prefix is searched
 BUILD_INFO = 'Contents/Resources/build-info.json'
 BUILD_INFO_SCHEMA = 1
 
@@ -47,6 +61,17 @@ class BuildError(Exception):
     def __init__(self, message, code='build', log=None):
         super().__init__(message)
         self.code, self.log = code, log
+
+
+def pinned_deps(*names):
+    """OPUS_PREFIX, VPX_PREFIX, … in this process's environment, which the Makefile reads: the repository's tools/deps
+    makes them once per Mac from pinned sources, so no Homebrew is needed (2026-11-12)."""
+    sys.path.insert(0, str(REPO))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env(*names))
+    except DepsError as e:
+        raise BuildError(str(e), code='toolchain') from None
 
 
 def event(kind, /, **fields):
@@ -161,19 +186,27 @@ def kind_of(path):
     raise BuildError(f'{path.name}: expected an XCI or NSP holding {APP_NAME} {EXPECTED["display_version"]}', code='input')
 
 
-def check_package(path):
-    """An NSP's tickets name its title (read without keys): another game, or Metroid Dread's update or DLC, is refused
-    here. A card image carries no tickets; build_app.py identified it before handing it over, and the extraction refuses
-    any other Program NCA. The exact version is checked by the hashes of the extracted code and data."""
+def check_package(path, update=False):
+    """An NSP's tickets name its title (read without keys): another game, or the wrong part of Metroid Dread (the update
+    given as the base, the base as the update, DLC), is refused here. A card image carries no tickets; build_app.py
+    identified it before handing it over, and the extraction refuses any other Program NCA. The exact version is checked
+    by the hashes of the extracted code and data."""
     kind = kind_of(path)
+    if update and kind != 'nsp':
+        raise BuildError(f'{path.name}: expected the {APP_NAME} {EXPECTED["display_version"]} update as an NSP', code='input')
     titles = ticket_titles(path) if kind == 'nsp' else []
-    if titles and EXPECTED['title_id'] not in titles:
+    want = EXPECTED['update_title_id'] if update else EXPECTED['title_id']
+    if update and titles and want not in titles:
+        raise BuildError(f'{path.name} is not the {APP_NAME} update ({want}); its tickets name {", ".join(titles)}',
+                         code='wrong_game')
+    if not update and titles and EXPECTED['title_id'] not in titles:
         def application(t):   # build_app.title_kind: base ends in 000, update in 800, DLC belongs 0x1000 below its block
             v = int(t, 16)
             return f'{v & ~0xFFF:016X}' if v & 0xFFF in (0, 0x800) else f'{(v & ~0xFFF) - 0x1000:016X}'
         if EXPECTED['title_id'] in {application(t) for t in titles}:
-            raise BuildError(f'{path.name} is {APP_NAME} add-on content or an update, not the base game; this build '
-                             f'takes the base game {EXPECTED["display_version"]} only', code='wrong_game')
+            raise BuildError(f'{path.name} is {APP_NAME} add-on content or an update, not the base game: give the base '
+                             f'game as the first file and the {EXPECTED["display_version"]} update with --update',
+                             code='wrong_game')
         raise BuildError(f'{path.name} is not {APP_NAME} ({EXPECTED["title_id"]}); its tickets name {", ".join(titles)}',
                          code='wrong_game')
     return kind
@@ -220,9 +253,7 @@ def prerequisites():
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install', code='toolchain')
     choose_sdk()
-    missing = [p for p in ('opus', 'libvpx') if not Path(f'/opt/homebrew/opt/{p}/lib').is_dir()]
-    if missing:
-        raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}', code='toolchain')
+    pinned_deps('opus', 'libvpx')
     for tool in ('git', 'make'):
         if not shutil.which(tool, path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
             raise BuildError(f'{tool} not found: xcode-select --install', code='toolchain')
@@ -273,21 +304,24 @@ def manifest_source(work):
         return None
 
 
-def step_code(py, work, game, keys, logs):
+def step_code(py, work, update, keys, logs):
+    """The code of 2.1.0 is the update's ExeFS (every module: main changed, sdk and subsdk0 are 1.0.0's)."""
     exefs = work / f'extracted/{VERSION}/exefs'
-    if all(matches(exefs / n, h) for n, h in EXPECTED['exefs_sha256'].items()) and manifest_source(work) == game:
-        say('1/4 code: the 1.0.0 code is already extracted and verified')
+    if all(matches(exefs / n, h) for n, h in EXPECTED['exefs_sha256'].items()) and manifest_source(work) == update:
+        say(f'1/4 code: {EXPECTED["display_version"]} code is already extracted and verified')
     else:
-        say('1/4 code: extracting and verifying the 1.0.0 code')
+        say(f'1/4 code: extracting and verifying {EXPECTED["display_version"]} code')
         shutil.rmtree(exefs, ignore_errors=True)
         try:
-            run([py, 'scripts/extract_exefs.py', game, '--keys', keys, '--output', exefs], logs / 'extract-exefs.log')
+            tool = 'scripts/extract_exefs.py' if VERSION == 'v100' else 'scripts/extract_code.py'
+            run([py, tool, update, '--keys', keys, *([] if VERSION == 'v100' else ['--title', EXPECTED['title_id']]), '--output', exefs],
+                logs / 'extract-exefs.log')
         except BuildError as e:   # keys that do not open the NCAs, another game, an update or a damaged dump
             e.code = 'keys_or_dump'
             raise
         bad = [n for n, h in EXPECTED['exefs_sha256'].items() if not matches(exefs / n, h)]
         if bad:
-            raise BuildError(f'the extracted code differs from the reference 1.0.0: {", ".join(bad)}', code='hash_mismatch')
+            raise BuildError(f'the extracted code differs from the reference {EXPECTED["display_version"]}: {", ".join(bad)}', code='hash_mismatch')
     rewritten = work / f'rewritten/{VERSION}'
     env = dict(os.environ, DM_RULESET='native', DM_PRIVATE_GATES='0')
     for module in ('sdk', 'subsdk0', 'main'):
@@ -299,33 +333,42 @@ def step_code(py, work, game, keys, logs):
         rewritten.mkdir(parents=True, exist_ok=True)
         run([py, 'third_party/d2r/patch_nso.py', exefs / module, rewritten, module], logs / f'rewrite-{module}.log', env=env)
         if not matches(target, want):
-            raise BuildError(f'the rewritten {module} differs from the reference rewrite (assets/expected-v1.0.0.json)', code='hash_mismatch')
+            raise BuildError(f'the rewritten {module} differs from the reference rewrite (assets/expected-v2.1.0.json)', code='hash_mismatch')
     elf = work / f'extracted/{VERSION}/elf'
     if not (elf / 'modules.json').is_file():
         run([py, 'scripts/prepare_modules.py', exefs, '--output', elf], logs / 'prepare-modules.log')
-    say('1/4 code: verified (ExeFS and rewrite match assets/expected-v1.0.0.json)')
+    say('1/4 code: verified (ExeFS and rewrite match assets/expected-v2.1.0.json)')
 
 
 def romfs_done(romfs):
     try:
         index = json.loads((romfs / 'index.json').read_text())
+        size = (romfs/'romfs.bin').stat().st_size
     except (OSError, ValueError):
         return False
-    return (index.get('status') == 'pass' and index.get('romfs_sha256') == EXPECTED['romfs']['sha256']
-            and (romfs / 'romfs.bin').stat().st_size == EXPECTED['romfs']['size'])
+    if not (index.get('status') == 'pass' and index.get('romfs_sha256') == EXPECTED['romfs']['sha256']
+            and size == EXPECTED['romfs']['size']):
+        return False
+    sys.path.insert(0, str(HERE/'scripts'))
+    from dread_bundle import Digests
+    digests = Digests(romfs.parents[2]/'build/verified-digests.json')
+    valid = digests.sha256(romfs/'romfs.bin') == EXPECTED['romfs']['sha256']
+    digests.save()
+    return valid
 
 
-def step_data(py, work, keys, fonts, logs):
+def step_data(py, work, game, update, keys, fonts, logs):
     romfs = work / f'extracted/{VERSION}/romfs'
     if romfs_done(romfs):
         say('2/4 data: the RomFS is already verified')
     else:
-        say('2/4 data: extracting the RomFS and verifying all six IVFC levels (4.4 GB; a few minutes)')
+        say('2/4 data: merging the base and update RomFS and verifying all six IVFC levels (5.3 GB; a few minutes)')
         shutil.rmtree(romfs, ignore_errors=True)
-        run([py, 'scripts/extract_romfs.py', '--keys', keys, '--manifest', work / f'extracted/{VERSION}/extraction-manifest.json',
-             '--output', romfs], logs / 'extract-romfs.log')
+        command = [py, 'scripts/merge_romfs.py', game, update, '--keys', keys, '--title', EXPECTED['title_id'], '--output', romfs] if update else [
+            py, 'scripts/extract_romfs.py', '--keys', keys, '--manifest', work/f'extracted/{VERSION}/extraction-manifest.json', '--output', romfs]
+        run(command, logs/'romfs.log')
         if not romfs_done(romfs):
-            raise BuildError('the RomFS differs from the reference 1.0.0 (assets/expected-v1.0.0.json)', code='hash_mismatch')
+            raise BuildError('the RomFS differs from the reference 2.1.0 (assets/expected-v2.1.0.json)', code='hash_mismatch')
     folder = work / 'extracted/firmware/shared-fonts'
     firmware, shared = fonts
     if firmware:
@@ -358,27 +401,46 @@ def fonts_valid(folder):
 
 
 def step_shaders(py, work, logs):
+    """The translator, then every shader of the game prepared from the player's RomFS (build/shader-seed: the 1,010
+    shaders for their default bind state and the states assets/shader_list.tsv names; reused while nothing changed) and
+    compiled into Metal libraries (build/shader-libs, all or nothing). The runtime imports the seed at the first start
+    and loads the libraries instead of compiling, so no shader is translated or compiled while playing."""
     say('3/4 shaders: the shader translator (checked against its SHA-256) and SPIRV-Cross')
     run(['make', 'shader-tools', f'WORK={work}', f'PY={py}'], logs / 'shader-tools.log')
+    say('3/4 shaders: preparing every shader of the game (a few seconds)')
+    run(['make', 'shader-seed', f'WORK={work}', f'PY={py}'], logs / 'shader-seed.log')
+    say('3/4 shaders: compiling them into Metal libraries (about a minute the first time)')
+    run(['make', 'shader-libs', f'WORK={work}', f'PY={py}'], logs / 'shader-libs.log')
 
 
 def step_app(py, work, game, keys, out, logs, inputs):
-    say('4/4 app: generating the runtime tables, compiling the runtime and the launcher')
-    partial = out.with_name(out.name + '.partial')
-    shutil.rmtree(partial, ignore_errors=True)
-    run(['make', 'prepare', 'mods', 'app', f'WORK={work}', f'PY={py}', f'APP={partial}', f'GAME={game}',
-         f'KEYS={keys}'], logs / 'app.log')
-    (partial / BUILD_INFO).parent.mkdir(parents=True, exist_ok=True)
-    (partial / BUILD_INFO).write_text(json.dumps(build_info(inputs, work), indent=2) + '\n')
-    run(['codesign', '--force', '--sign', '-', partial], logs / 'codesign.log')
-    if out.exists():
-        old = out.with_name(f'{out.name}.replaced-{os.getpid()}')
-        out.rename(old)
-        partial.rename(out)
-        shutil.rmtree(old, ignore_errors=True)
-    else:
-        partial.rename(out)
-    say(f'4/4 app: {out}')
+    sys.path.insert(0, str(HERE/'scripts'))
+    from package_dread import package
+    from types import SimpleNamespace
+    package(SimpleNamespace(run=run, build_info=build_info, EXPECTED=EXPECTED, VERSION=VERSION, BUILD_INFO=BUILD_INFO),
+            py, work, out, logs, inputs)
+
+
+def update(app, work):
+    """Express update: recompile runtime, retain checked translation and archive entries."""
+    import plistlib
+    sys.path.insert(0, str(HERE/'scripts'))
+    from package_dread import blocker
+    app, work = Path(app).resolve(), Path(work).resolve()
+    if work == REPO or REPO in work.parents or work in REPO.parents or work == app or app in work.parents:
+        raise BuildError('work must stay outside the checkout and App', code='input')
+    info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+    select_version(info.get('MNGDreadVersion', 'v210'))
+    problem = blocker(app, work)
+    if problem: raise BuildError(problem, code='full_build')
+    if not romfs_done(work/f'extracted/{VERSION}/romfs'):
+        raise BuildError('game data is missing or differs from the pinned RomFS', code='full_build')
+    prerequisites()
+    logs = work/'logs'
+    py = prepare_venv(work, logs)
+    # prepare_runtime validates original and rewritten module hashes before compiling.
+    report = json.loads((app/BUILD_INFO).read_text())
+    step_app(py, work, None, None, app, logs, report.get('inputs', {}))
 
 
 IOS_SPACE_GB = 10   # the app (a clone of the 4.4 GB RomFS while on the same volume), the .ipa, Xcode's build and Opus / libvpx
@@ -392,9 +454,14 @@ def ios_prerequisites():
         developer_dir()
     except RuntimeError as e:
         raise BuildError(f'the iPhone / iPad app needs the full Xcode: {e}', code='toolchain')
-    missing = [tool for tool in ('xcodegen', 'cmake', 'ninja') if not shutil.which(tool)]
-    if missing:
-        raise BuildError(f'the iPhone / iPad app needs {", ".join(missing)}: brew install {" ".join(missing)}', code='toolchain')
+    # xcodegen, cmake and ninja from the repository's tools/deps (pinned, made once per Mac), first on PATH for
+    # build_ipa.py and build_deps.py, which run them by name
+    sys.path.insert(0, str(REPO))
+    from tools.deps import DepsError, path
+    try:
+        os.environ['PATH'] = os.pathsep.join(path('xcodegen', 'cmake', 'ninja') + [os.environ.get('PATH', '')])
+    except DepsError as e:
+        raise BuildError(str(e), code='toolchain') from None
 
 
 def step_ios(py, work, out, logs):
@@ -413,8 +480,9 @@ def step_ios(py, work, out, logs):
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('game', type=Path, help=f'your {APP_NAME} card image (XCI) or NSP, base game {EXPECTED["display_version"]} ({EXPECTED["title_id"]})')
-    ap.add_argument('--update', type=Path, help='not supported yet: the build takes the base game 1.0.0')
+    ap.add_argument('game', type=Path, help=f'your {APP_NAME} card image (XCI) or NSP of the base game ({EXPECTED["title_id"]})')
+    ap.add_argument('--update', type=Path, help=f'your {APP_NAME} {EXPECTED["display_version"]} update NSP '
+                    '(optional; the base alone builds 1.0.0)')
     ap.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys')
     ap.add_argument('-o', '--out', type=Path, help='the app to write (default: next to the game file)')
     ap.add_argument('--work', type=Path, help='work folder (default: Dread_build next to the game file); the app runs the game from it')
@@ -446,9 +514,11 @@ def main(argv):
         signal.signal(signal.SIGTERM, cancelled)
         if not os.environ.pop('MACNATIVEGAMES_HELLO_SENT', None):   # build_app.py wrote it before handing a card image over
             event('hello', schema=EVENT_SCHEMA)
+    select_version('v210' if args.update else 'v100')
     game, keys = args.game.expanduser().resolve(), args.keys.expanduser().resolve()
-    for path in (game, keys):
-        if not path.is_file():
+    update = args.update.expanduser().resolve() if args.update else None
+    for path in (game, update, keys):
+        if path and not path.is_file():
             raise BuildError(f'no such file: {path}', code='input')
     if args.platform == 'visionos':
         raise BuildError(f'{APP_NAME} has no Vision Pro build: build the Mac app, or the iPhone / iPad app with --platform ios', code='platform')
@@ -457,9 +527,6 @@ def main(argv):
         raise BuildError(f'{APP_NAME} has no DLC support: leave out --dlc', code='input')
     if args.mod or args.install_mod_romfs:
         raise BuildError(f'{APP_NAME} takes its mods from games/dread/mods (README.md), not --mod', code='input')
-    if args.update:
-        raise BuildError(f'{APP_NAME} updates are not supported yet: build from the base game {EXPECTED["display_version"]} '
-                         'without --update', code='unsupported_version')
     firmware = args.firmware.expanduser().resolve() if args.firmware else None
     shared = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
     for folder in (firmware, shared):
@@ -468,8 +535,14 @@ def main(argv):
     out = args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.{"ipa" if ios else "app"}'
     if out.suffix.lower() not in (('.ipa', '.app') if ios else ('.app',)):
         raise BuildError(f'the output must end in {".ipa or .app" if ios else ".app"}: {out}', code='input')
-    work = args.work.expanduser().resolve() if args.work else game.parent / 'Dread_build'
+    sys.path.insert(0, str(REPO))
+    import build_app as shared_build
+    work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else shared_build.default_work(out, 'dread')
+    if work == REPO or REPO in work.parents or work in REPO.parents or work == out or out in work.parents:
+        raise BuildError('work/output must stay outside the checkout and each other', code='input')
+    say(f'work folder {work} ({why})')
     kind = check_package(game)
+    if update: check_package(update, update=True)
     if args.inspect:
         if EVENTS:
             event('inspect', game=GAME['id'], app_name=APP_NAME, version=VERSION, display_version=EXPECTED['display_version'],
@@ -490,15 +563,15 @@ def main(argv):
             raise BuildError(f'needs about {SPACE_GB} GB free for the work folder ({free:.0f} GB free)', code='disk_space')
     say(f'work folder {work}')
     py = prepare_venv(work, logs)
-    step_code(py, work, game, keys, logs)
-    step_data(py, work, keys, (firmware, shared), logs)
+    step_code(py, work, update or game, keys, logs)
+    step_data(py, work, game, update, keys, (firmware, shared), logs)
     step_shaders(py, work, logs)
     if ios:
         step_ios(py, work, out, logs)
         say(f'done in {(time.time() - t0) / 60:.0f} min: {out}. Sign and install it with games/dread/ios/tools/install_device.py; '
             'it carries the game, so the work folder is not needed to play.')
     else:
-        step_app(py, work, game, keys, out, logs, dict(game=game, firmware=firmware, shared_fonts=shared))
+        step_app(py, work, game, keys, out, logs, dict(game=game, update=update, firmware=firmware, shared_fonts=shared))
         say(f'done in {(time.time() - t0) / 60:.0f} min: {out}. It runs the game from {work}: keep that folder where it is.')
     if EVENTS:
         event('done', out=str(out), game=GAME['id'], version=VERSION, platform=args.platform)

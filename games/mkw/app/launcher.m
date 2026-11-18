@@ -94,7 +94,7 @@ static void note(NSString *text) {
 }
 
 /* The one question about the shader contribution (totk_contrib_upload.h, the same as Tears of the Kingdom's), before the
-   game starts, once the file holds TOTK_CONTRIB_STEP new rows and the player has not chosen. */
+   game starts, at the first start where the player has not chosen yet (no row threshold, user 2026-11-10). */
 static void contrib_ask(NSString *path) {
     NSUInteger rows = totk_inbox_should_ask(path);
     if (!rows) return;
@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
-        NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
+        NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", contrib_file(data)));   // this game's file only
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         contrib_ask(contrib);
         totk_inbox_start(contrib, @"mac");   // the player chose "Contribute shaders": sent while playing

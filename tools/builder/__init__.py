@@ -1,1 +1,1 @@
-"""Friendly builder: a window and a text mode around build_app.py for players who do not use the terminal."""
+"""The models behind MNG Launcher's Settings, Mods, Controls, Storage and Saves pages (docs/builder.md)."""

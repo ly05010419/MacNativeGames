@@ -6,7 +6,7 @@ This page only covers turning **your own** game files into an app on your Mac, i
 
 **Ocarina of Time** (Switch 2) has its own page: [games/oot/docs/install.md](../games/oot/docs/install.md).
 
-Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
+Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [Folders](#folders) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
 
 Ground rules: use only files from your own Switch and your own game. Nothing is downloaded for you, and nothing from the game is in this repository. Never edit `games/totk/assets/expected-*.json` or the scripts to get past a check: the error message says what is wrong. The app you build contains the game: it is for you only.
 
@@ -29,11 +29,11 @@ On macOS 15, use the community fork by [1918662410-ship-it](https://github.com/1
 - The base game must be uncompressed. Decompress an NSZ or XCZ base first (`nsz -D`).
 - A card image that also holds its own update is fine; the version still comes from `--update`.
 
-**`prod.keys`** from the same Switch (Lockpick_RCM). Keys dumped on an old firmware can be too old for a newer update.
+**`prod.keys`** from the same Switch as the game files. A keys file older than the update cannot open it.
 
 **System fonts**, needed when the base game is an **NSP** and always for **Breath of the Wild**. Give one of:
 - `--firmware <folder>`: your firmware dump as a folder of `.nca` files (unzip it first), or an installed firmware `registered` folder.
-- `--shared-fonts <folder>`: the six `.bfttf` files an earlier Tears of the Kingdom build extracted, in `TOTK_build/totk/extracted/firmware/shared-fonts`.
+- `--shared-fonts <folder>`: the six `.bfttf` files an earlier Tears of the Kingdom build extracted, in `<work folder>/totk/extracted/firmware/shared-fonts` (by default `~/MacNativeGames-work/totk/…`).
 
 A Tears of the Kingdom XCI carries the fonts itself.
 
@@ -44,33 +44,58 @@ A Tears of the Kingdom XCI carries the fonts itself.
 | base game only | 25 GB | 45 GB |
 | with an update | 40 GB | 60 GB |
 
-The work folder is created next to the game file (`TOTK_build`, or `BotW_build` for Breath of the Wild). Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
+Without `--work`, the work folder is the one the app at `-o` records, else `MacNativeGames-work/<game>` beside the folder that holds the app (for `~/Applications`: `~/MacNativeGames-work/totk`; for `/Applications`: `~/MacNativeGames-work/totk` too). MNG Launcher uses the same rule. Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
 
-## Build with a window
+## Build with MNG Launcher or an AI
 
-Rather not type the command? With the tools of step 1 below installed, double-click **Build Game.command** in this folder (or run `python3.14 -m tools.builder`). A window opens: choose the game, then your game file, update, `prod.keys` and, when the game needs them, a firmware or shared-fonts folder (the work folder and the output app are under **Advanced**). **Check files** checks this Mac and your files and shows each problem, with the exact command that fixes it when there is one. **Build app** then runs `build_app.py` with those paths, and shows its four stages, the elapsed time and the log. When it is done, **Open app** and **Show in Finder** are one click away. Nothing is copied: the window saves the paths you chose, and the game, version, app and commit of the last successful build, in `~/Library/Application Support/MacNativeGames/Builder/settings.json`. Each run's output is also saved as `~/Library/Logs/MacNativeGames/builder-<game>-<date>-<time>.log`.
+One engine builds every game, whoever drives it: MNG Launcher's window, or `tools/mng.py` in a terminal (what an AI helping you uses). Both run `tools/builder_jobs` and follow the same rules (below), so a game built one way is updated the other way.
 
-**Cancel** sends the build and everything it started an interrupt (SIGINT), then SIGKILL if it is still running 10 seconds later. The window then says how the build ended and whether that matches the signal it sent; it never claims more. Build again with the same work folder to go on: what was already done is reused. Closing the window or quitting it during a build asks first, cancels, and closes once the build has stopped; closing the Terminal window that opens with it cancels the build the same way, so keep it open while it builds.
+### MNG Launcher (the window)
 
-**Your own picture:** the builder ships no image. Under **Details**, **Choose picture...** puts a picture of yours (PNG, JPEG, HEIC, GIF or TIFF) beside the form; **Left**, **Center** and **Right** pick the part it shows, and **Remove** takes it away. A copy is kept in `~/Library/Application Support/MacNativeGames/Builder/`, so the original can move.
+Download the official Launcher DMG from GitHub Releases, open it and drag **MNG Launcher.app** to Applications.
+Eject the image and open the installed app. The ZIP is an alternative. Official downloads are already signed and
+Apple notarized: players do not compile or re-sign the Launcher, configure certificates, or submit it for notarization.
+It carries Python and matching build scripts; no source checkout is needed.
+Game builds still need the developer tools and your own game files. See [download builds](builder-app.md#download-builds).
 
-**Settings tab:** for an app built from Tears of the Kingdom 1.4.3 or Breath of the Wild 1.9.0, the game starts with its automatic settings unless you choose otherwise here: picture at start (MetalFX 2K, native 2K where the version has it), frame interpolation (offered only when this Mac's GPU has Metal 4 MetalFX frame interpolation), edge smoothing, sharper ground at a distance and, on 1.4.3, the picture shape. **Play** starts the game. The picture, frame interpolation, edge smoothing and picture shape are the game's own settings, the ones its settings panel (key 1) keeps beside `controls.txt`: they hold for a start from Finder too, and changing them in either place changes both. Only the sharper ground at a distance, which the panel does not have, holds just when the game is started with **Play**. Settings are not changed while the game is running: close it first.
+Only if you choose to build a development app from source:
 
-**Mods tab:** for Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0, **Add mod...** takes a mod folder of yours (with `romfs/`, and for Tears of the Kingdom `exefs/` for code patches; Breath of the Wild's code patches are not used); the builder ships no mod. Mod manager packages (TKMM's `.tkcl`, BCML's `.bnp`) are refused: install them with their manager, or use a RomFS version. A mod made for Breath of the Wild 1.6.0 may install but still not work on 1.9.0: try it in the game. Each one is checked against your built app: its paths must fit this version and it must replace a file of the game; only then can it be switched on (that does not test it in play). Files another mod also replaces, files the app replaces itself and code patches (which need a build with `--mod`) are listed under the mod. **Apply mods** puts the mods that are on, in order (the lower one wins), into the game's mod folder through the repository's own installer, which writes the manifest and keeps the previous folder as a backup; the game loads them at its next start, from Finder or Play. Your own backups are never removed unless you ask.
+`python3 tools/builder_app/make_app.py` makes `~/Applications/MNG Launcher.app`. It carries its own Python and runs this folder's code, so after a `git pull` it needs no remaking unless its window changed.
+The local build is automatically ad-hoc signed, without a Developer ID account or certificate. Do not use this
+command to replace or re-sign an official downloaded Launcher.
 
-**Updates:** in a `git clone`, the window checks when it opens whether MacNativeGames has new commits on its `main`, and lists them. It looks only at the remote whose URL is github.com/ly05010419/MacNativeGames (in a fork, usually `upstream`): other remotes, such as your fork, are never fetched. On `main`, **Update** then fetches and fast-forwards it: it never merges, rebases or discards anything, and when files were changed here or `main` has commits of its own it says so and leaves the update to you. On any other branch it only says how many commits are waiting, to merge by hand. After an update, close and reopen the builder and build again; your saved paths, and the saves of the game, stay where they are. A ZIP download cannot update itself: download the new version.
+- **Games** (the first page, no bar on top): one card per game. A built game shows its own app's picture; click it for a big green **Start game** (top right), its update, one button named after the fastest one that fits: **Express update** or **Fast update** (no game files), or **Full build** (the build steps with its game files); and its pages, which open under the buttons. A game not built yet shows a plus: click it for the build steps, step 1 drop the game files, step 2 choose your `prod.keys`, step 3 **Build and Play**, with the progress the whole way. Opened as `open -a "MNG Launcher" "<game file>" "<update>" "<prod.keys>"`, the build steps open with steps 1 and 2 filled in.
+- A built game's pages, under its card: **Settings** (how Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 start, the same as the game's settings panel: each shows your setting, or the game's default by name; **Start game** starts with them), **Mods** (your own mods, checked against your app and applied with the repository's installer; none ship), **Controls** (the controller layout, button icons, a key test), **Storage** (the work folder: size and clean; the shader cache: where it is and its size; sizes are measured when you press **Measure space used**, and the last ones show until then), **Saves** (backups and restore). The old window (`Build Game.command`) is gone; these pages replaced it. Details: [builder-app.md](builder-app.md) and, for those changing the code, [builder.md](builder.md).
 
-The window needs Tk (`brew install python-tk@3.14`); without it, **Build Game.command** says so. The same checks and build run in Terminal too:
+### With an AI or a terminal: `tools/mng.py`
 
-```sh
-python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
-```
+The commands in this section are for the source-checkout route. Players using an official downloaded Launcher
+can use its window directly; do not run a separate checkout's Launcher migration over that installation.
 
-`--dry-run` prints the exact `build_app.py` command instead, and without either it asks before building (`--yes` does not ask). `python3.14 -m tools.builder --help` lists every option.
+Any `python3` starts it (it runs with MNG Launcher's own Python, else a Python 3.14). An AI building for you should use it rather than writing `build_app.py` commands itself, and **its first step is always `mng migrate`**: MNG Launcher is opened only on a migrated Mac (`mng open` refuses until then).
 
-**The first double-click after downloading the ZIP:** macOS blocks a downloaded script it has not opened before. Open **System Settings › Privacy & Security** and click **Open Anyway** for `Build Game.command`, or run `xattr -d com.apple.quarantine "Build Game.command"` in this folder once. A `git clone` is not affected. The builder never removes the quarantine itself.
+| Command | What it does |
+|---|---|
+| `python3 tools/mng.py migrate` | is this Mac migrated? (`--apply` does what is left; see [Moving an older install](#moving-an-older-install-to-mng-launcher)) |
+| `python3 tools/mng.py status` | the games on this Mac and the update each needs |
+| `python3 tools/mng.py check "<base>" "<update>" --keys "<prod.keys>"` | what the files are, the build they make, what this Mac still needs |
+| `python3 tools/mng.py build "<base>" "<update>" --keys "<prod.keys>"` | build that game (or update it, when it is installed and the version is the same) |
+| `python3 tools/mng.py update totk` | update an installed game without files (`botw`, `oot`, a name or the app's path work too) |
+| `python3 tools/mng.py page <settings\|mods\|controls\|storage\|saves> <action> --game totk` | what the window's pages do |
+| `python3 tools/mng.py open "<files>" "<prod.keys>"` | open MNG Launcher with them filled in (only on a migrated Mac) |
 
-How the builder is made, for anyone changing it (people or AI assistants): [builder.md](builder.md).
+It prints each stage, step and log line, the progress once a minute and the end (`--json`: what the window reads). For what `mng` does not do (iPhone and iPad, `--mod`, `--vr`) use the `build_app.py` commands under [Build the app](#build-the-app).
+
+### The rules both follow
+
+1. **One folder rule.** The app goes where you choose (MNG Launcher: `~/Applications`); its work folder is the one the app already records, else `MacNativeGames-work/<game>` beside the folder that holds the app (`~/MacNativeGames-work/totk` for `~/Applications`). `build_app.py` without `--work` takes the same. See [Folders](#folders).
+2. **The fastest update that fits, in this order:** express (`update_runtime.py`, minutes, no game files), fast (`--seed`, new startup shaders from the work folder), full (`build_app.py` with the game files and keys). `update_runtime.py "<app>" --plan` says which fits and why; the window's **Update** and `mng update` run it. Dropped files for an installed game of the same version also take the update; another version takes the full build into the same app.
+3. **One build or update at a time on a Mac**, whoever starts it. A second one is refused and says which is running and who started it. The window shows a job started elsewhere ("Started from …") and can stop it; it starts the game only after a job it started itself.
+4. **Your files stay where they are**: game files and keys are read in place, never copied; nothing is uploaded. Logs: `~/Library/Logs/MacNativeGames/`; the running job: `~/Library/Application Support/MacNativeGames/Builder/jobs/`.
+5. **No Homebrew**: the build fetches its own pinned tools and libraries ([What you need](#what-you-need)).
+6. **Migrated first**: an AI checks the migration before anything else and opens MNG Launcher only once it is done.
+
+Coming from an older install: [Moving an older install to MNG Launcher](#moving-an-older-install-to-mng-launcher).
 
 ## Build the app
 
@@ -78,12 +103,12 @@ How the builder is made, for anyone changing it (people or AI assistants): [buil
 
 ```sh
 xcode-select --install
-# Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
-brew install opus libvpx python@3.14
-brew install python-tk@3.14   # only for the builder window (Build with a window, above)
+# Python 3.14: the installer from https://www.python.org/downloads/macos/
+#   or Homebrew's: brew install python@3.14
+# opus, libvpx and dav1d are not installed: the build compiles them from pinned sources itself
 ```
 
-Instead of Homebrew's Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
+Instead of an installed Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
 
 Optional, if the full Xcode app is installed: `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so the app can be moved and rebuilds are faster. Without it the build still works, and the shaders go into macOS's Metal cache for the app's location.
 
@@ -135,7 +160,7 @@ The same script builds Breath of the Wild. It always needs fonts (see [What you 
 
 ```sh
 # 1.6.0 from the card image (base + update + DLC in one XCI)
-python3.14 build_app.py "<botw 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/TOTK_build/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
+python3.14 build_app.py "<botw 1.6.0.xci>" -k "<prod.keys>" --shared-fonts "<…/MacNativeGames-work/totk/totk/extracted/firmware/shared-fonts>" -o "/Applications/Breath of the Wild.app"
 
 # 1.9.0 (or 1.6.0) from NSPs: base + update, each DLC pack optional
 python3.14 build_app.py "<botw base.nsp>" -k "<prod.keys>" --update "<1.9.0 update.nsp>" --dlc "<dlc 1.nsp>" --dlc "<dlc 2.nsp>" --firmware "<firmware folder>" -o "/Applications/Breath of the Wild.app"
@@ -147,7 +172,7 @@ With a separate update the app holds only the DLC packs you give with `--dlc`. A
 
 **Needed:**
 - iOS / iPadOS 26 and an iPhone 14 or newer.
-- On the Mac: the full **Xcode 26** or later with the iOS platform, plus `brew install xcodegen cmake ninja`.
+- On the Mac: the full **Xcode 26** or later with the iOS platform. Nothing from Homebrew: the build downloads pinned XcodeGen, CMake and Ninja itself.
 - Your Apple ID in Xcode › Settings › Accounts. A free one works.
 - Developer Mode on the device.
 
@@ -193,13 +218,86 @@ With `--update`, use that version's folder (`v121` or `v143`) instead of `v0`.
 
 ## Update the app
 
-- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` updates it in about a minute, without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`.
-- **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
-  Installation waits for actual game processes to exit, not the update window that shares their executable.
+Which update, always in this order (quit the game first). Start with the express update; it says when you need the next one.
+
+| Update | When | Command | Needs |
+|---|---|---|---|
+| **Express update (极速更新)** | every new version of this repository (`git pull`); MNG Launcher runs it for an installed app | `python3.14 update_runtime.py "<the app>"` | the work folder the app records; no game files or keys |
+| **Fast update (快速更新)** | the express update says the startup shaders no longer fit (Tears of the Kingdom, Breath of the Wild, Bananza, Pokopia: another translation chain; Bananza, Pokopia also another shader key rule). Ocarina of Time: when its translation chain or translator changed, every shader is translated again from the work folder (about the shader part of a full build: an hour or more) | `python3.14 update_runtime.py "<the app>" --seed` | the work folder's game files; no game container or keys |
+| **Normal update (普通更新)**, the full build | either of them says a full build is needed: another game version, DLC or game files, other code rewrite rules or picture-size overlays, another translator or translation chain for Ocarina of Time, an Ocarina of Time app whose shaders were prepared before 11 November 2026, a missing or deleted work folder | `build_app.py` as for the first build, with the same `-o "<the app>"` and the app's `--work` | the game file and keys |
+
+Bananza and Pokopia have the same three updates since 12 November 2026 (until then only the normal update); every update keeps the unchanged translations and pipelines.
+
+- **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"`, the express update (below), without the game files or keys. If it says the startup shaders no longer fit, add `--seed` (the fast update). It works in the work folder the app records (see [Folders](#folders)) and prints which one; pass `--work` only to move it.
+- **MNG Launcher** updates an installed app with the fastest of the three that fits (`update_runtime.py --plan` decides). The settings panel in the game has no Update page since 13 November 2026: every update goes through MNG Launcher or the commands here.
+- **Express update (极速更新)**: `update_runtime.py` on a Tears of the Kingdom, Breath of the Wild or Ocarina of Time app rebuilds the runtime and keeps everything whose inputs did not change. It checks rather than assumes:
+  - **Translated shaders** (Ocarina of Time): each translation keeps the request it was made from. The update asks the new runtime for every request again and keeps each translation whose request is the same; only the others are translated again. The startup shaders of Tears of the Kingdom and Breath of the Wild never depend on the runtime.
+  - **The newest shader list**: the update downloads the game's newest shared list from GitHub (the file **Check shaders** reads; offline, the copy in this repository, and the log says why). The shaders it names that the app has no variant for are translated with the work folder's translator (Tears of the Kingdom and Breath of the Wild: only those, the others are reused; Ocarina of Time: as above), and its pipelines are made below, so after an express update **Check shaders** finds nothing new. `--list <file>` gives another list.
+  - **Metal libraries**: compiled only for translations that changed.
+  - **Pipeline archive**: every listed pipeline is made against the last archive (Metal compares its functions and state). An unchanged one comes from the archive; a changed one is compiled and written to a new file.
+  - **File checks**: a file that is still the same file (device, inode, size, modification time) keeps the digest recorded with it; only new or changed files are read. A seed whose every file is the one already published, from the same inputs, is kept as it is, and so is the signed shader data bundle made from it.
+  - Measured on an M4 Mac (Ocarina of Time, 11 November 2026, a runtime change): about 9 minutes, all 42,891 translations, every library and all 21,330 pipelines kept; the same update took 17 minutes before these checks and a full build about 40.
+  - A full `build_app.py` is needed only when the update says so: another translation chain, translator, spirv-cross or depth mode, other game files, other code rewrite rules, and once for an Ocarina of Time app whose shaders were prepared before 11 November 2026.
+  - The log says what it kept: `translations: N kept for this runtime's requests, M made again`, `seed files: …, K read again`, `… sources and … libraries read`, and the pipeline archive's `按这个运行时核对，X 条和存档里的不一样`.
+  - Bananza and Pokopia are rebuilt with `build_app.py`; their builds keep translations and pipelines the same way.
 - **Back to the version you had** (when a new version plays worse): quit the game, find the commit your checkout was on before `git pull` with `git reflog` (the line just below the `pull` line), `git checkout <that commit>` (git calls this a "detached HEAD"; that is expected) and run `python3.14 update_runtime.py "<the app>"` again, with `--seed` if it asks for it. Then `git checkout main`: the app keeps the older runtime until you update it again. This works for commits from 685f940 (26 October 2026) on; your saves and settings are not changed.
 - **Another game version:** run `build_app.py` again with the new `--update` and the same `-o`. It replaces the app. Before the first start on the new version, the app backs up your saves next to them as `profile-before-<version>`; keep that backup if you may go back.
 - **Mods:** `--mod "<mod folder>" --install-mod-romfs` builds the app with a mod's code patches and installs its data. See [mods.md](mods.md), [merged-mod-pack.md](merged-mod-pack.md) and [translation-mods.md](translation-mods.md).
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.
+
+## Moving an older install to MNG Launcher
+
+This section covers a source-checkout installation. For an official downloaded Launcher, follow the DMG
+installation above and use its window; do not rebuild or re-sign it as a migration step.
+
+For players who built a game before 12 November 2026 with `build_app.py` or the old window (`Build Game.command`). Nothing is rebuilt and no game files or keys are needed, unless a step says so. Quit the game first.
+
+**With an AI (or in a terminal), the migration is one command, and it comes first:** `python3 tools/mng.py migrate` lists each game app and MNG Launcher with what is left; `python3 tools/mng.py migrate --apply` does it (renames each work folder that breaks the rule into `MacNativeGames-work/<game>` on the same disk, records it with one express update per game, makes or remakes MNG Launcher). A Mac is migrated when every app records a work folder that obeys the [Folders](#folders) rule (outside the checkout and the apps folder, on the app's disk) and MNG Launcher is made from this checkout; a game whose next update is a full build anyway (Bananza, Pokopia, another version) does not hold it up. Only then is MNG Launcher opened: `python3 tools/mng.py open` refuses before. The steps below are the same by hand.
+
+1. **Get the new code.** In the `MacNativeGames` folder: `git pull` (a ZIP download: download it again). `Build Game.command` is gone; MNG Launcher has its pages.
+2. **Python.** Keep the Python 3.14 you have. A new Mac only needs the installer from <https://www.python.org/downloads/macos/>; Homebrew is not needed any more (opus, libvpx, dav1d, XcodeGen, CMake and the other build tools come with the build).
+3. **Make MNG Launcher:** `python3 tools/builder_app/make_app.py`, then open `~/Applications/MNG Launcher.app`. It runs this folder's code, so a later `git pull` is enough; make it again only when its window changed.
+4. **Your games appear by themselves** as cards on the first page, with their own pictures (every Tears of the Kingdom, Breath of the Wild, Ocarina of Time, Bananza and Pokopia app macOS knows). Click a card: its button names the update it can have, such as **Express update** (no game files needed).
+5. **Put each work folder where the rule says** (see [Folders](#folders)): `MacNativeGames-work/<game>` beside the folder that holds the app, for example `~/MacNativeGames-work/totk` for `~/Applications`. Open the **Storage** page, choose the game and look at its work folder:
+
+   | The page says | Do |
+   |---|---|
+   | recorded, and it is already `…/MacNativeGames-work/<game>` | nothing |
+   | recorded, somewhere else (a `TOTK_build` or `BotW_build` next to the game file, a folder of your choice) | it works as it is. To follow the rule: **Move…** to `MacNativeGames-work/<game>` (instant on the same disk), then **Update now**: the app records the new place |
+   | the app records none (built before 31 October 2026) | **Move…** the folder its build used (usually `TOTK_build` next to the app or the game file) to `MacNativeGames-work/<game>`, then **Update now** |
+   | on a disk that is not connected | connect it and open the page again, or rebuild (below) |
+
+   A second, older copy of a work folder (one the app does not record) can be deleted afterwards; **Storage** shows which one the app uses.
+6. **When Update says "needs a full build"** (another game version, a missing work folder, Bananza and Pokopia always): drop the game files in step 1 and the keys in step 2 and press **Build Again**. It builds into the same app, keeps the saves and the work folder it records, and reuses the verified game data of that app.
+7. **What the old window kept is still there**, and the pages read it in place: mods (`<game data>/mod-library`, the **Mods** page; press **Apply mods** once if it says they no longer fit), controller choices (**Controls**), start options (**Settings**), save backups (`~/Documents/MacNativeGames-Backups`, **Saves**; each game's now in a folder of its own there, named as its app, and older ones move into it when the page opens). Only the old window's remembered file paths (`Builder/settings.json`) are no longer read: drop the files again when a full build needs them.
+8. **Optional clean-up.** Homebrew packages installed only for this project can go (`brew uninstall opus libvpx dav1d ffmpeg llvm xcodegen cmake ninja`, if nothing else of yours uses them). A Dock or desktop shortcut made while an app had no icon can stay blank: delete it and make it again.
+
+An AI helping you can do all of this: the install-zelda skill reads each app's `MNGWorkFolder`, runs `update_runtime.py "<app>" --plan` and opens the Launcher with `open -a "MNG Launcher" "<files>" "<prod.keys>"`.
+
+## Folders
+
+Keep two kinds of folders apart, for every game (Tears of the Kingdom, Breath of the Wild, Ocarina of Time and the others):
+
+| Kind | What is in it | Can it be deleted? |
+|---|---|---|
+| **Keep** | the app (`-o`), your saves and settings (`~/Library/Application Support/MacNativeGames/<game>`), the game data folder of `--mac-game-data library` | No: these are what you play and what you cannot make again. |
+| **Work** | the work folder (`--work`): extracted game files, translated shaders, pipeline caches, logs | Yes, at any time. The next build makes it again (it then needs the game file and keys again); a runtime update needs it, so delete it only when you would rebuild anyway. |
+
+- One work folder per game, outside the `MacNativeGames` checkout (the build refuses one inside it) and outside the folder that holds your apps, on the same APFS volume as the app (the game data is then cloned, not copied): `<disk>/MacNativeGames-work/<game>` next to `<disk>/Applications`. That is the default of `build_app.py` without `--work` (after the folder the app records) and of MNG Launcher (`build_app.default_work`, one rule for both), so builds and updates from either find the same files and can be fast.
+- The app records its work folder (`MNGWorkFolder`) and the Python that built it (`MNGBuildPython`) in its `Info.plist`; `update_runtime.py` and MNG Launcher use them. Read them with `plutil -extract MNGWorkFolder raw "<the app>/Contents/Info.plist"`. Never point two builds of different games at one work folder while they run.
+- **An existing install (for an AI helping you: check this before any build or update).** Read `MNGWorkFolder` of the app:
+  - it names an existing folder that is not inside the checkout or the apps folder: nothing to do;
+  - it fails (an app built before 31 October 2026), or names one inside the apps folder (an update before 11 November 2026 run without `--work` made a second work folder next to the app): pick the work folder as above, move the old one there if it holds the build (`mv` on the same volume is instant), then run `update_runtime.py "<the app>" --work "<that folder>"` once. The app records it from then on. A second copy left in the apps folder can then be deleted.
+- **What an update does with old files**, so an older install keeps updating:
+
+  | The app records | `update_runtime.py "<the app>"` (and MNG Launcher) |
+  |---|---|
+  | no work folder (built before 31 October 2026) | uses `TOTK_build` / `BotW_build` / `OcarinaOfTime_build` next to the app, as before; move it as above when you like |
+  | a folder that exists | uses it |
+  | a folder that was deleted (its parent is still there) | makes it again there and goes on: the app carries its game data and needs none of the old files |
+  | a folder on a disk that is not connected, or whose parent is gone too | stops with `… cannot be found, nor the folder it was in …`: connect that disk and run it again, or add `--work "<a folder of your choice>"` (the app then records it) |
+
+  An app so old that it still needs files from its build (it says `does not hold the files the build of this app extracted`), or an update with `--seed`, needs the work folder of that build: pass it with `--work`, or build the app again with `build_app.py`.
 
 ## When the build stops
 
@@ -209,7 +307,8 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 |---|---|
 | `needs macOS 26 or later` | Not supported here; see the macOS 15 fork under [What you need](#what-you-need). |
 | `clang++ finds no C++ standard library headers` | With Xcode: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. Without: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install`. |
-| `Homebrew packages missing`, `Python 3.14 not found`, `git not found` | Install what it names. |
+| `Python 3.14 not found`, `git not found` | Install what it names. |
+| `[deps] … failed` (opus, libvpx, dav1d, XcodeGen, …) | The build makes these itself from pinned sources; read the log it names under `~/Library/Caches/MacNativeGames/deps/logs`. A download that failed: run the build again. |
 | `NSP files do not include system shared fonts`, `needs --firmware or --shared-fonts` | Add `--firmware` or `--shared-fonts`. |
 | `SHA-256 … is not the expected …`, `ExeFS … is missing; not the supported version` | `git pull` first. Then check that the base is 1.0.0 and the update a supported version; otherwise dump the game again. |
 | `unsupported update module hashes` | That update version is not supported. |
@@ -217,8 +316,9 @@ Read the `ERROR:` line and the log file it names (`<work folder>/logs/…`), fix
 | `… add-on content (DLC), not the game`, `pass it as …`, `use the files of one game` | A file is on the wrong option; the message names the right one. |
 | `the game file holds [...]: expected Tears of the Kingdom … or Breath of the Wild` | Another game: build it with its own `games/<name>/README.md`. |
 | `needs about N GB free` | Free space, or `--work` and `-o` on an APFS volume with room. |
-| `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update: dump `prod.keys` again on current firmware. |
-| `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools or Homebrew outside `/opt/homebrew`. |
+| `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](#folders)). |
+| `BKTR verification failed`, an error merging the update | `git pull` first. If it stays, your keys may be older than the update. |
+| `make failed`, `xcrun failed` | Read the named log; usually incomplete developer tools. |
 | iOS signing or install errors | Apple ID in Xcode › Settings › Accounts, device unlocked and trusted, Developer Mode on; run the install again. |
 
 Still stuck? Open an [issue](https://github.com/ly05010419/MacNativeGames/issues) with the command (paths shortened), Mac model, macOS version, `git log -1 --oneline`, the `ERROR:` line and the end of the log it names. Never attach keys, game files, firmware or the app.

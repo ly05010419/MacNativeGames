@@ -1206,6 +1206,13 @@ NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *c
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
 }
 NVN(nvnWindowBuilderSetPresentInterval, void, NVNwindowBuilder *b, int v) { WB(b)->interval = v; }
+// The game's output size as last presented: the texture nvnQueuePresentTexture shows, width << 16 | height, and when (monotonic ns). The settings panel shows it,
+// as current while it is fresh and as last seen otherwise; *age_s is -1 before the first present
+static _Atomic uint32_t g_present_wh; static _Atomic uint64_t g_present_ns;
+void dm_nvn_window_size(int *w, int *h, double *age_s) {
+    uint32_t v = atomic_load(&g_present_wh); uint64_t t = atomic_load(&g_present_ns);
+    *w = (int)(v >> 16); *h = (int)(v & 0xffff); *age_s = t ? (double)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t) / 1e9 : -1;
+}
 NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder_t *s = (const win_builder_t *)b; win_t *o = (win_t *)w;
     memset(o, 0, sizeof *o); o->magic = MAGIC('W', 'I', 'N', 'D'); o->native = s->native; o->ntex = s->ntex; o->interval = s->interval;
@@ -1544,6 +1551,10 @@ static uint64_t present_period(const win_t *o) {
 static uint64_t rt_period_ns(const win_t *o, uint64_t period) { (void)o; return period; }
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
+    if (idx >= 0 && idx < o->ntex && o->tex[idx]) {
+        atomic_store(&g_present_wh, (uint32_t)(CTX(o->tex[idx])->d.width & 0xffff) << 16 | (uint32_t)(CTX(o->tex[idx])->d.height & 0xffff));
+        atomic_store(&g_present_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+    }
     dm_fps_lock_tick();
     static int previous_target=-1;
     int target=aoc_timing_target();

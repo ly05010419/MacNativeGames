@@ -98,13 +98,16 @@ def locator(fields):
 # nvn_pso_skey.h pso_skey as the runtime writes it (544 bytes): merged flag, colour formats, blend enables, write masks and
 # one 8-byte blend state per colour target
 SKEY_SIZE, SKEY_MERGED, SKEY_CFMT, SKEY_BLEND_EN, SKEY_CHMASK, SKEY_BLEND = 544, 162, 216, 260, 264, 272
+NORMALIZE = False   # pipeline_key: TOTK's runtime normalizes keys (pso_key_norm), Dread's does not
 
 
 def pipeline_key(key):
     """A render pipeline key as nvn_pso_skey.h pso_key_norm leaves it: blend factors of a target that does not blend, and
     outside a merged pass the write mask and blend bit of a missing colour target, cleared. Rows recorded before the runtime
-    did so differ only there (9,057 render pipelines of the list were 5,611, 2026-10-22); keys of another size stay."""
-    if len(key) != 2 * SKEY_SIZE:
+    did so differ only there (9,057 render pipelines of the list were 5,611, 2026-10-22); keys of another size stay.
+    Dread's runtime (third_party/d2r_gfx) has no pso_key_norm: it looks pipelines up by the key as recorded, so a
+    cleared key would warm a pipeline play never asks for. Dread's keys stay as recorded."""
+    if not NORMALIZE or len(key) != 2 * SKEY_SIZE:
         return key
     b = bytearray.fromhex(key)
     merged, cfmt = b[SKEY_MERGED], struct.unpack_from('<8I', b, SKEY_CFMT)

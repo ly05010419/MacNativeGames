@@ -1,14 +1,94 @@
 """Exercise the actual Mac settings panel (key 1) without game data or GPU work."""
 from pathlib import Path
+import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+# The shader inbox (its own project, beside this one; tests/test_shot_share.py): the 截图分享 page's pictures.
+INBOX = Path(os.environ.get('SHADER_INBOX_DIR') or ROOT.parent / 'MacNativeGamesWeb/shader-inbox')
+HAS_INBOX = bool(shutil.which('node')) and (INBOX / 'node_modules/@electric-sql/pglite').is_dir()
+
+
+def build_probe(compiler, executable):
+    """tests/settings_panel_probe.m as the base game (Tears of the Kingdom 1.2.1), with ImageIO for the shared pictures."""
+    gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
+    return subprocess.run([compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-declarations',
+                           '-I' + str(gfx / 'include'), '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
+                           str(ROOT / 'tests/settings_panel_probe.m'), str(ROOT / 'games/totk/runtime/input_prompts.m'),
+                           '-framework', 'CoreText', '-framework', 'CoreGraphics', str(ROOT / 'tests/settings_output_fixture.c'),
+                           *[str(gfx / f) for f in ('totk_mfx.m', 'totk_mfx_up.m', 'totk_taa.m', 'fps_overlay.c')],
+                           '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'MetalFX', '-framework', 'QuartzCore',
+                           '-framework', 'CoreVideo', '-framework', 'ImageIO', '-o', str(executable)],
+                          capture_output=True, text=True, timeout=120)
+
+
+class LocalInbox:
+    """The inbox's test/local-server.js on 127.0.0.1 (in-memory database): `base` is its root."""
+
+    def __enter__(self):
+        self.server = subprocess.Popen(['node', str(INBOX / 'test/local-server.js')], cwd=INBOX, stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, text=True)
+        self.base = f'http://127.0.0.1:{int(self.server.stdout.readline().split()[1])}'
+        return self
+
+    def __exit__(self, *exc):
+        self.server.stdin.close()
+        self.server.wait(timeout=30)
+        self.server.stdout.close()
+
+    def name(self, board_id, name=None):
+        """PUT /v1/name when name is given (as another player would), else GET: the nickname, or None."""
+        if name is None:
+            request = urllib.request.Request(f'{self.base}/v1/name?me={board_id}')
+        else:
+            request = urllib.request.Request(f'{self.base}/v1/name', method='PUT', headers={'content-type': 'application/json'},
+                                             data=json.dumps({'board_id': board_id, 'name': name}).encode())
+        with urllib.request.urlopen(request, timeout=30) as answer:
+            return json.loads(answer.read())['data']['name']
+
+
+class OnePanel(unittest.TestCase):
+    """One panel for Tears of the Kingdom (and BotW / Bananza / Pokopia), Ocarina of Time and Super Mario Odyssey:
+    shared/runtime/settings_panel.h, each game's runtime/settings_panel.h a link to it, the game's own in its
+    runtime/settings_game.h."""
+    SHARED = ROOT / 'shared/runtime/settings_panel.h'
+
+    def test_each_game_links_the_shared_panel(self):
+        for game in ('totk', 'oot', 'odyssey'):
+            with self.subTest(game=game):
+                link = ROOT / f'games/{game}/runtime/settings_panel.h'
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(os.readlink(link), '../../../shared/runtime/settings_panel.h')   # relative: any checkout
+                self.assertEqual(link.resolve(), self.SHARED.resolve())
+                self.assertIn('#if SETTINGS_GAME_PART == 1', (link.parent / 'settings_game.h').read_text())
+                self.assertIn('#include "settings_panel.h"', (link.parent / 'frontend.m').read_text())
+
+    def test_the_shared_panel_names_no_game(self):
+        panel = self.SHARED.read_text()
+        for word in ('TOTK_GAME_V143', 'TOTK_GAME_V121', 'GAME_BOTW', 'GAME_DKB', 'GAME_POKOPIA', 'GAME_NS2', 'GAME_OOT',
+                     'GAME_ODYSSEY', 'settings_oot_', 'odyssey_graphics'):
+            self.assertNotIn(word, panel)
+        self.assertEqual(panel.count('#include "settings_game.h"'), 2)   # SETTINGS_GAME_PART 1 and 2
+
+    def test_odyssey_has_the_zelda_pages_but_vr(self):
+        """User, Effects, 排行榜 and 截图分享 too (2026-11-17, their modules shared in shared/runtime); VR and the 1.4.3
+        anti-aliasing quality rows stay the Zelda games' own."""
+        game = (ROOT / 'games/odyssey/runtime/settings_game.h').read_text()
+        self.assertEqual(sorted(re.findall(r'#define (SETTINGS_HAS_\w+) 1', game)),
+                         ['SETTINGS_HAS_BOARD', 'SETTINGS_HAS_EFFECTS', 'SETTINGS_HAS_SHOTS', 'SETTINGS_HAS_USERS'])
+        self.assertIn('static void settings_effects_reset(void)', game)   # the panel's Reset to defaults calls the game's own
+        self.assertNotIn('KEYMAP_SCREENSHOT = -2', game)   # its screenshot is real now (keyboard_map.h, gamepad.m)
+        self.assertIn('static NSArray<TOTKSettingRow *> *settings_rows(void)', game)
+        self.assertIn('static const SettingsAction *settings_actions(int *count)', game)
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'AppKit requires macOS')
@@ -39,8 +119,85 @@ class SettingsPanel(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('pass: supported VR settings rows', result.stdout)
 
-    def test_update_page_never_forks(self):
-        self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
+    @unittest.skipUnless(HAS_INBOX, 'needs node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+    def test_screenshots_page_with_pictures(self):
+        """The 截图分享 page against the inbox's test/local-server.js: pictures shared, listed, shown, deleted.
+        SHOTS_TEST_PNG=<path.png> keeps pictures of the panel (-grid, -picture, -zh)."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'settings-panel-shots'
+            build = build_probe(compiler, executable)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            with LocalInbox() as inbox:
+                settings = Path(directory) / 'saved'
+                settings.mkdir()
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), SHOTS_TEST_URL=inbox.base + '/v1/shots')
+                run = subprocess.run([str(executable), 'shots'], env=env, capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
+                self.assertIn('pass: screenshots page with pictures', run.stdout)
+
+    @unittest.skipUnless(HAS_INBOX, 'needs node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+    def test_nickname_with_the_server(self):
+        """The nickname row (nick_row.h) against the inbox's test/local-server.js: set from the 排行榜 page by the
+        controller, listed on the board and the pictures, the same on the 截图分享 page, a taken one refused, cleared.
+        NICK_TEST_PNG=<path prefix> keeps pictures of both pages."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'settings-panel-nick'
+            build = build_probe(compiler, executable)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            with LocalInbox() as inbox:
+                other = str(uuid.uuid4())
+                self.assertEqual(inbox.name(other, 'Zelda'), 'Zelda')   # another player holds it first
+                settings = Path(directory) / 'saved'
+                settings.mkdir()
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), NICK_TEST_URL=inbox.base, NICK_TEST_TAKEN='Zelda')
+                run = subprocess.run([str(executable), 'nick'], env=env, capture_output=True, text=True, timeout=180)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
+                self.assertIn('pass: nickname with the server', run.stdout)
+                self.assertIn('[name] the nickname was not set (409): this nickname is taken', run.stderr)
+                me = (settings / 'nick/leaderboard-id.txt').read_text().strip()   # the board's id, in the folder above the game's
+                self.assertIsNone(inbox.name(me))       # cleared at the end
+                self.assertEqual(inbox.name(other), 'Zelda')
+                for switch in ('leaderboard.txt', 'screenshot-share.txt'):   # a nickname turns on no upload switch
+                    self.assertFalse((settings / 'nick/TOTK' / switch).exists(), switch)
+
+    @unittest.skipUnless(HAS_INBOX, 'needs node and the shader inbox (SHADER_INBOX_DIR) with npm install')
+    def test_contribution_list_with_the_server(self):
+        """The 着色器贡献 page's list against the inbox's test/local-server.js (user 2026-11-11): two players' rows sent,
+        this Mac's under the install id the probe writes, the other with more; both listed, most first, this Mac's
+        marked. CONTRIB_TEST_PNG=<path> keeps a picture of the page."""
+        compiler = shutil.which('clang')
+        if not compiler:
+            self.skipTest('clang is required')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'settings-panel-contrib'
+            build = build_probe(compiler, executable)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            with LocalInbox() as inbox:
+                mine, other = '0f0f0f0f-0000-4000-8000-000000001234', str(uuid.uuid4())
+                other_board = str(uuid.uuid4())   # the other player's board id, with a nickname: the list shows it (2026-11-12)
+                self.assertEqual(inbox.name(other_board, 'Zelda'), 'Zelda')
+                for install, count, board in ((mine, 3, None), (other, 7, other_board)):
+                    rows = [f'V\t{(install[:8] + str(k)).ljust(64, "0")}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}' for k in range(count)]
+                    body = {'schema': 1, 'game': 'totk', 'game_version': '1.2.1', 'app_build': 'test', 'rows': rows,
+                            'install': install, 'platform': 'mac', 'device': 'Mac16,1', 'os': 'macOS 26.0'}
+                    if board:
+                        body['board_id'] = board
+                    request = urllib.request.Request(f'{inbox.base}/v1/contrib', method='POST', headers={'content-type': 'application/json'},
+                                                     data=json.dumps(body).encode())
+                    with urllib.request.urlopen(request, timeout=30) as answer:
+                        self.assertEqual(answer.status, 200)
+                settings = Path(directory) / 'saved'
+                settings.mkdir()
+                env = dict(os.environ, TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings), CONTRIB_TEST_URL=inbox.base, CONTRIB_TEST_OTHER_NAME='Zelda')
+                run = subprocess.run([str(executable), 'contrib'], env=env, capture_output=True, text=True, timeout=120)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr[-3000:])
+                self.assertIn('pass: contribution page with the server', run.stdout)
 
     def test_current_modes_and_refresh(self):
         compiler = shutil.which('clang')
@@ -79,8 +236,14 @@ class SettingsPanel(unittest.TestCase):
                                        TOTK_MFX='interp' if overridden else '0',
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
                                        TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
-                            run = subprocess.run([str(executable)], env=env,
-                                                 capture_output=True, text=True, timeout=35)
+                            try:
+                                # About 6 s on a Mac, 35 s and more on GitHub's macOS virtual machines (Tears of the Kingdom 1.4.3)
+                                run = subprocess.run([str(executable)], env=env,
+                                                     capture_output=True, text=True, timeout=120)
+                            except subprocess.TimeoutExpired as timeout:   # where the probe was when it stopped
+                                said = ''.join(part.decode(errors='replace') if isinstance(part, bytes) else part or ''
+                                               for part in (timeout.stdout, timeout.stderr))
+                                self.fail('timed out after 120 s; last output:\n' + '\n'.join(said.splitlines()[-25:]))
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: settings panel', run.stdout)
                 settings = Path(directory) / ('saved-' + (version or 'base'))
@@ -113,9 +276,15 @@ class SettingsPanel(unittest.TestCase):
                             run = subprocess.run([str(executable), 'aa'], env=current, capture_output=True, text=True, timeout=10)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: AA preferences', run.stdout)
-                run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
+                run = subprocess.run([str(executable), 'shots'], env=env, capture_output=True, text=True, timeout=60)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-                self.assertIn('pass: update page', run.stdout)
+                self.assertIn('pass: screenshots page', run.stdout)
+                run = subprocess.run([str(executable), 'nick'], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: nickname', run.stdout)
+                run = subprocess.run([str(executable), 'contrib'], env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: contribution page', run.stdout)   # 查看排名 on the 着色器贡献 page (user 2026-11-11)
                 for action in ('save', 'restore', 'override'):
                     current = dict(env)
                     if action == 'override':

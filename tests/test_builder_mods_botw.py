@@ -1,6 +1,7 @@
 """E9 S9.2: the Mods tab for Breath of the Wild 1.9.0. Its library and its load folder are BotW's; Apply, switching off
 and back on never touch Tears of the Kingdom's files; BCML and TKMM packages are refused in words; code patches are not
-used for BotW. A fake built app (no game file), HOME inside the test folder as in test_builder_mod_library."""
+used for BotW (the Mods page shows no code switch and says why). A fake built app (no game file), HOME inside the test
+folder as in test_builder_mod_library."""
 import os
 from pathlib import Path
 import shutil
@@ -10,14 +11,13 @@ from unittest.mock import patch
 import zipfile
 
 from test_mod_manifest import fake_romfs
-from test_builder_gui_mods import ModsBase, mods_ready, state
 from tools.builder import mod_add, mod_code, mod_find, mod_library, mod_tools
+from tools.builder.controller_mods import ModsState
 from tools.builder.games import BOTW
-from tools.builder.mod_library import ApplyResult, Mod
+from tools.builder.mod_library import Mod
 from tools.builder.mod_tools import Validation
 from tools.builder.ports import CommandRunner, RealClock
-from tools.builder.session import ModsApplied
-from tools.builder.strings import text
+from tools.builder_jobs import tab_mods
 
 REPO = Path(__file__).resolve().parents[1]
 FILES = {'Actor/Pack/Weapon_Sword_001.sbactorpack': b'original sword', 'Pack/TitleBG.pack': b'original title' * 50}
@@ -123,28 +123,29 @@ class Packages(Base):
         tkcl = self.tmp / 'pack.tkcl'
         tkcl.write_bytes(b'tkmm')
         self.assertEqual(self.refused(tkcl), 'tkmm_package')
-        self.assertIn('BCML', text('gui.mods.refused.bcml_package', detail='Infinite Running.bnp'))
+        self.assertIn('BCML', tab_mods.say('refused.bcml_package', detail='Infinite Running.bnp'))
 
 
-class Tab(ModsBase):
+class Page(unittest.TestCase):
+    """What the Mods page (tools/builder_jobs/tab_mods.view) shows of a BotW state."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, MNG_LANG='en')
+        env.start()
+        self.addCleanup(env.stop)
+
+    def state(self, *mods, **fields):
+        return ModsState('botw', 'Breath of the Wild', '1.9.0', Path('/A.app'), mods=mods, **fields)
+
     def test_no_code_switch_for_botw_and_the_reason_in_words(self):
-        panel = self.opened()
         v = Validation(True, '', 1, 0, code='not_for_game')
-        self.deliver(mods_ready(state(Mod('a', 'Sword', False, v))))
-        self.assertNotIn('a:code', panel.toggles)
-        self.assertIn(text('gui.mods.code.not_for_game'), self.labels(panel.rows))
+        [mod] = tab_mods.view(self.state(Mod('a', 'Sword', False, v)))['mods']
+        self.assertIsNone(mod['code'])
+        self.assertIn(tab_mods.say('code.not_for_game'), mod['details'])
 
-    def test_not_applied_and_the_apply_result(self):                   # S7.3 N2
-        panel = self.opened()
-        self.deliver(mods_ready(state(not_applied=True)))
-        self.assertEqual((panel.not_applied.winfo_manager(), panel.not_applied.cget('text')),
-                         ('pack', text('gui.mods.not_applied')))
-        self.deliver(mods_ready(state()))
-        self.assertEqual(panel.not_applied.winfo_manager(), '')
-        self.deliver(ModsApplied(ApplyResult(True, lines=('/a/long/path: replaced by .compose/romfs',))))
-        self.assertEqual(panel.status.cget('text'), text('gui.mods.applied.ok'))      # a success: one short line
-        self.deliver(ModsApplied(ApplyResult(False, 'install_failed', ('broken',))))
-        self.assertEqual(panel.status.cget('text'), text('gui.mods.applied.install_failed') + '\nbroken')
+    def test_not_applied_is_said(self):                                  # S7.3 N2
+        self.assertEqual(tab_mods.view(self.state(not_applied=True))['not_applied'], tab_mods.say('not_applied'))
+        self.assertEqual(tab_mods.view(self.state())['not_applied'], '')
 
 
 if __name__ == '__main__':

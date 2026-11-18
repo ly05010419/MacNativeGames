@@ -104,7 +104,7 @@ static pid_t running_game(NSString *slot) {
 
 
 /* The one question about the shader contribution (totk_contrib_upload.h, the same as Tears of the Kingdom's), before the
-   game starts, once the file holds TOTK_CONTRIB_STEP new rows and the player has not chosen. */
+   game starts, at the first start where the player has not chosen yet (no row threshold, user 2026-11-10). */
 static void contrib_ask(NSString *path) {
     NSUInteger rows = totk_inbox_should_ask(path);
     if (!rows) return;
@@ -256,7 +256,7 @@ int main(int argc, char **argv) {
            start to the title wrote 48 rows, and at TOTK_CONTRIB_STEP rows the reminder below would ask for a rebuild that
            takes no notes for this game yet. Both, and the contribution question, wait for the seed in the app. */
         if ([NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"build/shader-seed/seed-manifest.json"]]) {
-            NSString *contrib = env_or("TOTK_SHADER_CONTRIB", [data stringByAppendingPathComponent:@"shader-list-contribution.txt"]);
+            NSString *contrib = totk_inbox_claim(env_or("TOTK_SHADER_CONTRIB", [data stringByAppendingPathComponent:@"shader-list-contribution.txt"]));   // this game's file only
             setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
             smo_notes_reminder(contrib, root);
             contrib_ask(contrib);

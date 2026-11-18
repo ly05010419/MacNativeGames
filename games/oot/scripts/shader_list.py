@@ -236,6 +236,7 @@ class ShaderList:
         self.path = None
         self.answers = {}       # suffix -> answers (compact JSON): the bind states warm rows name (A rows)
         self.refused = 0        # warm rows merged from a source that named a bind state the list does not know
+        self.held = []          # those rows (row, flag), tried again once every source is in (retry_refused)
         self.listed = {}        # a merged cache's variant names -> the names a build gives them ("<variant>_b"; add_cache)
         self.renamed = 0        # warm rows whose variants were renamed so (add_rows)
 
@@ -293,6 +294,22 @@ class ShaderList:
         answers = listed_answers(deps)
         self.answers[answers_suffix(answers)] = answers
 
+    def retry_refused(self):
+        """The refused warm rows again, once every source of a merge is in: a later source can bring the bind state an
+        earlier one's row names (2026-11-11: 202 inbox rows were refused before the issues' V rows came in). Returns how
+        many went in; the rest stay counted in refused."""
+        held, self.held, took = self.held, [], 0
+        for row, flag in held:
+            if not self.knows(row):
+                names = {n: self.listed[n] for n in row_variants(row) if n in self.listed}
+                if not (names and self.knows(rename_warm(row, names))):
+                    self.held.append((row, flag))
+                    continue
+                row = rename_warm(row, names); self.renamed += 1
+            self.add_warm(row, flag); took += 1
+        self.refused -= took
+        return took
+
     def knows(self, row):
         """Whether every variant a warm row names is the default one or one of a bind state the list keeps."""
         return all(name[:-2].rpartition('-')[2] in self.answers or name[:-2].rpartition('-')[2] == DEFAULT_SUFFIX
@@ -301,6 +318,38 @@ class ShaderList:
     def add_warm(self, row, flag):
         old = self.warm.get(row, '')
         self.warm[row] = ''.join(f for f in 'tm' if f in old + flag)
+
+    def title_keys(self):
+        """The shaders (64-hex keys) the title rows name: what a quick build translates (games/oot/build.py, user
+        2026-11-13: "就带上 菜单的 着色器就行")."""
+        return {name[:64] for row, flags in self.warm.items() if 't' in flags for name in row_variants(row) if KEY.match(name[:64])}
+
+    QUICK_KINDS = ('C', 'T', 'M')
+
+    def quick_keys(self):
+        """What a quick build translates: the title rows' shaders and those of every compute (C), tile-read (T) and mesh
+        (M) row, so its packaging warms those pipelines into the pipeline archive (user 2026-11-15: "快速启动 默认 预热
+        网格管线", then the same for C and T; a quick App compiled every mesh pipeline at its first draw, a cold world
+        entry 32 of them in 75 s). The plain render (R) rows stay the title's only: 35,294 of them."""
+        rest = {name[:64] for row in self.warm if row[0] in self.QUICK_KINDS for name in row_variants(row) if KEY.match(name[:64])}
+        return self.title_keys() | rest
+
+    def only(self, keys):
+        """A copy holding only these shaders' rows: their V and L rows, and the warm rows every shader of which is one of
+        them (with the A rows those name). The seed of a quick build is translated from it (prepare_ns2_seed.py --only)."""
+        keys = set(keys)
+        part = ShaderList()
+        part.path = self.path
+        for key, deps in self.variants:
+            if key in keys:
+                part.add_variant(key, deps)
+        part.locators = {where for where in self.locators if where[0] in keys}
+        part.answers.update(self.answers)   # save writes only the ones a kept warm row names
+        for row, flags in self.warm.items():
+            names = row_variants(row)
+            if names and all(name[:64] in keys for name in names):
+                part.warm[row] = flags
+        return part
 
     def add_cache(self, folder):
         for index in sorted(Path(folder).glob('*.variants')):
@@ -357,6 +406,7 @@ class ShaderList:
                     row = rename_warm(row, names); self.renamed += 1
                 else:
                     self.refused += 1
+                    self.held.append((row, (fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else '') or flag))
                     continue
             listed = fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else ''
             self.add_warm(row, listed or flag)
@@ -472,6 +522,7 @@ def main(argv):
                 lst.add_cache(source)
             else:
                 lst.add_rows(source, 't' if title else 'm')
+        lst.retry_refused()   # a later source may bring the bind state an earlier one's rows name
         lst.save(args[0])
         refused = f'; {lst.refused} warm rows refused: they name bind states neither the list nor the source keeps' if lst.refused else ''
         refused += f'; {lst.renamed} warm rows renamed to the variants a build names (a cache\'s index)' if lst.renamed else ''

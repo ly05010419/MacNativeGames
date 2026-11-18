@@ -947,7 +947,7 @@ sites behave (it is part of `sdk`, 12,085 rewritten sites, equiv 0 divergent but
 
 ## Reference: the nxnative build of this game renders the text; shared fonts are the difference (same session)
 
-The user pointed at the working native build (`/Volumes/bit2t/switch/games/宝可梦 阿尔宙斯/Pokémon Legends - Arceus.app`,
+The user pointed at the working native build (`<the working native build>/Pokémon Legends - Arceus.app`,
 the nxnative host). Its language page shows the dynamic title "要使用哪种语言进行游戏？" and the warning
 "一旦决定语言，将无法在中途更改。"; its log says:
 
@@ -1143,7 +1143,7 @@ comes from the 3D content, not from the output mapping. Our language page (`/tmp
 build's (`/tmp/ref1.png`) almost exactly, so the chain does reproduce the reference for a dark scene.
 
 **Next, cheapest decisive check**: the reference build reaches the same beach
-(`/Volumes/bit2t/switch/games/宝可梦 阿尔宙斯/Pokémon Legends - Arceus.app`); if its beach frame is visibly darker
+(`<the working native build>/Pokémon Legends - Arceus.app`); if its beach frame is visibly darker
 than `/tmp/txf_05.png`, the difference is in the scene lighting chain (sun / sky / shadows and the material
 shaders), not in post — compare the same pass breakpoints (scene target before the tonemap, the 0.72·0.80·0.76
 average, and `c3[154].y`) against that build. Diagnostics added for this: `PLA_TONEMAP_LOG=1` (the block above)

@@ -73,11 +73,11 @@ static void hdr_shadow_copy(id<MTLTexture> src,id<MTLTexture> dst) {
     id<MTLRenderPipelineState> pso=dst.pixelFormat==MTLPixelFormatRGBA16Float?to16:to11;
     if(!pso) {
         NSString *msl=totk_hdr_copy_source();
-        NSError *e=nil;id<MTLLibrary> l=[g_dev newLibraryWithSource:msl options:nil error:&e];
+        NSError *e=nil;id<MTLLibrary> l=mtl_counted_library(g_dev, msl, nil, &e);
         MTLRenderPipelineDescriptor *p=[MTLRenderPipelineDescriptor new];
         p.vertexFunction=[l newFunctionWithName:@"vs"];p.fragmentFunction=[l newFunctionWithName:@"fs"];
         p.colorAttachments[0].pixelFormat=dst.pixelFormat;
-        pso=[g_dev newRenderPipelineStateWithDescriptor:p error:&e];
+        pso=mtl_counted_render(g_dev, p, &e);
         if(!pso)MDIE("HDR format conversion compile: %s",e.localizedDescription.UTF8String);
         if(dst.pixelFormat==MTLPixelFormatRGBA16Float)to16=pso;else to11=pso;
     }

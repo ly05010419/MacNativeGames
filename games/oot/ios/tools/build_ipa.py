@@ -4,8 +4,8 @@ or Breath of the Wild (botw160, botw190; the runtime and graphics layer built wi
 shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
-from compile_seed import METAL_FLAGS
-from device_pipelines import SCHEMA, connected_gpus, seed_check
+from compile_seed import METAL_FLAGS, seed_flags
+from device_pipelines import SCHEMA, connected_gpus, mac_cache, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -82,6 +82,35 @@ def oot_pane(root):
         'Values':['0','1','2','3'],'DefaultValue':'0'}
     return root
 
+# The icon at one size, drawn with the system's AppKit through osascript (as MNG Launcher's tools/builder_app/
+# resize_icon.js; the work tree carries only this game's folder). sips writes through the user's temporary folder on the
+# system disk, which this Mac's build sandbox refuses: 2026-11-15 the iPad package stopped at "sips … Cannot write to
+# file /var/folders/…/T/…". tests/test_ios_icon_no_sips.py.
+RESIZE_ICON_JS = r"""ObjC.import('AppKit');
+function run(argv) {
+  var image = $.NSImage.alloc.initWithContentsOfFile(argv[0]);
+  if (image.isNil()) throw new Error('cannot read ' + argv[0]);
+  var n = parseInt(argv[1], 10);
+  var rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
+    null, n, n, 8, 4, true, false, $.NSDeviceRGBColorSpace, 0, 0);
+  rep.size = $.NSMakeSize(n, n);
+  var context = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep);
+  $.NSGraphicsContext.saveGraphicsState;
+  $.NSGraphicsContext.setCurrentContext(context);
+  context.setImageInterpolation($.NSImageInterpolationHigh);
+  image.drawInRectFromRectOperationFraction($.NSMakeRect(0, 0, n, n), $.NSZeroRect, $.NSCompositingOperationCopy, 1.0);
+  context.flushGraphics;
+  $.NSGraphicsContext.restoreGraphicsState;
+  var data = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+  if (!data.writeToFileAtomically(argv[2], false)) throw new Error('cannot write ' + argv[2]);
+  return '';
+}
+"""
+
+def png_icon(source, pixels, out, log, env):
+    script=Path(log).with_suffix('.js'); script.parent.mkdir(parents=True,exist_ok=True); script.write_text(RESIZE_ICON_JS)
+    run(['/usr/bin/osascript','-l','JavaScript',script,source,str(pixels),out],Path(out).parent,Path(log),env)
+
 def run(args, cwd, log, env):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
@@ -129,7 +158,7 @@ def configure_app_icon(tree, gen, project, logs, env, vision=False):
     if icon.is_file() and not vision:
         appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True)
         (catalog/'Contents.json').write_text(json.dumps({'info':{'author':'xcode','version':1}}))
-        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',appicon/'icon-1024.png'],tree,logs/'ios-icon.log',env)
+        png_icon(icon,1024,appicon/'icon-1024.png',logs/'ios-icon.log',env)
         (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':'icon-1024.png','idiom':'universal','platform':'ios','size':'1024x1024'}],
                                                          'info':{'author':'xcode','version':1}}))
         project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
@@ -202,7 +231,7 @@ def seed_reusable(seed, source_hash, source_files, sdk):
     shaders=[name for name in source_files if name.endswith('_b.metal')]
     return (cached.get('ios_source_manifest_sha256')==source_hash and
             cached.get('ios_metallibs')==len(shaders) and cached.get('ios_sdk','iphoneos')==sdk and
-            cached.get('ios_metal_flags')==' '.join(METAL_FLAGS) and
+            cached.get('ios_metal_flags')==seed_flags(sdk) and
             all((seed/(name.removesuffix('.metal')+'.metallib')).is_file() for name in shaders))
 
 def main():
@@ -220,7 +249,10 @@ def main():
     if vision and a.version.startswith('botw'): raise RuntimeError('native visionOS builds currently support Tears of the Kingdom only')
     sdk=subprocess.check_output(['xcrun','--sdk',sdk_name,'--show-sdk-path'],env=env,text=True).strip()
     subprocess.run(['xcodebuild','-version'],env=env,check=True,stdout=subprocess.DEVNULL)
-    if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
+    # the repository's tools/deps: pinned XcodeGen (no Homebrew); build_app.py runs this from its copy in the work folder
+    sys.path.insert(0,os.environ.get('MNG_REPO') or str(Path(__file__).resolve().parents[4]))
+    from tools.deps import program
+    generator=program('xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
     ns2=a.version in ('dkb','pkp','oot')
@@ -320,7 +352,7 @@ def main():
     xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a Gen/deps/lib/libdav1d.a{xlate_link} {flags}\n'
                         + ('OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1\n' if device_xlate else ''))
-    run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
+    run([generator,'generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
     derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
         '-destination','generic/platform='+('visionOS' if vision else 'iOS'),'-derivedDataPath',derived,'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY='],
         ios,logs/f'xcodebuild-{a.platform}.log',env)
@@ -382,7 +414,8 @@ def main():
     pipe_work=tree/f'build/ios-pipelines/{a.version}'
     # Two runs of the Mac binary's mode: the first records the patched variants the runtime compiles from source
     # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
-    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds.
+    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds,
+    # also when the runtime changed: only the pipelines it describes otherwise are made again (device_pipelines.mac_cache).
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
     # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
     # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
@@ -394,15 +427,14 @@ def main():
     tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)
     def mac_pipelines(folder,log):
         stamp=folder/'seed.txt'
-        if not (stamp.is_file() and stamp.read_text().strip()==want): shutil.rmtree(folder,ignore_errors=True)   # pipelines of other shaders or lists
-        folder.mkdir(parents=True,exist_ok=True)
+        recheck=mac_cache(folder,want)   # kept and checked against this runtime, never thrown away (device_pipelines.mac_cache)
         # A game running at the same time shares Metal's gpuarchiver folder and the two remove each other's files (2026-11-03):
         # the game slot makes this step wait for a running game, and a game wait for this step.
         sys.path.insert(0,str(tree/'scripts/dev'))
         os.environ.setdefault('TOTK_GAME_SLOT_DIR',str(Path.home()/'Library/Application Support/MacNativeGames/TOTK/game-slot'))
         from game_slot import GameSlot
         with GameSlot(owner='build',purpose='OOT iOS pipeline archive',expect_seconds=1800):
-            run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1'))
+            run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1',**recheck))
         stamp.write_text(want+'\n')
     t0=time.time()
     if gpus:   # without the last build's variant libraries, so the first run compiles and records every variant it meets

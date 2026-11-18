@@ -6,8 +6,9 @@ make every frame time meaningless. runtime/game_slot.c enforces this in every `b
 module is the same protocol for scripts, so a script waits for its turn *before* it starts its own timers, and
 reruns a test that the user's game interrupted. Change both files together.
 
-Files in the slot directory (TOTK_GAME_SLOT_DIR, default <native-port>/analysis/game-slot; analysis/ is shared by
-every worktree, see scripts/dev/new_worktree.sh):
+Files in the slot directory (TOTK_GAME_SLOT_DIR, default ~/Library/Application Support/MacNativeGames/TOTK/game-slot,
+the folder the Tears of the Kingdom App's launcher passes to its game, so scripts, Makefile probes and games queue in
+one place; until 2026-11-11 the default was <native-port>/analysis/game-slot, which no App's game used):
   lock               flock(2) target; the holder keeps it locked while its game runs (the kernel drops it on exit)
   holder             key=value lines about the current holder (stale once the lock is free)
   queue/<ns>-<pid>   waiters, first come first served
@@ -37,7 +38,6 @@ import sys
 import time
 from pathlib import Path
 
-NATIVE_PORT = Path(__file__).resolve().parents[2]
 EX_PREEMPTED = 75
 _OWNER = re.compile(r"[a-z0-9_-]{1,32}")
 
@@ -73,8 +73,21 @@ def pid_path(pid):
     return buf.value.decode(errors="replace") if _libproc.proc_pidpath(pid, buf, 4096) > 0 else ""
 
 
+APP_GAMES = ("TOTK", "BotW", "Bananza", "Pokopia", "OcarinaOfTime")   # <App>/Contents/MacOS/<name>: the Mac apps' games
+                                                                      # (build_app.py APPS; games/oot/build.py)
+
+
+def is_game_path(path):
+    """Same rule as runtime/game_slot.c slot_path_is_game: an App's game, or a built runtime (also renamed copies such as
+    totk-native.base)."""
+    p = Path(path)
+    if p.name in APP_GAMES and p.parent.name == "MacOS" and p.parent.parent.name == "Contents":
+        return True
+    return p.name.startswith(("totk-native", "oot-native"))
+
+
 def is_game(pid):
-    return os.path.basename(pid_path(pid)).startswith("totk-native")   # also renamed copies (totk-native.base)
+    return is_game_path(pid_path(pid))
 
 
 def all_pids():
@@ -116,9 +129,14 @@ def num(kv, key):
         return 0
 
 
+def default_slot_dir():
+    """The folder app/launcher.m passes to Tears of the Kingdom's game (and runtime/game_slot.c slot_default_dir)."""
+    return Path.home() / "Library/Application Support/MacNativeGames/TOTK/game-slot"
+
+
 def slot_dir():
     env = os.environ.get("TOTK_GAME_SLOT_DIR")
-    d = Path(env) if env else (NATIVE_PORT / "analysis").resolve() / "game-slot"
+    d = Path(env) if env else default_slot_dir()
     for sub in ("queue", "preempted"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     return d.resolve()
@@ -128,7 +146,7 @@ def test_ignores_legacy(d):
     """Tests run in their own slot directory and may ignore games outside it; never the shared directory."""
     if os.environ.get("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY") != "1":
         return False
-    if not os.environ.get("TOTK_GAME_SLOT_DIR") or "/analysis/game-slot" in str(d):
+    if not os.environ.get("TOTK_GAME_SLOT_DIR") or Path(d).resolve() == default_slot_dir().resolve():
         raise SystemExit("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY needs a test TOTK_GAME_SLOT_DIR")
     return True
 

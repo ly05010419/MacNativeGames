@@ -1,5 +1,4 @@
 """Real folder-sync transactions: separate user identities, backups and invalid remote metadata."""
-import os
 from pathlib import Path
 import plistlib
 import subprocess

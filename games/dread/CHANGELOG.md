@@ -17,7 +17,7 @@ named by hash and subject. Game data, keys and saves are never committed (see th
 | 2 | A runtime target with the other games' parts compiled out, booting to `nnMain` | done 2026-10-25 |
 | 3 | Follow every unknown service / command / NVN call until the first `nvnQueuePresentTexture` | done 2026-10-25 (first presented frame at 1.2 s) |
 | 4 | A picture, audio, input, saves | in progress: a new game reaches the first area (Artaria) with HUD and minimap |
-| 5 | Performance, shaders, packaging as an app | in progress: Mac app; iPhone / iPad app (2026-11-01), its shader seed (2026-11-02) |
+| 5 | Performance, shaders, packaging as an app | in progress: Mac app; iPhone / iPad app (2026-11-01), its shader seed (2026-11-02); 2.1.0 with prepared shaders and pipelines on the Mac (2026-11-13) |
 
 ## Log
 
@@ -469,4 +469,74 @@ Not checked: the first-start compile on an older device (`.metallib` built on th
 Metal Toolchain), an iPad, areas beyond those played, and whether more bind states than cube and depth textures turn up. The Mac app is unchanged: its launcher does not set
 `TOTK_SHADER_SEED_DIR`, and the Mac build does not prepare the seed (a work folder that has one, after an iOS build,
 imports it on the next Mac start, as the runtime always did with `build/shader-seed`).
+
+### 2026-11-13: 2.1.0, prepared shaders and pipelines on the Mac, the movie Stop fix and the audio tick
+
+**2.1.0.**
+- The target moved from 1.0.0 to the latest update, 2.1.0 (v327680, `010093801237C800`). Only `main` changes:
+  - build ID `646761F643AFEBB379EDD5E6A5151AF2CEF93DC1`;
+  - bss `0x70cd2fa0`, about 1.8 GiB, so the leading patch area is still needed.
+- `sdk`, `subsdk0` and the 1,010 shaders are byte-identical to 1.0.0's.
+- `build.py` takes the update NSP (`--update`, required):
+  - the code comes from its ExeFS (`scripts/extract_code.py`);
+  - the RomFS is the base's merged with the update's BKTR image (`scripts/merge_romfs.py`, all six IVFC levels
+    verified). Both scripts are Echoes of Wisdom's.
+- `assets/expected-v2.1.0.json` replaces the 1.0.0 pins: 9,774 files, 5,299,917,424 bytes.
+- The rewrite: `structck.py` OK and `equiv.py` 0 divergent on the three modules (main 1,087 sites). `make probe` maps
+  `rewritten/v210`.
+
+**Shaders and pipelines on the Mac.**
+- The Mac build now prepares the seed (`make shader-seed`) and compiles it into Metal libraries (`make shader-libs`,
+  `scripts/build_shader_libs.py`, Echoes of Wisdom's). The runtime reads neither `flags.txt` nor the libraries' options;
+  it finds each library by the SHA-256 of its MSL.
+- A/B to Artaria (2 runs per arm, the same app):
+  - without the seed, 120 Metal libraries were compiled and about 130 shaders translated in play;
+  - with it, 0 and 0;
+  - the 128 render pipelines were still built on demand in every run.
+- The 128 pipelines B1 and B2 recorded (the same keys in both: with the seed every variant id is fixed) are `R` rows
+  of `assets/shader_list.tsv`. `prepare_shader_seed.py` writes the ones whose shaders the seed holds into its
+  `pso_manifest.tsv`, and the warm-up builds them in the background.
+- `scripts/shader_list.py` keeps Dread's keys as recorded (`NORMALIZE = False`): this runtime has no `pso_key_norm`,
+  and with TOTK's normalization 22 of the 128 merged into keys play never asks for.
+- A/B to Artaria: synchronous pipeline builds in play went from 128 to 0 in both runs with the list, and stayed at 128
+  without it. Both arms recorded 47 frames over 50 ms.
+- The first-play saving in time and the first frame of a cold start depend on macOS's own Metal cache, which those
+  runs did not isolate. They are not claimed.
+
+**Movie Stop / Reset with a frame held.**
+- `release_codec` freed every output frame but kept `out_held` / `out_bytes`, so a frame acquired before Stop or Reset
+  could still be fetched:
+  - texture mode (Dread's) read the freed frame in `nv12_to_rgba`;
+  - buffer mode copied from it.
+- It now clears both, as Echoes of Wisdom's and Kirby's do.
+- `tests/movie_stop` (in `make test`, AddressSanitizer):
+  - checks Stop and Reset in buffer and texture mode, and that the decoder works again after a new Configure and
+    Start;
+  - without the fix it stops with a SEGV in `memmove`.
+- The earlier movie crashes in this log stay open: this fix is not shown to be theirs.
+
+**The audio tick.**
+- The player heard a tick every so often in the movie and the music.
+- Cause: the game streams them as DSP-ADPCM in buffers of 14,336 samples at 44.1 kHz and marks every buffer end of
+  stream with three more queued. A queue trace shows `(0..14336 eos)` slot after slot.
+- The renderer, as TotK's, stopped the voice for the rest of the 5 ms frame after an end-of-stream buffer: a gap every
+  325 ms. The DSP plays on into the next queued buffer (Ryujinx), as upstream already does for Breath of the Wild
+  (`AUDIO_EOS_PLAYS_ON`, 2b6fb60).
+- `runtime/audio_mixer.h` now sets it, and the mixer's walk and `advance_voice` follow it.
+- Probes:
+  - Breath of the Wild's cursor probe is carried over;
+  - a new probe (`probe_eos_mix`) reads the mixed output: the second buffer's samples must be in the same frame;
+  - reverting only the mixer's walk makes it fail (output 100 is 0, want -0.25).
+- Measured on 30 s captures of the output (`TOTK_AUDIO_CAPTURE`): output steps on the 240-sample frame boundary
+  325-335 ms apart went from 73 to 7, and the output level stayed normal after the title. The player listened and the
+  noise was gone.
+- Ruled out on the way: `AudioOut` (opened, never fed), the aux effect (never enabled), starved streams and the ADPCM
+  history across frames.
+
+**Without Homebrew.**
+- opus and libvpx come from `tools/deps` (upstream, d9a52a77).
+- `build.py` no longer searches `/opt/homebrew/bin` or `/usr/local/bin` for git and make.
+- SPIRV-Cross is built from its pinned commit.
+- The shader translator in `prebuilt/macos-arm64` is byte-identical to the Astral Chain, Bayonetta 3 and Echoes of
+  Wisdom copies (SHA-256 `6dd53d64…`).
 

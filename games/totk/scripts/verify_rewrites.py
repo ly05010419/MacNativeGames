@@ -47,7 +47,7 @@ def main():
     if (outputs / 'build_src.sha256').read_text().split()[0] != source_hash:
         raise RuntimeError('Rewrite source changed since artifacts were generated; rebuild first')
     environment = os.environ.copy()
-    environment.setdefault('LLVM_BIN', '/opt/homebrew/opt/llvm/bin')
+    # structck.py disassembles with Xcode's llvm-objdump unless LLVM_BIN / LLVM_OBJDUMP name another (no Homebrew llvm)
     environment['DM_VCACHE'] = str(analysis / 'llvm-cache')
     # The rewritten modules this title ships: main, sdk and its subsdk modules (TotK: subsdk0; Switch 2 games: none)
     names = ['main', 'sdk', *(f'subsdk{i}' for i in range(10) if (outputs / f'subsdk{i}.patched.bin').is_file())]

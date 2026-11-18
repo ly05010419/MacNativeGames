@@ -6,8 +6,9 @@ make every frame time meaningless. runtime/game_slot.c enforces this in every `b
 module is the same protocol for scripts, so a script waits for its turn *before* it starts its own timers, and
 reruns a test that the user's game interrupted. Change both files together.
 
-Files in the slot directory (TOTK_GAME_SLOT_DIR, default <native-port>/analysis/game-slot; analysis/ is shared by
-every worktree, see scripts/dev/new_worktree.sh):
+Files in the slot directory (TOTK_GAME_SLOT_DIR, default ~/Library/Application Support/MacNativeGames/TOTK/game-slot,
+the folder the App's launcher passes to its game, so scripts, packaging steps and games all queue in one place; until
+2026-11-11 the default was <native-port>/analysis/game-slot and the packaging's pipeline step never met a running game):
   lock               flock(2) target; the holder keeps it locked while its game runs (the kernel drops it on exit)
   holder             key=value lines about the current holder (stale once the lock is free)
   queue/<ns>-<pid>   waiters, first come first served
@@ -28,6 +29,7 @@ In a Python script:
 """
 import argparse
 import ctypes
+import errno
 import fcntl
 import os
 import random
@@ -37,7 +39,6 @@ import sys
 import time
 from pathlib import Path
 
-NATIVE_PORT = Path(__file__).resolve().parents[2]
 EX_PREEMPTED = 75
 _OWNER = re.compile(r"[a-z0-9_-]{1,32}")
 
@@ -46,6 +47,7 @@ _libproc.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, c
 _libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
 _libproc.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE, _SZOMB = 3, 136, 5   # struct proc_bsdinfo: status at 4, pbi_start_tvsec at 120
+_PROC_FLAG_INEXIT = 4   # sys/proc_info.h: pbi_flags, not the pbi_status enum
 
 
 class Preempted(Exception):
@@ -73,8 +75,21 @@ def pid_path(pid):
     return buf.value.decode(errors="replace") if _libproc.proc_pidpath(pid, buf, 4096) > 0 else ""
 
 
+APP_GAMES = ("TOTK", "BotW", "Bananza", "Pokopia", "OcarinaOfTime")   # <App>/Contents/MacOS/<name>: the Mac apps' games
+                                                                      # (build_app.py APPS; games/oot/build.py)
+
+
+def is_game_path(path):
+    """Same rule as runtime/game_slot.c slot_path_is_game: an App's game, or a built runtime (also renamed copies such as
+    totk-native.base)."""
+    p = Path(path)
+    if p.name in APP_GAMES and p.parent.name == "MacOS" and p.parent.parent.name == "Contents":
+        return True
+    return p.name.startswith(("totk-native", "oot-native"))
+
+
 def is_game(pid):
-    return os.path.basename(pid_path(pid)).startswith("totk-native")   # also renamed copies (totk-native.base)
+    return is_game_path(pid_path(pid))
 
 
 def all_pids():
@@ -116,9 +131,14 @@ def num(kv, key):
         return 0
 
 
+def default_slot_dir():
+    """The folder app/launcher.m passes to its game (and runtime/game_slot.c slot_default_dir)."""
+    return Path.home() / "Library/Application Support/MacNativeGames/TOTK/game-slot"
+
+
 def slot_dir():
     env = os.environ.get("TOTK_GAME_SLOT_DIR")
-    d = Path(env) if env else (NATIVE_PORT / "analysis").resolve() / "game-slot"
+    d = Path(env) if env else default_slot_dir()
     for sub in ("queue", "preempted"):
         (d / sub).mkdir(parents=True, exist_ok=True)
     return d.resolve()
@@ -128,7 +148,7 @@ def test_ignores_legacy(d):
     """Tests run in their own slot directory and may ignore games outside it; never the shared directory."""
     if os.environ.get("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY") != "1":
         return False
-    if not os.environ.get("TOTK_GAME_SLOT_DIR") or "/analysis/game-slot" in str(d):
+    if not os.environ.get("TOTK_GAME_SLOT_DIR") or Path(d).resolve() == default_slot_dir().resolve():
         raise SystemExit("TOTK_GAME_SLOT_TEST_IGNORE_LEGACY needs a test TOTK_GAME_SLOT_DIR")
     return True
 
@@ -173,13 +193,22 @@ def legacy_games(d, entries=None, user_pid=None, exclude=()):
 def pid_stuck_exiting(pid):
     """True when the process is gone, a zombie, or stuck exiting (ps state E): a game whose GPU context the kernel cannot
     tear down after a GPU hang stays in E for ever, holding every lock it had (2026-11-06 and 2026-11-07)."""
-    if pid <= 0 or not pid_start(pid):
+    if pid <= 0:
         return True
-    try:
-        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return "E" in stat or "Z" in stat
+    # /bin/ps is setuid and cannot be exec'd inside the build/test sandbox.
+    # Read the same kernel exit flag without a privileged subprocess. An unreadable
+    # process is unknown, not proof that a held lock can safely be replaced.
+    buf = ctypes.create_string_buffer(_BSDINFO_SIZE)
+    ctypes.set_errno(0)
+    size = _libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, buf, _BSDINFO_SIZE)
+    if size != _BSDINFO_SIZE:
+        error = ctypes.get_errno()
+        if size == 0 and error == errno.ESRCH:
+            return True
+        raise OSError(error or errno.EIO, f'cannot read process {pid} exit state ({size} bytes)')
+    flags = int.from_bytes(buf.raw[:4], 'little')
+    status = int.from_bytes(buf.raw[4:8], 'little')
+    return bool(flags & _PROC_FLAG_INEXIT) or status == _SZOMB
 
 
 def rotate_stuck_lock(d, log):

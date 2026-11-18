@@ -15,7 +15,7 @@ Use an Apple silicon Mac with Metal 4 support, macOS 26 or later, and Xcode with
 Build dependencies:
 
 - Python 3.11 or later with `lz4`, `capstone`, `fonttools`, and `backports.zstd` when Python is older than 3.14.
-- .NET SDK **10**, `make`, `clang`, `zstd` and `spirv-cross` on `PATH`.
+- `make` and `clang` (Xcode). The .NET SDK **10**, `zstd` and `spirv-cross` come with the build: the build makes them itself, once per Mac, from pinned sources (the repository's `tools/deps`, cached in `~/Library/Caches/MacNativeGames/deps`): no Homebrew.
 - A **local LibHac 0.19.0 NuGet package** supplied with `--libhac-package`. SHA-256: `1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19`. This is an explicit build prerequisite, like .NET and Python packages; it is not redistributed here. An existing local package/cache can supply it. The builder never downloads it and rejects a missing or mismatched package before extraction.
 - The shader translator is included as **binaries only** under `prebuilt/`, with SHA-256 checksums and upstream source provenance. Duplicate translator sources, debug symbols and Humanizer satellite resources are omitted. libvpx remains source-only because it is the host's movie decoder, not a translator dependency.
 - Your own unmodified base NSP or XCI, the **2.3.0 update NSP**, and your own `prod.keys`. These are private build inputs; this repository supplies none of them. Compressed inputs, other updates, DLC and iOS are outside this target's supported scope.
@@ -45,7 +45,7 @@ make -C games/jamboree build \
   OUTPUT='/path/to/private/Super Mario Party Jamboree.app' LANGUAGE=en-US
 ```
 
-The build is offline once the listed prerequisites are installed. The wrapper hash-checks the local LibHac package, copies it into `<work>/dependencies/nuget`, and restores `nx_extract` using only that local feed and an explicit NuGet configuration that clears inherited feeds/fallbacks. NuGet auditing is disabled, and the following compile uses `--no-restore`. There is no download fallback. An empty NuGet cache works; an absent local package fails with a clear error. The generated app does not contain LibHac or any .NET tools.
+The build is offline once the listed prerequisites are installed and the first build on this Mac has fetched the pinned tools. The wrapper hash-checks the local LibHac package, copies it into `<work>/dependencies/nuget`, and restores `nx_extract` using only that local feed and an explicit NuGet configuration that clears inherited feeds/fallbacks. NuGet auditing is disabled, and the following compile uses `--no-restore`. There is no download fallback. An empty NuGet cache works; an absent local package fails with a clear error. The generated app does not contain LibHac or any .NET tools.
 
 The builder stages every runtime source, script and compiler inside `<work>/source`. It never reads another game directory. Original containers are linked into `<work>/input`; extracted files, rewritten modules, logs, shader packages and caches stay under `<work>/input/0100965017338000_build`. .NET and task caches stay under `<work>/cache` and `<work>/tmp`. A repeat build uses the existing stages' fingerprints. Do not edit generated binaries; change the declared source rules and rebuild from the original inputs.
 

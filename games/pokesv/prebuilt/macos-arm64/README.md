@@ -23,3 +23,10 @@ that building the app needs no .NET and the app needs no .NET runtime.
 - NativeAOT builds are not byte-for-byte reproducible across folders (paths end up in the binary), so a rebuild gets a
   different hash; what matters is that it translates the same. Check a rebuild by replaying a shader cache through
   both programs and comparing every MSL, SPIR-V and reflection file.
+
+## Licences of what is compiled in
+
+`psv_xlate` contains, besides this repository's own MIT code and Ryujinx's shader recompiler (MIT; see `THIRD_PARTY_NOTICES.md` at the repository root):
+
+- SPIRV-Cross (Apache-2.0): `SPIRV-Cross.LICENSE` in this folder.
+- The .NET runtime of the NativeAOT build (MIT): `dotnet-runtime.LICENSE` in this folder.

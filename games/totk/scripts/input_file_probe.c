@@ -18,6 +18,7 @@ void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-ca
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
 void runtime_settings_toggle(void){runtime_fail("unexpected settings panel in unit probe");}
+void runtime_settings_page(int page){(void)page;runtime_fail("unexpected settings panel in unit probe");}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)name;(void)word;(void)what;}
 void runtime_setting_remove(const char *name){(void)name;}

@@ -32,9 +32,11 @@ void runtime_swkbd_selftest(void);
 void runtime_dump_threads(void);   /* threads.c: every guest thread's wait state and guest return chain (TOTK_INPUT_FILE "threads") */   /* diagnostic "kbtest": show the text entry bar from a thread of its own */
 void runtime_frame_step_pin(double ms);                  /* game_patches.c: pin the real-time frame step (diagnostics), 0 = real time */
 void runtime_frame_step_update(uint64_t now_ns);
-/* 3.0.1 optional 60 FPS: original 30 by default; choice is saved for the next launch. */
+/* Optional 60 FPS (3.0.1, 3.0.3) and 120 FPS (3.0.3): original 30 by default; choice is saved for the next launch. */
 int runtime_frame_rate_active(void);
 int runtime_frame_rate_available(void);
+int runtime_display_max_hz(void);         /* frontend.m: the fastest refresh rate among the connected screens; 0 = unknown */
+int runtime_frame_rate_offers(int fps);   /* 30 always; 60 / 120 when this build and app carry that rate's data */
 int runtime_frame_rate_choice(void);
 int runtime_frame_rate_locked(void);
 int runtime_frame_rate_choose(int value);
@@ -161,17 +163,64 @@ void runtime_gamepad_settings_enable(int enabled);
 int runtime_gamepad_settings_requested(void);
 void runtime_gamepad_text_capture(int on);
 void runtime_gamepad_text_read(RuntimeGamepadState *out);
+int runtime_gamepad_battery_left_percent(void);   /* runtime/gamepad.m: a Joy-Con pair's left one, -1 none or unknown (the corner box) */
+int runtime_gamepad_screenshot_button(void);               /* the button held 3 s for a screenshot (controller_map.h), -1 none */
+void runtime_gamepad_screenshot_button_set(int physical); /* the key bindings; saved in controller-screenshot.txt (none: "none"), the touchpad the default */
+/* The controller's capture button (runtime/gamepad.m, as games/odyssey): the Share button of a controller GameController
+   reports, or bit 5 of a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The hook is
+   called once per press, on the main queue; the window (frontend.m) sets it to save a picture of the game's next frame
+   (runtime/screenshot.h). */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_capture_press(void) __attribute__((weak));   /* gamepad.m (weak: probes that link input.c alone): the capture button pressed once (the input file's "capture") */
+void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
+void runtime_gamepad_switch_left(void *controller, int x, int y);    /* gamepad_feedback.m: a Switch controller's sticks from its HID reports */
+void runtime_gamepad_switch_right(void *controller, int x, int y);
+int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in (controller-background.txt); default off */
+void runtime_gamepad_background_set(int on);    /* main thread: apply and save */
+void runtime_gamepad_focus(int on);             /* Mac window focus, independent of the guest's focus state */
+int runtime_gamepad_game_input(void);   /* any thread: 1 while the game gets the controllers (no capture, nor its release wait) */
+void runtime_gamepad_hid_battery(int left, int percent);   /* runtime/gamepad.m, any thread: a Switch controller's battery read from its HID reports (left: a paired set's left Joy-Con), -1 none */
+/* DSU (cemuhook) motion and input over UDP, as games/totk (runtime/dsu_client.h, included by gamepad.m; the input page's
+   DSU rows, runtime/dsu_settings_rows.h). Off by default. */
+int runtime_dsu_motion_active(void);     /* fresh DSU six-axis samples currently own motion, not just an open socket */
+typedef struct {
+    int enabled, slot, locked;
+    char endpoint[264];
+} RuntimeDSUSettings;
+typedef struct {
+    int connected, sensor;
+    double acc[3], gyro[3];   /* gyro in degrees/second for the settings display */
+    uint32_t buttons;
+    uint8_t axes[4];
+    char error[160];
+} RuntimeDSUStatus;
+void runtime_dsu_settings(RuntimeDSUSettings *out);   /* main queue; environment overrides saved preferences */
+void runtime_dsu_status(RuntimeDSUStatus *out);       /* main queue; passive snapshot */
+int runtime_dsu_apply(const RuntimeDSUSettings *settings); /* 0 applied and saved, -1 invalid, -2 environment locked */
+void runtime_feedback_motion_source_changed(void);   /* gamepad_feedback.m: switch between DSU and native motion without changing rumble */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
 typedef struct { uint64_t sampling, delta_ns; float acc[3], gyro[3], angle[3], dir[9]; } RuntimeMotionState;   /* G, rev/s, rev, 3 axes */
 int runtime_rumble_enabled(void);
 int runtime_gyro_enabled(void);
-/* The settings panel's rumble switch: in force at once when the game has the vibration devices (it got them at start), else
-   from the next launch; saved in rumble.txt. TOTK_RUMBLE or an agent's test session decide first (locked). */
-int runtime_rumble_locked(void);
-int runtime_rumble_choice(void);
-void runtime_rumble_choose(int on);
+/* The shared settings panel's rumble and gyro switches (shared/runtime/settings_panel.h settings_feedback_row; shared
+   runtime/hid_feedback.c): gyro 0 rumble, 1 motion. In force at once when the game has the device (it got its devices at
+   the start), else from the next launch; saved in rumble.txt / gyro.txt (runtime/feedback_settings.h). TOTK_RUMBLE /
+   TOTK_GYRO or an agent's test session decide first (locked). This panel shows the rumble row only. */
+int runtime_feedback_locked(int gyro);
+int runtime_feedback_present(int gyro);
+int runtime_feedback_choice(int gyro);
+void runtime_feedback_choose(int gyro, int on);
+/* Named by the shared panel's rumble strength and mouse sensitivity rows, which this game does not have (its rumble has no
+   strength setting and its mouse only clicks): declared for the panel's helpers, defined nowhere, so a row that used them
+   would fail to link instead of doing nothing. */
+int runtime_rumble_gain_locked(void);
+float runtime_rumble_gain(void);
+void runtime_rumble_gain_set(float gain);
+int runtime_mouse_sensitivity(void);
+int runtime_mouse_sensitivity_locked(void);
+void runtime_mouse_sensitivity_set(int value);
 void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);

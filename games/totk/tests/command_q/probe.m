@@ -49,6 +49,9 @@ void runtime_amiibo_place(int i){(void)i;}
 void runtime_input_clear_window(void){inputClears++;memset(heldInput,0,sizeof heldInput);}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_dsu_settings(RuntimeDSUSettings *out){*out=(RuntimeDSUSettings){.endpoint="127.0.0.1:26760"};}
+void runtime_dsu_status(RuntimeDSUStatus *out){*out=(RuntimeDSUStatus){0};}
+int runtime_dsu_apply(const RuntimeDSUSettings *settings){(void)settings;return 0;}
 void runtime_gamepad_focus(int on){(void)on;}
 int runtime_gamepad_background_enabled(void){return 0;}
 void runtime_gamepad_background_set(int on){(void)on;}
@@ -62,6 +65,8 @@ int runtime_gamepad_settings_requested(void){return 0;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_settings_button(void){return -1;}
 void runtime_gamepad_settings_button_set(int physical){(void)physical;}
+int runtime_gamepad_screenshot_button(void){return CONTROLLER_SCREENSHOT_DEFAULT;}
+void runtime_gamepad_screenshot_button_set(int physical){(void)physical;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 static int textCaptureFixture;
@@ -151,17 +156,23 @@ uint64_t dm_nvn_frame_count(void){return 0;}
 void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
+int hud_line_shown(int line){(void)line;return 1;}   /* fps_overlay.c: which lines the overlay choice shows */
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
 void runtime_aspect_view(double w,double h){(void)w;(void)h;}
 int taa_enabled(void){return 0;}
 /* The settings panel (runtime/settings_panel.h) is not opened here. */
 void taa_set(int on){(void)on;}
+int taa_fast_enabled(void){return 0;}   /* edge smoothing's fast resolve (totk_taa.m) */
+void taa_set_fast(int on){(void)on;}
 int mfx_requested(void){return 0;}
 int fps_overlay_hud_mode(void){return 1;}
 void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
 void dm_gfx_aniso_start(int n){(void)n;} int dm_gfx_aniso_locked(void){return 0;} int dm_gfx_aniso(void){return 0;} void dm_gfx_aniso_set(int n){(void)n;}   /* the display page's anisotropy row (nvn_mtl.m) */
 void dm_gfx_keepalive_start(int on){(void)on;} int dm_gfx_keepalive_locked(void){return 0;} int dm_gfx_keepalive(void){return 1;} void dm_gfx_keepalive_set(int on){(void)on;}   /* the display page's GPU keep-alive row (nvn_mtl.m, PR #2049) */
+/* the leaderboard (board_upload.h): the graphics layer's frame record and picture settings, none here */
+void fps_board_start(void){} void fps_board_reset(void){} int fps_board_counting(void){return 0;} int fps_board_snapshot(fps_board_stats *s){(void)s;return 0;}
+void mtl_board_view(int *ow,int *oh,int *sw,int *sh,int *mfx){*ow=*oh=*sw=*sh=*mfx=0;} void nvn_board_pacing(int *lock,int *interp){*lock=*interp=0;} int mtl_display_hz(void){return 0;}
 int runtime_output_modes(void){return 0;}
 int runtime_output_mode(void){return 0;}
 int runtime_output_mode_set(int mode){(void)mode;return 0;}

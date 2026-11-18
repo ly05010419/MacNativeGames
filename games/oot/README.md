@@ -22,12 +22,16 @@ The Legend of Zelda: Ocarina of Time for Nintendo Switch 2 (title `0400486024DEC
 - MetalFX frame interpolation works: at 50+50 on a 100 Hz display 595 of 600 game frames got an interpolated frame, about 3.7 ms of GPU each.
 - iPhone and iPad: a build path exists (`--platform ios`) and is being tested; the install page does not cover it yet.
 
+## Mods and save editing
+
+See [mods and save editing](docs/mods.md) for Switch 2 RomFS compatibility, controller prompt packs, and offline save editing on the Mac.
+
 ## Settings
 
 Key **1** opens the settings panel. The first page:
 
 - **Resolution**, changed while the game runs: 720p (from 480p), **720p (the default)**, 1080p (from 720p), 1080p, 2K (from 1080p), 2K. The canvas is the picture and the window; the 3D is drawn inside it and upscaled once.
-- **Upscaler**: MetalFX (the default) or the game's own network, for that one upscale.
+- **Upscaler**: MetalFX (the default) or the game's own network, for that one upscale. The title and opening movies always use MetalFX, whatever this setting: the game runs its own network on each movie picture (about 28 ms a frame on an M4, so the movies played slowed down and out of sync with their sound); with MetalFX a movie frame takes about 1.5 ms on the GPU.
 - **End-of-frame network at native resolution**: skipped (the default) or running. At a native resolution the game still runs its upscaling network 1:1, about 2 ms a frame; skipped, the picture is copied to the canvas instead and has no anti-aliasing from the network.
 - **Quality profile**, changed while the game runs: handheld (the default) or docked. The game's own handheld profile draws less vegetation; the resolution stays the one chosen above.
 - **Frame lock**: 30 (the default), off, 40, 60, 72, 90, 120.
@@ -37,7 +41,7 @@ Key **1** opens the settings panel. The first page:
 
 ## Shaders
 
-A full build translates every shader of the game, compiles all of them into Metal libraries and builds a pipeline archive from the [shader list](assets/shader_list.tsv) (bind states and pipelines players recorded), so the game starts warm. A pipeline no one has recorded yet is built the first time it is drawn, a short stutter; the game writes it to `shader-list-contribution.txt` and reminds you to send that file in a GitHub issue. Those issues are merged into the list.
+A full build translates every shader of the game, compiles all of them into Metal libraries and builds a pipeline archive from the [shader list](assets/shader_list.tsv) (bind states and pipelines players recorded), so the game starts warm. A pipeline no one has recorded yet is built the first time it is drawn, a short stutter; the game writes it to `shader-list-contribution.txt` and, once you answer "Contribute shaders" (asked once before the game starts; a switch in Settings), sends it to the shader inbox on its own. What the inbox collects is merged into the list.
 
 ## Known issues
 

@@ -20,6 +20,7 @@ void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in 
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
 /* Key 1's settings panel (frontend.m) is not part of this probe. */
 void runtime_settings_toggle(void){}
+void runtime_settings_page(int page){(void)page;}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)name;(void)word;(void)what;}   // nothing is saved here
 void runtime_setting_remove(const char *name){(void)name;}

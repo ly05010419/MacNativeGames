@@ -15,7 +15,15 @@ TOOLS = IOS / 'tools'
 sys.path.insert(0, str(TOOLS))
 spec = importlib.util.spec_from_file_location('oot_build_ipa_picture', TOOLS / 'build_ipa.py')
 build_ipa = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(build_ipa)
+# build_ipa.py imports compile_seed by name: load this game's copy, not one another game's tests imported first,
+# and leave sys.modules as it was for them.
+_shared = sys.modules.pop('compile_seed', None)
+try:
+    spec.loader.exec_module(build_ipa)
+finally:
+    sys.modules.pop('compile_seed', None)
+    if _shared is not None:
+        sys.modules['compile_seed'] = _shared
 
 HARNESS = r'''
 #include "settings_map.h"
@@ -73,7 +81,7 @@ class OOTPhonePicture(unittest.TestCase):
             self.assertNotIn(gone, rows)
 
     def test_same_labels_as_the_macs_row(self):
-        panel = (ROOT / 'games/oot/runtime/settings_panel.h').read_text()
+        panel = (ROOT / 'games/oot/runtime/settings_game.h').read_text()   # its rows (shared/runtime/settings_panel.h reads it)
         start = (IOS / 'Sources/start_screen.m').read_text()
         # The Mac marks its own default entry ("，默认"); the phone's default is the lowest, so the stems are compared.
         for label in ('720p（480p 放大', '720p（原生', '1080p（720p 放大', '1080p（原生）'):   # 720p native is the Mac's default since 2026-11-10

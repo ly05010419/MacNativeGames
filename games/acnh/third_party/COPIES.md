@@ -14,6 +14,32 @@ to another game never changes this one.
 | `tools/prepare_shader_seed.py` | `games/totk/scripts/prepare_shader_seed.py` at `032a05d` | Container parsing and the seed manifest, adapted to this game's data and request format |
 | `tools/build_hactool.py` | Root `build_app.py` at `1dcf40d` | Pinned hactool build, private ticket file, bounded base NCA and checked BKTR padding support; standalone copy |
 
+Since 2026-11-17 some of these are no longer copies: `third_party/d2r_gfx/gfx/nvn/fps_overlay.{c,h}`,
+`third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h` (which now follows the Mac's first preferred language, not the app
+bundle's locale) and `runtime/settings_panel.h` are symlinks into the repository's `shared/` folder (shared/README.md), the
+same files the Zelda games and Super Mario Odyssey use; the corner box and FPS graph that `runtime/frontend.m` had are the
+shared `runtime/hud_box.h`. This game's own settings rows and restore code are in `runtime/settings_game.h`. Also linked from
+`shared/` since then, for the panel's other pages: `runtime/screenshot.h`, `board_upload.h`, `board_tab.h`, `nick_row.h`,
+`shot_upload.h`, `shot_tab.h`, `dsu_client.h`, `dsu_protocol.h`, `dsu_settings_rows.h`, and
+`third_party/d2r_gfx/gfx/nvn/fps_board.{c,h}` and `nvn_capture_region.h`. `runtime/account.c` stays this game's own
+(one user: Animal Crossing keeps one island per console).
+
+| Component | Copied from | Description |
+|---|---|---|
+| `runtime/playtime.h` | `games/totk/runtime/playtime.h` at `b704821` | The corner box's session and total playtime (`profile/playtime.json`) |
+| `third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` | the identity part of `games/odyssey/third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h` at `b704821` | `GAME_INBOX_ID` (`acnh`), the build, device and system names and the board id's file for the 性能排行榜 and 截图分享 pages; no shader upload |
+| The screenshot action and hold (`runtime/keyboard_map.h`, `controller_map.h`, `gamepad.m`, `input.c`, `bindings_diagram.h`), DSU in `gamepad.m` and `gamepad_feedback.m`, `runtime_feedback_*` in `hid_feedback.c`, the game-frame capture (`mtl_grab_next_game_frame`), the board's frame record and view (`nvn_mtl.m` `mtl_board_view`, `hle_nvn.c` `nvn_board_pacing`) and the long-frame lines (`hitch_overlay_note`, `hitch_overlay_publish`) | `games/odyssey` at `b704821` (from games/totk) | Adapted to this game: no mouse lines in `controls.txt`, the capture button through GameController's Share button and, while motion is read from a Switch controller's HID reports, its capture button; the board counts new game frames (what the FPS box counts); no frame lock or interpolation on the board (the 30 / 60 / 120 mode is the game's own clock for the run) |
+
+Since 2026-11-18 these are symlinks into `shared/` as well (shared/README.md): `third_party/d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}`,
+`totk_sysload.{c,h}`, and `runtime/playtime.h`, `gamepad_layout.h`, `feedback_settings.h` (new here), `hid_feedback.c`,
+`motion_fusion.c`, `swkbd_host.c`, `ipc.{c,h}`, `bindings_diagram.h`. Their copies above were older versions of the
+same code. The rumble switch is the shared `runtime_feedback_*` now (`runtime_rumble_locked`, `_choice` and `_choose`
+are gone). This game's key bindings words, kinds and legend (the tools on the d-pad, the NookPhone; the mouse
+moves nothing) are in `runtime/bindings_game.h`. Still this game's own: `runtime/time_host.c` (the `nn::time` answers its
+main imports, such as the adjustable user clock, the steady clock's time point, `IsValidDate` and the calendar
+comparisons: in the shared file they would also replace SDK code other games run), `controller_map.h` (no mouse lines:
+the mouse belongs to the keyboard layout), `keyboard_map.h`, `shared_font.c`, `game_slot.c` and `third_party/d2r`.
+
 ## Optional local ACNH 3.0.1 speed-correction inputs
 
 `tools/prepare_fps.py` and `runtime/frame_rate.c` are original host-side adapters.
@@ -26,3 +52,30 @@ assets, and its tools are not run by this build. A locally built app with the
 optional inputs carries their original LICENSE and a source/adaptation NOTICE
 under `game/fps60/` and `Resources/Licenses/`. Default builds use the original
 30 FPS timing and do not require these assets.
+
+
+## The app launcher and the build plumbing (2026-11-18)
+
+`scripts/acnh_app_launcher.c` keeps this game's own launcher code (the data folder per version (`ACNH_DATA_FOLDER`), the GPU and presentation settings, the frame-rate and add-on files); the plumbing every port's launcher shares is
+`scripts/app_launcher.h`, a symlink to the repository's `shared/app/app_launcher.h` (shared/README.md). `build.py` and
+`scripts/package_native_app.py` keep this game's steps, checks and contents and import the shared Python from `tools/port_app/`
+(`adapter.py`: MNG Launcher's arguments, the work folder's venv, the express update's entry; `bundle.py`: clones,
+Info.plist, the signature, staging beside the app, Launch Services). These are reached in the repository, not copied
+from another game.
+
+
+## The input stack linked from `shared/` (2026-11-18)
+
+`runtime/gamepad.m`, `gamepad_feedback.m` and the new `gamepad_core.h`, `gamepad_settings.h`, `gamepad_hid_pad.h`,
+`gamepad_mouse.h`, `hid_imu.h`, `switch_left_fallback.h` and `input_file.h` are symlinks into the repository's `shared/`
+folder (shared/README.md). The copies were older versions of games/totk's (from `032a05d`); the shared versions keep this
+game's two fixes: a layout file that does not parse leaves the default layout instead of stopping the game, and a DSU
+pad's buttons never reach the mouse's. This game's own: `runtime/gamepad_game.h` (no mouse mode: the mouse belongs to the
+keyboard layout), `runtime/feedback_game.h` (nothing beyond the shared rumble and motion), `runtime/controller_map.h` (no
+mouse lines), and in `runtime/input.c` the key table, the HID answers and the `gpucapture`, `panelshot` and `fps`
+commands.
+
+
+## The platform layer's identical files linked from `shared/` (2026-11-18)
+
+These were byte-identical to games/totk's (and, for `freeze_watchdog.c`, to Super Mario Odyssey's) and are now symlinks into the repository's `shared/` folder (shared/README.md): `runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `romfs_path.h` and `freeze_watchdog.c`. Nothing compiled changes. The rest of this game's platform layer (`threads.c`, `fs_host.{c,h}`, `romfs.c`, the audio mixer, renderer and output, `opus_codec.c`, `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`, `autoload.{c,h}`, `world_survey.{c,h}`, `hle_stack.S`, `dlc.c` and the probes) stays its own: it carries this game's scheduling, saves, timing and answers (shared/README.md).

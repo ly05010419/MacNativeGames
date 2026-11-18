@@ -3,6 +3,11 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 static class TensorMsl {
+    // SPIRV-Cross marks helpers always_inline. Expanding hundreds of HMMA calls
+    // into one kernel makes Apple's loop/CFG optimizer spend minutes merging
+    // blocks (e6be82d8: 576 calls; MergeBlockIntoPredecessor / DomTreeUpdater).
+    // Keep the identical matrix body callable, including all SIMD barriers.
+    internal const string CallQualifier = "static __attribute__((noinline))";
     const string Body = """
 {
     threadgroup uint* s = &%(scr)s[uint(%(blk)s)];
@@ -39,6 +44,8 @@ static class TensorMsl {
         int start=m.Index+m.Length-1,end=start;depth=0;
         for(;end<src.Length;end++){if(src[end]=='{')depth++;if(src[end]=='}'&&--depth==0)break;}
         if(end==src.Length)throw new Exception("HMMA body not closed");
-        return src[..start]+b+src[(end+1)..];
+        var qualifier=Regex.Match(src[..m.Index],@"static inline __attribute__\(\(always_inline\)\)\s*$");
+        string prefix=qualifier.Success?src[..qualifier.Index]:src[..m.Index];
+        return prefix+"\n"+CallQualifier+src[m.Index..start]+b+src[(end+1)..];
     }
 }

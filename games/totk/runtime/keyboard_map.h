@@ -9,6 +9,9 @@
    bow (ZR). The arrow keys turn the camera for a keyboard without a mouse, G attacks and Option draws the bow there.
    Key 1 opens the settings panel (runtime/input.c) and is never part of a layout; Command, Caps Lock and fn are not
    offered either (Command-Q and Command-Tab stay the system's).
+   One action is no Switch input: screenshot (user 2026-11-11: "截图键 ... 默认p键"), P by default, takes the capture
+   button's picture (runtime/input.c -> gamepad.m runtime_capture_press -> screenshot.h); keymap_apply gives it nothing,
+   so its inputs never reach the game.
    The bow, as the controller layout's "zr aim" (controller_map.h): while an input of ZR is held, an input of Y shoots
    (ZR let go) instead of attacking, so the right button draws and a left click looses the arrow.
    Rotating (Tears of the Kingdom's Ultrahand turns what it holds with R and the d-pad): while the mouse turns the camera
@@ -32,7 +35,9 @@ enum {
     KEYMAP_A = 0, KEYMAP_B, KEYMAP_X, KEYMAP_Y, KEYMAP_LSTICK, KEYMAP_RSTICK, KEYMAP_L, KEYMAP_R, KEYMAP_ZL, KEYMAP_ZR,
     KEYMAP_PLUS, KEYMAP_MINUS, KEYMAP_DLEFT, KEYMAP_DUP, KEYMAP_DRIGHT, KEYMAP_DDOWN, KEYMAP_SWITCH_BUTTONS,
     KEYMAP_MOVE_UP = KEYMAP_SWITCH_BUTTONS, KEYMAP_MOVE_DOWN, KEYMAP_MOVE_LEFT, KEYMAP_MOVE_RIGHT,
-    KEYMAP_CAMERA_UP, KEYMAP_CAMERA_DOWN, KEYMAP_CAMERA_LEFT, KEYMAP_CAMERA_RIGHT, KEYMAP_ACTIONS
+    KEYMAP_CAMERA_UP, KEYMAP_CAMERA_DOWN, KEYMAP_CAMERA_LEFT, KEYMAP_CAMERA_RIGHT,
+    KEYMAP_SCREENSHOT,   /* not the game's: a screenshot (runtime/input.c) */
+    KEYMAP_ACTIONS
 };
 
 typedef struct KeyMap { uint8_t slot[KEYMAP_ACTIONS][KEYMAP_SLOTS]; } KeyMap;
@@ -40,7 +45,7 @@ typedef struct KeyMap { uint8_t slot[KEYMAP_ACTIONS][KEYMAP_SLOTS]; } KeyMap;
 static inline const char *keymap_action_name(int action) {
     static const char *const names[KEYMAP_ACTIONS] = {
         "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
-        "move_up", "move_down", "move_left", "move_right", "camera_up", "camera_down", "camera_left", "camera_right"};
+        "move_up", "move_down", "move_left", "move_right", "camera_up", "camera_down", "camera_left", "camera_right", "screenshot"};
     return action >= 0 && action < KEYMAP_ACTIONS ? names[action] : NULL;
 }
 
@@ -130,6 +135,7 @@ static inline void keymap_default(KeyMap *m) {
     KEYMAP_SET(KEYMAP_CAMERA_DOWN, 125, KEYMAP_NONE);
     KEYMAP_SET(KEYMAP_CAMERA_LEFT, 123, KEYMAP_NONE);
     KEYMAP_SET(KEYMAP_CAMERA_RIGHT, 124, KEYMAP_NONE);
+    KEYMAP_SET(KEYMAP_SCREENSHOT, 35, KEYMAP_NONE);      /* P: screenshot */
 #undef KEYMAP_SET
 }
 
@@ -184,7 +190,7 @@ static inline int keymap_parse(const char *text, KeyMap *m, const char **error) 
             const char *key_end = eq;
             while (key_end > p && (key_end[-1] == ' ' || key_end[-1] == '\t')) key_end--;
             int action = keymap_action_parse(p, (size_t)(key_end - p));
-            if (action < 0) { *error = "unknown action (a b x y l r zl zr plus minus lstick rstick up down left right move_up move_down move_left move_right camera_up camera_down camera_left camera_right)"; return line; }
+            if (action < 0) { *error = "unknown action (a b x y l r zl zr plus minus lstick rstick up down left right move_up move_down move_left move_right camera_up camera_down camera_left camera_right screenshot)"; return line; }
             if (given[action]) { *error = "this action has a line already"; return line; }
             uint8_t slots[KEYMAP_SLOTS] = {KEYMAP_NONE, KEYMAP_NONE}; int words = 0, none = 0;
             for (const char *q = eq + 1; q < stop;) {
@@ -239,7 +245,8 @@ static inline int keymap_format(const KeyMap *m, char *out, size_t size) {
 }
 
 /* The FullKey buttons and the two sticks (-32767..32767, up positive) from the inputs held (held[input] nonzero);
-   mouse_camera: the mouse turns the camera (mouse mode), so R with the camera inputs is R with the d-pad. */
+   mouse_camera: the mouse turns the camera (mouse mode), so R with the camera inputs is R with the d-pad. The screenshot
+   action's inputs drive nothing here. */
 typedef struct { uint64_t buttons; int32_t lx, ly, rx, ry; } KeyMapOutput;
 static inline KeyMapOutput keymap_apply(const KeyMap *m, const unsigned char held[KEYMAP_INPUTS], int mouse_camera) {
     int on[KEYMAP_ACTIONS];

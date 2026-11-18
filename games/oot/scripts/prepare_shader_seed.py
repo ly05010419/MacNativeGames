@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shader_list import ShaderList   # noqa: E402
 
-CHAIN = re.search(r'#define DMSH_CHAIN "([^"]+)"',
+CHAIN = re.search(r'#define DMSH_CHAIN "([^"]+)"\s*/\* game: oot\b',
                   (Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text()).group(1)
 MIN_SHADERS = 8000
 ZSTD = b'\x28\xb5\x2f\xfd'

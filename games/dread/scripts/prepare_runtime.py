@@ -2,13 +2,14 @@
 """Bind the native loader to the verified Metroid Dread rewrite and RomFS: generated headers stay in the work folder.
 
 Writes <work>/build/runtime_tables.h (modules, symbols, relocations, gates), romfs_config.h and
-extracted/v100/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
+extracted/v210/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
 Adapted from games/totk/scripts/prepare_runtime.py, prepare_romfs_backend.py and prepare_shared_fonts.py; every input
-is checked against assets/expected-v1.0.0.json first.
+is checked against assets/expected-v2.1.0.json first.
 """
 import argparse
 import hashlib
 import json
+import os
 import struct
 import sys
 from pathlib import Path
@@ -18,8 +19,8 @@ sys.path.insert(0, str(HERE / 'third_party/d2r'))   # Metroid Dread's own copy o
 from relr import decode_relr
 import nsoimg
 
-VERSION = 'v100'
-EXPECTED = json.loads((HERE / 'assets/expected-v1.0.0.json').read_text())
+VERSION = os.environ.get('DREAD_VERSION', 'v210')
+EXPECTED = json.loads((HERE / ('assets/expected-v1.0.0.json' if VERSION == 'v100' else 'assets/expected-v2.1.0.json')).read_text())
 
 
 def sha(path):

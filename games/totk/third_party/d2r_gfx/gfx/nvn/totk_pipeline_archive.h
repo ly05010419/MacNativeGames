@@ -41,6 +41,8 @@
 #include <stdatomic.h>
 #include "dmsh_chain.h"
 #include "totk_shader_rt.h"
+#include "nvn_compiler_retry.h"   /* #2070: an add the compiler service dropped is tried again */
+#include "nvn_archive_map.h"   /* an archive file is mapped, not read whole, from an external drive */
 
 #ifndef PAR_BATCH_MAC
 #define PAR_BATCH_MAC 8
@@ -54,6 +56,17 @@ static NSMutableDictionary<NSString *, id<MTLBinaryArchive>> *g_par_open; // ope
 static int g_par_on, g_par_valid;                                        // valid: files of this OS / GPU / chain exist
 static _Atomic uint64_t g_par_written, g_par_write_failed, g_par_files, g_par_add_ns, g_par_flush_ns;
 static _Atomic int par_filling;                                          // the background fill (warm_fill_archive)
+/* Packaging (TOTK_PAR_RECHECK=1, mtl_pipeline_archive_tool): every listed pipeline is made against the archive, a key it has
+   included, so one the runtime now describes otherwise is found missing and written again (par_stale); the files whose
+   keys all moved go (par_prune_superseded). The archive is kept from one package to the next instead of thrown away
+   whenever the runtime changed (user 2026-11-11: "如何让 快速更新 不要这么容易失效"). */
+static int g_par_recheck;
+/* The keys this packaging run looked up or wrote (par_archive_for, par_write): the lists' pipelines. A file holding none
+   of them goes too (par_prune_superseded): its pipelines are no longer listed (2026-11-13, Ocarina of Time for an iPad:
+   a translator change gave about half the shaders new keys, the old keys' files stayed, 0 removed, and the device archive
+   was compiled with them). */
+static NSMutableSet<NSString *> *g_par_used;
+static _Atomic uint64_t g_par_stale;                                      // keys whose file missed their pipeline (par_stale)
 static __thread int par_write_in_place;                                  // the fill's and the start-up warm-up's thread: they write at once
 
 /* Pipelines per file (see the top): TOTK_PIPELINE_ARCHIVE_BATCH=<1-256>, 8 on the Mac. iOS keeps one per file: it opens a
@@ -79,7 +92,15 @@ static int par_fill_light(void) {
 #if TARGET_OS_IPHONE
     return 1;
 #else
-    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL"); return e && !strcmp(e, "1");
+    const char *e = getenv("TOTK_PIPELINE_ARCHIVE_FILL");
+#ifdef GAME_OOT
+    /* The complete OOT seed has over 42,000 shaders. On a fresh install, keep
+       its precompiled libraries on disk and fill only recorded pipelines;
+       loading every library defeats the seed's bounded memory use. */
+    return !e || !strcmp(e, "1");
+#else
+    return e && !strcmp(e, "1");
+#endif
 #endif
 }
 static NSString *par_dir(void) { return [totk_rt_dir() stringByAppendingPathComponent:@"pipelines"]; }
@@ -89,9 +110,20 @@ static NSString *par_lock_file(void) { return [totk_rt_dir() stringByAppendingPa
 // 5 (2026-10-29): border and tile-read pipelines are keyed with their variant (nvn_mtl.m pso_archive_key); files of 4 held
 // some under the plain pipeline's key, which then missed in every session.
 #define PAR_SCHEMA 6   /* vertex fetches omit trailing lanes proven unused by the MSL */
+/* What the folder's files are good for: the key format, the GPU and the OS. Not the translation chain (2026-11-15, user:
+   "为什么要重建？这次必须重建吗？"): a new chain changes few shaders (v27 -> v28: 18 of 18,661 .metal files differ, the other
+   18,643 byte-identical), and every pipeline taken from a file is made with MTLPipelineOptionFailOnBinaryArchiveMiss, which
+   misses when its functions changed (par_stale writes it again). Throwing the folder away for the chain made the OOT iPad
+   build compile all ~19,700 pipelines twice, and a player's first start after an update compile everything again. */
 static NSDictionary *par_identity(id<MTLDevice> dev) {
-    return @{@"schema": @PAR_SCHEMA, @"chain": @DMSH_CHAIN, @"gpu": dev.name ?: @"?",
+    return @{@"schema": @PAR_SCHEMA, @"gpu": dev.name ?: @"?",
              @"os": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"?"};
+}
+/* A stamp still carrying the chain (written before 2026-11-15) is the same identity when these three match. */
+static BOOL par_same_identity(NSDictionary *stamp, NSDictionary *want) {
+    if (![stamp isKindOfClass:NSDictionary.class]) return NO;
+    for (NSString *k in want) if (![stamp[k] isEqual:want[k]]) return NO;
+    return YES;
 }
 static NSString *par_hash(const void *bytes, size_t n) {
     uint8_t d[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(bytes, (CC_LONG)n, d);
@@ -99,6 +131,11 @@ static NSString *par_hash(const void *bytes, size_t n) {
     for (int i = 0; i < 20; i++) [s appendFormat:@"%02x", d[i]];   // 160 bits name a file
     return s;
 }
+#ifdef PSO4_BUILT
+static NSUInteger par4_load_dir(id<MTLDevice> dev, uint64_t *bytes);   // nvn_pso4.h: the Metal 4 archive's own files
+static BOOL par4_name(NSString *name);                                 // a Metal 4 file's name (m4:<base>, m4-<stem>)
+static void par4_open_all(id<MTLDevice> dev);                          // every Metal 4 file opened in the background
+#endif
 #include "totk_pipeline_archive_folders.h"
 /* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
    (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
@@ -127,6 +164,8 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     const char *off = getenv("TOTK_PIPELINE_PREBUILT"), *seed = getenv("TOTK_SHADER_SEED_DIR");
     NSString *arch = dev.architecture.name, *dir = seed && *seed ? @(seed) : nil;
 #if !TARGET_OS_IPHONE
+    NSString *packaged = exe_rel("pipelines");
+    if ([NSFileManager.defaultManager fileExistsAtPath:[packaged stringByAppendingFormat:@"/pipelines-%@.json", arch]]) dir = packaged;
     if (!dir) {   // the Mac app's own (build_app.py mac_pipelines; the launcher names no seed): build/pipelines since 2026-11-03,
         dir = exe_rel("pipelines");   // beside the shader data bundle, which they would change on every packaging; before, the seed
         if (![NSFileManager.defaultManager fileExistsAtPath:dir]) dir = exe_rel("shader-seed");
@@ -150,12 +189,24 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
         return 0;
     }
     NSString *index = [NSString stringWithContentsOfFile:[base stringByAppendingString:@".tsv"] encoding:NSUTF8StringEncoding error:nil];
-    NSUInteger n = 0;
+    NSUInteger n = 0, twice = 0; NSMutableSet<NSString *> *listed = [NSMutableSet set];
     for (NSString *line in [index componentsSeparatedByString:@"\n"]) {
         NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
-        if (c.count != 2 || !c[0].length || !c[1].length || [c[1] containsString:@"/"] || g_par_where[c[0]]) continue;
+        if (c.count != 2 || !c[0].length || !c[1].length || [c[1] containsString:@"/"]) continue;
+        /* A key listed twice: the App's index must give each key one file (build_app.py mac_pipeline_files). 2026-11-15:
+           a pipeline written again stayed listed in its old file too, the old row came first, and the game took that
+           stale pipeline, which Metal refused (14 mesh pipelines compiled again at every start): red, so it is seen. */
+        if ([listed containsObject:c[0]]) { twice++; continue; }
+        [listed addObject:c[0]];
+        NSString *own = g_par_where[c[0]];
+#ifdef PSO4_BUILT
+        if (own && !(par4_name(c[1]) && !par4_name(own))) continue;   // the device's own file wins, but not an old file over a Metal 4 one (nvn_pso4.h)
+#else
+        if (own) continue;   // the device's own file wins
+#endif
         [g_par_have addObject:c[0]]; g_par_where[c[0]] = c[1]; [g_par_pre addObject:c[1]]; n++;
     }
+    if (twice) MLOG("【红】管线存档：App 带的索引里有 %lu 个键重复（每个键应只对应一个文件；用的是先列的那个，可能是旧的），重新打包", (unsigned long)twice);
     g_par_pre_base = [base stringByAppendingString:@"-"];
     return n;
 }
@@ -169,8 +220,10 @@ static int par_open_identity(id<MTLDevice> dev) {
     NSDictionary *stamp = sd ? [NSJSONSerialization JSONObjectWithData:sd options:0 error:nil] : nil;
     [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.metalarchive"] error:nil];   // layouts of earlier tests
     [fm removeItemAtPath:[totk_rt_dir() stringByAppendingPathComponent:@"pipelines.json"] error:nil];
-    if (![stamp isEqual:par_identity(dev)] && [fm fileExistsAtPath:par_dir()]) {
-        if (stamp) MLOG("管线存档：系统版本、GPU 或翻译链变了，删掉重建");
+    if (par_same_identity(stamp, par_identity(dev)) && stamp[@"chain"] && ![stamp[@"chain"] isEqual:@DMSH_CHAIN])
+        MLOG("管线存档：翻译链 %s → %s，存档保留；着色器变了的管线逐条重编", [[stamp[@"chain"] description] UTF8String], DMSH_CHAIN);
+    if (!par_same_identity(stamp, par_identity(dev)) && [fm fileExistsAtPath:par_dir()]) {
+        if (stamp) MLOG("管线存档：系统版本、GPU 或存档格式变了，删掉重建（翻译链变了不删：着色器变了的管线取存档时 Metal 认不出，逐条重编）");
         if (!par_pub_wipe(par_dir(), par_lock_file())) {   // totk_pipeline_archive_publish.h
             MLOG("【红】[pipeline-archive] another process of the app is writing %s for another system, GPU or chain: no archive this run", par_dir().UTF8String);
             return 0;
@@ -182,7 +235,9 @@ static int par_open_identity(id<MTLDevice> dev) {
         MLOG("【红】[pipeline-archive] cannot lock %s (%s): no archive this run", par_lock_file().UTF8String, strerror(errno));
         return 0;
     }
-    [[NSJSONSerialization dataWithJSONObject:par_identity(dev) options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
+    NSMutableDictionary *written = [par_identity(dev) mutableCopy];
+    written[@"chain"] = @DMSH_CHAIN;   // for the log line above only; par_same_identity does not compare it
+    [[NSJSONSerialization dataWithJSONObject:written options:NSJSONWritingSortedKeys error:nil] writeToFile:stamp_path atomically:YES];
     par_pub_unlock(lk);
     return 1;
 }
@@ -195,8 +250,16 @@ static void par_open_dir(id<MTLDevice> dev) {
            writer: batches no longer hold g_par_wmu while Metal uses their build folders. Shared folders stay intact. */
         par_ga_cleanup_startup();
         if (!par_open_identity(dev)) return;
-        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files), own = g_par_have.count, pre = par_load_prebuilt(dev);
+        NSUInteger files = 0; uint64_t bytes = par_load_dir(&files);
+#ifdef PSO4_BUILT
+        uint64_t bytes4 = 0; NSUInteger files4 = par4_load_dir(dev, &bytes4);   // after the old files: a key in both is the Metal 4 file's
+        if (files4) MLOG("Metal 4 管线存档：本机 %lu 个文件（共 %.1f MB）", (unsigned long)files4, bytes4 / 1048576.0);
+#endif
+        uint64_t own = g_par_have.count, pre = par_load_prebuilt(dev);
         g_par_on = 1; g_par_valid = g_par_have.count > 0;
+#ifdef PSO4_BUILT
+        par4_open_all(dev);   // the Metal 4 files, in the background (a first open from a USB drive took up to 0.8 s)
+#endif
         if (pre) MLOG("管线存档：App 带了 Mac 为这台设备的 GPU（%s）编好的 %llu 条管线，首次启动不用填充；本机自己的 %llu 条", dev.architecture.name.UTF8String,
                       (unsigned long long)pre, (unsigned long long)own);
         if (g_par_valid && own) MLOG("管线存档：%llu 条管线在 %lu 个文件里（共 %.1f MB），用到哪个才打开哪个", (unsigned long long)own, (unsigned long)files, bytes / 1048576.0);
@@ -204,24 +267,73 @@ static void par_open_dir(id<MTLDevice> dev) {
     });
 }
 // The archive with this pipeline's code, or nil (no file yet; off).
+#if defined(GAME_OOT)
+/* Ocarina of Time: at most TOTK_PAR_OPEN_MAX (256) archive files stay open, least recently used out first; 0 keeps every
+   one (A/B). iOS: an open archive keeps its file mapped, one vnode each, and the iPad (A16) has about 11,400 for the whole
+   device: with the device archive at one file per pipeline (19,750 files, 2026-11-13) the warm-up kept every one open and
+   the system ended the game with jetsam reason vnode-limit (JetsamEvent-2026-11-13-090255, 735 MB resident). The Mac
+   (2026-11-16): each open archive keeps about 116 KB of Metal's flatbuffers on the heap, 3,878 of them 452 MB after the
+   warm-up opened the App's 3,800 files (heap with MallocStackLogging, scratch/runs/2026-11/oot-mem10g/msl-1). A pipeline
+   already made does not need its archive; a later lookup in a closed file opens it again. Under g_par_mu. */
+static NSMutableArray<NSString *> *g_par_open_lru; static uint64_t g_par_open_closed;
+static void par_open_note(NSString *name) {
+    static NSUInteger cap; if (!cap) { const char *e = getenv("TOTK_PAR_OPEN_MAX"); long v = e && *e ? atol(e) : 256; cap = v == 0 ? NSUIntegerMax : (NSUInteger)(v < 8 ? 8 : v); }
+    if (cap == NSUIntegerMax) return;
+    if (!g_par_open_lru) g_par_open_lru = [NSMutableArray array];
+    [g_par_open_lru removeObject:name]; [g_par_open_lru addObject:name];   // most recent last
+    while (g_par_open_lru.count > cap) {
+        NSString *old = g_par_open_lru[0]; [g_par_open_lru removeObjectAtIndex:0];
+        [g_par_open removeObjectForKey:old];
+        if (g_par_open_closed++ % 2000 == 0)
+            MLOG("pipeline archive: at most %lu files open at a time (vnodes): %llu closed so far", (unsigned long)cap, (unsigned long long)g_par_open_closed);
+    }
+}
+#define PAR_OPEN_NOTE(name) par_open_note(name)
+#else
+#define PAR_OPEN_NOTE(name) ((void)0)
+#endif
+/* The file is opened outside g_par_mu: Metal reads an archive's header when it opens it, and with the lock held every other
+   thread's lookup (fill_row's "is it there", pso_new) waited for it. The packaging's archive check opened its 3,791 files so,
+   one at a time, while 7 of its 8 threads waited on the lock (2026-11-16, scratch/runs/2026-11/express-speed/profiles-1:
+   12,000 of the busy samples in the lock). Two threads that open the same file at once keep the one registered first. */
+/* Files actually opened by par_archive_for and the time it took (the frame record's @par_opens / @par_open_ms,
+   hle_nvn.c): 2026-11-17, OOT with the memory saver built 366 pipelines in the world at 4 ms each, up to 63 ms. */
+static _Atomic uint64_t g_par_opens, g_par_open_ns;
+void mtl_par_open_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_par_opens); *ns = atomic_load(&g_par_open_ns); }
 static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
     pthread_mutex_lock(&g_par_mu);
+    if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     NSString *name = g_par_where[key];
+#ifdef PSO4_BUILT
+    if (name && par4_name(name)) { pthread_mutex_unlock(&g_par_mu); par_last_pre = 0; return nil; }   // a Metal 4 file (nvn_pso4.h): not this API's
+#endif
     int pre = name && [g_par_pre containsObject:name];
     id<MTLBinaryArchive> a = name ? g_par_open[name] : nil;
-    if (!a && name) {
-        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:pre ? par_pre_file(name) : par_file(name)];
-        NSError *e = nil; a = [dev newBinaryArchiveWithDescriptor:d error:&e];
-        if (a) g_par_open[name] = a;
-        else {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
+    if (a) PAR_OPEN_NOTE(name);
+    NSString *path = !a && name ? (pre ? par_pre_file(name) : par_file(name)) : nil;
+    pthread_mutex_unlock(&g_par_mu);
+    if (path) {
+        MTLBinaryArchiveDescriptor *d = [MTLBinaryArchiveDescriptor new]; d.url = [NSURL fileURLWithPath:path];
+        uint64_t open_t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        NSError *e = nil; arch_map_begin(); id<MTLBinaryArchive> opened = [dev newBinaryArchiveWithDescriptor:d error:&e]; arch_map_end();   // mapped, not read whole, from an external drive (nvn_archive_map.h)
+        uint64_t open_ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - open_t0;
+        atomic_fetch_add(&g_par_opens, 1); atomic_fetch_add(&g_par_open_ns, open_ns);
+        if (open_ns >= 20000000ull) {   // which file, how big, how long (2026-11-17 OOT: one open took 210 ms in the world)
+            struct stat st; long long bytes = stat(path.fileSystemRepresentation, &st) ? -1 : (long long)st.st_size;
+            MLOG("管线存档：打开 %s（%lld KB）用了 %.1f ms", name.UTF8String, bytes / 1024, open_ns / 1e6);
+        }
+        pthread_mutex_lock(&g_par_mu);
+        if ((a = g_par_open[name])) PAR_OPEN_NOTE(name);   // another thread opened it meanwhile
+        else if (opened) { a = g_par_open[name] = opened; PAR_OPEN_NOTE(name); static int told; if (!told && arch_map_count()) { told = 1; MLOG("管线存档：文件按映射打开（App 在外置盘上也不整份读进内存，nvn_archive_map.h）"); } }
+        else if ([g_par_where[key] isEqualToString:name]) {   // unreadable: its pipelines are compiled again and written to new files (the app's own files stay)
             for (NSString *k in [g_par_where allKeysForObject:name]) { [g_par_have removeObject:k]; [g_par_where removeObjectForKey:k]; }
             if (pre) [g_par_pre removeObject:name];
             else { [NSFileManager.defaultManager removeItemAtPath:par_file(name) error:nil]; [NSFileManager.defaultManager removeItemAtPath:par_keys_file(name) error:nil]; }
         }
+        pthread_mutex_unlock(&g_par_mu);
     }
-    pthread_mutex_unlock(&g_par_mu);
     par_last_pre = a && pre;
     return a;
 }
@@ -286,6 +398,7 @@ static void par_flush_thread(void) {
 }
 static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
     pthread_mutex_lock(&g_par_mu);
+    if (g_par_recheck) { if (!g_par_used) g_par_used = [NSMutableSet set]; [g_par_used addObject:key]; }
     BOOL skip = [g_par_have containsObject:key] || [g_par_pending containsObject:key];
     if (!skip) [g_par_pending addObject:key];
     pthread_mutex_unlock(&g_par_mu);
@@ -302,8 +415,15 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch
     }
-    BOOL ok = b->archive && ([desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [b->archive addRenderPipelineFunctionsWithDescriptor:desc error:&e]
-                                                                                  : [b->archive addComputePipelineFunctionsWithDescriptor:desc error:&e]);
+    // a mesh pipeline too (OOT 2026-11-11: its 124 listed mesh pipelines were compiled at every start, none archived)
+    /* Adding compiles through the compiler service: when it went away (another thread's shader crashed it, #2070), the
+       add is tried again once it is back, instead of losing the batch (nvn_compiler_retry.h). */
+    id<MTLBinaryArchive> archive = b->archive;
+    BOOL ok = archive && compiler_retry(&e, 100, ^BOOL(NSError **err) {
+        return [desc isKindOfClass:MTLRenderPipelineDescriptor.class] ? [archive addRenderPipelineFunctionsWithDescriptor:desc error:err]
+             : [desc isKindOfClass:MTLMeshRenderPipelineDescriptor.class] ? [archive addMeshRenderPipelineFunctionsWithDescriptor:desc error:err]
+                                                                        : [archive addComputePipelineFunctionsWithDescriptor:desc error:err];
+    });
     atomic_fetch_add(&g_par_add_ns, bp_now() - t0);
     if (ok) [b->keys addObject:key];
     else {
@@ -312,8 +432,20 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
     }
     if (b->keys.count >= (NSUInteger)par_batch_size() || !b->archive) par_flush_thread();
 }
+/* A key whose file does not hold its pipeline (Metal checks the functions and state: the runtime that wrote the file
+   described the pipeline otherwise): forgotten, so the pipeline compiled now is written into a new file, which then holds
+   the key (par_load_dir takes a key's newest file). Before 2026-11-11 par_write kept the first, so such a pipeline was
+   compiled at every start, and packaging threw the whole archive away whenever the runtime changed. */
+static void par_stale(NSString *key) {
+    if (!key) return;
+    pthread_mutex_lock(&g_par_mu);
+    if ([g_par_have containsObject:key] && ![g_par_pending containsObject:key]) {
+        [g_par_have removeObject:key]; [g_par_where removeObjectForKey:key]; atomic_fetch_add(&g_par_stale, 1);
+    }
+    pthread_mutex_unlock(&g_par_mu);
+}
 // Called after a pipeline the archive did not have was compiled. The warm-up writes it at once; one compiled in play is in
-// pso_user.tsv, so the next start's warm-up builds it and writes it then.
+// the device's list (pso_collected.tsv), so the next start's warm-up builds it and writes it then.
 static void par_add(id<MTLDevice> dev, NSString *key, id desc) {
     if (g_par_on && key && par_write_in_place) par_write(dev, key, desc);
 }

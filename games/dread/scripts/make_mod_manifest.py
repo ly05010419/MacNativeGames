@@ -7,7 +7,7 @@ replacement's size and SHA-256 and the original's SHA-256; the game checks all o
 another game version stops the start instead of loading. A file the RomFS lacks is added (its original's SHA-256 is
 "-"), unless a RomFS path differs from it only in case: that is a misspelt replacement (paths are case-sensitive), so
 nothing is written. The originals come from the RomFS the game was prepared with, which stays in the work folder (the app
-holds only the launcher): <work>/extracted/v100/romfs (romfs.bin and runtime-index.bin), ../Dread_build by default.
+holds only the launcher): <work>/extracted/v210/romfs (romfs.bin and runtime-index.bin), ../Dread_build by default.
 
 usage: make_mod_manifest.py <mod folder> [--romfs <folder>]
 """
@@ -18,7 +18,7 @@ import struct
 import sys
 
 DREAD = Path(__file__).resolve().parents[1]
-DEFAULT_ROMFS = DREAD.parent/'Dread_build/extracted/v100/romfs'   # the Makefile's WORK ?= ../Dread_build, version 1.0.0
+DEFAULT_ROMFS = DREAD.parent/'Dread_build/extracted/v210/romfs'   # the Makefile's WORK ?= ../Dread_build, version 2.1.0
 CHUNK = 8 << 20
 
 

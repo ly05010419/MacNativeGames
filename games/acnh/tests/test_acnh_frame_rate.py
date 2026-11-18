@@ -61,6 +61,19 @@ class RuntimeTests(unittest.TestCase):
             header += f'#define ACNH_FPS_{key}_SHA "{sha}"\n'
         (self.root / "fps_config.h").write_text(header)
 
+    def add_120(self):
+        """A second asset folder and its pins, as build_host writes them for 3.0.3."""
+        self.assets120 = self.root / "assets120"
+        shutil.copytree(self.assets, self.assets120)
+        (self.assets120 / "manifest.json").write_bytes(b"synthetic 120 identity\n")
+        self.env["ACNH_FPS120_ASSETS"] = str(self.assets120)
+        header = "#define ACNH_FPS120_ENABLED 1\n#define ACNH_FPS120_PATCH_COUNT 2\n"
+        for key, file in (("MANIFEST", "manifest.json"), ("PATCH", "patches.tsv"), ("ROMFS", "romfs/manifest.tsv")):
+            sha = hashlib.sha256((self.assets120 / file).read_bytes()).hexdigest()
+            header += f'#define ACNH_FPS120_{key}_SHA "{sha}"\n'
+        with (self.root / "fps_config.h").open("a") as f:
+            f.write(header)
+
     def compile(self, version=2097152):
         result = subprocess.run(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
                                  "-Wno-deprecated-declarations", f"-DACNH_VERSION_RAW={version}",
@@ -102,6 +115,33 @@ class RuntimeTests(unittest.TestCase):
         self.settings.write_text("60\n")
         self.env.pop("ACNH_FPS_ASSETS")
         self.run_probe(30, "unlocked")
+        self.env["ACNH_FPS"] = "120"
+        self.assertIn("must be 30 or 60", self.run_probe(30, expected=77).stderr)
+
+    def test_303_offers_60_and_installs_its_corrections(self):
+        self.compile(2228224)
+        self.settings.write_text("60\n")
+        self.run_probe(60)
+
+    def test_303_120_runs_on_a_120_hz_screen_with_a_120_hz_present_clock(self):
+        self.add_120()
+        self.compile(2228224)
+        self.settings.write_text("120\n")
+        self.env["TEST_DISPLAY_HZ"] = "120"
+        self.run_probe(120)
+
+    def test_303_saved_120_steps_down_to_60_on_a_60_hz_screen(self):
+        self.add_120()
+        self.compile(2228224)
+        self.settings.write_text("120\n")
+        self.env["TEST_DISPLAY_HZ"] = "60"
+        self.assertIn("needs a 120 Hz screen", self.run_probe(60).stderr)
+        self.assertEqual(self.settings.read_text(), "120\n")   # the choice is kept for a 120 Hz screen
+
+    def test_301_build_has_no_120(self):
+        self.compile(2097152)
+        self.settings.write_text("120\n")
+        self.run_probe(30)
         self.env["ACNH_FPS"] = "120"
         self.assertIn("must be 30 or 60", self.run_probe(30, expected=77).stderr)
 

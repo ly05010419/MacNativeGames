@@ -1,0 +1,35 @@
+{
+  "_comment": "Verified Metroid Dread 2.1.0 code (ExeFS from the update), rewrite bytes (DM_RULESET=native DM_PRIVATE_GATES=0) and merged RomFS (base + update). Hashes only; no game content.",
+  "title_id": "010093801237C000",
+  "update_title_id": "010093801237C800",
+  "version": 327680,
+  "display_version": "2.1.0",
+  "main_build_id": "646761F643AFEBB379EDD5E6A5151AF2CEF93DC1",
+  "base_program_nca": {
+    "name": "ef84c741a4eff99c29bb0a35fe9a8faf.nca",
+    "size": 4431331328
+  },
+  "update_program_nca": {
+    "name": "d354365819c4ae3d7ca10d79923d3d9c.nca",
+    "size": 148221952
+  },
+  "exefs_sha256": {
+    "main": "06872d2061f2529d7cefb7508be2fdaa50b027bad16e238a6414180eae8d3489",
+    "main.npdm": "7daae595e783773b93215da46680def6d06e80be65b6701c93d7427103eb11a6",
+    "rtld": "bc175ad9865adb48f9cbe9d7993ddb3367d3771bc06642c87d16ccf4f4dc9ff4",
+    "sdk": "1c9f198a91c0bcfee5cf8f5b53fb941895e91334dfb766ce79fc68576797f017",
+    "subsdk0": "67a38fcf89cd13e040a021eb3d157072f38ebf6680a907874c35c7b231b5d4e2"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "7f7158beb690d637316c2112d3919c7920bd62afbe6a91597cafed68a5b33ae3",
+    "sdk.patched.bin": "31f8d4331e89291232776b3edfb0ed097bbce7761179eb7311ccf590f6e2a649",
+    "subsdk0.patched.bin": "e84539bb052a880b97ad759dea2115e3fa557dae0390cc4a8900716fc56ab388"
+  },
+  "romfs": {
+    "size": 5299917424,
+    "sha256": "d69f6e2c1dae04f0c9a83f2f94e2eab2667ffc72f0550fc50fcd99403b838041",
+    "files": 9774,
+    "bytes_from_base": 5184644224,
+    "bytes_from_update": 125709808
+  }
+}

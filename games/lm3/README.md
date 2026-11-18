@@ -19,7 +19,7 @@ is in this repository; the generated folders (`extracted/`, `rewritten/`, `build
 
 ## Build and play
 
-Needs macOS 26 on Apple silicon, the Xcode command line tools, Homebrew `opus` and `libvpx`, and Python 3.14. From
+Needs macOS 26 on Apple silicon, the Xcode command line tools and Python 3.14 ([python.org](https://www.python.org/downloads/macos/)); opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew). From
 `games/lm3`:
 
 ```sh

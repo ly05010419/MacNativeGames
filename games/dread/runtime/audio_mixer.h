@@ -2,6 +2,13 @@
 #pragma once
 #include "audio_renderer.h"
 #include "ipc.h"
+
+/* A voice reaching the end of an end-of-stream buffer plays on into the next queued one in the same frame, as the DSP
+   does (Ryujinx; games/mkw/runtime/audio_mixer.h AUDIO_EOS_PLAYS_ON, Breath of the Wild 2b6fb60). Metroid Dread marks
+   every buffer of its streamed music and movie audio end of stream (14,336 samples at 44.1 kHz) with three more queued:
+   stopping for the rest of the frame left a gap of up to 5 ms every 325 ms, the tick in the movie and the music
+   (2026-11-13). audio_renderer.c advance_voice and the mixer's walk follow it alike. */
+#define AUDIO_EOS_PLAYS_ON 1
 #include <pthread.h>
 
 typedef struct {

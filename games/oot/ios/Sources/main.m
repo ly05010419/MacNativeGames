@@ -113,6 +113,7 @@ static void cloud_folder_apply(void) {
 }
 /* Key 1's settings panel is Mac only (runtime/frontend.m). */
 void runtime_settings_toggle(void) {}
+void runtime_settings_page(int page) { (void)page; }
 #if !TARGET_OS_VISION
 static void apply_display_settings(void);   // below, next to the pane helpers it uses
 #endif
@@ -182,8 +183,8 @@ static void contrib_settings_sync(NSString *contrib) {
     if (!now || [now isEqualToString:@"auto"] != on) totk_inbox_choose(contrib, on);
 }
 /* The one question about the shader contribution (totk_contrib_upload.h, the same as the Mac's app/launcher.m and Tears of the Kingdom's
-   contrib_ask), before the game starts, once Documents/shader-list-contribution.txt holds TOTK_CONTRIB_STEP new rows and
-   the player has not chosen. The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
+   contrib_ask), before the game starts, at the first start where
+   the player has not chosen yet (no row threshold, user 2026-11-10). The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
    what the app serves in prepareAndStart, so the first count after a new build can be a little high.) */
 - (BOOL)offerShaderUpload {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -710,7 +711,7 @@ static void apply_settings(void) {
     });
     // Shaders the shared list lacks (totk_shader_contrib.h), contributed over HTTPS when the player lets it (totk_contrib_upload.h).
     // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
-    NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
+    NSString *contrib = totk_inbox_claim([docs stringByAppendingPathComponent:@"shader-list-contribution.txt"]);   // this game's file only
     totk_contrib_prune(contrib, seedDir, seedDir);
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
     contrib_settings_sync(contrib);
@@ -718,7 +719,7 @@ static void apply_settings(void) {
     // The Settings switch turned while the game runs (the app comes back from Settings): on starts, off stops the sending.
     [NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil
         usingBlock:^(NSNotification *n) { (void)n; contrib_settings_sync(contrib); totk_inbox_start(contrib, @"ios"); }];
-    // ... with the game and version it came from, so a file sent by hand in an issue names them
+    // ... with the game and version it came from, so the file names them
     setenv("TOTK_CONTRIB_GAME",GAME_FOLDER " " TOTK_GAME_VERSION,1);
     setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);
     setenv("DM_MSL_DIR",seedDir.fileSystemRepresentation,1);

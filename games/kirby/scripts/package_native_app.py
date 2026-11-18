@@ -186,6 +186,7 @@ def package(work, data_work, fonts, output, icon=None):
         clone(GAME.parents[1] / "LICENSE", notices / "MacNativeGames-MIT.txt")
         info = {
             "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": expected["game"],
+            "CFBundleLocalizations": ["en", "zh-Hans"],
             "CFBundleExecutable": "Kirby", "CFBundleIdentifier": "local.projectidea.kirby",
             "CFBundleInfoDictionaryVersion": "6.0", "CFBundleName": "Kirby",
             "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.0.0",

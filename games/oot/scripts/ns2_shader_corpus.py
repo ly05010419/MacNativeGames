@@ -49,6 +49,9 @@ def stage_of(ctl, code):
     return SPH_STAGE.get(kind) if w0 & 0x1f else None
 
 
+KEY_RULE = 'nvn2-ctl48-zero-30'   # nvn_ctl.h NVN2_KEY_RULE, Ocarina of Time's line (tests/test_ns2_key_rule.py)
+
+
 def shader_key(ctl, code):
     k = bytearray(ctl[:0x48])
     k[0x30:0x34] = bytes(4)

@@ -29,7 +29,7 @@ def _chain():
     """The shader cache folder of the current translation chain: rt-<DMSH_CHAIN> (dmsh_chain.h), so a new chain needs no
     change here."""
     header = Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h'
-    m = re.search(r'#define\s+DMSH_CHAIN\s+"([^"]+)"', header.read_text())
+    m = re.search(r'#define\s+DMSH_CHAIN\s+"([^"]+)"\s*/\* game: oot\b', header.read_text())
     if not m: raise SystemExit(f'no DMSH_CHAIN in {header}')
     return 'rt-' + m.group(1)
 CHAIN = _chain()

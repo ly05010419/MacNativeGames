@@ -4,6 +4,7 @@
 #include "../command_q/probe.m"
 #undef main
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 #include <assert.h>
 void runtime_feedback_attach(GCController *c){(void)c;}
 void runtime_feedback_detach(GCController *c){(void)c;}
@@ -15,6 +16,8 @@ uint64_t runtime_keyboard_buttons(void){return 0;}
 static unsigned checks;
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);exit(1);}}while(0)
 static RuntimeGamepadState pad(uint64_t b){return (RuntimeGamepadState){.connected=1,.buttons=b};}
+static int probeCaptures;
+static void probe_capture(void){probeCaptures++;}
 static double instant;
 static void press(uint64_t b){[settingsPanel controllerPad:pad(0) time:instant+=1 active:YES];[settingsPanel controllerPad:pad(b) time:instant+=0.1 active:YES];}
 @interface SettingsPreviewDelegate:NSObject<NSWindowDelegate>
@@ -60,13 +63,41 @@ int main(int argc,char **argv){@autoreleasepool{
  CHECK(runtime_gamepad_settings_button()==-1&&![NSFileManager.defaultManager fileExistsAtPath:saved]);
  hidPad.buttons=1ull<<10;refresh_gamepads();CHECK(!runtime_gamepad_settings_requested());runtime_gamepad_read(&out);CHECK(out.buttons);
  hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ /* The screenshot button (user 2026-11-11): the touchpad by default; held 3 s it takes one picture through the capture
+    button's hook, once per hold, and not before; released, the next hold takes another. It keeps driving what it drives
+    (the menu button below still reaches the game), and a picked button is saved in controller-screenshot.txt ("none": none;
+    the touchpad, the default: no file). The probe moves the hold's start back instead of waiting. */
+ runtime_capture_set_hook(probe_capture);probeCaptures=0;
+ CHECK(runtime_gamepad_screenshot_button()==CONTROLLER_SCREENSHOT_DEFAULT&&CONTROLLER_SCREENSHOT_DEFAULT==16);
+ hidPad.buttons=1ull<<16;refresh_gamepads();CHECK(screenshotHold.down&&!screenshotHold.fired&&probeCaptures==0);
+ screenshotHold.since-=2900000000ull;refresh_gamepads();CHECK(probeCaptures==0);   /* 2.9 s: not yet */
+ screenshotHold.since-=100000000ull;refresh_gamepads();CHECK(probeCaptures==1&&screenshotHold.fired);   /* 3.0 s */
+ screenshotHold.since-=60000000000ull;refresh_gamepads();CHECK(probeCaptures==1);   /* still the same hold */
+ hidPad.buttons=0;refresh_gamepads();CHECK(!screenshotHold.down);
+ hidPad.buttons=1ull<<16;refresh_gamepads();screenshotHold.since-=3000000000ull;refresh_gamepads();CHECK(probeCaptures==2);
+ hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ NSString *shotSaved=[@(argv[1]) stringByAppendingPathComponent:@"controller-screenshot.txt"];
+ runtime_gamepad_screenshot_button_set(10);
+ CHECK(runtime_gamepad_screenshot_button()==10&&[[NSString stringWithContentsOfFile:shotSaved encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"menu\n"]);
+ hidPad.buttons=1ull<<10;refresh_gamepads();runtime_gamepad_read(&out);CHECK(out.buttons&(1ull<<10));   /* + still reaches the game */
+ screenshotHold.since-=3000000000ull;refresh_gamepads();CHECK(probeCaptures==3);
+ hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ hidPad.buttons=1ull<<16;refresh_gamepads();screenshotHold.since-=3000000000ull;refresh_gamepads();CHECK(probeCaptures==3&&!screenshotHold.down);   /* the touchpad no longer */
+ hidPad.buttons=0;refresh_gamepads();runtime_gamepad_read(&out);
+ atomic_store(&screenshotButton,CONTROLLER_SCREENSHOT_DEFAULT);load_screenshot_button();CHECK(runtime_gamepad_screenshot_button()==10);   /* the next start reads it */
+ runtime_gamepad_screenshot_button_set(-1);
+ CHECK(runtime_gamepad_screenshot_button()==-1&&[[NSString stringWithContentsOfFile:shotSaved encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"none\n"]);
+ atomic_store(&screenshotButton,CONTROLLER_SCREENSHOT_DEFAULT);load_screenshot_button();CHECK(runtime_gamepad_screenshot_button()==-1);
+ runtime_gamepad_screenshot_button_set(CONTROLLER_SCREENSHOT_DEFAULT);
+ CHECK(runtime_gamepad_screenshot_button()==16&&![NSFileManager.defaultManager fileExistsAtPath:shotSaved]);
+ runtime_capture_set_hook(NULL);
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+(settingsPanel.page==SETTINGS_PAGE_DISPLAY?settingsPanel.displayButtons.count:0));   /* the display page: its buttons after the rows */
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+1&&settingsPanel.controllerTargets.lastObject==settingsPanel.homeButton);   /* every page: 访问主页 after the rows */
  /* The input page: a menu first (controller type) and switches after row 1 (the display page's switches went to the
     effects page, 2026-10-30). */
- [settingsPanel selectPage:SETTINGS_PAGE_INPUT];CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count);
+ [settingsPanel selectPage:SETTINGS_PAGE_INPUT];CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+1);
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
  TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};

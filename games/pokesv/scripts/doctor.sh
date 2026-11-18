@@ -28,11 +28,11 @@ if [ "$pyver" = 3.14 ]; then
     "$PY" -c "import $m" 2>/dev/null && ok "  $m" || need "  Python package $m" "make venv"
   done
 else
-  need "Python 3.14 (PY=$PY gives ${pyver:-nothing})" "brew install python@3.14, then make venv"
+  need "Python 3.14 (PY=$PY gives ${pyver:-nothing})" "install it from https://www.python.org/downloads/macos/, then make venv"
 fi
-have "$OPUS/lib/libopus.a" "opus" "brew install opus"
-have "$LIBVPX/lib/libvpx.a" "libvpx" "brew install libvpx"
-have "$LLVM_BIN/llvm-objdump" "llvm-objdump (make verify)" "brew install llvm@23"
+have "$OPUS/lib/libopus.a" "opus" "python3 ../../tools/deps prefix opus"
+have "$LIBVPX/lib/libvpx.a" "libvpx" "python3 ../../tools/deps prefix libvpx"
+xcrun --find llvm-objdump >/dev/null 2>&1 && ok "llvm-objdump (make verify): Xcode's" || need "llvm-objdump (make verify)" "xcode-select --install"
 command -v git >/dev/null && ok "git (fetches SPIRV-Cross once)" || need "git" "xcode-select --install"
 
 echo "Work folder $WORK ($VERSION)"

@@ -8,6 +8,8 @@
    - The RomFS interface mod; the FPS / resolution HUD.
    The game runs at its own frame rate on a 60 Hz present base, as on the console; it has no game-code patches. */
 #import <Cocoa/Cocoa.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -189,6 +191,16 @@ int main(int argc, char **argv) {
         NSString *logs = [home stringByAppendingPathComponent:@"Library/Logs/MacNativeGames"];
         NSString *profile = [data stringByAppendingPathComponent:@"profile"], *slot = [data stringByAppendingPathComponent:@"game-slot"];
         if (!make_dir(profile) || !make_dir(slot) || !make_dir(logs)) { fail([NSString stringWithFormat:@"%@", data]); return 1; }
+        NSString *session = [data stringByAppendingPathComponent:@"session.lock"];
+        int session_lock = open(session.fileSystemRepresentation, O_RDWR | O_CREAT, 0600);
+        if (session_lock < 0 || flock(session_lock, LOCK_EX | LOCK_NB)) { fail(@"The game is already running or its profile is unavailable"); return 1; }
+        NSString *pack = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"dread/build"];
+        setenv("DM_NVN_SHMAP", [pack stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 1);
+        setenv("TOTK_SHADER_SEED_DIR", [pack stringByAppendingPathComponent:@"shader-seed"].fileSystemRepresentation, 1);
+        setenv("TOTK_SHADER_LIB_DIR", [pack stringByAppendingPathComponent:@"shader-libs"].fileSystemRepresentation, 1);
+        setenv("DM_PSO_ARCHIVE", [pack stringByAppendingPathComponent:@"pipeline-archive"].fileSystemRepresentation, 1);
+    unsetenv("DM_PSO_OFFLINE"); unsetenv("DM_PSO_ARCHIVE_BUILD"); unsetenv("DM_PSO_REQUIRE_ARCHIVE");
+        setenv("TOTK_WARM_BEFORE_TITLE", "1", 1);
         if (chdir(work.fileSystemRepresentation)) { fail(work); return 1; }   // the runtime reads extracted/ and rewritten/ relative to it
 
         setenv("DM_PRESENT_HZ", "60", 1);   // the game's own pacing on a 60 Hz base, as on the console
@@ -230,7 +242,10 @@ int main(int argc, char **argv) {
                 work.UTF8String, getenv("DM_PRESENT_HZ"), getenv("DREAD_DISPLAY"), full ? "yes" : "no", getenv("TOTK_WINDOW_SIZE"),
                 getenv("TOTK_DRAWABLE_SCALE") ?: "1", getenv("TOTK_MFX_OUTPUT") ? "on" : "off", getenv("TOTK_ROMFS_MODS"));
         NSString *binary = [work stringByAppendingPathComponent:@"build/dread-native"];
-        char *const args[] = {(char *)binary.fileSystemRepresentation, "rewritten/v100", "boot", NULL};
+        NSString *version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGDreadVersion"] ?: @"v210";
+        if (![version isEqualToString:@"v100"] && ![version isEqualToString:@"v210"]) { fail(@"Unknown Dread version"); return 1; }
+        NSString *rewritten = [@"rewritten" stringByAppendingPathComponent:version];
+        char *const args[] = {(char *)binary.fileSystemRepresentation, (char *)rewritten.fileSystemRepresentation, "boot", NULL};
         execv(args[0], args);
         fprintf(stderr, "[launcher] execv failed: %s\n", strerror(errno));
         fail([NSString stringWithFormat:T("No se pudo iniciar el juego. Mira %@.", "Starting the game failed. See %@."), log]);

@@ -60,5 +60,25 @@ class ButtonGuideTextures(unittest.TestCase):
             missing = set(self.icons.HUD_TEXTURES.values()) - set(style(None))
             self.assertFalse(missing, f'{name}: no icon for {", ".join(f"U+{cp:04X}" for cp in sorted(missing))}')
 
+    def test_a_glyph_the_style_keeps_keeps_its_hud_texture(self):
+        # the builder's layout style (tools/builder/icons_generate.py) leaves the stick-movement glyphs U+E052, U+E05E as
+        # the game draws them; their HUD textures stay the game's too (the Controls page's icons stopped with KeyError 57426)
+        import struct
+        size, blob, data_at = 72, bytearray(), {}
+        for name in self.icons.HUD_TEXTURES:
+            i = len(blob); blob += b'BRTI' + bytes(0x100 - 4)
+            struct.pack_into('<H', blob, i + 0x16, 1); struct.pack_into('<I', blob, i + 0x1C, self.icons.R8_UNORM)
+            struct.pack_into('<II', blob, i + 0x24, size, size); struct.pack_into('<I', blob, i + 0x34, 3)
+            n = len(blob); blob += struct.pack('<H', len(name)) + name.encode() + bytes(6); struct.pack_into('<Q', blob, i + 0x60, n)
+            p = len(blob); blob += bytes(8); struct.pack_into('<Q', blob, i + 0x70, p); data_at[name] = p
+        for name, p in data_at.items():
+            struct.pack_into('<Q', blob, p, len(blob)); blob += bytes(((size + 63) // 64) * 512 * 8 * ((size + 63) // 64))
+        kept = {0xE052, 0xE05E}
+        square = lambda pen: self.icons.polygon(pen, [(0, 0), (100, 0), (100, 100), (0, 100)])
+        out = self.icons.redraw_hud(bytes(blob), {cp: (100, square) for cp in self.icons.HUD_TEXTURES.values() if cp not in kept})
+        for name, p in data_at.items():
+            centre = struct.unpack_from('<Q', out, p)[0] + self.icons.gob_offset(size // 2, size // 2, 1, 8)
+            self.assertEqual(out[centre], 0 if self.icons.HUD_TEXTURES[name] in kept else 255, name)
+
 if __name__ == '__main__':
     unittest.main()

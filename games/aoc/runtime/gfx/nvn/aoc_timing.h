@@ -5,7 +5,8 @@
 enum { AOC_DYNAMIC = 0x38, AOC_DT = 0x3c, AOC_SECONDS = 0x40,
        AOC_UPDATES = 0x48, AOC_MAX_DT = 0x50, AOC_MIN_DT = 0x54,
        AOC_COUNTER_SCALE = 0x60, AOC_SCENE_TICKS = 0x68, AOC_SCENE_DT = 0x70,
-       AOC_SCENE_ACTIVE = 0x74, AOC_SCENE_UPDATES = 0x78, AOC_SCENE_SECONDS = 0x80 };
+       AOC_SCENE_ACTIVE = 0x74, AOC_SCENE_UPDATES = 0x78, AOC_SCENE_SECONDS = 0x80,
+       AOC_ASPECT = 0x88, AOC_ASPECT_OWN = 0x8c };   // camera aspect factors (patches.py): chosen ratio / (16/9), 0 = the game's own
 int aoc_timing_valid(int target);
 void aoc_timing_apply(int profile_target);
 void aoc_timing_set(int target, int dynamic);
@@ -14,3 +15,4 @@ int aoc_timing_target(void); // 0: original; otherwise 30 or 60; legacy 120 fall
 int aoc_timing_dynamic(void);
 void aoc_timing_clock(double *seconds, uint64_t *updates);
 void aoc_timing_scene_clock(double *seconds, uint64_t *updates);
+void aoc_aspect_set(float ratio, int own_site); // 0: the game's 16:9; own_site 0 leaves main+0x115fa64's camera at its own aspect

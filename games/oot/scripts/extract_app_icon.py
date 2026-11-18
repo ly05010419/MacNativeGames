@@ -7,7 +7,6 @@ import hashlib
 import json
 import subprocess
 import tempfile
-import urllib.request
 from pathlib import Path
 
 
@@ -60,8 +59,9 @@ def source_icon(spec, output):
     receipt = output.with_suffix('.source.json')
     def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
     if not image.is_file() or digest(image) != source['sha256']:
-        with urllib.request.urlopen(source['url'], timeout=30) as response:
-            data = response.read()
+        # macOS's curl, not urllib: python.org's Python has no CA certificates until its Install Certificates step
+        data = subprocess.run(['/usr/bin/curl', '-fsSL', '--max-time', '60', source['url']], check=True,
+                              capture_output=True).stdout
         if hashlib.sha256(data).hexdigest() != source['sha256']:
             raise ValueError('official app icon hash mismatch')
         image.parent.mkdir(parents=True, exist_ok=True)

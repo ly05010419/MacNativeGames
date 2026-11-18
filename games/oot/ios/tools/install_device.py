@@ -20,7 +20,20 @@ from pathlib import Path
 ENTITLEMENT = 'com.apple.developer.kernel.increased-memory-limit'
 CACHE = Path.home()/'Library/Caches/MacNativeGames/ios-signing'
 
+def xcodegen():
+    """The pinned XcodeGen of the repository's tools/deps (downloaded once per Mac; no Homebrew)."""
+    sys.path.insert(0, os.environ.get('MNG_REPO') or str(Path(__file__).resolve().parents[4]))
+    from tools.deps import program
+    return program('xcodegen')
+
 def run(cmd, **kw): return subprocess.run([str(x) for x in cmd], check=True, **kw)
+
+def profile_plist(prov):
+    """The provisioning profile's plist. Not `security cms -D`: it imports the signer's certificates into the login
+    keychain, a write to the system disk that the confined install refuses ("cert import failed: Operation not
+    permitted", 2026-11-16). openssl checks the CMS signature over the content and writes nothing."""
+    return subprocess.run(['openssl','smime','-inform','der','-verify','-noverify','-in',str(prov)],
+                          check=True, capture_output=True).stdout
 def out(cmd): return subprocess.run([str(x) for x in cmd], check=True, capture_output=True, text=True).stdout
 
 def teams():
@@ -45,6 +58,11 @@ def pick_device(name):
         sys.exit(f"choose the device with --device <name>:\n{listed}" if devs else 'no paired iPhone / iPad / Vision Pro found: pair it with this Mac and enable Developer Mode')
     return match[0]
 
+# What xcodebuild says when the team has no device to make a development profile for (a free Apple ID before its first
+# device is registered, #2268)
+NO_DEVICE = ('has no devices from which to generate a provisioning profile', 'Your team has no devices',
+             'No profiles for')
+
 def profile(team, bundle_id, udid, platform='ios'):
     """Build an empty app with the game's bundle identifier and entitlements; Xcode makes the profile for it."""
     vision = platform == 'visionos'
@@ -67,14 +85,25 @@ targets:
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_ENTITLEMENTS: TOTK.entitlements
 ''')
-    run(['xcodegen','generate','--quiet'], cwd=proj)
+    run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
-    with log.open('w') as f:
-        r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
-                            '-destination',f'generic/platform={project_platform}','-derivedDataPath',str(derived),
-                            '-allowProvisioningUpdates','build'],
-                           cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+
+    def build(destination, *extra):
+        with log.open('w') as f:
+            return subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
+                                   '-destination',destination,'-derivedDataPath',str(derived),
+                                   '-allowProvisioningUpdates',*extra,'build'],
+                                  cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+    # A generic destination first (3b1aef95): naming the device makes Xcode copy its system symbols into
+    # ~/Library/Developer/Xcode/iOS DeviceSupport, several GB a device on the system disk. Only a team without this
+    # device (a free Apple ID's first install, #2268: "Your team has no devices from which to generate a provisioning
+    # profile") needs the device named, with -allowProvisioningDeviceRegistration so Xcode registers it.
+    r = build(f'generic/platform={project_platform}')
+    if r.returncode and any(m in log.read_text(errors='replace') for m in NO_DEVICE):
+        print(f'Your team has no {project_platform} device yet: registering this one ({udid}). Xcode copies its system '
+              'symbols to ~/Library/Developer/Xcode/iOS DeviceSupport (several GB); they can be deleted afterwards.', flush=True)
+        r = build(f'platform={project_platform},id={udid}', '-allowProvisioningDeviceRegistration')
     if r.returncode:
         errors = [l for l in log.read_text(errors='replace').splitlines() if 'error:' in l]
         sys.exit('Xcode could not make a provisioning profile:\n' + '\n'.join(errors[-8:]) + f'\nfull log: {log}')
@@ -250,20 +279,29 @@ def push_seed(dev, bundle_id, seed):
         folder = f'shader-seed-{fp[:12]}-{int(time.time())}'
         names = sorted(p.name for p in seed.iterdir() if p.is_file())
         total = sum((seed/n).stat().st_size for n in names)
-        pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in names) + 2   # write_pack's stream
-        parts = (pack + PART - 1) // PART
-        print(f'shaders: copying {len(names)} files, {total / 2**30:.1f} GiB, as one pack in {parts} parts (once per shader list; later installs keep them)', flush=True)
-        prog = Progress('shaders', pack); made = [0]
+        # The shaders' own files go as image parts (<folder>.img.NNN, seed_image.py), read in place on the device
+        # (totk_seed_image.h); the few others as the pack the app unpacks (2026-11-13: the device unpacked about 128,000
+        # files after every update and removed the last seed's 128,000).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from seed_image import image_names, write_parts
+        imaged = image_names(names); loose = sorted(set(names) - set(imaged))
+        image = sum((seed/n).stat().st_size + 16 + 24 + len(n.encode()) for n in imaged)   # write_parts' data, alignment, index
+        pack = 9 + sum(2 + len(n.encode()) + 8 + (seed/n).stat().st_size for n in loose) + 2   # write_pack's stream
+        parts = (pack + PART - 1) // PART + (image + PART - 1) // PART
+        print(f'shaders: copying {len(names)} files, {total / 2**30:.1f} GiB: {len(imaged)} in image parts and {len(loose)} '
+              f'in a pack, {parts} parts in all (once per shader list; later installs keep them)', flush=True)
+        prog = Progress('shaders', pack + image); made = [0]
         print(f'  shaders: making part 1/{parts} from the shader files …', flush=True)
         def copy(local, name):
             run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
                  bundle_id,'--source',local,'--destination',f'Documents/GameData/{name}'], capture_output=True)
         got.write_text('stale\n'); copy(got, 'shader-seed.txt')   # until every part is there
-        def push(local):   # each part as write_pack completes it (making a part reads ~1 GiB of shader files first)
+        def push(local):   # each part as it is complete (making a part reads ~1 GiB of shader files first)
             made[0] += 1; n = local.stat().st_size
             prog.part(f'part {made[0]}/{parts}', n, lambda: copy(local, local.name)); local.unlink()
             if made[0] < parts: print(f'  shaders: making part {made[0] + 1}/{parts} from the shader files …', flush=True)
-        write_pack(seed, names, Path(d), folder, PART, push)
+        write_parts(seed, imaged, Path(d)/folder, PART, push)
+        write_pack(seed, loose, Path(d), folder, PART, push)
         got.write_text(f'{folder}\n{fp}\n'); copy(got, 'shader-seed.txt')
 
 def built_bundle_id(ipa, team):
@@ -312,7 +350,7 @@ def main():
     if platform == 'visionos' and dev['hardwareProperties'].get('platform') != 'visionOS':
         sys.exit('this is a native Vision Pro app: choose a paired Vision Pro with --device')
     prov, signed = profile(team, bundle_id, udid, platform)
-    info = plistlib.loads(out(['security','cms','-D','-i',prov]).encode())
+    info = plistlib.loads(profile_plist(prov))
     if udid not in info.get('ProvisionedDevices', []) and not info.get('ProvisionsAllDevices'):
         sys.exit('this device is not registered in the provisioning profile; register it with your Apple developer team first')
     ents = info['Entitlements']

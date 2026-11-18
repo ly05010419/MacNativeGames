@@ -8,7 +8,7 @@
 // ios/Sources/main.m; unset in development runs, which then write nothing) as a shader-list V, R or B row: shader keys,
 // bind states and pipeline descriptors, no game data. Once the file holds TOTK_CONTRIB_STEP new rows, the
 // Mac launcher asks once, before the game starts, whether to contribute them automatically over HTTPS
-// (totk_contrib_upload.h; a switch in Settings changes it later); scripts/collect_shader_issues.py --inbox merges what
+// (totk_contrib_upload.h; a switch in Settings changes it later); games/totk/scripts/collect_shaders.py --inbox merges what
 // arrives. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
@@ -25,17 +25,10 @@
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
 #endif
 /* This game's own shader list, games/mvdk/assets/shader_list.tsv (user 2026-10-28: every game its own list, never mixed
-   into Tears of the Kingdom's): the issue form of the other games with the game and the title filled in, an automatic
-   submission titled with the game (games/totk/scripts/collect_shader_issues.py OTHER finds it by that title), and a
-   contribution file named after it. */
-#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
-#define GAME_CONTRIB_GAME "Mario vs. Donkey Kong"
-#define GAME_CONTRIB_TITLE "Shader list (Mario vs. Donkey Kong):"
+   into Tears of the Kingdom's): a contribution file named after it, uploaded under
+   the game's inbox id (GAME_INBOX_ID, totk_contrib_upload.h). */
 #define GAME_CONTRIB_FILE "shader-list-contribution-mvdk.txt"
-#define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
-    "&game=Mario+vs.+Donkey+Kong&title=Shader+list+%28Mario+vs.+Donkey+Kong%29%3A+"
-#define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
+#define TOTK_REPO_URL "https://github.com/ly05010419/MacNativeGames"   // the star button (launcher, settings panel): the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */
@@ -64,6 +57,36 @@ static inline NSMutableSet<NSString *> *totk_contrib_read(NSString *path) {
 static inline NSString *totk_contrib_side(NSString *path, NSString *ext) {
     return [path.stringByDeletingLastPathComponent stringByAppendingPathComponent:[NSString stringWithFormat:@".%@.%@", path.lastPathComponent, ext]];
 }
+/* The game a contribution file belongs to: its line "# Inbox game: <id>" (the shader inbox's id for the game, GAME_INBOX_ID),
+   or nil. Every game's shaders stay apart from writing to sending (user 2026-11-12: "每个游戏的着色器都独立"): the launcher
+   claims the file before the game starts (totk_contrib_upload.h totk_inbox_claim) and gives the game the id in
+   TOTK_CONTRIB_GAME_ID; the game writes only to a file of its own id (totk_contrib_writable) and the upload sends only such a
+   file (totk_inbox_send). Before, a file could hold several games' rows and the app that sent it named its own game for all
+   of them (2026-11-11: an Ocarina of Time install sent 418 Tears of the Kingdom pipelines; 2026-11-12: 464 Pokopia rows came
+   as Breath of the Wild's, the two games sharing one file). */
+#define TOTK_CONTRIB_OWNER "# Inbox game: "
+static inline NSString *totk_contrib_owner(NSString *path) {
+    NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    for (NSString *line in [text componentsSeparatedByString:@"\n"])
+        if ([line hasPrefix:@TOTK_CONTRIB_OWNER]) return [line substringFromIndex:strlen(TOTK_CONTRIB_OWNER)];
+    return nil;
+}
+/* This game's id as the launcher's claim gave it (TOTK_CONTRIB_GAME_ID), or nil (a development run: no check). */
+static inline NSString *totk_contrib_writer_id(void) {
+    const char *id = getenv("TOTK_CONTRIB_GAME_ID");
+    return id && *id && !strchr(id, '\n') ? @(id) : nil;
+}
+/* Whether this game may write to the file: it is this game's, or not there yet (the first row names the game). */
+static inline BOOL totk_contrib_writable(NSString *path) {
+    NSString *id = totk_contrib_writer_id();
+    if (!id || !path) return YES;
+    NSString *found = [NSFileManager.defaultManager fileExistsAtPath:path] ? totk_contrib_owner(path) : id;
+    if ([found isEqualToString:id]) return YES;
+    fprintf(stderr, "[shader-contrib] %s is %s, not %s's: nothing is written to it\n", path.UTF8String,
+            found.length ? [NSString stringWithFormat:@"%@'s", found].UTF8String : "no game's", id.UTF8String);
+    return NO;
+}
+
 /* The file opened with these flags and locked (flock, exclusive), or -1. totk_contrib_retire replaces the file by a rename,
    so a descriptor opened before it names the old one: then the file is opened again. */
 static inline int totk_contrib_lock(NSString *path, int flags) {
@@ -164,7 +187,7 @@ static inline void totk_contrib_add_line(NSString *line) {
     if (off) return;
     if (!rows) {
         path = totk_contrib_path();
-        if (!path) { off = 1; return; }
+        if (!path || !totk_contrib_writable(path)) { off = 1; return; }
         rows = totk_contrib_read(path);
         [rows unionSet:totk_contrib_read(totk_contrib_side(path, @"done"))];   /* rows the inbox took */
     }
@@ -173,10 +196,12 @@ static inline void totk_contrib_add_line(NSString *line) {
     FILE *f = fd < 0 ? NULL : fdopen(fd, "a");
     if (!f) { if (fd >= 0) close(fd); return; }
     fseek(f, 0, SEEK_END);
-    if (ftell(f) == 0)
+    int fresh = ftell(f) == 0;
+    if (fresh)
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
               "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
-              "# Send it in a GitHub issue: " TOTK_CONTRIB_ISSUE_URL "\n", f);
+              "# This game sends it to the shader inbox when contributing is on in Settings (docs/shader-list.md).\n", f);
+    if (fresh && totk_contrib_writer_id()) fprintf(f, TOTK_CONTRIB_OWNER "%s\n", totk_contrib_writer_id().UTF8String);
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);
     [rows addObject:line];

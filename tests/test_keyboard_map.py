@@ -53,7 +53,7 @@ SWITCH = {'A': ['a'], 'B': ['b'], 'X': ['x'], 'Y': ['y'], 'ZR': ['zr'], 'ZL': ['
           'left stick press': ['lstick'], 'right stick press': ['rstick'], '+': ['plus'], '−': ['minus'],
           'left stick': ['move_up', 'move_left', 'move_down', 'move_right'],
           'right stick': ['camera_up', 'camera_left', 'camera_down', 'camera_right'],
-          'd-pad': ['left', 'up', 'right', 'down']}
+          'd-pad': ['left', 'up', 'right', 'down'], '—': ['screenshot']}   # the screenshot is no Switch button
 # How the page writes an input -> keyboard_map.h's label.
 WRITTEN = {'arrow keys': ['↑', '←', '↓', '→'], 'left button': ['Left click'], 'right button': ['Right click'],
            'wheel click': ['Wheel click'], 'moving the mouse': []}
@@ -75,7 +75,7 @@ class KeyboardMapTests(unittest.TestCase):
         """docs/controls.md's key table says what keyboard_map.h's default does, and the Chinese page's table says the same."""
         layout = default_layout(self)
         rows = table(ROOT / 'docs/controls.md', '| Action | Switch | Keys | Mouse |')
-        self.assertEqual(len(rows), 15)
+        self.assertEqual(len(rows), 16)
         covered = set()
         for action, switch, keys, mouse in rows:
             with self.subTest(row=action):

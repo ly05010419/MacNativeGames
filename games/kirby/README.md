@@ -6,7 +6,7 @@ Kirby and the Forgotten Land (**1.0.0**) running natively on Apple silicon Macs,
 
 ## Build
 
-You need an Apple silicon Mac with macOS 26 or later, the Xcode command line tools, `brew install opus libvpx python@3.14`,
+You need an Apple silicon Mac with macOS 26 or later, the Xcode command line tools, [Python 3.14](https://www.python.org/downloads/macos/) (opus and libvpx come with the build, pinned; no Homebrew),
 your base game 1.0.0 (`01004D300C5AE000`, NSP or XCI) and `prod.keys` from your own Switch. An NSP carries no system
 fonts: add `--firmware <unpacked firmware NCA folder>` or `--shared-fonts <a font folder from an earlier build>` (an
 XCI's system update partition holds them). From the repository folder:
@@ -46,6 +46,14 @@ Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to
 | Graphics & Shaders | Verified | All 27,278 shaders of the game translated and compiled to `.metallib` when the app is built |
 | Audio & Video | Verified | Opus audio; VP9 movies with libvpx, their Vorbis sound track with stb_vorbis (`runtime/movie_host.c`, after nxnative's `hle_movie.c`) |
 | Saves | Verified | Auto-save backups retained across sessions |
+
+## Language
+
+**Settings → Language / 语言** offers **Follow System**, **简体中文**, and **English**.
+The selection applies to both game text and the Mac host interface after a normal quit and relaunch.
+Follow System uses the Mac's preferred language list; changing language preserves the same save files.
+`KIRBY_LANGUAGE=system|zh-Hans|en-US` overrides the saved choice for diagnostics; explicit `TOTK_LANG`,
+`TOTK_LOCALE` and `TOTK_UI_LANG` environment overrides remain available.
 
 ## Shaders
 

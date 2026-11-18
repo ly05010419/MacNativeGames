@@ -1,7 +1,6 @@
 """Tears of the Kingdom VR: one picture for both eyes, camera ownership, picture order."""
 from pathlib import Path
 import platform
-import re
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +17,7 @@ class TotKStages(unittest.TestCase):
         probe=r"""
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <string.h>
 #include <assert.h>

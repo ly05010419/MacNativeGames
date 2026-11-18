@@ -101,17 +101,21 @@ class Choices(Base):
         self.assertFalse(frame.exists())
         self.assertFalse(self.paths.store.exists())   # nothing the panel has is kept in the window's own store
 
-    def test_the_panels_own_setting_is_shown_and_left_alone(self):
-        # the panel locked 72 fps (graphics-frame.txt lock-72): the window has no such choice, reads auto, keeps it
+    def test_the_panels_own_setting_is_shown_as_it_is(self):
+        # the panel locked 72 fps (graphics-frame.txt lock-72): no window choice is that, so it shows as the panel's
+        # own value, not as "auto" (user 2026-11-12); keeping it changes nothing, the game's default removes it
         app, frame = self.app('v143'), self.paths.data / 'TOTK/graphics-frame.txt'
         frame.parent.mkdir(parents=True); frame.write_text('lock-72\n')
         state = read_state(TOTK, app, self.paths)
-        self.assertEqual(state.choices['interpolation'], 'auto')
-        self.assertTrue(any('lock-72' in n for n in state.notes))
-        choose(TOTK, app, self.paths, 'interpolation', 'auto')
+        self.assertEqual((state.choices['interpolation'], state.notes), ('panel:lock-72', ()))
+        choose(TOTK, app, self.paths, 'interpolation', 'panel:lock-72')
         self.assertEqual(frame.read_text(), 'lock-72\n')
         choose(TOTK, app, self.paths, 'interpolation', 'interpmax')   # another choice replaces it, as the panel would
         self.assertEqual(frame.read_text(), 'interp-4\n')
+        frame.write_text('lock-72\n')
+        self.assertEqual(choose(TOTK, app, self.paths, 'interpolation', 'auto').choices['interpolation'], 'auto')
+        self.assertFalse(frame.exists())                                # the game's default: no file
+        self.assertRaises(ValueError, choose, TOTK, app, self.paths, 'interpolation', 'panel:lock-30')   # not what is there
 
     def test_smoothing_and_aspect_files(self):
         app, data = self.app('v143'), self.paths.data / 'TOTK'
@@ -119,8 +123,8 @@ class Choices(Base):
         self.assertEqual(((data / 'graphics-taa.txt').read_text(), (data / 'graphics-aspect.txt').read_text()), ('1\n', '2.3333333\n'))
         state = read_state(TOTK, app, self.paths)
         self.assertEqual((state.choices['smoothing'], state.choices['aspect']), ('on', '21:9'))
-        (data / 'graphics-taa.txt').write_text('0\n')   # the panel turned it off
-        self.assertEqual(read_state(TOTK, app, self.paths).choices['smoothing'], 'auto')
+        (data / 'graphics-taa.txt').write_text('0\n')   # the panel turned it off: the player's setting, shown as such
+        self.assertEqual(read_state(TOTK, app, self.paths).choices['smoothing'], 'panel:0')
 
     def test_only_the_tables_choices(self):
         botw = self.app('botw190', name='Breath of the Wild.app')

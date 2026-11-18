@@ -60,6 +60,9 @@
   "Status line (top-right)": "Ligne d'état (en haut à droite)",
   "shows the frame rate, the presented size and whether MetalFX is upscaling, ending with the number of shaders waiting for translation": "affiche les images par seconde, la taille affichée et l'état de MetalFX, puis le nombre de shaders en attente de traduction",
   "Shaders and pipelines (bottom-left)": "Shaders et pipelines (en bas à gauche)",
+  "Shaders": "Shaders",
+  "When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only": "Lorsque cette option est activée, le jeu contribue les shaders absents de la liste partagée : seuls les identifiants, les versions, le modèle de l’appareil et un identifiant aléatoire sont envoyés",
+  "Contribute shaders automatically": "Contribuer automatiquement aux shaders",
   "shows the shaders translated this run against the cache total, plus the render pipelines built this run; it turns yellow when something new is collected": "affiche les shaders traduits pendant cette session par rapport au total en cache, et les pipelines créés ; passe en jaune quand quelque chose de nouveau est collecté",
   "Debug": "Débogage",
   "writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game": "écrit Documents/log.txt, à lire sur un Mac (un peu plus lent) ; désactivé, rien n'est enregistré. Prend effet au prochain lancement du jeu",
@@ -74,5 +77,8 @@
   "Folder": "Dossier",
   "Choose folder": "Choisir un dossier",
   "Stop syncing": "Arrêter la synchronisation",
-  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil"
+  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil",
+  "Shaders": "Shaders",
+  "Contribute shaders automatically": "Partager les shaders automatiquement",
+  "When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only": "Activé, le jeu partage les shaders absents de la liste commune : uniquement des identifiants, des versions, le modèle de l'appareil et un numéro aléatoire"
 }

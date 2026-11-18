@@ -27,7 +27,8 @@ FORMAT = 1
 BACKUP_JSON = 'backup.json'
 HASH_LIMIT = 2 * 1024 * 1024 * 1024       # larger single files are listed by size only, never read whole
 
-PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR'}   # one launcher for both games (app/launcher.m)
+PROFILE_ENV = {'totk': 'TOTK_PROFILE_DIR', 'botw': 'TOTK_PROFILE_DIR', 'oot': 'TOTK_PROFILE_DIR', 'acnh': 'TOTK_PROFILE_DIR', 'eow': 'TOTK_PROFILE_DIR',
+               'odyssey': 'TOTK_PROFILE_DIR'}   # games/totk/app/launcher.m (both games), games/oot/app/launcher.m
 NXNATIVE = 'nxnative'
 
 
@@ -81,6 +82,32 @@ def default_backup_root(home):
     return Path(home) / 'Documents' / 'MacNativeGames-Backups'
 
 
+def game_backup_root(home, spec):
+    """Where one game's backups go: a folder of its own, named as its app, under the backups folder (user 2026-11-18:
+    "所有游戏的 存档备份 都在一起 必须分开 放在 自己游戏的 固定位置")."""
+    return default_backup_root(home) / spec.app_name
+
+
+def sort_backups(home, specs):
+    """Move the backups made straight into the shared backups folder (before 2026-11-18) into their game's folder, by the
+    game their backup.json names; a backup of another game or of none stays. A rename on the same disk: nothing is
+    copied or rewritten, and a folder already there is never replaced. Returns ((old, new), ...)."""
+    root = default_backup_root(home)
+    by_id = {spec.id: spec for spec in specs}
+    moved = []
+    for item in find_backups(root):
+        spec = by_id.get(item.game)
+        if spec is None:
+            continue
+        target = game_backup_root(home, spec) / item.directory.name
+        if target.exists() or target.is_symlink():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        item.directory.rename(target)
+        moved.append((item.directory, target))
+    return tuple(moved)
+
+
 def profile_dir(spec, home, environ=None):
     environ = os.environ if environ is None else environ
     value = environ.get(PROFILE_ENV.get(spec.id, ''))
@@ -95,7 +122,8 @@ def nxnative_root(home):
 
 def nxnative_dirs(home, titles=()):
     """The title folders nxnative has actually written, as (title id, path), newest first; a name
-    that is not a 16-digit hex title id is not a title folder and is skipped."""
+    that is not a 16-digit hex title id is not a title folder and is skipped. With titles, only those (the
+    filter was accepted and ignored until 2026-11-12, so a game's page listed other games' saves too)."""
     root = nxnative_root(home)
     titles = {t.upper() for t in titles}
     found = []
@@ -106,6 +134,8 @@ def nxnative_dirs(home, titles=()):
     for entry in entries:
         name = entry.name.upper()
         if len(name) != 16 or any(c not in '0123456789ABCDEF' for c in name):
+            continue
+        if titles and name not in titles:
             continue
         if entry.is_dir(follow_symlinks=False):
             found.append((name, Path(entry.path)))
@@ -142,7 +172,8 @@ def source(spec, home, environ=None):
 
 
 def nxnative_sources(home, titles=('0100F2C0115B6000', '01007EF00011E000')):
-    """Every nxnative title folder found, the two the games use marked with their game id."""
+    """The nxnative title folders found of these titles (the two games' by default; () for every one), each
+    marked with its game id when it is one of the two."""
     known = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw'}
     found = []
     for title_id, path in nxnative_dirs(home, titles):
@@ -182,7 +213,7 @@ def backup(source_path, root, label, game, now, title_id='', with_hash=True):
         directory.mkdir(parents=True)
     except OSError as error:
         return None, error.strerror or str(error)
-    files, copied, failures = [], [], []
+    files = []
     try:
         for entry in list(os.scandir(source_path)):
             target = directory / entry.name

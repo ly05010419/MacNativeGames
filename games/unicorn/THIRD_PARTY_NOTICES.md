@@ -22,7 +22,7 @@ Installed separately before building:
 
 | Library | Use | License |
 |---|---|---|
-| libopus (Homebrew) | Statically linked Opus audio | BSD-3-Clause |
-| libvpx (Homebrew) | Statically linked VP9 movies | BSD-3-Clause |
+| libopus 1.6.1 (pinned source, built by `tools/deps`) | Statically linked Opus audio | BSD-3-Clause |
+| libvpx 1.16.0 (pinned source, built by `tools/deps`) | Statically linked VP9 movies | BSD-3-Clause |
 
 Python dependencies and their versions are listed in `requirements.txt`. Install them before an offline build.

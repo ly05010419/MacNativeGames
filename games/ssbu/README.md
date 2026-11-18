@@ -49,7 +49,8 @@ fighters, stages and modes are the 13.0.2 ones (the same 98 NRO modules), and so
 ## Build
 
 Needs a Mac with Apple silicon and macOS 26 or later, Xcode with the Metal toolchain
-(`xcodebuild -downloadComponent MetalToolchain`), Python 3.14, and from Homebrew `opus libvpx libvorbis libogg`.
+(`xcodebuild -downloadComponent MetalToolchain`), Python 3.14 ([python.org](https://www.python.org/downloads/macos/));
+opus, libvpx, libvorbis and libogg come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew).
 
 ```sh
 cd games/ssbu

@@ -36,13 +36,13 @@ static id<MTLRenderPipelineState> bfin_ps(MTLPixelFormat f, int scale) {
         "fragment float4 bfin_copy(V in [[stage_in]], texture2d<float, access::read> t [[texture(0)]]) { return t.read(uint2(in.p.xy)); }\n"
         "fragment float4 bfin_scale(V in [[stage_in]], texture2d<float> t [[texture(0)]]) {\n"
         "  constexpr sampler s(filter::linear, address::clamp_to_edge); return t.sample(s, in.uv); }\n";
-    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+    NSError *e = nil; id<MTLLibrary> lib = mtl_counted_library(g_dev, @(src), nil, &e);
     if (!lib) { RED_ONCE(125, "BotW FXAA 关的通道编译失败：%s", e.localizedDescription.UTF8String); return nil; }
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     pd.vertexFunction = [lib newFunctionWithName:@"bfin_vs"]; pd.fragmentFunction = [lib newFunctionWithName:scale ? @"bfin_scale" : @"bfin_copy"];
     pd.colorAttachments[0].pixelFormat = f;
     pd.colorAttachments[0].writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;
-    id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    id<MTLRenderPipelineState> ps = mtl_counted_render(g_dev, pd, &e);
     if (!ps) { RED_ONCE(126, "BotW FXAA 关的管线建不出（格式 %lu）：%s", (unsigned long)f, e.localizedDescription.UTF8String); return nil; }
     g_bfin.ps[slot] = ps; g_bfin.ps_fmt[slot] = f; g_bfin.ps_scale[slot] = scale;
     return ps;

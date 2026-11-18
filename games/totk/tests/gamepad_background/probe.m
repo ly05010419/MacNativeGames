@@ -1,5 +1,6 @@
 /* Real controller routing and saved policy, with the HID state supplied locally; no game files or physical pad needed. */
 #include "../../runtime/gamepad.m"
+#include "../dsu/motion_stubs.h"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
 uint64_t runtime_now_ns(void) { return 1000000000; }

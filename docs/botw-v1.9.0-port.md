@@ -89,6 +89,18 @@ compare-and-swap loops that retry inside the window. `prepare_runtime.py`, `prep
   (29-30 FPS) gave the same speed, within one 30 fps frame, for the inventory tab animations (R, L), the typed item
   text and the jump poses (X, 100 ms steps). A frame-driven animation would be 4 times slower. At 30 fps the inventory
   opens about 80-120 ms later (about 3 frames), then runs at the same rate.
+- Moving platforms above 30 fps (`patch_kf_angle`, user report 2026-11-13): on Vah Medoh, Link hopped in place while the
+  beast tilted, more the higher the frame rate, and not at 30+30. The bodies the game moves (a Divine Beast's floor,
+  lifts, gates) get each physics step the angular velocity toward their target from hkQuaternion::getAngle
+  (main+0xb06d4, 2 acos(|w|), called at main+0x12d57fc). Under about half a milliradian w rounds to 1.0 and the turn
+  reads as none, so at high frame rates the floor stood still for some steps and then caught up. The call now goes to a
+  veneer (text padding +0x300) that returns 2 atan2(|xyz|, |w|) through the game's own atan2f import. Cause and cure
+  were found by Phosquitos for SavageWindRecomp ([pull request #312](https://github.com/Revivedx/SavageWindRecomp/pull/312),
+  issue #209 there). `verify_kf_angle_patch.py` assembles the veneer's actual words and executes them on Apple silicon,
+  comparing with `acosf` as a negative control; it needs no game data or CPU emulator. An optional original main image
+  also checks the patch guards and padding. The original angle loses small turns when w rounds to 1.
+  The PR author reported Link standing still on a tilting Medoh at 60+60 and uncapped. `TOTK_KF_ANGLE=0` keeps the shipped
+  angle.
 - Docked play renders at 1920x1080, as upstream's 1.6.0 port does: the display-mode routine main+0x1266074, `movk` at
   main+0x12660c8. `TOTK_RENDER_RES=900` keeps 1600x900.
 - While a movie plays (movie player instance main+0x1e565a8), the pacing holds 30 fps. Every movie frame is shown

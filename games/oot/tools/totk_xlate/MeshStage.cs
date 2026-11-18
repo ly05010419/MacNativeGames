@@ -13,7 +13,7 @@ sealed class MeshStage
     readonly bool task, deviceAllowed;   // deviceAllowed: the request may say stage_device=false (tests reading the stage memory from a compute wrapper)
     readonly List<(int n,int c)> vertex = new(), primitive = new();
     readonly int[] layout;
-    readonly int shared;
+    readonly int shared, blocks;
     // Device stage memory (2026-11-08). A mesh shader's stage memory as Metal threadgroup memory (the attribute area of
     // up to 128 vertices x ~25 components: 11-16 KiB a 32-thread threadgroup) let a GPU core hold two or three
     // threadgroups: the mesh stage ran at ~5 % occupancy and every raw-memory latency showed (Ocarina of Time village:
@@ -72,7 +72,7 @@ sealed class MeshStage
                 }
             }
             if(maxV<1||maxV>256||maxP<1||maxP>512||!vertex.Any(x=>x.n==-1))throw new Exception("mesh outputs exceed Metal limits or have no position");
-            int blocks=(Math.Max(Math.Max(maxV,maxP),1)+31)/32;
+            blocks=(Math.Max(Math.Max(maxV,maxP),1)+31)/32;
             // The guest exports complete 32-primitive blocks, even when the
             // declared bound ends within the final block (for example 126).
             // Keep the raster bound unchanged; reserve every byte it can write.
@@ -139,13 +139,23 @@ sealed class MeshStage
         head+="struct dm_vertex_t { float4 position [[position, invariant]];\n"+string.Concat(vn.Where(n=>n>=0).Select(n=>$"float4 a{n} [[user(locn{n})]];\n"))+"};\n";
         if(pn.Count>0)head+="struct dm_prim_t {\n"+string.Concat(pn.Select(n=>$"float4 p{n} [[user(locn{n})]];\n"))+"};\n";
         head+=$"using dm_mesh_t=metal::mesh<dm_vertex_t,{(pn.Count>0?"dm_prim_t":"void")},{maxV},{maxP},metal::topology::triangle>;\n";
-        int stride=Math.Max(vertex.Count+primitive.Count,1)*32;
-        string Vec(List<(int n,int c)> comps,int n,int offset)=>"float4("+string.Join(", ",Enumerable.Range(0,4).Select(c=>{int k=comps.IndexOf((n,c));return k<0?(c==3?"1.0":"0.0"):$"as_type<float>({mem}[b+{(k+offset)*32}u])";}))+")";
-        string sets=string.Concat(vn.Select(n=>$"v.{(n<0?"position":"a"+n)}={Vec(vertex,n,0)};\n"));
-        string psets=string.Concat(pn.Select(n=>$"p.p{n}={Vec(primitive,n,vertex.Count)};\n"));
+        /* The guest's attribute area: every vertex block first, then every primitive block. A block holds 32 vertices
+           (or primitives), one 32-word row per output component: vertex component k of vertex v at word
+           output + (v/32)*V*32 + k*32 + v%32, primitive component k of primitive p at output + blocks*V*32 + (p/32)*P*32
+           + k*32 + p%32 (V, P: the vertex / primitive output components, blocks for the larger of maxV / maxP; the
+           index bytes follow at blocks*(V+P) rows, layout[3]). Until 2026-11-13 the export read the blocks interleaved,
+           (V+P)*32 words a block, the primitive rows after each vertex block: the same addresses for a shader without
+           primitive outputs or with a single block, but for 128 vertices / 64 primitives every vertex from 32 on and
+           every primitive output came from the wrong words. Ocarina of Time's Forest Temple paintings (task 2d324024,
+           mesh ee4ef51a, fragment a75838cd: 12,000 brush strokes, each coloured from the Poe picture as a primitive
+           output) were left black or showed uninitialised memory (green). */
+        int vstride=Math.Max(vertex.Count,1)*32, pstride=Math.Max(primitive.Count,1)*32, pbase=output+blocks*vertex.Count*32;
+        string Vec(List<(int n,int c)> comps,int n)=>"float4("+string.Join(", ",Enumerable.Range(0,4).Select(c=>{int k=comps.IndexOf((n,c));return k<0?(c==3?"1.0":"0.0"):$"as_type<float>({mem}[b+{k*32}u])";}))+")";
+        string sets=string.Concat(vn.Select(n=>$"v.{(n<0?"position":"a"+n)}={Vec(vertex,n)};\n"));
+        string psets=string.Concat(pn.Select(n=>$"p.p{n}={Vec(primitive,n)};\n"));
         string Entry(string name,bool gl){
             string fill=task?$"for(uint i={lid};i<{pay}u;i+={threads}u){mem}[{input}u+i]=dm_payload.w[i];\n{bar}\nif({lid}==0u){{{mem}[0]={tg};{mem}[{input}]={tg};}}\n":$"if({lid}==0u){mem}[0]=dm_first[0]+{tg};\n";
-            return $"[[mesh]] void {name}({sig}, dm_mesh_t dm_out, "+(task?"const object_data dm_payload_t& dm_payload [[payload]]":first)+scratch+$")\n{{\n{start}{fill}{bar}\n{call}\n{bar}\nuint np=min({mem}[{prim/4}]>>24,{maxP}u);\nif({lid}==0u)dm_out.set_primitive_count(np);\nfor(uint n={lid};n<{maxV}u;n+={threads}u){{uint b={output}u+(n/32u)*{stride}u+n%32u; dm_vertex_t v;\n{sets}"+(gl?"v.position.z=fma(v.position.z,0.5,v.position.w*0.5);\n":"")+"dm_out.set_vertex(n,v);}\n"+(pn.Count>0?$"for(uint n={lid};n<np;n+={threads}u){{uint b={output}u+(n/32u)*{stride}u+n%32u;dm_prim_t p;{psets}dm_out.set_primitive(n,p);}}\n":"")+$"for(uint n={lid};n<np*3u;n+={threads}u){{uint at={prim+4}u+n;dm_out.set_index(n,({mem}[at>>2]>>((at&3u)*8u))&255u);}}\n{release}}}\n";
+            return $"[[mesh]] void {name}({sig}, dm_mesh_t dm_out, "+(task?"const object_data dm_payload_t& dm_payload [[payload]]":first)+scratch+$")\n{{\n{start}{fill}{bar}\n{call}\n{bar}\nuint np=min({mem}[{prim/4}]>>24,{maxP}u);\nif({lid}==0u)dm_out.set_primitive_count(np);\nfor(uint n={lid};n<{maxV}u;n+={threads}u){{uint b={output}u+(n/32u)*{vstride}u+n%32u; dm_vertex_t v;\n{sets}"+(gl?"v.position.z=fma(v.position.z,0.5,v.position.w*0.5);\n":"")+"dm_out.set_vertex(n,v);}\n"+(pn.Count>0?$"for(uint n={lid};n<np;n+={threads}u){{uint b={pbase}u+(n/32u)*{pstride}u+n%32u;dm_prim_t p;{psets}dm_out.set_primitive(n,p);}}\n":"")+$"for(uint n={lid};n<np*3u;n+={threads}u){{uint at={prim+4}u+n;dm_out.set_index(n,({mem}[at>>2]>>((at&3u)*8u))&255u);}}\n{release}}}\n";
         }
         return src+"\n"+head+Entry("main0",true)+"\n"+Entry("main0_z",false);
     }

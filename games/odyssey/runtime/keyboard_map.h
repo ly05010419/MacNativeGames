@@ -2,7 +2,10 @@
    controls.txt. The default preserves Odyssey's existing J/K/Space/I/U, Q/E, Option/Shift and F/T/H/G controls;
    mouse mode additionally supplies cap throw and crouch. W A S D move and arrows turn the camera. Key 1 is reserved
    for settings. Binding, swapping, diagrams and reset use the latest shared Mac panel; no Zelda bow/Ultrahand input
-   transformations apply to Odyssey. */
+   transformations apply to Odyssey.
+   One action is no Switch input: screenshot (games/totk, user 2026-11-11), P by default, takes the capture button's
+   picture (runtime/input.c -> gamepad.m runtime_capture_press -> screenshot.h); keymap_apply gives it nothing, so its
+   inputs never reach the game. */
 #ifndef TOTK_KEYBOARD_MAP_H
 #define TOTK_KEYBOARD_MAP_H
 #include <stdint.h>
@@ -17,7 +20,9 @@ enum {
     KEYMAP_A = 0, KEYMAP_B, KEYMAP_X, KEYMAP_Y, KEYMAP_LSTICK, KEYMAP_RSTICK, KEYMAP_L, KEYMAP_R, KEYMAP_ZL, KEYMAP_ZR,
     KEYMAP_PLUS, KEYMAP_MINUS, KEYMAP_DLEFT, KEYMAP_DUP, KEYMAP_DRIGHT, KEYMAP_DDOWN, KEYMAP_SWITCH_BUTTONS,
     KEYMAP_MOVE_UP = KEYMAP_SWITCH_BUTTONS, KEYMAP_MOVE_DOWN, KEYMAP_MOVE_LEFT, KEYMAP_MOVE_RIGHT,
-    KEYMAP_CAMERA_UP, KEYMAP_CAMERA_DOWN, KEYMAP_CAMERA_LEFT, KEYMAP_CAMERA_RIGHT, KEYMAP_ACTIONS
+    KEYMAP_CAMERA_UP, KEYMAP_CAMERA_DOWN, KEYMAP_CAMERA_LEFT, KEYMAP_CAMERA_RIGHT,
+    KEYMAP_SCREENSHOT,   /* not the game's: a screenshot (runtime/input.c) */
+    KEYMAP_ACTIONS
 };
 
 typedef struct KeyMap { uint8_t slot[KEYMAP_ACTIONS][KEYMAP_SLOTS]; } KeyMap;
@@ -25,7 +30,7 @@ typedef struct KeyMap { uint8_t slot[KEYMAP_ACTIONS][KEYMAP_SLOTS]; } KeyMap;
 static inline const char *keymap_action_name(int action) {
     static const char *const names[KEYMAP_ACTIONS] = {
         "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down",
-        "move_up", "move_down", "move_left", "move_right", "camera_up", "camera_down", "camera_left", "camera_right"};
+        "move_up", "move_down", "move_left", "move_right", "camera_up", "camera_down", "camera_left", "camera_right", "screenshot"};
     return action >= 0 && action < KEYMAP_ACTIONS ? names[action] : NULL;
 }
 
@@ -115,6 +120,7 @@ static inline void keymap_default(KeyMap *m) {
     KEYMAP_SET(KEYMAP_CAMERA_DOWN, 125, KEYMAP_NONE);
     KEYMAP_SET(KEYMAP_CAMERA_LEFT, 123, KEYMAP_NONE);
     KEYMAP_SET(KEYMAP_CAMERA_RIGHT, 124, KEYMAP_NONE);
+    KEYMAP_SET(KEYMAP_SCREENSHOT, 35, KEYMAP_NONE);      /* P: screenshot */
 #undef KEYMAP_SET
 }
 
@@ -169,7 +175,7 @@ static inline int keymap_parse(const char *text, KeyMap *m, const char **error) 
             const char *key_end = eq;
             while (key_end > p && (key_end[-1] == ' ' || key_end[-1] == '\t')) key_end--;
             int action = keymap_action_parse(p, (size_t)(key_end - p));
-            if (action < 0) { *error = "unknown action (a b x y l r zl zr plus minus lstick rstick up down left right move_up move_down move_left move_right camera_up camera_down camera_left camera_right)"; return line; }
+            if (action < 0) { *error = "unknown action (a b x y l r zl zr plus minus lstick rstick up down left right move_up move_down move_left move_right camera_up camera_down camera_left camera_right screenshot)"; return line; }
             if (given[action]) { *error = "this action has a line already"; return line; }
             uint8_t slots[KEYMAP_SLOTS] = {KEYMAP_NONE, KEYMAP_NONE}; int words = 0, none = 0;
             for (const char *q = eq + 1; q < stop;) {

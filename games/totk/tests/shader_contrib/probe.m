@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
         totk_contrib_add(key(1), @{@"tex": @{@"9": @"2darray"}});
         NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
         NSArray *lines = [text componentsSeparatedByString:@"\n"];
-        check(lines.count == 6 && [lines[0] hasPrefix:@"# "] && [lines[2] containsString:@TOTK_CONTRIB_ISSUE_URL], "three header lines, then the rows");
+        check(lines.count == 6 && [lines[0] hasPrefix:@"# "] && [lines[2] containsString:@"shader inbox"] && ![text containsString:@"github.com"], "three header lines (the last names the shader inbox, no GitHub issue), then the rows");
         check([lines[3] isEqualToString:[NSString stringWithFormat:@"V\t%@\t{\"attr\":{\"0\":\"float\"},\"fout\":{},\"img\":{\"1\":{\"fmt\":\"r32f\",\"type\":\"2d\"}},\"tex\":{\"10\":\"3d\",\"9\":\"2d\"}}", key(1)]],
               "sorted compact deps, only tex / img / attr / fout");
         check(totk_contrib_read(path).count == 2 && totk_contrib_due(path) == 0, "two rows, no reminder yet");

@@ -1,7 +1,7 @@
 #include "game_patches.h"
 #include <stdint.h>
 
-/* Metroid Dread 1.0.0 has no game-code patches yet. One would be checked against the original instruction words before
+/* Metroid Dread 2.1.0 has no game-code patches yet. One would be checked against the original instruction words before
    it is written, as TotK's and Bayonetta 3's are. */
 void runtime_game_patches(Module *main_module) { (void)main_module; }
 

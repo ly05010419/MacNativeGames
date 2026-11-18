@@ -236,6 +236,10 @@ static void release_codec(Movie *m) {
     for (int i = 0; i < IN_BUFS; i++) { free(m->in[i]); m->in[i] = NULL; }
     for (int i = 0; i < OUT_BUFS; i++) { free(m->out[i]); m->out[i] = NULL; }
     free(m->rgba); m->rgba = NULL;
+    /* No slot stays held over freed memory (as Kirby's movie_host.c, PR #819): the game's movie player can ask for a
+       frame it acquired just before Stop from its other thread; that read now gets ST_ERROR instead of converting from
+       a null frame (the intermittent crash in h_get_output when the intro movie stops, main+0x189714c). */
+    memset(m->out_held, 0, sizeof m->out_held); memset(m->out_bytes, 0, sizeof m->out_bytes);
     m->configured = m->started = 0; m->nin_free = m->npending = m->nready = m->ndecoded = 0; m->t0 = 0;
 }
 static void reset_queues(Movie *m) {

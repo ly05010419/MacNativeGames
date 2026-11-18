@@ -43,54 +43,18 @@ def sha256(path):
     return h.hexdigest()
 
 
-# The code that decides what the translator is asked (user 2026-11-10, "最好的办法": a runtime change elsewhere in these files
-# keeps the translations; before, the whole totk_shader_rt.m counted, and porting a memory release in its cache-folder setup
-# (main 0d4e68ec) made every one of 42,000 shaders translate again). Per file, the start of each function taken: its body runs
-# to the next line that is a lone "}", or it is the one line when its braces close there.
-REQUEST_FUNCTIONS = {
-    'totk_shader_rt.m': ('static NSMutableDictionary *variant_request(',   # the request: code range, c1, stage, answers, NVN2 fields
-                         'static NSString *stage_name(int stage) {', 'static NSString *hex(const uint8_t *p, size_t n) {',
-                         'static NSString *json_string(id obj) {',     # how it is written down
-                         'static void service_start(rt_svc *svc) {'),  # how the translator is started: its arguments
-    'nvn_mtl.m': ('static NSDictionary *rt_answers(int st) {', 'static NSArray *rt_local(const uint8_t *control, int st) {'),
-}
-
-
-def function_text(text, head, name):
-    """The source of the function that starts with head in text (name: the file, for the error)."""
-    start = text.find(head)
-    if start < 0:
-        raise ValueError(f'{name} no longer holds {head}')
-    line = text[start:text.find('\n', start)]
-    if '{' in line and line.count('{') == line.count('}'):
-        return line
-    end = text.find('\n}\n', start)
-    if end < 0:
-        raise ValueError(f'{name}: no end for {head}')
-    return text[start:end]
-
-
-def request_sources(nvn=None):
-    """SHA-256 of the runtime code that builds a translation request: nvn_ctl.h (the control section's layout) and the
-    functions of totk_shader_rt.m and nvn_mtl.m that make a request and start the translator (REQUEST_FUNCTIONS). The rest of
-    the runtime does not reach a translation."""
-    nvn = Path(nvn) if nvn else Path(__file__).resolve().parents[1] / 'third_party/d2r_gfx/gfx/nvn'
-    parts = [(nvn / 'nvn_ctl.h').read_bytes()]
-    for name, heads in REQUEST_FUNCTIONS.items():
-        text = (nvn / name).read_text(errors='replace')
-        parts += [function_text(text, head, name).encode() for head in heads]
-    return hashlib.sha256(b'\0'.join(parts)).hexdigest()
-
-
 def translation_context(translator, depth_mode):
-    """A cache belongs to what decides a translation: the chain, the device depth mode, the translator and the code that builds
-    its requests. Not to the whole runtime binary, or every runtime change translates 42,000 shaders again (248 s).
+    """The cache folder: what decides every translation at once, the chain, the device depth mode and the translator (its
+    spirv-cross runs inside it, TOTK_XLATE_SPIRV_CROSS=inproc). Not the runtime code that makes the requests: each
+    translation keeps the request it was made from (totk_shader_rt.m variant_request, its index entry's "request"), and a
+    seed run of another runtime keeps those it would ask for the same way and makes only the others again
+    (TOTK_SEED_VERIFY, seed_verified; user 2026-11-11: "如何让 快速更新 不要这么容易失效"). Until then the source of the
+    request functions counted, and removing a fallback for starting the translator (4b308d25) made all 42,891 translate again.
 
     The shader/bind-state key alone does not describe device depth mode. The old unversioned seed cache kept vertex
     shaders made with near=0 after the runtime was corrected to NVN's near=-w default.
     """
-    inputs = dict(schema=2, chain=CHAIN, depth_mode=depth_mode,
-                  request_sources_sha256=request_sources(), translator_sha256=sha256(translator))
+    inputs = dict(schema=3, chain=CHAIN, depth_mode=depth_mode, translator_sha256=sha256(translator))
     return hashlib.sha256(json.dumps(inputs, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -108,41 +72,114 @@ def parallel_sha256(paths, jobs=None):
         return dict(zip((p.name for p in paths), pool.map(sha256, paths)))
 
 
-def seed_files(cache):
-    """name -> path for the translations of the seed cache: each shader's index and the variants it lists."""
-    files, checks = {}, []
-    for index in sorted(cache.glob('*.variants')):
-        if not VARIANTS.match(index.name):
+def publish_digests(paths, seed, hash_all):
+    """name -> SHA-256 of the seed about to be published, and how many files were read for it. A file that is still the
+    cache file the last published seed had (same device, inode, size and modification time in that seed's .verified.json,
+    record_verified) keeps the digest recorded then; every other one is read (hash_all). The change time is not compared:
+    linking a cache file into the new seed changes its inode's. A translation made again is a new file, and an index this
+    run writes is new too (user 2026-11-11 "极速更新": hashing all 250,000 files took 3 minutes of every update)."""
+    known = {}
+    try:
+        record = json.loads(seed.with_name(seed.name + '.verified.json').read_text())
+        if record.get('schema') == 1 and isinstance(record.get('files'), dict):
+            known = record['files']
+    except (OSError, ValueError):
+        pass
+    out, todo = {}, []
+    for path in paths:
+        entry = known.get(path.name)
+        try:
+            st = path.stat()
+        except OSError:
+            todo.append(path)
             continue
+        if isinstance(entry, list) and len(entry) == 6 and entry[:4] == [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns]:
+            out[path.name] = entry[5]
+        else:
+            todo.append(path)
+    out.update(hash_all(todo))
+    return out, len(todo)
+
+
+GENERATED = {'shader-keys.json', 'pso_title.tsv', 'pso_manifest.tsv'}   # written by the publish itself, from the inputs
+
+
+def seed_unchanged(out, files, inputs):
+    """Whether the published seed already is this one: made from the same inputs (translator, chain, depth mode, game
+    files, shader list, corpus and the scripts that write it), and every translation and index file is the very file it has
+    (same device and inode: a translation made again, or an index this run writes, is another file). Then it is kept as it
+    is, without new links, digests or manifest, so the shader data bundle made from it is kept too (user 2026-11-11 "极速
+    更新": publishing an unchanged seed took 3 minutes, and its new manifest had the bundle signed again, 3 more)."""
+    try:
+        old = json.loads((out / 'seed-manifest.json').read_text())
+        if old.get('inputs') != inputs:
+            return False
+        names = set(old.get('files', {}))
+        if not set(files) <= names or not names - set(files) <= GENERATED:
+            return False
+        def same(item):   # 128,668 files, two stats each: on all cores (2026-11-16, 117 us a stat on the external disk)
+            name, src = item
+            a, b = (out / name).stat(), src.stat()
+            return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+            return all(pool.map(same, files.items(), chunksize=512))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def seed_files(cache, verified=None):
+    """name -> path for the translations of the seed cache: each shader's index and the variants it lists; with verified
+    (the variants the seed run checked against its runtime's requests or made), only those, and indexes -> the entries left
+    of each shader's index (written into the seed in place of the cache's file)."""
+    files, checks, indexes = {}, [], {}
+    # Each index and its files on all cores, put together in the indexes' order as one thread did: 42,848 indexes and two
+    # stats each took most of a minute of every express update on the external disk (2026-11-16: 649 us for one index read
+    # alone, 73 us with 16 threads; scratch/runs/2026-11/express-speed/io-probe.log).
+    def one(index):
         try:
             entries = json.loads(index.read_text())
         except (OSError, ValueError):
-            continue
-        kept = False
+            return None
+        kept, found = [], []
         for entry in entries if isinstance(entries, list) else []:
             name = entry.get('variant') if isinstance(entry, dict) else None
             if not isinstance(name, str) or not VARIANT.match(name):
                 continue
             if name[:64] != index.stem:
                 raise ValueError(f'seed index refers to another shader: {index}')
+            if verified is not None and name not in verified:
+                continue
             metal, refl = cache / f'{name}_b.metal', cache / f'{name}_b.json'
             if metal.is_file() and metal.stat().st_size and refl.is_file():
-                checks.append((name, refl))
-                files[metal.name], files[refl.name] = metal, refl
-                kept = True
+                found.append((name, metal, refl))
+                kept.append(entry)
+        return entries, kept, found
+    import concurrent.futures
+    candidates = sorted(p for p in cache.glob('*.variants') if VARIANTS.match(p.name))
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        results = list(pool.map(one, candidates, chunksize=256))
+    for index, result in zip(candidates, results):
+        if result is None:
+            continue
+        entries, kept, found = result
+        for name, metal, refl in found:
+            checks.append((name, refl))
+            files[metal.name], files[refl.name] = metal, refl
         if kept:
             files[index.name] = index
+            if verified is not None and len(kept) != len(entries):
+                indexes[index.name] = kept
     # The reflections are checked on all cores (42,845 JSON files; one thread read them for minutes).
     def check(item):
         name, refl = item
         reflection = json.loads(refl.read_text())
         if reflection.get('chain') != CHAIN or reflection.get('key') != name + '_b' or not reflection.get('entry'):
             raise ValueError(f'invalid seed reflection: {refl}')
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
-        for _ in pool.map(check, checks):
+        for _ in pool.map(check, checks, chunksize=256):
             pass
-    return files
+    return (files, indexes) if verified is not None else files
 
 
 def corpus_inventory(path):
@@ -168,6 +205,39 @@ def corpus_inventory(path):
     return inventory
 
 
+def corpus_subset(path, keys, out):
+    """The corpus records of these shaders, written to out in the same form (a quick build's seed translates only them:
+    --only). Returns how many there are; a key the corpus does not hold is left out, as the full seed would have it."""
+    records = []
+    with Path(path).open('rb') as stream:
+        header = stream.read(12)
+        if len(header) != 12 or header[:8] != CORPUS_MAGIC:
+            raise ValueError('invalid shader corpus')
+        count, = struct.unpack('<I', header[8:])
+        for _ in range(count):
+            head = stream.read(14)
+            st, cn, kn, ln = struct.unpack('<IIIH', head)
+            label, control, code = stream.read(ln), stream.read(cn), stream.read(kn)
+            if len(control) != cn or len(code) != kn:
+                raise ValueError('truncated shader corpus')
+            if shader_key(control, code) in keys:
+                records.append(head + label + control + code)
+    if not records:
+        raise ValueError('none of the --only shaders is in the corpus')
+    out = Path(out)
+    out.write_bytes(CORPUS_MAGIC + struct.pack('<I', len(records)) + b''.join(records))
+    return len(records)
+
+
+def only_keys(path):
+    """The 64-hex shader keys of an --only file, one per line."""
+    keys = {line.strip() for line in Path(path).read_text().splitlines() if line.strip()}
+    bad = [k for k in keys if not re.fullmatch('[0-9a-f]{64}', k)]
+    if bad or not keys:
+        raise ValueError(f'{path}: not a list of shader keys' + (f' ({bad[0]})' if bad else ' (empty)'))
+    return keys
+
+
 def require_complete(inventory, keys, done, listed=None):
     missing = sorted(inventory.keys() - set(keys))
     if missing or not done or int(done.group(1)) != len(inventory) or int(done.group(2)) != len(inventory):
@@ -186,6 +256,8 @@ def main():
     p.add_argument('--jobs', type=int, default=4, help='bounded extraction/translation concurrency')
     p.add_argument('--output', type=Path, help='default build/shader-seed/<version>')
     p.add_argument('--logs', type=Path, default=Path('logs'))
+    p.add_argument('--only', type=Path, help='translate only these shaders (one 64-hex key per line): a quick build\'s '
+                   'seed (games/oot/build.py, the title rows\' shaders); the game translates the rest at first use')
     a = p.parse_args()
     if not 1 <= a.jobs <= 32:
         p.error('--jobs must be between 1 and 32')
@@ -208,6 +280,16 @@ def main():
              *(['--listed', a.list] if a.list else [])], a.logs / f'ns2-corpus-{v}.log')
         stamp.write_text(json.dumps(want))
 
+    full_corpus, seed_list = corpus, a.list
+    only = only_keys(a.only) if a.only else None
+    if only:   # the corpus and the list cut to these shaders; the full corpus stays as it is (its stamp), for the next build
+        corpus = corpus.with_name(f'{v}-only.bin')
+        print(f'quick seed: {corpus_subset(full_corpus, only, corpus)} of the {len(only)} shaders asked for are in the corpus', flush=True)
+        if a.list:
+            from shader_list import ShaderList
+            seed_list = corpus.with_name(f'{v}-only-list.tsv')
+            ShaderList.load(a.list).only(only).save(seed_list)
+
     prebuilt = Path('prebuilt/macos-arm64/totk_xlate')
     context = translation_context(prebuilt, a.depth_mode)
     cache = cache / context
@@ -227,13 +309,16 @@ def main():
     from game_slot import GameSlot
     os.environ.setdefault('TOTK_GAME_SLOT_DIR', str(Path.home() / 'Library/Application Support/MacNativeGames/TOTK/game-slot'))
     env = {k: value for k, value in os.environ.items() if k not in ('TOTK_SHADER_XLATE', 'TOTK_SHADER_DEBUGMODE')}
+    verified_list = (cache / 'verified.txt').resolve()   # what this run checked or made (runtime_shader_seed)
+    verified_list.unlink(missing_ok=True)
     env.update(TOTK_SHADER_CACHE=str(cache.resolve()), TOTK_SEED_DEPTH_MODE=a.depth_mode,
                TOTK_NATIVE_DIR=str(native.resolve()), TOTK_SHADER_SEED='off', TOTK_RT_BG_WORKERS=str(a.jobs),
-               TOTK_SHADER_SERVICE='native', TOTK_XLATE_SPIRV_CROSS='inproc')
+               TOTK_SHADER_SERVICE='native', TOTK_XLATE_SPIRV_CROSS='inproc',
+               TOTK_SEED_VERIFY='1', TOTK_SEED_VERIFIED_OUT=str(verified_list))
     with GameSlot(owner='build', purpose=f'{v}: complete offline shader translation', expect_seconds=1200) as slot:
         with log.open('w') as output:
             result = slot.popen([str(a.binary), f'rewritten/{v}', 'seed-shaders', str(corpus),
-                                 *([str(a.list)] if a.list else [])], env=env, stdout=output, stderr=subprocess.STDOUT).wait()
+                                 *([str(seed_list)] if seed_list else [])], env=env, stdout=output, stderr=subprocess.STDOUT).wait()
         if result:
             raise SystemExit(f'seed-shaders failed ({result}); see {log}')
     text = log.read_text(errors='replace')
@@ -242,19 +327,40 @@ def main():
     if not done:
         raise SystemExit(f'the seed did not finish; see {log}')
 
-    files = seed_files(cache)
+    if not verified_list.is_file():
+        raise SystemExit(f'the seed run wrote no {verified_list.name}; see {log}')
+    checked = re.search(r'\[seed\] requests checked: (\d+) variants for this runtime, (\d+) cached ones kept, (\d+) made again', text)
+    if checked:
+        print(f'translations: {checked.group(2)} kept for this runtime\'s requests, {checked.group(3)} made again '
+              f'(another request), {int(checked.group(1)) - int(checked.group(2))} made in all', flush=True)
+    files, indexes = seed_files(cache, set(verified_list.read_text().split()))
     keys = sorted(n[:-len('.variants')] for n in files if n.endswith('.variants'))
     inventory = corpus_inventory(corpus)
     missing = {k: inventory[k] for k in sorted(inventory.keys() - set(keys))}
     (a.logs / f'ns2-seed-{v}-missing.json').write_text(json.dumps(missing, indent=2) + '\n')
     require_complete(inventory, keys, done, listed)
     shaders = sum(n.endswith('_b.metal') for n in files)
+    here = Path(__file__).resolve().parent
+    inputs = dict(chain=CHAIN, version=v, source_romfs_sha256=romfs_sha, translation_context_sha256=context,
+                  nvn_depth_mode=a.depth_mode, translator_sha256=sha256(prebuilt),
+                  shader_list_sha256=sha256(a.list) if a.list else None, corpus_sha256=sha256(corpus),
+                  scripts_sha256={n: sha256(here / n) for n in ('prepare_ns2_seed.py', 'prepare_shader_seed.py', 'shader_list.py')},
+                  only_sha256=sha256(a.only) if only else None)
+    if not indexes and seed_unchanged(out, files, inputs):
+        print(f'seed unchanged: its {len(files)} translation files are the ones published, from the same inputs; '
+              'kept as it is (no new links, digests or manifest)', flush=True)
+        return
     staging = out.with_name(out.name + '.partial')
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     for name, src in files.items():
+        if name in indexes:   # only the variants this run checked or made
+            (staging / name).write_text(json.dumps(indexes[name], sort_keys=True, separators=(',', ':'), ensure_ascii=False))
+            continue
         os.link(src, staging / name) if src.stat().st_dev == staging.stat().st_dev else shutil.copy2(src, staging / name)
-    scope = shader_key_scope(keys, v, romfs_sha)
+    # every shader of the game, also the ones a quick seed leaves out: the runtime takes the scope as the game's shaders
+    # (totk_rt_note_set writes a shader outside it into the player's contribution file as new)
+    scope = shader_key_scope(sorted(corpus_inventory(full_corpus)) if only else keys, v, romfs_sha)
     (staging / 'shader-keys.json').write_text(json.dumps(scope, separators=(',', ':')) + '\n')
     # Unlike the shaders, a complete render-pipeline description needs the game's bind state: the warm-up lists come from
     # the shared list's recorded rows (S / C / R / B / T), each variant named as this seed serves it (shader_list.py
@@ -277,12 +383,14 @@ def main():
                   runtime_sha256=sha256(a.binary), translator_sha256=sha256(prebuilt),
                   shader_list_sha256=sha256(a.list) if a.list else None,
                   corpus_sha256=sha256(corpus), corpus_inputs=want, all_default=True,
+                  only=len(only) if only else None,   # a quick seed: only these shaders (the rest translated at first use)
                   stages={str(st): sum(x['stage'] == st for x in inventory.values()) for st in range(6)},
                   preparation_sha256=sha256(Path(__file__).resolve()), shaders=shaders,
                   corpus_shaders=int(done.group(2)), translated_default=int(done.group(1)),
                   listed_variants=int(listed.group(1)) if listed else 0, listed_asked=int(listed.group(2)) if listed else 0,
-                  seconds=round(time.time() - t0, 1),
-                  files=parallel_sha256(sorted(staging.iterdir())))
+                  seconds=round(time.time() - t0, 1), inputs=inputs, files={})
+    report['files'], read = publish_digests(sorted(staging.iterdir()), out, parallel_sha256)
+    print(f'seed files: {len(report["files"])}, {read} read again (the rest kept the digest of the last seed)', flush=True)
     (staging / 'seed-manifest.json').write_text(json.dumps(report, indent=2) + '\n')
     # Publish first; deleting tens of thousands of old files on an external APFS volume takes minutes. The old seed
     # is entirely generated data and no longer read once its replacement is published.

@@ -135,7 +135,7 @@ class Nso:
             import lz4.block
         except ImportError:
             raise ModError(f'{self.source}: the {name} segment is compressed and the lz4 Python module is missing '
-                           f'(brew install python@3.14 and install games/totk/requirements.txt)')
+                           f'(run it with the build\'s Python, or: python3.14 -m pip install -r games/totk/requirements.txt)')
         return lz4.block.decompress(payload, uncompressed_size=size)
 
     def image(self):

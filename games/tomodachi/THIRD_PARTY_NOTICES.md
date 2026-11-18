@@ -16,7 +16,7 @@ All paths below are local to this game folder.
 | Audio effect arithmetic | Ryujinx.Audio, via parent | MIT, `third_party/licenses/Ryujinx-Audio.txt` |
 | Container/extraction helpers | Tyraelone/MacNativeGames, via parent | MIT, `tools/LICENSE`, revision details in `tools/UPSTREAM.json` |
 | SPIRV-Cross (external input tool) | KhronosGroup/SPIRV-Cross at `aa217ae` | Apache-2.0, license in its external source checkout |
-| libopus and libvpx (system build dependencies) | Homebrew upstream distributions | BSD-3-Clause, licenses in the installed source/distribution |
+| libopus and libvpx (build dependencies) | upstream releases, built from pinned sources by `tools/deps` | BSD-3-Clause, licenses in the installed source/distribution |
 
 Copy locations, input hashes, and title adaptations are recorded in
 `third_party/COPIES.md` and `third_party/COPIES.json`. Translated game shaders

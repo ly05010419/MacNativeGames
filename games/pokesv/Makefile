@@ -24,15 +24,14 @@ VERSION_DEFINE := -DPSV_GAME_$(shell echo $(VERSION) | tr a-z A-Z)
 VENV := $(WORK)/venv
 PY ?= $(if $(wildcard $(VENV)/bin/python),$(abspath $(VENV)/bin/python),python3.14)
 NATIVE_OPT ?= -O2
-# 26.0, the repository's minimum (Metal 4). The Homebrew opus and libvpx are built for the macOS they were installed on,
+# 26.0, the repository's minimum (Metal 4). opus and libvpx (tools/deps) are built for the macOS they were made on,
 # so on macOS 26 they are 26's; only 27 has been tested (after PR #1655).
 # The app's Info.plist takes the same value.
 MACOS_MIN ?= 26.0
-# Homebrew's prefix, asked once (not every Mac has it in /opt/homebrew). structck.py needs llvm@23's llvm-objdump.
-BREW := $(or $(shell brew --prefix 2>/dev/null),/opt/homebrew)
-OPUS ?= $(BREW)/opt/opus
-LIBVPX ?= $(BREW)/opt/libvpx
-LLVM_BIN ?= $(BREW)/opt/llvm@23/bin
+# opus and libvpx come from the repository's tools/deps: made once per Mac from pinned sources (no Homebrew).
+# structck.py disassembles with Xcode's llvm-objdump (LLVM_BIN or LLVM_OBJDUMP choose another).
+OPUS ?= $(or $(shell python3 ../../tools/deps prefix opus),$(error tools/deps could not make opus))
+LIBVPX ?= $(or $(shell python3 ../../tools/deps prefix libvpx),$(error tools/deps could not make libvpx))
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -201,7 +200,7 @@ rewrite: $(foreach m,$(MODULES),$(REWRITTEN)/$(m).patched.bin)
 verify: rewrite
 	@mkdir -p "$(WORK)/logs"
 	@for m in $(MODULES); do \
-	  LLVM_BIN="$(LLVM_BIN)" DM_VCACHE="$(abspath $(OUT))/cache/verify" "$(PY)" third_party/d2r/structck.py "$(REWRITTEN)" $$m "$(EXEFS)/$$m" \
+	  DM_VCACHE="$(abspath $(OUT))/cache/verify" "$(PY)" third_party/d2r/structck.py "$(REWRITTEN)" $$m "$(EXEFS)/$$m" \
 	    > "$(WORK)/logs/structck-$$m.log" 2>&1; s=$$?; tail -1 "$(WORK)/logs/structck-$$m.log"; [ $$s = 0 ] || exit 1; \
 	  "$(PY)" third_party/d2r/equiv.py "$(REWRITTEN)" $$m "$(EXEFS)/$$m" --min-eff 8 > "$(WORK)/logs/equiv-$$m.log" 2>&1; s=$$?; \
 	    tail -1 "$(WORK)/logs/equiv-$$m.log"; [ $$s = 0 ] || exit 1; \
@@ -212,4 +211,4 @@ test:
 
 doctor:
 	@PY="$(PY)" WORK="$(WORK)" OUT="$(OUT)" VERSION="$(VERSION)" MACOS_MIN="$(MACOS_MIN)" OPUS="$(OPUS)" LIBVPX="$(LIBVPX)" \
-	  LLVM_BIN="$(LLVM_BIN)" GENERATED="$(GENERATED)" sh scripts/doctor.sh
+	  GENERATED="$(GENERATED)" sh scripts/doctor.sh

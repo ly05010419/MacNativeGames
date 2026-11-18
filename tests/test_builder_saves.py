@@ -42,6 +42,9 @@ class Locations(unittest.TestCase):
     def test_the_default_backup_root_is_in_documents(self):
         self.assertEqual(saves.default_backup_root('/Users/me'),
                          Path('/Users/me/Documents/MacNativeGames-Backups'))
+        # each game in a folder of its own, named as its app (user 2026-11-18)
+        self.assertEqual(saves.game_backup_root('/Users/me', GAMES['botw']),
+                         Path('/Users/me/Documents/MacNativeGames-Backups/Breath of the Wild'))
 
     def test_a_missing_profile_is_reported_not_guessed(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -61,6 +64,16 @@ class Locations(unittest.TestCase):
         self.assertEqual([title for title, _ in found], ['01007EF00011E000', '0100F2C0115B6000'])
         self.assertEqual([item.game for item in items], ['botw', 'totk'])
         self.assertTrue(all(item.kind == 'nxnative' for item in items))
+
+    def test_a_game_s_page_lists_only_its_own_nxnative_title(self):
+        # the titles filter was accepted and ignored: the Tears of the Kingdom page listed Bananza's and Pokopia's saves
+        with tempfile.TemporaryDirectory() as folder:
+            root = saves.nxnative_root(Path(folder))
+            for title in ('0100F2C0115B6000', '040074A01BF12000', '0400A3A01EE4C000'):
+                (root / title).mkdir(parents=True)
+            self.assertEqual([t for t, _ in saves.nxnative_dirs(Path(folder), ('0100f2c0115b6000',))], ['0100F2C0115B6000'])
+            self.assertEqual(len(saves.nxnative_dirs(Path(folder))), 3)   # no filter: every title folder
+            self.assertEqual([s.title_id for s in saves.nxnative_sources(Path(folder))], ['0100F2C0115B6000'])
 
 
 class Files(unittest.TestCase):

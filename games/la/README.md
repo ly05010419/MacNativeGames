@@ -20,8 +20,9 @@ authenticated, and the program is trusted through its own signature and the upda
 
 ## Build
 
-Apple silicon, macOS 26 or later, Xcode with its Metal toolchain, .NET SDK 10, Python 3 with `lz4`,
-`capstone`, `fonttools` (and `backports.zstd` before 3.14), `spirv-cross`, `zstd` and `make`.
+Apple silicon, macOS 26 or later, Xcode with its Metal toolchain (and its `make`), Python 3 with `lz4`,
+`capstone` and `fonttools` (and `backports.zstd` before 3.14). The .NET SDK 10, `spirv-cross` and `zstd`
+come with the build: the build makes them itself, once per Mac, from pinned sources (the repository's `tools/deps`, cached in `~/Library/Caches/MacNativeGames/deps`): no Homebrew.
 
 ```sh
 python3 scripts/extract_la.py --base "<base>.xci" --update "<update 1.1.0>.nsp" --keys prod.keys \

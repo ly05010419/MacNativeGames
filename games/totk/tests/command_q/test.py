@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     subprocess.run([
         "xcrun", "clang", "-std=c11", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
         "-Wno-deprecated-declarations", "-I" + str(source.parents[2] / "third_party/d2r_gfx/gfx/nvn/include"), str(source), "-framework", "Cocoa",
-        "-framework", "QuartzCore", "-framework", "Metal", "-framework", "CoreVideo",
+        "-framework", "QuartzCore", "-framework", "Metal", "-framework", "CoreVideo", "-framework", "IOKit",
         "-o", str(binary),
     ], check=True)
     for mode, expected in enumerate(("graceful guest shutdown pending", "save done", "gave up")):

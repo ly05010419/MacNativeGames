@@ -97,8 +97,16 @@ hour, and never asks again; "Don't contribute" sends nothing and never asks agai
 Settings (the Mac's settings panel, display page; the iPhone / iPad Settings app) turns it on or off at any time. Only
 shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are
 sent. On the Mac the file is `shader-list-contribution/shader-list-contribution.txt` in your clone (Breath of the
-Wild's `shader-list-contribution-botw.txt`). A file can still be attached by hand to a
-[shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml) issue.
+Wild's `shader-list-contribution-botw.txt`, Bananza's `-dkb`, Pokopia's `-pkp`). The upload is the only way in: since
+2026-11-12 no file is taken from a GitHub issue.
+
+Each file belongs to one game (2026-11-12): every game's shaders stay apart from writing to sending. The launcher claims
+the file before the game starts (`totk_contrib_upload.h totk_inbox_claim`): its line `# Inbox game: <id>` names the game
+(the inbox's id, `GAME_INBOX_ID`). The game writes only to a file of its own id, and the upload sends only such a file.
+A file of another game, or one from before this check (no such line), moves aside as `<file>.of-<game>-<time>` or
+`<file>.unclaimed-<time>` and is never sent; the game starts a new one. Before, one file could hold several games' rows
+(Breath of the Wild, Bananza and Pokopia shared `-botw` until 2026-11-12) and the app that sent it named its own game for
+all of them.
 
 The file holds only what still has to be sent (2026-11-01; before, every issue carried the whole file, and of one
 day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipeline rows were already in the list):
@@ -111,8 +119,7 @@ day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipe
 - **Rows the inbox took leave it.** Each upload moves the rows the inbox took out of the file, so each row is sent
   once; rows not taken (no network, a server error) stay for the next try.
 - Both go to a hidden `.shader-list-contribution.txt.done` beside the file. The game treats its rows as ones it has, so
-  it never writes or sends them again. A file attached to an issue by hand is not known to be sent; it leaves the file
-  when the next build's list has it.
+  it never writes or sends them again.
 
 ## Breath of the Wild
 
@@ -121,10 +128,9 @@ tools (`shader_list.py merge ... games/botw/assets/shader_list.tsv <folder or fi
 Yaz0 packages (`Pack/`, `Effect/`, `Event/`, `System/`: the `uking_*.sbfsha` material archives and the engine's agl
 packages) and translates the boot and title packages' shaders for the default bind state plus every state the list
 names (`games/botw/scripts/prepare_shader_seed.py`). Its players' contribution file is
-`~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt`, sent with the
-[Breath of the Wild issue form](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-botw.yml)
-(label `shader-list-botw`; `collect_shader_issues.py` merges both games' issues). The lists never mix: a key names a
-shader of one game only.
+`~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt`, uploaded to the shader inbox under
+the game id `botw` (`collect_shaders.py` merges every game's rows). The lists never mix: a key names a shader of one
+game only.
 
 Its shader key hashes the control section's own length (the word at +0x20: 0x7d1 for the game's archives, 0x848 for
 agl's; Tears of the Kingdom's is 0x880, so its keys are unchanged) and, for the agl programs the game loads from
@@ -142,38 +148,37 @@ Every other game that records a contribution file keeps its own list, `games/<ga
 Tears of the Kingdom's (2026-10-28): Super Mario Odyssey (`odyssey`), Super Smash Bros. Ultimate (`ssbu`), Super Mario
 Bros. Wonder (`wonder`) and Mario vs. Donkey Kong (`mvdk`). Each game's own `totk_shader_contrib.h` names it: the
 contribution file `shader-list-contribution-<game>.txt` (Wonder and Mario vs. Donkey Kong, in the clone's
-`shader-list-contribution/` folder; Odyssey and Smash write `shader-list-contribution.txt` in their own data folder), the
-[issue form of the other games](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-other.yml)
-with the game filled in (label `shader-list-other`), and an automatic submission titled `Shader list (<game>): ...`.
-Before that the files of Wonder and Mario vs. Donkey Kong were `shader-list-contribution-botw.txt` and their issues were
-titled `Shader list: ... (Wonder 1.2.1)`, like Tears of the Kingdom's.
+`shader-list-contribution/` folder; Odyssey and Smash write `shader-list-contribution.txt` in their own data folder), and
+its own `totk_contrib_upload.h` names the game's id in the shader inbox (`GAME_INBOX_ID`). Before that the files of
+Wonder and Mario vs. Donkey Kong were `shader-list-contribution-botw.txt`, like Breath of the Wild's.
 
-`collect_shader_issues.py` gives an issue to the game its title, its form's game field or an older title's
-`(<data folder> <version>)` names. There is no seed of those games here, so such an issue gives its game every row that
-is not Tears of the Kingdom's or Breath of the Wild's, and no default variants are dropped; a plain `Shader list:` issue
-holding their shaders finds them by the keys already in their lists. Odyssey's and Smash's builds read their lists
+`collect_shaders.py` gives a row to the game whose shader keys hold its shaders; the game the app named decides only
+when no other game holds them (the script's docstring has the rules). There is no seed of those games here, so their
+rows are told apart by the keys already in their lists, and no default variants are dropped. Odyssey's and Smash's builds read their lists
 (their own `prepare_shader_seed.py`); Wonder's and Mario vs. Donkey Kong's do not yet, so their lists only collect for now.
 
 ## Merging what players sent (maintainers)
 
+Everything players contribute arrives in the shader inbox; nothing is read from GitHub issues (since 2026-11-12).
+
 ```sh
-# what each open shader-list issue of either game would add (changes nothing). Each --seed gives a game version's
-# shader keys (its shader-keys.json) and drops the rows its built-in variants serve; --keys <game>=<file> adds a key list
+# what the inbox holds for each game and what it would add (changes nothing). SHADER_INBOX_TOKEN is the inbox's admin
+# token. Each --seed gives a game version's shader keys (its shader-keys.json) and drops the rows its built-in variants
+# serve: give a seed of every version collected; --keys <game>=<file> adds a key list
+export SHADER_INBOX_TOKEN=<token>
 S=<work>/totk/build/shader-seed
-python3 games/totk/scripts/collect_shader_issues.py --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160
-# write the lists; --close also thanks each merged issue and closes it
-python3 games/totk/scripts/collect_shader_issues.py --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160 --apply --close
+python3 games/totk/scripts/collect_shaders.py --inbox https://mac-native-games.com --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160
+# write the lists
+python3 games/totk/scripts/collect_shaders.py --inbox https://mac-native-games.com --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160 --apply
+# once the lists are committed: the same with --mark-inbox <commit>, so the inbox counts those rows as done
 # drop rows already in the list that the seed's default (or depth-bound) variants serve
 python3 games/totk/scripts/shader_list.py prune games/totk/assets/shader_list.tsv <work>/totk/build/shader-seed/v143
 ```
 
-It takes only `V` rows and render pipeline `R` / `B` / `T` rows from an attachment (or from a comment's, when the upload
-failed) and drops everything else. One contribution file serves both games, so every row goes to the game its shader
-keys belong to, whatever the issue's title says. Rows of shaders neither game's keys hold are not merged and keep their
-issue open: a key list may lack a game version (give a seed of every version collected; a seed made before 2026-10-22
-has no shader-keys.json and is refused), or the file is another game's (#525, Super Mario Odyssey). Once checked,
-`--drop-unknown` leaves them out and closes the issue. Then check with `shader_list.py stats`, commit
-the list and push; the next builds carry the new variants.
+It takes `V` rows and render pipeline `R` / `B` / `T` rows. Every row goes to the game its shader keys belong to,
+whatever game the app named; a row no one can place stays in the inbox. A seed made before 2026-10-22 has no
+shader-keys.json and is refused. Then check with `shader_list.py stats`, commit the lists and push; the next builds
+carry the new variants.
 
 ## Adding what you played (with git)
 
@@ -221,11 +226,12 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - `L` 行：打包程序自己找不到的着色器在玩家游戏文件中的位置：文件路径、控制段和代码的偏移、代码长度。打包时从玩家自己的文件读出，核对哈希等于键才用。BNSH 文件、agl 的 `.sharcb` 包和游戏程序里的着色器，打包程序会自己找到。
   - `S`、`C`、`R` 行：预热用的着色器库和管线。`B` 行：同一条管线带着它当时采样器的边框颜色（Metal 没有的颜色要在着色器里模拟），预热按它建好补丁着色器和这条管线。`T` 行：同一条管线换成从 tile 直接读本次绘制自己颜色附件的片元变体（2026-10-26 以前只记在 `pso_user.tsv`，新装的人每次都在游玩中现建）。标记 `t` 是标题画面用的（第一帧只等这些），`m` 是其余预热。
   - 只有标识，不含游戏数据。
-- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行，从 tile 读附件的再加 `T` 行；普通管线清单里已有时，`B` / `T` 行也照记；变体名换成别人打包时也会有的名字）。着色器和管线合计攒够 100 条时，Mac 和 iPhone / iPad 都会在游戏开始前问一次：“贡献着色器”还是“不贡献”。选“贡献着色器”，游戏会自己通过 HTTPS 上传到项目的着色器收件箱（https://mac-native-games.com）：开始后约 20 秒一次，之后每半小时一次，以后不再问；选“不贡献”就什么都不发，也不再问。之后随时可以在“设置”里用“自动贡献着色器”开关打开或关闭（Mac 在游戏内设置面板的画面页，iPhone / iPad 在系统“设置”App）。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号。想手动发的，也可以把文件拖进 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面。
-- **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py --seed <打包目录>/totk/build/shader-seed/v143 --seed <旷野之息打包目录>/totk/build/shader-seed/botw160` 先看两款游戏的每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件（上传失败时也看评论里补传的）里只取 `V` 行和管线的 `R` / `B` / `T` 行，种子自带的默认变体能用的 `V` 行丢掉。贡献文件两款游戏共用，所以每一行按它的着色器键归到所属游戏，不看 Issue 标题；每个 `--seed` 提供该版本的键（`shader-keys.json`，2026-10-22 以前的旧种子没有，会被拒绝），`--keys <游戏>=<文件>` 可再加键清单。两款游戏的键都不认识的行不并入、Issue 保持开着（可能少给了某个版本的种子，也可能是别的游戏的文件，如奥德赛 #525）；核对后用 `--drop-unknown` 丢掉并关闭。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
-- **其他游戏**（2026-10-28）：记贡献文件的其他游戏各有自己的清单 `games/<游戏>/assets/shader_list.tsv`，不混进王国之泪的：奥德赛（`odyssey`）、大乱斗（`ssbu`）、惊奇（`wonder`）、马力欧 vs. 大金刚（`mvdk`）。每个游戏自己的 `totk_shader_contrib.h` 写明它的贡献文件名 `shader-list-contribution-<游戏>.txt`（惊奇和大金刚在项目的 `shader-list-contribution/` 文件夹里；奥德赛和大乱斗写在各自数据文件夹的 `shader-list-contribution.txt`）、[其他游戏的 Issue 表单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-other.yml)（已填好游戏，标签 `shader-list-other`）和自动提交的标题 `Shader list (<游戏>): ...`。以前惊奇和大金刚的文件叫 `shader-list-contribution-botw.txt`，Issue 标题和王国之泪一样是 `Shader list: ... (Wonder 1.2.1)`。`collect_shader_issues.py` 按标题、表单里的游戏或旧标题里的 `(<数据文件夹> <版本>)` 认游戏；这些游戏这里没有种子，所以不属于王国之泪、旷野之息的行都归 Issue 所写的游戏，也不去掉默认变体；标题只写 `Shader list:` 的旧 Issue 里它们的着色器，靠清单里已有的键认出来。奥德赛和大乱斗打包时读自己的清单；惊奇和大金刚的打包还不读，清单目前只是先收着。
+- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行，从 tile 读附件的再加 `T` 行；普通管线清单里已有时，`B` / `T` 行也照记；变体名换成别人打包时也会有的名字）。着色器和管线合计攒够 100 条时，Mac 和 iPhone / iPad 都会在游戏开始前问一次：“贡献着色器”还是“不贡献”。选“贡献着色器”，游戏会自己通过 HTTPS 上传到项目的着色器收件箱（https://mac-native-games.com）：开始后约 20 秒一次，之后每半小时一次，以后不再问；选“不贡献”就什么都不发，也不再问。之后随时可以在“设置”里用“自动贡献着色器”开关打开或关闭（Mac 在游戏内设置面板的画面页，iPhone / iPad 在系统“设置”App）。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号。上传是唯一的途径：从 2026-11-12 起不再收 GitHub Issue 里的文件。
+- **维护者合并**：玩家的贡献全在着色器收件箱里，不再看 GitHub Issue（2026-11-12 起）。`SHADER_INBOX_TOKEN=<收件箱管理口令> python3 games/totk/scripts/collect_shaders.py --inbox https://mac-native-games.com --seed <打包目录>/totk/build/shader-seed/v143 --seed <旷野之息打包目录>/totk/build/shader-seed/botw160` 先看每个游戏能加多少；加 `--apply` 写进清单；清单提交后再加 `--mark-inbox <提交号>`，收件箱把这些行记为已处理。只取 `V` 行和管线的 `R` / `B` / `T` 行，种子自带的默认变体能用的 `V` 行丢掉。每一行按它的着色器键归到所属游戏，不看 App 报的游戏；谁都认不出的行留在收件箱里。每个 `--seed` 提供该版本的键（`shader-keys.json`，2026-10-22 以前的旧种子没有，会被拒绝），`--keys <游戏>=<文件>` 可再加键清单。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
+- **每个贡献文件只属于一个游戏**（2026-11-12）：启动器在游戏开始前认领文件（`totk_inbox_claim`），文件里的 `# Inbox game: <id>` 行写明是哪个游戏（收件箱里的 id，`GAME_INBOX_ID`）；游戏只往写着自己 id 的文件里写，上传也只发这样的文件。别的游戏的文件、或这项检查之前留下的没有这一行的文件，挪到 `<文件>.of-<游戏>-<时间>` / `<文件>.unclaimed-<时间>`，永远不发，游戏另起一个新文件。以前一个文件里可能有几个游戏的行（旷野之息、大金刚、Pokopia 到 2026-11-12 共用 `-botw`），哪个 App 上传就全标成自己的游戏。
+- **其他游戏**（2026-10-28）：记贡献文件的其他游戏各有自己的清单 `games/<游戏>/assets/shader_list.tsv`，不混进王国之泪的：奥德赛（`odyssey`）、大乱斗（`ssbu`）、惊奇（`wonder`）、马力欧 vs. 大金刚（`mvdk`）。每个游戏自己的 `totk_shader_contrib.h` 写明它的贡献文件名 `shader-list-contribution-<游戏>.txt`（惊奇和大金刚在项目的 `shader-list-contribution/` 文件夹里；奥德赛和大乱斗写在各自数据文件夹的 `shader-list-contribution.txt`），它自己的 `totk_contrib_upload.h` 写明它在着色器收件箱里的游戏 id（`GAME_INBOX_ID`）。以前惊奇和大金刚的文件叫 `shader-list-contribution-botw.txt`，和旷野之息一样。`collect_shaders.py` 把一行归给着色器键包含它的着色器的那个游戏；只有别的游戏都没有这些键时，才按 App 报的游戏归（规则见脚本开头的说明）。这些游戏这里没有种子，所以靠清单里已有的键区分，也不去掉默认变体。奥德赛和大乱斗打包时读自己的清单；惊奇和大金刚的打包还不读，清单目前只是先收着。
 - **用 git 贡献**：
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。
   - iOS：`fill_shaders.py` 补译后和 Mac 一样先写进贡献文件（`shader-list-contribution.txt`）；想让下一次本地打包就带上，加 `--update-list` 同时并进共享清单。旷野之息对照旷野之息自己的清单（`--game botw`，bundle id 带 `.botw` 时默认如此）；`--from-cache <rt 文件夹> --seed <seed>` 把 Mac 上旷野之息缓存里有、App 里没有的着色器（已翻译好）打包给设备。
 - **审核**：`stats` 和 `tests/test_shader_list.py` 要通过；PR 只能改这一个文件，不能带翻译出的 `.metal`、编好的 `.metallib` 或缓存。
-- **旷野之息**：自己的一份清单 `games/botw/assets/shader_list.tsv`，格式、工具都一样（`merge` 时写它的路径）。打包时读它的 Yaz0 包（`Pack/`、`Effect/`、`Event/`、`System/`），启动包和标题包的着色器按默认绑定状态翻译、清单里的绑定状态也翻译。玩家的贡献文件在 `~/Library/Application Support/MacNativeGames/BotW/`，用旷野之息自己的 Issue 表单（标签 `shader-list-botw`），`collect_shader_issues.py --game botw` 合并。两份清单不混：一个键只属于一个游戏。它的键按控制段自己的长度算（+0x20 处的字：档案里 0x7d1、agl 的 0x848；王国之泪是 0x880，键不变）；agl 包里嵌着的 BNSH 程序还按游戏绑定前改写过的字节算（`bound_control`），agl 包自己的记录原样绑定。
+- **旷野之息**：自己的一份清单 `games/botw/assets/shader_list.tsv`，格式、工具都一样（`merge` 时写它的路径）。打包时读它的 Yaz0 包（`Pack/`、`Effect/`、`Event/`、`System/`），启动包和标题包的着色器按默认绑定状态翻译、清单里的绑定状态也翻译。玩家的贡献文件在 `~/Library/Application Support/MacNativeGames/BotW/`，以游戏 id `botw` 上传到着色器收件箱，`collect_shaders.py` 合并。两份清单不混：一个键只属于一个游戏。它的键按控制段自己的长度算（+0x20 处的字：档案里 0x7d1、agl 的 0x848；王国之泪是 0x880，键不变）；agl 包里嵌着的 BNSH 程序还按游戏绑定前改写过的字节算（`bound_control`），agl 包自己的记录原样绑定。

@@ -53,7 +53,7 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # end of data only; the loader zero-fills bss and the key page. Smaller modules keep the old layout and output.
 PATCH_LEAD = 0
 if PATCH_OFF >= (1 << 27) - (1 << 20):
-    PATCH_LEAD = 0x400000   # main 1.0.0 needs 0xa9ac
+    PATCH_LEAD = 0x400000   # main 2.1.0 needs 0xa9fc (1.0.0: 0xa9ac)
     PATCH_OFF = -PATCH_LEAD
     assert TEXT_END + PATCH_LEAD < (1 << 27), 'text too large for a leading patch area'
     assert KEY_PAGE_OFF + 0x4000 - PATCH_OFF < (1 << 32), 'key page out of ADRP reach'

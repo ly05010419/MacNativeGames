@@ -17,7 +17,7 @@ import versions
 APP_NAME = 'Octopath Traveler 0'
 MODULES = ('sdk', 'subsdk0', 'main')
 REWRITE_FILES = ('patched.bin', 'fixups.tsv', 'gates.tsv', 'cuts.tsv', 'obs.tsv', 'params.tsv', 'sites.tsv')
-LIBRARIES = {'opus': 'lib/libopus.a', 'libvpx': 'lib/libvpx.a'}
+DEPS = ('opus', 'libvpx')   # linked statically by the Makefile (tools/deps)
 APP_FILESYSTEMS = ('apfs', 'hfs')
 WORK_UNSAFE = ':$"'
 MAKE_UNSAFE = '$"'
@@ -44,6 +44,17 @@ Game data stays in the work folder and in the app; never share either. Saves, th
 
 class BuildError(Exception):
     pass
+
+
+def pinned_deps(*names):
+    """OPUS_PREFIX, VPX_PREFIX, … in this process's environment, which the Makefile reads: the repository's tools/deps
+    makes them once per Mac from pinned sources, so no Homebrew is needed (2026-11-12)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.deps import DepsError, env
+    try:
+        os.environ.update(env(*names))
+    except DepsError as e:
+        raise BuildError(str(e)) from None
 
 
 def say(message):
@@ -95,9 +106,7 @@ def check_setup(work, out, inputs):
         raise BuildError(f'needs Python 3.14 (this is {sys.version.split()[0]}): start the build with python3.14')
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError("Xcode's Command Line Tools are missing: run xcode-select --install")
-    missing = [name for name, lib in LIBRARIES.items() if not (Path('/opt/homebrew/opt') / name / lib).is_file()]
-    if missing:
-        raise BuildError(f'missing Homebrew packages: run brew install {" ".join(missing)}')
+    pinned_deps(*DEPS)
     bad = unsafe(work, WORK_UNSAFE, spaces=True)
     if bad:
         raise BuildError(f'the work folder\'s path has {" ".join(repr(c) for c in bad)}, which make cannot handle: {work}\n'

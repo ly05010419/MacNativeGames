@@ -108,6 +108,30 @@ int main(void) {
         controller_map_assign(map, modes, 22, 0); controller_map_assign(map, modes, 0, 16); controller_map_assign(map, modes, 0, -2);
         expect(!memcmp(before, map, sizeof map), "out of range: unchanged");
     }
+    /* The screenshot button's hold (user 2026-11-11: the touchpad held 3 s): fires once at 3.0 s, not before, not twice in
+       one hold, and again in the next hold after a release. */
+    {
+        const uint64_t need = CONTROLLER_SCREENSHOT_HOLD_MS * 1000000ull, t0 = 5000000000ull;
+        int fire = 0, fires = 0;
+        expect(CONTROLLER_SCREENSHOT_DEFAULT == 16 && !strcmp(controller_physical_names[CONTROLLER_SCREENSHOT_DEFAULT], "touchpad") &&
+               need == 3000000000ull, "the touchpad, 3 s");
+        ControllerHold h = {0};
+        h = controller_hold_next(h, 0, t0, need, &fire); expect(!fire && !h.down && controller_hold_wait(h, t0, need) == UINT64_MAX, "up: nothing");
+        h = controller_hold_next(h, 1, t0, need, &fire); expect(!fire && h.down && h.since == t0 && controller_hold_wait(h, t0, need) == need, "pressed: 3 s to go");
+        h = controller_hold_next(h, 1, t0 + need - 1, need, &fire); expect(!fire && controller_hold_wait(h, t0 + need - 1, need) == 1, "1 ns short: not yet");
+        ControllerHold kept = h;
+        h = controller_hold_next(h, 1, t0 + need, need, &fire); fires += fire; expect(fire && h.fired && controller_hold_wait(h, t0 + need, need) == UINT64_MAX, "3.0 s: fires");
+        expect(kept.down && !kept.fired, "the earlier hold is a value of its own");
+        h = controller_hold_next(h, 1, t0 + need + 1, need, &fire); fires += fire;
+        h = controller_hold_next(h, 1, t0 + 10 * need, need, &fire); fires += fire; expect(fires == 1, "held on: once per hold");
+        h = controller_hold_next(h, 0, t0 + 10 * need + 1, need, &fire); expect(!fire && !h.down && !h.fired, "released: armed again");
+        h = controller_hold_next(h, 1, t0 + 11 * need, need, &fire); expect(!fire && h.since == t0 + 11 * need, "the next hold starts from its own press");
+        h = controller_hold_next(h, 0, t0 + 11 * need + need / 2, need, &fire); expect(!fire, "let go at 1.5 s: nothing");
+        h = controller_hold_next(h, 1, t0 + 12 * need, need, &fire);
+        h = controller_hold_next(h, 1, t0 + 13 * need, need, &fire); expect(fire, "the next full hold fires again");
+        h = (ControllerHold){0}; h = controller_hold_next(h, 1, t0, need, &fire);
+        h = controller_hold_next(h, 1, t0 + 2 * need, need, &fire); expect(fire, "a late look (no report while held) still fires, once");
+    }
     if (failures) return 1;
     printf("PASS: controller layout cases\n");
     return 0;

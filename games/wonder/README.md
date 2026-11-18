@@ -10,8 +10,8 @@ real-time frame step, so the game keeps its speed at any frame rate (`TOTK_REALT
 
 ## Build
 
-Needs a Mac with Apple silicon and macOS 26 or later, the Xcode command line tools, Python 3.14, and from Homebrew
-`opus libvpx`.
+Needs a Mac with Apple silicon and macOS 26 or later, the Xcode command line tools and Python 3.14 ([python.org](https://www.python.org/downloads/macos/));
+opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew).
 
 ```sh
 cd games/wonder

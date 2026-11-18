@@ -7,7 +7,20 @@
   "data_folder": "Dread",
   "build": "games/dread/build.py",
   "work_holds_game_data": true,
-  "sources": ["games/dread"],
-  "files": {"game": ["xci", "nsp"], "update": []},
-  "versions": ["1.0.0"]
+  "sources": [
+    "games/dread"
+  ],
+  "files": {
+    "game": [
+      "xci",
+      "nsp"
+    ],
+    "update": [
+      "nsp"
+    ]
+  },
+  "versions": [
+    "1.0.0",
+    "2.1.0"
+  ]
 }

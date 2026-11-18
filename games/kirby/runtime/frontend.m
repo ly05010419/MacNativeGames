@@ -9,6 +9,7 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "kirby_preferences.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 int mfxup_output_enabled(void);
 static NSWindow *window;
@@ -249,10 +250,20 @@ static void front_overlays_apply(int mode);
 -(void)setFrameRate:(NSMenuItem *)s{runtime_kirby_set_fps((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
 -(void)setResolution:(NSMenuItem *)s{runtime_kirby_set_fixed_res((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
 -(void)setOverlays:(NSMenuItem *)s{front_overlays_apply((int)s.tag);}
+-(void)setLanguage:(NSMenuItem *)item {
+ kirby_language_save((int)item.tag);
+ NSAlert *alert = [NSAlert new];
+ alert.messageText = @(TOTK_UI("语言设置已保存，下次启动生效", "Language saved for the next launch"));
+ alert.informativeText = @(TOTK_UI("请先在游戏中保存进度，再正常退出并重新打开 Kirby。",
+                                 "Save your progress in the game, then quit normally and reopen Kirby."));
+ [alert addButtonWithTitle:@(TOTK_UI("好", "OK"))];
+ [alert beginSheetModalForWindow:window completionHandler:nil];
+}
 -(BOOL)validateMenuItem:(NSMenuItem *)item{
  if(item.action==@selector(setFrameRate:)){item.state=runtime_kirby_fps()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
  if(item.action==@selector(setResolution:)){item.state=runtime_kirby_fixed_res()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
  if(item.action==@selector(setOverlays:)){item.state=fps_overlay_hud_mode()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return YES;}
+ if(item.action==@selector(setLanguage:)){item.state=kirby_language_choice()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return YES;}
  return item.action==@selector(showLog:)?front_log_file()!=nil:front_data_folder()!=nil;}
 @end
 static TOTKMenuTarget *menuTarget;
@@ -297,6 +308,13 @@ static void front_install_menu(void){
  menu_item(settings,TOTK_UI("提示：全部","Overlays: All"),@selector(setOverlays:),@"",0,menuTarget).tag=1;
  menu_item(settings,TOTK_UI("提示：只显示 FPS","Overlays: FPS Only"),@selector(setOverlays:),@"",0,menuTarget).tag=2;
  menu_item(settings,TOTK_UI("提示：隐藏","Overlays: Off"),@selector(setOverlays:),@"",0,menuTarget).tag=0;
+ [settings addItem:NSMenuItem.separatorItem];
+ NSMenu *languageMenu=[[NSMenu alloc] initWithTitle:@"Language / 语言"];
+ NSMenuItem *languageItem=[[NSMenuItem alloc] initWithTitle:@"Language / 语言" action:nil keyEquivalent:@""];languageItem.submenu=languageMenu;[settings addItem:languageItem];
+ menu_item(languageMenu,"跟随系统 / Follow System",@selector(setLanguage:),@"",0,menuTarget).tag=0;
+ menu_item(languageMenu,"简体中文",@selector(setLanguage:),@"",0,menuTarget).tag=1;
+ menu_item(languageMenu,"English",@selector(setLanguage:),@"",0,menuTarget).tag=2;
+ [settings addItem:NSMenuItem.separatorItem];
  NSMenuItem *windowItem=[NSMenuItem new];windowItem.submenu=windowMenu;[menu addItem:windowItem];
  front_menubar_fps_add(menu);
  menu_item(windowMenu,TOTK_UI("最小化","Minimize"),@selector(performMiniaturize:),@"m",NSEventModifierFlagCommand,window);
