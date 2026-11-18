@@ -156,7 +156,7 @@ class FullHD(unittest.TestCase):
 
 class PicturePane(unittest.TestCase):
     """The Settings app keeps only the picture profile and MetalFX for the two Zelda games (user 2026-11-17: "dentro do
-    jogo é o que vale"; spec "App Ajustes"); the picture rows of before go, so the pane and the game cannot disagree.
+    jogo é o que vale"); the picture rows of before go, so the pane and the game cannot disagree.
     Bananza and Pokopia keep their own rows (Full HD / output size, frame rate)."""
     PICTURE = {'TOTK_DOCKED', 'TOTK_DOCKED_SCENE', 'TOTK_BOTW_SCENE', 'TOTK_PHONE_FPS', 'TOTK_CUSTOM_PICTURE',
                'TOTK_IOS_PICTURE_MODE', 'TOTK_RENDER_RES', 'TOTK_FPS_CAP', 'TOTK_MFX_UPSCALE', 'TOTK_TAA', 'TOTK_ASPECT',
@@ -189,7 +189,7 @@ class PicturePane(unittest.TestCase):
         rows = {s['Key']: s for s in self.root()['PreferenceSpecifiers'] if s.get('Key')}
         self.assertEqual(rows['TOTK_PICTURE_PROFILE']['Values'], profiles)
         self.assertEqual(rows['TOTK_METALFX']['Values'], metalfx)
-        self.assertEqual(rows['TOTK_PICTURE_PROFILE']['DefaultValue'], 'performance', 'Desempenho on a new install')
+        self.assertEqual(rows['TOTK_PICTURE_PROFILE']['DefaultValue'], 'performance', 'Performance on a new install')
         self.assertEqual(rows['TOTK_METALFX']['DefaultValue'], 'off', 'the game\'s own upscale unless the player turns it on')
         for key in ('TOTK_PICTURE_PROFILE', 'TOTK_METALFX'):
             self.assertEqual(len(rows[key]['Titles']), len(rows[key]['Values']), key)
@@ -224,7 +224,7 @@ class PicturePane(unittest.TestCase):
 
 
 class Profiles(unittest.TestCase):
-    """The picture profiles reach the runtime when the game starts (spec "Restrições"): main.m builds the environment
+    """The picture profiles reach the runtime when the game starts (user 2026-11-17): main.m builds the environment
     from the saved profile, MetalFX and custom combination (picture_settings.m), after a one-time migration of the old
     rows; Tears of the Kingdom's custom layer is gone. Bananza and Pokopia keep their presets."""
     def setUp(self):
@@ -312,15 +312,15 @@ class StartScreen(unittest.TestCase):
         self.assertNotIn('PLAYSHELF', screen.upper(), 'no launcher name on the game\'s screen')
 
 class ProfileStartScreen(unittest.TestCase):
-    """The start screen of Tears of the Kingdom and Breath of the Wild (spec "Tela inicial"): the three profiles (and
-    Personalizado when a custom combination is saved), a line saying what the chosen one does, MetalFX on its own row
+    """The start screen of Tears of the Kingdom and Breath of the Wild (user 2026-11-17): the three profiles (and
+    Custom when a custom combination is saved), a line saying what the chosen one does, MetalFX on its own row
     (changing it keeps the profile), an Advanced button and Play. Bananza and Pokopia keep their picture / frame rows."""
     def setUp(self):
         self.screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
 
     def test_the_profile_layout_where_the_pane_has_the_profile(self):
         self.assertIn('_hasProfiles = [self settingsPaneHas:@"TOTK_PICTURE_PROFILE"];', self.screen)
-        self.assertIn('totk_has_custom_picture()', self.screen, 'Personalizado shows when a combination is saved')
+        self.assertIn('totk_has_custom_picture()', self.screen, 'Custom shows when a combination is saved')
         self.assertIn('totk_choose_profile(', self.screen)
         self.assertIn('totk_choose_metalfx(', self.screen)
         self.assertIn('totk_current_picture(&profile, &mfx)', self.screen)
@@ -354,8 +354,8 @@ class ProfileStartScreen(unittest.TestCase):
 
 
 class Advanced(unittest.TestCase):
-    """The Advanced screen (spec "O Avançado"): every control of the profiles, one line on what each choice does, inside
-    a scroll view (an iPhone in landscape); any change but MetalFX makes the profile Personalizado; MetalFX is its own
+    """The Advanced screen (user 2026-11-17): every control of the profiles, one line on what each choice does, inside
+    a scroll view (an iPhone in landscape); any change but MetalFX makes the profile Custom; MetalFX is its own
     setting. The Switch size only on an iPad, the aspect ratio only in Tears of the Kingdom."""
     def setUp(self):
         self.view = (TOOLS.parent/'Sources/advanced_view.m').read_text()

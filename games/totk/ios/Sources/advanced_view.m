@@ -180,7 +180,7 @@ static NSString *metalfx_title(pp_metalfx m) {
 }
 - (void)title:(UIButton *)b text:(NSString *)text { UIButtonConfiguration *c = b.configuration; c.title = text; b.configuration = c; }
 
-/* Any control but MetalFX: the combination becomes Personalizado. */
+/* Any control but MetalFX: the combination becomes Custom. */
 - (void)changed { totk_save_custom_picture(&_pic); [self show]; }
 - (void)modeChanged { _pic.mode = _mode.selectedSegmentIndex == 1 ? PP_DOCKED : PP_HANDHELD; [self changed]; }
 - (void)setScene:(unsigned)w { _pic.scene_w = w; [self changed]; }

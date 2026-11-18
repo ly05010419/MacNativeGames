@@ -12,7 +12,7 @@ import settings_strings
 def pane_for(root, app):
     """The pane for one app, in place: app is 'totk', 'botw' or 'ns2' (Bananza, Pokopia). A row Root.plist marks with
     TOTKApp belongs to that app only, 'zelda' to Tears of the Kingdom and Breath of the Wild (the picture profile and
-    MetalFX, spec 2026-11-17-ios-picture-profiles: the picture is chosen in the game); an unmarked row is everyone's. Any
+    MetalFX, user 2026-11-17: the picture is chosen in the game); an unmarked row is everyone's. Any
     group the dropped rows leave empty goes too. tests/test_ios_packaging.py PicturePane checks the three panes."""
     def mine(s):
         mark=s.get('TOTKApp')
@@ -41,7 +41,7 @@ def seed_fingerprint(seed, lists):
 
 def botw_pane(root):
     """Breath of the Wild's pane: the picture profile and MetalFX, as Tears of the Kingdom's (the picture is chosen in the
-    game, spec 2026-11-17-ios-picture-profiles)."""
+    game, user 2026-11-17)."""
     return pane_for(root,'botw')
 
 def bananza_pane(root):

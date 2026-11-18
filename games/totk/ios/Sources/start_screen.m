@@ -73,7 +73,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     UIStackView *pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     UIStackView *fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
     _hasPicture = _hasResolution || [self settingsPaneHas:@"TOTK_DOCKED"];
-    /* Tears of the Kingdom and Breath of the Wild (spec 2026-11-17-ios-picture-profiles "Tela inicial"): the picture
+    /* Tears of the Kingdom and Breath of the Wild (user 2026-11-17): the picture
        profiles, a line on what the chosen one does, MetalFX on its own row (it never changes the profile), Advanced. */
     _hasProfiles = [self settingsPaneHas:@"TOTK_PICTURE_PROFILE"];
     UIStackView *profileRow = nil, *metalfxRow = nil;
@@ -210,7 +210,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [d setObject:_fps.selectedSegmentIndex == 0 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
 }
 
-/* The chosen profile, and what it does (spec "Os perfis"); Personalizado says what its combination is. */
+/* The chosen profile, and what it does (user 2026-11-17); Custom says what its combination is. */
 - (pp_profile)chosenProfile { return (pp_profile)_profile.selectedSegmentIndex; }
 - (void)profileChanged { totk_choose_profile([self chosenProfile]); [self showProfile]; }
 - (void)metalfxChanged {
@@ -225,7 +225,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
                                                     onStart:^{ [weak closeAdvanced]; [weak start]; }];
     [self addSubview:_advancedView];
 }
-/* Back from Advanced: the profile may now be Personalizado and MetalFX another value. */
+/* Back from Advanced: the profile may now be Custom and MetalFX another value. */
 - (void)closeAdvanced {
     [_advancedView removeFromSuperview]; _advancedView = nil;
     pp_profile profile; pp_metalfx mfx;

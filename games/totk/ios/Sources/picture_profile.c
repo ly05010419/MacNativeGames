@@ -8,8 +8,8 @@ static const char *const METALFX_KEYS[] = {"off", "scene", "screen"};
 static const struct { const char *size; unsigned width; } SCENES[] = {
     {"1920x1080", 1920}, {"1600x900", 1600}, {"1280x720", 1280}, {"960x540", 960}, {"800x450", 800}, {"640x360", 640}};
 
-/* The profiles (spec "Os perfis"): Qualidade the sharpest, docked; Desempenho the default, handheld at the game's own
-   phone scene; Economia the coolest, at the Switch's screen size. */
+/* The profiles (user 2026-11-17): Quality the sharpest, docked; Performance the default, handheld at the game's own
+   phone scene; Economy the coolest, at the Switch's screen size. */
 static const pp_picture PROFILES[] = {
     [PP_QUALITY]     = {PP_DOCKED,   1600, 1, 30, 0, 0},   /* 30: steady where 1600x900 + TAA cannot hold 60 (iPad A16: 33) */
     [PP_PERFORMANCE] = {PP_HANDHELD, 0,    0, 60, 0, 0},

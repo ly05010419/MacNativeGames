@@ -1,7 +1,7 @@
 #pragma once
 
 /* Picture profiles on iPhone / iPad (docs/superpowers/specs/2026-11-17-ios-picture-profiles-design.md, user 2026-11-17):
-   Qualidade, Desempenho and Economia are fixed combinations of the Advanced screen's controls; Personalizado is the
+   Quality, Performance and Economy are fixed combinations of the Advanced screen's controls; Custom is the
    player's own. MetalFX (the upscale) is a setting of its own, on top of any profile. Kept free of UIKit so
    tests/test_picture_profile.c checks it on a Mac. The environment it builds is what the runtime reads at game start. */
 
@@ -38,7 +38,7 @@ unsigned pp_scene_effective(const pp_picture *p, pp_game g);   /* Automática re
 int pp_mfx_scene_acts(const pp_picture *p, pp_game g);         /* 0 unless the scene is narrower than the canvas */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out);
 
-/* The old Settings rows (before the profiles) as they were saved, for the one-time migration to Personalizado. */
+/* The old Settings rows (before the profiles) as they were saved, for the one-time migration to Custom. */
 typedef struct {
     int docked;                /* TOTK_DOCKED */
     const char *docked_scene;  /* TOTK_DOCKED_SCENE (TotK) or TOTK_BOTW_SCENE */
@@ -52,5 +52,5 @@ typedef struct {
     const char *aspect;        /* TOTK_ASPECT: "0" / "16:9" is 16:9 */
     int totk_old;              /* Tears of the Kingdom 1.0 / 1.2.1: its handheld scene without a size is 1280x720 */
 } pp_old;
-/* Exactly the combination that ran before (spec "Migração"); MetalFX goes to its own setting. */
+/* Exactly the combination that ran before (user 2026-11-17); MetalFX goes to its own setting. */
 void pp_migrate(const pp_old *old, pp_game g, pp_picture *custom, pp_metalfx *mfx);

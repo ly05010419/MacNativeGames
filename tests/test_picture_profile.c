@@ -20,14 +20,14 @@ static void want(const pp_env *e, const char *name, const char *value, const cha
 static void profiles_are_the_spec_values(void) {
     pp_picture q, d, e, c;
     CHECK(pp_profile_picture(PP_QUALITY, &q) && q.mode == PP_DOCKED && q.scene_w == 1600 && q.taa && q.fps == 30 &&
-          !q.switch_size && !q.aspect_169, "Qualidade: docked, 1600x900, TAA, 30, no Switch size, fill");
+          !q.switch_size && !q.aspect_169, "Quality: docked, 1600x900, TAA, 30, no Switch size, fill");
     /* 30, not 60 (owner 2026-11-18): on the iPad A16 docked 1600x900 + TAA ran at an unsteady 33 fps (GPU 28.6 ms);
        held at 30 it is steady and cooler. */
     CHECK(pp_profile_picture(PP_PERFORMANCE, &d) && d.mode == PP_HANDHELD && d.scene_w == 0 && !d.taa && d.fps == 60 &&
-          !d.switch_size, "Desempenho: handheld, automatic scene, no TAA, 60");
+          !d.switch_size, "Performance: handheld, automatic scene, no TAA, 60");
     CHECK(pp_profile_picture(PP_ECONOMY, &e) && e.mode == PP_HANDHELD && e.scene_w == 640 && !e.taa && e.fps == 30 &&
-          e.switch_size, "Economia: handheld, 640x360, 30, Switch size");
-    CHECK(!pp_profile_picture(PP_CUSTOM, &c), "Personalizado has no fixed values");
+          e.switch_size, "Economy: handheld, 640x360, 30, Switch size");
+    CHECK(!pp_profile_picture(PP_CUSTOM, &c), "Custom has no fixed values");
 }
 
 static void scene_held_at_canvas(void) {
@@ -65,7 +65,7 @@ static void env_desempenho_totk(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_PERFORMANCE, &p);
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e);
-    const char *w = "Desempenho, TotK, MetalFX off";
+    const char *w = "Performance, TotK, MetalFX off";
     want(&e, "TOTK_OPERATION_MODE", "handheld", w); want(&e, "TOTK_IOS_DRAWABLE_H", "(unset)", w);
     want(&e, "TOTK_RENDER_RES", "960x540", w);      want(&e, "TOTK_MFX_UPSCALE", "0", w);
     want(&e, "TOTK_MFX_OUTPUT", "0", w);            want(&e, "TOTK_TAA", "0", w);
@@ -78,7 +78,7 @@ static void env_qualidade_docked(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_QUALITY, &p);
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_BOTW, &e);
-    const char *w = "Qualidade, BotW";
+    const char *w = "Quality, BotW";
     want(&e, "TOTK_OPERATION_MODE", "docked", w); want(&e, "TOTK_IOS_DRAWABLE_H", "1080", w);
     want(&e, "TOTK_RENDER_RES", "1600x900", w);   want(&e, "TOTK_TAA", "1", w);
     want(&e, "TOTK_PHONE_FPS", "30", w);
@@ -88,7 +88,7 @@ static void env_economia_botw_scene_mfx(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_ECONOMY, &p);
     pp_env_build(&p, PP_MFX_SCENE, PP_GAME_BOTW, &e);
-    const char *w = "Economia, BotW, MetalFX scene";
+    const char *w = "Economy, BotW, MetalFX scene";
     want(&e, "TOTK_RENDER_RES", "640x360", w); want(&e, "TOTK_MFX_UPSCALE", "1", w); want(&e, "TOTK_MFX_OUTPUT", "0", w);
     want(&e, "TOTK_PHONE_FPS", "30", w);       want(&e, "TOTK_SWITCH_SIZE", "1", w);
 }
@@ -99,7 +99,7 @@ static void env_switch_size_with_screen_mfx(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_ECONOMY, &p);
     pp_env_build(&p, PP_MFX_SCREEN, PP_GAME_TOTK, &e);
-    const char *w = "Economia + MetalFX scene and screen";
+    const char *w = "Economy + MetalFX scene and screen";
     want(&e, "TOTK_IOS_DRAWABLE_H", "0", w); want(&e, "TOTK_MFX_UPSCALE", "1", w);
     want(&e, "TOTK_MFX_OUTPUT", "1", w);     want(&e, "TOTK_SWITCH_SIZE", "1", w);
 }
@@ -137,7 +137,7 @@ static void garbage_values_fall_back(void) {
     }
 }
 
-/* Migration (spec "Migração"): any saved old row becomes Personalizado with exactly the combination that ran before, so
+/* Migration (user 2026-11-17): any saved old row becomes Custom with exactly the combination that ran before, so
    the game looks the same after the update until the player picks a profile. Review focus 1: an iPad whose app wrote
    "docked" on its own still opens docked. */
 static void migrate_case(const char *what, pp_old old, pp_game g, pp_picture want, pp_metalfx want_mfx) {

@@ -422,7 +422,7 @@ static void apply_frame_env(const totk_frame_env *e, int overwrite) {
 /* The picture and frame rate, applied once, just before the game thread starts, so the start screen's pick counts (after
    PR #433: applying them in didFinishLaunching as well left a 1080 drawable behind when the start screen then turned
    Full HD off). Tears of the Kingdom and Breath of the Wild: the picture profile, MetalFX and the custom combination
-   (picture_settings.m, picture_profile.c; spec 2026-11-17-ios-picture-profiles). Bananza and Pokopia: their presets
+   (picture_settings.m, picture_profile.c; user 2026-11-17). Bananza and Pokopia: their presets
    (settings_map.c). Every key keeps a devicectl value (overwrite=0). */
 static void apply_display_settings(void) {
 #ifdef GAME_NS2
