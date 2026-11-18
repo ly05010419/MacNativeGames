@@ -57,7 +57,7 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/freeze_watchdog.c` | `ODYSSEY_FREEZE_WATCHDOG`: what the game's threads do when frames stop; it only logs | odyssey, acnh |
 | `third_party/d2r_gfx/gfx/tex/*` but `nvn_deswizzle_gpu.{m,h}`, `third_party/d2r_gfx/third_party/bcdec/*` | Texture decoding: the block-linear deswizzle (the Switch 2's GOB order under `GAME_NS2`), the BCn decoder and the BCn to ASTC/EAC transcoder for GPUs without BC, the NVN to Metal formats (Ocarina of Time's depth reads under `GAME_OOT`) | totk, oot, odyssey, acnh, eow |
 | `third_party/d2r_gfx/host/{dm,front,hle}.h`, `gfx/nvn/include/{nvn.h,mach_vm_compat.h}`, `gfx/nvn/nvn_impl.h`, `nvn_entry.S` | The graphics layer's host interfaces, NVN's types, and the entry thunk every NVN call goes through | totk, oot, odyssey, acnh, eow |
-| `third_party/d2r_gfx/gfx/nvn/` `nvn_arg_address_cache.h`, `nvn_copy_alias_probe.h`, `nvn_cover.h`, `nvn_cube_group_probe.h`, `nvn_depth_clear.h`, `nvn_diag_range.h`, `nvn_encode_fifo.h`, `nvn_hmap.h`, `nvn_pace.h`, `nvn_pool_index.h`, `nvn_pool_retire_probe.h`, `nvn_tex.h`, `nvn_tex_slots_probe.h`, `nvn_texture_plan.h`, `rt_range_check.inc`, `totk_serial_set.h`, `totk_vpool.{c,h}` | Pieces of the graphics layer that are the same for every game: the hash map (8-byte keys compared as one word), pool and range indexes, the encoder FIFO, frame pacing, the texture descriptor, the virtual pool, and their probes | totk, oot, odyssey, acnh, eow |
+| `third_party/d2r_gfx/gfx/nvn/` `nvn_arg_address_cache.h`, `nvn_copy_alias_probe.h`, `nvn_cover.h`, `nvn_cube_group_probe.h`, `nvn_depth_clear.h`, `nvn_diag_range.h`, `nvn_encode_fifo.h`, `nvn_hmap.h`, `nvn_pace.h`, `nvn_pool_index.h`, `nvn_pool_retire_probe.h`, `nvn_tex.{c,h}`, `nvn_tex_slots_probe.h`, `nvn_texture_plan.h`, `rt_range_check.inc`, `totk_serial_set.h`, `totk_vpool.{c,h}` | Pieces of the graphics layer that are the same for every game: the hash map (8-byte keys compared as one word), pool and range indexes, the encoder FIFO, frame pacing, the texture descriptor, the virtual pool, and their probes | totk, oot, odyssey, acnh, eow |
 
 The platform layer that runs the game (2026-11-18, step 4) is shared only where the copies were already the same file
 (above); each game's copy of the rest stays its own, because the copies carry that game's tuning or answers:
@@ -120,6 +120,9 @@ adds code under `GAME_NS2` / `GAME_OOT`, a query nobody else calls, or a faster 
 - `nvn_rtex.inc`, `nvn_cube_group.h`: TotK's count their Metal compiles through `nvn_counted.h`, which the others lack.
 - `nvn_deswizzle_gpu.{m,h}`, `totk_lifelog.{c,h}`: TotK's add the Switch 2's GOB order, a region kernel and OoT's
   texture lifetime trace.
-- `nvn_tex.c`: TotK's has 3c482a7d (cube array sizes, a packaged 3D texture's block depth, linear BCn sizes in pixel
-  rows, all measured against the original driver). The three do not have it. It is a fix rather than tuning, but it
-  changes texture sizes the game is told, so a game takes it only with its picture checked (cube maps, 3D textures).
+
+`nvn_tex.c` (the texture sizes) is shared too, since 2026-11-18: TotK's 3c482a7d (cube array sizes, a packaged 3D
+texture's block depth, linear BCn sizes in pixel rows, all measured against the original driver) now applies to the three,
+with its two lines of `nvn_mtl.m` in each game's own copy (Metal's cube array length is depth / 6 cubes; the upload does
+not multiply the layers by six). Up to the title screen, only Animal Crossing has such a texture: two cube arrays of one
+cube each (4x4 and 256x256), whose storage was six times too large; its title screen looks the same.
