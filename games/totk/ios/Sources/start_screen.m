@@ -3,6 +3,7 @@
 #include "totk_ui_lang.h"
 #include "ns2_resolution.h"
 #include "picture_settings.h"
+#import "advanced_view.h"
 
 static BOOL zh(void) { return totk_ui_zh(); }   // the language of the host's other text (boot screen, overlays; TOTK_UI_LANG overrides)
 static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
@@ -13,6 +14,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     UISegmentedControl *_profile, *_metalfx;   // Tears of the Kingdom / Breath of the Wild: the picture profile and MetalFX
     UIButton *_start, *_advanced;
     UILabel *_profileNote;   // what the chosen profile does
+    TOTKAdvancedView *_advancedView;   // open over this screen; this screen's controller polling waits meanwhile
     BOOL _hasProfiles;       // the pane has the picture profile (the two Zelda games)
     NSArray<UIView *> *_controls;   // what the controller's focus moves through, top to bottom; the Play button last
     NSInteger _row;          // index into _controls
@@ -147,9 +149,13 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
                                               [stack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
                                               [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor constant:24]]];
     [self focus];
+    [self startPolling];
+    return self;
+}
+
+- (void)startPolling {
     __weak TOTKStartView *weak = self;
     _poll = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *t) { (void)t; [weak pollController]; }];
-    return self;
 }
 
 /* Whether the app's Settings pane offers a setting: the start screen shows only what the Settings app has. */
@@ -196,7 +202,27 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     pp_metalfx now; totk_current_picture(NULL, &now);
     totk_choose_metalfx(_metalfx.selectedSegmentIndex == 0 ? PP_MFX_OFF : now == PP_MFX_SCREEN ? PP_MFX_SCREEN : PP_MFX_SCENE);
 }
-- (void)openAdvanced {}
+- (void)openAdvanced {
+    if (_advancedView || _done) return;
+    [_poll invalidate]; _poll = nil;
+    __weak TOTKStartView *weak = self;
+    _advancedView = [[TOTKAdvancedView alloc] initWithFrame:self.bounds onBack:^{ [weak closeAdvanced]; }
+                                                    onStart:^{ [weak closeAdvanced]; [weak start]; }];
+    [self addSubview:_advancedView];
+}
+/* Back from Advanced: the profile may now be Personalizado and MetalFX another value. */
+- (void)closeAdvanced {
+    [_advancedView removeFromSuperview]; _advancedView = nil;
+    pp_profile profile; pp_metalfx mfx;
+    totk_current_picture(&profile, &mfx);
+    if (profile == PP_CUSTOM && _profile.numberOfSegments < 4) [_profile insertSegmentWithTitle:T(@"自定义", @"Custom") atIndex:3 animated:NO];
+    _profile.selectedSegmentIndex = (NSInteger)profile;
+    [_metalfx setTitle:mfx == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On") forSegmentAtIndex:1];
+    _metalfx.selectedSegmentIndex = mfx == PP_MFX_OFF ? 0 : 1;
+    [self showProfile];
+    _held = YES;   // the button that closed Advanced is still down
+    if (!_done) [self startPolling];
+}
 - (void)showProfile {
     BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
     pp_picture pic = totk_current_picture(NULL, NULL);

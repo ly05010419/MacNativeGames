@@ -327,6 +327,42 @@ class ProfileStartScreen(unittest.TestCase):
         self.assertIn('NSInteger last = (NSInteger)_controls.count - 1;', self.screen)
 
 
+class Advanced(unittest.TestCase):
+    """The Advanced screen (spec "O Avançado"): every control of the profiles, one line on what each choice does, inside
+    a scroll view (an iPhone in landscape); any change but MetalFX makes the profile Personalizado; MetalFX is its own
+    setting. The Switch size only on an iPad, the aspect ratio only in Tears of the Kingdom."""
+    def setUp(self):
+        self.view = (TOOLS.parent/'Sources/advanced_view.m').read_text()
+
+    def test_interface(self):
+        header = (TOOLS.parent/'Sources/advanced_view.h').read_text()
+        self.assertIn('- (instancetype)initWithFrame:(CGRect)frame onBack:(void (^)(void))onBack onStart:(void (^)(void))onStart;', header)
+        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+        opened = screen[screen.index('- (void)openAdvanced {'):]
+        self.assertIn('[[TOTKAdvancedView alloc] initWithFrame:', opened[:opened.index('\n}\n')])
+
+    def test_changes_make_the_profile_custom_but_metalfx(self):
+        self.assertIn('totk_save_custom_picture(&_pic);', self.view)
+        mfx = self.view[self.view.index('- (void)setMetalfx:'):]
+        mfx = mfx[:mfx.index('\n}\n')]
+        self.assertIn('totk_choose_metalfx(', mfx)
+        self.assertNotIn('totk_save_custom_picture', mfx)
+
+    def test_effect_lines_follow_the_model(self):
+        self.assertIn('pp_scene_effective(&_pic)', self.view, 'says when the scene is held at the canvas')
+        self.assertIn('pp_mfx_scene_acts(&_pic)', self.view, 'says when the scene upscale has nothing to do')
+
+    def test_device_and_game_rows(self):
+        self.assertIn('UIUserInterfaceIdiomPad', self.view[self.view.index('_switchSize'):], 'the Switch size row only on an iPad')
+        aspect = self.view.index('_aspect = ')
+        self.assertIn('#ifndef GAME_BOTW', self.view[self.view.rindex('#if', 0, aspect) - 1:aspect])
+        self.assertIn('UIScrollView', self.view)
+
+    def test_the_controller_reaches_every_control(self):
+        self.assertIn('pollController', self.view)
+        self.assertIn('buttonB', self.view, 'B goes back')
+
+
 class SwitchSize(unittest.TestCase):
     """The game at the Switch's 6.2-inch screen on an iPad (TOTK_SWITCH_SIZE=1, user 2026-11-17), centred, so a
     low-resolution picture looks sharper. The app's picture settings hand the variable over (2026-11-17 profiles); a
