@@ -75,6 +75,20 @@ class VisionOS(unittest.TestCase):
                 self.assertEqual(app.parent.name, 'Debug-'+sdk)
                 self.assertEqual(prov, app/'embedded.mobileprovision')
 
+    def test_profile_is_made_for_the_connected_device(self):
+        # A free (Personal Team) Apple ID has no registered devices: Xcode registers the device only when the
+        # build names it. A generic destination failed with "Your team has no devices from which to generate a
+        # provisioning profile", so the first install with a free Apple ID never got a profile.
+        with tempfile.TemporaryDirectory() as d, patch.object(install_device, 'CACHE', Path(d)), \
+                patch.object(install_device, 'run'), patch.object(install_device, 'xcodegen', return_value='xcodegen'), \
+                patch.object(install_device.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            for platform, name in [('ios', 'iOS'), ('visionos', 'visionOS')]:
+                install_device.profile('TEAM', 'org.macnativegames.botw', '00008120-000179541E00032', platform)
+                cmd = run.call_args.args[0]
+                self.assertEqual(cmd[cmd.index('-destination') + 1], f'platform={name},id=00008120-000179541E00032')
+                self.assertIn('-allowProvisioningUpdates', cmd)
+
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'requires macOS SDK')
     def test_unavailable_metalfx_modes_stay_off_even_when_requested_by_environment(self):
         # Exercise the visionOS branches on the host without launching a game or requiring a headset.
