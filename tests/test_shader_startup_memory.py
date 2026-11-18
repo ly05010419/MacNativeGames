@@ -27,6 +27,7 @@ class ShaderStartupMemory(unittest.TestCase):
 #include <malloc/malloc.h>
 static NSString *g_dir, *g_seed_dir;
 static NSSet *g_seed_names;
+static BOOL g_seed_sealed;
 static seed_image g_seed_img;
 static NSString *g_seed_prefix;
 static BOOL g_seed_all_default;
