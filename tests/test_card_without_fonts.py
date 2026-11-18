@@ -70,6 +70,42 @@ class CardUpdatePartition(unittest.TestCase):
         self.assertFalse([b for b in self.blocks(merged, game='dread') if '1G+1U' in b])     # a game without system fonts
         self.assertFalse([b for b in self.blocks(merged, game='tmnt') if '1G+1U' in b])      # nor TMNT (PR #2125)
 
+    def test_open_source_fonts_lift_the_block(self):
+        # 用开源字体 (user 2026-11-18): the block names itself for the Launcher's button, and the button's plan builds
+        merged = card([('secure', [('aa.nca', b'x' * 32)])])
+        for game, data, name in (('totk', merged, 'game.xci'), ('odyssey', b'nsp', 'game.nsp'), ('acnh', b'nsp', 'game.nsp'),
+                                 ('eow', b'nsp', 'game.nsp'), ('botw', merged, 'game.xci')):
+            items = [classify.Item(self.write(data, name), 'base', game)]
+            asked = classify.plan(items)
+            self.assertIn(asked.font_block, asked.blocks, game)
+            self.assertFalse(asked.open_fonts)
+            chosen = classify.plan(items, open_fonts=True)
+            self.assertIsNone(chosen.font_block)
+            self.assertNotIn(asked.font_block, chosen.blocks, game)
+            self.assertTrue(chosen.open_fonts)
+            self.assertTrue(any('Noto' in n for n in chosen.notes), game)
+        full = card([('update', [('b.nca', b'f' * 8)]), ('secure', [('aa.nca', b'x' * 32)])])
+        fine = classify.plan([classify.Item(self.write(full), 'base', 'totk')], open_fonts=True)
+        self.assertFalse(fine.open_fonts)   # a card with its fonts needs none made
+
+
+class OpenFontsInTheBuild(unittest.TestCase):
+    def test_the_build_takes_the_open_fonts_folder(self):
+        from tools.builder_jobs import build_job
+        said = []
+        emit = lambda kind, **f: said.append((kind, f))
+        argv = ['/game.nsp', '-k', '/prod.keys', '--work', '/w', '-o', '/o.app']
+        made = build_job.with_open_fonts(argv, emit, make=lambda: '/cache/open-fonts-x')
+        self.assertEqual(made, ['/game.nsp', '-k', '/prod.keys', '--shared-fonts', '/cache/open-fonts-x', '--work', '/w', '-o', '/o.app'])
+        self.assertEqual(said[0][0], 'log')
+        given = argv[:3] + ['--firmware', '/fw'] + argv[3:]
+        self.assertEqual(build_job.with_open_fonts(given, emit, make=lambda: self.fail('made')), given)
+
+        def broken():
+            raise OSError('no network')
+        with self.assertRaises(build_job.Refused):
+            build_job.with_open_fonts(argv, emit, make=broken)
+
 
 if __name__ == '__main__':
     unittest.main()

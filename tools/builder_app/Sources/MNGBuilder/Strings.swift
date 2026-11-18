@@ -212,6 +212,7 @@ enum T {
     static let back = s("Back", "上一步")
     static let gameFiles = s("Game files", "游戏文件")
     static let chooseAgain = s("Choose Again…", "重新选择…")
+    static let useOpenFonts = s("Use Open-Source Fonts", "用开源字体")
     static let keys = s("Keys", "密钥")
     static let getXcode = s("Get Xcode", "获取 Xcode")
     static let installCLT = s("Install Command Line Tools", "安装命令行工具")

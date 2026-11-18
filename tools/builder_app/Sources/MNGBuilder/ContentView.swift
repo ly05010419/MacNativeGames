@@ -238,8 +238,15 @@ struct GameStep: View {
             }
             if let error = model.classifyError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             ForEach(model.plan?.notes ?? [], id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
-            ForEach((model.plan?.blocks ?? []).filter { !(model.plan?.keys_problems ?? []).contains($0) && !model.toolBlocks.contains($0) }, id: \.self) {
-                Label($0, systemImage: "xmark.octagon").foregroundStyle(.red)
+            ForEach((model.plan?.blocks ?? []).filter { !(model.plan?.keys_problems ?? []).contains($0) && !model.toolBlocks.contains($0) }, id: \.self) { block in
+                HStack(alignment: .firstTextBaseline) {
+                    Label(block, systemImage: "xmark.octagon").foregroundStyle(.red)
+                    if block == model.plan?.font_block {   // 用开源字体 (user 2026-11-18), as Ocarina of Time builds without fonts:
+                        Spacer()                        // green, on the right of its line
+                        Button(T.useOpenFonts) { model.useOpenFonts() }
+                            .buttonStyle(.borderedProminent).tint(.green).disabled(busy)
+                    }
+                }
             }
         }
     }

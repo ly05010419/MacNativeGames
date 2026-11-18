@@ -11,6 +11,9 @@ final class Model: ObservableObject {
     @Published var keysPath: String?
     @Published var report: ClassifyReport?
     @Published var classifyError: String?
+    /// 用开源字体 (user 2026-11-18): a game file without system fonts builds with the open-source Noto fonts; chosen
+    /// files of another game, or Choose Again, ask again.
+    @Published var openFonts = false
     @Published var checks: [ChecksReport.Check] = []
     @Published var phase: Phase = .idle
     @Published var stage = ""
@@ -189,7 +192,7 @@ final class Model: ObservableObject {
     /// Choose Again: these files in place of the ones chosen before (the keys stay).
     func replace(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        paths = urls.map { $0.path }; report = nil; classifyError = nil
+        paths = urls.map { $0.path }; report = nil; classifyError = nil; openFonts = false
         save()
         Task { await classify() }
     }
@@ -198,10 +201,16 @@ final class Model: ObservableObject {
     /// becomes step 2's keys (2026-11-17: an empty case's Build page lost the keys chosen with Tears of the Kingdom).
     func clear() {
         if keysPath == nil, let found = plan?.keys { keysPath = found }
-        paths = []; report = nil; classifyError = nil; save()
+        paths = []; report = nil; classifyError = nil; openFonts = false; save()
     }
 
     /// Step 2: the keys are chosen on their own and kept for every game (a path, never the file).
+    /// 用开源字体: the plan is read again with the open-source fonts standing in for the missing system fonts.
+    func useOpenFonts() {
+        openFonts = true
+        Task { await classify() }
+    }
+
     func setKeys(_ url: URL?) {
         keysPath = url?.path
         save()
@@ -247,7 +256,7 @@ final class Model: ObservableObject {
     func classify() async {
         guard !paths.isEmpty else { report = nil; return }
         do {
-            let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []))
+            let data = try await Job.collect(["classify"] + paths + (keysPath.map { [$0] } ?? []) + (openFonts ? ["--open-fonts"] : []))
             report = try JSONDecoder().decode(ClassifyReport.self, from: data)
             classifyError = nil
         } catch {
