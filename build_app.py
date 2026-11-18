@@ -2406,6 +2406,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
                 CFBundleVersion=str(expected['version'] + 1), LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
                 LSApplicationCategoryType='public.app-category.action-games', LSSupportsGameMode=True,
                 GCSupportsControllerUserInteraction=True,
+                # full screen around the notch (games/totk/runtime/frontend.m): a window over the camera housing must not
+                # put the display into its compatibility mode (a letterboxed panel)
+                NSPrefersDisplaySafeAreaCompatibilityMode=False,
                 CFBundleLocalizations=list(GAME_LANGUAGES) + (['pt-BR'] if version in ('v143', 'botw190') else []))
     icon = tree / 'build/AppIcon.icns'
     if icon.exists():

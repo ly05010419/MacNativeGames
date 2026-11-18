@@ -21,6 +21,9 @@
                                                              the window takes that shape at once, its height kept
                                                              (runtime_front_resize_aspect; user 2026-10-25: no fitting the
                                                              window any more); TOTK_ASPECT's ratio is offered too
+     full screen around   switch, default off                front_notch_set (frontend.m), fullscreen-notch.txt; on a screen
+     the notch                                               with a camera housing full screen covers the whole panel;
+                                                             TOTK_NOTCH decides first (greyed out)
    Input
      controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
      background controller switch, default off              runtime_gamepad_background_set, controller-background.txt
@@ -145,7 +148,7 @@ int nvn_fps_lock(void);
 /* Picking a resolution sizes the window to it at once (user 2026-10-25): 720p 1280x720, 1080p and 720p + MetalFX 1920x1080, MetalFX 2560x1440, native its own size (2K), 2K + MetalFX and native 4K 3840x2160, in the window's points as the first window (frontend.m runtime_front_run), the picture's shape kept
    (the aspect ratio picked) and shrunk to fit the screen's visible area. Full screen stays as it is. */
 static void settings_window_size(unsigned w,unsigned h,double ratio) {
- if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+ if(!window||win_full())return;   /* full screen, or the full panel around the notch */
  NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen||!(ratio>0)||!w||!h)return;
  NSRect visible=screen.visibleFrame,content=[window contentRectForFrameRect:visible];
  CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio))),cw=round(ch*ratio);
@@ -751,6 +754,10 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 #endif
    }})];}
  }
+ /* Full screen around the notch (frontend.m): off by default; takes effect at the next full screen. */
+ NSString *notch=settings_text("全屏覆盖刘海两侧","Full screen around the notch");
+ if(front_notch_locked())[rows addObject:settings_fixed(notch,settings_text("由 TOTK_NOTCH 设置","Set by TOTK_NOTCH"))];
+ else [rows addObject:settings_row(notch,nil,nil,^int{return front_notch_enabled();},^(int v){front_notch_set(v);})];
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],

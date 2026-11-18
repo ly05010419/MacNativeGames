@@ -191,6 +191,7 @@ void totk_sr_start(const char *game,const char *version){(void)game;(void)versio
 void totk_sr_picture(int key,int visible){(void)key;(void)visible;}
 void totk_sr_window(int key,int visible){(void)key;(void)visible;}
 void totk_sr_view(int w,int h,int hz,int fullscreen){(void)w;(void)h;(void)hz;(void)fullscreen;}
+void mtl_hud_safe_top(int top){(void)top;}   /* nvn_mtl.m: the corner boxes' top inset (full screen around the notch) */
 void totk_sr_settings(int open){(void)open;}
 void totk_sr_closing(void){fprintf(stderr,"[probe] state report: closing\n");}
 int nvn_fps_lock(void){return fixtureFrameLimit;}

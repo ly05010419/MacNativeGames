@@ -21201,6 +21201,16 @@ void mtl_hud_safe_area(int w, int h, int side, int bottom) {
     atomic_store(&g_hud_safe_w, w); atomic_store(&g_hud_safe_h, h);
     if (changed) MLOG("[hud] 安全区：两侧 %d 像素、底部 %d 像素（画布 %dx%d），角上的提示框避开它", side, bottom, w, h);
 }
+/* Mac, full screen around the notch (runtime/frontend.m panel_changed): the strip beside the camera housing and the
+   panel's rounded top corners, in drawable pixels; the top corner boxes keep below it. 0 otherwise. */
+static _Atomic int g_hud_safe_top;
+void mtl_hud_safe_top(int top) {
+    if (atomic_exchange(&g_hud_safe_top, top) != top) MLOG("[hud] top inset %d px (full screen around the notch): the top corner boxes keep below it", top);
+}
+static double hud_inset_top(MTLViewport vp) {
+    int t = atomic_load(&g_hud_safe_top);
+    return t > vp.originY ? t - vp.originY : 0;
+}
 static double hud_inset_right(MTLViewport vp) {
     int w = atomic_load(&g_hud_safe_w), s = atomic_load(&g_hud_safe_side); double gap = w - (vp.originX + vp.width);
     return w > 0 && s > gap ? s - gap : 0;
@@ -21236,7 +21246,7 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
     float bw = g_fps_box[slot][0], bh = g_fps_box[slot][1], W = FPS_OVERLAY_TEX_W, H = FPS_OVERLAY_TEX_H;
     pthread_mutex_unlock(&mu);
     double m = 3.0 * scale;
-    *ovp = (MTLViewport){vp.originX + vp.width - m - bw - hud_inset_right(vp), vp.originY + m, bw, bh, 0, 1};   // top-right corner
+    *ovp = (MTLViewport){vp.originX + vp.width - m - bw - hud_inset_right(vp), vp.originY + m + hud_inset_top(vp), bw, bh, 0, 1};   // top-right corner
     const float u[8] = {0, 0, bw / W, bh / H, 0.5f / W, 0.5f / H, (bw - 0.5f) / W, (bh - 0.5f) / H};
     memcpy(uv, u, sizeof u);
     return 1;
@@ -21328,7 +21338,7 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     double m = 3.0 * scale;
 #if TARGET_OS_IPHONE
     double below = fps_overlay_hints_enabled() && fps_overlay_enabled() ? g_fps_box[slot][1] + m : 0;   // under the FPS box (top-right)
-    *ovp = (MTLViewport){vp.originX + vp.width - m - bw - hud_inset_right(vp), vp.originY + m + below, bw, bh, 0, 1};
+    *ovp = (MTLViewport){vp.originX + vp.width - m - bw - hud_inset_right(vp), vp.originY + m + below + hud_inset_top(vp), bw, bh, 0, 1};
 #else
     *ovp = (MTLViewport){vp.originX + m, vp.originY + vp.height - m - bh, bw, bh, 0, 1};   // bottom-left corner
 #endif

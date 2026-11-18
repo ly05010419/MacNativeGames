@@ -134,6 +134,19 @@ static NSProgressIndicator *bootProgress;
 static NSView *hudBox;   /* the FPS / shader / load box (TOTKHudBox), nil with TOTK_HUD=corners */
 static NSView *fpsGraphBox;
 static int fpsGraphEnabled;
+/* Full screen around the notch (off by default; TOTK_NOTCH=1 or the settings panel's row, saved in
+   fullscreen-notch.txt): on a screen with a camera housing, full screen is a borderless window over the whole panel
+   (NSScreen.frame, 3024x1964 on a 14" MacBook Pro) above the menu bar, instead of macOS's full screen, which stops below
+   the housing (3024x1898). The picture keeps the aspect ratio picked; at the panel's own shape (3024x1964, 1.54) it
+   fills it, the 3D on both sides of the housing. A screen without a housing keeps native full screen. The app's
+   Info.plist has NSPrefersDisplaySafeAreaCompatibilityMode = false (build_app.py), so macOS does not letterbox the
+   whole display for a window over the housing. */
+static BOOL fullPanel;   /* main thread: the window covers the whole panel now */
+static BOOL win_full(void);
+static int front_notch_enabled(void);
+static int front_notch_locked(void);
+static void front_notch_set(int on);
+static CGFloat front_top_inset(void);
 /* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
@@ -338,7 +351,7 @@ static int front_modifier_down(NSEvent *e){
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
  (void)timer;self.cursorHideTimer=nil;
- if(!self.cursorAutoHideActive||!self.window.isKeyWindow||!(self.window.styleMask&NSWindowStyleMaskFullScreen))return;
+ if(!self.cursorAutoHideActive||!self.window.isKeyWindow||!win_full())return;
  if(!self.cursorIsHidden){[NSCursor hide];self.cursorIsHidden=YES;}
 }
 -(void)mouseMoved:(NSEvent *)e{
@@ -384,6 +397,18 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
 }
 #include "hud_box.h"   /* shared/runtime/hud_box.h: the corner box and the FPS graph */
+/* Full screen around the notch: the corner box keeps below the strip beside the camera housing and the panel's rounded
+   top corner (front_top_inset; 0 otherwise, so the shared box is as it was). */
+@interface TOTKNotchHudBox:TOTKHudBox
+@end
+@implementation TOTKNotchHudBox
+-(void)position{
+ [super position];
+ CGFloat t=front_top_inset();if(t<=0||!self.superview)return;
+ NSRect f=self.frame;f.origin.y=floor(self.superview.bounds.size.height-f.size.height-10-t);
+ if(!NSEqualRects(self.frame,f))self.frame=f;
+}
+@end
 /* zeldaVR: the headset's picture on the Mac window (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes side by side,
    the newest image the VR thread handed to the streamer (gfx/nvn/totk_vr.m vr_mirror_copy, an IOSurface, +1), as this
    view's layer contents over the game's picture, 60 times a second; hidden while there is none (VR off, not connected,
@@ -549,7 +574,7 @@ static CGFloat drawable_scale(void){static CGFloat f=-1;if(f<0){const char *e=ge
 static void front_sr_view(void){
  if(!totk_sr_view||!window||!metalLayer)return;
  CGSize px=metalLayer.drawableSize;
- totk_sr_view((int)px.width,(int)px.height,window.screen?(int)window.screen.maximumFramesPerSecond:0,(window.styleMask&NSWindowStyleMaskFullScreen)!=0);
+ totk_sr_view((int)px.width,(int)px.height,window.screen?(int)window.screen.maximumFramesPerSecond:0,win_full());
 }
 static void front_sr_window(void){if(totk_sr_window&&window)totk_sr_window(window.isKeyWindow,runtime_front_window_visible()!=0);}
 static void front_sync_drawable(void){
@@ -564,7 +589,7 @@ static void front_sync_drawable(void){
 void runtime_front_resize_aspect(double ratio){
  if(!isfinite(ratio)||ratio<0.5||ratio>8)return;
  dispatch_async(dispatch_get_main_queue(), ^{
-  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+  if(!window||win_full())return;
   NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen)return;
   static NSSize lastSize;static CGFloat preferredHeight;
   NSRect oldFrame=window.frame;NSSize current=window.contentView.bounds.size;
@@ -582,10 +607,104 @@ void runtime_front_resize_aspect(double ratio){
   front_sync_drawable();
  });
 }
+/* ---- Full screen around the notch (see fullPanel above) ---- */
+extern void mtl_hud_safe_top(int top) __attribute__((weak_import));   /* gfx/nvn/nvn_mtl.m: TOTK_HUD=corners boxes keep below it */
+/* A screen with a camera housing: macOS reports the strip beside it as the top safe-area inset (32 pt on the 14" M5). */
+static BOOL screen_notched(NSScreen *s){return s&&s.safeAreaInsets.top>0;}
+static BOOL win_full(void){return window&&(fullPanel||(window.styleMask&NSWindowStyleMaskFullScreen));}
+/* What the corner overlays keep clear of at the top, in points: the strip beside the housing and the rounded corners. */
+static CGFloat front_top_inset(void){return fullPanel&&window.screen?window.screen.safeAreaInsets.top:0;}
+static int notchSetting=-1;   /* fullscreen-notch.txt, read once: -1 not read yet */
+static int front_notch_locked(void){const char *e=getenv("TOTK_NOTCH");return e&&*e;}
+static int front_notch_enabled(void){
+ const char *e=getenv("TOTK_NOTCH");if(e&&*e)return strcmp(e,"0")!=0;
+ if(notchSetting<0){char w[16]={0};notchSetting=runtime_setting_word("fullscreen-notch.txt",w,sizeof w)&&!strncmp(w,"on",2);}
+ return notchSetting;
+}
+static void panel_leave(void);
+static void front_native_toggle(void);
+static void front_notch_set(int on){
+ notchSetting=!!on;runtime_setting_save("fullscreen-notch.txt",on?"on":"off","full screen around the notch");
+ if(!on&&fullPanel){panel_leave();front_native_toggle();}   /* turned off while in use: the system's full screen instead */
+}
+static NSRect panelSavedFrame;static NSWindowStyleMask panelSavedStyle;static NSWindowLevel panelSavedLevel;
+/* Above the menu bar with the Dock and the menu bar hidden, while the game is the active app (the options apply only then;
+   AppKit restores them when it is not). */
+static void panel_raise(void){
+ if(!fullPanel)return;
+ window.level=NSMainMenuWindowLevel+1;
+ @try{NSApp.presentationOptions=NSApplicationPresentationHideDock|NSApplicationPresentationHideMenuBar;}
+ @catch(NSException *x){fprintf(stderr,"[totk] full panel: presentation options refused (%s)\n",x.reason.UTF8String);}
+}
+/* The same as windowDidEnterFullScreen / windowDidExitFullScreen, for the full panel. */
+static void panel_changed(void){
+ front_sync_drawable();
+ [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:win_full()&&window.isKeyWindow];
+ if(mtl_hud_safe_top){CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1;mtl_hud_safe_top((int)lround(front_top_inset()*s*drawable_scale()));}
+ [(TOTKHudBox *)hudBox position];front_sr_view();
+ NSRect f=window.frame;
+ fprintf(stderr,"[totk] full screen around the notch %s: window %.0fx%.0f pt at %.0f,%.0f, top inset %.0f pt\n",fullPanel?"on":"off",f.size.width,f.size.height,f.origin.x,f.origin.y,front_top_inset());
+}
+static void panel_enter(void){
+ NSScreen *s=window.screen?:NSScreen.mainScreen;if(fullPanel||!s)return;
+ panelSavedFrame=window.frame;panelSavedStyle=window.styleMask;panelSavedLevel=window.level;
+ fullPanel=YES;   /* first: TOTKWindow's frame constraint and key-window answer follow it */
+ window.styleMask=NSWindowStyleMaskBorderless;
+ panel_raise();
+ [window setFrame:s.frame display:YES];
+ [window makeKeyAndOrderFront:nil];[window makeFirstResponder:window.contentView];
+ panel_changed();
+}
+static void panel_leave(void){
+ if(!fullPanel)return;
+ fullPanel=NO;
+ @try{NSApp.presentationOptions=NSApplicationPresentationDefault;}@catch(NSException *x){(void)x;}
+ window.level=panelSavedLevel;window.styleMask=panelSavedStyle;
+ [window setFrame:panelSavedFrame display:YES];
+ NSScreen *s=window.screen?:NSScreen.mainScreen;
+ if(s&&!NSIntersectsRect(window.frame,s.visibleFrame))[window center];   /* its screen went away (docked): back in view */
+ [window makeFirstResponder:window.contentView];
+ panel_changed();
+}
+/* The window's screen changed (docked, undocked, another resolution): on a screen without a housing (a 16:9 Studio
+   Display) the system's full screen takes over there; on a notched one the panel follows the screen's frame. */
+static void panel_check_screen(void){
+ static BOOL busy;if(!fullPanel||busy)return;busy=YES;
+ NSScreen *s=window.screen?:NSScreen.mainScreen;
+ if(!screen_notched(s)){
+  fprintf(stderr,"[totk] full panel: the window's screen has no camera housing; native full screen there\n");
+  panel_leave();dispatch_async(dispatch_get_main_queue(),^{if(!(window.styleMask&NSWindowStyleMaskFullScreen))front_native_toggle();});
+ }else if(!NSEqualRects(window.frame,s.frame)){[window setFrame:s.frame display:YES];panel_changed();}
+ busy=NO;
+}
+/* The game window: a borderless one can take the keyboard, keeps a frame over the menu bar while it covers the panel, and
+   closes through the same path as a titled one (Command-Q, runtime_front_request_close). Full screen requests (the green
+   button, Control-Command-F, the View menu) go to the full panel when it is chosen and the screen has a housing. */
+@interface TOTKWindow:NSWindow
+-(void)nativeToggleFullScreen;
+@end
+@implementation TOTKWindow
+-(BOOL)canBecomeKeyWindow{return fullPanel||[super canBecomeKeyWindow];}
+-(BOOL)canBecomeMainWindow{return fullPanel||[super canBecomeMainWindow];}
+-(NSRect)constrainFrameRect:(NSRect)r toScreen:(NSScreen *)s{return fullPanel?r:[super constrainFrameRect:r toScreen:s];}
+-(void)toggleFullScreen:(id)sender{
+ if(fullPanel){panel_leave();return;}
+ if(!(self.styleMask&NSWindowStyleMaskFullScreen)&&front_notch_enabled()&&screen_notched(self.screen)){panel_enter();return;}
+ [super toggleFullScreen:sender];
+}
+-(void)nativeToggleFullScreen{[super toggleFullScreen:nil];}
+/* performClose: of a window without a close button only beeps */
+-(void)performClose:(id)sender{
+ if(!fullPanel){[super performClose:sender];return;}
+ id<NSWindowDelegate> d=self.delegate;
+ if(![d respondsToSelector:@selector(windowShouldClose:)]||[d windowShouldClose:self])[self close];
+}
+@end
+static void front_native_toggle(void){if([window isKindOfClass:TOTKWindow.class])[(TOTKWindow *)window nativeToggleFullScreen];else [window toggleFullScreen:nil];}
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
--(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);runtime_gamepad_focus(1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
+-(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);runtime_gamepad_focus(1);if(win_full())[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
 -(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_gamepad_focus(0);runtime_input_clear_window();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
@@ -603,7 +722,7 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
--(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();panel_check_screen();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */
@@ -669,7 +788,7 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
 }
 -(void)displayRate:(id)sender{(void)sender;}
 -(BOOL)validateMenuItem:(NSMenuItem *)item{
- if(item.action==@selector(toggleFullscreen:))item.title=@((window.styleMask&NSWindowStyleMaskFullScreen)?TOTK_UI("退出全屏","Exit Full Screen"):TOTK_UI("进入全屏","Enter Full Screen"));
+ if(item.action==@selector(toggleFullscreen:))item.title=@(win_full()?TOTK_UI("退出全屏","Exit Full Screen"):TOTK_UI("进入全屏","Enter Full Screen"));
  if(item.action==@selector(chooseFrameLimit:)){item.state=nvn_fps_lock()==item.tag?NSControlStateValueOn:NSControlStateValueOff;if(getenv("TOTK_MFX"))return NO;}
  /* the screen the window is on now (another display, a changed refresh rate): read when the menu opens */
  if(item.action==@selector(displayRate:)){item.title=[NSString stringWithFormat:@(TOTK_UI("显示器刷新率：%ld Hz","Display refresh: %ld Hz")),(long)(window.screen?:NSScreen.mainScreen).maximumFramesPerSecond];return NO;}
@@ -750,7 +869,7 @@ void runtime_front_run(void(*callback)(void)){
 #endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
-  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window=[[TOTKWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* TOTK_WINDOW_FLOAT=1 (test scripts only): the window floats above the user's other windows, in the screen's top-right
      corner, so their work does not cover it: macOS stops the display link of a covered window and the game's presents stop
@@ -794,7 +913,7 @@ void runtime_front_run(void(*callback)(void)){
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
   {TOTKVRMirror *mirror=[[TOTKVRMirror alloc] initWithFrame:window.contentView.bounds];mirror.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;   /* zeldaVR */
    [window.contentView addSubview:mirror positioned:NSWindowBelow relativeTo:bootOverlay];}
-  TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
+  TOTKHudBox *box=[[TOTKNotchHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
   [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];hudBox=box;
   /* The settings panel's FPS graph switch, one for both games (user 2026-10-29: "改成两个游戏共用 默认打开"): fps-graph.txt
      in the folder above the game's ("on" / "off"), on when there is none. */
@@ -809,7 +928,10 @@ void runtime_front_run(void(*callback)(void)){
   totk_screenshot_shared=totk_shot_queue;totk_shot_start();   /* 截图分享 (shot_upload.h): off unless the player turned it on */
 #endif
   front_sr_view();
-  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
+  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();panel_check_screen();}];   /* a refresh rate changed on the same screen */
+  /* Full panel: Command-Tab away lowers it to a normal window (other apps' windows come in front of it), back raises it again. */
+  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;if(fullPanel)window.level=NSNormalWindowLevel;}];
+  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;panel_raise();panel_check_screen();}];
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   runtime_gamepad_focus(window.isKeyWindow||assume_focus());   /* a test window never becomes key (TOTK_ASSUME_FOCUS) */
