@@ -43,6 +43,10 @@ final class Model: ObservableObject {
     var jobRunning: Bool { phase == .building || phase == .cancelling }
     @Published var kind = "full"         // express, fast or full: what the running job does
     @Published var page = "home"         // the page shown: home (the games) or build
+    /// The game a build from the Build page just made: the home page opens with its case in the middle (user 2026-11-18:
+    /// "安装 完了 不返回首页").
+    @Published var homeGame: String?
+    private var jobGameId: String?       // the running job's game (its 'plan' event)
     @Published var buildFor: String?     // the game a card's plus chose for the Build page (its files go to step 1)
     @Published var quickStart = false    // 快速启动: build with only the title's shaders (Model.quickGames)
     /// The log of the job that failed last, which the terminal page's AI is asked about.
@@ -419,7 +423,7 @@ final class Model: ObservableObject {
             append(line); return
         }
         switch e.event {
-        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last
+        case "plan": measured = e.measured ?? false; appPath = e.app; kind = e.kind ?? "full"; stepsLast = e.steps_last; jobGameId = e.game
         case "stage":
             stage = T.stage(e.name ?? ""); stageText = e.text ?? ""; append("— " + (e.text ?? ""))
             if let i = e.index, let n = e.total { stageNumber = (i, n) }
@@ -435,6 +439,11 @@ final class Model: ObservableObject {
             if e.ok == true {
                 phase = .done; fraction = 1; appPath = e.app ?? appPath
                 if startedHere { play() }   // a job started elsewhere ends without starting the game
+                if startedHere && page == "build" {   // back to the games, this one in the middle; its files are done with
+                    homeGame = jobGameId ?? plan?.game
+                    buildFor = nil; clear(); buildStep = 1
+                    page = "home"
+                }
             } else {
                 failure = e; phase = (e.cancelled ?? false) ? .cancelled : .failed
             }

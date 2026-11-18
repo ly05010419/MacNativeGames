@@ -27,6 +27,10 @@ struct HomePage: View {
 
     /// The first built game is open when the page shows (user 2026-11-12: "启动 app 默认选中第一个游戏").
     private func chooseFirst() {
+        if let built = model.homeGame {   // a build just finished: its game in the middle
+            chosen = built; defaulted = true; model.homeGame = nil
+            return
+        }
         guard !defaulted, model.installedLoaded else { return }
         guard let first = order.first(where: { g in model.installed.contains { $0.game == g } }) else { return }
         chosen = first
