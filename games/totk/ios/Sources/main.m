@@ -284,6 +284,8 @@ static void contrib_settings_sync(NSString *contrib) {
     __weak TOTKGameController *weak = self;
     void (^start)(void) = ^{
         apply_display_settings();
+        // The 60/30 button was drawn before Play; it shows the frame rate the picture holds now.
+        for (UIView *v in weak.view.subviews) if ([v isKindOfClass:TOTKTouchPad.class]) [v setNeedsDisplay];
         const char *switch_size = getenv("TOTK_SWITCH_SIZE");   // the picture settings hand it over (apply_display_settings)
         g_switch_size = switch_size && !strcmp(switch_size, "1");
         [weak placeGameView];   // the Switch's screen size, when chosen, before the drawable takes the view's shape

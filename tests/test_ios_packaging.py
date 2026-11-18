@@ -256,6 +256,11 @@ class Profiles(unittest.TestCase):
         sync = 'runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);'
         self.assertIn(sync, zelda)
         self.assertLess(zelda.index('setenv(env.v[i].name, env.v[i].value, 0);'), zelda.index(sync))
+        # ... and the button, drawn before Play, showed 60 while the game held 30: it is drawn again once the picture is set.
+        start = self.main[self.main.index('- (void)prepareAndStart {'):self.main.index('- (void)boot {')]
+        redraw = 'if ([v isKindOfClass:TOTKTouchPad.class]) [v setNeedsDisplay];'
+        self.assertIn(redraw, start)
+        self.assertLess(start.index('apply_display_settings();'), start.index(redraw))
 
     def test_migration_runs_once_before_the_rows_are_handed_over(self):
         self.assertLess(self.launch.index('totk_migrate_picture_rows();'), self.launch.index('for (NSString *key in defaults)'))
