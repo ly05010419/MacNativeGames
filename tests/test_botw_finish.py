@@ -46,7 +46,7 @@ class Hooks(unittest.TestCase):
             'if (mfxup_dock(fs)) {',
             'botw_fin_upscale(fs, 1);',                                 # MetalFX wrote the canvas: only notes it
             'if (botw_fin_upscale(fs, 0)) return 1;',                    # MetalFX on but the draw kept
-            'if (!TAA_COMPOSE(fs) || !R.rt.n')]                       # the compose path (every game's compose, 1ae9bba7)
+            'if (!MFXUP_COMPOSE(fs) || !R.rt.n')]                     # the compose path (TotK; BotW on iOS, 1ae9bba7)
         self.assertEqual(order, sorted(order))
         self.assertIn('    if (!mfxup_enabled()) return 0;\n#endif', draw)   # the other games unchanged
 
