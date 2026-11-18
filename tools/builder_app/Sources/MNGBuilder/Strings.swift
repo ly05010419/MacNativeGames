@@ -39,6 +39,10 @@ enum T {
     /// The Launcher's version, bottom right of the window (user 2026-11-17: "launcher 右下角 显示 版本号").
     static func version(_ v: String) -> String { "MNG Launcher \(v)" }
     static func devVersion(_ commit: String) -> String { zh ? "MNG Launcher 开发版 · \(commit)" : "MNG Launcher development build · \(commit)" }
+    static func versionNewer(_ v: String, _ newer: String) -> String {
+        zh ? "MNG Launcher \(v) · 可更新到 \(newer)" : "MNG Launcher \(v) · \(newer) is out"
+    }
+    static let versionNewerHelp = s("Downloads the new MNG Launcher", "下载新版 MNG Launcher")
     static func versionHelp(_ commit: String) -> String { zh ? "自带代码提交 \(commit)" : "Bundled code commit \(commit)" }
     static let thisMac = s("This Mac", "这台 Mac")
     static let fix = s("Fix", "修复")
