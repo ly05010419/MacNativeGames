@@ -71,6 +71,9 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     private var height: CGFloat { CoverFlowGeometry.top(size) + size * 1.38 }   // the room above, the box, its reflection
     private let spring = Animation.spring(response: 0.45, dampingFraction: 0.86)
     private let turnSpring = Animation.spring(response: 0.55, dampingFraction: 0.84)
+    /// Opening: 95% of the turn 0.25 s after the click, 5% past and back (user 2026-11-18: "改成 0.25秒 和 10%", "10% 改成
+    /// 5%"; damping 0.69 overshoots 5.0%, reaching 0.95 at 0.455 x response, and the trace moves ~0.035 s after the click)
+    private let openingTurn = Animation.spring(response: 0.46, dampingFraction: 0.69)
 
     var body: some View {
         GeometryReader { geo in
@@ -338,7 +341,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             open = 0; expanded = true; flipped = true
             DispatchQueue.main.async {   // inserted at 0 first, then it moves
                 guard flipped else { return }   // closed again before it began: nothing to open
-                withAnimation(turnSpring) { open = 1; coverLean = .zero; coverLit = 0 }
+                withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { detailPress = 0 }
             }
         } else {

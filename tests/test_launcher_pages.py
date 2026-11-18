@@ -153,7 +153,8 @@ class Pages(unittest.TestCase):
                      '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
             self.assertIn(part, detail)
         for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, close: { turn(false) })',
-                     'withAnimation(turnSpring) { open = 1; coverLean = .zero; coverLit = 0 }',
+                     'withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }',
+                     'private let openingTurn = Animation.spring(response: 0.46, dampingFraction: 0.69)',
                      'withAnimation(turnSpring, completionCriteria: .removed) { open = 0; coverLean = .zero; coverLit = 0 } completion: {',
                      'flip: Double(open), hideCenter: expanded',
                      "including: flipped ? .subviews : .all", 'guard !expanded else { return }'):
