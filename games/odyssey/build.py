@@ -31,6 +31,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from tools.port_app import adapter  # noqa: E402  MNG Launcher's side every port's build.py shares
 from tools.port_app.adapter import say  # noqa: E402
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 
 def python_for(work):
@@ -39,8 +40,6 @@ def python_for(work):
 
 def checked_work(work, out):
     adapter.checked_work(work, out, REPO)
-    if ' ' in os.path.relpath(work, GAME):
-        raise ValueError(f'make cannot build into a folder whose path has a space: {work}')
     return work
 
 
@@ -117,7 +116,7 @@ def update(app, work):
         return None
     app, work, _ = ready
     env = {**os.environ, **package_env(work, app)}
-    make_work = os.path.relpath(work, GAME)
+    make_work = os.path.relpath(make_path(work, 'odyssey'), GAME)   # relative: the checkout's own path may have a space
     steps = [(5, 'Loader tables (verifies every input against the pinned hashes)', [sys.executable, 'scripts/prepare_runtime.py', '--work', work], {}),
              (6, 'Shader tools and the runtime', ['make', f'-j{os.cpu_count() or 8}', 'runtime', f'WORK={make_work}', f'PY={sys.executable}'],
               adapter.xcode_env()),

@@ -213,6 +213,19 @@ class GamesTheProgramsDoNotCover(unittest.TestCase):
                 self.assertFalse(classify.no_developer_tools())
             self.assertEqual({c[0] for c in calls}, {'/usr/bin/xcode-select'})
 
+    def test_a_full_xcode_counts(self):
+        """xcode-select naming Xcode.app: clang is in its default toolchain, not in Developer/usr/bin (issue #2284)."""
+        from tools.builder_jobs import classify
+        with tempfile.TemporaryDirectory() as tmp:
+            run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, tmp + '\n', '')
+            with mock.patch.object(classify.subprocess, 'run', side_effect=run):
+                (Path(tmp) / 'usr/bin').mkdir(parents=True)
+                self.assertTrue(classify.no_developer_tools())
+                clang = Path(tmp) / 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang'
+                clang.parent.mkdir(parents=True)
+                clang.write_text('')
+                self.assertFalse(classify.no_developer_tools())
+
 
 class SourceArchive(unittest.TestCase):
     def test_the_archive_carries_the_folder(self):

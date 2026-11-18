@@ -12,6 +12,8 @@ import sys
 import time
 
 GAME=Path(__file__).resolve().parent
+if str(GAME.parents[1]) not in sys.path:sys.path.append(str(GAME.parents[1]))   # the repository root, after this folder
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)   # first here (#2045)
 VERSION='oot'
 TITLE='0400486024DEC000'
 
@@ -58,20 +60,6 @@ def imported_romfs(tree):
     names it. Not a pinned image: two retail dumps of update 131072 pack to different images (#2009, #2011)."""
     index=json.loads((Path(tree)/'extracted/oot/romfs/index.json').read_text())
     return dict(sha256=index['romfs_sha256'],size=index['romfs_size'])
-
-def make_path(work):
-    """The work folder as make can name it (#2045): make splits target and prerequisite names at spaces, and the default
-    work folder sits next to the dump, named after the game. A path with spaces gets a fixed alias in the temporary
-    folder, a link to it; the build's files still land in the work folder."""
-    work=Path(work)
-    if ' ' not in str(work):return work
-    import tempfile
-    alias=Path(tempfile.gettempdir())/('oot-work-'+hashlib.sha256(str(work.resolve()).encode()).hexdigest()[:12])
-    if ' ' in str(alias):raise ValueError(f'the temporary folder {alias.parent} has a space too: set TMPDIR to a folder without one')
-    if alias.is_symlink() and alias.resolve()==work.resolve():return alias
-    if alias.is_symlink() or alias.exists():alias.unlink()
-    alias.symlink_to(work.resolve(),target_is_directory=True)
-    return alias
 
 def clone_file(source, destination):
     """APFS copy-on-write keeps the verified game image independent without duplicating disk blocks."""
@@ -730,7 +718,7 @@ def update_runtime(app,work=None,remake=False,shared=None):
     print('building the runtime',flush=True)
     env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
     with (logs/'native-runtime.log').open('w') as f:
-        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,env=env)
+        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work,'oot')),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,env=env)
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
@@ -912,7 +900,7 @@ def build(args, source):
     run([py,'scripts/prepare_shared_fonts.py','--version','oot'],'prepare-shared-fonts')
     install_translator(tree)
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
-    run(['make','-C',GAME,'WORK='+str(make_path(work)),'-j2'],'native-runtime',work)
+    run(['make','-C',GAME,'WORK='+str(make_path(work,'oot')),'-j2'],'native-runtime',work)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
     if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
     mode='full' if device else shader_mode()

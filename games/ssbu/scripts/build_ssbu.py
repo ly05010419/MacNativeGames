@@ -40,6 +40,9 @@ import time
 from pathlib import Path
 
 GAME_DIR = Path(__file__).resolve().parents[1]
+if str(GAME_DIR.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(GAME_DIR.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 VERSIONS = {v: json.loads((GAME_DIR / f'assets/expected-{name}.json').read_text())
             for v, name in (('v1302', 'v13.0.2'), ('v1305', 'v13.0.5'))}
 VERSION = 'v1302'   # main() sets the one identify_update chose
@@ -336,23 +339,6 @@ def step_data(work, py, game, keys, logs, firmware=None, shared_fonts=None):
     run([py, 'scripts/prepare_runtime.py', '--work', work, '--version', VERSION, *copy], logs / 'prepare-runtime.log')
 
 
-def make_path(work):
-    """The work folder as make can name it. Make splits every path at spaces (2026-10-24: a work folder in
-    "Super Smash Brothers Ultimate/" stopped the first make with "No rule to make target"), so a folder with a space is
-    handed over as a link without one in the temporary folder; everything still lands in the work folder."""
-    if ' ' not in str(work):
-        return work
-    alias = Path(tempfile.gettempdir()) / f'ssbu-work-{hashlib.sha256(str(work).encode()).hexdigest()[:12]}'
-    if ' ' in str(alias):
-        raise BuildError(f'the work folder {work} has a space and the temporary folder {alias.parent} too; pass --work '
-                         'a folder without spaces')
-    if alias.is_symlink() and alias.resolve() != work.resolve():
-        alias.unlink()
-    if not alias.is_symlink():
-        alias.symlink_to(work)
-    return alias
-
-
 # ---- 5. shaders ----
 def list_with_notes(work, py, logs):
     """The shared list plus what the player's own game noted that it lacks (the app keeps those rows in
@@ -377,7 +363,7 @@ def list_with_notes(work, py, logs):
 
 
 def step_shaders(work, py, logs):
-    mk = make_path(work)
+    mk = make_path(work, 'ssbu')
     make = ['make', f'WORK={mk}', f'PY={mk / "venv/bin/python"}', f'VERSION={VERSION}']
     run([*make, 'shader-tools'], logs / 'shader-tools.log')
     lst = list_with_notes(work, py, logs)
@@ -396,7 +382,7 @@ def step_shaders(work, py, logs):
 # ---- 6. binary, launcher, icon ----
 def step_binary(work, py, game, keys, logs):
     say('6. app: the game binary and the launcher')
-    mk = make_path(work)
+    mk = make_path(work, 'ssbu')
     run(['make', f'-j{os.cpu_count() or 4}', f'WORK={mk}', f'PY={mk / "venv/bin/python"}', f'VERSION={VERSION}', 'runtime'],
         logs / 'runtime.log')
     defines = [] if VERSION == 'v1302' else [f'-DSSBU_GAME_{VERSION.upper()}=1']   # runtime/game_version.h, as the Makefile

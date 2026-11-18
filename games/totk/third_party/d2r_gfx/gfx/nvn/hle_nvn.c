@@ -3385,6 +3385,12 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] uniform 换副本 至帧 %llu：每帧更新 %.1f 次（内容未变跳过 %.1f 次），新副本 %.1f 个 / %.1f KB，提前写回 %.2f 次，开编码器后才发现重叠 %.2f 次，表满回退 %.2f 次", frame,
                 (v[0] - pr[0]) / nf, (v[6] - pr[6]) / nf, (v[1] - pr[1]) / nf, (v[2] - pr[2]) / nf / 1024, (v[3] - pr[3]) / nf, (v[4] - pr[4]) / nf, (v[5] - pr[5]) / nf); }
           memcpy(pr, v, sizeof pr); }
+        { static uint64_t pv[8]; uint64_t v[8]; void mtl_pend_overlay_stats(uint64_t[8]); mtl_pend_overlay_stats(v);   // nvn_mtl.m pend_overlay_x
+          if (pf && frame > pf) { double nf = (double)(frame - pf);
+            for (int t = 0; t < 2; t++) { const uint64_t *c = v + 4 * t, *p = pv + 4 * t; double calls = (double)(c[0] - p[0]);
+              LOG("[nvn] 待写叠加（%s）至帧 %llu：每帧 %.1f 次，每次扫描 %.1f 条、跳过已完成前缀 %.1f 条、应用 %.2f 条 | pending-write overlays (%s): per frame, scanned / completed prefix skipped / applied per call",
+                  t ? "拷贝例程" : "回放", frame, calls / nf, calls ? (c[1] - p[1]) / calls : 0, calls ? (c[2] - p[2]) / calls : 0, calls ? (c[3] - p[3]) / calls : 0, t ? "copy routine" : "replay"); } }
+          memcpy(pv, v, sizeof pv); }
         if (frame % 300 == 0) { unsigned wn = 0; uint32_t wq = dm_guest_work_qos(&wn); thread_extended_info_data_t xi; mach_msg_type_number_t xc = THREAD_EXTENDED_INFO_COUNT; int okx = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_EXTENDED_INFO, (thread_info_t)&xi, &xc) == KERN_SUCCESS;
             thread_time_constraint_policy_data_t tp; mach_msg_type_number_t tc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0; int rt_live = thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tp, &tc, &def) == KERN_SUCCESS && !def;   // def = 1：实时策略没在生效（没设上 / 被撤） | def = 1: the real-time policy is not in effect (never set / revoked)
             LOG("[nvn] 线程策略：主线程 实时 计算 %.2f ms / 周期 %.2f ms，实时策略%s，当前优先级 %d（基础 %d，调度类 %d）；工作线程 %u 条 QoS %#x；出图 QoS %#x", g_rt_comp_ms, g_rt_period_ms, rt_live ? "在生效" : "未生效", okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }

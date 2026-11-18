@@ -9,13 +9,15 @@ from device_pipelines import SCHEMA, connected_gpus, mac_cache, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
-def settings_without_totk(root):
-    """The pane for Breath of the Wild, in place: every row Root.plist marks TOTKApp=totk (its picture modes and scene
-    sizes, the custom picture tier, MetalFX, and the aspect-ratio row, whose key means ultrawide in Breath of the Wild),
-    and any group they leave empty. The Full HD switch stays: botw_pane describes it for Breath of the Wild and adds
-    its docked scene row. The mark sits on the row itself, so this list is not kept
-    a second time here; tests/test_ios_packaging.py checks that every marked row is gone from the pane."""
-    specs=[s for s in root['PreferenceSpecifiers'] if s.get('TOTKApp')!='totk']
+def pane_for(root, app):
+    """The pane for one app, in place: app is 'totk', 'botw' or 'ns2' (Bananza, Pokopia). A row Root.plist marks with
+    TOTKApp belongs to that app only, 'zelda' to Tears of the Kingdom and Breath of the Wild (the picture profile and
+    MetalFX, user 2026-11-17: the picture is chosen in the game); an unmarked row is everyone's. Any
+    group the dropped rows leave empty goes too. tests/test_ios_packaging.py PicturePane checks the three panes."""
+    def mine(s):
+        mark=s.get('TOTKApp')
+        return mark is None or mark==app or (mark=='zelda' and app in ('totk','botw'))
+    specs=[s for s in root['PreferenceSpecifiers'] if mine(s)]
     kept=[]
     for i,s in enumerate(specs):
         if s.get('Type')=='PSGroupSpecifier':
@@ -38,24 +40,13 @@ def seed_fingerprint(seed, lists):
     return fp.hexdigest()
 
 def botw_pane(root):
-    """Breath of the Wild's pane, in place: the Full HD switch described for this game, its docked scene row right after
-    it (TOTK_BOTW_SCENE, game_patches_botw.c patch_render_phone: original is the Switch's 1600x900 scene upscaled into
-    the 1920x1080 canvas, HD the scene at 1920x1080; user 2026-11-01), then settings_without_totk."""
-    specs=root['PreferenceSpecifiers']
-    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
-    specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
-                               'iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · '
-                               'on: the game\'s docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch '
-                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 (960×540 inside), '
-                               'the iPhone\'s default. Takes effect after relaunching the game')
-    specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
-                       'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
-                       'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
-    return settings_without_totk(root)
+    """Breath of the Wild's pane: the picture profile and MetalFX, as Tears of the Kingdom's (the picture is chosen in the
+    game, user 2026-11-17)."""
+    return pane_for(root,'botw')
 
 def bananza_pane(root):
     """Bananza's own engine size; TOTK/BotW's docked presets describe other engines."""
-    root=settings_without_totk(root)
+    root=pane_for(root,'ns2')
     specs=root['PreferenceSpecifiers']
     at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
     specs[at-1]['FooterText']=('輸入寬x高，例如 1280x720（720p）、960x540 或 1920x1080。'
@@ -230,7 +221,7 @@ def main():
         define='GAME_DKB' if a.version=='dkb' else 'GAME_POKOPIA'
         project=project.replace('-I../build\n',f'-I../build -D{define}=1 -DGAME_NS2=1\n')
         root=plistlib.loads((settings/'Root.plist').read_bytes())
-        root=bananza_pane(root) if a.version=='dkb' else settings_without_totk(root)
+        root=bananza_pane(root) if a.version=='dkb' else pane_for(root,'ns2')
         (settings/'Root.plist').write_bytes(plistlib.dumps(root))
     elif botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
@@ -239,6 +230,8 @@ def main():
         (settings/'Root.plist').write_bytes(plistlib.dumps(root))
     elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
     else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
+    if not botw and not ns2:   # Tears of the Kingdom: its own rows and the Zelda ones, without Bananza's and Pokopia's
+        (settings/'Root.plist').write_bytes(plistlib.dumps(pane_for(plistlib.loads((settings/'Root.plist').read_bytes()),'totk')))
     settings_strings.localize(settings)   # after the game's own changes to the pane
     if not botw and not ns2 and a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
     project=configure_app_icon(tree,gen,project,logs,env,vision)

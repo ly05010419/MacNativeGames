@@ -5,6 +5,8 @@ and Echoes of Wisdom (2026-11-18; until then each carried a copy).
               the express update's entry (--update-app, update_runtime.py)
   bundle.py   the packager's plumbing: APFS clones, the launcher compiled, the icon, Info.plist and its update keys, the
               ad hoc signature with the bundle ID as designated requirement, staging beside the app, Launch Services
+  make_path.py  the work folder as make can name it (a link without spaces): every port's `make ... WORK=`, the ones
+              outside this list too (Ocarina of Time, Smash, Dread, Kirby, OT0, TMNT, Tomodachi; issue #2284)
 
 Each game's own steps, files, checks and tuning stay in its folder. The C side of the app launcher is
 shared/app/app_launcher.h (shared/ holds files games link; this folder holds Python the games import, as build_app.py

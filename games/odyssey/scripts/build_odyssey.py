@@ -27,6 +27,9 @@ from pathlib import Path
 
 GAME_DIR = Path(__file__).resolve().parents[1]
 GAMES = GAME_DIR.parent
+if str(GAME_DIR.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(GAME_DIR.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 SPIRV_CROSS = ("https://github.com/KhronosGroup/SPIRV-Cross.git", "aa217aeb6c9f0ace7a0ab233b28807edf45eb165")
 MODULES = ("main", "sdk", "subsdk0")
 
@@ -184,11 +187,9 @@ def main():
     if not (src / ".git").is_dir():
         run(["git", "clone", "--quiet", SPIRV_CROSS[0], src])
     run(["git", "-C", src, "checkout", "--quiet", SPIRV_CROSS[1]])
-    # make cannot handle spaces in target paths, so the work folder goes in relative to games/odyssey (the checkout
-    # itself may sit in a folder with a space, as long as the work folder's own path below it has none).
-    make_work = os.path.relpath(work, GAME_DIR)
-    if " " in make_work:
-        raise SystemExit(f"make cannot build into a folder whose path has a space: {make_work}; pick another --work")
+    # make cannot handle spaces in target paths: the work folder goes in relative to games/odyssey (the checkout itself
+    # may sit in a folder with a space), and a work folder with a space through make_path's link without one.
+    make_work = os.path.relpath(make_path(work, "odyssey"), GAME_DIR)
     run(["make", f"-j{args.jobs}", "runtime", f"WORK={make_work}", f"PY={py}"], env={"DEVELOPER_DIR": args.developer_dir})
     done(t)
 

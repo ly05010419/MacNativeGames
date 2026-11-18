@@ -18,12 +18,12 @@ class WorkPathTests(unittest.TestCase):
     def test_a_path_with_spaces_gets_an_alias_without_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp) / 'The Legend of Zelda Ocarina of Time [NUP]' / 'OcarinaOfTime_build'; work.mkdir(parents=True)
-            alias = build.make_path(work)
+            alias = build.make_path(work, 'oot')   # tools/port_app/make_path.py since issue #2284
             self.assertNotIn(' ', str(alias))
             self.assertEqual(alias.resolve(), work.resolve())
-            self.assertEqual(build.make_path(work), alias)   # the same alias each time
+            self.assertEqual(build.make_path(work, 'oot'), alias)   # the same alias each time
             plain = Path(tmp) / 'plain'; plain.mkdir()
-            self.assertEqual(build.make_path(plain), plain)
+            self.assertEqual(build.make_path(plain, 'oot'), plain)
 
     def test_make_refuses_a_work_path_with_spaces_and_says_why(self):
         result = subprocess.run(['make', '-n', '-C', str(GAME), 'WORK=/tmp/a b'], capture_output=True, text=True)
@@ -32,7 +32,7 @@ class WorkPathTests(unittest.TestCase):
 
     def test_both_runtime_builds_use_the_alias(self):
         source = (GAME / 'build.py').read_text()
-        self.assertEqual(source.count("'WORK='+str(make_path(work))"), 2)
+        self.assertEqual(source.count("'WORK='+str(make_path(work,'oot'))"), 2)
         self.assertNotIn("'WORK='+str(work)", source)
 
 

@@ -2910,18 +2910,52 @@ static void pend_materialize_x(uint64_t a, uint8_t *out, size_t n, int depth, in
     pend_overlay_x(a, out, n, depth, wait);
 }
 static void pend_materialize(uint64_t a, uint8_t *out, size_t n, int depth) { pend_materialize_x(a, out, n, depth, 1); }
+/* Completed prefix (TOTK_PEND_SKIP=0: off). Entries are appended with the next submission's fence (g_fence only grows) and
+   pend_begin keeps their order, so the fences never decrease along the table: the entries the GPU has completed are a
+   prefix, which the loop below skipped one by one. The iPad A16 (Breath of the Wild 1.9.0, 2026-11-18): 523 replay overlays
+   a frame scanned ~500 entries each, ~300 of them that prefix; skipping it took the replay from 21.52 to 21.15 M cycles a
+   frame (on and off in alternate 300-frame windows of one run, lower in 19 of 19). TOTK_PEND_SKIP_CHECK=1 checks the order
+   on every overlay (11,400 frames, no violation). */
+static _Atomic int g_pend_skip = -1, g_pend_skip_check = -1;
+static int pend_skip_on(void) {
+    int v = atomic_load(&g_pend_skip);
+    if (v < 0) { const char *e = getenv("TOTK_PEND_SKIP"); v = !(e && !atoi(e)); atomic_store(&g_pend_skip, v); if (!v) MLOG("TOTK_PEND_SKIP=0: pending-write overlays scan the whole table"); }
+    return v;
+}
+static int pend_skip_check_on(void) {
+    int v = atomic_load(&g_pend_skip_check);
+    if (v < 0) { const char *e = getenv("TOTK_PEND_SKIP_CHECK"); v = e && atoi(e); atomic_store(&g_pend_skip_check, v); }
+    return v;
+}
+static int pend_first_live(int npend, uint64_t done) {   // the first entry with fence > done (npend when none)
+    int a = 0, b = npend;
+    while (a < b) { int m = (a + b) >> 1; if (g_pend_fence[m] <= done) a = m + 1; else b = m; }
+    return a;
+}
+/* What overlays scan: [0] calls, [1] entries scanned, [2] entries skipped as the completed prefix, [3] entries applied;
+   [4..7] the same for the copy routine's calls (wait = 0, possibly on helper threads). */
+static _Atomic uint64_t g_pov[8];
+void mtl_pend_overlay_stats(uint64_t v[8]) { for (int i = 0; i < 8; i++) v[i] = atomic_load_explicit(&g_pov[i], memory_order_relaxed); }
 static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wait) {   // the pending writes over out (= [a, a+n) before them)
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
     int npend = wait ? g_npend : g_usnap_pend_n;   // wait = 0: the copy routine (possibly on a helper thread)
-    for (int i = 0; i < npend; i++) {
+    int first = pend_skip_on() ? pend_first_live(npend, done) : 0;
+    if (pend_skip_check_on()) for (int i = 1; i < npend; i++) if (g_pend_fence[i] < g_pend_fence[i - 1])
+        MDIE("pending writes out of fence order at %d: %llu after %llu", i, (unsigned long long)g_pend_fence[i], (unsigned long long)g_pend_fence[i - 1]);
+    uint64_t c_hit = 0;
+    for (int i = first; i < npend; i++) {
         uint64_t lo = g_pend_lo[i], hi = g_pend_hi[i];
         if (hi <= a || lo >= a + n || g_pend_fence[i] <= done) continue;   // completed writes are already in memory (which may hold newer CPU writes)
+        c_hit++;
         if (g_eye_skip_fence && g_pend_fence[i] == g_eye_skip_fence) continue;   // stereo replay: the first replay's, not before the second (mtl_eye_pass)
         uint64_t s0 = lo > a ? lo : a, e0 = hi < a + n ? hi : a + n;
         if (g_pend_kind[i] == 0) memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
         else if (depth < 2) pend_materialize_x((uint64_t)(uintptr_t)g_pend_src[i] + (s0 - lo), out + (s0 - a), e0 - s0, depth + 1, wait);
         else memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
     }
+    _Atomic uint64_t *c = g_pov + (wait ? 0 : 4);
+    atomic_fetch_add_explicit(&c[0], 1, memory_order_relaxed); atomic_fetch_add_explicit(&c[1], (uint64_t)(npend - first), memory_order_relaxed);
+    atomic_fetch_add_explicit(&c[2], (uint64_t)first, memory_order_relaxed); atomic_fetch_add_explicit(&c[3], c_hit, memory_order_relaxed);
 }
 // Write the logged updates into memory on the GPU timeline (ends a render pass if one is open).
 static void upd_flush(void) {
@@ -18336,6 +18370,9 @@ static int tup_dock(__unsafe_unretained NvShader *fs) {
 /* TOTK_MFX_UPSCALE: the game's compose shader 0ac9a549 (tone mapping and bloom into the canvas) samples the scene at
    texture slot 0; when that scene is smaller than the canvas (TOTK_RENDER_RES below the canvas size), upscale it with
    MetalFX first and let encode_args bind the result. Runs before the draw opens its render encoder. Docked: mfxup_dock.
+   Breath of the Wild's handheld play composes the same way (TAA_COMPOSE: 1.9.0 f7ee6fe1, 1.6.0 d14b1c38) straight into
+   the 1280x720 canvas, so its phone scene (960x540 or the pane's custom size) takes this path too (user 2026-11-17);
+   docked, its compose writes the scene's own size and its upscale is bd7ffdd4 (mfxup_dock).
    Returns 1 when the draw was replaced (not to be encoded). */
 static _Atomic uint32_t g_scene_w, g_scene_h;   // the internal resolution: the scene the compose draw samples (fps_overlay)
 static _Atomic uint32_t g_out_w, g_out_h;       // the output resolution: the canvas rectangle the game presents (present_encode)
@@ -18354,6 +18391,14 @@ static void scene_size_note(__unsafe_unretained NvShader *fs) {   // the compose
 #include "botw_finish.h"   // the same rows on Breath of the Wild 1.9.0, around its FXAA / upscale draw
 #endif
 #include "totk_hdr_render.h"
+/* The compose draws whose smaller scene MetalFX upscales in mfxup_draw. Breath of the Wild on the Mac keeps what it had
+   (none: its compose writes the scene's own size there, and this path was Tears of the Kingdom's alone before
+   2026-11-17); on iOS its handheld compose is the upscale (1ae9bba7). */
+#if defined(GAME_BOTW) && !TARGET_OS_IPHONE
+#define MFXUP_COMPOSE(fs) 0
+#else
+#define MFXUP_COMPOSE(fs) TAA_COMPOSE(fs)
+#endif
 static int mfxup_draw(NvProg *pr) {
     if (g_mfxup_src || g_mfxup_out) { g_mfxup_src = nil; g_mfxup_out = nil; } g_mfxup_sh = nil;   // TOTK: nil stores were two objc_release calls on every draw
     if (!pr) return 0;
@@ -18408,7 +18453,7 @@ static int mfxup_draw(NvProg *pr) {
 #ifdef BOTW_FINISH
     if (botw_fin_upscale(fs, 0)) return 1;   // MetalFX on, but this draw kept (the picture is the canvas's size)
 #endif
-    if (strncmp(fs->key, "0ac9a54938974396", 16) || !R.rt.n || !R.rt.color[0]) return 0;
+    if (!MFXUP_COMPOSE(fs) || !R.rt.n || !R.rt.color[0]) return 0;   // TOTK: 0ac9a549, as before
     int tid = (int)(S.tex[1][0] & 0xfffff); if (tid <= 0) return 0;
     id<MTLTexture> src = (__bridge id<MTLTexture>)tex_fast_lk(tid), dst = g_hdr_draw_native ? attachment_texture(R.rt.color[0], &R.rt.cview[0], R.rt.has_cview[0]) : tex_mtl(R.rt.color[0]);   // HDR: its FP16 companion (PR #1129)
     if (!src || !dst || src.width >= dst.width || src.height >= dst.height) return 0;

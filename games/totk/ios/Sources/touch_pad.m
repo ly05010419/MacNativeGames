@@ -14,9 +14,9 @@
    A touch that misses every button is a stick, centred where the finger went down: the left stick on the left half,
    the camera (right stick) on the right half. Bits are the Npad buttons. While a game controller is connected the layer
    is hidden; a touch shows it and works as usual, and it hides again 3 seconds after the last finger lifts.
-   Between − and + a smaller button shows the frame rate the game is held to; a tap switches it at once. With the
-   custom layer off it saves the choice in the pane's preset row (TOTK_PHONE_FPS) for the next start; with it on the
-   pane owns the cap, so the button only holds 30 until the next launch. */
+   Between − and + a smaller button shows the frame rate the game is held to; a tap switches it at once. In Tears of
+   the Kingdom and Breath of the Wild it holds for this session only: the picture profile is the choice that stays
+   (user 2026-11-17). Bananza and Pokopia save it in their frame-rate row (TOTK_PHONE_FPS) for the next start. */
 typedef struct { CGPoint at; uint64_t bit; NSString *label; CGFloat size; } TouchButton;
 enum { kButtonCount = 16 };
 static const CGFloat kButtonSize = 46;
@@ -158,13 +158,11 @@ static const CGFloat kFpsButtonSize = 34;
 - (CGPoint)fpsButton { return CGPointMake(CGRectGetMidX(self.area), self.topRow); }   // in the top row
 - (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
 - (void)switchFrameRate {
-    /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
-       cap in the pane, so this only holds 30 until the next launch and saves nothing. */
-    BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
     int fps = totk_frame_button_target(runtime_phone_fps() == 30);
     runtime_phone_fps_set(fps);
-    const char *key = totk_frame_button_key(custom);
-    if (key) [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@(key)];
+#ifdef GAME_NS2
+    [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
+#endif
     [self setNeedsDisplay];
 }
 
