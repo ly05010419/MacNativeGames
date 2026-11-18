@@ -70,7 +70,7 @@ static NSTimer *settingsRestoreTimer;
 /* The saved resolution choice (graphics-canvas.txt), or the default. Also the size the window opens at (frontend.m): it
    used to open at 1920x1080 and take the choice's size 1.5 s later, larger first and then smaller once 720p became the
    default (user 2026-11-10: "窗口 为什么 先变大 后变小？"). */
-static int settings_oot_canvas_saved(void){int v;return settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:1;}
+static int settings_oot_canvas_saved(void){int v;return settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<=7)||v==8)?v==8?0:v:1;}   /* 6 and 7: 4K from 2K and native 4K, since 2026-11-18 */
 #endif
 static void settings_save_frame(void) {
  char word[32];int fps=nvn_fps_lock(),mfx=mfx_requested();
@@ -110,7 +110,7 @@ static void settings_restore_begin(void) {
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
  {extern void runtime_operation_mode_choose(int,int);if(!getenv("TOTK_OPERATION_MODE")&&!(settings_read_int("graphics-profile.txt",&v)&&v==0))runtime_operation_mode_choose(0,0);}   /* no choice saved: the handheld quality profile (user 2026-11-10, after comparing in the panel) */   /* the handheld quality profile, before the guest starts */
  {extern void netbp_copy_set_flag(int);if(!getenv("OOT_NET_COPY")&&settings_read_int("graphics-net-copy.txt",&v)&&(v==0||v==1))netbp_copy_set_flag(v);}
- {int c=settings_oot_canvas_saved();   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
+ {int c=settings_oot_canvas_saved();   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 9: no longer listed */
  settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
@@ -289,8 +289,9 @@ static TOTKSettingRow *settings_oot_profile_row(void) {
 /* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
  return settings_row(settings_text("分辨率","Resolution"),
-  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生，默认）","720p (native, default)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)")],
-  @[@0,@1,@2,@3,@4,@5],^int{return settingsOotCanvas;},^(int v){
+  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生，默认）","720p (native, default)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)"),
+    settings_text("4K（2K 放大）","4K (from 2K)"),settings_text("4K（3840×2160 原生）","4K (3840×2160 native)")],   /* user 2026-11-18: "设置里 添加 4k（2k放大）和 原生4k 分辨率支持"; the window textures are 3840x2160 and the render target pool has the room (game_patches_ns2.c patch_oot_window_textures, patch_oot_render_target_pool) */
+  @[@0,@1,@2,@3,@4,@5,@6,@7],^int{return settingsOotCanvas;},^(int v){
    settingsOotCanvas=v;runtime_oot_canvas_set(v,1);settings_save_int("graphics-canvas.txt",v,"resolution");dispatch_async(dispatch_get_main_queue(),^{settings_oot_window_sync();});});
 }
 #endif

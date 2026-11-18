@@ -432,7 +432,9 @@ static void *oot_canvas_flip(void *arg) {
 /* The resolution row (user 2026-11-09): the canvas is the picture, the 3D sits inside it at the listed scale, and the one
    upscale between them is the game's network or MetalFX, as the "Upscaler" row says. Docked scales move in steps; these were
    measured (claude/oot-depth-unify g34, g36): 0.6667 gives 854x480 in 1280x720 and 1280x720 in 1920x1080, 0.75 gives 1920x1080
-   in 2560x1440. 6 and 7 need a 4K canvas, which crashes at scale 1 (issues_lessons 2026-11-09): not in the list.
+   in 2560x1440. 6 is 2560x1440 in a 3840x2160 canvas and 7 the 3D at 3840x2160 as well, listed since 2026-11-18: the
+   window textures are that large (patch_oot_window_textures) and the render target pool has the room
+   (patch_oot_render_target_pool; before, 7 crashed in the game's render target allocator, issues_lessons 2026-11-09).
    0 is 854x480 in 1280x720 and 8 the same (saved by an earlier list); with no choice saved the settings panel starts 2,
    1280x720 in 1920x1080 (user 2026-11-09: the Mac default, with MetalFX). 9 keeps the canvas the
    game computes (docked 2048x1152) with patch_oot_fixed_res's scale (1536x864): not the game's own picture, which is dynamic
@@ -601,6 +603,58 @@ static void oot_ios_fixed_res(Module *m) {
     fprintf(stderr, "[oot] fixed render scale %g (iOS, OOT_FIXED_RES)\n", s);
 }
 #endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* The window's textures are 3840x2160 (2026-11-18, user: "设置里 添加 4k（2k放大）和 原生4k 分辨率支持"). The game's start
+   puts 2560x1440 into the parameters of its graphics system at main+0x1202ee0 (mov x8, #0xa00; movk x8, #0x5a0, lsl #32;
+   stur x8, [x21, #0x14]), and the call that returns to main+0x12030ac makes the three window textures that size
+   (TOTK_SIZE_CHAIN=2560x1440, res4k-5: "texture size 2560x1440 <- main+0x112e5b4 <- main+0xf49244 <- main+0x346c2fc <-
+   main+0x12030ac", then "WindowInitialize 交换链 3 张 … 首张 2560x1440"). A 3840x2160 canvas (the resolution row's 6:
+   the 3D at 2560x1440) then has no texture to be presented from: "出图裁切越界：0,0 3840x2160 / 原纹理 2560x1440", and the
+   picture stops (res4k-1). With the textures 3840x2160 the same choice shows "3840x2160 (2560x1440)", complete (res4k-6).
+   A smaller canvas is a crop of the textures, as 1920x1080 was of 2560x1440.
+   What did not make them larger, each tried alone: the display level the game lays its picture out for (main+0x6502e0
+   reads the level asked for at +0x650344; main+0x112c5e0 turns it into a size from the table at main+0x3f58540, where
+   level 0 is 3840x2160 and the game runs at 1, 2560x1440), the four functions that return 2560 and 1440 (main+0x20f7ff0
+   to +0x20f8020), and the sizes stored at main+0x31f39f4 (res4k-2, -3, -4).
+   A 3840x2160 3D picture (the list's 7) needs room for its render targets as well: patch_oot_render_target_pool.
+   OOT_FB_SIZE=<width>x<height>: another size, 2560x1440 for the game's own. */
+static void patch_oot_window_textures(Module *m) {
+    const char *e = getenv("OOT_FB_SIZE"); unsigned w = 3840, h = 2160;
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    if (e && *e && (sscanf(e, "%ux%u", &w, &h) != 2 || w < 1920 || h < 1080 || w > 3840 || h > 2160))
+        runtime_fail("OOT_FB_SIZE must be <width>x<height>, from 1920x1080 to 3840x2160");
+    const uint64_t site = 0x1202ee0; uint32_t have[2]; memcpy(have, m->base + site, 8);
+    if (have[0] != 0xd2814008 || have[1] != 0xf2c0b408) runtime_fail("OOT window texture size site differs from verified update 131072");
+    uint32_t code[2] = {0xd2800008 | w << 5, 0xf2c00008 | h << 5};   /* mov x8, #w; movk x8, #h, lsl #32 */
+    memcpy(m->base + site, code, 8);
+    fprintf(stderr, "[oot] window textures %ux%u (the game's own are 2560x1440; OOT_FB_SIZE)\n", w, h);
+}
+/* Room for 3840x2160 render targets (2026-11-18). The game's render targets come from one memory pool whose size its
+   start gives the texture manager: main+0x36aeaa0 loads it (ldr x10, [x19, #0x5b8]) into the parameters main+0xc2a1c0
+   passes on, and main+0xc29070 makes the manager's one block of it (main+0xc291b0 stores a block count of 1, and the
+   allocator for further blocks is null). Read from the running game it is 319,815,680 bytes, 305 MiB, with 7 sub-heaps
+   over the same pool (keep/tools/oot-fps90/tools/rtpool.py, res4k-8: in use 137-157 MiB at 1920x1080, 186-199 MiB at
+   2560x1440, 200-210 MiB with a 3840x2160 canvas over 2560x1440). The allocator, main+0x3ed00, looks for a free range
+   in the block's lists (main+0x41620), finds none for a 3840x2160 3D picture, has no empty block slot and goes on with a
+   null range: the crash at main+0x404fc / +0x403f0 when the resolution row's 7 is picked (res4k-6, -7; 2026-11-09).
+   The pool is made 2.25 times that, the pixels of 3840x2160 over the 2560x1440 the game is made for: 0x2ae40000,
+   686 MiB. OOT_RT_POOL_MB=<MiB>: another size, 305 for the game's own. */
+static void patch_oot_render_target_pool(Module *m) {
+    const char *e = getenv("OOT_RT_POOL_MB"); unsigned mb = 0; uint64_t bytes = 0x2ae40000;
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    if (e && *e) {
+        if (sscanf(e, "%u", &mb) != 1 || mb < 305 || mb > 2048) runtime_fail("OOT_RT_POOL_MB must be 305 (the game's own) to 2048");
+        if (mb == 305) return;
+        bytes = (uint64_t)mb << 20;
+    }
+    if (bytes & 0xffff || bytes >> 32) runtime_fail("OOT render target pool size must be a multiple of 64 KiB under 4 GiB");
+    const uint64_t site = 0x36aeaa0; uint32_t have; memcpy(&have, m->base + site, 4);
+    if (have != 0xf942de6a) runtime_fail("OOT render target pool size load differs from verified update 131072");
+    uint32_t mov = 0xd2a00000 | (uint32_t)(bytes >> 16) << 5 | 10;   /* movz x10, #(bytes >> 16), lsl #16 */
+    memcpy(m->base + site, &mov, 4);
+    fprintf(stderr, "[oot] render target pool %llu MiB (the game's own is 305 MiB; OOT_RT_POOL_MB)\n", (unsigned long long)(bytes >> 20));
+}
+#endif
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
@@ -613,6 +667,8 @@ void runtime_game_patches(Module *m) {
     patch_oot_timestep(m);
     patch_oot_fixed_res(m);
     patch_oot_aspect(m);
+    patch_oot_window_textures(m);
+    patch_oot_render_target_pool(m);
     if (getenv("TOTK_EXPORT_IOS")) export_oot_fixed_res_ios(m);   /* only when exporting for the phone */
 #elif defined(GAME_OOT)
     oot_ios_fixed_res(m);
