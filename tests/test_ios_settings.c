@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
     }
     if (argc == 3 && !strcmp(argv[1], "--layer")) {
         totk_key_layer l = totk_key_layer_of(argv[2]);
-        puts(l == TOTK_KEY_PRESET ? "preset" : l == TOTK_KEY_CUSTOM ? "custom" : "always");
+        puts(l == TOTK_KEY_PRESET ? "preset" : l == TOTK_KEY_CUSTOM ? "custom" : l == TOTK_KEY_EXTRA ? "extra" : "always");
         return 0;
     }
     if (argc == 4 && !strcmp(argv[1], "--handed")) {   /* KEY SWITCH: 1 when main.m hands KEY over (test_ios_settings.py) */

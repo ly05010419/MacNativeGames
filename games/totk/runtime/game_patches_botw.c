@@ -841,14 +841,14 @@ static uint32_t native_word(uint32_t original, int kind, int k) {   /* the same 
    mode, whose branch of the 1.6.0 display-mode routine (jump table at main+0x26164f8: mode 1 -> main+0x18216c8) stores
    the screen width 1280.0 and the render width 1280.0 as one pair:
      main+0x18216c8  mov x8, #0x44a00000              (1280.0, the screen)
-     main+0x18216cc  movk x8, #0x44a0, lsl #48        (1280.0, the render width) -> movk x8, #0x4470, lsl #48 (960.0)
+     main+0x18216cc  movk x8, #0x44a0, lsl #48        (1280.0, the render width; the first patch made it 960.0, now both words load the pair, below)
    The renderer scales its targets by render / screen width, as docked play does at 1600 / 1920, so the scene is drawn at
    960x540 and the game's own upscale draws it into the 1280x720 canvas (MetalFX replaces it on the phone only with the
    pane's custom switch and MetalFX row on: totk_mfx_up.m mfxup_enabled, TOTK_MFX_UPSCALE).
    1.9.0: the display-mode routine main+0x1266074 jumps by a byte table (main+0x1725916, base main+0x12660bc): mode 1 ->
    main+0x1266114, the same pair (str x8, [x19, #0x1210]); mode 3 (VR) computes its own and is left alone:
      main+0x1266114  mov x8, #0x44a00000
-     main+0x1266118  movk x8, #0x44a0, lsl #48        -> movk x8, #0x4470, lsl #48 (960.0)
+     main+0x1266118  movk x8, #0x44a0, lsl #48        (likewise: the pair from the data page, below)
    (its dynamic-resolution scale, main+0x12661e8, divides the render width +0x1214 by 1280.0 in handheld: 0.75).
    The pair comes from the data page after main (+0x28; +16 is the docked pair, +0x20 the ultrawide word), as the docked
    one does (patch_render_phone): mov x8 / movk x8 become adrp x8, <data page> / ldr x8, [x8, #0x28], and the start writes

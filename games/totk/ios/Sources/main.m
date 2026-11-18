@@ -436,8 +436,10 @@ static void apply_display_settings(void) {
    game sees the same defaults before the player changes anything, then handed to the runtime as an environment
    variable (overwrite=0, so devicectl can still supply a plain key). The picture and frame keys belong to one of the
    pane's two layers, chosen by TOTK_CUSTOM_PICTURE: the presets (Full HD, frame rate) when it is off, the custom
-   picture and frame rows when it is on. Only the chosen layer is handed over, so no key is written twice. visionOS is
-   the exception: its platform defaults own the picture and frame keys (the pane's rows describe a phone display). */
+   picture and frame rows when it is on. Only the chosen layer is handed over, so no key is written twice. Breath of
+   the Wild keeps its presets with the switch on, which then adds its scene, MetalFX and edge-smoothing rows
+   (settings_map.c totk_key_handed, TOTK_KEY_EXTRA). visionOS is the exception: its platform defaults own the picture
+   and frame keys (the pane's rows describe a phone display). */
 static void apply_settings(void) {
     NSBundle *settings = [NSBundle bundleWithPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Settings.bundle"]];
     NSString *path = [settings pathForResource:@"Root" ofType:@"plist"];

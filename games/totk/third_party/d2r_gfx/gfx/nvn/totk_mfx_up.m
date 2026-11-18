@@ -56,7 +56,8 @@ int mfxup_enabled(void) {
            game_patches_botw.c patch_phone_render) and the game's own upscale draws it into the 1280x720 canvas, for both
            games (user 2026-10-23: "两个统一", no MetalFX on the iPhone): Tears of the Kingdom's is FSR 1 EASU, Breath of the
            Wild's a bilinear upscale with an FXAA-style edge pass, both one cheap pass. TOTK_MFX_UPSCALE=1 (or key 3 on
-           the Mac) lets MetalFX do it. */
+           the Mac) lets MetalFX do it; Breath of the Wild's iOS pane hands it over from its custom picture rows (off by
+           default; user 2026-11-17). */
         v = e ? strcmp(e, "0") != 0 : 0;
         atomic_store(&g_on, v);
         ULOG("MetalFX spatial upscaling (TOTK_MFX_UPSCALE): %s", v ? "on" : "off");
