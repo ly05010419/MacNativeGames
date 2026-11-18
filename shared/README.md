@@ -49,6 +49,26 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/mouse_look.h` | Mouse movement as the right stick and the gyro (mouse mode), and pointing | totk, oot, odyssey |
 | `runtime/controller_map.h` | The controller layout file (`controls.txt`): the physical buttons with the mouse's, modes, the screenshot hold. Odyssey's keeps its `reach` lines, and Animal Crossing's and Echoes of Wisdom's have no mouse lines (their mouse belongs to the keyboard layout), so those stay their own | totk, oot |
 | `runtime/input_file.h` | Scripted input: `TOTK_INPUT_SCRIPT`, and the `TOTK_INPUT_FILE` command stream with the commands every game has (keys, screenshots, capture, text entry, flags, traces, close), read on when the file is replaced. Each game's `runtime/input.c` keeps its key table and HID answers and gives its own commands and flags (`input_game_command`, `input_game_flag`) | totk, oot, odyssey, acnh, eow |
+| `runtime/gate.S`, `runtime/thread_enter.S`, `runtime/thread_compat.h`, `runtime/hle_stack.c` | The host-call gate the rewritten code's `svc` and timer reads enter (every register kept), a guest thread's first entry, the thread code's log and clock names, and host functions wrapped onto the guest thread's host stack (with `hletrace`). Each game's `hle_stack.S` stays its own: TotK's and OoT's pass stack arguments beyond the eighth (48ea32ba, for DKB), which would add instructions to every host call of the other games | totk, oot, odyssey, acnh, eow |
+| `runtime/audio_effects.{c,h}`, `runtime/audio_reverb.{c,h}` | The audio renderer's effects (delay, I3DL2 reverb, biquad, limiter and the rest) and the reverb, as Ryujinx.Audio computes them | totk, oot, odyssey, acnh, eow |
+| `runtime/audio_ramp.h` | The volume ramp and depop arithmetic (`tests/test_audio_ramp.c`). Whether a game ramps is its own `audio_mixer.c`'s: Breath of the Wild under `GAME_BOTW`, Odyssey always | totk, oot, odyssey |
+| `runtime/memory_probe.c` | The `probe-memory` mode: stack moves and memory accounting checked through the production SVC path | totk, oot, odyssey, acnh, eow |
+| `runtime/romfs_path.h` | The RomFS path checks of `romfs.c` (`tests/test_romfs_paths.c`). Ocarina of Time keeps its own, with `//` inside a path collapsed | totk, odyssey, acnh, eow |
+| `runtime/text_keyboard.h` | The Mac's text entry keyboard that a controller can operate (`frontend.m` includes it) | totk, oot, odyssey |
+| `runtime/freeze_watchdog.c` | `ODYSSEY_FREEZE_WATCHDOG`: what the game's threads do when frames stop; it only logs | odyssey, acnh |
+
+The platform layer that runs the game (2026-11-18, step 4) is shared only where the copies were already the same file
+(above); each game's copy of the rest stays its own, because the copies carry that game's tuning or answers:
+`threads.c` (TotK's asynchronous preemption, core migration and spin gates, OoT's core-wait diagnostics, Odyssey's and
+Animal Crossing's starvation rule and core watch; Echoes of Wisdom's is an older TotK copy, and taking TotK's would turn
+on TotK's scheduling there); `fs_host.c` (each game's save layout and answers, OoT's drive waits off the core, b1b65908)
+and `fs_host.h`; `romfs.c` (each game reads its data its own way); `audio_mixer.{c,h}`, `audio_renderer.c` and
+`audio_out.c` (end-of-stream behaviour, ramps and depop, and the warm-up hold differ per game); `opus_codec.c`
+(Animal Crossing's extra overload); `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`
+(per-game SDK starts, heaps, service answers and movie codecs); `autoload.{c,h}` and `game_patches.h` (headers of
+per-game code); `world_survey.{c,h}`, `gfx_bridge.c`, `gfx_probe.c`, `vpool_probe.m`, `gpu_path_probe.m` (each follows
+its game's own graphics layer or diagnostics); `audio_renderer.h` (with its renderer). Where Odyssey, Animal Crossing and
+Echoes of Wisdom have the same older copy, sharing it would only freeze it.
 
 Left in each game on purpose (2026-11-18): `runtime/keyboard_map.h` (each game's actions); Odyssey's, Animal Crossing's
 and Echoes of Wisdom's `runtime/controller_map.h` (above); Odyssey's `runtime/gamepad.m` (its two seats, layout per seat

@@ -74,3 +74,8 @@ pad's buttons never reach the mouse's. This game's own: `runtime/gamepad_game.h`
 keyboard layout), `runtime/feedback_game.h` (nothing beyond the shared rumble and motion), `runtime/controller_map.h` (no
 mouse lines), and in `runtime/input.c` the key table, the HID answers and the `gpucapture`, `panelshot` and `fps`
 commands.
+
+
+## The platform layer's identical files linked from `shared/` (2026-11-18)
+
+These were byte-identical to games/totk's (and, for `freeze_watchdog.c`, to Super Mario Odyssey's) and are now symlinks into the repository's `shared/` folder (shared/README.md): `runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `romfs_path.h` and `freeze_watchdog.c`. Nothing compiled changes. The rest of this game's platform layer (`threads.c`, `fs_host.{c,h}`, `romfs.c`, the audio mixer, renderer and output, `opus_codec.c`, `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`, `autoload.{c,h}`, `world_survey.{c,h}`, `hle_stack.S`, `dlc.c` and the probes) stays its own: it carries this game's scheduling, saves, timing and answers (shared/README.md).

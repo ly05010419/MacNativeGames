@@ -92,3 +92,8 @@ lines. Odyssey's fixes now in the shared files for every game: a queued motion s
 feeds the fusion is dropped, a Switch HID sensor that does not open leaves motion free for the next controller, rumble
 and motion may belong to two controllers without sharing one HID device, reports of a closed device are ignored, a
 controller that leaves takes its last pulse and its HID stick fallback with it, and its sensors are switched off.
+
+
+## The platform layer's identical files linked from `shared/` (2026-11-18)
+
+These were byte-identical to games/totk's (and, for `freeze_watchdog.c`, to Animal Crossing's) and are now symlinks into the repository's `shared/` folder (shared/README.md): `../runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `romfs_path.h`, `text_keyboard.h`, `freeze_watchdog.c` and `audio_ramp.h` (which differed only in its first comment line, "ported from BOTW e38682d"; that note is in the shared file; this game's `audio_mixer.c` still ramps every voice, as before). Nothing compiled changes. The rest of this game's platform layer (`threads.c`, `fs_host.{c,h}`, `romfs.c`, the audio mixer, renderer and output, `opus_codec.c`, `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`, `autoload.{c,h}`, `world_survey.{c,h}`, `hle_stack.S` and the probes) stays its own: it carries this game's scheduling, saves, timing and answers (shared/README.md).

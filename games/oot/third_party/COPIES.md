@@ -42,3 +42,6 @@ shared core for every game. This game's own: `runtime/gamepad_game.h` (mouse mod
 copy had, zeldaVR's linkage, and the input trace `OOT_INPUT_TRACE`), `runtime/feedback_game.h` (no bow triggers: the
 settings row says "Not in this version", as before), and in `runtime/input.c` the key table, the HID answers, the
 `settings`, `ashot`, `ashotn` and stereo B2 commands and its flags (`input_trace`, the resolution rows, `fps_lock`).
+
+
+Platform layer (2026-11-18): `runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `audio_ramp.h` and `text_keyboard.h` were byte-identical to games/totk's and are symlinks into the repository's `shared/` folder (shared/README.md); nothing compiled changes. Still this game's own: `runtime/threads.c` (its core-wait diagnostics and experiments), `fs_host.{c,h}` (game file reads and save writes give the virtual core up, b1b65908), `romfs.c` and `romfs_path.h` (several RomFS mounts, `//` collapsed), the audio mixer and renderer, `loader.c`, `services.c` and the other service files.
