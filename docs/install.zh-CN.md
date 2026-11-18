@@ -110,9 +110,11 @@ xcode-select --install
 
 也可以不装 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
 
-可选（装了完整 Xcode 时）：`xcodebuild -downloadComponent MetalToolchain`。
+这页的游戏可选、**时之笛必需**（见[时之笛的安装说明](../games/oot/docs/install.zh-CN.md)）：装了完整 Xcode 时运行 `xcodebuild -downloadComponent MetalToolchain`。
 - 装了它，打包时会把启动着色器直接编进 App：App 之后可以随意挪动，重新打包也更快。
 - 不装也能打包，着色器会编进 macOS 的 Metal 缓存，绑定 App 所在的位置。
+- 时之笛的打包要用同一个离线编译器编译游戏的全部着色器，命令行工具里没有它，没有工具链就打不下去。
+- MNG Launcher 第 1 步选好游戏后就会显示，时之笛的打包因此不会跑了几分钟才停；`python3 tools/mng.py check "<游戏文件>"` 也会说出来。
 
 **2. 取得本仓库**：`git clone https://github.com/ly05010419/MacNativeGames.git`（或下载 ZIP），然后在 `MacNativeGames` 文件夹里打开终端。已经有的，先 `git pull`：很多打包报错在 `main` 上早就修好了。
 

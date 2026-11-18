@@ -98,7 +98,7 @@ python3.14 build_app.py "<导出目录>" --shared-fonts "<…/TOTK_build/totk/ex
 | `pass --shared-fonts with the six verified firmware fonts` | 源码是旧版：`git pull`（或重新下载 ZIP）后再运行同一条命令；新版没给字体时会用开源字体。 |
 | `--shared-fonts <目录>: …` | 那个目录不是本仓库打包留下的 6 个字体：去掉 `--shared-fonts`，用开源字体。 |
 | `does not match its pinned SHA-256`（`[deps]` 开头的行） | 下载中断或内容变了：再运行同一条命令；还是这样就开 issue 并贴上这一行。 |
-| `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | 安装完整的 Xcode 和它的 Metal 工具链。 |
+| `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | 从 App Store 安装完整的 Xcode，再装它的 Metal 工具链：`xcodebuild -downloadComponent MetalToolchain`（或 Xcode › 设置 › 组件 › Metal Toolchain）。MNG Launcher 第 1 步和 `python3 tools/mng.py check "<游戏文件>"` 都会在打包前报出来。 |
 | `… must remain outside the source checkout` | 把 `--work` 和 `-o` 放到 `MacNativeGames` 目录外面。 |
 | `unfinished App staging directory exists; left untouched` | 上次打包在写 App 时停下了：删掉 App 旁边的 `.Ocarina of Time.app.ready` 目录，再打包。 |
 | `this title currently uses its original rendering options` | 去掉 `--native-4k`、`--native-5k` 和 `--vr`。 |

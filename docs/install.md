@@ -110,7 +110,7 @@ xcode-select --install
 
 Instead of an installed Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
 
-Optional, if the full Xcode app is installed: `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so the app can be moved and rebuilds are faster. Without it the build still works, and the shaders go into macOS's Metal cache for the app's location.
+Optional for the games below, **required for Ocarina of Time** ([its own guide](../games/oot/docs/install.md)): with the full Xcode app installed, `xcodebuild -downloadComponent MetalToolchain`. The build then compiles the startup shaders into the app, so the app can be moved and rebuilds are faster; Ocarina of Time's build compiles all of the game's shaders with that same offline compiler, which the command line tools do not include, and stops without it. Without it the other games still build, and their shaders go into macOS's Metal cache for the app's location. MNG Launcher's first page says it once the game is known, so an Ocarina of Time build stops there instead of minutes in, and `python3 tools/mng.py check "<game file>"` says it too.
 
 **2. This repository**: `git clone https://github.com/ly05010419/MacNativeGames.git` (or download the ZIP), then open Terminal in the `MacNativeGames` folder. If you already have it, run `git pull` first: many build errors are fixed on `main`.
 

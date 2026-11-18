@@ -124,9 +124,10 @@ def cmd_status(a):
 def cmd_check(a):
     from tools.builder_jobs.checks import checks
     from tools.builder_jobs.classify import report
-    out = {'checks': checks(str(Path.home()))}
-    if a.files:
-        out['files'] = report(a.files + ([a.keys] if a.keys else []))
+    files = report(a.files + ([a.keys] if a.keys else [])) if a.files else None   # the game decides what it needs first
+    out: dict = {'checks': checks(str(Path.home()), files['plan']['game'] if files else None)}
+    if files:
+        out['files'] = files
     if a.json:
         return show(out, True) or 0
     for c in out['checks']:
@@ -147,7 +148,8 @@ def cmd_build(a):
     from tools.builder_jobs.checks import checks
     from tools.builder_jobs.classify import report
     plan = report(a.files + ([a.keys] if a.keys else []))['plan']
-    blocking = plan['blocks'] + [c['text'] for c in checks(str(Path.home())) if not c['ok'] and c['id'] != 'disk']
+    blocking = plan['blocks'] + [c['text'] for c in checks(str(Path.home()), plan.get('game'))
+                                 if not c['ok'] and c['id'] != 'disk']
     if blocking:
         for b in blocking:
             print('BLOCK ' + b)

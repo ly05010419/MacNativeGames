@@ -102,7 +102,7 @@ Read the `ERROR:` line and the log file in `<work folder>/logs/`, fix the cause,
 | `pass --shared-fonts with the six verified firmware fonts` | An older checkout: `git pull` (or download the ZIP again) and run the same command; the build now uses open-source fonts when none are given. |
 | `--shared-fonts <folder>: …` | That folder is not the six fonts of a build of this repository: leave `--shared-fonts` out to use the open-source fonts. |
 | `does not match its pinned SHA-256` (in `[deps]` lines) | A download was cut off or changed: run the same command again; if it repeats, open an issue with the line. |
-| `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | Install the full Xcode and its Metal toolchain. |
+| `no Metal compiler (Xcode -> Settings -> Components: Metal Toolchain)` | Install the full Xcode from the App Store, then its Metal toolchain: `xcodebuild -downloadComponent MetalToolchain` (or Xcode › Settings › Components › Metal Toolchain). MNG Launcher's first page names it before the build, and `python3 tools/mng.py check "<the game file>"` too. |
 | `the work folder … records, …, cannot be found, nor the folder it was in` | The work folder the app remembers is on a disk that is not connected, or was moved. Connect the disk and run the same command again, or add `--work "<a folder of your choice>"` ([Folders](../../../docs/install.md#folders)). A deleted work folder is made again by itself. |
 | `… must remain outside the source checkout` | Put `--work` and `-o` outside the `MacNativeGames` folder. |
 | `unfinished App staging directory exists; left untouched` | A build stopped while writing the app: delete the `.Ocarina of Time.app.ready` folder next to the app, then build again. |
