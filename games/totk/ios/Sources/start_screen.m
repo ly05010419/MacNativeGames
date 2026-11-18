@@ -2,6 +2,7 @@
 #import <GameController/GameController.h>
 #include "totk_ui_lang.h"
 #include "ns2_resolution.h"
+#include "picture_settings.h"
 
 static BOOL zh(void) { return totk_ui_zh(); }   // the language of the host's other text (boot screen, overlays; TOTK_UI_LANG overrides)
 static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
@@ -9,8 +10,12 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 @implementation TOTKStartView {
     void (^_onStart)(void);
     UISegmentedControl *_picture, *_fps;
-    UIButton *_start;
-    NSInteger _row;          // 0 picture, 1 frame rate, 2 start (controller focus)
+    UISegmentedControl *_profile, *_metalfx;   // Tears of the Kingdom / Breath of the Wild: the picture profile and MetalFX
+    UIButton *_start, *_advanced;
+    UILabel *_profileNote;   // what the chosen profile does
+    BOOL _hasProfiles;       // the pane has the picture profile (the two Zelda games)
+    NSArray<UIView *> *_controls;   // what the controller's focus moves through, top to bottom; the Play button last
+    NSInteger _row;          // index into _controls
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
@@ -22,7 +27,6 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 - (instancetype)initWithFrame:(CGRect)frame onStart:(void (^)(void))onStart {
     if (!(self = [super initWithFrame:frame])) return nil;
     _onStart = [onStart copy];
-    _row = 2;
     self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     CAGradientLayer *bg = [CAGradientLayer layer];
     bg.colors = @[(id)[UIColor colorWithRed:0.10 green:0.11 blue:0.15 alpha:1].CGColor, (id)[UIColor colorWithRed:0.04 green:0.05 blue:0.07 alpha:1].CGColor];
@@ -66,6 +70,42 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     UIStackView *pictureRow = [self row:T(@"画面", @"Picture") control:_picture];
     UIStackView *fpsRow = [self row:T(@"帧率", @"Frame rate") control:_fps];
     _hasPicture = _hasResolution || [self settingsPaneHas:@"TOTK_DOCKED"];
+    /* Tears of the Kingdom and Breath of the Wild (spec 2026-11-17-ios-picture-profiles "Tela inicial"): the picture
+       profiles, a line on what the chosen one does, MetalFX on its own row (it never changes the profile), Advanced. */
+    _hasProfiles = [self settingsPaneHas:@"TOTK_PICTURE_PROFILE"];
+    UIStackView *profileRow = nil, *metalfxRow = nil;
+    UILabel *mfxNote = nil;
+    if (_hasProfiles) {
+        pp_profile profile; pp_metalfx mfx;
+        totk_current_picture(&profile, &mfx);
+        NSMutableArray *items = [@[T(@"品质", @"Quality"), T(@"性能", @"Performance"), T(@"省电", @"Economy")] mutableCopy];
+        if (totk_has_custom_picture() || profile == PP_CUSTOM) [items addObject:T(@"自定义", @"Custom")];
+        _profile = [[UISegmentedControl alloc] initWithItems:items];
+        _profile.selectedSegmentIndex = profile == PP_CUSTOM && items.count < 4 ? PP_PERFORMANCE : (NSInteger)profile;
+        _metalfx = [[UISegmentedControl alloc] initWithItems:@[T(@"关", @"Off"), mfx == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On")]];
+        _metalfx.selectedSegmentIndex = mfx == PP_MFX_OFF ? 0 : 1;
+        for (UISegmentedControl *c in @[_profile, _metalfx]) {
+            c.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+            [c.widthAnchor constraintEqualToConstant:c == _profile ? 460 : 340].active = YES;
+        }
+        [_profile addTarget:self action:@selector(profileChanged) forControlEvents:UIControlEventValueChanged];
+        [_metalfx addTarget:self action:@selector(metalfxChanged) forControlEvents:UIControlEventValueChanged];
+        profileRow = [self row:T(@"画面", @"Picture") control:_profile];
+        metalfxRow = [self row:@"MetalFX" control:_metalfx];
+        _profileNote = [UILabel new];
+        mfxNote = [UILabel new];
+        mfxNote.text = T(@"MetalFX 放大场景：更清晰，几乎不耗性能。", @"MetalFX upscales the scene: sharper, at almost no cost.");
+        for (UILabel *l in @[_profileNote, mfxNote]) {
+            l.font = [UIFont systemFontOfSize:13]; l.textColor = [UIColor colorWithWhite:0.6 alpha:1];
+            l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter;
+            [l.widthAnchor constraintLessThanOrEqualToConstant:520].active = YES;
+        }
+        UIButtonConfiguration *ac = [UIButtonConfiguration plainButtonConfiguration];
+        ac.title = T(@"进阶 ›", @"Advanced ›"); ac.baseForegroundColor = [UIColor colorWithRed:0.45 green:0.75 blue:1.0 alpha:1];
+        _advanced = [UIButton buttonWithConfiguration:ac primaryAction:nil];
+        [_advanced addTarget:self action:@selector(openAdvanced) forControlEvents:UIControlEventTouchUpInside];
+        [self showProfile];
+    }
 
     UILabel *note = [UILabel new];
     if (_hasResolution)
@@ -92,10 +132,15 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     /* The icon only on an iPad: on an iPhone in landscape the rows did not fit with it (user 2026-11-01). */
     NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:title];
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) [rows insertObject:icon atIndex:0];
-    [rows addObjectsFromArray:_hasPicture ? @[pictureRow, fpsRow, note, _start] : @[fpsRow, _start]];
+    if (_hasProfiles) [rows addObjectsFromArray:@[profileRow, _profileNote, metalfxRow, mfxNote, _advanced, _start]];
+    else [rows addObjectsFromArray:_hasPicture ? @[pictureRow, fpsRow, note, _start] : @[fpsRow, _start]];
+    _controls = _hasProfiles ? @[_profile, _metalfx, _advanced, _start] : _hasPicture ? @[_picture, _fps, _start] : @[_fps, _start];
+    _row = (NSInteger)_controls.count - 1;   // the focus starts on Play
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:rows];
     stack.axis = UILayoutConstraintAxisVertical; stack.alignment = UIStackViewAlignmentCenter; stack.spacing = 18;
-    [stack setCustomSpacing:28 afterView:title]; [stack setCustomSpacing:26 afterView:note];
+    [stack setCustomSpacing:28 afterView:title];
+    if ([rows containsObject:note]) [stack setCustomSpacing:26 afterView:note];
+    if (_hasProfiles) [stack setCustomSpacing:26 afterView:mfxNote];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[[stack.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
@@ -144,6 +189,42 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     [d setObject:_fps.selectedSegmentIndex == 0 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
 }
 
+/* The chosen profile, and what it does (spec "Os perfis"); Personalizado says what its combination is. */
+- (pp_profile)chosenProfile { return (pp_profile)_profile.selectedSegmentIndex; }
+- (void)profileChanged { totk_choose_profile([self chosenProfile]); [self showProfile]; }
+- (void)metalfxChanged {
+    pp_metalfx now; totk_current_picture(NULL, &now);
+    totk_choose_metalfx(_metalfx.selectedSegmentIndex == 0 ? PP_MFX_OFF : now == PP_MFX_SCREEN ? PP_MFX_SCREEN : PP_MFX_SCENE);
+}
+- (void)openAdvanced {}
+- (void)showProfile {
+    BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+    pp_picture pic = totk_current_picture(NULL, NULL);
+    switch ([self chosenProfile]) {
+    case PP_QUALITY:
+        _profileNote.text = T(@"1080p，场景 1600×900，边缘平滑。最清晰；会发热，可能低于 60 fps。",
+                              @"1080p with a 1600×900 scene, smooth edges. The sharpest; runs warm and may drop below 60 fps."); break;
+    case PP_PERFORMANCE:
+        _profileNote.text = T(@"720p，场景 960×540，60 fps。流畅、均衡。", @"720p with a 960×540 scene, 60 fps. Smooth and balanced."); break;
+    case PP_ECONOMY:
+        _profileNote.text = pad ? T(@"720p，场景 640×360，30 fps，Switch 屏幕大小。发热最少，最省电。",
+                                    @"720p with a 640×360 scene, 30 fps, at the Switch's screen size. The coolest, easiest on the battery.")
+                                : T(@"720p，场景 640×360，30 fps。发热最少，最省电。",
+                                    @"720p with a 640×360 scene, 30 fps. The coolest, easiest on the battery."); break;
+    default: {
+        unsigned w = pp_scene_effective(&pic);
+        NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObjects:
+            pic.mode == PP_DOCKED ? T(@"1080p 底座", @"1080p docked") : @"720p",
+            [NSString stringWithFormat:T(@"场景 %u×%u%@", @"%u×%u scene%@"), w, w * 9 / 16,
+             pic.scene_w > w ? T(@"（掌机画布上限）", @" (held at the handheld canvas)") : @""],
+            [NSString stringWithFormat:@"%d fps", pic.fps], nil];
+        if (pic.taa) [parts addObject:T(@"边缘平滑", @"smooth edges")];
+        if (pic.switch_size && pad) [parts addObject:T(@"Switch 屏幕大小", @"Switch screen size")];
+        _profileNote.text = [NSString stringWithFormat:T(@"自定义：%@。在“进阶”里修改。", @"Custom: %@. Change it under Advanced."),
+                             [parts componentsJoinedByString:@" · "]];
+    } }
+}
+
 - (void)resolutionChanged:(UISegmentedControl *)sender {
     if(sender.selectedSegmentIndex!=3) { [self changed]; return; }
     NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
@@ -178,7 +259,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if (_done) return;
     _done = YES;
     [_poll invalidate]; _poll = nil;
-    [self changed];
+    if (!_hasProfiles) [self changed];   // the profile and MetalFX are saved as they change
     void (^go)(void) = _onStart; _onStart = nil;
     [UIView animateWithDuration:0.25 animations:^{ self.alpha = 0; } completion:^(BOOL f) { (void)f; [self removeFromSuperview]; }];
     if (go) go();
@@ -186,11 +267,10 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 
 /* The controller's focus: a ring around the row it moves. */
 - (void)focus {
-    NSArray<UIView *> *rows = @[_picture, _fps, _start];   // _row 0 is never focused without the picture row
-    for (NSUInteger i = 0; i < rows.count; i++) {
-        rows[i].layer.borderWidth = (NSInteger)i == _row ? 2 : 0;
-        rows[i].layer.borderColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1].CGColor;
-        rows[i].layer.cornerRadius = i == 2 ? 26 : 9;
+    for (NSUInteger i = 0; i < _controls.count; i++) {
+        _controls[i].layer.borderWidth = (NSInteger)i == _row ? 2 : 0;
+        _controls[i].layer.borderColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1].CGColor;
+        _controls[i].layer.cornerRadius = _controls[i] == _start ? 26 : 9;
     }
 }
 
@@ -205,14 +285,20 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if (!any) { _held = NO; return; }
     if (_held) return;
     _held = YES;
-    if (up) _row = MAX(_hasPicture ? 0 : 1, _row - 1);
-    else if (down) _row = MIN(2, _row + 1);
-    else if ((left || right) && _row < 2) {
-        UISegmentedControl *s = _row == 0 ? _picture : _fps;
+    NSInteger last = (NSInteger)_controls.count - 1;   // the Play button
+    UIView *at = _controls[_row];
+    if (up) _row = MAX(0, _row - 1);
+    else if (down) _row = MIN(last, _row + 1);
+    else if ((left || right) && [at isKindOfClass:UISegmentedControl.class]) {
+        UISegmentedControl *s = (UISegmentedControl *)at;
         s.selectedSegmentIndex = MAX(0, MIN((NSInteger)s.numberOfSegments - 1, s.selectedSegmentIndex + (right ? 1 : -1)));
-        if(_hasResolution && s==_picture) [self resolutionChanged:s]; else [self changed];
-    } else if (confirm && _row == 2) { [self start]; return; }
-    else if (confirm) _row = 2;
+        if (s == _profile) [self profileChanged];
+        else if (s == _metalfx) [self metalfxChanged];
+        else if (_hasResolution && s == _picture) [self resolutionChanged:s];
+        else [self changed];
+    } else if (confirm && at == _advanced) { [self openAdvanced]; return; }
+    else if (confirm && _row == last) { [self start]; return; }
+    else if (confirm) _row = last;
     [self focus];
 }
 @end

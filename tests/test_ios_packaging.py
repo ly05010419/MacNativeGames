@@ -297,6 +297,36 @@ class StartScreen(unittest.TestCase):
             self.assertIn(key, screen)
         self.assertNotIn('PLAYSHELF', screen.upper(), 'no launcher name on the game\'s screen')
 
+class ProfileStartScreen(unittest.TestCase):
+    """The start screen of Tears of the Kingdom and Breath of the Wild (spec "Tela inicial"): the three profiles (and
+    Personalizado when a custom combination is saved), a line saying what the chosen one does, MetalFX on its own row
+    (changing it keeps the profile), an Advanced button and Play. Bananza and Pokopia keep their picture / frame rows."""
+    def setUp(self):
+        self.screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+
+    def test_the_profile_layout_where_the_pane_has_the_profile(self):
+        self.assertIn('_hasProfiles = [self settingsPaneHas:@"TOTK_PICTURE_PROFILE"];', self.screen)
+        self.assertIn('totk_has_custom_picture()', self.screen, 'Personalizado shows when a combination is saved')
+        self.assertIn('totk_choose_profile(', self.screen)
+        self.assertIn('totk_choose_metalfx(', self.screen)
+        self.assertIn('totk_current_picture(&profile, &mfx)', self.screen)
+        self.assertIn('@selector(openAdvanced)', self.screen)
+
+    def test_metalfx_does_not_touch_the_profile(self):
+        metalfx = self.screen[self.screen.index('- (void)metalfxChanged {'):]
+        metalfx = metalfx[:metalfx.index('\n}\n')]
+        self.assertNotIn('totk_choose_profile', metalfx)
+        self.assertNotIn('totk_save_custom_picture', metalfx)
+
+    def test_the_presets_screens_stay(self):
+        for key in ('settingsPaneHas:@"TOTK_DOCKED"', 'settingsPaneHas:@"TOTK_OUTPUT_RES"', 'forKey:@"TOTK_PHONE_FPS"', 'forKey:@"TOTK_DOCKED"'):
+            self.assertIn(key, self.screen)
+
+    def test_the_controller_moves_through_the_shown_controls(self):
+        self.assertIn('NSArray<UIView *> *_controls;', self.screen)
+        self.assertIn('NSInteger last = (NSInteger)_controls.count - 1;', self.screen)
+
+
 class SwitchSize(unittest.TestCase):
     """The game at the Switch's 6.2-inch screen on an iPad (TOTK_SWITCH_SIZE=1, user 2026-11-17), centred, so a
     low-resolution picture looks sharper. The app's picture settings hand the variable over (2026-11-17 profiles); a
