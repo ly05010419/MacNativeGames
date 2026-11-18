@@ -1,6 +1,6 @@
 /* The picture profiles (games/totk/ios/Sources/picture_profile.c) without UIKit: each profile's fixed values, the scene
-   held at the mode's canvas, and the environment the runtime reads (docs/superpowers/specs/2026-11-17-ios-picture-
-   profiles-design.md). A wrong value here is a profile whose text does not say what the game does. */
+   held at the mode's canvas, and the environment the runtime reads (PR #2287). A wrong value here is a profile whose
+   text does not say what the game does. */
 #include "picture_profile.h"
 #include <stdio.h>
 #include <string.h>
@@ -31,7 +31,7 @@ static void profiles_are_the_spec_values(void) {
 }
 
 static void scene_held_at_canvas(void) {
-    pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0};
+    pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0, 0};
     CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "handheld 1920x1080 is held at the 1280x720 canvas");
     p.scene_w = 1600; CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "handheld 1600x900 is held at the canvas");
     p.scene_w = 0;    CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 960, "handheld automatic is 960x540");
@@ -43,7 +43,7 @@ static void scene_held_at_canvas(void) {
    render_res_publish), so its handheld scene may be 1600x900 above the 1280x720 canvas, as its old custom layer offered;
    only above 1600x900 does it need the bigger heaps the phone has not. Breath of the Wild cannot go above its canvas. */
 static void totk_handheld_scene_limit(void) {
-    pp_picture p = {PP_HANDHELD, 1600, 0, 60, 0, 0};
+    pp_picture p = {PP_HANDHELD, 1600, 0, 60, 0, 0, 0};
     CHECK(pp_scene_effective(&p, PP_GAME_TOTK) == 1600, "TotK handheld 1600x900 stays");
     CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "BotW handheld 1600x900 is held at the canvas");
     p.scene_w = 1920; CHECK(pp_scene_effective(&p, PP_GAME_TOTK) == 1600, "TotK handheld 1920x1080 is held at 1600x900");
@@ -55,13 +55,13 @@ static void totk_handheld_scene_limit(void) {
 }
 
 static void mfx_scene_acts(void) {
-    pp_picture p = {PP_HANDHELD, 1280, 0, 60, 0, 0};
+    pp_picture p = {PP_HANDHELD, 1280, 0, 60, 0, 0, 0};
     CHECK(!pp_mfx_scene_acts(&p, PP_GAME_BOTW), "a scene the canvas's size leaves the scene upscale nothing to do");
     p.scene_w = 960;  CHECK(pp_mfx_scene_acts(&p, PP_GAME_BOTW), "960x540 into the 720p canvas is upscaled");
     p.mode = PP_DOCKED; p.scene_w = 1920; CHECK(!pp_mfx_scene_acts(&p, PP_GAME_BOTW), "docked 1920x1080 is the canvas");
 }
 
-static void env_desempenho_totk(void) {
+static void env_performance_totk(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_PERFORMANCE, &p);
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e);
@@ -74,7 +74,7 @@ static void env_desempenho_totk(void) {
     CHECK(e.n == 10, "%s: %d variables, want the 10 the runtime reads", w, e.n);
 }
 
-static void env_qualidade_docked(void) {
+static void env_quality_docked(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_QUALITY, &p);
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_BOTW, &e);
@@ -84,7 +84,7 @@ static void env_qualidade_docked(void) {
     want(&e, "TOTK_PHONE_FPS", "30", w);
 }
 
-static void env_economia_botw_scene_mfx(void) {
+static void env_economy_botw_scene_mfx(void) {
     pp_picture p; pp_env e;
     pp_profile_picture(PP_ECONOMY, &p);
     pp_env_build(&p, PP_MFX_SCENE, PP_GAME_BOTW, &e);
@@ -105,13 +105,13 @@ static void env_switch_size_with_screen_mfx(void) {
 }
 
 static void handheld_scene_above_canvas_env(void) {
-    pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0}; pp_env e;
+    pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0, 0}; pp_env e;
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_BOTW, &e);
     want(&e, "TOTK_RENDER_RES", "1280x720", "BotW handheld 1920x1080 asked");
 }
 
 static void aspect_only_totk(void) {
-    pp_picture p = {PP_HANDHELD, 0, 0, 60, 0, 1}; pp_env e;
+    pp_picture p = {PP_HANDHELD, 0, 0, 60, 0, 1, 0}; pp_env e;
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e); want(&e, "TOTK_ASPECT", "0", "TotK 16:9");
     pp_env_build(&p, PP_MFX_OFF, PP_GAME_BOTW, &e); want(&e, "TOTK_ASPECT", "(unset)", "BotW has no aspect row (ultrawide)");
 }
@@ -122,11 +122,11 @@ static void garbage_values_fall_back(void) {
     CHECK(!pp_profile_parse("mfx", &pr) && pr == PP_ECONOMY && !pp_profile_parse(NULL, &pr), "unknown profiles are refused, untouched");
     CHECK(!pp_metalfx_parse("mfx", &m) && m == PP_MFX_SCREEN && !pp_metalfx_parse(NULL, &m), "unknown MetalFX values are refused");
     CHECK(!pp_scene_parse("3840x2160", &w) && w == 123 && !pp_scene_parse(NULL, &w), "sizes outside the list are refused");
-    CHECK(pp_scene_parse("", &w) && w == 0, "an empty scene is Automática");
+    CHECK(pp_scene_parse("", &w) && w == 0, "an empty scene is automatic");
     CHECK(pp_scene_parse("800x450", &w) && w == 800, "a listed size");
     CHECK(!strcmp(pp_scene_key(0), "") && !strcmp(pp_scene_key(800), "800x450") && !strcmp(pp_scene_key(1920), "1920x1080"),
           "a width is stored as the size the parser reads back");
-    CHECK(!strcmp(pp_scene_key(1234), ""), "a width outside the list is stored as Automática");
+    CHECK(!strcmp(pp_scene_key(1234), ""), "a width outside the list is stored as automatic");
     for (int i = PP_QUALITY; i <= PP_CUSTOM; i++) {
         pp_profile back = PP_QUALITY;
         CHECK(pp_profile_parse(pp_profile_key((pp_profile)i), &back) && back == (pp_profile)i, "profile key %d round-trips", i);
@@ -144,27 +144,56 @@ static void migrate_case(const char *what, pp_old old, pp_game g, pp_picture wan
     pp_picture got; pp_metalfx mfx = PP_MFX_SCENE;
     pp_migrate(&old, g, &got, &mfx);
     CHECK(got.mode == want.mode && got.scene_w == want.scene_w && got.taa == want.taa && got.fps == want.fps &&
-          got.switch_size == want.switch_size && got.aspect_169 == want.aspect_169 && mfx == want_mfx,
-          "%s: mode %d scene %u taa %d fps %d switch %d aspect %d mfx %d", what, got.mode, got.scene_w, got.taa, got.fps,
-          got.switch_size, got.aspect_169, mfx);
+          got.switch_size == want.switch_size && got.aspect_169 == want.aspect_169 && got.present_60 == want.present_60 &&
+          mfx == want_mfx,
+          "%s: mode %d scene %u taa %d fps %d switch %d aspect %d present_60 %d mfx %d", what, got.mode, got.scene_w, got.taa,
+          got.fps, got.switch_size, got.aspect_169, got.present_60, mfx);
 }
+/* After PR #2287: the display's 60 Hz pace of a Custom combination brought over from the old custom layer, and nothing
+   else; Tears of the Kingdom 1.0 / 1.2.1's automatic handheld scene is its own 1280x720, not 960x540. */
+static void present_60_and_old_totk_scene(void) {
+    pp_picture p; pp_env e;
+    pp_profile_picture(PP_PERFORMANCE, &p);
+    p.present_60 = 1; pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e); want(&e, "DM_PRESENT_HZ", "60", "migrated custom, 60");
+    p.fps = 30;       pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e); want(&e, "DM_PRESENT_HZ", "(unset)", "migrated custom, 30");
+    want(&e, "TOTK_PHONE_FPS", "30", "migrated custom, 30");
+    for (int i = PP_QUALITY; i <= PP_ECONOMY; i++) {
+        pp_profile_picture((pp_profile)i, &p);
+        CHECK(!p.present_60, "profile %d does not pace the display", i);
+        pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e); want(&e, "DM_PRESENT_HZ", "(unset)", "a fixed profile");
+    }
+    pp_profile_picture(PP_PERFORMANCE, &p);
+    CHECK(pp_scene_effective(&p, PP_GAME_TOTK_OLD) == 1280, "TotK 1.0 / 1.2.1 handheld automatic is its own 1280x720");
+    pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK_OLD, &e); want(&e, "TOTK_RENDER_RES", "1280x720", "Performance, TotK 1.0 / 1.2.1");
+    CHECK(!pp_mfx_scene_acts(&p, PP_GAME_TOTK_OLD), "its 1280x720 scene is the canvas: the scene upscale has nothing to do");
+    CHECK(pp_scene_limit(&p, PP_GAME_TOTK_OLD) == 1600, "TotK 1.0 / 1.2.1 handheld goes up to 1600x900 as 1.4.3");
+    p.aspect_169 = 1; pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK_OLD, &e); want(&e, "TOTK_ASPECT", "0", "TotK 1.0 / 1.2.1 16:9");
+    pp_profile_picture(PP_ECONOMY, &p);
+    pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK_OLD, &e); want(&e, "TOTK_RENDER_RES", "640x360", "Economy keeps its size on 1.0 / 1.2.1");
+}
+
 static void migration(void) {
     migrate_case("migrate_ipad_auto_docked", (pp_old){.docked = 1}, PP_GAME_BOTW,
-                 (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0}, PP_MFX_OFF);
+                 (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0, 0}, PP_MFX_OFF);
     migrate_case("migrate_totk_custom_mfx", (pp_old){.custom_picture = 1, .picture_mode = "mfx", .render_res = "800x450", .fps_cap = "30"},
-                 PP_GAME_TOTK, (pp_picture){PP_HANDHELD, 800, 0, 30, 0, 0}, PP_MFX_SCREEN);
+                 PP_GAME_TOTK, (pp_picture){PP_HANDHELD, 800, 0, 30, 0, 0, 0}, PP_MFX_SCREEN);
+    /* the old custom layer's 60 cap paced the display (DM_PRESENT_HZ=60): it stays so (after PR #2287) */
     migrate_case("migrate_totk_custom_1080", (pp_old){.custom_picture = 1, .picture_mode = "1080", .render_res = "1600x900", .fps_cap = "60"},
-                 PP_GAME_TOTK, (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0}, PP_MFX_OFF);
+                 PP_GAME_TOTK, (pp_picture){PP_DOCKED, 1600, 0, 60, 0, 0, 1}, PP_MFX_OFF);
+    migrate_case("migrate_totk_custom_default_cap", (pp_old){.custom_picture = 1, .picture_mode = "720"},
+                 PP_GAME_TOTK, (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0, 1}, PP_MFX_OFF);
+    migrate_case("migrate_totk_old_custom", (pp_old){.custom_picture = 1, .picture_mode = "720", .fps_cap = "60", .totk_old = 1},
+                 PP_GAME_TOTK_OLD, (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0, 1}, PP_MFX_OFF);
     migrate_case("migrate_botw_hd", (pp_old){.docked = 1, .docked_scene = "1920x1080", .phone_fps = "30"}, PP_GAME_BOTW,
-                 (pp_picture){PP_DOCKED, 1920, 0, 30, 0, 0}, PP_MFX_OFF);
+                 (pp_picture){PP_DOCKED, 1920, 0, 30, 0, 0, 0}, PP_MFX_OFF);
     migrate_case("migrate_handheld", (pp_old){.phone_fps = "60"}, PP_GAME_TOTK,
-                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0}, PP_MFX_OFF);
+                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0, 0}, PP_MFX_OFF);
     migrate_case("migrate_totk_old_handheld", (pp_old){.totk_old = 1}, PP_GAME_TOTK,
-                 (pp_picture){PP_HANDHELD, 1280, 0, 60, 0, 0}, PP_MFX_OFF);
+                 (pp_picture){PP_HANDHELD, 1280, 0, 60, 0, 0, 0}, PP_MFX_OFF);
     migrate_case("migrate_mfx_and_taa", (pp_old){.mfx_upscale = 1, .taa = 1, .aspect = "16:9"}, PP_GAME_TOTK,
-                 (pp_picture){PP_HANDHELD, 960, 1, 60, 0, 1}, PP_MFX_SCENE);
+                 (pp_picture){PP_HANDHELD, 960, 1, 60, 0, 1, 0}, PP_MFX_SCENE);
     migrate_case("migrate_botw_aspect_ignored", (pp_old){.aspect = "0"}, PP_GAME_BOTW,
-                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0}, PP_MFX_OFF);
+                 (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0, 0}, PP_MFX_OFF);
 }
 
 int main(int argc, char **argv) {
@@ -179,14 +208,15 @@ int main(int argc, char **argv) {
     scene_held_at_canvas();
     mfx_scene_acts();
     totk_handheld_scene_limit();
-    env_desempenho_totk();
-    env_qualidade_docked();
-    env_economia_botw_scene_mfx();
+    env_performance_totk();
+    env_quality_docked();
+    env_economy_botw_scene_mfx();
     env_switch_size_with_screen_mfx();
     handheld_scene_above_canvas_env();
     aspect_only_totk();
     garbage_values_fall_back();
     migration();
+    present_60_and_old_totk_scene();
     if (failures) return 1;
     puts("picture profiles ok");
     return 0;

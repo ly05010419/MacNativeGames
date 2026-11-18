@@ -445,16 +445,8 @@ static void apply_display_settings(void) {
     pp_profile profile; pp_metalfx mfx;
     pp_picture pic = totk_current_picture(&profile, &mfx);
     pp_env env;
-#ifdef GAME_BOTW
-    pp_env_build(&pic, mfx, PP_GAME_BOTW, &env);
-#else
-    pp_env_build(&pic, mfx, PP_GAME_TOTK, &env);
-#endif
+    pp_env_build(&pic, mfx, PP_THIS_GAME, &env);   /* Breath of the Wild, Tears of the Kingdom 1.4.3, or 1.0 / 1.2.1 */
     for (int i = 0; i < env.n; i++) if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);
-    /* The touch controls drew their 60/30 button before Play, and the runtime kept the hold it read then (hle_nvn.c
-       phone_holds_30): it takes the environment's again (iPad A16 2026-11-18: Economy ran at 60). */
-    const char *phone_fps = getenv("TOTK_PHONE_FPS");
-    runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);
     fprintf(stderr, "[totk] picture: profile %s, metalfx %s; %s, scene %s, taa %s, %s fps, Switch size %s, drawable %s\n",
             pp_profile_key(profile), pp_metalfx_key(mfx), getenv("TOTK_OPERATION_MODE") ?: "?", getenv("TOTK_RENDER_RES") ?: "?",
             getenv("TOTK_TAA") ?: "?", pic.fps == 30 ? "30" : "60", getenv("TOTK_SWITCH_SIZE") ?: "?", getenv("TOTK_IOS_DRAWABLE_H") ?: "default");
@@ -475,6 +467,12 @@ static void apply_display_settings(void) {
     totk_frame_env fe;
     if (totk_preset_frame_env_build(fps.UTF8String, &fe)) apply_frame_env(&fe, 1);
 #endif
+    /* The touch controls drew their 60 / 30 button before Play, and the runtime kept the hold it read then (hle_nvn.c
+       phone_holds_30 reads TOTK_PHONE_FPS once): every game takes the hold from the environment just handed over (iPad
+       A16 2026-11-18: Economy ran at 60; Bananza's and Pokopia's start-screen frame rate was lost the same way; after
+       PR #2287). */
+    const char *phone_fps = getenv("TOTK_PHONE_FPS");
+    runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);
 }
 #endif
 

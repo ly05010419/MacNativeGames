@@ -243,19 +243,24 @@ class Profiles(unittest.TestCase):
     def test_the_profile_drives_the_runtime_at_game_start(self):
         zelda = self.display[self.display.index('#ifndef GAME_NS2'):]
         self.assertIn('pp_picture pic = totk_current_picture(&profile, &mfx);', zelda)
-        self.assertIn('pp_env_build(&pic, mfx, PP_GAME_BOTW, &env);', zelda)
-        self.assertIn('pp_env_build(&pic, mfx, PP_GAME_TOTK, &env);', zelda)
+        # the game as picture_settings.h names it: Breath of the Wild, Tears of the Kingdom 1.4.3, or 1.0 / 1.2.1 (after PR #2287)
+        self.assertIn('pp_env_build(&pic, mfx, PP_THIS_GAME, &env);', zelda)
+        header = (TOOLS.parent/'Sources/picture_settings.h').read_text()
+        for game in ('PP_GAME_BOTW', 'PP_GAME_TOTK', 'PP_GAME_TOTK_OLD'):
+            self.assertIn(f'#define PP_THIS_GAME {game}', header)
         # overwrite 0: a devicectl value still wins; NULL leaves a variable alone
         self.assertIn('if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);', zelda)
 
     def test_the_profiles_30_fps_reaches_a_runtime_that_already_read_the_hold(self):
         # iPad A16 2026-11-18: Economy ran at 60. The touch controls draw their 60/30 button when the view loads, before
         # Play, and the runtime keeps the hold it read then (hle_nvn.c phone_holds_30): TOTK_PHONE_FPS set at Play
-        # came too late. The hold is set again from the environment (a devicectl value still wins).
-        zelda = self.display[self.display.index('#ifndef GAME_NS2'):self.display.index('totk_preset_env prenv;')]
+        # came too late. The hold is set again from the environment (a devicectl value still wins), after every game's
+        # frame keys: the profiles' and Bananza's / Pokopia's presets lost their start-screen pick the same way (after PR #2287).
         sync = 'runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);'
-        self.assertIn(sync, zelda)
-        self.assertLess(zelda.index('setenv(env.v[i].name, env.v[i].value, 0);'), zelda.index(sync))
+        self.assertEqual(self.display.count(sync), 1)
+        self.assertLess(self.display.index('setenv(env.v[i].name, env.v[i].value, 0);'), self.display.index(sync))
+        self.assertLess(self.display.index('apply_frame_env(&fe, 1);'), self.display.index(sync))
+        self.assertGreater(self.display.index(sync), self.display.rindex('#endif'), 'outside the per-game branches')
         # ... and the button, drawn before Play, showed 60 while the game held 30: it is drawn again once the picture is set.
         start = self.main[self.main.index('- (void)prepareAndStart {'):self.main.index('- (void)boot {')]
         redraw = 'if ([v isKindOfClass:TOTKTouchPad.class]) [v setNeedsDisplay];'

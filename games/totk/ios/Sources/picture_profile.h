@@ -1,6 +1,6 @@
 #pragma once
 
-/* Picture profiles on iPhone / iPad (docs/superpowers/specs/2026-11-17-ios-picture-profiles-design.md, user 2026-11-17):
+/* Picture profiles on iPhone / iPad (PR #2287, user 2026-11-17; iPad default Performance, user 2026-11-18):
    Quality, Performance and Economy are fixed combinations of the Advanced screen's controls; Custom is the
    player's own. MetalFX (the upscale) is a setting of its own, on top of any profile. Kept free of UIKit so
    tests/test_picture_profile.c checks it on a Mac. The environment it builds is what the runtime reads at game start. */
@@ -8,15 +8,20 @@
 typedef enum { PP_QUALITY, PP_PERFORMANCE, PP_ECONOMY, PP_CUSTOM } pp_profile;
 typedef enum { PP_HANDHELD, PP_DOCKED } pp_mode;
 typedef enum { PP_MFX_OFF, PP_MFX_SCENE, PP_MFX_SCREEN } pp_metalfx;
-typedef enum { PP_GAME_TOTK, PP_GAME_BOTW } pp_game;
+/* PP_GAME_TOTK_OLD: Tears of the Kingdom 1.0 / 1.2.1, whose handheld scene without a size is the game's own 1280x720
+   (game_patches.c render_res), where 1.4.3's and Breath of the Wild's is 960x540 (after PR #2287). */
+typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD } pp_game;
 
 typedef struct {
     pp_mode mode;
-    unsigned scene_w;    /* 0: Automática (960x540 handheld, 1600x900 docked); else one of the listed widths */
+    unsigned scene_w;    /* 0: automatic (the game's own handheld scene, 1600x900 docked); else one of the listed widths */
     int taa;             /* edge smoothing (MetalFX temporal anti-aliasing) */
     int fps;             /* 30 or 60 (60: no fixed cap) */
     int switch_size;     /* the picture at the Switch's 6.2-inch screen (iPad only; the app checks) */
     int aspect_169;      /* Tears of the Kingdom only: 16:9 with bars instead of filling the screen */
+    int present_60;      /* Custom only, from the old custom layer's 60 fps cap: the display paces 60 (DM_PRESENT_HZ=60),
+                            as it did before the profiles, instead of the uncapped path; any frame-rate change clears it
+                            (after PR #2287) */
 } pp_picture;
 
 #define PP_ENV_MAX 12
@@ -27,14 +32,14 @@ const char *pp_profile_key(pp_profile p);             /* "quality" | "performanc
 int pp_profile_parse(const char *s, pp_profile *out); /* 0 for anything else (out untouched) */
 const char *pp_metalfx_key(pp_metalfx m);             /* "off" | "scene" | "screen" */
 int pp_metalfx_parse(const char *s, pp_metalfx *out);
-int pp_scene_parse(const char *s, unsigned *w);       /* "" → 0 (Automática); the six listed sizes → width; else 0 returned */
+int pp_scene_parse(const char *s, unsigned *w);       /* "" → 0 (automatic); the six listed sizes → width; else 0 returned */
 const char *pp_scene_key(unsigned w);                 /* the stored form: "" for 0 (or a width not listed), else "<w>x<h>" */
 
 int pp_profile_picture(pp_profile p, pp_picture *out);  /* the fixed values; 0 for PP_CUSTOM (out untouched) */
 /* The widest scene the game takes in the picture's mode: docked 1920; handheld 1280 (the canvas) for Breath of the Wild,
    1600 for Tears of the Kingdom (its scene is scaled by the canvas; above 1600x900 it needs heaps the phone has not). */
 unsigned pp_scene_limit(const pp_picture *p, pp_game g);
-unsigned pp_scene_effective(const pp_picture *p, pp_game g);   /* Automática resolved, held at pp_scene_limit */
+unsigned pp_scene_effective(const pp_picture *p, pp_game g);   /* automatic resolved, held at pp_scene_limit */
 int pp_mfx_scene_acts(const pp_picture *p, pp_game g);         /* 0 unless the scene is narrower than the canvas */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out);
 

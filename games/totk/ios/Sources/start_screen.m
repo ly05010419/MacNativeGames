@@ -246,8 +246,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     case PP_QUALITY:
         _profileNote.text = T(@"1080p，场景 1600×900，边缘平滑，30 fps。最清晰；会发热。",
                               @"1080p with a 1600×900 scene, smooth edges, 30 fps. The sharpest; runs warm."); break;
-    case PP_PERFORMANCE:
-        _profileNote.text = T(@"720p，场景 960×540，60 fps。流畅、均衡。", @"720p with a 960×540 scene, 60 fps. Smooth and balanced."); break;
+    case PP_PERFORMANCE: {   /* the game's own handheld scene: 960x540, 1280x720 on Tears of the Kingdom 1.0 / 1.2.1 (after PR #2287) */
+        pp_picture perf; pp_profile_picture(PP_PERFORMANCE, &perf);
+        unsigned w = pp_scene_effective(&perf, PP_THIS_GAME);
+        _profileNote.text = [NSString stringWithFormat:T(@"720p，场景 %u×%u，60 fps。流畅、均衡。", @"720p with a %u×%u scene, 60 fps. Smooth and balanced."),
+                             w, w * 9 / 16]; break; }
     case PP_ECONOMY:
         _profileNote.text = pad ? T(@"720p，场景 640×360，30 fps，Switch 屏幕大小。发热最少，最省电。",
                                     @"720p with a 640×360 scene, 30 fps, at the Switch's screen size. The coolest, easiest on the battery.")
@@ -313,6 +316,12 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         _controls[i].layer.borderWidth = (NSInteger)i == _row ? 2 : 0;
         _controls[i].layer.borderColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1].CGColor;
         _controls[i].layer.cornerRadius = _controls[i] == _start ? 26 : 9;
+    }
+    /* bring the focused row into view: the profile rows are taller than an iPhone in landscape (after PR #2287) */
+    if (_row >= 0 && _row < (NSInteger)_controls.count) {
+        UIView *v = _controls[_row], *s = v.superview;
+        while (s && ![s isKindOfClass:UIScrollView.class]) s = s.superview;
+        if (s) [(UIScrollView *)s scrollRectToVisible:[v convertRect:CGRectInset(v.bounds, 0, -24) toView:s] animated:YES];
     }
 }
 

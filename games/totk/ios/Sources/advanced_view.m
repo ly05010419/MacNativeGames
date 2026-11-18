@@ -4,7 +4,15 @@
 #include "totk_ui_lang.h"
 
 static NSString *T(NSString *z, NSString *e) { return totk_ui_zh() ? z : e; }
-static const unsigned SCENE_WIDTHS[] = {0, 1920, 1600, 1280, 960, 800, 640};   /* 0: Automática */
+static const unsigned SCENE_WIDTHS[] = {0, 1920, 1600, 1280, 960, 800, 640};   /* 0: automatic */
+
+/* The controller's focus moved to v: bring it into view inside the screen's scroll view (an iPhone in landscape shows
+   a few rows only; after PR #2287). */
+static void scroll_to(UIView *v) {
+    UIView *s = v.superview;
+    while (s && ![s isKindOfClass:UIScrollView.class]) s = s.superview;
+    if (s) [(UIScrollView *)s scrollRectToVisible:[v convertRect:CGRectInset(v.bounds, 0, -24) toView:s] animated:YES];
+}
 static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
 
 @implementation TOTKAdvancedView {
@@ -35,7 +43,8 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
 
     UIButtonConfiguration *bc = [UIButtonConfiguration plainButtonConfiguration];
     bc.title = T(@"‹ 返回", @"‹ Back"); bc.baseForegroundColor = [UIColor colorWithRed:0.45 green:0.75 blue:1.0 alpha:1];
-    UIButton *back = [UIButton buttonWithConfiguration:bc primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [self back]; }]];
+    __weak TOTKAdvancedView *me = self;   // the buttons' actions must not keep this view alive (after PR #2287)
+    UIButton *back = [UIButton buttonWithConfiguration:bc primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [me back]; }]];
     UILabel *title = [UILabel new];
     title.text = T(@"进阶", @"Advanced"); title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold]; title.textColor = UIColor.whiteColor;
     _profileLabel = [UILabel new];
@@ -68,7 +77,7 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     pc.title = T(@"开始游戏", @"Play"); pc.image = [UIImage systemImageNamed:@"play.fill"]; pc.imagePadding = 8;
     pc.baseBackgroundColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1]; pc.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     pc.contentInsets = NSDirectionalEdgeInsetsMake(14, 40, 14, 40);
-    _play = [UIButton buttonWithConfiguration:pc primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [self play]; }]];
+    _play = [UIButton buttonWithConfiguration:pc primaryAction:[UIAction actionWithHandler:^(UIAction *a) { (void)a; [me play]; }]];
     [rows addObject:_play]; [controls addObject:_play];
     _controls = controls; _row = (NSInteger)controls.count - 1;
 
@@ -114,9 +123,10 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     UILabel *effect = [UILabel new];
     effect.font = [UIFont systemFontOfSize:13]; effect.textColor = [UIColor colorWithWhite:0.6 alpha:1]; effect.numberOfLines = 0;
     _effects[[NSValue valueWithNonretainedObject:control]] = effect;
+    control.accessibilityLabel = label;   // VoiceOver: the row's name on the control, its effect line as the hint (effect:)
     [rows addObjectsFromArray:@[row, effect]]; [controls addObject:control];
 }
-- (void)effect:(UIView *)control text:(NSString *)text { _effects[[NSValue valueWithNonretainedObject:control]].text = text; }
+- (void)effect:(UIView *)control text:(NSString *)text { _effects[[NSValue valueWithNonretainedObject:control]].text = text; control.accessibilityHint = text; }
 
 static NSString *scene_title(unsigned w) {
     return w ? [NSString stringWithFormat:@"%u×%u", w, w * 9 / 16] : T(@"自动", @"Automatic");
@@ -172,6 +182,8 @@ static NSString *metalfx_title(pp_metalfx m) {
     [self effect:_metalfx text:[mfxText stringByAppendingString:T(@"（独立于画面设置）", @" (a setting of its own, kept by every profile)")]];
     [self effect:_taa text:T(@"MetalFX 时间抗锯齿：边缘更稳，可能有轻微拖影。场景越大越吃 GPU：960×540 约 1 ms，1600×900 约 11 ms（iPad A16）。", @"MetalFX temporal anti-aliasing: steadier edges, slight ghosting possible. Its GPU cost grows with the scene: about 1 ms at 960×540, about 11 ms at 1600×900 (iPad A16).")];
     [self effect:_fps text:_pic.fps == 30 ? T(@"30 fps：更凉、更省电。", @"30 fps: cooler, easier on the battery.")
+                         : _pic.present_60 ? T(@"60 fps：按屏幕 60 Hz 固定节奏（沿用以前的自定义设置；重新选一次帧率就改成不固定上限）。",
+                                               @"60 fps, paced at the screen's 60 Hz (kept from the old custom settings; choosing the frame rate again makes it uncapped).")
                                           : T(@"60 fps：不固定上限，最高到屏幕的刷新率。", @"60 fps: no fixed cap, up to the screen's rate.")];
     if (_switchSize) [self effect:_switchSize text:T(@"画面显示成 Switch 屏幕的大小（6.2 英寸），居中、四周黑边：更小、更清晰。",
                                                      @"The picture at the Switch's screen size (6.2 inches), centred on black: smaller and sharper.")];
@@ -185,7 +197,7 @@ static NSString *metalfx_title(pp_metalfx m) {
 - (void)modeChanged { _pic.mode = _mode.selectedSegmentIndex == 1 ? PP_DOCKED : PP_HANDHELD; [self changed]; }
 - (void)setScene:(unsigned)w { _pic.scene_w = w; [self changed]; }
 - (void)taaChanged { _pic.taa = _taa.on; [self changed]; }
-- (void)fpsChanged { _pic.fps = _fps.selectedSegmentIndex == 0 ? 30 : 60; [self changed]; }
+- (void)fpsChanged { _pic.fps = _fps.selectedSegmentIndex == 0 ? 30 : 60; _pic.present_60 = 0; [self changed]; }
 - (void)switchSizeChanged { _pic.switch_size = _switchSize.on; [self changed]; }
 - (void)aspectChanged { _pic.aspect_169 = _aspect.selectedSegmentIndex == 1; [self changed]; }
 - (void)setMetalfx:(pp_metalfx)m {
@@ -204,6 +216,7 @@ static NSString *metalfx_title(pp_metalfx m) {
         _controls[i].layer.borderColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1].CGColor;
         _controls[i].layer.cornerRadius = _controls[i] == _play ? 26 : 9;
     }
+    if (_row >= 0 && _row < (NSInteger)_controls.count) scroll_to(_controls[_row]);
 }
 
 /* Left / right: a segmented control's neighbour, a menu's next value, a switch on or off. */

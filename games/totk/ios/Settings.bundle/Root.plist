@@ -71,6 +71,8 @@
 			<string>zelda</string>
 			<key>Key</key>
 			<string>TOTK_PICTURE_PROFILE</string>
+			<key>TOTKPhone</key>
+			<true/>
 			<key>Title</key>
 			<string>畫面設定 · Picture profile</string>
 			<key>Titles</key>
@@ -97,6 +99,8 @@
 			<string>zelda</string>
 			<key>Key</key>
 			<string>TOTK_METALFX</string>
+			<key>TOTKPhone</key>
+			<true/>
 			<key>Title</key>
 			<string>MetalFX</string>
 			<key>Titles</key>

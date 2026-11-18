@@ -21,6 +21,7 @@ pp_picture totk_current_picture(pp_profile *profile, pp_metalfx *mfx) {
         pic.fps = [[d stringForKey:@"TOTK_CUSTOM_FPS"] isEqualToString:@"30"] ? 30 : 60;
         pic.switch_size = [d boolForKey:@"TOTK_CUSTOM_SWITCH_SIZE"];
         pic.aspect_169 = [[d stringForKey:@"TOTK_CUSTOM_ASPECT"] isEqualToString:@"0"];
+        pic.present_60 = [d boolForKey:@"TOTK_CUSTOM_PRESENT_60"];
     }
     if (profile) *profile = p;
     if (mfx) *mfx = m;
@@ -38,6 +39,7 @@ void totk_save_custom_picture(const pp_picture *p) {
     [d setObject:p->fps == 30 ? @"30" : @"60" forKey:@"TOTK_CUSTOM_FPS"];
     [d setBool:p->switch_size != 0 forKey:@"TOTK_CUSTOM_SWITCH_SIZE"];
     [d setObject:p->aspect_169 ? @"0" : @"" forKey:@"TOTK_CUSTOM_ASPECT"];
+    [d setBool:p->present_60 != 0 forKey:@"TOTK_CUSTOM_PRESENT_60"];
     totk_choose_profile(PP_CUSTOM);
 }
 
@@ -52,7 +54,11 @@ void totk_migrate_picture_rows(void) {
     BOOL any = NO;
     for (NSString *key in old_keys) if (stored[key]) any = YES;
     if (any) {
-        NSString *(^text)(NSString *) = ^NSString *(NSString *key) { id v = stored[key]; return [v isKindOfClass:NSString.class] ? v : nil; };
+        /* a number counts as its text: devicectl or an older build may have stored 30 as a number (after PR #2287) */
+        NSString *(^text)(NSString *) = ^NSString *(NSString *key) {
+            id v = stored[key];
+            return [v isKindOfClass:NSString.class] ? v : [v isKindOfClass:NSNumber.class] ? [v stringValue] : nil;
+        };
         pp_old old = {
             .docked = [stored[@"TOTK_DOCKED"] boolValue],
             .docked_scene = (text(@"TOTK_BOTW_SCENE") ?: text(@"TOTK_DOCKED_SCENE")).UTF8String,
