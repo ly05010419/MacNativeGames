@@ -382,6 +382,19 @@ static void persistence_probe(const char *action) {
         dm_gfx_aa_method_set(2);assert(fakeSmaaQuality==3&&!atomic_load(&g_fin_fxaa_quality));
     }
 #endif
+    if (!strcmp(action, "auto")) {   /* graphics-aspect.txt "auto" (the row's Auto) comes back once the patch is in */
+        assert(settingsPendingAuto && settingsPendingAspect == 0);
+        settings_restore_ready(); assert(settingsPendingAuto);   /* not yet: no aspect patch */
+        settings_test_output_init(); settings_test_aspect_init(16.0 / 9); assert(!runtime_aspect_auto());
+        settings_restore_ready(); assert(!settingsPendingAuto);
+#ifdef GAME_BOTW
+        assert(!runtime_aspect_auto());   /* no Auto there: the word is dropped */
+#else
+        assert(runtime_aspect_auto() && runtime_aspect_now() == 0);
+#endif
+        return;
+    }
+    assert(!settingsPendingAuto);
     if (!strcmp(action, "corrupt")) {
         assert(settingsPendingOutput == -1 && settingsPendingAspect == 0 && fakeLock == 0 && mfx_requested() == MFX_OFF);
         assert(fps_overlay_hud_mode() == HUD_MODE_ALL && !taa_enabled()); return;
@@ -1250,8 +1263,24 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settings_test_aspect_init(1.6);
     key_event(53, YES); key_event(53, NO); assert(!settingsOpen && settingsPanel.hidden);   /* Esc closes it */
     press(18); assert(settingsOpen);
-    /* 16:9, 16:10, 21:9, 32:9 (no fitting the window any more); the window takes each shape at once. */
-    assert(menu(@"Aspect ratio").enabled && menu(@"Aspect ratio").numberOfItems == 4 && [menu(@"Aspect ratio") indexOfItemWithTitle:@"Fit to window"] < 0);
+    /* 16:9, 16:10, 21:9, 32:9 (no fitting the window any more); the window takes each shape at once. Tears of the Kingdom
+       has Auto first: the screen's shape in full screen, 16:9 in a window (aspect_patch.h); Breath of the Wild has none. */
+    int hasAuto = runtime_aspect_auto_available();
+#ifdef GAME_BOTW
+    assert(!hasAuto);
+#else
+    assert(hasAuto && [[menu(@"Aspect ratio") itemTitleAtIndex:0] isEqualToString:@"Auto"]);
+#endif
+    assert(menu(@"Aspect ratio").enabled && menu(@"Aspect ratio").numberOfItems == 4 + hasAuto && [menu(@"Aspect ratio") indexOfItemWithTitle:@"Fit to window"] < 0);
+    if (hasAuto) {
+        pick(@"Aspect ratio", @"Auto"); assert(runtime_aspect_auto() && runtime_aspect_now() == 0);   /* a window: 16:9 */
+        shows(@"Aspect ratio", @"Auto");
+        runtime_aspect_fullscreen(1); assert(fabsf(runtime_aspect_now() - 1.6f) < 0.001f && fabsf(runtime_aspect_ratio() - 1.6f) < 0.001f);   /* the screen's 16:10 */
+        runtime_aspect_view(16.0 * 1080 / 9, 1080); assert(runtime_aspect_now() == 0);   /* a 16:9 screen: the game's own */
+        runtime_aspect_view(1.6 * 1080, 1080); assert(fabsf(runtime_aspect_now() - 1.6f) < 0.001f);
+        runtime_aspect_fullscreen(0); assert(runtime_aspect_now() == 0 && runtime_aspect_auto());
+        shows(@"Aspect ratio", @"Auto");
+    }
     pick(@"Aspect ratio", @"16:10"); assert(fabsf(runtime_aspect_ratio() - 1.6f) < 0.001f && fabsf(runtime_aspect_now() - 1.6f) < 0.001f);
     tick(); shaped(16.0 / 10);
     pick(@"Aspect ratio", @"32:9"); assert(fabsf(runtime_aspect_now() - 32.0f / 9) < 0.001f);
@@ -1260,6 +1289,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     tick(); shaped(21.0 / 9);
     pick(@"Aspect ratio", @"16:9"); assert(runtime_aspect_now() == 0 && fabsf(runtime_aspect_ratio() - 16.0f / 9) < 0.001f);
     tick(); shaped(16.0 / 9);
+    if (hasAuto) {   /* 16:9 picked: full screen does not follow the screen */
+        assert(!runtime_aspect_auto()); runtime_aspect_fullscreen(1); assert(runtime_aspect_now() == 0); runtime_aspect_fullscreen(0);
+    }
     /* 2K + MetalFX for a 4K screen: the 2K canvas, the MetalFX output stage on, a 3840x2160 window (as far as the screen holds). */
     if (nativeResolution) {
     pick(@"Resolution", @"2K + MetalFX upscaling (4K screens)");

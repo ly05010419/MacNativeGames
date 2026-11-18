@@ -556,7 +556,7 @@ static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
- metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
+ metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_fullscreen((window.styleMask&NSWindowStyleMaskFullScreen)!=0);runtime_aspect_view(px.width,px.height);
  front_sr_view();
 }
 /* BotW, the settings panel's aspect ratio: the window takes the selected camera ratio. Keep the chosen height across toggles, even when a wide
@@ -601,8 +601,8 @@ void runtime_front_resize_aspect(double ratio){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
--(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
--(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;runtime_aspect_fullscreen(1);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
+-(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;runtime_aspect_fullscreen(0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
 -(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log

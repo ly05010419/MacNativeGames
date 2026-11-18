@@ -1,6 +1,7 @@
 /* Other picture shapes on the Mac: the settings panel (key 1, frontend.m) picks 16:9 (the game's own), 16:10, 21:9 or
    32:9, and the window takes that shape (user 2026-10-25; fitting the window's own shape was dropped then).
    TOTK_ASPECT=<w>:<h>, <w>x<h> or a ratio (2.39, 3440x1440) starts on that ratio, which the panel then also offers.
+   Without TOTK_ASPECT the Mac starts on Auto: the screen's shape in full screen, 16:9 in a window (runtime_aspect_fullscreen).
    iPhone / iPad: always the screen's shape (no panel; TOTK_ASPECT=0 keeps 16:9), see the TARGET_OS_IPHONE part of
    aspect_install.
    Not a stretched picture: the camera's projection takes the other aspect ratio, so more of the world is seen at the
@@ -35,8 +36,9 @@ static _Atomic(uint32_t) *g_aspect_slot;   /* points into that page once the stu
 static _Atomic(uint32_t) *g_aspect_vert;   /* the Vert+ factor beside it, when Vert+ stubs are in */
 static float g_aspect_wide;               /* the ratio of the wide step: the panel's pick, TOTK_ASPECT's, or 21:9 */
 static int g_aspect_named;                /* TOTK_ASPECT gave it */
-static atomic_int g_aspect_step;          /* ASPECT_STEP_GAME or _WIDE (the Mac), _FIT (the phone: the screen's shape) */
+static atomic_int g_aspect_step;          /* ASPECT_STEP_GAME or _WIDE, _FIT (the phone: the screen's shape; the Mac: Auto) */
 static _Atomic(uint32_t) g_aspect_view;   /* the drawable's width / height (frontend.m, frontend_ios.m), float bits */
+static atomic_int g_aspect_full;          /* Mac: the window is in full screen (frontend.m); Auto follows the screen only then */
 
 /* TOTK_ASPECT as a ratio (0 when unset or "0"). A malformed value stops the start. */
 static inline double aspect_requested(void) {
@@ -55,6 +57,9 @@ float runtime_aspect_now(void) { return g_aspect_slot ? aspect_bits_float(atomic
 float runtime_aspect_ratio(void) {
     if (!g_aspect_slot) return 0;
     int step = atomic_load(&g_aspect_step);
+#if !TARGET_OS_IPHONE
+    if (step == ASPECT_STEP_FIT) { float a = runtime_aspect_now(); return a ? a : (float)ASPECT_GAME; }   /* Auto: the ratio it took */
+#endif
     return step == ASPECT_STEP_WIDE ? g_aspect_wide : step == ASPECT_STEP_FIT ? aspect_bits_float(atomic_load(&g_aspect_view)) : (float)ASPECT_GAME;
 }
 float runtime_aspect_start(void) { return g_aspect_named ? g_aspect_wide : 0; }   /* TOTK_ASPECT's ratio, 0 without it */
@@ -62,7 +67,11 @@ float runtime_aspect_start(void) { return g_aspect_named ? g_aspect_wide : 0; } 
 /* Puts the ratio of the panel's step (and its Vert+ factor) on the data page; logs a change. */
 static void aspect_apply(void) {
     if (!g_aspect_slot) return;
-    double want = aspect_step_ratio(atomic_load(&g_aspect_step), aspect_bits_float(atomic_load(&g_aspect_view)), g_aspect_wide);
+    double view = aspect_bits_float(atomic_load(&g_aspect_view));
+#if !TARGET_OS_IPHONE
+    if (!atomic_load(&g_aspect_full)) view = 0;   /* Auto in a window: the game's 16:9 (the window keeps its own shape) */
+#endif
+    double want = aspect_step_ratio(atomic_load(&g_aspect_step), view, g_aspect_wide);
     float a = aspect_effective(want), k = g_aspect_vert ? aspect_vert_factor(a) : 0;
     uint32_t old = atomic_exchange(g_aspect_slot, aspect_float_bits(a));
     if (g_aspect_vert) atomic_store(g_aspect_vert, aspect_float_bits(k));
@@ -92,6 +101,28 @@ int runtime_aspect_vr(float a, float k) {
     else fprintf(stderr, "[totk] aspect for VR: ratio %.4f, vertical view widened %.3fx\n", a, k);
     return 1;
 }
+
+/* Auto on the Mac: in full screen the camera takes the screen's shape, so a MacBook's 16:10 area below the camera
+   housing is filled (3024x1890 or so: 1.6) and a 16:9 display stays the game's own 16:9; in a window it is the game's
+   16:9 (the window keeps its own shape, with bars where it is not 16:9). It is the start unless TOTK_ASPECT is set
+   (TOTK_ASPECT=0: 16:9). frontend.m reports full screen (windowDidEnter/ExitFullScreen and each drawable change); the
+   settings panel's Auto choice, saved as "auto" in graphics-aspect.txt, comes back to it. */
+void runtime_aspect_fullscreen(int on) {
+    if (atomic_exchange(&g_aspect_full, on != 0) != (on != 0) && atomic_load(&g_aspect_step) == ASPECT_STEP_FIT) aspect_apply();
+}
+int runtime_aspect_set_auto(void) {
+#if TARGET_OS_IPHONE
+    return 0;
+#else
+    if (!g_aspect_slot) return 0;
+    atomic_store(&g_aspect_step, ASPECT_STEP_FIT);
+    aspect_apply();
+    fprintf(stderr, "[totk] aspect: auto (the screen's shape in full screen)\n");
+    return 1;
+#endif
+}
+int runtime_aspect_auto(void) { return g_aspect_slot && atomic_load(&g_aspect_step) == ASPECT_STEP_FIT; }
+int runtime_aspect_auto_available(void) { return !TARGET_OS_IPHONE && g_aspect_slot != NULL; }
 
 /* The settings panel: a ratio (0.5..8; within 1% of 16:9 the game's own). Returns 0 where it is not available (iPhone /
    iPad, other game versions) or the ratio is out of range. */
@@ -192,10 +223,11 @@ static inline void aspect_install(Module *m, const char *version, const uint64_t
     if (g_aspect_vert) atomic_store(g_aspect_vert, 0);
     g_aspect_named = req > 0;
     g_aspect_wide = req > 0 ? (float)req : (float)ASPECT_WIDE;
-    atomic_store(&g_aspect_step, req > 0 ? ASPECT_STEP_WIDE : ASPECT_STEP_GAME);
+    const char *ae = getenv("TOTK_ASPECT");
+    atomic_store(&g_aspect_step, req > 0 ? ASPECT_STEP_WIDE : (ae && *ae) ? ASPECT_STEP_GAME : ASPECT_STEP_FIT);
     aspect_apply();
-    char start[48]; if (g_aspect_named) snprintf(start, sizeof start, "%.4f (TOTK_ASPECT)", g_aspect_wide); else snprintf(start, sizeof start, "16:9");
-    fprintf(stderr, "[totk] %s aspect ratio: the settings panel picks 16:9 / 16:10 / 21:9 / 32:9, starts at %s; %u site(s), %s, stubs +%#llx\n",
+    char start[48]; if (g_aspect_named) snprintf(start, sizeof start, "%.4f (TOTK_ASPECT)", g_aspect_wide); else snprintf(start, sizeof start, (ae && *ae) ? "16:9" : "auto");
+    fprintf(stderr, "[totk] %s aspect ratio: the settings panel picks Auto / 16:9 / 16:10 / 21:9 / 32:9, starts at %s; %u site(s), %s, stubs +%#llx\n",
             version, start, nsite,
             nvert ? "Vert+ below 16:9 (TOTK_ASPECT_VERT=1, experimental: some UI effects sit off)" : "vertical view kept below 16:9 (TOTK_ASPECT_VERT=1: Vert+, experimental)",
             (unsigned long long)stub_off);

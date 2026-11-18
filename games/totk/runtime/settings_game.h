@@ -17,10 +17,13 @@
                           2K + MetalFX (a 4K screen)
                                                              1080p is the start until a choice is saved; the window
                                                              takes that size at once (settings_window_for)
-     aspect ratio         16:9 / 16:10 / 21:9 / 32:9         runtime_aspect_set_ratio (aspect_patch.h, game_patches_botw.c);
+     aspect ratio         Auto / 16:9 / 16:10 / 21:9 / 32:9  runtime_aspect_set_ratio (aspect_patch.h, game_patches_botw.c);
                                                              the window takes that shape at once, its height kept
                                                              (runtime_front_resize_aspect; user 2026-10-25: no fitting the
-                                                             window any more); TOTK_ASPECT's ratio is offered too
+                                                             window any more); TOTK_ASPECT's ratio is offered too.
+                                                             Auto (Tears of the Kingdom, runtime_aspect_set_auto): the
+                                                             screen's shape in full screen, 16:9 in a window; the start
+                                                             without TOTK_ASPECT; saved as "auto"
    Input
      controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
      background controller switch, default off              runtime_gamepad_background_set, controller-background.txt
@@ -171,6 +174,8 @@ static void settings_window_for(int mode) {
    patches become available later, so restore those on the main thread when the guest has installed them. */
 static int settingsPendingOutput = -1;
 static float settingsPendingAspect;
+static int settingsPendingAuto;   /* graphics-aspect.txt says "auto" (the aspect row's Auto) */
+#define SETTINGS_ASPECT_AUTO -2   /* the aspect row's Auto: its value beside the ratios' indexes */
 static NSTimer *settingsRestoreTimer;
 static void settings_save_frame(void) {
  char word[32];int fps=nvn_fps_lock(),mfx=mfx_requested();
@@ -270,6 +275,7 @@ static void settings_restore_begin(void) {
     !getenv("TOTK_ASPECT")&&runtime_setting_word("graphics-aspect.txt",word,sizeof word)){
   char *end;float ratio=strtof(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
+  else{word[strcspn(word," \t\r\n")]=0;if(!strcmp(word,"auto"))settingsPendingAuto=1;}   /* Auto, as the row saves it */
  }
 }
 static void settings_restore_ready(void) {
@@ -277,6 +283,7 @@ static void settings_restore_ready(void) {
   float r=settingsPendingAspect;settingsPendingAspect=0;
   if(runtime_aspect_set_ratio(r))runtime_front_resize_aspect(r);
  }
+ if(settingsPendingAuto&&runtime_aspect_ratio()>0){settingsPendingAuto=0;runtime_aspect_set_auto();}   /* 0 where there is no Auto */
  int outputModes=runtime_output_modes();
 #ifdef GAME_BOTW
  /* BotW advertises 1080p / MetalFX before its patches are installed. Wait for those patches before deciding whether
@@ -287,11 +294,11 @@ static void settings_restore_ready(void) {
   int mode=settingsPendingOutput;settingsPendingOutput=-1;
   if((outputModes&(1<<mode))&&runtime_output_mode_set(mode))settings_window_for(mode);
  }
- if(settingsPendingOutput<0&&settingsPendingAspect<=0){[settingsRestoreTimer invalidate];settingsRestoreTimer=nil;}
+ if(settingsPendingOutput<0&&settingsPendingAspect<=0&&!settingsPendingAuto){[settingsRestoreTimer invalidate];settingsRestoreTimer=nil;}
 }
 static void settings_restore_start(void) {
  settings_restore_begin();
- if(settingsPendingOutput<0&&settingsPendingAspect<=0)return;
+ if(settingsPendingOutput<0&&settingsPendingAspect<=0&&!settingsPendingAuto)return;
  settingsRestoreTimer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;settings_restore_ready();}];
  [NSRunLoop.mainRunLoop addTimer:settingsRestoreTimer forMode:NSRunLoopCommonModes];
 }
@@ -740,10 +747,15 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   for(NSNumber *r in ratios)listed|=aspect_near(start,r.doubleValue);
   if(start>0&&!listed)[ratios addObject:@(start)];
   NSMutableArray<NSString *> *choices=[NSMutableArray array];NSMutableArray<NSNumber *> *values=[NSMutableArray array];
+  /* Auto (aspect_patch.h): the screen's shape in full screen, 16:9 in a window; Tears of the Kingdom on the Mac only */
+  if(runtime_aspect_auto_available()){[choices addObject:settings_text("自动","Auto")];[values addObject:@(SETTINGS_ASPECT_AUTO)];}
   for(NSUInteger i=0;i<ratios.count;i++){[choices addObject:settings_ratio_text(ratios[i].floatValue)];[values addObject:@((int)i)];}
   [rows addObject:settings_row(aspect,choices,values,^int{
+    if(runtime_aspect_auto())return SETTINGS_ASPECT_AUTO;
     float now=runtime_aspect_ratio();for(NSUInteger i=0;i<ratios.count;i++)if(aspect_near(now,ratios[i].doubleValue))return (int)i;return -1;},
-   ^(int v){float r=ratios[(NSUInteger)v].floatValue;settingsPendingAspect=0;if(runtime_aspect_set_ratio(r)){
+   ^(int v){settingsPendingAspect=0;settingsPendingAuto=0;
+   if(v==SETTINGS_ASPECT_AUTO){if(runtime_aspect_set_auto())runtime_setting_save("graphics-aspect.txt","auto","aspect ratio");return;}
+   float r=ratios[(NSUInteger)v].floatValue;if(runtime_aspect_set_ratio(r)){
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
     settings_ns2_save_size();dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});
 #else
