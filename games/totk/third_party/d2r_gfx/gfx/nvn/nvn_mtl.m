@@ -179,7 +179,18 @@ static _Atomic uint32_t g_present_qos;
    and replay took turns. How far ahead it runs stays bounded by the game's swapchain acquire. */
 #define ALLOC_MAX 64
 static id<MTL4CommandAllocator> g_alloc4[ALLOC_MAX]; static int g_alloc_n, g_alloc_cur;   // 主提交的命令分配器池：开工时挑一个 GPU 已用完的，没有就新建（到上限才等） | Command allocator pool of the main submission: at start pick one the GPU has finished with, create a new one if there is none (wait only at the cap)
-static id<MTL4CommandAllocator> g_up_alloc4[3];
+/* Upload allocator slots. BOTW makes new texture objects every frame (about 20 first uploads a frame in play, in several
+   segments of a submission). With 3 slots in fixed rotation the submit thread ran at most 3 upload batches ahead of the
+   GPU and waited about 6 ms a frame for a slot while the GPU idled (BOTW 1.9.0, 2026-11-17: 50.5 fps; with 8 slots the
+   wait was 0.0-0.2 ms and the same state ran at 54.5 fps). UP_SLOTS_MAX slots exist and up_slots() of them rotate: all 8
+   on BOTW by default. Other games keep 3 (TOTK 1.4.3 showed no gain from 8: it was GPU-bound with 3 and with 8). */
+#ifdef GAME_BOTW
+#define UP_SLOTS_MAX 8
+static _Atomic int g_up_slots_n;   /* 0: not read yet (TOTK_BOTW_UP_SLOTS=3..8, flag up_slots <3..8>; default UP_SLOTS_MAX) */
+#else
+#define UP_SLOTS_MAX 3
+#endif
+static id<MTL4CommandAllocator> g_up_alloc4[UP_SLOTS_MAX];
 static id<MTL4CommandAllocator> g_present_alloc4[3];
 static id<MTL4CommandBuffer> g_present_cb[3];
 static id<MTL4ArgumentTable> g_vt, g_ft, g_ct, g_up_ct, g_ot;
@@ -1090,6 +1101,14 @@ void mtl_init(void) {
         g_present_cb[i] = [g_dev newCommandBuffer];
         if (!g_present_cb[i]) MDIE("建立出图 MTL4CommandBuffer[%d] 失败", i);
     }
+#ifdef GAME_BOTW
+    for (int i = 3; i < UP_SLOTS_MAX; i++) {
+        MTL4CommandAllocatorDescriptor *ad = [MTL4CommandAllocatorDescriptor new]; NSError *ae = nil;
+        ad.label = [NSString stringWithFormat:@"nvn-mtl upload allocator %d", i];
+        g_up_alloc4[i] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae];
+        if (!g_up_alloc4[i]) MDIE("upload MTL4CommandAllocator[%d]: %s", i, ae.localizedDescription.UTF8String);
+    }
+#endif
     MTL4ArgumentTableDescriptor *atd = [MTL4ArgumentTableDescriptor new];
     atd.maxBufferBindCount = 31; atd.maxTextureBindCount = 1;
     NSError *ate = nil;
@@ -4137,6 +4156,9 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"pool_issue_stats")) { extern void nvn_pool_issue_statistics(uint64_t[3],int); uint64_t n[3]; nvn_pool_issue_statistics(n,v); MLOG("[pool-issue] stats=%d calls=%llu skipped=%llu registered=%llu",v!=0,n[0],n[1],n[2]); return; }
     if (!strcmp(name,"mesh_reuse_check")) { atomic_store(&g_mesh_reuse_check,v!=0); MLOG("[flag] mesh_reuse_check = %d",v!=0); return; }
     if (!strcmp(name,"mesh_trace")) { if(v>=0&&v<=4)atomic_store(&g_mesh_trace_frames,v); return; }
+#ifdef GAME_BOTW
+    if (!strcmp(name, "up_slots")) { if (v < 3 || v > UP_SLOTS_MAX) { MLOG("[flag] up_slots requires 3..%d", UP_SLOTS_MAX); return; } atomic_store(&g_up_slots_n, v); MLOG("[flag] up_slots = %d (next upload batch)", v); return; }
+#endif
     if (!strcmp(name, "chunk_first") || !strcmp(name, "chunk_draws")) {
         if (v < 0 || v > 1000) { MLOG("[flag] chunk controls require 0..1000"); return; }
         atomic_store(!strcmp(name, "chunk_first") ? &g_chunk_first_request : &g_chunk_size_request, v);
@@ -5030,7 +5052,19 @@ static _Atomic uint64_t g_upload_ns;   // 提交线程上解排布 + 上传编�
 static _Atomic uint64_t g_upload_gpu_ns;
 static id<MTL4CommandBuffer> g_up_cb;
 static id<MTL4ComputeCommandEncoder> g_up_ce;
-static _Atomic int g_up_alloc_busy[3];
+static _Atomic int g_up_alloc_busy[UP_SLOTS_MAX];
+#ifdef GAME_BOTW
+static unsigned g_up_cur_slot;   /* the open batch's slot (submit thread): up_slots() can change between up_begin and up_flush */
+static unsigned up_slots(void) {
+    int n = atomic_load(&g_up_slots_n);
+    if (!n) {
+        const char *e = getenv("TOTK_BOTW_UP_SLOTS"); n = e ? atoi(e) : UP_SLOTS_MAX; if (n < 3 || n > UP_SLOTS_MAX) n = UP_SLOTS_MAX;
+        int unset = 0; if (!atomic_compare_exchange_strong(&g_up_slots_n, &unset, n)) n = unset;   /* a flag set meanwhile wins */
+        MLOG("[upload] %d upload allocator slots in rotation (TOTK_BOTW_UP_SLOTS, 3..%d, default %d)", n, UP_SLOTS_MAX, UP_SLOTS_MAX);
+    }
+    return (unsigned)n;
+}
+#endif
 // TOTK: the submit thread sleeps on this until an upload allocator slot's GPU feedback arrives (was a 1 ms usleep poll).
 static pthread_mutex_t g_up_slot_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_up_slot_cv = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_up_slot_waits, g_up_slot_wait_ns;
@@ -5235,7 +5269,11 @@ static void up_flush(void) {
     }
     if (b) { m4_end(b); g_up_ce = nil; }
     id<MTL4CommandBuffer> cb = g_up_cb;
+#ifdef GAME_BOTW
+    unsigned slot = g_up_cur_slot;
+#else
     unsigned slot = (g_up_seq - 1) % 3;
+#endif
     NSMutableArray *dsts = [NSMutableArray arrayWithCapacity:(NSUInteger)g_nup_blits]; for (int i = 0; i < g_nup_blits; i++) if (g_up_blits[i].dst) [dsts addObject:g_up_blits[i].dst];
     static int lost_at = -2; static uint64_t batch_n; if (lost_at == -2) { const char *e = getenv("DM_TEST_UP_LOST"); lost_at = e ? atoi(e) : -1; } int fake_lost = dsts.count && lost_at > 0 && (int)++batch_n == lost_at;
     TotkCommitOptions *o = [TotkCommitOptions new];
@@ -5282,7 +5320,11 @@ void mtl_upload_wait_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_up_s
 static void up_begin(void) {
     up_owner_check("up_begin");
     if (g_up_cb) return;
+#ifdef GAME_BOTW
+    unsigned slot = g_up_cur_slot = g_up_seq++ % up_slots();
+#else
     unsigned slot = g_up_seq++ % 3;
+#endif
     if (atomic_load(&g_up_alloc_busy[slot])) {
         uint64_t w0 = bp_now(); pthread_mutex_lock(&g_up_slot_mu);
         while (atomic_load(&g_up_alloc_busy[slot])) pthread_cond_wait(&g_up_slot_cv, &g_up_slot_mu);
