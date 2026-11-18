@@ -708,16 +708,24 @@ enum { RENDER_MOVZ = 0x12660bc, RENDER_MOVK = 0x12660c8 };
 static uint64_t output_floats(unsigned screen, unsigned render);   /* {screen, render width} as two floats */
 static int phone_scene_hd(void) { const char *e = getenv("TOTK_BOTW_SCENE"); return e && !strcmp(e, "1920x1080"); }
 /* The custom scene size (user 2026-11-17: the pane's TOTK_RENDER_RES, handed over only while "Use custom settings" is on;
-   ios/tools/build_ipa.py botw_pane, ios/Sources/settings_map.c): its width, for docked and handheld play alike; 0 keeps
-   the presets' scene. Only sizes at or below the handheld 1280x720 canvas: above the canvas the game cannot make its
-   heaps (patch_render_1080). Lower sizes cost the GPU less, for heat and battery; MetalFX's scene upscale (TOTK_MFX_UPSCALE)
-   can then replace the game's own upscale into the canvas. Read at start, before the first display-mode run. */
-static unsigned phone_scene_custom(void) {
-    static const struct { const char *size; unsigned width; } sizes[] = {{"1280x720", 1280}, {"960x540", 960}, {"800x450", 800}, {"640x360", 640}};
+   ios/tools/build_ipa.py botw_pane, ios/Sources/settings_map.c): its width in the mode whose canvas is canvas_w wide (docked
+   1920, handheld 1280); 0 keeps the presets' scene. A size above that canvas is held at the canvas: above it the game cannot
+   make its heaps (patch_render_1080), so 1600x900 and 1920x1080 are docked sizes and handheld plays them at 1280x720
+   (user 2026-11-17: the list stays open for faster iPads and iPhones). Lower sizes cost the GPU less, for heat and battery;
+   MetalFX's scene upscale (TOTK_MFX_UPSCALE) can then replace the game's own upscale into the canvas. Read at start, before
+   the first display-mode run. */
+static unsigned phone_scene_custom(unsigned canvas_w) {
+    static const struct { const char *size; unsigned width; } sizes[] = {
+        {"1920x1080", 1920}, {"1600x900", 1600}, {"1280x720", 1280}, {"960x540", 960}, {"800x450", 800}, {"640x360", 640}};
     const char *e = getenv("TOTK_RENDER_RES");
     if (!e || !*e) return 0;
-    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) if (!strcmp(e, sizes[i].size)) return sizes[i].width;
-    fprintf(stderr, "[botw] scene %s is not one of the pane's sizes (1280x720, 960x540, 800x450, 640x360); the presets' scene\n", e);
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++) {
+        if (strcmp(e, sizes[i].size)) continue;
+        if (sizes[i].width <= canvas_w) return sizes[i].width;
+        fprintf(stderr, "[botw] scene %s is above this mode's %ux%u canvas; %ux%u here\n", e, canvas_w, canvas_w * 9 / 16, canvas_w, canvas_w * 9 / 16);
+        return canvas_w;
+    }
+    fprintf(stderr, "[botw] scene %s is not one of the pane's sizes (1920x1080 to 640x360); the presets' scene\n", e);
     return 0;
 }
 static void patch_render_phone(Module *m) {
@@ -726,7 +734,7 @@ static void patch_render_phone(Module *m) {
     const uint64_t page = (uintptr_t)m->base + data_off;
     put_word(m, RENDER_MOVZ, adrp_reg(8, (uintptr_t)m->base + RENDER_MOVZ, page), "docked render size");   /* adrp x8, page */
     put_word(m, RENDER_MOVK, 0xf9400908u, "docked render size");   /* ldr x8, [x8, #16]: {screen, render width} */
-    const unsigned custom = phone_scene_custom(), render = custom ? custom : phone_scene_hd() ? 1920 : 1600;
+    const unsigned custom = phone_scene_custom(1920), render = custom ? custom : phone_scene_hd() ? 1920 : 1600;
     atomic_store((_Atomic uint64_t *)(void *)(page + 16), output_floats(1920, render));
     fprintf(stderr, "[botw] docked render size %ux%u into the 1920x1080 canvas (%s)\n", render, render * 9 / 16,
             custom ? "custom; TOTK_RENDER_RES" : render == 1920 ? "HD; TOTK_BOTW_SCENE" : "as on the Switch; TOTK_BOTW_SCENE");
@@ -865,7 +873,7 @@ static void patch_phone_render(Module *m) {
     const uint64_t page = (uintptr_t)m->base + data_off;
     put_word(m, PHONE_RENDER, adrp_reg(8, (uintptr_t)m->base + PHONE_RENDER, page), "handheld render size");   /* adrp x8, page */
     put_word(m, PHONE_RENDER + 4, 0xf9401508u, "handheld render size");   /* ldr x8, [x8, #0x28]: {screen, render width} */
-    const unsigned custom = phone_scene_custom(), render = custom ? custom : 960;
+    const unsigned custom = phone_scene_custom(1280), render = custom ? custom : 960;
     atomic_store((_Atomic uint64_t *)(void *)(page + 0x28), output_floats(1280, render));
     fprintf(stderr, "[botw] handheld render size %ux%u, the game's own upscale to the 1280x720 canvas (phone%s)\n", render, render * 9 / 16,
             custom ? "; custom, TOTK_RENDER_RES" : "");
