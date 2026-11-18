@@ -6,6 +6,14 @@
 static void stor_alias_migrate_to(stor_alias_heap *destination) {
     if (!stor_alias_migrate_on()) return;
     if (!on_sub_thread() || rp_active() || !g_cb) { g_alias_migration_skipped++; return; }
+    /* No submitted work may still read or write the textures this migration is about to copy: wait for the fence of
+       the last submit before the blits. A draw a submitted command buffer is still writing into reads as a half-written
+       picture once it is copied into the new heap and every serial points at the copy (2026-11-18: one-frame flashes on
+       an M4 / 16 GB with the growth migration on; OOT_STOR_MIGRATE=0 removed them, and a 4 KiB texture was enough to see
+       it). The caller is a background thread, so the frame thread is not blocked; the wait happens once per heap
+       generation, not once a frame. */
+    { uint64_t last = mtl_last_fence();
+      if (last) mtl_wait(last, UINT64_MAX); }
     registry_lock();
     NSMutableArray *rows = [NSMutableArray array];
     pthread_mutex_lock(&g_smu);
