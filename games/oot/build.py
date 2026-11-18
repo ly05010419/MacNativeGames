@@ -634,6 +634,27 @@ def app_running(app):
         return True
     return False
 
+def seed_context_matches(tree,metadata):
+    """The seed (its seed-manifest.json `metadata`) was translated in this repository's translation context: the same chain,
+    depth mode and translator code (prepare_ns2_seed.translation_context, schema 4 since 2026-11-18). A seed from before
+    names its context by the translator's whole file (schema 3): it still matches when a program it names (the work
+    tree's in-game translator, its prebuilt copy or a translation cache's own copy, by whole-file SHA-256) has this
+    repository's translator's code and gives that context. So the Launcher's Developer ID copy and this repository's
+    ad-hoc one are one translator (user 2026-11-18: an express update after the Launcher's build was refused)."""
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_ns2_seed import translation_context,legacy_translation_context,code_sha256
+    repo=GAME/'prebuilt/macos-arm64/totk_xlate';depth=metadata.get('nvn_depth_mode');have=metadata.get('translation_context_sha256')
+    if have==translation_context(repo,depth):return True
+    named=metadata.get('translator_sha256');code=code_sha256(repo)
+    cache=tree/'build/ns2-seed-cache/oot'
+    places=[tree/'build/shader-service/totk_xlate',tree/'prebuilt/macos-arm64/totk_xlate',
+            *(sorted(cache.glob('*/tool/build/shader-service/totk_xlate')) if cache.is_dir() else [])]
+    for program in places:
+        if program.is_file() and sha(program)==named and code_sha256(program)==code and legacy_translation_context(program,depth)==have:
+            return True
+    return False
+
 def update_blocker(work, mode='full', remake=False):
     """Why this work folder cannot take an update without the full build ('' when it can): its last full build's files
     are missing, its shaders are of another translation chain or translator than this repository's (the seed's
@@ -653,10 +674,9 @@ def update_blocker(work, mode='full', remake=False):
     if mode!='title' and not remake:
         scripts=str(GAME/'scripts')
         if scripts not in sys.path:sys.path.insert(0,scripts)
-        from prepare_ns2_seed import translation_context
         try:metadata=json.loads(manifest.read_text())
         except ValueError:return f'{manifest} is not readable: run the full build'
-        if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
+        if not seed_context_matches(tree,metadata):
             return 'the translation chain or the translator changed, or the seed is older than the request checks (2026-11-11): the shaders need the full build'
     expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
     for name,want in expected['rewritten_sha256'].items():
@@ -713,11 +733,8 @@ def update_shaders(app,listfile,work=None):
     manifest=shader_dirs(tree,shader_mode(app))[0]/'seed-manifest.json'
     for needed in (manifest,tree/'extracted/oot/romfs/index.json',work/'build/oot-native'):
         if not needed.exists():raise ValueError(f'{needed} is missing: the work folder cannot translate shaders (a full build makes it)')
-    scripts=str(GAME/'scripts')
-    if scripts not in sys.path:sys.path.insert(0,scripts)
-    from prepare_ns2_seed import translation_context
     metadata=json.loads(manifest.read_text())
-    if metadata.get('translation_context_sha256')!=translation_context(GAME/'prebuilt/macos-arm64/totk_xlate',metadata.get('nvn_depth_mode')):
+    if not seed_context_matches(tree,metadata):
         raise ValueError('this repository translates for another chain or translator than the App\'s shaders: update the App first')
     told=False
     while app_running(app):

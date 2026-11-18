@@ -137,22 +137,26 @@ NSString *totk_rt_dir(void) {
              translator after the 2026-11-15 express updates (games/oot/build.py install_translator). */
           const char *xe = getenv("TOTK_SHADER_XLATE");
           NSString *service = xe && *xe ? @(xe) : [root_dir() stringByAppendingString:@"/build/shader-service/totk_xlate"];
-          NSString *translator = totk_file_sha256(service), *why = nil;
+          NSString *file = totk_file_sha256(service), *translator = totk_code_sha256(service), *why = nil;   // its code: any signature (2026-11-18)
 #ifdef GAME_OOT
           const BOOL unrecorded_untrusted = YES;
 #else
           const BOOL unrecorded_untrusted = NO;   // build_app.py clones the repository's translator into every App with its seed
 #endif
-          NSString *retired = totk_rt_translator_check(g_dir, translator, unrecorded_untrusted, &why);
+          NSString *retired = totk_rt_translator_check(g_dir, translator, file, unrecorded_untrusted, &why);
           if (retired) LOG("[shader-cache] 本机缓存目录换新的：%s（%s）；旧的翻译留在 %s，管线存档和收集清单照常接过来",
                            g_dir.lastPathComponent.UTF8String, why.UTF8String, retired.lastPathComponent.UTF8String);
           else if (why) LOG("[shader-cache] 【红】本机缓存目录 %s：%s", g_dir.UTF8String, why.UTF8String);
           NSData *md = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"seed-manifest.json"]];
           NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:nil] : nil;
           NSString *seedTranslator = [m isKindOfClass:NSDictionary.class] ? m[@"translator_sha256"] : nil;
-          if (translator && [seedTranslator isKindOfClass:NSString.class] && ![seedTranslator isEqualToString:translator] && !(xe && *xe))
+          NSString *seedCode = [m isKindOfClass:NSDictionary.class] ? m[@"translator_code_sha256"] : nil;   // since 2026-11-18: the code, any signature
+          BOOL other = [seedCode isKindOfClass:NSString.class] ? ![seedCode isEqualToString:translator]
+                     : [seedTranslator isKindOfClass:NSString.class] && ![seedTranslator isEqualToString:file];
+          if (translator && other && !(xe && *xe))
               LOG("[shader-cache] 【红】App 的翻译器 %.12s 不是种子用的 %.12s：游玩中翻译的着色器和种子不是同一个翻译器做的，重新打包",
-                  translator.UTF8String, seedTranslator.UTF8String);
+                  ([seedCode isKindOfClass:NSString.class] ? translator : file).UTF8String,
+                  ([seedCode isKindOfClass:NSString.class] ? seedCode : seedTranslator).UTF8String);
         }
 #endif
         // a new chain or context: this device's pipeline archive and collected list come along (totk_rt_carry.h)

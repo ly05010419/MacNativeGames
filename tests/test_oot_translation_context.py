@@ -43,7 +43,8 @@ class TranslationContext(unittest.TestCase):
         self.assertFalse(hasattr(self.seed, 'request_sources'))
         body = Path(self.seed.__file__).read_text().split('def translation_context')[1].split('\n\n\n')[0]
         inputs = [line for line in body.splitlines() if line.strip().startswith('inputs = ')]
-        self.assertEqual(inputs, ['    inputs = dict(schema=3, chain=CHAIN, depth_mode=depth_mode, translator_sha256=sha256(translator))'])
+        # the translator by its code since 2026-11-18 (tests/test_translator_code_identity.py): any signature is the same
+        self.assertEqual(inputs, ['    inputs = dict(schema=4, chain=CHAIN, depth_mode=depth_mode, translator_code_sha256=code_sha256(translator))'])
 
 
 class SeedFiles(unittest.TestCase):

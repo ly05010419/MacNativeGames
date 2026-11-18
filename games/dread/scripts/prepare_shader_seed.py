@@ -46,6 +46,37 @@ DEFAULTS = dict(tex='2d', img={}, attr='float', fout='float')   # totk_shader_rt
 DEPTH_MINUS_W = True   # nvnDeviceSetDepthMode NEAR_IS_MINUS_W: the Mac's own vertex translations have the clip-z conversion
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -239,7 +270,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None):
     listed = ShaderList.load(shader_list).variants
     identity = dict(schema=1, chain=CHAIN, version=version, game='dread',
                     source_romfs_sha256=json.loads((romfs/'index.json').read_text())['romfs_sha256'],
-                    translator_sha256=digest(translator.read_bytes()),
+                    translator_code_sha256=code_digest(translator),   # its code, any signature (2026-11-18)
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
                     preparation_sha256=digest(Path(__file__).read_bytes()),
                     shader_list_sha256=digest(shader_list.read_bytes()) if shader_list.is_file() else None)
@@ -253,7 +284,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None):
     staging.mkdir(parents=True)
     shaders, archives = inventory(romfs)
     cache = TranslationCache(output.with_name(output.name+'.translations'), dict(
-        schema=1, chain=CHAIN, translator_sha256=identity['translator_sha256'],
+        schema=1, chain=CHAIN, translator_code_sha256=identity['translator_code_sha256'],
         spirv_cross_sha256=identity['spirv_cross_sha256'],
         request_sha256=digest(inspect.getsource(translation_request).encode())))
     jobs = plan(shaders, listed)
@@ -351,7 +382,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None):
     for p in staging.iterdir():   # failed translations can leave MSL behind: never a cached shader
         if p.name not in wanted:
             p.unlink()
-    report = dict(**identity, shaders=len(completed), discovered=len(shaders), startup_shaders=ready, all_default=True,
+    report = dict(**identity, translator_sha256=digest(translator.read_bytes()), shaders=len(completed), discovered=len(shaders), startup_shaders=ready, all_default=True,
                   listed_variants=sum(1 for job in jobs if job[3] == 'listed'), warm_pipelines=len(pipelines),
                   skipped=failed, archives=archives,
                   seconds=time.monotonic()-started,

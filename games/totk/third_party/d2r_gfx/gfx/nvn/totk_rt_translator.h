@@ -27,6 +27,37 @@ __attribute__((unused)) static NSString *totk_file_sha256(NSString *path) {
     return hex;
 }
 
+/* SHA-256 of a program's code, the same whatever signed it (2026-11-18): a thin 64-bit Mach-O up to its code signature,
+   with the three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize);
+   anything else hashed whole. MNG Launcher ships the translator with a Developer ID signature that carries a time stamp,
+   so each release is another file of the same code; recorded by its whole file, a folder was set aside at every switch
+   between a Launcher and a command-line update. The same as games/oot/scripts/prepare_ns2_seed.py code_sha256. */
+__attribute__((unused)) static NSString *totk_code_sha256(NSString *path) {
+    NSMutableData *data = [NSMutableData dataWithContentsOfFile:path];
+    if (!data) return nil;
+    uint8_t *b = (uint8_t *)data.mutableBytes; size_t n = data.length, keep = n;
+    uint32_t magic = 0, ncmds = 0, sizeofcmds = 0;
+    if (n >= 32) { memcpy(&magic, b, 4); memcpy(&ncmds, b + 16, 4); memcpy(&sizeofcmds, b + 20, 4); }
+    if (magic == 0xfeedfacf && 32 + (size_t)sizeofcmds <= n) {
+        size_t at = 32, end = 32 + sizeofcmds; int64_t sig = -1; BOOL ok = YES;
+        for (uint32_t i = 0; i < ncmds && ok; i++) {
+            uint32_t cmd, size;
+            if (at + 8 > end) { ok = NO; break; }
+            memcpy(&cmd, b + at, 4); memcpy(&size, b + at + 4, 4);
+            if (size < 8 || at + size > end) { ok = NO; break; }
+            if (cmd == 0x19 && size >= 56 && !strncmp((const char *)b + at + 8, "__LINKEDIT", 16)) { memset(b + at + 32, 0, 8); memset(b + at + 48, 0, 8); }
+            else if (cmd == 0x1d && size >= 16) { uint32_t off; memcpy(&off, b + at + 8, 4); sig = off; memset(b + at + 12, 0, 4); }
+            at += size;
+        }
+        if (ok && sig >= 0 && (size_t)sig <= n) keep = (size_t)sig;
+        else data = [NSMutableData dataWithContentsOfFile:path], b = (uint8_t *)data.mutableBytes, keep = n;   // hashed whole, unchanged
+    }
+    uint8_t md[32]; CC_SHA256(b, (CC_LONG)keep, md);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:64];
+    for (int i = 0; i < 32; i++) [hex appendFormat:@"%02x", md[i]];
+    return hex;
+}
+
 /* The folder holds translations (a translated shader's MSL, SPIR-V or its variant index). */
 __attribute__((unused)) static BOOL totk_rt_has_translations(NSString *dir) {
     for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] ?: @[])
@@ -41,7 +72,9 @@ __attribute__((unused)) static BOOL totk_rt_has_translations(NSString *dir) {
    path returned (*why says which case). Otherwise nil: the folder stays. Either way it then records `translator`.
    A folder of another name (a packaging cache), or no translator known, is left alone. A rename that fails leaves the
    folder unrecorded and sets *why (the caller logs it): its translations are not claimed for this translator. */
-__attribute__((unused)) static NSString *totk_rt_translator_check(NSString *dir, NSString *translator, BOOL unrecorded_untrusted, NSString **why) {
+/* `translator` is the program's code (totk_code_sha256) and is what the folder records; `file`, its whole-file SHA-256,
+   is what folders recorded before 2026-11-18: such a record of the same file is the same translator (rewritten as code). */
+__attribute__((unused)) static NSString *totk_rt_translator_check(NSString *dir, NSString *translator, NSString *file, BOOL unrecorded_untrusted, NSString **why) {
     if (why) *why = nil;
     if (translator.length != 64 || ![dir.lastPathComponent hasPrefix:@"rt-"]) return nil;
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -49,6 +82,10 @@ __attribute__((unused)) static NSString *totk_rt_translator_check(NSString *dir,
     NSString *had = [[NSString stringWithContentsOfFile:record encoding:NSUTF8StringEncoding error:nil]
                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if ([had isEqualToString:translator]) return nil;
+    if (file.length == 64 && [had isEqualToString:file]) {   // recorded by the whole file before: the same program
+        [[translator stringByAppendingString:@"\n"] writeToFile:record atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return nil;
+    }
     NSString *retired = nil;
     BOOL other = had.length ? YES : (unrecorded_untrusted && totk_rt_has_translations(dir));
     if (other) {

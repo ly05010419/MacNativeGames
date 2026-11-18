@@ -21,8 +21,9 @@ PROGRAM = r'''#import <Foundation/Foundation.h>
 #include "totk_rt_translator.h"
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc == 2) { NSString *h = totk_file_sha256(@(argv[1])); printf("%s\n", h ? h.UTF8String : "nil"); return 0; }
+    if (argc == 3 && !strcmp(argv[1], "code")) { NSString *h = totk_code_sha256(@(argv[2])); printf("%s\n", h ? h.UTF8String : "nil"); return 0; }
     NSString *why = nil;
-    NSString *retired = totk_rt_translator_check(@(argv[1]), @(argv[2]), atoi(argv[3]), &why);
+    NSString *retired = totk_rt_translator_check(@(argv[1]), @(argv[2]), argc > 4 ? @(argv[4]) : nil, atoi(argv[3]), &why);
     printf("retired %s\nwhy %s\n", retired ? retired.lastPathComponent.UTF8String : "-", why ? why.UTF8String : "-");
     for (NSString *from in totk_rt_carry_over(@(argv[1]))) printf("moved %s\n", from.UTF8String);
     return 0;
@@ -59,8 +60,9 @@ class TranslatorRecord(unittest.TestCase):
             (d / 'translator.sha256').write_text(record + '\n')
         return d
 
-    def check(self, d, translator=NEW, untrusted=1):
-        out = subprocess.run([str(self.exe), str(d), translator, str(untrusted)], capture_output=True, text=True, check=True)
+    def check(self, d, translator=NEW, untrusted=1, file=None):
+        out = subprocess.run([str(self.exe), str(d), translator, str(untrusted), *([file] if file else [])], capture_output=True,
+                             text=True, check=True)
         lines = dict(l.split(' ', 1) for l in out.stdout.splitlines() if not l.startswith('moved'))
         return lines['retired'], lines['why'], [l[6:] for l in out.stdout.splitlines() if l.startswith('moved')]
 
@@ -105,6 +107,14 @@ class TranslatorRecord(unittest.TestCase):
         self.assertFalse((d / 'abc-0123456789ab_b.metal').exists())
         self.assertEqual(len(moved), 2, moved)
 
+    def test_a_record_of_the_same_file_from_before_code_identity_keeps_its_folder(self):   # 2026-11-18
+        d = self.folder(record=OLD)   # OLD: the whole-file SHA-256 the folder recorded before; NEW: the program's code
+        self.assertEqual(self.check(d, untrusted=1, file=OLD), ('-', '-', []))
+        self.assertEqual(self.record(d), NEW)                                   # now recorded by its code
+        self.assertTrue((d / 'abc-0123456789ab_b.metal').exists())
+        retired = self.check(self.folder('rt-v28-other', record=OLD), untrusted=0, file=NEW)[0]   # another file: set aside
+        self.assertTrue(retired.startswith('rt-v28-other-retired-' + OLD[:12]), retired)
+
     def test_a_packaging_cache_is_left_alone(self):   # prepare_ns2_seed.py's caches are named by their context
         d = self.folder('e37674ae')
         self.assertEqual(self.check(d)[0], '-')
@@ -132,6 +142,8 @@ class TranslatorRecord(unittest.TestCase):
         self.assertIn('/build/shader-service/totk_xlate', body[:body.index('totk_rt_translator_check(g_dir')])
         oot = body[body.index('#ifdef GAME_OOT'):body.index('#endif', body.index('#ifdef GAME_OOT'))]
         self.assertIn('unrecorded_untrusted = YES', oot)
+        self.assertIn('translator = totk_code_sha256(service)', body)   # recorded by its code, any signature (2026-11-18)
+        self.assertIn('totk_rt_translator_check(g_dir, translator, file,', body)
 
 
 if __name__ == '__main__':
