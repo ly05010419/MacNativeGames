@@ -1173,13 +1173,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
 
     /* Overlay: all -> FPS + playtime -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
-    shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    shows(@"Overlay", @"All");
+    /* user 2026-11-18: no notes in brackets, the choices in reverse, "FPS 全信息" renamed and last */
+    assert([menu(@"Overlay").itemTitles isEqualToArray:(@[@"Off", @"Bare FPS", @"FPS + playtime", @"All", @"FPS and frame debug info"])]);
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nSession  0 h 00 m | Total  0 h 00 m\nSettings: key 1 · controller L3 + R3"]); }   /* the last line: how to open this panel (a DualSense connected) */
     /* Bare FPS (user 2026-11-18: "极简fps 只显示 fps和分辨率， 放大3倍（只有这个 放大3倍）"): the FPS line alone, at three
        times the font of the other modes. */
     CGFloat usual = 0; if (hudBox) usual = [[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize];
-    pick(@"Overlay", @"Bare FPS (FPS and resolution only, 3x the size)"); assert(fps_overlay_hud_mode() == HUD_MODE_BARE);
+    pick(@"Overlay", @"Bare FPS"); assert(fps_overlay_hud_mode() == HUD_MODE_BARE);
     assert(hud_line_shown(HUD_FPS) && !hud_line_shown(HUD_SHADER) && !hud_line_shown(HUD_LOAD));
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440"]);
         NSFont *font = [b.label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL];
@@ -1189,7 +1191,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
       pick(@"Overlay", @"FPS + playtime"); fps_overlay_text(&info, line, sizeof line); assert(strstr(line, "(1707x960)") && strstr(line, "MetalFX")); }
     if (hudBox) assert(fabs([[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize] - usual) < 0.01);   /* only that mode is larger */
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
-    pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    pick(@"Overlay", @"All");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
 
     if (hudBox) assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Session  0 h 00 m | Total  0 h 00 m"]);
