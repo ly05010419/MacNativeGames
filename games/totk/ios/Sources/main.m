@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
+#include <sys/sysctl.h>
 #include "runtime.h"
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
@@ -145,6 +146,28 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
     runtime_ios_attach_layer((CAMetalLayer *)self.gameView.layer, self.gameView);
     TOTKTouchPad *pad=[[TOTKTouchPad alloc] initWithFrame:self.view.bounds];pad.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[self.view addSubview:pad];
 }
+/* "Switch screen size" (TOTK_SWITCH_SIZE=1; settings_map.c totk_switch_size; user 2026-11-17): once the game
+   starts, the game view is the Switch's 6.2-inch 16:9 screen, centred on the black view, so a low-resolution picture is
+   shown smaller and looks sharper; the touch controls keep the whole screen. iPad only: an iPhone's screen is smaller
+   than the Switch's. Off, or where that picture would not be smaller, the view fills the screen as before. */
+#if !TARGET_OS_VISION   // no UIScreen there, and the headset's window is no Switch-sized picture
+static BOOL g_switch_size;
+- (void)placeGameView {
+    CGRect b = self.view.bounds; double w = 0, h = 0;
+    char machine[32] = ""; size_t n = sizeof machine;
+    UIScreen *screen = self.view.window.windowScene.screen;
+    CGFloat scale = screen.nativeScale > 0 ? screen.nativeScale : self.view.traitCollection.displayScale;   // pixels per point
+    if (g_switch_size && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && !sysctlbyname("hw.machine", machine, &n, NULL, 0) &&
+        totk_switch_size(b.size.width, b.size.height, totk_ipad_ppi(machine), scale, &w, &h)) {
+        self.gameView.autoresizingMask = UIViewAutoresizingNone;
+        self.gameView.frame = CGRectMake(round((b.size.width - w) / 2), round((b.size.height - h) / 2), round(w), round(h));
+    } else {
+        self.gameView.autoresizingMask = UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+        self.gameView.frame = b;
+    }
+}
+- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; if (g_switch_size) [self placeGameView]; }   // a resized window
+#endif
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     static BOOL started; if (started) return; started = YES;
@@ -260,6 +283,9 @@ static void contrib_settings_sync(NSString *contrib) {
     __weak TOTKGameController *weak = self;
     void (^start)(void) = ^{
         apply_display_settings();
+        const char *switch_size = getenv("TOTK_SWITCH_SIZE");   // the picture settings hand it over (apply_display_settings)
+        g_switch_size = switch_size && !strcmp(switch_size, "1");
+        [weak placeGameView];   // the Switch's screen size, when chosen, before the drawable takes the view's shape
         runtime_ios_sync_drawable(weak.gameView);   // the drawable follows the chosen picture (TOTK_IOS_DRAWABLE_H)
         [weak boot];
     };
