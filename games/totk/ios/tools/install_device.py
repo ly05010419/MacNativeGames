@@ -58,6 +58,11 @@ def pick_device(name):
         sys.exit(f"choose the device with --device <name>:\n{listed}" if devs else 'no paired iPhone / iPad / Vision Pro found: pair it with this Mac and enable Developer Mode')
     return match[0]
 
+# What xcodebuild says when the team has no device to make a development profile for (a free Apple ID before its first
+# device is registered, #2268)
+NO_DEVICE = ('has no devices from which to generate a provisioning profile', 'Your team has no devices',
+             'No profiles for')
+
 def profile(team, bundle_id, udid, platform='ios'):
     """Build an empty app with the game's bundle identifier and entitlements; Xcode makes the profile for it."""
     vision = platform == 'visionos'
@@ -83,13 +88,22 @@ targets:
     run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
-    with log.open('w') as f:
-        r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
-                            # the device itself, not generic/platform=: a free Apple ID's team has no devices
-                            # until a build names one, and then Xcode registers it
-                            '-destination',f'platform={project_platform},id={udid}','-derivedDataPath',str(derived),
-                            '-allowProvisioningUpdates','build'],
-                           cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+
+    def build(destination, *extra):
+        with log.open('w') as f:
+            return subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
+                                   '-destination',destination,'-derivedDataPath',str(derived),
+                                   '-allowProvisioningUpdates',*extra,'build'],
+                                  cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+    # A generic destination first (3b1aef95): naming the device makes Xcode copy its system symbols into
+    # ~/Library/Developer/Xcode/iOS DeviceSupport, several GB a device on the system disk. Only a team without this
+    # device (a free Apple ID's first install, #2268: "Your team has no devices from which to generate a provisioning
+    # profile") needs the device named, with -allowProvisioningDeviceRegistration so Xcode registers it.
+    r = build(f'generic/platform={project_platform}')
+    if r.returncode and any(m in log.read_text(errors='replace') for m in NO_DEVICE):
+        print(f'Your team has no {project_platform} device yet: registering this one ({udid}). Xcode copies its system '
+              'symbols to ~/Library/Developer/Xcode/iOS DeviceSupport (several GB); they can be deleted afterwards.', flush=True)
+        r = build(f'platform={project_platform},id={udid}', '-allowProvisioningDeviceRegistration')
     if r.returncode:
         errors = [l for l in log.read_text(errors='replace').splitlines() if 'error:' in l]
         sys.exit('Xcode could not make a provisioning profile:\n' + '\n'.join(errors[-8:]) + f'\nfull log: {log}')
