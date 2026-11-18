@@ -25244,6 +25244,7 @@ static __strong id<MTLBuffer> g_late_buf[LATE_MAX][LATE_SLOTS]; static uint64_t 
 static late_job *g_late_fly[LATE_MAX * LATE_SLOTS]; static int g_late_nfly;   /* copied out, not landed yet */
 static uint8_t *g_late_post[LATE_MAX]; static size_t g_late_post_n[LATE_MAX]; static uint64_t g_late_lseq[LATE_MAX];   /* (g_late_mu) edge bytes after the last landing of each target, and the landings so far */
 static _Atomic uint64_t g_late_landed, g_late_skipped, g_late_freed, g_late_bytes, g_late_ns;
+static _Atomic uint64_t g_late_full;   /* learned targets left without a slot (late_count): their flushes keep waiting */
 static _Atomic uint64_t g_late_last[LATE_MAX];   /* the submission that last rendered each learned target */
 
 static int late_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_BOTW_LATE_WB"); on = !(e && !strcmp(e, "0")); } return on; }
@@ -25375,6 +25376,10 @@ static void late_count(uint64_t serial) {
                 free(g_late_post[r]); g_late_post[r] = NULL; g_late_post_n[r] = 0; g_late_lseq[r]++; atomic_store(&g_late_last[r], g_fence);
                 atomic_store(&g_late_sera[r], serial); if (r == n) atomic_store(&g_late_n, n + 1);
                 MLOG("[late-wb] ser=%llu: the flush waited for its rendering %d times; from now on it lands when its submission completes (slot %d)", (unsigned long long)serial, LATE_LEARN, r);
+            } else {   // every slot held by a target still rendered (after PR #2261: the 512x512 grass mask got none of 8, silently)
+                uint64_t full = atomic_fetch_add(&g_late_full, 1) + 1;
+                RED_ONCE(210, "[late-wb] ser=%llu waited for its rendering %d times but all %d slots belong to targets still rendered: its flush keeps waiting (TOTK_BOTW_LATE_WB)", (unsigned long long)serial, LATE_LEARN, LATE_MAX);
+                if (!(full & (full - 1))) MLOG("[late-wb] targets left without a slot so far: %llu", (unsigned long long)full);
             }
             g_late_cand[i] = (late_cand){0, 0};
         }
