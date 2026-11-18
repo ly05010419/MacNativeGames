@@ -21311,6 +21311,20 @@ static pres_ent g_pres[PRING];
 // 取第 n 次出图的实际呈现时刻（未就绪返回 0，被丢弃返回 −1）
 // Get the actual presentation time of the nth present (returns 0 if not ready, -1 if dropped)
 double mtl_presented_time(uint64_t n) { pres_ent e = g_pres[n % PRING]; return e.n == n ? e.t : 0; }
+/* The display link's pacing of each game present (2026-11-18, OOT camera turn: frames the GPU finished on time reached the
+   screen a refresh late, 35 ms after the GPU instead of 24): when the game queued it (t_in), the display-link callback that
+   took it (tick), that callback's target presentation time (target), the GPU end of the command buffer that copies it into
+   the drawable (blit_end), and how many older queued frames that tick merged away. CACurrentMediaTime seconds, the base of
+   presentedTime. Written under g_pq_mu by the callback and the copy's feedback; DM_NVN_TSV turns them into columns
+   (hle_nvn.c @pq_*). */
+typedef struct { uint64_t n; double t_in, tick, target, blit_end; int merged; } pdiag_ent;
+static pdiag_ent g_pdiag[PRING];
+int mtl_present_diag(uint64_t n, double *t_in, double *tick, double *target, double *blit_end, int *merged) {
+    pthread_mutex_lock(&g_pq_mu); pdiag_ent e = g_pdiag[n % PRING]; pthread_mutex_unlock(&g_pq_mu);
+    if (e.n != n || e.tick <= 0) return 0;
+    *t_in = e.t_in; *tick = e.tick; *target = e.target; *blit_end = e.blit_end; *merged = e.merged;
+    return 1;
+}
 static _Atomic uint64_t g_drawable_ns;   // 出图里等 nextDrawable 的累计墙钟（计时埋点） | Accumulated wall clock waiting for nextDrawable in present (timing instrumentation)
 uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0); }
 // 有窗口时屏幕的最高刷新率（Hz）；无窗口返回 0。Mac 用 CoreGraphics 显示模式（线程安全的 C 接口，出图配置在游戏线程上读）
@@ -22360,7 +22374,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                 }
             }
         }
-        pthread_mutex_lock(&g_pq_mu); g_present_alloc_busy[alloc_i] = 0; if (interp < 0 && ticket > g_pq_done) g_pq_done = ticket; if (ring >= 0) g_pring_busy[ring] = 0; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
+        pthread_mutex_lock(&g_pq_mu); g_present_alloc_busy[alloc_i] = 0; if (interp < 0 && ticket > g_pq_done) g_pq_done = ticket;
+        if (interp < 0 && !f.error && g_pdiag[ticket % PRING].n == ticket) g_pdiag[ticket % PRING].blit_end = f.GPUEndTime;
+        if (ring >= 0) g_pring_busy[ring] = 0; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);   // above: the pacing record (@pq_blit_end_ms)
     }];
     pthread_mutex_lock(&g_pq_mu); g_present_alloc_busy[alloc_i] = 1; g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
     q4_commit(cb, o);
@@ -22471,6 +22487,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     }
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = tts; }
     pq_item it = *ip; g_link_it_tin = it.t_in;
+    if (interp < 0) g_pdiag[ticket % PRING] = (pdiag_ent){ticket, it.t_in, CACurrentMediaTime(), tts, 0, (int)(ticket - first)};   // the pacing record (@pq_* columns)
     g_pq_read = interp >= 0 ? g_pq_in - 1 : g_pq_in;
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) g_pres[k % PRING] = (pres_ent){k, -1}; }   // 被合并丢弃的旧帧记「未上屏」，上屏统计如实算掉帧 | Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
     if (ticket > 1 && g_pq_done < ticket - 1) g_pq_done = ticket - 1;

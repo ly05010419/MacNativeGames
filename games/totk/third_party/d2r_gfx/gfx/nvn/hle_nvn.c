@@ -3903,7 +3903,17 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         g_pres_iv[g_presn++ % TWIN] = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0);
         { double iv_ = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0); mtl_ub_present(iv_); }   // 同进程交替测量（DM_NVN_UB）按相统计上屏间隔；没开时只是一次原子读 | same-process alternating measurement (DM_NVN_UB) tallies on-screen present intervals per phase; when off it is just one atomic read
         dm_perf_present(a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0));   // 上屏间隔另存一圈，tsummary 每 300 帧报掉帧（M1 判据） | on-screen present intervals are also kept in a separate ring; tsummary reports dropped frames every 300 frames (M1 criterion)
-        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
+        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6);
+        /* the display link's pacing of the same present (nvn_mtl.m mtl_present_diag): queued, taken at the tick, the
+           tick's target, the drawable copy's GPU end (ms since process start), older frames merged away */
+        double q_in, q_tick, q_tgt, q_blit; int q_merged;
+        if (frame_rec() && mtl_present_diag(n, &q_in, &q_tick, &q_tgt, &q_blit, &q_merged)) {
+            double z = g_t0_ns / 1e6;
+            trow(f - 8, "@pq_in_ms", q_in * 1e3 - z); trow(f - 8, "@pq_tick_ms", q_tick * 1e3 - z);
+            if (q_tgt > 0) trow(f - 8, "@pq_target_ms", q_tgt * 1e3 - z);
+            if (q_blit > 0) trow(f - 8, "@pq_blit_end_ms", q_blit * 1e3 - z);
+            trow(f - 8, "@pq_merged", q_merged);
+        } }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     PSTEP(PS_END); present_steps_report(f);
     prev_out = now_ns();

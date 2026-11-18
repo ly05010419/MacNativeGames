@@ -469,6 +469,7 @@ int mtl_link_active(void);
 /* frame_ticks: 60 Hz ticks one game frame occupies (the game's present interval; 1 in display mode). */
 int mtl_link_wait_tick(uint64_t timeout_ns, unsigned frame_ticks);
 double mtl_presented_time(uint64_t n);
+int mtl_present_diag(uint64_t n, double *t_in, double *tick, double *target, double *blit_end, int *merged);   // the display link's pacing of present n (DM_NVN_TSV @pq_*)
    // 第 n 次出图（从 1 计）的实际呈现时刻（秒）；0 = 未就绪，−1 = 被丢弃
    // Actual presentation time (seconds) of the n-th present (counted from 1); 0 = not ready, −1 = dropped
 // 贴图释放（Finalize 时）
