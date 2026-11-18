@@ -2879,18 +2879,52 @@ static void pend_materialize_x(uint64_t a, uint8_t *out, size_t n, int depth, in
     pend_overlay_x(a, out, n, depth, wait);
 }
 static void pend_materialize(uint64_t a, uint8_t *out, size_t n, int depth) { pend_materialize_x(a, out, n, depth, 1); }
+/* Completed prefix (TOTK_PEND_SKIP=0: off). Entries are appended with the next submission's fence (g_fence only grows) and
+   pend_begin keeps their order, so the fences never decrease along the table: the entries the GPU has completed are a
+   prefix, which the loop below skipped one by one. The iPad A16 (Breath of the Wild 1.9.0, 2026-11-18): 523 replay overlays
+   a frame scanned ~500 entries each, ~300 of them that prefix; skipping it took the replay from 21.52 to 21.15 M cycles a
+   frame (on and off in alternate 300-frame windows of one run, lower in 19 of 19). TOTK_PEND_SKIP_CHECK=1 checks the order
+   on every overlay (11,400 frames, no violation). */
+static _Atomic int g_pend_skip = -1, g_pend_skip_check = -1;
+static int pend_skip_on(void) {
+    int v = atomic_load(&g_pend_skip);
+    if (v < 0) { const char *e = getenv("TOTK_PEND_SKIP"); v = !(e && !atoi(e)); atomic_store(&g_pend_skip, v); if (!v) MLOG("TOTK_PEND_SKIP=0: pending-write overlays scan the whole table"); }
+    return v;
+}
+static int pend_skip_check_on(void) {
+    int v = atomic_load(&g_pend_skip_check);
+    if (v < 0) { const char *e = getenv("TOTK_PEND_SKIP_CHECK"); v = e && atoi(e); atomic_store(&g_pend_skip_check, v); }
+    return v;
+}
+static int pend_first_live(int npend, uint64_t done) {   // the first entry with fence > done (npend when none)
+    int a = 0, b = npend;
+    while (a < b) { int m = (a + b) >> 1; if (g_pend_fence[m] <= done) a = m + 1; else b = m; }
+    return a;
+}
+/* What overlays scan: [0] calls, [1] entries scanned, [2] entries skipped as the completed prefix, [3] entries applied;
+   [4..7] the same for the copy routine's calls (wait = 0, possibly on helper threads). */
+static _Atomic uint64_t g_pov[8];
+void mtl_pend_overlay_stats(uint64_t v[8]) { for (int i = 0; i < 8; i++) v[i] = atomic_load_explicit(&g_pov[i], memory_order_relaxed); }
 static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wait) {   // the pending writes over out (= [a, a+n) before them)
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
     int npend = wait ? g_npend : g_usnap_pend_n;   // wait = 0: the copy routine (possibly on a helper thread)
-    for (int i = 0; i < npend; i++) {
+    int first = pend_skip_on() ? pend_first_live(npend, done) : 0;
+    if (pend_skip_check_on()) for (int i = 1; i < npend; i++) if (g_pend_fence[i] < g_pend_fence[i - 1])
+        MDIE("pending writes out of fence order at %d: %llu after %llu", i, (unsigned long long)g_pend_fence[i], (unsigned long long)g_pend_fence[i - 1]);
+    uint64_t c_hit = 0;
+    for (int i = first; i < npend; i++) {
         uint64_t lo = g_pend_lo[i], hi = g_pend_hi[i];
         if (hi <= a || lo >= a + n || g_pend_fence[i] <= done) continue;   // completed writes are already in memory (which may hold newer CPU writes)
+        c_hit++;
         if (g_eye_skip_fence && g_pend_fence[i] == g_eye_skip_fence) continue;   // stereo replay: the first replay's, not before the second (mtl_eye_pass)
         uint64_t s0 = lo > a ? lo : a, e0 = hi < a + n ? hi : a + n;
         if (g_pend_kind[i] == 0) memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
         else if (depth < 2) pend_materialize_x((uint64_t)(uintptr_t)g_pend_src[i] + (s0 - lo), out + (s0 - a), e0 - s0, depth + 1, wait);
         else memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
     }
+    _Atomic uint64_t *c = g_pov + (wait ? 0 : 4);
+    atomic_fetch_add_explicit(&c[0], 1, memory_order_relaxed); atomic_fetch_add_explicit(&c[1], (uint64_t)(npend - first), memory_order_relaxed);
+    atomic_fetch_add_explicit(&c[2], (uint64_t)first, memory_order_relaxed); atomic_fetch_add_explicit(&c[3], c_hit, memory_order_relaxed);
 }
 // Write the logged updates into memory on the GPU timeline (ends a render pass if one is open).
 static void upd_flush(void) {
