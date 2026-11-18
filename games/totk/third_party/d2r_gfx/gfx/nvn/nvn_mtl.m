@@ -910,6 +910,37 @@ static int g_c1_full_valid;
 /* c1_bounded.tsv beside the shader map (tools/c1_bounds.py, 2026-11-16): shader key -> its MSL's byte length, for the
    shaders whose computed c1 indexes were proven inside their shared span at packaging. Read once before the warm-up. */
 static NSDictionary<NSString *, NSNumber *> *g_c1_bounded;
+/* build/pool_sources.tsv (2026-11-18, user: "a"): the pool proof (nvn_pool_sources) of every seed shader with a pooled
+   read, made once at packaging by games/oot/tools/pool_sources_list.m from the same nvn_pool_sources.m. key -> @[digest
+   of the MSL and the reflection it was proven from, the row]. A shader whose MSL or reflection is another (a translation
+   made in play, the SSAO patch) is proven at load as before. TOTK_POOL_LIST=0: never used. */
+static NSDictionary<NSString *, NSArray<NSString *> *> *g_pool_list;
+static _Atomic uint64_t g_pool_list_hits, g_pool_list_misses;
+static NSDictionary *pool_list_load(NSString *path) {
+    const char *e = getenv("TOTK_POOL_LIST");
+    if (e && !strcmp(e, "0")) { MLOG("池化读取证明清单：TOTK_POOL_LIST=0，不用，加载时现算"); return nil; }
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (!text) { MLOG("池化读取证明清单：没有 %s，加载时现算", path.UTF8String); return nil; }
+    if (![text hasPrefix:@"# nvn pool sources v1 "]) { MLOG("【红】池化读取证明清单 %s 不是 v1 格式，不用", path.UTF8String); return nil; }
+    NSMutableDictionary *rows = [NSMutableDictionary dictionary];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        if (!line.length || [line hasPrefix:@"#"]) continue;
+        NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+        if (c.count != 3 || c[1].length != 64) { MLOG("【红】池化读取证明清单 %s 有坏行，整份不用", path.UTF8String); return nil; }
+        rows[c[0]] = @[c[1], c[2]];
+    }
+    MLOG("池化读取证明清单：%lu 个着色器的证明在打包时做好，加载时直接读", (unsigned long)rows.count);
+    return rows;
+}
+/* SHA-256 of the MSL's UTF-8 bytes followed by the reflection file's bytes, as pool_sources_list.m computes it. */
+static NSString *pool_list_digest(NSString *msl, NSData *json) {
+    const char *s = msl.UTF8String; if (!s || !json) return nil;
+    CC_SHA256_CTX c; CC_SHA256_Init(&c); CC_SHA256_Update(&c, s, (CC_LONG)strlen(s)); CC_SHA256_Update(&c, json.bytes, (CC_LONG)json.length);
+    unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Final(md, &c);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:64];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", md[i]];
+    return hex;
+}
 static uint64_t g_c1_listed;   // shaders that share a bank because they are listed (c1_store)
 static os_unfair_lock g_c1_lock = OS_UNFAIR_LOCK_INIT;
 /* Rows "<key>\t<MSL bytes>" under the header "# c1 bounded v1 ..."; nil without the file, with another header, or with
@@ -7347,6 +7378,7 @@ static void shmap_load(void) {
         for (NSString *line in [ct componentsSeparatedByString:@"\n"]) if (line.length && ![line hasPrefix:@"#"]) [g_c1_full addObject:[line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
     }
     g_c1_bounded = c1_bounded_load([[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"c1_bounded.tsv"]);
+    g_pool_list = pool_list_load([[path stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"pool_sources.tsv"]);
     MLOG("着色器路线 B（Switch 原版翻译）：映射表 %lu 条（%s），metallib 目录 %s", (unsigned long)g_shmap.count, path.UTF8String, g_msl_dir.UTF8String);
     warm_start();
 }
@@ -7980,45 +8012,26 @@ static int drv_fillable(int stage, int bank, unsigned off) {
     default: return 0;
     }
 }
-/* TOTK 2026-10-16: does the function store through storage binding `name` (spirv-cross names: `(*spvDescriptorSet0.fp_s0)._m0[...] = ...`
-   for stores, `&(*spvDescriptorSet0.fp_s1)` for atomics)? The reflection's rw was never set (shader_service.py tested the wrong
-   flag bit), and the MSL address space over-approximates (1,140 fragment variants hold a non-const `device` pointer they only
-   read), so the stores themselves are looked for. The deferred-lighting quads store a per-tile feedback word the next frame's
-   class marker reads; skipping them as "0 samples passed" blacked out the title mural (claude.md "标题壁画丢失"). */
-static int msl_stores_through(NSString *src, NSString *name) {
-    const char *s = src.UTF8String; if (!s || !name) return 0;
-    char pat[160];
-    snprintf(pat, sizeof pat, "&(*spvDescriptorSet0.%s)", name.UTF8String);
-    if (strstr(s, pat)) return 1;
-    snprintf(pat, sizeof pat, "(*spvDescriptorSet0.%s)._m0[", name.UTF8String);
-    size_t pl = strlen(pat);
-    for (const char *p = strstr(s, pat); p; p = strstr(p, pat)) {
-        p += pl; int depth = 1;
-        while (*p && depth) { if (*p == '[') depth++; else if (*p == ']') depth--; p++; }
-        if (*p == '.') { p++; while (*p == 'x' || *p == 'y' || *p == 'z' || *p == 'w') p++; }
-        while (*p == ' ') p++;
-        if (p[0] == '=' && p[1] != '=') return 1;
-    }
-    return 0;
-}
-static void refl_mark_stores(NvShader *o, NSArray *bs, NSString *src) {
-    if (![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;   // nvn_refl_from_json keeps the json order 1:1
-    for (int i = 0; i < o->rf.nb; i++) {
-        nvn_rbind *b = &o->rf.b[i]; if (b->rw || (b->kind != NVN_RB_SBUFP && b->kind != NVN_RB_SBUFU)) continue;
-        NSDictionary *d = bs[(NSUInteger)i]; if (![d isKindOfClass:[NSDictionary class]]) continue;
-        if (msl_stores_through(src, d[@"msl_name"])) b->rw = 1;
-    }
-}
+/* rw from the MSL's own stores (2026-10-16, the title mural): nvn_pool_sources.m nvn_refl_mark_stores since 2026-11-18, so
+   the packaging tool (games/oot/tools/pool_sources_list.m) marks the bindings exactly as the runtime does before the pool
+   proof, which reads rw. */
+static void refl_mark_stores(NvShader *o, NSArray *bs, NSString *src) { nvn_refl_mark_stores(&o->rf, bs, src); }
 /* Texture slots the shader reads by integer texel coordinates (MSL `<name>.read(`): a copy one mip level smaller (the
    iPhone's mip drop, mip_drop_of) does not hold those texels, so such a texture is kept at full size once bound to one
    (tex_keep_full). #337: the Depths' Gloom mask read this way from a 1000x800 data texture drew false Gloom in stair
    steps around Link. From the shader's own code, not from a guess at which formats are data. */
 static void refl_mark_fetches(NvShader *o, NSArray *bs, NSString *src) {
     if (![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;   // nvn_refl_from_json keeps the json order 1:1
+    /* One UTF-8 view of the source and strstr per texture (2026-11-18): NSString rangeOfString per binding was a fifth of
+       an 80 ms shader load (CFStringFindWithOptionsAndLocale, OOT second save). The MSL is ASCII: the same matches. */
+    const char *s = src.UTF8String; if (!s) return;
+    char pat[160];
     for (int i = 0; i < o->rf.nb; i++) {
         nvn_rbind *b = &o->rf.b[i]; if (b->kind != NVN_RB_TEX) continue;
         NSDictionary *d = bs[(NSUInteger)i]; NSString *name = [d isKindOfClass:[NSDictionary class]] ? d[@"msl_name"] : nil;
-        if ([name isKindOfClass:[NSString class]] && name.length && [src rangeOfString:[name stringByAppendingString:@".read("]].location != NSNotFound) b->fetch = 1;
+        if (![name isKindOfClass:[NSString class]] || !name.length) continue;
+        if (snprintf(pat, sizeof pat, "%s.read(", name.UTF8String) >= (int)sizeof pat) { if ([src rangeOfString:[name stringByAppendingString:@".read("]].location != NSNotFound) b->fetch = 1; continue; }
+        if (strstr(s, pat)) b->fetch = 1;
     }
 }
 /* TOTK (2026-10-23): how far into each uniform binding a shader reads, so a renamed inline update (upd_shadow) copies only
@@ -8167,6 +8180,8 @@ static NvShader *compute_archive_shader(id<MTLLibrary> lib,NSDictionary *j,NSStr
     o->fn.label=key;o->stage=5;strlcpy(o->key,key.UTF8String,sizeof o->key);
     return o;
 }
+static _Atomic uint64_t g_shader_scan_ns;   // shader_load_mode's scans of the MSL text, since the last take (@scan_ms)
+uint64_t mtl_shader_scan_ns_take(void) { return atomic_exchange(&g_shader_scan_ns, 0); }
 static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) {
     NSError *e = nil;
     // TOTK: runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
@@ -8230,7 +8245,29 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     NSString *full = rt ? totk_rt_text(rt_src) : nil;
     if (stage == 1 && o->rf.has_c1 && ssao_on()) full = ssao_patch(o, full, j[@"entry"]);   // TOTK_SSAO (totk_ssao.h): the scans below then see the patched source
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
-    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); refl_mark_fetches(o, j[@"bindings"], full); refl_read_extents(o, j[@"bindings"], full); o->pool_reads=nvn_pool_sources(&o->rf,j[@"bindings"],full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores; uniform read extents
+    if (full) {   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores; uniform read extents
+        /* each scan timed (2026-11-18, OOT second save: a shader load took 80 ms on the replay thread): the per-frame
+           record's @scan_ms, and a log line for a load whose scans take 5 ms or more, by scan */
+        uint64_t t[6]; t[0] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        o->src_path = rt_src; drv_scan(o, full); t[1] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        refl_mark_stores(o, j[@"bindings"], full); t[2] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        refl_mark_fetches(o, j[@"bindings"], full); t[3] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        refl_read_extents(o, j[@"bindings"], full); t[4] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        {   // the proof made at packaging when this is the MSL and reflection it was made from (g_pool_list), else proven here
+            NSArray<NSString *> *row = g_pool_list[pc]; NSDictionary *proved = nil;
+            if (row && [row[0] isEqualToString:pool_list_digest(full, jd)]) proved = nvn_pool_sources_decode(&o->rf, row[1]);
+            if (proved) { uint64_t h = atomic_fetch_add(&g_pool_list_hits, 1) + 1;
+                          if (h == 1 || h % 1000 == 0) MLOG("池化读取证明清单：已直接读 %llu 次，现算 %llu 次（清单里有、但 MSL 或反射不同）", (unsigned long long)h, (unsigned long long)atomic_load(&g_pool_list_misses)); }
+            else { if (row) atomic_fetch_add(&g_pool_list_misses, 1); proved = nvn_pool_sources(&o->rf, j[@"bindings"], full); }
+            o->pool_reads = proved;
+        }
+        t[5] = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        atomic_fetch_add(&g_shader_scan_ns, t[5] - t[0]);
+        if (t[5] - t[0] >= 5000000)
+            MLOG("[shader-scan] %s (%lu bytes of MSL): %.1f ms -- drv %.2f, stores %.2f, fetches %.2f, extents %.2f, pool sources %.2f",
+                 o->key, (unsigned long)full.length, (t[5] - t[0]) / 1e6, (t[1] - t[0]) / 1e6, (t[2] - t[1]) / 1e6, (t[3] - t[2]) / 1e6,
+                 (t[4] - t[3]) / 1e6, (t[5] - t[4]) / 1e6);
+    }
     /* TOTK (2026-10-17): the MSL is read again from its file when a variant needs it (sh_src), on the Mac too -- keeping
        every source cost 255 MB of strings (7,691 of them) in a long session (analysis/long18 heap). TOTK_KEEP_MSL=1 keeps
        them in memory (the Mac's behaviour before). */

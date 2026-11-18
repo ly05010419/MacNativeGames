@@ -1,7 +1,24 @@
 #include "nvn_pool_sources.h"
+#include <os/lock.h>
 typedef struct { uint64_t sources; int ok, masked, floating; } proof;
+/* Each pattern compiled once (2026-11-18): the proof below asks the same few patterns thousands of times per shader (every
+   argument of every call, every subexpression), and compiling them anew each time made a 200 KB shader's load take 45 ms on
+   the replay thread (OOT second save), 131.8 s over the 40,659 translations of Ocarina of Time. A compiled
+   NSRegularExpression is immutable and safe to share between threads; the table is guarded. */
+static NSRegularExpression *pattern(NSString *p) {
+    static NSMutableDictionary<NSString *, NSRegularExpression *> *table; static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
+    os_unfair_lock_lock(&lock);
+    if (!table) table = [NSMutableDictionary dictionary];
+    NSRegularExpression *r = table[p];
+    os_unfair_lock_unlock(&lock);
+    if (r) return r;
+    r = [NSRegularExpression regularExpressionWithPattern:p options:0 error:NULL];
+    if (!r) return nil;
+    os_unfair_lock_lock(&lock); table[p] = r; os_unfair_lock_unlock(&lock);
+    return r;
+}
 static NSArray<NSTextCheckingResult *> *matches(NSString *s, NSString *p) {
-    NSRegularExpression *r=[NSRegularExpression regularExpressionWithPattern:p options:0 error:NULL];
+    NSRegularExpression *r=pattern(p);
     return [r matchesInString:s options:0 range:NSMakeRange(0,s.length)];
 }
 static NSString *part(NSString *s,NSTextCheckingResult *m,int i) {return [s substringWithRange:[m rangeAtIndex:i]];}
@@ -160,21 +177,27 @@ static proof trace(NSString *expr,NSDictionary *defs,NSDictionary *types,NSDicti
     }
     return all;
 }
+/* Only a pooled texture read "(&spvDescriptorSet0.<name>->e[0])[min(" has anything to prove (the reads pattern in
+   nvn_pool_sources starts with that text): without one in the source the result is empty, so the scans of the whole
+   source are skipped. They were the shader load's cost (2026-11-13, iPad A16 CPU report: about 30 of 31 samples of
+   shader_load_mode in this function's regexes, matching rather than compiling them: 4.16 against 0.02 ms per shader on
+   an M4); 2,304 of Ocarina of Time's 18,661 iOS shaders have such a read. One UTF-8 view, strstr per texture
+   (2026-11-18: rangeOfString per binding cost more). */
+BOOL nvn_pool_sources_pooled(const nvn_refl *rf,NSArray *bindings,NSString *src) {
+    if(bindings.count!=(NSUInteger)rf->nb)return NO;
+    const char *text=src.UTF8String;
+    for(int i=0;i<rf->nb;i++){
+        if(rf->b[i].kind!=NVN_RB_TEXP)continue;
+        NSString *name=[bindings[i] isKindOfClass:NSDictionary.class]?bindings[i][@"msl_name"]:nil;if(![name isKindOfClass:NSString.class]||!name.length)continue;
+        NSString *pat=[NSString stringWithFormat:@"(&spvDescriptorSet0.%@->e[0])[min(",name];
+        if(text&&strstr(text,pat.UTF8String))return YES;
+    }
+    return NO;
+}
 NSDictionary *nvn_pool_sources(nvn_refl *rf,NSArray *bindings,NSString *src) {
     for(int i=0;i<rf->nb;i++)rf->b[i].pool_sources=0;
     if(bindings.count!=(NSUInteger)rf->nb)return @{};
-    /* Only a pooled texture read "(&spvDescriptorSet0.<name>->e[0])[min(" has anything to prove (the reads pattern
-       below starts with that text): without one in the source the result is empty, so the scans of the whole source
-       are skipped. They were the shader load's cost (2026-11-13, iPad A16 CPU report: about 30 of 31 samples of
-       shader_load_mode in this function's regexes, matching rather than compiling them: 4.16 against 0.02 ms per
-       shader on an M4); 2,304 of Ocarina of Time's 18,661 iOS shaders have such a read. */
-    BOOL pooled=NO;
-    for(int i=0;i<rf->nb&&!pooled;i++){
-        if(rf->b[i].kind!=NVN_RB_TEXP)continue;
-        NSString *name=[bindings[i] isKindOfClass:NSDictionary.class]?bindings[i][@"msl_name"]:nil;if(![name isKindOfClass:NSString.class]||!name.length)continue;
-        pooled=src&&[src rangeOfString:[NSString stringWithFormat:@"(&spvDescriptorSet0.%@->e[0])[min(",name]].location!=NSNotFound;
-    }
-    if(!pooled)return @{};
+    if(!nvn_pool_sources_pooled(rf,bindings,src))return @{};
     // A bound mutable alias needs interprocedural analysis. Helper parameters
     // alone are harmless; direct lvalue arguments are rejected below instead.
     if(matches(src,@"(?:thread|device)\\s+(?!const\\b)[^;\\n{}]*&\\s*\\w+\\s*=").count||[src containsString:@"const_cast"]||[src containsString:@"[&"])return @{};
@@ -217,6 +240,106 @@ NSDictionary *nvn_pool_sources(nvn_refl *rf,NSArray *bindings,NSString *src) {
             }
             result[@(b->aid)]=indices;
         }
+    }
+    return result;
+}
+
+/* ---- the proof made once at packaging (2026-11-18, user: "a") ----
+   nvn_pool_sources is a prover over the whole MSL text: one 200 KB shader takes 40-70 ms, 99.6 s over Ocarina of Time's
+   40,659 translations, paid again at every start's warm-up and at every first load in play (80 ms frames on the second
+   save). games/oot/tools/pool_sources_list.m runs it once per seed shader at packaging and writes build/pool_sources.tsv;
+   the runtime decodes a row when the MSL and the reflection are the ones it was proven from (nvn_mtl.m). */
+
+/* TOTK 2026-10-16: does the function store through storage binding `name` (spirv-cross names: `(*spvDescriptorSet0.fp_s0)._m0[...] = ...`
+   for stores, `&(*spvDescriptorSet0.fp_s1)` for atomics)? The reflection's rw was never set (shader_service.py tested the wrong
+   flag bit), and the MSL address space over-approximates (1,140 fragment variants hold a non-const `device` pointer they only
+   read), so the stores themselves are looked for. The deferred-lighting quads store a per-tile feedback word the next frame's
+   class marker reads; skipping them as "0 samples passed" blacked out the title mural (claude.md "标题壁画丢失").
+   Here since 2026-11-18 (from nvn_mtl.m): the packaging tool marks the bindings as the runtime does before the proof. */
+static int msl_stores_through(NSString *src, NSString *name) {
+    const char *s = src.UTF8String; if (!s || !name) return 0;
+    char pat[160];
+    snprintf(pat, sizeof pat, "&(*spvDescriptorSet0.%s)", name.UTF8String);
+    if (strstr(s, pat)) return 1;
+    snprintf(pat, sizeof pat, "(*spvDescriptorSet0.%s)._m0[", name.UTF8String);
+    size_t pl = strlen(pat);
+    for (const char *p = strstr(s, pat); p; p = strstr(p, pat)) {
+        p += pl; int depth = 1;
+        while (*p && depth) { if (*p == '[') depth++; else if (*p == ']') depth--; p++; }
+        if (*p == '.') { p++; while (*p == 'x' || *p == 'y' || *p == 'z' || *p == 'w') p++; }
+        while (*p == ' ') p++;
+        if (p[0] == '=' && p[1] != '=') return 1;
+    }
+    return 0;
+}
+void nvn_refl_mark_stores(nvn_refl *rf, NSArray *bs, NSString *src) {
+    if (![bs isKindOfClass:[NSArray class]] || (int)bs.count != rf->nb) return;   // nvn_refl_from_json keeps the json order 1:1
+    for (int i = 0; i < rf->nb; i++) {
+        nvn_rbind *b = &rf->b[i]; if (b->rw || (b->kind != NVN_RB_SBUFP && b->kind != NVN_RB_SBUFU)) continue;
+        NSDictionary *d = bs[(NSUInteger)i]; if (![d isKindOfClass:[NSDictionary class]]) continue;
+        if (msl_stores_through(src, d[@"msl_name"])) b->rw = 1;
+    }
+}
+
+/* One row's text: "b<binding>=<hex>" for each binding with proved sources, then per proved binding (its aid)
+   "a<aid>", per source binding "s<index>" and its index programs as "(op t<type> b<binding> v<value> args...)". */
+static void encode_expr(PoolExpr *p, NSMutableString *o) {
+    [o appendFormat:@"(%@ t%d b%d v%u", p->op, p->type, p->binding, p->value];
+    for (PoolExpr *a in p->args) { [o appendString:@" "]; encode_expr(a, o); }
+    [o appendString:@")"];
+}
+NSString *nvn_pool_sources_encode(const nvn_refl *rf, NSDictionary *result) {
+    NSMutableString *o = [NSMutableString string];
+    for (int i = 0; i < rf->nb; i++) if (rf->b[i].pool_sources) [o appendFormat:@"b%d=%llx ", i, (unsigned long long)rf->b[i].pool_sources];
+    for (NSNumber *aid in [result.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        NSDictionary *indices = result[aid]; [o appendFormat:@"a%@ ", aid];
+        for (NSNumber *k in [indices.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+            [o appendFormat:@"s%@ ", k];
+            for (PoolExpr *p in indices[k]) { encode_expr(p, o); [o appendString:@" "]; }
+        }
+    }
+    return o;
+}
+static PoolExpr *decode_expr(const char **cur, int depth) {
+    const char *s = *cur;
+    if (depth > 64 || *s != '(') return nil;
+    s++;
+    const char *op0 = s; while (*s && *s != ' ' && *s != ')') s++;
+    if (s == op0 || *s != ' ') return nil;
+    NSString *op = [[NSString alloc] initWithBytes:op0 length:(NSUInteger)(s - op0) encoding:NSUTF8StringEncoding];
+    char *end; long type, binding; unsigned long long value;
+    if (s[0] != ' ' || s[1] != 't') return nil; type = strtol(s + 2, &end, 10); s = end;
+    if (s[0] != ' ' || s[1] != 'b') return nil; binding = strtol(s + 2, &end, 10); s = end;
+    if (s[0] != ' ' || s[1] != 'v') return nil; value = strtoull(s + 2, &end, 10); s = end;
+    if (value > UINT32_MAX || type < 0 || type > 2) return nil;
+    NSMutableArray *args = [NSMutableArray array];
+    while (*s == ' ') { s++; PoolExpr *a = decode_expr(&s, depth + 1); if (!a) return nil; [args addObject:a]; }
+    if (*s != ')') return nil;
+    PoolExpr *p = node(op, (int)type, (uint32_t)value, args); p->binding = (int)binding;
+    *cur = s + 1;
+    return p;
+}
+NSDictionary *nvn_pool_sources_decode(nvn_refl *rf, NSString *text) {
+    for (int i = 0; i < rf->nb; i++) rf->b[i].pool_sources = 0;
+    const char *s = text.UTF8String; if (!s) return nil;
+    NSMutableDictionary *result = [NSMutableDictionary dictionary]; NSMutableDictionary *indices = nil; NSMutableArray *programs = nil;
+    char *end;
+    while (*s) {
+        if (*s == ' ') { s++; continue; }
+        if (*s == 'b') {
+            long i = strtol(s + 1, &end, 10); if (end == s + 1 || *end != '=' || i < 0 || i >= rf->nb) return nil;
+            unsigned long long bits = strtoull(end + 1, &end, 16); rf->b[i].pool_sources = bits; s = end;
+        } else if (*s == 'a') {
+            long aid = strtol(s + 1, &end, 10); if (end == s + 1) return nil;
+            result[@(aid)] = indices = [NSMutableDictionary dictionary]; programs = nil; s = end;
+        } else if (*s == 's') {
+            long k = strtol(s + 1, &end, 10); if (end == s + 1 || !indices) return nil;
+            indices[@(k)] = programs = [NSMutableArray array]; s = end;
+        } else if (*s == '(') {
+            if (!programs) return nil;
+            PoolExpr *p = decode_expr(&s, 0); if (!p) return nil;
+            [programs addObject:p];
+        } else return nil;
     }
     return result;
 }

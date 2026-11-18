@@ -270,6 +270,24 @@ def c1_list(tree,mode='full'):
     print(f'   c1 list: {rows} shaders proven'+(' (seed unchanged, kept)' if kept else ''),flush=True)
     return out
 
+def pool_list(work,tree,mode='full'):
+    """build/pool_sources<suffix>.tsv: the pool proof (nvn_pool_sources.m) of every seed shader with a pooled read, made
+    once here by the runtime's own code (tools/pool_sources_list.m, built with the runtime) instead of at every load
+    (2026-11-18, user: "a"): one 200 KB shader took 40-70 ms, 99.6 s over the 40,659 translations, at every start's
+    warm-up and at the first load in play. Made again only when the seed manifest or nvn_pool_sources.m changes (the
+    first line names both). Every row is decoded again before the list is written (--verify)."""
+    seed,_,suffix=shader_dirs(tree,mode)
+    out=tree/f'build/pool_sources{suffix}.tsv'
+    seed_sha,scan_sha=sha(seed/'seed-manifest.json'),sha(GAME/'third_party/d2r_gfx/gfx/nvn/nvn_pool_sources.m')
+    if out.is_file():
+        with out.open() as f:
+            if f.readline().rstrip('\n')==f'# nvn pool sources v1 seed={seed_sha} scan={scan_sha}':
+                print('   pool sources: seed and proof unchanged, kept',flush=True);return out
+    tool=work/'build/pool-sources-list'
+    if not tool.is_file():raise ValueError(f'{tool} is missing: the runtime build makes it (make -C games/oot)')
+    subprocess.run([str(tool),str(seed),str(out),seed_sha,scan_sha,'--verify'],check=True)
+    return out
+
 # The bundle's shaders as image parts (shader-seed.img.NNN, shader-libs.img.NNN beside the two folders, at most
 # IMAGE_PART bytes each; ios/tools/seed_image.py, read in place by totk_seed_image.h), not 128,674 seed files and 64,699
 # libraries (2026-11-17, user: "继续做吧"): from the USB drive the App is on, a library first used in play cost an
@@ -513,6 +531,8 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     took('warm-up lists resolved')
     c1=c1_list(tree,mode) if shader_record else None
     took('c1 list')
+    pools=pool_list(work,tree,mode) if shader_record else None
+    took('pool sources')
     pipelines=compute_pipeline_archive(work,tree,lists,mode) if shader_record else None
     took('pipeline archive')
     prepared=shader_bundle(tree,shader_record,mode) if shader_record else None
@@ -568,6 +588,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     title,manifest=lists   # the archive's lists, beside the shader map, where the runtime and the launcher look (build_app.py resolve_lists)
     clone_file(title,data/'build/pso_title.tsv');clone_file(manifest,data/'build/pso_manifest.tsv')
     if c1:clone_file(c1,data/'build/c1_bounded.tsv')   # beside the shader map, where nvn_mtl.m c1_bounded_load reads it
+    if pools:clone_file(pools,data/'build/pool_sources.tsv')   # beside it too: nvn_mtl.m pool_list_load
     if pipelines:check_archive_lists(data/'build')   # never an App whose archive was built from other lists
     took('App assembled')
     # VideoToolbox is the primary AV1 decoder; the bounded dav1d fallback is linked statically (build_app.codec_libraries
