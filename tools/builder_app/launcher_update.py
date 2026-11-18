@@ -78,14 +78,24 @@ if ! mv "$app" "$old"; then
   echo "the old app could not be moved aside: nothing was replaced"
   finish '{"ok": false, "why": "aside"}' 1
 fi
+# The folder the new app was unpacked into, and the one around it when that is a hidden folder of its own beside the app
+# (the support folder on another disk than the app; 1.0.7 left it there, empty, after every update). The support folder
+# itself holds this script and its log and is never empty, so rmdir leaves it.
+tidy() {
+  stage=$(dirname "$new")
+  rm -rf "$new"
+  rmdir "$stage" 2>/dev/null
+  rmdir "$(dirname "$stage")" 2>/dev/null
+}
 if mv "$new" "$app"; then
   echo "replaced"
   rm -rf "$old"
-  rmdir "$(dirname "$new")" 2>/dev/null   # the folder the new app was unpacked into, now empty
+  tidy
   finish '{"ok": true}' 0
 fi
 echo "the new app could not be put in place: the old one is back"
 mv "$old" "$app"
+tidy
 finish '{"ok": false, "why": "place"}' 1
 '''
 

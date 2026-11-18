@@ -291,6 +291,29 @@ class Replacement(Served):
         self.assertGreater(time.time() - started, 1.3)
         self.assertEqual(version_of(running), '1.0.7')
 
+    def test_nothing_is_left_beside_the_app_when_the_support_folder_is_on_another_disk(self):
+        # the new app is then unpacked into a hidden folder beside the app (work_folder); 1.0.7 left that folder there,
+        # empty, after every update (seen in /Applications with the support folder on an external disk)
+        running = make_app(self.apps, '1.0.6', self.program)
+        base = self.support / 'launcher-update'
+        base.mkdir(parents=True)
+        real = os.stat
+
+        def other_disk(path, *a, **kw):
+            st = real(path, *a, **kw)
+            return os.stat_result((*st[:2], st.st_dev + 1, *st[3:])) if Path(path) == self.apps else st
+
+        with mock.patch.object(lu.os, 'stat', other_disk):
+            self.assertEqual(lu.work_folder(self.support, running), (base, self.apps / '.MNG Launcher update'))
+        with mock.patch.object(lu.os, 'stat', real):
+            self.assertEqual(lu.work_folder(self.support, running), (base, base))
+        stage = self.apps / '.MNG Launcher update' / 'new'
+        new = make_app(stage, '1.0.7', self.program)
+        self.assertEqual(self.script(self.quit_launcher(), new, running), {'ok': True})
+        self.assertEqual(version_of(running), '1.0.7')
+        self.assertEqual([p.name for p in self.apps.iterdir()], [APP])
+        self.assertTrue((base / 'replace.sh').is_file())             # the support folder is left as it is
+
     def test_a_missing_new_app_leaves_the_old_one(self):
         running = make_app(self.apps, '1.0.6', self.program)
         self.assertEqual(self.script(self.quit_launcher(), self.made / 'nothing.app', running), {'ok': False, 'why': 'missing'})
