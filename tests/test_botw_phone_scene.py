@@ -71,6 +71,23 @@ class PhoneScene(unittest.TestCase):
         self.assertIn('return canvas_w;', fn, 'a size above the canvas is held at the canvas, never above it')
 
 
+class ComposeUpscale(unittest.TestCase):
+    """MetalFX's scene upscale on the phone: Breath of the Wild's handheld compose (tone mapping) samples the small scene
+    and writes the 1280x720 canvas itself, with no upscale draw of its own, so mfxup_draw must recognise every game's
+    compose shader (TAA_COMPOSE), not only Tears of the Kingdom's 0ac9a549. Without it the pane's MetalFX row does
+    nothing in handheld play (iPad 2026-11-17: on, and no replacement in a 3 minute run)."""
+    def test_compose_path_takes_each_games_compose(self):
+        nvn = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
+        text = (nvn / 'nvn_mtl.m').read_text()
+        draw = re.search(r'static int mfxup_draw\(NvProg \*pr\) \{.*?\n}', text, re.S).group(0)
+        guard = re.search(r'\n    if \((.*?)\) return 0;[^\n]*\n    int tid = \(int\)\(S\.tex\[1\]\[0\]', draw).group(1)
+        self.assertTrue(guard.startswith('!TAA_COMPOSE(fs)'), guard)
+        header = (nvn / 'nvn_obj.h').read_text()
+        composes = re.findall(r'^#define TAA_COMPOSE\(fs\) (.*)$', header, re.M)
+        self.assertEqual(len(composes), 3, 'BotW 1.9.0, BotW 1.6.0, TotK')
+        self.assertEqual(composes[2], '!strncmp(fs->key, "0ac9a54938974396", 16)', 'Tears of the Kingdom keeps its compose key')
+
+
 def body_fn(text, name):
     return re.search(r'static unsigned ' + name + r'\(unsigned canvas_w\) \{.*?\n}', text, re.S).group(0)
 
