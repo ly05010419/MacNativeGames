@@ -270,7 +270,7 @@ class Updates(unittest.TestCase):
         self.assertEqual((out/'romfs.bin').read_bytes(), romfs())
 
     def test_bundle_contains_only_selected_game_version(self):
-        def fake_lists(tree, res, game, logs):   # shader_list.py resolve, tested in test_shader_list
+        def fake_lists(tree, res, game, logs, shared=None):   # shader_list.py resolve, tested in test_shader_list
             for name in ('pso_manifest.tsv', 'pso_title.tsv'):
                 (res/'build'/name).write_text('# resolved\n')
         for version, display in (('v121', '1.2.1'), ('v143', '1.4.3')):

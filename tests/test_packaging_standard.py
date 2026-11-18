@@ -43,6 +43,41 @@ STANDARDS = {
 
 GFX = 'games/{}/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m'
 
+# What the three ports MNG Launcher builds through tools/port_app (Animal Crossing, Echoes of Wisdom, Super Mario
+# Odyssey) do not do yet. Seven of the eight are the same for all three because the packaging they share is the same;
+# the eighth differs and is below. Read in the sources 2026-11-18, each reason naming what shows it. None seen in play.
+PORT_APP_GAPS = {
+    'shader data in its own signed bundle': 'no file of these ports names ShaderData-: the shader data is inside the '
+        'app, not in a bundle of its own',
+    'pipeline archive built while packaging': 'no packager here builds one: mac_pipelines is nowhere in these ports, '
+        'and the only pipeline-archive they name is the vendored runtime header totk_pipeline_archive.h (Echoes of '
+        'Wisdom does not name it at all)',
+    'title after the warm-up': 'neither TOTK_WARM_BEFORE_TITLE nor DM_PSO_PREPARE is set anywhere in these ports, so '
+        'nothing holds the title until the warm-up is done',
+    'seed and library digests are reused': "only Odyssey's vendored third_party/totk-scripts/prepare_shader_seed.py "
+        'has seed_digests/record_verified, and its own packaging path does not call it',
+    'repackaging keeps the .app folder': 'tools/port_app/bundle.py staged() does shutil.rmtree(output) and then '
+        'stage.rename(output): every repackaging replaces the .app folder instead of installing into it, which is why '
+        'register() has to make Finder and the Dock read the icon again',
+    'warm-up lists beside the shader map': 'no packager writes build/pso_title.tsv and build/pso_manifest.tsv beside '
+        'the shader map, nor checks them (check_archive_lists)',
+    "pipeline archive built from the App's lists": 'there is no pipeline archive to build from them (the second gap)',
+}
+
+# The eighth, per port: two of the three run a program inside the app they have just made.
+PORT_APP_RUNS_INSIDE = {
+    'acnh': "package_native_app.py's assemble() ends with bundle.check_launcher(launcher_bin), the launcher it "
+            'compiled into Contents/MacOS of the staged bundle, run there right after signing it',
+    'eow': "package_app.py's assemble() ends with bundle.check_launcher(macos / EXECUTABLE): the app's own launcher, "
+           'run inside the bundle it has just signed',
+    'odyssey': 'this packager runs nothing inside the app, but no name of its path says so in the form this check '
+               'knows (run_outside_bundle)',
+}
+
+
+def port_app_gaps(game):
+    return {**PORT_APP_GAPS, 'no program runs inside a new app': PORT_APP_RUNS_INSIDE[game]}
+
 # name -> (the sources of that packaging path, {standard not met: why})
 PATHS = {
     'totk': (['build_app.py', 'update_runtime.py', 'games/totk/scripts/prepare_shader_seed.py', GFX.format('totk')], {}),
@@ -62,10 +97,26 @@ PATHS = {
     'worldend': (['games/worldend/build.py', 'games/worldend/scripts/build_worldend.py', 'games/worldend/scripts/worldend_bundle.py',
                   'games/worldend/scripts/worldend_pipelines.py', 'games/worldend/scripts/worldend_update.py',
                   'games/worldend/app/launcher.c'], {}),
+    # The three ports built through tools/port_app (bundle.py, adapter.py): unlike every path above, their packaging is
+    # not its own copy of the code -- the staging, the signature, the Info.plist and the venv are shared, so those two
+    # files are read with each of them. Measured 2026-11-18 against the sources, not played.
+    'acnh': (['games/acnh/build.py', 'games/acnh/scripts/package_native_app.py',
+              'games/acnh/scripts/precompile_cached_shaders.py', 'games/acnh/tools/prepare_shader_seed.py',
+              'games/acnh/scripts/acnh_app_launcher.c', GFX.format('acnh'),
+              'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('acnh')),
+    'eow': (['games/eow/build.py', 'games/eow/scripts/package_app.py', 'games/eow/scripts/prepare_runtime.py',
+             'games/eow/scripts/build_shader_libs.py', 'games/eow/scripts/prepare_shader_seed.py',
+             'games/eow/app/launcher.c', GFX.format('eow'),
+             'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('eow')),
+    'odyssey': (['games/odyssey/build.py', 'games/odyssey/scripts/build_odyssey.py',
+                 'games/odyssey/scripts/package_native_app.py', 'games/odyssey/scripts/precompile_cached_shaders.py',
+                 'games/odyssey/scripts/prepare_runtime.py', 'games/odyssey/scripts/odyssey_app_launcher.c',
+                 GFX.format('odyssey'), 'tools/port_app/bundle.py', 'tools/port_app/adapter.py'], port_app_gaps('odyssey'))
 }
 
 BUILD_SCRIPTS = {'games/tmnt/build.py': 'tmnt', 'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
-                 'games/worldend/build.py': 'worldend'}
+                 'games/worldend/build.py': 'worldend', 'games/acnh/build.py': 'acnh', 'games/eow/build.py': 'eow',
+                 'games/odyssey/build.py': 'odyssey'}
 
 
 class PackagingStandard(unittest.TestCase):
@@ -73,6 +124,9 @@ class PackagingStandard(unittest.TestCase):
         found = {str(p.relative_to(ROOT)) for p in (ROOT / 'games').glob('*/build.py')}
         unknown = sorted(found - set(BUILD_SCRIPTS))
         self.assertEqual(unknown, [], 'a game with its own build.py: add it to PATHS and BUILD_SCRIPTS, and check it against the standards')
+        # the message above asks for both: registering the build.py alone would make this test pass with nothing checked
+        for script, name in sorted(BUILD_SCRIPTS.items()):
+            self.assertIn(name, PATHS, f'{script} is in BUILD_SCRIPTS but names no path in PATHS: nothing checks it')
 
     def test_paths_meet_the_standards(self):
         for name, (sources, gaps) in PATHS.items():

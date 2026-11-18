@@ -30,6 +30,7 @@ static NSSet *g_seed_names;
 static seed_image g_seed_img;
 static NSString *g_seed_prefix;
 static BOOL g_seed_all_default;
+static BOOL g_seed_sealed;   // totk_shader_rt.m:92, outside the body this probe takes (a sealed seed's variant)
 static void (*runtime_boot_status)(const char *, const char *);
 static NSString *root_dir(void) { return @"unused"; }
 static NSString *seed_dir(void) { return @(getenv("TOTK_SHADER_SEED_DIR")); }
