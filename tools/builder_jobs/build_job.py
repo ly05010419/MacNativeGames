@@ -222,6 +222,7 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     start = time.time()
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
+    real_build = script is None   # tests pass a script of their own: nothing of theirs goes into the Launcher's list
     script = script or chosen
     # steps_last: how many steps the same kind of build took on this Mac last time (the window says "N steps last time")
     if kind == 'full' and (request.get('plan') or {}).get('open_fonts'):
@@ -306,6 +307,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
         history.record(record, steps.poll(end), end)
         if record_mods:
             record_mods(out)
+        if real_build:   # the app goes into the Launcher's own list (installed.py known-apps.json)
+            from tools.builder_jobs.installed import remember
+            remember([str(out)])
         emit('progress', fraction=1.0, left=0, elapsed=round(end - start), measured=True)
         emit('done', ok=True, app=str(out), elapsed=round(end - start), note=mods_note(game, out, True, ''))
         return 0

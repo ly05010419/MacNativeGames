@@ -5,6 +5,7 @@ import json
 import os
 import plistlib
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -192,6 +193,46 @@ class Installed(unittest.TestCase):
         ids = installed.bundle_ids()
         for bundle in ('org.macnativegames.totk', 'org.macnativegames.botw', 'org.macnativegames.oot'):
             self.assertIn(bundle, ids)
+
+    def test_the_launcher_s_own_list_comes_first_and_keeps_its_games(self):
+        # user 2026-11-18: "launcher 要自己 记住 不是靠 macOS 的应用索引 ... 优先自己记住，然后 靠 macOS 的应用索引"; that day
+        # LaunchServices named Tears of the Kingdom but not the Odyssey, Animal Crossing and Echoes of Wisdom next to it
+        with tempfile.TemporaryDirectory() as tmp:
+            def make(rel, bundle):
+                app = Path(tmp) / rel
+                (app / 'Contents').mkdir(parents=True)
+                (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': bundle}))
+                return os.path.realpath(app)
+            totk = make('games/Tears of the Kingdom.app', 'org.macnativegames.totk')
+            odyssey = make('games/Super Mario Odyssey.app', 'org.macnativegames.odyssey')
+            oot = make('elsewhere/Ocarina of Time.app', 'org.macnativegames.oot')
+            botw = make('third/Breath of the Wild.app', 'org.macnativegames.botw')
+            make('games/Other.app', 'com.example.other')
+            known, last = Path(tmp) / 'known-apps.json', Path(tmp) / 'installed.json'
+            last.write_text(json.dumps({'apps': [{'app': oot}]}))
+            self.assertEqual(installed.known_apps(known, last), [oot])          # a first list from the window's last one
+            known.write_text(json.dumps({'apps': [oot, '/Volumes/not-connected/Old.app']}))
+            asked = []
+            plan = lambda app, python: {'game': Path(app).stem, 'kind': 'express'}
+            def macos(ids):
+                asked.append(True)
+                return [totk]                                                  # macOS leaves out what it leaves out
+            with mock.patch.object(installed, 'registered', side_effect=macos), \
+                 mock.patch.object(installed, 'plan', side_effect=plan):
+                found = sorted(a['app'] for a in installed.apps(known_file=known))
+            self.assertEqual(found, sorted([totk, odyssey, oot]))
+            kept = json.loads(known.read_text())['apps']
+            self.assertEqual(kept[:2], [oot, '/Volumes/not-connected/Old.app'])  # its own list first; a disk not connected stays
+            self.assertEqual(sorted(kept[2:]), sorted([totk, odyssey]))
+            with mock.patch.object(installed, 'registered', return_value=[]), \
+                 mock.patch.object(installed, 'plan', side_effect=plan):          # macOS forgets them all: still found
+                self.assertEqual(sorted(a['app'] for a in installed.apps(known_file=known)), sorted([totk, odyssey, oot]))
+            installed.remember([botw], known)                                  # a build adds its app
+            shutil.rmtree(Path(tmp) / 'elsewhere/Ocarina of Time.app')          # a deleted app leaves the list
+            installed.remember([], known)
+            kept = json.loads(known.read_text())['apps']
+            self.assertIn(botw, kept)
+            self.assertNotIn(oot, kept)
 
 
 class History(unittest.TestCase):
