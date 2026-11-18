@@ -470,7 +470,6 @@ static void apply_settings(void) {
     /* One switch between the pane's layers (Root.plist, "Use custom settings"): the layer that is off is not handed
        over at all, so neither can overwrite the other. Which keys belong to which layer is settings_map.c's table. */
     BOOL custom_switch = [d boolForKey:@"TOTK_CUSTOM_PICTURE"];
-    BOOL custom = totk_custom_layer_on(custom_switch);   // Breath of the Wild: the switch adds rows, the presets stay
     for (NSString *key in defaults) {
         if (!totk_key_handed(key.UTF8String, custom_switch)) continue;
         id value = [d objectForKey:key];
@@ -492,6 +491,7 @@ static void apply_settings(void) {
            keys of the chosen layer. */
     }
 #if !TARGET_OS_VISION
+    BOOL custom = totk_custom_layer_on(custom_switch);   // Breath of the Wild: the switch adds rows, the presets stay
     NSString *layer;
     if (custom) {
         /* The picture mode owns the drawable, the output upscale and the operation mode (the 1080 entry runs the
