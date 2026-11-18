@@ -53,13 +53,18 @@ int pp_profile_picture(pp_profile p, pp_picture *out) {
     return 1;
 }
 
-/* Above the mode's canvas (handheld 1280x720, docked 1920x1080) the game cannot make its heaps. */
+/* The canvas: handheld 1280x720, docked 1920x1080. Breath of the Wild cannot make its heaps above it
+   (game_patches_botw.c patch_render_1080); Tears of the Kingdom scales its scene by the canvas (game_patches_v143.c
+   render_res_publish) and runs a handheld scene up to 1600x900, as its old custom layer offered (final review 2026-11-18). */
 static unsigned canvas_w(const pp_picture *p) { return p->mode == PP_DOCKED ? 1920 : 1280; }
-unsigned pp_scene_effective(const pp_picture *p) {
-    unsigned w = p->scene_w ? p->scene_w : p->mode == PP_DOCKED ? 1600 : 960;
-    return w > canvas_w(p) ? canvas_w(p) : w;
+unsigned pp_scene_limit(const pp_picture *p, pp_game g) {
+    return p->mode == PP_DOCKED ? 1920 : g == PP_GAME_TOTK ? 1600 : 1280;
 }
-int pp_mfx_scene_acts(const pp_picture *p) { return pp_scene_effective(p) < canvas_w(p); }
+unsigned pp_scene_effective(const pp_picture *p, pp_game g) {
+    unsigned w = p->scene_w ? p->scene_w : p->mode == PP_DOCKED ? 1600 : 960, limit = pp_scene_limit(p, g);
+    return w > limit ? limit : w;
+}
+int pp_mfx_scene_acts(const pp_picture *p, pp_game g) { return pp_scene_effective(p, g) < canvas_w(p); }
 
 static void put(pp_env *e, const char *name, const char *value) { e->v[e->n].name = name; e->v[e->n].value = value; e->n++; }
 
@@ -69,7 +74,7 @@ static void put(pp_env *e, const char *name, const char *value) { e->v[e->n].nam
    passed as a size, so it means the same on every game version. */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out) {
     out->n = 0;
-    unsigned w = pp_scene_effective(p);
+    unsigned w = pp_scene_effective(p, g);
     const char *scene = "960x540";
     for (unsigned i = 0; i < sizeof SCENES / sizeof *SCENES; i++) if (SCENES[i].width == w) scene = SCENES[i].size;
     put(out, "TOTK_OPERATION_MODE", p->mode == PP_DOCKED ? "docked" : "handheld");

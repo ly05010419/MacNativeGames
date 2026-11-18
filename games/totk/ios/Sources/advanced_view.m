@@ -28,6 +28,7 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     _onBack = [onBack copy]; _onStart = [onStart copy];
     _pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
     _pic = totk_current_picture(NULL, &_mfx);
+    _held = YES;   // the press that opened this screen is still down: wait for every button to be let go first
     _effects = [NSMutableDictionary dictionary];
     self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.10 alpha:1];
@@ -153,17 +154,17 @@ static NSString *metalfx_title(pp_metalfx m) {
     _metalfx.menu = [UIMenu menuWithChildren:mfx];
     [self title:_metalfx text:metalfx_title(_mfx)];
 
-    unsigned w = pp_scene_effective(&_pic);
+    unsigned w = pp_scene_effective(&_pic, PP_THIS_GAME), limit = pp_scene_limit(&_pic, PP_THIS_GAME);
     BOOL docked = _pic.mode == PP_DOCKED, small = _pad && _pic.switch_size;
     [self effect:_mode text:docked
         ? [T(@"游戏的底座设置，输出 1920×1080。", @"The game's docked settings, 1920×1080 output.") stringByAppendingString:small
            ? T(@"在 Switch 屏幕大小下画面会缩小，多出的像素白白耗费 GPU。", @" At the Switch's screen size the picture is scaled down: the extra pixels cost GPU for nothing.") : @""]
         : T(@"掌机设置，输出 1280×720。", @"Handheld settings, 1280×720 output.")];
     [self effect:_scene text:_pic.scene_w > w
-        ? [NSString stringWithFormat:T(@"掌机画布是 1280×720：场景用 %u×%u。", @"The handheld canvas is 1280×720: the scene runs at %u×%u."), w, w * 9 / 16]
+        ? [NSString stringWithFormat:T(@"掌机模式最高 %u×%u：场景用 %u×%u。", @"Handheld goes up to %u×%u: the scene runs at %u×%u."), limit, limit * 9 / 16, w, w * 9 / 16]
         : [NSString stringWithFormat:T(@"场景 %u×%u。只影响 3D 世界：越低越凉、越省电，画面也越软。", @"Scene %u×%u. The 3D world only: lower runs cooler and saves battery, with a softer picture."), w, w * 9 / 16]];
     NSString *mfxText = _mfx == PP_MFX_OFF ? T(@"游戏自己的放大。", @"The game's own upscale.")
-        : !pp_mfx_scene_acts(&_pic) ? T(@"场景和画布一样大：MetalFX 不需要放大场景。", @"The scene is the canvas's size: MetalFX has no scene to upscale.")
+        : !pp_mfx_scene_acts(&_pic, PP_THIS_GAME) ? T(@"场景不比画布小：MetalFX 没有场景要放大。", @"The scene is not smaller than the canvas: MetalFX has no scene to upscale.")
         : T(@"MetalFX 把场景放大到画布：更清晰，几乎不耗性能。", @"MetalFX upscales the scene into the canvas: sharper, at almost no cost.");
     if (_mfx == PP_MFX_SCREEN) mfxText = [mfxText stringByAppendingString:small
         ? T(@"再把画布放大到 Switch 大小的画面：最清晰，最耗 GPU。", @" It also enlarges the canvas to the Switch-sized picture: the sharpest, the heaviest on the GPU.")

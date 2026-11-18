@@ -1,12 +1,6 @@
 #import "picture_settings.h"
 #include <stdio.h>
 
-#ifdef GAME_BOTW
-#define PP_THIS_GAME PP_GAME_BOTW
-#else
-#define PP_THIS_GAME PP_GAME_TOTK
-#endif
-
 static NSUserDefaults *defaults(void) { return NSUserDefaults.standardUserDefaults; }
 
 BOOL totk_has_custom_picture(void) { return [defaults() stringForKey:@"TOTK_CUSTOM_MODE"] != nil; }

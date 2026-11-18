@@ -31,8 +31,11 @@ int pp_scene_parse(const char *s, unsigned *w);       /* "" → 0 (Automática);
 const char *pp_scene_key(unsigned w);                 /* the stored form: "" for 0 (or a width not listed), else "<w>x<h>" */
 
 int pp_profile_picture(pp_profile p, pp_picture *out);  /* the fixed values; 0 for PP_CUSTOM (out untouched) */
-unsigned pp_scene_effective(const pp_picture *p);     /* Automática resolved, held at the mode's canvas */
-int pp_mfx_scene_acts(const pp_picture *p);           /* 0 when the scene is as wide as the canvas: nothing to upscale */
+/* The widest scene the game takes in the picture's mode: docked 1920; handheld 1280 (the canvas) for Breath of the Wild,
+   1600 for Tears of the Kingdom (its scene is scaled by the canvas; above 1600x900 it needs heaps the phone has not). */
+unsigned pp_scene_limit(const pp_picture *p, pp_game g);
+unsigned pp_scene_effective(const pp_picture *p, pp_game g);   /* Automática resolved, held at pp_scene_limit */
+int pp_mfx_scene_acts(const pp_picture *p, pp_game g);         /* 0 unless the scene is narrower than the canvas */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out);
 
 /* The old Settings rows (before the profiles) as they were saved, for the one-time migration to Personalizado. */

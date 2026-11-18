@@ -30,18 +30,33 @@ static void profiles_are_the_spec_values(void) {
 
 static void scene_held_at_canvas(void) {
     pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0};
-    CHECK(pp_scene_effective(&p) == 1280, "handheld 1920x1080 is held at the 1280x720 canvas");
-    p.scene_w = 1600; CHECK(pp_scene_effective(&p) == 1280, "handheld 1600x900 is held at the canvas");
-    p.scene_w = 0;    CHECK(pp_scene_effective(&p) == 960, "handheld automatic is 960x540");
-    p.mode = PP_DOCKED; CHECK(pp_scene_effective(&p) == 1600, "docked automatic is 1600x900");
-    p.scene_w = 1920; CHECK(pp_scene_effective(&p) == 1920, "docked 1920x1080 stays");
+    CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "handheld 1920x1080 is held at the 1280x720 canvas");
+    p.scene_w = 1600; CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "handheld 1600x900 is held at the canvas");
+    p.scene_w = 0;    CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 960, "handheld automatic is 960x540");
+    p.mode = PP_DOCKED; CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1600, "docked automatic is 1600x900");
+    p.scene_w = 1920; CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1920, "docked 1920x1080 stays");
+}
+
+/* Final review (2026-11-18): Tears of the Kingdom's scene is scaled by the canvas (game_patches_v143.c
+   render_res_publish), so its handheld scene may be 1600x900 above the 1280x720 canvas, as its old custom layer offered;
+   only above 1600x900 does it need the bigger heaps the phone has not. Breath of the Wild cannot go above its canvas. */
+static void totk_handheld_scene_limit(void) {
+    pp_picture p = {PP_HANDHELD, 1600, 0, 60, 0, 0};
+    CHECK(pp_scene_effective(&p, PP_GAME_TOTK) == 1600, "TotK handheld 1600x900 stays");
+    CHECK(pp_scene_effective(&p, PP_GAME_BOTW) == 1280, "BotW handheld 1600x900 is held at the canvas");
+    p.scene_w = 1920; CHECK(pp_scene_effective(&p, PP_GAME_TOTK) == 1600, "TotK handheld 1920x1080 is held at 1600x900");
+    p.mode = PP_DOCKED; CHECK(pp_scene_effective(&p, PP_GAME_TOTK) == 1920, "TotK docked 1920x1080 stays");
+    p.mode = PP_HANDHELD; p.scene_w = 1600;
+    CHECK(!pp_mfx_scene_acts(&p, PP_GAME_TOTK), "a scene above the canvas leaves the scene upscale nothing to do");
+    pp_env e; pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e); want(&e, "TOTK_RENDER_RES", "1600x900", "TotK handheld 1600x900");
+    CHECK(pp_scene_limit(&p, PP_GAME_TOTK) == 1600 && pp_scene_limit(&p, PP_GAME_BOTW) == 1280, "the limits by game");
 }
 
 static void mfx_scene_acts(void) {
     pp_picture p = {PP_HANDHELD, 1280, 0, 60, 0, 0};
-    CHECK(!pp_mfx_scene_acts(&p), "a scene the canvas's size leaves the scene upscale nothing to do");
-    p.scene_w = 960;  CHECK(pp_mfx_scene_acts(&p), "960x540 into the 720p canvas is upscaled");
-    p.mode = PP_DOCKED; p.scene_w = 1920; CHECK(!pp_mfx_scene_acts(&p), "docked 1920x1080 is the canvas");
+    CHECK(!pp_mfx_scene_acts(&p, PP_GAME_BOTW), "a scene the canvas's size leaves the scene upscale nothing to do");
+    p.scene_w = 960;  CHECK(pp_mfx_scene_acts(&p, PP_GAME_BOTW), "960x540 into the 720p canvas is upscaled");
+    p.mode = PP_DOCKED; p.scene_w = 1920; CHECK(!pp_mfx_scene_acts(&p, PP_GAME_BOTW), "docked 1920x1080 is the canvas");
 }
 
 static void env_desempenho_totk(void) {
@@ -88,8 +103,8 @@ static void env_switch_size_with_screen_mfx(void) {
 
 static void handheld_scene_above_canvas_env(void) {
     pp_picture p = {PP_HANDHELD, 1920, 0, 60, 0, 0}; pp_env e;
-    pp_env_build(&p, PP_MFX_OFF, PP_GAME_TOTK, &e);
-    want(&e, "TOTK_RENDER_RES", "1280x720", "handheld 1920x1080 asked");
+    pp_env_build(&p, PP_MFX_OFF, PP_GAME_BOTW, &e);
+    want(&e, "TOTK_RENDER_RES", "1280x720", "BotW handheld 1920x1080 asked");
 }
 
 static void aspect_only_totk(void) {
@@ -160,6 +175,7 @@ int main(int argc, char **argv) {
     profiles_are_the_spec_values();
     scene_held_at_canvas();
     mfx_scene_acts();
+    totk_handheld_scene_limit();
     env_desempenho_totk();
     env_qualidade_docked();
     env_economia_botw_scene_mfx();

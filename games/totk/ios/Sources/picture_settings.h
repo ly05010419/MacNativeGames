@@ -2,6 +2,12 @@
 #import <Foundation/Foundation.h>
 #include "picture_profile.h"
 
+#ifdef GAME_BOTW
+#define PP_THIS_GAME PP_GAME_BOTW
+#else
+#define PP_THIS_GAME PP_GAME_TOTK
+#endif
+
 /* The picture choices as the app stores them (NSUserDefaults; the Settings pane writes the same two keys), for main.m
    (the environment at game start), the start screen and the Advanced screen. Tears of the Kingdom and Breath of the
    Wild only (not GAME_NS2). Keys: TOTK_PICTURE_PROFILE and TOTK_METALFX (the pane's rows), TOTK_CUSTOM_MODE / _SCENE /

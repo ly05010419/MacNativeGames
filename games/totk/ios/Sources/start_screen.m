@@ -15,6 +15,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     UIButton *_start, *_advanced;
     UILabel *_profileNote;   // what the chosen profile does
     TOTKAdvancedView *_advancedView;   // open over this screen; this screen's controller polling waits meanwhile
+    pp_metalfx _lastMfxOn;   // what "On" saves: the last On value (Scene, or Scene + screen from Advanced)
     BOOL _hasProfiles;       // the pane has the picture profile (the two Zelda games)
     NSArray<UIView *> *_controls;   // what the controller's focus moves through, top to bottom; the Play button last
     NSInteger _row;          // index into _controls
@@ -86,6 +87,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         _profile.selectedSegmentIndex = profile == PP_CUSTOM && items.count < 4 ? PP_PERFORMANCE : (NSInteger)profile;
         _metalfx = [[UISegmentedControl alloc] initWithItems:@[T(@"关", @"Off"), mfx == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On")]];
         _metalfx.selectedSegmentIndex = mfx == PP_MFX_OFF ? 0 : 1;
+        _lastMfxOn = mfx == PP_MFX_SCREEN ? PP_MFX_SCREEN : PP_MFX_SCENE;
         for (UISegmentedControl *c in @[_profile, _metalfx]) {
             c.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
             [c.widthAnchor constraintEqualToConstant:c == _profile ? 460 : 340].active = YES;
@@ -144,10 +146,23 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if ([rows containsObject:note]) [stack setCustomSpacing:26 afterView:note];
     if (_hasProfiles) [stack setCustomSpacing:26 afterView:mfxNote];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:stack];
-    [NSLayoutConstraint activateConstraints:@[[stack.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
-                                              [stack.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-                                              [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.safeAreaLayoutGuide.leadingAnchor constant:24]]];
+    /* In a scroll view: the profile rows are taller than an iPhone in landscape (final review 2026-11-18). Centred while
+       they fit, scrolled when they do not. */
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    [scroll addSubview:stack]; [self addSubview:scroll];
+    UILayoutGuide *content = scroll.contentLayoutGuide, *visible = scroll.frameLayoutGuide, *safe = self.safeAreaLayoutGuide;
+    NSLayoutConstraint *fill = [content.heightAnchor constraintEqualToAnchor:visible.heightAnchor]; fill.priority = UILayoutPriorityDefaultLow;
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:safe.topAnchor], [scroll.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor], [scroll.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        [content.widthAnchor constraintEqualToAnchor:visible.widthAnchor],
+        [content.heightAnchor constraintGreaterThanOrEqualToAnchor:visible.heightAnchor], fill,
+        [stack.centerXAnchor constraintEqualToAnchor:content.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:content.centerYAnchor],
+        [stack.topAnchor constraintGreaterThanOrEqualToAnchor:content.topAnchor constant:16],
+        [stack.bottomAnchor constraintLessThanOrEqualToAnchor:content.bottomAnchor constant:-16],
+        [stack.leadingAnchor constraintGreaterThanOrEqualToAnchor:safe.leadingAnchor constant:24]]];
     [self focus];
     [self startPolling];
     return self;
@@ -199,8 +214,8 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 - (pp_profile)chosenProfile { return (pp_profile)_profile.selectedSegmentIndex; }
 - (void)profileChanged { totk_choose_profile([self chosenProfile]); [self showProfile]; }
 - (void)metalfxChanged {
-    pp_metalfx now; totk_current_picture(NULL, &now);
-    totk_choose_metalfx(_metalfx.selectedSegmentIndex == 0 ? PP_MFX_OFF : now == PP_MFX_SCREEN ? PP_MFX_SCREEN : PP_MFX_SCENE);
+    totk_choose_metalfx(_metalfx.selectedSegmentIndex == 0 ? PP_MFX_OFF : _lastMfxOn);
+    [_metalfx setTitle:_lastMfxOn == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On") forSegmentAtIndex:1];
 }
 - (void)openAdvanced {
     if (_advancedView || _done) return;
@@ -217,7 +232,8 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     totk_current_picture(&profile, &mfx);
     if (profile == PP_CUSTOM && _profile.numberOfSegments < 4) [_profile insertSegmentWithTitle:T(@"自定义", @"Custom") atIndex:3 animated:NO];
     _profile.selectedSegmentIndex = (NSInteger)profile;
-    [_metalfx setTitle:mfx == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On") forSegmentAtIndex:1];
+    if (mfx != PP_MFX_OFF) _lastMfxOn = mfx;
+    [_metalfx setTitle:_lastMfxOn == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On") forSegmentAtIndex:1];
     _metalfx.selectedSegmentIndex = mfx == PP_MFX_OFF ? 0 : 1;
     [self showProfile];
     _held = YES;   // the button that closed Advanced is still down
@@ -238,11 +254,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
                                 : T(@"720p，场景 640×360，30 fps。发热最少，最省电。",
                                     @"720p with a 640×360 scene, 30 fps. The coolest, easiest on the battery."); break;
     default: {
-        unsigned w = pp_scene_effective(&pic);
+        unsigned w = pp_scene_effective(&pic, PP_THIS_GAME);
         NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObjects:
             pic.mode == PP_DOCKED ? T(@"1080p 底座", @"1080p docked") : @"720p",
             [NSString stringWithFormat:T(@"场景 %u×%u%@", @"%u×%u scene%@"), w, w * 9 / 16,
-             pic.scene_w > w ? T(@"（掌机画布上限）", @" (held at the handheld canvas)") : @""],
+             pic.scene_w > w ? T(@"（掌机上限）", @" (the handheld limit)") : @""],
             [NSString stringWithFormat:@"%d fps", pic.fps], nil];
         if (pic.taa) [parts addObject:T(@"边缘平滑", @"smooth edges")];
         if (pic.switch_size && pad) [parts addObject:T(@"Switch 屏幕大小", @"Switch screen size")];

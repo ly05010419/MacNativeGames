@@ -312,6 +312,18 @@ class ProfileStartScreen(unittest.TestCase):
         self.assertIn('totk_current_picture(&profile, &mfx)', self.screen)
         self.assertIn('@selector(openAdvanced)', self.screen)
 
+    def test_metalfx_on_keeps_its_saved_variant_and_says_it(self):
+        # Final review: with "Scene + screen" saved, Off then On saved "scene" while the segment still read "to the
+        # screen". On restores the last On value of this screen, and the title follows what is saved.
+        metalfx = self.screen[self.screen.index('- (void)metalfxChanged {'):]
+        metalfx = metalfx[:metalfx.index('\n}\n')]
+        self.assertIn('_lastMfxOn', metalfx)
+        self.assertIn('setTitle:', metalfx)
+
+    def test_scrolls_on_a_short_screen(self):
+        # Final review: profile, two notes, MetalFX, Advanced and Play are taller than an iPhone in landscape.
+        self.assertIn('UIScrollView', self.screen)
+
     def test_metalfx_does_not_touch_the_profile(self):
         metalfx = self.screen[self.screen.index('- (void)metalfxChanged {'):]
         metalfx = metalfx[:metalfx.index('\n}\n')]
@@ -349,8 +361,8 @@ class Advanced(unittest.TestCase):
         self.assertNotIn('totk_save_custom_picture', mfx)
 
     def test_effect_lines_follow_the_model(self):
-        self.assertIn('pp_scene_effective(&_pic)', self.view, 'says when the scene is held at the canvas')
-        self.assertIn('pp_mfx_scene_acts(&_pic)', self.view, 'says when the scene upscale has nothing to do')
+        self.assertIn('pp_scene_effective(&_pic, PP_THIS_GAME)', self.view, 'says when the scene is held at the limit')
+        self.assertIn('pp_mfx_scene_acts(&_pic, PP_THIS_GAME)', self.view, 'says when the scene upscale has nothing to do')
 
     def test_device_and_game_rows(self):
         self.assertIn('UIUserInterfaceIdiomPad', self.view[self.view.index('_switchSize'):], 'the Switch size row only on an iPad')
@@ -360,6 +372,10 @@ class Advanced(unittest.TestCase):
 
     def test_the_controller_reaches_every_control(self):
         self.assertIn('pollController', self.view)
+        # Final review: the A press that opened Advanced was still down on its first poll, with the focus on Play, so the
+        # game started; the screen waits for every button to be let go first.
+        init = self.view[self.view.index('- (instancetype)initWithFrame:'):self.view.index('_poll = [NSTimer')]
+        self.assertIn('_held = YES;', init)
         self.assertIn('buttonB', self.view, 'B goes back')
 
 
