@@ -449,6 +449,10 @@ static void apply_display_settings(void) {
     pp_env_build(&pic, mfx, PP_GAME_TOTK, &env);
 #endif
     for (int i = 0; i < env.n; i++) if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);
+    /* The touch controls drew their 60/30 button before Play, and the runtime kept the hold it read then (hle_nvn.c
+       phone_holds_30): it takes the environment's again (iPad A16 2026-11-18: Economy ran at 60). */
+    const char *phone_fps = getenv("TOTK_PHONE_FPS");
+    runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);
     fprintf(stderr, "[totk] picture: profile %s, metalfx %s; %s, scene %s, taa %s, %s fps, Switch size %s, drawable %s\n",
             pp_profile_key(profile), pp_metalfx_key(mfx), getenv("TOTK_OPERATION_MODE") ?: "?", getenv("TOTK_RENDER_RES") ?: "?",
             getenv("TOTK_TAA") ?: "?", pic.fps == 30 ? "30" : "60", getenv("TOTK_SWITCH_SIZE") ?: "?", getenv("TOTK_IOS_DRAWABLE_H") ?: "default");

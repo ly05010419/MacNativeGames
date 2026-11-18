@@ -248,6 +248,15 @@ class Profiles(unittest.TestCase):
         # overwrite 0: a devicectl value still wins; NULL leaves a variable alone
         self.assertIn('if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);', zelda)
 
+    def test_the_profiles_30_fps_reaches_a_runtime_that_already_read_the_hold(self):
+        # iPad A16 2026-11-18: Economy ran at 60. The touch controls draw their 60/30 button when the view loads, before
+        # Play, and the runtime keeps the hold it read then (hle_nvn.c phone_holds_30): TOTK_PHONE_FPS set at Play
+        # came too late. The hold is set again from the environment (a devicectl value still wins).
+        zelda = self.display[self.display.index('#ifndef GAME_NS2'):self.display.index('totk_preset_env prenv;')]
+        sync = 'runtime_phone_fps_set(phone_fps && atoi(phone_fps) == 30 ? 30 : 60);'
+        self.assertIn(sync, zelda)
+        self.assertLess(zelda.index('setenv(env.v[i].name, env.v[i].value, 0);'), zelda.index(sync))
+
     def test_migration_runs_once_before_the_rows_are_handed_over(self):
         self.assertLess(self.launch.index('totk_migrate_picture_rows();'), self.launch.index('for (NSString *key in defaults)'))
         settings = (TOOLS.parent/'Sources/picture_settings.m').read_text()
