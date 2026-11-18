@@ -106,7 +106,38 @@ class Pages(unittest.TestCase):
         # holds the game's actions (GameActions) or, for a game not built yet, the way to build it; Esc turns it back;
         # its pages open under the Cover Flow; the drawn back takes no clicks, so a live one is laid on top once settled
         flow = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
-        for part in ('if i == index { turn(true) }', '.onKeyPress(.escape)', 'if flipped { return .ignored }',
+        # a click presses the middle case in (user 2026-11-18: "点击的时候 再来一下 感觉点击上了的效果"); a drag lets
+        # the press go
+        for part in ('withAnimation(pressDown) { press = 1 }', 'dampingFraction: 0.42)) { press = 0 }',
+                     'lean(at: nil, nil); release()',
+                     'let pressed = i == center ? CGFloat(press) * w * 0.1 : 0'):
+            self.assertIn(part, flow)
+        # it turns on the button coming up, however long it was held ("长按 也翻页"), not when dragged away
+        self.assertNotIn('clickLongest', flow)
+        for part in ('guard pressedMiddle, !flipped, moved < 6,',
+                     'if i != index { go(to: i) }'):
+            self.assertIn(part, flow)
+        self.assertNotIn('openSoon', flow)
+        # and turns from the case as pressed and leaning, springing out as it goes, not from the case at rest
+        # ("从默认状态开始的 所以不连贯")
+        for part in ('coverLean = tilt; coverLit = CGFloat(lit); detailPress = CGFloat(press)',
+                     'withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { detailPress = 0 }',
+                     'press: detailPress', 'func pressedScale(_ press: CGFloat) -> CGFloat'):
+            self.assertIn(part, flow)
+        detail = (REPO / 'tools/builder_app/Sources/MNGBuilder/CaseDetail.swift').read_text()
+        for part in ('var press: CGFloat = 0', 'stage.pressedScale(press)', 'let deeper = 1 + 0.8 * Double(press)',
+                     # the press springs on its own: in CaseDetail's animatableData its spring took the turn over and the
+                     # turn ran fast ("翻页 速度快了很多")
+                     'struct PressedFront<Cover: View>: View, Animatable',
+                     'var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>>>'):
+            self.assertIn(part, detail)
+        self.assertNotIn('AnimatablePair(open, press)', detail)
+        # the tap ending the click that opened it does not close it again ("翻页超快 然后黑屏"), and an open begun after
+        # a close does not run
+        for part in ('if !pressedMiddle { turn(false) }', 'guard flipped else { return }   // closed again'):
+            self.assertIn(part, flow)
+        self.assertNotIn('if flipped { turn(false); return }', flow)
+        for part in ('.onKeyPress(.escape)', 'if flipped { return .ignored }',
                      'withAnimation(turnSpring, completionCriteria: .removed)',
                      'let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over * Self.turnWay',
                      'static let turnWay: Double = -1'):   # "这个方向好": the opening edge shows half way
@@ -121,8 +152,8 @@ class Pages(unittest.TestCase):
                      '.rotation3DEffect(.degrees(settled ? 0 : 180 * Double(p) * CoverFlowGeometry.turnWay)', 'if p < 0.5 {',
                      '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
             self.assertIn(part, detail)
-        for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, close: { turn(false) })',
-                     'DispatchQueue.main.async { withAnimation(turnSpring) { open = 1 } }',
+        for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, close: { turn(false) })',
+                     'withAnimation(turnSpring) { open = 1; coverLean = .zero; coverLit = 0 }',
                      'withAnimation(turnSpring, completionCriteria: .removed) { open = 0; coverLean = .zero; coverLit = 0 } completion: {',
                      'flip: Double(open), hideCenter: expanded',
                      "including: flipped ? .subviews : .all", 'guard !expanded else { return }'):

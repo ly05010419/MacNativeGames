@@ -43,6 +43,10 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     @State private var open: CGFloat = 0   // how far, turning and growing at once: 0 its front at rest, 1 the stage
     @State private var coverLean = CGPoint.zero   // the pointer over the opened case's cover, -1...1 (leanCover)
     @State private var coverLit: CGFloat = 0
+    @State private var detailPress: CGFloat = 0   // the press the opening case turns from (turn(true)), springing out
+    @State private var press = 0.0             // the middle case pressed down by a click (pressDown / release)
+    @State private var pressing = false        // the mouse button is down (the press gesture has begun)
+    @State private var pressedMiddle = false   // ...and it went down on the middle case
     @State private var zoomFromCover = false   // a start from the opened case: the zoom begins at its cover
     @State private var tilt = CGPoint.zero // the pointer over the middle front, -1...1 from its centre
     @State private var lit = 0.0           // 1 while the pointer is over the middle front: its light shows
@@ -78,17 +82,43 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             ZStack(alignment: .topLeading) {
                 CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
                                flip: Double(open), hideCenter: expanded, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
-                               pulls: pulls, pulledLight: pulledLight,
+                               pulls: pulls, press: press, pulledLight: pulledLight,
                                front: front, spine: spine, back: back)
                     .opacity(Double(1 - open))   // the opened case covers the stage
                     .contentShape(Rectangle())
                     .gesture(SpatialTapGesture().onEnded { tap in
                         guard !dragging else { return }
-                        if flipped { turn(false); return }
+                        // turned over by this same click (the press below opens it as the button comes up, and this
+                        // tap ends after it): not a click to close it (2026-11-18, "翻页超快 然后黑屏": it closed at once
+                        // and the turn's own animation then left the stage hidden)
+                        if flipped {
+                            CoverFlowTrace.note("tap while turned over, opened by this click \(pressedMiddle)")
+                            if !pressedMiddle { turn(false) }
+                            return
+                        }
                         guard let i = stage.cover(at: tap.location) else { return }
                         CoverFlowTrace.note("tap case \(i) (middle \(index)), pulled \(pulled)")
-                        if i == index { turn(true) } else { go(to: i) }
+                        if i != index { go(to: i) }   // the middle case turns on the button coming up (below)
                     })
+                    // the mouse button down on the middle case presses it in (user 2026-11-18: "点击的时候 再来一下 感觉
+                    // 点击上了的效果"); up, however long it was held ("鼠标松开", "长按 也翻页"), it turns from there,
+                    // springing back out as it goes ("从默认状态开始的 所以不连贯": turn(true)); dragged away, it does not
+                    .simultaneousGesture(DragGesture(minimumDistance: 0)
+                        .onChanged { v in
+                            guard !pressing else { return }
+                            pressing = true
+                            pressedMiddle = !flipped && !dragging && stage.cover(at: v.startLocation) == index
+                            guard pressedMiddle else { return }
+                            withAnimation(pressDown) { press = 1 }
+                        }
+                        .onEnded { v in
+                            pressing = false
+                            let moved = hypot(v.translation.width, v.translation.height)
+                            guard pressedMiddle, !flipped, moved < 6,
+                                  stage.cover(at: v.location) == index else { release(); return }
+                            CoverFlowTrace.note("click middle case \(index)")
+                            turn(true)
+                        })
                     .onContinuousHover(coordinateSpace: .local) { phase in
                         switch phase {
                         case .active(let p): hovering = true; lean(at: p, stage)
@@ -124,7 +154,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                                          startPoint: .top, endPoint: .bottom))
                     .allowsHitTesting(false)
                     // the middle case turning and growing into the opened case: cover left, actions right
-                    CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, close: { turn(false) }) {
+                    CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, close: { turn(false) }) {
                         front(index)
                     } panel: {
                         detail(index, true)
@@ -154,7 +184,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         .background(LinearGradient(colors: [Color(white: 0.17), Color(white: 0.03)], startPoint: .top, endPoint: .bottom))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 6)
-            .onChanged { v in turn(false); lean(at: nil, nil); dragging = true; drag = v.translation.width }
+            .onChanged { v in turn(false); lean(at: nil, nil); release(); dragging = true; drag = v.translation.width }
             .onEnded { v in
                 // it carries on with the drag's speed (where the drag would have ended), then settles on a case
                 let thrown = Double(index) - Double(v.predictedEndTranslation.width / (size * 0.35))
@@ -168,7 +198,15 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         .onKeyPress(.leftArrow) { move(-1); return .handled }
         .onKeyPress(.rightArrow) { move(1); return .handled }
         // turned over, Return is the back's own (its start button is the default action)
-        .onKeyPress(.return) { if flipped { return .ignored }; turn(true); return .handled }
+        .onKeyPress(.return) {   // pressed and let go as a click is
+            if flipped { return .ignored }
+            withAnimation(pressDown) { press = 1 }
+            let at = index
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {   // pressed in: it turns from there
+                if index == at, !dragging { turn(true) } else { release() }
+            }
+            return .handled
+        }
         .onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }
         .onChange(of: index) { turn(false); settleMove() }
         .onChange(of: launches) { grow() }
@@ -281,11 +319,28 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     /// Opens the middle case (true): it turns and grows over the stage at once ("翻转的同时 放大 不是翻转完"), one spring
     /// for both, CaseDetail drawing it from its front at rest (the stage hides its own copy of it), the others stepping
     /// back as it goes. Closes it (false): the same backwards, ending on its front where it stands.
+    private var pressDown: Animation { .spring(response: 0.14, dampingFraction: 0.9) }
+
+    /// Lets the pressed middle case go: a bouncy spring, so it comes back a little past where it rests, then settles.
+    private func release() {
+        guard press != 0 else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.42)) { press = 0 }
+    }
+
     private func turn(_ over: Bool) {
         if over {
             guard !flipped else { return }
+            // CaseDetail takes the case over as the stage shows it: leaning under the pointer, lit, pressed in; the turn
+            // lays the lean and the light down, and the press springs back out (a little past) as it goes (user
+            // 2026-11-18: "翻页 不是在按下 再一次压下后 开始的 … 不连贯")
+            coverLean = tilt; coverLit = CGFloat(lit); detailPress = CGFloat(press)
+            press = 0   // the stage's own copy is hidden from now on
             open = 0; expanded = true; flipped = true
-            DispatchQueue.main.async { withAnimation(turnSpring) { open = 1 } }   // inserted at 0 first, then it moves
+            DispatchQueue.main.async {   // inserted at 0 first, then it moves
+                guard flipped else { return }   // closed again before it began: nothing to open
+                withAnimation(turnSpring) { open = 1; coverLean = .zero; coverLit = 0 }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { detailPress = 0 }
+            }
         } else {
             guard flipped else { return }
             flipped = false
@@ -324,6 +379,7 @@ struct CoverFlowGeometry {
     var flip: Double = 0   // the middle box turned over: 0 its front, 1 its back (CoverFlow.turn)
     var pointer = CGPoint.zero   // the pointer over the middle front, -1...1 from its centre (CoverFlow.lean)
     var pulls = CaseAmounts()    // how far each folded case is pulled out under the pointer (CoverFlow.lean)
+    var press: Double = 0        // the middle case pressed by a click: further in, leaning more (CoverFlow.pressDown)
     /// Which way the middle case turns over: +1 its right edge going back first (half way its spine shows), -1 the other
     /// way (its opening edge shows; user 2026-11-17: "试一试 相反的 翻转方向"). Its back ends the same either way.
     static let turnWay: Double = -1
@@ -362,11 +418,15 @@ struct CoverFlowGeometry {
     /// The middle case's front at rest is at depth/2 towards the camera: its scale on the stage (centred at backCenter),
     /// where CaseDetail starts.
     var frontScale: CGFloat { 1 / (1 - (depth / 2) / eye) }
+    /// The middle front pressed `press` in (boxTransform: w·0.1·press further from the camera): its scale against the
+    /// front at rest, for CaseDetail to start the turn where the press left it.
+    func pressedScale(_ press: CGFloat) -> CGFloat { (eye - depth / 2) / (eye - depth / 2 + w * 0.1 * press) }
 
     /// The middle case leaning away under the pointer (the sketch's: up to 9° sideways, 7° up and down): the part under
     /// the pointer goes back, as if pressed. Rotations as `boxTransform`'s (row vectors).
     var lean: CATransform3D {
-        let ay = Double(pointer.x) * 9 * Double.pi / 180, ax = -Double(pointer.y) * 7 * Double.pi / 180
+        let deeper = 1 + 0.8 * press   // a click presses it further where it is pressed
+        let ay = Double(pointer.x) * 9 * deeper * Double.pi / 180, ax = -Double(pointer.y) * 7 * deeper * Double.pi / 180
         var ry = CATransform3DIdentity
         ry.m11 = CGFloat(cos(ay)); ry.m13 = CGFloat(-sin(ay)); ry.m31 = CGFloat(sin(ay)); ry.m33 = CGFloat(cos(ay))
         var rx = CATransform3DIdentity
@@ -398,7 +458,8 @@ struct CoverFlowGeometry {
         let x = (CGFloat(side) * w * 1.02 + CGFloat(d - side) * w * 0.3) * (1 + 0.35 * CGFloat(away))
             + aside * (CGFloat(pushed(i)) * w * 0.2 + pull * w * 0.02)
         let y = -pull * h * 0.015
-        let z = -CGFloat(abs(side)) * w * 0.6 + lift * CGFloat(over) - w * 0.5 * CGFloat(away) + pull * w * 0.1
+        let pressed = i == center ? CGFloat(press) * w * 0.1 : 0   // the middle case pushed in by a click, then back
+        let z = -CGFloat(abs(side)) * w * 0.6 + lift * CGFloat(over) - w * 0.5 * CGFloat(away) + pull * w * 0.1 - pressed
         let a = -side * tilt * (1 - 0.15 * Double(pull)) + Double.pi * over * Self.turnWay
         var r = CATransform3DIdentity
         r.m11 = CGFloat(cos(a)); r.m13 = CGFloat(-sin(a))
@@ -512,25 +573,27 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
     var tiltX: Double        // the middle case's lean (CoverFlow.lean)
     var tiltY: Double
     var pulls: CaseAmounts   // the folded cases pulled out under the pointer
+    var press: Double        // the middle case pressed by a click (CoverFlow.pressDown)
     let pulledLight: UnitPoint   // where the pointer is on the pulled-out case's front
     let front: (Int) -> Front
     let spine: (Int) -> Spine
     let back: (Int, Bool) -> Back
 
     var animatableData: AnimatablePair<AnimatablePair<AnimatablePair<Double, Double>, AnimatablePair<Double, AnimatablePair<Double, Double>>>,
-                                       CaseAmounts> {
-        get { AnimatablePair(AnimatablePair(AnimatablePair(position, flip), AnimatablePair(lit, AnimatablePair(tiltX, tiltY))), pulls) }
+                                       AnimatablePair<CaseAmounts, Double>> {
+        get { AnimatablePair(AnimatablePair(AnimatablePair(position, flip), AnimatablePair(lit, AnimatablePair(tiltX, tiltY))),
+                             AnimatablePair(pulls, press)) }
         set {
             let a = newValue.first
             position = a.first.first; flip = a.first.second
             lit = a.second.first; tiltX = a.second.second.first; tiltY = a.second.second.second
-            pulls = newValue.second
+            pulls = newValue.second.first; press = newValue.second.second
         }
     }
 
     var body: some View {
         let g = CoverFlowGeometry(count: count, size: size, width: width, height: height, position: position, flip: flip,
-                                  pointer: CGPoint(x: tiltX, y: tiltY), pulls: pulls)
+                                  pointer: CGPoint(x: tiltX, y: tiltY), pulls: pulls, press: press)
         let _ = CoverFlowTrace.frame(position: position, flip: flip, lit: lit, tilt: (tiltX, tiltY), pulls: pulls,
                                      order: g.drawOrder)
         ZStack(alignment: .topLeading) {
@@ -597,7 +660,7 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.backPlacement, m)))
             } else {
                 front(i).frame(width: g.w, height: g.h)
-                    .overlay(CaseFront(light: mirrored ? 0 : i == g.center ? lit : pulls[i],
+                    .overlay(CaseFront(light: mirrored ? 0 : i == g.center ? lit + 0.35 * press : pulls[i],
                                        at: i == g.center ? UnitPoint(x: (1 + tiltX) / 2, y: (1 + tiltY) / 2) : pulledLight))
                     .overlay(Color.black.opacity(shade))
                     .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
