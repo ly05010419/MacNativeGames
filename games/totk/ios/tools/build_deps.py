@@ -20,6 +20,14 @@ sdk = subprocess.check_output(['xcrun','--sdk',platform,'--show-sdk-path'], text
 ios_sdk = subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-path'], text=True).strip()
 target = 'arm64-apple-xros26.0' if platform == 'xros' else 'arm64-apple-ios26.0'
 src = root/'src'; build = root/'build'; src.mkdir(parents=True, exist_ok=True); build.mkdir(exist_ok=True)
+# A work folder moved to another path (2026-11-09, mac-APFS -> /Volumes/开发) keeps build trees whose CMake caches and
+# Makefiles name the old path: CMake refuses them ("CMakeCache.txt directory ... is different than the directory ...",
+# 2026-11-19, Breath of the Wild's iPhone build). They are remade when this folder was built elsewhere, or by an
+# older script that kept no record of where (one rebuild of the libraries, a minute or two).
+_where = build/'.built-at'
+if (_where.read_text() if _where.is_file() else None) != str(build.resolve()) and any(p != _where for p in build.iterdir()):
+    __import__('shutil').rmtree(build); build.mkdir()
+_where.write_text(str(build.resolve()))
 # CMake chooses the platform's flags from this path: iPhoneOS.platform gives -miphoneos-version-min even for visionOS
 sdklink=root/'sdkroot/Platforms'/('XROS.platform' if platform=='xros' else 'iPhoneOS.platform')/'Developer/SDKs'/Path(sdk).name
 if sdklink.is_symlink(): sdklink.unlink()

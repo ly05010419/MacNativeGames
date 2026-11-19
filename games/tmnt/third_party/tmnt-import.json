@@ -5,7 +5,7 @@
       "origin": "games/totk/ios/tools/build_deps.py",
       "commit": "6bef700320ecd16c5e74bb5f18ea1a405568be8b",
       "source_blob": "485866220df30f90e18365f7a4519f148ebb9112",
-      "sha256": "0e4cf4aff30db722fb92652d8b155fc9bc19552e5ff9c6914c729c6c13229ec4"
+      "sha256": "fbe13ec8ce482d92f94015f68eaa62af4417536d35ff190b2bad4397f8a4113f"
     },
     "ios/tools/gen_embed.py": {
       "origin": "games/totk/ios/tools/gen_embed.py",
