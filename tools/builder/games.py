@@ -141,8 +141,10 @@ PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'acnh': ('controls', 'storage', 'saves'),
          'eow': ('controls', 'storage', 'saves'),
          'odyssey': ('controls', 'storage', 'saves'),
-         'dread': ('controls',)}
-# Metroid Dread has Controls only: its launcher (games/dread/app/launcher.m) reads DREAD_WORK and DREAD_DISPLAY and
-# neither TOTK_PROFILE_DIR nor TOTK_SHADER_CACHE, which are what the Saves and Storage pages point at
-# (saves.PROFILE_ENV, storage.SHADER_ENV). Giving it those pages would show pages with nothing behind them.
-# Settings and Mods are not written for it either, as for Ocarina of Time.
+         'dread': ('controls', 'saves')}
+# Metroid Dread has Controls and Saves. Its launcher (games/dread/app/launcher.m) sets TOTK_PROFILE_DIR and
+# TOTK_GAME_SLOT_DIR exactly as Ocarina of Time's does, both under Application Support/MacNativeGames/Dread, which is
+# where saves.profile_dir and game_state.slot_dir look, so Saves reads the real save and refuses while the game runs.
+# Storage is left out: Dread's cache is its work folder's (<work>/build/shader-cache/rt-<chain>, from root_dir() in
+# totk_shader_rt.m over the <work>/build/dread-native the launcher runs), and storage.shader_dir does not resolve a
+# work folder yet. Settings and Mods are not written for Dread either, as for Ocarina of Time.
