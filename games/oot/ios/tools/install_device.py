@@ -185,9 +185,12 @@ def push_game_data(dev, bundle_id, image):
     size = image.stat().st_size; parts = (size + PART - 1) // PART
     have = device_files(dev, bundle_id, 'Documents/GameData')
     expected_sizes = {f'romfs.bin.{i:03d}': min(PART, size - i * PART) for i in range(parts)}
-    copying = f'copying {sha}'
+    # the size too, so the game's boot screen shows how far the copy is and starts when it is done (ios/Sources/main.m
+    # game_data_ready; user 2026-11-19: "传输的时候 有进度"); a marker of an older install names the image alone
+    copying = f'copying {sha} {size}'
+    older = f'copying {sha}'
     marker = None
-    if have.get('romfs.sha256') in (64 + 1, len(copying) + 1):
+    if have.get('romfs.sha256') in (64 + 1, len(copying) + 1, len(older) + 1):
         with tempfile.TemporaryDirectory() as d:
             got = Path(d)/'romfs.sha256'
             r = subprocess.run(['xcrun','devicectl','device','copy','from','--device',dev,'--domain-type','appDataContainer',
@@ -199,7 +202,7 @@ def push_game_data(dev, bundle_id, image):
         print('game data: the device already has this image'); return
     # Equal lengths alone cannot identify an image. Reuse complete parts only after reading a marker of this SHA.
     # A committed image with a truncated part can be repaired too, after marking the transfer in progress again.
-    resume = marker in (sha, copying)
+    resume = marker in (sha, copying, older)
     print(f'game data: copying {size / 2**30:.1f} GiB in {parts} parts (once; later installs keep it)' +
           (', going on from the parts already there' if resume else ''), flush=True)
     with tempfile.TemporaryDirectory() as d, open(image, 'rb') as src:
@@ -212,7 +215,7 @@ def push_game_data(dev, bundle_id, image):
                 print(f'  {name}: copy failed (attempt {attempt + 1} of 3): {(r.stderr or r.stdout).strip().splitlines()[-1:]}', flush=True)
                 time.sleep(10)
             sys.exit(f'game data: {name} could not be copied (keep the device unlocked and connected); run this again to go on from there')
-        if marker != copying: (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
+        if marker not in (copying, older): (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
         prog = Progress('game data', size)
         for i in range(parts):
             part = Path(d)/f'romfs.bin.{i:03d}'; length = min(PART, size - i * PART)
@@ -295,7 +298,8 @@ def push_seed(dev, bundle_id, seed):
         def copy(local, name):
             run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
                  bundle_id,'--source',local,'--destination',f'Documents/GameData/{name}'], capture_output=True)
-        got.write_text('stale\n'); copy(got, 'shader-seed.txt')   # until every part is there
+        # until every part is there; with the parts' size, for the game's boot screen (main.m game_data_ready)
+        got.write_text(f'stale {pack + image}\n'); copy(got, 'shader-seed.txt')
         def push(local):   # each part as it is complete (making a part reads ~1 GiB of shader files first)
             made[0] += 1; n = local.stat().st_size
             prog.part(f'part {made[0]}/{parts}', n, lambda: copy(local, local.name)); local.unlink()

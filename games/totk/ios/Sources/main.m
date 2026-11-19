@@ -31,6 +31,100 @@ static char *host_argv[3];
 static BOOL outputResolutionFromEnvironment;
 static NSString *g_no_game_data;   // set when there is no RomFS image to play from (didFinishLaunching)
 static NSString *g_seed_pack, *g_seed_unpack_to;   // a pushed shader pack to unpack before the game starts (seed_unpack)
+static NSString *g_seed_dir;       // the startup shaders' folder (game_data_ready): the app's own, or the one pushed
+static BOOL g_wait_for_data;       // the game data or the shaders are being copied (or not there yet): checked every second
+static uint64_t g_copy_done, g_copy_total;   // what of them is on the device so far (bytes), for the boot screen's bar
+static NSString *g_contrib;        // this game's shader contribution file (didFinishLaunching), pruned again once ready
+
+/* Bytes of the files in `folder` whose names start with one of `prefixes` and that changed since `since` (nil: any). */
+static uint64_t folder_bytes(NSString *folder, NSArray<NSString *> *prefixes, NSDate *since) {
+    NSFileManager *fm = NSFileManager.defaultManager; uint64_t sum = 0;
+    for (NSString *name in [fm contentsOfDirectoryAtPath:folder error:nil] ?: @[]) {
+        BOOL match = NO; for (NSString *p in prefixes) if ([name hasPrefix:p] || [name containsString:p]) { match = YES; break; }
+        if (!match) continue;
+        NSDictionary *a = [fm attributesOfItemAtPath:[folder stringByAppendingPathComponent:name] error:nil];
+        if (since && [a.fileModificationDate compare:since] == NSOrderedAscending) continue;
+        sum += a.fileSize;
+    }
+    return sum;
+}
+
+/* The game data and the startup shaders, in the app or in Documents/GameData (install_device.py --game-data and the
+   seed push put them there, writing their markers last): applied to the environment when both are there, and nil
+   returned; else what the boot screen says. While install_device.py is copying them (its markers say so) or before it
+   has begun, g_wait_for_data is set and g_copy_done / g_copy_total say how far the copy is: the boot screen asks again
+   every second and starts the game as soon as both are there (user 2026-11-19: "必须 能自己刷新 而且 传输的时候 有进度";
+   until then the screen said "still being copied" and stayed so, the game had to be closed and opened again). */
+static NSString *game_data_ready(NSString *docs, NSString *res) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+    NSString *app = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"TOTK";   // the Files app's folder name
+    NSString *gameData = [docs stringByAppendingPathComponent:@"GameData"];
+    g_wait_for_data = NO; g_copy_done = g_copy_total = 0;
+    /* The 17 GB image may live in Documents/GameData instead of the app (romfs.bin or romfs.bin.000, ...; ios/tools/
+       install_device.py --game-data puts it there): a new build then installs without it, and reinstalling keeps it.
+       Excluded from iCloud backups. The runtime still hashes it once against the build's pin (TOTK_ROMFS_PROOF_DIR). */
+    BOOL image = [fm fileExistsAtPath:[gameData stringByAppendingPathComponent:@"romfs.bin"]] ||
+                 [fm fileExistsAtPath:[gameData stringByAppendingPathComponent:@"romfs.bin.000"]];
+    NSString *mark = [[NSString stringWithContentsOfFile:[gameData stringByAppendingPathComponent:@"romfs.sha256"] encoding:NSUTF8StringEncoding error:nil]
+                      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    BOOL copying = mark && mark.length != 64;   // install_device.py writes "copying <sha256> <bytes>", the hash alone last
+    BOOL inApp = [fm fileExistsAtPath:[res stringByAppendingPathComponent:@"romfs/romfs.bin"]];
+    if (image && !copying) {
+        [[NSURL fileURLWithPath:gameData isDirectory:YES] setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+        setenv("TOTK_ROMFS_DATA",gameData.fileSystemRepresentation,1);
+    } else if (!inApp) {
+        /* No image to play from yet: said on the screen instead of the game ending at once (runtime_fail exits), and
+           waited for: the copy's progress from its parts' sizes against the size the marker names. */
+        g_wait_for_data = YES;
+        NSArray<NSString *> *words = [mark componentsSeparatedByString:@" "];
+        g_copy_total = words.count >= 3 ? strtoull(words[2].UTF8String, NULL, 10) : 0;
+        g_copy_done = folder_bytes(gameData, @[@"romfs.bin."], nil);
+        return copying || image
+            ? [NSString stringWithFormat:(zh ? @"游戏数据正在复制到“文件 › 我的 iPhone › %@ › GameData”，复制完会自动开始。"
+                                             : @"The game data is being copied to Files › On My iPhone › %@ › GameData. The game starts when it is done."), app]
+            : [NSString stringWithFormat:(zh ? @"没有游戏数据。请在 Mac 上用 ios/tools/install_device.py --game-data 把它复制到“文件 › 我的 iPhone › %@ › GameData”，复制完会自动开始。"
+                                             : @"No game data. On the Mac, copy it to Files › On My iPhone › %@ › GameData with ios/tools/install_device.py --game-data; the game starts when it is there."), app];
+    }
+    /* The startup shaders likewise (build_app.py --ios-game-data documents): install_device.py puts the seed into its own
+       folder in Documents/GameData once per content and writes shader-seed.txt last ("<folder>\n<fingerprint>"; while
+       copying "stale <bytes>"), so the app carries none and a new build installs in seconds. Read in place like the app's
+       own (totk_shader_seed.h); folders of earlier seeds are removed in the background. */
+    NSString *seedDir = [res stringByAppendingPathComponent:@"shader-seed"];
+    NSString *seedTxt = [gameData stringByAppendingPathComponent:@"shader-seed.txt"];
+    NSArray<NSString *> *seedMark = [[NSString stringWithContentsOfFile:seedTxt encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
+    NSString *pushedName = seedMark.count >= 2 && seedMark[1].length == 64 && [seedMark[0] hasPrefix:@"shader-seed-"] && ![seedMark[0] containsString:@"/"] ? seedMark[0] : nil;
+    NSString *pushed = pushedName ? [gameData stringByAppendingPathComponent:pushedName] : nil;
+    BOOL packed = pushed && ![fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]] &&
+                  [fm fileExistsAtPath:[pushed stringByAppendingString:@".pack.000"]];
+    if (pushed && (packed || [fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]])) {
+        if (packed) { g_seed_pack = [pushed stringByAppendingString:@".pack"]; g_seed_unpack_to = pushed; }   // unpacked in viewDidAppear
+        seedDir = pushed; setenv("TOTK_SHADER_SEED_PUSHED", pushed.fileSystemRepresentation, 1);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
+            NSFileManager *files = [NSFileManager new];
+            for (NSString *name in [files contentsOfDirectoryAtPath:gameData error:nil] ?: @[])
+                if ([name hasPrefix:@"shader-seed-"] && ![name hasPrefix:pushedName]) [files removeItemAtPath:[gameData stringByAppendingPathComponent:name] error:nil];
+        });
+    } else if (![fm fileExistsAtPath:[seedDir stringByAppendingPathComponent:@"seed-manifest.json"]]) {
+        /* The shaders are being copied (after the game data) or not there yet: waited for, with the parts written since
+           the marker said so against the size it names. */
+        g_wait_for_data = YES;
+        NSArray<NSString *> *words = [seedMark.firstObject componentsSeparatedByString:@" "];
+        BOOL copyingSeed = [words.firstObject isEqualToString:@"stale"];
+        g_copy_total = copyingSeed && words.count >= 2 ? strtoull(words[1].UTF8String, NULL, 10) : 0;
+        g_copy_done = copyingSeed ? folder_bytes(gameData, @[@".img.", @".pack."],
+                                                 [fm attributesOfItemAtPath:seedTxt error:nil].fileModificationDate) : 0;
+        return copyingSeed
+            ? (zh ? @"着色器正在复制到手机，复制完会自动开始。" : @"The shaders are being copied to the device. The game starts when they are there.")
+            : (zh ? @"没有着色器。请在 Mac 上用 ios/tools/install_device.py 重新安装（会把着色器复制到手机上），复制完会自动开始。"
+                  : @"No shaders. Install the game again from the Mac with ios/tools/install_device.py (it copies them to the device); the game starts when they are there.");
+    }
+    g_seed_dir = seedDir;
+    setenv("TOTK_SHADER_SEED_DIR",seedDir.fileSystemRepresentation,1);
+    setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);
+    setenv("DM_MSL_DIR",seedDir.fileSystemRepresentation,1);
+    return nil;
+}
 
 /* The startup shaders arrive as one stream cut into 1 GiB parts (<folder>.pack.000, .001, ...; ios/tools/install_device.py
    push_seed): devicectl stops after ~25,000 of the seed's 128,000 files when it copies a folder (2026-10-23). Stream:
@@ -178,8 +272,42 @@ static BOOL g_switch_size;
     BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];   // the same rule as the boot screen (totk_ui_lang.h)
     if (g_no_game_data) {
         runtime_boot_status(zh ? "无法开始游戏" : "Cannot start the game", g_no_game_data.UTF8String);
+        if (g_wait_for_data) [self waitForGameData];
         return;
     }
+    [self startAfterChecks];
+}
+/* The game data or the shaders are being copied from the Mac (or not there yet): asked again every second, the copy's
+   progress on the boot screen (its bar and "x / y GB"), and the game started as soon as both are there (user 2026-11-19:
+   "必须 能自己刷新 而且 传输的时候 有进度"). */
+- (void)waitForGameData {
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+    NSString *res = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameData"];
+    __weak TOTKGameController *weakSelf = self;
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        NSString *missing = game_data_ready(docs, res);
+        if (missing) {
+            if (g_copy_total) {
+                static char stage[512];
+                snprintf(stage, sizeof stage, "%s", missing.UTF8String);
+                runtime_boot_progress(stage, MIN(g_copy_done, g_copy_total), g_copy_total);
+            } else {
+                runtime_boot_status(zh ? "等待游戏数据" : "Waiting for the game data", missing.UTF8String);
+            }
+            return;
+        }
+        [timer invalidate];
+        g_no_game_data = nil;
+        fprintf(stderr, "[totk] the game data and the shaders are there: starting\n");
+        if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
+        runtime_boot_status(zh ? "正在启动" : "Starting", NULL);
+        [weakSelf startAfterChecks];
+    }];
+}
+/* What follows the game data's check before the game starts: the save folder question, the shader question, then the
+   start itself (prepareAndStart). */
+- (void)startAfterChecks {
     cloud_folder_forget_if_asked();
     if (g_pick_cloud_folder || [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CLOUD_SAVE_PICK"]) {
         __weak TOTKGameController *weakSelf = self;
@@ -611,49 +739,9 @@ static void apply_settings(void) {
     /* The 17 GB image may live in Documents/GameData instead of the app (romfs.bin or romfs.bin.000, ...; ios/tools/
        install_device.py --game-data puts it there): a new build then installs without it, and reinstalling keeps it.
        Excluded from iCloud backups. The runtime still hashes it once against the build's pin (TOTK_ROMFS_PROOF_DIR). */
-    NSString *gameData = [docs stringByAppendingPathComponent:@"GameData"];
-    BOOL image = [fm fileExistsAtPath:[gameData stringByAppendingPathComponent:@"romfs.bin"]] ||
-                 [fm fileExistsAtPath:[gameData stringByAppendingPathComponent:@"romfs.bin.000"]];
-    NSString *mark = [NSString stringWithContentsOfFile:[gameData stringByAppendingPathComponent:@"romfs.sha256"] encoding:NSUTF8StringEncoding error:nil];
-    BOOL copying = mark && [mark stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length != 64;   // install_device.py writes the hash last
-    if (image && !copying) {
-        [[NSURL fileURLWithPath:gameData isDirectory:YES] setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
-        setenv("TOTK_ROMFS_DATA",gameData.fileSystemRepresentation,1);
-    } else if (![fm fileExistsAtPath:[res stringByAppendingPathComponent:@"romfs/romfs.bin"]]) {
-        /* No image to play from: said on the screen instead of the game ending at once (runtime_fail exits). */
-        BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
-        NSString *app = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"TOTK";   // the Files app's folder name
-        g_no_game_data = copying || image
-            ? [NSString stringWithFormat:(zh ? @"游戏数据还在复制到“文件 › 我的 iPhone › %@ › GameData”，复制完再打开游戏。"
-                                             : @"The game data is still being copied to Files › On My iPhone › %@ › GameData. Open the game again when it is done."), app]
-            : [NSString stringWithFormat:(zh ? @"没有游戏数据。请在 Mac 上用 ios/tools/install_device.py --game-data 把它复制到“文件 › 我的 iPhone › %@ › GameData”。"
-                                             : @"No game data. On the Mac, copy it to Files › On My iPhone › %@ › GameData with ios/tools/install_device.py --game-data."), app];
-        fprintf(stderr, "[totk] no game image: %s\n", g_no_game_data.UTF8String);
-    }
-    /* The startup shaders likewise (build_app.py --ios-game-data documents): install_device.py puts the seed into its own
-       folder in Documents/GameData once per content and writes shader-seed.txt last ("<folder>\n<fingerprint>"), so the app
-       carries none and a new build installs in seconds. Read in place like the app's own (totk_shader_seed.h); folders of
-       earlier seeds are removed in the background. Without either seed the game has no shaders: said on the screen. */
-    NSString *seedDir = [res stringByAppendingPathComponent:@"shader-seed"];
-    NSArray<NSString *> *seedMark = [[NSString stringWithContentsOfFile:[gameData stringByAppendingPathComponent:@"shader-seed.txt"] encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
-    NSString *pushedName = seedMark.count >= 2 && seedMark[1].length == 64 && [seedMark[0] hasPrefix:@"shader-seed-"] && ![seedMark[0] containsString:@"/"] ? seedMark[0] : nil;
-    NSString *pushed = pushedName ? [gameData stringByAppendingPathComponent:pushedName] : nil;
-    BOOL packed = pushed && ![fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]] &&
-                  [fm fileExistsAtPath:[pushed stringByAppendingString:@".pack.000"]];
-    if (packed) { g_seed_pack = [pushed stringByAppendingString:@".pack"]; g_seed_unpack_to = pushed; }   // unpacked in viewDidAppear
-    if (pushed && (packed || [fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]])) {
-        seedDir = pushed; setenv("TOTK_SHADER_SEED_PUSHED", pushed.fileSystemRepresentation, 1);
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
-            NSFileManager *files = [NSFileManager new];
-            for (NSString *name in [files contentsOfDirectoryAtPath:gameData error:nil] ?: @[])
-                if ([name hasPrefix:@"shader-seed-"] && ![name hasPrefix:pushedName]) [files removeItemAtPath:[gameData stringByAppendingPathComponent:name] error:nil];
-        });
-    } else if (!g_no_game_data && ![fm fileExistsAtPath:[seedDir stringByAppendingPathComponent:@"seed-manifest.json"]]) {
-        BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
-        g_no_game_data = zh ? @"没有着色器。请在 Mac 上用 ios/tools/install_device.py 重新安装（会把着色器复制到手机上）。"
-                            : @"No shaders. Install the game again from the Mac with ios/tools/install_device.py (it copies them to the device).";
-        fprintf(stderr, "[totk] no shader seed: %s\n", g_no_game_data.UTF8String);
-    }
+    g_no_game_data = game_data_ready(docs, res);   // the game data and the shaders, or what is missing (and waited for)
+    if (g_no_game_data) fprintf(stderr, "[totk] not ready to start: %s\n", g_no_game_data.UTF8String);
+    NSString *seedDir = g_seed_dir ?: [res stringByAppendingPathComponent:@"shader-seed"];   // set again once ready
 #if TARGET_OS_VISION
     setenv("TOTK_OPERATION_MODE","docked",1);
     setenv("TOTK_IOS_DRAWABLE_H","1080",0);
@@ -696,7 +784,8 @@ static void apply_settings(void) {
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
     // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
     NSString *contrib = totk_inbox_claim([docs stringByAppendingPathComponent:@"shader-list-contribution.txt"]);   // this game's file only
-    totk_contrib_prune(contrib, seedDir, seedDir);
+    g_contrib = contrib;
+    if (!g_no_game_data) totk_contrib_prune(contrib, seedDir, seedDir);   // else once the shaders are there (waitForGameData)
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
     contrib_settings_sync(contrib);
     totk_inbox_start(contrib, @"ios");   // the player chose "Contribute shaders" (offerShaderUpload): sent while playing

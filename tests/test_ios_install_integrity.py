@@ -90,8 +90,15 @@ class ImageTransferTests(OfflineTest):
         self.remote['romfs.bin.001'] = b'e'
         self.push()
         self.assertEqual(self.written_parts(), ['romfs.bin.001'])
-        self.assertEqual(self.writes[0], ('romfs.sha256', ('copying ' + self.sha + '\n').encode()))
+        # the in-progress marker names the size too: the game's boot screen shows the copy's progress (main.m
+        # game_data_ready; user 2026-11-19 "传输的时候 有进度")
+        self.assertEqual(self.writes[0], ('romfs.sha256', f'copying {self.sha} {len(self.payload)}\n'.encode()))
         self.assert_complete()
+
+    def test_same_sha_resume_with_the_sized_marker(self):
+        self.remote['romfs.sha256'] = f'copying {self.sha} {len(self.payload)}\n'.encode()
+        self.push()
+        self.assertEqual(self.writes, [('romfs.sha256', (self.sha + '\n').encode())])
 
     def test_missing_marker_cannot_commit_equal_sized_foreign_parts(self):
         self.remote = {name: b'X' * len(data) for name, data in self.remote.items()}
