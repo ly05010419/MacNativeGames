@@ -18,3 +18,11 @@ static inline uint64_t nvn_pace(nvn_pacer *p, uint64_t now, uint64_t period) {
     p->target = now - next < period ? next : now;
     return 0;
 }
+
+// A frame something other than this beat paced (the display link's ticks): the beat follows it and restarts at its present
+// (after nxnative b010f2b8, MIT). The beat is a clock only while the acquire waits for the slot time it gives a texture; with
+// the display link pacing, stepping it by one period a present let it run ahead of real time without bound whenever presents
+// came faster than the period (nxnative: Ocarina of Time on a 120 Hz variable-refresh link, 27.6 s ahead after 18,000
+// frames), and the fallback that waits for the slot when the link times out then slept the whole lead in one go.
+// Restarted here, that fallback's first wait is at most one period from the last present.
+static inline void nvn_pace_follow(nvn_pacer *p, uint64_t now) { p->target = now; }
