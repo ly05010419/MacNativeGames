@@ -96,7 +96,18 @@ int main(void) {
     { char path[PATH_MAX], version[32] = ""; launcher_join(path, b.resources, "game-version.txt");
       FILE *vf = fopen(path, "r");
       if (vf) { if (fgets(version, sizeof version, vf)) version[strcspn(version, "\r\n")] = 0; fclose(vf); }
-      if (*version) setenv("ODYSSEY_GAME_VERSION", version, 1); }
+      if (*version) setenv("ODYSSEY_GAME_VERSION", version, 1);
+      /* The player's RomFS mods (runtime/romfs.c, issue #1788): <data>/mods/<version>, named by the version's digits as
+         the Zelda apps name theirs (v130, v141). The runtime loads the folder when it holds a manifest.tsv
+         (scripts/make_mod_manifest.py); without one the log says "RomFS overlay: none" and names the folder. An app
+         without game-version.txt is 1.3.0's (runtime/game_version.h). Both updates merge to the same RomFS, so a
+         manifest written for one fits the other. A TOTK_ROMFS_MODS given to the app decides first (0 = none). */
+      char digits[32] = ""; size_t n = 0;
+      for (const char *c = version; *c && n + 1 < sizeof digits; c++) if (*c >= '0' && *c <= '9') digits[n++] = *c;
+      digits[n] = 0;
+      char name[48], mods[PATH_MAX]; snprintf(name, sizeof name, "mods/v%s", n ? digits : "130");
+      launcher_join(mods, d.data, name);
+      setenv("TOTK_ROMFS_MODS", mods, 0); }
     /* The player's button layout (runtime/controller_map.h), when controls.txt exists in the data folder. A TOTK_CONTROLS
        given to the app decides first (the other ports' launchers set theirs over it). */
     setenv("TOTK_CONTROLS", d.controls, 0);

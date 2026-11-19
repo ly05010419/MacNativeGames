@@ -97,3 +97,11 @@ controller that leaves takes its last pulse and its HID stick fallback with it, 
 ## The platform layer's identical files linked from `shared/` (2026-11-18)
 
 These were byte-identical to games/totk's (and, for `freeze_watchdog.c`, to Animal Crossing's) and are now symlinks into the repository's `shared/` folder (shared/README.md): `../runtime/gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `memory_probe.c`, `audio_effects.{c,h}`, `audio_reverb.{c,h}`, `romfs_path.h`, `text_keyboard.h`, `freeze_watchdog.c` and `audio_ramp.h` (which differed only in its first comment line, "ported from BOTW e38682d"; that note is in the shared file; this game's `audio_mixer.c` still ramps every voice, as before). Nothing compiled changes. The rest of this game's platform layer (`threads.c`, `fs_host.{c,h}`, `romfs.c`, the audio mixer, renderer and output, `opus_codec.c`, `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`, `autoload.{c,h}`, `world_survey.{c,h}`, `hle_stack.S` and the probes) stays its own: it carries this game's scheduling, saves, timing and answers (shared/README.md).
+
+
+## The mod manifest script (2026-11-19)
+
+`../scripts/make_mod_manifest.py` is a copy of `games/by3/scripts/make_mod_manifest.py` (fab08820). Changed here:
+Odyssey's RomFS places (`--app` for `Contents/Resources/game/romfs`, the work folder's `extracted/local/romfs` by
+default) and the files the app's own `romfs-patches` replace left out of the manifest, since two overlays of one file
+stop the start (`../runtime/romfs.c`).
