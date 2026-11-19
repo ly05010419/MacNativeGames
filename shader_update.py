@@ -36,8 +36,23 @@ REPO = Path(__file__).resolve().parent
 SCRIPTS = REPO / 'games/totk/scripts'
 RAW = 'https://raw.githubusercontent.com/ly05010419/MacNativeGames/main'
 LISTS = {'totk': 'games/totk/assets/shader_list.tsv', 'botw': 'games/botw/assets/shader_list.tsv',
-         'oot': 'games/oot/assets/shader_list.tsv'}
-TOOLS = {'oot': REPO / 'games/oot/scripts'}   # a game with its own list tools; the others use games/totk/scripts
+         'oot': 'games/oot/assets/shader_list.tsv', 'dread': 'games/dread/assets/shader_list.tsv'}
+# A game with its own list tools; the others use games/totk/scripts. Metroid Dread has its own shader_list.py and
+# prepare_shader_seed.py, as Ocarina of Time does, and its own list in games/dread/assets.
+TOOLS = {'oot': REPO / 'games/oot/scripts', 'dread': REPO / 'games/dread/scripts'}
+# The folder inside an App that holds a game's runtime data (its build/shader-seed, pso lists and pipeline archive).
+# build_app.py's games all keep Tears of the Kingdom's name for it; a game packaged by its own build.py names it after
+# itself (games/dread/scripts/package_dread.py writes Contents/Resources/dread).
+RESOURCES = {'dread': 'dread'}
+# The games whose installed app this script can also update in place. Applying a list means build_app.py's work folder,
+# shader bundle, seed replacement and pipeline build (update below), which a game packaged by its own build.py does not
+# use; checking what the list adds works for every game in LISTS. Ocarina of Time has its own path (update_ocarina).
+UPDATES = {'totk', 'botw', 'oot'}
+
+
+def resources(app, game):
+    """The App's folder of runtime data for this game."""
+    return Path(app) / 'Contents/Resources' / RESOURCES.get(game, 'totk')
 
 
 def scripts(game='totk'):
@@ -69,7 +84,20 @@ def download(game, folder):
 
 
 def identity(app):
-    """(game, version): Ocarina of Time's app ('oot', 'oot'), else a build_app.py app's (update_runtime.app_identity)."""
+    """(game, version): from the App's own build-info.json when it has one, else Ocarina of Time's app ('oot', 'oot'),
+    else a build_app.py app's (update_runtime.app_identity).
+
+    A game built by its own build.py (games/dread, games/ss, games/worldend) writes build-info.json beside its
+    resources and lays its bundle out its own way, so app_identity refuses it: "not an app build_app.py made
+    (expected Contents/MacOS/TOTK or BotW ...)". The file names the game and the version outright, so it is read
+    first. Apps build_app.py made carry no such file and keep the old path."""
+    info = Path(app) / 'Contents/Resources/build-info.json'
+    try:
+        got = json.loads(info.read_text())
+        if got.get('game') and got.get('version'):
+            return got['game'], got['version']
+    except (OSError, ValueError):
+        pass
     _, ur = tools()
     if ur.ocarina_app(Path(app)):
         return 'oot', 'oot'
@@ -111,10 +139,13 @@ def check(app, listfile):
     """What the list adds to the app, changing nothing: a dict with the counts and the reasons."""
     game, version = identity(app)
     sl, pss = scripts(game)
-    res = Path(app) / 'Contents/Resources/totk'
+    res = resources(app, game)
     seed = res / 'build/shader-seed'
     if not (seed / 'shader-keys.json').is_file():
-        raise RuntimeError('the app\'s startup shaders predate shader-keys.json: update the app first (update_runtime.py --seed)')
+        # What takes the inventory in differs per game, so say the one the player can actually do: an app this script
+        # updates gets a new seed that way, one packaged by its own build.py only through a build.
+        how = 'update the app first (update_runtime.py --seed)' if game in UPDATES else 'rebuild the app once'
+        raise RuntimeError(f'the app\'s startup shaders predate shader-keys.json: {how}')
     lst = sl.ShaderList.load(listfile)
     shaders = new_shaders(lst, seed, pss)
     title, counts_t = lst.resolve(seed, 't')
@@ -151,12 +182,12 @@ def tree_chain(tree):
     return m.group(1) if m else None
 
 
-def can_translate(app, version, tree):
+def can_translate(app, game, version, tree):
     """'' when the work folder can translate new shaders for this app, else why not (in words). It must hold the build's
     game files the seed reads (update_runtime.check_work_files: the app's own RomFS index and modules) and be of the
     app's translation chain: the work folder's translator and scripts are used as they are, never this checkout's."""
     ba, ur = tools()
-    res = Path(app) / 'Contents/Resources/totk'
+    res = resources(app, game)
     if not Path(tree).is_dir():
         return f'the build\'s work folder ({tree}) is not there'
     try:
@@ -180,11 +211,14 @@ def update(app, listfile, work=None):
         return {**result, 'done': 'nothing'}
     if game == 'oot':
         return {**result, **update_ocarina(app, listfile, work)}
+    if game not in UPDATES:
+        raise RuntimeError(f'the newest list is not applied to {game} apps yet (its app is packaged by its own '
+                           f'build.py): rebuild the app to take the list in')
     folder, why = (Path(work).expanduser().resolve(), 'given') if work else ba.recorded_work_folder(app, ur.old_work_name(game))
     tree, logs = folder / 'totk', folder / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     say(f'{result["new_shaders"]} new shaders, {result["new_pipelines"]} new pipelines; work folder {folder} ({why})')
-    why_not = can_translate(app, version, tree) if result['new_shaders'] else 'no new shaders'
+    why_not = can_translate(app, game, version, tree) if result['new_shaders'] else 'no new shaders'
     translate = not why_not
     if result['new_shaders'] and not translate:
         say(f'   the new shaders are left out: {why_not}; only the new pipelines are made')
@@ -211,7 +245,7 @@ def update(app, listfile, work=None):
         ba.copy_tree(app, tmp)
     replaced = []
     try:
-        new_res = tmp / 'Contents/Resources/totk'
+        new_res = resources(tmp, game)
         if translate:
             ur.replace_seed(tree, tmp, version, game, logs, bundle_id)
         ba.run([sys.executable, SCRIPTS / 'shader_list.py', 'resolve', new_res / 'build/shader-seed', listfile,

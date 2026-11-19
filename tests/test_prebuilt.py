@@ -193,6 +193,21 @@ class GamesTheProgramsDoNotCover(unittest.TestCase):
                 with self.subTest(game=game):
                     self.assertEqual(self.plan(game).tool_needs, [])
 
+    def test_metroid_dread_is_held_when_no_xcode_has_the_metal_compiler(self):
+        """Its shaders are compiled with Xcode's Metal compiler (games/dread/scripts/build_shader_libs.py), which the
+        command line tools do not carry, so a Mac with the tools and no Metal toolchain used to pass every check and
+        stop in the middle of the build (2026-11-16). Ocarina of Time is held the same way."""
+        from tools.builder_jobs import classify
+        with mock.patch.object(classify, 'no_developer_tools', return_value=False), \
+                mock.patch.object(classify, 'no_metal_compiler', return_value=True):
+            p = self.plan('dread')
+            self.assertEqual(p.tool_needs, ['metal'])
+            self.assertTrue(any('Metal' in b for b in p.tool_blocks), p.tool_blocks)
+            self.assertIn(p.tool_blocks[0], p.blocks)   # the build page shows it among this Mac's needs
+            for other in ('acnh', 'tmnt', 'totk'):      # only the games that compile their own shaders
+                with self.subTest(game=other):
+                    self.assertEqual(self.plan(other).tool_needs, [])
+
     def test_with_the_tools_nothing_is_added(self):
         from tools.builder_jobs import classify
         with mock.patch.object(classify, 'no_developer_tools', return_value=False):

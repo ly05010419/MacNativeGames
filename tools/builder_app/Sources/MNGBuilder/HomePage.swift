@@ -12,7 +12,7 @@ struct HomePage: View {
     @State private var gamePage: String?   // the page a case's back opened (T.gamePages), shown under the Cover Flow
     @State private var launches = 0        // games started from a back: the Cover Flow grows the case over the stage
 
-    static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp"]
+    static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp", "dread"]
 
     /// The cases' order (user 2026-11-17: "已经安装的游戏 放前面，没有安装的游戏盒子 放后面"): the built games, then the
     /// ones not built yet, each in the catalog's order.

@@ -25,7 +25,7 @@ from tools.builder_jobs.text import t
 
 LAUNCHER = Path(os.environ.get('MNG_LAUNCHER_APP') or Path.home() / 'Applications/MNG Launcher.app')   # tests move it
 # the work folder an app built before 31 October 2026 used, next to the app (update_runtime.py's fallback)
-LEGACY = {'totk': 'TOTK_build', 'botw': 'BotW_build', 'oot': 'OcarinaOfTime_build'}
+LEGACY = {'totk': 'TOTK_build', 'botw': 'BotW_build', 'oot': 'OcarinaOfTime_build', 'dread': 'Dread_build'}
 
 
 def _inside(path, folder):

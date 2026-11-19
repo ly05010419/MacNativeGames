@@ -82,6 +82,87 @@ class Check(unittest.TestCase):
             su.check(app, make_list(self.tmp))
 
 
+class Dread(unittest.TestCase):
+    """A game packaged by its own build.py: its runtime data is in Contents/Resources/<game>, its list tools are its
+    own (games/dread/scripts), and shader_update.py cannot assemble an updated app for it."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.sl, self.pss = su.scripts('dread')
+        self.addCleanup(su.scripts)   # put Tears of the Kingdom's tools back for the rest of the suite
+
+    def variant(self, key, deps=None):
+        answers = self.pss.answers_for(deps or {})
+        return self.pss.variant_name(key, answers)
+
+    def fake_app(self, *, listed_rows=()):
+        app = self.tmp/'Metroid Dread.app'
+        res = app/'Contents/Resources/dread'
+        (app/'Contents/Resources/build-info.json').parent.mkdir(parents=True, exist_ok=True)
+        (app/'Contents/Resources/build-info.json').write_text(json.dumps({'game': 'dread', 'version': 'v210'}))
+        seed = res/'build/shader-seed'
+        seed.mkdir(parents=True)
+        # The inventory holds KEY_A only: a list row naming KEY_B is another version's and is passed over.
+        (seed/'shader-keys.json').write_text(json.dumps({'keys': [KEY_A]}))
+        (seed/f'{KEY_A}.variants').write_text(json.dumps(
+            [{'variant': self.variant(KEY_A), 'deps': {'tex': {'0': '2d'}}}]))
+        (seed/'seed-manifest.json').write_text(json.dumps({'chain': 'totk-native-v4-unverified'}))
+        (res/'build/pso_manifest.tsv').write_text('# exported\n' + ''.join('\t'.join(r) + '\n' for r in listed_rows))
+        return app
+
+    def make_list(self, warm=()):
+        path = self.tmp/'dread-shader_list.tsv'
+        rows = [f'V\t{key}\t{self.sl.canonical(deps)}' for key, deps in
+                ((KEY_A, {'tex': {'0': '2d'}}), (KEY_A, {'tex': {'0': '2d_depth'}}), (KEY_B, {'tex': {'0': '2d'}}))]
+        rows += ['\t'.join(row) + '\tm' for row in warm]
+        path.write_text(''.join(line + '\n' for line in rows))
+        return path
+
+    def test_the_check_reads_the_game_s_own_resources_folder_and_counts_with_its_own_tools(self):
+        served = ('S', self.variant(KEY_A) + '_b', '0')                            # the seed carries this variant
+        waiting = ('S', self.variant(KEY_A, {'tex': {'0': '2d_depth'}}) + '_b', '0')   # its shader is not translated yet
+        r = su.check(self.fake_app(), self.make_list(warm=(served, waiting)))
+        self.assertEqual((r['game'], r['version']), ('dread', 'v210'))
+        self.assertEqual(r['new_shaders'], 1)     # KEY_A's depth state; its colour state is served, KEY_B is another version's
+        self.assertEqual(r['new_pipelines'], 1)   # the served row, which the app's own list does not hold
+        self.assertEqual(r['waiting'], 1)         # the depth row waits for its shader
+
+    def test_rows_the_app_lists_already_are_not_new(self):
+        served = ('S', self.variant(KEY_A) + '_b', '0')
+        r = su.check(self.fake_app(listed_rows=(served,)), self.make_list(warm=(served,)))
+        self.assertEqual(r['new_pipelines'], 0)
+
+    def test_a_row_naming_another_version_s_shader_is_passed_over_not_counted_as_waiting(self):
+        other = ('S', self.variant(KEY_B) + '_b', '0')   # KEY_B is not in the seed's inventory
+        r = su.check(self.fake_app(), self.make_list(warm=(other,)))
+        self.assertEqual((r['new_shaders'], r['new_pipelines'], r['waiting']), (1, 0, 0))
+
+    def test_the_update_says_a_rebuild_takes_the_list_in_instead_of_half_assembling_an_app(self):
+        served = ('S', self.variant(KEY_A) + '_b', '0')
+        with self.assertRaisesRegex(RuntimeError, 'rebuild the app'):
+            su.update(self.fake_app(), self.make_list(warm=(served,)))
+
+    def test_the_window_is_not_offered_an_update_it_cannot_run(self):
+        self.assertNotIn('dread', su.UPDATES)
+        self.assertIn('dread', su.LISTS)   # but it is checked
+
+
+class Window(unittest.TestCase):
+    """The window draws "Check shaders" from its own list (Model.swift shaderGames) while the job reads
+    shader_update.LISTS. A game in one and not the other either shows a button that cannot answer or, as Metroid Dread
+    did until 2026-11-17, answers for a button that is never drawn."""
+
+    def test_the_window_offers_the_check_for_the_games_the_job_can_check(self):
+        import re
+        swift = (Path(__file__).resolve().parents[1]/'tools/builder_app/Sources/MNGBuilder/Model.swift').read_text()
+        line = re.search(r'static let shaderGames: Set<String> = \[([^\]]*)\]', swift).group(1)
+        self.assertEqual(set(re.findall(r'"(\w+)"', line)), set(su.LISTS))
+
+    def test_every_game_it_can_update_is_one_it_can_check(self):
+        self.assertTrue(su.UPDATES <= set(su.LISTS))
+
+
 class Download(unittest.TestCase):
     def test_only_the_game_s_list_file_from_github_main(self):
         seen = []

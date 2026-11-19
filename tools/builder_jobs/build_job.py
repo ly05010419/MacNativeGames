@@ -16,7 +16,7 @@ import threading
 import time
 
 from tools.builder import progress as parse
-from tools.builder_jobs import history, repo, shared
+from tools.builder_jobs import history, repo, shared, toolchain
 from tools.builder_jobs.events import Emitter
 from tools.builder_jobs.text import t
 
@@ -173,8 +173,18 @@ QUICK_GAMES = {'oot'}   # games whose build can carry only the title's shaders (
 def job_env(request, game):
     """The build's environment: this one's, and for a quick build (request quick: MNG Launcher's 快速启动, user 2026-11-13:
     "就带上 菜单的 着色器就行") OOT_SHADERS=title, so the app carries only the title's shaders; its card then offers
-    补全着色器 (a shaders request), which makes it a full app."""
+    补全着色器 (a shaders request), which makes it a full app.
+
+    DEVELOPER_DIR is set when `metal` is not reachable but an Xcode here has the Metal toolchain (toolchain.py): the
+    Launcher is opened from Finder, so it inherits no shell's environment, and a Mac whose xcode-select points at the
+    Command Line Tools has no Metal compiler. Without this a cold build dies in step 3 after minutes of work. A Mac
+    where `metal` is already reachable is left alone, and one with no Xcode gets nothing to set -- the game's own
+    block says so before the build starts, with the command that fixes it (classify.dread_needs_metal, as Ocarina of
+    Time's oot_needs_metal does; page 1's checks are the developer tools', which carry no Metal compiler)."""
     env = dict(os.environ)
+    developer = toolchain.developer_dir_for_metal(env)
+    if developer:
+        env['DEVELOPER_DIR'] = developer
     if request.get('quick'):
         if game not in QUICK_GAMES:
             raise Refused(t('a quick start is only for Ocarina of Time so far', '快速启动目前只支持时之笛'))

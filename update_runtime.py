@@ -289,10 +289,15 @@ def no_compiler_warning(gaps):
 
 
 def shared_list_games():
-    """The games with a shared shader list on GitHub (shader_update.LISTS: Tears of the Kingdom, Breath of the Wild,
-    Ocarina of Time); the others keep their seed and lists as before."""
+    """The games whose shared list on GitHub an express update can apply (shader_update.LISTS: Tears of the Kingdom,
+    Breath of the Wild, Ocarina of Time); the others keep their seed and lists as before.
+
+    Both conditions, not the list alone: a game packaged by its own build.py has a shared list to check against
+    (Metroid Dread is in LISTS, which is what the Launcher's Check shaders reads) but no app this script can update
+    in place, since every step below is build_app.py's -- shader_update.UPDATES says which, and its update() refuses
+    the others outright. Its shaders come in at a rebuild."""
     import shader_update
-    return set(shader_update.LISTS)
+    return set(shader_update.LISTS) & shader_update.UPDATES
 
 
 def newest_shader_list(game, work, given=None):

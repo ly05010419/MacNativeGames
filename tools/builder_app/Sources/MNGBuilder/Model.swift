@@ -120,6 +120,7 @@ final class Model: ObservableObject {
         "acnh": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
         "eow": ["controls", "storage", "saves"],   // its settings are the game's own panel (key 1)
         "odyssey": ["controls", "storage", "saves"],
+        "dread": ["controls", "saves"],   // Metroid Dread: its launcher sets TOTK_PROFILE_DIR as Ocarina of Time's does; no Storage while its cache is the work folder's and shader_dir looks elsewhere (tools/builder/games.py PAGES)
     ]
     static func pages(_ game: String?) -> [String] { game.flatMap { gamePages[$0] } ?? [] }
     /// The installed apps the pages besides building serve.
@@ -340,8 +341,10 @@ final class Model: ObservableObject {
         updating = app.app
         start(BuildRequest(update: app.app, shaders: true))
     }
-    /// The games whose shaders the Check shaders button compares with their newest list (shader_update.py LISTS).
-    static let shaderGames: Set<String> = ["totk", "botw", "oot"]
+    /// The games whose shaders the Check shaders button compares with their newest list: the same set as
+    /// shader_update.py LISTS, which is what the job itself reads (tests/test_shader_update.py keeps the two the
+    /// same). A game missing here gets no button at all, however well the backend answers for it.
+    static let shaderGames: Set<String> = ["totk", "botw", "oot", "dread"]
 
     /// work: a folder the Storage page moved the work folder to; the update records it in the app.
     func update(path: String, work: String? = nil) {

@@ -26,6 +26,8 @@ NAMES = {
     # Animal Crossing (games/acnh/README.md, its controls table); the D-pad's rows open the tool ring and the like
     'acnh': dict(zip(ORDER, ('Talk / Use Tool', 'Cancel / Run', 'Pockets', 'Pick Up', 'NookPhone', 'Reactions', None,
                              None, None, None, None, None, 'Tool Ring', 'Put Away Tool', None, None))),   # Ocarina of Time (2026-11-13): no use confirmed in play yet, every row "to confirm"
+    # Metroid Dread (2026-11-16): no use confirmed in play yet, every row "to confirm"
+    'dread': dict.fromkeys(ORDER),
 }
 
 SWITCH_LABELS = {'a': 'A', 'b': 'B', 'x': 'X', 'y': 'Y', 'zl': 'ZL', 'zr': 'ZR', 'l': 'L', 'r': 'R', 'minus': '−',

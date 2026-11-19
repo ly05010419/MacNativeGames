@@ -113,10 +113,26 @@ ODYSSEY = GameSpec(
     versions=(VersionSpec('v262144', '1.3.0', 'expected-local-update.json'),),
 )
 
+# Metroid Dread (Switch 1): built by games/dread/build.py, not build_app.py, so not in GAMES, as Ocarina of Time is
+# not. MNG Launcher's game pages serve it (PAGES). Its build.py already speaks the launcher's contract (--inspect,
+# --json-progress, --keys, --update, --work, --mod) and reads games/dread/game.json for its own metadata, which is
+# where these values come from. Its data folder is its own (Dread/), so it takes no other game's slot.
+DREAD = GameSpec(
+    id='dread',
+    display_name='Metroid Dread',
+    title_id='010093801237C000',
+    app_name='Metroid Dread',
+    bundle_id='org.macnativegames.dread',
+    data_folder='Dread',
+    assets_dir='games/dread/assets',
+    versions=(VersionSpec('v100', '1.0.0', 'expected-v1.0.0.json'),
+              VersionSpec('v210', '2.1.0', 'expected-v2.1.0.json')),
+)
+
 # The games MNG Launcher's game pages serve, and which pages each has (tools/builder_jobs/tabs.py TABS; the window shows
 # these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
-PAGE_GAMES = {**GAMES, OOT.id: OOT, ACNH.id: ACNH, EOW.id: EOW, ODYSSEY.id: ODYSSEY}
+PAGE_GAMES = {**GAMES, OOT.id: OOT, ACNH.id: ACNH, EOW.id: EOW, ODYSSEY.id: ODYSSEY, DREAD.id: DREAD}
 # 诊断模式 (2026-11-13) was removed 2026-11-15 (user: "去掉诊断模式 快速启动 默认带诊断"): a quick App starts with its
 # diagnostics itself (games/oot/app/launcher.m).
 PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
@@ -124,4 +140,11 @@ PAGES = {'totk': ('settings', 'mods', 'controls', 'storage', 'saves'),
          'oot': ('controls', 'storage', 'saves'),
          'acnh': ('controls', 'storage', 'saves'),
          'eow': ('controls', 'storage', 'saves'),
-         'odyssey': ('controls', 'storage', 'saves')}
+         'odyssey': ('controls', 'storage', 'saves'),
+         'dread': ('controls', 'saves')}
+# Metroid Dread has Controls and Saves. Its launcher (games/dread/app/launcher.m) sets TOTK_PROFILE_DIR and
+# TOTK_GAME_SLOT_DIR exactly as Ocarina of Time's does, both under Application Support/MacNativeGames/Dread, which is
+# where saves.profile_dir and game_state.slot_dir look, so Saves reads the real save and refuses while the game runs.
+# Storage is left out: Dread's cache is its work folder's (<work>/build/shader-cache/rt-<chain>, from root_dir() in
+# totk_shader_rt.m over the <work>/build/dread-native the launcher runs), and storage.shader_dir does not resolve a
+# work folder yet. Settings and Mods are not written for Dread either, as for Ocarina of Time.

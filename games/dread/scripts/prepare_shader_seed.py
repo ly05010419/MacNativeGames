@@ -24,6 +24,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -83,6 +84,33 @@ def digest(data):
 
 def canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(',', ':'))
+
+
+def shader_key_scope(keys, version, source_romfs_sha256, *, chain=CHAIN):
+    """The raw shader keys belonging to this game, including shaders not translated into the seed.
+
+    Written to the seed as shader-keys.json and read by shader_update.py check: it tells a shared-list row of this
+    game from one of another version. It is deliberately independent of the translation plan. A valid shader may fail
+    translation, or only be needed in a later area; it still belongs to the game, so deriving this from the seed's
+    .variants files would drop exactly the rows the check looks for. The same scope as Tears of the Kingdom's
+    (games/totk/scripts/prepare_shader_seed.py), on this game's own translation chain.
+    """
+    if chain != CHAIN:
+        raise ValueError('shader key scope translation chain mismatch')
+    if not isinstance(version, str) or not version or version != version.strip():
+        raise ValueError('invalid shader key scope game version')
+    if not isinstance(source_romfs_sha256, str) or not re.fullmatch('[0-9a-f]{64}', source_romfs_sha256):
+        raise ValueError('invalid shader key scope RomFS hash')
+    if isinstance(keys, (str, bytes)):
+        raise ValueError('shader key scope requires a collection of raw shader hashes')
+    values = set()
+    for key in keys:
+        if not isinstance(key, str) or not re.fullmatch('[0-9a-f]{64}', key):
+            raise ValueError('invalid raw shader key')
+        values.add(key)
+    if not values:
+        raise ValueError('empty shader key scope')
+    return dict(schema=1, chain=chain, version=version, source_romfs_sha256=source_romfs_sha256, keys=sorted(values))
 
 
 def variant_name(key, answers):
@@ -219,6 +247,8 @@ def reusable_seed(output, identity):
         old = json.loads((output/'seed-manifest.json').read_text())
         if any(old.get(k) != v for k, v in identity.items()) or old.get('shaders', 0) < MIN_SHADERS:
             return None
+        if 'shader-keys.json' not in old['files']:
+            return None   # prepared before the seed carried the shader inventory; its translation rows are not one
         if all(digest((output/name).read_bytes()) == sha for name, sha in old['files'].items()):
             return old
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -376,7 +406,11 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None):
     pipelines = warm_pipelines(shader_list, {variant+'_b' for _, variant, _ in completed})
     rows += ['R\t'+key for key in pipelines]
     (staging/'pso_manifest.tsv').write_text('# Prepared from this app\'s local game data; '+CHAIN+'\n'+'\n'.join(rows)+'\n')
-    wanted = {'pso_manifest.tsv'}
+    # The game's whole shader inventory, not just what was translated: shader_update.py check needs it to tell this
+    # version's list rows from another's, and a seed without it is refused there (reusable_seed below rebuilds one).
+    scope = shader_key_scope(sorted(shaders), version, identity['source_romfs_sha256'])
+    (staging/'shader-keys.json').write_text(json.dumps(scope, separators=(',', ':'))+'\n')
+    wanted = {'pso_manifest.tsv', 'shader-keys.json'}
     for _, variant, _ in completed:
         wanted.update([variant+'_b.metal', variant+'_b.json', variant.split('-')[0]+'.variants'])
     for p in staging.iterdir():   # failed translations can leave MSL behind: never a cached shader
