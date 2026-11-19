@@ -502,29 +502,8 @@ static partial class ShaderService
         File.Move(tmp, Path.Combine(outDir, name + ".json"), true);
     }
 
-    // SPIRV-Cross writes OpUMulExtended / OpSMulExtended as calls of an optnone template, spvMulExtended (spirv_msl.cpp
-    // SPVFuncImplMulExtended: Metal's compiler may fail on an inlined mulhi). The barrier keeps every product a call that is
-    // never folded, and Switch 2 shaders divide by constants through the high word of a product (Ocarina of Time: 348,587
-    // such calls, all scalar uint by a literal, 98% by a power of two). Scalar uint / int operands get overloads that take the
-    // halves of the 64-bit product, with no mulhi and no optnone; overload resolution prefers them to the template, and
-    // vectors keep it. After nxnative 37f076a5 (MIT): Kokiri Forest deck route 54.0 -> 59.1 fps on an M4 Pro, GPU 15.55 ->
-    // 14.76 ms; here OOT_UMUL_INLINE (nvn_umul_diagnostic.h, uint only, run-time compiles only) measured about +4.2 %
-    // (games/oot/docs/fps-60-90.md). Changes the MSL: needs a new chain name and a rebuilt totk_xlate.
-    static readonly Regex MulExtendedHelper = new(@"template<typename T, typename U, typename V>\s*\[\[clang::optnone\]\] T spvMulExtended\(V l, V r\)\s*\{\s*return T\{U\(l \* r\), U\(mulhi\(l, r\)\)\};\s*\}\n");
-    static string MulExtended(string src)
-    {
-        if (!src.Contains("spvMulExtended") || src.Contains("spvMulExtended(uint l, uint r)")) return src;
-        var found = MulExtendedHelper.Matches(src);
-        if (found.Count != 1) return src;
-        string scalar = "";
-        foreach (var (t, w) in new[] { ("uint", "ulong"), ("int", "long") })
-            scalar += $"template<typename T, typename U> static inline __attribute__((always_inline)) T spvMulExtended({t} l, {t} r) {{ {w} p = {w}(l) * {w}(r); return T{{U(p), U(p >> 32)}}; }}\n";
-        int end = found[0].Index + found[0].Length;
-        return src[..end] + scalar + src[end..];
-    }
-
     // the MSL steps after SPIRV-Cross that every stage takes
-    static string PostProcess(string src) => MulExtended(PoolArrays(PreciseMinMax(MatchSwitchDepthSampling(src))));   // after the compare rewrite: its totk_d16ref clamp is written as precise:: too
+    static string PostProcess(string src) => PoolArrays(PreciseMinMax(MatchSwitchDepthSampling(src)));   // after the compare rewrite: its totk_d16ref clamp is written as precise:: too
 
     // A texture slot's answered kind, without the depth suffix of a list row made before 2026-11-09.
     static string TexKind(JsonObject tex, string slot)

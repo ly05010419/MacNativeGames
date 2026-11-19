@@ -88,20 +88,7 @@ sealed class MeshStage
         string path=Path.Combine(outDir,(string)rq["variant"]+".mesh.code");File.WriteAllBytes(path,code[0x80..]);job["code"]=path;
         job["local"]=new JsonArray(threads,1,1);job["shared"]=shared;job["stage_memory"]=new JsonArray(layout.Select(x=>(JsonNode)JsonValue.Create(x)).ToArray());
     }
-    public JsonObject Reflection(){
-        var r=new JsonObject{["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device,["byte_stores"]=ByteStores};
-        if(kind!="ts"&&!task)r["object"]=ObjectEntry;   // the object function that launches its workgroups in blocks (ObjectBlock)
-        return r;
-    }
-    /* A mesh shader with no task shader launches its workgroups through an object function of its own, ObjectBlock at a time
-       (after nxnative 09dcb627, MIT). Metal holds a mesh grid to 1024 threadgroups, and with no object stage the draw's
-       workgroups were the mesh grid: Ocarina of Time's foliage meshes d98076e4 / fed302d7 drew up to 1,238 in one indirect draw
-       here (oot-fps90 n90d, 40 of 608 draws over 1024) and nxnative saw 1,771 read out of bounds and page fault an M2 Max.
-       Each one-thread object threadgroup b launches min(count - b*ObjectBlock, ObjectBlock) mesh threadgroups (0 past the
-       count) and hands them b*ObjectBlock in the payload; the mesh adds it to its threadgroup position. The count is word 0
-       of the grid record the host binds at object buffer ObjectCountBuffer (nvn_mesh_tasks.inc mtk_encode). */
-    public const string ObjectEntry = "main0_o";
-    public const int ObjectBlock = 1024, ObjectCountBuffer = 30;
+    public JsonObject Reflection()=>new(){["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device,["byte_stores"]=ByteStores};
     static List<string> Params(string t) {
         var r=new List<string>();int depth=0,at=0;
         for(int i=0;i<t.Length;i++){char c=t[i];if(c==','&&depth==0){r.Add(t[at..i].Trim());at=i+1;}if("([<".Contains(c))depth++;if(")]>".Contains(c))depth--;}
@@ -167,13 +154,8 @@ sealed class MeshStage
         string sets=string.Concat(vn.Select(n=>$"v.{(n<0?"position":"a"+n)}={Vec(vertex,n)};\n"));
         string psets=string.Concat(pn.Select(n=>$"p.p{n}={Vec(primitive,n)};\n"));
         string Entry(string name,bool gl){
-            string fill=task?$"for(uint i={lid};i<{pay}u;i+={threads}u){mem}[{input}u+i]=dm_payload.w[i];\n{bar}\nif({lid}==0u){{{mem}[0]={tg};{mem}[{input}]={tg};}}\n":$"if({lid}==0u){mem}[0]=dm_first[0]+dm_block.base+{tg};\n";
-            return $"[[mesh]] void {name}({sig}, dm_mesh_t dm_out, "+(task?"const object_data dm_payload_t& dm_payload [[payload]]":first+", const object_data dm_block_t& dm_block [[payload]]")+scratch+$")\n{{\n{start}{fill}{bar}\n{call}\n{bar}\nuint np=min({mem}[{prim/4}]>>24,{maxP}u);\nif({lid}==0u)dm_out.set_primitive_count(np);\nfor(uint n={lid};n<{maxV}u;n+={threads}u){{uint b={output}u+(n/32u)*{vstride}u+n%32u; dm_vertex_t v;\n{sets}"+(gl?"v.position.z=fma(v.position.z,0.5,v.position.w*0.5);\n":"")+"dm_out.set_vertex(n,v);}\n"+(pn.Count>0?$"for(uint n={lid};n<np;n+={threads}u){{uint b={pbase}u+(n/32u)*{pstride}u+n%32u;dm_prim_t p;{psets}dm_out.set_primitive(n,p);}}\n":"")+$"for(uint n={lid};n<np*3u;n+={threads}u){{uint at={prim+4}u+n;dm_out.set_index(n,({mem}[at>>2]>>((at&3u)*8u))&255u);}}\n{release}}}\n";
-        }
-        if(!task){
-            head+="struct dm_block_t { uint base; };\n";
-            head+=$"[[object]] void {ObjectEntry}(uint dm_otg [[threadgroup_position_in_grid]], object_data dm_block_t& dm_block [[payload]], mesh_grid_properties dm_grid, constant uint* dm_count [[buffer({ObjectCountBuffer})]])\n"
-                +$"{{\n    uint base=dm_otg*{ObjectBlock}u, n=dm_count[0];\n    dm_block.base=base;\n    dm_grid.set_threadgroups_per_grid(uint3(n>base?min(n-base,{ObjectBlock}u):0u,1u,1u));\n}}\n";
+            string fill=task?$"for(uint i={lid};i<{pay}u;i+={threads}u){mem}[{input}u+i]=dm_payload.w[i];\n{bar}\nif({lid}==0u){{{mem}[0]={tg};{mem}[{input}]={tg};}}\n":$"if({lid}==0u){mem}[0]=dm_first[0]+{tg};\n";
+            return $"[[mesh]] void {name}({sig}, dm_mesh_t dm_out, "+(task?"const object_data dm_payload_t& dm_payload [[payload]]":first)+scratch+$")\n{{\n{start}{fill}{bar}\n{call}\n{bar}\nuint np=min({mem}[{prim/4}]>>24,{maxP}u);\nif({lid}==0u)dm_out.set_primitive_count(np);\nfor(uint n={lid};n<{maxV}u;n+={threads}u){{uint b={output}u+(n/32u)*{vstride}u+n%32u; dm_vertex_t v;\n{sets}"+(gl?"v.position.z=fma(v.position.z,0.5,v.position.w*0.5);\n":"")+"dm_out.set_vertex(n,v);}\n"+(pn.Count>0?$"for(uint n={lid};n<np;n+={threads}u){{uint b={pbase}u+(n/32u)*{pstride}u+n%32u;dm_prim_t p;{psets}dm_out.set_primitive(n,p);}}\n":"")+$"for(uint n={lid};n<np*3u;n+={threads}u){{uint at={prim+4}u+n;dm_out.set_index(n,({mem}[at>>2]>>((at&3u)*8u))&255u);}}\n{release}}}\n";
         }
         return src+"\n"+head+Entry("main0",true)+"\n"+Entry("main0_z",false);
     }
