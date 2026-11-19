@@ -59,5 +59,31 @@ class VariantLibs(unittest.TestCase):
         self.assertEqual(json.loads((self.tree/'build/shader-libs/variants-v143.json').read_text()), [])
 
 
+class NoMetalCompiler(unittest.TestCase):
+    """Without Apple's offline compiler (the command line tools have none) the libraries cannot be made. An update that
+    is there to make them (update_runtime.py --seed / --shader-libs) stops and says how to get one, instead of going on
+    without them: that quiet skip left an app with libraries for 1,890 of the 17,884 shaders its warm-up loads."""
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tree, self.logs = Path(tmp.name)/'tree', Path(tmp.name)/'logs'
+        (self.tree/'build/shader-seed/v143').mkdir(parents=True)
+        (self.tree/'build/shader-seed/v143/a_b.metal').write_text('// startup shader')
+
+    def test_required_is_an_error_naming_the_toolchain(self):
+        with patch.object(build_app, 'metal_compiler', return_value=None), patch.object(build_app, 'say'):
+            with self.assertRaises(build_app.BuildError) as raised:
+                build_app.step_shader_libs(self.tree, self.logs, version='v143', required=True)
+        self.assertIn('MetalToolchain', str(raised.exception))
+        self.assertIn('DEVELOPER_DIR=', str(raised.exception))
+        self.assertFalse((self.tree/'build/shader-libs').exists())
+
+    def test_a_build_without_it_still_goes_on_and_says_so(self):
+        said = []
+        with patch.object(build_app, 'metal_compiler', return_value=None), patch.object(build_app, 'say', said.append):
+            build_app.step_shader_libs(self.tree, self.logs, version='v143')
+        self.assertTrue(any('WARNING: no Metal toolchain' in line for line in said), said)
+
+
 if __name__ == '__main__':
     unittest.main()
