@@ -4,10 +4,13 @@
    that renders straight to memory). The original function is the negative control: it reads memory, so it cannot reach
    1.0. A sample one texel to the side must still read memory: draw only the even columns so the sampled odd columns stay
    zero, independent of when a tile is stored. A texture used by anything but plain sample calls must be refused.
+   nvn_fbdep.h (text only): a texture read only at positions that depend on another texture read (refraction) is told from
+   one read at the fragment's own position, from a mix of both and from a read() use.
    Run alone through the shared game slot. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "nvn_fbread.h"
+#include "nvn_fbdep.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -30,6 +33,26 @@ static NSString *decal(NSString *extra_param, NSString *extra_use) {
         "    return out;\n}\n", extra_param, extra_use];
 }
 
+/* The same form with a second texture (a normal map, ids 2 and 3) and a body: nvn_fbdep_dependent only reads the text. */
+static NSString *refract(NSString *body) {
+    return [NSString stringWithFormat:@"#include <metal_stdlib>\n\nusing namespace metal;\n\n"
+        "struct spvDescriptorSetBuffer0\n{\n    texture2d<float> fp_t_tcb_8 [[id(0)]];\n    sampler fp_t_tcb_8Smplr [[id(1)]];\n"
+        "    texture2d<float> fp_t_tcb_80 [[id(2)]];\n    sampler fp_t_tcb_80Smplr [[id(3)]];\n};\n\n"
+        "fragment main0_out main0(main0_in in [[stage_in]], constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]])\n{\n"
+        "    main0_out out = {};\n"
+        "    float2 _1 = float2(in.m_41.x / in.m_41.w, in.m_41.y / in.m_41.w);\n"
+        "    float4 _3 = spvDescriptorSet0.fp_t_tcb_80.sample(spvDescriptorSet0.fp_t_tcb_80Smplr, _1);\n"
+        "    float _4 = _3.x;\n"
+        "    float2 _5;\n"
+        "    if (_1.x == 0.5)\n    {\n        _5 = _1;\n    }\n"
+        "    _5.x = fma(_4, 0.01, _1.x);\n"
+        "    float2 _6 = select(_5, float2(0.0), isnan(_5));\n"
+        "    float4 _2 = spvDescriptorSet0.fp_t_tcb_8.sample(spvDescriptorSet0.fp_t_tcb_8Smplr, _6, level(0.0)).xyzw;\n"
+        "%@"
+        "    out.m_50 = _2 + float4(0.25);\n"
+        "    return out;\n}\n", body];
+}
+
 static NSString *vertex_src = @"#include <metal_stdlib>\nusing namespace metal;\n"
     "struct V { float4 p [[position]]; float4 s [[user(locn0)]]; };\n"
     // a triangle covering the target; the varying is the texture coordinate of the pixel, shifted by `shift` texels
@@ -45,6 +68,15 @@ int main(void) { @autoreleasepool {
     // a texture used by a read() as well must be refused; so must one with no plain sample
     check(nvn_fbread_src(decal(@"", @"    float4 _3 = spvDescriptorSet0.fp_t_tcb_8.read(uint2(0));\n"), @"main0", aid, att, 1) == nil, "a read() use is refused");
     check(nvn_fbread_src(decal(@"", @""), @"main1", aid, att, 1) == nil, "a missing entry point is refused");
+    // nvn_fbdep.h: only a texture whose every use is a sample at a position that depends on a texture read is dependent
+    check(nvn_fbdep_dependent(refract(@""), 0) == 1, "a sample at a position offset by another texture's value is dependent");
+    check(nvn_fbdep_dependent(refract(@""), 2) == 0, "the normal map itself is read at the fragment's position");
+    check(nvn_fbdep_dependent(decal(@"", @""), 0) == 0, "a decal reads at its own position");
+    check(nvn_fbdep_dependent(refract(@"    float4 _7 = spvDescriptorSet0.fp_t_tcb_8.sample(spvDescriptorSet0.fp_t_tcb_8Smplr, _1);\n"), 0) == 0, "one plain sample among dependent ones is not dependent");
+    check(nvn_fbdep_dependent(refract(@"    float4 _7 = spvDescriptorSet0.fp_t_tcb_8.read(uint2(_5));\n"), 0) == 0, "a read() use is not dependent");
+    check(nvn_fbdep_dependent(refract(@"    float4 _7 = spvDescriptorSet0.fp_t_tcb_80.sample(spvDescriptorSet0.fp_t_tcb_80Smplr, _1, level(_4));\n"), 2) == 0, "a level that depends on a texture read does not make the position dependent");
+    check(nvn_fbdep_dependent(refract(@""), 1) == 0 && nvn_fbdep_dependent(refract(@""), 9) == 0, "a sampler or an unknown id is not dependent");
+    printf("{\"case\":\"dependent-read classifier (nvn_fbdep.h)\",\"checks\":7,\"pass\":true,\"game_data\":false}\n");
     NSError *e = nil;
     id<MTLLibrary> vlib = [dev newLibraryWithSource:vertex_src options:nil error:&e]; check(vlib != nil, "vertex function");
     MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:W height:H mipmapped:NO];

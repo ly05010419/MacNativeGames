@@ -95,6 +95,9 @@ static _Atomic uint64_t g_taa_last;     // game frame of the last edge smoothing
 #include "nvn_dirty.h"
 #include "nvn_depth_clear.h"
 #include "nvn_fbread.h"
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+#include "nvn_fbdep.h"   // csnap_draw: a draw that samples its colour target off its own pixel
+#endif
 #include "nvn_refl.h"
 #include "nvn_geometry.h"   // geometry stages as compute: the capture record (GEO_CAPTURE_WORDS) the shader loader reads, the assembly nvn_geometry_rt.inc uses
 #include "nvn_texture_plan.h"
@@ -6858,6 +6861,20 @@ static void watch_tex_flush(void) {
     }
     g_wt_nreq = 0;
 }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK, every version (this file is shared by its versions, so no version macro) */
+/* Colour sampled off the fragment's own pixel by a draw that writes it (2026-11-19). Rauru's ghost in Ukouh Shrine fades
+   in and out with 20 blended draws that sample the HDR scene target they draw into, at the screen position plus an offset
+   from a normal map (refraction). On Apple's GPUs the attachment sampled in the pass that writes it reads blocks of
+   undefined content (the depth case: g_dsnap_ser): here NaN in about 100,000 pixels a frame, which the blend wrote into
+   the scene and bloom spread into a magenta shape of the ghost. The tile read (att_fb_take) serves only the fragment's own
+   pixel. Such a draw reads a copy: the pass ends, the target is copied (csnap_prepare) and the draw's slot resolves to the
+   copy (tex_fast / tex_fast_rid). One copy serves a run of such draws: the game records no barrier between them, so they
+   are not ordered against each other on the Switch either. Any other draw and every pass end drop the copy (csnap_clear).
+   TOTK_COLOR_SNAP=0: the target is read directly, as before. */
+static int g_csnap_tid;                      // texture id whose slots read the copy (0 = none)
+static uint64_t g_csnap_ser, g_csnap_rid, g_csnap_copies; static void *g_csnap_tex;   // its serial; the copy
+static void csnap_clear(void) { if (g_csnap_tid) { g_csnap_tid = 0; g_csnap_ser = 0; args_dirty_all(); } }
+#endif
 static void rp_end_from(const char *rp_file, int rp_line) { if (g_enc) {
     PD("Z %llu pass_end draws=%llu at=%s:%d", g_stat_pass, (unsigned long long)(g_stat_draw - g_pass_draw0), strrchr(rp_file, '/') ? strrchr(rp_file, '/') + 1 : rp_file, rp_line);   // passdump: the call site that ended this pass
     ghost_flush();
@@ -6868,6 +6885,9 @@ static void rp_end_from(const char *rp_file, int rp_line) { if (g_enc) {
 #endif
     if (totk_tl_on()) totk_tl(TL_PASS_END, g_stat_pass, g_stat_draw - g_pass_draw0);
     sd_finish(); enc_r_end(g_enc); g_oot_bar_pass = g_oot_bar_writes = g_oot_bar_order = 0; zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    csnap_clear();   // nothing between two passes reads the copy
+#endif
     hdr_shadow_store();
     /* Diagnostic: inspect each full-size HDR render target immediately after its
        producer pass, on the same Metal 4 queue and before later passes reuse it. */
@@ -7567,6 +7587,9 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
     NvBorderKeyCache *border_cache;   // registry lock
     NvFunctionCache *fragment_cache, *vertex_cache;   // g_bpatch_lock / g_vpatch_lock
     uint8_t vertex_components[32];   // atomic: 0 unknown, otherwise 1 + highest lane read by the original MSL
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    uint64_t csnap_known[2], csnap_dep[2]; uint8_t csnap_logged;   // per fragment texture register: nvn_fbdep_dependent was asked / said yes (csnap_dep_reg); the first-use line is out
+#endif
 } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader
 - (void)dealloc { free(pool_hint_scratch); free(rf.c1); }
@@ -9255,12 +9278,18 @@ static inline __attribute__((always_inline)) int dsnap_hit(int tid) {   // calle
 }
 static inline __attribute__((always_inline)) void *tex_fast(int tid) {
     if (dsnap_hit(tid)) return g_dsnap_tex;
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    if (g_csnap_tid && tid == g_csnap_tid) return g_csnap_tex;
+#endif
     void *p=tex_view_valid(tid)?g_treg[tid].view:tex_by_id_p(tid);
     id<MTLTexture> hdr=hdr_shadow_sample((__bridge id<MTLTexture>)p);
     return hdr?(__bridge void *)hdr:p;
 }
 static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
     if (dsnap_hit(tid)) { if (out) *out = g_dsnap_tex; return g_dsnap_rid; }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    if (g_csnap_tid && tid == g_csnap_tid) { if (out) *out = g_csnap_tex; return g_csnap_rid; }
+#endif
     if(!hdr_shadow_enabled()) {
         if (tex_view_valid(tid)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
         void *t = tex_by_id_p(tid); if (out) *out = t; return t ? ((__bridge id<MTLTexture>)t).gpuResourceID._impl : 0;
@@ -15804,6 +15833,90 @@ static int dsnap_prepare(const tex_t *d) {
     PD("M %llu 绘制一边写深度一边采样本通道的深度附件：改读拷贝（ser=%llu）", g_stat_pass, (unsigned long long)d->serial);
     return 1;
 }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+static int csnap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_COLOR_SNAP"); on = !(e && !strcmp(e, "0")); if (!on) MLOG("TOTK_COLOR_SNAP=0: a draw that samples its own colour target off its pixel reads the target itself"); } return on; }
+/* Does fs read the texture of binding b only at positions that depend on another texture read (nvn_fbdep.h)? Asked once per shader and register. */
+static int csnap_dep_reg(NvShader *fs, const nvn_rbind *b) {
+    unsigned w = b->reg >> 6; uint64_t m = UINT64_C(1) << (b->reg & 63);
+    if (!(fs->csnap_known[w] & m)) { if (nvn_fbdep_dependent(sh_src(fs), b->aid)) fs->csnap_dep[w] |= m; fs->csnap_known[w] |= m; }
+    return (fs->csnap_dep[w] & m) != 0;
+}
+/* End the pass and copy src, the texture slot tid resolves to (colour attachment ser of the draw's pass); the slot reads the
+   copy from now on, through a view with src's channel swizzle when it has one (the scene target's view gives alpha = 1).
+   Returns 0 when no copy can be made (the attachment is read directly). */
+static int csnap_prepare(id<MTLTexture> src, int tid, uint64_t ser) {
+    static id<MTLTexture> snap, view; static NSUInteger sw, sh; static MTLPixelFormat sf; static uint32_t vz;
+    if (!snap || sw != src.width || sh != src.height || sf != src.pixelFormat) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView; td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> t = [g_dev newTextureWithDescriptor:td];
+        if (!t) { static int warned; if (!warned++) MLOG("【红】colour snapshot %lux%lu: texture not made, the attachment is read directly", (unsigned long)src.width, (unsigned long)src.height); return 0; }
+        if (view) defer_obj_release(view);
+        if (snap) defer_obj_release(snap);
+        view = nil; snap = t; sw = src.width; sh = src.height; sf = src.pixelFormat; snap.label = @"same-pass colour snapshot"; res_add(snap); res_commit();
+    }
+    MTLTextureSwizzleChannels z = src.swizzle; id<MTLTexture> bound = snap;
+    uint32_t zk = (uint32_t)z.red | (uint32_t)z.green << 8 | (uint32_t)z.blue << 16 | (uint32_t)z.alpha << 24;
+    if (zk != ((uint32_t)MTLTextureSwizzleRed | (uint32_t)MTLTextureSwizzleGreen << 8 | (uint32_t)MTLTextureSwizzleBlue << 16 | (uint32_t)MTLTextureSwizzleAlpha << 24)) {
+        if (!view || vz != zk) {
+            id<MTLTexture> v = [snap newTextureViewWithPixelFormat:snap.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0, 1) slices:NSMakeRange(0, 1) swizzle:z];
+            if (!v) { static int warned; if (!warned++) MLOG("【红】colour snapshot: swizzled view not made, the attachment is read directly"); return 0; }
+            if (view) defer_obj_release(view);
+            view = v; vz = zk; }
+        bound = view;
+    }
+    rp_flush();   // what the earlier draws wrote is stored; the copy reads it (the pass end dropped any earlier copy)
+    id<MTL4ComputeCommandEncoder> b = blit();
+    enc_b_copy_texture(b, src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(src.width, src.height, 1), snap, 0, 0, MTLOriginMake(0, 0, 0));
+    g_csnap_tex = (__bridge void *)bound; g_csnap_rid = bound.gpuResourceID._impl; g_csnap_ser = ser; g_csnap_tid = tid; args_dirty_all();
+    g_csnap_copies++;
+    PD("M %llu colour snapshot: the draw samples its pass's colour attachment off its own pixel and reads a copy (ser=%llu, copy %llu)", g_stat_pass, (unsigned long long)ser, (unsigned long long)g_csnap_copies);
+    return 1;
+}
+/* The draw about to be encoded samples the attachments rs of its pass (draw_att_reads). When its fragment stage reads one
+   colour attachment only at dependent positions, the slot reads a copy and the attachment leaves rs, so neither the tile
+   read nor the store-before-sample acts on it. Every other draw drops the copy. */
+static void csnap_draw(NvProg *pr, uint64_t *rs, int *n) {
+    NvShader *fs = pr ? pr->sh[1] : nil; uint64_t ser = 0; int tid = 0, j = -1;
+    if (!*n || !fs || !R.has_rt || g_fz.active || !sh_has_src(fs) || !csnap_on()) { csnap_clear(); return; }   // a fused pass reads the tile by construction
+    for (int i = 0; i < fs->rf.nb; i++) { const nvn_rbind *b = &fs->rf.b[i]; uint64_t h;
+        if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[1][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[1][b->reg] : 0; else continue;
+        uint64_t s = h ? h_ser(h) : 0;
+        if (!s || !has_ser(rs, *n, s)) continue;
+        int m = -1; for (int k = 0; k < R.rt.n && k < 8; k++) if (R.rt.color[k] && R.rt.color[k]->serial == s) { m = k; break; }
+        if (m < 0) continue;   // the depth attachment, or one only the open encoder has: today's path
+        if (b->kind != NVN_RB_TEX || (ser && (s != ser || (int)(h & 0xfffff) != tid)) || !csnap_dep_reg(fs, b)) { csnap_clear(); return; }   // one attachment, one view, every read dependent
+        ser = s; tid = (int)(h & 0xfffff); j = m;
+    }
+    if (!ser || !tid) { csnap_clear(); return; }
+    for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh == fs || sh->stage >= 6) continue;   // another stage reads it too: today's path
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
+            if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0; else continue;
+            if (h && h_ser(h) == ser) { csnap_clear(); return; } } }
+    if (g_csnap_tid != tid || g_csnap_ser != ser || !g_enc) {   // no copy of it yet in this run of readers; no open pass: the draw the copy was made for never drew (empty scissor, deferred), so the copy can be old
+        csnap_clear();
+        uint64_t s_; int lv, sl; rt_sub(&R.rt, j, &s_, &lv, &sl);
+        if (lv || sl) return;
+        void *tv_ = NULL; tex_fast_rid_lk(tid, &tv_); __unsafe_unretained id<MTLTexture> tv = (__bridge id<MTLTexture>)tv_;
+        if (!tv) return;
+        uint32_t apf = tv.parentTexture ? (uint32_t)tv.parentTexture.pixelFormat : (uint32_t)tv.pixelFormat; uint8_t swz[4];   // as att_fb_take: the view is the attachment itself
+        if (R.rt.has_cview[j] && R.rt.cview[j].set_format && !(nvn_fmt_to_mtl(R.rt.cview[j].format, &apf, swz) && apf)) return;
+        if (tv.textureType != MTLTextureType2D || tv.sampleCount != 1 || tv.mipmapLevelCount != 1 || (tv.parentTexture && (tv.parentRelativeLevel || tv.parentRelativeSlice)) || tv.pixelFormat != (MTLPixelFormat)apf) return;
+        if (!csnap_prepare(tv, tid, ser)) return;
+    }
+    if (!fs->csnap_logged) { fs->csnap_logged = 1; static int logged;
+        if (logged++ < 16) MLOG("[totk] same-pass colour sampling: shader %s samples the colour target it draws into off its own pixel; it reads a copy (pass %llu, copy %llu)", fs->key, g_stat_pass, (unsigned long long)g_csnap_copies); }
+    int m = 0; for (int i = 0; i < *n; i++) if (rs[i] != ser) rs[m++] = rs[i];
+    *n = m;
+}
+/* The draw reads the copy of slot tid (csnap_draw), and the store of another attachment it samples (att_unstored_read: the
+   depth an earlier reader of the copy wrote) ended the pass, which dropped the copy: copy the stored target again. The
+   checks of csnap_draw held for this slot when the dropped copy was made. */
+static void csnap_again(int tid, uint64_t ser) {
+    void *tv_ = NULL; tex_fast_rid_lk(tid, &tv_); __unsafe_unretained id<MTLTexture> tv = (__bridge id<MTLTexture>)tv_;
+    if (tv) csnap_prepare(tv, tid, ser);
+}
+#endif
 /* TOTK_ATT_STORE=0 turns the store-before-sample off (A/B; the decals ghost again) */
 static int att_store_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_ATT_STORE"); on = !(e && !strcmp(e, "0")); } return on; }
 static int att_unstored_read(const uint64_t *rs, int n) {
@@ -16313,6 +16426,9 @@ static void defer_fallback(void) {
     if (g_defer_replaying || !defer_has_active()) return;
     g_defer_fallbacks++; MLOG("【红】推迟合并通道：提交结束仍有未回放组，按各组 P 原目标兜底");
     if (g_enc) { enc_r_end(g_enc); g_enc = nil; }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    csnap_clear();
+#endif
     typeof(S) save; memcpy(&save, &S, sizeof S); p_set_rt rt = R.rt; g_defer_replaying = 1;
     for (int gi, after = 0; (gi = defer_next(0, after)) >= 0;) { defer_t *d = &g_defer_slots[gi]; after = d->born; g_defer_cur = d; R.rt = d->p_rt; R.has_rt = 1; memcpy(R.clear_c, d->clear_c, 8); memcpy(R.cc, d->cc, sizeof R.cc);
         R.clear_d = d->clear_d; R.clear_s = d->clear_s; R.cd = d->cd; R.cs = d->cs;
@@ -17022,6 +17138,9 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
 static void clear_quad(const p_clear_color *c) {
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    csnap_clear();   // the clear changes the target: a later reader copies again
+#endif
     gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / partial-mask / scissored color clear"); NVN_RT_DUP_CLEAR_TO_FIRST(c)
     const tex_t *t = R.rt.color[c->index];
     int f = R.rt.has_cview[c->index] && R.rt.cview[c->index].set_format ? R.rt.cview[c->index].format : t->d.format;
@@ -19164,10 +19283,17 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     uint64_t att_rs[ATT_READS_MAX]; int att_n = att_store_on() ? draw_att_reads(pr, att_rs) : 0;
     if (dsnap_on() && att_n && R.has_rt && R.rt.depth && (S.ds.dw || S.ds.st) && has_ser(att_rs, att_n, R.rt.depth->serial)) { if (!dsnap_prepare(R.rt.depth)) dsnap_clear(); }
     else dsnap_clear();
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    csnap_draw(pr, att_rs, &att_n);   // a read of its own colour target off the fragment's pixel reads a copy
+    int cs_tid = g_csnap_tid; uint64_t cs_ser = g_csnap_ser;   // the copy this draw reads (0: none)
+#endif
     id<MTLFunction> fb_fn = att_n ? att_fb_take(pr, att_rs, &att_n) : nil;   // TOTK: attachments it reads from the tile need no store
     if (!(g_fz.active && g_fz.phase == 2) && att_unstored_read(att_rs, att_n)) {
         static int once; if (!once++) MLOG("[totk] a draw samples an attachment its pass drew: the pass is stored first (first: pass %llu)", g_stat_pass);
         PD("M %llu 绘制采样本通道画过的附件，先写回再画", g_stat_pass); rp_flush(); }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    if (cs_tid && !g_csnap_tid) csnap_again(cs_tid, cs_ser);   // that store dropped the copy this draw reads
+#endif
     static id<MTLFunction> fz_fn;   // 合并通道后一个通道本次绘制的特化片元函数（nil = 用原版本） | Specialized fragment function for this draw of the later pass in a merged render pass (nil = use the original version)
     if (g_fz.active && g_enc && g_fz.phase == 2 && !fz_p2_draw(pr, dw, di, g_fz.lmap2, &fz_fn)) {   // 证不出：结束合并通道（前一个通道的结果照常写回），按后一个通道的原目标重开 | Cannot be proven: end the merged render pass (the earlier pass's result is stored as usual) and reopen with the later pass's original targets
         static int once3; if (!once3++) MLOG("可读 tile 通道合并：后一个通道的绘制证不出，退回分开（首例 通道 %llu）", g_stat_pass);
@@ -19427,6 +19553,9 @@ frz_plain:;
                                  : g_vis_counting;
     if (taa_jittered() && nv > 6 && vo == 0 && vs == 1 && ux == 1 && uy == 1 && !vis_proxy && !fb_fn && !att_n && !(!att_store_on() && draw_att_reads(pr, att_rs)))
         taa_jitter(&jx, &jy);
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
+    if (g_csnap_tid) jx = jy = 0;   // this draw reads the colour snapshot: it samples its target, so it is not jittered (as before the snapshot)
+#endif
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
         long sx0 = R.sc.x, sx1 = (long)R.sc.x + R.sc.w;
