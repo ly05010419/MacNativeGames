@@ -18,6 +18,7 @@
 #include "picture_settings.h"
 #include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
+#import "mng_active.h"            // the day's report of active players
 #include "totk_contrib_upload.h"   // the shader inbox: asked once, sent while playing
 #import "touch_pad.h"
 #import "start_screen.h"
@@ -583,6 +584,11 @@ static void apply_settings(void) {
     // Controller input does not reset the idle timer; auto-lock would suspend the game mid-play or mid shader import.
     application.idleTimerDisabled = YES;
     audio_observe();
+#ifdef GAME_INBOX_ID   /* the day's report of active players (mng_active.h; off in the Settings app's pane) */
+    mng_active_start(@GAME_INBOX_ID, mng_active_version());
+#else
+    mng_active_start(@"totk", mng_active_version());
+#endif
     /* The Mac launcher passes the preferred language as TOTK_LOCALE (PR #97); "zh-Hans-CN" maps to zh-Hans in services.c. */
     NSString *preferred = NSLocale.preferredLanguages.firstObject;
     if (preferred.length) setenv("TOTK_LOCALE", preferred.UTF8String, 1);

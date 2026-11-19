@@ -13,6 +13,7 @@
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #import "playtime.h"
+#import "mng_active.h"   /* the day's report of active players (on unless turned off in the Launcher's settings) */
 #define TOTK_HDR_FRONTEND 1
 #include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
 #include "hdr_auto.h"
@@ -805,6 +806,11 @@ void runtime_front_run(void(*callback)(void)){
   front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   totk_board_start();   /* the leaderboard's rounds (board_upload.h): nothing is sent unless the player turned 我要上榜 on */
+#ifdef GAME_INBOX_ID   /* game_version.h names Breath of the Wild, Bananza and Pokopia; Tears of the Kingdom otherwise */
+  mng_active_start(@GAME_INBOX_ID, mng_active_version());
+#else
+  mng_active_start(@"totk", mng_active_version());
+#endif
 #if defined(TOTK_SCREENSHOT_WINDOW)
   totk_screenshot_shared=totk_shot_queue;totk_shot_start();   /* 截图分享 (shot_upload.h): off unless the player turned it on */
 #endif

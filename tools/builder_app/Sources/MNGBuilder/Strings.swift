@@ -196,6 +196,9 @@ enum T {
                             "快速版：带标题菜单的着色器和计算、读帧缓冲、网格管线；启动时带全部诊断")
     static let fillShaders = s("Fill in shaders", "补全着色器")
     // the card's memory saver switch (user 2026-11-16: "CheckBox 叫 开启省内存模式"; tools/builder_jobs/memory_saver.py)
+    static let usageStats = s("Count me as an active player (anonymous)", "匿名统计活跃度")
+    static let usageStatsHelp = s("Once a day the Launcher and each game send a random install id of this Mac, the program's name, the platform and its version, so the site can count daily, weekly and monthly players. Nothing else: no name, no account, no game file. The site keeps the id only as a salted hash and no IP address. Turning it off here stops it for the Launcher and every game of this Mac.",
+                                  "Launcher 和每个游戏每天最多上报一次：这台 Mac 的随机安装号、程序名、平台和版本，用来统计日活、周活、月活和流失率。不发别的：没有名字、账号或游戏文件；网站只存安装号的加盐哈希，不存 IP。在这里关掉，Launcher 和这台 Mac 上的所有游戏都不再上报。")
     static let memorySaver = s("Memory saver mode", "开启省内存模式")
     static let memorySaverHelp = s("Off (the default): every pipeline stays in memory after the warm-up, so nothing is fetched while you play. On: only the title menu's pipelines and every compute, mesh and tile-read pipeline stay; the rest come from the pipeline archive the first time they are drawn (a short hitch each time), and the memory saved shrinks the further you play. Counts from the game's next start; you can change it while the game runs.",
                                    "关（默认）：预热后全部管线常驻内存，游玩中不用临时从存档取。开：只常驻标题菜单的管线和全部计算、网格、贴图读取管线，其余第一次画到时从管线存档取（每次会小卡一下），玩得越远省下的内存越少。下次启动游戏时生效，游戏开着也能改。")

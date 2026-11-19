@@ -22,6 +22,7 @@ int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnable
 #include "hle.h"
 #include "pad_slots.h"
 #include "haptics_apple.h"
+#import "mng_active.h"   // the day's report of active players (on unless turned off in the Launcher's settings)
 #import "front_settings.h"
 #import "front_hud.h"
 #import "pso_export.h"
@@ -446,6 +447,7 @@ void front_run(void (*guest)(void)) {
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
         [win center];
         [win makeKeyAndOrderFront:nil];
+        mng_active_start(@"la", mng_active_version());
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
         g_win = win;
         [NSApp activateIgnoringOtherApps:YES];

@@ -8,6 +8,7 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"
+#import "mng_active.h"   /* the day's report of active players (on unless turned off in the Launcher's settings) */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
@@ -401,6 +402,7 @@ void runtime_front_run(void(*callback)(void)){
     window.alphaValue=0.0;window.ignoresMouseEvents=YES;[window orderBack:nil];
   }else if(assume_focus()){[window orderFrontRegardless];}
   else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}
+  mng_active_start(@"tmnt", mng_active_version());
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");

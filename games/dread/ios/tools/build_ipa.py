@@ -52,6 +52,7 @@ targets:
         excludes:
           - Dread.entitlements
           - Info.plist
+      - path: {GAME/'ios/Settings.bundle'}   # the Settings app pane: the active players switch (mng_active.h)
       - path: {rt}
         excludes:
           - frontend.m

@@ -14,6 +14,7 @@ struct BuilderApp: App {
                 .environmentObject(model)   // after the overlay: the version label reads the model too
         }
         .windowResizability(.contentMinSize)
+        Settings { UsageStatsSettings() }   // MNG Launcher > Settings… (UsageStats.swift)
     }
 }
 
@@ -69,6 +70,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)   // a bare executable (swift run) gets a Dock icon and focus too
         NSApp.activate(ignoringOtherApps: true)
+        UsageStats.start()   // the day's report of active players, unless turned off (UsageStats.swift)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

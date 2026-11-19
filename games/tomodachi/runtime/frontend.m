@@ -8,6 +8,7 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"
+#import "mng_active.h"   /* the day's report of active players (on unless turned off in the Launcher's settings) */
 #ifndef NATIVE_GAME_TITLE
 #define NATIVE_GAME_TITLE "Tears of the Kingdom"
 #endif
@@ -216,6 +217,7 @@ void runtime_front_run(void(*callback)(void)){
   extern void runtime_title_frontend_ready(void *) __attribute__((weak_import));
   if(runtime_title_frontend_ready)runtime_title_frontend_ready((__bridge void *)window);
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
+  mng_active_start(@"tomodachi", mng_active_version());
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");

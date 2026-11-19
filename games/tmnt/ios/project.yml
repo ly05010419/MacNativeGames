@@ -12,6 +12,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Settings.bundle   # the Settings app pane: the active players switch (mng_active.h, NSUserDefaults TOTK_USAGE_STATS)
       - path: ../runtime
         excludes:
           - frontend.m

@@ -8,6 +8,7 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"
+#import "mng_active.h"   /* the day's report of active players (on unless turned off in the Launcher's settings) */
 #include "totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 int mfxup_output_enabled(void);
@@ -392,6 +393,7 @@ void runtime_front_run(void(*callback)(void)){
   [window.contentView addSubview:controlButton positioned:NSWindowAbove relativeTo:bootOverlay];
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
+  mng_active_start(@"lm3", mng_active_version());
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   displayWindowFrame=window.frame;display_apply_mode();

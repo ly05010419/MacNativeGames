@@ -15,6 +15,7 @@
 #include "hle.h"
 #include "pad_slots.h"
 #include "haptics_apple.h"
+#import "mng_active.h"   // the day's report of active players (on unless turned off in the Launcher's settings)
 #include "motion_apple.h"
 #include "motion_pro_mac.h"
 #include <signal.h>
@@ -270,6 +271,7 @@ void front_run(void (*guest)(void)) {
         v.layer = g_layer; [(DmGameView *)v fitDrawable];
         [win center];
         [win makeKeyAndOrderFront:nil];
+        mng_active_start(@"mk8d", mng_active_version());
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
         g_win = win;
         [NSApp activateIgnoringOtherApps:YES];

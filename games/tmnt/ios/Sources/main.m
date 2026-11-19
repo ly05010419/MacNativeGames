@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
+#import "mng_active.h"   // the day's report of active players
 
 int tmnt_host_main(int argc, char **argv);
 void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *view);
@@ -112,6 +113,11 @@ static void *run_game(void *unused) {
 
 @interface TMNTAppDelegate : UIResponder <UIApplicationDelegate> @end
 @implementation TMNTAppDelegate
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
+    (void)application; (void)options;
+    mng_active_start(@"tmnt", mng_active_version());   // the day's report of active players (mng_active.h)
+    return YES;
+}
 - (UISceneConfiguration *)application:(UIApplication *)application
  configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)application; (void)options;

@@ -137,7 +137,7 @@
       "origin": "games/ssbu/runtime/frontend.m",
       "commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
       "source_blob": "a6f346f25605ec9c4ba24416a4033bbf152ab904",
-      "sha256": "3111cb69770283dbb15cf23553b4057a3bc87c937ba38c73c09b463191adcd97"
+      "sha256": "a9641bce8553657cd44b5f7e9977f2ef0d61be99c5e0162be850e0a0d418a7dc"
     },
     "runtime/frontend_ios.m": {
       "origin": "games/ssbu/runtime/frontend_ios.m",
@@ -3486,6 +3486,7 @@
     "assets/shader_list.tsv",
     "build.py",
     "ios/README.md",
+    "ios/Settings.bundle/Root.plist",
     "ios/Sources/main.m",
     "ios/project.yml",
     "ios/tests/test_gen_nro_embed.py",
@@ -3495,6 +3496,7 @@
     "requirements-dev.txt",
     "runtime/graphics_phase.c",
     "runtime/graphics_phase.h",
+    "runtime/mng_active.h",
     "runtime/romfs_read_exact.h",
     "runtime/symbols.c",
     "runtime/symbols.h",
