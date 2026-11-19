@@ -390,6 +390,34 @@ game's own icons, which already name its buttons. The mod replaces the seven `Fo
 `Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
 needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
 
+### Super Mario Odyssey
+
+The Odyssey app reads its mods from the folder for the update it was built from, `v130` for 1.3.0 or `v141` for 1.4.1:
+
+```text
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v130
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v141
+```
+
+The RomFS half above applies: copy the mod's RomFS contents into that folder and generate the manifest with Odyssey's
+own script and the app (1.4.1 shown):
+
+```bash
+MODDIR="$HOME/Library/Application Support/MacNativeGames/Odyssey/mods/v141"
+python3 games/odyssey/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Odyssey.app"
+```
+
+Check `grep "mods/v141 checked" "$HOME/Library/Application Support/MacNativeGames/Odyssey/last-run.log"` after the
+start (`mods/v130 checked` on 1.3.0). Without a manifest the log says `RomFS overlay: none` and names the folder it
+looked in.
+
+- 1.3.0 and 1.4.1 merge to the same game data, so a manifest written for one fits the other. When you build the app
+  again from the other update, rename the folder.
+- An app built with a bigger render size (the default, for key 3) replaces `SystemData/ProjectGraphicsQuality.szs`
+  itself. The script leaves that file out of the mod's manifest: two overlays that replace one file stop the start.
+- The game's language follows the Mac's first preferred language. A translation replaces the files of one language
+  (for English, `LocalizedData/USen/...` and `LocalizedData/EUen/...`) and shows when the game runs in that language.
+
 ### Sharp UI texture pack (Breath of the Wild 1.9.0 and 1.6.0, Tears of the Kingdom 1.4.3)
 
 The games draw their UI from small textures (48x48 and 72x72 button and icon masks, colour icons) that the 3456x1944 picture
@@ -874,6 +902,28 @@ Xbox 手柄时它不画任何东西：图标字体里已经有每个按钮，所
 它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。`controller-type.txt` 为 `playstation`（按键 6）时得到 PlayStation 图标：在字体自己的按钮字形格子里画上叉、圆、方、三角，L1 R1 L2 R2，Options 和 Create，操作提示的按键贴图也一样（浅色字母留空）（`--style playstation`，games/totk/scripts/botw_playstation_icons.py；`--style xbox` 保留字母）；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
 就对应手柄上的按钮。mod 替换七个（1.6.0 为六个）`Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
 布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
+
+### 超级马力欧 奥德赛
+
+奥德赛 App 按构建它所用的更新从对应目录读取 mod，1.3.0 是 `v130`，1.4.1 是 `v141`：
+
+```text
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v130
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v141
+```
+
+上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用奥德赛自己的脚本和 App 生成清单（下面以 1.4.1 为例）：
+
+```bash
+MODDIR="$HOME/Library/Application Support/MacNativeGames/Odyssey/mods/v141"
+python3 games/odyssey/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Odyssey.app"
+```
+
+启动后用 `grep "mods/v141 checked" "$HOME/Library/Application Support/MacNativeGames/Odyssey/last-run.log"` 检查（1.3.0 是 `mods/v130 checked`）。没有清单时，日志写 `RomFS overlay: none`，并给出它查找的目录。
+
+- 1.3.0 和 1.4.1 合并后的游戏数据完全相同，所以为其中一个生成的清单也适用于另一个。用另一个更新重新构建 App 时，把目录改名即可。
+- 按更大渲染尺寸构建的 App（默认如此，供按键 3 使用）自己会替换 `SystemData/ProjectGraphicsQuality.szs`。脚本会把这个文件从 mod 的清单里去掉：两个覆盖层替换同一个文件时，启动会停止。
+- 游戏语言跟随 Mac 的首选语言。翻译 mod 替换某一种语言的文件（英语是 `LocalizedData/USen/...` 和 `LocalizedData/EUen/...`），游戏以该语言运行时显示。
 
 ### 高清界面贴图包（旷野之息 1.9.0 和 1.6.0，王国之泪 1.4.3）
 

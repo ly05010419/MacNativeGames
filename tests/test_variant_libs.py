@@ -52,11 +52,48 @@ class VariantLibs(unittest.TestCase):
         libs = build_app.shader_libs_of(self.tree, 'v143', {'files': {'a_b.metal': startup}})
         self.assertEqual([p.name for p in libs], [f'{startup}.metallib', f'{self.good}.metallib'])
 
+    def test_refused_sources_are_recorded_for_this_compiler(self):
+        (self.tree/'build/shader-seed/v143/c_d.metal').write_text('// refuse me')
+        self.compiler.write_text('#!/bin/sh\nfor a; do last=$a; done\ngrep -q refuse "$last" && exit 1\n'
+                                 'while [ "$1" != "-o" ]; do shift; done\ncp "$3" "$2"\n')   # the source is the last argument
+        self.build()
+        refused = hashlib.sha256(b'// refuse me').hexdigest()
+        self.assertEqual(json.loads((self.tree/'build/shader-libs'/build_app.REFUSED_LIBS).read_text()), [refused])
+        self.assertEqual(build_app.refused_shader_libs(self.tree, 'fake 1'), {refused})
+        self.assertEqual(build_app.refused_shader_libs(self.tree, 'another compiler'), frozenset())   # it may take them
+        self.assertEqual(build_app.refused_shader_libs(self.root/'none', 'fake 1'), frozenset())
+
     def test_no_recorded_variants(self):
         for p in self.variants.iterdir():
             p.unlink()
         self.build()
         self.assertEqual(json.loads((self.tree/'build/shader-libs/variants-v143.json').read_text()), [])
+
+
+class NoMetalCompiler(unittest.TestCase):
+    """Without Apple's offline compiler (the command line tools have none) the libraries cannot be made. An update that
+    is there only to make them (update_runtime.py --shader-libs) stops and says how to get one; a build goes on with a
+    warning (an app once went on quietly, with libraries for 1,890 of the 17,884 shaders its warm-up loads)."""
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tree, self.logs = Path(tmp.name)/'tree', Path(tmp.name)/'logs'
+        (self.tree/'build/shader-seed/v143').mkdir(parents=True)
+        (self.tree/'build/shader-seed/v143/a_b.metal').write_text('// startup shader')
+
+    def test_required_is_an_error_naming_the_toolchain(self):
+        with patch.object(build_app, 'metal_compiler', return_value=None), patch.object(build_app, 'say'):
+            with self.assertRaises(build_app.BuildError) as raised:
+                build_app.step_shader_libs(self.tree, self.logs, version='v143', required=True)
+        self.assertIn('MetalToolchain', str(raised.exception))
+        self.assertIn('DEVELOPER_DIR=', str(raised.exception))
+        self.assertFalse((self.tree/'build/shader-libs').exists())
+
+    def test_a_build_without_it_still_goes_on_and_says_so(self):
+        said = []
+        with patch.object(build_app, 'metal_compiler', return_value=None), patch.object(build_app, 'say', said.append):
+            build_app.step_shader_libs(self.tree, self.logs, version='v143')
+        self.assertTrue(any('WARNING: no Metal toolchain' in line for line in said), said)
 
 
 if __name__ == '__main__':

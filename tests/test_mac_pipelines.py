@@ -103,5 +103,48 @@ class MacPipelineFiles(unittest.TestCase):
         self.assertEqual(int(re.search(r'#define PAR_SCHEMA (\d+)', HEADER.read_text()).group(1)), build_app.PAR_SCHEMA)
 
 
+class MacPipelinesStamp(unittest.TestCase):
+    """The archive is checked again when the compiled libraries the tool loads change (build/shader-libs), not only the
+    lists, the seed or the binary: one made while most shaders were compiled from source may miss for the offline
+    libraries (totk_pipeline_archive.h: "a wrong file is a miss")."""
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.tree, self.logs, self.res = root / 'tree', root / 'logs', root / 'Game.app/Contents/Resources/totk'
+        self.build = self.res / 'build'
+        (self.build / 'shader-seed').mkdir(parents=True)
+        (self.build / 'shader-seed/seed-manifest.json').write_text('{"chain": "c"}')
+        (self.build / 'pso_manifest.tsv').write_text('R\tkey\n')
+        (self.build / 'totk-native').write_bytes(b'binary')
+        (self.build / 'shader-libs').mkdir()
+
+    def stamp(self):
+        """The stamp mac_pipelines writes, and whether the tool was asked to check the last archive (TOTK_PAR_RECHECK)."""
+        import contextlib
+        from unittest import mock
+        with mock.patch.object(build_app, 'run_outside_bundle', return_value=contextlib.nullcontext('tool')), \
+                mock.patch.object(build_app, 'run') as ran, mock.patch.object(build_app, 'last_json', return_value={}), \
+                mock.patch.object(build_app, 'say'):
+            build_app.mac_pipelines(self.tree, self.res, 'v143', self.logs)
+        recheck = ran.call_args.kwargs['env']['TOTK_PAR_RECHECK']
+        return (self.tree / 'build/mac-pipelines/v143/inputs.txt').read_text().split()[0], recheck
+
+    def test_a_new_library_set_checks_the_archive_again(self):
+        import hashlib
+        none, _ = self.stamp()
+        inputs = [self.build / 'shader-seed/seed-manifest.json', self.build / 'pso_manifest.tsv', self.build / 'totk-native']
+        self.assertEqual(none, hashlib.sha256(b''.join(p.read_bytes() for p in inputs)).hexdigest(),
+                         'an app without libraries keeps the stamp it had')
+        self.assertEqual(self.stamp(), (none, '0'))
+        (self.build / 'shader-libs' / ('a' * 64 + '.metallib')).write_bytes(b'lib')
+        one, recheck = self.stamp()
+        self.assertNotEqual(one, none)
+        self.assertEqual(recheck, '1')
+        self.assertEqual(self.stamp(), (one, '0'))
+        (self.build / 'shader-libs' / ('b' * 64 + '.metallib')).write_bytes(b'lib')
+        self.assertNotEqual(self.stamp()[0], one)
+
+
 if __name__ == '__main__':
     unittest.main()
