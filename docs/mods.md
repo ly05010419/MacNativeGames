@@ -495,6 +495,10 @@ your Mac and never go into the repository or a pull request.
   combined: merge them in the manager first, then build with `--mod <the manager's output folder>
   --install-mod-romfs`; the build refuses
   two patch files that change the same bytes and names both of them.
+- [Graft](https://github.com/nickpetrovic/graft) (by nickpetrovic, MIT, built from source) is a community mod manager
+  for these Mac apps: it merges Tears of the Kingdom mods with TkSharp (the library TKMM uses), checks their code
+  patches and installs the result into the version folder above. It is a separate project that this repository has not
+  tested; it needs a MacNativeGames checkout and the .NET 10 SDK.
 - A mod with a code patch also needs its `exefs/` patch to match the game version the app is built from.
   The build checks what the file itself says: a `.pchtxt` is refused when its `@nsobid-` names another
   main, and an `.ips` / `.ips32` named after a build id is left out when that id is not this main's.
@@ -956,6 +960,9 @@ ContourPy（BSD-3-Clause）追踪拟合场的轮廓，像素边界由本项目�
   `--exclude`：管理器的堆表和 App 的 2K 覆盖文件会自动协调）。每次在管理器里重新合并后都要重新构建，因为游戏启动时会逐个校验文件哈希。多个带代码
   补丁的 mod 也是这样合的：先在管理器里合并，再用 `--mod <管理器的输出文件夹> --install-mod-romfs` 构建；两个补丁文件改到同一批字节
   时构建会拒绝，并同时报出这两个文件。
+- [Graft](https://github.com/nickpetrovic/graft)（nickpetrovic 做的社区模组管理器，MIT，要从源码编译）是给这些 Mac App
+  用的：用 TkSharp（TKMM 用的库）合并王国之泪的模组，检查它们的代码补丁，再装进上面的版本目录。它是独立项目，本仓库
+  没有测试过；需要一份 MacNativeGames 源码和 .NET 10 SDK。
 - 带代码补丁的 mod，其 `exefs/` 补丁也要和构建所用的游戏版本一致。构建按文件自己写的东西核对：`.pchtxt` 的
   `@nsobid-` 不是这个 main 就拒绝；按 build id 命名的 `.ips` / `.ips32`，id 不是这个 main 就留出并提示。
 - 本文面向 Mac App；iPhone/iPad 的 App 容器内安装未在此说明。
