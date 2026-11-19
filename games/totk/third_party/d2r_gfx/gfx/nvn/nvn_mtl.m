@@ -5568,29 +5568,36 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
 static uint64_t g_pkg_upload_faults, g_pkg_upload_unreadable;
 /* 1 when every page of [mem, mem+size) can be read now: one byte per host page (and the last byte) is read under the
    fault guard. A walk with mach_vm_region was one system call per VM entry, and the dirty tracker splits a texture's
-   range into an entry per page it unprotected: ~1 ms for a 16 MiB texture in alternating protections, ~16 us this way. */
-static int guest_probe(const void *mem, uint64_t size) {
-    if (!size) return 1;
-    static uintptr_t pg; if (!pg) pg = (uintptr_t)getpagesize();
-    const volatile uint8_t *m = mem; uintptr_t a = (uintptr_t)mem, e = a + size;
-    sigjmp_buf jb, *prev = runtime_fault_guard;
-    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; return 0; }
-    runtime_fault_guard = &jb;
-    uint8_t sink = 0;
-    for (uintptr_t at = a; at < e; at = (at & ~(pg - 1)) + pg) sink ^= m[at - a];
-    sink ^= m[size - 1];
-    runtime_fault_guard = prev;
-    (void)sink;
-    return 1;
-}
+   range into an entry per page it unprotected: ~1 ms for a 16 MiB texture in alternating protections, ~16 us this way.
+   Pages the system paged out are read back on several threads at once (nvn_guest_probe.h, 2026-11-19). */
+#include "nvn_guest_probe.h"
+static int guest_probe(const void *mem, uint64_t size) { return nvn_guest_probe(mem, size); }
+/* g_up_tid / g_up_via: the texture ID being resolved on this thread and how it was asked for (1 a bound texture, 2 a
+   descriptor pool read by the shader), for the [uptime] line. 2026-11-19 OOT: the slow first uploads in play were pool
+   reads of descriptors registered at the save load, first used a minute later; reading their pages ahead at the bind or
+   at the registration did not help (paged out again by the time of use), so it was taken out again. */
+static _Thread_local int g_up_tid, g_up_via;
 /* DM_NVN_UPTIME=<ms> (diagnostic, off by default): one log line per texture upload that takes at least that long on the
    submit thread, split into its steps, with the process's page faults during it. */
 static uint64_t g_upt[6]; static int g_upt_path;   // step marks of the upload in progress (submit thread only)
+/* The state of the source pages before the probe touches them (mincore): in memory, paged out (compressed or swapped by
+   the system), or neither (never touched since mapped, or dropped). 2026-11-19 OOT: in play the probe took ~70 us a page,
+   one minor fault per page, while the system had 60-100 MB free and swapped in hundreds of pages a second. */
+static unsigned g_upt_core[3];
+static void upt_pages(const void *mem, uint64_t size) {
+    memset(g_upt_core, 0, sizeof g_upt_core);
+    uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)mem & ~(pg - 1), e = ((uintptr_t)mem + size + pg - 1) & ~(pg - 1);
+    size_t n = (e - a) / pg; if (!size || n > (1u << 20)) return;
+    char *v = malloc(n); if (!v) return;
+    if (!mincore((void *)a, e - a, v))
+        for (size_t i = 0; i < n; i++) g_upt_core[v[i] & MINCORE_INCORE ? 0 : v[i] & MINCORE_PAGED_OUT ? 1 : 2]++;
+    free(v);
+}
 static int upt_on(void) { static int on = -1; if (on < 0) on = getenv("DM_NVN_UPTIME") != NULL; return on; }
 static inline void upt_mark(int i) { if (upt_on()) g_upt[i] = clock_gettime_nsec_np(CLOCK_MONOTONIC); }
 static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    struct rusage ru0; if (upt_on()) { getrusage(RUSAGE_SELF, &ru0); memset(g_upt, 0, sizeof g_upt); g_upt_path = 0; upt_mark(0); }
+    struct rusage ru0; if (upt_on()) { upt_pages(t->mem, t->L.size); getrusage(RUSAGE_SELF, &ru0); memset(g_upt, 0, sizeof g_upt); g_upt_path = 0; upt_mark(0); }
     /* TOTK (2026-10-28): the copy reads the texture's guest memory, which the game can take away meanwhile. A texture made
        in memory the game had moved into the stack region (svcMapMemory) was uploaded after the move was undone: the
        submit thread read the decommitted page (PROT_NONE) in nvn_deswizzle and the process died with SIGBUS (100% save, about
@@ -5606,11 +5613,12 @@ static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key,
     if (upt_on()) { static double min_ms = -1; if (min_ms < 0) min_ms = atof(getenv("DM_NVN_UPTIME"));
         if (d_ / 1e6 >= min_ms) { struct rusage ru1; getrusage(RUSAGE_SELF, &ru1); uint64_t e = clock_gettime_nsec_np(CLOCK_MONOTONIC);
             #define UPT_MS(i, j) (g_upt[i] && g_upt[j] ? (g_upt[j] - g_upt[i]) / 1e6 : -1.0)
-            MLOG("[uptime] frame=%llu ser=%llu fmt=%#x %ux%u lv=%u tgt=%d size=%llu path=%s total=%.2f ms: probe %.2f, texture %.2f, protect %.2f, %s %.2f, %s %.2f, rest %.2f; faults minor %ld major %ld",
+            MLOG("[uptime] frame=%llu ser=%llu fmt=%#x %ux%u lv=%u tgt=%d size=%llu path=%s total=%.2f ms: probe %.2f, texture %.2f, protect %.2f, %s %.2f, %s %.2f, rest %.2f; faults minor %ld major %ld; pages before: in memory %u, paged out %u, other %u; id %d via %s",
                  (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, t->d.levels, t->d.target, (unsigned long long)t->L.size,
                  g_upt_path == 1 ? "gpu" : g_upt_path == 2 ? "cpu" : g_upt_path == 3 ? "gpu-then-cpu" : "none", d_ / 1e6, UPT_MS(0, 1), UPT_MS(1, 2), UPT_MS(2, 3),
                  g_upt_path == 1 ? "wrap" : "staging", UPT_MS(3, 4), g_upt_path == 1 ? "encode" : "copy", UPT_MS(4, 5), g_upt[5] ? (e - g_upt[5]) / 1e6 : -1.0,
-                 ru1.ru_minflt - ru0.ru_minflt, ru1.ru_majflt - ru0.ru_majflt);
+                 ru1.ru_minflt - ru0.ru_minflt, ru1.ru_majflt - ru0.ru_majflt, g_upt_core[0], g_upt_core[1], g_upt_core[2],
+                 g_up_tid, g_up_via == 1 ? "bind" : g_up_via == 2 ? "pool" : "other");
             #undef UPT_MS
         } }
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
@@ -9049,6 +9057,7 @@ static uint8_t treg_kind(const tex_t *t) { return tex_mirrored(t) ? (pkg_hashed(
    retain + autorelease (an autorelease-pool entry) on the texture slow path. */
 #define tex_by_id(tid) ((__bridge id<MTLTexture>)tex_by_id_p(tid))
 static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
+    g_up_tid = tid;   // the [uptime] line's ID (DM_NVN_UPTIME)
     { int pn = bound_tex_pool_n(); if (pn && tid >= pn) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（绑定的池容量 %d）按空槽处理：读出 0", tid, pn); return NULL; } }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return NULL; }
     treg_t *rp = &g_treg[tid];
@@ -17225,6 +17234,7 @@ static void prepare_shader_images(NvShader *sh,int stage) {
   registry_unlock();
  }
 }
+static void prepare_draw_pools(NvProg *pr) { g_up_via = 2; prepare_shader_pools(pr->sh[0]); prepare_shader_pools(pr->sh[1]); g_up_via = 0; }
 static void prepare_draw_textures(NvProg *pr) {
     if (!pr) return;
     prepare_shader_images(pr->sh[0],0);prepare_shader_images(pr->sh[1],1);
@@ -17245,11 +17255,11 @@ static void prepare_draw_textures(NvProg *pr) {
             }
             total += sh->texture_count; g_texture_plan_total += sh->rf.nb; g_texture_plan_selected += sh->texture_count;
         }
-        if (!total) {prepare_shader_pools(pr->sh[0]);prepare_shader_pools(pr->sh[1]);return;}
+        if (!total) {prepare_draw_pools(pr);return;}
     }
     for (;;) {
         g_tex_prepare_split = 0; g_tex_preparing = 1;
-        registry_lock();
+        registry_lock(); g_up_via = 1;
         for (int st = 0; st < 2; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
             int count = planned ? sh->texture_count : sh->rf.nb;
             for (int i = 0; i < count; i++) { int tid = 0;
@@ -17263,8 +17273,8 @@ static void prepare_draw_textures(NvProg *pr) {
             }
             if (g_tex_prepare_split) break;
         }
-        registry_unlock(); g_tex_preparing = 0;
-        if (!g_tex_prepare_split) {prepare_shader_pools(pr->sh[0]);prepare_shader_pools(pr->sh[1]);return;}
+        g_up_via = 0; registry_unlock(); g_tex_preparing = 0;
+        if (!g_tex_prepare_split) {prepare_draw_pools(pr);return;}
         /* rp_end may flush deferred draws which also use the registry. */
         g_tex_prepare_split = 0; rp_end();
     }
