@@ -2,6 +2,19 @@
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
 static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
+/* A mesh shader with no task shader launches its workgroups through its own object function, MTK_OBJECT_BLOCK at a time
+   (MeshStage.cs ObjectEntry / ObjectBlock / ObjectCountBuffer, the same constants; after nxnative 09dcb627, MIT): Metal holds
+   a mesh grid to 1024 threadgroups, and Ocarina of Time's foliage drew up to 1,238 in one indirect draw here (1,771 at
+   nxnative, a GPU page fault on an M2 Max). An indirect draw's count is read on the GPU, so it launches
+   MTK_OBJECT_BLOCKS_INDIRECT blocks (16,384 workgroups; the blocks past the count launch nothing). A translation without the
+   object function (an older chain, the probes) draws as before. OOT_MESH_BLOCKS=0: one mesh grid as before, to compare. */
+enum { MTK_OBJECT_BLOCK=1024, MTK_OBJECT_BLOCKS_INDIRECT=16, MTK_OBJECT_COUNT_BUFFER=30 };
+static _Atomic uint64_t g_mtk_block_draws;
+static int mtk_blocks_on(const NvShader *ms) {
+    static _Atomic int on=-1;int v=atomic_load_explicit(&on,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_MESH_BLOCKS");v=!(e&&!strcmp(e,"0"));if(atomic_exchange(&on,v)<0&&!v)MLOG("[mesh] OOT_MESH_BLOCKS=0: a mesh shader with no task shader draws its workgroups as one mesh grid");}
+    return v&&ms&&ms->mesh_notask&&ms->ofn;
+}
 static int mtk_owners(NvShader **ts,NvShader **ms){if(!g_mtk.on)return 0;*ts=g_mtk.ts;*ms=g_mtk.ms;return 1;}   // nvn_mesh_batch.inc: the mesh draw's real task / mesh owners (draw_inner sees a raster-only program)
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
@@ -151,6 +164,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
     if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
+    else if(mtk_blocks_on(ms)){m.objectFunction=ms->ofn;m.payloadMemoryLength=16;m.maxTotalThreadsPerObjectThreadgroup=1;}   // its workgroups in blocks of MTK_OBJECT_BLOCK (mtk_encode)
     m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
     m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
@@ -300,8 +314,9 @@ static void mtk_scratch_report(void) {
 }
 static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms;
-    if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={!!ts}},0);
-    else {[en setArgumentTable:g_vt atStages:MTLRenderStageMesh];if(ts)[en setArgumentTable:g_ot atStages:MTLRenderStageObject];}
+    const int blocks=!ts&&mtk_blocks_on(ms);   // the mesh's own object function launches its workgroups MTK_OBJECT_BLOCK at a time
+    if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={ts||blocks}},0);
+    else {[en setArgumentTable:g_vt atStages:MTLRenderStageMesh];if(ts||blocks)[en setArgumentTable:g_ot atStages:MTLRenderStageObject];}
     uint64_t first=g_mtk.first_gpu;
     if(!first){id<MTLBuffer>b;size_t o=arena_alloc(16,&b);memcpy((uint8_t *)b.contents+o,&g_mtk.first,4);first=b.gpuAddress+o;}
     if(ts){g_args_dirty[3]=1;encode_args((id<MTLCommandEncoder>)en,ts,3,0);
@@ -310,7 +325,20 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());mtk_scratch_report();   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
     int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
-    if(g_mtk.indirect_gpu){
+    if(blocks){
+        /* The object stage reads the workgroup count from word 0 of the grid record (an indirect draw's converted record, a
+           direct draw's copy) and each object threadgroup launches its block. An indirect draw's count is known only on the
+           GPU, so it gets MTK_OBJECT_BLOCKS_INDIRECT object threadgroups; the ones past the count launch nothing. */
+        uint64_t count=g_mtk.indirect_gpu;uint32_t groups=g_mtk.indirect_gpu?MTK_OBJECT_BLOCKS_INDIRECT:(g_mtk.count+MTK_OBJECT_BLOCK-1)/MTK_OBJECT_BLOCK;
+        if(!count){id<MTLBuffer>b;size_t o=arena_alloc(16,&b);memcpy((uint8_t *)b.contents+o,&g_mtk.count,4);count=b.gpuAddress+o;}
+        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={MTK_OBJECT_COUNT_BUFFER,count}},0);else[g_ot setAddress:count atIndex:MTK_OBJECT_COUNT_BUFFER];
+        atomic_fetch_add(&g_mtk_block_draws,1);
+        if(groups){
+            if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={groups,1,ms->mesh_threads}},1);
+            else [en drawMeshThreadgroups:MTLSizeMake(groups,1,1) threadsPerObjectThreadgroup:MTLSizeMake(1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+        }
+    }
+    else if(g_mtk.indirect_gpu){
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH_INDIRECT,.u={g_mtk.indirect_gpu,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
         else [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.indirect_gpu threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
     }

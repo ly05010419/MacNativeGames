@@ -7540,7 +7540,7 @@ static void pool_memo_index(NvPoolMemo *m) {   // rebuild the uhash -> way index
     for (int w = 0; w < POOL_MEMO_WAYS; w++) if (m->ent[w].valid) { unsigned s = (unsigned)(m->ent[w].uhash % POOL_MEMO_SLOTS); while (m->slot[s]) s = (s + 1) % POOL_MEMO_SLOTS; m->slot[s] = (uint16_t)(w + 1); }
 }
 static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo_wdiff, g_pmemo_whole_diff, g_pmemo_split, g_pmemo_evict, g_pmemo_fill;   // [descriptor-demand-memo]
-@interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn;   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
+@interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn, ofn;   /* ofn: a mesh shader's own object function (mesh_stage.object, MeshStage.cs ObjectEntry): its workgroups in blocks of 1024 */   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
     int frmw;   /* #2070: fn is the lowered build of this compute shader (nvn_float_rmw.h, frmw_use_lowered) */
     int has_bz;   /* its MSL has the blend-zero guard and reads the word at fragment buffer BLEND_ZERO_BUFFER (nvn_blend_zero.h, bz_bind) */
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
@@ -8332,6 +8332,7 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
     NSDictionary *mi=j[@"mesh_stage"];
     if ([mi isKindOfClass:NSDictionary.class]) { o->mesh_kind=[mi[@"kind"] isEqual:@"ts"]?1:2; o->mesh_notask=![mi[@"task"] boolValue]; o->mesh_threads=[mi[@"threads"] intValue]; o->mesh_payload=[mi[@"payload"] intValue]; o->mesh_device=[mi[@"device"] boolValue]; }
     o->fn = lib_fn(lib, j[@"entry"]); o->fn.label=pc; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
+    if (o->mesh_kind == 2 && o->mesh_notask && [mi isKindOfClass:NSDictionary.class] && [mi[@"object"] isKindOfClass:NSString.class]) { o->ofn = lib_fn(lib, mi[@"object"]); if (!o->ofn) MLOG("【红】mesh %s: its object function %s is not in the library; the workgroups go up as one mesh grid", pc.UTF8String, [mi[@"object"] UTF8String]); }
     {   // geometry as compute (nvn_geometry_rt.inc): the kernel's output layout, a vertex variant's capture entry
         NSDictionary *g = j[@"geometry"];
         if ([g isKindOfClass:NSDictionary.class]) { o->geo_vertices = [g[@"vertices"] intValue]; o->geo_invocations = [g[@"invocations"] intValue]; o->geo_output = [g[@"output"] intValue];
