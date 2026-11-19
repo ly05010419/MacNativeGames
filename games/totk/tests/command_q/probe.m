@@ -48,6 +48,7 @@ void runtime_gamepad_start(void){}
    real-controller probes define FRONTEND_REAL_GAMEPAD and use the production implementations instead. */
 static RuntimeGamepadCalibration calibrationFixture = {.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
 static float deadzoneFixture[2] = {.12f,.12f};
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out){*out=(RuntimeGamepadCalibrationSample){0};}
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out){*out=calibrationFixture;}
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in){calibrationFixture=*in;}
 float runtime_gamepad_stick_deadzone_get(int right){return deadzoneFixture[!!right];}

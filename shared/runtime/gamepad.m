@@ -52,6 +52,9 @@ static void refresh_gamepads(void) {
         uint64_t trace = gamepad_game_trace_row();
         if (trace) fprintf(stderr, GAMEPAD_TRACE_TAG " %llu t=%llu refresh blocked: focused=0 background=0\n",
                            (unsigned long long)trace, (unsigned long long)runtime_now_ns());
+#ifdef RUNTIME_STICK_CALIBRATION
+        if (calibrationSample.valid) calibration_sample_invalidate();
+#endif
         return;
     }
 #endif
@@ -214,6 +217,7 @@ static void refresh_gamepads(void) {
     gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
     gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
 #ifdef RUNTIME_STICK_CALIBRATION
+    calibration_sample_update();
     captureStickActive=captureActive;
     gamepadRawLx=rawLx; gamepadRawLy=rawLy; gamepadRawRx=rawRx; gamepadRawRy=rawRy;
     gamepadRawLT=rawLT; gamepadRawRT=rawRT;
@@ -274,6 +278,7 @@ void runtime_gamepad_clear(void) {
     gamepadRawLx = gamepadRawLy = gamepadRawRx = gamepadRawRy = 0;
     gamepadRawLT = gamepadRawRT = 0;
     captureStickActive=0;
+    calibration_sample_invalidate();
 #endif
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
     settingsShortcutDown = settingsShortcutPending = 0;

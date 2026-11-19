@@ -179,6 +179,9 @@ typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } Runtime
    positive gain for old callers. The default center 0, scale 1 leaves the stick unchanged. */
 typedef struct { float centerX, centerY, scaleX, scaleY, scaleNegX, scaleNegY; } RuntimeStickCalibration;
 typedef struct { RuntimeStickCalibration left, right; int stableHID; } RuntimeGamepadCalibration;
+/* Main-thread calibration samples: generation changes even when an interruption occurs between UI ticks. */
+typedef struct { float lx,ly,rx,ry,lt,rt; uint64_t generation; int valid; } RuntimeGamepadCalibrationSample;
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out);
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the calibration in force */
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* set and save (controller-calibration.txt) */
 void runtime_gamepad_calibration_reset(void);   /* back to the default and remove the file */

@@ -26,6 +26,9 @@ static unsigned char hidButtons[16];          /* usage 1..15, 1 = pressed */
 static int hidHat = 8;                        /* 0 N, 1 NE, 2 E ... 7 NW; 8 centred */
 static float hidX, hidY, hidZ, hidRz;         /* -1..1, 0 centred */
 static int hidOrder;                          /* gamepad_hid_order of the attached pad */
+#ifdef RUNTIME_STICK_CALIBRATION
+static unsigned hidSampleAxes; /* all four descriptor axes must be primed; attach zeros are not samples */
+#endif
 static int hidRightRxRy;                      /* its right stick is Rx/Ry */
 static GamepadHidReach hidReach[4];           /* X, Y, right X, right Y; used in the Switch Pro order */
 static float hidReachLogged[4][2];
@@ -111,16 +114,34 @@ static void hid_value(void *context, IOReturn result, void *sender, IOHIDValueRe
         hidHat = hid_hat(element, v);
     } else if (page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_X) {
         hidX = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 1;
+#endif
     } else if (page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Y) {
         hidY = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 2;
+#endif
     } else if (page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Z) {
         hidZ = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 4;
+#endif
     } else if (page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Rz) {
         hidRz = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 8;
+#endif
     } else if (hidRightRxRy && page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Rx) {
         hidZ = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 4;
+#endif
     } else if (hidRightRxRy && page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Ry) {
         hidRz = hid_axis(element, v);
+#ifdef RUNTIME_STICK_CALIBRATION
+        hidSampleAxes |= 8;
+#endif
     } else {
         return;
     }
@@ -132,6 +153,24 @@ static void hid_value(void *context, IOReturn result, void *sender, IOHIDValueRe
     }
 }
 
+#ifdef RUNTIME_STICK_CALIBRATION
+/* Change-only HID devices need not emit idle reports: prime genuine current axis values once
+   on attach. Missing/unreadable axes remain invalid until their first actual callback. */
+static void hid_prime_axes(IOHIDDeviceRef device) {
+    CFArrayRef elements=IOHIDDeviceCopyMatchingElements(device,NULL,kIOHIDOptionsTypeNone);
+    if (!elements) return;
+    for (CFIndex i=0;i<CFArrayGetCount(elements);i++) {
+        IOHIDElementRef element=(IOHIDElementRef)CFArrayGetValueAtIndex(elements,i);
+        uint32_t page=IOHIDElementGetUsagePage(element), usage=IOHIDElementGetUsage(element);
+        if (page!=kHIDPage_GenericDesktop || !(usage==kHIDUsage_GD_X || usage==kHIDUsage_GD_Y ||
+            usage==kHIDUsage_GD_Z || usage==kHIDUsage_GD_Rz || (hidRightRxRy && (usage==kHIDUsage_GD_Rx || usage==kHIDUsage_GD_Ry)))) continue;
+        IOHIDValueRef value=NULL;
+        if (IOHIDDeviceGetValue(device,element,&value)==kIOReturnSuccess && value) hid_value(NULL,kIOReturnSuccess,device,value);
+    }
+    CFRelease(elements);
+}
+#endif
+
 static void hid_pad_reset(void) {
     memset(hidButtons, 0, sizeof hidButtons);
     hidHat = 8;
@@ -141,6 +180,7 @@ static void hid_pad_reset(void) {
     hidPad = (HIDPadState){0};
 #ifdef RUNTIME_STICK_CALIBRATION
     hidRawLx = hidRawLy = hidRawRx = hidRawRy = 0;
+    hidSampleAxes=0;calibration_sample_invalidate();
 #endif
 }
 
@@ -207,6 +247,9 @@ static int hid_pad_attach(IOHIDDeviceRef device, char *why, size_t n) {
     IOHIDDeviceRegisterInputValueCallback(device, hid_value, NULL);
     IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     hidPad.present = 1;
+#ifdef RUNTIME_STICK_CALIBRATION
+    hid_prime_axes(device);
+#endif
     fprintf(stderr, "[totk-input] HID gamepad connected: %s (%s)\n", name ? name : "unknown", manufacturer ? manufacturer : "unknown");
     fprintf(stderr, "[totk-input] HID gamepad buttons in the %s order, right stick %s", hidOrder == GAMEPAD_HID_SWITCH_PRO ?
             "Switch Pro Controller" : "generic", hidRightRxRy ? "Rx/Ry" : "Z/Rz");

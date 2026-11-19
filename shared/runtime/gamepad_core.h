@@ -122,6 +122,13 @@ static void gamepad_forget_raw(GCController *controller) {
 }
 
 #ifdef RUNTIME_STICK_CALIBRATION
+static RuntimeGamepadCalibrationSample calibrationSample;
+static uintptr_t calibrationDevice;
+static unsigned calibrationDomain;
+static void calibration_sample_invalidate(void) {
+    calibrationSample.valid=0; calibrationSample.generation++;
+    calibrationDevice=0; calibrationDomain=0;
+}
 static void hid_calibration_changed(void);
 /* The stick calibration (the settings panel's tool, controller-calibration.txt): center is where the stick rests when
    released and scale stretches its real travel to full range. It applies before the deadzone so a drifting stick that has
@@ -450,6 +457,49 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
 #include "gamepad_hid_pad.h"   /* hidPad: the generic HID pads (macOS) */
 
 #ifdef RUNTIME_STICK_CALIBRATION
+/* Calibration uses one device, not a per-axis strongest-source merge. For Switch pads prefer
+   the exact source gameplay selected, including the final neutral sample. Every domain change
+   invalidates the sweep; never calibrate a working native stick using a different HID centre. */
+static void calibration_sample_update(void) {
+    RuntimeGamepadCalibrationSample next={0}; uintptr_t device=0; unsigned domain=0;
+    uint64_t now=runtime_now_ns();
+    /* Only actual pending fallback evidence invalidates native neutral. A small raw bias or
+       an expired auxiliary report is not evidence that a functioning native stick is stuck. */
+    for (GCController *controller in GCController.controllers) {
+        GCExtendedGamepad *pad=controller.extendedGamepad;
+        if (!pad) continue;
+        device=(uintptr_t)(__bridge void *)controller; domain=1;
+        next=(RuntimeGamepadCalibrationSample){.lx=pad.leftThumbstick.xAxis.value,.ly=pad.leftThumbstick.yAxis.value,
+            .rx=pad.rightThumbstick.xAxis.value,.ry=pad.rightThumbstick.yAxis.value,
+            .lt=pad.leftTrigger.value,.rt=pad.rightTrigger.value,.valid=1};
+        if (rawLeftController==controller && rawLeft.valid) {
+            int fresh=now>=rawLeft.at && now-rawLeft.at<=250000000ULL;
+            if (fresh && rawLeft.active) { next.lx=switch_left_axis(rawLeft.x);next.ly=switch_left_axis(rawLeft.y);domain|=2; }
+            else if (fresh && rawLeft.zeroSince && fabsf(next.lx)<=.0001f && fabsf(next.ly)<=.0001f) next.valid=0;
+        }
+        if (rawRightController==controller && rawRight.valid) {
+            int fresh=now>=rawRight.at && now-rawRight.at<=250000000ULL;
+            if (fresh && rawRight.active) { next.rx=switch_left_axis(rawRight.x);next.ry=switch_left_axis(rawRight.y);domain|=4; }
+            else if (fresh && rawRight.zeroSince && fabsf(next.rx)<=.0001f && fabsf(next.ry)<=.0001f) next.valid=0;
+        }
+        break;
+    }
+#if TARGET_OS_OSX
+    if (!device && hidPad.present) {
+        device=(uintptr_t)hidDevice; domain=8; /* reset invalidates even if an address gets reused */
+        next=(RuntimeGamepadCalibrationSample){.lx=hidRawLx,.ly=hidRawLy,.rx=hidRawRx,.ry=hidRawRy,
+            .lt=!!(hidPad.buttons&(1ULL<<8)),.rt=!!(hidPad.buttons&(1ULL<<9)),.valid=hidSampleAxes==15};
+    }
+#endif
+    next.valid=next.valid && isfinite(next.lx)&&isfinite(next.ly)&&isfinite(next.rx)&&isfinite(next.ry);
+    next.generation=calibrationSample.generation + (device!=calibrationDevice || domain!=calibrationDomain || next.valid!=calibrationSample.valid);
+    calibrationDevice=device;calibrationDomain=domain;calibrationSample=next;
+}
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out) {
+    refresh_gamepads(); /* poll native axes and re-evaluate expiring Switch reports, never reuse synthetic clear zeros */
+    pthread_mutex_lock(&gamepadLock);*out=calibrationSample;pthread_mutex_unlock(&gamepadLock);
+}
+
 /* A settings edit must update cached HID axes even without another input event. */
 static void hid_calibration_changed(void) {
     if (!hidPad.present) return;

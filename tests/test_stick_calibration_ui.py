@@ -20,6 +20,8 @@ static RuntimeGamepadCalibration saved={.left={.scaleX=1, .scaleY=1},.right={.sc
 static int saves, connection=1;
 static float triggerLeft,triggerRight,renderedTriggers[2];
 static uint64_t now=1000000000;
+static RuntimeGamepadCalibrationSample sampleFixture={.valid=1,.generation=1};
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out){*out=sampleFixture;out->lt=triggerLeft;out->rt=triggerRight;}
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration*c){*c=saved;}
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration*c){saved=*c;saves++;}
 static float dz[2]={.12f,.12f};
@@ -124,6 +126,21 @@ assert([[v valueForKey:@"calibrationStatus"] containsString:@"完成"]);
 triggerLeft=.4f;triggerRight=.9f;[v tick];render(v);
 assert(renderedTriggers[0]==0&&renderedTriggers[1]==0); /* auto-complete returns to idle */
 triggerLeft=triggerRight=0;
+/* Invalid focus-cleared samples must neither record centre nor finish a completed sweep. */
+for(int phase=CAL_AWAIT_CENTER;phase<=CAL_READY;phase+=CAL_READY-CAL_AWAIT_CENTER){
+ calRun[0]=(StickCalibrationRun){.phase=phase,.settleSince=1,.posX=.9,.negX=-.8};calRun[1]=calRun[0];
+ sampleFixture.valid=0;sampleFixture.generation++;now+=1000000000;[v tick];
+ assert(saves==1&&calRun[0].phase==CAL_AWAIT_CENTER&&calRun[0].settleSince==0&&calRun[0].posX==0);
+ now+=1000000000;[v tick];assert(calRun[0].phase==CAL_AWAIT_CENTER&&calRun[0].settleSince==0);
+ sampleFixture.valid=1;sampleFixture.generation++;[v tick];assert(calRun[0].settleSince==0);
+}
+/* Domain/device transitions reset centre, dwell, travel and sector coverage, even if already READY. */
+for(int phase=CAL_RECORD;phase<=CAL_READY;phase++){
+ calRun[0]=(StickCalibrationRun){.phase=phase,.centerX=.1,.settleSince=1,.recordSince=1,.posX=.9,.negX=-.8};calRun[1]=calRun[0];
+ calRun[0].coverage[0]=2;sampleFixture.generation+=2;[v tick];
+ assert(saves==1&&calRun[0].phase==CAL_AWAIT_CENTER&&calRun[0].centerX==0&&calRun[0].coverage[0]==0&&calRun[0].posX==0);
+}
+calRun[0].phase=calRun[1].phase=CAL_IDLE;
 /* Hiding, disconnect and detaching cancel without a write. */
 [v calibrate:v.calibrateButton];w.contentView.hidden=YES;[v tick];assert(!settings_calibration_active()&&saves==1);
 w.contentView.hidden=NO;[v calibrate:v.calibrateButton];connection=0;[v tick];assert(!settings_calibration_active()&&saves==1);

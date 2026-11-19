@@ -98,6 +98,7 @@ void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
    and must never fall through dynamic_lookup to a missing gamepad symbol. */
 static RuntimeGamepadCalibration fakeCalibration = {.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
 static float fakeDeadzone[2] = {.12f, .12f};
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out){*out=(RuntimeGamepadCalibrationSample){0};}
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = fakeCalibration; }
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) { fakeCalibration = *in; }
 void runtime_gamepad_calibration_reset(void) {

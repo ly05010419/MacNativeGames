@@ -16,7 +16,8 @@ static NSArray *test_controllers(id cls, SEL selector) { (void)cls; (void)select
 @end
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
-uint64_t runtime_now_ns(void) { return 1000000000; }
+static uint64_t testNow=1000000000;
+uint64_t runtime_now_ns(void) { return testNow; }
 void runtime_feedback_attach(GCController *controller) { (void)controller; }
 void runtime_feedback_detach(GCController *controller) { (void)controller; }
 void runtime_feedback_quiet(void) {}
@@ -216,6 +217,48 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_gamepad_calibration_reset(); CHECK(!calibration.stableHID);
     hidX=.65f;hidY=hidZ=hidRz=0;hid_pad_compute();
     CHECK(hidPad.lx>32760 && fabsf(hidRawLx-.65f)<1e-6f); /* uncalibrated adaptive reach retained */
+
+    /* Calibration has its own source-coherent samples; focus/cache clears cannot fake neutral. */
+    RuntimeGamepadCalibrationSample sample;testControllers=@[snapshot];hidPad.present=0;
+    [snapshot.extendedGamepad.leftThumbstick.xAxis setValue:.2f];[snapshot.extendedGamepad.leftThumbstick.yAxis setValue:.1f];
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && fabsf(sample.lx-.2f)<1e-6f);
+    uint64_t generation=sample.generation;
+    runtime_gamepad_background_set(0);runtime_gamepad_focus(0);
+    runtime_gamepad_calibration_sample(&sample);CHECK(!sample.valid && sample.generation>generation);
+    runtime_gamepad_focus(1);runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && fabsf(sample.lx-.2f)<1e-6f);
+    generation=sample.generation;
+    runtime_gamepad_focus(0);runtime_gamepad_focus(1); /* interruption wholly between UI ticks stays latched */
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation>generation);
+    runtime_gamepad_background_set(1);generation=sample.generation;runtime_gamepad_focus(0);
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation==generation);
+    runtime_gamepad_focus(1);runtime_gamepad_background_set(0);
+    /* Foreign controller reports must never supply selected controller coordinates. */
+    GCController *other=[GCController controllerWithExtendedGamepad];
+    runtime_gamepad_switch_left((__bridge void*)other,3800,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(fabsf(sample.lx-.2f)<1e-6f);
+    generation=sample.generation;
+    runtime_gamepad_switch_left((__bridge void*)snapshot,3200,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.generation==generation && fabsf(sample.lx-.2f)<1e-6f); /* working native remains authoritative */
+    [snapshot.extendedGamepad.leftThumbstick.xAxis setValue:0];[snapshot.extendedGamepad.leftThumbstick.yAxis setValue:0];
+    runtime_gamepad_switch_left((__bridge void*)snapshot,2100,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation==generation && sample.lx==0); /* normal native centre ignores small raw bias */
+    testNow+=300000000;
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation==generation && sample.lx==0); /* stale auxiliary data cannot invalidate normal native */
+    runtime_gamepad_switch_left((__bridge void*)snapshot,3200,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(!sample.valid); /* delayed fallback cannot calibrate stuck zero */
+    testNow+=250000000;runtime_gamepad_switch_left((__bridge void*)snapshot,3200,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation>generation && sample.lx>.5f);
+    generation=sample.generation;
+    runtime_gamepad_switch_left((__bridge void*)snapshot,2100,2048); /* final centre: same domain, not native zero */
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.generation==generation && sample.lx>0 && sample.lx<.03f);
+    rawLeft.valid=0;refresh_gamepads();runtime_gamepad_switch_left((__bridge void*)snapshot,2100,2048);
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.generation>generation); /* change and return between ticks */
+    testControllers=@[other];runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid);
+    testControllers=@[];hid_pad_reset();hidPad.present=1;
+    runtime_gamepad_calibration_sample(&sample);CHECK(!sample.valid); /* attached synthetic zero is not primed */
+    hidSampleAxes=15;hidX=.1f;hidY=hidZ=hidRz=0;hid_pad_compute();
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid);generation=sample.generation;
+    runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation==generation); /* change-only stationary pad */
 
     /* Restart-equivalent preference loading; only a valid opt-in enables background events. */
     write_word(saved, "on\n"); load_gamepad_background();

@@ -161,6 +161,7 @@ static int settings_calibration_active(void) { return calRun[0].phase != CAL_IDL
     float rawLX, rawLY, rawRX, rawRY;
     float rawLT, rawRT;
     BOOL connected;
+    uint64_t sampleGeneration;
     NSString *calibrationStatus;
 }
 -(BOOL)isFlipped{return YES;}
@@ -367,8 +368,17 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
 -(void)tick{
     if(self.hiddenOrHasHiddenAncestor||!self.window){calRun[0].phase=calRun[1].phase=CAL_IDLE;return;}
     int conn=0;runtime_gamepad_stick_raw(&rawLX,&rawLY,&rawRX,&rawRY,&conn);connected=conn!=0;
-    runtime_gamepad_trigger_raw(&rawLT,&rawRT);
+    RuntimeGamepadCalibrationSample sample;runtime_gamepad_calibration_sample(&sample);
+    BOOL interrupted=!sample.valid || sampleGeneration!=sample.generation;
+    sampleGeneration=sample.generation;
+    rawLX=sample.lx;rawLY=sample.ly;rawRX=sample.rx;rawRY=sample.ry;rawLT=sample.lt;rawRT=sample.rt;
     if(!connected){calRun[0].phase=calRun[1].phase=CAL_IDLE;}
+    else if(interrupted && settings_calibration_active()){
+        /* Never combine a pre-interruption centre/range with another source or synthetic focus-clear zeros. */
+        for(int stick=0;stick<2;stick++)calRun[stick]=(StickCalibrationRun){.phase=CAL_AWAIT_CENTER};
+        calibrationStatus=settings_text("输入已变化，请重新松开摇杆","Input changed; release the sticks again");
+    }
+    if(interrupted){[self refreshControls];[self setNeedsDisplay:YES];return;}
     [self stepStick:CAL_LEFT];[self stepStick:CAL_RIGHT];
     [self finishIfComplete];
     [self refreshControls];[self setNeedsDisplay:YES];
