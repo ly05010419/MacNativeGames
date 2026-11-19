@@ -179,7 +179,11 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     if(akey&&g_par_on){par_count(0);atomic_fetch_add(&g_mtk_archive_misses,1);}
     id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
     if(ps&&akey)par_add(g_dev,akey,m);
-    if(!ps)gpu_compile_error(error?*error:nil,m.label);
+    if(!ps){gpu_compile_error(error?*error:nil,m.label);
+#ifdef PSO4_BUILT
+        par4_compiler_died(error?*error:nil);   // the service's death also takes the Metal 4 captures under way (nvn_pso4.h)
+#endif
+    }
     return ps;
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {

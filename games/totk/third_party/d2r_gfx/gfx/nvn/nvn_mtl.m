@@ -10899,7 +10899,12 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     if (key && g_par_on) par_count(0);
     ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
     if (ps) par_add(g_dev, key, d);
-    else gpu_compile_error(e ? *e : nil, d.label);
+    else {
+        gpu_compile_error(e ? *e : nil, d.label);
+#ifdef PSO4_BUILT
+        par4_compiler_died(e ? *e : nil);   // the service's death also takes the Metal 4 captures under way (nvn_pso4.h)
+#endif
+    }
     return ps;
 }
 static _Atomic uint64_t g_compute_bundle_hits,g_compute_device_hits,g_compute_misses;
@@ -10932,7 +10937,12 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
     if (ps) par_add(g_dev, key, d);
-    else gpu_compile_error(e ? *e : nil, d.label);
+    else {
+        gpu_compile_error(e ? *e : nil, d.label);
+#ifdef PSO4_BUILT
+        par4_compiler_died(e ? *e : nil);   // the service's death also takes the Metal 4 captures under way (nvn_pso4.h)
+#endif
+    }
     return ps;
 }
 /* A compute pipeline that takes the shader's own thread group size. Metal compiles a kernel for some number of threads a group

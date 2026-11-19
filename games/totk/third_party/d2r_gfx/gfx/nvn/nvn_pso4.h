@@ -173,7 +173,7 @@ static id<MTL4Archive> par4_archive_for(id<MTLDevice> dev, NSString *key, int *o
 
 /* A flush period: its compiler captures what it compiles into its serializer. busy: compiles under way in it. */
 @interface Par4Period : NSObject { @public id<MTL4PipelineDataSetSerializer> ser; id<MTL4Compiler> comp; dispatch_group_t busy;
-    NSMutableArray<NSString *> *keys; NSMutableArray *descs; NSUInteger captured; int batch; }   // descs: each key's Metal 4 description (par4_resplit)
+    NSMutableArray<NSString *> *keys; NSMutableArray *descs; NSUInteger captured; int batch; uint64_t deaths; }   // descs: each key's Metal 4 description (par4_resplit); deaths: g_par4_deaths when it began
 @end
 @implementation Par4Period
 @end
@@ -182,6 +182,31 @@ static Par4Period *g_par4_period;          // g_par4_mu
 static int g_par4_capture_off;             // g_par4_mu: capturing failed in a new period, so it stays off this run
 static uint64_t g_par4_last_capture;       // g_par4_mu: bp_now() of the last capture (the timer's flush)
 static int g_par4_timer;                   // g_par4_mu: a timer is set
+/* The compiler service (MTLCompilerService) dying under any compile takes every compile it holds down, the captures of the
+   periods not yet written among them, whether or not one of them reported it; a period then written holds pipelines whose
+   functions are missing, and the next start aborts in Metal's lookup of that file (nxnative 9bd8bb38, MIT: Ocarina of Time,
+   a second crash met only plain compute compiles, and the period written after it, with 42 task / mesh pipelines, aborted
+   the next start). So every death is counted (par4_compiler_died), and a period that began before the latest one is not
+   written (par4_write): its pipelines are compiled again when drawn, into a sound period. Metal's error names the XPC
+   connection it lost; its domain is the GPU family's and its code a generic one, so the text tells it apart. */
+static _Atomic uint64_t g_par4_deaths, g_par4_dropped;
+static int par4_err_died(NSError *e) {
+    if (!e) return 0;
+    for (NSString *t in @[e.localizedDescription ?: @"", e.description ?: @""])
+        if ([t containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"] || [t containsString:@"interrupted connection"]) return 1;
+    return 0;
+}
+static void par4_write(Par4Period *p);
+static dispatch_queue_t par4_queue(void);
+/* Any compile that failed (the capturing compiler, the plain one, the old MTLDevice path): when the compiler service died
+   under it, the current period is handed to its writer, which drops it, and later captures go to a new one. */
+static void par4_compiler_died(NSError *e) {
+    if (!par4_err_died(e)) return;
+    uint64_t n = atomic_fetch_add(&g_par4_deaths, 1) + 1;
+    pthread_mutex_lock(&g_par4_mu); Par4Period *p = g_par4_period; g_par4_period = nil; pthread_mutex_unlock(&g_par4_mu);
+    MLOG("【红】Metal 4 管线存档：编译服务在编译中崩溃（第 %llu 次）：之前开始、还没写出的期都不写，里面的管线画到时重编 | the compiler service died under a compile: periods begun before it are not written", (unsigned long long)n);
+    if (p) dispatch_async(par4_queue(), ^{ par4_write(p); });
+}
 static dispatch_queue_t par4_queue(void) {
     static dispatch_queue_t q; static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.pso4-write", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
@@ -196,6 +221,7 @@ static id<MTL4Compiler> par4_plain(id<MTLDevice> dev) {   // no serializer: pipe
 /* A new period: its own serializer and the compiler bound to it, or nil (no batch lock, or Metal refused). */
 static Par4Period *par4_new_period(id<MTLDevice> dev) {
     Par4Period *p = [Par4Period new]; p->busy = dispatch_group_create(); p->keys = [NSMutableArray array]; p->descs = [NSMutableArray array];
+    p->deaths = atomic_load(&g_par4_deaths);
     p->batch = par_batch_begin();   // Metal's build folder of this serializer is removed once it is written (totk_pipeline_archive_folders.h)
     MTL4PipelineDataSetSerializerDescriptor *sd = [MTL4PipelineDataSetSerializerDescriptor new];
     sd.configuration = MTL4PipelineDataSetSerializerConfigurationCaptureBinaries;   // descriptions too: no file is written (nxnative)
@@ -221,7 +247,6 @@ static Par4Period *par4_enter(id<MTLDevice> dev) {
     pthread_mutex_unlock(&g_par4_mu);
     return p;
 }
-static void par4_write(Par4Period *p);
 static void par4_timer_fire(void);
 static void par4_leave(Par4Period *p, NSString *key, id desc4, BOOL captured) {
     BOOL full = NO, arm = NO;
@@ -278,11 +303,17 @@ static void par4_resplit(NSArray<NSString *> *keys, NSArray *descs);   // nvn_ps
 static void par4_write(Par4Period *p) {
     dispatch_group_wait(p->busy, DISPATCH_TIME_FOREVER);
     pthread_mutex_lock(&g_par4_mu); NSArray<NSString *> *keys = [p->keys copy]; NSArray *descs = [p->descs copy]; pthread_mutex_unlock(&g_par4_mu);
+    if (atomic_load(&g_par4_deaths) != p->deaths) {   // the compiler service died since the period began (par4_compiler_died): not written, not split
+        par4_release(p); atomic_fetch_add(&g_par4_dropped, keys.count); atomic_fetch_add(&g_par4_lost, keys.count);
+        MLOG("【红】Metal 4 管线存档：%lu 条没写（这一期开始后编译服务崩溃过），画到时重编 | %lu pipelines not written: the compiler service died since their period began", (unsigned long)keys.count, (unsigned long)keys.count);
+        return;
+    }
     NSError *why = nil;
     BOOL ok = !keys.count || par4_publish(p, keys, &why);
     par4_release(p);
     if (ok) return;
     if (atomic_fetch_add(&g_par4_failed, 1) < 64) MLOG("【红】Metal 4 管线存档：%lu 条写不了（%s），对半拆开再存", (unsigned long)keys.count, why ? why.localizedDescription.UTF8String : "no lock, or publishing failed");
+    par4_compiler_died(why);   // the service died while serializing: the other periods begun before it are not written either
     par4_resplit(keys, descs);
 }
 static void par4_timer_fire(void) {   // on par4_queue

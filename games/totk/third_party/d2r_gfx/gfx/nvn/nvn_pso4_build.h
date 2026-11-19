@@ -156,15 +156,21 @@ static id par4_make(int kind, id desc4, NSString *key) {
     NSError *ce = nil;
     if (c) ps = kind == PAR_RENDER ? (id)[c newRenderPipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce]
                                    : (id)[c newComputePipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce];
+    /* Test TOTK_PSO4_TEST_DEATH=<n>: the n-th capture reports the compiler service's death (the error Metal gives then) instead
+       of its pipeline, so a run shows par4_compiler_died / par4_write dropping the period (the pipeline is compiled again below). */
+    { static int nth = -1; static _Atomic int seen; if (nth < 0) { const char *t = getenv("TOTK_PSO4_TEST_DEATH"); nth = t ? atoi(t) : 0; }
+      if (p && ps && nth > 0 && atomic_fetch_add(&seen, 1) + 1 == nth) { ps = nil; ce = [NSError errorWithDomain:@"AGXMetalTest" code:2 userInfo:@{NSLocalizedDescriptionKey: @"Compiler encountered XPC_ERROR_CONNECTION_INTERRUPTED (TOTK_PSO4_TEST_DEATH)"}]; } }
     if (p) par4_leave(p, key, desc4, ps != nil);
     if (claimed) fn4_release(fid);
-    if (!ps && p) {   // refused through the capturing compiler: the period is written as it is, then once more without capture
-        par4_refused(p);
+    if (!ps && p) {   // refused through the capturing compiler: the period is written as it is (dropped when the compiler service died, par4_compiler_died), then once more without capture
+        if (par4_err_died(ce)) par4_compiler_died(ce); else par4_refused(p);
         if (atomic_fetch_add(&g_par4_failed, 1) < 4) MLOG("【红】Metal 4 管线存档：捕获时编不了 %s（%s），改不捕获再编", key.UTF8String, ce.localizedDescription.UTF8String ?: "?");
         id<MTL4Compiler> plain = par4_plain(g_dev); ce = nil;
         if (plain) ps = kind == PAR_RENDER ? (id)[plain newRenderPipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce]
                                            : (id)[plain newComputePipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce];
     }
+    else if (!ps) par4_compiler_died(ce);   // a plain compile (no key, or no period) the service died under
+    if (!ps && ce && p) par4_compiler_died(ce);   // the retry without capture died too
     if (ps) atomic_fetch_add(&g_par4_built, 1);
     return ps;   // nil: the old path compiles it and reports the error
 }
