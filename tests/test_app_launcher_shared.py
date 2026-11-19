@@ -268,6 +268,21 @@ class OdysseyLauncher(Common, Moves, LauncherCase):
         self.launch(TOTK_CONTROLS=str(self.root / 'mine.txt'))
         self.assertEqual(self.env()['TOTK_CONTROLS'], str(self.root / 'mine.txt'))
 
+    def test_romfs_mods_are_the_data_folders_mods_for_the_apps_version(self):   # issue #1788
+        self.launch()   # no game-version.txt: 1.3.0 (runtime/game_version.h)
+        self.assertEqual(self.env()['TOTK_ROMFS_MODS'], str(self.data / 'mods/v130'))
+        resources = self.app / 'Contents/Resources'
+        resources.mkdir(parents=True, exist_ok=True)
+        (resources / 'game-version.txt').write_text('1.4.1\n')
+        self.launch()
+        env = self.env()
+        self.assertEqual(env['ODYSSEY_GAME_VERSION'], '1.4.1')
+        self.assertEqual(env['TOTK_ROMFS_MODS'], str(self.data / 'mods/v141'))
+
+    def test_a_given_romfs_mods_folder_decides_first(self):
+        self.launch(TOTK_ROMFS_MODS='0')
+        self.assertEqual(self.env()['TOTK_ROMFS_MODS'], '0')
+
     def test_backups_are_named_by_time_alone(self):
         self.save()
         self.launch()
