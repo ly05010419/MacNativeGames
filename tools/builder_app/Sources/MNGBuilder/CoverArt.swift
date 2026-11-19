@@ -104,58 +104,6 @@ final class CoverImages {
     }
 }
 
-/// A picture parted in two by depth, as a spatial scene on a phone's lock screen (user 2026-11-19: "手机上 照片做墙纸 有一种
-/// 空间3d 特效", "做一个 mac上 我看看"): its subject (what Vision finds in front: a figure, a shield, the title) on its
-/// own with clear round it, and the scenery behind, where the subject's place is filled with the picture heavily
-/// blurred, so a little of it may show as the subject moves off it. Made once per picture, off the main thread; until
-/// then (or when Vision finds no subject) the picture is one layer.
-@MainActor final class SpatialLayers: ObservableObject {
-    static let shared = SpatialLayers()
-    struct Layers { let subject: PlatformImage; let scenery: PlatformImage }
-    @Published private(set) var made: [String: Layers] = [:]
-    private var asked: Set<String> = []
-
-    func layers(of path: String) -> Layers? {
-        if let known = made[path] { return known }
-        if !asked.contains(path) {
-            asked.insert(path)
-            Task.detached(priority: .utility) {
-                guard let parts = Self.part(path) else { return }
-                await MainActor.run {
-                    self.made[path] = Layers(subject: platformImage(parts.subject), scenery: platformImage(parts.scenery))
-                }
-            }
-        }
-        return nil
-    }
-
-    nonisolated static func part(_ path: String) -> (subject: CGImage, scenery: CGImage)? {
-        guard let image = CoverImages.decode(path) else { return nil }
-        let request = VNGenerateForegroundInstanceMaskRequest()
-        let handler = VNImageRequestHandler(cgImage: image)
-        guard (try? handler.perform([request])) != nil, let found = request.results?.first,
-              let buffer = try? found.generateScaledMaskForImage(forInstances: found.allInstances, from: handler)
-        else { return nil }
-        let picture = CIImage(cgImage: image)
-        let extent = picture.extent
-        let mask = CIImage(cvPixelBuffer: buffer)
-        let clear = CIImage(color: .clear).cropped(to: extent)
-        // the subject: the picture where the mask is, clear elsewhere
-        let subject = picture.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: clear,
-                                                                            kCIInputMaskImageKey: mask])
-        // the scenery: the subject's place (a little wider, soft-edged) filled with the picture heavily blurred
-        let wider = mask.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: extent.width * 0.012])
-            .applyingGaussianBlur(sigma: extent.width * 0.006).cropped(to: extent)
-        let smudged = picture.clampedToExtent().applyingGaussianBlur(sigma: extent.width * 0.03).cropped(to: extent)
-        let scenery = smudged.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: picture,
-                                                                            kCIInputMaskImageKey: wider])
-        let context = CIContext()
-        guard let a = context.createCGImage(subject, from: extent), let b = context.createCGImage(scenery, from: extent)
-        else { return nil }
-        return (a, b)
-    }
-}
-
 /// Where to cut a game's square picture into a case's tall insert (user 2026-11-17: "图片 重新裁剪 要合适的 长方形"):
 /// across the middle of what matters in it, its title's words and what draws the eye, as Vision finds them. The pictures'
 /// titles run across 0.75-0.9 of their width, so the insert keeps 88% of it and loses only empty sides. Worked out once
@@ -236,7 +184,11 @@ struct CoverFront<Empty: View>: View {
 
     @ObservedObject private var crops = CoverCrops.shared
     @Environment(\.caseParallax) private var parallax
-    @ObservedObject private var spatial = SpatialLayers.shared
+    @ObservedObject private var depth = DepthScenes.shared
+    /// The picture's depth layers move by depthReach x (depth - depthFocus) of the front's width at a full lean: the
+    /// farthest (0) a little the other way, the nearest (7/8) the most towards the pointer.
+    static var depthReach: CGFloat { 0.10 }
+    static var depthFocus: CGFloat { 0.35 }
 
     var body: some View {
         GeometryReader { geo in
@@ -276,17 +228,17 @@ struct CoverFront<Empty: View>: View {
                         .offset(back)
                         .clipped()
                         .overlay(Color.black.opacity(0.25))
-                        // the picture in depth (SpatialLayers): its scenery moved a little the other way, its
-                        // subject towards the pointer and a touch nearer; one layer until they are made. The frame
-                        // and its fading lower edge stay where they are.
+                        // the picture in depth while the case leans (DepthScenes): its layers far to near, each
+                        // moved by its depth, the farthest the other way; one layer until they are made (and at
+                        // rest, where the layers would lie exactly on it). The frame and its fading lower edge stay.
                         let center = crops.center(of: picturePath)
                         ZStack {
-                            if let parts = spatial.layers(of: picturePath) {
-                                CroppedPicture(picture: parts.scenery, center: center)
-                                    .offset(CGSize(width: -parallax.x * w * 0.012, height: -parallax.y * w * 0.012))
-                                CroppedPicture(picture: parts.subject, center: center)
-                                    .scaleEffect(1 + 0.03 * min(1, hypot(parallax.x, parallax.y)))
-                                    .offset(middle)
+                            if parallax != .zero, let scene = depth.scene(of: picturePath) {
+                                ForEach(scene.layers.indices, id: \.self) { k in
+                                    let by = Self.depthReach * (scene.depths[k] - Self.depthFocus)
+                                    CroppedPicture(picture: scene.layers[k], center: center)
+                                        .offset(CGSize(width: parallax.x * w * by, height: parallax.y * w * by))
+                                }
                             } else {
                                 CroppedPicture(picture: picture, center: center).offset(middle)
                             }

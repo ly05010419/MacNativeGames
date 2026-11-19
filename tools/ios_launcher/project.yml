@@ -17,6 +17,9 @@ targets:
       - path: Covers      # made by install.py from this Mac's game apps' icons: Covers/<game>.png
         type: folder
         buildPhase: resources
+      - path: Models      # put in by install.py (tools/deps/depth_model.py): the depth model as it is, and its licence
+        type: folder
+        buildPhase: resources
     info:
       path: Sources/Info.plist
       properties:

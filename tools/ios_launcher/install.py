@@ -36,7 +36,7 @@ MAC_UI = REPO / 'tools/builder_app/Sources/MNGBuilder'
 # The Mac Launcher's files the iPhone / iPad Launcher compiles as they are (tests/test_ios_launcher.py checks they use
 # AppKit only inside `#if os(macOS)`)
 SHARED = ('CoverFlow.swift', 'CaseDetail.swift', 'CaseAmounts.swift', 'CoverArt.swift', 'CoverFlowTrace.swift',
-          'GameStrings.swift')
+          'GameStrings.swift', 'DepthScene.swift')
 ICON = REPO / 'tools/builder_app/Resources/AppIcon.png'   # the Mac Launcher's artwork, 1024 px
 RESIZE = REPO / 'tools/builder_app/resize_icon.js'        # icns -> PNG with AppKit (no sips: the build sandbox)
 GAMES = ('oot', 'totk', 'botw', 'dkb', 'pkp', 'dread', 'tmnt')   # Sources/Games.swift Games.all
@@ -120,6 +120,17 @@ def stage(work, apps):
         (assets / name).mkdir()
         shutil.copy2(ICON, assets / name / 'AppIcon.png')
         (assets / name / 'Contents.json').write_text(json.dumps({'images': [dict(entry, filename='AppIcon.png')], **CATALOG}))
+    # the case pictures' depth model (DepthScene.swift), as it is: Core ML compiles it on the phone when first used
+    sys.path.insert(0, str(REPO))
+    try:
+        from tools.deps.depth_model import depth_model
+        from tools.deps.pins import DEPTH_MODEL_PACKAGE
+    finally:
+        sys.path.remove(str(REPO))
+    model = depth_model()
+    shutil.copytree(model / DEPTH_MODEL_PACKAGE, project / 'Models' / DEPTH_MODEL_PACKAGE)
+    for name in ('LICENSE', 'README.md'):
+        shutil.copy2(model / name, project / 'Models' / f'depth-anything-v2-small-{name}')
     found = covers(project / 'Covers', apps)
     for game in GAMES:
         print(f'cover {game}: ' + (f'from {found[game]}' if game in found else 'none (no Mac app of it): a plain case'), flush=True)

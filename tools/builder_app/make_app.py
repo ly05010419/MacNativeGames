@@ -92,6 +92,25 @@ def binary(scratch):
     return Path(out) / 'MNGBuilder'
 
 
+def depth_model(resources):
+    """The case pictures' depth model (DepthScene.swift) into Contents/Resources as it is, its card and licence into
+    licenses/depth-anything-v2-small/: fetched once per Mac (tools/deps/depth_model.py, pinned by SHA-256), compiled
+    by Core ML on the player's Mac when first used. Returns the package's name."""
+    sys.path.insert(0, str(REPO))
+    try:
+        from tools.deps.depth_model import depth_model as fetch_model
+        from tools.deps.pins import DEPTH_MODEL_PACKAGE
+    finally:
+        sys.path.remove(str(REPO))
+    folder = fetch_model()
+    shutil.copytree(folder / DEPTH_MODEL_PACKAGE, resources / DEPTH_MODEL_PACKAGE)
+    notices = resources / 'licenses' / 'depth-anything-v2-small'
+    notices.mkdir(parents=True, exist_ok=True)
+    for name in ('LICENSE', 'README.md'):
+        shutil.copy2(folder / name, notices / name)
+    return DEPTH_MODEL_PACKAGE
+
+
 def licenses(scratch, resources):
     """The licence and notice files of every package SwiftPM checked out (SwiftTerm, MIT; swift-argument-parser,
     Apache-2.0, which only SwiftTerm's own tools use), into Contents/Resources/licenses/<package>/: the app carries
@@ -272,6 +291,7 @@ def main(argv):
     shutil.copy2(exe, stage / 'Contents/MacOS' / EXECUTABLE)
     say('licences: ' + ', '.join(licenses(a.scratch.expanduser(), stage / 'Contents/Resources')))
     icon(stage / 'Contents/Resources')
+    say('depth model: ' + depth_model(stage / 'Contents/Resources'))
     plist = info(REPO)
     if a.version is not None:   # a checkout's build keeps info()'s placeholder; its window says 开发版, not a version
         plist['CFBundleShortVersionString'] = a.version

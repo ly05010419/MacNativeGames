@@ -163,13 +163,28 @@ class SharedCaseViews(unittest.TestCase):
         self.assertIn('.environment(\\.caseParallax, i == g.center ? CGPoint(x: tiltX, y: tiltY) : .zero)',
                       (mac / 'CoverFlow.swift').read_text())
         self.assertIn('.environment(\\.caseParallax, lean)', detail)
-        # "做一个 mac上 我看看" (a spatial scene): the picture parted by Vision's foreground mask, once per picture off
-        # the main thread; its scenery filled where the subject was; one layer until then
-        self.assertIn('final class SpatialLayers: ObservableObject {', art)
-        self.assertIn('VNGenerateForegroundInstanceMaskRequest()', art)
-        self.assertIn('Task.detached(priority: .utility)', art[art.index('final class SpatialLayers'):])
-        self.assertIn('if let parts = spatial.layers(of: picturePath) {', art)
+        # "能想iphone 原生的 一样好吗？" "好 做" (a spatial scene): the picture cut into depth layers by Depth Anything V2
+        # Small (Apache-2.0, carried as it is, compiled by Core ML when the Launcher starts), only while the case
+        # leans, the last three kept; one layer until they are made; no Metal of our own (Command Line Tools builds)
+        scene = (mac / 'DepthScene.swift').read_text()
+        self.assertIn('@MainActor final class DepthScenes: ObservableObject {', scene)
+        for part in ('VNCoreMLRequest(model: model)', 'MLModel.compileModel(at: url)', 'static let count = 48',
+                     'static let side = 384', 'static let kept = 1', 'let ready = Self.model != nil',
+                     'let feather = 0.5 / Float(count)'):
+            self.assertIn(part, scene)
+        self.assertNotIn('ShaderLibrary', scene)
+        self.assertIn('if parallax != .zero, let scene = depth.scene(of: picturePath) {', art)
         self.assertIn('CroppedPicture(picture: picture, center: center).offset(middle)', art)
+        self.assertNotIn('SpatialLayers', art)
+        self.assertIn("'DepthScene.swift'", (LAUNCHER / 'install.py').read_text())
+        # the model pinned by SHA-256 in tools/deps, put into both apps with its licence, never into the repository
+        pins = (LAUNCHER.parents[0] / 'deps/pins.py').read_text()
+        self.assertIn("DEPTH_MODEL_PACKAGE = 'DepthAnythingV2SmallF16P8.mlpackage'", pins)
+        self.assertIn("'cfef6f6f2a70783dedc0bfae40cecbc2052285d3'", pins)
+        self.assertIn("say('depth model: ' + depth_model(stage / 'Contents/Resources'))",
+                      (LAUNCHER.parents[0] / 'builder_app/make_app.py').read_text())
+        self.assertIn("project / 'Models' / DEPTH_MODEL_PACKAGE", (LAUNCHER / 'install.py').read_text())
+        self.assertIn('- path: Models', (LAUNCHER / 'project.yml').read_text())
         # "算了 mac 背景也是毛玻璃": the ground frosted on the Mac and the iPhone alike
         self.assertIn('FrozenBlur.image($0, width: stage.width, height: stage.height, radius: 22,', book)
         self.assertNotIn('groundBlur', detail)
