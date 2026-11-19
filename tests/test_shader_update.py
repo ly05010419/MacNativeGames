@@ -170,7 +170,7 @@ class ExpressUpdateBringsTheNewestList(unittest.TestCase):
         text = (REPO / 'update_runtime.py').read_text()
         main = text[text.index('def main('):]
         for part in ("translate = args.seed or args.shader_libs or bool(listfile and list_adds_shaders(app, version, tree, listfile, logs))",
-                     'make_seed(tree, work, game, version, logs, env, shader_list=listfile, app=app, required=args.seed)',
+                     'make_seed(tree, work, game, version, logs, env, shader_list=listfile, app=app)',
                      'shaders = None if translate else build_app.app_shader_bundle(app, version)',
                      'if translate:\n            replace_seed(',
                      'prompt_app=app, shared=listfile)',

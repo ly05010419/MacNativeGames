@@ -1464,6 +1464,21 @@ NO_METAL_COMPILER = ('no Metal shader compiler was found: it comes with an Xcode
                      'DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer (its path)')
 
 
+REFUSED_LIBS = 'refused.json'   # build/shader-libs/: the digests the compiler of compiler.txt did not compile
+
+
+def refused_shader_libs(tree, compiler):
+    """The startup shaders (by their source's SHA-256) the Metal compiler `compiler` (metal_compiler()'s second item)
+    refused in the work folder's last step_shader_libs; empty when another compiler made those libraries or none did."""
+    libs = tree/'build/shader-libs'
+    try:
+        if (libs/'compiler.txt').read_text() != ' '.join([compiler, *METAL_FLAGS]):
+            return frozenset()
+        return frozenset(json.loads((libs/REFUSED_LIBS).read_text()))
+    except (OSError, ValueError, TypeError):
+        return frozenset()
+
+
 def step_shader_libs(tree, logs, *, version='v0', required=False):
     """Compile the startup shaders ahead of time. Metal's own cache of shaders compiled at launch does not follow the
     app to a folder whose path has another length (step_warm_metal); these files go inside the app. Each is named by the
@@ -1506,10 +1521,14 @@ def step_shader_libs(tree, logs, *, version='v0', required=False):
         r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=metal_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
-            return f'{src.name}\n{r.stdout}{r.stderr}'
+            return digest, f'{src.name}\n{r.stdout}{r.stderr}'
         partial.replace(libs/f'{digest}.metallib')
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
-        failed = [f for f in pool.map(compile_one, todo.items()) if f]
+        refused = [f for f in pool.map(compile_one, todo.items()) if f]
+    failed = [text for _, text in refused]
+    # the sources this compiler (compiler.txt) refused: update_runtime.py does not count them as libraries to complete,
+    # so one shader the compiler cannot take does not send every later express update through the completion
+    (libs/REFUSED_LIBS).write_text(json.dumps(sorted(digest for digest, _ in refused)))
     log = logs/'shader-libs.log'
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text('\n'.join(failed))

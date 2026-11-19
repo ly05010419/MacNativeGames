@@ -52,6 +52,17 @@ class VariantLibs(unittest.TestCase):
         libs = build_app.shader_libs_of(self.tree, 'v143', {'files': {'a_b.metal': startup}})
         self.assertEqual([p.name for p in libs], [f'{startup}.metallib', f'{self.good}.metallib'])
 
+    def test_refused_sources_are_recorded_for_this_compiler(self):
+        (self.tree/'build/shader-seed/v143/c_d.metal').write_text('// refuse me')
+        self.compiler.write_text('#!/bin/sh\nfor a; do last=$a; done\ngrep -q refuse "$last" && exit 1\n'
+                                 'while [ "$1" != "-o" ]; do shift; done\ncp "$3" "$2"\n')   # the source is the last argument
+        self.build()
+        refused = hashlib.sha256(b'// refuse me').hexdigest()
+        self.assertEqual(json.loads((self.tree/'build/shader-libs'/build_app.REFUSED_LIBS).read_text()), [refused])
+        self.assertEqual(build_app.refused_shader_libs(self.tree, 'fake 1'), {refused})
+        self.assertEqual(build_app.refused_shader_libs(self.tree, 'another compiler'), frozenset())   # it may take them
+        self.assertEqual(build_app.refused_shader_libs(self.root/'none', 'fake 1'), frozenset())
+
     def test_no_recorded_variants(self):
         for p in self.variants.iterdir():
             p.unlink()
@@ -61,8 +72,8 @@ class VariantLibs(unittest.TestCase):
 
 class NoMetalCompiler(unittest.TestCase):
     """Without Apple's offline compiler (the command line tools have none) the libraries cannot be made. An update that
-    is there to make them (update_runtime.py --seed / --shader-libs) stops and says how to get one, instead of going on
-    without them: that quiet skip left an app with libraries for 1,890 of the 17,884 shaders its warm-up loads."""
+    is there only to make them (update_runtime.py --shader-libs) stops and says how to get one; a build goes on with a
+    warning (an app once went on quietly, with libraries for 1,890 of the 17,884 shaders its warm-up loads)."""
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
