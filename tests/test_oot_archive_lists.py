@@ -52,7 +52,7 @@ class ArchiveLists(unittest.TestCase):
         base = Path(self.tmp.name)
         self.work, self.tree = base / 'work', base / 'work/oot'
         (self.work / 'build').mkdir(parents=True)
-        (self.work / 'build/oot-native').write_bytes(b'runtime')
+        (self.work / 'build/oot-native').write_bytes(b'runtime\0MNG_SHADER_CHAIN=test-chain\0')   # the seed's chain (build.py check_runtime_chain)
         seed = self.tree / 'build/shader-seed/oot'
         seed.mkdir(parents=True)
         (seed / 'seed-manifest.json').write_text(json.dumps({'chain': 'test-chain', 'files': {}}))

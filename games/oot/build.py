@@ -47,6 +47,54 @@ def sha(path):
         while data:=f.read(8<<20):h.update(data)
     return h.hexdigest()
 
+# make judges by file times only. A work folder whose objects are newer than the sources it is given (built by a newer
+# checkout, then updated from an older one, such as a Launcher's bundled code) kept its old program: 2026-11-19 the
+# nxport copy's v29 runtime stayed ("make: Nothing to be done") while an update from fab08820 re-made the seed as v28,
+# and all 29,124 pipelines failed with "Startup shader seed identity is invalid". So the runtime is built anew (make -B)
+# whenever the content of its sources differs from the last build's, whatever their times.
+RUNTIME_SOURCE_SUFFIXES=frozenset(('.c','.h','.m','.mm','.S','.inc','.plist','.metal'))
+RUNTIME_SOURCE_SKIP=frozenset(('tests','ios','assets','prebuilt','docs','scripts','__pycache__'))   # top-level folders make never reads
+RUNTIME_STAMP='runtime-source.sha256'   # in the work folder's build/, beside the program
+
+def runtime_source_digest(root=None):
+    """One digest of every file the runtime's make can read under root (sources, headers, Makefile), by path and content;
+    symbolic links followed (third_party, zeldaVR), each real folder once."""
+    root=Path(root or GAME);h=hashlib.sha256();seen=set()
+    for top,dirs,files in os.walk(root,followlinks=True):
+        real=os.path.realpath(top)
+        if real in seen:dirs[:]=[];continue
+        seen.add(real)
+        rel=Path(top).relative_to(root)
+        dirs[:]=sorted(d for d in dirs if not (rel==Path('.') and d in RUNTIME_SOURCE_SKIP))
+        for name in sorted(files):
+            if name=='Makefile' or Path(name).suffix in RUNTIME_SOURCE_SUFFIXES:
+                h.update(f'{rel/name}\0{sha(Path(top)/name)}\n'.encode())
+    return h.hexdigest()
+
+def build_runtime(work,log,jobs,env):
+    """make the runtime into work/build; with -B when the sources' content is not the last build's (above)."""
+    stamp=work/'build'/RUNTIME_STAMP
+    digest=runtime_source_digest()
+    old=stamp.read_text().strip() if stamp.is_file() else ''
+    cmd=['make','-C',str(GAME),'WORK='+str(make_path(work,'oot')),'-j'+str(jobs)]
+    if old!=digest:
+        cmd.append('-B')
+        print('runtime: built anew, '+('its sources differ from the last build' if old else 'no record of the sources it was built from'),flush=True)
+    with Path(log).open('w') as f:subprocess.run(cmd,cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,env=env)
+    stamp.parent.mkdir(parents=True,exist_ok=True);stamp.write_text(digest+'\n')
+
+def binary_chain(program):
+    """The translation chain a runtime program was built with: its MNG_SHADER_CHAIN= mark (nvn_mtl.m), None without one."""
+    m=re.search(rb'MNG_SHADER_CHAIN=([\x21-\x7e]+)',Path(program).read_bytes())
+    return m[1].decode() if m else None
+
+def check_runtime_chain(program,chain):
+    """Refuse a runtime of another chain than the seed's before anything is built from them: its pipelines all fail."""
+    have=binary_chain(program)
+    if have!=chain:
+        raise ValueError(f'the runtime {program} is of translation chain {have}, the shader seed of {chain}: '
+                         'build the runtime from the same sources as the seed (update again; the runtime is rebuilt when its sources differ)')
+
 def _script(name):
     """games/oot/scripts/<name>.py by its path (games/totk/scripts may hold a module of the same name)."""
     import importlib.util
@@ -372,6 +420,7 @@ def compute_pipeline_archive(work, tree, lists, mode='full'):
     folder=tree/'build/compute-pipelines';folder.mkdir(parents=True,exist_ok=True)
     plan=folder/'compute.tsv';plan.write_text('\n'.join(rows)+'\n')
     chain=json.loads((seed/'seed-manifest.json').read_text())['chain']
+    check_runtime_chain(work/'build/oot-native',chain)
     cache=pipeline_cache(folder,suffix)   # a title build's own: its pruning never reaches the full build's files
     # Kept from one package to the next, also when the runtime changed: with TOTK_PAR_RECHECK=1 the tool makes every listed
     # pipeline against the archive (Metal compares the functions and state), so one this runtime describes otherwise is
@@ -717,8 +766,7 @@ def update_runtime(app,work=None,remake=False,shared=None):
     logs=work/'logs';logs.mkdir(exist_ok=True)
     print('building the runtime',flush=True)
     env=dict(os.environ,DM_RULESET='native',DM_PRIVATE_GATES='0')
-    with (logs/'native-runtime.log').open('w') as f:
-        subprocess.run(['make','-C',GAME,'WORK='+str(make_path(work,'oot')),'-j'+str(os.cpu_count() or 4)],cwd=work,stdout=f,stderr=subprocess.STDOUT,check=True,env=env)
+    build_runtime(work,logs/'native-runtime.log',os.cpu_count() or 4,env)
     def run(cmd,name,cwd=tree):
         print(name,flush=True)
         with (logs/(name+'.log')).open('w') as f:subprocess.run([str(x)for x in cmd],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
@@ -900,7 +948,8 @@ def build(args, source):
     run([py,'scripts/prepare_shared_fonts.py','--version','oot'],'prepare-shared-fonts')
     install_translator(tree)
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
-    run(['make','-C',GAME,'WORK='+str(make_path(work,'oot')),'-j2'],'native-runtime',work)
+    print('native-runtime',flush=True)
+    build_runtime(work,logs/'native-runtime.log',2,env)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
     if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
     mode='full' if device else shader_mode()
