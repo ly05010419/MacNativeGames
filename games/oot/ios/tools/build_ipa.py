@@ -234,6 +234,12 @@ def seed_reusable(seed, source_hash, source_files, sdk):
             cached.get('ios_metal_flags')==seed_flags(sdk) and
             all((seed/(name.removesuffix('.metal')+'.metallib')).is_file() for name in shaders))
 
+def url_scheme(version):
+    """The URL scheme the game's app answers (Info.plist CFBundleURLTypes): the iPhone MNG Launcher (tools/ios_launcher,
+    Games.swift) sees the game installed and starts it through it. One per game, not per version: mng-totk, mng-botw,
+    mng-oot, mng-dkb, mng-pkp."""
+    return 'mng-'+('botw' if version.startswith('botw') else 'totk' if version in ('v0','v121','v143') else version)
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tree',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
@@ -345,7 +351,7 @@ def main():
     manifest['files']={n:known.get(n) or hashlib.sha256((seed/n).read_bytes()).hexdigest() for n in names}
     (seed/'seed-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     # Generate the app project with resolved identity and the embedded-segment linker flags.
-    env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
+    env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id,TOTK_URL_SCHEME=url_scheme(a.version))   # project.yml CFBundleURLTypes
     xcconfig=gen/'totk.xcconfig'
     frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','Photos','AVFAudio','Security','VideoToolbox','CoreMedia','CoreVideo'])
     # the start-up object as a file of its own (publish_ios_lib.sh: inside the archive nothing would pull it in)

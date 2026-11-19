@@ -1,4 +1,6 @@
-import AppKit
+#if os(macOS)
+import AppKit   // the trackpad's two-finger swipe (watchSwipes); the iPhone / iPad Launcher shares the rest of this file
+#endif
 import QuartzCore
 import SwiftUI
 
@@ -32,6 +34,13 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     var size: CGFloat = 375   // the case's height (user 2026-11-17: half again as big)
     var launches = 0          // bumped when a game starts from the opened case: the case turns back to its front
     var name: (Int) -> String = { _ in "" }   // a case's game, floated over it while the pointer pulls it out
+    /// Set: a click (a tap) or Return on the middle case calls it with the case, pressed in and let go, and the case does
+    /// not turn over (the iPhone / iPad Launcher: the cases only, a tap starts the game; user 2026-11-19 "ios 只要这个
+    /// 不要和mac 一模一样"). nil (the Mac): it turns over and opens.
+    var onOpen: ((Int) -> Void)? = nil
+    /// The arrow buttons at either side (the Mac); false on the iPhone / iPad, where a swipe moves the cases (user
+    /// 2026-11-19: "左右箭头不要").
+    var arrows = true
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
     @ViewBuilder let back: (Int, Bool) -> Back
@@ -117,7 +126,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                             guard pressedMiddle, !flipped, moved < 6,
                                   stage.cover(at: v.location) == index else { release(); return }
                             CoverFlowTrace.note("click middle case \(index)")
-                            turn(true)
+                            openMiddle()
                         })
                     .onContinuousHover(coordinateSpace: .local) { phase in
                         switch phase {
@@ -181,8 +190,8 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                 go(to: to)
                 DispatchQueue.main.async { dragging = false }   // the click a drag ends with is not a tap
             }, including: flipped ? .subviews : .all)   // turned or opened: its own controls take the pointer
-        .overlay(alignment: .leading) { arrow("chevron.left", by: -1) }
-        .overlay(alignment: .trailing) { arrow("chevron.right", by: 1) }
+        .overlay(alignment: .leading) { if arrows { arrow("chevron.left", by: -1) } }
+        .overlay(alignment: .trailing) { if arrows { arrow("chevron.right", by: 1) } }
         .focusable().focused($focused).focusEffectDisabled()
         .onKeyPress(.leftArrow) { move(-1); return .handled }
         .onKeyPress(.rightArrow) { move(1); return .handled }
@@ -192,7 +201,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             withAnimation(pressDown) { press = 1 }
             let at = index
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {   // pressed in: it turns from there
-                if index == at, !dragging { turn(true) } else { release() }
+                if index == at, !dragging { openMiddle() } else { release() }
             }
             return .handled
         }
@@ -200,7 +209,12 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         .onChange(of: index) { turn(false); settleMove() }
         .onChange(of: launches) { turn(false) }   // a game was started: back to the games, the way the case was opened
         .onAppear { focused = true; watchSwipes() }
-        .onDisappear { if let m = swipeMonitor { NSEvent.removeMonitor(m) }; swipeMonitor = nil }
+        .onDisappear {
+            #if os(macOS)
+            if let m = swipeMonitor { NSEvent.removeMonitor(m) }
+            #endif
+            swipeMonitor = nil
+        }
         .accessibilityIdentifier("cover-flow")
     }
 
@@ -265,13 +279,16 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     /// A two-finger sideways swipe on the trackpad moves the cases while the pointer is over the stage, with the
     /// trackpad's own momentum after the fingers lift, and settles on a case when it stops; an up-and-down swipe still
     /// scrolls the page. (SwiftUI has no scroll-wheel event of its own here: an app-local NSEvent monitor.)
+    /// On an iPhone or iPad the finger's drag (above) is the swipe: nothing to watch.
     private func watchSwipes() {
+        #if os(macOS)
         guard swipeMonitor == nil else { return }
         swipeMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
             let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY, fine = event.hasPreciseScrollingDeltas
             let used = MainActor.assumeIsolated { swipe(dx: dx, dy: dy, fine: fine) }
             return used ? nil : event
         }
+        #endif
     }
 
     private func swipe(dx: CGFloat, dy: CGFloat, fine: Bool) -> Bool {
@@ -300,6 +317,16 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     private func release() {
         guard press != 0 else { return }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.42)) { press = 0 }
+    }
+
+    /// The middle case clicked: onOpen when it is set (it springs back out), else it turns over and opens.
+    private func openMiddle() {
+        if let onOpen {
+            release()
+            onOpen(index)
+        } else {
+            turn(true)
+        }
     }
 
     private func turn(_ over: Bool) {

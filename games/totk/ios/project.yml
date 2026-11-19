@@ -42,6 +42,10 @@ targets:
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleURLTypes:   # the iPhone MNG Launcher sees the game installed and starts it (tools/ios_launcher; build_ipa.py url_scheme)
+          - CFBundleURLName: org.macnativegames.launch
+            CFBundleURLSchemes:
+              - ${TOTK_URL_SCHEME}
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeLeft

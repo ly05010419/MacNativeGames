@@ -217,7 +217,13 @@ class Pages(unittest.TestCase):
         self.assertNotIn('GameActions(app: app).id(app.app)', home)   # no actions box under the stage any more
         # one state for the three views of a back, read only by the live one
         self.assertIn('GameCardState.of(app.app)', home)
-        self.assertIn('guard live || !state.asked else { return }', home)   # read when the turn starts, no jump
+        # the switches are read before the case opens, so its buttons never move and no Python process runs during
+        # the opening (user 2026-11-19: "mac 第一次打开 这些按钮在动 而且卡，第二次 就好了"); the opened case reads them
+        # again only after its opening animation
+        self.assertIn('await GameCardState.preload(middle + model.installed.map(\\.app))', home)
+        self.assertIn('if !state.loaded { await state.loadSwitches(app.app); return }', home)
+        self.assertIn('try? await Task.sleep(for: .milliseconds(800))', home)
+        self.assertNotIn('state.asked', home)
         self.assertIn('.keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)', home)
 
     def test_another_game_s_build_page_starts_without_the_files_chosen_before(self):
@@ -240,9 +246,11 @@ class Pages(unittest.TestCase):
     def test_a_case_s_picture_is_cut_tall_round_its_title(self):
         # user 2026-11-17: "图片 重新裁剪 要合适的 长方形": the square picture is cut to a tall rectangle whose middle is
         # the middle of the title's words and what draws the eye (Vision), not shown whole with a blur under it
+        # (the front moved to CoverArt.swift's CoverFront 2026-11-19, shared with the iPhone / iPad Launcher)
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('CroppedPicture(picture: picture, center: crops.center(of: picturePath))', home)
+        self.assertIn('CoverFront(game: game, picture: art?.picture, picturePath: art?.path, backdrop: art?.backdrop)', home)
         art = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverArt.swift').read_text()
+        self.assertIn('CroppedPicture(picture: picture, center: crops.center(of: picturePath))', art)
         for part in ('VNRecognizeTextRequest()', 'VNGenerateAttentionBasedSaliencyImageRequest()', 'Task.detached'):
             self.assertIn(part, art)
         self.assertIn('Text(T.gamePlatforms(game))', (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text())

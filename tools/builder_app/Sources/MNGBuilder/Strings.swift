@@ -1,11 +1,9 @@
 import Foundation
 import SwiftUI
 
-/// Every visible text, in Chinese when the Mac's first language is Chinese, else English.
+/// Every visible text, in Chinese when the Mac's first language is Chinese, else English. The games' names, platforms
+/// and colours, `s` and `zh` are in GameStrings.swift, which the iPhone / iPad Launcher (tools/ios_launcher) shares.
 enum T {
-    static let zh = (Locale.preferredLanguages.first ?? "en").hasPrefix("zh")
-    static func s(_ en: String, _ cn: String) -> String { zh ? cn : en }
-
     static let title = "MNG Launcher"
     static let dropHere = s("Drop your game files here", "把游戏文件拖到这里")
     static let dropHint = s("The game (XCI, NSP or a Switch 2 dump folder), its update, prod.keys and, for an NSP, your firmware folder. A whole folder works too. Nothing is copied.",
@@ -109,47 +107,10 @@ enum T {
     static let addGame = s("Add this game", "添加这个游戏")
     // a case's back (scheme A, user 2026-11-17): a game not built yet, and the hint under every back
     static let notBuiltYet = s("Not built yet. A build takes three steps:", "还没打包。打包分三步：")
-    static let turnBack = s("Click outside or press Esc to turn it back", "点盒子外面或按 Esc 翻回")
     static func addGameHelp(_ name: String) -> String { s("Build \(name) from your own files", "用你自己的文件打包\(name)") }
     static let anyGame = s("Any game", "不限游戏")
     static func buildingFor(_ name: String) -> String { s("Build \(name)", "打包\(name)") }
     static func otherGameDropped(_ name: String) -> String { s("These files are \(name), not the game chosen on the first page.", "这些文件是\(name)，不是首页选的那个游戏。") }
-    static func gameName(_ g: String) -> String {
-        switch g {
-        case "oot": return s("Zelda: Ocarina of Time", "塞尔达传说 时之笛")
-        case "totk": return s("Zelda: Tears of the Kingdom", "塞尔达传说 王国之泪")
-        case "botw": return s("Zelda: Breath of the Wild", "塞尔达传说 旷野之息")
-        case "dkb": return s("Donkey Kong Bananza", "大金刚 Bananza")
-        case "pkp": return s("Pokémon Pokopia", "宝可梦 Pokopia")
-        case "acnh": return s("Animal Crossing: New Horizons", "集合啦！动物森友会")
-        case "eow": return s("Zelda: Echoes of Wisdom", "塞尔达传说 智慧的再现")
-        case "odyssey": return s("Super Mario Odyssey", "超级马力欧 奥德赛")
-        default: return g
-        }
-    }
-    static func gamePlatforms(_ g: String) -> String {
-        switch g {
-        case "totk": return "Mac · iPhone · iPad · Vision Pro"
-        case "botw": return "Mac · iPhone · iPad"
-        case "oot": return "Switch 2 · Mac"
-        case "acnh": return s("Mac · experimental", "Mac · 实验性")
-        case "eow": return s("Mac · early", "Mac · 早期")
-        case "odyssey": return s("Mac · early", "Mac · 早期")
-        default: return s("Switch 2 · Mac · early", "Switch 2 · Mac · 早期")
-        }
-    }
-    static func gameColors(_ g: String) -> [Color] {
-        switch g {
-        case "oot": return [Color(red: 0.16, green: 0.42, blue: 0.30), Color(red: 0.05, green: 0.18, blue: 0.14)]
-        case "totk": return [Color(red: 0.20, green: 0.55, blue: 0.62), Color(red: 0.06, green: 0.20, blue: 0.30)]
-        case "botw": return [Color(red: 0.35, green: 0.45, blue: 0.62), Color(red: 0.10, green: 0.14, blue: 0.24)]
-        case "dkb": return [Color(red: 0.85, green: 0.42, blue: 0.12), Color(red: 0.40, green: 0.12, blue: 0.08)]
-        case "odyssey": return [Color(red: 0.86, green: 0.20, blue: 0.18), Color(red: 0.30, green: 0.06, blue: 0.10)]
-        case "eow": return [Color(red: 0.55, green: 0.42, blue: 0.78), Color(red: 0.16, green: 0.12, blue: 0.30)]
-        case "acnh": return [Color(red: 0.36, green: 0.72, blue: 0.62), Color(red: 0.10, green: 0.32, blue: 0.30)]
-        default: return [Color(red: 0.45, green: 0.70, blue: 0.35), Color(red: 0.14, green: 0.32, blue: 0.16)]
-        }
-    }
     static func filesFor(_ g: String) -> String {
         switch g {
         case "totk": return s("Drop the base game (XCI or NSP) and the 1.4.3 update (NSP); an NSP base also needs your unpacked firmware folder.", "拖入游戏本体（XCI 或 NSP）和 1.4.3 更新（NSP）；本体是 NSP 时还要解开的固件文件夹。")
