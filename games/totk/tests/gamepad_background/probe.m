@@ -168,6 +168,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_gamepad_deadzone_set(NAN); CHECK(stickDeadzone[0] == .1f && stickDeadzone[1] == .1f);
     runtime_gamepad_deadzone_set(2); CHECK(stickDeadzone[0] == .5f && stickDeadzone[1] == .5f);
 
+    hidSampleAxes=15;RuntimeGamepadCalibrationSample ownerSample;
+    runtime_gamepad_calibration_sample(&ownerSample);CHECK(ownerSample.valid);
     /* Real calibration -> cached HID -> game state, with independent L/R data. */
     runtime_gamepad_deadzone_set(.1f);
     RuntimeGamepadCalibration custom={.left={.centerX=.1f,.centerY=-.2f,.scaleX=2,.scaleY=1.5f},.right={.centerX=-.1f,.centerY=.1f,.scaleX=1.2f,.scaleY=1.1f}};
@@ -184,13 +186,16 @@ int main(int argc, char **argv) { @autoreleasepool {
     RuntimeGamepadCalibration restored;runtime_gamepad_calibration_get(&restored);
     CHECK(fabsf(restored.left.centerX-.35f)<1e-6f && restored.left.scaleX==2);
     CHECK(fabsf(restored.right.centerX+.1f)<1e-6f && fabsf(restored.right.scaleX-1.2f)<1e-6f);
-    hid_calibration_changed();refresh_gamepads();runtime_gamepad_read(&out);
-    CHECK(out.lx==0 && out.rx==rightBefore);
+    CHECK(!calibration_hid_matches()); /* archived file is never bound to whichever pad happens to be connected */
+    runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&restored);
+    runtime_gamepad_read(&out);CHECK(out.lx==0 && out.rx==rightBefore);
 
     /* Old eight-value profiles load with legacy coordinates. New files retain asymmetric gains. */
     setting_write("controller-calibration.txt","0.1235 0 2 1 0 0 1 1","legacy test");
     load_calibration(); CHECK(!calibration.stableHID && calibration.left.scaleNegX==2);
-    CHECK(fabsf(stick_calibrate(0,.1235f))<1e-6f);
+    CHECK(fabsf(stick_calibrate(0,.1235f))<1e-6f && !calibration_hid_matches());
+    runtime_gamepad_calibration_get(&restored);runtime_gamepad_calibration_sample(&ownerSample);
+    runtime_gamepad_calibration_set(&restored); /* explicit calibration of the sampled device activates it */
     /* At 0% deadzone quantization/ADC residuals must not trap UI capture; buttons still block release. */
     hidX=.123456f;hidY=hidZ=hidRz=0;runtime_gamepad_deadzone_set(0);
     runtime_gamepad_text_capture(1); runtime_gamepad_text_capture(0);
@@ -202,7 +207,9 @@ int main(int argc, char **argv) { @autoreleasepool {
     hidButtons[1]=0;hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==0);
     custom=(RuntimeGamepadCalibration){.left={.centerX=.15f,.centerY=-.1f,.scaleX=1/.65f,.scaleY=1/.8f,
         .scaleNegX=1/.95f,.scaleNegY=1/.6f},.right={.scaleX=1,.scaleY=1},.stableHID=1};
-    runtime_gamepad_calibration_set(&custom);load_calibration();
+    runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);load_calibration();
+    CHECK(!calibration_hid_matches());
+    runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);
     CHECK(calibration.stableHID && fabsf(calibration.left.scaleNegX-1/.95f)<1e-6f);
     CHECK(stick_calibrate(0,.8f)>.9999f && stick_calibrate(0,-.8f)<-.9999f);
     CHECK(stick_calibrate(1,.7f)>.9999f && stick_calibrate(1,-.7f)<-.9999f);
@@ -213,7 +220,9 @@ int main(int argc, char **argv) { @autoreleasepool {
     hidX=.8f;hid_pad_compute();int calibratedEdge=hidPad.lx;CHECK(calibratedEdge>32760);
     memset(hidReach,0,sizeof hidReach);hid_pad_compute();CHECK(hidPad.lx==calibratedEdge);
     hid_pad_reset();hidOrder=GAMEPAD_HID_SWITCH_PRO;hidX=.15f;hidY=.1f;hidZ=hidRz=0;
-    hid_pad_compute();CHECK(hidPad.lx==0 && hidPad.ly==0); /* persisted calibration survives reconnect */
+    hid_pad_compute();CHECK(!calibration_hid_matches() && hidPad.lx!=0); /* reconnect never inherits an unverified identity */
+    hidSampleAxes=15;runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);
+    CHECK(hidPad.lx==0 && hidPad.ly==0); /* explicit re-calibration restores this connection */
     runtime_gamepad_calibration_reset(); CHECK(!calibration.stableHID);
     hidX=.65f;hidY=hidZ=hidRz=0;hid_pad_compute();
     CHECK(hidPad.lx>32760 && fabsf(hidRawLx-.65f)<1e-6f); /* uncalibrated adaptive reach retained */
@@ -259,6 +268,55 @@ int main(int argc, char **argv) { @autoreleasepool {
     hidSampleAxes=15;hidX=.1f;hidY=hidZ=hidRz=0;hid_pad_compute();
     runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid);generation=sample.generation;
     runtime_gamepad_calibration_sample(&sample);CHECK(sample.valid && sample.generation==generation); /* change-only stationary pad */
+
+    /* Two same-model devices must not share centre compensation, or lock capture at neutral. */
+    hidPad.present=0;rawLeft=(SwitchLeftFallback){0};rawRight=(SwitchLeftFallback){0};
+    [snapshot.extendedGamepad.leftTrigger setValue:0];[snapshot.extendedGamepad.rightTrigger setValue:0];
+    [snapshot.extendedGamepad.leftThumbstick.xAxis setValue:.2f];
+    [snapshot.extendedGamepad.leftThumbstick.yAxis setValue:0];
+    testControllers=@[snapshot,other];runtime_gamepad_calibration_sample(&ownerSample);
+    custom=(RuntimeGamepadCalibration){.left={.centerX=.2f,.scaleX=1,.scaleY=1},.right={.scaleX=1,.scaleY=1}};
+    runtime_gamepad_calibration_set(&custom);runtime_gamepad_deadzone_set(0);runtime_gamepad_read(&out);
+    CHECK(out.lx==0 && !captureStickActive); /* other controller at raw zero must not become -.2 */
+    testControllers=@[other,snapshot];refresh_gamepads();runtime_gamepad_read(&out);CHECK(out.lx==0); /* array order isn't identity */
+    [other.extendedGamepad.leftThumbstick.xAxis setValue:.5f];refresh_gamepads();runtime_gamepad_read(&out);CHECK(out.lx>16000);
+    [other.extendedGamepad.leftThumbstick.xAxis setValue:0];runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==0);
+    detach_gamepad(snapshot);CHECK(!calibration_source_matches(snapshot,0,0)); /* even object reuse/re-attachment cannot inherit */
+    testControllers=@[snapshot];[snapshot.extendedGamepad.leftThumbstick.xAxis setValue:.10f];
+    runtime_gamepad_deadzone_set(.12f);runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==0);
+    runtime_gamepad_deadzone_set(0);runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==0); /* configured DZ independent */
+    [snapshot.extendedGamepad.leftThumbstick.xAxis setValue:.2f];runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==2);
+    /* Raw fallback expires at read-time with no intervening refresh. Other device/right/buttons remain held. */
+    [snapshot.extendedGamepad.leftThumbstick.xAxis setValue:0];
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);testNow+=250000000;
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);runtime_gamepad_text_capture(0);
+    runtime_gamepad_read(&out);CHECK(textCapture==2 && captureRawLeftActive);
+    testNow+=250000001;runtime_gamepad_read(&out);CHECK(textCapture==0);
+    testControllers=@[snapshot,other];[other.extendedGamepad.rightThumbstick.xAxis setValue:.5f];
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);testNow+=250000000;runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);
+    runtime_gamepad_text_capture(0);testNow+=250000001;runtime_gamepad_read(&out);CHECK(textCapture==2); /* unrelated right axis still held */
+    [other.extendedGamepad.rightThumbstick.xAxis setValue:0];[other.extendedGamepad.buttonA setValue:1];
+    refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==2); /* unrelated button still held */
+    [other.extendedGamepad.buttonA setValue:0];refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==0);
+    testControllers=@[snapshot];
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);testNow+=250000000;runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);
+    runtime_gamepad_switch_right((__bridge void*)snapshot,4000,2048);testNow+=200000000;
+    runtime_gamepad_switch_right((__bridge void*)snapshot,4000,2048);runtime_gamepad_text_capture(0);
+    testNow+=60000000;runtime_gamepad_read(&out);CHECK(textCapture==2); /* left expired, right fallback still fresh */
+    testNow+=200000000;runtime_gamepad_read(&out);CHECK(textCapture==0); /* both expired without refreshing */
+    /* A calibration measured in raw HID coordinates must not offset the synthetic native zero,
+       either in gameplay or after the settings panel releases capture. */
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);testNow+=250000000;
+    runtime_gamepad_switch_left((__bridge void*)snapshot,4000,2048);
+    runtime_gamepad_calibration_sample(&ownerSample);CHECK(ownerSample.valid);
+    custom=(RuntimeGamepadCalibration){.left={.centerX=.2f,.scaleX=1,.scaleY=1},.right={.scaleX=1,.scaleY=1}};
+    runtime_gamepad_calibration_set(&custom);
+    CHECK(calibration_source_matches(snapshot,0,1) && !calibration_source_matches(snapshot,0,0));
+    runtime_gamepad_switch_left((__bridge void*)snapshot,2457,2048);
+    runtime_gamepad_text_capture(1);runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);
+    CHECK(textCapture==0 && gamepadNativeLx==0 && !captureStickActive);
+    testNow+=250000001;runtime_gamepad_read(&out);CHECK(out.lx==0 && out.ly==0);
+    testControllers=@[];
 
     /* Restart-equivalent preference loading; only a valid opt-in enables background events. */
     write_word(saved, "on\n"); load_gamepad_background();

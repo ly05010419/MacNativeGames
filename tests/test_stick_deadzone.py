@@ -31,6 +31,8 @@ int main(int argc,char**argv){
  expect(runtime_gamepad_stick_deadzone_get(0),.05f);expect(runtime_gamepad_stick_deadzone_get(1),.18f);
  runtime_gamepad_stick_deadzone_set(1,.3f);
  load_stick_deadzone();expect(stickDeadzone[0],.05f);expect(stickDeadzone[1],.3f);
+ assert(!source_capture_active(0,.10f,0,0));
+ assert(source_capture_active(0,.13f,0,0));
  assert(!stick_capture_active(.00004f,0,0,0));
  assert(stick_capture_active(.2f,0,0,0));
  float x,y;

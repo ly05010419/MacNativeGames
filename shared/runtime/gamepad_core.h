@@ -125,6 +125,15 @@ static void gamepad_forget_raw(GCController *controller) {
 static RuntimeGamepadCalibrationSample calibrationSample;
 static uintptr_t calibrationDevice;
 static unsigned calibrationDomain;
+static __weak GCController *calibrationSampleController, *calibrationOwner;
+static unsigned calibrationOwnerDomain;
+static uint64_t hidConnectionGeneration=1, calibrationOwnerHID;
+static void calibration_unbind(void) { calibrationOwner=nil;calibrationOwnerHID=0;calibrationOwnerDomain=0; }
+static inline int calibration_hid_matches(void) { return calibrationOwnerHID && calibrationOwnerHID==hidConnectionGeneration; }
+static inline int calibration_source_matches(GCController *controller,int right,int raw) {
+    return controller && calibrationOwner==controller && !calibrationOwnerHID &&
+        !!(calibrationOwnerDomain & (right?4:2))==!!raw;
+}
 static void calibration_sample_invalidate(void) {
     calibrationSample.valid=0; calibrationSample.generation++;
     calibrationDevice=0; calibrationDomain=0;
@@ -142,7 +151,13 @@ static float gamepadRawLT, gamepadRawRT;   /* the analog triggers (0..1) for the
 /* The HID fallback's raw sticks (game coordinates), kept by hid_pad_compute and folded into the gamepadRaw_* by
    refresh_gamepads, so the calibration tool sees the same sticks the game does. */
 static float hidRawLx, hidRawLy, hidRawRx, hidRawRy;
-static int hidCaptureActive, captureStickActive;
+static int hidCaptureActive, captureStickActive, captureRawLeftActive, captureRawRightActive;
+static uint64_t captureRawLeftAt,captureRawRightAt;
+static int capture_active_locked(void) {
+    uint64_t now=runtime_now_ns();
+    return captureStickActive || (captureRawLeftActive && now>=captureRawLeftAt && now-captureRawLeftAt<=250000000ULL) ||
+        (captureRawRightActive && now>=captureRawRightAt && now-captureRawRightAt<=250000000ULL);
+}
 
 enum { STICK_LX = 0, STICK_LY, STICK_RX, STICK_RY };
 static float stick_calibrate(int axis, float value) {
@@ -156,8 +171,13 @@ static float stick_calibrate(int axis, float value) {
 }
 
 static inline int stick_capture_active(float lx,float ly,float rx,float ry) {
-    return hypotf(stick_calibrate(0,lx),stick_calibrate(1,ly)) > .08f ||
-           hypotf(stick_calibrate(2,rx),stick_calibrate(3,ry)) > .08f;
+    return hypotf(stick_calibrate(0,lx),stick_calibrate(1,ly)) > .12f ||
+           hypotf(stick_calibrate(2,rx),stick_calibrate(3,ry)) > .12f;
+}
+
+static int source_capture_active(int right,float x,float y,int apply) {
+    if (apply) { x=stick_calibrate(right?2:0,x);y=stick_calibrate(right?3:1,y); }
+    return hypotf(x,y)>.12f; /* retain the default neutral tolerance, independent of configured gameplay DZ */
 }
 
 /* Radial response preserves direction and bounds diagonal travel to the unit circle.
@@ -182,10 +202,17 @@ static inline int32_t stick_axis(float value) {
     return value < 0 ? -result : result;
 }
 
-static int32_t native_stick_component(int axis, float x, float y) {
+#ifndef RUNTIME_STICK_CALIBRATION
+static inline int calibration_source_matches(GCController *controller,int right,int raw) { (void)controller;(void)right;(void)raw;return 0; }
+static inline int calibration_hid_matches(void) { return 0; }
+#endif
+static int32_t native_stick_component(int axis, float x, float y, int apply) {
 #ifdef RUNTIME_STICK_CALIBRATION
-    return stick_component(axis, x, y);
+    if (apply) return stick_component(axis, x, y);
+    float gain=stick_response_gain(x,y,stickDeadzone[axis>=STICK_RX]);
+    return (int32_t)(((axis&1)?y:x)*gain*32767.f);
 #else
+    (void)apply;
     return stick_axis((axis & 1) ? y : x);
 #endif
 }
@@ -313,6 +340,7 @@ static void save_controller_type(int type) { setting_write("controller-type.txt"
    profiles keep their adaptive HID convention until the user recalibrates; never reinterpret
    an adaptive centre as a descriptor-normalized one. Missing/bad files leave defaults intact. */
 static void load_calibration(void) {
+    calibration_unbind(); /* no trustworthy persistent per-device identity: retain file, never guess its owner */
     char path[4096], word[512] = {0}, extra;
     if (!setting_read("controller-calibration.txt", word, sizeof word, path, sizeof path)) return;
     float v[12]; int stable = 0, modern = !strncmp(word, "v2 ", 3);
@@ -328,7 +356,7 @@ static void load_calibration(void) {
     calibration = (RuntimeGamepadCalibration){
         .left={v[0],v[1],v[2],v[3],v[4],v[5]}, .right={v[6],v[7],v[8],v[9],v[10],v[11]}, .stableHID=stable};
     fprintf(stderr, "[totk-input] stick calibration: %s%s\n", path,
-        modern ? "" : " (legacy HID coordinates; recalibrate to use stable HID coordinates)");
+        " (archived profile; recalibrate this controller to activate for this connection)");
 }
 static void save_calibration(void) {
     char word[512];
@@ -342,12 +370,18 @@ static void save_calibration(void) {
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = calibration; }
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) {
     calibration = *in;
+    calibration_unbind();
+    if (calibrationSample.valid) {
+        calibrationOwner=calibrationSampleController;calibrationOwnerDomain=calibrationDomain;
+        if (calibrationDomain==8) calibrationOwnerHID=hidConnectionGeneration;
+    }
     save_calibration();
     hid_calibration_changed();
     refresh_gamepads();
     fprintf(stderr, "[totk-input] stick calibration: changed in the settings panel\n");
 }
 void runtime_gamepad_calibration_reset(void) {
+    calibration_unbind();
     calibration = (RuntimeGamepadCalibration){ .left = {.scaleX=1, .scaleY=1}, .right = {.scaleX=1, .scaleY=1} };
     char path[4096];
     if (setting_path("controller-calibration.txt", path, sizeof path)) unlink(path);
@@ -462,13 +496,14 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
    invalidates the sweep; never calibrate a working native stick using a different HID centre. */
 static void calibration_sample_update(void) {
     RuntimeGamepadCalibrationSample next={0}; uintptr_t device=0; unsigned domain=0;
+    GCController *selected=nil;
     uint64_t now=runtime_now_ns();
     /* Only actual pending fallback evidence invalidates native neutral. A small raw bias or
        an expired auxiliary report is not evidence that a functioning native stick is stuck. */
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad=controller.extendedGamepad;
         if (!pad) continue;
-        device=(uintptr_t)(__bridge void *)controller; domain=1;
+        selected=controller;device=(uintptr_t)(__bridge void *)controller; domain=1;
         next=(RuntimeGamepadCalibrationSample){.lx=pad.leftThumbstick.xAxis.value,.ly=pad.leftThumbstick.yAxis.value,
             .rx=pad.rightThumbstick.xAxis.value,.ry=pad.rightThumbstick.yAxis.value,
             .lt=pad.leftTrigger.value,.rt=pad.rightTrigger.value,.valid=1};
@@ -493,7 +528,7 @@ static void calibration_sample_update(void) {
 #endif
     next.valid=next.valid && isfinite(next.lx)&&isfinite(next.ly)&&isfinite(next.rx)&&isfinite(next.ry);
     next.generation=calibrationSample.generation + (device!=calibrationDevice || domain!=calibrationDomain || next.valid!=calibrationSample.valid);
-    calibrationDevice=device;calibrationDomain=domain;calibrationSample=next;
+    calibrationSampleController=selected;calibrationDevice=device;calibrationDomain=domain;calibrationSample=next;
 }
 void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out) {
     refresh_gamepads(); /* poll native axes and re-evaluate expiring Switch reports, never reuse synthetic clear zeros */

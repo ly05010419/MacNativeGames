@@ -63,7 +63,7 @@ static void refresh_gamepads(void) {
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
 #ifdef RUNTIME_STICK_CALIBRATION
     float rawLx=0, rawLy=0, rawRx=0, rawRy=0, rawLT=0, rawRT=0;
-    int captureActive=0;
+    int captureActive=0,rawLeftCapture=0,rawRightCapture=0;
 #endif
     uint64_t rawAt = 0, rawRightAt = 0;
     int capture = captureDown;
@@ -78,30 +78,35 @@ static void refresh_gamepads(void) {
         next.connected = 1;
         physical |= padPhysical;
         if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
-        nativeLx = stronger_axis(nativeLx, native_stick_component(0, lx, ly));
-        nativeLy = stronger_axis(nativeLy, native_stick_component(1, lx, ly));
+        nativeLx = stronger_axis(nativeLx, native_stick_component(0, lx, ly, calibration_source_matches(controller,0,0)));
+        nativeLy = stronger_axis(nativeLy, native_stick_component(1, lx, ly, calibration_source_matches(controller,0,0)));
+        int leftRaw=0,rightRaw=0;
         int wasActive = rawLeft.active;
         float rawX, rawY;
         if (controller == rawLeftController && switch_left_get(&rawLeft, lx, ly, runtime_now_ns(), &rawX, &rawY)) {
-            lx = rawX; ly = rawY;
+            lx = rawX; ly = rawY;leftRaw=1;
             rawAt = rawLeft.at;
             if (!wasActive) fprintf(stderr, "[totk-input] Switch left stick: native axes stuck at zero; using live HID input\n");
         }
-        next.lx = stronger_axis(next.lx, native_stick_component(0, lx, ly));
-        next.ly = stronger_axis(next.ly, native_stick_component(1, lx, ly));
-        nativeRx = stronger_axis(nativeRx, native_stick_component(2, rx, ry));
-        nativeRy = stronger_axis(nativeRy, native_stick_component(3, rx, ry));
+        next.lx = stronger_axis(next.lx, native_stick_component(0, lx, ly, calibration_source_matches(controller,0,leftRaw)));
+        next.ly = stronger_axis(next.ly, native_stick_component(1, lx, ly, calibration_source_matches(controller,0,leftRaw)));
+        nativeRx = stronger_axis(nativeRx, native_stick_component(2, rx, ry, calibration_source_matches(controller,1,0)));
+        nativeRy = stronger_axis(nativeRy, native_stick_component(3, rx, ry, calibration_source_matches(controller,1,0)));
         int rightWasActive = rawRight.active;
         float rawRX, rawRY;
         if (controller == rawRightController && switch_left_get(&rawRight, rx, ry, runtime_now_ns(), &rawRX, &rawRY)) {
-            rx = rawRX; ry = rawRY;
+            rx = rawRX; ry = rawRY;rightRaw=1;
             rawRightAt = rawRight.at;
             if (!rightWasActive) fprintf(stderr, "[totk-input] Switch right stick: native axes stuck at zero; using live HID input\n");
         }
-        next.rx = stronger_axis(next.rx, native_stick_component(2, rx, ry));
-        next.ry = stronger_axis(next.ry, native_stick_component(3, rx, ry));
+        next.rx = stronger_axis(next.rx, native_stick_component(2, rx, ry, calibration_source_matches(controller,1,rightRaw)));
+        next.ry = stronger_axis(next.ry, native_stick_component(3, rx, ry, calibration_source_matches(controller,1,rightRaw)));
 #ifdef RUNTIME_STICK_CALIBRATION
-        captureActive |= stick_capture_active(lx,ly,rx,ry);
+        /* Non-fallback/native contributions stay live when either raw report expires. */
+        captureActive |= source_capture_active(0,pad.leftThumbstick.xAxis.value,pad.leftThumbstick.yAxis.value,calibration_source_matches(controller,0,0));
+        captureActive |= source_capture_active(1,pad.rightThumbstick.xAxis.value,pad.rightThumbstick.yAxis.value,calibration_source_matches(controller,1,0));
+        if (leftRaw) rawLeftCapture |= source_capture_active(0,lx,ly,calibration_source_matches(controller,0,1));
+        if (rightRaw) rawRightCapture |= source_capture_active(1,rx,ry,calibration_source_matches(controller,1,1));
         if (fabsf(lx) > fabsf(rawLx)) rawLx = lx;
         if (fabsf(ly) > fabsf(rawLy)) rawLy = ly;
         if (fabsf(rx) > fabsf(rawRx)) rawRx = rx;
@@ -140,7 +145,7 @@ static void refresh_gamepads(void) {
         float axes[4];
         for (int i = 0; i < 4; i++) axes[i] = (dsuInput.axes[i] - 128) / (dsuInput.axes[i] >= 128 ? 127.f : 128.f);
 #ifdef RUNTIME_STICK_CALIBRATION
-        captureActive |= hypotf(axes[0],axes[1]) > .08f || hypotf(axes[2],axes[3]) > .08f;
+        captureActive |= hypotf(axes[0],axes[1]) > .12f || hypotf(axes[2],axes[3]) > .12f;
 #endif
         next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
         next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
@@ -219,6 +224,8 @@ static void refresh_gamepads(void) {
 #ifdef RUNTIME_STICK_CALIBRATION
     calibration_sample_update();
     captureStickActive=captureActive;
+    captureRawLeftActive=rawLeftCapture;captureRawRightActive=rawRightCapture;
+    captureRawLeftAt=rawAt;captureRawRightAt=rawRightAt;
     gamepadRawLx=rawLx; gamepadRawLy=rawLy; gamepadRawRx=rawRx; gamepadRawRy=rawRy;
     gamepadRawLT=rawLT; gamepadRawRT=rawRT;
 #endif
@@ -261,6 +268,10 @@ static void attach_gamepad(GCController *controller) {
 }
 
 static void detach_gamepad(GCController *controller) {
+#ifdef RUNTIME_STICK_CALIBRATION
+    if (calibrationOwner==controller) calibration_unbind();
+    if (calibrationSampleController==controller) calibration_sample_invalidate();
+#endif
     controller.extendedGamepad.valueChangedHandler = nil;
     gamepad_forget_raw(controller);
     runtime_feedback_detach(controller);
@@ -277,7 +288,7 @@ void runtime_gamepad_clear(void) {
 #ifdef RUNTIME_STICK_CALIBRATION
     gamepadRawLx = gamepadRawLy = gamepadRawRx = gamepadRawRy = 0;
     gamepadRawLT = gamepadRawRT = 0;
-    captureStickActive=0;
+    captureStickActive=captureRawLeftActive=captureRawRightActive=0;
     calibration_sample_invalidate();
 #endif
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
@@ -347,7 +358,7 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
         RuntimeGamepadState held = text_state_locked();
         if (textCapture == 2 && !held.buttons &&
 #ifdef RUNTIME_STICK_CALIBRATION
-            !captureStickActive
+            !capture_active_locked()
 #else
             !held.lx && !held.ly && !held.rx && !held.ry
 #endif

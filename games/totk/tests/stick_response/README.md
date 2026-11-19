@@ -47,3 +47,13 @@ itself to check L/R calibration, cached HID updates and restart-equivalent reloa
 原始输入在对角线同时达到 X=1、Y=1 时模长为 √2，按坐标直接绘制会越出圆形。
 现在游戏输出和界面预览使用同一径向死区与单位圆限幅，保留方向，不对原始采样做
 裁剪；校准中心/行程仍用原始值。该改变影响实际手感，需真手柄确认。
+
+### Controller identity and saved calibration
+
+Calibration compensation is scoped to the sampled physical connection and each stick's
+native/HID coordinate source. It is never assigned by controller order or model name.
+The current runtime has no verified persistent identity for GameController devices, so
+reconnects and app restarts require calibration again. Existing legacy/v2 files remain
+readable as archived values, but loading never auto-binds them to an arbitrary controller.
+Explicitly completing calibration replaces the archive and activates only that connection.
+Dead-zone preferences remain persistent and independent of the 12% capture-release tolerance.

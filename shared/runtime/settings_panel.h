@@ -185,6 +185,7 @@ static int settings_calibration_active(void) { return calRun[0].phase != CAL_IDL
     self.rightDeadzoneLabel.font=[NSFont systemFontOfSize:11];
     self.rightDeadzoneLabel.textColor=[NSColor colorWithCalibratedWhite:0.9 alpha:1];
     [self addSubview:self.rightDeadzone];[self addSubview:self.rightDeadzoneLabel];
+    calibrationStatus=settings_text("校准仅对本次连接生效；重连或重启后请重新校准","Calibration is connection-only; recalibrate after reconnect or restart");
     [self updateDeadzoneLabel];
     self.deadzoneLabel.textColor=[NSColor colorWithCalibratedWhite:0.9 alpha:1];
     __weak TOTKStickCalibrationView *weak=self;
@@ -439,7 +440,7 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
     cal.stableHID=1;
     runtime_gamepad_calibration_set(&cal);
     calRun[0].phase=calRun[1].phase=CAL_IDLE;
-    calibrationStatus=settings_text("校准完成，左右摇杆已保存","Calibration complete; both sticks saved");
+    calibrationStatus=settings_text("校准完成，仅本次连接有效；重连后请重新校准","Calibration applied for this connection; recalibrate after reconnect");
     [self refreshControls];
 }
 -(void)updateDeadzoneLabel{

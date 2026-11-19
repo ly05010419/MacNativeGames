@@ -83,7 +83,7 @@ static void hid_pad_compute(void) {
 #endif
     if (hidOrder == GAMEPAD_HID_SWITCH_PRO
 #ifdef RUNTIME_STICK_CALIBRATION
-        && !calibration.stableHID
+        && !(calibration_hid_matches() && calibration.stableHID)
 #endif
     ) {   /* sticks that stop short of the HID range (gamepad_hid_reach) */
         lx = gamepad_hid_reach(&hidReach[0], lx); ly = gamepad_hid_reach(&hidReach[1], ly);
@@ -94,12 +94,12 @@ static void hid_pad_compute(void) {
     hidPad.buttons = buttons;
     float cx = gamepad_game_stick(0, lx), cy = gamepad_game_stick(1, -ly);
     float crx = gamepad_game_stick(2, rx), cry = gamepad_game_stick(3, -ry);
-    hidPad.lx = native_stick_component(0, cx, cy);
-    hidPad.ly = native_stick_component(1, cx, cy);
-    hidPad.rx = native_stick_component(2, crx, cry);
-    hidPad.ry = native_stick_component(3, crx, cry);
+    hidPad.lx = native_stick_component(0, cx, cy, calibration_hid_matches());
+    hidPad.ly = native_stick_component(1, cx, cy, calibration_hid_matches());
+    hidPad.rx = native_stick_component(2, crx, cry, calibration_hid_matches());
+    hidPad.ry = native_stick_component(3, crx, cry, calibration_hid_matches());
 #ifdef RUNTIME_STICK_CALIBRATION
-    hidCaptureActive = stick_capture_active(cx,cy,crx,cry);
+    hidCaptureActive = source_capture_active(0,cx,cy,calibration_hid_matches()) || source_capture_active(1,crx,cry,calibration_hid_matches());
 #endif
 }
 
@@ -180,7 +180,7 @@ static void hid_pad_reset(void) {
     hidPad = (HIDPadState){0};
 #ifdef RUNTIME_STICK_CALIBRATION
     hidRawLx = hidRawLy = hidRawRx = hidRawRy = 0;
-    hidSampleAxes=0;calibration_sample_invalidate();
+    hidSampleAxes=0;hidConnectionGeneration++;calibration_sample_invalidate();
 #endif
 }
 
