@@ -12,8 +12,10 @@
 // Read only, from any thread, once opened (seed_image_open, before the warm-up threads start).
 #pragma once
 #import <Foundation/Foundation.h>
+#include <dispatch/dispatch.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -80,6 +82,52 @@ static int seed_image_find(const seed_image *img, NSString *name, const seed_ima
         if (x) { *part = &img->p[i]; *ent = x; return 1; }
     }
     return 0;
+}
+/* Small files read on the replay thread, copied into memory up front (2026-11-19, Ocarina of Time on the user's play).
+   A shader's variant index (<key>.variants, 300-900 bytes) is read the first time the game uses the shader in a session,
+   on the thread replaying the game's commands; mapped from the image on the external drive, its first touch waited for a
+   disk read, and while the game streamed an area in (0.8-0.9 GB/s of page-ins) that read held the replay 200-411 ms. All
+   of them, about 13 MB for 42,848 shaders, are copied into one buffer by a background thread after the image opens; a
+   file found there is served from memory, any other as before. */
+typedef struct { uint8_t *buf; size_t len, files; uint32_t *at[SEED_IMAGE_PARTS]; } seed_image_preloaded;   // at: offset + 1 in buf, 0 for a file not copied
+static int seed_image_name_ends(const seed_image_part *p, const seed_image_ent *x, const char *suffix, size_t slen) {
+    return x->nlen >= slen && !memcmp(p->names + x->name + x->nlen - slen, suffix, slen);
+}
+/* Every file whose name ends with suffix, copied with pread on several threads. NULL when there is none, when they do not
+   fit in 4 GiB, or when a read comes short (then nothing is preloaded: every read stays the mapped one). */
+__attribute__((unused)) static seed_image_preloaded *seed_image_preload(const seed_image *img, const char *suffix) {   // unused: the launcher and runtime include this header for seed_image_data alone (-Werror)
+    size_t slen = strlen(suffix), total = 0, files = 0;
+    for (int i = 0; i < img->parts; i++)
+        for (uint32_t k = 0; k < img->p[i].count; k++)
+            if (seed_image_name_ends(&img->p[i], &img->p[i].e[k], suffix, slen)) { total += (size_t)img->p[i].e[k].size; files++; }
+    if (!files || total >= UINT32_MAX) return NULL;
+    seed_image_preloaded *pre = (seed_image_preloaded *)calloc(1, sizeof *pre);
+    if (!pre || !(pre->buf = (uint8_t *)malloc(total ? total : 1))) { free(pre); return NULL; }
+    pre->len = total; pre->files = files;
+    typedef struct { int part; uint32_t k; size_t at; } job;
+    job *jobs = (job *)malloc(files * sizeof *jobs);
+    int ok = jobs != NULL; size_t o = 0, n = 0;
+    for (int i = 0; ok && i < img->parts; i++) {
+        if (!(pre->at[i] = (uint32_t *)calloc(img->p[i].count ? img->p[i].count : 1, sizeof(uint32_t)))) { ok = 0; break; }
+        for (uint32_t k = 0; k < img->p[i].count; k++)
+            if (seed_image_name_ends(&img->p[i], &img->p[i].e[k], suffix, slen)) { jobs[n++] = (job){i, k, o}; pre->at[i][k] = (uint32_t)o + 1; o += (size_t)img->p[i].e[k].size; }
+    }
+    __block int bad = !ok;
+    if (ok) dispatch_apply(n, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(size_t j) {
+        const seed_image_part *p = &img->p[jobs[j].part]; const seed_image_ent *x = &p->e[jobs[j].k];
+        if (x->size && pread(p->fd, pre->buf + jobs[j].at, (size_t)x->size, (off_t)x->off) != (ssize_t)x->size) __atomic_store_n(&bad, 1, __ATOMIC_RELAXED);
+    });
+    free(jobs);
+    if (bad) { for (int i = 0; i < img->parts; i++) free(pre->at[i]); free(pre->buf); free(pre); return NULL; }
+    return pre;
+}
+/* The file's bytes from the preloaded buffer (not copied again; the buffer lives as long as the process), nil when it was
+   not preloaded. */
+__attribute__((unused)) static NSData *seed_image_preloaded_data(const seed_image_preloaded *pre, const seed_image *img, NSString *name) {
+    const seed_image_part *p; const seed_image_ent *x;
+    if (!pre || !seed_image_find(img, name, &p, &x)) return nil;
+    uint32_t a = pre->at[p - img->p][x - p->e];
+    return a ? [NSData dataWithBytesNoCopy:pre->buf + a - 1 length:(NSUInteger)x->size freeWhenDone:NO] : nil;
 }
 /* The file's bytes, mapped read only (only its pages); the mapping goes with the data. nil when the image has no such
    file or the mapping fails. An empty file is empty data. */

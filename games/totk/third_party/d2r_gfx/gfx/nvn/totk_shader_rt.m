@@ -69,6 +69,7 @@ static NSString *g_root, *g_dir;
 static NSString *g_seed_dir;
 static NSSet<NSString *> *g_seed_names;
 static seed_image g_seed_img;   // the seed's per-shader files when it came as an image (<seed>.img.000 ...), opened with g_seed_dir
+static _Atomic(seed_image_preloaded *) g_seed_pre;   // its variant indexes copied into memory in the background (seed_image_preload), NULL until done
 static NSString *g_seed_prefix;   // g_seed_dir + "/"
 /* Seed files found broken (an empty or entry-less MSL, 2026-10-30: a translation cut short on 10-26 left a 0-byte
    5e0447ea... in the packaging cache, and the warm-up ended the game on it): read from the cache instead, where the
@@ -175,7 +176,15 @@ NSString *totk_rt_dir(void) {
                 g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]]; g_seed_sealed = [seed[@"sealed"] boolValue];
                 g_seed_prefix = [source stringByAppendingString:@"/"]; seed_image_open(&g_seed_img, source);
                 if (g_seed_img.parts) { uint64_t files = 0; for (int i = 0; i < g_seed_img.parts; i++) files += g_seed_img.p[i].count;
-                    LOG("[shader-seed] 着色器文件在镜像里：%d 份，%llu 个文件（原地读取，不解包）", g_seed_img.parts, (unsigned long long)files); }
+                    LOG("[shader-seed] 着色器文件在镜像里：%d 份，%llu 个文件（原地读取，不解包）", g_seed_img.parts, (unsigned long long)files);
+                    /* The variant indexes into memory, off the replay thread (totk_seed_image.h seed_image_preload) */
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+                        seed_image_preloaded *pre = seed_image_preload(&g_seed_img, ".variants");
+                        atomic_store(&g_seed_pre, pre);
+                        if (pre) LOG("[shader-seed] 变体索引预读进内存：%zu 个，%.1f MB，%.0f ms", pre->files, pre->len / 1048576.0, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e6);
+                        else LOG("[shader-seed] 【红】变体索引预读失败：照旧从镜像映射读");
+                    }); }
                 for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:g_dir error:nil] ?: @[])   // made again before: the cache's
                     if ([name hasSuffix:@"_b.metal"] && [g_seed_names containsObject:name]) {
                         seed_mark_broken(name); seed_mark_broken([[name substringToIndex:name.length - 6] stringByAppendingString:@".json"]);
@@ -338,7 +347,9 @@ NSString *totk_rt_file(NSString *name) {
 static NSData *seed_image_file(NSString *path) {
     if (!g_seed_img.parts || ![path hasPrefix:g_seed_prefix]) return nil;
     NSString *name = [path substringFromIndex:g_seed_prefix.length];
-    return [name containsString:@"/"] ? nil : seed_image_data(&g_seed_img, name);
+    if ([name containsString:@"/"]) return nil;
+    NSData *pre = seed_image_preloaded_data(atomic_load(&g_seed_pre), &g_seed_img, name);   // a variant index: from memory once preloaded
+    return pre ?: seed_image_data(&g_seed_img, name);
 }
 NSData *totk_rt_read(NSString *path) {
     if (!path) return nil;
