@@ -19,13 +19,15 @@ struct HomePage: View {
     @State private var slowMotion = 1
     static let slowMotions = [1, 2, 3, 5, 10, 20, 50]
 
-    static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp"]
+    static let games = GameCatalog.all
 
-    /// The cases' order (user 2026-11-17: "已经安装的游戏 放前面，没有安装的游戏盒子 放后面"): the built games, then the
-    /// ones not built yet, each in the catalog's order.
-    private var order: [String] {
-        let built = Self.games.filter { g in model.installed.contains { $0.game == g } }
-        return built + Self.games.filter { !built.contains($0) }
+    /// The cases' order: the catalog's, the same as the iPhone's (user 2026-11-19: "顺序也一样"; until then the built
+    /// games came first, user 2026-11-17, which put the cases in a different order on each device).
+    private var order: [String] { Self.games }
+    @ObservedObject private var official = OfficialCovers.shared   // a fetched picture changes picturePaths
+    /// Each case's picture, in the cases' order (the ones it has).
+    private var picturePaths: [String] {
+        order.compactMap { g in GameCard.coverPath(g, model.installed.first { $0.game == g }) }
     }
     private var selected: String { order.contains(chosen) ? chosen : order[0] }
     private var center: Binding<Int> {
@@ -86,8 +88,9 @@ struct HomePage: View {
                           arrows: false, opening: CaseOpening(rawValue: caseOpening) ?? .book,
                           inside: { i in
                               let game = cases[i]
-                              return CoverImages.shared.cover(at: GameCard.picturePath(of: model.installed.first { $0.game == game }))?.picture
+                              return CoverImages.shared.cover(at: GameCard.coverPath(game, model.installed.first { $0.game == game }))?.picture
                           },
+                          cartridge: { i in model.installed.contains { $0.game == cases[i] } },   // built: its cartridge
                           slow: Double(slowMotion)) { i in
                     let game = cases[i]
                     GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
@@ -114,6 +117,9 @@ struct HomePage: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {   // 慢速模式, the stage's bottom-right corner
+                    // a Launcher built here only, never the release players get (user 2026-11-19: "龟速模式 按钮 只能我
+                    // 开发版 看到 用户 不能看到")
+                    if !Paths.isRelease {
                     Menu {
                         Picker(T.slowMotion, selection: $slowMotion) {
                             ForEach(Self.slowMotions, id: \.self) { n in Text(T.slowMotionTimes(n)).tag(n) }
@@ -128,11 +134,10 @@ struct HomePage: View {
                     .foregroundStyle(.white)
                     .environment(\.colorScheme, .dark)
                     .padding(12)
+                    }
                 }
-                // what the middle cover is, as the iPod writes it under the cover
+                // no name nor platforms under the stage (user 2026-11-19: "去掉 下面这个说明"): the case says them
                 VStack(spacing: 4) {
-                    Text(T.gameName(selected)).font(.title2.weight(.semibold))
-                    Text(T.gamePlatforms(selected)).font(.callout).foregroundStyle(.secondary)
                     if model.installedLoaded, !model.installed.contains(where: { $0.game == selected }) {
                         Button { open(selected) } label: { Label(T.addGame, systemImage: "plus") }
                             .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 6)
@@ -194,6 +199,11 @@ struct HomePage: View {
         .task(id: selected) {
             if let app = model.installed.first(where: { $0.game == selected })?.app { await GameCardState.preload([app]) }
         }
+        // every case's depth made ahead, the middle one first (user 2026-11-19: "不能都提前准备好吗？"); again when a
+        // picture changes (an official one fetched, a game built)
+        .task(id: picturePaths) {
+            DepthScenes.shared.prepare(DepthScenes.outwards(picturePaths, from: order.firstIndex(of: selected) ?? 0))
+        }
         .onChange(of: model.installedLoaded) { chooseFirst() }
     }
 }
@@ -207,13 +217,19 @@ struct GameCard: View {
     var cover = false
     let tap: () -> Void
 
-    @ObservedObject var crops = CoverCrops.shared   // not private: the memberwise init stays usable
+    @ObservedObject var official = OfficialCovers.shared   // a picture fetched on this Mac shows when it arrives
+                                                           // (not private: the memberwise init stays usable)
 
     /// The icon file of each app, read from its Info.plist once (again when the Info.plist changes): a case is drawn on
     /// every frame of a swipe (user 2026-11-19, "mac 也要这样优化吗" "改").
     @MainActor private static var iconPaths: [String: (stamp: Date?, path: String)] = [:]
 
-    private var picturePath: String? { Self.picturePath(of: app) }
+    private var picturePath: String? { Self.coverPath(game, app) }
+
+    /// The case's picture: the game's official key art (OfficialCovers; built or not), else its app's icon.
+    @MainActor static func coverPath(_ game: String, _ app: InstalledReport.App?) -> String? {
+        OfficialCovers.shared.path(for: game) ?? picturePath(of: app)
+    }
 
     /// The icon file of a built game's app (the opened case's inside shows it too: HomePage, CaseDetail's `inside`).
     static func picturePath(of app: InstalledReport.App?) -> String? {
@@ -244,7 +260,9 @@ struct GameCard: View {
     /// front itself is CoverArt.swift's CoverFront, shared with the iPhone / iPad Launcher.
     private var coverBody: some View {
         let art = art
-        return CoverFront(game: game, picture: art?.picture, picturePath: art?.path, backdrop: art?.backdrop) {
+        // cut where covers.json says across the official picture; an app's icon in the middle
+        let center = official.path(for: game) != nil ? official.center(for: game) : 0.5
+        return CoverFront(game: game, picture: art?.picture, picturePath: art?.path, center: center) {
             ZStack {
                 if loading {
                     ProgressView().controlSize(.small).tint(.white)

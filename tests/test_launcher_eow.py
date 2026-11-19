@@ -53,8 +53,8 @@ class Wiring(unittest.TestCase):
         self.assertIn(f'"{games.EOW.data_folder}")', (ROOT / 'games/eow/app/launcher.c').read_text())
         self.assertEqual(games.PAGES['eow'], ('controls', 'storage', 'saves'))
         self.assertIn('"eow": ["controls", "storage", "saves"]', (ROOT / 'tools/builder_app/Sources/MNGBuilder/Model.swift').read_text())
-        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('"eow"', re.search(r'static let games = \[[^\]]*\]', swift).group(0))
+        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/GameStrings.swift').read_text()   # GameCatalog, both Launchers
+        self.assertIn('"eow"', re.search(r'static let all = \[[^\]]*\]', swift).group(0))
 
 
 class UpdateBlocker(unittest.TestCase):

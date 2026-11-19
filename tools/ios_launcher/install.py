@@ -36,10 +36,12 @@ MAC_UI = REPO / 'tools/builder_app/Sources/MNGBuilder'
 # The Mac Launcher's files the iPhone / iPad Launcher compiles as they are (tests/test_ios_launcher.py checks they use
 # AppKit only inside `#if os(macOS)`)
 SHARED = ('CoverFlow.swift', 'CaseDetail.swift', 'CaseAmounts.swift', 'CoverArt.swift', 'CoverFlowTrace.swift',
-          'GameStrings.swift', 'DepthScene.swift')
-ICON = REPO / 'tools/builder_app/Resources/AppIcon.png'   # the Mac Launcher's artwork, 1024 px
+          'GameStrings.swift', 'DepthScene.swift', 'DepthSurface.swift')
+ICON = REPO / 'tools/builder_app/Resources/AppIcon-iOS.png'   # the project icon (icon.png) filling 1024 px, opaque: iOS cuts its corners
 RESIZE = REPO / 'tools/builder_app/resize_icon.js'        # icns -> PNG with AppKit (no sips: the build sandbox)
-GAMES = ('oot', 'totk', 'botw', 'dkb', 'pkp', 'dread', 'tmnt')   # Sources/Games.swift Games.all
+GAMES = ('oot', 'totk', 'botw', 'dkb', 'pkp', 'dread', 'tmnt')   # with an iPhone / iPad build: GameStrings.swift GameCatalog.onIPhone
+# every case, both Launchers ("统一 b 两边数量一样", "顺序也一样"): GameStrings.swift GameCatalog.all
+CASES = ('oot', 'totk', 'botw', 'eow', 'odyssey', 'acnh', 'dkb', 'pkp', 'dread', 'tmnt')
 # A Mac game app's bundle identifier (build_app.py APPS, games/*/build.py) -> its game
 MAC_BUNDLES = {'org.macnativegames.totk': 'totk', 'org.macnativegames.botw': 'botw', 'org.macnativegames.oot': 'oot',
                'org.macnativegames.bananza': 'dkb', 'org.macnativegames.pokopia': 'pkp',
@@ -90,6 +92,35 @@ def icon_of(app):
     return Path(app) / 'Contents/Resources' / (name if Path(name).suffix else name + '.icns')
 
 
+def official_covers(folder):
+    """Covers/<game>.jpg: each game's official key art (tools/builder_app/Resources/covers.json, user 2026-11-19),
+    fetched on this Mac through the deps cache and checked against its SHA-256, into this phone's build only (the
+    repository holds the addresses alone). A picture that cannot be fetched is left out: that game's case shows its
+    app's icon (covers). Returns the games put in."""
+    sys.path.insert(0, str(REPO))
+    try:
+        from tools.deps.core import fetch
+    finally:
+        sys.path.remove(str(REPO))
+    folder.mkdir(parents=True, exist_ok=True)
+    source = REPO / 'tools/builder_app/Resources/covers.json'
+    shutil.copy2(source, folder / 'covers.json')   # where each picture is cut (Games.center)
+    spec = json.loads(source.read_text())['covers']
+    done = []
+    for game in CASES:
+        cover = spec.get(game)
+        if not cover:
+            continue
+        try:
+            picture = fetch(cover['url'], cover['sha256'], f'cover-{game}-{cover["sha256"][:12]}.jpg')
+        except Exception as e:   # offline: the app's icon stands in
+            print(f'official cover {game}: not fetched ({e})', flush=True)
+            continue
+        shutil.copy2(picture, folder / f'{game}.jpg')
+        done.append(game)
+    return done
+
+
 def covers(folder, apps):
     """Covers/<game>.png from the first remembered Mac app of each game; returns {game: source app}."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -131,8 +162,10 @@ def stage(work, apps):
     shutil.copytree(model / DEPTH_MODEL_PACKAGE, project / 'Models' / DEPTH_MODEL_PACKAGE)
     for name in ('LICENSE', 'README.md'):
         shutil.copy2(model / name, project / 'Models' / f'depth-anything-v2-small-{name}')
+    official = official_covers(project / 'Covers')
+    print('official covers: ' + (', '.join(official) or 'none (offline): the apps\' icons'), flush=True)
     found = covers(project / 'Covers', apps)
-    for game in GAMES:
+    for game in CASES:
         print(f'cover {game}: ' + (f'from {found[game]}' if game in found else 'none (no Mac app of it): a plain case'), flush=True)
     return project
 

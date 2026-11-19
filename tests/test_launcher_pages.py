@@ -94,8 +94,9 @@ class Pages(unittest.TestCase):
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertIn('CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) },\n'
                       '                          arrows: false, opening: CaseOpening(rawValue: caseOpening) ?? .book,', home)
-        # the built games first, then the ones not built yet (user 2026-11-17); the chosen one is kept by game, not place
-        self.assertIn('return built + Self.games.filter { !built.contains($0) }', home)
+        # the shared catalog's order, the same as the iPhone's (user 2026-11-19: "顺序也一样"; replacing 2026-11-17's
+        # built games first); the chosen one is kept by game, not place
+        self.assertIn('private var order: [String] { Self.games }', home)
         self.assertIn('let cases = order', home)
         self.assertIn('set: { chosen = order[$0] }', home)
         flow =(REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
@@ -154,7 +155,7 @@ class Pages(unittest.TestCase):
                      '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
             self.assertIn(part, detail)
         for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,\n'
-                     '                               inside: inside(index), close: { turn(false) })',
+                     '                               inside: inside(index), cartridge: cartridge(index), close: { turn(false) })',
                      'withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }',
                      # "去掉 5% 反弹 改成 0%": opening and closing critically damped, no overshoot, either way it opens
                      'private var openingTurn: Animation { paced(.spring(response: 0.33, dampingFraction: 1)) }',
@@ -252,18 +253,19 @@ class Pages(unittest.TestCase):
         self.assertEqual(home.count('model.buildGame('), 2)
         self.assertNotIn('model.buildFor = ', home)
 
-    def test_a_case_s_picture_is_cut_tall_round_its_title(self):
-        # user 2026-11-17: "图片 重新裁剪 要合适的 长方形": the square picture is cut to a tall rectangle whose middle is
-        # the middle of the title's words and what draws the eye (Vision), not shown whole with a blur under it
+    def test_a_case_s_picture_is_the_square_s_middle_80_percent(self):
+        # user 2026-11-19: "裁剪成 正方形 然后 中间80% 显示在封面上" (replacing 2026-11-17's cut round the title by
+        # Vision; "改成 90%"): the square picture drawn 1 / 0.9 x the insert's height, centred, so the insert shows its middle 90%
         # (the front moved to CoverArt.swift's CoverFront 2026-11-19, shared with the iPhone / iPad Launcher)
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('CoverFront(game: game, picture: art?.picture, picturePath: art?.path, backdrop: art?.backdrop)', home)
+        self.assertIn('CoverFront(game: game, picture: art?.picture, picturePath: art?.path, center: center)', home)
         art = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverArt.swift').read_text()
-        # the cut's middle once (crops.center), the picture or its spatial layers cut the same way
-        self.assertIn('let center = crops.center(of: picturePath)', art)
-        self.assertIn('CroppedPicture(picture: picture, center: center)', art)
-        for part in ('VNRecognizeTextRequest()', 'VNGenerateAttentionBasedSaliencyImageRequest()', 'Task.detached'):
-            self.assertIn(part, art)
+        self.assertIn('var center: CGFloat = 0.5', art)   # the middle unless covers.json says (Tears of the Kingdom: right)
+        self.assertIn('static var margin: CGFloat { 1 / 0.9 }', art)
+        self.assertIn('CroppedPicture(picture: picture, center: center, margin: margin)', art)
+        for part in ('VNRecognizeTextRequest()', 'VNGenerateAttentionBasedSaliencyImageRequest()', 'crops.center'):
+            self.assertNotIn(part, art)
+        self.assertIn('productImage, shape square', (REPO / 'tools/builder_app/Resources/covers.json').read_text())
         self.assertIn('Text(T.gamePlatforms(game))', (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text())
 
 

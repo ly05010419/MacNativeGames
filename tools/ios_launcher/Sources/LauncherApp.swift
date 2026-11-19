@@ -16,7 +16,7 @@ final class Library: ObservableObject {
     @Published var message: String?
 
     func refresh() {
-        installed = Set(Games.all.filter { UIApplication.shared.canOpenURL(Games.url($0)) })
+        installed = Set(Games.playable.filter { UIApplication.shared.canOpenURL(Games.url($0)) })
     }
 
     func launch(_ game: String) {
@@ -35,13 +35,10 @@ struct HomeView: View {
     @Environment(\.scenePhase) private var phase
     @State private var chosen = Games.all[0]
     @State private var launches = 0   // a game started from the opened case: it turns back to its front, as on the Mac
-    @StateObject private var motion = MotionTilt()   // the phone's turn leans the middle case, as the Mac's pointer
+    @State private var motion = MotionTilt()   // the phone's turn leans the middle case (sent, not watched: TurnFeed)
 
-    /// Installed games first, then the rest, each in the catalog's order (as the Mac: built ones first).
-    private var order: [String] {
-        let have = Games.all.filter { library.installed.contains($0) }
-        return have + Games.all.filter { !have.contains($0) }
-    }
+    /// The catalog's order, the same as the Mac's (user 2026-11-19: "顺序也一样").
+    private var order: [String] { Games.all }
     private var center: Binding<Int> {
         Binding(get: { order.firstIndex(of: chosen) ?? 0 }, set: { chosen = order[$0] })
     }
@@ -58,7 +55,8 @@ struct HomeView: View {
             CoverFlow(count: cases.count, index: center, size: size, launches: launches, name: { T.gameName(cases[$0]) },
                       arrows: false, opening: .book,
                       inside: { CoverImages.shared.cover(at: Games.picturePath(cases[$0]))?.picture },
-                      corner: 0, tiltInput: motion.tilt) { i in
+                      cartridge: { library.installed.contains(cases[$0]) },   // installed here: its cartridge
+                      corner: 0, turns: motion.feed) { i in
                 front(cases[i])
             } spine: { i in
                 CaseSpine(game: cases[i])
@@ -71,7 +69,13 @@ struct HomeView: View {
         }
         .ignoresSafeArea()
         .background(Color.black.ignoresSafeArea())
-        .onAppear { library.refresh(); chosen = order.first ?? chosen; motion.start() }
+        .onAppear { library.refresh(); chosen = order.first ?? chosen; motion.start(); Health.shared.start() }
+        // every case's depth made ahead, the middle one first (user 2026-11-19: "每次 看一个封面 才开始准备 视差效果
+        // 还要等1秒 不能都提前准备好吗？")
+        .task {
+            let paths = order.compactMap { Games.picturePath($0) }
+            DepthScenes.shared.prepare(DepthScenes.outwards(paths, from: order.firstIndex(of: chosen) ?? 0))
+        }
         .onChange(of: phase) { _, now in
             if now == .active { library.refresh(); motion.start() } else { motion.stop() }   // no motion in the background
         }
@@ -112,7 +116,7 @@ struct HomeView: View {
     /// "去掉 还没安装 提示").
     private func front(_ game: String) -> some View {
         let cover = CoverImages.shared.cover(at: Games.picturePath(game))   // decoded and blurred once, not on every frame
-        return CoverFront(game: game, picture: cover?.picture, picturePath: cover?.path, backdrop: cover?.backdrop) {
+        return CoverFront(game: game, picture: cover?.picture, picturePath: cover?.path, center: Games.center(game)) {
             Text(T.gameName(game)).font(.headline).foregroundStyle(.white)
                 .multilineTextAlignment(.center).padding(.horizontal, 12)
         }

@@ -19,16 +19,30 @@ enum T {
 /// canOpenURL says no: tests/test_ios_launcher.py). The Launcher cannot build, install or read another app: it only sees
 /// whether the scheme opens, and opens it.
 enum Games {
-    /// Every game with an iPhone / iPad build in this repository (games/totk/ios: totk, botw, dkb, pkp; games/oot/ios;
-    /// games/dread/ios; games/tmnt/ios), in the Mac Launcher's order (HomePage.games), then the iPhone-only ones
-    static let all = ["oot", "totk", "botw", "dkb", "pkp", "dread", "tmnt"]
+    /// The cases: every game the Mac Launcher shows, in its order (GameCatalog, shared: "统一 b 两边数量一样").
+    static let all = GameCatalog.all
+    /// The ones with an iPhone / iPad build: their apps are looked for (project.yml LSApplicationQueriesSchemes).
+    static let playable = GameCatalog.onIPhone
 
     static func url(_ game: String) -> URL { URL(string: "mng-\(game)://launch")! }
 
-    /// The game's picture, put into this app by its install from the player's own Mac app of the game
-    /// (install.py: Covers/<game>.png); nil when that game was not built on the Mac.
+    /// The game's picture, put into this app by its install on the Mac (install.py): its official key art
+    /// (Covers/<game>.jpg, user 2026-11-19), else its Mac app's icon (Covers/<game>.png); nil when there is neither.
     static func picturePath(_ game: String) -> String? {
-        Bundle.main.path(forResource: game, ofType: "png", inDirectory: "Covers")
+        Bundle.main.path(forResource: game, ofType: "jpg", inDirectory: "Covers")
+            ?? Bundle.main.path(forResource: game, ofType: "png", inDirectory: "Covers")
+    }
+
+    /// Where across the official picture the case's front is cut, 0 left ... 1 right (Covers/covers.json `center`,
+    /// copied in by install.py; the Mac's OfficialCovers reads the same); the middle for an app's icon.
+    static func center(_ game: String) -> CGFloat {
+        guard Bundle.main.path(forResource: game, ofType: "jpg", inDirectory: "Covers") != nil,
+              let url = Bundle.main.url(forResource: "covers", withExtension: "json", subdirectory: "Covers"),
+              let data = try? Data(contentsOf: url),
+              let spec = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pin = (spec["covers"] as? [String: Any])?[game] as? [String: Any],
+              let center = pin["center"] as? Double else { return 0.5 }
+        return CGFloat(center)
     }
 }
 // The pictures are decoded and blurred once by CoverImages, shared with the Mac Launcher (Shared/CoverArt.swift).

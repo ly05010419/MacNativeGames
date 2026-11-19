@@ -14,6 +14,12 @@ enum CoverFlowTrace {
                      position, flip, lit, tilt.0, tilt.1, p, order.map(String.init).joined(separator: ",")))
     }
 
+    /// The middle case drawn leaning (MiddleLean): its own line, the stage is not drawn for it.
+    static func lean(_ x: Double, _ y: Double, _ lit: Double) {
+        guard on else { return }
+        write(String(format: "lean %.3f,%.3f lit %.3f", x, y, lit))
+    }
+
     static func note(_ text: String) {
         guard on else { return }
         write("note " + text)

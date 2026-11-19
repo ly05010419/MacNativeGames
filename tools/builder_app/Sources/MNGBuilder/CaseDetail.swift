@@ -32,6 +32,9 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
     /// case shows it through its clear plastic (user 2026-11-19, a photo of an opened case: "这样效果"); nil (a game not
     /// built yet), a plain dark tray and the cover's front on the open cover.
     var inside: PlatformImage? = nil
+    /// The cartridge in its slot: only for a game that is built (the Mac) or installed (the iPhone); an empty case for
+    /// one that is not (user 2026-11-19: "没安装的 去掉 左边盒子里的 sd卡").
+    var cartridge = true
     /// Closes the case: a tap on the ground round it (no close button, user 2026-11-19 "去掉 关闭按钮 点击背景 关闭"), or
     /// Escape on the Mac (CoverFlow).
     let close: () -> Void
@@ -107,7 +110,9 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
         let spineW = caseW * 0.07
         let shown = Double(max(0, (p - 0.3) / 0.7))
         // the blurred pictures, made once at their opened size (FrozenBlur), never blurred again frame by frame
-        let frost = inside.flatMap { FrozenBlur.image($0, width: 2 * openW, height: openH, radius: 16, saturation: 1.35,
+        // heavier than the ground's (radius 22) and milky over it, so the case's inside reads as frosted glass set apart
+        // from the frosted ground (user 2026-11-19: "打开 盒子的 毛玻璃 效果 应该更重 和背景 毛玻璃有区分"; it was 16)
+        let frost = inside.flatMap { FrozenBlur.image($0, width: 2 * openW, height: openH, radius: 44, saturation: 1.2,
                                                       scale: displayScale) }
         // the ground frosted too, the Mac as the iPhone (user 2026-11-19: "算了 mac 背景也是毛玻璃", after trying it clear)
         let ground = inside.flatMap { FrozenBlur.image($0, width: stage.width, height: stage.height, radius: 22,
@@ -162,7 +167,9 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
                     ZStack {
                         Self.frosted(frost, left: true, width: openW, height: openH)
                         Self.plastic(width: openW, height: openH, corner: openCorner, outerLeading: true)
-                        Self.cartridge(inside, width: openW * 0.405, height: openW * 0.405 * 1.36)
+                        if cartridge {
+                            Self.cartridge(inside, width: openW * 0.405, height: openW * 0.405 * 1.36)
+                        }
                     }
                     .frame(width: openW, height: openH)
                     .clipShape(RoundedRectangle(cornerRadius: openCorner, style: .continuous))
@@ -210,14 +217,15 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
     /// 毛玻璃 效果，而不是 两块 毛玻璃"; a dark wash over the system material had come out a muddy grey-brown): the
     /// picture fills the two halves side by side and is blurred as one, its colour lifted, so the blur runs on across
     /// the spine; this half is cut out of it, a thin dark wash over it for the type. `frost` is that picture already
-    /// blurred at 2·width x height (FrozenBlur, radius 16, saturation 1.35): nothing is blurred frame by frame.
+    /// blurred at 2·width x height (FrozenBlur, radius 44, saturation 1.2): nothing is blurred frame by frame.
     private static func frosted(_ frost: PlatformImage, left: Bool, width: CGFloat, height: CGFloat) -> some View {
         Image(platformImage: frost).resizable()
             .frame(width: 2 * width, height: height)
             .offset(x: left ? width / 2 : -width / 2)
             .frame(width: width, height: height)
             .clipped()
-            .overlay(Color.black.opacity(0.3))
+            .overlay(Color.white.opacity(0.12))   // milky, as frosted glass
+            .overlay(Color.black.opacity(0.28))   // dark enough still for the white type
     }
 
     /// A half's clear plastic: a sheen across it, its thick rim, the sleeve's inner edge and two clips on the outer edge.

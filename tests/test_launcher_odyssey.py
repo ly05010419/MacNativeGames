@@ -48,8 +48,8 @@ class Wiring(unittest.TestCase):
         self.assertIn('"Odyssey")', (ROOT / 'games/odyssey/scripts/odyssey_app_launcher.c').read_text())
         self.assertEqual(games.PAGES['odyssey'], ('controls', 'storage', 'saves'))
         self.assertEqual(NAMES['odyssey']['a'], 'Jump / Confirm')
-        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('"odyssey"', re.search(r'static let games = \[[^\]]*\]', swift).group(0))
+        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/GameStrings.swift').read_text()   # GameCatalog, both Launchers
+        self.assertIn('"odyssey"', re.search(r'static let all = \[[^\]]*\]', swift).group(0))
 
     def test_update_blocker(self):
         build = load_build()

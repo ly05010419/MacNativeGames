@@ -8,8 +8,11 @@ import UIKit
 /// under a pointer at its top. The rest it is measured from follows the phone slowly (about two seconds), so a phone
 /// held still at any angle shows the case straight, and only a turn leans it.
 @MainActor
-final class MotionTilt: ObservableObject {
-    @Published private(set) var tilt = CGPoint.zero
+final class MotionTilt {
+    /// Not published: each reading is sent to the Cover Flow (feed), which redraws the middle case only; a published
+    /// value redrew the whole home page 65 times a second (user 2026-11-19: "越用越慢").
+    private(set) var tilt = CGPoint.zero
+    let feed = TurnFeed()
 
     private let manager = CMMotionManager()
     private var rest: CMQuaternion?
@@ -33,6 +36,7 @@ final class MotionTilt: ObservableObject {
         manager.stopDeviceMotionUpdates()
         rest = nil
         tilt = .zero
+        feed.send(.zero)
     }
 
     private func update(_ now: CMQuaternion) {
@@ -46,7 +50,18 @@ final class MotionTilt: ObservableObject {
         let aboutUp = homeRight ? about.x : -about.x          // turning about the screen's upright axis
         let aboutAcross = homeRight ? -about.y : about.y      // turning about its left-to-right axis
         let clamp = { (v: Double) in CGFloat(max(-Self.most, min(Self.most, v / Self.full))) }
-        tilt = CGPoint(x: clamp(aboutUp), y: clamp(aboutAcross))
+        // a change too small to see (under 0.002 of a full lean: a hundredth of a point) is not passed on: the sensor's
+        // jitter redrew the whole stage at 60 a second with the phone held still ("ab 都做", A)
+        var next = CGPoint(x: clamp(aboutUp), y: clamp(aboutAcross))
+        // the rest has all but caught up with the phone: the case straight, and nothing more sent until it turns again
+        // (it crept on in ever smaller steps, each one a redraw: "基准角度追平以后就停住")
+        if abs(next.x) < 0.01, abs(next.y) < 0.01 { next = .zero }
+        if next != tilt, next == .zero || abs(next.x - tilt.x) >= 0.002 || abs(next.y - tilt.y) >= 0.002 {
+            tilt = next
+            feed.send(next)
+            // the time each reading arrives, to measure how long it takes to show (the lean lines, same precision)
+            CoverFlowTrace.note(String(format: "motion %.3f,%.3f", tilt.x, tilt.y))
+        }
         rest = Self.toward(from, now, Self.follow)
     }
 

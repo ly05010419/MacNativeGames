@@ -4,6 +4,16 @@ import SwiftUI
 /// The texts and colours the game cases show, shared by the Mac Launcher and the iPhone / iPad Launcher
 /// (tools/ios_launcher copies this file with CoverFlow.swift, CaseDetail.swift, CaseAmounts.swift, CoverArt.swift and
 /// CoverFlowTrace.swift): the same cases on both. Only Foundation and SwiftUI here.
+/// The games both Launchers show: the same cases in the same order on the Mac and the iPhone / iPad (user 2026-11-19:
+/// "统一 b 两边数量一样", "顺序也一样"), one list here, read by HomePage.games and the iPhone's Games.all. A game
+/// without an iPhone / iPad build shows there too, its platforms line naming where it plays, and no start button.
+enum GameCatalog {
+    static let all = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp", "dread", "tmnt"]
+    /// The ones with an iPhone / iPad build in this repository (games/totk/ios: totk, botw, dkb, pkp; games/oot/ios;
+    /// games/dread/ios; games/tmnt/ios): the iPhone Launcher looks for their apps (their URL schemes).
+    static let onIPhone = ["oot", "totk", "botw", "dkb", "pkp", "dread", "tmnt"]
+}
+
 extension T {
     static let zh = (Locale.preferredLanguages.first ?? "en").hasPrefix("zh")
     static func s(_ en: String, _ cn: String) -> String { zh ? cn : en }

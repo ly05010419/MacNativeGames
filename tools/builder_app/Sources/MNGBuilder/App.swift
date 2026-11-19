@@ -68,6 +68,9 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // dark always, whatever the Mac's own setting (user 2026-11-19: "默认 改成 黑色背景 不用 白色背景"): the window,
+        // Settings and the alerts alike
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         NSApp.setActivationPolicy(.regular)   // a bare executable (swift run) gets a Dock icon and focus too
         NSApp.activate(ignoringOtherApps: true)
         UsageStats.start()   // the day's report of active players, unless turned off (UsageStats.swift)

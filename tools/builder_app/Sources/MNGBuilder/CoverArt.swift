@@ -78,7 +78,7 @@ final class CoverImages {
     }
 
     /// Picture: the file's largest image (an icns holds several sizes) scaled to 768 px (a case's insert is at most about
-    /// 700 px high). Backdrop: a quarter of that, blurred as CoverFront's live .blur(radius: 10) looks on a case (10 pt on
+    /// 700 px high). Backdrop: a quarter of that, blurred about as a live 10 pt blur looks on a case (10 pt on
     /// an insert about 230 pt high: 4.3% of the picture's side).
     private func load(_ path: String) -> Cover? {
         guard let image = Self.decode(path) else { return nil }
@@ -89,72 +89,61 @@ final class CoverImages {
         return Cover(picture: platformImage(image), backdrop: platformImage(backdrop), path: path)
     }
 
-    /// The file's largest image (an icns holds several sizes) scaled to 768 px.
+    /// Every picture this many pixels high (or its own height, if less): its height is what fills the insert (about
+    /// 730 px on a Retina screen), so a 1024 x 1024 square and a 1920 x 1080 key art come out equally sharp (user
+    /// 2026-11-19: "像素都一致 不要有些高清 有些模糊"; a cap on the longer side had left the key art 720 high).
+    nonisolated static let height = 1024
+
+    /// The file's largest image (an icns holds several sizes) scaled to `height` px high, its width in proportion.
     nonisolated static func decode(_ path: String) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
-        let largest = (0..<CGImageSourceGetCount(source)).max { a, b in
-            func width(_ i: Int) -> Int {
-                (CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any])?[kCGImagePropertyPixelWidth] as? Int ?? 0
-            }
-            return width(a) < width(b)
-        } ?? 0
-        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 768,
+        func size(_ i: Int) -> (w: Int, h: Int) {
+            let p = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any]
+            return (p?[kCGImagePropertyPixelWidth] as? Int ?? 0, p?[kCGImagePropertyPixelHeight] as? Int ?? 0)
+        }
+        let largest = (0..<CGImageSourceGetCount(source)).max { size($0).w < size($1).w } ?? 0
+        let (w, h) = size(largest)
+        let longest = h > 0 && w > 0 ? Int((Double(min(h, height)) * Double(max(w, h)) / Double(h)).rounded()) : height
+        let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: longest,
                        kCGImageSourceShouldCacheImmediately: true] as CFDictionary
         return CGImageSourceCreateThumbnailAtIndex(source, largest, options)
     }
 }
 
-/// Where to cut a game's square picture into a case's tall insert (user 2026-11-17: "图片 重新裁剪 要合适的 长方形"):
-/// across the middle of what matters in it, its title's words and what draws the eye, as Vision finds them. The pictures'
-/// titles run across 0.75-0.9 of their width, so the insert keeps 88% of it and loses only empty sides. Worked out once
-/// per picture, off the main thread; until then the cut is in the middle.
-@MainActor final class CoverCrops: ObservableObject {
-    static let shared = CoverCrops()
-    /// The share of the square picture's width a tall insert keeps.
-    static let keep: CGFloat = 0.88
-    @Published private(set) var centers: [String: CGFloat] = [:]
-    private var asked: Set<String> = []
 
-    /// The middle of the cut, as a share of the picture's width.
-    func center(of path: String) -> CGFloat {
-        if let c = centers[path] { return c }
-        if !asked.contains(path) {
-            asked.insert(path)
-            Task.detached(priority: .utility) {
-                let c = Self.find(path)
-                await MainActor.run { self.centers[path] = c }
-            }
-        }
-        return 0.5
-    }
-
-    /// The middle of the span the title's words and the eye-catching parts take up; 0.5 if Vision finds neither.
-    nonisolated static func find(_ path: String) -> CGFloat {
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return 0.5 }
-        let words = VNRecognizeTextRequest()
-        let eye = VNGenerateAttentionBasedSaliencyImageRequest()
-        do { try VNImageRequestHandler(cgImage: image).perform([words, eye]) } catch { return 0.5 }
-        let boxes = (words.results ?? []).map(\.boundingBox)
-            + ((eye.results ?? []).first?.salientObjects ?? []).map(\.boundingBox)
-        guard let low = boxes.map(\.minX).min(), let high = boxes.map(\.maxX).max() else { return 0.5 }
-        return (low + high) / 2
-    }
-}
-
-/// A game's square picture cut to a tall frame: the frame's height is the picture's, its middle at `center`.
-struct CroppedPicture: View {
-    let picture: PlatformImage
+/// A game's picture (the official key art, 16:9, or an app's square icon) cut to a tall frame: drawn `margin` times the
+/// frame's height, in its own proportions, its middle at `center` across it; the extra is spread round the frame, top
+/// and bottom alike and, where the picture is wide enough, left and right, so the picture can move inside the frame
+/// without its edge coming in (user 2026-11-19: "原始图片 裁剪 大一圈" — the frame cut from a larger picture, not the
+/// picture enlarged).
+struct CroppedPicture<Content: View>: View {
+    /// The picture's width over its height.
+    let aspect: CGFloat
     let center: CGFloat
+    var margin: CGFloat = 1
+    /// The picture, drawn at the size it is given (an image, or the leaning case's picture in depth on the GPU).
+    @ViewBuilder let content: Content
 
     var body: some View {
         GeometryReader { geo in
-            let side = geo.size.height
-            let x = min(0, max(geo.size.width - side, geo.size.width / 2 - center * side))
-            Image(platformImage: picture).resizable().frame(width: side, height: side)
-                .offset(x: x)
-                .frame(width: geo.size.width, height: side, alignment: .leading)
+            let height = geo.size.height * margin
+            let width = height * aspect
+            let spare = (height - geo.size.height) / 2
+            // as near the centre as the picture allows, keeping `spare` beyond the frame on both sides where it can
+            let lowest = min(0, geo.size.width - width + spare), highest = max(lowest, -spare)
+            let x = min(highest, max(lowest, geo.size.width / 2 - center * width))
+            content.frame(width: width, height: height)
+                .offset(x: x, y: -spare)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
                 .clipped()
+        }
+    }
+}
+
+extension CroppedPicture where Content == Image {
+    init(picture: PlatformImage, center: CGFloat, margin: CGFloat = 1) {
+        self.init(aspect: picture.size.width / max(1, picture.size.height), center: center, margin: margin) {
+            Image(platformImage: picture).resizable()
         }
     }
 }
@@ -177,17 +166,19 @@ struct CoverFront<Empty: View>: View {
     let game: String
     let picture: PlatformImage?
     let picturePath: String?
-    /// The picture already blurred, made once (the iPhone / iPad Launcher: a live blur of the whole picture on every
-    /// case, every frame, made its swipe stutter, user 2026-11-19 "为什么 这么卡"); nil: blurred live (the Mac).
-    var backdrop: PlatformImage? = nil
+    /// Where across the picture the front is cut, 0 left ... 1 right (covers.json `center`; the middle by default).
+    var center: CGFloat = 0.5
     @ViewBuilder let empty: Empty
 
-    @ObservedObject private var crops = CoverCrops.shared
     @Environment(\.caseParallax) private var parallax
     @ObservedObject private var depth = DepthScenes.shared
     /// A part of the picture at depth d moves by depthReach x (d - depthFocus) of the front's width at a full lean
     /// (DepthWarp): the farthest (0) a little the other way, the nearest (1) the most towards the pointer.
-    static var depthReach: CGFloat { 0.10 }
+    static var depthReach: CGFloat { 0.05 }   // half the thickness (user 2026-11-19: "我希望 厚度 小一半", from 0.10)
+    /// The square picture is drawn this much taller than the insert, centred (CroppedPicture): the insert shows the
+    /// middle 90% of its height (user 2026-11-19: "改成 90%", from 80%), 5% to spare above and below, more at the sides;
+    /// the largest move is about 8 pt on the Mac and 11 pt at the iPhone's fuller lean, under the 15 pt or so to spare.
+    static var margin: CGFloat { 1 / 0.9 }
     static var depthFocus: CGFloat { 0.35 }
 
     var body: some View {
@@ -202,61 +193,37 @@ struct CoverFront<Empty: View>: View {
         .clipped()
     }
 
-    /// The insert under the band: the game's square picture cut to a tall rectangle round its title (CoverCrops), its
-    /// lower edge fading into the same picture lightly blurred, which carries on to the bottom with the game's name.
+    /// The insert under the band: the picture alone, filling the whole tall rectangle (user 2026-11-19: "去掉 这个 只显示
+    /// 图片，不用 正方形了 用 长方形": no name nor blurred ground under it; the name is written under the middle case).
     private var art: some View {
         ZStack {
             if let picture, let picturePath {
                 GeometryReader { geo in
-                    let tall = min(geo.size.height, geo.size.width / CoverCrops.keep)
-                    // the parallax (caseParallax): the layers moved apart, each only moved, never laid out again
-                    let w = geo.size.width
-                    let back = CGSize(width: -parallax.x * w * 0.025, height: -parallax.y * w * 0.025)
+                    let w = geo.size.width, tall = geo.size.height
+                    // the picture in depth while the case leans (DepthScenes): each pixel moved by its depth, the
+                    // farthest the other way; moved whole until the depth is made (and at rest, where it lies
+                    // exactly on it)
                     let middle = CGSize(width: parallax.x * w * 0.035, height: parallax.y * w * 0.035)
-                    let front = CGSize(width: parallax.x * w * 0.06, height: parallax.y * w * 0.06)
-                    ZStack(alignment: .top) {
-                        Group {
-                            if let backdrop {
-                                Image(platformImage: backdrop).resizable().scaledToFill()
-                                    .frame(width: geo.size.width, height: geo.size.height)
-                            } else {
-                                Image(platformImage: picture).resizable().scaledToFill()
-                                    .frame(width: geo.size.width, height: geo.size.height).blur(radius: 10)
+                    ZStack {
+                        // the shift at a full lean in the picture's pixels: depthReach of the front's width, the
+                        // picture shown `tall` x margin points high
+                        let margin = Self.margin
+                        let perPoint = 1 / (tall * margin)
+                        if parallax != .zero, DepthWarp.ready, let scene = depth.scene(of: picturePath) {
+                            // drawn by the GPU straight to the screen (DepthSurface.swift), the shift rounded to half a
+                            // pixel of the picture: a turn too small to move it draws nothing new ("ab 都做", A)
+                            let pixels = Self.depthReach * w * scene.height * perPoint
+                            let half = { (v: CGFloat) in (v * 2).rounded() / 2 }
+                            CroppedPicture(aspect: scene.picture.extent.width / max(1, scene.picture.extent.height),
+                                           center: center, margin: margin) {
+                                DepthWarpView(scene: scene, shift: CGPoint(x: half(parallax.x * pixels), y: half(parallax.y * pixels)),
+                                              focus: Self.depthFocus)
                             }
+                        } else {
+                            CroppedPicture(picture: picture, center: center, margin: margin).offset(middle)
                         }
-                        .scaleEffect(1.08)   // farthest back, moved the other way: larger, so its edges never show
-                        .offset(back)
-                        .clipped()
-                        .overlay(Color.black.opacity(0.25))
-                        // the picture in depth while the case leans (DepthScenes): its layers far to near, each
-                        // moved by its depth, the farthest the other way; one layer until they are made (and at
-                        // rest, where the layers would lie exactly on it). The frame and its fading lower edge stay.
-                        let center = crops.center(of: picturePath)
-                        ZStack {
-                            // the shift at a full lean in the picture's pixels: depthReach of the front's width, the
-                            // square picture shown `tall` points high
-                            if parallax != .zero, let scene = depth.scene(of: picturePath),
-                               let warped = DepthWarp.image(scene, path: picturePath,
-                                                            shift: CGPoint(x: parallax.x * Self.depthReach * w * scene.side / tall,
-                                                                           y: parallax.y * Self.depthReach * w * scene.side / tall),
-                                                            focus: Self.depthFocus) {
-                                CroppedPicture(picture: warped, center: center)
-                            } else {
-                                CroppedPicture(picture: picture, center: center).offset(middle)
-                            }
-                        }
-                        .frame(width: geo.size.width, height: tall)
-                        .mask(LinearGradient(stops: [.init(color: .black, location: 0.88), .init(color: .clear, location: 1)],
-                                             startPoint: .top, endPoint: .bottom))
-                        VStack {
-                            Spacer(minLength: 0)
-                            Text(T.gameName(game)).font(.system(size: geo.size.width * 0.075, weight: .bold))
-                                .foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.6)
-                                .padding(.horizontal, geo.size.width * 0.06).shadow(color: .black.opacity(0.6), radius: 3)
-                                .frame(height: max(0, geo.size.height - tall * 0.96))
-                        }
-                        .offset(front)   // nearest: moved the most
                     }
+                    .frame(width: w, height: tall)
                 }
             } else {
                 LinearGradient(colors: T.gameColors(game), startPoint: .topLeading, endPoint: .bottomTrailing)

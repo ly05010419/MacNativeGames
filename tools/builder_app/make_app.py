@@ -10,6 +10,7 @@ read a game card with the player's keys, at games/totk/requirements.txt's versio
 (MNGRepo), so the window runs its tools/builder_jobs; an ad-hoc signature. Runs with the system's python3 (3.9)."""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -109,6 +110,35 @@ def depth_model(resources):
     for name in ('LICENSE', 'README.md'):
         shutil.copy2(folder / name, notices / name)
     return DEPTH_MODEL_PACKAGE
+
+
+def official_covers(resources, fetch_pictures):
+    """Resources/covers.json (each game's official key art: its address and SHA-256) always; with fetch_pictures (a
+    local build: never --portable, which is given to players) the pictures themselves into Resources/Covers/<game>.jpg,
+    fetched through the deps cache (once per Mac) and checked against their SHA-256. A picture that cannot be fetched
+    (offline) is left out: the Launcher fetches it when first shown, as the released one does for every game (user
+    2026-11-19: a local build fetches them, the released one carries none). Returns the games put in."""
+    spec = HERE / 'Resources/covers.json'
+    shutil.copy2(spec, resources / 'covers.json')
+    if not fetch_pictures:
+        return []
+    sys.path.insert(0, str(REPO))
+    try:
+        from tools.deps.core import fetch
+    finally:
+        sys.path.remove(str(REPO))
+    folder = resources / 'Covers'
+    folder.mkdir(exist_ok=True)
+    done = []
+    for game, cover in json.loads(spec.read_text())['covers'].items():
+        try:
+            picture = fetch(cover['url'], cover['sha256'], f'cover-{game}-{cover["sha256"][:12]}.jpg')
+        except Exception as e:   # offline or changed at the source: the Launcher fetches it, or shows the app's icon
+            say(f'cover {game}: not fetched ({e}); the Launcher fetches it when first shown')
+            continue
+        shutil.copy2(picture, folder / f'{game}.jpg')
+        done.append(game)
+    return done
 
 
 def licenses(scratch, resources):
@@ -292,6 +322,8 @@ def main(argv):
     say('licences: ' + ', '.join(licenses(a.scratch.expanduser(), stage / 'Contents/Resources')))
     icon(stage / 'Contents/Resources')
     say('depth model: ' + depth_model(stage / 'Contents/Resources'))
+    covers = official_covers(stage / 'Contents/Resources', fetch_pictures=not a.portable)
+    say('covers: ' + (', '.join(covers) if covers else 'none in the app; fetched on the player\'s Mac when first shown'))
     plist = info(REPO)
     if a.version is not None:   # a checkout's build keeps info()'s placeholder; its window says 开发版, not a version
         plist['CFBundleShortVersionString'] = a.version

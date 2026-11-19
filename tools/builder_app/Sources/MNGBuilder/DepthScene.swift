@@ -16,20 +16,27 @@ import UIKit
 /// "开始做2", after 48 layers stacked: their steps rang round a figure, and 48 images a frame dropped every fifth one).
 ///
 /// No Metal of our own (a Launcher built with only the Command Line Tools has no Metal compiler): the warp is a Core
-/// Image kernel written as source, compiled by the system when first used. Only the case under the pointer is made
-/// (CoverFront asks only while it leans), the last `kept` kept; the model is compiled by Core ML when the Launcher
-/// starts, off the main thread.
+/// Image kernel written as source, compiled by the system when first used. Every case's scene is made ahead, one after
+/// another in the background (prepare: the Launchers' home pages), and kept; the model is compiled by Core ML when the
+/// Launcher starts, off the main thread.
 @MainActor final class DepthScenes: ObservableObject {
     static let shared = DepthScenes()
-    /// The picture and its depth (0 farthest ... 1 nearest), both side x side.
-    struct Scene { let picture: CIImage; let depth: CIImage; let side: CGFloat }
-    static let side = 512
-    static let kept = 3   // two 1 MB images each
+    /// The picture and its depth (0 farthest ... 1 nearest), both `height` pixels high in the picture's own proportions
+    /// (the official key art is 16:9: 910 x 512).
+    struct Scene { let picture: CIImage; let depth: CIImage; let height: CGFloat }
+    static let side = 512   // the scene's height
+    /// Every case's scene kept (two images of at most 2 MB each: about 35 MB for the ten games), all made ahead
+    /// (prepare), so no case waits for its depth when it is turned to (user 2026-11-19: "每次 看一个封面 才开始准备
+    /// 视差效果 还要等1秒 不能都提前准备好吗？"; until then only the last 3 were kept, each made when first leaned).
+    static let kept = 16
     static let modelName = "DepthAnythingV2SmallF16P8"
 
     @Published private(set) var made: [String: Scene] = [:]
     private var order: [String] = []
     private var asked: Set<String> = []
+    /// Pictures waiting for their scene, made one at a time (the model is not run on several at once).
+    private var queue: [String] = []
+    private var working = false
 
     private init() {
         Task.detached(priority: .utility) {   // compiled ahead of the first case
@@ -40,11 +47,46 @@ import UIKit
         }
     }
 
-    /// The scene of a picture; nil until it is made (asked the first time), or when it cannot be.
+    /// The scene of a picture; nil until it is made, or when it cannot be. One asked for and not made yet goes to the
+    /// front of the queue.
     func scene(of path: String) -> Scene? {
         if let known = made[path] { return known }
-        guard !asked.contains(path) else { return nil }
-        asked.insert(path)   // left in when it cannot be made: not asked again
+        if !asked.contains(path) {
+            asked.insert(path)   // left in when it cannot be made: not asked again
+            queue.insert(path, at: 0)
+        } else if let i = queue.firstIndex(of: path), i > 0 {
+            queue.insert(queue.remove(at: i), at: 0)
+        }
+        pump()
+        return nil
+    }
+
+    /// Make the scenes of these pictures ahead, in this order (the middle case first, then outwards), one after
+    /// another in the background; called when the cases are shown, and again when their pictures change.
+    func prepare(_ paths: [String]) {
+        for path in paths where !asked.contains(path) {
+            asked.insert(path)
+            queue.append(path)
+        }
+        pump()
+    }
+
+    /// The items from `middle` outwards: it, then one each side, two each side, ... (the order to prepare the cases).
+    nonisolated static func outwards<T>(_ items: [T], from middle: Int) -> [T] {
+        guard !items.isEmpty else { return [] }
+        let m = min(max(middle, 0), items.count - 1)
+        var out = [items[m]]
+        for d in 1..<max(items.count, 1) {
+            if m + d < items.count { out.append(items[m + d]) }
+            if m - d >= 0 { out.append(items[m - d]) }
+        }
+        return out
+    }
+
+    private func pump() {
+        guard !working, !queue.isEmpty else { return }
+        working = true
+        let path = queue.removeFirst()
         Task.detached(priority: .userInitiated) {
             let start = Date()
             let scene = Self.make(path)
@@ -52,64 +94,89 @@ import UIKit
             await MainActor.run {
                 CoverFlowTrace.note(String(format: "depth scene %@ %@ in %.0f ms", scene == nil ? "failed" : "made",
                                            (path as NSString).lastPathComponent, ms))
-                guard let scene else { return }
-                self.made[path] = scene
-                self.order.append(path)
-                while self.order.count > Self.kept {
-                    let old = self.order.removeFirst()
-                    self.made[old] = nil
-                    self.asked.remove(old)
+                if let scene {
+                    self.made[path] = scene
+                    self.order.append(path)
+                    while self.order.count > Self.kept {
+                        let old = self.order.removeFirst()
+                        self.made[old] = nil
+                        self.asked.remove(old)
+                    }
                 }
+                self.working = false
+                self.pump()
             }
         }
-        return nil
     }
 
     /// The model, compiled by Core ML from the package the app carries (the Mac: Contents/Resources; the iPhone:
-    /// Models/); nil without it.
+    /// Models/) once and kept in the caches folder, read from there on the next starts (user 2026-11-19, the iPhone
+    /// compiled it on every start: "depth model ready in 7487 ms" before any case had its depth); nil without it.
     nonisolated(unsafe) static let model: VNCoreMLModel? = {
         let found = Bundle.main.url(forResource: modelName, withExtension: "mlpackage")
             ?? Bundle.main.resourceURL?.appendingPathComponent("Models/\(modelName).mlpackage")
-        guard let url = found, FileManager.default.fileExists(atPath: url.path),
-              let compiled = try? MLModel.compileModel(at: url),
-              let ml = try? MLModel(contentsOf: compiled, configuration: MLModelConfiguration()) else { return nil }
+        guard let url = found, FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let fm = FileManager.default
+        // the kept copy is named after the package's manifest (its size and date): a new model is compiled anew
+        let manifest = (try? fm.attributesOfItem(atPath: url.appendingPathComponent("Manifest.json").path)) ?? [:]
+        let stamp = "\((manifest[.size] as? Int) ?? 0)-\(Int(((manifest[.modificationDate] as? Date) ?? .distantPast).timeIntervalSince1970))"
+        let folder = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "org.macnativegames.launcher")
+        let kept = folder.appendingPathComponent("\(modelName)-\(stamp).mlmodelc")
+        var start = Date()
+        if !fm.fileExists(atPath: kept.path) {
+            guard let compiled = try? MLModel.compileModel(at: url) else { return nil }
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            for old in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            where old.lastPathComponent.hasPrefix(modelName) { try? fm.removeItem(at: old) }
+            do { try fm.moveItem(at: compiled, to: kept) } catch { try? fm.copyItem(at: compiled, to: kept) }
+            CoverFlowTrace.note(String(format: "depth model compiled in %.0f ms", Date().timeIntervalSince(start) * 1000))
+            start = Date()
+        }
+        guard let ml = try? MLModel(contentsOf: kept, configuration: MLModelConfiguration()) else {
+            try? fm.removeItem(at: kept)   // unreadable: compiled again on the next start
+            return nil
+        }
+        CoverFlowTrace.note(String(format: "depth model loaded in %.0f ms", Date().timeIntervalSince(start) * 1000))
         return try? VNCoreMLModel(for: ml)
     }()
 
-    /// The picture at side x side and its depth, normalised to 0 (farthest) ... 1 (nearest), a little smoothed; both
-    /// rendered once into memory, so drawing from them costs no more model or decoding.
+    /// The picture `side` pixels high in its own proportions and its depth at the same size, normalised to 0 (farthest)
+    /// ... 1 (nearest), a little smoothed; both rendered once into memory, so drawing from them costs no more model or
+    /// decoding.
     nonisolated static func make(_ path: String) -> Scene? {
         guard let model, let image = CoverImages.decode(path) else { return nil }
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
         guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil,
               let buffer = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else { return nil }
-        let n = side, bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        let h = side, w = max(1, Int((Double(side) * Double(image.width) / Double(max(1, image.height))).rounded()))
+        let bounds = CGRect(x: 0, y: 0, width: w, height: h)
         let raw = CIImage(cvPixelBuffer: buffer)
-        let smooth = raw.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / raw.extent.width,
-                                                           y: CGFloat(n) / raw.extent.height))
+        let smooth = raw.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / raw.extent.width,
+                                                           y: CGFloat(h) / raw.extent.height))
             .clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: bounds)
-        var depth = [Float](repeating: 0, count: n * n)
+        var depth = [Float](repeating: 0, count: w * h)
         let linear = CIContext(options: [.workingColorSpace: NSNull()])
         depth.withUnsafeMutableBytes {
-            linear.render(smooth, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .Rf, colorSpace: nil)
+            linear.render(smooth, toBitmap: $0.baseAddress!, rowBytes: w * 4, bounds: bounds, format: .Rf, colorSpace: nil)
         }
         guard let lo = depth.min(), let hi = depth.max(), hi > lo else { return nil }
         for i in depth.indices { depth[i] = (depth[i] - lo) / (hi - lo) }
-        let depthImage = CIImage(bitmapData: depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: n * 4,
-                                 size: CGSize(width: n, height: n), format: .Lf, colorSpace: nil)
+        let depthImage = CIImage(bitmapData: depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: w * 4,
+                                 size: CGSize(width: w, height: h), format: .Lf, colorSpace: nil)
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         let source = CIImage(cgImage: image)
-        let scaled = source.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / source.extent.width,
-                                                              y: CGFloat(n) / source.extent.height))
-        var rgba = [UInt8](repeating: 0, count: n * n * 4)
+        let scaled = source.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / source.extent.width,
+                                                              y: CGFloat(h) / source.extent.height))
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
         rgba.withUnsafeMutableBytes {
-            CIContext().render(scaled, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .RGBA8,
+            CIContext().render(scaled, toBitmap: $0.baseAddress!, rowBytes: w * 4, bounds: bounds, format: .RGBA8,
                                colorSpace: srgb)
         }
-        let picture = CIImage(bitmapData: Data(rgba), bytesPerRow: n * 4, size: CGSize(width: n, height: n),
+        let picture = CIImage(bitmapData: Data(rgba), bytesPerRow: w * 4, size: CGSize(width: w, height: h),
                               format: .RGBA8, colorSpace: srgb)
-        return Scene(picture: picture, depth: depthImage, side: CGFloat(n))
+        return Scene(picture: picture, depth: depthImage, height: CGFloat(h))
     }
 }
 
@@ -117,12 +184,12 @@ import UIKit
 /// walked from the nearest to the farthest in `steps`, and the first surface found to land on this pixel gives its
 /// colour; so a near thing stands in front, its side is its own edge drawn on (seen as thickness), and nothing tears.
 /// A part at depth d moves by shift x (d - focus): the farthest a little against the lean, the nearest the most with
-/// it. The last frame is kept: the case's reflection asks for the same one.
+/// it. Drawn by the GPU into the screen (DepthSurface.swift).
 @MainActor enum DepthWarp {
     // Any nearer surface counts, so a near thing's side is drawn on as thickness. Tried 2026-11-19: counting a surface
     // only at its own depth (a near thing floating, what is behind it showing, "浮在前面、露出背景"): a figure's own
     // depths vary, so much of it was passed over as "side" and broke into specks ("不好").
-    static let steps = 48
+    static let steps = 48   // the depths walked per pixel (user 2026-11-19: 24 tried, "用48")
     private static let source = """
     kernel vec4 depthParallax(sampler image, sampler depth, vec2 shift, float focus) {
         vec2 p = destCoord();
@@ -141,34 +208,26 @@ import UIKit
     """
     /// nil where the system will not compile it: CoverFront then moves the picture whole.
     static let kernel: CIKernel? = CIKernel(source: source)
-    private static let context = CIContext(options: [.cacheIntermediates: false])
-    private static var last: (key: String, image: PlatformImage)?
     private static var told = false
 
-    /// The picture for a shift in the picture's pixels (x right, y down, as SwiftUI's), or nil.
-    static func image(_ scene: DepthScenes.Scene, path: String, shift: CGPoint, focus: CGFloat) -> PlatformImage? {
-        let key = "\(path) \((shift.x * 4).rounded()) \((shift.y * 4).rounded())"
-        if let last, last.key == key { return last.image }
+    /// Whether the warp can be drawn (the kernel compiled); said once in the trace.
+    static var ready: Bool {
         if !told {
             told = true
             CoverFlowTrace.note("depth warp kernel " + (kernel == nil ? "missing: the picture moves whole" : "ready"))
         }
+        return kernel != nil
+    }
+
+    /// The picture for a shift in the picture's pixels (x right, y down, as SwiftUI's), as a Core Image recipe the GPU
+    /// draws straight to the screen (DepthWarpSurface); nil without the kernel.
+    static func warped(_ scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat) -> CIImage? {
         guard let kernel else { return nil }
-        let start = Date()
-        defer { if CoverFlowTrace.on { CoverFlowTrace.note(String(format: "depth warp %.1f ms", Date().timeIntervalSince(start) * 1000)) } }
         let margin = abs(shift.x) + abs(shift.y) + 2
         let extent = scene.picture.extent
         // Core Image's y runs up: a shift down on the screen is a negative one here
-        guard let out = kernel.apply(extent: extent, roiCallback: { _, rect in rect.insetBy(dx: -margin, dy: -margin) },
-                                     arguments: [scene.picture.clampedToExtent(), scene.depth.clampedToExtent(),
-                                                 CIVector(x: shift.x, y: -shift.y), focus]),
-              let cg = context.createCGImage(out, from: extent) else { return nil }
-        #if os(macOS)
-        let made = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        #else
-        let made = UIImage(cgImage: cg)
-        #endif
-        last = (key, made)
-        return made
+        return kernel.apply(extent: extent, roiCallback: { _, rect in rect.insetBy(dx: -margin, dy: -margin) },
+                            arguments: [scene.picture.clampedToExtent(), scene.depth.clampedToExtent(),
+                                        CIVector(x: shift.x, y: -shift.y), focus])
     }
 }

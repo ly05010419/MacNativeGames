@@ -50,8 +50,8 @@ class Wiring(unittest.TestCase):
         packager = (ROOT / 'games/acnh/scripts/package_native_app.py').read_text()
         self.assertIn(f'BUNDLE_ID = "{games.ACNH.bundle_id}"', packager)
         self.assertEqual(games.PAGES['acnh'], ('controls', 'storage', 'saves'))
-        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('"acnh"', re.search(r'static let games = \[[^\]]*\]', swift).group(0))
+        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/GameStrings.swift').read_text()   # GameCatalog, both Launchers
+        self.assertIn('"acnh"', re.search(r'static let all = \[[^\]]*\]', swift).group(0))
 
 
 class UpdateBlocker(unittest.TestCase):

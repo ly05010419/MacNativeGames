@@ -45,13 +45,18 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     var opening = CaseOpening.turn
     /// The picture spread across a case's inside, seen when it opens like a book (CaseDetail's `inside`); nil, a plain tray.
     var inside: (Int) -> PlatformImage? = { _ in nil }
+    /// Whether case i holds its cartridge when it opens: a game built (the Mac) or installed (the iPhone); none, an empty
+    /// slot (user 2026-11-19: "没安装的 去掉 左边盒子里的 sd卡").
+    var cartridge: (Int) -> Bool = { _ in true }
     /// Every animation of the stage this many times slower (user 2026-11-19: "慢速模式 … 慢1 2 3 5 10 20 50倍 我要看动画效果").
     var slow: Double = 1
     /// The stage's corners: the Mac, a rounded panel in the window; the iPhone / iPad, 0, the stage is the whole screen
     /// and its corners the screen's own (user 2026-11-19: "整个背景 都不是全屏， 做成全屏").
-    var corner: CGFloat = 14    /// The phone's turn in place of the pointer (the iPhone / iPad: MotionTilt, user 2026-11-19 "mac 的 鼠标 在封面上的
+    var corner: CGFloat = 14
+    /// The phone's turn in place of the pointer (the iPhone / iPad: MotionTilt, user 2026-11-19 "mac 的 鼠标 在封面上的
     /// 效果（关闭的时候） 放在iphone上 用 陀螺仪 模拟"): -1...1 across and down the middle case; nil (the Mac), the pointer.
-    var tiltInput: CGPoint? = nil
+    /// Handed over by a call, not as a value of the view, so a turn redraws the middle case only, not what holds it.
+    var turns: TurnFeed? = nil
     /// An animation of the stage at the slow-motion rate.
     private func paced(_ animation: Animation) -> Animation { animation.speed(1 / max(1, slow)) }
     @ViewBuilder let front: (Int) -> Front
@@ -70,8 +75,12 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     @State private var press = 0.0             // the middle case pressed down by a click (pressDown / release)
     @State private var pressing = false        // the mouse button is down (the press gesture has begun)
     @State private var pressedMiddle = false   // ...and it went down on the middle case
-    @State private var tilt = CGPoint.zero // the pointer over the middle front, -1...1 from its centre
-    @State private var lit = 0.0           // 1 while the pointer is over the middle front: its light shows
+    /// The middle case's lean and light (the pointer or the phone's turn): held apart, so changing them redraws only the
+    /// middle case (MiddleLean), not the stage and every case in it (user 2026-11-19: on the iPhone every reading of the
+    /// phone's turn, 65 a second, redrew all ten cases, and a frame in six was dropped).
+    @State private var leaning = CaseLean()
+    private var tilt: CGPoint { leaning.tilt }
+    private var lit: Double { leaning.lit }
     @State private var pulls = CaseAmounts()   // the folded case under the pointer, pulled out a little (1), the rest 0
     @State private var pulled = -1             // which one that is (-1: none)
     @State private var pulledLight = UnitPoint(x: 0.5, y: 0.3)   // where the pointer is on its front
@@ -106,7 +115,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                 CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
                                // the book opens over the stage's own fading-out: the cases need not step back frame by
                                // frame under it (each frame redrew every case's outline, MNG_COVERFLOW_TRACE 2026-11-19)
-                               flip: opening == .book ? 0 : Double(open), hideCenter: expanded, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
+                               flip: opening == .book ? 0 : Double(open), hideCenter: expanded, leaning: leaning,
                                pulls: pulls, press: press, pulledLight: pulledLight,
                                front: front, spine: spine, back: back)
                     .opacity(Double(1 - open))   // the opened case covers the stage
@@ -165,7 +174,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                     // its reflection on the floor, as every case has: turning and growing, shrinking and settling with
                     // it (user 2026-11-17: "返回的时候 底下阴影 没有跟上 要真实 阴影 也是从大变小"); upside down about
                     // the line the stage's reflections turn about (boxTransform: floorY + gap/2), faint and fading
-                    CaseDetail(stage: stage, open: open, opening: opening, inside: inside(index), close: {}) {
+                    CaseDetail(stage: stage, open: open, opening: opening, inside: inside(index), cartridge: cartridge(index), close: {}) {
                         front(index)
                     } panel: {
                         detail(index, false)
@@ -180,7 +189,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                     .allowsHitTesting(false)
                     // the middle case turning and growing into the opened case: cover left, actions right
                     CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,
-                               inside: inside(index), close: { turn(false) }) {
+                               inside: inside(index), cartridge: cartridge(index), close: { turn(false) }) {
                         front(index)
                     } panel: {
                         detail(index, true)
@@ -225,8 +234,10 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         .onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }
         .onChange(of: index) { turn(false); settleMove() }
         .onChange(of: launches) { turn(false) }   // a game was started: back to the games, the way the case was opened
-        .onChange(of: tiltInput) { _, turn in if let turn { follow(turn) } }   // the phone's turn (MotionTilt)
-        .onAppear { focused = true; watchSwipes() }
+        .onAppear {
+            focused = true; watchSwipes()
+            turns?.onTurn = { turn in follow(turn) }   // the phone's turn (MotionTilt)
+        }
         .onDisappear {
             #if os(macOS)
             if let m = swipeMonitor { NSEvent.removeMonitor(m) }
@@ -251,7 +262,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         guard to != tilt || on != lit else { return }
         var still = Transaction()
         still.disablesAnimations = true
-        withTransaction(still) { tilt = to; lit = on }
+        withTransaction(still) { leaning.set(to, on) }
     }
 
     private func lean(at p: CGPoint?, _ stage: CoverFlowGeometry?) {
@@ -268,7 +279,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             }
         }
         if to != tilt || on != lit {
-            withAnimation(paced(.spring(response: 0.35, dampingFraction: 0.8))) { tilt = to; lit = on }
+            withAnimation(paced(.spring(response: 0.35, dampingFraction: 0.8))) { leaning.set(to, on) }
         }
         if side != pulled { CoverFlowTrace.note("pull case \(side) (was \(pulled)), middle \(index), position \(position)") }
         if side != pulled {
@@ -296,7 +307,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         withAnimation(spring) {
             pulled = -1
             pulls = CaseAmounts.one(-1, of: count)
-            tilt = .zero; lit = 0
+            leaning.set(.zero, 0)
         }
     }
 
@@ -600,9 +611,8 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
     var position: Double
     var flip: Double
     let hideCenter: Bool     // the middle case is drawn by CaseDetail (turning and growing over the stage)
-    var lit: Double          // the light over the middle front (0 off, 1 on)
-    var tiltX: Double        // the middle case's lean (CoverFlow.lean)
-    var tiltY: Double
+    /// The middle case's lean and light: watched by the middle case alone (MiddleLean), so they redraw nothing else.
+    let leaning: CaseLean
     var pulls: CaseAmounts   // the folded cases pulled out under the pointer
     var press: Double        // the middle case pressed by a click (CoverFlow.pressDown)
     let pulledLight: UnitPoint   // where the pointer is on the pulled-out case's front
@@ -610,27 +620,22 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
     let spine: (Int) -> Spine
     let back: (Int, Bool) -> Back
 
-    var animatableData: AnimatablePair<AnimatablePair<AnimatablePair<Double, Double>, AnimatablePair<Double, AnimatablePair<Double, Double>>>,
-                                       AnimatablePair<CaseAmounts, Double>> {
-        get { AnimatablePair(AnimatablePair(AnimatablePair(position, flip), AnimatablePair(lit, AnimatablePair(tiltX, tiltY))),
-                             AnimatablePair(pulls, press)) }
+    var animatableData: AnimatablePair<AnimatablePair<Double, Double>, AnimatablePair<CaseAmounts, Double>> {
+        get { AnimatablePair(AnimatablePair(position, flip), AnimatablePair(pulls, press)) }
         set {
-            let a = newValue.first
-            position = a.first.first; flip = a.first.second
-            lit = a.second.first; tiltX = a.second.second.first; tiltY = a.second.second.second
+            position = newValue.first.first; flip = newValue.first.second
             pulls = newValue.second.first; press = newValue.second.second
         }
     }
 
     var body: some View {
         let g = CoverFlowGeometry(count: count, size: size, width: width, height: height, position: position, flip: flip,
-                                  pointer: CGPoint(x: tiltX, y: tiltY), pulls: pulls, press: press)
-        let _ = CoverFlowTrace.frame(position: position, flip: flip, lit: lit, tilt: (tiltX, tiltY), pulls: pulls,
-                                     order: g.drawOrder)
+                                  pulls: pulls, press: press)
+        let _ = CoverFlowTrace.frame(position: position, flip: flip, lit: 0, tilt: (0, 0), pulls: pulls, order: g.drawOrder)
         ZStack(alignment: .topLeading) {
             // the reflections: the boxes upside down under the floor, fading into it
             ZStack(alignment: .topLeading) {
-                ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in box(i, g, mirrored: true) }
+                ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in placed(i, g, mirrored: true) }
             }
             .frame(width: width, height: height, alignment: .topLeading)   // the mask covers the whole stage, not one face
             // one picture first, then faint: an opacity on a plain ZStack is given to every face on its own, and the
@@ -640,14 +645,29 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
             .mask(LinearGradient(stops: [.init(color: .black, location: (g.floorY + g.gap) / height),
                                          .init(color: .clear, location: min(1, (g.floorY + g.gap + size * 0.42) / height))],
                                  startPoint: .top, endPoint: .bottom))
-            ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in box(i, g, mirrored: false) }
+            ForEach(g.drawOrder.filter { !hideCenter || $0 != g.center }, id: \.self) { i in placed(i, g, mirrored: false) }
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .allowsHitTesting(false)
     }
 
+    /// A case in its place: the middle one through MiddleLean, which alone redraws as it leans and lights.
     @ViewBuilder
-    private func box(_ i: Int, _ g: CoverFlowGeometry, mirrored: Bool) -> some View {
+    private func placed(_ i: Int, _ g: CoverFlowGeometry, mirrored: Bool) -> some View {
+        if i == g.center {
+            MiddleLean(leaning: leaning) { tilt, lit in
+                var leant = g
+                leant.pointer = tilt
+                return AnyView(box(i, leant, mirrored: mirrored, lit: lit))
+            }
+        } else {
+            box(i, g, mirrored: mirrored, lit: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func box(_ i: Int, _ g: CoverFlowGeometry, mirrored: Bool, lit: Double) -> some View {
+        let tiltX = Double(g.pointer.x), tiltY = Double(g.pointer.y)
         let side = g.place(i).side
         let (over, away) = g.turned(i)
         let turning = over > 0.02 && over < 0.98   // half way round, its spine faces the camera
@@ -699,6 +719,56 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
                     .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.frontPlacement, m)))
             }
+        }
+    }
+}
+
+/// The middle case's lean (-1...1 across and down, the pointer's place on it or the phone's turn) and its light (0...1),
+/// held by CoverFlow but watched only by MiddleLean: a change redraws the middle case (and its reflection), not the
+/// stage, the other cases and their outlines (user 2026-11-19, the iPhone: "越用越慢", "陀螺仪 效果 慢半拍").
+@MainActor
+final class CaseLean: ObservableObject {
+    @Published private(set) var tilt = CGPoint.zero
+    @Published private(set) var lit = 0.0
+
+    func set(_ tilt: CGPoint, _ lit: Double) {
+        if self.tilt != tilt { self.tilt = tilt }
+        if self.lit != lit { self.lit = lit }
+    }
+}
+
+/// The phone's turns handed to the Cover Flow by a call (MotionTilt sends, CoverFlow.follow receives), so the view
+/// holding the stage is not drawn again for each reading.
+@MainActor
+final class TurnFeed {
+    var onTurn: ((CGPoint) -> Void)?
+    func send(_ turn: CGPoint) { onTurn?(turn) }
+}
+
+/// The middle case, drawn again whenever its lean or light changes (and only it); animated as they spring (the Mac's
+/// pointer) or followed as they come (the phone's turn).
+private struct MiddleLean: View {
+    @ObservedObject var leaning: CaseLean
+    let draw: (CGPoint, Double) -> AnyView
+
+    var body: some View {
+        Leant(x: Double(leaning.tilt.x), y: Double(leaning.tilt.y), lit: leaning.lit, draw: draw)
+    }
+
+    private struct Leant: View, Animatable {
+        var x: Double
+        var y: Double
+        var lit: Double
+        let draw: (CGPoint, Double) -> AnyView
+
+        var animatableData: AnimatablePair<Double, AnimatablePair<Double, Double>> {
+            get { AnimatablePair(x, AnimatablePair(y, lit)) }
+            set { x = newValue.first; y = newValue.second.first; lit = newValue.second.second }
+        }
+
+        var body: some View {
+            let _ = CoverFlowTrace.lean(x, y, lit)
+            draw(CGPoint(x: x, y: y), lit)
         }
     }
 }
