@@ -41,6 +41,22 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     /// The arrow buttons at either side (the Mac); false on the iPhone / iPad, where a swipe moves the cases (user
     /// 2026-11-19: "左右箭头不要").
     var arrows = true
+    /// How the middle case opens (CaseOpening): the Mac's setting, book by default; the iPhone / iPad turn it over.
+    var opening = CaseOpening.turn
+    /// The picture spread across a case's inside, seen when it opens like a book (CaseDetail's `inside`); nil, a plain tray.
+    var inside: (Int) -> PlatformImage? = { _ in nil }
+    /// Every animation of the stage this many times slower (user 2026-11-19: "慢速模式 … 慢1 2 3 5 10 20 50倍 我要看动画效果").
+    var slow: Double = 1
+    /// The stage's corners: the Mac, a rounded panel in the window; the iPhone / iPad, 0, the stage is the whole screen
+    /// and its corners the screen's own (user 2026-11-19: "整个背景 都不是全屏， 做成全屏").
+    var corner: CGFloat = 14
+    /// How much the picture behind the opened case is blurred (CaseDetail.groundBlur): the Mac 0, the iPhone / iPad 22.
+    var groundBlur: CGFloat = 0
+    /// The phone's turn in place of the pointer (the iPhone / iPad: MotionTilt, user 2026-11-19 "mac 的 鼠标 在封面上的
+    /// 效果（关闭的时候） 放在iphone上 用 陀螺仪 模拟"): -1...1 across and down the middle case; nil (the Mac), the pointer.
+    var tiltInput: CGPoint? = nil
+    /// An animation of the stage at the slow-motion rate.
+    private func paced(_ animation: Animation) -> Animation { animation.speed(1 / max(1, slow)) }
     @ViewBuilder let front: (Int) -> Front
     @ViewBuilder let spine: (Int) -> Spine
     @ViewBuilder let back: (Int, Bool) -> Back
@@ -75,11 +91,12 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         return p < 0 ? -pull(-p) : p > n ? n + pull(p - n) : p
     }
     private var height: CGFloat { CoverFlowGeometry.top(size) + size * 1.38 }   // the room above, the box, its reflection
-    private let spring = Animation.spring(response: 0.45, dampingFraction: 0.86)
-    private let turnSpring = Animation.spring(response: 0.55, dampingFraction: 0.84)
-    /// Opening: 95% of the turn 0.25 s after the click, 5% past and back (user 2026-11-18: "改成 0.25秒 和 10%", "10% 改成
-    /// 5%"; damping 0.69 overshoots 5.0%, reaching 0.95 at 0.455 x response, and the trace moves ~0.035 s after the click)
-    private let openingTurn = Animation.spring(response: 0.46, dampingFraction: 0.69)
+    private var spring: Animation { paced(.spring(response: 0.45, dampingFraction: 0.86)) }
+    /// Opening and closing, either way the case opens: 95% of the way 0.25 s after the click (user 2026-11-18: "改成
+    /// 0.25秒"), with no overshoot (user 2026-11-19: "去掉 5% 反弹 改成 0%", after "中间交锋处 一直不稳定 左边的 盒子
+    /// 一直来回晃动": 5% past and back took the cover some 9° past flat, in perspective); critically damped.
+    private var turnSpring: Animation { paced(.spring(response: 0.4, dampingFraction: 1)) }
+    private var openingTurn: Animation { paced(.spring(response: 0.33, dampingFraction: 1)) }
 
     var body: some View {
         GeometryReader { geo in
@@ -90,7 +107,9 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                                           pulls: pulls)
             ZStack(alignment: .topLeading) {
                 CoverFlowStage(count: count, size: size, width: geo.size.width, height: height, position: position,
-                               flip: Double(open), hideCenter: expanded, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
+                               // the book opens over the stage's own fading-out: the cases need not step back frame by
+                               // frame under it (each frame redrew every case's outline, MNG_COVERFLOW_TRACE 2026-11-19)
+                               flip: opening == .book ? 0 : Double(open), hideCenter: expanded, lit: lit, tiltX: Double(tilt.x), tiltY: Double(tilt.y),
                                pulls: pulls, press: press, pulledLight: pulledLight,
                                front: front, spine: spine, back: back)
                     .opacity(Double(1 - open))   // the opened case covers the stage
@@ -149,7 +168,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                     // its reflection on the floor, as every case has: turning and growing, shrinking and settling with
                     // it (user 2026-11-17: "返回的时候 底下阴影 没有跟上 要真实 阴影 也是从大变小"); upside down about
                     // the line the stage's reflections turn about (boxTransform: floorY + gap/2), faint and fading
-                    CaseDetail(stage: stage, open: open, close: {}) {
+                    CaseDetail(stage: stage, open: open, opening: opening, inside: inside(index), groundBlur: groundBlur, close: {}) {
                         front(index)
                     } panel: {
                         detail(index, false)
@@ -163,7 +182,8 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                                          startPoint: .top, endPoint: .bottom))
                     .allowsHitTesting(false)
                     // the middle case turning and growing into the opened case: cover left, actions right
-                    CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, close: { turn(false) }) {
+                    CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,
+                               inside: inside(index), groundBlur: groundBlur, close: { turn(false) }) {
                         front(index)
                     } panel: {
                         detail(index, true)
@@ -180,7 +200,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         }
         .frame(height: height)
         .background(LinearGradient(colors: [Color(white: 0.17), Color(white: 0.03)], startPoint: .top, endPoint: .bottom))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .simultaneousGesture(DragGesture(minimumDistance: 6)
             .onChanged { v in turn(false); lean(at: nil, nil); release(); dragging = true; drag = v.translation.width }
             .onEnded { v in
@@ -208,6 +228,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
         .onKeyPress(.escape) { guard flipped else { return .ignored }; turn(false); return .handled }
         .onChange(of: index) { turn(false); settleMove() }
         .onChange(of: launches) { turn(false) }   // a game was started: back to the games, the way the case was opened
+        .onChange(of: tiltInput) { _, turn in if let turn { follow(turn) } }   // the phone's turn (MotionTilt)
         .onAppear { focused = true; watchSwipes() }
         .onDisappear {
             #if os(macOS)
@@ -223,6 +244,19 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     /// aside (the sketch's, user 2026-11-17). Which case is under the pointer is the stage as shown (`stage.cover`, with
     /// the current pull: from the middle outwards, the first whose front holds the point; a nearer case covers a farther
     /// one), so the case that reacts is the one the player sees there. Only while the fronts show and nothing moves.
+    /// The middle case leans and lights as the phone turns, as under the Mac's pointer (lean(at:)): only while it rests
+    /// closed in the middle; its light grows with the turn, none while the phone is held still. Followed as it comes (the
+    /// motion is smooth already, 60 a second), not on a spring.
+    private func follow(_ turn: CGPoint) {
+        let resting = !flipped && !dragging && !moving && abs(position - Double(index)) < 0.01
+        let to = resting ? turn : .zero
+        let on = resting ? min(1, Double(hypot(turn.x, turn.y)) * 2) : 0
+        guard to != tilt || on != lit else { return }
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) { tilt = to; lit = on }
+    }
+
     private func lean(at p: CGPoint?, _ stage: CoverFlowGeometry?) {
         var to = CGPoint.zero, on = 0.0, side = -1
         if let p, let stage, !flipped, !dragging, !moving, abs(position - Double(index)) < 0.01, let i = stage.cover(at: p) {
@@ -237,11 +271,11 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             }
         }
         if to != tilt || on != lit {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { tilt = to; lit = on }
+            withAnimation(paced(.spring(response: 0.35, dampingFraction: 0.8))) { tilt = to; lit = on }
         }
         if side != pulled { CoverFlowTrace.note("pull case \(side) (was \(pulled)), middle \(index), position \(position)") }
         if side != pulled {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { pulled = side; pulls = CaseAmounts.one(side, of: count) }
+            withAnimation(paced(.spring(response: 0.32, dampingFraction: 0.8))) { pulled = side; pulls = CaseAmounts.one(side, of: count) }
         }
     }
 
@@ -255,7 +289,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             if abs(x) <= 1, abs(y) <= 1 { to = CGPoint(x: x, y: y); on = 1 }
         }
         guard to != coverLean || on != coverLit else { return }
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { coverLean = to; coverLit = on }
+        withAnimation(paced(.spring(response: 0.35, dampingFraction: 0.8))) { coverLean = to; coverLit = on }
     }
 
     /// A new middle (a click, the arrows, a drag or a swipe): the case pulled out under the pointer goes back with the
@@ -311,12 +345,12 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     /// Opens the middle case (true): it turns and grows over the stage at once ("翻转的同时 放大 不是翻转完"), one spring
     /// for both, CaseDetail drawing it from its front at rest (the stage hides its own copy of it), the others stepping
     /// back as it goes. Closes it (false): the same backwards, ending on its front where it stands.
-    private var pressDown: Animation { .spring(response: 0.14, dampingFraction: 0.9) }
+    private var pressDown: Animation { paced(.spring(response: 0.14, dampingFraction: 0.9)) }
 
     /// Lets the pressed middle case go: a bouncy spring, so it comes back a little past where it rests, then settles.
     private func release() {
         guard press != 0 else { return }
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.42)) { press = 0 }
+        withAnimation(paced(.spring(response: 0.28, dampingFraction: 0.42))) { press = 0 }
     }
 
     /// The middle case clicked: onOpen when it is set (it springs back out), else it turns over and opens.
@@ -341,7 +375,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
             DispatchQueue.main.async {   // inserted at 0 first, then it moves
                 guard flipped else { return }   // closed again before it began: nothing to open
                 withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { detailPress = 0 }
+                withAnimation(paced(.spring(response: 0.3, dampingFraction: 0.5))) { detailPress = 0 }
             }
         } else {
             guard flipped else { return }

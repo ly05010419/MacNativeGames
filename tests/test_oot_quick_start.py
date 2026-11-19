@@ -324,7 +324,7 @@ class LauncherQuickStart(unittest.TestCase):
     def test_the_card_button_follows_the_game_pages_and_sends_the_same_request(self):
         swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
         home = (swift / 'HomePage.swift').read_text()
-        self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button(T.quickStart) { model.quickStart(app) }'))
+        self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button { model.quickStart(app) } label: { Text(T.quickStart)'))
         model = (swift / 'Model.swift').read_text()
         self.assertIn('start(BuildRequest(update: app.app, quick: true))', model)
         self.assertIn('quick: quick ? true : nil))', model)   # the Build page's switch: the same field

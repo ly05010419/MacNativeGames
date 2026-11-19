@@ -92,7 +92,8 @@ class Pages(unittest.TestCase):
         # the games as the iPod classic's Cover Flow (user 2026-11-17): a mouse wheel scrolls the page, so every cover is
         # reached by the arrows, the arrow keys and a drag, whatever the window's width
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) })', home)
+        self.assertIn('CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) },\n'
+                      '                          arrows: false, opening: CaseOpening(rawValue: caseOpening) ?? .book,', home)
         # the built games first, then the ones not built yet (user 2026-11-17); the chosen one is kept by game, not place
         self.assertIn('return built + Self.games.filter { !built.contains($0) }', home)
         self.assertIn('let cases = order', home)
@@ -108,7 +109,7 @@ class Pages(unittest.TestCase):
         flow = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text()
         # a click presses the middle case in (user 2026-11-18: "点击的时候 再来一下 感觉点击上了的效果"); a drag lets
         # the press go
-        for part in ('withAnimation(pressDown) { press = 1 }', 'dampingFraction: 0.42)) { press = 0 }',
+        for part in ('withAnimation(pressDown) { press = 1 }', 'dampingFraction: 0.42))) { press = 0 }',
                      'lean(at: nil, nil); release()',
                      'let pressed = i == center ? CGFloat(press) * w * 0.1 : 0'):
             self.assertIn(part, flow)
@@ -121,7 +122,7 @@ class Pages(unittest.TestCase):
         # and turns from the case as pressed and leaning, springing out as it goes, not from the case at rest
         # ("从默认状态开始的 所以不连贯")
         for part in ('coverLean = tilt; coverLit = CGFloat(lit); detailPress = CGFloat(press)',
-                     'withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { detailPress = 0 }',
+                     'withAnimation(paced(.spring(response: 0.3, dampingFraction: 0.5))) { detailPress = 0 }',
                      'press: detailPress', 'func pressedScale(_ press: CGFloat) -> CGFloat'):
             self.assertIn(part, flow)
         detail = (REPO / 'tools/builder_app/Sources/MNGBuilder/CaseDetail.swift').read_text()
@@ -152,11 +153,14 @@ class Pages(unittest.TestCase):
                      '.rotation3DEffect(.degrees(settled ? 0 : 180 * Double(p) * CoverFlowGeometry.turnWay)', 'if p < 0.5 {',
                      '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
             self.assertIn(part, detail)
-        for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, close: { turn(false) })',
+        for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,\n'
+                     '                               inside: inside(index), groundBlur: groundBlur, close: { turn(false) })',
                      'withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }',
-                     'private let openingTurn = Animation.spring(response: 0.46, dampingFraction: 0.69)',
+                     # "去掉 5% 反弹 改成 0%": opening and closing critically damped, no overshoot, either way it opens
+                     'private var openingTurn: Animation { paced(.spring(response: 0.33, dampingFraction: 1)) }',
+                     'private var turnSpring: Animation { paced(.spring(response: 0.4, dampingFraction: 1)) }',
                      'withAnimation(turnSpring, completionCriteria: .removed) { open = 0; coverLean = .zero; coverLit = 0 } completion: {',
-                     'flip: Double(open), hideCenter: expanded',
+                     'flip: opening == .book ? 0 : Double(open), hideCenter: expanded',
                      "including: flipped ? .subviews : .all", 'guard !expanded else { return }'):
             self.assertIn(part, flow)
         self.assertNotIn('openSpring', flow)
@@ -166,7 +170,12 @@ class Pages(unittest.TestCase):
         self.assertIn('detail(index, false)', flow)
         self.assertIn('LinearGradient(colors: [Color(white: 0.17), Color(white: 0.03)], startPoint: .top, endPoint: .bottom)', detail)
         self.assertNotIn('Color(red: 0.12, green: 0.12, blue: 0.13)', detail)
-        self.assertIn('private var buttonWidth: CGFloat { wide ? 200 : .infinity }', home)
+        # "按钮 居然 不整齐 不居中" (2026-11-19): every button the column's width, the column at most 300 ("不要 无限长")
+        self.assertIn('private var buttonWidth: CGFloat { .infinity }', home)
+        self.assertIn('static let column: CGFloat = 300', home)
+        self.assertIn('.frame(maxWidth: wide ? Self.column : .infinity, alignment: .leading)', home)
+        self.assertIn('Text(T.checkShaders).frame(maxWidth: buttonWidth)', home)
+        self.assertIn('Text(T.quickStart).frame(maxWidth: .infinity)', home)
         self.assertNotIn('.frame(maxWidth: wide ? .infinity : nil)', home)   # "极速更新 不要居中了"
         # "封面 要依然支持 鼠标效果": the opened cover leans and lights, laid flat once settled; "去掉 滚动条"
         for part in ('.rotation3DEffect(.degrees(Double(lean.x) * 9)', 'private var settled: Bool { open >= 0.999 }',

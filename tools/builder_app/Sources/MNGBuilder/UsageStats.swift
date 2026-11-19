@@ -85,9 +85,17 @@ enum UsageStats {
 /// MNG Launcher > Settings… (⌘,): the one switch, for the Launcher and every game of this Mac.
 struct UsageStatsSettings: View {
     @State private var on = UsageStats.on
+    /// How a game case opens on the home page (CaseOpening; user 2026-11-19: "旧方案 保留 可以切换").
+    @AppStorage(CaseOpening.key) private var caseOpening = CaseOpening.book.rawValue
 
     var body: some View {
         Form {
+            Picker(T.caseOpening, selection: $caseOpening) {
+                Text(T.caseOpeningBook).tag(CaseOpening.book.rawValue)
+                Text(T.caseOpeningTurn).tag(CaseOpening.turn.rawValue)
+            }
+            .pickerStyle(.radioGroup)
+            Divider()
             Toggle(T.usageStats, isOn: Binding(get: { on }, set: { on = $0; UsageStats.on = $0 }))
             Text(T.usageStatsHelp).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

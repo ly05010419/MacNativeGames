@@ -5,7 +5,7 @@ import UIKit
 /// platforms, colours and `s` come from the shared GameStrings.swift (install.py copies it in), an extension of this.
 enum T {
     static let homeSubtitle = s("Your games on this device", "这台设备上的游戏")
-    static let play = s("Play", "开始游戏")
+    static let play = s("Start game", "启动游戏")   // the Mac's words (Strings.swift startGame)
     static let installed = s("Installed on this device", "已装在这台设备上")
     static let notInstalled = s("Not on this device", "还没装到这台设备")
     static let howToInstall = s("Build it in MNG Launcher on your Mac (its iPhone / iPad version) and install it with the cable; it shows up here.",

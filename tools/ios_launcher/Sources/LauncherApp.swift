@@ -35,6 +35,7 @@ struct HomeView: View {
     @Environment(\.scenePhase) private var phase
     @State private var chosen = Games.all[0]
     @State private var launches = 0   // a game started from the opened case: it turns back to its front, as on the Mac
+    @StateObject private var motion = MotionTilt()   // the phone's turn leans the middle case, as the Mac's pointer
 
     /// Installed games first, then the rest, each in the catalog's order (as the Mac: built ones first).
     private var order: [String] {
@@ -48,12 +49,16 @@ struct HomeView: View {
     var body: some View {
         GeometryReader { screen in
             let cases = order
-            // the stage is 1.47 cases high (CoverFlowGeometry.top 0.09 + the case and its reflection 1.38)
-            let size = min(520, screen.size.height / 1.47)
-            // a tap on the middle case turns it over and opens it as on the Mac (user 2026-11-19: "手机 点击 打开 效果
-            // 没有了"): its cover left, its name and Play right
+            // the stage is the whole screen, under the notch and the home indicator too (user 2026-11-19: "整个背景 都不是
+            // 全屏， 做成全屏"): 1.47 cases high (CoverFlowGeometry.top 0.09 + the case and its reflection 1.38)
+            let size = screen.size.height / 1.47
+            // a tap on the middle case opens it as on the Mac (user 2026-11-19: "手机 点击 打开 效果 没有了", then "安装
+            // iphone ，效果一样"): its cover swings open like a real case's, the cartridge on the left, its name and Play
+            // on the right, over the game's picture
             CoverFlow(count: cases.count, index: center, size: size, launches: launches, name: { T.gameName(cases[$0]) },
-                      arrows: false) { i in
+                      arrows: false, opening: .book,
+                      inside: { CoverImages.shared.cover(at: Games.picturePath(cases[$0]))?.picture },
+                      corner: 0, groundBlur: 22, tiltInput: motion.tilt) { i in
                 front(cases[i])
             } spine: { i in
                 CaseSpine(game: cases[i])
@@ -64,9 +69,12 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .ignoresSafeArea()
         .background(Color.black.ignoresSafeArea())
-        .onAppear { library.refresh(); chosen = order.first ?? chosen }
-        .onChange(of: phase) { _, now in if now == .active { library.refresh() } }
+        .onAppear { library.refresh(); chosen = order.first ?? chosen; motion.start() }
+        .onChange(of: phase) { _, now in
+            if now == .active { library.refresh(); motion.start() } else { motion.stop() }   // no motion in the background
+        }
         .alert(library.message ?? "", isPresented: Binding(get: { library.message != nil }, set: { if !$0 { library.message = nil } })) {
             Button("OK", role: .cancel) {}
         }
@@ -74,23 +82,29 @@ struct HomeView: View {
 
     /// The opened case's right side (wide) and its back during the turn: the game's name and Play when it is on this
     /// device; nothing else (user 2026-11-19: "去掉 还没安装 提示"). live false: the drawn copy (turn, reflection).
+    /// The start as the Mac's (user 2026-11-19: "红色按钮 改成绿色和mac 一样 然后小一点放下面 和mac 一样"): green, at
+    /// the bottom of the opened case's right side, the column's width.
     @ViewBuilder private func panel(_ game: String, live: Bool, wide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: wide ? 14 : 8) {
-            Text(T.gameName(game)).font(wide ? .title2.weight(.bold) : .callout.weight(.semibold)).lineLimit(2)
-            Text(T.gamePlatforms(game)).font(wide ? .callout : .caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: wide ? 10 : 8) {
+            Text(T.gameName(game)).font(wide ? .title3.weight(.bold) : .callout.weight(.semibold)).lineLimit(2)
+            Text(T.gamePlatforms(game)).font(wide ? .caption : .caption2).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
             if library.installed.contains(game) {
                 Button {
                     launches += 1
                     library.launch(game)
                 } label: {
                     Label(T.play, systemImage: "play.fill")
-                        .font(wide ? .title3.weight(.semibold) : .callout.weight(.semibold)).frame(maxWidth: .infinity)
+                        .font(.callout.weight(.semibold)).frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent).tint(caseRed).controlSize(wide ? .large : .small)
+                .buttonStyle(.borderedProminent).tint(.green).controlSize(wide ? .regular : .small)
             }
         }
         .allowsHitTesting(live)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // in from the opened case's edges, off its top and bottom (user 2026-11-19: "右边 文字 和按钮 都往中间一点 离上下
+        // 一定距离"): the phone's case is small, the Mac's margins alone kept them against its rim
+        .padding(.horizontal, wide ? 10 : 0).padding(.vertical, wide ? 14 : 0)
         .environment(\.colorScheme, .dark)
     }
 

@@ -157,6 +157,12 @@ enum T {
                             "快速版：带标题菜单的着色器和计算、读帧缓冲、网格管线；启动时带全部诊断")
     static let fillShaders = s("Fill in shaders", "补全着色器")
     // the card's memory saver switch (user 2026-11-16: "CheckBox 叫 开启省内存模式"; tools/builder_jobs/memory_saver.py)
+    // how a case opens on the home page (CaseOpening; user 2026-11-19: "盒子 打开", "旧方案 保留 可以切换")
+    static let caseOpening = s("A game case opens", "游戏盒子打开方式")
+    static let caseOpeningBook = s("Its cover swings open, like a real case", "像真的盒子一样翻开封面")
+    static let caseOpeningTurn = s("The whole case turns over", "整个盒子翻转")
+    static let slowMotion = s("Slow motion", "慢速模式")
+    static func slowMotionTimes(_ n: Int) -> String { n == 1 ? s("Normal speed", "正常速度") : zh ? "慢 \(n) 倍" : "\(n)× slower" }
     static let usageStats = s("Count me as an active player (anonymous)", "匿名统计活跃度")
     static let usageStatsHelp = s("Once a day the Launcher and each game send a random install id of this Mac, the program's name, the platform and its version, so the site can count daily, weekly and monthly players. Nothing else: no name, no account, no game file. The site keeps the id only as a salted hash and no IP address. Turning it off here stops it for the Launcher and every game of this Mac.",
                                   "Launcher 和每个游戏每天最多上报一次：这台 Mac 的随机安装号、程序名、平台和版本，用来统计日活、周活、月活和流失率。不发别的：没有名字、账号或游戏文件；网站只存安装号的加盐哈希，不存 IP。在这里关掉，Launcher 和这台 Mac 上的所有游戏都不再上报。")

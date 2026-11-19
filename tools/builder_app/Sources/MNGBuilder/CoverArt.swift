@@ -11,12 +11,50 @@ extension Image { init(platformImage: PlatformImage) { self.init(nsImage: platfo
 private func platformImage(_ image: CGImage) -> PlatformImage {
     NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
 }
+/// An image drawn at `scale` pixels per point, shown at its size in points.
+private func platformImage(_ image: CGImage, points: CGSize, scale: CGFloat) -> PlatformImage {
+    NSImage(cgImage: image, size: points)
+}
 #else
 import UIKit
 typealias PlatformImage = UIImage
 extension Image { init(platformImage: PlatformImage) { self.init(uiImage: platformImage) } }
 private func platformImage(_ image: CGImage) -> PlatformImage { UIImage(cgImage: image) }
+private func platformImage(_ image: CGImage, points: CGSize, scale: CGFloat) -> PlatformImage {
+    UIImage(cgImage: image, scale: scale, orientation: .up)
+}
 #endif
+
+/// A picture blurred once at the size it is shown, instead of on every frame of an animation (user 2026-11-19: "封面
+/// 移动的时候里面图片 也在一直 调整": the opened case blurred the picture live over the whole stage and across both
+/// halves, twice with its reflection, on every frame; the frames came 6, 13 and 20 ms apart in turn, MNG_COVERFLOW_TRACE,
+/// and the whole picture moved in uneven steps). Drawn by SwiftUI itself (ImageRenderer) with the very modifiers a live
+/// blur had, so it looks the same; kept per picture, size and settings.
+@MainActor
+enum FrozenBlur {
+    private static var made: [String: PlatformImage] = [:]
+
+    /// `image` filling `width` x `height` (cut to fill), blurred by `radius` with opaque edges and its colour times
+    /// `saturation`, drawn at `scale` pixels per point.
+    static func image(_ image: PlatformImage, width: CGFloat, height: CGFloat, radius: CGFloat, saturation: Double,
+                      scale: CGFloat) -> PlatformImage? {
+        let w = width.rounded(), h = height.rounded()
+        guard w > 0, h > 0 else { return nil }
+        let key = "\(ObjectIdentifier(image).hashValue) \(w)x\(h) r\(radius) s\(saturation) @\(scale)"
+        if let known = made[key] { return known }
+        let renderer = ImageRenderer(content:
+            Image(platformImage: image).resizable().aspectRatio(contentMode: .fill)
+                .frame(width: w, height: h).clipped()
+                .blur(radius: radius, opaque: true)
+                .saturation(saturation))
+        renderer.scale = scale
+        guard let cg = renderer.cgImage else { return nil }
+        let frozen = platformImage(cg, points: CGSize(width: w, height: h), scale: scale)
+        if made.count >= 24 { made.removeAll() }   // a window resized many times: start again
+        made[key] = frozen
+        return frozen
+    }
+}
 
 /// Each game's picture decoded once, at the size a case shows it, and its blurred backdrop made once; read again when
 /// its file changes (a new build of the game). User 2026-11-19 "为什么 这么卡": every case read its picture from the

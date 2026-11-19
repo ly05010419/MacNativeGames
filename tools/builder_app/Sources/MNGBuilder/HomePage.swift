@@ -11,6 +11,13 @@ struct HomePage: View {
     @State private var defaulted = false   // the first built game was chosen once, when the page first showed
     @State private var gamePage: String?   // the page a case's back opened (T.gamePages), shown under the Cover Flow
     @State private var launches = 0        // games started from a back: the Cover Flow grows the case over the stage
+    /// How the middle case opens (user 2026-11-19: "盒子 翻转 改成 盒子 打开", "旧方案 保留 可以切换"): book (its cover swings
+    /// open, the default) or turn (the whole case turns over, as before); MNG Launcher › Settings… (UsageStatsSettings).
+    @AppStorage(CaseOpening.key) private var caseOpening = CaseOpening.book.rawValue
+    /// The stage's animations this many times slower, to watch them (user 2026-11-19: "右下角 放一个按钮 叫 慢速模式 可以
+    /// 选择 慢1 2 3 5 10 20 50倍 我要看动画效果"); for this run only, so it is never left slow by mistake.
+    @State private var slowMotion = 1
+    static let slowMotions = [1, 2, 3, 5, 10, 20, 50]
 
     static let games = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp"]
 
@@ -73,7 +80,15 @@ struct HomePage: View {
                 // The games as the iPod classic's Cover Flow (user 2026-11-17): every one is reached by the arrows,
                 // the arrow keys, a drag or a click on a side cover, at any window width
                 let cases = order
-                CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) }) { i in
+                // no arrow buttons (user 2026-11-19: "mac 左右箭头去掉"): the arrow keys, a drag, a click on a side case
+                // and the trackpad's swipe move the cases
+                CoverFlow(count: cases.count, index: center, launches: launches, name: { T.gameName(cases[$0]) },
+                          arrows: false, opening: CaseOpening(rawValue: caseOpening) ?? .book,
+                          inside: { i in
+                              let game = cases[i]
+                              return CoverImages.shared.cover(at: GameCard.picturePath(of: model.installed.first { $0.game == game }))?.picture
+                          },
+                          slow: Double(slowMotion)) { i in
                     let game = cases[i]
                     GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
                              selected: false, cover: true, tap: {})
@@ -97,6 +112,22 @@ struct HomePage: View {
                     } else {
                         EmptyBack(ready: model.installedLoaded, live: live, wide: true, name: T.gameName(game)) { open(game) }
                     }
+                }
+                .overlay(alignment: .bottomTrailing) {   // 慢速模式, the stage's bottom-right corner
+                    Menu {
+                        Picker(T.slowMotion, selection: $slowMotion) {
+                            ForEach(Self.slowMotions, id: \.self) { n in Text(T.slowMotionTimes(n)).tag(n) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label(slowMotion == 1 ? T.slowMotion : "\(T.slowMotion) ×\(slowMotion)", systemImage: "tortoise")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .foregroundStyle(.white)
+                    .environment(\.colorScheme, .dark)
+                    .padding(12)
                 }
                 // what the middle cover is, as the iPod writes it under the cover
                 VStack(spacing: 4) {
@@ -182,7 +213,10 @@ struct GameCard: View {
     /// every frame of a swipe (user 2026-11-19, "mac 也要这样优化吗" "改").
     @MainActor private static var iconPaths: [String: (stamp: Date?, path: String)] = [:]
 
-    private var picturePath: String? {
+    private var picturePath: String? { Self.picturePath(of: app) }
+
+    /// The icon file of a built game's app (the opened case's inside shows it too: HomePage, CaseDetail's `inside`).
+    static func picturePath(of app: InstalledReport.App?) -> String? {
         guard let app else { return nil }
         // the icon the app's Info.plist names (Odyssey: OdysseyIcon, Animal Crossing: AnimalCrossingIcon), else AppIcon
         // (2026-11-18: Odyssey's case showed no picture, the Launcher looked only for AppIcon.icns)
@@ -342,9 +376,12 @@ struct GameActions: View {
     /// Laid out for the case opened over the stage (CaseDetail): the game's name and platforms on top, larger type and
     /// controls, the pages in one row; on the case's back (false) small, in one narrow column.
     let wide: Bool
-    /// The big buttons' width: opened, 200 points (user 2026-11-17: "按钮 不要 无限长 … 200px就行"), at the left like the
-    /// text ("极速更新 不要居中了"; the start alone sits bottom right); on the narrow back, its whole width.
-    private var buttonWidth: CGFloat { wide ? 200 : .infinity }
+    /// Every button the column's whole width, so their edges line up (user 2026-11-19: "按钮 居然 不整齐 不居中", in the
+    /// opened case's tray, one case wide): opened, the column is at most `column` wide (user 2026-11-17: "按钮 不要 无限长"),
+    /// at the left like the text ("极速更新 不要居中了"; the start alone sits bottom right, as wide); on the narrow back,
+    /// its whole width.
+    private var buttonWidth: CGFloat { .infinity }
+    static let column: CGFloat = 300
 
     init(app: InstalledReport.App, section: Binding<String?>, live: Bool, wide: Bool = false, started: @escaping () -> Void = {}) {
         self.app = app
@@ -423,6 +460,7 @@ struct GameActions: View {
             Label(T.startGame, systemImage: "play.fill").font((wide ? Font.title3 : .callout).weight(.semibold))
                 .frame(maxWidth: buttonWidth).padding(.vertical, wide ? 4 : 0)
         }
+        .frame(maxWidth: wide ? Self.column : .infinity)
         .buttonStyle(.borderedProminent).tint(.green).controlSize(.large)
         .disabled(starting || (model.jobRunning && model.updating == app.app))
         .keyboardShortcut(live ? KeyboardShortcut.defaultAction : nil)
@@ -508,7 +546,8 @@ struct GameActions: View {
                 }
                 if Model.shaderGames.contains(app.game ?? "") {   // only the shaders and pipelines, from the newest list (user 2026-11-13)
                     HStack(spacing: 6) {
-                        Button(T.checkShaders) { Task { await checkShaders() } }.disabled(checkingShaders || busy)
+                        Button { Task { await checkShaders() } } label: { Text(T.checkShaders).frame(maxWidth: buttonWidth) }
+                            .disabled(checkingShaders || busy)
                         if shaderUpdate {
                             Button(T.updateShaders) { shaderUpdate = false; shaderLine = ""; model.updateShaders(app) }
                                 .buttonStyle(.borderedProminent).disabled(busy)
@@ -519,20 +558,23 @@ struct GameActions: View {
                     if !said.isEmpty { Text(said).font(.caption2).foregroundStyle(.secondary) }
                 }
                 if model.pageApps.contains(where: { $0.app == app.app }) {   // the pages serve these games only
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: wide ? 6 : 3), spacing: wide ? 8 : 5) {
+                    // three a row: the opened case's tray is one case wide (user 2026-11-19, "快…" cut off in six)
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 3), spacing: wide ? 8 : 5) {
                         ForEach(T.gamePages.filter { Model.pages(app.game).contains($0.0) }, id: \.0) { id, label in
                             // under the Cover Flow, not a page of its own (user 2026-11-12); pressed again, it closes
                             Button { section = section == id ? nil : id } label: { Text(label).frame(maxWidth: .infinity) }
                                 .buttonStyle(.bordered).tint(section == id ? .accentColor : nil)
                         }
                         if Model.quickGames.contains(app.game ?? "") {   // 快速启动, after the game's pages (user 2026-11-15)
-                            Button(T.quickStart) { model.quickStart(app) }.buttonStyle(.bordered).help(T.quickStartHelp)
+                            Button { model.quickStart(app) } label: { Text(T.quickStart).frame(maxWidth: .infinity) }
+                                .buttonStyle(.bordered).help(T.quickStartHelp)
                                 .disabled(model.phase == .building || model.phase == .cancelling)
                         }
                     }
                 }
             }
             .controlSize(wide ? .regular : .small)
+            .frame(maxWidth: wide ? Self.column : .infinity, alignment: .leading)   // one column, every button as wide
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
