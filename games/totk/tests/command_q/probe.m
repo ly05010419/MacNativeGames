@@ -44,6 +44,21 @@ void runtime_input_clear(void){}
 void runtime_input_clear_window(void){inputClears++;memset(heldInput,0,sizeof heldInput);}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+/* The no-controller frontend fixture also backs text_keyboard/lifecycle.m. Keep calibration UI state in memory;
+   real-controller probes define FRONTEND_REAL_GAMEPAD and use the production implementations instead. */
+static RuntimeGamepadCalibration calibrationFixture = {.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
+static float deadzoneFixture[2] = {.12f,.12f};
+void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out){*out=calibrationFixture;}
+void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in){calibrationFixture=*in;}
+float runtime_gamepad_stick_deadzone_get(int right){return deadzoneFixture[!!right];}
+void runtime_gamepad_stick_deadzone_set(int right,float value){deadzoneFixture[!!right]=value;}
+void runtime_gamepad_stick_preview(int right,float x,float y,float *outX,float *outY){
+    (void)right;*outX=x;*outY=y;
+}
+void runtime_gamepad_stick_raw(float *lx,float *ly,float *rx,float *ry,int *connected){
+    *lx=*ly=*rx=*ry=0;*connected=0;
+}
+void runtime_gamepad_trigger_raw(float *lt,float *rt){*lt=*rt=0;}
 void runtime_dsu_settings(RuntimeDSUSettings *out){*out=(RuntimeDSUSettings){.endpoint="127.0.0.1:26760"};}
 void runtime_dsu_status(RuntimeDSUStatus *out){*out=(RuntimeDSUStatus){0};}
 int runtime_dsu_apply(const RuntimeDSUSettings *settings){(void)settings;return 0;}

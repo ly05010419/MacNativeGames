@@ -15,7 +15,7 @@ PRELUDE = r'''
 #include <unistd.h>
 #include <math.h>
 #include "runtime.h"
-static RuntimeGamepadCalibration calibration = {.left={0,0,1,1},.right={0,0,1,1}};
+static RuntimeGamepadCalibration calibration = {.left={.scaleX=1, .scaleY=1},.right={.scaleX=1, .scaleY=1}};
 static int hidUpdates, refreshes;
 static void hid_calibration_changed(void){hidUpdates++;}
 static void refresh_gamepads(void){refreshes++;}
@@ -31,6 +31,8 @@ int main(int argc,char**argv){
  expect(runtime_gamepad_stick_deadzone_get(0),.05f);expect(runtime_gamepad_stick_deadzone_get(1),.18f);
  runtime_gamepad_stick_deadzone_set(1,.3f);
  load_stick_deadzone();expect(stickDeadzone[0],.05f);expect(stickDeadzone[1],.3f);
+ assert(!stick_capture_active(.00004f,0,0,0));
+ assert(stick_capture_active(.2f,0,0,0));
  float x,y;
  runtime_gamepad_stick_preview(0,.2f,0,&x,&y);assert(x>.15f&&x<.16f&&y==0);
  runtime_gamepad_stick_preview(1,.2f,0,&x,&y);assert(x==0&&y==0);

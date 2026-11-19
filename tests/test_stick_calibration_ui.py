@@ -16,7 +16,7 @@ PRELUDE = r'''
 #include "runtime.h"
 #define TOTK_UI(c,e) c
 static NSString *settings_text(const char*c,const char*e){(void)e;return @(c);}
-static RuntimeGamepadCalibration saved={.left={0,0,1,1},.right={0,0,1,1}};
+static RuntimeGamepadCalibration saved={.left={.scaleX=1, .scaleY=1},.right={.scaleX=1, .scaleY=1}};
 static int saves, connection=1;
 static float triggerLeft,triggerRight,renderedTriggers[2];
 static uint64_t now=1000000000;
@@ -117,6 +117,7 @@ assert(saves==0&&settings_calibration_active());
 [v setValue:@(NAN) forKey:@"rawLX"];[v finishIfComplete];assert(saves==0);
 [v setValue:@0 forKey:@"rawLX"];[v finishIfComplete];
 assert(saves==1&&!settings_calibration_active());[v finishIfComplete];assert(saves==1);
+assert(saved.stableHID && saved.left.scaleNegX>saved.left.scaleX);
 assert(saved.left.scaleX>1.11&&saved.left.scaleX<1.12&&saved.right.scaleX>1.42);
 assert([v.calibrateButton.title isEqualToString:@"校准"]);
 assert([[v valueForKey:@"calibrationStatus"] containsString:@"完成"]);

@@ -175,9 +175,10 @@ void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
 /* A stick's calibration (runtime/gamepad.m, the settings panel's stick-calibration tool): center is where the stick
    actually rests when released, in game coordinates (-1..1, up positive); scale stretches the real travel to full
-   range (>= 1). The default center 0, scale 1 leaves the stick unchanged. */
-typedef struct { float centerX, centerY, scaleX, scaleY; } RuntimeStickCalibration;
-typedef struct { RuntimeStickCalibration left, right; } RuntimeGamepadCalibration;
+   range. Positive and negative travel have independent gains; a zero negative gain uses the
+   positive gain for old callers. The default center 0, scale 1 leaves the stick unchanged. */
+typedef struct { float centerX, centerY, scaleX, scaleY, scaleNegX, scaleNegY; } RuntimeStickCalibration;
+typedef struct { RuntimeStickCalibration left, right; int stableHID; } RuntimeGamepadCalibration;
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the calibration in force */
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* set and save (controller-calibration.txt) */
 void runtime_gamepad_calibration_reset(void);   /* back to the default and remove the file */

@@ -60,6 +60,7 @@ static void refresh_gamepads(void) {
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
 #ifdef RUNTIME_STICK_CALIBRATION
     float rawLx=0, rawLy=0, rawRx=0, rawRy=0, rawLT=0, rawRT=0;
+    int captureActive=0;
 #endif
     uint64_t rawAt = 0, rawRightAt = 0;
     int capture = captureDown;
@@ -97,6 +98,7 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, native_stick_component(2, rx, ry));
         next.ry = stronger_axis(next.ry, native_stick_component(3, rx, ry));
 #ifdef RUNTIME_STICK_CALIBRATION
+        captureActive |= stick_capture_active(lx,ly,rx,ry);
         if (fabsf(lx) > fabsf(rawLx)) rawLx = lx;
         if (fabsf(ly) > fabsf(rawLy)) rawLy = ly;
         if (fabsf(rx) > fabsf(rawRx)) rawRx = rx;
@@ -115,6 +117,7 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
 #ifdef RUNTIME_STICK_CALIBRATION
+        captureActive |= hidCaptureActive;
         if (fabsf(hidRawLx) > fabsf(rawLx)) rawLx = hidRawLx;
         if (fabsf(hidRawLy) > fabsf(rawLy)) rawLy = hidRawLy;
         if (fabsf(hidRawRx) > fabsf(rawRx)) rawRx = hidRawRx;
@@ -133,6 +136,9 @@ static void refresh_gamepads(void) {
         next.connected = 1; physical |= dsuInput.buttons & CONTROLLER_OWN_BUTTONS;   /* never the mouse's buttons (games/acnh) */
         float axes[4];
         for (int i = 0; i < 4; i++) axes[i] = (dsuInput.axes[i] - 128) / (dsuInput.axes[i] >= 128 ? 127.f : 128.f);
+#ifdef RUNTIME_STICK_CALIBRATION
+        captureActive |= hypotf(axes[0],axes[1]) > .08f || hypotf(axes[2],axes[3]) > .08f;
+#endif
         next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
         next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
         gamepad_game_dsu_input(dsuInput.buttons || stick_axis(axes[0]) || stick_axis(axes[1]) || stick_axis(axes[2]) || stick_axis(axes[3]));
@@ -208,6 +214,7 @@ static void refresh_gamepads(void) {
     gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
     gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
 #ifdef RUNTIME_STICK_CALIBRATION
+    captureStickActive=captureActive;
     gamepadRawLx=rawLx; gamepadRawLy=rawLy; gamepadRawRx=rawRx; gamepadRawRy=rawRy;
     gamepadRawLT=rawLT; gamepadRawRT=rawRT;
 #endif
@@ -266,6 +273,7 @@ void runtime_gamepad_clear(void) {
 #ifdef RUNTIME_STICK_CALIBRATION
     gamepadRawLx = gamepadRawLy = gamepadRawRx = gamepadRawRy = 0;
     gamepadRawLT = gamepadRawRT = 0;
+    captureStickActive=0;
 #endif
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
     settingsShortcutDown = settingsShortcutPending = 0;
@@ -332,7 +340,13 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
     pressedEdges = 0;
     if (textCapture) {
         RuntimeGamepadState held = text_state_locked();
-        if (textCapture == 2 && !held.buttons && !held.lx && !held.ly && !held.rx && !held.ry)
+        if (textCapture == 2 && !held.buttons &&
+#ifdef RUNTIME_STICK_CALIBRATION
+            !captureStickActive
+#else
+            !held.lx && !held.ly && !held.rx && !held.ry
+#endif
+        )
             textCapture = 0;
         *out = (RuntimeGamepadState){.connected = out->connected};
     }

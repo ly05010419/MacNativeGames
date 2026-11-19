@@ -96,12 +96,12 @@ void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
 /* The calibration widget is constructed on every Input page. Keep its runtime
    dependencies in-process too: this probe has a connected, neutral controller,
    and must never fall through dynamic_lookup to a missing gamepad symbol. */
-static RuntimeGamepadCalibration fakeCalibration = {.left={0,0,1,1}, .right={0,0,1,1}};
+static RuntimeGamepadCalibration fakeCalibration = {.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
 static float fakeDeadzone[2] = {.12f, .12f};
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = fakeCalibration; }
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) { fakeCalibration = *in; }
 void runtime_gamepad_calibration_reset(void) {
-    fakeCalibration = (RuntimeGamepadCalibration){.left={0,0,1,1}, .right={0,0,1,1}};
+    fakeCalibration = (RuntimeGamepadCalibration){.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
 }
 float runtime_gamepad_stick_deadzone_get(int right) { return fakeDeadzone[!!right]; }
 void runtime_gamepad_stick_deadzone_set(int right, float value) {

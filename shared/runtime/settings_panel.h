@@ -423,9 +423,10 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
         StickCalibrationRun *r=&calRun[stick];
         RuntimeStickCalibration *c=stick==CAL_LEFT?&cal.left:&cal.right;
         *c=(RuntimeStickCalibration){r->centerX,r->centerY,
-            fmaxf(1.0f,fminf(8.0f,1.0f/fmaxf(-r->negX,r->posX))),
-            fmaxf(1.0f,fminf(8.0f,1.0f/fmaxf(-r->negY,r->posY)))};
+            fminf(8.0f,1.0f/r->posX), fminf(8.0f,1.0f/r->posY),
+            fminf(8.0f,-1.0f/r->negX), fminf(8.0f,-1.0f/r->negY)};
     }
+    cal.stableHID=1;
     runtime_gamepad_calibration_set(&cal);
     calRun[0].phase=calRun[1].phase=CAL_IDLE;
     calibrationStatus=settings_text("校准完成，左右摇杆已保存","Calibration complete; both sticks saved");

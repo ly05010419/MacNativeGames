@@ -158,7 +158,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_gamepad_focus(1); runtime_gamepad_read(&out); CHECK(out.buttons && out.lx == 20000);
 
     /* A stationary HID stick must immediately use an edited/persisted deadzone. */
-    hidRawLx = .2f; hidRawLy = hidRawRx = hidRawRy = 0;
+    hidX = .2f; hidY = hidZ = hidRz = 0; hidOrder = 0; memset(hidButtons,0,sizeof hidButtons);
     runtime_gamepad_deadzone_set(.3f); runtime_gamepad_read(&out);
     CHECK(out.lx == 0 && runtime_gamepad_deadzone_get() == .3f);
     runtime_gamepad_deadzone_set(.1f); runtime_gamepad_read(&out);
@@ -169,8 +169,8 @@ int main(int argc, char **argv) { @autoreleasepool {
 
     /* Real calibration -> cached HID -> game state, with independent L/R data. */
     runtime_gamepad_deadzone_set(.1f);
-    RuntimeGamepadCalibration custom={.left={.1f,-.2f,2,1.5f},.right={-.1f,.1f,1.2f,1.1f}};
-    hidRawLx=.35f;hidRawLy=-.2f;hidRawRx=.3f;hidRawRy=.1f;
+    RuntimeGamepadCalibration custom={.left={.centerX=.1f,.centerY=-.2f,.scaleX=2,.scaleY=1.5f},.right={.centerX=-.1f,.centerY=.1f,.scaleX=1.2f,.scaleY=1.1f}};
+    hidX=.35f;hidY=.2f;hidZ=.3f;hidRz=-.1f;
     runtime_gamepad_calibration_set(&custom); runtime_gamepad_read(&out);
     CHECK(out.lx>=14562 && out.lx<=14564 && out.ly==0);
     CHECK(out.rx>=13833 && out.rx<=13835 && out.ry==0);
@@ -178,13 +178,44 @@ int main(int argc, char **argv) { @autoreleasepool {
     custom.left.centerX=.35f;
     runtime_gamepad_calibration_set(&custom);runtime_gamepad_read(&out);
     CHECK(out.lx==0 && out.rx==rightBefore); /* changing left never changes right */
-    calibration=(RuntimeGamepadCalibration){.left={0,0,1,1},.right={0,0,1,1}};
+    calibration=(RuntimeGamepadCalibration){.left={.scaleX=1, .scaleY=1},.right={.scaleX=1, .scaleY=1}};
     load_calibration(); /* restart-equivalent loading, not the UI's in-memory copy */
     RuntimeGamepadCalibration restored;runtime_gamepad_calibration_get(&restored);
     CHECK(fabsf(restored.left.centerX-.35f)<1e-6f && restored.left.scaleX==2);
     CHECK(fabsf(restored.right.centerX+.1f)<1e-6f && fabsf(restored.right.scaleX-1.2f)<1e-6f);
     hid_calibration_changed();refresh_gamepads();runtime_gamepad_read(&out);
     CHECK(out.lx==0 && out.rx==rightBefore);
+
+    /* Old eight-value profiles load with legacy coordinates. New files retain asymmetric gains. */
+    setting_write("controller-calibration.txt","0.1235 0 2 1 0 0 1 1","legacy test");
+    load_calibration(); CHECK(!calibration.stableHID && calibration.left.scaleNegX==2);
+    CHECK(fabsf(stick_calibrate(0,.1235f))<1e-6f);
+    /* At 0% deadzone quantization/ADC residuals must not trap UI capture; buttons still block release. */
+    hidX=.123456f;hidY=hidZ=hidRz=0;runtime_gamepad_deadzone_set(0);
+    runtime_gamepad_text_capture(1); runtime_gamepad_text_capture(0);
+    runtime_gamepad_read(&out);CHECK(textCapture==0);
+    hidX=.3f; hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(out.lx>1000);
+    runtime_gamepad_deadzone_set(.5f); hidX=.3f;hid_pad_compute();refresh_gamepads();
+    runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==2); /* large game DZ is not neutral */
+    hidX=.123456f;hidButtons[1]=1;hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==2);
+    hidButtons[1]=0;hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==0);
+    custom=(RuntimeGamepadCalibration){.left={.centerX=.15f,.centerY=-.1f,.scaleX=1/.65f,.scaleY=1/.8f,
+        .scaleNegX=1/.95f,.scaleNegY=1/.6f},.right={.scaleX=1,.scaleY=1},.stableHID=1};
+    runtime_gamepad_calibration_set(&custom);load_calibration();
+    CHECK(calibration.stableHID && fabsf(calibration.left.scaleNegX-1/.95f)<1e-6f);
+    CHECK(stick_calibrate(0,.8f)>.9999f && stick_calibrate(0,-.8f)<-.9999f);
+    CHECK(stick_calibrate(1,.7f)>.9999f && stick_calibrate(1,-.7f)<-.9999f);
+    /* Stable Switch Pro samples/output cannot change as the adaptive range learns or after reconnect. */
+    hidOrder=GAMEPAD_HID_SWITCH_PRO;hidX=.15f;hidY=.1f;hidZ=hidRz=0;
+    runtime_gamepad_deadzone_set(0);hid_pad_compute(); CHECK(hidPad.lx==0 && hidPad.ly==0);
+    CHECK(fabsf(hidRawLx-.15f)<1e-6f && fabsf(hidRawLy+.1f)<1e-6f);
+    hidX=.8f;hid_pad_compute();int calibratedEdge=hidPad.lx;CHECK(calibratedEdge>32760);
+    memset(hidReach,0,sizeof hidReach);hid_pad_compute();CHECK(hidPad.lx==calibratedEdge);
+    hid_pad_reset();hidOrder=GAMEPAD_HID_SWITCH_PRO;hidX=.15f;hidY=.1f;hidZ=hidRz=0;
+    hid_pad_compute();CHECK(hidPad.lx==0 && hidPad.ly==0); /* persisted calibration survives reconnect */
+    runtime_gamepad_calibration_reset(); CHECK(!calibration.stableHID);
+    hidX=.65f;hidY=hidZ=hidRz=0;hid_pad_compute();
+    CHECK(hidPad.lx>32760 && fabsf(hidRawLx-.65f)<1e-6f); /* uncalibrated adaptive reach retained */
 
     /* Restart-equivalent preference loading; only a valid opt-in enables background events. */
     write_word(saved, "on\n"); load_gamepad_background();

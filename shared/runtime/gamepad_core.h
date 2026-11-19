@@ -126,7 +126,7 @@ static void hid_calibration_changed(void);
 /* The stick calibration (the settings panel's tool, controller-calibration.txt): center is where the stick rests when
    released and scale stretches its real travel to full range. It applies before the deadzone so a drifting stick that has
    been re-centred reads as centred, and a worn stick that no longer reaches the edge still reads full travel. */
-static RuntimeGamepadCalibration calibration = { .left = {0, 0, 1, 1}, .right = {0, 0, 1, 1} };
+static RuntimeGamepadCalibration calibration = { .left = {.scaleX=1, .scaleY=1}, .right = {.scaleX=1, .scaleY=1} };
 /* The raw sticks before calibration (game coordinates, up positive): the calibration tool's live picture. A controller
    other than GameController's own (the HID fallback) is folded in the same way as the game state. */
 static float gamepadRawLx, gamepadRawLy, gamepadRawRx, gamepadRawRy;
@@ -135,14 +135,22 @@ static float gamepadRawLT, gamepadRawRT;   /* the analog triggers (0..1) for the
 /* The HID fallback's raw sticks (game coordinates), kept by hid_pad_compute and folded into the gamepadRaw_* by
    refresh_gamepads, so the calibration tool sees the same sticks the game does. */
 static float hidRawLx, hidRawLy, hidRawRx, hidRawRy;
+static int hidCaptureActive, captureStickActive;
 
 enum { STICK_LX = 0, STICK_LY, STICK_RX, STICK_RY };
 static float stick_calibrate(int axis, float value) {
     const RuntimeStickCalibration *s = axis < STICK_RX ? &calibration.left : &calibration.right;
     float center = (axis & 1) ? s->centerY : s->centerX;
     float scale  = (axis & 1) ? s->scaleY  : s->scaleX;
+    float negative = (axis & 1) ? s->scaleNegY : s->scaleNegX;
+    if (value < center && negative > 0) scale = negative;
     float out = (value - center) * scale;
     return out > 1.0f ? 1.0f : out < -1.0f ? -1.0f : out;
+}
+
+static inline int stick_capture_active(float lx,float ly,float rx,float ry) {
+    return hypotf(stick_calibrate(0,lx),stick_calibrate(1,ly)) > .08f ||
+           hypotf(stick_calibrate(2,rx),stick_calibrate(3,ry)) > .08f;
 }
 
 /* Radial response preserves direction and bounds diagonal travel to the unit circle.
@@ -294,28 +302,34 @@ static void load_controller_type(void) {
 static void save_controller_type(int type) { setting_write("controller-type.txt", gamepad_type_name(type), "controller type"); }
 
 #ifdef RUNTIME_STICK_CALIBRATION
-/* The stick calibration, one line of eight numbers: left centre X/Y and scale X/Y, then the right stick's, centre in
-   [-0.9, 0.9] (game coordinates) and scale in [1, 8]. A missing or bad file keeps the default (centre 0, scale 1). */
+/* v2 stores independent +/- gains and the HID coordinate convention. Legacy eight-number
+   profiles keep their adaptive HID convention until the user recalibrates; never reinterpret
+   an adaptive centre as a descriptor-normalized one. Missing/bad files leave defaults intact. */
 static void load_calibration(void) {
-    char path[4096], word[512] = {0};
+    char path[4096], word[512] = {0}, extra;
     if (!setting_read("controller-calibration.txt", word, sizeof word, path, sizeof path)) return;
-    float v[8] = {0, 0, 1, 1, 0, 0, 1, 1};
-    if (sscanf(word, "%f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) != 8) {
-        fprintf(stderr, "[totk-input] %s: not eight numbers; the stick calibration stays the default\n", path); return;
+    float v[12]; int stable = 0, modern = !strncmp(word, "v2 ", 3);
+    int count = modern ? sscanf(word, "v2 %d %f %f %f %f %f %f %f %f %f %f %f %f %c", &stable,
+        &v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],&v[7],&v[8],&v[9],&v[10],&v[11],&extra) :
+        sscanf(word,"%f %f %f %f %f %f %f %f %c",&v[0],&v[1],&v[2],&v[3],&v[6],&v[7],&v[8],&v[9],&extra);
+    if (count != (modern ? 13 : 8) || (stable != 0 && stable != 1)) return;
+    if (!modern) { v[4]=v[2]; v[5]=v[3]; v[10]=v[8]; v[11]=v[9]; }
+    for (int i=0;i<12;i++) {
+        if (!isfinite(v[i])) return;
+        if (i%6<2 ? fabsf(v[i])>.9f : (v[i] < (modern?.5f:1.f) || v[i]>8.f)) return;
     }
-    for (int s = 0; s < 2; s++) {
-        for (int a = 0; a < 2; a++) if (v[s * 4 + a] < -0.9f || v[s * 4 + a] > 0.9f) { fprintf(stderr, "[totk-input] %s: centre out of range\n", path); return; }
-        for (int a = 2; a < 4; a++) if (v[s * 4 + a] < 1.0f || v[s * 4 + a] > 8.0f) { fprintf(stderr, "[totk-input] %s: scale out of range\n", path); return; }
-    }
-    calibration.left  = (RuntimeStickCalibration){v[0], v[1], v[2], v[3]};
-    calibration.right = (RuntimeStickCalibration){v[4], v[5], v[6], v[7]};
-    fprintf(stderr, "[totk-input] stick calibration: %s\n", path);
+    calibration = (RuntimeGamepadCalibration){
+        .left={v[0],v[1],v[2],v[3],v[4],v[5]}, .right={v[6],v[7],v[8],v[9],v[10],v[11]}, .stableHID=stable};
+    fprintf(stderr, "[totk-input] stick calibration: %s%s\n", path,
+        modern ? "" : " (legacy HID coordinates; recalibrate to use stable HID coordinates)");
 }
 static void save_calibration(void) {
     char word[512];
-    snprintf(word, sizeof word, "%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
-             calibration.left.centerX, calibration.left.centerY, calibration.left.scaleX, calibration.left.scaleY,
-             calibration.right.centerX, calibration.right.centerY, calibration.right.scaleX, calibration.right.scaleY);
+    RuntimeStickCalibration l=calibration.left, r=calibration.right;
+    snprintf(word,sizeof word,"v2 %d %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
+        calibration.stableHID,l.centerX,l.centerY,l.scaleX,l.scaleY,
+        l.scaleNegX>0?l.scaleNegX:l.scaleX,l.scaleNegY>0?l.scaleNegY:l.scaleY,
+        r.centerX,r.centerY,r.scaleX,r.scaleY,r.scaleNegX>0?r.scaleNegX:r.scaleX,r.scaleNegY>0?r.scaleNegY:r.scaleY);
     setting_write("controller-calibration.txt", word, "stick calibration");
 }
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = calibration; }
@@ -327,7 +341,7 @@ void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) {
     fprintf(stderr, "[totk-input] stick calibration: changed in the settings panel\n");
 }
 void runtime_gamepad_calibration_reset(void) {
-    calibration = (RuntimeGamepadCalibration){ .left = {0, 0, 1, 1}, .right = {0, 0, 1, 1} };
+    calibration = (RuntimeGamepadCalibration){ .left = {.scaleX=1, .scaleY=1}, .right = {.scaleX=1, .scaleY=1} };
     char path[4096];
     if (setting_path("controller-calibration.txt", path, sizeof path)) unlink(path);
     hid_calibration_changed();
@@ -439,10 +453,9 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
 /* A settings edit must update cached HID axes even without another input event. */
 static void hid_calibration_changed(void) {
     if (!hidPad.present) return;
-    hidPad.lx = stick_component(STICK_LX, hidRawLx, hidRawLy);
-    hidPad.ly = stick_component(STICK_LY, hidRawLx, hidRawLy);
-    hidPad.rx = stick_component(STICK_RX, hidRawRx, hidRawRy);
-    hidPad.ry = stick_component(STICK_RY, hidRawRx, hidRawRy);
+#if TARGET_OS_OSX
+    hid_pad_compute();
+#endif
 }
 
 #endif

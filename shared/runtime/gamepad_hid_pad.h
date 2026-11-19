@@ -73,7 +73,16 @@ static void hid_pad_compute(void) {
     default: break;
     }
     float lx = hidX, ly = hidY, rx = hidZ, ry = hidRz;
-    if (hidOrder == GAMEPAD_HID_SWITCH_PRO) {   /* sticks that stop short of the HID range (gamepad_hid_reach) */
+#ifdef RUNTIME_STICK_CALIBRATION
+    /* Calibration UI always measures descriptor coordinates, never the learning reach transform. */
+    hidRawLx=gamepad_game_stick(0,lx); hidRawLy=gamepad_game_stick(1,-ly);
+    hidRawRx=gamepad_game_stick(2,rx); hidRawRy=gamepad_game_stick(3,-ry);
+#endif
+    if (hidOrder == GAMEPAD_HID_SWITCH_PRO
+#ifdef RUNTIME_STICK_CALIBRATION
+        && !calibration.stableHID
+#endif
+    ) {   /* sticks that stop short of the HID range (gamepad_hid_reach) */
         lx = gamepad_hid_reach(&hidReach[0], lx); ly = gamepad_hid_reach(&hidReach[1], ly);
         rx = gamepad_hid_reach(&hidReach[2], rx); ry = gamepad_hid_reach(&hidReach[3], ry);
         hid_reach_note();
@@ -87,7 +96,7 @@ static void hid_pad_compute(void) {
     hidPad.rx = native_stick_component(2, crx, cry);
     hidPad.ry = native_stick_component(3, crx, cry);
 #ifdef RUNTIME_STICK_CALIBRATION
-    hidRawLx = cx; hidRawLy = cy; hidRawRx = crx; hidRawRy = cry;
+    hidCaptureActive = stick_capture_active(cx,cy,crx,cry);
 #endif
 }
 
