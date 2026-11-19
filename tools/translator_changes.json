@@ -223,7 +223,7 @@
    ]
   },
   "games/oot/prebuilt/macos-arm64/totk_xlate": {
-   "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
+   "code_sha256": "0628c3980e2ad164880c525ffa94647d082df8ce19b8fb796909a4801a854672",
    "history": [
     {
      "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
@@ -232,6 +232,14 @@
      "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 b6c6c48b（fix(oot): HMMA helpers are called, not inlined, so the title's 26k-line compute shader compiles）。之前的变化没有逐条记录理由。",
      "necessary": "基线，不是一次改动（建账前已在使用）。",
      "evidence": "git log -- games/oot/prebuilt/macos-arm64/totk_xlate"
+    },
+    {
+     "code_sha256": "0628c3980e2ad164880c525ffa94647d082df8ce19b8fb796909a4801a854672",
+     "date": "2026-11-19",
+     "commit": "claude/oot-nx-port: 99f00a2e (MeshStage.cs object function), 1bf3b8f8 (Service.cs MulExtended), this rebuild",
+     "why": "两处翻译输出的改动，都从 nxnative 移植（MIT）：① 没有 task 着色器的 mesh 着色器多生成一个 object 函数 main0_o，按每块 1024 个发射工作组（nxnative 09dcb627）。Metal 的 mesh 网格上限是 1024 个线程组，时之笛树叶 mesh d98076e4 / fed302d7 在我们的录制里一次间接绘制最多 1,238 个（oot-fps90 n90d，608 次里 40 次超过 1024），超出 Metal 定义的范围；nxnative 在 M2 Max 上见到 1,771 个越界读、GPU page fault。② 标量 uint / int 的 spvMulExtended 走内联重载，不再经过 SPIRV-Cross 的 optnone 模板，常数除法能被编译器折叠（nxnative 37f076a5：Kokiri 54.0 → 59.1 fps，M4 Pro；我们的运行时诊断 OOT_UMUL_INLINE 约 +4.2%）。",
+     "necessary": "两处都要改翻译出的 MSL：① object 函数和 mesh 的 payload 参数是着色器入口本身，宿主无法在不重翻的情况下加上（宿主另一种做法是拆成最多 8 次绘制、上限 8,192，nxnative 最终没有采用）；② optnone 写在 SPIRV-Cross 生成的模板里，只有改 MSL 才能去掉，运行时改写（OOT_UMUL_INLINE）只覆盖运行时编译、不覆盖预编的着色器库。两处合在一次翻译器改变里，玩家只重翻一次。",
+     "evidence": "tests/test_oot_mesh_blocks.py（翻译器自己的 object 函数在 GPU 上：1、1023、1024、1025、1238、1771、3,000 个工作组直接 / 间接绘制，每个正好跑一次）；tests/test_oot_mul_extended.py（GPU 上 65,536 组 uint 和 int 操作数，重载与 optnone 模板逐位相同）；tests/test_oot_mesh_output_layout.py 通过；构建：dotnet SDK 10.0.401 NativeAOT，scratch/runs/2026-11/oot-nx-port/publish3.log。"
     }
    ]
   },
