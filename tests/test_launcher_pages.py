@@ -154,7 +154,7 @@ class Pages(unittest.TestCase):
                      '.scaleEffect(x: settled ? 1 : -1, y: 1)', 'static var coverShare: CGFloat { 0.44 }'):
             self.assertIn(part, detail)
         for part in ('CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,\n'
-                     '                               inside: inside(index), groundBlur: groundBlur, close: { turn(false) })',
+                     '                               inside: inside(index), close: { turn(false) })',
                      'withAnimation(openingTurn) { open = 1; coverLean = .zero; coverLit = 0 }',
                      # "去掉 5% 反弹 改成 0%": opening and closing critically damped, no overshoot, either way it opens
                      'private var openingTurn: Animation { paced(.spring(response: 0.33, dampingFraction: 1)) }',

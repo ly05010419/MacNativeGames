@@ -154,11 +154,9 @@ class SharedCaseViews(unittest.TestCase):
         self.assertNotIn('ultraThinMaterial', detail)
         self.assertNotIn('sheetInset', detail)
         # "整个后面 黑色 背景 换成封面": the stage behind the opened case is the game's picture
-        self.assertIn('FrozenBlur.image($0, width: stage.width, height: stage.height, radius: groundBlur,', book)
-        # "mac 上要求 打开 只是 盒子上 毛玻璃 背景不要毛玻璃": the Mac's ground is the picture as it is, the iPhone's blurred
-        self.assertIn('var groundBlur: CGFloat = 0', detail)
-        self.assertIn('var groundBlur: CGFloat = 0', (mac / 'CoverFlow.swift').read_text())
-        self.assertNotIn('groundBlur:', (mac / 'HomePage.swift').read_text())
+        # "算了 mac 背景也是毛玻璃": the ground frosted on the Mac and the iPhone alike
+        self.assertIn('FrozenBlur.image($0, width: stage.width, height: stage.height, radius: 22,', book)
+        self.assertNotIn('groundBlur', detail)
         # "封面移动的时候里面图片 也在一直 调整": nothing in the opened case is blurred frame by frame; the blurred
         # pictures are made once (FrozenBlur, the picture drawn by ImageRenderer with the same modifiers)
         self.assertNotIn('.blur(', detail)
@@ -187,13 +185,13 @@ class SharedCaseViews(unittest.TestCase):
         self.assertIn('arrows: false, opening: .book,', phone)
         self.assertIn('inside: { CoverImages.shared.cover(at: Games.picturePath(cases[$0]))?.picture }', phone)
         # "整个背景 都不是全屏， 做成全屏": the stage is the whole screen, square-cornered; the Mac keeps its rounded panel
-        self.assertIn('corner: 0, groundBlur: 22, tiltInput:', phone)
+        self.assertIn('corner: 0, tiltInput:', phone)
         # "红色按钮 改成绿色和mac 一样 然后小一点放下面": the start green, smaller, at the bottom, the Mac's words
         self.assertIn('.buttonStyle(.borderedProminent).tint(.green).controlSize(wide ? .regular : .small)', phone)
         self.assertNotIn('tint(caseRed)', phone)
         # "mac 的 鼠标 在封面上的 效果（关闭的时候） 放在iphone上 用 陀螺仪 模拟": the phone's turn in place of the pointer,
         # only while the middle case rests closed; stopped in the background
-        self.assertIn('corner: 0, groundBlur: 22, tiltInput: motion.tilt) { i in', phone)
+        self.assertIn('corner: 0, tiltInput: motion.tilt) { i in', phone)
         self.assertIn('if now == .active { library.refresh(); motion.start() } else { motion.stop() }', phone)
         motion = (LAUNCHER / 'Sources/Motion.swift').read_text()
         self.assertIn('final class MotionTilt: ObservableObject {', motion)

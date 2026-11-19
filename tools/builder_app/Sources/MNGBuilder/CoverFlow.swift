@@ -49,10 +49,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
     var slow: Double = 1
     /// The stage's corners: the Mac, a rounded panel in the window; the iPhone / iPad, 0, the stage is the whole screen
     /// and its corners the screen's own (user 2026-11-19: "整个背景 都不是全屏， 做成全屏").
-    var corner: CGFloat = 14
-    /// How much the picture behind the opened case is blurred (CaseDetail.groundBlur): the Mac 0, the iPhone / iPad 22.
-    var groundBlur: CGFloat = 0
-    /// The phone's turn in place of the pointer (the iPhone / iPad: MotionTilt, user 2026-11-19 "mac 的 鼠标 在封面上的
+    var corner: CGFloat = 14    /// The phone's turn in place of the pointer (the iPhone / iPad: MotionTilt, user 2026-11-19 "mac 的 鼠标 在封面上的
     /// 效果（关闭的时候） 放在iphone上 用 陀螺仪 模拟"): -1...1 across and down the middle case; nil (the Mac), the pointer.
     var tiltInput: CGPoint? = nil
     /// An animation of the stage at the slow-motion rate.
@@ -168,7 +165,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                     // its reflection on the floor, as every case has: turning and growing, shrinking and settling with
                     // it (user 2026-11-17: "返回的时候 底下阴影 没有跟上 要真实 阴影 也是从大变小"); upside down about
                     // the line the stage's reflections turn about (boxTransform: floorY + gap/2), faint and fading
-                    CaseDetail(stage: stage, open: open, opening: opening, inside: inside(index), groundBlur: groundBlur, close: {}) {
+                    CaseDetail(stage: stage, open: open, opening: opening, inside: inside(index), close: {}) {
                         front(index)
                     } panel: {
                         detail(index, false)
@@ -183,7 +180,7 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                     .allowsHitTesting(false)
                     // the middle case turning and growing into the opened case: cover left, actions right
                     CaseDetail(stage: stage, open: open, lean: coverLean, lit: coverLit, press: detailPress, opening: opening,
-                               inside: inside(index), groundBlur: groundBlur, close: { turn(false) }) {
+                               inside: inside(index), close: { turn(false) }) {
                         front(index)
                     } panel: {
                         detail(index, true)

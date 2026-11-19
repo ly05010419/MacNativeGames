@@ -32,9 +32,6 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
     /// case shows it through its clear plastic (user 2026-11-19, a photo of an opened case: "这样效果"); nil (a game not
     /// built yet), a plain dark tray and the cover's front on the open cover.
     var inside: PlatformImage? = nil
-    /// The picture behind the opened case blurred this much (CoverFlow.groundBlur): the Mac, 0, the picture as it is,
-    /// only the case frosted (user 2026-11-19: "mac 上要求 打开 只是 盒子上 毛玻璃 背景不要毛玻璃"); the iPhone, 22.
-    var groundBlur: CGFloat = 0
     /// Closes the case: a tap on the ground round it (no close button, user 2026-11-19 "去掉 关闭按钮 点击背景 关闭"), or
     /// Escape on the Mac (CoverFlow).
     let close: () -> Void
@@ -112,7 +109,8 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
         // the blurred pictures, made once at their opened size (FrozenBlur), never blurred again frame by frame
         let frost = inside.flatMap { FrozenBlur.image($0, width: 2 * openW, height: openH, radius: 16, saturation: 1.35,
                                                       scale: displayScale) }
-        let ground = inside.flatMap { FrozenBlur.image($0, width: stage.width, height: stage.height, radius: groundBlur,
+        // the ground frosted too, the Mac as the iPhone (user 2026-11-19: "算了 mac 背景也是毛玻璃", after trying it clear)
+        let ground = inside.flatMap { FrozenBlur.image($0, width: stage.width, height: stage.height, radius: 22,
                                                        saturation: 1, scale: displayScale) }
         return ZStack(alignment: .topLeading) {
             // the ground behind the opened case, coming in as it opens: the game's picture over the whole stage, blurred

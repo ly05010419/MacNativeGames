@@ -58,7 +58,7 @@ struct HomeView: View {
             CoverFlow(count: cases.count, index: center, size: size, launches: launches, name: { T.gameName(cases[$0]) },
                       arrows: false, opening: .book,
                       inside: { CoverImages.shared.cover(at: Games.picturePath(cases[$0]))?.picture },
-                      corner: 0, groundBlur: 22, tiltInput: motion.tilt) { i in
+                      corner: 0, tiltInput: motion.tilt) { i in
                 front(cases[i])
             } spine: { i in
                 CaseSpine(game: cases[i])
