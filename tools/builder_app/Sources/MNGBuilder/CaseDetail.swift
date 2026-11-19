@@ -208,6 +208,8 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
                 .padding(inset)
                 .frame(width: width, height: height, alignment: .topLeading)
                 .opacity(shown)
+                // black type on the light frosted glass ("盒子里 黑色字体"); white on the plain dark tray
+                .environment(\.colorScheme, frost == nil ? .dark : .light)
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
@@ -224,8 +226,8 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
             .offset(x: left ? width / 2 : -width / 2)
             .frame(width: width, height: height)
             .clipped()
-            .overlay(Color.white.opacity(0.12))   // milky, as frosted glass
-            .overlay(Color.black.opacity(0.28))   // dark enough still for the white type
+            // milky, as frosted glass, light enough for black type (user 2026-11-19: "盒子里 黑色字体")
+            .overlay(Color.white.opacity(0.45))
     }
 
     /// A half's clear plastic: a sheen across it, its thick rim, the sleeve's inner edge and two clips on the outer edge.

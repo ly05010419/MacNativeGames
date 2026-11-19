@@ -109,7 +109,7 @@ struct HomeView: View {
         // in from the opened case's edges, off its top and bottom (user 2026-11-19: "右边 文字 和按钮 都往中间一点 离上下
         // 一定距离"): the phone's case is small, the Mac's margins alone kept them against its rim
         .padding(.horizontal, wide ? 10 : 0).padding(.vertical, wide ? 14 : 0)
-        .environment(\.colorScheme, .dark)
+        // the case's own colours: black type on its light frosted glass (CaseDetail, "盒子里 黑色字体")
     }
 
     /// A case's front, in its own colours, the same for every game, installed or not (user 2026-11-19: "不要变黑 正常颜色",

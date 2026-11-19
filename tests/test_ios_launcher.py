@@ -59,6 +59,14 @@ class Schemes(unittest.TestCase):
         home = (mac / 'HomePage.swift').read_text()
         self.assertNotIn('Text(T.gameName(selected))', home)
         self.assertNotIn('Text(T.gamePlatforms(selected))', home)
+        # "盒子里 黑色字体": black type on the opened case's light frosted glass, on both
+        detail_text = (mac / 'CaseDetail.swift').read_text()
+        self.assertIn('.environment(\\.colorScheme, frost == nil ? .dark : .light)', detail_text)
+        self.assertIn('.overlay(Color.white.opacity(0.45))', detail_text)
+        self.assertNotIn('.environment(\\.colorScheme, .dark)\n    }', (LAUNCHER / 'Sources/LauncherApp.swift').read_text())
+        # "这个按钮 去掉 不是盒子里的": no add button under the stage, the opened case's own kept
+        self.assertNotIn('Button { open(selected) } label: { Label(T.addGame, systemImage: "plus") }', home)
+        self.assertIn('Button(action: add) { Label(T.addGame, systemImage: "plus")', home)
         # "没安装的 去掉 左边盒子里的 sd卡": a case opens with its cartridge only for a game built (the Mac) or installed
         # (the iPhone)
         detail = (mac / 'CaseDetail.swift').read_text()

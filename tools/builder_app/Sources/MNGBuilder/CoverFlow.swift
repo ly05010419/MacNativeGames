@@ -159,17 +159,8 @@ struct CoverFlow<Front: View, Spine: View, Back: View, Detail: View>: View {
                         case .ended: hovering = false; lean(at: nil, stage)
                         }
                     }
-                if pulled >= 0, pulled < count {   // the pulled-out case's game, floating over it
-                    let quad = stage.frontQuad(pulled)
-                    Text(name(pulled)).font(.caption.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(.black.opacity(0.78), in: Capsule())
-                        .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
-                        .fixedSize()
-                        .position(x: quad.map(\.x).reduce(0, +) / 4, y: max(14, (quad.map(\.y).min() ?? 0) - 22))
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
+                // no name floating over the pulled-out case (user 2026-11-19: "盒子上面的 这个名字 去掉"): its spine and
+                // front say it
                 if expanded {
                     // its reflection on the floor, as every case has: turning and growing, shrinking and settling with
                     // it (user 2026-11-17: "返回的时候 底下阴影 没有跟上 要真实 阴影 也是从大变小"); upside down about

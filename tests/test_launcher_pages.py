@@ -206,8 +206,9 @@ class Pages(unittest.TestCase):
         # it, found on the stage at rest, comes out a little, those beyond move aside, its name floats over it; it stays
         # behind the nearer cases ("效果 太夸张 都出来了": it had come all the way out over them)
         for part in ('let i = stage.cover(at: p)', 'pulls = CaseAmounts.one(side, of: count)',
-                     'pull * w * 0.1', 'CGFloat(pushed(i)) * w * 0.2', 'Text(name(pulled))'):
+                     'pull * w * 0.1', 'CGFloat(pushed(i)) * w * 0.2'):
             self.assertIn(part, flow)
+        self.assertNotIn('Text(name(pulled))', flow)   # "盒子上面的 这个名字 去掉"
         self.assertIn('var drawOrder: [Int] { (0..<count).sorted { abs(place($0).d) > abs(place($1).d) } }', flow)
         # "总是有 卡顿 和 重新调整 的 硬跳": the corner layers are one Canvas per box (not 12 projected views), and the
         # pointer is judged on the stage as shown, with the current pull

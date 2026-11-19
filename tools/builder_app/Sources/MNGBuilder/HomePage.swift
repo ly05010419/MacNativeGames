@@ -136,15 +136,8 @@ struct HomePage: View {
                     .padding(12)
                     }
                 }
-                // no name nor platforms under the stage (user 2026-11-19: "去掉 下面这个说明"): the case says them
-                VStack(spacing: 4) {
-                    if model.installedLoaded, !model.installed.contains(where: { $0.game == selected }) {
-                        Button { open(selected) } label: { Label(T.addGame, systemImage: "plus") }
-                            .buttonStyle(.borderedProminent).controlSize(.large).padding(.top, 6)
-                            .help(T.addGameHelp(T.gameName(selected)))
-                    }
-                }
-                .frame(maxWidth: .infinity)
+                // nothing under the stage: no name nor platforms (user 2026-11-19: "去掉 下面这个说明"), no add button
+                // ("这个按钮 去掉 不是盒子里的": the opened case has its own)
                 if let error = model.installedError {
                     Label(T.appsScanFailed(error), systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                         .textSelection(.enabled)
