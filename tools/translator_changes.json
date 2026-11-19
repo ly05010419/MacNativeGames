@@ -223,7 +223,7 @@
    ]
   },
   "games/oot/prebuilt/macos-arm64/totk_xlate": {
-   "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
+   "code_sha256": "0628c3980e2ad164880c525ffa94647d082df8ce19b8fb796909a4801a854672",
    "history": [
     {
      "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
@@ -240,14 +240,6 @@
      "why": "两处翻译输出的改动，都从 nxnative 移植（MIT）：① 没有 task 着色器的 mesh 着色器多生成一个 object 函数 main0_o，按每块 1024 个发射工作组（nxnative 09dcb627）。Metal 的 mesh 网格上限是 1024 个线程组，时之笛树叶 mesh d98076e4 / fed302d7 在我们的录制里一次间接绘制最多 1,238 个（oot-fps90 n90d，608 次里 40 次超过 1024），超出 Metal 定义的范围；nxnative 在 M2 Max 上见到 1,771 个越界读、GPU page fault。② 标量 uint / int 的 spvMulExtended 走内联重载，不再经过 SPIRV-Cross 的 optnone 模板，常数除法能被编译器折叠（nxnative 37f076a5：Kokiri 54.0 → 59.1 fps，M4 Pro；我们的运行时诊断 OOT_UMUL_INLINE 约 +4.2%）。",
      "necessary": "两处都要改翻译出的 MSL：① object 函数和 mesh 的 payload 参数是着色器入口本身，宿主无法在不重翻的情况下加上（宿主另一种做法是拆成最多 8 次绘制、上限 8,192，nxnative 最终没有采用）；② optnone 写在 SPIRV-Cross 生成的模板里，只有改 MSL 才能去掉，运行时改写（OOT_UMUL_INLINE）只覆盖运行时编译、不覆盖预编的着色器库。两处合在一次翻译器改变里，玩家只重翻一次。",
      "evidence": "tests/test_oot_mesh_blocks.py（翻译器自己的 object 函数在 GPU 上：1、1023、1024、1025、1238、1771、3,000 个工作组直接 / 间接绘制，每个正好跑一次）；tests/test_oot_mul_extended.py（GPU 上 65,536 组 uint 和 int 操作数，重载与 optnone 模板逐位相同）；tests/test_oot_mesh_output_layout.py 通过；构建：dotnet SDK 10.0.401 NativeAOT，scratch/runs/2026-11/oot-nx-port/publish3.log。"
-    },
-    {
-     "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
-     "date": "2026-11-19",
-     "commit": "revert of 02989095 (v29)",
-     "why": "撤回 v29（02989095 的翻译器：mesh object 函数 main0_o 和内联 spvMulExtended），换回 2026-11-15 的那份代码，翻译链回到 oot-native-v28-mesh-primitive-blocks。用户 2026-11-19 决定撤回：改翻译器前没有问过用户必要性（“我说了 更新 翻译器 要 询问我必要性 加了测试 为什么 没有问我？”）。",
-     "necessary": "v29 让每个玩家下次更新都重翻全部 42,911 个着色器（这台 M4 上 83 分钟），换来的是少数无 task mesh 着色器超过 1024 个工作组的修复（有不改翻译器的宿主拆分做法）和一项没测出可见帧率差别的性能改动。换回原来的代码、原来的链名，翻译上下文回到原来那一份（prepare_ns2_seed.translation_context：链、深度模式、翻译器代码），没拿到 v29 的玩家不重翻。",
-     "evidence": "代码哈希与 2026-11-15 基线相同（tests/test_translator_changes.py）；v29 的 App、翻译缓存、种子和库存在 MacNativeGames-artifacts/keep/oot-chains/v29，v28 的在 keep/oot-chains/v28。上面 v29 条目里的 tests/test_oot_mesh_blocks.py、tests/t_mesh_blocks.m、tests/test_oot_mul_extended.py 随撤回删掉（它们测的是 v29 翻译器），原样在提交 d47c358b / f361b840 里，将来重新做翻译器改动时一起拿回来。"
     }
    ]
   },
