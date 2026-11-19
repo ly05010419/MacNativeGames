@@ -185,8 +185,8 @@ struct CoverFront<Empty: View>: View {
     @ObservedObject private var crops = CoverCrops.shared
     @Environment(\.caseParallax) private var parallax
     @ObservedObject private var depth = DepthScenes.shared
-    /// The picture's depth layers move by depthReach x (depth - depthFocus) of the front's width at a full lean: the
-    /// farthest (0) a little the other way, the nearest (7/8) the most towards the pointer.
+    /// A part of the picture at depth d moves by depthReach x (d - depthFocus) of the front's width at a full lean
+    /// (DepthWarp): the farthest (0) a little the other way, the nearest (1) the most towards the pointer.
     static var depthReach: CGFloat { 0.10 }
     static var depthFocus: CGFloat { 0.35 }
 
@@ -233,12 +233,14 @@ struct CoverFront<Empty: View>: View {
                         // rest, where the layers would lie exactly on it). The frame and its fading lower edge stay.
                         let center = crops.center(of: picturePath)
                         ZStack {
-                            if parallax != .zero, let scene = depth.scene(of: picturePath) {
-                                ForEach(scene.layers.indices, id: \.self) { k in
-                                    let by = Self.depthReach * (scene.depths[k] - Self.depthFocus)
-                                    CroppedPicture(picture: scene.layers[k], center: center)
-                                        .offset(CGSize(width: parallax.x * w * by, height: parallax.y * w * by))
-                                }
+                            // the shift at a full lean in the picture's pixels: depthReach of the front's width, the
+                            // square picture shown `tall` points high
+                            if parallax != .zero, let scene = depth.scene(of: picturePath),
+                               let warped = DepthWarp.image(scene, path: picturePath,
+                                                            shift: CGPoint(x: parallax.x * Self.depthReach * w * scene.side / tall,
+                                                                           y: parallax.y * Self.depthReach * w * scene.side / tall),
+                                                            focus: Self.depthFocus) {
+                                CroppedPicture(picture: warped, center: center)
                             } else {
                                 CroppedPicture(picture: picture, center: center).offset(middle)
                             }

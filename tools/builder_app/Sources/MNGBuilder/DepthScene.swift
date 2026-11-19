@@ -10,25 +10,21 @@ import UIKit
 #endif
 
 /// A case's picture in depth, as a phone's spatial scene (user 2026-11-19: "手机上 照片做墙纸 有一种 空间3d 特效",
-/// "做一个 mac上 我看看", then "能想iphone 原生的 一样好吗？" "好 做"): the picture's depth is estimated once by Depth
-/// Anything V2 Small (its Core ML conversion, Apache-2.0, carried by the app as it is: tools/deps/depth_model.py), and
-/// the picture is cut into `count` layers by it: layer k holds every pixel nearer than k / count (layer 0 the whole
-/// picture), its edge soft. CoverFront stacks them far to near, each moved by its depth as the case leans, so the
-/// picture moves as a scene in depth; where a near part moves off, the layer under it holds the same part a little less
-/// moved, so no hole shows (the phone's generates what was hidden; here the picture stretches a little).
+/// "做一个 mac上 我看看", "能想iphone 原生的 一样好吗？" "好 做"): the picture's depth is estimated once by Depth Anything
+/// V2 Small (its Core ML conversion, Apache-2.0, carried by the app as it is: tools/deps/depth_model.py). As the case
+/// leans, DepthWarp draws the picture anew pixel by pixel from it, each part moved by its own depth (user 2026-11-19:
+/// "开始做2", after 48 layers stacked: their steps rang round a figure, and 48 images a frame dropped every fifth one).
 ///
-/// No Metal of our own (a Launcher built with only the Command Line Tools has no Metal compiler): the layers are plain
-/// images, moved by SwiftUI. Only the case under the pointer is made (CoverFront asks only while it leans), the last
-/// `kept` kept; the model is compiled by Core ML when the Launcher starts, off the main thread.
+/// No Metal of our own (a Launcher built with only the Command Line Tools has no Metal compiler): the warp is a Core
+/// Image kernel written as source, compiled by the system when first used. Only the case under the pointer is made
+/// (CoverFront asks only while it leans), the last `kept` kept; the model is compiled by Core ML when the Launcher
+/// starts, off the main thread.
 @MainActor final class DepthScenes: ObservableObject {
     static let shared = DepthScenes()
-    struct Scene { let layers: [PlatformImage]; let depths: [CGFloat] }
-    // 48 layers, so the copies of a near thing at the steps between them close up into one surface, its side seen as
-    // thickness (user 2026-11-19: "如何 让人的 这些 边缘 连贯 像是一个 有厚度的 东西？", "先做 1"; at 16 they showed as
-    // separate rings), each 384 px: 48 x 384 x 384 x 4 bytes = 28 MB, kept for the case under the pointer only
-    static let count = 48
-    static let side = 384
-    static let kept = 1
+    /// The picture and its depth (0 farthest ... 1 nearest), both side x side.
+    struct Scene { let picture: CIImage; let depth: CIImage; let side: CGFloat }
+    static let side = 512
+    static let kept = 3   // two 1 MB images each
     static let modelName = "DepthAnythingV2SmallF16P8"
 
     @Published private(set) var made: [String: Scene] = [:]
@@ -51,15 +47,13 @@ import UIKit
         asked.insert(path)   // left in when it cannot be made: not asked again
         Task.detached(priority: .userInitiated) {
             let start = Date()
-            let parts = Self.make(path)
+            let scene = Self.make(path)
             let ms = Date().timeIntervalSince(start) * 1000
             await MainActor.run {
-                CoverFlowTrace.note(String(format: "depth scene %@ %@ in %.0f ms", parts == nil ? "failed" : "made",
+                CoverFlowTrace.note(String(format: "depth scene %@ %@ in %.0f ms", scene == nil ? "failed" : "made",
                                            (path as NSString).lastPathComponent, ms))
-            }
-            guard let parts else { return }
-            await MainActor.run {
-                self.made[path] = Scene(layers: parts.layers.map(depthLayerImage), depths: parts.depths)
+                guard let scene else { return }
+                self.made[path] = scene
                 self.order.append(path)
                 while self.order.count > Self.kept {
                     let old = self.order.removeFirst()
@@ -82,72 +76,99 @@ import UIKit
         return try? VNCoreMLModel(for: ml)
     }()
 
-    /// The layers (side x side, premultiplied RGBA) and the depth each moves by (0 farthest ... 1 nearest).
-    nonisolated static func make(_ path: String) -> (layers: [CGImage], depths: [CGFloat])? {
+    /// The picture at side x side and its depth, normalised to 0 (farthest) ... 1 (nearest), a little smoothed; both
+    /// rendered once into memory, so drawing from them costs no more model or decoding.
+    nonisolated static func make(_ path: String) -> Scene? {
         guard let model, let image = CoverImages.decode(path) else { return nil }
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
         guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil,
               let buffer = (request.results?.first as? VNPixelBufferObservation)?.pixelBuffer else { return nil }
         let n = side, bounds = CGRect(x: 0, y: 0, width: side, height: side)
-        // the depth at side x side, a little smoothed, 0 farthest ... 1 nearest (the model's relative inverse depth)
         let raw = CIImage(cvPixelBuffer: buffer)
-        let depthImage = raw.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / raw.extent.width,
-                                                               y: CGFloat(n) / raw.extent.height))
+        let smooth = raw.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / raw.extent.width,
+                                                           y: CGFloat(n) / raw.extent.height))
             .clampedToExtent().applyingGaussianBlur(sigma: 1.5).cropped(to: bounds)
         var depth = [Float](repeating: 0, count: n * n)
         let linear = CIContext(options: [.workingColorSpace: NSNull()])
         depth.withUnsafeMutableBytes {
-            linear.render(depthImage, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .Rf, colorSpace: nil)
+            linear.render(smooth, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .Rf, colorSpace: nil)
         }
         guard let lo = depth.min(), let hi = depth.max(), hi > lo else { return nil }
         for i in depth.indices { depth[i] = (depth[i] - lo) / (hi - lo) }
-        // the picture at the same size and the same row order
+        let depthImage = CIImage(bitmapData: depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: n * 4,
+                                 size: CGSize(width: n, height: n), format: .Lf, colorSpace: nil)
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         let source = CIImage(cgImage: image)
-        let picture = source.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / source.extent.width,
-                                                               y: CGFloat(n) / source.extent.height))
+        let scaled = source.transformed(by: CGAffineTransform(scaleX: CGFloat(n) / source.extent.width,
+                                                              y: CGFloat(n) / source.extent.height))
         var rgba = [UInt8](repeating: 0, count: n * n * 4)
         rgba.withUnsafeMutableBytes {
-            CIContext().render(picture, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .RGBA8,
+            CIContext().render(scaled, toBitmap: $0.baseAddress!, rowBytes: n * 4, bounds: bounds, format: .RGBA8,
                                colorSpace: srgb)
         }
-        // layer k: the pixels nearer than k / count, faded in over a band either side of it
-        var layers: [CGImage] = [], depths: [CGFloat] = []
-        let feather = 0.5 / Float(count)   // one layer wide (user 2026-11-19: "0.5 / 层数", after trying 0.1 and 1)
-        for k in 0..<count {
-            let t = Float(k) / Float(count)
-            var pixels = rgba
-            if k > 0 {
-                for i in 0..<(n * n) {
-                    let x = min(1, max(0, (depth[i] - (t - feather)) / (2 * feather)))
-                    let a = x * x * (3 - 2 * x)
-                    if a < 1 {
-                        let o = i * 4
-                        for c in 0..<4 { pixels[o + c] = UInt8(Float(pixels[o + c]) * a) }
-                    }
-                }
-            }
-            guard let layer = premultiplied(pixels, side: n, space: srgb) else { return nil }
-            layers.append(layer)
-            depths.append(CGFloat(t))
-        }
-        return (layers, depths)
-    }
-
-    private nonisolated static func premultiplied(_ pixels: [UInt8], side n: Int, space: CGColorSpace) -> CGImage? {
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-        return CGImage(width: n, height: n, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: n * 4, space: space,
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider,
-                       decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+        let picture = CIImage(bitmapData: Data(rgba), bytesPerRow: n * 4, size: CGSize(width: n, height: n),
+                              format: .RGBA8, colorSpace: srgb)
+        return Scene(picture: picture, depth: depthImage, side: CGFloat(n))
     }
 }
 
-/// A layer as the platform holds an image.
-private func depthLayerImage(_ image: CGImage) -> PlatformImage {
-    #if os(macOS)
-    NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-    #else
-    UIImage(cgImage: image)
-    #endif
+/// The picture drawn anew from its depth for one lean (parallax occlusion mapping): for each pixel, the depths are
+/// walked from the nearest to the farthest in `steps`, and the first surface found to land on this pixel gives its
+/// colour; so a near thing stands in front, its side is its own edge drawn on (seen as thickness), and nothing tears.
+/// A part at depth d moves by shift x (d - focus): the farthest a little against the lean, the nearest the most with
+/// it. The last frame is kept: the case's reflection asks for the same one.
+@MainActor enum DepthWarp {
+    // Any nearer surface counts, so a near thing's side is drawn on as thickness. Tried 2026-11-19: counting a surface
+    // only at its own depth (a near thing floating, what is behind it showing, "浮在前面、露出背景"): a figure's own
+    // depths vary, so much of it was passed over as "side" and broke into specks ("不好").
+    static let steps = 48
+    private static let source = """
+    kernel vec4 depthParallax(sampler image, sampler depth, vec2 shift, float focus) {
+        vec2 p = destCoord();
+        vec4 colour = sample(image, samplerTransform(image, p + shift * focus));
+        float found = 0.0;
+        for (int i = 0; i < \(steps); i++) {
+            float z = 1.0 - float(i) / \(steps - 1).0;
+            vec2 q = p - shift * (z - focus);
+            float d = sample(depth, samplerTransform(depth, q)).r;
+            float hit = step(z, d) * (1.0 - found);
+            colour = mix(colour, sample(image, samplerTransform(image, q)), hit);
+            found = max(found, hit);
+        }
+        return colour;
+    }
+    """
+    /// nil where the system will not compile it: CoverFront then moves the picture whole.
+    static let kernel: CIKernel? = CIKernel(source: source)
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+    private static var last: (key: String, image: PlatformImage)?
+    private static var told = false
+
+    /// The picture for a shift in the picture's pixels (x right, y down, as SwiftUI's), or nil.
+    static func image(_ scene: DepthScenes.Scene, path: String, shift: CGPoint, focus: CGFloat) -> PlatformImage? {
+        let key = "\(path) \((shift.x * 4).rounded()) \((shift.y * 4).rounded())"
+        if let last, last.key == key { return last.image }
+        if !told {
+            told = true
+            CoverFlowTrace.note("depth warp kernel " + (kernel == nil ? "missing: the picture moves whole" : "ready"))
+        }
+        guard let kernel else { return nil }
+        let start = Date()
+        defer { if CoverFlowTrace.on { CoverFlowTrace.note(String(format: "depth warp %.1f ms", Date().timeIntervalSince(start) * 1000)) } }
+        let margin = abs(shift.x) + abs(shift.y) + 2
+        let extent = scene.picture.extent
+        // Core Image's y runs up: a shift down on the screen is a negative one here
+        guard let out = kernel.apply(extent: extent, roiCallback: { _, rect in rect.insetBy(dx: -margin, dy: -margin) },
+                                     arguments: [scene.picture.clampedToExtent(), scene.depth.clampedToExtent(),
+                                                 CIVector(x: shift.x, y: -shift.y), focus]),
+              let cg = context.createCGImage(out, from: extent) else { return nil }
+        #if os(macOS)
+        let made = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        #else
+        let made = UIImage(cgImage: cg)
+        #endif
+        last = (key, made)
+        return made
+    }
 }

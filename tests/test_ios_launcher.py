@@ -163,17 +163,20 @@ class SharedCaseViews(unittest.TestCase):
         self.assertIn('.environment(\\.caseParallax, i == g.center ? CGPoint(x: tiltX, y: tiltY) : .zero)',
                       (mac / 'CoverFlow.swift').read_text())
         self.assertIn('.environment(\\.caseParallax, lean)', detail)
-        # "能想iphone 原生的 一样好吗？" "好 做" (a spatial scene): the picture cut into depth layers by Depth Anything V2
-        # Small (Apache-2.0, carried as it is, compiled by Core ML when the Launcher starts), only while the case
-        # leans, the last three kept; one layer until they are made; no Metal of our own (Command Line Tools builds)
+        # "能想iphone 原生的 一样好吗？" "好 做" (a spatial scene), then "开始做2": the picture's depth by Depth Anything
+        # V2 Small (Apache-2.0, carried as it is, compiled by Core ML when the Launcher starts), and the picture drawn
+        # anew pixel by pixel from it as the case leans (parallax occlusion mapping in a Core Image kernel written as
+        # source: no Metal of our own, Command Line Tools builds), one image a frame, the last kept for the reflection
         scene = (mac / 'DepthScene.swift').read_text()
         self.assertIn('@MainActor final class DepthScenes: ObservableObject {', scene)
-        for part in ('VNCoreMLRequest(model: model)', 'MLModel.compileModel(at: url)', 'static let count = 48',
-                     'static let side = 384', 'static let kept = 1', 'let ready = Self.model != nil',
-                     'let feather = 0.5 / Float(count)'):
+        for part in ('VNCoreMLRequest(model: model)', 'MLModel.compileModel(at: url)', 'static let side = 512',
+                     'static let kept = 3', 'let ready = Self.model != nil', '@MainActor enum DepthWarp {',
+                     'static let kernel: CIKernel? = CIKernel(source: source)', 'float hit = step(z, d) * (1.0 - found);',
+                     'if let last, last.key == key { return last.image }'):
             self.assertIn(part, scene)
         self.assertNotIn('ShaderLibrary', scene)
-        self.assertIn('if parallax != .zero, let scene = depth.scene(of: picturePath) {', art)
+        self.assertIn('if parallax != .zero, let scene = depth.scene(of: picturePath),', art)
+        self.assertIn('let warped = DepthWarp.image(scene, path: picturePath,', art)
         self.assertIn('CroppedPicture(picture: picture, center: center).offset(middle)', art)
         self.assertNotIn('SpatialLayers', art)
         self.assertIn("'DepthScene.swift'", (LAUNCHER / 'install.py').read_text())
