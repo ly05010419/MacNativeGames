@@ -27,7 +27,7 @@ def sources():
         files = [base] if base.is_file() else sorted(p for p in base.rglob('*') if p.is_file())
         for path in files:
             parts = set(path.relative_to(ROOT).parts)
-            if parts & {'ios', 'tests', 'third_party', '__pycache__', 'build'}:
+            if parts & {'ios', 'ios_launcher', 'tests', 'third_party', '__pycache__', 'build'}:   # ios_launcher: an iPhone app
                 continue
             if path.suffix in KINDS or path.name == 'Makefile':
                 yield path

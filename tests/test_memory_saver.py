@@ -94,7 +94,7 @@ class MemorySaverTests(unittest.TestCase):
         self.assertIn('static let memorySaver = s("Memory saver mode", "开启省内存模式")', strings)
         self.assertIn('Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))', home)
         self.assertIn('"storage", "set_memory_saver", app: app.app, args: ["on": on]', home)
-        self.assertIn('"storage", "memory_saver", app: app.app', home)
+        self.assertIn('"storage", "memory_saver", app: app)', home)   # read ahead by app (GameCardState.preload)
         self.assertIn('.task(id: app.app) { await loadSaver() }', home)
         self.assertIn('static let diagnostics = s("Diagnostic mode", "诊断模式")', strings)
         self.assertIn('Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))', home)
