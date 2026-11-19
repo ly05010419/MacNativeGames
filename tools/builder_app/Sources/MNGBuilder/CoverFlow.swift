@@ -691,6 +691,8 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.backPlacement, m)))
             } else {
                 front(i).frame(width: g.w, height: g.h)
+                    // its layers move apart as it leans, the middle case only (CoverArt.swift caseParallax)
+                    .environment(\.caseParallax, i == g.center ? CGPoint(x: tiltX, y: tiltY) : .zero)
                     .overlay(CaseFront(light: mirrored ? 0 : i == g.center ? lit + 0.35 * press : pulls[i],
                                        at: i == g.center ? UnitPoint(x: (1 + tiltX) / 2, y: (1 + tiltY) / 2) : pulledLight))
                     .overlay(Color.black.opacity(shade))

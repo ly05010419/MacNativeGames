@@ -259,7 +259,9 @@ class Pages(unittest.TestCase):
         home = (REPO / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertIn('CoverFront(game: game, picture: art?.picture, picturePath: art?.path, backdrop: art?.backdrop)', home)
         art = (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverArt.swift').read_text()
-        self.assertIn('CroppedPicture(picture: picture, center: crops.center(of: picturePath))', art)
+        # the cut's middle once (crops.center), the picture or its spatial layers cut the same way
+        self.assertIn('let center = crops.center(of: picturePath)', art)
+        self.assertIn('CroppedPicture(picture: picture, center: center)', art)
         for part in ('VNRecognizeTextRequest()', 'VNGenerateAttentionBasedSaliencyImageRequest()', 'Task.detached'):
             self.assertIn(part, art)
         self.assertIn('Text(T.gamePlatforms(game))', (REPO / 'tools/builder_app/Sources/MNGBuilder/CoverFlow.swift').read_text())

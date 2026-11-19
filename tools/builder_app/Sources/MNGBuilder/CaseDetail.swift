@@ -353,6 +353,7 @@ struct PressedFront<Cover: View>: View, Animatable {
     var body: some View {
         let deeper = 1 + 0.8 * Double(press)   // CoverFlowGeometry.lean
         cover.frame(width: stage.w, height: stage.h)
+            .environment(\.caseParallax, lean)   // its layers apart as on the stage, coming together as the lean goes
             .overlay(CaseFront(light: Double(lit + 0.35 * press), at: UnitPoint(x: (1 + lean.x) / 2, y: (1 + lean.y) / 2)))
             .clipShape(RoundedRectangle(cornerRadius: stage.corner, style: .continuous))
             .rotation3DEffect(.degrees(Double(lean.x) * 9 * deeper), axis: (x: 0, y: 1, z: 0), perspective: 0.5)

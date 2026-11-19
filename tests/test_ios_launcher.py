@@ -154,6 +154,22 @@ class SharedCaseViews(unittest.TestCase):
         self.assertNotIn('ultraThinMaterial', detail)
         self.assertNotIn('sheetInset', detail)
         # "整个后面 黑色 背景 换成封面": the stage behind the opened case is the game's picture
+        # "mac 试一试 3d 视差效果": the leaning case's front in layers moving apart (the backdrop away, the picture and
+        # its name towards the pointer), each only moved, the middle case only
+        art = (mac / 'CoverArt.swift').read_text()
+        self.assertIn('@Environment(\\.caseParallax) private var parallax', art)
+        for part in ('.offset(back)', '.offset(middle)', '.offset(front)', '.scaleEffect(1.08)'):
+            self.assertIn(part, art)
+        self.assertIn('.environment(\\.caseParallax, i == g.center ? CGPoint(x: tiltX, y: tiltY) : .zero)',
+                      (mac / 'CoverFlow.swift').read_text())
+        self.assertIn('.environment(\\.caseParallax, lean)', detail)
+        # "做一个 mac上 我看看" (a spatial scene): the picture parted by Vision's foreground mask, once per picture off
+        # the main thread; its scenery filled where the subject was; one layer until then
+        self.assertIn('final class SpatialLayers: ObservableObject {', art)
+        self.assertIn('VNGenerateForegroundInstanceMaskRequest()', art)
+        self.assertIn('Task.detached(priority: .utility)', art[art.index('final class SpatialLayers'):])
+        self.assertIn('if let parts = spatial.layers(of: picturePath) {', art)
+        self.assertIn('CroppedPicture(picture: picture, center: center).offset(middle)', art)
         # "算了 mac 背景也是毛玻璃": the ground frosted on the Mac and the iPhone alike
         self.assertIn('FrozenBlur.image($0, width: stage.width, height: stage.height, radius: 22,', book)
         self.assertNotIn('groundBlur', detail)
