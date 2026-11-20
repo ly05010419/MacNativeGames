@@ -1835,6 +1835,7 @@ void mtl_sub_begin(void) {
 }
 
 static void rp_end_from(const char *file, int line);
+static int g_mtk_pass_mesh, g_mtk_pass_plain;   // OOT_MESH_PASS_SPLIT=2 (nvn_mesh_tasks.inc): the open pass holds a mesh / an ordinary draw
 #define rp_end() rp_end_from(__FILE__, __LINE__)   // passdump records which call site ended a render pass
 static void mesh_batch_prefetch(void);   // nvn_mesh_batch.inc: mesh indirect-argument batches for the pass about to open
 extern int g_frz_on; static int g_frz_state;   // 世界冻结：本帧锁存的状态（0 正常 / 1 完整帧 / 2 冻结帧），见 frz_op 上方的说明 | World freeze: the state latched for this frame (0 normal / 1 full frame / 2 frozen frame), see the note above frz_op
@@ -6894,7 +6895,7 @@ static void rp_end_from(const char *rp_file, int rp_line) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     if (totk_tl_on()) totk_tl(TL_PASS_END, g_stat_pass, g_stat_draw - g_pass_draw0);
-    sd_finish(); enc_r_end(g_enc); g_oot_bar_pass = g_oot_bar_writes = g_oot_bar_order = 0; zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+    sd_finish(); enc_r_end(g_enc); g_mtk_pass_mesh = g_mtk_pass_plain = 0; g_oot_bar_pass = g_oot_bar_writes = g_oot_bar_order = 0; zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
 #if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
     csnap_clear();   // nothing between two passes reads the copy
 #endif
@@ -19275,6 +19276,7 @@ static void oot_bar_note_draw(NvProg *pr) {
     if (g_oot_bar_mode) g_oot_bar_writes |= oot_bar_shader_writes(pr);
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
+    if (!g_mtk.on && mtk_split_on() == 2) { if (g_enc && g_mtk_pass_mesh) rp_end(); g_mtk_pass_plain = 1; }   // OOT_MESH_PASS_SPLIT=2: an ordinary draw after mesh draws starts a pass
     NSUInteger native_output_width=0,native_output_height=0;
     uint64_t native_output_source=0;
     if(g_host_rect_draw){g_host_rect_draw=0;g_pso_dirty=1;}
