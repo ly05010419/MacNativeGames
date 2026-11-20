@@ -98,7 +98,6 @@ dm/gfx/tools/dmsh_mesh.py	shader:stage:gs	passthrough geometry composed into a m
 dm/host/hle_fpslock.c	present:*	build-gated engine frame limits and dynamic resolution
 dm/gfx/tools/mvgl.py	api:gl	MVGL archive input to OpenGL shader scanning
 dm/gfx/tools/smash_arc.py	*:*	Smash archive input to shader and NRO scanning
-dm/gfx/tools/uepak.py	shader:stage:*	Unreal archive input to shader scanning
 dm/host/romfs_image.h	hle:*fs*	RomFS image index validation shared by mounts and iOS startup
 dm/host/romfs_identity.h	*:*	RomFS identity checks at iOS startup for every game's separate deployment
 dm/host/hle_fs.c	hle:*fs*	filesystem mounts, paths and file operations

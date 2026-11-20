@@ -292,7 +292,7 @@ def build_sources(exefs, romfs, modules):
     spirv = 0
     if any(re.match(r'vk[A-Z]', s) for s in imports):   # only a Vulkan game's RomFS is read
         spirv = sum(1 for _, _, head in romfs_files(romfs) if head.startswith(bytes.fromhex('03022307')))
-    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); import uepak
+    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); from shader_split_unreal import unreal_paks   # footers only: Unreal games are refused
     trinity = 0
     for d, _, names in os.walk(romfs):
         for n in names:
@@ -326,7 +326,7 @@ def build_sources(exefs, romfs, modules):
                 nb = (struct.unpack_from('<I', h, i + 12)[0] + max(struct.unpack_from('<I', h, i + 4)[0], 1) - 1) // max(struct.unpack_from('<I', h, i + 4)[0], 1)
                 oodle_ue3 += h[i + 16 + 8 * nb:i + 17 + 8 * nb] == b'\x8c'
     import frostbite   # Frostbite's superbundles (EA SPORTS FC 27): every item of the cas files is Oodle Leviathan, decoded with the game's own decoder
-    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), inline=False)), trinity, len(uepak.unreal_paks(str(romfs), inline=True)), gl_names, gl_src, gl_files, oodle_pkz, nro_imp,
+    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(unreal_paks(str(romfs), inline=False)), trinity, len(unreal_paks(str(romfs), inline=True)), gl_names, gl_src, gl_files, oodle_pkz, nro_imp,
                           oodle_gfpak=oodle_gfpak, oodle_ue3=oodle_ue3, frostbite=frostbite.is_frostbite(str(romfs)), romfs_glsl=romfs_glsl)
 
 

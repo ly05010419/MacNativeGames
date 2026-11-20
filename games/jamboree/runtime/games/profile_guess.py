@@ -204,7 +204,7 @@ def build_sources(exefs, romfs, modules):
     spirv = 0
     if any(re.match(r'vk[A-Z]', s) for s in imports):   # only a Vulkan game's RomFS is read
         spirv = sum(1 for _, _, head in romfs_files(romfs) if head.startswith(bytes.fromhex('03022307')))
-    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); import uepak
+    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); from shader_split_unreal import unreal_paks   # footers only: Unreal games are refused
     trinity = 0
     for d, _, names in os.walk(romfs):
         for n in names:
@@ -219,7 +219,7 @@ def build_sources(exefs, romfs, modules):
                     h = f.read(0x20)
                     if h[:4] == b'pkzl':
                         cnt, eo, nl = struct.unpack_from('<III', h, 0x10); f.seek(eo + 0x20 * cnt); oodle_pkz += b'OodleKraken\0' in f.read(nl)
-    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), legacy=False)), trinity, len(uepak.unreal_paks(str(romfs), legacy=True)), gl_names, gl_src, gl_files, oodle_pkz)
+    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(unreal_paks(str(romfs), legacy=False)), trinity, len(unreal_paks(str(romfs), legacy=True)), gl_names, gl_src, gl_files, oodle_pkz)
 
 
 def va_heap(sysres, imports):   # virtual address memory (an NPDM system resource) and a heap: the alias / heap split is a starting point the heap check corrects (Wonder, Tears of the Kingdom; Engage's pool is its own measurement)
