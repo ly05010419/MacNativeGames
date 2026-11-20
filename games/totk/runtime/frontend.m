@@ -870,6 +870,10 @@ void runtime_front_run(void(*callback)(void)){
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[TOTKWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  /* Black behind the game from the start: until a frame is presented (and while a full screen change, a Space switch or the
+     full screen around the notch resizes the window before the next frame at the new size) the window's own background
+     shows, the system's windowBackgroundColor, near white in the light appearance. */
+  window.backgroundColor=NSColor.blackColor;
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* TOTK_WINDOW_FLOAT=1 (test scripts only): the window floats above the user's other windows, in the screen's top-right
      corner, so their work does not cover it: macOS stops the display link of a covered window and the game's presents stop
@@ -885,6 +889,7 @@ void runtime_front_run(void(*callback)(void)){
   window.tabbingMode=NSWindowTabbingModeDisallowed;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+  metalLayer.backgroundColor=NSColor.blackColor.CGColor;   /* the same behind the layer's drawable (see the window above) */
   if(totk_hdr_available()){
    front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
