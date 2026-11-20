@@ -18,6 +18,19 @@ class HudEveryKind(unittest.TestCase):
         cls.header = (NVN / 'fps_overlay.h').read_text()
         cls.mtl = (NVN / 'nvn_mtl.m').read_text()
         cls.mesh = (NVN / 'nvn_mesh_tasks.inc').read_text()
+        cls.panel = (NVN / 'hud_panel.inc').read_text()   # the corner panel every game shares (61b95acc, "fps pannel 也要统一")
+
+    def corner_panel(self):
+        """What the window's corner panel publishes: the shared branch in hud_panel.inc plus the lines Tears of the
+        Kingdom adds in nvn_mtl.m (hud_more_lines), and nvn_mtl.m's pipeline counts the shared code reads."""
+        self.assertIn('#include "hud_panel.inc"', self.mtl)
+        start = self.panel.index('if (hud_compact()) {   // the window\'s corner panel')
+        branch = self.panel[start:self.panel.index('return 0;', start)]
+        self.assertIn('hud_more_lines(now);', branch)
+        more = self.mtl[self.mtl.index('static void hud_more_lines(uint64_t now) {'):]
+        more = more[:more.index('\n}')]
+        counts = self.mtl[self.mtl.index('static void hud_pso_counts('):self.mtl.index('static void hud_more_lines(')]
+        return branch + more, counts
 
     def lines(self):
         enum = re.search(r'enum \{ (HUD_FPS[^}]*) \};', self.header).group(1)
@@ -70,8 +83,7 @@ class HudEveryKind(unittest.TestCase):
             self.assertIn(line, box)   # nothing under the FPS line
 
     def test_every_line_but_fps_and_load_is_published_on_its_own(self):
-        start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')
-        branch = self.mtl[start:self.mtl.index('return 0;', start)]
+        branch, _ = self.corner_panel()
         self.assertIn('hitch_overlay_publish(now);', branch)   # the hitch lines (fps_overlay.c publishes them)
         for line in self.lines():
             if line in ('HUD_FPS', 'HUD_LOAD') or line.startswith('HUD_HITCH'):
@@ -85,11 +97,10 @@ class HudEveryKind(unittest.TestCase):
         self.assertEqual(recorded, set('SRCMTB'))
         switch = self.mtl[self.mtl.index('static int collect_kind(char c)'):]
         switch = switch[:switch.index('\n}')]
-        start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')
-        branch = self.mtl[start:self.mtl.index('return 0;', start)]
+        branch, counts = self.corner_panel()
         shown = set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', branch))
-        prepare = self.mtl[self.mtl.index('static int shader_overlay_prepare('):start]
-        shown |= set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', prepare)) & {'R'}   # the render line's count (pso_new)
+        self.assertIn('hud_pso_counts(&pso, &plast);', self.panel)   # shader_overlay_prepare reads the counts below
+        shown |= set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', counts)) & {'R'}   # the render line's count (pso_new)
         for kind in sorted(recorded):
             with self.subTest(kind=kind):
                 self.assertIn(f"case '{kind}': return COLLECT_{kind};", switch)

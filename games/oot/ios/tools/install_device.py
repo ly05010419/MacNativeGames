@@ -6,6 +6,9 @@ with the same team and bundle identifier keeps the saves and the shader cache (t
 
   python3 games/totk/ios/tools/install_device.py "Tears of the Kingdom.ipa" --device "Jack iPhone"
 
+Animal Crossing's app (games/acnh/ios/tools/build_ipa.py) is built from the same sources as TOTK.app and installs the same
+way, its game data with --game-data <work>/prepared/update/romfs/romfs.bin.
+
 An IPA built with --ios-game-data documents carries no 17 GB game image: pass --game-data <work>/totk/extracted/v143/
 romfs/romfs.bin and it is copied once into the app's Documents/GameData in 1 GiB parts (devicectl drops the connection on
 one file that size); a later install skips it while the device holds the same image (romfs.sha256 there).
@@ -63,15 +66,19 @@ def pick_device(name):
 NO_DEVICE = ('has no devices from which to generate a provisioning profile', 'Your team has no devices',
              'No profiles for')
 
+def same_or_write(path, data):
+    if not path.is_file() or path.read_bytes() != data: path.write_bytes(data)
+
 def profile(team, bundle_id, udid, platform='ios'):
     """Build an empty app with the game's bundle identifier and entitlements; Xcode makes the profile for it."""
     vision = platform == 'visionos'
     project_platform = 'visionOS' if vision else 'iOS'
     sdk = 'xros' if vision else 'iphoneos'
     proj = CACHE/(bundle_id + ('.visionos' if vision else '')); proj.mkdir(parents=True, exist_ok=True)
-    (proj/'main.m').write_text('int main(void) { return 0; }\n')
-    (proj/'TOTK.entitlements').write_bytes(plistlib.dumps({ENTITLEMENT: True}))
-    (proj/'project.yml').write_text(f'''name: TOTKSigning
+    # written only when they change: Xcode refuses an entitlements file newer than its last build of it (2026-11-20)
+    same_or_write(proj/'main.m', b'int main(void) { return 0; }\n')
+    same_or_write(proj/'TOTK.entitlements', plistlib.dumps({ENTITLEMENT: True}))
+    same_or_write(proj/'project.yml', f'''name: TOTKSigning
 options: {{deploymentTarget: {{{project_platform}: "26.0"}}}}
 targets:
   TOTK:
@@ -84,7 +91,8 @@ targets:
       DEVELOPMENT_TEAM: {team}
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_ENTITLEMENTS: TOTK.entitlements
-''')
+      CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES   # only this empty app; a rebuild saw the file as modified (2026-11-20)
+'''.encode())
     run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
@@ -100,6 +108,14 @@ targets:
     # device (a free Apple ID's first install, #2268: "Your team has no devices from which to generate a provisioning
     # profile") needs the device named, with -allowProvisioningDeviceRegistration so Xcode registers it.
     r = build(f'generic/platform={project_platform}')
+    if r.returncode and 'is not installed' in log.read_text(errors='replace'):
+        # A destination asks for Xcode's platform component (Xcode › Settings › Components: "iOS 26.2 is not installed",
+        # 2026-11-20); the SDK alone builds the empty app, and automatic signing makes the profile for the team's devices
+        with log.open('w') as f:
+            r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-target','TOTK','-configuration','Debug',
+                                '-sdk',sdk,f'SYMROOT={derived/"Build/Products"}',f'OBJROOT={derived/"obj"}',
+                                '-allowProvisioningUpdates','-allowProvisioningDeviceRegistration','build'],
+                               cwd=proj, stdout=f, stderr=subprocess.STDOUT)
     if r.returncode and any(m in log.read_text(errors='replace') for m in NO_DEVICE):
         print(f'Your team has no {project_platform} device yet: registering this one ({udid}). Xcode copies its system '
               'symbols to ~/Library/Developer/Xcode/iOS DeviceSupport (several GB); they can be deleted afterwards.', flush=True)
