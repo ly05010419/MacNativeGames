@@ -6,6 +6,7 @@
 #include "../zeldaVR/runtime/vr_view_math.h"
 #include "../zeldaVR/gfx/totk_vr_link.h"
 #include "../zeldaVR/gfx/vr_labo.h"
+#include "botw_vr_head.h"
 #include <pthread.h>
 
 static vr_cam_state botw_vr_cam;
@@ -88,6 +89,7 @@ static void botw_vr_camera_update(uint8_t *camera,unsigned stage) {
         }
     }
     vr_cam_state control=botw_vr_control;
+    botw_vr_head_update(botw_vr_base,control.on&&vr_labo_active()&&control.fp_pos&&control.fp_blend>0.5f);   /* Link's head (botw_vr_head.h) */
     if(!control.on||!vr_labo_active()){botw_vr_main_camera.base_valid=0;pthread_mutex_unlock(&botw_vr_mu);return;}
     float m[12],p[3];memcpy(m,camera+8,sizeof m);
     for(int i=0;i<12;i++)if(!isfinite(m[i])){pthread_mutex_unlock(&botw_vr_mu);return;}
