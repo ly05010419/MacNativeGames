@@ -145,6 +145,10 @@ float runtime_aspect_start(void) {
     return 0;
 #endif
 }
+void runtime_aspect_fullscreen(int on) { (void)on; }   /* Auto: Tears of the Kingdom only (aspect_patch.h) */
+int runtime_aspect_set_auto(void) { return 0; }
+int runtime_aspect_auto(void) { return 0; }
+int runtime_aspect_auto_available(void) { return 0; }
 
 /* Exclusive loads with acquire (TOTK_EXCL_ACQUIRE=0: as shipped): every plain ldxr / ldxp that opens a real exclusive window
    (a store-exclusive on the same base register within 16 instructions) gets the acquire bit. Why: game_patches_wonder.c. */

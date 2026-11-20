@@ -300,3 +300,7 @@ class SettingsPanel(unittest.TestCase):
                     (settings / name).write_text(value)
                 run = subprocess.run([str(executable), 'corrupt'], env=env, capture_output=True, text=True, timeout=35)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                (settings / 'graphics-aspect.txt').write_text('auto\n')   # the aspect row's Auto, as it saves it
+                run = subprocess.run([str(executable), 'auto'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: settings persistence', run.stdout)

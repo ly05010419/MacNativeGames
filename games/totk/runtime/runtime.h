@@ -141,6 +141,10 @@ float runtime_aspect_ratio(void);        /* the ratio picked (16:9 = the game's 
 float runtime_aspect_start(void);        /* TOTK_ASPECT's ratio, 0 without it (the panel offers it too) */
 void runtime_aspect_view(double w, double h);   /* frontend.m: the window's drawable size, which key 4 follows */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
+void runtime_aspect_fullscreen(int on);   /* frontend.m: the window entered / left full screen (Auto follows the screen only then) */
+int runtime_aspect_set_auto(void);        /* the settings panel's Auto; 0 where unavailable */
+int runtime_aspect_auto(void);            /* Auto is in force */
+int runtime_aspect_auto_available(void);  /* the panel offers Auto (Tears of the Kingdom on the Mac) */
 void runtime_front_resize_aspect(double ratio);   /* Mac: resize the window to a selected picture ratio */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line: fps_overlay.h HUD_* (drawn in HUD_ORDER); 0 = not published */
