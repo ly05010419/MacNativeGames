@@ -46,10 +46,15 @@ class MeshFallback(unittest.TestCase):
         self.assertLess(check, body.index('mtk_row_parse('))
 
     def test_a_refused_pipeline_is_a_skip_on_the_phone(self):
+        # since 49ab152e the Mac skips it too (#2107); the exit is only the Mac's TOTK_MESH_FAIL_DIE=1, never built for the phone
         body = function(self.source, 'static id<MTLRenderPipelineState> mtk_pso')
-        phone = re.search(r'#if TARGET_OS_IPHONE\n\s*if\(!ps\)\{[^\n]*return nil;\}', body)
-        self.assertIsNotNone(phone)
-        self.assertLess(phone.start(), body.index('MDIE("task/mesh pipeline'))
+        refused = body[body.index('    if(!ps){'):]
+        refused = refused[:refused.index('\n    }\n')]
+        mac_only = re.search(r'#if !TARGET_OS_IPHONE\n(.*?)#endif', refused, re.S)
+        self.assertIsNotNone(mac_only)
+        self.assertIn('MDIE("task/mesh pipeline', mac_only.group(1))
+        self.assertEqual(refused.count('MDIE('), 1)
+        self.assertIn('return nil;', refused[mac_only.end():])
 
 
 if __name__ == '__main__':
