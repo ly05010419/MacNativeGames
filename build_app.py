@@ -1785,14 +1785,31 @@ def resolve_lists(tree, res, game, logs, shared=None):
          res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
+def romfs_runtime_index(tree, version, logs):
+    """extracted/<version>/romfs/runtime-index.bin, the runtime's index of the image, made from its index.json by
+    scripts/prepare_romfs_backend.py as make game-data makes it: again when it is missing or older than index.json. True
+    when the folder then holds romfs.bin, index.json and that index. #2303: an image an express update took from the app
+    (adopt_game_data, which writes romfs.bin and index.json) had no index, and prepare_prompt_hud.py stopped on it."""
+    folder = tree / f'extracted/{version}/romfs'
+    image, listing, index = folder / 'romfs.bin', folder / 'index.json', folder / 'runtime-index.bin'
+    if not image.is_file() or not listing.is_file():
+        return False
+    if not index.is_file() or index.stat().st_mtime_ns < listing.stat().st_mtime_ns:
+        say(f'   the work folder\'s {version} game data has no runtime index of its own yet: made from its index.json')
+        run([tree / '.venv/bin/python', 'scripts/prepare_romfs_backend.py', '--version', version],
+            logs / f'romfs-index-{version}.log', cwd=tree)
+    return index.is_file()
+
+
 def prepare_prompt_assets(tree, app, version, logs, *, prompt_app=None):
     """Bind the live HUD masks to this player's verified game image, without packaging pixels."""
     res = app / 'Contents/Resources/totk'
     if version == 'v143':
         # A fresh app has not received its GameData bundle yet. Runtime updates
         # can instead read the installed app when no extraction cache is kept.
+        # The work folder's image is read only with its runtime index (#2303).
         romfs = tree / f'extracted/{version}/romfs'
-        source = ['--romfs', romfs] if (romfs / 'romfs.bin').is_file() else ['--app', prompt_app or app]
+        source = ['--romfs', romfs] if romfs_runtime_index(tree, version, logs) else ['--app', prompt_app or app]
         run([tree / '.venv/bin/python', tree / 'scripts/prepare_prompt_hud.py', *source,   # Python 3.14: compression.zstd (#2099)
              '--version', version, '--output', res / 'build/prompt-hud.tsv'], logs / 'prompt-hud.log')
 
