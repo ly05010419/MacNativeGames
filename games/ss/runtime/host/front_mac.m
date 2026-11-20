@@ -285,7 +285,13 @@ static void pad_read(GCExtendedGamepad *g) {
     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
     #undef K
-    pad_set(p, m, pad_axis(g.leftThumbstick.xAxis.value), pad_axis(g.leftThumbstick.yAxis.value), pad_axis(g.rightThumbstick.xAxis.value), pad_axis(g.rightThumbstick.yAxis.value));
+    float lx = g.leftThumbstick.xAxis.value, ly = g.leftThumbstick.yAxis.value, rx = g.rightThumbstick.xAxis.value, ry = g.rightThumbstick.yAxis.value;
+    if (p == g_pro_player && g_pro_bound) {   // local: raw 0x30 sticks of the bound Pro Controller when GameController's stay at zero (motion_pro_mac.h)
+        uint64_t t = now_ns(); float x, y;
+        if (switch_left_get(&g_pro_raw_left, lx, ly, t, &x, &y)) { lx = x; ly = y; }
+        if (switch_left_get(&g_pro_raw_right, rx, ry, t, &x, &y)) { rx = x; ry = y; }
+    }
+    pad_set(p, m, pad_axis(lx), pad_axis(ly), pad_axis(rx), pad_axis(ry));
 }
 // Home and Capture: without this macOS takes them as system gestures (Home opens the Games app); the host gives them no function
 static void pad_keep_system_buttons(GCController *c) { for (NSString *b in @[GCInputButtonHome, GCInputButtonShare]) c.physicalInputProfile.buttons[b].preferredSystemGestureState = GCSystemGestureStateDisabled; }
@@ -398,7 +404,16 @@ static void hidpad_detach(hid_pad *d) {   // d is already off g_hidpads
     dm_pad_set_player(p, 0, 0, 0, 0, 0);   // nothing stays pressed
     dm_pad_players(pad_slot_mask(&g_slots));
 }
+// local: the raw sticks of the bound Pro Controller changed (motion_pro_mac.h); re-read the controller of that player
+static void pro_sticks_refresh(void) {
+    for (GCController *c in GCController.controllers) {
+        if (!c.extendedGamepad) continue;
+        int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)c);
+        if (p == g_pro_player) { pad_read(c.extendedGamepad); return; }
+    }
+}
 static void pads_start(void) {
+    g_pro_sticks_changed = pro_sticks_refresh;
     const char *e = getenv("DM_PAD_MERGE"); g_merge = e && atoi(e);
     e = getenv("DM_KBD_PLAYER"); g_kbd_own = !g_merge && e && !strcmp(e, "own");
     static const char kbd = 0;
