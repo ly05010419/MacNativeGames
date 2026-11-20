@@ -26,6 +26,21 @@ enum StorageText {
     static let working = T.s("Working…", "处理中…")
     static let busy = T.s("A build or an update is running: cleaning and moving wait until it ends.",
                           "正在打包或更新：结束后才能清理或移动。")
+    /// 游戏卸载 (user 2026-11-20): the app, its work folder, game data image and shader cache, deleted for good; the saves
+    /// stay unless the switch says so; the player's own game files and keys never go (tools/builder_jobs/uninstall.py).
+    static let uninstall = T.s("Uninstall game", "游戏卸载")
+    static let uninstallNote = T.s("Deletes the app and what its builds and the game made, for good. Your saves and your own game files stay.",
+                                   "直接删除 App 和打包、游戏生成的文件，不能恢复。存档和你自己的游戏文件保留。")
+    static let alsoSaves = T.s("Delete the saves and settings too", "也删除存档和设置")
+    static let uninstallNow = T.s("Uninstall", "卸载")
+    static let stays = T.s("stays", "保留")
+}
+
+struct UninstallPlan: Decodable {
+    struct Item: Decodable, Identifiable { let id, label, path, size, stays: String }
+    let items: [Item]
+    let saves: Bool
+    let busy, confirm: String
 }
 
 /// The work folder the app records and the game's shader cache (tab_storage.py over tools/builder/storage.py): where
@@ -40,6 +55,8 @@ struct StoragePage: View {
     @State private var status = ""
     @State private var failed = false
     @State private var working = false
+    @State private var uninstallPlan: UninstallPlan?   // the question shown (sheet)
+    @State private var uninstallSaves = false
 
     private var building: Bool { model.jobRunning }
 
@@ -58,11 +75,78 @@ struct StoragePage: View {
                 if !status.isEmpty {
                     Text(status).foregroundStyle(failed ? .red : .secondary).textSelection(.enabled)
                 }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(StorageText.uninstall).font(.body.weight(.medium))
+                        Text(StorageText.uninstallNote).font(.caption).foregroundStyle(.secondary)
+                        Button(role: .destructive) { askUninstall() } label: { Label(StorageText.uninstall, systemImage: "trash") }
+                            .buttonStyle(.borderedProminent).tint(.red)   // red: role .destructive alone stays grey on macOS
+                            .disabled(working || building)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else if error == nil {
                 ProgressView()
             }
         }
         .task { await load() }
+        .sheet(item: Binding(get: { uninstallPlan.map { PlanBox(plan: $0) } }, set: { if $0 == nil { uninstallPlan = nil } })) { box in
+            uninstallSheet(box.plan)
+        }
+    }
+
+    private struct PlanBox: Identifiable { let plan: UninstallPlan; var id: String { plan.items.map(\.path).joined() + "\(plan.saves)" } }
+
+    @ViewBuilder private func uninstallSheet(_ plan: UninstallPlan) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(StorageText.uninstall).font(.title3.weight(.semibold))
+            Text(plan.confirm).font(.callout).fixedSize(horizontal: false, vertical: true)
+            ForEach(plan.items) { item in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(item.label).font(.body.weight(.medium))
+                        if !item.size.isEmpty { Text(item.size).foregroundStyle(.secondary) }
+                        if !item.stays.isEmpty { Text("\(StorageText.stays): \(item.stays)").foregroundStyle(.orange) }
+                    }
+                    Text(item.path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            Toggle(StorageText.alsoSaves, isOn: Binding(get: { uninstallSaves }, set: { on in uninstallSaves = on; askUninstall() }))
+            if !plan.busy.isEmpty { Label(plan.busy, systemImage: "hourglass").foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button(StorageText.cancel) { uninstallPlan = nil }.keyboardShortcut(.cancelAction)
+                Button(StorageText.uninstallNow, role: .destructive) { runUninstall() }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(working || !plan.busy.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    /// The question: what would go, asked of tab_storage.uninstall_plan (again when the saves switch changes).
+    private func askUninstall() {
+        Task {
+            do { uninstallPlan = try await TabClient.decode(UninstallPlan.self, "storage", "uninstall_plan", app: app, args: ["saves": uninstallSaves]) }
+            catch { report(error.localizedDescription, failed: true) }
+        }
+    }
+
+    private func runUninstall() {
+        struct Done: Decodable { let message: String; let app_gone: Bool }
+        let saves = uninstallSaves
+        uninstallPlan = nil
+        working = true
+        Task {
+            do {
+                let r = try await TabClient.decode(Done.self, "storage", "uninstall", app: app, args: ["saves": saves, "confirmed": true])
+                report(r.message, failed: false)
+                if r.app_gone { await model.loadInstalled() }   // the game's card goes back to "not built yet"
+            } catch { report(error.localizedDescription, failed: true) }
+            working = false
+            uninstallSaves = false
+        }
     }
 
     @ViewBuilder private func folderBox(_ f: StorageState.Folder) -> some View {

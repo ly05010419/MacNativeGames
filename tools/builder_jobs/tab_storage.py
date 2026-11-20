@@ -459,6 +459,66 @@ def set_diagnostics(ctx, on=False):
     return model.choose(ctx, on, 'diagnostics')
 
 
+def uninstall_reason_words(reason):
+    return {'not_app': t('That is not this game\'s app.', '这不是这个游戏的 App。')}.get(reason) or refusal(reason)
+
+
+def uninstall_plan(ctx, saves=False):
+    """游戏卸载's question (tools/builder_jobs/uninstall.py): what would go, each with its path, its last measured size and
+    why it would stay; the player's game files and keys always stay. saves: the data folder (saves, settings) goes too."""
+    from tools.builder_jobs import uninstall
+    sizes = read_sizes(ctx)
+    rows = []
+    for id_, label, path in uninstall.items(ctx, bool(saves), work_folder(ctx), shader_folder(ctx)):
+        reason = uninstall.app_reason(ctx) if id_ == 'app' else uninstall.folder_reason(ctx, path, bool(saves))
+        known = sizes.get(str(path))
+        rows.append({'id': id_, 'label': label, 'path': str(path),
+                     'size': storage.human(int(known['bytes'])) if isinstance(known, dict) and 'bytes' in known else '',
+                     'stays': uninstall_reason_words(reason) if reason else ''})
+    kept = t('Your game files and keys (.xci, .nsp, .nsz, .xcz, .nca, .tik, prod.keys, title.keys) are never deleted: a folder holding '
+             'any stays whole.', '你自己的游戏文件和密钥（.xci、.nsp、.nsz、.xcz、.nca、.tik、prod.keys、title.keys）不会删：含有它们的文件夹整个保留。')
+    saves_line = (t('Saves and settings are deleted too.', '存档和设置也会删除。') if saves else
+                  t('Saves and settings stay; installing the game again finds them.', '存档和设置保留，以后重新安装还在。'))
+    busy = busy_reason(ctx, 'work')
+    return {'items': rows, 'saves': bool(saves), 'busy': refusal(busy) if busy else '',
+            'confirm': t(f'Uninstall {ctx.spec.display_name}? What is listed is deleted for good (not to the Trash). ',
+                         f'卸载《{ctx.spec.display_name}》？列出的内容会直接删除（不进废纸篓），不能恢复。') + saves_line + ' ' + kept}
+
+
+def uninstall(ctx, saves=False, confirmed=False):
+    """游戏卸载 (user 2026-11-20): after the window's question (confirmed), each listed folder that may go and holds none of
+    the player's game files is renamed aside and deleted in the background; refused while the game or a build runs."""
+    from tools.builder_jobs import uninstall as model
+    if not confirmed:
+        return uninstall_plan(ctx, saves)
+    busy = busy_reason(ctx, 'work')
+    if busy:
+        raise TabError(t('Could not uninstall: ', '没能卸载：') + refusal(busy))
+    gone, stayed, aside = [], [], []
+    for id_, label, path in model.items(ctx, bool(saves), work_folder(ctx), shader_folder(ctx)):
+        reason = model.app_reason(ctx) if id_ == 'app' else model.folder_reason(ctx, path, bool(saves))
+        roms = [] if reason else model.rom_files(path)
+        if reason or roms:
+            why = uninstall_reason_words(reason) if reason else t(f'it holds your game files ({roms[0]})', f'里面有你的游戏文件（{roms[0]}）')
+            stayed.append(f'{label}: {path} — {why}')
+            continue
+        try:
+            aside.append(model.set_aside(path))
+            gone.append(f'{label}: {path}')
+        except OSError as e:
+            stayed.append(f'{label}: {path} — {e.strerror or e}')
+    model.detach_delete(aside)
+    sizes = read_sizes(ctx)
+    write_sizes(ctx, {k: v for k, v in sizes.items() if not any(k == g.split(': ', 1)[1] for g in gone)})
+    message = (t(f'Uninstalled {ctx.spec.display_name}: removed {len(gone)} items, deleted in the background (minutes for a big '
+                 'work folder).', f'已卸载《{ctx.spec.display_name}》：移除了 {len(gone)} 项，正在后台删除（大的工作文件夹要几分钟）。')
+               if gone else t('Nothing was removed.', '什么都没有删除。'))
+    if stayed:
+        message += ' ' + t('Kept: ', '保留：') + '; '.join(stayed)
+    return {'removed': gone, 'kept': stayed, 'message': message, 'app_gone': not Path(ctx.app).exists()}
+
+
 ACTIONS = {'state': state, 'measure': measure, 'clean': clean, 'safe_clean': safe_clean, 'move': move,
+           'uninstall_plan': uninstall_plan, 'uninstall': uninstall,
            'memory_saver': memory_saver, 'set_memory_saver': set_memory_saver,
            'diagnostics': diagnostics, 'set_diagnostics': set_diagnostics}
