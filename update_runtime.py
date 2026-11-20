@@ -515,6 +515,7 @@ def record_commit(tmp, work, *, native_5k=None):
         info.pop('MNGSourceCommit', None)
     build_app.record_launcher_version(info)   # the Launcher of this update, beside the commit in the HUD's build line
     build_app.record_update_source(info, work)
+    info['NSPrefersDisplaySafeAreaCompatibilityMode'] = False   # full screen around the notch (build_app.py's Info.plist)
     if native_5k is None:
         info.pop('MNGNative5K', None)
     else:
