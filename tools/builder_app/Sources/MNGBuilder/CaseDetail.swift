@@ -83,6 +83,7 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
             }
         }
         .frame(width: width, height: height)
+        // hits: settled, the only time its actions are there to click, it is turned 0°
         .rotation3DEffect(.degrees(settled ? 0 : 180 * Double(p) * CoverFlowGeometry.turnWay), axis: (x: 0, y: 1, z: 0),
                           perspective: 0.45)
     }
@@ -187,6 +188,10 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
             .frame(width: caseW, height: caseH)
             .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), anchor: .leading, perspective: 0.45)
             .offset(x: hinge, y: top)
+            // the cover has no controls (a tap round the case closes it), and hit testing does not follow the turn:
+            // turned over to the left, it still took every click where it stood before, right over the tray, and no
+            // button in the opened case answered (user 2026-11-20: "launcher 所有按键 都失灵", Launcher 1.1.0)
+            .allowsHitTesting(false)
         }
         .frame(width: stage.width, height: stage.height, alignment: .topLeading)
         .environment(\.colorScheme, .dark)
@@ -283,6 +288,8 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
                     .overlay(CaseFront(light: Double(lit), at: UnitPoint(x: (1 + lean.x) / 2, y: (1 + lean.y) / 2)))
                     .clipShape(RoundedRectangle(cornerRadius: stage.corner, style: .continuous))
                     .shadow(color: .black.opacity(0.7), radius: 22, y: 14)
+                    // hits: a lean of at most 9° and 7° in its own place, no controls: it keeps a click on the cover
+                    // from closing the case, as before
                     .rotation3DEffect(.degrees(Double(lean.x) * 9), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
                     .rotation3DEffect(.degrees(Double(-lean.y) * 7), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
                     .scaleEffect(scale)
@@ -338,6 +345,7 @@ struct PressedLean: ViewModifier, Animatable {
     func body(content: Content) -> some View {
         let deeper = 1 + 0.8 * Double(press)   // CoverFlowGeometry.lean, as PressedFront
         content
+            // hits: the tray it turns gets lean .zero once the case is open (CaseDetail.book), when its buttons are there
             .rotation3DEffect(.degrees(Double(lean.x) * 9 * deeper), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
             .rotation3DEffect(.degrees(Double(-lean.y) * 7 * deeper), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
             .scaleEffect(stage.pressedScale(press))
@@ -366,6 +374,7 @@ struct PressedFront<Cover: View>: View, Animatable {
             .environment(\.caseParallax, lean)   // its layers apart as on the stage, coming together as the lean goes
             .overlay(CaseFront(light: Double(lit + 0.35 * press), at: UnitPoint(x: (1 + lean.x) / 2, y: (1 + lean.y) / 2)))
             .clipShape(RoundedRectangle(cornerRadius: stage.corner, style: .continuous))
+            // hits: a front with no controls, shown only while the case turns (and in book() under allowsHitTesting(false))
             .rotation3DEffect(.degrees(Double(lean.x) * 9 * deeper), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
             .rotation3DEffect(.degrees(Double(-lean.y) * 7 * deeper), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
             .scaleEffect(scale * stage.pressedScale(press))

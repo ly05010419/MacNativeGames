@@ -689,16 +689,19 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
             if side < -0.02 || (turning && CoverFlowGeometry.turnWay > 0) || leaning > 0.02 {
                 spine(i).frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
+                    // hits: none, CoverFlowStage takes no clicks; CoverFlow finds the case from its geometry (cover(at:))
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: true), m)))
             } else if side > 0.02 || (turning && CoverFlowGeometry.turnWay < 0) || leaning < -0.02 {
                 CaseEdge().frame(width: g.depth, height: g.h - 2 * g.corner)
                     .overlay(Color.black.opacity(0.1 + shade))
+                    // hits: none, CoverFlowStage takes no clicks
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.sidePlacement(left: false), m)))
             }
             if over > 0.5 {   // past half way the back faces the camera
                 back(i, false).frame(width: g.w, height: g.h)
                     .overlay(CaseRim())
                     .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))
+                    // hits: none, CoverFlowStage takes no clicks
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.backPlacement, m)))
             } else {
                 front(i).frame(width: g.w, height: g.h)
@@ -708,6 +711,7 @@ private struct CoverFlowStage<Front: View, Spine: View, Back: View>: View, Anima
                                        at: i == g.center ? UnitPoint(x: (1 + tiltX) / 2, y: (1 + tiltY) / 2) : pulledLight))
                     .overlay(Color.black.opacity(shade))
                     .clipShape(RoundedRectangle(cornerRadius: g.corner, style: .continuous))   // the case's rounded corners
+                    // hits: none, CoverFlowStage takes no clicks
                     .projectionEffect(ProjectionTransform(CATransform3DConcat(g.frontPlacement, m)))
             }
         }
