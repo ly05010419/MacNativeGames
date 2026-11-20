@@ -49,7 +49,20 @@ def write_hactool_keyset(keys, path):
             stream.write(f'{name} = {selected[name].hex()}\n')
 
 
-def merge(base, update, keys_path, hactool, output, *, base_romfs=None, title_id):
+def merge_failures(log):
+    """The lines of hactool's merge log that say something failed."""
+    return [line for line in log.splitlines() if re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', line)]
+
+
+def signatures_only(failures, pinned_sha256):
+    """True when the only failures are the update NCA's header and NPDM signatures and the merged RomFS has a pinned
+    hash: a combined card's update (split_card.py) was re-encrypted with standard crypto, which breaks those signatures
+    while its data hashes hold, so the pinned hash of the merge roots the integrity instead of the signature."""
+    return bool(failures) and pinned_sha256 is not None and all(
+        re.match(r'\s*(Fixed-Key|NPDM) Signature \(FAIL\)', line) for line in failures)
+
+
+def merge(base, update, keys_path, hactool, output, *, base_romfs=None, title_id, pinned_sha256=None):
     require(isinstance(title_id, str) and re.fullmatch(r'[0-9A-Fa-f]{16}', title_id),
             'Expected a 16-digit title ID')
     title_id = title_id.upper()
@@ -105,16 +118,21 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None, title_id
             code = subprocess.run(command, env=environment,
                                   stdout=log, stderr=subprocess.STDOUT).returncode
         log = (result/'merge.log').read_text()
-        if code or re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', log):
+        failures = merge_failures(log)
+        unsigned = signatures_only(failures, pinned_sha256)
+        if code or failures:
             (output.parent/(output.name+'-failure.log')).write_text(log)
-        require(code == 0 and not re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', log), 'BKTR verification failed')
+        require(code == 0 and (not failures or unsigned), 'BKTR verification failed')
         require(all(re.search(rf'Level {i} \(GOOD\)', log) for i in range(6)), 'Missing verified IVFC levels')
         image = result/'romfs.bin'
         with image.open('rb') as f:
             digest = hashlib.file_digest(f, 'sha256').hexdigest()
         files = index_romfs(image)
-        report = dict(status='pass', romfs_size=image.stat().st_size, romfs_sha256=digest,
-                      files=files, integrity='BKTR merge; all six IVFC levels verified')
+        require(not unsigned or digest == pinned_sha256, 'Merged RomFS of an unsigned update differs from the pinned hash')
+        report = dict(status='pass', romfs_size=image.stat().st_size, romfs_sha256=digest, files=files,
+                      integrity='BKTR merge; all six IVFC levels verified' +
+                                ('; update NCA signature fails (re-encrypted card), merged RomFS matches the pinned hash'
+                                 if unsigned else ''))
         (result/'index.json').write_text(json.dumps(report, indent=2)+'\n')
         result.rename(output)
     print(json.dumps(dict(status='pass', files=len(files), sha256=digest)))
@@ -130,10 +148,12 @@ def main(default_title_id=None):
                         type=lambda value: value.upper(),
                         help='base title ID, for selecting a game from a combined XCI')
     parser.add_argument('--base-romfs', type=Path, help='full decrypted base IVFC section, including hash levels (not a raw RomFS image)')
+    parser.add_argument('--pinned-sha256', help='the merged RomFS\'s pinned SHA-256: an update whose only failures are '
+                        'its NCA header and NPDM signatures (a re-encrypted card) is accepted when the merge matches it')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     merge(args.base, args.update, args.keys, args.hactool, args.output,
-          base_romfs=args.base_romfs, title_id=args.title_id)
+          base_romfs=args.base_romfs, title_id=args.title_id, pinned_sha256=args.pinned_sha256)
 
 
 if __name__ == '__main__':
