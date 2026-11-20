@@ -12730,7 +12730,9 @@ static id<MTLTexture> tex_type_view(id<MTLTexture> base, MTLTextureType want) {
     id<MTLTexture> v = [g_type_views objectForKey:base];
     if (v && v.textureType == want) return v;
     if (v) defer_obj_unref(v);   // another type requested: earlier encoded draws may still use the old view
-    v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, 1)];
+    /* a cube map viewed as a cube array needs all 6 faces; 1 slice is right for 2D <-> 2D array only */
+    NSUInteger slices = want == MTLTextureTypeCubeArray && base.textureType == MTLTextureTypeCube ? 6 : 1;
+    v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, slices)];
     if (!v) { RED_ONCE(46, "贴图类型视图建不出（%lu → %lu）", (unsigned long)base.textureType, (unsigned long)want); return nil; }
     [g_type_views setObject:v forKey:base];
     static int said; if (said++ < 3) MLOG("texture type view: %lu -> %lu for a %lux%lu texture", (unsigned long)base.textureType, (unsigned long)want, (unsigned long)base.width, (unsigned long)base.height);
@@ -14730,6 +14732,12 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 /* TOTK: the shader indexes a 2D texture as a 2D array (the UI glyph atlas: NVN clamps the layer to 0) or the reverse;
                    Metal needs a matching texture type in the argument buffer, so bind a cached 1-slice view of the right type. */
                 id<MTLTexture> av = tex_type_view(t, (MTLTextureType)b->dtt);
+                if (av) { t = av; trid = av.gpuResourceID._impl; } }
+            else if (b->dtt == MTLTextureTypeCubeArray && treg_view_type(tid, t) == MTLTextureTypeCube) {
+                /* Breath of the Wild's light-probe mip blur (2ab186d450f5b32c) samples a texturecube_array while a plain cube map
+                   is bound: Metal returns one value for the whole cube, so the probe's mips came out one flat colour and tinted
+                   the scene. Bind a cached 6-face cube-array view. */
+                id<MTLTexture> av = tex_type_view(t, MTLTextureTypeCubeArray);
                 if (av) { t = av; trid = av.gpuResourceID._impl; } }
             if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial, sh, reg, b->fetch ? 0 : (int)(S.tex[nvn_stage][reg] >> 20)); /* a slot the shader also reads by integer texel coordinates (read(..., 0)) keeps every level below: a one-level view would move its level 0 */ if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
             if (g_mfxup_out && (__bridge void *)sh == (__bridge void *)g_mfxup_sh && t == g_mfxup_src) { t = g_mfxup_out; trid = t.gpuResourceID._impl; }   // TOTK_MFX_UPSCALE
