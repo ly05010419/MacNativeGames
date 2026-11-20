@@ -54,6 +54,11 @@ void dm_gfx_ssao_set(int pct) { if (fakeSsaoLive) fakeSsaoSet = pct; }
 #else
 #define BOTW_V190 0
 #endif
+#if defined(GAME_BOTW) || defined(GAME_NS2)   /* the display page's spatial audio row (runtime/audio_route.h) is Tears of the Kingdom's only */
+#define SPATIAL_ROW 0
+#else
+#define SPATIAL_ROW 1
+#endif
 static const char *const fakeFxIds[2] = {"ao", "bloom"}, *const fakeFxNames[2][2] = {{"环境光遮蔽", "Ambient occlusion"}, {"泛光", "Bloom"}};
 static int fakeFxOn[2] = {1, 1};
 static int fakeAnisoStart = -1, fakeSharpen;
@@ -1143,7 +1148,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 32 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 32 + SPATIAL_ROW + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1589,7 +1594,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Pages: Display, Input, User and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
-    assert(settingsPanel.rows.count == 7 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
+    assert(settingsPanel.rows.count == 7 + SPATIAL_ROW && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
+    assert(!SPATIAL_ROW || [settingsPanel.rows[7].title isEqualToString:@"Spatial audio (from the next launch)"]);   /* the last display row, Tears of the Kingdom only */
     /* Every page's bottom right: 访问主页 (user 2026-11-11, was the display page's star), after the rows for a controller;
        the version stays clear of it; a result shows for a moment where the version is. */
     NSButton *starButton = settingsPanel.homeButton;

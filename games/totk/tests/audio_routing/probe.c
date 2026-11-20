@@ -10,6 +10,13 @@ void ipc_out(IpcResponse *r, const void *p, uint32_t n) { (void)r; (void)p; (voi
 _Noreturn void ipc_unimplemented(const IpcSession *s, const IpcRequest *r) { (void)s; (void)r; runtime_fail("unexpected IPC"); }
 uint32_t runtime_event_new(void) { return 1; }
 uint32_t runtime_event_readable(uint32_t h) { return h; }
+/* Spatial audio (audio_spatial.m, the settings file): not linked into the probes; TOTK_AUDIO_OFF keeps the output as before. */
+void *audio_system_spatial_open(int rate, int channels, unsigned block, int lead_ms, float gain, AudioSpatialRead read, void *ctx) {
+    (void)rate; (void)channels; (void)block; (void)lead_ms; (void)gain; (void)read; (void)ctx; return NULL;
+}
+void audio_system_spatial_close(void *handle) { (void)handle; }
+int audio_system_spatial_available(void) { return 0; }
+int runtime_setting_word(const char *name, char *word, size_t size) { (void)name; (void)word; (void)size; return 0; }
 
 static void splitter(Mixer *m, int id, int destination_id, int mix, float volume) {
     m->split[id].ndest = 1;
@@ -155,11 +162,51 @@ static int run_case_51(void) {
     return failed;
 }
 
+/* Spatial audio's output side without a device: the 5.1 ring folded to stereo in the device callback with the game's
+   downmix (the stereo route), the 5.1 ring copied as is (the surround route), and the device-paced renderer step. */
+static int spatial_output(void) {
+    int failed = 0;
+    runtime_audio_hold(0);   /* the shader warm-up's hold (silent until it ends) does not apply here */
+    Mixer *m = calloc(1, sizeof *m);
+    m->frame = 240; m->channels = 6; m->out_ch = 2; m->rate = 48000;
+    atomic_store(&m->consumer, 1); atomic_store(&m->playing, 1);
+    atomic_store(&m->fold[0], 0.5f); atomic_store(&m->fold[1], 0.25f); atomic_store(&m->fold[2], 0.125f);
+    float six[240 * 6], out[512 * 6];
+    for (int k = 0; k < 240; k++) { const float f[6] = {0.1f, 0.2f, 0.4f, 0.9f, 0.8f, -0.8f}; memcpy(&six[6 * k], f, sizeof f); }
+    for (int n = 0; n < 8; n++) output_push(m, six, 240);
+    AudioBufferList io = {1, {{2, sizeof out, out}}};
+    pull(m, NULL, NULL, 0, 240, &io);
+    float l = 0.5f * 0.1f + 0.25f * 0.4f + 0.125f * 0.8f, rr = 0.5f * 0.2f + 0.25f * 0.4f - 0.125f * 0.8f;
+    for (int k = 0; k < 240; k++) if (fabsf(out[2 * k] - l) > 1e-6f || fabsf(out[2 * k + 1] - rr) > 1e-6f) {
+        fprintf(stderr, "stereo fold frame %d: %g %g, want %g %g\n", k, out[2 * k], out[2 * k + 1], l, rr); failed = 1; break;
+    }
+    m->out_ch = 6; io.mBuffers[0].mNumberChannels = 6;
+    pull(m, NULL, NULL, 0, 240, &io);
+    for (int k = 0; k < 240 * 6; k++) if (out[k] != six[k]) { fprintf(stderr, "5.1 copy sample %d\n", k); failed = 1; break; }
+    /* Pacing: room in the ring -> render now; a full ring whose consumer never moves -> back to the wall clock. */
+    if (semaphore_create(mach_task_self(), &m->pace_sem, SYNC_POLICY_FIFO, 0) != KERN_SUCCESS) runtime_fail("semaphore");
+    m->pace_sem_ok = m->paced = 1; atomic_store(&m->period, 240u);
+    AudioRenderer r = {.mixer = m};
+    atomic_store(&m->rd, atomic_load(&m->wr));
+    if (audio_mixer_pace(&r) != 1) { fprintf(stderr, "pacing: an empty ring should render now\n"); failed = 1; }
+    for (int n = 0; n < 8; n++) output_push(m, six, 240);
+    if (audio_mixer_pace(&r) != 0 || !m->pace.stalled) { fprintf(stderr, "pacing: a stalled consumer should fall back to the wall clock\n"); failed = 1; }
+    pull(m, NULL, NULL, 0, 240, &io);   /* the consumer moves (and posts the semaphore): paced again once there is room */
+    while (atomic_load(&m->wr) - atomic_load(&m->rd) > 960) pull(m, NULL, NULL, 0, 240, &io);
+    if (audio_mixer_pace(&r) != 1 || m->pace.stalled) { fprintf(stderr, "pacing: the consumer moved, room in the ring: render\n"); failed = 1; }
+    atomic_store(&m->playing, 0);
+    if (audio_mixer_pace(&r) != 0) { fprintf(stderr, "pacing: stopped renderer -> wall clock\n"); failed = 1; }
+    semaphore_destroy(mach_task_self(), m->pace_sem); free(m);
+    if (!failed) puts("spatial output: stereo fold, 5.1 copy, device pacing passed");
+    return failed;
+}
+
 int main(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1); unsetenv("TOTK_AUDIO_CAPTURE");
     int failed = eos_samples();
     for (int i = 0; i < 4; ++i) failed += run_case(i);
     failed += run_case_51();
+    failed += spatial_output();
     if (failed) return 1;
     puts("4 audio routing graphs / 64 stereo frames (128 channel samples) passed");
     puts("1 5.1 surround routing graph / 16 surround frames (96 channel samples) passed");

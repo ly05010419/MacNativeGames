@@ -29,7 +29,8 @@ C_TESTS = \
 	screenshot_botw \
 	agent_slot_limit \
 	agent_slot_limit_oot \
-	hdr_auto
+	hdr_auto \
+	audio_route
 C_TEST_EXTRA_users = games/totk/runtime/account.c -Igames/totk/runtime
 C_TEST_SRC_screenshot_botw = tests/test_screenshot.c
 C_TEST_EXTRA_screenshot_botw = -DGAME_BOTW190

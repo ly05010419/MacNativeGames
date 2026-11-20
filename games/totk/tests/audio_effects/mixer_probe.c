@@ -13,6 +13,11 @@ void ipc_out(IpcResponse *r,const void *p,uint32_t n){(void)r;(void)p;(void)n;ru
 _Noreturn void ipc_unimplemented(const IpcSession *s,const IpcRequest *r){(void)s;(void)r;runtime_fail("unexpected IPC");}
 uint32_t runtime_event_new(void){return 1;}
 uint32_t runtime_event_readable(uint32_t h){return h;}
+/* Spatial audio (audio_spatial.m, the settings file): not linked into the probe; TOTK_AUDIO_OFF keeps the output as before. */
+void *audio_system_spatial_open(int rate,int channels,unsigned block,int lead_ms,float gain,AudioSpatialRead read,void *ctx){(void)rate;(void)channels;(void)block;(void)lead_ms;(void)gain;(void)read;(void)ctx;return NULL;}
+void audio_system_spatial_close(void *handle){(void)handle;}
+int audio_system_spatial_available(void){return 0;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}
 static unsigned long checks;
 static void check(int ok,const char *s){if(!ok)runtime_fail(s);checks++;}
 static void near(float x,float y,const char *s){check(isfinite(x)&&fabsf(x-y)<=2e-5f+fabsf(y)*2e-5f,s);}
@@ -89,7 +94,7 @@ static void reverb_early_modes(void){
     }
 }
 static void ring_output(void){
-    Mixer *m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->playing,1);float samples[480],out[1024];for(int k=0;k<480;k++)samples[k]=.25f;
+    Mixer *m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->consumer,1);atomic_store(&m->playing,1);float samples[480],out[1024];for(int k=0;k<480;k++)samples[k]=.25f;
     AudioBufferList io={.mNumberBuffers=1,.mBuffers={{.mNumberChannels=2,.mDataByteSize=sizeof out,.mData=out}}};
     output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);check(atomic_load(&m->rd)==0&&!atomic_load(&m->underruns),"startup prefill is not underrun");for(int k=0;k<1024;k++)near(out[k],0,"prefill silence");
     for(int n=0;n<7;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);for(int k=0;k<1024;k++)near(out[k],.25f,"prefill resumes real samples");
@@ -103,7 +108,7 @@ static void ring_output(void){
     AudioRenderer r={.mixer=m};audio_mixer_set_running(&r,1);for(int n=0;n<8;n++)output_push(m,samples,240);audio_mixer_set_running(&r,0);audio_mixer_set_running(&r,1);
     for(int k=0;k<480;k++)samples[k]=.5f;for(int n=0;n<8;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);near(out[0],.5f,"rapid stop/start drops stale queued audio");check(atomic_load(&m->underruns)==1,"resume keeps underrun accounting");
     atomic_store(&m->rd,0);atomic_store(&m->wr,RING_FRAMES);uint64_t before=atomic_load(&m->wr);output_push(m,samples,240);check(atomic_load(&m->wr)==before&&atomic_load(&m->overruns)==1,"full ring drops atomically");free(m);
-    m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->playing,1);
+    m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->consumer,1);atomic_store(&m->playing,1);
     for(int n=0;n<16 && !m->ready;n++){output_push(m,samples,240);pull(m,NULL,NULL,0,240,&io);}
     check(m->ready,"playback starts after bounded prefill");
     /* The producer is descheduled right after playback starts: the prefill, less the block the first pull took, must come
@@ -114,7 +119,7 @@ static void ring_output(void){
     pull(m,NULL,NULL,0,240,&io);check(atomic_load(&m->underruns)==1,"a gap longer than the prefill underruns");free(m);
     /* A Bluetooth route change or CoreAudio callback stall lets the 5-ms producer fill the 341-ms ring while pull() is
        paused; when pull() resumes on a live device, stale backlog past the headroom cap is skipped back to prefill. */
-    m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->playing,1);
+    m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->consumer,1);atomic_store(&m->playing,1);
     for(int k=0;k<480;k++)samples[k]=.25f;for(int n=0;n<20;n++)output_push(m,samples,240);
     for(int k=0;k<480;k++)samples[k]=.75f;for(int n=0;n<4;n++)output_push(m,samples,240);
     pull(m,NULL,NULL,0,240,&io);near(out[0],.75f,"device stall backlog trims stale audio back to prefill");

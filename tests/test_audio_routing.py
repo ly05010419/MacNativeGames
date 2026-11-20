@@ -24,13 +24,14 @@ class AudioRouting(unittest.TestCase):
                 "xcrun", "clang", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                 "-fsanitize=undefined", "-fno-sanitize-recover=all", *defines, "-I" + str(GAME / "runtime"),
                 str(GAME / "tests/audio_routing/probe.c"), str(GAME / "runtime/audio_effects.c"),
-                str(GAME / "runtime/audio_reverb.c"), "-framework", "AudioToolbox", "-o", str(binary)
+                str(GAME / "runtime/audio_reverb.c"), "-framework", "AudioToolbox", "-framework", "CoreAudio", "-framework", "CoreFoundation", "-o", str(binary)
             ], capture_output=True, text=True, timeout=120)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("4 audio routing graphs", result.stdout)
             self.assertIn("4 EOS sample paths", result.stdout)
+            self.assertIn("spatial output: stereo fold, 5.1 copy, device pacing passed", result.stdout)
 
 
 if __name__ == "__main__":

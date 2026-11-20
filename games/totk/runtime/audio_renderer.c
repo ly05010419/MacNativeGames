@@ -285,6 +285,10 @@ static void *render_thread(void *p) {
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
     struct timespec next; clock_gettime(CLOCK_MONOTONIC, &next);
     while (__atomic_load_n(&r->running, __ATOMIC_ACQUIRE)) {
+        /* Spatial audio on (audio_route.h): the frame waits for the output device to take audio from the ring, so the
+           mix runs on the device's clock and the ring stays at its target; otherwise (and while the device stalls) the
+           wall clock below, as before. */
+        int paced = __atomic_load_n(&r->state, __ATOMIC_RELAXED) == 0 && audio_mixer_pace(r);
         pthread_mutex_lock(&r->lock);
         if (r->state == 0) {
             audio_voices_prepare(r);
@@ -299,6 +303,7 @@ static void *render_thread(void *p) {
         }
         pthread_mutex_unlock(&r->lock);
         runtime_event_signal(r->event);
+        if (paced) { clock_gettime(CLOCK_MONOTONIC, &next); continue; }
         uint64_t ns = (uint64_t)(frame * 1e9);
         next.tv_nsec += (long)ns; while (next.tv_nsec >= 1000000000L) { next.tv_nsec -= 1000000000L; next.tv_sec++; }
         struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
