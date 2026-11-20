@@ -6,12 +6,15 @@
    host writes the first 24 bytes of an AudioOutBuffer {data, capacity, size}; AudioOutParameter {int32 sample rate,
    uint16 channel count}, 0 = 48 kHz / 2 channels. */
 #include "runtime.h"
+#include "audio_input.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 void hle_signal_system_event(void *event);
 #define AO_MAX 8
@@ -104,33 +107,82 @@ static int sample_rate(const uint8_t *guest) { int32_t v; memcpy(&v, guest, 4); 
 static int channel_count(const uint8_t *guest) { int32_t v; memcpy(&v, guest + 4, 4); return v; }
 static int sample_format(const uint8_t *guest) { int32_t v; memcpy(&v, guest + 8, 4); return v; }
 
-/* No input capture is opened: an empty virtual-device list is valid offline. */
-static int list_virtual_input(void *names, int capacity) { (void)names; (void)capacity; return 0; }
-
-/* No microphone on the host: list_virtual_input lists no device, so the game never opens an input stream. The SDK forwards
-   these calls to the stream's Impl pointer, null for a stream that never opened, and the Impl's first read is [Impl+0x340];
-   only GetInputStreamState answers a null Impl itself. The Legend of Zelda: Ocarina of Time purges its two microphone streams
-   when they are not started (main+0x336ee7c, when a song is played; seedds/nxnative issue 1525, pull request 1527, MIT).
-   Every input stream call the game imports answers here, without touching the guest object. */
+/* The game's microphone (audio_input.h; the Mac only, off unless OOT_MIC=1, user 2026-11-20). The Legend of Zelda: Ocarina
+   of Time lists the virtual input devices when its audio starts and opens its two microphone streams only when one is
+   listed (seedds/nxnative docs/reference/audio.md, PR #1822, MIT); its "Ocarina Mic Input" option then plays the ocarina
+   from what they capture. With the microphone off nothing is listed and every open fails, as before.
+   The SDK forwards these calls to the stream's Impl pointer, null for a stream the host opened or one that never opened, and
+   the Impl's first read is [Impl+0x340]; only GetInputStreamState answers a null Impl itself. The game purges its streams
+   when they are not started (main+0x336ee7c, when a song is played; nxnative issue 1525, pull request 1527) and reads their
+   statistics each update. So every input stream call the game imports (main.patched.bin: the eleven below) answers here,
+   keyed by the guest object, which is never written. */
 #define INPUT_STREAM_CLOSED 0
 #define INPUT_STREAM_UNAVAILABLE 0x199u   /* the failure open_out returns */
 typedef struct { int64_t value[3]; } InputStreamStatistics;   /* returned through x8: InputStreamImpl::GetStatistics zeroes 24 bytes */
-#define INPUT_STREAM_CALL(name) do { static _Atomic int said; if (!atomic_exchange(&said, 1)) fprintf(stderr, "[ns2-audio] input stream %s: no microphone, answered for a stream that never opened\n", name); } while (0)
-static uint32_t input_open(void *stream, void *buffer, size_t size, const void *device, const void *format, int frames) {
-    (void)stream; (void)buffer; (void)size; (void)device; (void)format; (void)frames; INPUT_STREAM_CALL("Open"); return INPUT_STREAM_UNAVAILABLE;
+typedef struct { int32_t format, channels, rate; } InputStreamFormat;   /* nn::audio::StreamFormat, 12 bytes */
+#define INPUT_STREAMS 8
+static struct { const void *guest; dm_audio_input_stream *stream; } g_input_streams[INPUT_STREAMS];
+static pthread_mutex_t g_input_streams_mu = PTHREAD_MUTEX_INITIALIZER;
+static dm_audio_input_stream *input_stream_of(const void *guest) {
+    dm_audio_input_stream *s = NULL;
+    pthread_mutex_lock(&g_input_streams_mu);
+    for (int i = 0; i < INPUT_STREAMS && guest; i++) if (g_input_streams[i].guest == guest) { s = g_input_streams[i].stream; break; }
+    pthread_mutex_unlock(&g_input_streams_mu);
+    return s;
 }
-static uint32_t input_start(void *stream) { (void)stream; INPUT_STREAM_CALL("Start"); return INPUT_STREAM_UNAVAILABLE; }
-static void input_stop(void *stream) { (void)stream; INPUT_STREAM_CALL("Stop"); }
-static void input_close(void *stream) { (void)stream; INPUT_STREAM_CALL("Close"); }
-static void input_purge(void *stream) { (void)stream; INPUT_STREAM_CALL("Purge"); }
-static int input_read(void *stream, void *buffer, int frames) { (void)stream; (void)buffer; (void)frames; INPUT_STREAM_CALL("Read"); return 0; }
-static int input_state(const void *stream) { (void)stream; INPUT_STREAM_CALL("GetState"); return INPUT_STREAM_CLOSED; }
-static InputStreamStatistics input_statistics(void *stream, _Bool reset) { (void)stream; (void)reset; INPUT_STREAM_CALL("GetStatistics"); return (InputStreamStatistics){{0, 0, 0}}; }
-static int input_filled(const void *stream) { (void)stream; INPUT_STREAM_CALL("GetFilledFrameCount"); return 0; }
+static int list_virtual_input(void *names, int capacity) {
+    static _Atomic int calls;
+    int n = atomic_fetch_add(&calls, 1) + 1;
+    if (!names || capacity <= 0 || !dm_audio_input_available()) {
+        if (n <= 4) fprintf(stderr, "[ns2-audio] audio input: ListVirtualInputDevices (call %d): none (the microphone is off: OOT_MIC=%s)\n", n, getenv("OOT_MIC") ?: "unset");
+        return 0;
+    }
+    dm_audio_input_device_name(names);
+    if (n <= 4) fprintf(stderr, "[ns2-audio] audio input: ListVirtualInputDevices (call %d): 1 device\n", n);
+    return 1;
+}
+static void raw_input_device(char *name) {
+    if (!name) return;
+    if (dm_audio_input_available()) dm_audio_input_device_name(name);
+    else memset(name, 0, DM_AUDIO_INPUT_NAME_SIZE);
+}
+static uint32_t input_open(void *stream, void *buffer, size_t size, const void *device, const void *format, int frames) {
+    (void)buffer; (void)size;
+    if (!stream || !device || !format || strncmp(device, DM_AUDIO_INPUT_DEVICE, sizeof DM_AUDIO_INPUT_DEVICE) || input_stream_of(stream)) return INPUT_STREAM_UNAVAILABLE;
+    InputStreamFormat f; memcpy(&f, format, sizeof f);
+    dm_audio_input_stream *s = dm_audio_input_open(f.format, f.channels, f.rate, frames);
+    int slot = -1;
+    pthread_mutex_lock(&g_input_streams_mu);
+    for (int i = 0; s && i < INPUT_STREAMS; i++) if (!g_input_streams[i].guest) { g_input_streams[i].guest = stream; g_input_streams[i].stream = s; slot = i; break; }
+    pthread_mutex_unlock(&g_input_streams_mu);
+    if (s && slot < 0) { dm_audio_input_close(s); s = NULL; }
+    fprintf(stderr, "[ns2-audio] audio input: OpenInputStream %s (format %d, %d channel(s), %d Hz, %d frames)\n", s ? "accepted" : "failed", f.format, f.channels, f.rate, frames);
+    return s ? 0 : INPUT_STREAM_UNAVAILABLE;
+}
+static uint32_t input_start(void *stream) {
+    dm_audio_input_stream *s = input_stream_of(stream);
+    int r = s ? dm_audio_input_start(s) : -1;
+    if (s) fprintf(stderr, "[ns2-audio] audio input: StartInputStream %s\n", r ? "failed: no capture" : "started");
+    return r ? INPUT_STREAM_UNAVAILABLE : 0;
+}
+static void input_stop(void *stream) { dm_audio_input_stop(input_stream_of(stream)); }
+static void input_close(void *stream) {
+    dm_audio_input_stream *s = NULL;
+    pthread_mutex_lock(&g_input_streams_mu);
+    for (int i = 0; i < INPUT_STREAMS && stream; i++) if (g_input_streams[i].guest == stream) { s = g_input_streams[i].stream; g_input_streams[i].guest = NULL; g_input_streams[i].stream = NULL; break; }
+    pthread_mutex_unlock(&g_input_streams_mu);
+    if (s) dm_audio_input_close(s);
+}
+static void input_purge(void *stream) { dm_audio_input_purge(input_stream_of(stream)); }
+static int input_read(void *stream, void *buffer, int frames) { return dm_audio_input_read(input_stream_of(stream), buffer, frames); }
+static int input_state(const void *stream) { return dm_audio_input_state(input_stream_of(stream)); }
+static InputStreamStatistics input_statistics(void *stream, _Bool reset) { (void)stream; (void)reset; return (InputStreamStatistics){{0, 0, 0}}; }
+static int input_filled(const void *stream) { return dm_audio_input_filled(input_stream_of(stream)); }
 
 void *runtime_ns2_audio_out_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
         {"_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", list_virtual_input},
+        {"_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE", raw_input_device},
         {"_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi", input_open},
         {"_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE", input_start}, {"_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", input_stop},
         {"_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", input_close}, {"_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", input_purge},
@@ -185,9 +237,18 @@ int runtime_ns2_input_stream_probe(void) {
     int (*state)(const void *) = input_stream_hook("_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE");
     void *statistics = input_stream_hook("_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb");
     int (*filled)(const void *) = input_stream_hook("_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE");
-    int checked = 9;
+    int (*list)(void *, int) = input_stream_hook("_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi");
+    void (*raw)(char *) = input_stream_hook("_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE");
+    int checked = 11;
     uint8_t device[32] = {0}, format[12] = {0};
+    char names[DM_AUDIO_INPUT_NAME_SIZE];
+    /* the microphone off (the default): nothing listed, every open fails, the guest object untouched */
+    char *mic = getenv("OOT_MIC") ? strdup(getenv("OOT_MIC")) : NULL, *feed = getenv("OOT_MIC_FILE") ? strdup(getenv("OOT_MIC_FILE")) : NULL;
+    unsetenv("OOT_MIC"); unsetenv("OOT_MIC_FILE");
     #define INPUT_STREAM_CHECK(ok, what) do { if (!(ok)) runtime_fail("input stream probe: " what); checked++; } while (0)
+    memset(names, 0x5a, sizeof names);
+    INPUT_STREAM_CHECK(list(names, 1) == 0, "no device is listed with the microphone off");
+    raw(names); INPUT_STREAM_CHECK(!names[0], "no raw input device with the microphone off");
     INPUT_STREAM_CHECK(open_stream(stream, pcm, sizeof pcm, device, format, 16) != 0, "Open must fail without a microphone");
     INPUT_STREAM_CHECK(start(stream) != 0, "Start must fail on a stream that never opened");
     INPUT_STREAM_CHECK(state(stream) == INPUT_STREAM_CLOSED, "the state of a stream that never opened is closed");
@@ -200,6 +261,48 @@ int runtime_ns2_input_stream_probe(void) {
     INPUT_STREAM_CHECK(!through_x8[0] && !through_x8[1] && !through_x8[2], "the statistics are zero in the destination x8 names");
     INPUT_STREAM_CHECK(through_x8[3] == 0x1234, "the statistics are 24 bytes, no more");
     INPUT_STREAM_CHECK(!memcmp(stream, blank, sizeof stream), "the guest stream object must be left alone");
+#if TARGET_OS_OSX
+    /* the microphone on, fed a 440 Hz tone (OOT_MIC_FILE, audio_input_mac.m) instead of a device: one device listed, the
+       game's format opens, a started stream fills and reads back the tone, a stopped one reads nothing, a closed one is gone */
+    setenv("OOT_MIC", "1", 1); setenv("OOT_MIC_FILE", "tone:440", 1);
+    INPUT_STREAM_CHECK(list(names, 1) == 1 && !strcmp(names, DM_AUDIO_INPUT_DEVICE), "one device, AudioVirtualInput, with the microphone on");
+    InputStreamFormat game_format = {DM_AUDIO_INPUT_PCM16, 1, DM_AUDIO_INPUT_RATE};
+    INPUT_STREAM_CHECK(open_stream(stream, NULL, 0, names, &game_format, 4800) == 0, "Open succeeds on the listed device in the game's format");
+    INPUT_STREAM_CHECK(open_stream(stream, NULL, 0, names, &game_format, 4800) != 0, "a stream object opens once");
+    InputStreamFormat other = {DM_AUDIO_INPUT_PCM16, 2, DM_AUDIO_INPUT_RATE};
+    uint8_t stream2[64] = {0};
+    INPUT_STREAM_CHECK(open_stream(stream2, NULL, 0, names, &other, 4800) != 0, "only 48 kHz mono PCM16 opens");
+    INPUT_STREAM_CHECK(start(stream) == 0 && state(stream) == 2, "Start captures: the state is started");
+    int got = 0;
+    for (int i = 0; i < 100 && (got = filled(stream)) < 960; i++) usleep(10000);
+    INPUT_STREAM_CHECK(got >= 960, "a started stream fills from the feed within a second");
+    int16_t tone[960]; int n = read_stream(stream, tone, 960), peak = 0, crossings = 0;
+    for (int i = 0; i < n; i++) { int a = tone[i] < 0 ? -tone[i] : tone[i]; if (a > peak) peak = a; if (i && (tone[i - 1] < 0) != (tone[i] < 0)) crossings++; }
+    INPUT_STREAM_CHECK(n == 960, "Read returns the frames asked for");
+    INPUT_STREAM_CHECK(peak > 6000 && peak < 32767, "the tone arrives with the default gain (0.1 x 4), not clipped");
+    INPUT_STREAM_CHECK(crossings >= 15 && crossings <= 19, "20 ms of 440 Hz crosses zero about 17 times");
+    /* the 陶笛 page's song in place of the feed: one note of 587.33 Hz (C-up), and nothing of the feed's 440 Hz meanwhile */
+    static const double up[1] = {587.33};
+    INPUT_STREAM_CHECK(dm_audio_input_listening() == 1, "a started stream: the game is listening");
+    INPUT_STREAM_CHECK(dm_audio_input_play_notes(up, 1, 0.4, 0) == 1 && dm_audio_input_play_notes(up, 1, 0.4, 0) == -1, "a song starts, a second waits for it");
+    for (int i = 0; i < 100 && !dm_audio_input_playing(); i++) usleep(1000);
+    usleep(50000); purge(stream);   // the frames of the feed from before the song are gone
+    for (int i = 0; i < 100 && filled(stream) < 960; i++) usleep(10000);
+    n = read_stream(stream, tone, 960); crossings = 0;
+    for (int i = 1; i < n; i++) if ((tone[i - 1] < 0) != (tone[i] < 0)) crossings++;
+    INPUT_STREAM_CHECK(n == 960 && crossings >= 21 && crossings <= 26, "20 ms of the song's 587 Hz crosses zero about 23 times, not the feed's 17");
+    for (int i = 0; i < 200 && dm_audio_input_playing(); i++) usleep(10000);
+    INPUT_STREAM_CHECK(!dm_audio_input_playing(), "the song ends by itself (0.4 s and half a second of silence)");
+    stop(stream);
+    INPUT_STREAM_CHECK(dm_audio_input_play_notes(up, 1, 0.4, 0) == 0, "no song while the game is not listening");
+    INPUT_STREAM_CHECK(state(stream) == 1 && filled(stream) == 0 && read_stream(stream, tone, 16) == 0, "a stopped stream reads nothing");
+    close_stream(stream);
+    INPUT_STREAM_CHECK(state(stream) == INPUT_STREAM_CLOSED && start(stream) != 0, "a closed stream is gone");
+    INPUT_STREAM_CHECK(!memcmp(stream, blank, sizeof stream), "the guest stream object is still left alone");
+#endif
+    if (mic) setenv("OOT_MIC", mic, 1); else unsetenv("OOT_MIC");
+    if (feed) setenv("OOT_MIC_FILE", feed, 1); else unsetenv("OOT_MIC_FILE");
+    free(mic); free(feed);
     #undef INPUT_STREAM_CHECK
     return checked;
 }

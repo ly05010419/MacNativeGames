@@ -68,7 +68,7 @@ static inline int settings_read_number(const char *name, double lo, double hi, d
 /* The pages, in tab order. A page added here is counted in perPage (the panel height), given its tab, and its rows a
    SETTINGS_PAGE_* in the game's settings_rows. VR (zeldaVR) is last and only there while VR is on (settings_pages); a page
    the game does not have (its SETTINGS_HAS_*) has no tab (settings_page_present). */
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_VR, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_OCARINA, SETTINGS_PAGE_VR, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
@@ -212,6 +212,9 @@ enum { SETTINGS_BIND_PANEL = 100 };
 #ifndef SETTINGS_HAS_AA_ROWS
 #define SETTINGS_HAS_AA_ROWS 0
 #endif
+#ifndef SETTINGS_HAS_OCARINA
+#define SETTINGS_HAS_OCARINA 0   /* the 陶笛 page: songs played into the game's microphone (Ocarina of Time on the Mac) */
+#endif
 #ifndef SETTINGS_HAS_CONTRIB
 #define SETTINGS_HAS_CONTRIB 1
 #endif
@@ -242,6 +245,7 @@ static BOOL settings_page_present(NSInteger page) {
   case SETTINGS_PAGE_BOARD:return SETTINGS_HAS_BOARD;
   case SETTINGS_PAGE_SHOTS:return SETTINGS_HAS_SHOTS;
   case SETTINGS_PAGE_CONTRIB:return SETTINGS_HAS_CONTRIB;
+  case SETTINGS_PAGE_OCARINA:return SETTINGS_HAS_OCARINA;
 #if SETTINGS_HAS_VR
   case SETTINGS_PAGE_VR:return vr_enabled()!=0;
 #else
@@ -486,7 +490,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
  NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
- NSUInteger most=perPage[SETTINGS_PAGE_VR];for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
+ NSUInteger most=MAX(perPage[SETTINGS_PAGE_VR],perPage[SETTINGS_PAGE_OCARINA]);for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
  CGFloat n=most,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
@@ -510,7 +514,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSArray<NSString *> *pageNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots"),@"VR"];   /* SETTINGS_PAGE_* order */
+ NSArray<NSString *> *pageNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots"),settings_text("陶笛","Ocarina"),@"VR"];   /* SETTINGS_PAGE_* order */
  NSMutableArray<NSString *> *tabNames=[NSMutableArray array];   /* the pages this game has (settings_page_present) */
  for(NSInteger p=0;p<SETTINGS_PAGES;p++)if(settings_page_present(p))[tabNames addObject:pageNames[(NSUInteger)p]];
  NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
@@ -577,6 +581,11 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  NSView *shots=[self shotsPageWithFrame:bindingsFrame];[self addSubview:shots];[pages addObject:shots];   /* shot_tab.h */
 #else
  [pages addObject:[[NSView alloc] initWithFrame:NSZeroRect]];   /* no 截图分享 page */
+#endif
+#if SETTINGS_HAS_OCARINA
+ [pages addObject:rowPage(SETTINGS_PAGE_OCARINA)];   /* the game's rows on its 陶笛 page (settings_game.h) */
+#else
+ [pages addObject:[[NSView alloc] initWithFrame:NSZeroRect]];   /* no 陶笛 page: its place kept, self.pages[SETTINGS_PAGE_*] */
 #endif
 #if SETTINGS_HAS_VR
  if(vr_enabled())[pages addObject:rowPage(SETTINGS_PAGE_VR)];

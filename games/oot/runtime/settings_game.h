@@ -13,6 +13,9 @@
 #define SETTINGS_HAS_BOARD 1
 #define SETTINGS_HAS_SHOTS 1
 #define SETTINGS_HAS_VR 1
+#if !TARGET_OS_IPHONE
+#define SETTINGS_HAS_OCARINA 1   /* the 陶笛 page: the songs played into the game's microphone (user 2026-11-20) */
+#endif
 #include "totk_fps_limit.h"   /* totk_fps_limits: the frame lock choices */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
@@ -258,6 +261,51 @@ static TOTKSettingRow *settings_ssao_row(void) {
 static TOTKSettingRow *settings_botw_shadow_row(void);   /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
 static TOTKSettingRow *settings_botw_fov_row(void);      /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#import <AVFAudio/AVFAudio.h>
+/* The microphone (runtime/audio_input.h; user 2026-11-20, the Mac only, off by default): saved in microphone.txt, read by
+   the launcher (app/launcher.m microphone_setting). The game lists its input device when its audio starts, so the switch
+   takes effect at the next start; turning it on asks macOS for access now if it never has, so the next start does not
+   stop at the question. The game's own "Ocarina Mic Input" option is the other half. */
+static int settings_oot_mic_on(void){int v;return settings_read_int("microphone.txt",&v)&&v==1;}
+#include "audio_input.h"
+/* The 陶笛 page (user 2026-11-20: "这几首歌放在 设置里 我点击 就播放 新开 tab 叫做 陶笛"): the songs of the first part of
+   the game, played into the game's microphone at the ocarina's own pitches (A D4, C-down F4, C-right A4, C-left B4, C-up
+   D5), 0.45 s a note, while the game listens (the ocarina out, its Ocarina Mic Input on, the microphone switch on at the
+   start); the first row says which of those is missing. */
+typedef struct { const char *zh, *en, *keys; double hz[6]; } OotSong;
+static const OotSong oot_songs[] = {
+ {"塞尔达摇篮曲","Zelda's Lullaby","← ↑ → ← ↑ →",{493.88,587.33,440.0,493.88,587.33,440.0}},
+ {"艾波娜之歌","Epona's Song","↑ ← → ↑ ← →",{587.33,493.88,440.0,587.33,493.88,440.0}},
+ {"萨里亚之歌","Saria's Song","↓ → ← ↓ → ←",{349.23,440.0,493.88,349.23,440.0,493.88}},
+ {"太阳之歌","Sun's Song","→ ↓ ↑ → ↓ ↑",{440.0,349.23,587.33,440.0,349.23,587.33}},
+ {"时之歌","Song of Time","→ A ↓ → A ↓",{440.0,293.66,349.23,440.0,293.66,349.23}},
+ {"暴风雨之歌","Song of Storms","A ↓ ↑ A ↓ ↑",{293.66,349.23,587.33,293.66,349.23,587.33}},
+};
+static void settings_oot_ocarina_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+ TOTKSettingRow *state=[TOTKSettingRow new];state.title=@"";state.fullWidthText=YES;
+ state.text=^NSString *{
+  if(!dm_audio_input_available())return settings_text("麦克风没开：在“输入”页打开“麦克风吹陶笛”，再重开游戏","The microphone is off: turn on the Input page's switch, then start the game again");
+  if(dm_audio_input_playing())return settings_text("正在播放…","Playing…");
+  if(!dm_audio_input_listening())return settings_text("游戏没在听：拿出陶笛（游戏选项里也要开 Ocarina Mic Input）","The game is not listening: take out the ocarina (with the game's Ocarina Mic Input on)");
+  return settings_text("游戏在听：点“播放”把曲子吹给它","The game is listening: press Play");};
+ [rows addObject:state];
+ for(NSUInteger i=0;i<sizeof oot_songs/sizeof *oot_songs;i++){
+  const OotSong *song=&oot_songs[i];
+  TOTKSettingRow *r=[TOTKSettingRow new];r.title=@(TOTK_UI(song->zh,song->en));
+  r.text=^NSString *{return @(song->keys);};r.buttonTitle=settings_text("播放","Play");
+  r.buttonAction=^{dm_audio_input_play_notes(song->hz,6,0.45,0.1);settings_refresh_all();};
+  [rows addObject:r];
+ }
+}
+static TOTKSettingRow *settings_oot_mic_row(void) {
+ return settings_row(settings_text("麦克风吹陶笛（下次启动生效；游戏里也要开 Ocarina Mic Input）","Play the ocarina into the microphone (from the next start; also turn on the game's Ocarina Mic Input)"),nil,nil,
+  ^int{return settings_oot_mic_on();},
+  ^(int v){settings_save_int("microphone.txt",v?1:0,"microphone");
+   if(v&&AVAudioApplication.sharedInstance.recordPermission==AVAudioApplicationRecordPermissionUndetermined)
+    [AVAudioApplication requestRecordPermissionWithCompletionHandler:^(BOOL granted){fprintf(stderr,"[ns2-audio] audio input: macOS access %s\n",granted?"granted":"refused");}];});
+}
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
 /* The upscaler at the end of the frame: the game's own network or MetalFX (oot_net_bypass.inc). Takes effect on the next frame. */
 extern int netbp_flag(void); extern void netbp_set_flag(int);
 static TOTKSettingRow *settings_oot_upscaler_row(void) {
@@ -415,6 +463,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ [rows addObject:settings_oot_mic_row()];
+#endif
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */
@@ -440,6 +491,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_aniso_row()];
  [rows addObjectsFromArray:settings_effect_rows()];
  for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:i<users?SETTINGS_PAGE_USERS:SETTINGS_PAGE_EFFECTS;
+#if SETTINGS_HAS_OCARINA
+ {NSUInteger ocarina=rows.count;settings_oot_ocarina_rows(rows);for(NSUInteger i=ocarina;i<rows.count;i++)rows[i].page=SETTINGS_PAGE_OCARINA;}
+#endif
  if(vr_enabled()){   /* zeldaVR, its own page: the game's render resolution again (the display page's setting), camera, VR settings */
   NSUInteger vr=rows.count;
   if(res.count>=2)[rows addObject:settings_row(settings_text("游戏渲染分辨率","Game render resolution"),res,resModes,

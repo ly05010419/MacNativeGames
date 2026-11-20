@@ -485,6 +485,8 @@ RENDER_ROWS=('R\t','B\t','T\t')   # the warm rows that are render pipelines (sha
 MESH_ROWS=('M\t',)                 # mesh pipelines: archived since 2026-11-11 (nvn_mesh_tasks.inc mtk_archive_key)
 MESH_KEY='m'                       # their archive keys ('m' + 40 hex; render keys are hex, compute keys 'c' + hex)
 WARM_LISTS=('pso_title.tsv','pso_manifest.tsv')
+MICROPHONE_USAGE=('With the microphone switched on in the settings panel, you can play the ocarina into it '
+                  '(the game\'s Ocarina Mic Input option). Nothing is recorded or sent anywhere.')
 
 def check_archive_libraries(report, libraries):
     """The pipeline archive must be made from the libraries the App carries: Metal takes an archived pipeline only with the
@@ -634,6 +636,9 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     info=dict(CFBundleDevelopmentRegion='en',CFBundleExecutable='OcarinaOfTime',CFBundleIdentifier='org.macnativegames.oot',CFBundleName='Ocarina of Time',CFBundleDisplayName='Ocarina of Time',CFBundlePackageType='APPL',CFBundleShortVersionString='131072',CFBundleVersion='131072',LSMinimumSystemVersion='26.0',NSHighResolutionCapable=True,LSSupportsGameMode=True,GCSupportsControllerUserInteraction=True)
     icon=tree/'build/AppIcon.icns'   # the game's icon (assets/app-icon.json, made by build), as build_app.py puts it in the app
     if icon.is_file():clone_file(icon,res/'AppIcon.icns');info['CFBundleIconFile']='AppIcon'
+    # The microphone, off unless the settings panel's switch is on (runtime/audio_input.h, app/launcher.m microphone_setting):
+    # macOS shows this when it asks; without it the request ends the process
+    info['NSMicrophoneUsageDescription']=MICROPHONE_USAGE
     if game_data_mode=='library':info['MNGGameDataFolder']=str(game_data_folder)
     info['MNGShaders']=mode   # shader_mode: 'title' is a quick build, filled in by MNG Launcher's 补全着色器 (update_shaders)
     info['MNGContributionFolder']=str(contrib_folder())   # app/launcher.m contrib_file: where players find it, as build_app.py sets it
