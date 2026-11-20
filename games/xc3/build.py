@@ -426,27 +426,14 @@ def step_addons(py, work, version, dlcs, keys, logs):
     say(f'3/{STEPS} add-ons: {count} ready' if count else f'3/{STEPS} add-ons: none given')
 
 
-def make_work(work):
-    """The work folder as make sees it. The Makefile names targets under $(WORK), and make splits a target at spaces, so
-    a work folder whose path has one (a game folder named after the game) is reached through a link without spaces."""
-    if ' ' not in str(work):
-        return work
-    links = Path.home() / 'Library/Caches/MacNativeGames/xc3-work'
-    link = links / hashlib.sha256(str(work).encode()).hexdigest()[:16]
-    if ' ' in str(link):
-        raise BuildError(f'the work folder path has spaces and so does {links}: choose a work folder without spaces',
-                         code='input')
-    links.mkdir(parents=True, exist_ok=True)
-    if not (link.is_symlink() and link.resolve() == work.resolve()):
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(work, target_is_directory=True)
-    return link
-
-
 def make_args(py, work, version):
     """WORK, PY and VERSION for make, with the work folder (and the venv in it) under a path without spaces."""
-    seen = make_work(work)
+    sys.path.insert(0, str(REPO))
+    from tools.port_app.make_path import make_path
+    try:
+        seen = make_path(work, 'xc3')
+    except ValueError as e:
+        raise BuildError(str(e), code='input') from None
     return [f'WORK={seen}', f'PY={seen / Path(py).relative_to(work)}', f'VERSION={version}']
 
 

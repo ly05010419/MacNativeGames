@@ -181,16 +181,17 @@ class Reuse(unittest.TestCase):
 
     def test_make_sees_a_work_folder_with_spaces_through_a_link(self):
         plain = self.work / 'XC3_build'
-        plain.mkdir()
-        self.assertEqual(build.make_work(plain), plain)
+        (plain / 'venv/bin').mkdir(parents=True)
+        self.assertEqual(build.make_args(plain / 'venv/bin/python', plain, 'v100'),
+                         [f'WORK={plain}', f'PY={plain}/venv/bin/python', 'VERSION=v100'])
         spaced = self.work / 'Xenoblade Chronicles 3/XC3_build'
         (spaced / 'venv/bin').mkdir(parents=True)
-        link = build.make_work(spaced)
+        args = build.make_args(spaced / 'venv/bin/python', spaced, 'v221')
+        link = Path(args[0].split('=', 1)[1])
         try:
             self.assertNotIn(' ', str(link))
             self.assertEqual(link.resolve(), spaced.resolve())
-            self.assertEqual(build.make_work(spaced), link, 'the same link on the next run')
-            args = build.make_args(spaced / 'venv/bin/python', spaced, 'v221')
+            self.assertEqual(build.make_args(spaced / 'venv/bin/python', spaced, 'v221'), args, 'the same link on the next run')
             self.assertEqual(args, [f'WORK={link}', f'PY={link}/venv/bin/python', 'VERSION=v221'])
         finally:
             link.unlink()
