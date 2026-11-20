@@ -8,7 +8,7 @@ import SwiftUI
 /// "统一 b 两边数量一样", "顺序也一样"), one list here, read by HomePage.games and the iPhone's Games.all. A game
 /// without an iPhone / iPad build shows there too, its platforms line naming where it plays, and no start button.
 enum GameCatalog {
-    static let all = ["oot", "totk", "botw", "eow", "odyssey", "acnh", "dkb", "pkp", "dread", "tmnt"]
+    static let all = ["oot", "totk", "botw", "eow", "odyssey", "dkb", "acnh", "pkp", "dread", "tmnt"]   // Donkey Kong ahead of Animal Crossing (user 2026-11-20: "大金刚 往前一格")
     /// The ones with an iPhone / iPad build in this repository (games/totk/ios: totk, botw, dkb, pkp; games/oot/ios;
     /// games/dread/ios; games/tmnt/ios): the iPhone Launcher looks for their apps (their URL schemes).
     static let onIPhone = ["oot", "totk", "botw", "dkb", "pkp", "dread", "tmnt"]

@@ -130,7 +130,7 @@ class Schemes(unittest.TestCase):
         # user 2026-11-19: "为什么 mac上的 游戏数量 和 iphone不一样？？？" → "统一 b 两边数量一样", "顺序也一样": one
         # list, shared, read by both; no reordering on either side
         every = catalog('all')
-        self.assertEqual(every, ['oot', 'totk', 'botw', 'eow', 'odyssey', 'acnh', 'dkb', 'pkp', 'dread', 'tmnt'])
+        self.assertEqual(every, ['oot', 'totk', 'botw', 'eow', 'odyssey', 'dkb', 'acnh', 'pkp', 'dread', 'tmnt'])
         self.assertTrue(set(catalog('onIPhone')) <= set(every))
         home = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
         self.assertIn('static let games = GameCatalog.all', home)

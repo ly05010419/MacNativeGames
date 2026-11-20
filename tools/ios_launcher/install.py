@@ -41,7 +41,7 @@ ICON = REPO / 'tools/builder_app/Resources/AppIcon-iOS.png'   # the project icon
 RESIZE = REPO / 'tools/builder_app/resize_icon.js'        # icns -> PNG with AppKit (no sips: the build sandbox)
 GAMES = ('oot', 'totk', 'botw', 'dkb', 'pkp', 'dread', 'tmnt')   # with an iPhone / iPad build: GameStrings.swift GameCatalog.onIPhone
 # every case, both Launchers ("统一 b 两边数量一样", "顺序也一样"): GameStrings.swift GameCatalog.all
-CASES = ('oot', 'totk', 'botw', 'eow', 'odyssey', 'acnh', 'dkb', 'pkp', 'dread', 'tmnt')
+CASES = ('oot', 'totk', 'botw', 'eow', 'odyssey', 'dkb', 'acnh', 'pkp', 'dread', 'tmnt')
 # A Mac game app's bundle identifier (build_app.py APPS, games/*/build.py) -> its game
 MAC_BUNDLES = {'org.macnativegames.totk': 'totk', 'org.macnativegames.botw': 'botw', 'org.macnativegames.oot': 'oot',
                'org.macnativegames.bananza': 'dkb', 'org.macnativegames.pokopia': 'pkp',
