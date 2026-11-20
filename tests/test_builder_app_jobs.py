@@ -81,7 +81,7 @@ class Classify(unittest.TestCase):
         p = classify.plan(classify.classify([base, old, new]))
         self.assertEqual((p.game, p.base, p.update), ('totk', str(base.resolve()), str(new.resolve())))
         self.assertTrue(any('no keys' in b for b in p.blocks))
-        self.assertTrue(any('system fonts' in b for b in p.blocks))
+        self.assertTrue(p.open_fonts and not any('system fonts' in b for b in p.blocks))   # an NSP has none: the open ones, silently (2026-11-20)
         self.assertTrue(any(old.name in n for n in p.notes))
 
     def test_messages_follow_the_window_s_language(self):
@@ -91,12 +91,13 @@ class Classify(unittest.TestCase):
         with mock.patch.dict(os.environ, {'MNG_LANG': 'en'}):
             self.assertIn('no game', classify.plan(classify.classify([u])).blocks[0])
 
-    def test_a_breath_of_the_wild_card_needs_fonts_too(self):
+    def test_a_breath_of_the_wild_card_takes_the_open_fonts_too(self):
         card = self.dir / 'BotW [01007EF00011E000][v786432].xci'
         card.write_bytes(b'\0' * 0x100 + b'HEAD' + b'\0' * 60)
         p = classify.plan(classify.classify([card]))
         self.assertEqual(p.game, 'botw')
-        self.assertTrue(any('system fonts' in b or '系统字体' in b for b in p.blocks))
+        self.assertTrue(p.open_fonts)   # its card holds no fonts: the open ones, no block (user 2026-11-20)
+        self.assertFalse(any('system fonts' in b or '系统字体' in b for b in p.blocks))
 
     def test_plan_refuses_two_games(self):
         a = pfs0(self.dir / 'a [0100F2C0115B6000].nsp')

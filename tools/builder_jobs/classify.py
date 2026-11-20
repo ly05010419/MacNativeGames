@@ -418,13 +418,12 @@ def _plan(items, work=None, open_fonts=False):
                        'the open-source fonts',
                        '这个卡带镜像没有系统更新分区（合并或精简过的卡带，“1G+1U”），所以没有系统字体：把解开的固件文件夹'
                        '（或以前打包留下的 shared-fonts 文件夹）也放进来，或者用开源字体')
-    # 用开源字体 (user 2026-11-18): Ocarina of Time's open-source stand-ins (tools/deps/open_fonts.py) for every game
-    if font_block and open_fonts:
+    # No system fonts: the open-source stand-ins (tools/deps/open_fonts.py, Ocarina of Time's), at once and without a word
+    # (user 2026-11-20: "如果遇到 没有字体的情况下 自动使用 开源字体 … 不要报错 不要提示 直接顺利安装"; until then a block
+    # with the 用开源字体 button, 2026-11-18). Fonts the player drops (firmware, shared-fonts) still win: with them there
+    # is no font_block. open_fonts (the button's) is kept for callers that pass it and changes nothing now.
+    if font_block:
         p.open_fonts = True
-        p.notes.append(open_fonts_note())
-    elif font_block:
-        p.blocks.append(font_block)
-        p.font_block = font_block
     if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
         p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
     if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
