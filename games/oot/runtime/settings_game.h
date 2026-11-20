@@ -281,10 +281,12 @@ static const OotSong oot_songs[] = {
  {"时之歌","Song of Time","→ A ↓ → A ↓",{440.0,293.66,349.23,440.0,293.66,349.23}},
  {"暴风雨之歌","Song of Storms","A ↓ ↑ A ↓ ↑",{293.66,349.23,587.33,293.66,349.23,587.33}},
 };
+static TOTKSettingRow *settings_oot_mic_row(void);   /* below */
 static void settings_oot_ocarina_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+ [rows addObject:settings_oot_mic_row()];   /* the microphone switch heads the page (user 2026-11-20: "放在 陶笛tab里") */
  TOTKSettingRow *state=[TOTKSettingRow new];state.title=@"";state.fullWidthText=YES;
  state.text=^NSString *{
-  if(!dm_audio_input_available())return settings_text("麦克风没开：在“输入”页打开“麦克风吹陶笛”，再重开游戏","The microphone is off: turn on the Input page's switch, then start the game again");
+  if(!dm_audio_input_available())return settings_text("麦克风没开：打开上面的“麦克风吹陶笛”，再重开游戏","The microphone is off: turn on the switch above, then start the game again");
   if(dm_audio_input_playing())return settings_text("正在播放…","Playing…");
   if(!dm_audio_input_listening())return settings_text("游戏没在听：拿出陶笛（游戏选项里也要开 Ocarina Mic Input）","The game is not listening: take out the ocarina (with the game's Ocarina Mic Input on)");
   return settings_text("游戏在听：点“播放”把曲子吹给它","The game is listening: press Play");};
@@ -463,9 +465,6 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
-#if defined(GAME_OOT) && !TARGET_OS_IPHONE
- [rows addObject:settings_oot_mic_row()];
-#endif
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */

@@ -36,9 +36,12 @@ class Microphone(unittest.TestCase):
         self.assertTrue(MAC.rstrip().endswith('#endif'))
         phone = HEADER[HEADER.index('#else'):HEADER.index('#endif')]
         self.assertIn('device_available(void) { return 0; }', phone)   # the iPhone / iPad list nothing
-        self.assertIn('[rows addObject:settings_oot_mic_row()];', SETTINGS)
-        row = SETTINGS[SETTINGS.rindex('#if', 0, SETTINGS.index('[rows addObject:settings_oot_mic_row()];')):]
-        self.assertTrue(row.startswith('#if defined(GAME_OOT) && !TARGET_OS_IPHONE'))
+        # the switch heads the 陶笛 page (user 2026-11-20), the Mac's only (SETTINGS_HAS_OCARINA under !TARGET_OS_IPHONE)
+        ocarina = SETTINGS[SETTINGS.index('static void settings_oot_ocarina_rows('):]
+        self.assertTrue(ocarina.split('\n')[1].strip().startswith('[rows addObject:settings_oot_mic_row()];'))
+        self.assertEqual(SETTINGS.count('[rows addObject:settings_oot_mic_row()];'), 1)   # not on the Input page too
+        self.assertIn('#if !TARGET_OS_IPHONE\n#define SETTINGS_HAS_OCARINA 1', SETTINGS)
+        self.assertIn('rows[i].page=SETTINGS_PAGE_OCARINA', SETTINGS)
 
     def test_permission_is_asked_before_the_game_and_described(self):
         setting = LAUNCHER[LAUNCHER.index('static void microphone_setting(NSString *data) {'):]
