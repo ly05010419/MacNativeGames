@@ -175,7 +175,7 @@ def cmd_page(a):
 
 STATES = {'ok': t('ok', '已迁移'), 'move': t('to move', '要搬移'), 'record': t('to record', '要记录'),
           'later': t('at its next full build', '下次完整打包时'), 'unreachable': t('disk missing', '盘没接上'),
-          'make': t('to make', '要生成')}
+          'download': t('to download', '要下载'), 'other': t('another checkout', '另一份源码')}
 
 
 def print_migration(report):
@@ -200,7 +200,7 @@ def cmd_migrate(a):
     def run_update(app, work):
         print(t(f'== recording {work} in {app} (express update)', f'== 把 {work} 记进 {app}（极速更新）'), flush=True)
         return build_job.start({'update': app, 'work': work}, Words(a.json), HISTORY, source=a.source)
-    for what, result in migrate.apply(report, run_update, migrate.make_launcher):
+    for what, result in migrate.apply(report, run_update):
         print(f'{what}: {result}')
     after = migrate.check(installed(a.apps_dir))
     print_migration(after)
@@ -213,10 +213,9 @@ def cmd_open(a):
     if not report['done']:   # an AI opens the Launcher only on a migrated Mac (user 2026-11-12)
         print_migration(report)
         return 1
-    app = Path.home() / 'Applications/MNG Launcher.app'
+    app = migrate.LAUNCHER   # the released one in Applications, else a development one in ~/Applications
     if not app.is_dir():
-        raise SystemExit(t('MNG Launcher is not made yet: python3 tools/builder_app/make_app.py',
-                           '还没有 MNG Launcher：先运行 python3 tools/builder_app/make_app.py'))
+        raise SystemExit(migrate.launcher_state()['reason'])
     return subprocess.run(['/usr/bin/open', '-a', str(app), *[str(Path(f).expanduser()) for f in a.files]]).returncode
 
 

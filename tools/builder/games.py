@@ -114,7 +114,7 @@ ODYSSEY = GameSpec(
 )
 
 # The games MNG Launcher's game pages serve, and which pages each has (tools/builder_jobs/tabs.py TABS; the window shows
-# these only: tools/builder_app Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
+# these only: MNG-Launcher mac/ Model.swift gamePages). Ocarina of Time (user 2026-11-13): Controls, Storage and Saves;
 # its Settings and Mods are not written for it yet.
 PAGE_GAMES = {**GAMES, OOT.id: OOT, ACNH.id: ACNH, EOW.id: EOW, ODYSSEY.id: ODYSSEY}
 # 诊断模式 (2026-11-13) was removed 2026-11-15 (user: "去掉诊断模式 快速启动 默认带诊断"): a quick App starts with its

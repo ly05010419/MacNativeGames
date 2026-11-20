@@ -7,23 +7,35 @@ Migrated means:
 - every installed game app records its work folder (MNGWorkFolder), and that folder obeys the Folders rule: outside this
   checkout and outside the folder that holds the app, on the app's disk (its parent there, at least: a deleted work
   folder is made again by the next update);
-- MNG Launcher is made, from this checkout, with a window no older than this checkout's tools/builder_app.
+- MNG Launcher is installed: the released one (downloaded), or a development one made against this checkout. The
+  Launcher's code is not in this repository (user 2026-11-20: in a private repository of its own; "普通用户 只能下载
+  launcher"), so it is never made from here.
 A work folder elsewhere that obeys the rule is migrated (it need not be MacNativeGames-work/<game>, the default).
 
 --apply, one app at a time (the Mac's one job, shared.py): a work folder that breaks the rule is renamed to
 build_app.default_work's place (MacNativeGames-work/<game> beside the apps folder) when that is on the same disk (instant,
 nothing copied), then the express update records it (update_runtime.py --work); an app that records none gets the
 express update with that folder. A game whose next update is a full build (Bananza, Pokopia, another version) is not
-blocking: its next full build, which needs the game files, puts the work folder there. A stale MNG Launcher is made again."""
+blocking: its next full build, which needs the game files, puts the work folder there."""
 import os
 from pathlib import Path
 import plistlib
-import subprocess
 
 from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
 
-LAUNCHER = Path(os.environ.get('MNG_LAUNCHER_APP') or Path.home() / 'Applications/MNG Launcher.app')   # tests move it
+# where the released Launcher is put (the DMG: Applications) or a development one is made (~/Applications)
+DOWNLOAD = 'https://github.com/ly05010419/MacNativeGames/releases?q=launcher-v'
+
+
+def _launcher():
+    if os.environ.get('MNG_LAUNCHER_APP'):   # tests move it
+        return Path(os.environ['MNG_LAUNCHER_APP'])
+    places = [Path('/Applications/MNG Launcher.app'), Path.home() / 'Applications/MNG Launcher.app']
+    return next((p for p in places if p.is_dir()), places[0])
+
+
+LAUNCHER = _launcher()
 # the work folder an app built before 31 October 2026 used, next to the app (update_runtime.py's fallback)
 LEGACY = {'totk': 'TOTK_build', 'botw': 'BotW_build', 'oot': 'OcarinaOfTime_build'}
 
@@ -89,23 +101,22 @@ def _rule_place(b, app, game):
 
 
 def launcher_state():
-    """{state: ok|make, reason}: MNG Launcher made from this checkout, with a window as new as tools/builder_app here."""
+    """{state: ok|download|other, reason}: MNG Launcher installed, the released one (it runs its own source, and its signed
+    code updates) or a development one made against this checkout (MNGRepo). Never made from here: its code is not in
+    this repository (user 2026-11-20)."""
     try:
         info = plistlib.loads((LAUNCHER / 'Contents/Info.plist').read_bytes())
-    except Exception:   # not made yet, or unreadable
-        return {'state': 'make', 'reason': t('MNG Launcher is not made yet', '还没有生成 MNG Launcher')}
-    digest = info.get('MNGSourceArchiveSHA256')
-    if digest and (repo.REPO / '.ready').is_file() and (repo.REPO / '.ready').read_text().strip() == digest:
-        return {'state': 'ok', 'reason': t('using the Launcher release source', '使用 Launcher 发布版配套源码')}
+    except Exception:   # not installed, or unreadable
+        return {'state': 'download', 'reason': t(f'MNG Launcher is not installed: download it ({DOWNLOAD}) and drag it '
+                                                 'into Applications', f'还没有安装 MNG Launcher：先下载（{DOWNLOAD}），'
+                                                 '拖进“应用程序”')}
+    if info.get('MNGSourceArchiveSHA256'):
+        return {'state': 'ok', 'reason': t('the released Launcher', 'Launcher 发布版')}
     if Path(info.get('MNGRepo', '')).resolve() != repo.REPO.resolve():
-        return {'state': 'make', 'reason': t(f'MNG Launcher runs another checkout ({info.get("MNGRepo")})',
-                                             f'MNG Launcher 用的是另一份源码（{info.get("MNGRepo")}）')}
-    commit = info.get('MNGSourceCommit', '')
-    same = commit and subprocess.run(['git', '-C', str(repo.REPO), 'diff', '--quiet', commit, 'HEAD', '--',
-                                      'tools/builder_app'], capture_output=True).returncode == 0
-    if not same:
-        return {'state': 'make', 'reason': t('its window is older than this checkout', '它的窗口比这份源码旧')}
-    return {'state': 'ok', 'reason': t('made from this checkout', '由这份源码生成')}
+        return {'state': 'other', 'reason': t(f'MNG Launcher runs another checkout ({info.get("MNGRepo")}): install the '
+                                              f'released one ({DOWNLOAD})', f'MNG Launcher 用的是另一份源码（'
+                                              f'{info.get("MNGRepo")}）：装 Launcher 发布版（{DOWNLOAD}）')}
+    return {'state': 'ok', 'reason': t('a development Launcher of this checkout', '用这份源码的开发版 Launcher')}
 
 
 def check(apps=None):
@@ -120,8 +131,9 @@ def check(apps=None):
     return {'apps': items, 'launcher': launcher, 'done': not blocking and launcher['state'] == 'ok'}
 
 
-def apply(report, run_update, make_launcher):
-    """Do what check() found, one app at a time; a list of (app or 'MNG Launcher', what happened)."""
+def apply(report, run_update):
+    """Do what check() found, one app at a time; a list of (app or 'MNG Launcher', what happened). A Launcher that is
+    missing is only said: it is downloaded, never made here."""
     done = []
     for item in report['apps']:
         if item['state'] not in ('move', 'record'):
@@ -143,13 +155,6 @@ def apply(report, run_update, make_launcher):
         code = run_update(item['app'], str(target))
         done.append((item['app'], t('moved and recorded' if code == 0 else f'the update stopped (exit {code})',
                                     '已搬移并记录' if code == 0 else f'更新停下了（退出码 {code}）')))
-    if report['launcher']['state'] == 'make':
-        code = make_launcher()
-        done.append(('MNG Launcher', t('made' if code == 0 else f'make_app.py stopped (exit {code})',
-                                       '已生成' if code == 0 else f'make_app.py 停下了（退出码 {code}）')))
+    if report['launcher']['state'] != 'ok':
+        done.append(('MNG Launcher', report['launcher']['reason']))
     return done
-
-
-def make_launcher():
-    return subprocess.run(['/usr/bin/python3', str(repo.REPO / 'tools/builder_app/make_app.py'), '-o', str(LAUNCHER)],
-                          cwd=repo.REPO).returncode

@@ -16,7 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / 'games/totk/runtime/mng_active.h'
-SWIFT = ROOT / 'tools/builder_app/Sources/MNGBuilder/UsageStats.swift'
+# the Launcher's half (UsageStats.swift: the same files, address and fields) is checked in MNG-Launcher, its own
+# repository since 2026-11-20 (tests/test_porting_contract.py)
 # each game's start: (file, the call it makes)
 STARTS = {
     'games/totk/runtime/frontend.m': 'mng_active_start(@GAME_INBOX_ID, mng_active_version());',
@@ -83,18 +84,6 @@ class Wiring(unittest.TestCase):
         # a new game's Mac front end must report too: add it to STARTS
         fronts = {str(p.relative_to(ROOT)) for p in [*ROOT.glob('games/*/runtime/frontend.m'), *ROOT.glob('games/*/runtime/host/front_mac.m')]}
         self.assertEqual(sorted(fronts - set(STARTS)), [])
-
-    def test_the_launcher_uses_the_same_files_address_and_fields(self):
-        swift, header = SWIFT.read_text(), HEADER.read_text()
-        self.assertIn('https://mac-native-games.com/v1/ping', swift)
-        self.assertIn('#define MNG_ACTIVE_URL "https://mac-native-games.com/v1/ping"', header)
-        for name in ('install-id.txt', 'usage-stats-off', 'usage-sent', 'Library/Application Support/MacNativeGames', 'MNG_HOME'):
-            self.assertIn(name, swift, name)
-            self.assertIn(name, header, name)
-        self.assertIn('["install": id, "app": app, "platform": "mac", "version": version]', swift)
-        app = (ROOT / 'tools/builder_app/Sources/MNGBuilder/App.swift').read_text()
-        self.assertIn('UsageStats.start()', app)
-        self.assertIn('Settings { UsageStatsSettings() }', app)   # MNG Launcher > Settings…: the switch
 
     def test_the_ios_panes_have_the_switch_on_by_default(self):
         for path in PANES:

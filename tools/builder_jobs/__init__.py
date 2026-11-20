@@ -1,4 +1,4 @@
-"""The job layer of the drag-and-drop builder app (tools/builder_app): everything that touches files and processes, behind
+"""The job layer of the drag-and-drop builder app (MNG Launcher, its own repository MNG-Launcher since 2026-11-20): everything that touches files and processes, behind
 a command line that the window runs and reads line by line.
 
   python -m tools.builder_jobs classify <path>...     one JSON object: what each dropped file is, and the plan for a build

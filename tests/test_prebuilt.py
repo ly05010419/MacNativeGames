@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import build_app  # noqa: E402
 from tools import prebuilt  # noqa: E402
-from tools.builder_app import make_app  # noqa: E402
+# a release's source.tar.gz carrying .prebuilt (make_app.source_archive) is checked in MNG-Launcher, the Launcher's own
+# repository since 2026-11-20 (tests/test_porting_contract.py SourceArchive)
 
 
 def source_with(root, programs, commit='c0ffee', manifest_commit=None):
@@ -257,37 +258,6 @@ class GamesTheProgramsDoNotCover(unittest.TestCase):
                 clang.parent.mkdir(parents=True)
                 clang.write_text('')
                 self.assertFalse(classify.no_developer_tools())
-
-
-class SourceArchive(unittest.TestCase):
-    def test_the_archive_carries_the_folder(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / 'repo'; repo.mkdir()
-            def git(*args):
-                return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
-            git('init', '-q')
-            for name in ('build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
-                         'tools/builder_app/source_updates.py', 'tools/builder_app/source_signing.pub',
-                         'tools/builder_app/launcher_update.py',
-                         'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
-                         'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py'):
-                (repo / name).parent.mkdir(parents=True, exist_ok=True)
-                (repo / name).write_text('# fixture\n')
-            git('add', '.')
-            git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'x')
-            folder = Path(tmp) / 'p/.prebuilt'; folder.mkdir(parents=True)
-            (folder / 'manifest.json').write_text('{}'); (folder / 'hactool').write_bytes(b'hac')
-            archive = Path(tmp) / 'source.tar.gz'
-            make_app.source_archive(repo, archive, prebuilt=folder)
-            with tarfile.open(archive) as tar:
-                names = tar.getnames()
-                self.assertIn('build_app.py', names)
-                self.assertIn('.prebuilt/hactool', names)
-                self.assertEqual(tar.getmember('.prebuilt/hactool').uname, '')
-
-    def test_a_portable_launcher_carries_them(self):
-        text = (ROOT / 'tools/builder_app/make_app.py').read_text()
-        self.assertIn("source_archive(REPO, stage / 'Contents/Resources/source.tar.gz', prebuilt=programs)", text)
 
 
 if __name__ == '__main__':

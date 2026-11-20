@@ -52,9 +52,7 @@ class Wiring(unittest.TestCase):
         # the data folder under MacNativeGames (shared/app/app_launcher.h launcher_data_folder's last argument)
         self.assertIn(f'"{games.EOW.data_folder}")', (ROOT / 'games/eow/app/launcher.c').read_text())
         self.assertEqual(games.PAGES['eow'], ('controls', 'storage', 'saves'))
-        self.assertIn('"eow": ["controls", "storage", "saves"]', (ROOT / 'tools/builder_app/Sources/MNGBuilder/Model.swift').read_text())
-        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/GameStrings.swift').read_text()   # GameCatalog, both Launchers
-        self.assertIn('"eow"', re.search(r'static let all = \[[^\]]*\]', swift).group(0))
+        # the window's pages and its case (Model.swift, GameCatalog): checked in MNG-Launcher (tests/test_porting_contract.py)
 
 
 class UpdateBlocker(unittest.TestCase):

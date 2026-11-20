@@ -1,4 +1,4 @@
-"""The depth model the Launcher's case pictures are parted by (tools/builder_app/Sources/MNGBuilder/DepthScene.swift),
+"""The depth model the Launcher's case pictures are parted by (MNG-Launcher mac/Sources/MNGBuilder/DepthScene.swift),
 fetched once per Mac into the deps cache, each file checked against the SHA-256 pins.py names.
 
     from tools.deps.depth_model import depth_model

@@ -259,15 +259,8 @@ class StorageTab(unittest.TestCase):
         self.assertIn('build or an update is running', answer['error'])
         self.assertTrue((build / 'shader-bundles/ShaderData.bundle.previous-1').is_dir())
 
-    def test_the_page_s_button_is_the_safe_clean(self):
-        page = (REPO / 'tools/builder_app/Sources/MNGBuilder/StorageTab.swift').read_text()
-        self.assertIn('static let safeClean = T.s("Free space safely", "安全清理空间")', page)
-        self.assertIn('"storage", "safe_clean"', page)
-        self.assertIn('if f.prunable == true', page)
-        clean = page[page.index('private func safeClean()'):]
-        self.assertLess(clean.index('await load()'), clean.index('await measure("work")'))   # the size now, after it
-        self.assertNotIn('"storage", "clean"', page)                          # emptying it is the command line's only
-        self.assertNotIn('confirmationDialog', page)
+    # the page's button is this safe clean (StorageTab.swift): checked in MNG-Launcher, its own repository since
+    # 2026-11-20 (tests/test_porting_contract.py)
 
     def test_the_page_speaks_chinese(self):
         with mock.patch.dict(os.environ, {'MNG_LANG': 'zh'}):

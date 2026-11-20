@@ -61,7 +61,7 @@ OPEN_FONTS = (
     (5, 'nintendo-extension', 'notosanssymbols2/NotoSansSymbols2-Regular.ttf', '7d5fb73b7ca67a6798101741f5d280a3d016a56a197afcd4199dbb57b4b82a21'),
 )
 OPEN_FONTS_LICENSE = ('notosanssc/OFL.txt', '1c05c68c34f9708415aada51f17e1b0092d2cea709bf4a94cd38114f9e73d7d9')
-# The Launcher's case pictures in depth (tools/deps/depth_model.py; tools/builder_app DepthScene.swift; user 2026-11-19
+# The Launcher's case pictures in depth (tools/deps/depth_model.py; MNG-Launcher DepthScene.swift; user 2026-11-19
 # "做一个 mac上 我看看" a phone's spatial scene, "好 做"): Depth Anything V2 Small, Apple's Core ML conversion on Hugging
 # Face at a fixed commit, the 8-bit palettized float16 package (25 MB). The small model alone is Apache-2.0 (its larger
 # ones are not); the licence text is the upstream repository's, at a fixed commit. (path, sha256)

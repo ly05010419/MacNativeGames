@@ -69,7 +69,7 @@ class Migrate(unittest.TestCase):
         (self.apps / 'TOTK_build').mkdir()
         entry = [{'app': str(app), 'name': 'TotK', 'game': 'totk', 'kind': 'express'}]
         self.assertFalse(self.check(entry)['done'])
-        self.assertFalse(self.check([], launcher='make')['done'])
+        self.assertFalse(self.check([], launcher='download')['done'])
         self.assertTrue(self.check([])['done'])
 
     def test_apply_renames_on_the_same_disk_then_records_with_an_update(self):
@@ -79,7 +79,7 @@ class Migrate(unittest.TestCase):
         app = self.app(old)
         report = self.check([{'app': str(app), 'name': 'TotK', 'game': 'totk', 'kind': 'express'}])
         updates = []
-        done = migrate.apply(report, lambda a, w: updates.append((a, w)) or 0, lambda: 0)
+        done = migrate.apply(report, lambda a, w: updates.append((a, w)) or 0)
         target = self.tmp / 'disk/MacNativeGames-work/totk'
         self.assertEqual((target / 'marker').read_text(), 'x')
         self.assertFalse(old.exists())
@@ -92,9 +92,42 @@ class Migrate(unittest.TestCase):
         (self.tmp / 'disk/MacNativeGames-work/totk').mkdir(parents=True)
         report = self.check([{'app': str(self.app(old)), 'name': 'TotK', 'game': 'totk', 'kind': 'express'}])
         updates = []
-        migrate.apply(report, lambda a, w: updates.append(a) or 0, lambda: 0)
+        migrate.apply(report, lambda a, w: updates.append(a) or 0)
         self.assertTrue(old.is_dir())
         self.assertEqual(updates, [])
+
+
+class Launcher(unittest.TestCase):
+    """The Launcher is installed, never made here (user 2026-11-20: its code is in a private repository of its own;
+    "普通用户 只能下载launcher"): the released one, or a development one made against this checkout."""
+
+    def state(self, info):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / 'MNG Launcher.app'
+            if info is not None:
+                (app / 'Contents').mkdir(parents=True)
+                (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with mock.patch.object(migrate, 'LAUNCHER', app):
+                return migrate.launcher_state()
+
+    def test_the_released_launcher_is_enough(self):
+        self.assertEqual(self.state({'MNGSourceArchiveSHA256': 'a' * 64})['state'], 'ok')
+
+    def test_a_development_launcher_of_this_checkout_is_enough(self):
+        self.assertEqual(self.state({'MNGRepo': str(REPO)})['state'], 'ok')
+
+    def test_one_of_another_checkout_is_not(self):
+        self.assertEqual(self.state({'MNGRepo': '/elsewhere/MacNativeGames'})['state'], 'other')
+
+    def test_none_says_where_to_download_it(self):
+        s = self.state(None)
+        self.assertEqual(s['state'], 'download')
+        self.assertIn(migrate.DOWNLOAD, s['reason'])
+
+    def test_apply_makes_nothing(self):
+        done = migrate.apply({'apps': [], 'launcher': {'state': 'download', 'reason': 'x'}}, lambda a, w: 0)
+        self.assertEqual(done, [('MNG Launcher', 'x')])
+        self.assertFalse(hasattr(migrate, 'make_launcher'))
 
 
 if __name__ == '__main__':

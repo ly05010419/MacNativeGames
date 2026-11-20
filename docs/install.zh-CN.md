@@ -60,10 +60,8 @@ ZIP 保留为备选。正式下载版已经签名并通过 Apple 公证，用户
 它自带 Python 和配套构建脚本，无需手动下载源码。打包游戏仍需要开发工具和你自己的游戏文件。
 更新下载版时换成新版 Launcher，界面和配套脚本一起更新。
 
-只有主动选择从源码生成开发版时，才执行：
-
-运行 `python3 tools/builder_app/make_app.py` 生成 `~/Applications/MNG Launcher.app`。它自带 Python，运行的是这个文件夹里的代码，所以 `git pull` 之后不用重新生成，除非窗口本身改了。
-本地版本由脚本自动做 ad-hoc 临时签名，无需开发者账号或证书。不要用这个命令覆盖或重新签名正式下载版。
+MNG Launcher 只提供下载：它的代码不在这个仓库里（2026 年 11 月 20 日起单独管理，放在自己的仓库）。用源码的玩家，窗口也用下载的
+Launcher，终端里用下面的 `tools/mng.py` 做同样的事。
 
 - **游戏**（第一页，顶部没有标签栏）：每个游戏一张卡片。打包过的游戏显示它自己 App 的图片；点它出现右上角绿色的大按钮**启动游戏**，以及更新按钮，按能用的最快的一种命名：**极速更新**或**快速更新**（不用游戏文件），或**完整打包**（进入打包步骤，要游戏文件）；还有它的各页（点按钮就在下面展开）。没打包的游戏显示加号：点它进入打包三步，第一步拖入游戏文件，第二步选 `prod.keys`，第三步点**打包并游玩**，全程显示进度。用 `open -a "MNG Launcher" "<游戏文件>" "<更新>" "<prod.keys>"` 打开，会直接进入打包三步，第一、二步自动填好。
 - 打包过的游戏在卡片下面展开的各页：**设置**（王国之泪 1.4.3、旷野之息 1.9.0 的开局设置，和游戏里的设置面板是同一份：每项显示你的设置，没设过的显示游戏默认值；点**启动游戏**就按这些设置启动）、**模组**（你自己的模组，对照你的 App 检查，用仓库自己的安装器装；不带任何模组）、**按键**（手柄布局、按键图标、按键测试）、**存储**（工作目录：大小和清理；着色器缓存：位置和大小；点**计算空间占用大小**才计算，之前显示上次算的结果）、**存档**（备份和恢复）。旧窗口（`Build Game.command`）已经去掉，由这几页代替。细节见 [builder-app.md](builder-app.md)；改代码的人看 [builder.md](builder.md)。
@@ -269,11 +267,11 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 
 适用于 2026 年 11 月 12 日以前用 `build_app.py` 或旧窗口（`Build Game.command`）打过游戏的玩家。下面的步骤不用重新打包，也不用游戏文件和密钥，除非某一步写明要。先关掉游戏。
 
-**用 AI（或在终端里）迁移只要一条命令，而且必须最先做：** `python3 tools/mng.py migrate` 列出每个游戏 App 和 MNG Launcher 还差什么；`python3 tools/mng.py migrate --apply` 把它做完（把不符合规则的工作目录在同一个盘上改名到 `MacNativeGames-work/<游戏>`，每个游戏用一次极速更新记下来，生成或重新生成 MNG Launcher）。迁移完成指：每个 App 都记录了符合规则的工作目录（不在源码目录和放 App 的文件夹里、和 App 在同一个盘上），并且 MNG Launcher 是由这份源码生成的；下次本来就要完整打包的游戏（大金刚、Pokopia、换版本的）不卡这一步。迁移完成后才打开 MNG Launcher：在那之前 `python3 tools/mng.py open` 会拒绝。下面是手动做的同样步骤。
+**用 AI（或在终端里）迁移只要一条命令，而且必须最先做：** `python3 tools/mng.py migrate` 列出每个游戏 App 和 MNG Launcher 还差什么；`python3 tools/mng.py migrate --apply` 把它做完（把不符合规则的工作目录在同一个盘上改名到 `MacNativeGames-work/<游戏>`，每个游戏用一次极速更新记下来；没装 MNG Launcher 只提示去哪下载）。迁移完成指：每个 App 都记录了符合规则的工作目录（不在源码目录和放 App 的文件夹里、和 App 在同一个盘上），并且装了 MNG Launcher（下载的那个）；下次本来就要完整打包的游戏（大金刚、Pokopia、换版本的）不卡这一步。迁移完成后才打开 MNG Launcher：在那之前 `python3 tools/mng.py open` 会拒绝。下面是手动做的同样步骤。
 
 1. **更新代码。** 在 `MacNativeGames` 文件夹里运行 `git pull`（ZIP 下载的就重新下载）。`Build Game.command` 已经删掉，它的几页都搬进了 MNG Launcher。
 2. **Python。** 已经装了 Python 3.14 的照旧用。新 Mac 只要装 <https://www.python.org/downloads/macos/> 的安装包；不再需要 Homebrew（opus、libvpx、dav1d、XcodeGen、CMake 等编译工具由打包自己下载固定版本）。
-3. **生成 MNG Launcher：** `python3 tools/builder_app/make_app.py`，然后打开 `~/Applications/MNG Launcher.app`。它运行的是这个文件夹里的代码，以后 `git pull` 就够了；只有窗口本身有改动时才要重新生成。
+3. **安装 MNG Launcher：** 从 [GitHub Releases](https://github.com/ly05010419/MacNativeGames/releases?q=launcher-v) 下载它的 DMG，把 **MNG Launcher.app** 拖进“应用程序”再打开。它用自己的更新按钮更新，不再从这个文件夹生成。
 4. **你的游戏会自动列出来**：第一页的卡片就是它们，带各自的图片（macOS 知道的所有王国之泪、旷野之息、时之笛、大金刚、Pokopia 的 App）。点卡片，按钮写着它能用的更新，比如**极速更新**：不用游戏文件。
 5. **把每个游戏的工作目录放到规定的位置**（规则见英文版 [install.md 的 Folders 一节](install.md#folders)）：放 App 的文件夹旁边的 `MacNativeGames-work/<游戏>`，比如 App 在 `~/Applications`，就是 `~/MacNativeGames-work/totk`。打开**存储**页，选游戏，看它的工作目录：
 

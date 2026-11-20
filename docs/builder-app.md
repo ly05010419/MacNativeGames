@@ -9,6 +9,11 @@ Its Settings, Mods, Controls, Storage and Saves pages (opened under a game's car
 behind them stay in `tools/builder`, the models the pages call through `tools/builder_jobs/tab_*.py`
 ([builder.md](builder.md)).
 
+From 20 November 2026 the window's own code (the SwiftUI app, the files its signed release carries, the iPhone / iPad
+Launcher) is kept apart from the porting code, in a repository of its own that is not public; players download the
+Launcher. What it runs stays here: `tools/builder_jobs`, `tools/builder`, `tools/mng.py`, `build_app.py` and the games,
+which a release carries as its source and its code updates replace.
+
 ## Download builds
 
 The recommended download on GitHub Releases is `MNG-Launcher-<version>-macOS-arm64.dmg`.
@@ -44,9 +49,9 @@ two days earlier). From 1.0.2 the Launcher also runs newer code from signed sour
   with three files: `mng-source.json` (commit, commit time, archive name, SHA-256 and size, the oldest Launcher it works
   with), `mng-source.json.sig` (its Ed25519 signature) and `mng-source-<commit>.tar.gz` (`git archive` of the commit).
   The private key stays in the maintainer's keychain; nothing is published automatically.
-- **Checked by the signed app.** `tools/builder_app/source_updates.py` and `bundled_job.py` ship inside the signed
-  Launcher, never inside a source archive. A release is used only when the signature verifies with the public key in the
-  Launcher's own `Info.plist` (`MNGSourcePublicKey`, from `tools/builder_app/source_signing.pub`), the archive has the
+- **Checked by the signed app.** `source_updates.py` and `bundled_job.py` (the Launcher's own repository) ship inside the
+  signed Launcher, never inside a source archive. A release is used only when the signature verifies with the public key
+  in the Launcher's own `Info.plist` (`MNGSourcePublicKey`, from the Launcher's `source_signing.pub`), the archive has the
   size and SHA-256 the manifest names, its commit is newer than the Launcher's own source, and it asks for no newer
   Launcher (otherwise the update's log says which Launcher to download).
 - **When.** The home page reads the release list at most once in ten minutes and downloads new code in the background;
@@ -67,7 +72,7 @@ Launcher with the update button does it in one click:
 - **The button.** At the home page's top right, only while a newer `launcher-v*` release is out (the same read of the
   release list as above, no other request). It is off while a build or a game's update runs: those use the Python
   inside the app.
-- **What a click does.** `tools/builder_app/launcher_update.py`, shipped inside the signed app beside
+- **What a click does.** `launcher_update.py` (the Launcher's own repository), shipped inside the signed app beside
   `source_updates.py`, downloads the release's `MNG-Launcher-<version>-macOS-arm64.zip` from GitHub, unpacks it and
   takes the app only when all of this holds: the archive is the size the release list names and holds the app alone (no
   name or link that would land outside it); the app says this bundle ID and that version, higher than the running one;
@@ -90,48 +95,14 @@ after the start. No check of the download changes: a Developer ID Launcher still
 team. `tests/test_launcher_self_update.py` runs the whole update and every refusal with small apps signed ad hoc, and
 with `MNG_TEST_LAUNCHER_RELEASES=<folder of <version>/release/>` with two real signed releases.
 
-## Build a portable copy locally
+## Where the Launcher comes from
 
-Local compilation is supported independently of the maintainer's signing credentials and release tools.
-It automatically uses an ad-hoc signature and needs no Developer ID certificate or developer membership.
-Choose this route only for a source build; do not replace an official downloaded Launcher as an installation step.
-Use an Apple silicon Mac with the command line tools. Commit the source you want to bundle first, then run:
-
-```sh
-python3 tools/builder_app/make_app.py --portable --version 1.0.0 \
-  --scratch /path/outside-checkout/swift \
-  -o '/path/outside-checkout/MNG Launcher.app' \
-  --zip /path/outside-checkout/MNG-Launcher-1.0.0-macOS-arm64.zip
-```
-
-This makes an **ad-hoc signed local build**, not an Apple-notarized official download. Outputs must be outside
-the checkout. The builder refuses dirty tracked source, missing required dependencies and local instruction/key
-files; untracked and ignored files are never included. ZIP creation preserves symlinks and ordinary resources,
-while omitting extended attributes so Archive Utility cannot add AppleDouble (`._`) files.
-
-Run its regression tests with:
-
-```sh
-python3 -m pip install -r games/totk/requirements.txt
-python3 -m unittest discover -s tests -p 'test_launcher_*.py' -v
-```
-
-The **Validate Launcher preview (not notarized)** Actions workflow runs these tests, builds the portable app and
-stores its ZIP as a short-lived Actions artifact for testing. It does not publish a GitHub Release.
-Official signing, notarization and release automation are maintained separately from this repository.
-
-## Make a development app
-
-With the Xcode command line tools (`xcode-select --install`) and this checkout:
-
-```sh
-python3 tools/builder_app/make_app.py            # -> ~/Applications/MNG Launcher.app
-```
-
-It builds the window with `swift build`, puts a Python 3.14 inside the app (python-build-standalone 20261021, checked
-against its pinned SHA-256, plus `cryptography` at the build's own pin), records this checkout's path in its
-`Info.plist` (`MNGRepo`) and signs it ad hoc. About 40 seconds and 93 MB. The app runs the checkout it was made from:
-after `git pull`, the next build uses the new code; make the app again only when `tools/builder_app` changed.
+Only from its releases: the DMG (or ZIP) on GitHub Releases, signed and notarized, which updates itself from its button.
+It is no longer made from this checkout (its code is in its own repository since 2026-11-20). A release carries the
+committed source of one MacNativeGames commit (`source.tar.gz`, with that commit's `.prebuilt` programs) and runs it; a
+signed source release (`source-*`) replaces it later, as above. The engine's tests are this repository's own
+(`python3 -m unittest discover -s tests`); the window's are in the Launcher's repository, with the checks of what the
+window and this engine must agree on.
 
 ## What the player does
 
@@ -198,7 +169,7 @@ the running job follows its events and shows it as its own ("Started from …"),
 
 | Part | Where | Rule |
 |---|---|---|
-| Window | `tools/builder_app/Sources/MNGBuilder` (SwiftUI) | Shows what the jobs print; holds no rule. Texts in `Strings.swift`, Chinese when the Mac's first language is |
+| Window | The Launcher's own repository (SwiftUI, not public) | Shows what the jobs print; holds no rule. Texts in `Strings.swift`, Chinese when the Mac's first language is |
 | Jobs | `tools/builder_jobs` (Python) | `classify`, `checks` print one JSON object; `build` prints one event per line (`events.py`) |
 | What a file is | `classify.py`, `identify.py` | `build_app.py`'s own readers (`ticket_title_ids`, `npdm_program_id`, `title_kind`, `VERSIONS`), imported, never restated |
 | Progress | `history.py` | Each step is a log `build_app.py` starts in `<work>/logs`; the bar is last build's step times on this Mac (no guessed durations); a first build follows the four stages and shows no time left |

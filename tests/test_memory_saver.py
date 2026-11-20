@@ -13,7 +13,8 @@ sys.path.insert(0, str(ROOT))
 
 from tools.builder_jobs import memory_saver, tabs  # noqa: E402
 
-SWIFT = ROOT / 'tools/builder_app/Sources/MNGBuilder'
+# the card's switches (HomePage.swift, Strings.swift) are checked in MNG-Launcher, the Launcher's own repository since
+# 2026-11-20 (tests/test_porting_contract.py)
 
 
 def fake_app(folder, bundle_id):
@@ -88,20 +89,6 @@ class MemorySaverTests(unittest.TestCase):
         self.assertIs(memory_saver.SWITCHES['memory_saver'][3], True)
         self.assertIs(memory_saver.SWITCHES['diagnostics'][3], False)
 
-    def test_the_card_shows_the_switch(self):
-        home = (SWIFT / 'HomePage.swift').read_text()
-        strings = (SWIFT / 'Strings.swift').read_text()
-        self.assertIn('static let memorySaver = s("Memory saver mode", "开启省内存模式")', strings)
-        self.assertIn('Toggle(T.memorySaver, isOn: Binding(get: { saver.on }, set: { setSaver($0) }))', home)
-        self.assertIn('"storage", "set_memory_saver", app: app.app, args: ["on": on]', home)
-        self.assertIn('"storage", "memory_saver", app: app)', home)   # read ahead by app (GameCardState.preload)
-        self.assertIn('.task(id: app.app) { await loadSaver() }', home)
-        self.assertIn('static let diagnostics = s("Diagnostic mode", "诊断模式")', strings)
-        self.assertIn('Toggle(T.diagnostics, isOn: Binding(get: { diagnostics.on }, set: { setDiagnostics($0) }))', home)
-        self.assertIn('"storage", "set_diagnostics", app: app.app, args: ["on": on]', home)
-        # under the start button, not inside a page (it shows whether or not a page is open)
-        body = home[home.index('Button(action: start)'):]
-        self.assertLess(body.index('Toggle(T.memorySaver'), body.index('One button named after the update'))
 
 
 if __name__ == '__main__':
