@@ -153,6 +153,9 @@ void runtime_frame_rate_install(Module *m) {
     Rate *rate = rate_of(runtime_frame_rate_active());
     if (!rate || strcmp(m->name, "main")) return;
     char *data = checked_asset(rate, "patches.tsv", rate->patch_sha), *save;
+#if TARGET_OS_IPHONE
+    unsigned long long text_limit = (m->text_end + 0x3fffULL) & ~0x3fffULL;   /* the embedded r-x text (gen_embed.py x0) */
+#endif
     char *line = strtok_r(data, "\n", &save);
     if (!line || strcmp(line, "MNG_ACNH_FPS1")) runtime_fail("FPS patch header");
     struct Word { unsigned long long offset; unsigned before, after; };
@@ -165,6 +168,15 @@ void runtime_frame_rate_install(Module *m) {
             || (w.offset & 3) || m->file_size < 4 || w.offset > m->file_size - 4 || w.offset >= m->key_off
             || (count && w.offset <= words[count - 1].offset)) runtime_fail("Invalid FPS patch range/order");
         unsigned actual; memcpy(&actual, m->base + w.offset, 4);
+#if TARGET_OS_IPHONE
+        /* iOS: the text came with the corrections already applied (loader.c maps main's 60 FPS text, exported on the
+           Mac); its words are checked as patched and left alone, only the data words are written below. */
+        if (w.offset < text_limit) {
+            if (actual != w.after) { fprintf(stderr, "[acnh-fps] main+%#llx expected the patched %08x, found %08x\n", w.offset, w.after, actual);
+                                     runtime_fail("FPS text was not exported with this rate's corrections"); }
+            words[count++] = w; continue;
+        }
+#endif
         if (actual != w.before) {
             fprintf(stderr, "[acnh-fps] main+%#llx expected %08x, found %08x\n", w.offset, w.before, actual);
             runtime_fail("FPS patch original instruction mismatch");
@@ -174,7 +186,11 @@ void runtime_frame_rate_install(Module *m) {
     if (count != rate->count) runtime_fail("FPS patch count mismatch");
     /* Validate every site before changing the first. The loader seals/flushes
      * instruction-cache pages afterwards, before any guest thread executes. */
-    for (unsigned i = 0; i < count; i++) memcpy(m->base + words[i].offset, &words[i].after, 4);
+    for (unsigned i = 0; i < count; i++)
+#if TARGET_OS_IPHONE
+        if (words[i].offset >= text_limit)
+#endif
+        memcpy(m->base + words[i].offset, &words[i].after, 4);
     free(words); free(data);
     fprintf(stderr, "[acnh-fps] verified and installed %u main-module speed corrections for %d FPS\n", count, rate->fps);
 }

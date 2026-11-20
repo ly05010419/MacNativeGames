@@ -10,7 +10,9 @@ typedef enum { PP_HANDHELD, PP_DOCKED } pp_mode;
 typedef enum { PP_MFX_OFF, PP_MFX_SCENE, PP_MFX_SCREEN } pp_metalfx;
 /* PP_GAME_TOTK_OLD: Tears of the Kingdom 1.0 / 1.2.1, whose handheld scene without a size is the game's own 1280x720
    (game_patches.c render_res), where 1.4.3's and Breath of the Wild's is 960x540 (after PR #2287). */
-typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD } pp_game;
+/* PP_GAME_ACNH: Animal Crossing (games/acnh/ios builds with these files): no scene size, edge smoothing or 16:9 bars of
+   its own; the mode, MetalFX to the screen, the Switch size and 30 / 60 (ACNH_FPS: its 60 FPS text, exported on the Mac). */
+typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH } pp_game;
 
 typedef struct {
     pp_mode mode;

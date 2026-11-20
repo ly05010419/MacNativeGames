@@ -386,7 +386,9 @@ class Advanced(unittest.TestCase):
     def test_device_and_game_rows(self):
         self.assertIn('UIUserInterfaceIdiomPad', self.view[self.view.index('_switchSize'):], 'the Switch size row only on an iPad')
         aspect = self.view.index('_aspect = ')
-        self.assertIn('#ifndef GAME_BOTW', self.view[self.view.rindex('#if', 0, aspect) - 1:aspect])
+        guard = self.view[self.view.rindex('#if', 0, aspect) - 1:aspect]
+        self.assertIn('!defined(GAME_BOTW)', guard, 'no aspect row for Breath of the Wild')
+        self.assertIn('!defined(GAME_ACNH)', guard, 'nor for Animal Crossing (no aspect patch)')
         self.assertIn('UIScrollView', self.view)
 
     def test_the_controller_reaches_every_control(self):

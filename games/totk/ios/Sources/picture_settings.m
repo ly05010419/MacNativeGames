@@ -70,7 +70,7 @@ void totk_migrate_picture_rows(void) {
             .mfx_upscale = [stored[@"TOTK_MFX_UPSCALE"] boolValue],
             .taa = [stored[@"TOTK_TAA"] boolValue],
             .aspect = text(@"TOTK_ASPECT").UTF8String,
-#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143) && !defined(GAME_ACNH)
             .totk_old = 1,   /* 1.0 and 1.2.1: the handheld scene without a size was 1280x720 */
 #endif
         };

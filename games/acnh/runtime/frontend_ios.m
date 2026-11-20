@@ -87,25 +87,46 @@ void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf
 @end
 static TOTKVsync *vsyncTarget;
 
-/* Called on the main thread by the app before the game thread starts. */
-void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
- bootStartNS=runtime_now_ns();
- metalLayer=layer;metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.framebufferOnly=NO;
+/* The drawable for the picture chosen (TOTK_IOS_DRAWABLE_H, default 720; 0 = native pixels): this many pixels tall at the
+   view's aspect, so the game picture (1280x720 canvas) lands about 1:1 and the system compositor scales it to the screen
+   instead of our GPU. The shared app (games/totk/ios/Sources/main.m) calls it again once the start screen's picture is
+   chosen, and for the Switch-sized view (as Tears of the Kingdom's runtime/frontend_ios.m). */
+void runtime_ios_sync_safe_area(UIView *host);
+void runtime_ios_sync_drawable(UIView *host){
+ if(!metalLayer||host.bounds.size.width<1||host.bounds.size.height<1)return;
  CGFloat s=host.window.screen.nativeScale>0?host.window.screen.nativeScale:UIScreen.mainScreen.nativeScale;
  metalLayer.contentsScale=s;
- /* TOTK_IOS_DRAWABLE_H (default 720; 0 = native pixels): build the drawable this many pixels tall at the view's aspect, so the
-    game picture (1280x720 canvas) lands about 1:1 and the system compositor scales it to the screen instead of our GPU. */
  double vw=round(host.bounds.size.width*s),vh=round(host.bounds.size.height*s);
  const char *dh=getenv("TOTK_IOS_DRAWABLE_H");long want=dh?strtol(dh,NULL,10):720;
  /* the 16:9 picture should get about want rows: a screen narrower than 16:9 (an iPad, about 4:3; 2026-10-17) holds it by
     width, so there the drawable is want*16/9 columns wide (1281x890 on a 2360x1640 iPad); an iPhone keeps want rows */
  if(want>0){double h=vw/vh<16.0/9.0?round(want*16.0/9.0*vh/vw):(double)want;if(h<vh){vw=round(vw*h/vh);vh=h;}}
+ if(CGSizeEqualToSize(metalLayer.drawableSize,CGSizeMake(vw,vh)))return;
  metalLayer.drawableSize=CGSizeMake(vw,vh);
  fprintf(stderr,"[totk] view drawable %.0fx%.0f (screen scale %.1f, TOTK_IOS_DRAWABLE_H=%ld)\n",vw,vh,s,want);
+ runtime_aspect_view(vw,vh);   /* full screen: the camera takes the drawable's shape (shared aspect_patch.h) */
+ runtime_ios_sync_safe_area(host);
+}
+/* The safe area (notch, rounded corners, home indicator) in drawable pixels: the corner boxes keep out of it (the shared
+   hud_panel.inc, mtl_hud_safe_area), as Tears of the Kingdom's runtime/frontend_ios.m. The view's safeAreaInsetsDidChange
+   calls it too: at the first drawable the view is in no window yet and the insets are 0. */
+void mtl_hud_safe_area(int w,int h,int side,int bottom);
+void runtime_ios_sync_safe_area(UIView *host){
+ CGSize px=metalLayer?metalLayer.drawableSize:CGSizeZero;
+ if(px.width<1||host.bounds.size.width<1)return;
+ UIEdgeInsets in=host.safeAreaInsets;double k=px.width/host.bounds.size.width;   /* points -> drawable pixels */
+ mtl_hud_safe_area((int)px.width,(int)px.height,(int)lround(MAX(in.left,in.right)*k),(int)lround(in.bottom*k));
+}
+
+/* Called on the main thread by the app before the game thread starts. */
+void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
+ bootStartNS=runtime_now_ns();
+ metalLayer=layer;metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.framebufferOnly=NO;
+ runtime_ios_sync_drawable(host);
  bootOverlay=[[UIView alloc] initWithFrame:host.bounds];bootOverlay.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
  bootOverlay.backgroundColor=[UIColor colorWithRed:0.035 green:0.075 blue:0.09 alpha:1];
  CGFloat w=host.bounds.size.width,h=host.bounds.size.height;
- bootStage=[[UILabel alloc] initWithFrame:CGRectMake(0,h/2-50,w,36)];bootStage.text=@(TOTK_UI("正在启动海拉鲁","Starting Hyrule"));bootStage.textColor=UIColor.whiteColor;
+ bootStage=[[UILabel alloc] initWithFrame:CGRectMake(0,h/2-50,w,36)];bootStage.text=@(TOTK_UI("正在启动动物森友会","Starting Animal Crossing"));bootStage.textColor=UIColor.whiteColor;
  bootStage.font=[UIFont systemFontOfSize:24 weight:UIFontWeightSemibold];bootStage.textAlignment=NSTextAlignmentCenter;
  bootDetail=[[UILabel alloc] initWithFrame:CGRectMake(0,h/2-8,w,24)];bootDetail.text=@(TOTK_UI("正在准备游戏环境","Preparing the game environment"));bootDetail.textColor=[UIColor colorWithWhite:0.72 alpha:1];
  bootDetail.font=[UIFont systemFontOfSize:14];bootDetail.textAlignment=NSTextAlignmentCenter;

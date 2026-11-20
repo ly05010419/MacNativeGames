@@ -196,6 +196,30 @@ static void migration(void) {
                  (pp_picture){PP_HANDHELD, 960, 0, 60, 0, 0, 0}, PP_MFX_OFF);
 }
 
+/* Animal Crossing (games/acnh/ios builds the same app, user 2026-11-20): the mode, MetalFX to the screen, the Switch size
+   and 30 / 60 as ACNH_FPS (its 60 FPS text, frame_rate.c); no scene size, edge smoothing, phone hold or 16:9 bars, which
+   its runtime has not. */
+static void acnh(void) {
+    pp_picture p; pp_env e;
+    pp_profile_picture(PP_PERFORMANCE, &p);
+    pp_env_build(&p, PP_MFX_OFF, PP_GAME_ACNH, &e);
+    const char *w = "Performance, Animal Crossing";
+    want(&e, "TOTK_OPERATION_MODE", "handheld", w); want(&e, "TOTK_IOS_DRAWABLE_H", "720", w); want(&e, "ACNH_FPS", "60", w);
+    want(&e, "TOTK_MFX_UPSCALE", "0", w); want(&e, "TOTK_MFX_OUTPUT", "0", w);
+    want(&e, "TOTK_RENDER_RES", "(missing)", w); want(&e, "TOTK_TAA", "(missing)", w); want(&e, "TOTK_PHONE_FPS", "(missing)", w);
+    want(&e, "TOTK_ASPECT", "(missing)", w);
+    pp_profile_picture(PP_QUALITY, &p);
+    pp_env_build(&p, PP_MFX_SCREEN, PP_GAME_ACNH, &e);
+    w = "Quality, Animal Crossing, MetalFX to the screen";
+    want(&e, "TOTK_OPERATION_MODE", "docked", w); want(&e, "TOTK_IOS_DRAWABLE_H", "0", w); want(&e, "ACNH_FPS", "30", w);
+    want(&e, "TOTK_MFX_UPSCALE", "1", w); want(&e, "TOTK_MFX_OUTPUT", "1", w);
+    pp_profile_picture(PP_ECONOMY, &p);
+    pp_env_build(&p, PP_MFX_OFF, PP_GAME_ACNH, &e);
+    want(&e, "TOTK_SWITCH_SIZE", "1", "Economy, Animal Crossing"); want(&e, "ACNH_FPS", "30", "Economy, Animal Crossing");
+    CHECK(!pp_mfx_scene_acts(&p, PP_GAME_ACNH), "Animal Crossing has no smaller scene for the scene stage");
+    p.scene_w = 640; CHECK(pp_scene_effective(&p, PP_GAME_ACNH) == 1280, "Animal Crossing's scene is its canvas");
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--keys")) {   /* the Settings pane's values (tests/test_ios_packaging.py) */
         for (int i = PP_QUALITY; i <= PP_CUSTOM; i++) printf("%s%s", i ? " " : "", pp_profile_key((pp_profile)i));
@@ -217,6 +241,7 @@ int main(int argc, char **argv) {
     garbage_values_fall_back();
     migration();
     present_60_and_old_totk_scene();
+    acnh();
     if (failures) return 1;
     puts("picture profiles ok");
     return 0;

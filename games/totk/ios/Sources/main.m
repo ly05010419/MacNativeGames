@@ -176,7 +176,47 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
     fprintf(stderr, "[totk] shader pack unpacked: %llu files, %.0f MB\n", (unsigned long long)files, total / 1048576.0);
     return nil;
 }
-static void *run_host(void *unused) { (void)unused; return (void *)(intptr_t)totk_host_main(3, host_argv); }
+#ifdef GAME_ACNH
+/* Animal Crossing (games/acnh/ios/tools/build_ipa.py): the shaders its Mac app translated while playing come in the app
+   (GameData/shader-cache) and are copied into the cache in Documents, on the game thread: thousands of files take longer
+   than the 20 s iOS gives a launch (0x8badf00d, 2026-11-20). A .variants index gains only the rows it lacks. */
+static NSString *g_mac_shaders, *g_shader_cache;
+static NSArray *variant_rows(NSString *path) {
+    NSData *d = [NSData dataWithContentsOfFile:path]; id a = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    return [a isKindOfClass:NSArray.class] ? a : nil;
+}
+static unsigned long import_mac_shaders(NSString *from, NSString *to) {
+    NSFileManager *fm = NSFileManager.defaultManager; unsigned long copied = 0;
+    for (NSString *name in [fm contentsOfDirectoryAtPath:from error:nil] ?: @[]) {
+        NSString *src = [from stringByAppendingPathComponent:name], *dst = [to stringByAppendingPathComponent:name];
+        if ([name hasSuffix:@".variants"] && [fm fileExistsAtPath:dst]) {
+            NSArray *add = variant_rows(src); NSMutableArray *have = [variant_rows(dst) mutableCopy];
+            if (!add || !have) continue;
+            NSMutableSet *known = [NSMutableSet set];
+            for (id row in have) if ([row isKindOfClass:NSDictionary.class] && row[@"variant"]) [known addObject:row[@"variant"]];
+            BOOL changed = NO;
+            for (id row in add) if ([row isKindOfClass:NSDictionary.class] && row[@"variant"] && ![known containsObject:row[@"variant"]]) { [have addObject:row]; changed = YES; }
+            NSData *data = changed ? [NSJSONSerialization dataWithJSONObject:have options:NSJSONWritingSortedKeys error:nil] : nil;
+            if (data && [data writeToFile:dst atomically:YES]) copied++;
+            continue;
+        }
+        if (![fm fileExistsAtPath:dst] && [fm copyItemAtPath:src toPath:dst error:nil]) copied++;
+    }
+    return copied;
+}
+#endif
+static void *run_host(void *unused) {
+    (void)unused;
+#ifdef GAME_ACNH
+    if (g_mac_shaders) {
+        BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+        runtime_boot_status(zh ? "正在准备着色器" : "Preparing shaders", zh ? "复制 Mac 上翻译好的着色器（只在第一次）" : "copying the shaders translated on the Mac (first start only)");
+        unsigned long n = import_mac_shaders(g_mac_shaders, g_shader_cache);
+        fprintf(stderr, "[acnh] shaders: %lu files from the Mac's cache imported into %s\n", n, g_shader_cache.fileSystemRepresentation);
+    }
+#endif
+    return (void *)(intptr_t)totk_host_main(3, host_argv);
+}
 /* Save sync (runtime/cloud_save.m): a folder the player chose, e.g. an iCloud Drive folder shared with the Mac or with
    another Apple ID. Chosen in the system folder picker, opened at start when the Settings app's "Choose folder" switch is
    on or from the Home Screen icon's menu ("save-sync-folder", project.yml); remembered as a security-scoped bookmark and
@@ -300,7 +340,9 @@ static BOOL g_switch_size;
         [timer invalidate];
         g_no_game_data = nil;
         fprintf(stderr, "[totk] the game data and the shaders are there: starting\n");
-        if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
+    #ifndef GAME_ACNH
+    if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
+#endif
         runtime_boot_status(zh ? "正在启动" : "Starting", NULL);
         [weakSelf startAfterChecks];
     }];
@@ -308,6 +350,11 @@ static BOOL g_switch_size;
 /* What follows the game data's check before the game starts: the save folder question, the shader question, then the
    start itself (prepareAndStart). */
 - (void)startAfterChecks {
+#ifdef GAME_ACNH   // its file system keeps the saves in Documents only (no sync folder): no question about one
+    if ([self offerShaderUpload]) return;
+    [self prepareAndStart];
+    return;
+#endif
     cloud_folder_forget_if_asked();
     if (g_pick_cloud_folder || [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CLOUD_SAVE_PICK"]) {
         __weak TOTKGameController *weakSelf = self;
@@ -326,17 +373,24 @@ static BOOL g_switch_size;
    choice (totk_contrib_upload.h): once the switch has a value, it decides; an answer to the question sets the switch. */
 static NSString *const ContributeKey = @"TOTK_CONTRIBUTE_SHADERS";
 static void contrib_settings_sync(NSString *contrib) {
+#ifdef GAME_ACNH   // no shader inbox (games/acnh/third_party/COPIES.md: its totk_contrib_upload.h keeps the identity part only)
+    (void)contrib;
+#else
     id v = [NSUserDefaults.standardUserDefaults objectForKey:ContributeKey];
     if (!v) return;
     BOOL on = [v boolValue];
     NSString *now = totk_inbox_choice(contrib);
     if (!now || [now isEqualToString:@"auto"] != on) totk_inbox_choose(contrib, on);
+#endif
 }
 /* The one question about the shader contribution (totk_contrib_upload.h, the same as the Mac's app/launcher.m
    contrib_ask), before the game starts, at the first start where
    the player has not chosen yet (no row threshold, user 2026-11-10). The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
    what the app serves in prepareAndStart, so the first count after a new build can be a little high.) */
 - (BOOL)offerShaderUpload {
+#ifdef GAME_ACNH
+    return NO;
+#else
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
     contrib_settings_sync(contrib);
@@ -353,6 +407,7 @@ static void contrib_settings_sync(NSString *contrib) {
             [weakSelf prepareAndStart]; }]];
     [self presentViewController:a animated:YES completion:nil];
     return YES;
+#endif
 }
 /* No sync folder yet: offer one before the game reads its save, so it syncs from this start. "Not now" asks again at the
    next start (as does cancelling the picker); "Don't ask again" never (Settings › Choose folder still works). */
@@ -714,6 +769,8 @@ static void apply_settings(void) {
     audio_observe();
 #ifdef GAME_INBOX_ID   /* the day's report of active players (mng_active.h; off in the Settings app's pane) */
     mng_active_start(@GAME_INBOX_ID, mng_active_version());
+#elif defined(GAME_ACNH)
+    mng_active_start(@"acnh", mng_active_version());
 #else
     mng_active_start(@"totk", mng_active_version());
 #endif
@@ -783,6 +840,10 @@ static void apply_settings(void) {
     });
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
     // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
+#ifdef GAME_ACNH   // the rows the device lacks stay in Documents, as on its Mac (no inbox)
+    NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
+    setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
+#else
     NSString *contrib = totk_inbox_claim([docs stringByAppendingPathComponent:@"shader-list-contribution.txt"]);   // this game's file only
     g_contrib = contrib;
     if (!g_no_game_data) totk_contrib_prune(contrib, seedDir, seedDir);   // else once the shaders are there (waitForGameData)
@@ -792,6 +853,7 @@ static void apply_settings(void) {
     // The Settings switch turned while the game runs (the app comes back from Settings): on starts, off stops the sending.
     [NSNotificationCenter.defaultCenter addObserverForName:NSUserDefaultsDidChangeNotification object:nil queue:nil
         usingBlock:^(NSNotification *n) { (void)n; contrib_settings_sync(contrib); totk_inbox_start(contrib, @"ios"); }];
+#endif
     // ... with the game and version it came from, so the file names them
     setenv("TOTK_CONTRIB_GAME",GAME_FOLDER " " TOTK_GAME_VERSION,1);
     setenv("DM_NVN_SHMAP",[seedDir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation,1);
@@ -814,6 +876,26 @@ static void apply_settings(void) {
     id keyboard = [NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_KEYBOARD"];
     if (keyboard && ![keyboard boolValue]) setenv("TOTK_KEYBOARD", "0", 0);
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_TOUCH_WITH_KEYBOARD"]) setenv("TOTK_TOUCH_WITH_KEYBOARD", "1", 0);
+#ifdef GAME_ACNH
+    /* Animal Crossing's own (scripts/acnh_app_launcher.c, the Mac app's): its saves stay in Documents/profile (the folder
+       its first iPhone builds used), its add-ons, the 60 FPS mod's files (frame_rate.c; the frame rate itself comes with
+       the picture, apply_display_settings), no RomFS overlay unless that mod's, and its NVN settings. */
+    NSString *profile = [docs stringByAppendingPathComponent:@"profile"];
+    [fm createDirectoryAtPath:profile withIntermediateDirectories:YES attributes:nil error:nil];
+    setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
+    setenv("ACNH_DLC_DIR", [res stringByAppendingPathComponent:@"dlc"].fileSystemRepresentation, 1);
+    NSString *fps60 = [res stringByAppendingPathComponent:@"fps60"];
+    if ([fm fileExistsAtPath:[fps60 stringByAppendingPathComponent:@"manifest.json"]]) setenv("ACNH_FPS_ASSETS", fps60.fileSystemRepresentation, 1);
+    unsetenv("ACNH_FPS120_ASSETS");   // the display link runs at 60 Hz
+    setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);
+    setenv("DM_PRESERVE_INVARIANCE", "1", 1);
+    setenv("DM_NVN_GPU_CODE_MAX_MINOR", "31", 1);
+    setenv("TOTK_UNCAPPED", "0", 1);
+    setenv("TOTK_MOVIE_PACE", "0", 1);
+    setenv("TOTK_SHADER_ASYNC", "0", 0);
+    NSString *macShaders = [res stringByAppendingPathComponent:@"shader-cache"];
+    if ([fm fileExistsAtPath:macShaders]) { g_mac_shaders = macShaders; g_shader_cache = cache; }
+#endif
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
     const char *probe = getenv("TOTK_IOS_PROBE");

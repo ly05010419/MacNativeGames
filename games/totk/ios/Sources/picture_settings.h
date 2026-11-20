@@ -4,6 +4,8 @@
 
 #if defined(GAME_BOTW)
 #define PP_THIS_GAME PP_GAME_BOTW
+#elif defined(GAME_ACNH)
+#define PP_THIS_GAME PP_GAME_ACNH
 #elif defined(TOTK_GAME_V143)
 #define PP_THIS_GAME PP_GAME_TOTK
 #else

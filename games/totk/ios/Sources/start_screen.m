@@ -88,6 +88,9 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         _metalfx = [[UISegmentedControl alloc] initWithItems:@[T(@"关", @"Off"), mfx == PP_MFX_SCREEN ? T(@"开（到屏幕）", @"On (to the screen)") : T(@"开", @"On")]];
         _metalfx.selectedSegmentIndex = mfx == PP_MFX_OFF ? 0 : 1;
         _lastMfxOn = mfx == PP_MFX_SCREEN ? PP_MFX_SCREEN : PP_MFX_SCENE;
+#ifdef GAME_ACNH   // no scene stage of its own: MetalFX on is the canvas to the screen
+        _lastMfxOn = PP_MFX_SCREEN;
+#endif
         for (UISegmentedControl *c in @[_profile, _metalfx]) {
             c.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
             [c.widthAnchor constraintEqualToConstant:c == _profile ? 460 : 340].active = YES;
@@ -98,7 +101,11 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
         metalfxRow = [self row:@"MetalFX" control:_metalfx];
         _profileNote = [UILabel new];
         mfxNote = [UILabel new];
+#ifdef GAME_ACNH
+        mfxNote.text = T(@"MetalFX 把画面放大到屏幕：更清晰，更耗 GPU。", @"MetalFX enlarges the picture to the screen: sharper, heavier on the GPU.");
+#else
         mfxNote.text = T(@"MetalFX 放大场景：更清晰，几乎不耗性能。", @"MetalFX upscales the scene: sharper, at almost no cost.");
+#endif
         for (UILabel *l in @[_profileNote, mfxNote]) {
             l.font = [UIFont systemFontOfSize:13]; l.textColor = [UIColor colorWithWhite:0.6 alpha:1];
             l.numberOfLines = 0; l.textAlignment = NSTextAlignmentCenter;
@@ -242,6 +249,22 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
 - (void)showProfile {
     BOOL pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
     pp_picture pic = totk_current_picture(NULL, NULL);
+#ifdef GAME_ACNH   /* Animal Crossing: no scene size or edge smoothing (picture_profile.h PP_GAME_ACNH); 60 is the 60 FPS mod */
+    switch ([self chosenProfile]) {
+    case PP_QUALITY: _profileNote.text = T(@"1080p 底座模式，30 fps。最清晰；会发热。", @"1080p docked, 30 fps. The sharpest; runs warm."); return;
+    case PP_PERFORMANCE: _profileNote.text = T(@"720p 掌机模式，60 fps（60 帧补丁）。流畅。", @"720p handheld, 60 fps (the 60 FPS mod). Smooth."); return;
+    case PP_ECONOMY: _profileNote.text = pad ? T(@"720p 掌机模式，30 fps，Switch 屏幕大小。发热最少，最省电。",
+                                                 @"720p handheld, 30 fps, at the Switch's screen size. The coolest, easiest on the battery.")
+                                             : T(@"720p 掌机模式，30 fps。发热最少，最省电。", @"720p handheld, 30 fps. The coolest, easiest on the battery."); return;
+    default: {
+        NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObjects:pic.mode == PP_DOCKED ? T(@"1080p 底座", @"1080p docked") : T(@"720p 掌机", @"720p handheld"),
+                                             [NSString stringWithFormat:@"%d fps", pic.fps], nil];
+        if (pic.switch_size && pad) [parts addObject:T(@"Switch 屏幕大小", @"Switch screen size")];
+        _profileNote.text = [NSString stringWithFormat:T(@"自定义：%@。在“进阶”里修改。", @"Custom: %@. Change it under Advanced."),
+                             [parts componentsJoinedByString:@" · "]];
+        return;
+    } }
+#endif
     switch ([self chosenProfile]) {
     case PP_QUALITY:
         _profileNote.text = T(@"1080p，场景 1600×900，边缘平滑，30 fps。最清晰；会发热。",

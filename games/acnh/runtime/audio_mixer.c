@@ -36,7 +36,7 @@ typedef struct Mixer {
     float *buf; int nbuf, frame;
     int *offset;                                   /* first mix buffer of each mix id */
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
-    AudioComponentInstance unit; int unit_ok;
+    AudioComponentInstance unit; int unit_ok, rate;
     float ring[RING_FRAMES * 2]; _Atomic uint64_t wr, rd, underruns, overruns;
     _Atomic int playing; int ready; _Atomic uint64_t missing_frames;
     _Atomic uint64_t flush_until; _Atomic unsigned stop_epoch; unsigned callback_epoch;
@@ -162,6 +162,23 @@ static void output_push(Mixer *m, const float *lr, int frames) {
     if (!m->unit_ok) atomic_store(&m->rd, wr + (uint64_t)frames);   /* no device: the ring only keeps the latest frames */
 }
 
+/* The open outputs, so an iOS audio session interruption (a call, Siri, another app's audio) can start them again: the
+   app's shell calls runtime_audio_output_restart when the session comes back (games/totk/ios/Sources/main.m; ported
+   from games/totk/runtime/audio_mixer.c). recreate: media services were reset, so the units are made anew. */
+static pthread_mutex_t g_out_mu = PTHREAD_MUTEX_INITIALIZER;
+static Mixer *g_out[4];
+void runtime_audio_output_restart(int recreate) {
+    pthread_mutex_lock(&g_out_mu);
+    for (int i = 0; i < 4; i++) {
+        Mixer *m = g_out[i]; if (!m) continue;
+        if (m->unit_ok && !recreate && !AudioOutputUnitStart(m->unit)) { fprintf(stderr, "[totk-audio] output started again\n"); continue; }
+        if (m->unit_ok) { m->unit_ok = 0; AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
+        m->ready = 0; output_open(m, m->rate);
+        fprintf(stderr, "[totk-audio] output rebuilt (%s): %s\n", recreate ? "media services reset" : "start failed", m->unit_ok ? "playing" : "no sound");
+    }
+    pthread_mutex_unlock(&g_out_mu);
+}
+
 void audio_mixer_open(AudioRenderer *r) {
     Mixer *m = calloc(1, sizeof *m);
     if (!m) runtime_fail("audio mixer allocation");
@@ -194,7 +211,11 @@ void audio_mixer_open(AudioRenderer *r) {
         fprintf(stderr,"[totk-audio] diagnostic capture armed: %d Hz stereo float32, 30 seconds after %lu-second delay from first nonzero frame\n",r->param.sample_rate,seconds);
     }else fprintf(stderr,"[totk-audio] diagnostic capture unavailable (file exists or cannot be opened)\n");}
     prefill_blocks();   // decided before the device's callback can run
+    m->rate = r->param.sample_rate;
     output_open(m, r->param.sample_rate);
+    pthread_mutex_lock(&g_out_mu);
+    for (int i = 0; i < 4; i++) if (!g_out[i]) { g_out[i] = m; break; }
+    pthread_mutex_unlock(&g_out_mu);
 }
 void audio_mixer_set_running(AudioRenderer *r,int running){
     Mixer *m=r->mixer;if(!m)return;
@@ -203,6 +224,9 @@ void audio_mixer_set_running(AudioRenderer *r,int running){
 }
 void audio_mixer_close(AudioRenderer *r) {
     Mixer *m = r->mixer; if (!m) return;
+    pthread_mutex_lock(&g_out_mu);
+    for (int i = 0; i < 4; i++) if (g_out[i] == m) g_out[i] = NULL;
+    pthread_mutex_unlock(&g_out_mu);
     if (m->unit_ok) { AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
     if(m->capture_worker){
         pthread_mutex_lock(&m->capture_lock);m->capture_closing=1;pthread_cond_signal(&m->capture_cond);pthread_mutex_unlock(&m->capture_lock);

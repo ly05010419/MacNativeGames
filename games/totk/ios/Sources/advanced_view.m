@@ -60,15 +60,19 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:bar];
     NSMutableArray<UIView *> *controls = [NSMutableArray array];
     [self add:T(@"模式", @"Mode") control:_mode rows:rows controls:controls];
+#ifndef GAME_ACNH   // Animal Crossing draws its own scene and has no edge smoothing of ours (picture_profile.h PP_GAME_ACNH)
     [self add:T(@"场景", @"Scene") control:_scene rows:rows controls:controls];
+#endif
     [self add:@"MetalFX" control:_metalfx rows:rows controls:controls];
+#ifndef GAME_ACNH
     [self add:T(@"边缘平滑", @"Edge smoothing") control:_taa rows:rows controls:controls];
+#endif
     [self add:T(@"帧率", @"Frame rate") control:_fps rows:rows controls:controls];
     if (_pad) {   // an iPhone's screen is already smaller than the Switch's
         _switchSize = [UISwitch new]; [_switchSize addTarget:self action:@selector(switchSizeChanged) forControlEvents:UIControlEventValueChanged];
         [self add:T(@"Switch 屏幕大小", @"Switch screen size") control:_switchSize rows:rows controls:controls];
     }
-#ifndef GAME_BOTW   // Breath of the Wild's aspect key means ultrawide (a separate change)
+#if !defined(GAME_BOTW) && !defined(GAME_ACNH)   // Breath of the Wild's aspect key means ultrawide (a separate change); Animal Crossing has none
     _aspect = [self segments:@[T(@"填满", @"Fill"), @"16:9"] action:@selector(aspectChanged)];
     [self add:T(@"画面比例", @"Aspect ratio") control:_aspect rows:rows controls:controls];
 #endif
@@ -132,6 +136,9 @@ static NSString *scene_title(unsigned w) {
     return w ? [NSString stringWithFormat:@"%u×%u", w, w * 9 / 16] : T(@"自动", @"Automatic");
 }
 static NSString *metalfx_title(pp_metalfx m) {
+#ifdef GAME_ACNH
+    if (m != PP_MFX_OFF) return T(@"到屏幕", @"To the screen");
+#endif
     return m == PP_MFX_OFF ? T(@"关", @"Off") : m == PP_MFX_SCENE ? T(@"场景", @"Scene") : T(@"场景＋屏幕", @"Scene + screen");
 }
 
@@ -157,6 +164,9 @@ static NSString *metalfx_title(pp_metalfx m) {
     [self title:_scene text:scene_title(_pic.scene_w)];
     NSMutableArray<UIAction *> *mfx = [NSMutableArray array];
     for (int m = PP_MFX_OFF; m <= PP_MFX_SCREEN; m++) {
+#ifdef GAME_ACNH   // no smaller scene to upscale (picture_profile.h PP_GAME_ACNH): MetalFX is the picture to the screen, as on its Mac
+        if (m == PP_MFX_SCENE) continue;
+#endif
         UIAction *a = [UIAction actionWithTitle:metalfx_title((pp_metalfx)m) image:nil identifier:nil handler:^(UIAction *x) { (void)x; [weak setMetalfx:(pp_metalfx)m]; }];
         a.state = m == (int)_mfx ? UIMenuElementStateOn : UIMenuElementStateOff;
         [mfx addObject:a];
@@ -173,18 +183,29 @@ static NSString *metalfx_title(pp_metalfx m) {
     [self effect:_scene text:_pic.scene_w > w
         ? [NSString stringWithFormat:T(@"掌机模式最高 %u×%u：场景用 %u×%u。", @"Handheld goes up to %u×%u: the scene runs at %u×%u."), limit, limit * 9 / 16, w, w * 9 / 16]
         : [NSString stringWithFormat:T(@"场景 %u×%u。只影响 3D 世界：越低越凉、越省电，画面也越软。", @"Scene %u×%u. The 3D world only: lower runs cooler and saves battery, with a softer picture."), w, w * 9 / 16]];
+#ifdef GAME_ACNH   // as its Mac's picture row: MetalFX enlarges the game's picture to the screen's own pixels
+    NSString *mfxText = _mfx == PP_MFX_OFF ? T(@"系统直接拉伸到屏幕。", @"The system scales the picture to the screen.")
+        : T(@"MetalFX 把游戏画面放大到屏幕的原生像素：更清晰，更耗 GPU。", @"MetalFX enlarges the game's picture to the screen's own pixels: sharper, heavier on the GPU.");
+#else
     NSString *mfxText = _mfx == PP_MFX_OFF ? T(@"游戏自己的放大。", @"The game's own upscale.")
         : !pp_mfx_scene_acts(&_pic, PP_THIS_GAME) ? T(@"场景不比画布小：MetalFX 没有场景要放大。", @"The scene is not smaller than the canvas: MetalFX has no scene to upscale.")
         : T(@"MetalFX 把场景放大到画布：更清晰，几乎不耗性能。", @"MetalFX upscales the scene into the canvas: sharper, at almost no cost.");
     if (_mfx == PP_MFX_SCREEN) mfxText = [mfxText stringByAppendingString:small
         ? T(@"再把画布放大到 Switch 大小的画面：最清晰，最耗 GPU。", @" It also enlarges the canvas to the Switch-sized picture: the sharpest, the heaviest on the GPU.")
         : T(@"再把画布放大到屏幕：最清晰，最耗 GPU。", @" It also enlarges the canvas to the screen: the sharpest, the heaviest on the GPU.")];
+#endif
     [self effect:_metalfx text:[mfxText stringByAppendingString:T(@"（独立于画面设置）", @" (a setting of its own, kept by every profile)")]];
     [self effect:_taa text:T(@"MetalFX 时间抗锯齿：边缘更稳，可能有轻微拖影。场景越大越吃 GPU：960×540 约 1 ms，1600×900 约 11 ms（iPad A16）。", @"MetalFX temporal anti-aliasing: steadier edges, slight ghosting possible. Its GPU cost grows with the scene: about 1 ms at 960×540, about 11 ms at 1600×900 (iPad A16).")];
+#ifdef GAME_ACNH   // its 60 is the 60 FPS mod's speed corrections, chosen before the game starts (loader.c maps that text)
+    [self effect:_fps text:_pic.fps == 30 ? T(@"30 fps：游戏原本的帧率，更凉、更省电。", @"30 fps: the game's own rate, cooler and easier on the battery.")
+                                          : T(@"60 fps：60 帧补丁（tmouh/acnh-60fps）的速度修正；更流畅，也更吃性能。",
+                                              @"60 fps: the speed corrections of the 60 FPS mod (tmouh/acnh-60fps); smoother, and heavier.")];
+#else
     [self effect:_fps text:_pic.fps == 30 ? T(@"30 fps：更凉、更省电。", @"30 fps: cooler, easier on the battery.")
                          : _pic.present_60 ? T(@"60 fps：按屏幕 60 Hz 固定节奏（沿用以前的自定义设置；重新选一次帧率就改成不固定上限）。",
                                                @"60 fps, paced at the screen's 60 Hz (kept from the old custom settings; choosing the frame rate again makes it uncapped).")
                                           : T(@"60 fps：不固定上限，最高到屏幕的刷新率。", @"60 fps: no fixed cap, up to the screen's rate.")];
+#endif
     if (_switchSize) [self effect:_switchSize text:T(@"画面显示成 Switch 屏幕的大小（6.2 英寸），居中、四周黑边：更小、更清晰。",
                                                      @"The picture at the Switch's screen size (6.2 inches), centred on black: smaller and sharper.")];
     if (_aspect) [self effect:_aspect text:_pic.aspect_169 ? T(@"16:9，上下或左右加黑边。", @"16:9 with bars.")
@@ -227,6 +248,9 @@ static NSString *metalfx_title(pp_metalfx m) {
         [self setScene:SCENE_WIDTHS[n]];
     } else if (at == _metalfx) {
         int n = (int)_mfx + d; n = n < PP_MFX_OFF ? PP_MFX_OFF : n > PP_MFX_SCREEN ? PP_MFX_SCREEN : n;
+#ifdef GAME_ACNH
+        n = d > 0 ? PP_MFX_SCREEN : PP_MFX_OFF;
+#endif
         [self setMetalfx:(pp_metalfx)n];
     } else if ([at isKindOfClass:UISwitch.class]) {
         UISwitch *s = (UISwitch *)at; s.on = d > 0;

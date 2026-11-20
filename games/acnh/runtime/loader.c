@@ -154,13 +154,17 @@ static void map_module(Module *m,const char *dir) {
  const IosEmbed *e=NULL;for(unsigned i=0;i<sizeof(ios_embed)/sizeof(*ios_embed);i++)if(!strcmp(ios_embed[i].name,m->name))e=&ios_embed[i];
  need(e!=NULL,"module missing from ios_embed.h");
  char sx0[17],sx1[17],sw[17];snprintf(sx0,sizeof sx0,"__%sx0",m->name);snprintf(sx1,sizeof sx1,"__%sx1",m->name);snprintf(sw,sizeof sw,"__TOTK%sW",m->name);
+ /* At 60 FPS main's text is the one exported with the speed corrections applied (ios/tools/gen_embed.py --alt-text,
+    section __mainx0f): iOS cannot patch code at run time (frame_rate.c writes only the data words there). */
+ int alt=e->x0alt[0]&&runtime_frame_rate_active()==60;const char *want_x0=alt?e->x0alt:e->x0;
+ if(alt)snprintf(sx0,sizeof sx0,"__%sx0f",m->name);
  unsigned long z0=0,zw=0,z1=0;
  const uint8_t *x0=getsectiondata(&_mh_execute_header,"__TOTKX",sx0,&z0),*w=getsectiondata(&_mh_execute_header,sw,"__img",&zw),*x1=getsectiondata(&_mh_execute_header,"__TOTKX",sx1,&z1);
  need(x0&&w&&x1,"embedded module sections missing");
  need(z0==page_up(m->text_end)&&z0+zw==m->patch_off&&m->patch_off+z1==page_up(m->file_size),"embedded module layout");
  need(!((uintptr_t)x0&0x3fff)&&!((uintptr_t)w&0x3fff)&&!((uintptr_t)x1&0x3fff),"embedded sections not 16 KiB aligned");
  char hex[65];
- digest_hex(x0,z0,hex);need(!strcmp(hex,e->x0),"embedded text SHA256 differs from the exported patched text");
+ digest_hex(x0,z0,hex);need(!strcmp(hex,want_x0),"embedded text SHA256 differs from the exported patched text");
  digest_hex(w,zw,hex);need(!strcmp(hex,e->w),"embedded data SHA256 differs from verified rewrite");
  digest_hex(x1,z1,hex);need(!strcmp(hex,e->x1),"embedded patch area SHA256 differs from verified rewrite");
  m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
@@ -173,7 +177,7 @@ static void map_module(Module *m,const char *dir) {
  uint64_t *key=(void *)(m->base+m->key_off);
  for(unsigned i=0;i<8;i++)key[i]=runtime_keys[i]*8;
  make_hash(m);
- fprintf(stderr,"[totk] mapped embedded %s at %p size=%zu symbols=%u\n",m->name,m->base,m->size,m->nsym);
+ fprintf(stderr,"[totk] mapped embedded %s%s at %p size=%zu symbols=%u\n",m->name,alt?" (60 FPS text)":"",m->base,m->size,m->nsym);
 }
 #else
 static void map_module(Module *m,const char *dir) {

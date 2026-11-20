@@ -13,6 +13,15 @@ if '--text-dir' in args:
     i = args.index('--text-dir')
     text_dir = Path(args[i + 1])
     del args[i:i + 2]
+# --alt-text <name>=<dir>: a second exported text of that module, as section __<name>x0f, which a loader can map in place
+# of x0 (Animal Crossing's main with the 60 FPS speed corrections applied, exported with ACNH_FPS=60: games/acnh/runtime/
+# loader.c map_module). Its hash is the header's x0alt ("" for a module without one).
+alt = {}
+while '--alt-text' in args:
+    i = args.index('--alt-text')
+    module, folder = args[i + 1].split('=', 1)
+    alt[module] = Path(folder)
+    del args[i:i + 2]
 names = args
 asm = ['// Generated from the locally verified game modules.']
 entries = []
@@ -54,13 +63,21 @@ for name in names:
         chunk=chunk_source[lo:min(hi,len(chunk_source))] if lo < len(chunk_source) else b''
         if len(chunk)<hi-lo: chunk += bytes(hi-lo-len(chunk))
         hashes.append(hashlib.sha256(chunk).hexdigest())
-    entries.append({'name':name,'x0':hashes[0],'w':hashes[1],'x1':hashes[2]})
+    x0alt = ''
+    if name in alt:
+        alt_image = alt[name] / f'{name}.x0.bin'
+        alt_data = alt_image.read_bytes()
+        if len(alt_data) != x0:
+            raise ValueError(f'{name}: the alternative text must be exactly {x0:#x} bytes, got {len(alt_data):#x}')
+        asm += [f'    .section __TOTKX,__{name}x0f', '    .p2align 14', f'    .incbin "{alt_image.resolve()}"', '    .p2align 14']
+        x0alt = hashlib.sha256(alt_data).hexdigest()
+    entries.append({'name':name,'x0':hashes[0],'w':hashes[1],'x1':hashes[2],'x0alt':x0alt})
     flags.append(f'-Wl,-segprot,__TOTK{name}W,rw,rw')
 flags.append('-Wl,-segprot,__TOTKX,r-x,r-x')
 out.write_text('\n'.join(asm)+'\n')
 header = ['/* Generated locally; hashes bind app contents to the verified rewrites. */',
-          'typedef struct { const char *name, *x0, *w, *x1; } IosEmbed;', 'static const IosEmbed ios_embed[] = {']
-header += [f'{{"{e["name"]}","{e["x0"]}","{e["w"]}","{e["x1"]}"}},' for e in entries]
+          'typedef struct { const char *name, *x0, *w, *x1, *x0alt; } IosEmbed;', 'static const IosEmbed ios_embed[] = {']
+header += [f'{{"{e["name"]}","{e["x0"]}","{e["w"]}","{e["x1"]}","{e["x0alt"]}"}},' for e in entries]
 header += ['};']
 (out.parent/'ios_embed.h').write_text('\n'.join(header)+'\n')
 print(' '.join(flags))

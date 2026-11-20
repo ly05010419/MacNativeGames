@@ -57,13 +57,15 @@ int pp_profile_picture(pp_profile p, pp_picture *out) {
    (game_patches_botw.c patch_render_1080); Tears of the Kingdom scales its scene by the canvas (game_patches_v143.c
    render_res_publish) and runs a handheld scene up to 1600x900, as its old custom layer offered (final review 2026-11-18). */
 static unsigned canvas_w(const pp_picture *p) { return p->mode == PP_DOCKED ? 1920 : 1280; }
-static int is_totk(pp_game g) { return g != PP_GAME_BOTW; }   /* every Tears of the Kingdom version */
+static int is_totk(pp_game g) { return g == PP_GAME_TOTK || g == PP_GAME_TOTK_OLD; }   /* every Tears of the Kingdom version */
 unsigned pp_scene_limit(const pp_picture *p, pp_game g) {
+    if (g == PP_GAME_ACNH) return canvas_w(p);   /* the game draws its own scene: no size to choose */
     return p->mode == PP_DOCKED ? 1920 : is_totk(g) ? 1600 : 1280;
 }
 /* Automatic is the game's own scene: docked 1600x900; handheld 960x540, but 1280x720 on Tears of the Kingdom 1.0 / 1.2.1
    (it was passed as 960x540 there, below what those versions ran before; after PR #2287). */
 unsigned pp_scene_effective(const pp_picture *p, pp_game g) {
+    if (g == PP_GAME_ACNH) return canvas_w(p);
     unsigned own = p->mode == PP_DOCKED ? 1600 : g == PP_GAME_TOTK_OLD ? 1280 : 960;
     unsigned w = p->scene_w ? p->scene_w : own, limit = pp_scene_limit(p, g);
     return w > limit ? limit : w;
@@ -79,6 +81,15 @@ static void put(pp_env *e, const char *name, const char *value) { e->v[e->n].nam
    resolves to (pp_scene_effective). */
 void pp_env_build(const pp_picture *p, pp_metalfx m, pp_game g, pp_env *out) {
     out->n = 0;
+    if (g == PP_GAME_ACNH) {   /* the mode, MetalFX (its screen stage), the Switch size, and 30 or 60 (frame_rate.c) */
+        put(out, "TOTK_OPERATION_MODE", p->mode == PP_DOCKED ? "docked" : "handheld");
+        put(out, "TOTK_IOS_DRAWABLE_H", m == PP_MFX_SCREEN ? "0" : p->mode == PP_DOCKED ? "1080" : "720");
+        put(out, "TOTK_MFX_UPSCALE", m == PP_MFX_OFF ? "0" : "1");
+        put(out, "TOTK_MFX_OUTPUT", m == PP_MFX_SCREEN ? "1" : "0");
+        put(out, "ACNH_FPS", p->fps == 30 ? "30" : "60");
+        put(out, "TOTK_SWITCH_SIZE", p->switch_size ? "1" : "0");
+        return;
+    }
     unsigned w = pp_scene_effective(p, g);
     const char *scene = "960x540";
     for (unsigned i = 0; i < sizeof SCENES / sizeof *SCENES; i++) if (SCENES[i].width == w) scene = SCENES[i].size;

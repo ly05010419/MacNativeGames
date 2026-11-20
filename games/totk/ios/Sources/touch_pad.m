@@ -156,7 +156,13 @@ static const CGFloat kFpsButtonSize = 34;
 }
 
 - (CGPoint)fpsButton { return CGPointMake(CGRectGetMidX(self.area), self.topRow); }   // in the top row
-- (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
+- (BOOL)fpsButtonAt:(CGPoint)p {
+#ifdef GAME_ACNH   // Animal Crossing's frame rate is chosen before it starts (its 60 FPS text is mapped then; loader.c): no button
+    (void)p; return NO;
+#else
+    CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75;
+#endif
+}
 - (void)switchFrameRate {
     int fps = totk_frame_button_target(runtime_phone_fps() == 30);
     runtime_phone_fps_set(fps);
@@ -239,6 +245,7 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
         CGContextSetFillColorWithColor(c, fill); CGContextFillEllipseInRect(c, box); CGContextStrokeEllipseInRect(c, box);
         CGSize z = [b[i].label sizeWithAttributes:attrs]; [b[i].label drawAtPoint:CGPointMake(b[i].at.x - z.width / 2, b[i].at.y - z.height / 2) withAttributes:attrs];
     }
+#ifndef GAME_ACNH
     // The frame rate button: a smaller rounded square, its label the rate the game is held to now.
     CGPoint f = self.fpsButton; CGRect box = CGRectMake(f.x - kFpsButtonSize / 2, f.y - kFpsButtonSize / 2, kFpsButtonSize, kFpsButtonSize);
     UIBezierPath *key = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:8];
@@ -248,5 +255,6 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
     NSString *rate = runtime_phone_fps() == 30 ? @"30" : @"60";
     NSDictionary *small = @{NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold], NSForegroundColorAttributeName: ink};
     CGSize z = [rate sizeWithAttributes:small]; [rate drawAtPoint:CGPointMake(f.x - z.width / 2, f.y - z.height / 2) withAttributes:small];
+#endif
 }
 @end
