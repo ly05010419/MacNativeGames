@@ -120,9 +120,18 @@ static void handle(uint16_t type, const uint8_t *p, uint32_t n) {
             };
             uint64_t id; float v; memcpy(&id, p, 8); memcpy(&v, p + 12, 4);
             if (!(v == v)) break;
-            for (size_t i = 0; i < sizeof k_paths / sizeof k_paths[0]; i++) {
+            size_t known = sizeof k_paths / sizeof k_paths[0], i;
+            for (i = 0; i < known && k_paths[i].id != id; i++) {}
+            if (i == known) {   /* a path this table does not name (2026-11-19: BotW's A did nothing): each one once */
+                static uint64_t said[32]; static int nsaid; int seen = 0;
+                for (int k = 0; k < nsaid; k++) seen |= said[k] == id;
+                if (!seen && nsaid < 32) { said[nsaid++] = id; fprintf(stderr, "[vr-pad] unknown input path %016llx (value %.2f)\n", (unsigned long long)id, v); }
+            }
+            for (i = 0; i < known; i++) {
                 if (k_paths[i].id != id) continue;
-                if (k_paths[i].what < 0) { uint32_t bit = (uint32_t)-k_paths[i].what; if (v > 0.5f) g.pad.buttons |= bit; else g.pad.buttons &= ~bit; }
+                if (k_paths[i].what < 0) { uint32_t bit = (uint32_t)-k_paths[i].what, was = g.pad.buttons;
+                    if (v > 0.5f) g.pad.buttons |= bit; else g.pad.buttons &= ~bit;
+                    if (was != g.pad.buttons) fprintf(stderr, "[vr-pad] Quest buttons %02x -> %02x\n", was, g.pad.buttons); }
                 else { float *ax[8] = {&g.pad.lx, &g.pad.ly, &g.pad.rx, &g.pad.ry, &g.pad.ltrig, &g.pad.rtrig, &g.pad.lgrip, &g.pad.rgrip};
                        *ax[k_paths[i].what] = v < -1 ? -1 : v > 1 ? 1 : v; }
                 struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); g.pad.at_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;

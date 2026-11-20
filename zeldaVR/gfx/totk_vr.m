@@ -420,6 +420,13 @@ static void gestures(uint64_t now, const vr_controls *c, gesture_state *gs) {
     if (shield) { if (!shield_since) shield_since = now; gs->shield = now - shield_since > 100000000ull; } else shield_since = 0;
     const float speed = sqrtf(h[1].v[0] * h[1].v[0] + h[1].v[1] * h[1].v[1] + h[1].v[2] * h[1].v[2]);
     if (!gs->bow && speed > 2.2f && now - swing_at > 300000000ull && !(c->rgrip > 0.5f)) { swing_at = now; }
+    {   /* each fast movement of the right hand and what it gave (2026-11-19, Breath of the Wild: "挥剑没反应") */
+        static float peak; static uint64_t peak_at;
+        if (speed > 1.0f) { if (speed > peak) peak = speed; peak_at = now; }
+        else if (peak > 0 && now - peak_at > 150000000ull) {
+            VLOG("swing: right hand %.1f m/s (needs %.1f)%s%s", peak, 2.2f, gs->bow ? ", bow pose" : "", c->rgrip > 0.5f ? ", right grip held" : "");
+            peak = 0; }
+    }
     gs->swing = now - swing_at < 120000000ull;
     gs->slot_r = lf[1] < 0.0f && lu[1] > -0.30f && lr[1] > 0.0f;
     gs->slot_l = lf[0] < 0.0f && lu[0] > -0.30f && lr[0] < 0.0f;
@@ -498,7 +505,10 @@ int vr_gamepad(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *
         }
         if (now < pmenu.pulse_until) b |= pmenu.pulse_bits;
     } else {   // menus, the map, cut scenes: by name
-        pa.down_at = px.down_at = pls.down_at = prs.down_at = pmenu.down_at = 0; settings_sent = 0;
+        /* Only the world's own call (plain 0) forgets the world's presses: runtime/gamepad.m asks for the panel's pad
+           (plain 1) in every refresh too, and that call cleared them, so a tap of A, X, a stick click or the menu
+           button never gave its button in the world (2026-11-19, Breath of the Wild: "a 不能捡"). */
+        if (!plain) { pa.down_at = px.down_at = pls.down_at = prs.down_at = pmenu.down_at = 0; settings_sent = 0; }
         if (c.buttons & VR_PAD_A) b |= B << SW_A;
         if (c.buttons & VR_PAD_B) b |= B << SW_B;
         if (c.buttons & VR_PAD_X) b |= B << SW_X;
@@ -511,6 +521,11 @@ int vr_gamepad(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *
         if (c.lgrip > 0.5f) b |= B << SW_L;
         if (c.rgrip > 0.5f) b |= B << SW_R;
     }
+    if (!plain) {   /* what the game gets, when it changes (2026-11-19: BotW's A did nothing) */
+        static uint64_t last_b; static int last_world = -1; const int world = world_camera_running(now);
+        if (b != last_b || world != last_world) {
+            VLOG("pad: Quest %02x -> Switch %04llx (%s)", c.buttons, (unsigned long long)b, world ? "world" : "menu");
+            last_b = b; last_world = world; } }
     pthread_mutex_unlock(&mu);
     *buttons = b; *lx = (int32_t)(ax[0] * 32767); *ly = (int32_t)(ax[1] * 32767); *rx = (int32_t)(ax[2] * 32767); *ry = (int32_t)(ax[3] * 32767);
     return 1;
@@ -568,7 +583,12 @@ static void first_person_update(void) {   // VR thread, each frame (the lookup o
       b_at = t; }
     if (!target && b <= 0) { __atomic_store_n(&s->fp_pos, 0, __ATOMIC_RELEASE); __atomic_store_n(&s->fp_lag, 0, __ATOMIC_RELEASE); atomic_store(&g_vr_hidehead_fp, 0); atomic_store(&g_vr_eye_track, 0); return; }
     s->fp_blend = b * b * (3 - 2 * b);
+#ifdef GAME_BOTW
+    /* 150: Breath of the Wild's Link, the user on the Quest 2026-11-19 (TotK's 170 put the camera over his head) */
+    if (atomic_load(&g_eye_cm) < 0) { const char *e = getenv("TOTK_VR_EYE"); atomic_store(&g_eye_cm, e ? (int)(atof(e) * 100 + 0.5f) : 150); }
+#else
     if (atomic_load(&g_eye_cm) < 0) { const char *e = getenv("TOTK_VR_EYE"); atomic_store(&g_eye_cm, e ? (int)(atof(e) * 100 + 0.5f) : 170); }   // 170: the user on the Quest, 2026-10-29 (155 before)
+#endif
     static float fwd = -1; if (fwd < 0) { const char *e = getenv("TOTK_VR_EYE_FWD"); fwd = e ? (float)atof(e) : 0.15f; if (fwd < 0 || fwd > 1) fwd = 0.15f; }
 #ifdef GAME_BOTW
     /* BotW has its own player-position owner. TotK's palette identities, body
