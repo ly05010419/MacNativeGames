@@ -18,6 +18,14 @@ static int mtk_blocks_on(const NvShader *ms) {
 static int mtk_owners(NvShader **ts,NvShader **ms){if(!g_mtk.on)return 0;*ts=g_mtk.ts;*ms=g_mtk.ms;return 1;}   // nvn_mesh_batch.inc: the mesh draw's real task / mesh owners (draw_inner sees a raster-only program)
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
+/* PATCH, not the root fix (#2107, #2310; user 2026-11-20 "3补丁"): macOS 27's AGX compiler crashes on a few OOT mesh
+   pipelines (mesh ac2f3feb on M1 / M2), and the Mac ended the game at the first draw that needs one, on every load of a
+   save past it. A mesh pipeline Metal refuses is now handled as on the phone: the draw is skipped, and its key is kept
+   here so it is not compiled again this run (each attempt takes the compiler service down for seconds and draws nothing).
+   The root fix is in the translation (avoid the construct the compiler crashes on) and waits for a reproduction.
+   TOTK_MESH_FAIL_DIE=1 brings back the exit on the Mac. Same thread as g_mtk_cache (mtk_pso). */
+static nvn_hmap g_mtk_failed={.klen=sizeof(mtk_pso_key)};
+static uint64_t g_mtk_failed_n;
 #include "nvn_mesh_capture.inc"
 #include "nvn_mesh_translation.inc"
 #include "nvn_mesh_pack.inc"
@@ -212,15 +220,22 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     int pack=mtk_pack_on()&&!g_mtk_geometry&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);   // the geometry capture diagnostic and the HDR twin read the unpacked layout
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
+    if(nvn_hm_get(&g_mtk_failed,&key))return nil;   // refused earlier this run: skipped again without compiling (the patch above)
     uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived);
     /* Counted with the render pipelines made at a draw, as pso_get counts them (archive hits included): until 2026-11-15 a
        mesh pipeline built here was missing from the long-frame line's and the per-frame record's pipeline count and time
        (an OOT world entry: 32 mesh pipelines, 75 s, none of it counted). */
     g_bp_pso_n++;atomic_fetch_add_explicit(&g_bp_pso_ns,bp_now()-build_t0,memory_order_relaxed);
-#if TARGET_OS_IPHONE
-    if(!ps){MLOG("【红】网格管线没建成，跳过这次绘制（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return nil;}   // the fallback: never an exit on the phone
+    if(!ps){   // the patch above: skip the draw (never an exit on the phone; on the Mac unless TOTK_MESH_FAIL_DIE=1)
+#if !TARGET_OS_IPHONE
+        static int die=-1;if(die<0){const char *e=getenv("TOTK_MESH_FAIL_DIE");die=e&&atoi(e)>0;}
+        if(die)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
 #endif
-    if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
+        nvn_hm_put(&g_mtk_failed,&key,(void *)1);g_mtk_failed_n++;
+        MLOG("【红】网格管线没建成，跳过它的绘制，本局不再重编（第 %llu 条；task %s mesh %s fragment %s）：%s",(unsigned long long)g_mtk_failed_n,
+             ts?ts->key:"-",ms->key,fs?fs->key:"-",error.localizedDescription.UTF8String);
+        return nil;
+    }
     hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] %s task %s mesh %s fragment %s in %.1f ms at the draw",archived?"from the archive":"compiled",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
     if(!g_mtk_geometry){   // the next start builds it ahead (mtk_warm_row); the geometry diagnostic's variant is not a pipeline of the game
         pso_skey sk;char hex[sizeof sk*2+1];pso_skey_from(&key.p,ms,fs,0,NULL,&sk);pso_skey_hex(&sk,hex);
