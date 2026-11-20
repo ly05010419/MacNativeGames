@@ -61,6 +61,9 @@ class TurnedViewsTakeNoStrayClicks(unittest.TestCase):
         lines = (REPO / 'tools/builder_app/Sources/MNGBuilder/CaseDetail.swift').read_text().splitlines()
         (at,) = [n for n, l in enumerate(lines) if '.rotation3DEffect(.degrees(angle)' in l]
         self.assertTrue(any('.allowsHitTesting(false)' in l for l in chain_after(lines, at)))
+        # and not too much: the tray under it, which holds the game's actions, still takes clicks (PR #2317's check)
+        (tray,) = [n for n, l in enumerate(lines) if l.strip().startswith('tray(width: openW')]
+        self.assertFalse(any('allowsHitTesting(false)' in l for l in chain_after(lines, tray)))
 
     def test_the_check_sees_a_turned_view_without_either(self):
         bare = 'Group { cover }\n    .rotation3DEffect(.degrees(-180), axis: (x: 0, y: 1, z: 0),\n        perspective: 0.45)\n' \
