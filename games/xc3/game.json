@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "xc3",
+  "name": "Xenoblade Chronicles 3",
+  "title_id": "010074F013262000",
+  "bundle_id": "org.macnativegames.xc3",
+  "data_folder": "XC3",
+  "build": "games/xc3/build.py",
+  "work_holds_game_data": false,
+  "sources": ["games/xc3"],
+  "files": {"game": ["nsp"], "update": ["nsp"], "dlc": ["nsp"]},
+  "versions": ["1.0.0", "2.2.1"]
+}

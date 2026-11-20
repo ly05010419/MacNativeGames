@@ -10,6 +10,18 @@ A copy of `games/ot0` at upstream commit `5ab07b7` (2026-10-28); see [third_part
 
 ## Log
 
+### 2026-11-17: one-command build, shaders compiled before play
+
+- **`build.py`, `game.json`:** the whole build in one command, in the shape of `games/dread/build.py`: the base game, the optional 2.2.1 update and the add-ons (`--dlc`), each package checked by its tickets before any key is used (the update or an add-on given in the wrong place is refused with where it goes), then code, RomFS, add-ons, shaders and the app, each reused when the work folder already holds it verified. `game.json` lets NX2Apple's MacNativeGames engine build the game. A work folder whose path has spaces reaches make through a link (make splits its targets at spaces).
+- **`scripts/build_shader_libs.py`, `make shader-libs`:** copied from games/dread with `-fpreserve-invariance` (this runtime sets `DM_PRESERVE_INVARIANCE`). The seed's shaders are compiled into Metal libraries that `make app` carries, and the runtime loads them (`shader_lib_prebuilt`) instead of compiling while playing. Without them a fresh app compiled about 9,200 libraries in the first minutes, and frames waited up to 11.7 s on them.
+
+| Check | Result |
+|---|---|
+| Build, 2.2.1 with the four add-ons, M-series Mac, macOS 27 | the first run 3 min plus the libraries 11 min; a run again reuses everything |
+| Libraries | 28,158 of the seed's 28,158 sources compiled, 385 MB in the app |
+| Play, the rebuilt app | starts, add-ons present, no shader stalls (played by hand) |
+| Tests | `tests/test_xc3_build.py`: 20 pass, no game files |
+
 ### 2026-11-08: every shader translates
 
 One vertex shader of the game (`4b98320a…`, used through a generated shuffle helper) failed in SPIRV-Cross with "Subgroup builtins are not available in this type of function": Metal has no subgroup operations in vertex functions, and the game's shader reads a subgroup mask, the lane ID, a ballot and a shuffle. It was the only shader of 28,137 distinct translations to fail, before play and in play.
