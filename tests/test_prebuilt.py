@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -102,6 +103,37 @@ class BuildUsesThem(unittest.TestCase):
                 build_app.make_runtime(tree, 'v143', root / 'logs', {})
                 build_app.make_runtime(tree, 'v0', root / 'logs', {}, data=False)
             self.assertEqual([call.args[0][-1] for call in run.call_args_list], ['runtime-v143', 'binary'])
+
+    @staticmethod
+    def makefile_game_data():
+        """games/totk/Makefile, per version: the files game-data-<version> makes and the Python steps that make them."""
+        text = (ROOT / 'games/totk/Makefile').read_text()
+        define = text.split('define GAME_DATA\n', 1)[1].split('\nendef', 1)[0]
+        recipe = r'^({target}): .*\n\t.*?"\$+\(PY\)" scripts/(\S+\.py) --version {version}(.*)$'
+        found = {}
+        for v in re.findall(r'^\$\(eval \$\(call GAME_DATA,(\w+),', text, re.M):
+            files, steps = set(), set()
+            for m in re.finditer(recipe.format(target=r'build/game-data/\S+', version=r'\S+'), define.replace('$(1)', v), re.M):
+                files.add(m[1].rsplit('/', 1)[-1]); steps.add((m[2], *m[3].split()))
+            for line in re.findall(rf'^game-data-{v}: (.*)$', text, re.M):   # a version's own rules (BotW's aoc-config.txt)
+                for target in line.split():
+                    m = re.search(recipe.format(target=re.escape(target), version=v), text, re.M)
+                    files.add(target.rsplit('/', 1)[-1]); steps.add((m[2], *m[3].split()))
+            found[v] = files, steps
+        return found
+
+    def test_game_data_steps_are_the_makefiles(self):
+        """#2282, #2318: with the release's prebuilt runtime the Python steps stood in for make game-data-botw190 without
+        its aoc-config.txt rule, and no Breath of the Wild build got past placing the game data."""
+        found = self.makefile_game_data()
+        self.assertIn(('prepare_romfs_backend.py', '--aoc'), found['botw190'][1])
+        self.assertEqual(set(found), {'v0', 'v121', 'v143', 'botw160', 'botw190', 'dkb', 'pkp'})
+        for version, (files, steps) in found.items():
+            with self.subTest(version), mock.patch.object(build_app, 'run') as run:
+                build_app.make_game_data(Path('/w'), version, Path('/logs'), {})
+                ran = {(c.args[0][1].rsplit('/', 1)[-1], *c.args[0][4:]) for c in run.call_args_list}
+                self.assertEqual(ran, steps)
+                self.assertLessEqual(set(build_app.game_data_files(version)), files)   # what place_game_data wants
 
     def test_warm_tool_and_hactool_from_the_release(self):
         with tempfile.TemporaryDirectory() as tmp:

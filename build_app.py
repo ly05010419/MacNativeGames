@@ -1560,10 +1560,15 @@ SHADER_LISTS = {'botw160': '../botw/assets/shader_list.tsv', 'botw190': '../botw
 
 
 def make_game_data(tree, version, logs, env):
-    """make game-data-<version> (games/totk/Makefile GAME_DATA): its three Python steps, so no make is needed."""
+    """make game-data-<version> (games/totk/Makefile GAME_DATA, and Breath of the Wild's aoc-config.txt rule): its Python
+    steps, so no make is needed (tests/test_prebuilt.py checks them against the Makefile for every version)."""
     py = tree / '.venv/bin/python'
-    for script in ('prepare_runtime.py', 'prepare_romfs_backend.py', 'prepare_shared_fonts.py'):
-        run([py, f'scripts/{script}', '--version', version], logs / f'game-data-{script[:-3]}.log', cwd=tree, env=env)
+    steps = [('prepare_runtime.py',), ('prepare_romfs_backend.py',), ('prepare_shared_fonts.py',)]
+    if 'aoc-config.txt' in game_data_files(version):   # the add-on content volumes, none given or not
+        steps.append(('prepare_romfs_backend.py', '--aoc'))
+    for script, *extra in steps:
+        log = logs / f'game-data-{script[:-3]}{"".join(extra).replace("--", "-")}.log'
+        run([py, f'scripts/{script}', '--version', version, *extra], log, cwd=tree, env=env)
 
 
 def make_runtime(tree, version, logs, env, *, data=True):
