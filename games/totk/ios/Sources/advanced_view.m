@@ -2,9 +2,20 @@
 #import <GameController/GameController.h>
 #include "picture_settings.h"
 #include "totk_ui_lang.h"
+#include "fps_overlay.h"   /* the overlay modes (shared), as the Mac panel's "性能信息" row */
 
 static NSString *T(NSString *z, NSString *e) { return totk_ui_zh() ? z : e; }
 static const unsigned SCENE_WIDTHS[] = {0, 1920, 1600, 1280, 960, 800, 640};   /* 0: automatic */
+static const int HUD_MODES[] = {HUD_MODE_OFF, HUD_MODE_BARE, HUD_MODE_MINIMAL, HUD_MODE_ALL, HUD_MODE_FULL};
+static NSString *hud_title(int mode) {
+    switch (mode) {
+    case HUD_MODE_OFF: return T(@"关", @"Off");
+    case HUD_MODE_BARE: return T(@"极简 FPS", @"Bare FPS");
+    case HUD_MODE_MINIMAL: return T(@"FPS 与游玩时间", @"FPS + playtime");
+    case HUD_MODE_FULL: return T(@"FPS 和帧调试信息", @"FPS and frame debug info");
+    default: return T(@"全部", @"All");
+    }
+}
 
 /* The controller's focus moved to v: bring it into view inside the screen's scroll view (an iPhone in landscape shows
    a few rows only; after PR #2287). */
@@ -22,7 +33,7 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     BOOL _pad;
     UILabel *_profileLabel;
     UISegmentedControl *_mode, *_fps, *_aspect;
-    UIButton *_scene, *_metalfx, *_play;
+    UIButton *_scene, *_metalfx, *_hud, *_play;
     UISwitch *_taa, *_switchSize;
     NSMutableDictionary<NSValue *, UILabel *> *_effects;   // control -> the line under it
     NSArray<UIView *> *_controls;   // the controller's focus, top to bottom; Play last
@@ -77,6 +88,10 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     [self add:T(@"画面比例", @"Aspect ratio") control:_aspect rows:rows controls:controls];
 #endif
 
+    /* The overlay (user 2026-11-20: "进阶 可以选 fps格式 比如 关闭"): the Mac panel's five choices, saved where the Settings
+       pane keeps them (TOTK_HUD_MODE, which the app hands over at start; fps_overlay.c) and in force at once. */
+    _hud = [self menuButton];
+    [self add:T(@"性能信息", @"Overlay") control:_hud rows:rows controls:controls];
     UIButtonConfiguration *pc = [UIButtonConfiguration filledButtonConfiguration];
     pc.title = T(@"开始游戏", @"Play"); pc.image = [UIImage systemImageNamed:@"play.fill"]; pc.imagePadding = 8;
     pc.baseBackgroundColor = [UIColor colorWithRed:0.10 green:0.63 blue:1.0 alpha:1]; pc.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
@@ -173,6 +188,18 @@ static NSString *metalfx_title(pp_metalfx m) {
     }
     _metalfx.menu = [UIMenu menuWithChildren:mfx];
     [self title:_metalfx text:metalfx_title(_mfx)];
+    int hud = fps_overlay_hud_mode();
+    NSMutableArray<UIAction *> *huds = [NSMutableArray array];
+    for (size_t i = 0; i < sizeof HUD_MODES / sizeof *HUD_MODES; i++) {
+        int m = HUD_MODES[i];
+        UIAction *a = [UIAction actionWithTitle:hud_title(m) image:nil identifier:nil handler:^(UIAction *x) { (void)x; [weak setHud:m]; }];
+        a.state = m == hud ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [huds addObject:a];
+    }
+    _hud.menu = [UIMenu menuWithChildren:huds];
+    [self title:_hud text:hud_title(hud)];
+    [self effect:_hud text:hud == HUD_MODE_OFF ? T(@"不显示帧数和其他信息。", @"No frame rate or other information on screen.")
+                                               : T(@"画面角上的帧数与信息，和 Mac 的“性能信息”一样。", @"The frame rate and information in the picture's corners, as the Mac's Overlay row.")];
 
     unsigned w = pp_scene_effective(&_pic, PP_THIS_GAME), limit = pp_scene_limit(&_pic, PP_THIS_GAME);
     BOOL docked = _pic.mode == PP_DOCKED, small = _pad && _pic.switch_size;
@@ -211,6 +238,11 @@ static NSString *metalfx_title(pp_metalfx m) {
     if (_aspect) [self effect:_aspect text:_pic.aspect_169 ? T(@"16:9，上下或左右加黑边。", @"16:9 with bars.")
                                                            : T(@"填满屏幕，不拉伸：镜头按屏幕比例取景。", @"Fills the screen without stretching: the camera takes the screen's shape.")];
 }
+- (void)setHud:(int)mode {
+    fps_overlay_set_hud_mode(mode);
+    [NSUserDefaults.standardUserDefaults setObject:[NSString stringWithFormat:@"%d", mode] forKey:@"TOTK_HUD_MODE"];
+    [self show];
+}
 - (void)title:(UIButton *)b text:(NSString *)text { UIButtonConfiguration *c = b.configuration; c.title = text; b.configuration = c; }
 
 /* Any control but MetalFX: the combination becomes Custom. */
@@ -246,6 +278,11 @@ static NSString *metalfx_title(pp_metalfx m) {
         unsigned i = 0; while (i < SCENE_COUNT && SCENE_WIDTHS[i] != _pic.scene_w) i++;
         int n = (int)(i % SCENE_COUNT) + d; n = n < 0 ? 0 : n >= (int)SCENE_COUNT ? (int)SCENE_COUNT - 1 : n;
         [self setScene:SCENE_WIDTHS[n]];
+    } else if (at == _hud) {
+        int cur = fps_overlay_hud_mode(), n = (int)(sizeof HUD_MODES / sizeof *HUD_MODES), i = 0;
+        while (i < n && HUD_MODES[i] != cur) i++;
+        i = (i % n) + d; i = i < 0 ? 0 : i >= n ? n - 1 : i;
+        [self setHud:HUD_MODES[i]];
     } else if (at == _metalfx) {
         int n = (int)_mfx + d; n = n < PP_MFX_OFF ? PP_MFX_OFF : n > PP_MFX_SCREEN ? PP_MFX_SCREEN : n;
 #ifdef GAME_ACNH

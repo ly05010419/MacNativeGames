@@ -40,10 +40,18 @@ static const Glyph FONT[] = {
 /* The settings panel's overlay choice (key 1 opens it, runtime/frontend.m): all, FPS full information, minimal (FPS only)
    or off. */
 static _Atomic int g_hud_mode = HUD_MODE_ALL;
-int fps_overlay_hud_mode(void) { return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
+/* TOTK_HUD_MODE=<HUD_MODE_*> starts on that mode: the iPhone / iPad's choice (the Settings pane's and Advanced's
+   "性能信息" row, games/totk/ios; user 2026-11-20: "进阶 可以选 fps格式 比如 关闭"), as the Mac's graphics-overlay.txt. */
+static pthread_once_t g_hud_once = PTHREAD_ONCE_INIT;
+static void hud_mode_from_env(void) {
+    const char *e = getenv("TOTK_HUD_MODE"); char *end;
+    if (e && *e) { long v = strtol(e, &end, 10); if (!*end && v >= HUD_MODE_OFF && v <= HUD_MODE_BARE) atomic_store(&g_hud_mode, (int)v); }
+}
+int fps_overlay_hud_mode(void) { pthread_once(&g_hud_once, hud_mode_from_env); return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
 int fps_overlay_hints_enabled(void) { return fps_overlay_hud_mode() != HUD_MODE_OFF; }
 int fps_overlay_full_hud(void) { int m = fps_overlay_hud_mode(); return m == HUD_MODE_ALL || m == HUD_MODE_FULL; }
 void fps_overlay_set_hud_mode(int mode) {
+    pthread_once(&g_hud_once, hud_mode_from_env);   // a choice made now is not overwritten by the start's
     if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL || mode == HUD_MODE_FULL || mode == HUD_MODE_BARE)
         atomic_store_explicit(&g_hud_mode, mode, memory_order_relaxed);
 }

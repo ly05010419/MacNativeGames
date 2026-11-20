@@ -2,42 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>StringsTable</key>
-	<string>Root</string>
 	<key>PreferenceSpecifiers</key>
 	<array>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>遊戲語言 · Game language</string>
 			<key>FooterText</key>
 			<string>重新啟動遊戲後生效 · takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>遊戲語言 · Game language</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSRadioGroupSpecifier</string>
+			<key>DefaultValue</key>
+			<string></string>
 			<key>Key</key>
 			<string>TOTK_LANG</string>
 			<key>Title</key>
 			<string>語言 · Language</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>Values</key>
-			<array>
-				<string></string>
-				<string>zh-Hant</string>
-				<string>zh-Hans</string>
-				<string>en-US</string>
-				<string>ja</string>
-				<string>de</string>
-				<string>es</string>
-				<string>fr</string>
-				<string>it</string>
-				<string>nl</string>
-				<string>ru</string>
-				<string>ko</string>
-			</array>
 			<key>Titles</key>
 			<array>
 				<string>自動 · 跟隨系統語言 · Follow system language</string>
@@ -53,24 +34,41 @@
 				<string>Русский</string>
 				<string>한국어</string>
 			</array>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>zh-Hant</string>
+				<string>zh-Hans</string>
+				<string>en-US</string>
+				<string>ja</string>
+				<string>de</string>
+				<string>es</string>
+				<string>fr</string>
+				<string>it</string>
+				<string>nl</string>
+				<string>ru</string>
+				<string>ko</string>
+			</array>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
+			<key>FooterText</key>
+			<string>品質：1080p，場景 1600×900，邊緣平滑，30 fps，最清晰，會發熱。效能：720p，場景 960×540，60 fps，流暢。省電：720p，場景 640×360，30 fps，Switch 螢幕大小，發熱最少、最省電。自訂：遊戲開始畫面「進階」裡選的設定。MetalFX：放大場景，更清晰、幾乎不吃效能；「場景＋螢幕」再放大到螢幕，最吃 GPU。遊戲開始畫面也可以改 · Quality: 1080p, 1600×900 scene, edge smoothing, 30 fps; the sharpest, runs warm. Performance: 720p, 960×540 scene, 60 fps; smooth. Economy: 720p, 640×360 scene, 30 fps, at the Switch's screen size; the coolest and lightest on the battery. Custom: what you chose under Advanced on the game's start screen. MetalFX: upscales the scene, sharper at almost no cost; "Scene + screen" also enlarges it to the screen, the heaviest on the GPU. The game's start screen has these choices too</string>
 			<key>TOTKApp</key>
 			<string>zelda</string>
 			<key>Title</key>
 			<string>畫面 · Picture</string>
-			<key>FooterText</key>
-			<string>品質：1080p，場景 1600×900，邊緣平滑，30 fps，最清晰，會發熱。效能：720p，場景 960×540，60 fps，流暢。省電：720p，場景 640×360，30 fps，Switch 螢幕大小，發熱最少、最省電。自訂：遊戲開始畫面「進階」裡選的設定。MetalFX：放大場景，更清晰、幾乎不吃效能；「場景＋螢幕」再放大到螢幕，最吃 GPU。遊戲開始畫面也可以改 · Quality: 1080p, 1600×900 scene, edge smoothing, 30 fps; the sharpest, runs warm. Performance: 720p, 960×540 scene, 60 fps; smooth. Economy: 720p, 640×360 scene, 30 fps, at the Switch's screen size; the coolest and lightest on the battery. Custom: what you chose under Advanced on the game's start screen. MetalFX: upscales the scene, sharper at almost no cost; "Scene + screen" also enlarges it to the screen, the heaviest on the GPU. The game's start screen has these choices too</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSMultiValueSpecifier</string>
-			<key>TOTKApp</key>
-			<string>zelda</string>
+			<key>DefaultValue</key>
+			<string>performance</string>
 			<key>Key</key>
 			<string>TOTK_PICTURE_PROFILE</string>
+			<key>TOTKApp</key>
+			<string>zelda</string>
 			<key>TOTKPhone</key>
 			<true/>
 			<key>Title</key>
@@ -82,6 +80,8 @@
 				<string>省電 · Economy</string>
 				<string>自訂 · Custom</string>
 			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
 			<key>Values</key>
 			<array>
 				<string>quality</string>
@@ -89,16 +89,14 @@
 				<string>economy</string>
 				<string>custom</string>
 			</array>
-			<key>DefaultValue</key>
-			<string>performance</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSMultiValueSpecifier</string>
-			<key>TOTKApp</key>
-			<string>zelda</string>
+			<key>DefaultValue</key>
+			<string>off</string>
 			<key>Key</key>
 			<string>TOTK_METALFX</string>
+			<key>TOTKApp</key>
+			<string>zelda</string>
 			<key>TOTKPhone</key>
 			<true/>
 			<key>Title</key>
@@ -109,295 +107,323 @@
 				<string>場景 · Scene</string>
 				<string>場景＋螢幕 · Scene + screen</string>
 			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
 			<key>Values</key>
 			<array>
 				<string>off</string>
 				<string>scene</string>
 				<string>screen</string>
 			</array>
-			<key>DefaultValue</key>
-			<string>off</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
+			<key>FooterText</key>
+			<string>開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · on: the game's docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch docked; HD: 1920×1080, sharper and heavier), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game</string>
 			<key>TOTKApp</key>
 			<string>ns2</string>
 			<key>Title</key>
 			<string>畫面 · Display</string>
-			<key>FooterText</key>
-			<string>開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · on: the game's docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch docked; HD: 1920×1080, sharper and heavier), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
-			<key>TOTKApp</key>
-			<string>ns2</string>
-			<key>Key</key>
-			<string>TOTK_DOCKED</string>
-			<key>TOTKPhone</key>
-			<true/>
-			<key>Title</key>
-			<string>Full HD（底座模式）· Full HD (docked)</string>
 			<key>DefaultValue</key>
 			<false/>
 			<key>DefaultValuePad</key>
 			<true/>
+			<key>Key</key>
+			<string>TOTK_DOCKED</string>
+			<key>TOTKApp</key>
+			<string>ns2</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>Full HD（底座模式）· Full HD (docked)</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
+			<key>FooterText</key>
+			<string>鎖 30 幀畫面更穩、手機更涼；遊戲中也可以點觸控按鍵中間的 60 / 30 切換 · 30 is steadier and keeps the phone cooler; the 60 / 30 button between − and + of the touch controls switches it while playing</string>
 			<key>TOTKApp</key>
 			<string>ns2</string>
 			<key>Title</key>
 			<string>幀率 · Frame rate</string>
-			<key>FooterText</key>
-			<string>鎖 30 幀畫面更穩、手機更涼；遊戲中也可以點觸控按鍵中間的 60 / 30 切換 · 30 is steadier and keeps the phone cooler; the 60 / 30 button between − and + of the touch controls switches it while playing</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSMultiValueSpecifier</string>
-			<key>TOTKApp</key>
-			<string>ns2</string>
+			<key>DefaultValue</key>
+			<string>60</string>
 			<key>Key</key>
 			<string>TOTK_PHONE_FPS</string>
+			<key>TOTKApp</key>
+			<string>ns2</string>
 			<key>TOTKPhone</key>
 			<true/>
 			<key>Title</key>
 			<string>幀率 · Frame rate</string>
-			<key>DefaultValue</key>
-			<string>60</string>
-			<key>Values</key>
-			<array>
-				<string>60</string>
-				<string>30</string>
-			</array>
 			<key>Titles</key>
 			<array>
 				<string>最高 60 · Up to 60</string>
 				<string>鎖 30 · Held at 30</string>
 			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string>60</string>
+				<string>30</string>
+			</array>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>觸控操作 · Touch controls</string>
 			<key>FooterText</key>
 			<string>未連接手柄、或手柄沒有陀螺儀時，用手機的陀螺儀與觸覺馬達；有陀螺儀的手柄接手後：碰螢幕換回手機，操作手柄交還。重新啟動遊戲後生效 · uses the phone's gyro and haptic actuator when no controller is connected, or the controller has no gyro; a controller with motion takes the aiming over until the screen is touched (its sticks or buttons take it back). Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>觸控操作 · Touch controls</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<key>DefaultValue</key>
+			<true/>
 			<key>Key</key>
 			<string>TOTK_PHONE_GYRO</string>
 			<key>Title</key>
 			<string>手機體感 · Phone gyro</string>
-			<key>DefaultValue</key>
-			<true/>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<true/>
 			<key>Key</key>
 			<string>TOTK_PHONE_HAPTICS</string>
 			<key>Title</key>
 			<string>手機震動 · Phone haptics</string>
-			<key>DefaultValue</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>手柄 · Controller</string>
-			<key>FooterText</key>
-			<string>震动与陀螺仪只对支持的手柄生效。体感瞄准同时受游戏内选项影响。重新启动游戏后生效 · rumble and gyro apply only to controllers that have them, and motion aiming is also subject to the game's own option. Takes effect after relaunching</string>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
-			<key>Key</key>
-			<string>TOTK_RUMBLE</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>震动与陀螺仪只对支持的手柄生效。体感瞄准同时受游戏内选项影响。重新启动游戏后生效 · rumble and gyro apply only to controllers that have them, and motion aiming is also subject to the game's own option. Takes effect after relaunching</string>
 			<key>Title</key>
-			<string>手柄震动 · Controller rumble</string>
+			<string>手柄 · Controller</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
 			<key>DefaultValue</key>
 			<true/>
 			<key>FooterText</key>
 			<string>只对带触感的手柄生效；关掉后手机本身的震动也一起关 · applies to controllers with haptics; off also turns the phone's own vibration off</string>
-		</dict>
-		<dict>
+			<key>Key</key>
+			<string>TOTK_RUMBLE</string>
+			<key>Title</key>
+			<string>手柄震动 · Controller rumble</string>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
-			<key>Key</key>
-			<string>TOTK_GYRO</string>
-			<key>Title</key>
-			<string>手柄陀螺仪 · Controller gyro</string>
+		</dict>
+		<dict>
 			<key>DefaultValue</key>
 			<true/>
 			<key>FooterText</key>
 			<string>体感瞄准同时受游戏内选项影响 · motion aiming is also subject to the game's own option</string>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_GYRO</string>
 			<key>Title</key>
-			<string>键盘 · Keyboard</string>
-			<key>FooterText</key>
-			<string>外接键盘会自动识别。插着键盘时触控按键会隐藏，打开第二项可保留触控。重新启动游戏后生效 · a hardware keyboard is detected automatically; while one is connected the touch controls hide, and the second switch below keeps them. Takes effect after relaunching</string>
-		</dict>
-		<dict>
+			<string>手柄陀螺仪 · Controller gyro</string>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
-			<key>Key</key>
-			<string>TOTK_KEYBOARD</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>外接键盘会自动识别。插着键盘时触控按键会隐藏，打开第二项可保留触控。重新启动游戏后生效 · a hardware keyboard is detected automatically; while one is connected the touch controls hide, and the second switch below keeps them. Takes effect after relaunching</string>
 			<key>Title</key>
-			<string>使用外接键盘 · Use a hardware keyboard</string>
+			<string>键盘 · Keyboard</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
 			<key>DefaultValue</key>
 			<true/>
 			<key>FooterText</key>
 			<string>关闭后键盘按键不再操作游戏，触控与手柄不受影响 · off: the keyboard no longer drives the game; touch and controllers keep working</string>
-		</dict>
-		<dict>
+			<key>Key</key>
+			<string>TOTK_KEYBOARD</string>
+			<key>Title</key>
+			<string>使用外接键盘 · Use a hardware keyboard</string>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
-			<key>Key</key>
-			<string>TOTK_TOUCH_WITH_KEYBOARD</string>
-			<key>Title</key>
-			<string>插着键盘时保留触控 · Keep touch with a keyboard</string>
+		</dict>
+		<dict>
 			<key>DefaultValue</key>
 			<false/>
 			<key>FooterText</key>
 			<string>默认隐藏触控按键，避免误触；打开后两者可同时使用 · the touch controls hide by default to avoid stray taps; on: both work at once</string>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_TOUCH_WITH_KEYBOARD</string>
 			<key>Title</key>
-			<string>界面 · Interface</string>
-			<key>FooterText</key>
-			<string>重启游戏后生效 · takes effect after relaunching</string>
-		</dict>
-		<dict>
+			<string>插着键盘时保留触控 · Keep touch with a keyboard</string>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>重启游戏后生效 · takes effect after relaunching</string>
+			<key>Title</key>
+			<string>界面 · Interface</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string>1</string>
+			<key>Key</key>
+			<string>TOTK_HUD_MODE</string>
+			<key>Title</key>
+			<string>性能信息 · Overlay</string>
+			<key>Titles</key>
+			<array>
+				<string>關 · Off</string>
+				<string>極簡 FPS · Bare FPS</string>
+				<string>FPS 與遊玩時間 · FPS + playtime</string>
+				<string>全部 · All</string>
+				<string>FPS 和幀除錯資訊 · FPS and frame debug info</string>
+			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string>0</string>
+				<string>4</string>
+				<string>2</string>
+				<string>1</string>
+				<string>3</string>
+			</array>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>显示帧率、上屏尺寸和 MetalFX 是否生效；行尾是待补译的着色器数量 · shows the frame rate, the presented size and whether MetalFX is upscaling, ending with the number of shaders waiting for translation</string>
 			<key>Key</key>
 			<string>TOTK_FPS_OVERLAY</string>
 			<key>TOTKPhone</key>
 			<true/>
 			<key>Title</key>
 			<string>状态行（右上角）· Status line (top-right)</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
 			<key>DefaultValue</key>
 			<true/>
 			<key>FooterText</key>
-			<string>显示帧率、上屏尺寸和 MetalFX 是否生效；行尾是待补译的着色器数量 · shows the frame rate, the presented size and whether MetalFX is upscaling, ending with the number of shaders waiting for translation</string>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<string>显示本次新翻译的着色器 / 缓存总数，以及本次新建的渲染管线；收集到新东西时会变黄 · shows the shaders translated this run against the cache total, plus the render pipelines built this run; it turns yellow when something new is collected</string>
 			<key>Key</key>
 			<string>TOTK_SHADER_OVERLAY</string>
 			<key>TOTKPhone</key>
 			<true/>
 			<key>Title</key>
 			<string>着色器与管线（左下角）· Shaders and pipelines (bottom-left)</string>
-			<key>DefaultValue</key>
-			<true/>
-			<key>FooterText</key>
-			<string>显示本次新翻译的着色器 / 缓存总数，以及本次新建的渲染管线；收集到新东西时会变黄 · shows the shaders translated this run against the cache total, plus the render pipelines built this run; it turns yellow when something new is collected</string>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>存檔同步 · Save sync</string>
 			<key>FooterText</key>
 			<string>存檔仍保存在本機，副本放進所選資料夾。跨裝置同步需要相同的遊戲使用者 ID，顯示名稱相同仍會分開；新安裝的使用者 ID 不同。下次開啟遊戲時會出現資料夾選擇器，也可長按主畫面圖示選擇 · Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon</string>
+			<key>Title</key>
+			<string>存檔同步 · Save sync</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSTitleValueSpecifier</string>
+			<key>DefaultValue</key>
+			<string>—</string>
 			<key>Key</key>
 			<string>TOTK_CLOUD_SAVE_FOLDER_NAME</string>
 			<key>Title</key>
 			<string>資料夾 · Folder</string>
-			<key>DefaultValue</key>
-			<string>—</string>
+			<key>Type</key>
+			<string>PSTitleValueSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_CLOUD_SAVE_PICK</string>
 			<key>Title</key>
 			<string>選擇資料夾 · Choose folder</string>
-			<key>DefaultValue</key>
-			<false/>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_CLOUD_SAVE_STOP</string>
 			<key>Title</key>
 			<string>停止同步 · Stop syncing</string>
-			<key>DefaultValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>除錯 · Debug</string>
-			<key>FooterText</key>
-			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>除錯 · Debug</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_DEBUG_LOG</string>
 			<key>Title</key>
 			<string>記錄日誌 · Debug log</string>
-			<key>DefaultValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>着色器 · Shaders</string>
-			<key>FooterText</key>
-			<string>开启后，游戏会自动把公共清单里还没有的着色器贡献出去，让大家以后不再卡顿。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号 · When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only</string>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>开启后，游戏会自动把公共清单里还没有的着色器贡献出去，让大家以后不再卡顿。只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号 · When on, the game contributes the shaders the shared list lacks: identifiers, versions, device model and a random id only</string>
+			<key>Title</key>
+			<string>着色器 · Shaders</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_CONTRIBUTE_SHADERS</string>
 			<key>Title</key>
 			<string>自动贡献着色器 · Contribute shaders automatically</string>
-			<key>DefaultValue</key>
-			<false/>
-		</dict>
-		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>活跃度统计 · Active players</string>
-			<key>FooterText</key>
-			<string>每天最多上报一次：设备的随机安装号（开发者范围内的标识的哈希）、游戏、平台和版本，用来统计日活、周活、月活和流失率。不发名字、账号或游戏文件；网站只存安装号的加盐哈希，不存 IP · Once a day: a random install id of the device (a hash of the vendor id), the game, platform and version, to count daily, weekly and monthly players. No name, account or game file; the site keeps only a salted hash of the id and no IP</string>
-		</dict>
-		<dict>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>每天最多上报一次：设备的随机安装号（开发者范围内的标识的哈希）、游戏、平台和版本，用来统计日活、周活、月活和流失率。不发名字、账号或游戏文件；网站只存安装号的加盐哈希，不存 IP · Once a day: a random install id of the device (a hash of the vendor id), the game, platform and version, to count daily, weekly and monthly players. No name, account or game file; the site keeps only a salted hash of the id and no IP</string>
+			<key>Title</key>
+			<string>活跃度统计 · Active players</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<true/>
 			<key>Key</key>
 			<string>TOTK_USAGE_STATS</string>
 			<key>Title</key>
 			<string>匿名统计活跃度 · Count me as an active player</string>
-			<key>DefaultValue</key>
-			<true/>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
 		</dict>
 	</array>
+	<key>StringsTable</key>
+	<string>Root</string>
 </dict>
 </plist>

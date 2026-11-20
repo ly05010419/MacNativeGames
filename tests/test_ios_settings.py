@@ -44,10 +44,11 @@ class IOSSettings(unittest.TestCase):
         self.assertNotIn('TOTK_MFX_INTERP', self._rows())
 
     def test_overlays_are_separate_switches(self):
-        # The runtime reads the two overlays independently; a single combined mode would be a third state the player
-        # cannot see.
+        # The runtime reads the two overlays independently. The overlay's mode (the Mac panel's "性能信息") is a row of
+        # its own since 2026-11-20 ("进阶 可以选 fps格式 比如 关闭"), shown in the pane and on the Advanced screen, so it is
+        # no hidden third state; tests/test_hud_mode_choice.py checks it.
         rows = self._rows()
-        self.assertNotIn('TOTK_HUD_MODE', rows)
+        self.assertEqual(rows['TOTK_HUD_MODE']['Type'], 'PSMultiValueSpecifier')
         for key in ('TOTK_FPS_OVERLAY', 'TOTK_SHADER_OVERLAY'):
             self.assertIn(key, rows)
             self.assertEqual(rows[key]['Type'], 'PSToggleSwitchSpecifier')
