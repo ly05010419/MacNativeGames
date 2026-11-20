@@ -186,6 +186,9 @@ struct CaseDetail<Cover: View, Panel: View>: View, Animatable {
             .transition(.identity)
             .frame(width: caseW, height: caseH)
             .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), anchor: .leading, perspective: 0.45)
+            // the turn only draws it on the left: laid out it stays over the tray, and took every click meant for the
+            // actions (2026-11-20, 1.1.0: 极速更新 and 启动游戏 did nothing); it has no control of its own
+            .allowsHitTesting(false)
             .offset(x: hinge, y: top)
         }
         .frame(width: stage.width, height: stage.height, alignment: .topLeading)
