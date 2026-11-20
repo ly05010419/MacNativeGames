@@ -380,7 +380,7 @@ class SharedCaseViews(unittest.TestCase):
         self.assertNotIn('= Animation.spring(', flow)
         home = (mac / 'HomePage.swift').read_text()
         self.assertIn('static let slowMotions = [1, 2, 3, 5, 10, 20, 50]', home)
-        self.assertIn('slow: Double(slowMotion)', home)
+        self.assertIn('slow: Paths.isRelease ? 1 : Double(slowMotion)', home)   # test builds only (test_launcher_test_controls)
         self.assertEqual((mac / 'CoverFlow.swift').read_text().count('inside: inside(index)'), 2)   # case and reflection
         flow = (mac / 'CoverFlow.swift').read_text()
         self.assertIn('var opening = CaseOpening.turn', flow)   # the default when a Launcher does not choose

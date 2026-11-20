@@ -99,7 +99,7 @@ struct HomePage: View {
                               return CoverImages.shared.cover(at: GameCard.coverPath(game, model.installed.first { $0.game == game }))?.picture
                           },
                           cartridge: { i in model.installed.contains { $0.game == cases[i] } },   // built: its cartridge
-                          slow: Double(slowMotion)) { i in
+                          slow: Paths.isRelease ? 1 : Double(slowMotion)) { i in
                     let game = cases[i]
                     GameCard(game: game, app: model.installed.first { $0.game == game }, loading: !model.installedLoaded,
                              selected: false, cover: true, tap: {})
