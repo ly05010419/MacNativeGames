@@ -162,6 +162,8 @@ enum T {
     static let caseOpeningBook = s("Its cover swings open, like a real case", "像真的盒子一样翻开封面")
     static let caseOpeningTurn = s("The whole case turns over", "整个盒子翻转")
     static let slowMotion = s("Slow motion", "慢速模式")
+    static let depthLayers = s("Two depth layers", "两层景深")
+    static let depthReach = s("Depth strength", "景深强度")
     static func slowMotionTimes(_ n: Int) -> String { n == 1 ? s("Normal speed", "正常速度") : zh ? "慢 \(n) 倍" : "\(n)× slower" }
     static let usageStats = s("Count me as an active player (anonymous)", "匿名统计活跃度")
     static let usageStatsHelp = s("Once a day the Launcher and each game send a random install id of this Mac, the program's name, the platform and its version, so the site can count daily, weekly and monthly players. Nothing else: no name, no account, no game file. The site keeps the id only as a salted hash and no IP address. Turning it off here stops it for the Launcher and every game of this Mac.",

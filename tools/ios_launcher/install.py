@@ -36,7 +36,7 @@ MAC_UI = REPO / 'tools/builder_app/Sources/MNGBuilder'
 # The Mac Launcher's files the iPhone / iPad Launcher compiles as they are (tests/test_ios_launcher.py checks they use
 # AppKit only inside `#if os(macOS)`)
 SHARED = ('CoverFlow.swift', 'CaseDetail.swift', 'CaseAmounts.swift', 'CoverArt.swift', 'CoverFlowTrace.swift',
-          'GameStrings.swift', 'DepthScene.swift', 'DepthSurface.swift')
+          'GameStrings.swift', 'DepthScene.swift', 'DepthSurface.swift', 'DepthLayers.swift')
 ICON = REPO / 'tools/builder_app/Resources/AppIcon-iOS.png'   # the project icon (icon.png) filling 1024 px, opaque: iOS cuts its corners
 RESIZE = REPO / 'tools/builder_app/resize_icon.js'        # icns -> PNG with AppKit (no sips: the build sandbox)
 GAMES = ('oot', 'totk', 'botw', 'dkb', 'pkp', 'dread', 'tmnt')   # with an iPhone / iPad build: GameStrings.swift GameCatalog.onIPhone

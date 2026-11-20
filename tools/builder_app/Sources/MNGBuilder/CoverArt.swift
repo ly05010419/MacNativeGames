@@ -157,7 +157,21 @@ extension EnvironmentValues {
         get { self[CaseParallaxKey.self] }
         set { self[CaseParallaxKey.self] = newValue }
     }
+    /// The picture in depth drawn from its two layers (DepthLayers), or from the picture alone as before: a switch in
+    /// the Mac's development build, to compare (user 2026-11-20: "mac 增加一个 开关 我可以对比 看效果").
+    var depthLayers: Bool {
+        get { self[DepthLayersKey.self] }
+        set { self[DepthLayersKey.self] = newValue }
+    }
+    /// How far the picture's depth reaches (CoverFront.depthReach, the release's): a choice in the Mac's development
+    /// build, to compare (user 2026-11-20: "加一个“景深强度”选项（0.05 现在、0.10、0.15）").
+    var depthReach: CGFloat {
+        get { self[DepthReachKey.self] }
+        set { self[DepthReachKey.self] = newValue }
+    }
 }
+struct DepthLayersKey: EnvironmentKey { static let defaultValue = false }   // one layer, as 1.1.0 (the iPhone too)
+struct DepthReachKey: EnvironmentKey { static let defaultValue: CGFloat = 0.05 }   // CoverFront.depthReach
 
 /// A case's front in the Cover Flow, as a real case (user 2026-11-17, a Switch 2 case): the red band across the top, the
 /// insert's picture under it (the name is written under the middle case). `empty` is drawn on the game's colours when
@@ -171,6 +185,8 @@ struct CoverFront<Empty: View>: View {
     @ViewBuilder let empty: Empty
 
     @Environment(\.caseParallax) private var parallax
+    @Environment(\.depthLayers) private var layered
+    @Environment(\.depthReach) private var reach   // depthReach; the development build may choose another
     @ObservedObject private var depth = DepthScenes.shared
     /// A part of the picture at depth d moves by depthReach x (d - depthFocus) of the front's width at a full lean
     /// (DepthWarp): the farthest (0) a little the other way, the nearest (1) the most towards the pointer.
@@ -212,12 +228,12 @@ struct CoverFront<Empty: View>: View {
                         if parallax != .zero, DepthWarp.ready, let scene = depth.scene(of: picturePath) {
                             // drawn by the GPU straight to the screen (DepthSurface.swift), the shift rounded to half a
                             // pixel of the picture: a turn too small to move it draws nothing new ("ab 都做", A)
-                            let pixels = Self.depthReach * w * scene.height * perPoint
+                            let pixels = reach * w * scene.height * perPoint
                             let half = { (v: CGFloat) in (v * 2).rounded() / 2 }
                             CroppedPicture(aspect: scene.picture.extent.width / max(1, scene.picture.extent.height),
                                            center: center, margin: margin) {
                                 DepthWarpView(scene: scene, shift: CGPoint(x: half(parallax.x * pixels), y: half(parallax.y * pixels)),
-                                              focus: Self.depthFocus)
+                                              focus: Self.depthFocus, layered: layered)
                             }
                         } else {
                             CroppedPicture(picture: picture, center: center, margin: margin).offset(middle)

@@ -76,7 +76,27 @@ class Schemes(unittest.TestCase):
         self.assertEqual((mac / 'CoverFlow.swift').read_text().count('cartridge: cartridge(index)'), 2)
         # "龟速模式 按钮 只能我开发版 看到 用户 不能看到": the slow-motion menu in a build made here only
         menu = home.index('Picker(T.slowMotion, selection: $slowMotion)')
-        self.assertIn('if !Paths.isRelease {', home[menu - 400:menu])
+        self.assertIn('if !Paths.isRelease {', home[menu - 2000:menu])
+        # "加一个“景深强度”选项（0.05 现在、0.10、0.15）": beside it, the development build only; the release keeps 0.05
+        reach = home.index('Picker(T.depthReach, selection: $depthReach)')
+        self.assertIn('if !Paths.isRelease {', home[reach - 900:reach])
+        self.assertIn('static let depthReaches = [0.05, 0.10, 0.15]', home)
+        self.assertIn('.environment(\\.depthReach, Paths.isRelease ? DepthReachKey.defaultValue : CGFloat(depthReach))', home)
+        art_now = (mac / 'CoverArt.swift').read_text()
+        self.assertIn('struct DepthReachKey: EnvironmentKey { static let defaultValue: CGFloat = 0.05 }', art_now)
+        self.assertIn('let pixels = reach * w * scene.height * perPoint', art_now)
+        # "mac 增加一个 开关 我可以对比 看效果": two layers or one, beside it, the development build only, off at first;
+        # the release and the iPhone draw one, as 1.1.0 ("打开 更差"; "只能我测试显示 发布版本 不显示")
+        switch = home.index('Toggle(T.depthLayers, isOn: $depthLayers)')
+        self.assertIn('if !Paths.isRelease {', home[switch - 200:switch])
+        self.assertIn('.environment(\\.depthLayers, !Paths.isRelease && depthLayers)', home)
+        self.assertIn('@AppStorage("depthLayers") private var depthLayers = false', home)
+        self.assertIn('struct DepthLayersKey: EnvironmentKey { static let defaultValue = false }', art_now)
+        self.assertIn('focus: Self.depthFocus, layered: layered)', (mac / 'CoverArt.swift').read_text())
+        self.assertIn('shown.layered == key.4', (mac / 'DepthSurface.swift').read_text())
+        scene = (mac / 'DepthScene.swift').read_text()
+        self.assertIn('if layered, let behind = scene.behind {', scene)
+        self.assertIn('(scene.plain ?? scene.depth).clampedToExtent()', scene)   # one layer: the depth as it was
 
     def test_every_case_s_depth_is_made_ahead(self):
         # user 2026-11-19: "每次 看一个封面 才开始准备 视差效果 还要等1秒 不能都提前准备好吗？": both home pages ask for
@@ -255,7 +275,7 @@ class SharedCaseViews(unittest.TestCase):
         for part in ('VNCoreMLRequest(model: model)', 'MLModel.compileModel(at: url)', 'static let side = 512',
                      'static let kept = 16', 'let ready = Self.model != nil', '@MainActor enum DepthWarp {',
                      'static let kernel: CIKernel? = CIKernel(source: source)', 'float hit = step(z, d) * (1.0 - found);', 'static let steps = 48',
-                     'static func warped(_ scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat) -> CIImage?'):
+                     'static func warped(_ scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat, layered: Bool = true) -> CIImage?'):
             self.assertIn(part, scene)
         self.assertNotIn('ShaderLibrary', scene)
         # "ab 都做": the warp drawn by the GPU straight into a Metal layer, never copied back into a CGImage (B), and
@@ -269,6 +289,20 @@ class SharedCaseViews(unittest.TestCase):
             self.assertIn(part, surface)
         self.assertNotIn('makeLibrary', surface)   # no shader of our own: Command Line Tools builds
         self.assertIn("'DepthSurface.swift'", (LAUNCHER / 'install.py').read_text())
+        # "直接做2 可以照 3D Photo Inpainting 的思路，自己写一个轻量的两层版本（前景加补好的背景） 做mac": the depth's
+        # edges made sharp, the picture behind near things filled from their farther side, and where the walk meets a
+        # side, what is behind shows; on the Mac, then the iPhone too ("安装 iPhone")
+        layers = (mac / 'DepthLayers.swift').read_text()
+        for part in ('enum DepthLayers {\n    #if os(macOS)\n    static let on = !Paths.isRelease\n    #else\n    static let on = false\n',
+                     'static func sharpened(', 'static func nearestFarther(', 'vImageMin_PlanarF', 'vImageMax_PlanarF',
+                     'jump = mix(jump, e - prev, hit);', 'abs(behindAt - before)', 'depth.samplingNearest()', 'static let reach = 64',
+                     'static let kernel: CIKernel? = CIKernel(source: source)'):
+            self.assertIn(part, layers)
+        self.assertNotIn('import Metal', layers)   # Core Image source, as the one layer
+        for part in ('guard DepthLayers.on else {', 'DepthLayers.make(depth: depth, rgba: rgba, width: w, height: h)',
+                     'format: .RGh', 'if layered, let behind = scene.behind {'):
+            self.assertIn(part, scene)
+        self.assertIn("'DepthLayers.swift'", (LAUNCHER / 'install.py').read_text())
         self.assertIn('if parallax != .zero, DepthWarp.ready, let scene = depth.scene(of: picturePath) {', art)
         self.assertIn('let half = { (v: CGFloat) in (v * 2).rounded() / 2 }', art)
         self.assertIn('if next != tilt, next == .zero || abs(next.x - tilt.x) >= 0.002 || abs(next.y - tilt.y) >= 0.002 {',
@@ -283,7 +317,8 @@ class SharedCaseViews(unittest.TestCase):
         # every picture decoded to the same height ("像素都一致 不要有些高清 有些模糊")
         self.assertIn('nonisolated static let height = 1024', art)
         self.assertIn('kCGImageSourceThumbnailMaxPixelSize: longest', art)
-        self.assertIn('struct Scene { let picture: CIImage; let depth: CIImage; let height: CGFloat }', scene)
+        self.assertIn('struct Scene { let picture: CIImage; let depth: CIImage; let height: CGFloat; var behind: CIImage? = nil; var plain: CIImage? = nil }',
+                      scene)
         # every case's picture the game's official key art (Resources/covers.json: addresses and SHA-256 only), in
         # a local build's app, fetched by the released one on the player's Mac, else the app's icon
         import json as _json

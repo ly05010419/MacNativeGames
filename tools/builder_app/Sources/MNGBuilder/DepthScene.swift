@@ -22,8 +22,11 @@ import UIKit
 @MainActor final class DepthScenes: ObservableObject {
     static let shared = DepthScenes()
     /// The picture and its depth (0 farthest ... 1 nearest), both `height` pixels high in the picture's own proportions
-    /// (the official key art is 16:9: 910 x 512).
-    struct Scene { let picture: CIImage; let depth: CIImage; let height: CGFloat }
+    /// (the official key art is 16:9: 910 x 512). On the Mac also the picture behind its near things, the depth then
+    /// two values a pixel: the picture's, edges made sharp, and the depth behind (DepthLayers).
+    /// `plain`, the Mac's: the depth as one layer had it, for the development switch that compares the two (user
+    /// 2026-11-20: "mac 增加一个 开关 我可以对比 看效果").
+    struct Scene { let picture: CIImage; let depth: CIImage; let height: CGFloat; var behind: CIImage? = nil; var plain: CIImage? = nil }
     static let side = 512   // the scene's height
     /// Every case's scene kept (two images of at most 2 MB each: about 35 MB for the ten games), all made ahead
     /// (prepare), so no case waits for its depth when it is turned to (user 2026-11-19: "每次 看一个封面 才开始准备
@@ -163,8 +166,6 @@ import UIKit
         }
         guard let lo = depth.min(), let hi = depth.max(), hi > lo else { return nil }
         for i in depth.indices { depth[i] = (depth[i] - lo) / (hi - lo) }
-        let depthImage = CIImage(bitmapData: depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: w * 4,
-                                 size: CGSize(width: w, height: h), format: .Lf, colorSpace: nil)
         guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         let source = CIImage(cgImage: image)
         let scaled = source.transformed(by: CGAffineTransform(scaleX: CGFloat(w) / source.extent.width,
@@ -174,9 +175,24 @@ import UIKit
             CIContext().render(scaled, toBitmap: $0.baseAddress!, rowBytes: w * 4, bounds: bounds, format: .RGBA8,
                                colorSpace: srgb)
         }
-        let picture = CIImage(bitmapData: Data(rgba), bytesPerRow: w * 4, size: CGSize(width: w, height: h),
-                              format: .RGBA8, colorSpace: srgb)
-        return Scene(picture: picture, depth: depthImage, height: CGFloat(h))
+        let size = CGSize(width: w, height: h)
+        let picture = CIImage(bitmapData: Data(rgba), bytesPerRow: w * 4, size: size, format: .RGBA8, colorSpace: srgb)
+        let plain = CIImage(bitmapData: depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: w * 4,
+                            size: size, format: .Lf, colorSpace: nil)
+        guard DepthLayers.on else { return Scene(picture: picture, depth: plain, height: CGFloat(h)) }
+        let start = Date()
+        let layers = DepthLayers.make(depth: depth, rgba: rgba, width: w, height: h)
+        CoverFlowTrace.note(String(format: "depth layers %@: %d filled behind, %d unreached, in %.0f ms",
+                                   (path as NSString).lastPathComponent, layers.filled, layers.unreached,
+                                   Date().timeIntervalSince(start) * 1000))
+        let depthImage = CIImage(bitmapData: layers.depth.withUnsafeBufferPointer { Data(buffer: $0) }, bytesPerRow: w * 4,
+                                 size: size, format: .RGh, colorSpace: nil)
+        let behind = CIImage(bitmapData: Data(layers.behind), bytesPerRow: w * 4, size: size, format: .RGBA8, colorSpace: srgb)
+        #if os(macOS)
+        return Scene(picture: picture, depth: depthImage, height: CGFloat(h), behind: behind, plain: plain)
+        #else
+        return Scene(picture: picture, depth: depthImage, height: CGFloat(h), behind: behind)
+        #endif
     }
 }
 
@@ -189,7 +205,7 @@ import UIKit
     // Any nearer surface counts, so a near thing's side is drawn on as thickness. Tried 2026-11-19: counting a surface
     // only at its own depth (a near thing floating, what is behind it showing, "浮在前面、露出背景"): a figure's own
     // depths vary, so much of it was passed over as "side" and broke into specks ("不好").
-    static let steps = 48   // the depths walked per pixel (user 2026-11-19: 24 tried, "用48")
+    nonisolated static let steps = 48   // the depths walked per pixel (user 2026-11-19: 24 tried, "用48")
     private static let source = """
     kernel vec4 depthParallax(sampler image, sampler depth, vec2 shift, float focus) {
         vec2 p = destCoord();
@@ -221,13 +237,19 @@ import UIKit
 
     /// The picture for a shift in the picture's pixels (x right, y down, as SwiftUI's), as a Core Image recipe the GPU
     /// draws straight to the screen (DepthWarpSurface); nil without the kernel.
-    static func warped(_ scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat) -> CIImage? {
+    /// `layered`: from the scene's two layers where it has them; off (the Mac's development switch, to compare), the
+    /// one-layer walk over the picture's own depth (the first of the two the layered depth holds).
+    static func warped(_ scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat, layered: Bool = true) -> CIImage? {
+        // Core Image's y runs up: a shift down on the screen is a negative one here
+        if layered, let behind = scene.behind {
+            return DepthLayers.warped(picture: scene.picture, behind: behind, depth: scene.depth,
+                                      shift: CIVector(x: shift.x, y: -shift.y), focus: focus)
+        }
         guard let kernel else { return nil }
         let margin = abs(shift.x) + abs(shift.y) + 2
         let extent = scene.picture.extent
-        // Core Image's y runs up: a shift down on the screen is a negative one here
         return kernel.apply(extent: extent, roiCallback: { _, rect in rect.insetBy(dx: -margin, dy: -margin) },
-                            arguments: [scene.picture.clampedToExtent(), scene.depth.clampedToExtent(),
+                            arguments: [scene.picture.clampedToExtent(), (scene.plain ?? scene.depth).clampedToExtent(),
                                         CIVector(x: shift.x, y: -shift.y), focus])
     }
 }

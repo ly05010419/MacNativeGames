@@ -18,17 +18,19 @@ struct DepthWarpView {
     /// In the picture's pixels (x right, y down), already rounded (CoverFront).
     let shift: CGPoint
     let focus: CGFloat
+    /// From the scene's two layers where it has them (DepthLayers), else the picture alone.
+    var layered = true
 }
 
 #if os(macOS)
 extension DepthWarpView: NSViewRepresentable {
     func makeNSView(context: Context) -> DepthWarpSurface { DepthWarpSurface() }
-    func updateNSView(_ view: DepthWarpSurface, context: Context) { view.show(scene, shift, focus) }
+    func updateNSView(_ view: DepthWarpSurface, context: Context) { view.show(scene, shift, focus, layered) }
 }
 #else
 extension DepthWarpView: UIViewRepresentable {
     func makeUIView(context: Context) -> DepthWarpSurface { DepthWarpSurface() }
-    func updateUIView(_ view: DepthWarpSurface, context: Context) { view.show(scene, shift, focus) }
+    func updateUIView(_ view: DepthWarpSurface, context: Context) { view.show(scene, shift, focus, layered) }
 }
 #endif
 
@@ -47,9 +49,9 @@ final class DepthWarpSurface: DepthPlatformView {
                                                  .workingColorSpace: CGColorSpace(name: CGColorSpace.sRGB) as Any])
     }
 
-    private var input: (scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat)?
+    private var input: (scene: DepthScenes.Scene, shift: CGPoint, focus: CGFloat, layered: Bool)?
     /// What the layer shows now: a draw with the same is skipped.
-    private var shown: (picture: ObjectIdentifier, shift: CGPoint, focus: CGFloat, size: CGSize)?
+    private var shown: (picture: ObjectIdentifier, shift: CGPoint, focus: CGFloat, size: CGSize, layered: Bool)?
 
     private var metal: CAMetalLayer { layer as! CAMetalLayer }
 
@@ -86,8 +88,8 @@ final class DepthWarpSurface: DepthPlatformView {
         metal.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
     }
 
-    func show(_ scene: DepthScenes.Scene, _ shift: CGPoint, _ focus: CGFloat) {
-        input = (scene, shift, focus)
+    func show(_ scene: DepthScenes.Scene, _ shift: CGPoint, _ focus: CGFloat, _ layered: Bool) {
+        input = (scene, shift, focus, layered)
         draw()
     }
 
@@ -100,9 +102,11 @@ final class DepthWarpSurface: DepthPlatformView {
         let fit = min(1, extent.height / max(1, bounds.height * scale))
         let size = CGSize(width: (bounds.width * scale * fit).rounded(), height: (bounds.height * scale * fit).rounded())
         guard size.width >= 1, size.height >= 1 else { return }
-        let key = (ObjectIdentifier(input.scene.picture), input.shift, input.focus, size)
-        if let shown, shown.picture == key.0, shown.shift == key.1, shown.focus == key.2, shown.size == key.3 { return }
-        guard let warped = DepthWarp.warped(input.scene, shift: input.shift, focus: input.focus) else { return }
+        let key = (ObjectIdentifier(input.scene.picture), input.shift, input.focus, size, input.layered)
+        if let shown, shown.picture == key.0, shown.shift == key.1, shown.focus == key.2, shown.size == key.3,
+           shown.layered == key.4 { return }
+        guard let warped = DepthWarp.warped(input.scene, shift: input.shift, focus: input.focus,
+                                            layered: input.layered) else { return }
         metal.contentsScale = scale
         metal.drawableSize = size
         guard let drawable = metal.nextDrawable(), let buffer = queue.makeCommandBuffer() else { return }

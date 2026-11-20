@@ -17,7 +17,15 @@ struct HomePage: View {
     /// The stage's animations this many times slower, to watch them (user 2026-11-19: "右下角 放一个按钮 叫 慢速模式 可以
     /// 选择 慢1 2 3 5 10 20 50倍 我要看动画效果"); for this run only, so it is never left slow by mistake.
     @State private var slowMotion = 1
+    /// The picture in depth from two layers, or one as before: the development build's switch, to compare (user
+    /// 2026-11-20: "mac 增加一个 开关 我可以对比 看效果"), off at first; the release draws one, as 1.1.0 (two compared
+    /// worse: "打开 更差"), and shows none of these switches ("只能我测试显示 发布版本 不显示").
+    @AppStorage("depthLayers") private var depthLayers = false
+    /// How far the picture's depth reaches, the development build's choice (user 2026-11-20: "加一个“景深强度”选项
+    /// （0.05 现在、0.10、0.15）"); the release keeps CoverFront.depthReach.
+    @AppStorage("depthReach") private var depthReach = 0.05
     static let slowMotions = [1, 2, 3, 5, 10, 20, 50]
+    static let depthReaches = [0.05, 0.10, 0.15]
 
     static let games = GameCatalog.all
 
@@ -120,6 +128,26 @@ struct HomePage: View {
                     // a Launcher built here only, never the release players get (user 2026-11-19: "龟速模式 按钮 只能我
                     // 开发版 看到 用户 不能看到")
                     if !Paths.isRelease {
+                    HStack(spacing: 8) {
+                    Toggle(T.depthLayers, isOn: $depthLayers)
+                        .toggleStyle(.switch).controlSize(.small)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(.black.opacity(0.45), in: Capsule())
+                        .foregroundStyle(.white)
+                        .environment(\.colorScheme, .dark)
+                    Menu {
+                        Picker(T.depthReach, selection: $depthReach) {
+                            ForEach(Self.depthReaches, id: \.self) { r in Text(String(format: "%.2f", r)).tag(r) }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("\(T.depthReach) \(String(format: "%.2f", depthReach))", systemImage: "cube.transparent")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .foregroundStyle(.white)
+                    .environment(\.colorScheme, .dark)
                     Menu {
                         Picker(T.slowMotion, selection: $slowMotion) {
                             ForEach(Self.slowMotions, id: \.self) { n in Text(T.slowMotionTimes(n)).tag(n) }
@@ -133,9 +161,12 @@ struct HomePage: View {
                     .background(.black.opacity(0.45), in: Capsule())
                     .foregroundStyle(.white)
                     .environment(\.colorScheme, .dark)
+                    }
                     .padding(12)
                     }
                 }
+                .environment(\.depthLayers, !Paths.isRelease && depthLayers)
+                .environment(\.depthReach, Paths.isRelease ? DepthReachKey.defaultValue : CGFloat(depthReach))
                 // nothing under the stage: no name nor platforms (user 2026-11-19: "去掉 下面这个说明"), no add button
                 // ("这个按钮 去掉 不是盒子里的": the opened case has its own)
                 if let error = model.installedError {
