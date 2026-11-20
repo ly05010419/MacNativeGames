@@ -173,6 +173,7 @@ def prepare(base, update, keys, work, hactool=None):
             summary["hactool_sha256"] = sha256_file(hactool)
             run_step(work, "romfs-merge", TOOLS / "extract_update_romfs.py", base, update,
                      "--keys", keys, "--title-id", TITLE_ID, "--hactool", hactool,
+                     *(["--pinned-sha256", expected["update"]["romfs_sha256"]] if "romfs_sha256" in expected["update"] else []),
                      "--output", target / "romfs")
             index = read_json(target / "romfs/index.json")
             summary["romfs"] = {key: index[key] for key in ("status", "romfs_size", "romfs_sha256", "integrity")}

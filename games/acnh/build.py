@@ -31,6 +31,7 @@ GAME = Path(__file__).resolve().parent
 REPO = GAME.parents[1]
 APP_NAME = 'Animal Crossing New Horizons'   # tools/builder_jobs/repo.py GAMES['acnh']
 BUNDLE_ID = 'org.macnativegames.acnh'       # scripts/package_native_app.py
+TITLE_ID = '01006F8002326000'
 FPS_SOURCE_URL = 'https://github.com/tmouh/acnh-60fps'
 STEPS = 7
 if str(REPO) not in sys.path:
@@ -83,6 +84,20 @@ def prepare_game(work, python, base, update, keys, hactool):
         work, 'prepare')
     record.write_text(json.dumps(inputs, indent=2) + '\n')
     return prepared
+
+
+def combined_card(work, base, update, dlcs, keys):
+    """(base, update, add-ons) to build from: a combined card image (a merged XCI, "1G+1U+3D") is split into one NSP per
+    title in <work>/card (games/acnh/tools/split_card.py), its update and add-ons used unless given separately."""
+    from games.acnh.tools.split_card import is_combined, split
+    if base.suffix.lower() != '.xci' or not is_combined(base):
+        return base, update, dlcs
+    say('game data: this card image also holds the update or add-ons: splitting it into one package per title '
+        '(about a minute)')
+    found = split(base, keys, work / 'card', int(TITLE_ID, 16))
+    if update is None or update == base:
+        update = found['update']
+    return found['base'], update, (dlcs if dlcs and dlcs != [base] else found['dlc'])
 
 
 def fonts_ready(folder):
@@ -211,7 +226,8 @@ def checked_work(work, out):
 def build(argv=None):
     p = adapter.parser(__doc__)
     adapter.add_inputs(p, game_help='the base game 1.0.0 (NSP or XCI)', keys_help='your prod.keys',
-                       update_help='the 1.2.1, 3.0.1 or 3.0.3 update NSP', update_required=True)
+                       update_help='the 1.2.1, 3.0.1 or 3.0.3 update NSP (not needed for a combined card that holds '
+                                   'one)', update_required=False)
     p.add_argument('--dlc', type=Path, action='append', help='a pinned add-on NSP (3.0.1, 3.0.3); repeat for each')
     adapter.add_fonts(p)
     fps = p.add_mutually_exclusive_group()
@@ -229,12 +245,16 @@ def build(argv=None):
         return None
     hactool = hactool_for(work, python)
     stage(2, 'Reading and verifying the game data')
+    card, dlcs = base, [d.expanduser().resolve() for d in args.dlc or []]
+    base, update, dlcs = combined_card(work, base, update, dlcs, keys)
+    if update is None:
+        raise ValueError('give the 1.2.1, 3.0.1 or 3.0.3 update with --update')
     prepared = prepare_game(work, python, base, update, keys, hactool)
     version = json.loads((prepared / 'preparation.json').read_text())['inputs']['update']['cnmt_version_raw']
     stage(3, 'Preparing the system fonts')
-    fonts = prepare_fonts(work, python, keys, base, adapter.given(args.firmware), adapter.given(args.shared_fonts))
+    fonts = prepare_fonts(work, python, keys, card, adapter.given(args.firmware), adapter.given(args.shared_fonts))
     stage(4, 'Preparing the add-ons')
-    dlc = prepare_dlc(work, python, keys, [d.expanduser().resolve() for d in args.dlc or []], version)
+    dlc = prepare_dlc(work, python, keys, dlcs, version)
     stage(5, 'Preparing the frame-rate options')
     fps = None if args.no_fps_mod else fps_source(work, version, adapter.given(args.fps_mod))
     stage(6, 'Building the native host and the shaders')

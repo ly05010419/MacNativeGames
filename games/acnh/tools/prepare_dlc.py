@@ -70,20 +70,24 @@ def prepare(sources, keys_path, output):
         raise ValueError("DLC output already exists; use a new folder")
     expected = pins()
     wanted = {r["source_sha256"]: r for r in expected["entries"]}
-    selected = {}
+    by_title = {r["title_id"]: r for r in expected["entries"]}
+    selected = {}   # title ID: (source, its SHA-256)
     keys = load_keys(keys_path)
     for source in sources:
         source = source.expanduser()
         digest = verified_file(source)
         source = source.resolve()
-        if digest not in wanted or digest in selected:
-            raise ValueError("Unknown or duplicate DLC package; exact pinned hashes required")
-        row = wanted[digest]
-        if source.stat().st_size != row["source_size"]:
-            raise ValueError("DLC package size differs")
         with source.open('rb') as stream:
             kind, entries = container_entries(stream, source.stat().st_size)
             records = nca_inventory(stream, entries, keys)
+            titles = {r['title_id'] for r, _ in records}
+            # a pinned package, or one split from a combined card (split_card.py), whose package bytes differ: its
+            # add-on is then pinned by its RomFS, which verify_assets checks against the same row
+            row = wanted.get(digest) or (by_title.get(titles.pop()) if len(titles) == 1 else None)
+            if row is None or row['title_id'] in selected:
+                raise ValueError("Unknown or duplicate DLC package; a pinned add-on is required")
+            if digest in wanted and source.stat().st_size != row["source_size"]:
+                raise ValueError("DLC package size differs")
             if (kind != 'nsp' or sorted(r['content_type'] for r, _ in records) != [1, 5]
                     or any(r['title_id'] != row['title_id'] for r, _ in records)):
                 raise ValueError("Expected a separate single-title DLC Meta/PublicData NSP")
@@ -92,27 +96,29 @@ def prepare(sources, keys_path, output):
             if (cnmt is None or cnmt['application_id'] != expected['title_id']
                     or cnmt['cnmt_version_raw'] != row['version_raw']):
                 raise ValueError("DLC CNMT version/application differs")
-        selected[digest] = source
-    chosen = [row for row in expected['entries'] if row['source_sha256'] in selected]
+        selected[row['title_id']] = (source, digest)
+    chosen = [row for row in expected['entries'] if row['title_id'] in selected]
     if not chosen:
         raise ValueError("Provide at least one pinned DLC package")
     output.mkdir(parents=True)
     provenance = []
     for row in chosen:
-        source = selected[row['source_sha256']]
+        source, digest = selected[row['title_id']]
         with tempfile.TemporaryDirectory(dir=output) as temp:
             extracted = Path(temp) / 'extracted'
             subprocess.run([sys.executable, '-B', str(GAME / 'tools/extract_romfs.py'),
                             '--source', str(source), '--title-id', row['title_id'], '--keys', str(keys_path),
                             '--output', str(extracted)], check=True)
             clone_file(extracted / 'romfs.bin', output / f'{row["title_id"]}.romfs')
-        verified_file(source, row['source_sha256'])
-        provenance.append({'path': str(source), 'sha256': row['source_sha256'], 'title_id': row['title_id']})
+        verified_file(source, digest)
+        verified_file(output / f'{row["title_id"]}.romfs', row['romfs_sha256'])
+        provenance.append({'path': str(source), 'sha256': digest, 'title_id': row['title_id'],
+                           'pinned_by': 'package' if digest == row['source_sha256'] else 'romfs'})
     (output / 'manifest.json').write_text(json.dumps({'schema': 1, 'title_id': expected['title_id'],
                                                     'entries': chosen}, indent=2) + '\n')
     verify_assets(output)
     (output / 'provenance.json').write_text(json.dumps({'sources': provenance,
-        'integrity': 'Pinned NSP SHA-256, CNMT hash chains, FS headers and all six IVFC levels verified; RSA not checked'}, indent=2) + '\n')
+        'integrity': 'Pinned NSP or RomFS SHA-256, CNMT hash chains, FS headers and all six IVFC levels verified; RSA not checked'}, indent=2) + '\n')
     print(f'Prepared and verified {len(chosen)} DLC(s): {output}')
 
 

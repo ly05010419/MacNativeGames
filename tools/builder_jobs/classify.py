@@ -69,12 +69,20 @@ def _keys(path):
     return Item(str(path), 'keys')
 
 
-def _version(name):
+# The display versions of the ports with their own build.py whose versions build_app.py's VERSIONS does not list:
+# Animal Crossing's names its updates [3.0.3] (games/acnh/assets/expected-v*.json); without them several updates were
+# told apart by date only, and its add-ons were refused next to a 3.0.3 update (a player's report, 2026-11-20)
+_DISPLAY_VERSIONS = {'acnh': {'1.2.1': 458752, '3.0.1': 2097152, '3.0.3': 2228224}}
+
+
+def _version(name, game=None):
     """The title version a package's name gives: [vNNN], or a display version (1.2.1) of a version build_app.py knows."""
     found = _VERSION_IN_NAME.search(name)
     if found:
         return int(found.group(1))
     found = _DISPLAY_IN_NAME.search(name)
+    if found and found.group(1) in _DISPLAY_VERSIONS.get(game, {}):
+        return _DISPLAY_VERSIONS[game][found.group(1)]
     if found:
         for v in repo.build_app().VERSIONS.values():
             if v.get('display_version') == found.group(1) and str(v.get('version', '')).isdigit():
@@ -101,6 +109,7 @@ def _package(path):
     title = titles[0]
     _, role = b.title_kind(title)
     game = repo.game_of_title(title)
+    version = _version(path.name, game)
     if game is None:
         return Item(str(path), 'ignored', title=title, note=t(f'title {title} is not a game this repository builds', f'{title} 不是本项目能打包的游戏'))
     return Item(str(path), role, game=game, title=title, version=version)
@@ -233,6 +242,27 @@ def _hfs0_names(f, offset, length):
     return out
 
 
+def card_titles(path):
+    """How many titles (content metas) a game card image's secure partition holds, read from its HFS0 tables without
+    keys: more than one for a combined card ("1G+1U+3D": the base game, its update and add-ons), None when the file does
+    not read as a card image."""
+    import struct
+    try:
+        with open(path, 'rb') as f:
+            length = f.seek(0, 2)
+            f.seek(0x100)
+            if f.read(4) != b'HEAD':
+                return None
+            f.seek(0x130)
+            root = struct.unpack('<Q', f.read(8))[0]
+            secure = [o for n, o in _hfs0_names(f, root, length) if n == 'secure']
+            if not secure:
+                return None
+            return sum(1 for n, _ in _hfs0_names(f, secure[0], length) if n.endswith('.cnmt.nca'))
+    except (OSError, struct.error, ValueError):
+        return None
+
+
 def card_update_ncas(path):
     """How many NCAs (besides metadata) a game card image's system update partition holds, read from its HFS0 tables,
     which need no keys: 0 for a merged or trimmed card ("1G+1U"), whose missing or empty update partition has no system
@@ -360,6 +390,13 @@ def _plan(items, work=None, open_fonts=False):
         if len(usable) > 1:
             p.notes.append(t(f'{len(usable)} updates: the newest one is used', f'{len(usable)} 个更新：用最新的一个'))
     p.dlc = [i.path for i in by_role('dlc', p.game)]
+    # Animal Crossing on a combined card (its update and add-ons on the card too): games/acnh/build.py splits it
+    # (tools/split_card.py), its update given as the card itself unless one is dropped separately
+    if (p.game == 'acnh' and not p.update and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
+            and (card_titles(p.base) or 0) > 1):
+        p.update, p.update_version = p.base, base.version
+        p.notes.append(t('this card image also holds the update and add-ons: the build takes them from it',
+                         '这个卡带镜像里也有更新和追加内容：打包时直接从里面取'))
     firmware, fonts = by_role('firmware'), by_role('fonts')
     p.firmware = firmware[-1].path if firmware else None
     p.fonts = fonts[-1].path if fonts else None

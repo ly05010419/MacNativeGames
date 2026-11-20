@@ -70,8 +70,14 @@ def verified_cnmt(stream, record: dict, header: bytes, keys: dict,
     title, version = struct.unpack_from("<QI", data)
     if title != int(record["title_id"], 16) or data[12] != expected_type:
         raise ValueError("CNMT identity does not match the selected metadata")
+    extended, count = struct.unpack_from("<HH", data, 0x0E)
+    if len(data) < 0x20 + extended + count * 0x38:
+        raise ValueError("Truncated CNMT content records")
     result = {"cnmt_version_raw": version,
-              "cnmt_content_type": {0x80: "application", 0x81: "patch", 0x82: "add_on_content"}[expected_type]}
+              "cnmt_content_type": {0x80: "application", 0x81: "patch", 0x82: "add_on_content"}[expected_type],
+              # (NCA ID, content type) of the title's contents, which split_card.py groups a combined card by
+              "contents": [(data[0x20 + extended + i * 0x38 + 0x20:0x20 + extended + i * 0x38 + 0x30].hex(),
+                            data[0x20 + extended + i * 0x38 + 0x36]) for i in range(count)]}
     if expected_type == 0x82:
         extended_size = struct.unpack_from("<H", data, 14)[0]
         if extended_size < 16 or len(data) < 0x20 + extended_size:
