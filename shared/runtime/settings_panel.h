@@ -88,6 +88,8 @@ static void settings_pointer_used(void);
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
 @property(strong) NSTextField *textLabel;        /* the field showing text() */
+@property(strong) NSView *customView;            /* a full-width block (the stick-calibration tool) */
+@property int customRows;                        /* its height in row units; 0: an ordinary row */
 -(BOOL)slider;
 -(void)changed:(id)sender;
 -(void)refresh;
@@ -104,6 +106,7 @@ static void settings_pointer_used(void);
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
 -(void)refresh{
+ if(self.customView)return;   /* the stick-calibration block draws and updates itself */
  if(self.text){NSString *t=self.text();
   if(![self.textLabel.stringValue isEqualToString:t]){self.textLabel.stringValue=t;self.textLabel.toolTip=t;}
   if(self.fullWidthText){CGFloat width=[t sizeWithAttributes:@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]}].width;
@@ -121,6 +124,346 @@ static void settings_pointer_used(void);
 @end
 
 static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_UI(zh, en)); }
+#ifdef RUNTIME_STICK_CALIBRATION
+/* ---- The stick-calibration tool (Input page) ---- */
+/* Switch's "calibrate control sticks" recreated in the Input page (user 2026-11-13): each stick shows its live position
+   before calibration (the green dot) and the saved centre (the white cross), and a two-step flow. Release the stick (its
+   still position becomes the centre), then sweep it around the edge (the real travel is stretched back to full range).
+   The result is saved through runtime_gamepad_calibration_set and applied to the game at once; with no controller the
+   buttons are greyed and the dots sit at centre. */
+enum { CAL_LEFT = 0, CAL_RIGHT = 1 };
+enum { CAL_IDLE = 0, CAL_AWAIT_CENTER, CAL_RECORD, CAL_READY };
+enum { CAL_SECTORS = 24 };
+typedef struct {
+    int phase;
+    float centerX, centerY;       /* the centre recorded while the stick was released */
+    float prevX, prevY;           /* the previous raw value, to notice the stick went still */
+    double settleSince;           /* seconds (runtime_now_ns()/1e9) since the stick went still */
+    unsigned char coverage[CAL_SECTORS];
+    double recordSince;
+    float negX, posX, negY, posY; /* RECORD: the travel reached each way from the centre */
+} StickCalibrationRun;
+static StickCalibrationRun calRun[2];
+/* 1 while a calibration run is under way: the stick then drives only the calibration, and the panel's focus navigation
+   (the rows, tabs and other controls) stops answering it (user 2026-11-13). */
+static int settings_calibration_active(void) { return calRun[0].phase != CAL_IDLE || calRun[1].phase != CAL_IDLE; }
+
+@interface TOTKStickCalibrationView : NSView
+@property(strong) NSTimer *timer;
+@property(strong) NSButton *calibrateButton;
+@property(strong) NSSlider *deadzone;
+@property(strong) NSTextField *deadzoneLabel;
+@property(strong) NSSlider *rightDeadzone;
+@property(strong) NSTextField *rightDeadzoneLabel;
+@end
+
+@implementation TOTKStickCalibrationView {
+    float rawLX, rawLY, rawRX, rawRY;
+    float rawLT, rawRT;
+    BOOL connected;
+    uint64_t sampleGeneration;
+    NSString *calibrationStatus;
+}
+-(BOOL)isFlipped{return YES;}
+-(instancetype)initWithFrame:(NSRect)frame{
+    if(!(self=[super initWithFrame:frame]))return nil;
+    self.calibrateButton=[NSButton buttonWithTitle:settings_text("校准","Calibrate") target:self action:@selector(calibrate:)];
+    [self.calibrateButton setButtonType:NSButtonTypePushOnPushOff];
+    self.calibrateButton.controlSize=NSControlSizeSmall;
+    self.calibrateButton.font=[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+    self.calibrateButton.refusesFirstResponder=YES;
+    self.calibrateButton.toolTip=settings_text("推至最外沿转满一圈，松开回中后自动保存；取消或关闭页面不保存本次采样。","Sweep both sticks at full travel, then release to save automatically; Cancel or closing the page discards this session.");
+    [self.calibrateButton sizeToFit];[self addSubview:self.calibrateButton];
+    self.deadzone=[NSSlider sliderWithValue:runtime_gamepad_stick_deadzone_get(0)*100 minValue:0 maxValue:50 target:self action:@selector(changeDeadzone:)];
+    self.deadzone.continuous=YES;
+    self.deadzoneLabel=[NSTextField labelWithString:@""];
+    self.deadzoneLabel.font=[NSFont systemFontOfSize:11];
+    [self addSubview:self.deadzone];[self addSubview:self.deadzoneLabel];
+    self.rightDeadzone=[NSSlider sliderWithValue:runtime_gamepad_stick_deadzone_get(1)*100 minValue:0 maxValue:50 target:self action:@selector(changeDeadzone:)];
+    self.rightDeadzone.continuous=YES;
+    self.rightDeadzoneLabel=[NSTextField labelWithString:@""];
+    self.rightDeadzoneLabel.font=[NSFont systemFontOfSize:11];
+    self.rightDeadzoneLabel.textColor=[NSColor colorWithCalibratedWhite:0.9 alpha:1];
+    [self addSubview:self.rightDeadzone];[self addSubview:self.rightDeadzoneLabel];
+    calibrationStatus=settings_text("校准仅对本次连接生效；重连或重启后请重新校准","Calibration is connection-only; recalibrate after reconnect or restart");
+    [self updateDeadzoneLabel];
+    self.deadzoneLabel.textColor=[NSColor colorWithCalibratedWhite:0.9 alpha:1];
+    __weak TOTKStickCalibrationView *weak=self;
+    self.timer=[NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer *t){(void)t;[weak tick];}];
+    int conn=0;runtime_gamepad_stick_raw(&rawLX,&rawLY,&rawRX,&rawRY,&conn);connected=conn!=0;
+    [self refreshControls];   /* registered controllers are usable without a first input event */
+    return self;
+}
+-(void)dealloc{[self.timer invalidate];calRun[0].phase=calRun[1].phase=CAL_IDLE;}
+-(void)viewDidMoveToWindow{
+    [super viewDidMoveToWindow];
+    if(!self.window)calRun[0].phase=calRun[1].phase=CAL_IDLE;
+}
+-(void)setFrameSize:(NSSize)size{[super setFrameSize:size];[self relayout];}
+
+/* ---- the axis-lab palette (the prototype's exact colours) ---- */
+static NSColor *calLeft(void){ return [NSColor colorWithCalibratedRed:0.710 green:0.965 blue:0.420 alpha:1]; }   /* #b5f66b */
+static NSColor *calRight(void){ return [NSColor colorWithCalibratedRed:0.447 green:0.847 blue:1.000 alpha:1]; }   /* #72d8ff */
+static NSColor *calAccent(int stick){ return stick==CAL_LEFT?calLeft():calRight(); }
+static NSColor *calWellFill(void){ return [NSColor colorWithCalibratedRed:0.055 green:0.082 blue:0.102 alpha:1]; } /* #0e151a */
+static NSColor *calWellLine(void){ return [NSColor colorWithCalibratedRed:0.231 green:0.294 blue:0.333 alpha:1]; } /* #3b4b55 */
+static NSColor *calGrid(void){ return [NSColor colorWithCalibratedRed:0.149 green:0.204 blue:0.235 alpha:1]; }      /* #26343c */
+static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 green:0.471 blue:0.510 alpha:1]; }     /* #647882 */
+
+/* ---- geometry ---- */
+-(CGFloat)wellRadius{ return fmax(40.0,fmin(110.0,fmin((self.bounds.size.height-128.0)/2.0,(self.bounds.size.width-220.0)/4.0))); }
+-(NSPoint)wellCenter:(int)stick{
+    CGFloat w=self.bounds.size.width;
+    return NSMakePoint(stick==CAL_LEFT?w*0.30:w*0.70,[self wellRadius]+16.0);
+}
+-(void)relayout{
+    CGFloat w=self.bounds.size.width,h=self.bounds.size.height;
+    self.deadzoneLabel.frame=NSMakeRect(16,h-26,106,20);
+    self.deadzone.frame=NSMakeRect(124,h-28,w/2-140,24);
+    self.rightDeadzoneLabel.frame=NSMakeRect(w/2+8,h-26,106,20);
+    self.rightDeadzone.frame=NSMakeRect(w/2+116,h-28,w/2-132,24);
+    CGFloat by=h-56;
+    [self placeButton:self.calibrateButton cx:w*0.50 y:by];
+}
+-(void)placeButton:(NSButton *)b cx:(CGFloat)cx y:(CGFloat)y{
+    b.frame=NSMakeRect(cx-b.frame.size.width/2,y,b.frame.size.width,22);
+}
+
+/* ---- drawing ---- */
+-(void)drawRect:(NSRect)dirty{
+    (void)dirty;
+    NSRect b=self.bounds;CGFloat w=b.size.width;
+    [self drawStick:CAL_LEFT];
+    [self drawStick:CAL_RIGHT];
+    [self drawTrigger:CAL_LEFT];   /* LT */
+    [self drawTrigger:CAL_RIGHT];  /* RT */
+    NSString *status=settings_calibration_active()?settings_text("推至最外沿补齐灰区；亮区已覆盖，松开回中自动保存","Sweep at full travel: bright = covered, grey = missing; release to save"):calibrationStatus;
+    if(status){
+        NSMutableParagraphStyle *style=[NSMutableParagraphStyle new];style.alignment=NSTextAlignmentCenter;
+        [status drawInRect:NSMakeRect(12,b.size.height-80,w-24,20) withAttributes:@{
+            NSFontAttributeName:[NSFont systemFontOfSize:10],NSForegroundColorAttributeName:calMuted(),NSParagraphStyleAttributeName:style}];
+    }
+
+}
+-(void)drawStick:(int)stick{
+    NSPoint c=[self wellCenter:stick];CGFloat R=[self wellRadius];
+    NSColor *accent=calAccent(stick);
+    NSRect well=NSMakeRect(c.x-R,c.y-R,R*2,R*2);
+    /* the well: solid fill, ring, then the grid clipped to it */
+    [calWellFill() setFill];[[NSBezierPath bezierPathWithOvalInRect:well] fill];
+    NSBezierPath *ring=[NSBezierPath bezierPathWithOvalInRect:well];
+    [calWellLine() setStroke];ring.lineWidth=1;[ring stroke];
+    [NSGraphicsContext saveGraphicsState];
+    [[NSBezierPath bezierPathWithOvalInRect:well] addClip];
+    CGFloat step=R*2/10.0;
+    NSBezierPath *grid=[NSBezierPath bezierPath];
+    for(CGFloat gx=c.x-R;gx<=c.x+R+0.5;gx+=step){[grid moveToPoint:NSMakePoint(gx,c.y-R)];[grid lineToPoint:NSMakePoint(gx,c.y+R)];}
+    for(CGFloat gy=c.y-R;gy<=c.y+R+0.5;gy+=step){[grid moveToPoint:NSMakePoint(c.x-R,gy)];[grid lineToPoint:NSMakePoint(c.x+R,gy)];}
+    [calGrid() setStroke];grid.lineWidth=0.5;[grid stroke];
+    [NSGraphicsContext restoreGraphicsState];
+    /* Each outer-ring sector is lit only after actual samples reach it. */
+    if(calRun[stick].phase==CAL_RECORD||calRun[stick].phase==CAL_READY){
+        for(int sector=0;sector<CAL_SECTORS;sector++){
+            NSBezierPath *arc=[NSBezierPath bezierPath];
+            CGFloat start=sector*360.0/CAL_SECTORS;
+            [arc appendBezierPathWithArcWithCenter:c radius:R-3 startAngle:-start-360.0/CAL_SECTORS+1 endAngle:-start-1];
+            [(calRun[stick].coverage[sector]>=2?accent:[NSColor colorWithCalibratedWhite:0.30 alpha:1]) setStroke];
+            arc.lineWidth=4;[arc stroke];
+        }
+    }
+    /* the inner reference circle and the centre cross */
+    NSBezierPath *inner=[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(well,R*0.5,R*0.5)];
+    [[NSColor colorWithCalibratedRed:0.157 green:0.216 blue:0.251 alpha:1] setStroke];inner.lineWidth=1;[inner stroke];
+    NSBezierPath *ax=[NSBezierPath bezierPath];
+    [ax moveToPoint:NSMakePoint(c.x-R,c.y)];[ax lineToPoint:NSMakePoint(c.x+R,c.y)];
+    [ax moveToPoint:NSMakePoint(c.x,c.y-R)];[ax lineToPoint:NSMakePoint(c.x,c.y+R)];
+    [[NSColor colorWithCalibratedRed:0.251 green:0.318 blue:0.361 alpha:1] setStroke];ax.lineWidth=0.75;[ax setLineDash:(CGFloat[]){3,4} count:2 phase:0];[ax stroke];
+    /* The configured radial deadzone, as a fraction of the radius. */
+    NSBezierPath *dz=[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(well,R*(1-runtime_gamepad_stick_deadzone_get(stick)),R*(1-runtime_gamepad_stick_deadzone_get(stick)))];
+    [[NSColor colorWithCalibratedRed:0.510 green:0.592 blue:0.369 alpha:1] setStroke];dz.lineWidth=1;[dz setLineDash:(CGFloat[]){2,3} count:2 phase:0];[dz stroke];
+    /* The preview is post-calibration, so its centre is always zero. */
+    NSPoint ctr=c;
+    NSBezierPath *cross=[NSBezierPath bezierPath];
+    [cross moveToPoint:NSMakePoint(ctr.x-5,ctr.y)];[cross lineToPoint:NSMakePoint(ctr.x+5,ctr.y)];
+    [cross moveToPoint:NSMakePoint(ctr.x,ctr.y-5)];[cross lineToPoint:NSMakePoint(ctr.x,ctr.y+5)];
+    [[NSColor colorWithCalibratedWhite:1 alpha:0.7] setStroke];cross.lineWidth=1;[cross stroke];
+    /* Preview the same radial response sent to the game, never alter raw samples. */
+    float x=0,y=0;
+    if(calRun[stick].phase!=CAL_IDLE)
+        runtime_gamepad_stick_preview(stick==CAL_RIGHT,stick==CAL_LEFT?rawLX:rawRX,stick==CAL_LEFT?rawLY:rawRY,&x,&y);
+    NSPoint p=NSMakePoint(c.x+x*R,c.y-y*R);
+    /* the vector line from centre to the dot */
+    NSBezierPath *vec=[NSBezierPath bezierPath];
+    [vec moveToPoint:ctr];[vec lineToPoint:p];
+    [[accent colorWithAlphaComponent:0.9] setStroke];vec.lineWidth=1.5;[vec stroke];
+    /* the glowing dot */
+    [NSGraphicsContext saveGraphicsState];
+    NSShadow *glow=[NSShadow new];glow.shadowColor=[accent colorWithAlphaComponent:0.7];glow.shadowBlurRadius=7;glow.shadowOffset=NSZeroSize;[glow set];
+    [accent setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x-6,p.y-6,12,12)] fill];
+    [NSGraphicsContext restoreGraphicsState];
+    [[NSColor colorWithCalibratedRed:0.914 green:1.0 blue:0.894 alpha:1] setStroke];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x-6,p.y-6,12,12)] stroke];
+    /* the axis labels */
+    NSDictionary *axis=@{NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:calMuted()};
+    [@"+Y" drawInRect:NSMakeRect(c.x-12,c.y-R-14,24,12) withAttributes:axis];
+    [@"−Y" drawInRect:NSMakeRect(c.x-12,c.y+R+2,24,12) withAttributes:axis];
+    [@"−X" drawInRect:NSMakeRect(c.x-R-20,c.y-6,16,12) withAttributes:axis];
+    [@"+X" drawInRect:NSMakeRect(c.x+R+6,c.y-6,16,12) withAttributes:axis];
+    /* Keep live calibration feedback, without redundant stick headings. */
+    NSString *value=[self valueText:stick];
+    NSDictionary *va=@{NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:10.5 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName:[self valueColor:stick]};
+    [value drawInRect:NSMakeRect(c.x-90,c.y+R+16,180,15) withAttributes:va];
+}
+-(NSString *)valueText:(int)stick{
+    if(!connected)return settings_text("未连接手柄","No controller");
+    int phase=calRun[stick].phase;
+    if(phase==CAL_IDLE)return @"";
+    if(phase==CAL_AWAIT_CENTER)return settings_text("请松开摇杆…","Release the stick…");
+    if(phase==CAL_READY)return settings_text("覆盖完成，请松开回中","Covered; release to centre");
+    if(phase==CAL_RECORD){int count=0;for(int i=0;i<CAL_SECTORS;i++)count+=calRun[stick].coverage[i]>=2;
+        return [NSString stringWithFormat:settings_text("外圈 %d/%d","Outer ring %d/%d"),count,CAL_SECTORS];}
+    float x=stick==CAL_LEFT?rawLX:rawRX, y=stick==CAL_LEFT?rawLY:rawRY;
+    return [NSString stringWithFormat:@(TOTK_UI("X %+.2f · Y %+.2f","X %+.2f · Y %+.2f")),x,y];
+}
+-(NSColor *)valueColor:(int)stick{
+    if(calRun[stick].phase==CAL_IDLE)return [NSColor colorWithCalibratedWhite:0.72 alpha:1];
+    return [NSColor colorWithCalibratedRed:0.95 green:0.72 blue:0.32 alpha:1];   /* amber while calibrating */
+}
+-(void)drawTrigger:(int)stick{
+    BOOL right=stick==CAL_RIGHT;
+    CGFloat w=self.bounds.size.width;
+    NSPoint wc=[self wellCenter:CAL_LEFT];CGFloat R=[self wellRadius];
+    CGFloat tw=34.0,th=R*2.0,ty=wc.y-R;   /* as tall as the wells */
+    CGFloat cx=right?w-35:35;
+    NSColor *accent=calAccent(stick);
+    NSString *name=right?@"RT":@"LT";
+    [name drawInRect:NSMakeRect(cx-tw/2,ty-16,tw,14) withAttributes:@{
+        NSFontAttributeName:[NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
+        NSForegroundColorAttributeName:calMuted()}];
+    NSRect wellRect=NSMakeRect(cx-tw/2,ty,tw,th);
+    /* the well with quarter tick marks */
+    [calWellFill() setFill];[[NSBezierPath bezierPathWithRoundedRect:wellRect xRadius:6 yRadius:6] fill];
+    [[NSColor colorWithCalibratedRed:0.204 green:0.255 blue:0.290 alpha:1] setStroke];
+    NSBezierPath *outline=[NSBezierPath bezierPathWithRoundedRect:wellRect xRadius:6 yRadius:6];outline.lineWidth=1;[outline stroke];
+    NSBezierPath *ticks=[NSBezierPath bezierPath];
+    for(int i=1;i<4;i++){CGFloat yy=ty+th*i/4.0;[ticks moveToPoint:NSMakePoint(cx-tw/2,yy)];[ticks lineToPoint:NSMakePoint(cx+tw/2,yy)];}
+    [[NSColor colorWithCalibratedRed:0.447 green:0.514 blue:0.565 alpha:0.25] setStroke];ticks.lineWidth=0.5;[ticks stroke];
+    /* the liquid fill, from the bottom */
+    float v=calRun[stick].phase!=CAL_IDLE?(right?rawRT:rawLT):0;
+    if(v>0){
+        NSRect fill=NSMakeRect(cx-tw/2,ty+th*(1.0-fmin(1.0,v)),tw,th*fmin(1.0,v));
+        [[accent colorWithAlphaComponent:0.85] setFill];
+        NSBezierPath *fp=[NSBezierPath bezierPathWithRoundedRect:fill xRadius:5 yRadius:5];
+        /* keep the bottom corners square when the fill touches the well's bottom */
+        [fp fill];
+    }
+    NSString *num=[NSString stringWithFormat:@"%.0f%%",v*100];
+    [num drawInRect:NSMakeRect(cx-24,ty+th+4,48,14) withAttributes:@{
+        NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName:accent}];
+}
+
+/* ---- the calibration state machine (unchanged flow) ---- */
+-(void)tick{
+    if(self.hiddenOrHasHiddenAncestor||!self.window){calRun[0].phase=calRun[1].phase=CAL_IDLE;return;}
+    int conn=0;runtime_gamepad_stick_raw(&rawLX,&rawLY,&rawRX,&rawRY,&conn);connected=conn!=0;
+    RuntimeGamepadCalibrationSample sample;runtime_gamepad_calibration_sample(&sample);
+    BOOL interrupted=!sample.valid || sampleGeneration!=sample.generation;
+    sampleGeneration=sample.generation;
+    rawLX=sample.lx;rawLY=sample.ly;rawRX=sample.rx;rawRY=sample.ry;rawLT=sample.lt;rawRT=sample.rt;
+    if(!connected){calRun[0].phase=calRun[1].phase=CAL_IDLE;}
+    else if(interrupted && settings_calibration_active()){
+        /* Never combine a pre-interruption centre/range with another source or synthetic focus-clear zeros. */
+        for(int stick=0;stick<2;stick++)calRun[stick]=(StickCalibrationRun){.phase=CAL_AWAIT_CENTER};
+        calibrationStatus=settings_text("输入已变化，请重新松开摇杆","Input changed; release the sticks again");
+    }
+    if(interrupted){[self refreshControls];[self setNeedsDisplay:YES];return;}
+    [self stepStick:CAL_LEFT];[self stepStick:CAL_RIGHT];
+    [self finishIfComplete];
+    [self refreshControls];[self setNeedsDisplay:YES];
+}
+-(void)stepStick:(int)stick{
+    float x=stick==CAL_LEFT?rawLX:rawRX, y=stick==CAL_LEFT?rawLY:rawRY;
+    StickCalibrationRun *r=&calRun[stick];
+    double now=runtime_now_ns()/1e9;
+    if(r->phase==CAL_AWAIT_CENTER){
+        if(isfinite(x)&&isfinite(y)&&hypotf(x,y)<=0.25f&&fabsf(x-r->prevX)<0.02f&&fabsf(y-r->prevY)<0.02f){
+            if(r->settleSince<=0)r->settleSince=now;
+            else if(now-r->settleSince>=0.5){
+                r->centerX=x;r->centerY=y;r->negX=r->posX=r->negY=r->posY=0;r->phase=CAL_RECORD;r->settleSince=0;r->recordSince=now;
+            }
+        }else r->settleSince=0;
+        r->prevX=x;r->prevY=y;
+    }else if(r->phase==CAL_RECORD||r->phase==CAL_READY){
+        if(!isfinite(x)||!isfinite(y))return;
+        float dx=x-r->centerX,dy=y-r->centerY;
+        if(dx<r->negX)r->negX=dx;if(dx>r->posX)r->posX=dx;
+        if(dy<r->negY)r->negY=dy;if(dy>r->posY)r->posY=dy;
+        if(hypotf(dx,dy)>=0.55f){
+            float angle=atan2f(dy,dx);if(angle<0)angle+=2*M_PI;
+            int sector=MIN(CAL_SECTORS-1,(int)(angle*CAL_SECTORS/(2*M_PI)));
+            if(r->coverage[sector]<2)r->coverage[sector]++;
+        }
+        BOOL complete=now-r->recordSince>=0.75&&-r->negX>=0.45f&&r->posX>=0.45f&&-r->negY>=0.45f&&r->posY>=0.45f;
+        for(int i=0;i<CAL_SECTORS;i++)if(r->coverage[i]<2)complete=NO;
+        if(complete)r->phase=CAL_READY;
+    }
+}
+-(void)calibrate:(NSButton *)b{
+    (void)b;
+    if(!connected)return;
+    if(!settings_calibration_active()){
+        for(int stick=0;stick<2;stick++)calRun[stick]=(StickCalibrationRun){.phase=CAL_AWAIT_CENTER};
+        calibrationStatus=nil;
+    }else{
+        calRun[0].phase=calRun[1].phase=CAL_IDLE;
+        calibrationStatus=settings_text("已取消，保留原校准","Cancelled; previous calibration kept");
+    }
+    [self refreshControls];
+}
+-(void)finishIfComplete{
+    if(calRun[0].phase!=CAL_READY||calRun[1].phase!=CAL_READY)return;
+    /* Keep measuring travel until both sticks are released; never freeze a still-growing sweep. */
+    if(!isfinite(rawLX)||!isfinite(rawLY)||!isfinite(rawRX)||!isfinite(rawRY))return;
+    if(hypotf(rawLX-calRun[0].centerX,rawLY-calRun[0].centerY)>0.15f||
+       hypotf(rawRX-calRun[1].centerX,rawRY-calRun[1].centerY)>0.15f)return;
+    RuntimeGamepadCalibration cal;runtime_gamepad_calibration_get(&cal);
+    for(int stick=0;stick<2;stick++){
+        StickCalibrationRun *r=&calRun[stick];
+        RuntimeStickCalibration *c=stick==CAL_LEFT?&cal.left:&cal.right;
+        *c=(RuntimeStickCalibration){r->centerX,r->centerY,
+            fminf(8.0f,1.0f/r->posX), fminf(8.0f,1.0f/r->posY),
+            fminf(8.0f,-1.0f/r->negX), fminf(8.0f,-1.0f/r->negY)};
+    }
+    cal.stableHID=1;
+    runtime_gamepad_calibration_set(&cal);
+    calRun[0].phase=calRun[1].phase=CAL_IDLE;
+    calibrationStatus=settings_text("校准完成，仅本次连接有效；重连后请重新校准","Calibration applied for this connection; recalibrate after reconnect");
+    [self refreshControls];
+}
+-(void)updateDeadzoneLabel{
+    self.deadzoneLabel.stringValue=[NSString stringWithFormat:settings_text("左死区 %.0f%%","Left deadzone %.0f%%"),runtime_gamepad_stick_deadzone_get(0)*100];
+    self.rightDeadzoneLabel.stringValue=[NSString stringWithFormat:settings_text("右死区 %.0f%%","Right deadzone %.0f%%"),runtime_gamepad_stick_deadzone_get(1)*100];
+}
+-(void)changeDeadzone:(NSSlider *)slider{
+    runtime_gamepad_stick_deadzone_set(slider==self.rightDeadzone,roundf(slider.floatValue)/100.0f);
+    [self updateDeadzoneLabel];[self setNeedsDisplay:YES];
+}
+-(void)refreshControls{
+    self.calibrateButton.title=settings_calibration_active()?settings_text("取消","Cancel"):settings_text("校准","Calibrate");
+    self.calibrateButton.enabled=connected;
+    self.calibrateButton.state=settings_calibration_active()?NSControlStateValueOn:NSControlStateValueOff;
+    [self setNeedsDisplay:YES];
+}
+
+@end
+
+#else
+static int settings_calibration_active(void) { return 0; }
+#endif
+
 static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                     int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
@@ -485,7 +828,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
- NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
+ NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]+=r.customRows>0?r.customRows:1;
  NSUInteger most=perPage[SETTINGS_PAGE_VR];for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
@@ -496,7 +839,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  CGFloat roomW=window?window.contentView.bounds.size.width-8:CGFLOAT_MAX;   /* a narrower window: a narrower panel, kept inside */
  CGFloat body=n*(rowH+gap)-gap,h=SETTINGS_TOP+body+SETTINGS_BOTTOM,W=fmax(SETTINGS_NARROW_W,fmin(SETTINGS_W,roomW));
  if(!drawings&&h>room){h=room;body=fmax(0,h-SETTINGS_TOP-SETTINGS_BOTTOM);}   /* more controls: scroll rather than grow past the window */
- if(drawings){W=SETTINGS_WIDE_W;h=fmax(h,SETTINGS_WIDE_H);body=h-SETTINGS_TOP-SETTINGS_BOTTOM;}
+ if(drawings){W=SETTINGS_WIDE_W;h=fmin(room,fmax(h,SETTINGS_WIDE_H));body=h-SETTINGS_TOP-SETTINGS_BOTTOM;}
  if(!(self=[super initWithFrame:NSMakeRect(0,0,W,h)]))return nil;
 #if SETTINGS_HAS_AA_ROWS
  self.aaMethod=dm_gfx_aa_method();
@@ -521,12 +864,20 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
     350 ("GPU keep-alive (holds the clock up; hotter, more power)" is 348); 260 in a narrower panel */
  CGFloat popW=fmax(SETTINGS_POP_W,fmin(SETTINGS_POP_MAX_W,W-28-24-SETTINGS_LABEL_W));
  NSView *(^rowPage)(NSInteger)=^NSView *(NSInteger p){   /* the pages of rows: display, input, effects and (zeldaVR) VR */
-  NSUInteger count=0;for(TOTKSettingRow *r in rows)if(r.page==p)count++;
-  CGFloat docH=fmax(body,count*(rowH+gap)-gap);
-  NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,docH)];NSUInteger k=0;
+  /* The page's height: an ordinary row is rowH, a custom block (the stick calibration) spans its customRows. */
+  CGFloat total=0;for(TOTKSettingRow *r in rows)if(r.page==p)total+=(r.customRows>0?r.customRows:1)*(rowH+gap);
+  total=fmax(0,total-gap);
+  CGFloat docH=fmax(body,total);
+  NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,docH)];
+  CGFloat y=docH;
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
-   CGFloat y=docH-(k+1)*rowH-k*gap,rw=W-28;k++;
+   if(r.customRows>0){
+    CGFloat ch=r.customRows*rowH+(r.customRows-1)*gap;
+    y-=ch;r.customView.frame=NSMakeRect(14,y,W-28,ch);[page addSubview:r.customView];
+    y-=gap;continue;
+   }
+   y-=rowH;CGFloat rw=W-28;
    NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
    band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
@@ -550,6 +901,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
+   y-=gap;
   }
   if(docH>body){
    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];
@@ -773,7 +1125,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 #if SETTINGS_HAS_SHOTS
  else if(self.page==SETTINGS_PAGE_SHOTS)[self.controllerTargets addObjectsFromArray:[self shotsPageTargets]];
 #endif
- else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
+ else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.customView?:r.control.superview];
   NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
   for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];
   for(NSButton *b in self.effectsButtons)if(!b.hidden)[self.controllerTargets addObject:b];}
@@ -1062,6 +1414,9 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 }
 -(void)controllerPad:(RuntimeGamepadState)pad time:(double)now active:(BOOL)active{
  if(!active||!pad.connected){self.controllerArmed=NO;self.previousButtons=0;self.previousDirection=0;return;}
+ if(settings_calibration_active()){   /* the stick drives only the calibration; the panel's focus stays put (user 2026-11-13) */
+  self.controllerArmed=NO;self.previousButtons=0;self.previousDirection=0;return;
+ }
  int direction=(pad.buttons&(1ull<<13)||pad.ly>16000)?1:(pad.buttons&(1ull<<15)||pad.ly < -16000)?2:
   (pad.buttons&(1ull<<12)||pad.lx < -16000)?3:(pad.buttons&(1ull<<14)||pad.lx>16000)?4:0;
  if(!self.controllerArmed){if(!pad.buttons&&!direction)self.controllerArmed=YES;self.previousButtons=pad.buttons;return;}
@@ -1153,8 +1508,9 @@ static void settings_show(int open) {   /* main thread */
 #endif
  if(open){g_settings_controller_active=NO;settings_panel_replace();}else [settingsPanel endCapture];
  settingsOpen=open;
+ if(open)runtime_input_clear();
  runtime_gamepad_text_capture(open);
- if(open){runtime_input_clear();[settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
+ if(open){[settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
  else{[window makeFirstResponder:window.contentView];
   if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];}
  settingsPanel.hidden=!open;
