@@ -219,13 +219,45 @@ static int core_allowed(const thr_t *t, int c) { return (int)((t->mask >> c) & 1
    reading stale state on Apple cores (game_patches_botw.c, exclusive loads with acquire); with that fixed the game runs
    on Horizon's rules (session hz1). Holding G. */
 static int g_pi_step = -1;      /* default 0: Horizon's inheritance */
+static int g_pi_chain = -1;     /* opt-in until native-device validation */
 static int g_starve_on = -1;    /* default off: Horizon has no starvation rule */
 static void sched_knobs(void) {
     if (g_pi_step < 0) { const char *e = getenv("TOTK_PI_STEP"); g_pi_step = e ? atoi(e) : 0; }
+    if (g_pi_chain < 0) { const char *e = getenv("TOTK_PI_CHAIN"); g_pi_chain = e && !strcmp(e, "1"); }
     if (g_starve_on < 0) { const char *e = getenv("TOTK_STARVE"); g_starve_on = e && *e && strcmp(e, "0"); }
+}
+/* Follow a blocked mutex's current owner, with the handle-generation/type checks
+   used by the SVC dispatcher. Caller holds G; condition/address/event waits do
+   not create mutex-owner edges. */
+static const thr_t *pi_owner(const thr_t *w) {
+    if (!w || w->wkind != 1 || !w->waddr) return NULL;
+    uint32_t handle = __atomic_load_n((const uint32_t *)(uintptr_t)w->waddr, __ATOMIC_RELAXED) & ~WAITERS_BIT;
+    return h_peek(handle, O_THREAD);
+}
+/* Donate each waiter's base priority along its ownership chain. This computes
+   the same minimum as propagating effective priorities, without recursion,
+   allocation, cached owner pointers or dependence on wait-list ordering.
+   Brent's cycle detection visits every reachable owner before stopping; a
+   guest mutex cycle must not turn a priority query into an infinite loop. */
+static int pi_chain_priority(const thr_t *o) {
+    int p = o->prio;
+    for (const thr_t *w = g_wait; w; w = w->next) {
+        if (w->prio >= p) continue;
+        const thr_t *checkpoint = w, *owner = pi_owner(w);
+        size_t power = 1, steps = 0;
+        while (owner) {
+            if (owner == o) { p = w->prio; break; }
+            if (owner == checkpoint) break;
+            if (steps == power) { checkpoint = owner; power *= 2; steps = 0; }
+            owner = pi_owner(owner); steps++;
+        }
+    }
+    return p;
 }
 static int eff_prio(const thr_t *o) {
     sched_knobs();
+    // Preserve the existing diagnostic priority-step behavior and all defaults.
+    if (g_pi_chain && g_pi_step == 0) return pi_chain_priority(o);
     int p = o->prio;
     for (const thr_t *w = g_wait; w; w = w->next)
         if (w->wkind == 1 && w->waddr && (__atomic_load_n((const uint32_t *)(uintptr_t)w->waddr, __ATOMIC_RELAXED) & ~WAITERS_BIT) == o->handle && w->prio - g_pi_step < p) p = w->prio - g_pi_step;
