@@ -101,9 +101,9 @@ def _rule_place(b, app, game):
 
 
 def launcher_state():
-    """{state: ok|download|other, reason}: MNG Launcher installed, the released one (it runs its own source, and its signed
-    code updates) or a development one made against this checkout (MNGRepo). Never made from here: its code is not in
-    this repository (user 2026-11-20)."""
+    """{state: ok|download|other, reason}: MNG Launcher installed, the released one (it runs the source it carries) or a
+    development one made against this checkout (MNGRepo). Never made from here: its code is not in this repository
+    (user 2026-11-20)."""
     try:
         info = plistlib.loads((LAUNCHER / 'Contents/Info.plist').read_bytes())
     except Exception:   # not installed, or unreadable

@@ -12,7 +12,7 @@ behind them stay in `tools/builder`, the models the pages call through `tools/bu
 From 20 November 2026 the window's own code (the SwiftUI app, the files its signed release carries, the iPhone / iPad
 Launcher) is kept apart from the porting code, in a repository of its own that is not public; players download the
 Launcher. What it runs stays here: `tools/builder_jobs`, `tools/builder`, `tools/mng.py`, `build_app.py` and the games,
-which a release carries as its source and its code updates replace.
+which a release carries as its source.
 
 ## Download builds
 
@@ -39,41 +39,25 @@ An iPhone / iPad build needs Xcode too.
 The Build page is three pages: 1 this Mac (what is missing, with its fix), 2 the game files and keys, 3 where the
 app goes and the build. Next opens when the page is done.
 
-### Code updates without a new Launcher (1.0.2 and newer)
+### New code comes with a new Launcher
 
-Before 1.0.2 a Launcher only ever ran the source it shipped with: an express update rebuilt the same code, and a fix
-reached players only through a new Launcher download (2026-11-16: a 1.0.0 player kept the Ocarina of Time grass bug fixed
-two days earlier). From 1.0.2 the Launcher also runs newer code from signed source releases:
-
-- **Published by hand.** The maintainer picks a pushed commit and publishes it as a GitHub release tagged `source-*`
-  with three files: `mng-source.json` (commit, commit time, archive name, SHA-256 and size, the oldest Launcher it works
-  with), `mng-source.json.sig` (its Ed25519 signature) and `mng-source-<commit>.tar.gz` (`git archive` of the commit).
-  The private key stays in the maintainer's keychain; nothing is published automatically.
-- **Checked by the signed app.** `source_updates.py` and `bundled_job.py` (the Launcher's own repository) ship inside the
-  signed Launcher, never inside a source archive. A release is used only when the signature verifies with the public key
-  in the Launcher's own `Info.plist` (`MNGSourcePublicKey`, from the Launcher's `source_signing.pub`), the archive has the
-  size and SHA-256 the manifest names, its commit is newer than the Launcher's own source, and it asks for no newer
-  Launcher (otherwise the update's log says which Launcher to download).
-- **When.** The home page reads the release list at most once in ten minutes and downloads new code in the background;
-  pressing any update (express, fast or full) first makes sure the newest code is here, and its log names the code it
-  builds with (`Code: <commit>`). No network or a bad release leaves the code already on the Mac.
-- **Where.** Downloaded code goes to the same `sources/<archive-sha256>` folders with its manifest beside it; the game's
-  overlay then shows that commit as its build.
-- **Privacy.** GitHub is asked with the User-Agent `MNG-Launcher` and nothing about the player.
-
-`MNG_SOURCE_UPDATES=0` in the Launcher's environment keeps it on its own source.
+Every job a Launcher runs, an express update too, uses the source that Launcher carries; its log names it
+(`Code: <commit> (the code this Launcher carries)`). New code reaches players only in a new Launcher (user 2026-11-20).
+From 1.0.2 to 1.1.1 a Launcher also downloaded signed source releases (tag `source-*`) and built with the newest; that
+is gone from the Launcher after 1.1.1. The home page still reads the release list at most once in ten minutes, only for
+the newest `launcher-v*` release (the version label turns blue, the update button below); GitHub is asked with the
+User-Agent `MNG-Launcher` and nothing about the player.
 
 ### The Launcher updates itself (the button at the top right)
 
-Code updates change what a build is made from, not the window: a new Launcher still had to be downloaded and dragged into
-Applications, and the only sign of one was the version label turning blue (its click downloads the disk image). A
-Launcher with the update button does it in one click:
+A new Launcher once had to be downloaded and dragged into Applications, and the only sign of one was the version label
+turning blue (its click downloads the disk image). A Launcher with the update button does it in one click:
 
 - **The button.** At the home page's top right, only while a newer `launcher-v*` release is out (the same read of the
   release list as above, no other request). It is off while a build or a game's update runs: those use the Python
   inside the app.
 - **What a click does.** `launcher_update.py` (the Launcher's own repository), shipped inside the signed app beside
-  `source_updates.py`, downloads the release's `MNG-Launcher-<version>-macOS-arm64.zip` from GitHub, unpacks it and
+  `launcher_releases.py`, downloads the release's `MNG-Launcher-<version>-macOS-arm64.zip` from GitHub, unpacks it and
   takes the app only when all of this holds: the archive is the size the release list names and holds the app alone (no
   name or link that would land outside it); the app says this bundle ID and that version, higher than the running one;
   its code signature is whole and satisfies the designated requirement of the Launcher that is running (the same
@@ -99,8 +83,8 @@ with `MNG_TEST_LAUNCHER_RELEASES=<folder of <version>/release/>` with two real s
 
 Only from its releases: the DMG (or ZIP) on GitHub Releases, signed and notarized, which updates itself from its button.
 It is no longer made from this checkout (its code is in its own repository since 2026-11-20). A release carries the
-committed source of one MacNativeGames commit (`source.tar.gz`, with that commit's `.prebuilt` programs) and runs it; a
-signed source release (`source-*`) replaces it later, as above. The engine's tests are this repository's own
+committed source of one MacNativeGames commit (`source.tar.gz`, with that commit's `.prebuilt` programs) and runs only
+it. The engine's tests are this repository's own
 (`python3 -m unittest discover -s tests`); the window's are in the Launcher's repository, with the checks of what the
 window and this engine must agree on.
 
