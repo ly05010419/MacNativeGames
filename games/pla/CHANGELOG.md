@@ -1,3 +1,17 @@
+## iPhone / iPad — on the Zelda app and its shared port build
+
+Pokémon Legends: Arceus builds as an iPhone / iPad app the way Animal Crossing and Super Mario Odyssey do
+(`ios/tools/build_ipa.py`, a profile of `games/totk/ios/tools/build_port_ipa.py`; `ios/Sources/ios_front.m`).
+- Runtime: the shared `frontend_ios.m`, the image read from Documents/GameData (`TOTK_ROMFS_DATA`), the audio outputs
+  started again after an interruption (`runtime_audio_output_restart`, the AudioOut queues too), `mach_vm_compat.h` in
+  `shared_font.c`, the pipeline-archive packaging mode and a bundle id for the host (`runtime/game_info.plist`).
+- The phone's code holds no Mac address: the font-loader and sound-bank hooks load their target from the module's key
+  page (`runtime_hook_branch`); the export leaves out the 60 fps track and the exefs patches (`game_patches.c` phone_code).
+- Graphics: Tears of the Kingdom's pipeline archive (shared headers), the shared seed import (image parts), device
+  libraries in the archive mode (`shader_device_libs`), and `msl-rewrite`, which writes the vertex-output seeding and the
+  colour zero-fill into the seed's sources before the device's libraries are compiled from them.
+- The HUD's modes for the app's Advanced screen (`fps_overlay_hud_mode`), mapped onto this layer's one on/off HUD.
+
 
 ## Stability — the periodic "RomFS read failure" crash is gone
 

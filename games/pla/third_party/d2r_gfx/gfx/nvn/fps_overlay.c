@@ -38,8 +38,21 @@ static const Glyph FONT[] = {
 };
 
 static _Atomic int g_hints_visible = 1;
-int fps_overlay_hints_enabled(void) { return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
-int fps_overlay_toggle_hints(void) { return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
+static _Atomic int g_hud_mode = HUD_MODE_ALL;   /* the last mode chosen (the shared app's TOTK_HUD_MODE, advanced_view.m) */
+static pthread_once_t g_hud_once = PTHREAD_ONCE_INIT;
+static void hud_mode_from_env(void) {   /* TOTK_HUD_MODE=<HUD_MODE_*>: the iPhone / iPad's choice at start */
+    const char *e = getenv("TOTK_HUD_MODE"); char *end;
+    if (e && *e) { long v = strtol(e, &end, 10); if (!*end && v >= HUD_MODE_OFF && v <= HUD_MODE_BARE) {
+        atomic_store(&g_hud_mode, (int)v); atomic_store(&g_hints_visible, v != HUD_MODE_OFF); } }
+}
+int fps_overlay_hints_enabled(void) { pthread_once(&g_hud_once, hud_mode_from_env); return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
+int fps_overlay_toggle_hints(void) { pthread_once(&g_hud_once, hud_mode_from_env); return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
+int fps_overlay_hud_mode(void) { return fps_overlay_hints_enabled() ? atomic_load(&g_hud_mode) == HUD_MODE_OFF ? HUD_MODE_ALL : atomic_load(&g_hud_mode) : HUD_MODE_OFF; }
+void fps_overlay_set_hud_mode(int mode) {
+    pthread_once(&g_hud_once, hud_mode_from_env);   // a choice made now is not overwritten by the start's
+    if (mode < HUD_MODE_OFF || mode > HUD_MODE_BARE) return;
+    atomic_store(&g_hud_mode, mode); atomic_store(&g_hints_visible, mode != HUD_MODE_OFF);
+}
 
 int fps_overlay_enabled(void) {
     static int on = -1;

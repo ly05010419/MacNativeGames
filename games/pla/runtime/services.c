@@ -45,10 +45,22 @@ static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();retur
    is hosted as a plain lazy-commit mapping above the 39-bit line, where address space is plentiful. Nothing on
    those addresses should ever travel through the guest's 39-bit HIPC buffer encoding; if one ever does, the guest's
    sf layer truncates it and the HLE fails loudly on the wrong address. */
-#define VAMM_SPACE_AT 0x10000000000ULL
-#define VAMM_SIZE (64ULL<<30)
+/* iPhone / iPad: no app reaches 2^40, and the address space is far smaller even with the extended virtual addressing
+   entitlement (the shell's GAME_PLA asks for it), so the region goes wherever the system puts it, below 2^39 like every
+   app address, and only as large as nninitStartup's 32 GiB region needs (iPhone 14, 2026-11-21: the fixed 64 GiB at
+   2^40 stopped the game before its first frame). VAMM_SPACE_AT / VAMM_SIZE are the region as reserved. */
+#define VAMM_FIXED_AT 0x10000000000ULL
+#define VAMM_SIZE_MAX (64ULL<<30)
+#if TARGET_OS_IPHONE
+#define VAMM_SIZE_WANT (34ULL<<30)
+#else
+#define VAMM_SIZE_WANT VAMM_SIZE_MAX
+#endif
 static uint8_t *vamm_space;
-#define VAMM_PAGES (VAMM_SIZE/4096)
+static uint64_t vamm_size = VAMM_SIZE_WANT;
+#define VAMM_SPACE_AT ((uint64_t)(uintptr_t)vamm_space)
+#define VAMM_SIZE vamm_size
+#define VAMM_PAGES (VAMM_SIZE_MAX/4096)
 static unsigned char vamm_pages[VAMM_PAGES];   /* per-4-KB-page physical-commit state */
 static uint64_t vamm_bytes;
 #define LOW_SEARCH_FROM 0x300000000ULL
@@ -118,6 +130,10 @@ static void memory_init(void) {
  /* iOS: stack+heap and the alias region go side by side in one reservation (ASLR_SIZE spans both), placed in the lowest
     free gap that holds them. The free space depends on the device, so the alias region shrinks from the requested size
     to ALIAS_MIN_GIB before giving up (logging the free gaps); TOTK_ALIAS_GIB pins one size. */
+ /* The VAMM region first: nninitStartup's fixed 32 GiB address region (at +1 GiB) needs 34 GiB in one piece, and the
+    iPhone 14 then had only 30 GiB left behind the 16 GiB alias region (2026-11-21); the alias region (the game maps
+    about 3.3 GiB of it) shrinks into what remains. */
+ {mach_vm_address_t a=0;if(mach_vm_map(mach_task_self(),&a,VAMM_SIZE,0,VM_FLAGS_ANYWHERE,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS)vamm_space=(uint8_t *)(uintptr_t)a;}
  uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(ALIAS_MIN_GIB<<30);
  for(uint64_t a=want;a>=least&&!low_space;a-=1ULL<<30)if((low_space=reserve_in_gap(LOW_SIZE+a,0)))alias_len=a;
  if(!low_space){reserve_in_gap(UINT64_MAX,1);runtime_fail("reserve guest stack, heap and alias regions");}
@@ -143,10 +159,16 @@ static void memory_init(void) {
 #endif
  heap=low_space+HEAP_OFF;
  if(!vamm_space){
-  mach_vm_address_t a=VAMM_SPACE_AT;
-  vamm_space=mach_vm_map(mach_task_self(),&a,VAMM_SIZE,0,VM_FLAGS_FIXED,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS?(uint8_t *)(uintptr_t)a:NULL;
+  mach_vm_address_t a=TARGET_OS_IPHONE?0:VAMM_FIXED_AT;
+  vamm_space=mach_vm_map(mach_task_self(),&a,VAMM_SIZE,0,TARGET_OS_IPHONE?VM_FLAGS_ANYWHERE:VM_FLAGS_FIXED,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_READ|VM_PROT_WRITE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS?(uint8_t *)(uintptr_t)a:NULL;
  }
- if(!vamm_space)runtime_fail("reserve the 64 GiB VAMM region at 0x10000000000");
+ if(!vamm_space&&TARGET_OS_IPHONE){   /* diagnostic: the largest region the phone still gives, for the log */
+  uint64_t best=0;for(uint64_t g=33;g>=1;g--){mach_vm_address_t t=0;
+   if(mach_vm_map(mach_task_self(),&t,g<<30,0,VM_FLAGS_ANYWHERE,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS){
+    best=g;mach_vm_deallocate(mach_task_self(),t,g<<30);break;}}
+  fprintf(stderr,"[totk] VAMM: the largest region the phone gives now is %llu GiB (wanted %llu)\n",(unsigned long long)best,(unsigned long long)(VAMM_SIZE>>30));
+ }
+ if(!vamm_space)runtime_fail(TARGET_OS_IPHONE?"reserve the 34 GiB VAMM region (needs the extended virtual addressing entitlement)":"reserve the 64 GiB VAMM region at 0x10000000000");
  fprintf(stderr,"[totk] guest layout: alias %#llx+%#llx stack %#llx+%#llx heap %#llx (cap %#llx) vamm %#llx+%#llx\n",(unsigned long long)ALIAS_START,ALIAS_SIZE,(unsigned long long)STACK_START,STACK_SIZE,(unsigned long long)(uintptr_t)heap,HEAP_CAP,(unsigned long long)VAMM_SPACE_AT,VAMM_SIZE);
 }
 /* Scoped stack moves: independent host backing, copy back on unmap.
@@ -399,7 +421,11 @@ void *runtime_override(const char *name) {
  if(!getenv("PLA_NO_AUDIO_SDK_OVERRIDE")){void *aa=runtime_audio_sdk_override(name);if(aa)return aa;}
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);
  if(font){static unsigned n;if(n++<24&&getenv("PLA_FONT_TRACE"))fprintf(stderr,"[totk] font override hit: %s\n",name);}
- if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *friends=runtime_friends_override(name);if(friends)return friends;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);
+ if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *friends=runtime_friends_override(name);if(friends)return friends;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);if(front)return front;void *gfx=runtime_gfx_override(name);if(gfx)return gfx;
+ /* Last, after every answer of this game's own: the shared offline console (shared/runtime/offline_host.c), whose
+    nn::oe exit-request section the game enters when it saves; the SDK's own read a missing applet object and the
+    iPhone crashed converting an older save (2026-11-21). */
+ return runtime_offline_override(name);
 }
 void runtime_core_checkpoint(void);
 uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset) {

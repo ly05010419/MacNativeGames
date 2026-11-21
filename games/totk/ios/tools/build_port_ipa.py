@@ -75,6 +75,21 @@ class Port:
     pane_app: str = None       # build_ipa.py pane_for's app (default: game)
     mac_only: tuple = ('frontend.m', 'loader.c', 'game_info.plist')   # runtime files the iPhone app leaves out (loader.c is added as main; the Mac host's bundle id)
     extra: dict = field(default_factory=dict)
+    # A port whose runtime is of another line (Mario Kart 8 Deluxe: nxnative's host) answers these; None keeps the Zelda line's
+    # steps below as they are (Animal Crossing, Super Mario Odyssey). tests/test_ios_ports_unified.py Mk8dPort checks both.
+    prepare: Callable = None   # (L, gen, env, run, logs, work) -> stage what the steps below read (before the checks)
+    check: Callable = None     # (L) -> raise RuntimeError for what the Mac build has not made (default: check_mac_build)
+    modules: Callable = None   # (L) -> the module names (default: the generated runtime_tables.h's)
+    embed: Callable = None     # (L, gen, names, env, run, logs, work) -> link flags: the modules compiled into the app (default: export-ios + gen_embed.py)
+    sources: Callable = None   # (L, gen) -> [(path, {'excludes': [...], 'compilerFlags': '...'})]: the runtime's sources (default: runtime/, d2r_gfx, loader.c as main)
+    includes: Callable = None  # (L, gen) -> the runtime's header folders (default: d2r_gfx nvn and nvn/include)
+    shaders: Callable = None   # (L, out, work, logs, env) -> fingerprint: the seed folder out, as install_device.py pushes it (default: seed_with_mac_cache + device_pipelines)
+    # The port's own fixes to the merged seed's MSL sources before they are compiled for the device (seed_with_mac_cache fix):
+    # (L, folder, run, log, env) -> None, rewriting <variant>_b.metal files in place (replacing, never writing through the
+    # clones). Pokémon Legends: Arceus: its host's msl-rewrite, the source fixes its Mac runtime makes before compiling,
+    # which a library compiled on the Mac cannot get on the device. None: the sources as translated (the other ports).
+    sources_fix: Callable = None
+    entitlements: tuple = ()   # entitlements beyond the increased memory limit, listed in Info.plist MNGEntitlements for install_device.py
 
     @property
     def scheme(self): return f'mng-{self.game}'
@@ -106,11 +121,39 @@ def module_names(tables):
     return names
 
 
+def yaml_sources(entries):
+    """project.yml's lines for a port's own runtime sources (Port.sources): each a path with its excludes and compiler flags."""
+    out = ''
+    for path, opts in entries:
+        out += f'\n      - path: {path}'
+        if opts.get('excludes'): out += '\n        excludes:' + ''.join(f'\n          - "{n}"' for n in opts['excludes'])
+        if opts.get('compilerFlags'): out += f'\n        compilerFlags: "{opts["compilerFlags"]}"'
+    return out
+
+
 def project(port, L, gen, flags_file):
     rt, gfx = port.dir / 'runtime', port.dir / 'third_party/d2r_gfx/gfx'
     excludes = ''.join(f'\n          - "{n}"' for n in port.mac_only + NOT_SOURCES)
     not_sources = ''.join(f'\n          - "{n}"' for n in NOT_SOURCES)
+    entitlements_plist = ''.join(['        MNGEntitlements:\n', *(f'          - {e}\n' for e in port.entitlements)]) if port.entitlements else ''
     icon_plist = ICON_PLIST if (gen / 'icons' / ICONS[0][0]).is_file() else ''
+    incs = port.includes(L, gen) if port.includes else [gfx / 'nvn', gfx / 'nvn/include']
+    if port.sources:   # another runtime line's sources (Port.sources), then the embedded modules
+        runtime = yaml_sources(port.sources(L, gen)) + f'\n      - path: {gen / "embed.S"}'
+    else:
+        runtime = f'''
+      - path: {rt}
+        excludes:{excludes}
+      - path: {gfx / 'nvn'}
+        excludes:{not_sources}
+      - path: {gfx / 'tex'}
+        excludes:{not_sources}
+          - nvn_bctc.metal   # the runtime compiles its copy from source (nvn_mtl.m k_bctc_msl)
+      - path: {gen / 'embed.S'}
+      - path: {rt / 'loader.c'}
+        compilerFlags: "-Dmain=totk_host_main"'''
+    headers = ''.join(f'\n        - {d}' for d in incs)
+    include_flags = ' '.join(f'-I{d}' for d in [rt, *incs])
     return f'''name: PortIOS
 options:
   bundleIdPrefix: org.macnativegames
@@ -133,17 +176,7 @@ targets:
         excludes:
           - "*.entitlements"
           - Info.plist
-      - path: {gen / 'Settings.bundle'}
-      - path: {rt}
-        excludes:{excludes}
-      - path: {gfx / 'nvn'}
-        excludes:{not_sources}
-      - path: {gfx / 'tex'}
-        excludes:{not_sources}
-          - nvn_bctc.metal   # the runtime compiles its copy from source (nvn_mtl.m k_bctc_msl)
-      - path: {gen / 'embed.S'}
-      - path: {rt / 'loader.c'}
-        compilerFlags: "-Dmain=totk_host_main"
+      - path: {gen / 'Settings.bundle'}{runtime}
     info:
       path: {gen / 'Info.plist'}
       properties:
@@ -154,7 +187,7 @@ targets:
         CFBundleVersion: "1"
         UILaunchScreen: {{}}{icon_plist}
         UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
+{entitlements_plist}        LSSupportsOpeningDocumentsInPlace: true
         CFBundleURLTypes:   # the iPhone MNG Launcher sees the game installed and starts it
           - CFBundleURLName: org.macnativegames.launch
             CFBundleURLSchemes:
@@ -190,14 +223,12 @@ targets:
       CLANG_ENABLE_OBJC_ARC: YES
       GCC_WARN_INHIBIT_ALL_WARNINGS: YES
       HEADER_SEARCH_PATHS:
-        - $(inherited)
-        - {gfx / 'nvn'}
-        - {gfx / 'nvn/include'}
+        - $(inherited){headers}
         - {gen}
         - {gen / 'deps/include'}
         - {gen / 'deps/include/opus'}
         - {L.build}
-      OTHER_CFLAGS: $(inherited) -D{port.define}=1 {port.cflags(L)} -I{SHELL} -mcpu=apple-a15 -I{rt} -I{gfx / 'nvn'} -I{gfx / 'nvn/include'} -I{gen} -I{L.build} -idirafter {TOTK / 'runtime'} -idirafter {TOTK / 'third_party/d2r_gfx/gfx/nvn'}
+      OTHER_CFLAGS: $(inherited) -D{port.define}=1 {port.cflags(L)} -I{SHELL} -mcpu=apple-a15 {include_flags} -I{gen} -I{L.build} -idirafter {TOTK / 'runtime'} -idirafter {TOTK / 'third_party/d2r_gfx/gfx/nvn'}
 '''
 
 
@@ -218,13 +249,14 @@ def settings_pane(port, bundle):
     totk.settings_strings.localize(bundle)
 
 
-def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None):
+def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None, fix=None, fix_id=''):
     """The prepared seed with the Mac app's translations merged in, at out, and its fingerprint (fingerprint.txt): a
     translation the seed lacks is added and named in seed-manifest.json's files (its SHA-256), a .variants index both
     have gets the Mac's rows the seed lacks. Then, as Zelda's build_ipa.py does, compile_seed.py compiles every
     shader into the device's .metallib (the game loads it instead of compiling the source on the phone: the iPad's
-    first-start warm-up of 61,896 items, 2026-11-21); run None (tests) leaves them out. Made again only when the
-    inputs changed (the fingerprint of the inputs, with the compiler options)."""
+    first-start warm-up of 61,896 items, 2026-11-21); run None (tests) leaves them out. fix(out), when given (Port.sources_fix),
+    changes the merged sources first and their manifest hashes follow; fix_id names what it does (the inputs' fingerprint).
+    Made again only when the inputs changed (the fingerprint of the inputs, with the compiler options)."""
     import hashlib
     manifest = json.loads((seed / 'seed-manifest.json').read_text())
     # only shader files, by the name rule the seed import checks (totk_shader_seed_ports.h `safe`): the Mac cache also
@@ -233,6 +265,7 @@ def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None):
     inputs = hashlib.sha256((seed / 'seed-manifest.json').read_bytes())
     for f in mac: st = f.stat(); inputs.update(f'{f.name}\0{st.st_size}\0{st.st_mtime_ns}\n'.encode())
     if run: inputs.update(f'metallibs\0{seed_flags("iphoneos")}'.encode())
+    if fix: inputs.update(f'fix\0{fix_id}'.encode())
     want = inputs.hexdigest()
     stamp = out / 'fingerprint.txt'
     if stamp.is_file() and (out / 'inputs.txt').is_file() and (out / 'inputs.txt').read_text().strip() == want:
@@ -254,6 +287,10 @@ def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None):
         else:
             clone(f, target)
         files[f.name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    if fix:   # the port's source fixes, then the manifest names the sources as they now are (compile_seed.py keys libraries by them)
+        fix(out)
+        for name in [n for n in files if n.endswith('_b.metal')]:
+            if (out / name).is_file(): files[name] = hashlib.sha256((out / name).read_bytes()).hexdigest()
     (out / 'seed-manifest.json').unlink()
     (out / 'seed-manifest.json').write_text(json.dumps(manifest, indent=1, sort_keys=True))
     if run:   # libraries kept by source hash beside out (<out>.ios-metallibs): a rebuild compiles only new shaders
@@ -310,6 +347,46 @@ def device_pipelines(port, L, seed, cache, work, logs, env, requested):
     return fingerprint
 
 
+def check_mac_build(port, L):
+    """What the Zelda line's Mac build leaves (the host, its tables, the image and its index, the seed, the fonts)."""
+    for need in (L.host, L.build / 'runtime_tables.h', L.romfs / 'romfs.bin', L.romfs / 'runtime-index.bin', L.seed / 'seed-manifest.json'):
+        if not need.exists():
+            raise RuntimeError(f'missing {need}: build the Mac app first (games/{port.game}/build.py)')
+    if not list(L.fonts.glob('*.bfttf')):
+        raise RuntimeError(f'no system fonts in {L.fonts}: build the Mac app first')
+
+
+def seed_from_files(files, out):
+    """A seed folder for install_device.py from a runtime's own shader files (Port.shaders; Mario Kart 8 Deluxe's iOS
+    libraries and tables): files {name: path}, cloned into out with seed-manifest.json (each file's SHA-256) and
+    fingerprint.txt, which install_device.py compares to push it once per content. Made again only when the inputs changed
+    (their names, sizes and times). Returns the fingerprint."""
+    import hashlib
+    inputs = hashlib.sha256()
+    for name, path in sorted(files.items()):
+        st = path.stat(); inputs.update(f'{name}\0{path}\0{st.st_size}\0{st.st_mtime_ns}\n'.encode())
+    want, stamp = inputs.hexdigest(), out / 'fingerprint.txt'
+    if stamp.is_file() and (out / 'inputs.txt').is_file() and (out / 'inputs.txt').read_text().strip() == want:
+        return stamp.read_text().strip()
+    shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
+    manifest = {}
+    import ctypes
+    clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # one call per file: tens of thousands of cp processes took minutes
+    for name, path in sorted(files.items()):
+        if '/' in name or name in ('seed-manifest.json', 'fingerprint.txt', 'inputs.txt'):
+            raise RuntimeError(f'not a seed file name: {name}')
+        if not clonefile or clonefile(os.fsencode(path), os.fsencode(out / name), 0):
+            shutil.copy2(path, out / name)
+        h = hashlib.sha256()
+        with open(out / name, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 20), b''): h.update(chunk)
+        manifest[name] = h.hexdigest()
+    (out / 'seed-manifest.json').write_text(json.dumps({'files': manifest}, indent=1, sort_keys=True))
+    fingerprint = seed_fingerprint(out)
+    stamp.write_text(fingerprint + '\n'); (out / 'inputs.txt').write_text(want + '\n')
+    return fingerprint
+
+
 def drop_group(specs, first, keys):
     """Removes a pane group (its heading before the row keyed first) and its rows."""
     at = next(i for i, x in enumerate(specs) if x.get('Key') == first)
@@ -338,32 +415,33 @@ def main(port, argv=None):
     sys.path.insert(0, str(REPO))   # the repository's tools/deps: pinned xcodegen, cmake and ninja (no Homebrew)
     from tools.deps import path as deps_path
     env['PATH'] = os.pathsep.join(deps_path('xcodegen', 'cmake', 'ninja') + [env.get('PATH', '')])
-    tables = L.build / 'runtime_tables.h'
-    for need in (L.host, tables, L.romfs / 'romfs.bin', L.romfs / 'runtime-index.bin', L.seed / 'seed-manifest.json'):
-        if not need.exists():
-            raise RuntimeError(f'missing {need}: build the Mac app first (games/{port.game}/build.py)')
-    if not list(L.fonts.glob('*.bfttf')):
-        raise RuntimeError(f'no system fonts in {L.fonts}: build the Mac app first')
-    names = module_names(tables)
+    if port.prepare: port.prepare(L, gen, env, run, logs, work)
+    port.check(L) if port.check else check_mac_build(port, L)
+    names = port.modules(L) if port.modules else module_names(L.build / 'runtime_tables.h')
 
-    # gen_embed.py reads <name>.patched.bin and <name>.fixups.tsv side by side
-    staged = gen / 'rewritten'; shutil.rmtree(staged, ignore_errors=True); staged.mkdir()
-    for n in names:
-        (staged / f'{n}.patched.bin').symlink_to(L.rewritten / f'{n}.patched.bin')
-        (staged / f'{n}.fixups.tsv').symlink_to(L.fixups(n))
-    # The modules as the game patches leave them (export-ios), compiled into the executable's segments
-    modules = gen / 'modules'; shutil.rmtree(modules, ignore_errors=True); modules.mkdir()
-    extra = port.exports(L.host, L.rewritten, gen, env, run, logs, work) if port.exports else []
-    if not port.exports:
-        run([L.host, L.rewritten, 'export-ios'], work, logs / 'export-ios.log', dict(env, TOTK_EXPORT_IOS=str(modules)))
-    flags = subprocess.check_output([sys.executable, TOOLS / 'gen_embed.py', staged, gen / 'embed.S', '--text-dir', modules,
-                                     *extra, *names], text=True, env=env).strip()
+    extra = []
+    if port.embed:   # another runtime line's embedding (Port.embed)
+        flags = port.embed(L, gen, names, env, run, logs, work)
+    else:
+        # gen_embed.py reads <name>.patched.bin and <name>.fixups.tsv side by side
+        staged = gen / 'rewritten'; shutil.rmtree(staged, ignore_errors=True); staged.mkdir()
+        for n in names:
+            (staged / f'{n}.patched.bin').symlink_to(L.rewritten / f'{n}.patched.bin')
+            (staged / f'{n}.fixups.tsv').symlink_to(L.fixups(n))
+        # The modules as the game patches leave them (export-ios), compiled into the executable's segments
+        modules = gen / 'modules'; shutil.rmtree(modules, ignore_errors=True); modules.mkdir()
+        extra = port.exports(L.host, L.rewritten, gen, env, run, logs, work) if port.exports else []
+        if not port.exports:
+            run([L.host, L.rewritten, 'export-ios'], work, logs / 'export-ios.log', dict(env, TOTK_EXPORT_IOS=str(modules)))
+        flags = subprocess.check_output([sys.executable, TOOLS / 'gen_embed.py', staged, gen / 'embed.S', '--text-dir', modules,
+                                         *extra, *names], text=True, env=env).strip()
 
     # The audio and video libraries for the device: the Mac archives (tools/deps) cannot be linked into an iOS app
     deps = work / 'ios-deps'
-    if not all((deps / 'lib' / lib).is_file() for lib in port.libs):
+    if port.libs and not all((deps / 'lib' / lib).is_file() for lib in port.libs):
         run([sys.executable, TOOLS / 'build_deps.py', deps, 'iphoneos', *port.deps_args], work, logs / 'dependencies.log', env)
-    shutil.copytree(deps / 'include', gen / 'deps/include', dirs_exist_ok=True)
+    if port.libs:   # a runtime that builds its own (Mario Kart 8 Deluxe compiles libvpx from its sources) takes none
+        shutil.copytree(deps / 'include', gen / 'deps/include', dirs_exist_ok=True)
     for lib in port.libs:
         clone(deps / 'lib' / lib, gen / 'deps/lib' / lib)
 
@@ -405,23 +483,35 @@ def main(port, argv=None):
             clone(f, res / 'shared-fonts' / f.name)
     if port.game_data: port.game_data(res, work, L, extra)
     cache = a.mac_shader_cache.expanduser() if a.mac_shader_cache else port.mac_cache(L)
+    fix, fix_id = None, ''
+    if port.sources_fix:   # the port's source fixes (Port.sources_fix), named by its host (what makes them)
+        fix = lambda folder: port.sources_fix(L, folder, run, logs / 'msl-fix.log', env)
+        st = Path(L.host).stat(); fix_id = f'{port.game}\0{st.st_size}\0{st.st_mtime_ns}'
     if a.image_outside:
         # The shaders beside the app as Zelda's build_ipa.py --image-outside leaves them (<out>-shader-seed with its
         # fingerprint.txt): install_device.py pushes them once (image parts and a pack) and skips them while the device
         # has the same content; the port's seed import reads them there (shared totk_shader_seed_ports.h). The Mac's
         # translations go into the same seed, named in its manifest, so its integrity check covers them too.
         seed_out = out.with_name(out.stem + '-shader-seed')
-        fingerprint = seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env)
-        fingerprint = device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
-        print(f'shaders: the seed, the Mac\'s translations and their device libraries beside the app: {seed_out} ({fingerprint[:12]})')
+        if port.shaders:   # another runtime line's shaders (Port.shaders), in the same folder install_device.py pushes
+            fingerprint = port.shaders(L, seed_out, work, logs, env)
+            print(f'shaders: beside the app: {seed_out} ({fingerprint[:12]})')
+        else:
+            fingerprint = seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env, fix, fix_id)
+            fingerprint = device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
+            print(f'shaders: the seed, the Mac\'s translations and their device libraries beside the app: {seed_out} ({fingerprint[:12]})')
     else:   # the same seed, inside the app
         seed_out = work / 'ios-shader-seed'
-        seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env)
-        device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
+        if port.shaders:
+            port.shaders(L, seed_out, work, logs, env)
+        else:
+            seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env, fix, fix_id)
+            device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
         for f in sorted(seed_out.iterdir()):
             if f.is_file() and f.name not in ('fingerprint.txt', 'inputs.txt'):
                 clone(f, res / 'shader-seed' / f.name)
-        print(f'shaders: the seed, the Mac\'s translations and their device libraries in the app ({cache})')
+        what = 'the seed' if port.shaders else "the seed, the Mac's translations and their device libraries"
+        print(f'shaders: {what} in the app ({cache})')
     install = f'python3 games/totk/ios/tools/install_device.py "{out}" --device <name>' + (
         f' --game-data {L.romfs / "romfs.bin"}' if a.image_outside else '')
     if out.suffix == '.app':

@@ -18,6 +18,12 @@ int fps_overlay_enabled(void);
 /* Shared user toggle for every in-picture HUD layer: FPS, shader collection and load telemetry. */
 int fps_overlay_hints_enabled(void);
 int fps_overlay_toggle_hints(void);   /* atomically toggles all HUD layers and returns the new visibility */
+/* The shared iPhone / iPad app's overlay choice (games/totk/ios/Sources/advanced_view.m, its Settings pane's TOTK_HUD_MODE),
+   with the shared fps_overlay.h's values. This layer has one HUD (FPS, shaders, load: the shared panel's ALL): every mode
+   but HUD_MODE_OFF shows it, HUD_MODE_OFF hides it, as key 1's toggle. */
+enum { HUD_MODE_OFF = 0, HUD_MODE_ALL = 1, HUD_MODE_MINIMAL = 2, HUD_MODE_FULL = 3, HUD_MODE_BARE = 4 };
+int fps_overlay_hud_mode(void);
+void fps_overlay_set_hud_mode(int mode);   /* HUD_MODE_*; other values are ignored */
 /* Pixel scale (1..FPS_OVERLAY_MAX_SCALE) for a game picture view_h pixels tall: one text line is about 3% of its height. */
 int fps_overlay_scale(double view_h);
 /* The line in a 5x7 pixel font on a dark box, as BGRA8 pixels in out (FPS_OVERLAY_TEX_W x FPS_OVERLAY_TEX_H,

@@ -1,0 +1,1 @@
+../../../../../../shared/third_party/d2r_gfx/gfx/nvn/rt_range_check.inc

@@ -69,7 +69,7 @@ NO_DEVICE = ('has no devices from which to generate a provisioning profile', 'Yo
 def same_or_write(path, data):
     if not path.is_file() or path.read_bytes() != data: path.write_bytes(data)
 
-def profile(team, bundle_id, udid, platform='ios'):
+def profile(team, bundle_id, udid, platform='ios', extra=()):
     """Build an empty app with the game's bundle identifier and entitlements; Xcode makes the profile for it."""
     vision = platform == 'visionos'
     project_platform = 'visionOS' if vision else 'iOS'
@@ -77,7 +77,7 @@ def profile(team, bundle_id, udid, platform='ios'):
     proj = CACHE/(bundle_id + ('.visionos' if vision else '')); proj.mkdir(parents=True, exist_ok=True)
     # written only when they change: Xcode refuses an entitlements file newer than its last build of it (2026-11-20)
     same_or_write(proj/'main.m', b'int main(void) { return 0; }\n')
-    same_or_write(proj/'TOTK.entitlements', plistlib.dumps({ENTITLEMENT: True}))
+    same_or_write(proj/'TOTK.entitlements', plistlib.dumps({ENTITLEMENT: True, **{k: True for k in extra}}))
     same_or_write(proj/'project.yml', f'''name: TOTKSigning
 options: {{deploymentTarget: {{{project_platform}: "26.0"}}}}
 targets:
@@ -324,6 +324,18 @@ def push_seed(dev, bundle_id, seed):
         write_pack(seed, loose, Path(d), folder, PART, push)
         got.write_text(f'{folder}\n{fp}\n'); copy(got, 'shader-seed.txt')
 
+def wanted_entitlements(ipa):
+    """The entitlements an app asks for beyond the increased memory limit (Info.plist MNGEntitlements, build_port_ipa.py
+    Port.entitlements): Pokemon Legends: Arceus needs extended virtual addressing for its 32 GiB address region (2026-11-21)."""
+    try:
+        if ipa.is_dir(): raw = (ipa/'Info.plist').read_bytes()
+        else:
+            with zipfile.ZipFile(ipa) as z: raw = z.read('Payload/TOTK.app/Info.plist')
+        want = plistlib.loads(raw).get('MNGEntitlements', [])
+    except (OSError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException): want = []
+    return tuple(k for k in want if isinstance(k, str) and k.startswith('com.apple.developer.kernel.'))
+
+
 def built_bundle_id(ipa, team):
     """The identifier build_app.py gave the app (org.macnativegames.totk, or .botw for Breath of the Wild); a .app folder
     signed before carries it with the team suffix this script added."""
@@ -369,13 +381,16 @@ def main():
     platform = built_platform(a.ipa)
     if platform == 'visionos' and dev['hardwareProperties'].get('platform') != 'visionOS':
         sys.exit('this is a native Vision Pro app: choose a paired Vision Pro with --device')
-    prov, signed = profile(team, bundle_id, udid, platform)
+    extra = wanted_entitlements(a.ipa)
+    prov, signed = profile(team, bundle_id, udid, platform, extra)
     info = plistlib.loads(profile_plist(prov))
     if udid not in info.get('ProvisionedDevices', []) and not info.get('ProvisionsAllDevices'):
         sys.exit('this device is not registered in the provisioning profile; register it with your Apple developer team first')
     ents = info['Entitlements']
     if not ents.get(ENTITLEMENT):
         print(f'warning: your team cannot grant {ENTITLEMENT}; iOS may close the game when it runs out of memory')
+    for k in extra:
+        if not ents.get(k): print(f'warning: your team cannot grant {k}, which this game asks for')
     expires = info['ExpirationDate'].replace(tzinfo=timezone.utc).astimezone()  # plistlib returns naive UTC
     print(f"provisioning profile valid until {expires:%Y-%m-%d %H:%M} local time (run this again before then)")
 
@@ -395,7 +410,7 @@ def main():
     shutil.copy2(prov, app/'embedded.mobileprovision')
     entfile = work/'entitlements.plist'
     entfile.write_bytes(plistlib.dumps({k: ents[k] for k in ('application-identifier','com.apple.developer.team-identifier',
-                                                                'get-task-allow', ENTITLEMENT) if k in ents}))
+                                                                'get-task-allow', ENTITLEMENT, *extra) if k in ents}))
     # Before the slow part: the shaders this install pushes carry this device's pipelines (device_pipelines.seed_check)
     check_pipelines(dev, seed_beside(a.ipa, app) or app/'GameData/shader-seed', a.allow_device_fill)
     print('signing (a few minutes: every game file is hashed)')

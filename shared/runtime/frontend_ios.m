@@ -18,6 +18,19 @@ static CADisplayLink *displayLink;
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
 static void *vsyncEvents[16];
 static unsigned vsyncCount;
+/* iOS has no gethostuuid: the offline console's per-installation identity (shared/runtime/offline_host.c
+   pseudo_device_id, linked by Mario Kart 8 Deluxe), kept in the app's preferences as Tears of the Kingdom's
+   runtime/frontend_ios.m keeps it; updating the same bundle preserves it. */
+void runtime_ios_device_uuid(uint8_t out[16]) {
+ static NSUUID *identity; static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+  NSString *saved=[defaults stringForKey:@"MacNativeGamesDeviceUUID"];
+  identity=saved.length?[[NSUUID alloc] initWithUUIDString:saved]:nil;
+  if(!identity){identity=NSUUID.UUID;[defaults setObject:identity.UUIDString forKey:@"MacNativeGamesDeviceUUID"];}
+ });
+ [identity getUUIDBytes:out];
+}
 void hle_bind_system_event(void *,int);
 void hle_signal_system_event(void *);
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}

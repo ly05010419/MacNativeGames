@@ -9,6 +9,7 @@
    original PLT. The sdk build is pinned (assets/expected-v1.1.1.json); the thunk shape is verified. The modules
    are writable until seal(), which runs after this install. */
 #include "runtime.h"
+#include <TargetConditionals.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
 #include <stdio.h>
@@ -43,14 +44,6 @@ __attribute__((naked)) void runtime_font_load_stub(void) {
         "br x16\n");
 }
 
-static void emit_adrp_br(uint32_t *at, uintptr_t pc, const void *target) {
-    uintptr_t t = (uintptr_t)target;
-    int64_t imm = ((int64_t)(t & ~0xfffULL) - (int64_t)(pc & ~0xfffULL)) >> 12;
-    at[0] = 0x90000010u | ((uint32_t)(imm & 3) << 29) | (((uint32_t)(imm >> 2) & 0x7ffff) << 5);   /* adrp x16, target page */
-    at[1] = 0x91000210u | ((uint32_t)(t & 0xfff) << 10);                                           /* add x16, x16, #target & 0xfff */
-    at[2] = 0xd61f0200u;                                                                          /* br x16 */
-}
-
 void runtime_font_hook_set_region(const void *p) { runtime_font_region_ptr = p; }   /* called by the pl:u address override */
 void runtime_font_hook_install(void) {
     static int done;
@@ -63,17 +56,20 @@ void runtime_font_hook_install(void) {
     uint8_t *fn = (uint8_t *)runtime_symbol("FSS_load_font");
     if (!fn) { fprintf(stderr, "[font] FSS hook: symbol not found\n"); return; }
     uint32_t w0 = *(uint32_t *)fn, w1 = *(uint32_t *)(fn + 4), w2 = *(uint32_t *)(fn + 8);
+#if !TARGET_OS_IPHONE   /* iPhone / iPad: the text came patched (export-ios); runtime_hook_branch checks the words */
     if (w0 != 0x2a1f03e6u || w1 != 0x2a1f03e7u || (w2 & 0xfc000000u) != 0x14000000u) {
         fprintf(stderr, "[font] FSS hook: thunk shape changed (%#x %#x %#x)\n", w0, w1, w2); return; }
+#else
+    (void)w0; (void)w1; (void)w2;
+#endif
     uint8_t *base = fn - SDK_FSS_LOAD_FONT;
     runtime_font_real_ptr = (void *)(base + SDK_FSS_PLT);
     runtime_font_region_ptr = NULL;   /* set by the pl:u address override when the game asks for the shared font */
 
-    uint32_t patch[3] = {0, 0, 0};
-    emit_adrp_br(patch, (uintptr_t)fn, (const void *)runtime_font_load_stub);
-    /* Installed before seal(): the module text is still writable; seal() then makes it RX and flushes the cache. */
-    memcpy(fn, patch, 12);
-    sys_icache_invalidate(fn, 12);
+    /* Installed before seal(): the module text is still writable; seal() then makes it RX and flushes the cache. The words
+       load the stub's address from the module's key page (runtime_hook_branch), so the iPhone's exported text holds no
+       Mac address. */
+    if (!runtime_hook_branch(HOOK_SLOT_FONT, fn, (const void *)runtime_font_load_stub, "FSS_load_font")) return;
     fprintf(stderr, "[font] FSS_load_font hook installed: %p -> %p, PLT %p (lazy shared font)\n",
             (void *)fn, (void *)runtime_font_load_stub, (void *)(base + SDK_FSS_PLT));
 }

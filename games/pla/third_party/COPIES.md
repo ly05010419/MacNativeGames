@@ -16,3 +16,8 @@ MacNativeGames `feat/nier-latest` commit `c6fee464` (by3 line, itself forked fro
 | remaining `scripts/` | `games/by3/scripts` | renamed by3→pla, v120→v1101 |
 | `app/launcher.m` | `games/by3/app` | renamed by3→pla |
 | `requirements.txt` | `games/by3` | unchanged |
+
+Links into the repository's `shared/` (one copy for every port on the Zelda iPhone / iPad app, not copies):
+`runtime/frontend_ios.m`; in `third_party/d2r_gfx/gfx/nvn`: `totk_shader_seed.h` (→ `totk_shader_seed_ports.h`),
+`totk_seed_image.h`, `totk_pipeline_archive{,_files,_folders,_publish,_port,_port_fill}.h`, `nvn_archive_map.h`,
+`nvn_compiler_retry.h`, `dm_signpost.h`.
