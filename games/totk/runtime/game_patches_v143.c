@@ -16,6 +16,7 @@
 #include <TargetConditionals.h>
 #include "text_padding_v143.h"   /* who owns which bytes after the code */
 #include "prompt_cache_v143.h"
+#include "pouch_projection.h"
 _Static_assert(PAD_V143_ASPECT_LEN == 4 * ASPECT_STUB && PAD_V143_VERT_LEN == 2 * ASPECT_VSTUB, "1.4.3 padding: aspect stub sizes");
 #if !TARGET_OS_IPHONE
 #include <mach/mach.h>
@@ -1482,6 +1483,69 @@ static void vr_headlook_install(Module *m){
     fprintf(stderr,"[vr] head look: camera hook at main+%#llx, all native views at main+%#llx, branches +%#llx (TOTK_VR_HEADLOOK=0 turns it off)\n",(unsigned long long)site,(unsigned long long)callee,(unsigned long long)v1);
 }
 #endif
+/* Native view-set projection copy (main+0xb3440 -> main+0x649ed0). The pouch
+   player's full- and half-size views need the same UI coordinate frame.
+   A private projection copy lets the original function rebuild all matrices,
+   inverse matrices and camera parameters together, without accumulating edits
+   in the game's cached owner. The entry is shared; the captured camera
+   profile remains a parameter filter, with scene ownership still unproven. */
+#if !TARGET_OS_IPHONE
+static uintptr_t pouch_projection_type;
+static void (*pouch_projection_copy)(void *, const void *, const void *);
+static void pouch_projection_copy_hook(void *out, const void *extra, const void *projection) {
+    float aspect = runtime_aspect_now(), parameters[9]; uint64_t type = 0;
+    if (!(aspect > 0) || !projection) { pouch_projection_copy(out, extra, projection); return; }
+    memcpy(&type, projection, sizeof type);
+    if (type != pouch_projection_type) { pouch_projection_copy(out, extra, projection); return; }
+    memcpy(parameters, (const uint8_t *)projection + 0x98, sizeof parameters);
+    if (!pouch_projection_adjust(parameters, aspect)) { pouch_projection_copy(out, extra, projection); return; }
+    _Alignas(16) uint8_t owner[0xc0];
+    memcpy(owner, projection, sizeof owner);
+    memcpy(owner + 0x98, parameters, sizeof parameters);
+    owner[8] = 1;   /* Rebuild the copied owner's projection and device matrix. */
+    pouch_projection_copy(out, extra, owner);
+    static _Atomic unsigned logs;
+    if (atomic_fetch_add_explicit(&logs, 1, memory_order_relaxed) < 4)
+        fprintf(stderr, "[totk] pouch player view: aspect %.6f, shift %.6f,%.6f, fovy %.6f\n",
+                parameters[6], parameters[7], parameters[8], parameters[2]);
+}
+static void patch_pouch_projection(Module *m) {
+    /* Raw instruction fixtures have no executable patch area. Host callbacks
+       belong to a loaded module; iOS exports must not embed a Mac address. */
+    if (!m->patch_off || getenv("TOTK_EXPORT_IOS")) return;
+    /* This correction follows the flat-screen UI squeeze. VR has its own
+       native projection path, and wide replacement layouts turn squeeze off. */
+    const char *squeeze = getenv("TOTK_UI_SQUEEZE");
+    if (vr_active() || (squeeze && !strcmp(squeeze, "0"))) return;
+    const Patch guards[] = {
+        {0xb3440, 0x94165aa4, 0},   /* bl 0x649ed0 */
+        {0x649ed0, 0xd10383ff, 0}, /* native projection copy prologue */
+        {0x649ef4, 0x3dc00020, 0}, /* original extra matrix load */
+        {0x64a0e4, 0xf84b4288, 0}, /* source projection shift at +0xb4 */
+        {0x64a16c, 0xbd40b280, 0}, /* source aspect at +0xb0 */
+        {0x27d5438, 0xbd409800, 0}, /* original perspective matrix calculator */
+    };
+    for (unsigned i = 0; i < sizeof guards / sizeof *guards; i++) {
+        uint32_t word; memcpy(&word, m->base + guards[i].off, 4);
+        if (word != guards[i].original) runtime_fail("1.4.3 pouch projection copy does not match");
+    }
+    uint64_t method; memcpy(&method, m->base + 0x3902438, sizeof method);
+    if (method != (uintptr_t)m->base + 0x27d5438) runtime_fail("1.4.3 pouch perspective type does not match");
+    /* The VR veneers occupy data-64..data-8. This separate 16-byte bridge is
+       below them; other runtime stubs grow upwards from patch_off. */
+    uint64_t data = (m->file_size + 0x3fff) & ~0x3fffULL, stub = data - 96;
+    if (data > m->size || stub < m->file_size || stub < m->patch_off)
+        runtime_fail("1.4.3 pouch projection bridge layout");
+    for (unsigned i = 0; i < 16; i++) if (m->base[stub + i]) runtime_fail("1.4.3 pouch projection bridge in use");
+    uint32_t code[4] = {0x58000050, 0xd61f0200, 0, 0}; /* ldr x16, #8; br x16; address */
+    uint64_t target = (uintptr_t)pouch_projection_copy_hook; memcpy(code + 2, &target, sizeof target);
+    pouch_projection_type = (uintptr_t)m->base + 0x39023e0;
+    pouch_projection_copy = (void (*)(void *, const void *, const void *))(m->base + 0x649ed0);
+    uint32_t call = branch(0xb3440, stub) | 0x80000000u;
+    memcpy(m->base + stub, code, sizeof code); memcpy(m->base + 0xb3440, &call, sizeof call);
+    fprintf(stderr, "[totk] 1.4.3 pouch player projection follows the UI layout, bridge +%#llx\n", (unsigned long long)stub);
+}
+#endif
 static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 static void patch_fixed_res(Module *m);
@@ -1513,6 +1577,7 @@ void runtime_game_patches(Module *m) {
        Mac address and the iPad stopped at the first camera update ("Invalid Page", 2026-11-03, every 1.4.3 iOS build
        since zeldaVR came in, d1509b4b). */
     if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);
+    patch_pouch_projection(m);
 #endif
     patch_bench_cam(m);
     patch_lod_distance(m);
