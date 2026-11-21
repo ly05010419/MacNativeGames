@@ -206,10 +206,17 @@ static int path_ok(const char *p);
    identity (the originals are slices of it) and each listed file's identity (device, inode, size, mtime, birth time; ctime
    left out as in chunk_proofs). It lives in TOTK_ROMFS_PROOF_DIR (the player's data folder), never in the mods folder, and
    holds one set: another pack or a changed file hashes again. Like the RomFS record it is a startup shortcut for unchanged
-   files, not a fresh integrity proof; TOTK_ROMFS_VERIFY=full hashes again. */
-static int mods_key(const char *dir,uint8_t out[32]) {
+   files, not a fresh integrity proof; TOTK_ROMFS_VERIFY=full hashes again. The key also covers the overlays loaded before
+   the mods (pre: their RomFS index and SHA-256): a mod line whose original is a build overlay's edit is trusted only while
+   that overlay is the same. */
+static void mods_pre(size_t first,uint8_t out[32]) {
+ CC_SHA256_CTX c;CC_SHA256_Init(&c);
+ for(size_t k=0;k<first;k++){CC_SHA256_Update(&c,&overlays[k].index,sizeof overlays[k].index);CC_SHA256_Update(&c,overlays[k].sha,64);}
+ CC_SHA256_Final(out,&c);
+}
+static int mods_key(const char *dir,const uint8_t pre[32],uint8_t out[32]) {
  char p[4096];if(snprintf(p,sizeof p,"%s/manifest.tsv",dir)>=(int)sizeof p)return 0;FILE *m=fopen(p,"r");if(!m)return 0;
- CC_SHA256_CTX c;CC_SHA256_Init(&c);CC_SHA256_Update(&c,"TOTK-MODS-PROOF-1",17);
+ CC_SHA256_CTX c;CC_SHA256_Init(&c);CC_SHA256_Update(&c,"TOTK-MODS-PROOF-2",17);CC_SHA256_Update(&c,pre,32);
  struct stat is;if(fstat(image_fd,&is)){fclose(m);return 0;}RomfsProof ip=proof_for(&is);ip.ctime_sec=ip.ctime_nsec=0;CC_SHA256_Update(&c,&ip,sizeof ip);
  if(nchunks){RomfsProof cp[MAX_CHUNKS];chunk_proofs(cp);CC_SHA256_Update(&c,cp,(CC_LONG)(nchunks*sizeof *cp));}
  char line[8192];
@@ -246,7 +253,7 @@ static void overlay_load(const char *dir,int required,int mods) {
  /* only the player's mods folder: the button icons (TOTK_ROMFS_BUTTON_ICONS) are also loaded as a mod, and a second record
     for them would overwrite this one at every start; they are small and hash in milliseconds */
  const char *mv=getenv("TOTK_ROMFS_MODS");
- uint8_t mkey[32];int mkeyok=mods&&mv&&!strcmp(dir,mv)&&mods_key(dir,mkey),trusted=mkeyok&&mods_proof_matches(mkey);
+ uint8_t pre[32],mkey[32];mods_pre(first,pre);int mkeyok=mods&&mv&&!strcmp(dir,mv)&&mods_key(dir,pre,mkey),trusted=mkeyok&&mods_proof_matches(mkey);
 #else
  const int trusted=0;
 #endif
@@ -272,7 +279,7 @@ static void overlay_load(const char *dir,int required,int mods) {
  if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first+replaced,dir,noverlay-first-16);
 #if defined(GAME_BOTW) && !TARGET_OS_IPHONE
  if(trusted&&(noverlay>first||replaced)){fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, unchanged since their full SHA-256 check: record reused in %.2f s (TOTK_ROMFS_VERIFY=full hashes again)\n",dir,noverlay-first+replaced,(runtime_now_ns()-t0)/1e9);return;}
- if(mkeyok&&(noverlay>first||replaced)){uint8_t again[32];if(mods_key(dir,again)&&!memcmp(again,mkey,32))mods_proof_write(mkey);}   /* only when nothing moved during the hash */
+ if(mkeyok&&(noverlay>first||replaced)){uint8_t again[32];if(mods_key(dir,pre,again)&&!memcmp(again,mkey,32))mods_proof_write(mkey);}   /* only when nothing moved during the hash */
 #endif
  if(noverlay>first||replaced)fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, %.1f MB hashed in %.2f s\n",dir,noverlay-first+replaced,hashed/1048576.0,(runtime_now_ns()-t0)/1e9);
 }
