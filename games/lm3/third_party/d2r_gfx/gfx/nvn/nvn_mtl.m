@@ -157,6 +157,7 @@ static int nogpu(void) {
 - (void)addFeedbackHandler:(MTL4CommitFeedbackHandler)block { if (!handlers) handlers = [NSMutableArray array]; [handlers addObject:[block copy]]; [super addFeedbackHandler:block]; }
 @end
 static void gpu_budget_check(const char *where);
+static void stor_memory_report(void);
 static void dead_put_flush(void);
 static int bc_unpack(uint32_t nvn_fmt, uint32_t *pf, int *bpp);
 static void shot(id<MTLTexture> src, const char *path, int screen, const int crop[4]);
@@ -297,6 +298,7 @@ static void gpu_budget_check(const char *where) {
     uint64_t budget = gpu_budget_bytes(); if (!budget) return;
     uint64_t cur = (uint64_t)g_dev.currentAllocatedSize; if (cur <= budget) return;
     res_site_report(16);
+    stor_memory_report();
     MDIE("%s：显卡已分配 %llu MB 超过预算 %llu MB；四次内核崩溃都发生在驻留内存约 15 GB 时，拒绝继续提交（TOTK_GPU_BUDGET_MB 调整）", where, (unsigned long long)(cur >> 20), (unsigned long long)(budget >> 20));
 }
 // DM_RES_CHECK=1（诊断）：着色器经参数块访问的贴图 / 缓冲若不在驻留集里，打出前 40 个（贴图按父贴图 / 底层缓冲归到实际分配）
@@ -2109,11 +2111,17 @@ typedef struct { uint64_t mem, size; uint32_t w, h, d, levels, target, samples, 
 typedef struct { stor_key k; void *tex; uint64_t idle_fence; uint64_t *ser; int nser, cser; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
 static nvn_hmap g_by_storage = {.klen = sizeof(stor_key)};   // stor_key -> stor_ent *
 static nvn_hmap g_stor_of_obj = {.klen = 8};                  // base texture / view pointer -> stor_ent *
+/* Layouts superseded by LM3's resize notifications can be created lazily by an
+   older recorded draw, after its descriptor was retired. Keep layout identity,
+   not Metal objects, so those late creations are reclaimed too. g_smu held. */
+static nvn_hmap g_resized_layouts = {.klen = sizeof(stor_key)};
+static uint64_t g_stor_resized;
 static uint64_t g_stor_entries, g_stor_shared, g_stor_viewed, g_stor_recreated, g_stor_swept, g_stor_dropped;
 /* Texture preparation runs before a draw captures its encoder. An upgrade discovered under the
    registry lock requests a pass split; the caller ends the pass outside that lock and retries. */
 static int g_tex_preparing, g_tex_prepare_split;
 #define STOR_IDLE_SUBMITS 600
+#define STOR_RESIZE_IDLE_SUBMITS 32
 static int stor_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_TEX_SHARE"); on = !e || atoi(e); } return on; }
 static int stor_key_of(const tex_t *t, stor_key *k) {
     if (!t->mem || !t->L.size) return 0;
@@ -2776,13 +2784,43 @@ static void stor_collect_drop(int (^pick)(const stor_ent *), uint64_t *counter) 
     free(gone);
 }
 static void stor_sweep(uint64_t fence) {
+    /* Keep recently sampled sizes across multipass/previous-frame work. Only
+       layouts idle for 32 commits and with no live aliases leave the ordinary
+       600-fence reuse cache early. Actual Metal release remains fence-deferred. */
+    stor_collect_drop(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_RESIZE_IDLE_SUBMITS && nvn_hm_get(&g_resized_layouts, &e->k); }, &g_stor_resized);
+    stor_det_sweep(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_RESIZE_IDLE_SUBMITS && nvn_hm_get(&g_resized_layouts, &e->k); }, &g_stor_resized);
     stor_collect_drop(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_IDLE_SUBMITS; }, &g_stor_swept);
     stor_det_sweep(^int(const stor_ent *e) { return !e->nser && fence > e->idle_fence + STOR_IDLE_SUBMITS; }, &g_stor_swept);
+}
+/* Diagnose retained layouts separately from allocations with live serial owners. */
+static void stor_memory_report(void) {
+    uint64_t held = 0, idle = 0, hn = 0, in = 0, youngest = UINT64_MAX, oldest = 0;
+    pthread_mutex_lock(&g_smu);
+    for (uint32_t i = 0; i < g_by_storage.cap; i++) {
+        stor_ent *e = g_by_storage.vals[i]; if (!e) continue;
+        uint64_t bytes = ((__bridge id<MTLTexture>)e->tex).allocatedSize;
+        if (e->nser) { held += bytes; hn++; }
+        else { idle += bytes; in++; uint64_t age = g_fence - e->idle_fence; if (age < youngest) youngest = age; if (age > oldest) oldest = age; }
+    }
+    pthread_mutex_unlock(&g_smu);
+    MLOG("[lm3-storage] live holders %llu textures/%llu MB; idle layouts %llu/%llu MB, fence age %llu..%llu; resized reclaimed %llu", hn, held >> 20, in, idle >> 20, in ? youngest : 0, oldest, g_stor_resized);
 }
 /* A memory pool is finalised: its storage entries go with it. */
 static void stor_drop_range(uintptr_t lo, uintptr_t hi) {
     stor_collect_drop(^int(const stor_ent *e) { return e->k.mem >= lo && e->k.mem < hi; }, &g_stor_dropped);
     stor_det_sweep(^int(const stor_ent *e) { return e->k.mem >= lo && e->k.mem < hi; }, &g_stor_dropped);
+    pthread_mutex_lock(&g_smu);
+    /* A reused pool address must not inherit an earlier pool's resize history. */
+    stor_key *gone = NULL; size_t n = 0, cap = 0;
+    for (uint32_t i = 0; i < g_resized_layouts.cap; i++) {
+        if (!g_resized_layouts.vals[i]) continue;
+        stor_key k; memcpy(&k, g_resized_layouts.keys + (size_t)i * sizeof k, sizeof k);
+        if (k.mem < lo || k.mem >= hi) continue;
+        if (n == cap) { cap = cap ? cap * 2 : 32; gone = realloc(gone, cap * sizeof *gone); if (!gone) MDIE("resize history cleanup"); }
+        gone[n++] = k;
+    }
+    for (size_t i = 0; i < n; i++) nvn_hm_del(&g_resized_layouts, &gone[i]);
+    free(gone); pthread_mutex_unlock(&g_smu);
 }
 // 预排布贴图上传：先设只读、再取戳、再读池内存解排布进暂存缓冲，blit 进新的 private 贴图。
 // 批量：一次回放提交内的上传共用一个上传命令缓冲（计算编码器解排布 + 统一 blit），在回放命令缓冲提交前冲刷；
@@ -3557,6 +3595,16 @@ void mtl_tex_release(tex_t *t) {
     serial_del(t->serial);
     pthread_mutex_lock(&g_smu); totk_serial_add(&g_dead_serial, t->serial); ser_bump_locked(t->serial); pthread_mutex_unlock(&g_smu);   // view caches of this serial look again (dead-serial follow)
     treg_drop_serial(t->serial);
+}
+void mtl_tex_resize(tex_t *old, const tex_t *next) {
+    stor_key before, after;
+    if (stor_key_of(old, &before) && stor_key_of(next, &after)) {
+        pthread_mutex_lock(&g_smu);
+        nvn_hm_put(&g_resized_layouts, &before, (void *)1);
+        nvn_hm_del(&g_resized_layouts, &after);  // a returning size is current again
+        pthread_mutex_unlock(&g_smu);
+    }
+    mtl_tex_release(old);
 }
 /* TOTK (2026-10-17): not yet. A finalized serial must stay remembered while a texture-pool slot still names it: tex_by_id
    follows such a slot to the live texture at the same storage only for a remembered serial. The first version forgot a
@@ -9602,7 +9650,32 @@ static int mfxup_dock(__unsafe_unretained NvShader *fs) {
    Returns 1 when the draw was replaced (not to be encoded). */
 static _Atomic uint64_t g_control_observed;
 uint64_t nvn_control_render_observed(void){return atomic_load(&g_control_observed);}
+#if defined(GAME_LM3)
+static _Atomic uint64_t g_lm3_scene_size,g_lm3_canvas_size;
+static void lm3_note_render_size(void){
+ uint64_t s=atomic_load(&g_lm3_scene_size),c=atomic_load(&g_lm3_canvas_size);if(!s||!c)return;
+ uint64_t value=c|(s<<24);
+ if(atomic_exchange(&g_control_observed,value)!=value)MLOG("[lm3-render] actual G-buffer %ux%u -> swapchain %ux%u (colour/depth and viewport/scissor)",(unsigned)(s&4095),(unsigned)((s>>12)&4095),(unsigned)(c&4095),(unsigned)((c>>12)&4095));
+}
+#endif
 static void controls_note_render(NvProg *pr){
+#if defined(GAME_LM3)
+ (void)pr;
+ /* LM3's deferred scene has two integer G-buffer targets and matching depth.
+    A UI canvas or a large output texture alone is not evidence of native 3D. */
+ if(R.rt.n!=2||!R.rt.color[0]||!R.rt.color[1]||!R.rt.depth)return;
+ const tex_t *a=R.rt.color[0],*b=R.rt.color[1],*d=R.rt.depth;
+ if(!((a->d.format==0x0b&&b->d.format==0x27)||(a->d.format==0x27&&b->d.format==0x0b)))return;
+ unsigned w=a->d.width,h=a->d.height;
+ if(w<640||h<360||w>4095||h>4095||b->d.width!=w||b->d.height!=h||d->d.width!=w||d->d.height!=h||!fmt_depth(d->d.format))return;
+ if(!S.has_vp||!isfinite(S.vp[0][0])||!isfinite(S.vp[0][1])||!isfinite(S.vp[0][2])||!isfinite(S.vp[0][3])||fabs(S.vp[0][0])>0.5||fabs(S.vp[0][1])>0.5)return;
+ unsigned rw=(unsigned)fmin(w,floor(fabs(S.vp[0][2])+0.5)),rh=(unsigned)fmin(h,floor(fabs(S.vp[0][3])+0.5));
+ if(R.has_sc){if(R.sc.x||R.sc.y)return;rw=MIN(rw,(unsigned)MAX(0,R.sc.w));rh=MIN(rh,(unsigned)MAX(0,R.sc.h));}
+ if(rw<640||rh<360||llabs((long long)rw*9-(long long)rh*16)>32)return;
+ uint64_t size=rw|((uint64_t)rh<<12);
+ if(atomic_exchange(&g_lm3_scene_size,size)!=size)MLOG("[lm3-gbuffer] colour %ux%u fmt %#x + %ux%u fmt %#x; depth %ux%u fmt %#x; viewport %.0fx%.0f scissor %dx%d",w,h,a->d.format,b->d.width,b->d.height,b->d.format,d->d.width,d->d.height,d->d.format,fabs(S.vp[0][2]),fabs(S.vp[0][3]),R.sc.w,R.sc.h);
+ lm3_note_render_size();
+#else
  NvShader *f=pr?pr->sh[1]:nil;if(!f)return;
  if(strncmp(f->key,"a3a570eb159202f14bc86479b0d3a012ecd830b8550505536eb70bf82372e4bb-",65)&&strncmp(f->key,"ac58fc18eda5f3878b16074dc28cd441644a66710f1b73954d39e57ac357561b-",65))return;
  const p_bind_buf *u=&S.ubo[1][0];if(!u->addr||u->size<80)return;
@@ -9611,6 +9684,7 @@ static void controls_note_render(NvProg *pr){
  long rw=lround((double)k[0]*w),rh=lround((double)k[1]*h);if(rw<=0||rh<=0||rw>4095||rh>4095)return;
  uint64_t value=w|((uint64_t)h<<12)|((uint64_t)rw<<24)|((uint64_t)rh<<36);
  if(atomic_exchange(&g_control_observed,value)!=value)MLOG("[controls-render] actual scene %ldx%ld -> canvas %ux%u (game upscale constants)",rw,rh,w,h);
+#endif
 }
 static int mfxup_draw(NvProg *pr) {
     controls_note_render(pr);
@@ -11803,6 +11877,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     PD("X ser=%llu%s", t->serial, interp >= 0 ? " (MetalFX interpolated frame before it)" : "");
     id<MTLTexture> src = interp >= 0 ? mfx_output(interp) : tex_mtl(t);   // TOTK_MFX: the interpolated frame shown one tick before this game frame
     if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
+#if defined(GAME_LM3)
+    if(interp<0&&src.width<=4095&&src.height<=4095){atomic_store(&g_lm3_canvas_size,(uint64_t)src.width|((uint64_t)src.height<<12));lm3_note_render_size();}
+#endif
     if (interp < 0) anom_present(src, frame);   // TOTK_ANOMALY
     /* One-frame temporal fallback (TOTK_FLASH_GUARD=1, off by default): a same-queue readback of the picture's centre
        before the drawable is encoded; on an abrupt colour jump the previous good picture is shown again, at most twice
@@ -12870,6 +12947,83 @@ int mtl_probe_upload_batch(void) {
     return checked;
 }
 
+/* Repeated sizes at one pool address: keep queued pixels and live aliases, but
+   release unused superseded layouts without retaining 600 submissions of sizes. */
+static int probe_resize_storage(void) {
+    enum { N = 48 }; int checked = 0;
+    void *mem = calloc(1, 1u << 20); if (!mem) MDIE("resize probe memory");
+    id<MTLBuffer> rb = probe_buf(256 * 64); op_hdr end = {OP_END, 8};
+    tex_t t = {0}; t.serial = 0xfffe0000; t.mem = mem;
+    t.d = (nvn_texdesc){.width=64,.height=16,.depth=1,.levels=1,.target=1,.format=0x25};
+    nvn_tex_layout(&t.d, &t.L);
+    id __weak old[N] = {nil};
+    int negative = getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 8;
+    for (int round=0; round<N; round++) {
+        @autoreleasepool {
+            mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+            memset(&R,0,sizeof R); R.has_rt=1; R.rt.n=1; R.rt.color[0]=&t;
+            R.clear_c[0]=1; R.cc[0]=MTLClearColorMake((round+1)/64.0,0.5,0.75,1); rp_begin(); rp_end();
+            id<MTLTexture> current=tex_mtl(&t); old[round]=current;
+            enc_b_copy_texture_buffer(blit(),current,0,0,MTLOriginMake(0,0,0),MTLSizeMake(1,1,1),rb,0,256,256);
+            tex_t next=t; next.serial++; next.d.width++; nvn_tex_layout(&next.d,&next.L);
+            if (negative) mtl_tex_release(&t); else mtl_tex_resize(&t,&next);
+            if (!old[round]) MDIE("resize probe released queued texture");
+            memset(&R,0,sizeof R); mtl_sub_commit(); mtl_finish();
+            const uint8_t *p=rb.contents; const int want[4]={(int)lround((round+1)*255/64.0),128,191,255};
+            for(int c=0;c<4;c++){if(abs(p[c]-want[c])>1)MDIE("resize probe lost queued pixel round%d channel%d",round,c);checked++;}
+            t=next;
+        }
+    }
+    for(int i=0;i<STOR_RESIZE_IDLE_SUBMITS+4;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    for(int i=0;i<N;i++){if(old[i])MDIE("resize probe retained superseded layout %d",i);checked++;}
+    /* An actual same-storage alias must outlive the resize cache's idle limit. */
+    id __weak held=nil;
+    tex_t alias=t; alias.serial=0xfffe1000;
+    @autoreleasepool {
+        mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+        id<MTLTexture> current=tex_mtl(&t);held=current;
+        if(tex_mtl(&alias)!=current)MDIE("resize probe alias did not share storage");
+        tex_t next=t;next.serial++;next.d.width++;nvn_tex_layout(&next.d,&next.L);
+        mtl_tex_resize(&t,&next);t=next;mtl_sub_commit();mtl_finish();
+    }
+    for(int i=0;i<STOR_RESIZE_IDLE_SUBMITS+4;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    if(!held)MDIE("resize probe discarded live alias");checked++;
+    mtl_tex_release(&alias);
+    for(int i=0;i<STOR_RESIZE_IDLE_SUBMITS+4;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    if(held)MDIE("resize probe retained released alias");checked++;
+    /* A retired descriptor can be resolved lazily by an earlier recording. */
+    id __weak late=nil;
+    @autoreleasepool {
+        tex_t next=t;next.serial++;next.d.width++;nvn_tex_layout(&next.d,&next.L);
+        mtl_tex_resize(&t,&next);
+        mtl_sub_begin();mtl_exec((const uint8_t *)&end);late=tex_mtl(&t);
+        if(!late)MDIE("resize probe failed late creation");
+        mtl_sub_commit();mtl_finish();t=next;
+    }
+    for(int i=0;i<STOR_RESIZE_IDLE_SUBMITS+4;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    if(late)MDIE("resize probe retained late creation");checked++;
+    /* Returning to an earlier size revives that cache key. Ordinary finalizes
+       still preserve it for previous-frame reads, unlike a superseded size. */
+    id __weak returned=nil;
+    @autoreleasepool {
+        tex_t back=t;back.serial++;back.d.width--;nvn_tex_layout(&back.d,&back.L);
+        mtl_tex_resize(&t,&back);
+        mtl_sub_begin();mtl_exec((const uint8_t *)&end);returned=tex_mtl(&back);
+        mtl_tex_release(&back);mtl_sub_commit();mtl_finish();
+    }
+    for(int i=0;i<STOR_RESIZE_IDLE_SUBMITS+4;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    if(!returned)MDIE("resize probe did not revive returning layout");checked++;
+    stor_drop_range((uintptr_t)mem,(uintptr_t)mem+(1u<<20));
+    pthread_mutex_lock(&g_smu);int remaining=0;
+    for(uint32_t i=0;i<g_resized_layouts.cap;i++)if(g_resized_layouts.vals[i]){stor_key k;memcpy(&k,g_resized_layouts.keys+(size_t)i*sizeof k,sizeof k);remaining+=k.mem==(uintptr_t)mem;}
+    pthread_mutex_unlock(&g_smu);
+    if(remaining)MDIE("resize probe pool reuse retained stale history");checked++;
+    for(int i=0;i<3;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+    if(returned)MDIE("resize probe pool cleanup retained revived layout");checked++;
+    defer_obj_release(rb);free(mem);stor_memory_report();
+    return checked;
+}
+
 /* A sampling descriptor gains image/format-view usage while another render pass is open. The
    resolved view must retain every mip/layer written through the original storage descriptor. */
 int mtl_probe_storage_view(void) {
@@ -12900,7 +13054,7 @@ int mtl_probe_storage_view(void) {
         const uint8_t *saved_next=g_exec_next;g_exec_next=(const uint8_t *)&future;uint64_t gen=g_ser_gen;
         pso_predict_rest();g_exec_next=saved_next;
         if(g_ser_gen!=gen || serial_get(alias.serial))MDIE("pipeline prediction changed GPU texture storage");checked++;
-        if(getenv("TOTK_PROBE_NEGATIVE")) {registry_lock();(void)tex_fast(1);registry_unlock();}
+        if(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE"))!=8) {registry_lock();(void)tex_fast(1);registry_unlock();}
         else prepare_draw_textures(pr);
         registry_lock();id<MTLTexture> sampled=tex_by_id(1);registry_unlock();
         if(!sampled)MDIE("storage-view probe missing sampling view");
@@ -12917,7 +13071,7 @@ int mtl_probe_storage_view(void) {
         }
         memset(&R,0,sizeof R);mtl_reg_tex(1,NULL,NULL);serial_del(t.serial);serial_del(alias.serial);stor_drop_range((uintptr_t)mem,(uintptr_t)mem+4096);defer_obj_release(rb);free(mem);
     }
-    return checked;
+    return checked + probe_resize_storage();
 }
 
 /* Compressible storage changing hands (stor_compressed): an R32F depth and an RGBA8 target on the same compressible pool
