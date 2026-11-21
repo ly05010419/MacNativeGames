@@ -12856,22 +12856,30 @@ static const uint8_t *bound_uniform_bytes(uint64_t gpu, size_t size, id<MTLBuffe
    saw: a copy in the submission's arena. A range with GPU writes not yet complete (this or an earlier submission) is
    read live, so GPU-produced data is never replaced by a CPU copy. OOT_SBUF_SNAPSHOT=0 reads memory as before. */
 static uint64_t pool_range_write_fence(const p_bind_buf *u);
-static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e ? atoi(e) : 0; } return on; }   // off by default; =1: ranges up to 256 KB; =<n> (n > 1): up to n KB (2026-11-09: 1024 covers the main scene's 720 KB block)
+/* BOTW: on by default (OOT_SBUF_SNAPSHOT=0 turns it off). Its text shader 21fe759b reads glyph instances from a read-only
+   storage buffer in a per-frame UI ring; the game refills that block for a later frame about 10 ms after the encode, and the
+   GPU here reads it 14-25 ms after the encode, so cutscene name cards and the Game Over title showed the later frame's glyphs. */
+#ifdef GAME_BOTW
+#define SBUF_SNAP_DEFAULT 1
+#else
+#define SBUF_SNAP_DEFAULT 0
+#endif
+static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e ? atoi(e) : SBUF_SNAP_DEFAULT; } return on; }   // off by default except BOTW; =1: ranges up to 256 KB; =<n> (n > 1): up to n KB (2026-11-09: 1024 covers the main scene's 720 KB block)
 static size_t sbuf_snap_limit(void) { int v = sbuf_snap_on(); return v > 1 ? (size_t)v << 10 : 262144; }
-typedef struct { uint64_t addr, size, sub, gpu; int npend; } sbuf_snap_ent;   // npend: pend entries at the copy; later entries of the same submission are checked for overlap (the table only grows within a submission)
+typedef struct { uint64_t addr, size, sub, gpu, wep; int npend; } sbuf_snap_ent;   // npend: pend entries at the copy; later entries of the same submission are checked for overlap (the table only grows within a submission)
 static sbuf_snap_ent g_sbuf_snap[256]; static uint64_t g_sbuf_snap_copies, g_sbuf_snap_hits, g_sbuf_snap_live, g_sbuf_snap_bytes;
 static uint64_t sbuf_snap_get(const p_bind_buf *u) {
     if (u->size > sbuf_snap_limit() || !mtl_addr_known(u->addr, u->size)) return 0;
     if (pool_range_write_fence(u)) { g_sbuf_snap_live++; return 0; }   // GPU writes pending on these bytes: the GPU's own data
     unsigned h = (unsigned)(((u->addr >> 4) ^ u->size) * 2654435761u) & 255;
     sbuf_snap_ent *e = &g_sbuf_snap[h];
-    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && !pend_over()) {   // same submission: still the bytes the GPU should read unless a write landed on the range since the copy
+    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && e->wep == g_pool_write_epoch && !pend_over()) {   // wep: no write (CPU or GPU, usnap_drop) since the copy; a shader write that a wait already completed leaves no fence   // same submission: still the bytes the GPU should read unless a write landed on the range since the copy
         int clean = 1; for (int i = e->npend; i < g_npend; i++) if (u->addr < g_pend_hi[i] && u->addr + u->size > g_pend_lo[i]) { clean = 0; break; }
         if (clean) { e->npend = g_npend; g_sbuf_snap_hits++; return e->gpu; } }
     __unsafe_unretained id<MTLBuffer> buf = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
     arena_alloc_u((size_t)u->size, &buf, &cpu, &gpu);
     memcpy(cpu, (const void *)(uintptr_t)u->addr, (size_t)u->size);
-    *e = (sbuf_snap_ent){u->addr, u->size, g_sub_serial, gpu, g_npend};
+    *e = (sbuf_snap_ent){u->addr, u->size, g_sub_serial, gpu, g_pool_write_epoch, g_npend};
     g_sbuf_snap_copies++; g_sbuf_snap_bytes += u->size;
     static uint64_t last; uint64_t f = atomic_load(&g_cur_frame);
     if (f >= last + 600) { last = f; MLOG("[sbuf-snapshot] F%llu copies=%llu hits=%llu live=%llu bytes=%.1f MB", (unsigned long long)f, (unsigned long long)g_sbuf_snap_copies,
