@@ -1,0 +1,21 @@
+<!-- Switch shader → SPIR-V translation tool. It references the Ryujinx shader translator source kept in the repository (dm/third_party/ryujinx); -p:RyuSrc=<dir> points it at another copy. -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- AnyCPU under any -r: a build for a runtime ID otherwise ties the dll to that architecture, and the universal launcher's x86_64 half cannot load an arm64 dll (GitHub issue #803) -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../../third_party/ryujinx</RyuSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
+  </ItemGroup>
+  <!-- Embeds its own source: the source-sha argument prints its hash, by which dmsh_chain.py checks that the translator was built from the in-repo source -->
+  <ItemGroup>
+    <EmbeddedResource Include="Program.cs" LogicalName="src0" />
+    <EmbeddedResource Include="dmsh_xlate.csproj" LogicalName="src1" />
+  </ItemGroup>
+</Project>

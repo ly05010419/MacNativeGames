@@ -1,0 +1,271 @@
+{
+ "repo": "seedds/nxnative",
+ "prs": [
+  {
+   "number": 29,
+   "title": "Rhythm Heaven Groove: A16 legacy support, touch pad and ambient bars",
+   "url": "https://github.com/seedds/nxnative/pull/29",
+   "createdAt": "2026-10-21T04:34:19Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "Roylam23"
+   },
+   "body": "## Summary\n\nThis adds the A16 / older-iPhone support and the complete Rhythm Heaven Groove adaptation:\n\n- **A16 BC fallback**: decodes BC1–BC7 textures on the CPU when the GPU has no BC sampling (`dm/third_party/bcdec`), with an optional offline BC → ASTC cache (`BCA1`, keyed by the guest texture ha",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 167,
+   "title": "Textures: upload CPU-written linear and unflushed sampled textures",
+   "url": "https://github.com/seedds/nxnative/pull/167",
+   "createdAt": "2026-10-25T08:08:32Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "Jiiiin"
+   },
+   "body": "Two CPU-write paths left sampled textures with content 0 in The Great Ace Attorney Chronicles, on the Mac and on the iPad. Both are host-side and general.\n\n## 1. LINEAR textures at a pool offset Metal cannot view\n\n`tex_linear` returns nil when the pool offset or row pitch is not aligned to Metal's m",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 193,
+   "title": "Super Mario 3D All-Stars: multi-program applications, nn::jit served on iOS, and an opt-in in-process program switch",
+   "url": "https://github.com/seedds/nxnative/pull/193",
+   "createdAt": "2026-10-25T16:10:39Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "stan69b"
+   },
+   "body": "## Summary\n\nSuper Mario 3D All-Stars is not one program but four, each its own Program NCA, title ID (base + index), engine and graphics API: a menu (program 0, sead / agl on NVN) that starts Super Mario 64 (1, an N64 emulator on Vulkan with a JIT plugin), Super Mario Sunshine (2, NERD's Hagi with r",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 269,
+   "title": "Pokémon Violet: profile, Bluetooth LE takeover, ConservativeRasterDilate stub",
+   "url": "https://github.com/seedds/nxnative/pull/269",
+   "createdAt": "2026-10-26T07:17:19Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "jthrilly"
+   },
+   "body": "Brings up Pokémon Violet (`01008F6008C5E000`, update 4.0.0, SDK 13.3.13, Game Freak's Trinity engine on NVN, the same engine as Pokémon Legends: Z-A) on the Mac: it boots through the language select, character creation, the whole opening and into play, the player's room and the house's ground floor,",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 408,
+   "title": "Area labels on pull requests from the paths they change",
+   "url": "https://github.com/seedds/nxnative/pull/408",
+   "createdAt": "2026-10-27T11:54:16Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "v0lumehi"
+   },
+   "body": "Part of #313 (\"Triage, so issues and PRs find each other\").\n\n## Problem\n\n98 PRs are open, and none has a label. To find the ones that touch the shader chain, add a game, or change one game's profile, you have to open each.\n\n## Change\n\n- **`dm/tools/pr_areas.py`** maps a PR's changed paths to labels:",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 415,
+   "title": "Pokémon Violet: profile, Bluetooth stubs, Nintendo controller mapping",
+   "url": "https://github.com/seedds/nxnative/pull/415",
+   "createdAt": "2026-10-27T12:14:13Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "peachtaozhutou"
+   },
+   "body": "Adds a game profile for **Pokémon Violet** (update 3.0.1, `v720896`) and the two host changes it needs.\n\n**Profile** (`dm/games/01008F6008C5E000/`, note + table row): SDK 13.3.13, Game Freak's Trinity engine, 35,937 shaders\n(35,897 BNSH in `arc/data.trpfs` decoded with the game's own Oodle, 40 in `m",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 573,
+   "title": "feat(games): add Let’s Go Pikachu Mac profile and offline BLE startup",
+   "url": "https://github.com/seedds/nxnative/pull/573",
+   "createdAt": "2026-10-28T19:06:22Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "dmuiX"
+   },
+   "body": "## What and why\n\nAdd Pokémon: Let's Go, Pikachu! 1.0.2 (`010003F003A34000`, SDK 5.4.151), tested on Mac only.\n\n```text\ndm/games/010003F003A34000/  profile, tables, notes, smoke/benchmark routes, validation record\ndm/host/hle_offline.c       offline BLE initialization, idle events, empty discovery\ndm\n\nRelated to #224, not a claim to resolve it",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 734,
+   "title": "Port Super Mario 3D All-Stars' Super Mario 64 and Super Mario Sunshine to the Mac",
+   "url": "https://github.com/seedds/nxnative/pull/734",
+   "createdAt": "2026-10-30T17:17:39Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "joaquinsandoval2307"
+   },
+   "body": "## What and why\n\nSuper Mario 3D All-Stars' Super Mario 64 and Super Mario Sunshine now play on the Mac. Each needed something the host did not have yet:\n\n- **One program of a multi-program application.** The application is 4 programs: launcher 0, Super Mario 64 1, Super Mario Sunshine 2, Super Mario",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  },
+  {
+   "number": 756,
+   "title": "Fix shared Python lint failures in Unreal engine-region rewriting",
+   "url": "https://github.com/seedds/nxnative/pull/756",
+   "createdAt": "2026-10-30T23:26:42Z",
+   "isDraft": false,
+   "baseRefName": "main",
+   "author": {
+    "login": "thehobbit85"
+   },
+   "body": "Main still has the two Unreal engine-region lint findings: the operand helper captures the loop instruction, and the observation gate shifts a possibly-optional size-register value. Bind the instruction and assert the detector's size-register invariant, without changing the lint baseline or valid re",
+   "closingIssuesReferences": {
+    "nodes": []
+   }
+  }
+ ],
+ "issues": [
+  {
+   "number": 10,
+   "title": "大佬能否支持双人成行双手柄适配？",
+   "url": "https://github.com/seedds/nxnative/issues/10",
+   "createdAt": "2026-10-19T03:16:39Z",
+   "author": {
+    "login": "gdzhujun"
+   },
+   "labels": {
+    "nodes": []
+   },
+   "comments": {
+    "totalCount": 0,
+    "nodes": []
+   }
+  },
+  {
+   "number": 224,
+   "title": "Pokémon: Let's Go, Pikachu! boots and plays on iPhone: patches and findings",
+   "url": "https://github.com/seedds/nxnative/issues/224",
+   "createdAt": "2026-10-25T20:51:08Z",
+   "author": {
+    "login": "s7ymwkptc4-a11y"
+   },
+   "labels": {
+    "nodes": []
+   },
+   "comments": {
+    "totalCount": 0,
+    "nodes": []
+   }
+  },
+  {
+   "number": 313,
+   "title": "Roadmap: keeping every game green as the project grows",
+   "url": "https://github.com/seedds/nxnative/issues/313",
+   "createdAt": "2026-10-26T17:20:34Z",
+   "author": {
+    "login": "v0lumehi"
+   },
+   "labels": {
+    "nodes": []
+   },
+   "comments": {
+    "totalCount": 3,
+    "nodes": [
+     {
+      "author": {
+       "__typename": "User",
+       "login": "v0lumehi"
+      }
+     },
+     {
+      "author": {
+       "__typename": "User",
+       "login": "seedds"
+      }
+     },
+     {
+      "author": {
+       "__typename": "User",
+       "login": "v0lumehi"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "number": 542,
+   "title": "Virtual amiibo (nfp) on the Mac host",
+   "url": "https://github.com/seedds/nxnative/issues/542",
+   "createdAt": "2026-10-28T10:09:19Z",
+   "author": {
+    "login": "peterkmet"
+   },
+   "labels": {
+    "nodes": []
+   },
+   "comments": {
+    "totalCount": 1,
+    "nodes": [
+     {
+      "author": {
+       "__typename": "User",
+       "login": "peterkmet"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "number": 635,
+   "title": "Patch design: bind every patch as loosely as what it depends on (host, sdk, engine, game, build)",
+   "url": "https://github.com/seedds/nxnative/issues/635",
+   "createdAt": "2026-10-29T14:18:22Z",
+   "author": {
+    "login": "seedds"
+   },
+   "labels": {
+    "nodes": [
+     {
+      "name": "enhancement"
+     }
+    ]
+   },
+   "comments": {
+    "totalCount": 3,
+    "nodes": [
+     {
+      "author": {
+       "__typename": "User",
+       "login": "v0lumehi"
+      }
+     },
+     {
+      "author": {
+       "__typename": "User",
+       "login": "seedds"
+      }
+     },
+     {
+      "author": {
+       "__typename": "User",
+       "login": "seedds"
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

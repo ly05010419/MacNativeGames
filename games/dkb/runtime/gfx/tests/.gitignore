@@ -1,0 +1,9 @@
+# The tests' binaries and their debug symbols: every t_* without an extension (a test's build rule names its binary after its source), and every .dSYM.
+# Patterns, so a new test needs no line here; the sources (t_*.c, t_*.m) and everything else with an extension stay tracked
+t_*
+!t_*.*
+*.dSYM/
+# Tools built here that are not tests
+nvn_replay
+.precommit.err
+.precommit_snap/

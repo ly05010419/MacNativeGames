@@ -1,0 +1,10 @@
+# ASan and UBSan ignorelist (clang -fsanitize-ignorelist), used by the asan targets of dm/host/tests and dm/gfx/tex/tests.
+# Each exception names its reason. Real host findings are fixed rather than added here.
+[address]
+# Not a finding: the HLE tables (hle.h) are walked as arrays of their sections (__DATA,swhle and __DATA,swforce); redzones between the entries would break the walk
+global:hle_ent_*
+global:hle_force_*
+[pointer-overflow]
+# Test fixture: t_nro.c:48 gives the module init and fini offsets below its base (host functions under a heap buffer), so base + init (hle_ro.c:75) and base + fini (hle_ro.c:89) wrap; a real NRO's DT_INIT and DT_FINI lie inside it
+fun:h_ro_LoadModule
+fun:h_ro_UnloadModule
