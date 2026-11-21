@@ -7130,9 +7130,10 @@ static void uw_note_present(const tex_t *t) {
     g_mfx.swap_w = t->d.width; g_mfx.swap_h = t->d.height;
 }
 static int uw_on_canvas(void) { return g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas; }
-/* The TOTK_MFX UI vertex shaders and four more that draw UI quads (inventory tab labels, map icons). */
+/* The TOTK_MFX UI vertex shaders and additional UI quads (inventory tab labels, map icons, solid pane fills).
+   eb23ab56 uses the same pane/projection block as textured panes: shop row fills must follow their viewport and scissor. */
 static int uw_ui_vs(const char *vs) {
-    static const char *const more[] = {"1a40e5f5", "2117f58b", "8d4e36d0", "1469983f"};
+    static const char *const more[] = {"1a40e5f5", "2117f58b", "8d4e36d0", "1469983f", "eb23ab56"};
     if (mfx_ui_vs(vs)) return 1;
     for (size_t i = 0; i < sizeof more / sizeof *more; i++) if (!strncmp(vs, more[i], 8)) return 1;
     return 0;
@@ -18906,7 +18907,9 @@ static void totk_uw_wide_ui(NvProg *pr, const p_draw *dw, const p_draw_idx *di, 
                  cover >= 0 ? g_ui2d_box[0] : 0, cover >= 0 ? g_ui2d_box[1] : 0, cover >= 0 ? g_ui2d_box[2] : 0, cover >= 0 ? g_ui2d_box[3] : 0); }
         }
     }
-        if (kept) ux = uy = 1;
+        /* A full-width band keeps its width, but follows the widgets vertically: at 16:10 the inventory footer's
+           background must flatten with its text, decorations and scissor instead of staying at the canvas bottom. */
+        if (kept) { ux = 1; if (cover != 4) uy = 1; }
     }
     *pux = ux; *puy = uy; *pedge = edge; *pworld = world;
 }
