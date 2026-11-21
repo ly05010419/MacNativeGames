@@ -271,6 +271,7 @@ def verify_shader_resources(tree, mode='full'):
     if not libs.get('complete'):raise ValueError('OOT Metal libraries are incomplete')
     if '-fpreserve-invariance' not in libs.get('compiler','').split():raise ValueError('OOT Metal libraries lack position invariance')
     shared=build_helpers()
+    library_policy=_script('build_shader_libs')
     known_seed=shared.seed_digests(seed);known_libs=shared.seed_digests(libraries)
     for name,want in metadata['files'].items():
         if Path(name).name!=name or shared.seed_sha256(seed,name,known_seed)!=want:raise ValueError('damaged shader seed: '+name)
@@ -278,6 +279,9 @@ def verify_shader_resources(tree, mode='full'):
             if libs.get('subset') and name not in libs['sources']:continue   # OOT_SHADER_SUBSET builds: compiled by the game at first use
             if libs['sources'].get(name)!=want:raise ValueError('library source differs from seed: '+name)
             library=want+'.metallib'
+            if (libs.get('optimization_flags',{}).get(library,[])!=library_policy.optimization_flags(want) or
+                libs.get('sdk_roots',{}).get(library,'')!=library_policy.source_sdk_root(want)):
+                raise ValueError('Metal library compiler options changed; rebuild the libraries: '+library)
             if shared.seed_sha256(libraries,library,known_libs)!=libs['files'].get(library):raise ValueError('damaged Metal library: '+library)
     for library,want in libs['files'].items():
         if Path(library).name!=library or shared.seed_sha256(libraries,library,known_libs)!=want:

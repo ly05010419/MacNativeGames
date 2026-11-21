@@ -12,9 +12,12 @@ Each library is named by its source, so a run reuses every one already built; a 
 """
 import argparse
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
+import platform
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +37,36 @@ from game_slot import GameSlot
 # no GPU cost. The runtime's own compiles (nvn_mtl.m totk_precise_opts, a variant no library holds) go through
 # MTLCompileOptions, which has no such option: a shader first met in play is compiled without it until the next build.
 METAL_FLAGS = [*BASE_METAL_FLAGS, "-fpreserve-invariance", "-fwrapv"]
+
+# Shared with the Mac runtime. This is a complete source digest, not a prefix;
+# a changed translation must be investigated before it receives the workaround.
+SIZE_POLICY = REPO/'games/totk/third_party/d2r_gfx/gfx/nvn/oot_mesh_size.h'
+SIZE_SOURCE = re.search(r'#define OOT_MESH_SIZE_SOURCE_SHA256 "([0-9a-f]{64})"', SIZE_POLICY.read_text())[1]
+SIZE_MACOS_MAJOR = int(re.search(r'#define OOT_MESH_SIZE_MACOS_MAJOR (\d+)', SIZE_POLICY.read_text())[1])
+HOST_MACOS_MAJOR = int(platform.mac_ver()[0].split('.')[0] or 0)
+
+
+def optimization_flags(source_sha):
+    return ['-Os'] if (
+        HOST_MACOS_MAJOR == SIZE_MACOS_MAJOR and source_sha == SIZE_SOURCE) else []
+
+
+@functools.lru_cache(maxsize=1)
+def mac_sdk_root():
+    # Match `xcrun --sdk macosx metal`, including its environment. A bare
+    # MetalToolchain driver used a different AIR target; -Os alone still failed.
+    found = metal_compiler()
+    if not found:
+        raise RuntimeError('no Metal compiler for the mesh SDK selection')
+    root = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'],
+                                   env=found[2], text=True).strip()
+    if not Path(root).is_dir():
+        raise RuntimeError('macOS SDK directory is missing: '+root)
+    return root
+
+
+def source_sdk_root(source_sha):
+    return mac_sdk_root() if optimization_flags(source_sha) else ''
 
 
 def digest(path):
@@ -116,6 +149,8 @@ def main():
     prior = json.loads(manifest.read_text()) if manifest.exists() else {}
     known = prior.get('files', {}) if prior.get('compiler') == identity else {}
     parser_depths = dict(prior.get('parser_depths', {})) if known else {}
+    prior_options = prior.get('optimization_flags', {}) if known else {}
+    prior_sdks = prior.get('sdk_roots', {}) if known else {}
     todo, source_hashes = {}, {}
     # A source the seed recorded as checked (prepare_ns2_seed.py record_verified) keeps that digest; the rest, and every
     # library not recorded as unchanged, are hashed on all cores (one thread took minutes per build).
@@ -134,6 +169,10 @@ def main():
         def lib_ok(sha):
             lib = a.out/f'{sha}.metallib'
             if not (lib.is_file() and lib.name in known):
+                return False
+            if prior_options.get(lib.name, []) != optimization_flags(sha):
+                return False   # source unchanged, but this library needs different compiler options
+            if prior_sdks.get(lib.name, '') != source_sdk_root(sha):
                 return False
             entry = lib_record.get(lib.name)
             try:
@@ -157,15 +196,18 @@ def main():
     def compile_one(item):
         digest, src = item
         partial = a.out/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=env)
+        flags = [*METAL_FLAGS, *optimization_flags(digest)]
+        sdk = source_sdk_root(digest)
+        compile_env = dict(env, SDKROOT=sdk) if sdk else env
+        r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=compile_env)
         parser_depth = None
         if r.returncode and 'bracket nesting level exceeded maximum of 256' in r.stderr:
             # Two genuine OOT shaders have deeper structured control flow. This
             # changes only the compiler's parser limit, not their code or math.
             partial.unlink(missing_ok=True)
             parser_depth = 1024
-            r = subprocess.run([metal, *METAL_FLAGS, '-fbracket-depth=1024', '-o', partial, src],
-                               capture_output=True, text=True, env=env)
+            r = subprocess.run([metal, *flags, '-fbracket-depth=1024', '-o', partial, src],
+                               capture_output=True, text=True, env=compile_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
             (a.out/f'{digest}.metallib').unlink(missing_ok=True)
@@ -211,6 +253,10 @@ def main():
         library = a.out/name
         if not library.is_file():
             return None
+        if prior_options.get(name, []) != optimization_flags(name.removesuffix('.metallib')):
+            return None
+        if prior_sdks.get(name, '') != source_sdk_root(name.removesuffix('.metallib')):
+            return None
         entry = lib_record.get(name)
         try:
             if isinstance(entry, list) and len(entry) == 5 and entry[:4] == lib_identity(library) and entry[4] == expected:
@@ -224,6 +270,10 @@ def main():
                   if name not in files and Path(name).name == name and name.endswith('.metallib')]
         files.update({name: d for (name, _), d in zip(others, pool.map(variant_digest, others, chunksize=256)) if d})
     report = dict(schema=1, compiler=identity, complete=not failed, subset=bool(a.only), sources=source_hashes, files=files,
+                  optimization_flags={name: optimization_flags(name.removesuffix('.metallib')) for name in files
+                                      if optimization_flags(name.removesuffix('.metallib'))},
+                  sdk_roots={name: source_sdk_root(name.removesuffix('.metallib')) for name in files
+                             if source_sdk_root(name.removesuffix('.metallib'))},
                   parser_depths={k: v for k, v in parser_depths.items() if k in files},
                   preparation_sha256=digest(Path(__file__).resolve()))
     partial = manifest.with_suffix('.partial')
