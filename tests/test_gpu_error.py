@@ -71,7 +71,9 @@ class GpuError(unittest.TestCase):
         for words in ('slots held', 'forced takes', 'MTK_SCRATCH_FORCED', 'mtk_split_on()'):
             self.assertIn(words, report)
         # PR #2258: mesh draws in passes of their own by default only before Apple9 (M1 / M2); OOT_MESH_PASS_SPLIT forces it
-        self.assertIn('v=e&&*e?atoi(e)!=0:![g_dev supportsFamily:MTLGPUFamilyApple9];', tasks)
+        self.assertIn('v=e&&*e?atoi(e):[g_dev supportsFamily:MTLGPUFamilyApple9]?0:2;', tasks)
+        # mode 2 (only where mesh and ordinary draws meet) is the M1 / M2 default; an unknown value falls back to mode 1
+        self.assertIn('if(v<0||v>2)v=1;', tasks)
 
 
 if __name__ == '__main__':
