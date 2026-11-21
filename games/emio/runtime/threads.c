@@ -439,8 +439,7 @@ int svc_thread(int num, uint64_t *regs) {
 #ifndef DM_TEST_CV_OLD_ORDER
         st32(key, 1);
         t->wkey = key; t->waddr = addr; t->wtag = (uint32_t)regs[2];
-        { extern int emio_freehandoff; if (emio_freehandoff<0) emio_freehandoff=getenv("EMIO_FREE")?1:0;
-          if (emio_freehandoff) { st32(addr, 0); for (thr_t *ww=g_wait; ww;) { thr_t *nx=ww->next; if (ww->waddr==addr) wake(ww, 0); ww=nx; } } else { lock_handoff(addr); } }
+        lock_handoff(addr);   /* main pattern (tomodachi): handoff under G; no free+wake-all deviation (see #2272 discussion) */
         CV_TEST_HOOK();
 #else   // 仅单测 t_condvar 的负对照：还原修复前「先放锁、后置键」的顺序 | Negative control for the unit test t_condvar only: restores the pre-fix order "release the lock first, set the key after"
         lock_handoff(addr); CV_TEST_HOOK();
@@ -453,7 +452,7 @@ int svc_thread(int num, uint64_t *regs) {
     }
     case 0x1D: {  // SignalProcessWideKey(x0 条件键, w1 个数，<=0 全部) | SignalProcessWideKey(x0 condition key, w1 count, <=0 all)
         uint64_t key = regs[0]; int cnt = (int)regs[1], n = 0;
-        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=3000) { thr_t *st = cur(); fprintf(stderr,"[emio-signal] #%u tid=%x key=%llx cnt=%d lr=%llx",k,st?st->handle:0,(unsigned long long)key,cnt,(unsigned long long)regs[30]);
+        { static _Atomic unsigned sc=0; unsigned k=++sc; if(k<=3000) { thr_t *st = me_or_null(); fprintf(stderr,"[emio-signal] #%u tid=%x key=%llx cnt=%d lr=%llx",k,st?st->handle:0,(unsigned long long)key,cnt,(unsigned long long)regs[30]);
          { uint64_t fp=(uint64_t)regs[29]; for(int d=0;d<6&&fp&&!(fp&15);d++){ uint64_t fr[2]={0,0}; sigjmp_buf jw; runtime_fault_guard=&jw; int ok=1;
           if(sigsetjmp(jw,1)) ok=0; else { volatile uint64_t *pp=(volatile uint64_t *)(uintptr_t)fp; fr[0]=pp[0]; fr[1]=pp[1]; }
           runtime_fault_guard=NULL; if(!ok)break; fprintf(stderr," %llx",(unsigned long long)fr[1]); if(fr[0]==fp)break; fp=fr[0]; } fprintf(stderr,"\n"); } } }

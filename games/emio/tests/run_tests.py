@@ -19,8 +19,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='emio-tests-') as temporary:
         out = Path(temporary)
         common = ['xcrun', 'clang', '-Iruntime']
+        gfxinc = ['-Ithird_party/d2r_gfx/gfx/nvn', '-Ithird_party/d2r_gfx/gfx/nvn/include']
         for name, sources, flags in [
             ('compat-patches', ['tests/test_emio_compat_patches.c','runtime/game_patches.c'], []),
+            ('condvar', ['tests/test_emio_condvar.c','tests/test_emio_condvar_stub.c','runtime/threads.c'], ['-DDM_TEST_HOOKS', *gfxinc]),
+            ('condvar-old', ['tests/test_emio_condvar.c','tests/test_emio_condvar_stub.c','runtime/threads.c'], ['-DDM_TEST_HOOKS','-DDM_TEST_CV_OLD_ORDER', *gfxinc]),
+            ('ffscan', ['tests/test_emio_ffscan.c'], []),
             ('clock', ['tests/test_emio_clock.c','runtime/time_host.c'], ['-framework','CoreFoundation']),
             ('gesture', ['tests/test_emio_gesture.c','runtime/gesture.c'], []),
             ('inline-keyboard', ['tests/test_emio_inline_keyboard.c','runtime/inline_keyboard.c'], ['-framework','CoreFoundation']),

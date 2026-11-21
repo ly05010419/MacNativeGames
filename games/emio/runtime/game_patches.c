@@ -42,6 +42,17 @@ void runtime_game_patches(Module *m) {
  /* EBE20 bypass REMOVED: time services now work, real date query should succeed.
     The mov+ret bypass spun (ret to stale LR). */
  fprintf(stderr, "[emio] date/time query (main+0xEBE20) left intact\n");
+ /* D2 EXPERIMENTAL (vendored, local only): drop consumer echo Send (main+0xF00E8 bl -> nop).
+    Echo re-enters the same queue it was received from (+0x230 loopback), regenerating work
+    faster than the consumer drains; quit Send starves (queue full) and teardown never reaches
+    quit dispatch. Dropping echo drains the queue; movie already reached EOS with echo active,
+    so this tests whether echo is load-bearing for teardown. Revert if movie breaks. */
+ memcpy(&original, m->base+0xf00e8, 4);
+ if(original!=0x94049522)
+  runtime_fail("echo Send bl differs from pinned 1.0.0");
+ replacement=0xd503201f; /* nop */
+ memcpy(m->base+0xf00e8, &replacement, 4);
+ fprintf(stderr, "[emio] D2: dropped consumer echo Send (main+0xF00E8 -> nop)\n");
 }
 
 void runtime_frame_step_pin(double ms) { (void)ms; }

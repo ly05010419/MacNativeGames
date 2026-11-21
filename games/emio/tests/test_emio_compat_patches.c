@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
     put(image+0x9524, 0xaa1303e0);
     put(image+0xe1bc0, 0xd10343ff);
     put(image+0xe2450, 0xd10103ff);
+    put(image+0xf00e8, 0x94049522);
     if(argc>1 && !strcmp(argv[1],"wrong-instruction")) put(image+0x9520, 0xd503201f);
     runtime_game_patches(&module);
     assert(argc==1);
@@ -23,6 +24,7 @@ int main(int argc, char **argv) {
     assert(word(image+0xe1bc0)==0x52800020);
     assert(word(image+0xe1bc4)==0xd65f03c0);
     assert(word(image+0xe2450)==0xd65f03c0);
+    assert(word(image+0xf00e8)==0xd503201f);
     free(image);
     return 0;
 }
