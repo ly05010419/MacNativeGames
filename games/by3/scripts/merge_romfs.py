@@ -125,6 +125,20 @@ class Ranges:
             offset += n; size -= n; i += 1
 
 
+class DenseBase:
+    """A base RomFS section that was never sparsed (a card image): plain AES-CTR over the whole section."""
+    def __init__(self, ctr, start, end, fs):
+        require(fs[4] == 3, 'Dense base: expected an AES-CTR section')
+        gen0, self.secure = struct.unpack_from('<II', fs, 0x140)
+        self.ctr, self.start, self.upper = ctr, start, upper_iv(gen0, self.secure)
+        self.size, self.stored = end - start, 0
+
+    def read(self, offset, size):
+        require(0 <= offset and offset + size <= self.size, 'Dense base read out of bounds')
+        self.stored += size
+        return self.ctr.read(self.start + offset, size, self.upper)
+
+
 class SparseBase:
     """The base RomFS section as it was before sparsing; parts the update replaces read as zeros."""
     def __init__(self, ctr, start, end, fs):
@@ -254,7 +268,10 @@ def main():
     bf, brec, bhdr, bctr = open_program(args.base, keys, args.title)
     uf, urec, uhdr, uctr = open_program(args.update, keys, args.title)
     with bf, uf:
-        base = SparseBase(bctr, *romfs_section(bhdr))
+        bsec = romfs_section(bhdr)
+        gen = struct.unpack_from('<QH', bsec[2], 0x168)[1]
+        base = DenseBase(bctr, *bsec) if gen == 0 else SparseBase(bctr, *bsec)
+        print('base RomFS:', 'dense (not sparse)' if gen == 0 else 'sparse', flush=True)
         ustart, uend, ufs = romfs_section(uhdr)
         patched = Patched(uctr, ustart, uend, ufs, base)
         args.output.mkdir(parents=True)
