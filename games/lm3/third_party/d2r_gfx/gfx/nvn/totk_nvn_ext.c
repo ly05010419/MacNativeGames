@@ -174,10 +174,24 @@ NVN(nvnBlendStateGetBlendFunc, void, const NVNblendState *s, NVNblendFunc *sr, N
     const blend_st *b = CS(blend_st, s); *sr = (NVNblendFunc)b->src_rgb; *dr = (NVNblendFunc)b->dst_rgb; *sa = (NVNblendFunc)b->src_a; *da = (NVNblendFunc)b->dst_a;
 }
 NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquation *rgb, NVNblendEquation *a) { *rgb = (NVNblendEquation)CS(blend_st, s)->eq_rgb; *a = (NVNblendEquation)CS(blend_st, s)->eq_a; }
-NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode m) { (void)s; if (m) die("advanced blend mode %d not implemented", (int)m); }
-NVN(nvnBlendStateSetAdvancedOverlap, void, NVNblendState *s, NVNblendAdvancedOverlap o) { (void)s; (void)o; }   /* only meaningful with an advanced mode */
-NVN(nvnBlendStateSetAdvancedPremultipliedSrc, void, NVNblendState *s, uint32_t v) { (void)s; (void)v; }
-NVN(nvnBlendStateSetAdvancedNormalizedDst, void, NVNblendState *s, uint32_t v) { (void)s; (void)v; }
+NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode m) {
+    if (m != NVN_BLEND_ADVANCED_MODE_NONE &&
+        ((unsigned)m < NVN_BLEND_ADVANCED_MODE_ZERO || (unsigned)m > NVN_BLEND_ADVANCED_MODE_HSL_LUMINOSITY))
+        die("invalid advanced blend mode %d", (int)m);
+    MS(blend_st, s)->adv = (unsigned)m;
+}
+NVN(nvnBlendStateSetAdvancedOverlap, void, NVNblendState *s, NVNblendAdvancedOverlap o) {
+    if ((unsigned)o > NVN_BLEND_ADVANCED_OVERLAP_CONJOINT) die("invalid advanced blend overlap %d", (int)o);
+    MS(blend_st, s)->adv_ovl = (unsigned)o;
+}
+/* NVNboolean arguments occupy only the low byte of the register. Store the
+   full declared state; renderer support is checked when an enabled draw uses it. */
+NVN(nvnBlendStateSetAdvancedPremultipliedSrc, void, NVNblendState *s, uint32_t v) { MS(blend_st, s)->adv_npm = !(v & 0xff); }
+NVN(nvnBlendStateSetAdvancedNormalizedDst, void, NVNblendState *s, uint32_t v) { MS(blend_st, s)->adv_nnd = !(v & 0xff); }
+NVN(nvnBlendStateGetAdvancedMode, NVNblendAdvancedMode, const NVNblendState *s) { return (NVNblendAdvancedMode)CS(blend_st, s)->adv; }
+NVN(nvnBlendStateGetAdvancedOverlap, NVNblendAdvancedOverlap, const NVNblendState *s) { return (NVNblendAdvancedOverlap)CS(blend_st, s)->adv_ovl; }
+NVN(nvnBlendStateGetAdvancedPremultipliedSrc, NVNboolean, const NVNblendState *s) { return !CS(blend_st, s)->adv_npm; }
+NVN(nvnBlendStateGetAdvancedNormalizedDst, NVNboolean, const NVNblendState *s) { return !CS(blend_st, s)->adv_nnd; }
 NVN(nvnMultisampleStateGetMultisampleEnable, NVNboolean, const NVNmultisampleState *s) { return CS(ms_st, s)->enable; }
 NVN(nvnMultisampleStateGetSamples, int, const NVNmultisampleState *s) { return CS(ms_st, s)->samples; }
 NVN(nvnMultisampleStateGetAlphaToCoverageEnable, NVNboolean, const NVNmultisampleState *s) { return CS(ms_st, s)->a2c; }

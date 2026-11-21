@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "../third_party/d2r_gfx/gfx/tex/nvn_deswizzle.h"
 #include "../third_party/d2r_gfx/gfx/nvn/nvn_texture_plan.h"
+#include "../third_party/d2r_gfx/gfx/nvn/nvn_obj.h"
 static void probe_texture_plan(void) {
  nvn_refl rf = {0};
  struct { uint64_t before; uint16_t slots[NVN_REFL_MAXB]; uint64_t after; } output;
@@ -36,6 +37,94 @@ static void probe_texture_plan(void) {
 static void *(*lookup)(const char *);
 static void *fn(const char *name){void *f=lookup(name);if(!f)runtime_fail("NVN probe lookup");return f;}
 #define CALL(name,...) ((NVNT_##name)fn(#name))(__VA_ARGS__)
+static void probe_blend_ordinary(const NVNblendState *state) {
+ NVNblendFunc sr,dr,sa,da;NVNblendEquation rgb,a;
+ CALL(nvnBlendStateGetBlendFunc,state,&sr,&dr,&sa,&da);
+ CALL(nvnBlendStateGetBlendEquation,state,&rgb,&a);
+ if(CALL(nvnBlendStateGetBlendTarget,state)!=5 || sr!=NVN_BLEND_FUNC_CONSTANT_COLOR ||
+    dr!=NVN_BLEND_FUNC_ONE_MINUS_CONSTANT_ALPHA || sa!=NVN_BLEND_FUNC_SRC_ALPHA ||
+    da!=NVN_BLEND_FUNC_DST_ALPHA || rgb!=NVN_BLEND_EQUATION_MIN || a!=NVN_BLEND_EQUATION_MAX)
+  runtime_fail("advanced blend state overwrote ordinary factors, equations or target");
+}
+static void probe_blend_state(void) {
+ struct { uint64_t before[2];NVNblendState state;uint64_t after[2]; } guarded;
+ memset(&guarded,0xa5,sizeof guarded);NVNblendState *state=&guarded.state;
+ CALL(nvnBlendStateSetDefaults,state);
+ NVNblendFunc sr,dr,sa,da;NVNblendEquation rgb,a;
+ CALL(nvnBlendStateGetBlendFunc,state,&sr,&dr,&sa,&da);
+ CALL(nvnBlendStateGetBlendEquation,state,&rgb,&a);
+ if(CALL(nvnBlendStateGetBlendTarget,state)!=0 || sr!=NVN_BLEND_FUNC_ONE || dr!=NVN_BLEND_FUNC_ZERO ||
+    sa!=NVN_BLEND_FUNC_ONE || da!=NVN_BLEND_FUNC_ZERO || rgb!=NVN_BLEND_EQUATION_ADD || a!=NVN_BLEND_EQUATION_ADD ||
+    CALL(nvnBlendStateGetAdvancedMode,state)!=NVN_BLEND_ADVANCED_MODE_NONE ||
+    CALL(nvnBlendStateGetAdvancedOverlap,state)!=NVN_BLEND_ADVANCED_OVERLAP_UNCORRELATED ||
+    !CALL(nvnBlendStateGetAdvancedPremultipliedSrc,state) || !CALL(nvnBlendStateGetAdvancedNormalizedDst,state))
+  runtime_fail("advanced blend compatibility defaults");
+ const char *negative=getenv("TOTK_PROBE_NEGATIVE");int neg=negative?atoi(negative):0;
+ if(neg==91)CALL(nvnBlendStateSetAdvancedMode,state,(NVNblendAdvancedMode)64);
+ if(neg==92)CALL(nvnBlendStateSetAdvancedOverlap,state,(NVNblendAdvancedOverlap)3);
+ if(neg==91 || neg==92)runtime_fail("advanced blend invalid enum silently accepted or truncated");
+ CALL(nvnBlendStateSetBlendTarget,state,5);
+ CALL(nvnBlendStateSetBlendFunc,state,NVN_BLEND_FUNC_CONSTANT_COLOR,NVN_BLEND_FUNC_ONE_MINUS_CONSTANT_ALPHA,
+      NVN_BLEND_FUNC_SRC_ALPHA,NVN_BLEND_FUNC_DST_ALPHA);
+ CALL(nvnBlendStateSetBlendEquation,state,NVN_BLEND_EQUATION_MIN,NVN_BLEND_EQUATION_MAX);
+ for(unsigned mode=0;mode<=NVN_BLEND_ADVANCED_MODE_HSL_LUMINOSITY;mode++) {
+  if(mode>NVN_BLEND_ADVANCED_MODE_NONE && mode<NVN_BLEND_ADVANCED_MODE_ZERO)continue;
+  CALL(nvnBlendStateSetAdvancedMode,state,(NVNblendAdvancedMode)mode);
+  if((unsigned)CALL(nvnBlendStateGetAdvancedMode,state)!=mode)runtime_fail("advanced blend mode roundtrip");
+  probe_blend_ordinary(state);
+ }
+ for(unsigned overlap=0;overlap<=NVN_BLEND_ADVANCED_OVERLAP_CONJOINT;overlap++) {
+  CALL(nvnBlendStateSetAdvancedOverlap,state,(NVNblendAdvancedOverlap)overlap);
+  if((unsigned)CALL(nvnBlendStateGetAdvancedOverlap,state)!=overlap)runtime_fail("advanced blend overlap roundtrip");
+ }
+ const unsigned booleans[]={0,1,0x100,0x101,0xff};
+ for(unsigned i=0;i<sizeof booleans/sizeof *booleans;i++) {
+  unsigned value=booleans[i],expected=(value&0xff)!=0;
+  CALL(nvnBlendStateSetAdvancedPremultipliedSrc,state,value);
+  CALL(nvnBlendStateSetAdvancedNormalizedDst,state,value);
+  if(!!CALL(nvnBlendStateGetAdvancedPremultipliedSrc,state)!=expected ||
+     !!CALL(nvnBlendStateGetAdvancedNormalizedDst,state)!=expected)runtime_fail("advanced blend boolean low-byte roundtrip");
+  probe_blend_ordinary(state);
+ }
+ CALL(nvnBlendStateSetAdvancedMode,state,NVN_BLEND_ADVANCED_MODE_SCREEN);
+ CALL(nvnBlendStateSetAdvancedPremultipliedSrc,state,0);
+ CALL(nvnBlendStateSetAdvancedNormalizedDst,state,0);
+ CALL(nvnBlendStateSetAdvancedOverlap,state,NVN_BLEND_ADVANCED_OVERLAP_DISJOINT);
+ NVNblendState first;memcpy(&first,state,sizeof first);
+ NVNcommandBuffer commands;unsigned char control[256]={0};
+ if(!CALL(nvnCommandBufferInitialize,&commands,NULL))runtime_fail("advanced blend recorder initialize");
+ CALL(nvnCommandBufferAddCommandMemory,&commands,NULL,0,4096);
+ CALL(nvnCommandBufferAddControlMemory,&commands,control,sizeof control);
+ CALL(nvnCommandBufferBeginRecording,&commands);
+ CALL(nvnCommandBufferBindBlendState,&commands,state);
+ CALL(nvnBlendStateSetDefaults,state);
+ NVNblendState second;memcpy(&second,state,sizeof second);
+ CALL(nvnCommandBufferBindBlendState,&commands,state);
+ NVNcommandHandle handle=CALL(nvnCommandBufferEndRecording,&commands);
+ /* Binding captures all eight bytes. Later caller edits must not mutate the
+    earlier command, including advanced flags and ordinary factors. */
+ CALL(nvnBlendStateSetAdvancedMode,state,NVN_BLEND_ADVANCED_MODE_HSL_COLOR);
+ const uint8_t *p=(const uint8_t *)(uintptr_t)handle;unsigned found=0,ended=0;
+ for(unsigned bytes=0;bytes<4096;) {
+  op_hdr header;memcpy(&header,p,sizeof header);
+  if(header.op==OP_END){ended=1;break;}
+  if(header.size<8 || header.size%8 || header.size>4096-bytes)runtime_fail("advanced blend recorded command bounds");
+  if(header.op==OP_BIND_STATE) {
+   p_bind_state record;if(header.size<8+sizeof record)runtime_fail("advanced blend snapshot size");
+   memcpy(&record,p+8,sizeof record);
+   if(record.kind!=0 || found>=2 || memcmp(record.bytes,found?&second:&first,sizeof(blend_st)))
+    runtime_fail("advanced blend recorded snapshot changed with source state");
+   found++;
+  }
+  bytes+=header.size;p+=header.size;
+ }
+ if(!ended || found!=2)runtime_fail("advanced blend recorded snapshots missing");
+ CALL(nvnCommandBufferAddControlMemory,&commands,control,sizeof control);
+ CALL(nvnCommandBufferFinalize,&commands);
+ for(unsigned i=0;i<2;i++)if(guarded.before[i]!=UINT64_C(0xa5a5a5a5a5a5a5a5) ||
+                            guarded.after[i]!=UINT64_C(0xa5a5a5a5a5a5a5a5))runtime_fail("advanced blend opaque state canary");
+ fprintf(stderr,"advanced blend state probe: defaults, modes/flags, ordinary-factor preservation, canaries and bind snapshots pass\n");
+}
 static void probe_linear_layout(void) {
  for(int mode=0;mode<4;mode++) {
   unsigned w=mode&1?68:260,h=w,bpp=mode&1?8:2,flags=mode<2?0x40:0x50;
@@ -102,6 +191,7 @@ void runtime_gfx_probe(int negative){
  for(unsigned i=0;i<64;i++)if(texture.guard[i]!=0xa5)runtime_fail("NVN texture finalize overflow");
  int major=0,minor=0;CALL(nvnDeviceGetInteger,NULL,0,&major);CALL(nvnDeviceGetInteger,NULL,1,&minor);if(major!=55||minor<15)runtime_fail("TOTK NVN ABI target");
  if(lookup("TOTK_not_an_nvn_entry"))runtime_fail("unknown NVN lookup should be null");
+ probe_blend_state();
  probe_linear_layout();
  probe_minimal_layout();
  extern void dm_nvn_probe_present_interval(void); dm_nvn_probe_present_interval();

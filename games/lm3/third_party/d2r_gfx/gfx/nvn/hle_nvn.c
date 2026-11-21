@@ -1889,7 +1889,12 @@ NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { 
 // ---------- 状态对象：就地打包（nvn_obj.h） ----------
 // ---------- State objects: packed in place (nvn_obj.h) ----------
 #define ST(T, x) ((T *)(x))
-NVN(nvnBlendStateSetDefaults, void, NVNblendState *s) { *ST(blend_st, s) = (blend_st){0, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_FUNC_ONE, NVN_BLEND_FUNC_ZERO, NVN_BLEND_EQUATION_ADD, NVN_BLEND_EQUATION_ADD}; }
+NVN(nvnBlendStateSetDefaults, void, NVNblendState *s) {
+    *ST(blend_st, s) = (blend_st){.target=0, .src_rgb=NVN_BLEND_FUNC_ONE, .dst_rgb=NVN_BLEND_FUNC_ZERO,
+        .src_a=NVN_BLEND_FUNC_ONE, .dst_a=NVN_BLEND_FUNC_ZERO, .eq_rgb=NVN_BLEND_EQUATION_ADD,
+        .eq_a=NVN_BLEND_EQUATION_ADD, .adv=NVN_BLEND_ADVANCED_MODE_NONE,
+        .adv_npm=0, .adv_ovl=NVN_BLEND_ADVANCED_OVERLAP_UNCORRELATED, .adv_nnd=0};
+}
 NVN(nvnBlendStateSetBlendTarget, void, NVNblendState *s, int t) { ST(blend_st, s)->target = t; }
 NVN(nvnBlendStateSetBlendFunc, void, NVNblendState *s, NVNblendFunc sr, NVNblendFunc dr, NVNblendFunc sa, NVNblendFunc da) {
     blend_st *o = ST(blend_st, s); o->src_rgb = sr; o->dst_rgb = dr; o->src_a = sa; o->dst_a = da;
