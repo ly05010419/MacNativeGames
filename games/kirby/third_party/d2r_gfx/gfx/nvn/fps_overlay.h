@@ -2,9 +2,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* TOTK: frames per second and the size of the game picture on screen (pixels) in its top-right corner, one line
-   ("FPS 97  2560x1440"; the top-left holds the hearts). The game's internal render resolution is
-   deliberately not shown (user, 2026-10-16). The game image itself (frame screenshots, texture dumps) never contains it. TOTK_FPS_OVERLAY=0 hides it. */
+/* Kirby: FPS plus the presented game canvas and window pixel sizes, explicitly labelled.
+   The canvas is distinct from lower-resolution intermediate effects or prerecorded movies.
+   TOTK_FPS_OVERLAY=0 hides the readout. */
 enum { FPS_OVERLAY_TEX_W = 768, FPS_OVERLAY_TEX_H = 64, FPS_OVERLAY_MAX_SCALE = 5 };
 
 /* fps / screen size < 0 / 0: not known yet ("--"). mfx: MetalFX upscaled the picture in the last frames. gen > 0: MetalFX
