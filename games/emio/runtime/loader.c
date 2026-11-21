@@ -336,10 +336,12 @@ static void crash(int num,siginfo_t *info,void *context) {
   for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(ov>>(i*4))&15];b[n++]='\n';write(2,b,n);
   {void *fr[32];int fn=backtrace(fr,32);backtrace_symbols_fd(fr,fn,2);} _exit(128+num);}
  in_crash = 1;
- {char b[96];int n=0;const char *h="[emio] trap sig=";while(*h)b[n++]=*h++;
+ {char b[160];int n=0;const char *h="[emio] trap sig=";while(*h)b[n++]=*h++;
   int s=num;char t2[16];int m=0;do{t2[m++]='0'+s%10;s/=10;}while(s);while(m)b[n++]=t2[--m];
   const char *h2=" pc=";while(*h2)b[n++]=*h2++;uint64_t pv=u->uc_mcontext->__ss.__pc;
-  for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(pv>>(i*4))&15];b[n++]='\n';write(2,b,n);};
+  for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(pv>>(i*4))&15];
+  const char *h3=" fp=";while(*h3)b[n++]=*h3++;uint64_t fv=u->uc_mcontext->__ss.__fp;
+  for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(fv>>(i*4))&15];b[n++]='\n';write(2,b,n);};
  /* EL0 cache maintenance that Darwin traps but Horizon allows: emulate exactly two encodings (SDK only). */
  if(runtime_emio_snap_trap(num,context)){in_crash=0;return;}
  if(num==SIGILL){uint32_t insn=*(const uint32_t *)(uintptr_t)u->uc_mcontext->__ss.__pc;unsigned rt=insn&31;

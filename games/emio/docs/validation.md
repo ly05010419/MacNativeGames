@@ -91,17 +91,25 @@ Autoplay to title only (A advances the system-data dialog; no input on the title
 - Dialogs render (system-data prompts), BGM/voice packs open (silent output), input polls (controller disconnect reads), A advances state machine through dialogs. Title responds to input polling (menu present; A on title not pressed per stop-at-title bound).
 - No faults, no aborts on the title path. RomFS serves title assets with no fallback and no NOT_FOUND. `0xFF` writer canary clean on title path (writer still at large globally — entry blocker for config/save/load stages, listed below).
 
-### Host correctness fix (shipped, validated by title)
+### Host sync (shipped: deletion of a divergence, validated by title)
 
-`SVC 0x1C WaitProcessWideKeyAtomic` previously called `lock_handoff(addr)` (transfer semantics: write waiter's tag into the guest word + wake one). For condvar waits this clobbers the guest futex (`m=0x1001` with waiter bit stripped on a free mutex), the SDK gated-signal (`ldr;cbz→ret`) then skips, and quit Send blocks forever. Fix: release instead of transfer (`st32(addr,0)` + wake-all by address; spurious wakes are legal, SDK re-checks under mutex) plus a free-predicate guard (skip park if `[addr]==0` so a stale LINE-of-sight read retries CAS instead of parking). Validated: quit Send returns, consumer exits, join completes, title presents; existing host tests green, no bypass, no stub-return, no force-signal. Refining to exact waiter-bit preservation is a follow-up, not a blocker.
+`SVC 0x1C` now always `lock_handoff` under G — restoring `tomodachi`'s main pattern. Record correction: an earlier `FREE=1` free+wake-all path replaced handoff and reopened a gap main had closed; the "wake-all is load-bearing" finding is retracted as an artifact of that divergence, not a property of the contract. Retained: B5 stale-free predicate (skip park if `[addr]==0` so a stale read retries CAS) and null-safe 0x1D logging. Guarded by ported `t_condvar` (both orders) in `run_tests.py`. Validated: 15/15 titles, zero aborts, no bypass/force-signal/stub-return.
 
-### CUTs (flagged, peripheral for docked title)
+### Teardown fix (shipped, flagged guest-behavior change)
 
-- `main+0xE1BC0` display-mode validation bypassed (`mov w0,#1;ret`). Removing it aborts during init (mode fields unset); `GetNpadStyleSet` correctly returns the docked pad style, but the game's mode dispatch needs full applet operation/performance-mode mapping to pass without the CUT. Title presents correctly at 1920×1080 regardless. Revisit with mode mapping.
-- `main+0xE2450` motion-sensor init skipped (`ret`). Removing it aborts (host provides no SixAxis sensors; docked title uses buttons, not motion). Dead-on-path not claimed (it is called); limitation: motion unsupported, bypassed, title does not need it.
+Consumer echo looped back into its own queue (`+0x230`), regenerating work and starving quit Send (queue pinned full) — feedback starvation, not a missed wake. Fix: `main+0xF00E8` bl→nop (drop echo; queue drains, quit dispatches, thread exits, join succeeds). The `+0x48` vtable is guest SDK (method `0x118F708C0`), so this masks no host bug. Echo purpose beyond flow unknown; revert is pre-authorized suspect #1 on message-loss regression.
+
+### CUTs (flagged)
+
+- `main+0xE1BC0`: CUT REMOVED for M2 A/B (genuine display validation via `GetNpadStyleSet`; batch in progress vs 15/15 baseline). Was `mov w0,#1;ret`.
+- `main+0xE2450` motion-sensor init skipped (`ret`). Dead-on-path not claimed; docked title uses buttons. Revisit with mode mapping.
+
+### Watchpoint negative (measured, not retried)
+
+`mprotect`+SIGSEGV+rearm is unworkable here: arming a lock-containing queue page stalls the producer 0/2 vs 14/14 baseline (exclusive-monitor vs fault/rearm interaction), and arming a lock-free scratch page yields zero faults on a direct RO write (protection ineffective in this host). Filed as a negative with numbers. G2 proceeds via self-tested scanner (`ffscan` unit: fires on `0xFF` runs, silent on address bytes) over sync dumps (6 dumps, 0 hits, limited coverage stated) plus hash seams at the host fs path in M2 Phase 3. Save structures unplayed.
 
 ### Known issues (stop conditions for later stages)
 
-- Quit-delivery scheduling race: teardown occasionally stalls pre-quit (post-movie) or quit blocks; measured title-reach rate across a 6-boot batch (see commit body). Present with and without the fix; the fix strictly improves quit success.
-- `0xFF` wild writer still at large (canary armed, never fired on title path). Entry blocker for config/save/load (D) and choice/ending (E) per mission ladder.
-- BGM/voice silent output (packs open, decode ok). Applet library never starts (stubbed success, dialog advances). `0xE1BC0`/`0xE2450` CUTs above.
+- Pre-movie `#1` startup race (~10% residual): waiter vs lock-free signaler read, kernel-less losing branch; needs guest-semantic change. Does not block title at 15/15.
+- `0xFF` writer: sync-dump-clean (limited); save structures pending M2 Phase 3 with hash seams + ffscan.
+- BGM/voice silent output (packs open, decode ok). `0xE2450` CUT above.

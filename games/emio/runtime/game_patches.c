@@ -25,14 +25,14 @@ void runtime_game_patches(Module *m) {
  /* Bring-up CUTs (flagged, peripheral for docked title): E1BC0 display validation forced success
     (mode fields stay -1; docked 1080p presents correctly regardless), E2450 motion-sensor init
     skipped (docked title uses buttons, not motion). Revisit with full applet/hid mode mapping. */
- memcpy(&original, m->base+0xe1bc0, 4);
- if(original!=0xd10343ff)
-  runtime_fail("E1BC0 prologue differs from pinned 1.0.0");
- replacement=0x52800020; /* mov w0, #1 */
- memcpy(m->base+0xe1bc0, &replacement, 4);
- replacement=0xd65f03c0; /* ret */
- memcpy(m->base+0xe1bc4, &replacement, 4);
- fprintf(stderr, "[emio] CUT: bypassed display-mode validation (main+0xE1BC0)\n");
+ /* M2 Phase 1 A/B RESULT: E1BC0 CUT RESTORED. Genuine validation aborts init even with
+    correct host style (pad0=0x1 docked Pro, pad 0x20=0 unconnected) — needs applet
+    operation/performance-mode mapping beyond Npad style. Delta filed; CUT stays until
+    mode mapping lands. See docs/validation.md. */
+ { uint32_t _o,_r; memcpy(&_o, m->base+0xe1bc0, 4);
+ if(_o!=0xd10343ff) runtime_fail("E1BC0 prologue differs from pinned 1.0.0");
+ _r=0x52800020; memcpy(m->base+0xe1bc0, &_r, 4); _r=0xd65f03c0; memcpy(m->base+0xe1bc4, &_r, 4); }
+ fprintf(stderr, "[emio] CUT: E1BC0 bypassed (genuine aborts; needs applet/mode mapping)\n");
  memcpy(&original, m->base+0xe2450, 4);
  if(original!=0xd10103ff)
   runtime_fail("E2450 prologue differs from pinned 1.0.0");
