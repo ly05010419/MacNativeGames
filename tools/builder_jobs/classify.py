@@ -176,6 +176,25 @@ def _folder(path):
     return None
 
 
+def _nup(path, inside):
+    from tools import nup_input
+
+    b = repo.build_app()
+    try:
+        title, version = nup_input.inspect(path, b.NUP_VERSIONS)
+    except nup_input.InputError as error:
+        if error.title and error.title not in b.NUP_VERSIONS:
+            note = t(f'This Launcher cannot build NUP for Title ID {error.title}.',
+                     f'此版本不支持打包这个游戏的 NUP（游戏编号 {error.title}）。')
+        else:
+            note = t(f'Cannot use this NUP: {error}', f'无法使用这个 NUP：{error}')
+        return Item(str(path), 'ignored', title=error.title, note=note, inside=inside)
+    except nup_input.READ_ERRORS as error:
+        note = t(f'Cannot read this NUP: {error}', f'无法读取这个 NUP：{error}')
+        return Item(str(path), 'ignored', note=note, inside=inside)
+    return Item(str(path), 'nup', game=repo.game_of_title(title), title=title, version=version, inside=inside)
+
+
 def _one(path, depth, out):
     if _hidden(path):
         return
@@ -200,7 +219,7 @@ def _one(path, depth, out):
     elif suffix in GAME_SUFFIXES:
         out.append(('package', path, depth > 0))   # read once the keys among the paths are known (classify)
     elif suffix == '.nup':
-        out.append(Item(str(path), 'nup', game='oot', title=repo.OOT_TITLE))
+        out.append(_nup(path, depth > 0))
     elif depth == 0:
         out.append(Item(str(path), 'ignored', note=t('not a game file, keys file or game folder', '不是游戏文件、keys 或游戏文件夹')))
 
@@ -394,7 +413,8 @@ def _plan(items, work=None, open_fonts=False):
     known = [i for i in bases if i.game]
     base = (known or bases or [None])[0]
     if base is None:
-        other = [i for i in items if i.role == 'ignored' and i.title and not i.inside]
+        other = [i for i in items if i.role == 'ignored' and not i.inside
+                 and (i.title or Path(i.path).suffix.lower() == '.nup')]
         if other:   # a game file of a game this repository does not build: said as what it is
             p.blocks.append(other[0].note)
             return p
@@ -409,6 +429,8 @@ def _plan(items, work=None, open_fonts=False):
         p.needs_keys = False
         if base.role == 'ss_dump':
             p.update_version = 65536
+        elif base.role == 'nup':
+            p.update_version = base.version
         p.fonts = (by_role('fonts') or [Item('', '')])[-1].path or None
         # a Switch 2 dump holds no fonts: games/oot/build.py prepare_fonts and build_app.py main_ns2 take open-source ones
         if base.role in ('ns2_dump', 'nup') and not p.fonts:
