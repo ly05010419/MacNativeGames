@@ -202,6 +202,19 @@ class IosMacPipelineCache(unittest.TestCase):
                 self.assertIn('**recheck', text, 'the run gets TOTK_PAR_RECHECK')
                 self.assertNotRegex(text, r'rmtree\(folder\b', 'the cache folder is never thrown away')
 
+    def test_the_shared_steps_check_instead_of_throwing_away(self):
+        # Tears of the Kingdom's build_ipa.py and the ports' build_port_ipa.py run the steps of device_pipelines.make
+        # (user 2026-11-21: "统一 … 用测试保证"), which therefore keeps and checks the cache as the builds above do
+        tools = ROOT / 'games/totk/ios/tools'
+        text = (tools / 'device_pipelines.py').read_text()
+        text = text[text.index('def make('):].split('\ndef ')[0].replace(' ', '')
+        self.assertIn("'pipeline-archive'", text)
+        self.assertIn('mac_cache(folder,want)', text)
+        self.assertIn('**recheck', text, 'the run gets TOTK_PAR_RECHECK')
+        self.assertNotRegex(text, r'rmtree\(folder\b', 'the cache folder is never thrown away')
+        for build in ('build_ipa.py', 'build_port_ipa.py'):
+            self.assertIn('make as make_device_pipelines', (tools / build).read_text(), build)
+
 
 if __name__ == '__main__':
     unittest.main()

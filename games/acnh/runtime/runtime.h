@@ -18,6 +18,7 @@ void *runtime_symbol(const char *name);
 void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);
 void runtime_gpu_path_probe(const char *which);
+int mtl_pipeline_archive_tool(int argc, char **argv);   // Mac only (nvn_mtl.m): the device's pipeline archive for packaging
 void runtime_audio_probe(void);
 void *runtime_hle_wrap(void *fn);
 void runtime_hle_stack_set(uintptr_t top);

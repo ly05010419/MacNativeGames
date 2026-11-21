@@ -5,7 +5,7 @@ shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, struct, subprocess, sys, time, zlib
 from pathlib import Path
 from compile_seed import METAL_FLAGS, seed_flags
-from device_pipelines import SCHEMA, connected_gpus, mac_cache, seed_check
+from device_pipelines import device_gpus, make as make_device_pipelines, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -336,55 +336,11 @@ def main():
          lists/'pso_title.tsv'],tree,logs/'shader-list.log',env)
     # The device's pipeline archive, compiled here (2026-10-29): the Mac game binary makes every pipeline of the lists from
     # the device seed's metallibs (pipeline-archive mode), device_pipelines.py compiles them for the device GPU with metal-tt
-    # into the seed (pipelines-<arch>-*). The first start then takes them from there instead of filling its own archive:
-    # Breath of the Wild 1.6.0 on an iPhone 14 spent 567.8 s on that before the title. Without a GPU to build for, the
-    # device fills it as before. Kept in build/ios-pipelines/<version>, so a build whose lists did not change is quick.
-    gpus=[]
-    for g in a.device_gpu or ['auto']:
-        if g=='auto':
-            found=connected_gpus(env)
-            for name,product,arch in found: print(f'pipelines: {name} ({product}) on the cable: '+(arch or 'GPU not known here, its first start fills them'))
-            if not found: print('pipelines: no iPhone / iPad on the cable, so its first start fills them (about 10 minutes); connect it, or --device-gpu <arch>')
-            gpus+=[arch for _,_,arch in found if arch]
-        elif g!='none': gpus.append(g)
-    gpus=sorted(set(gpus))
-    pipe_work=tree/f'build/ios-pipelines/{a.version}'
-    # Two runs of the Mac binary's mode: the first records the patched variants the runtime compiles from source
-    # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
-    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds,
-    # also when the runtime changed: only the pipelines it describes otherwise are made again (device_pipelines.mac_cache).
+    # into the seed (pipelines-<arch>-*); the ports' build does the same (build_port_ipa.py, device_pipelines.make).
+    gpus=device_gpus(a.device_gpu,env)
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
-    # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
-    # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
-    # stamp held only the shaders and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
-    want=hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode()+(seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()
-                        +(lists/'pso_title.tsv').read_bytes()+host.read_bytes()).hexdigest()
-    # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
-    # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
-    tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)
-    def mac_pipelines(folder,log):
-        stamp=folder/'seed.txt'
-        recheck=mac_cache(folder,want)   # kept and checked against this runtime, never thrown away (device_pipelines.mac_cache)
-        run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1',**recheck))
-        stamp.write_text(want+'\n')
-    t0=time.time()
-    if gpus:   # without the last build's variant libraries, so the first run compiles and records every variant it meets
-        for p in seed.glob('variant-*'): p.unlink()
-        mac_pipelines(pipe_work/'variant-scan','device-pipelines-scan.log')
-    run([sys.executable,ios/'tools/device_pipelines.py','--variants',pipe_work/('variant-scan/variants' if gpus else 'none'),'--seed',seed,'--cache',pipe_work,
-         '--sdk',sdk_name],tree,logs/'device-variants.log',env)
-    if gpus:
-        v=json.loads((logs/'device-variants.log').read_text().strip().splitlines()[-1])
-        mac_pipelines(pipe_work/'mac-cache','device-pipelines-mac.log')
-        print(f"pipelines: made on the Mac in {time.time()-t0:.0f} s, with {v['variants']} variants compiled for the device ({v['compiled']} new, "
-              f"{v['failed']} failed); compiling them for {', '.join(gpus)}",flush=True)
-    t0=time.time()
-    run([sys.executable,ios/'tools/device_pipelines.py','--mac',pipe_work/'mac-cache/pipelines','--seed',seed,'--cache',pipe_work,'--sdk',sdk_name,
-         *[x for g in gpus for x in ('--arch',g)]],tree,logs/'device-pipelines.log',env)
-    if gpus:
-        done=json.loads((logs/'device-pipelines.log').read_text().strip().splitlines()[-1])
-        for r in done['archs']: print(f"pipelines: {r['arch']}: {r['pipelines']} ({r['compiled']} compiled, {r['kept']} kept from earlier builds, "
-                                      f"{r['failed']} failed) in {time.time()-t0:.0f} s; {done['library from source']} still use shaders the device compiles itself")
+    make_device_pipelines(gpus,host,rewritten,lists_args,[seed/'seed-manifest.json',lists/'pso_list.tsv',lists/'pso_title.tsv',host],
+                          seed,tree/f'build/ios-pipelines/{a.version}',sdk_name,run,tree,logs,env,clone)
     # What the device reads: the seed and the two lists. With --image-outside it goes beside the app (<out>-shader-seed),
     # for install_device.py to put into Documents/GameData once per content (main.m); unchanged content is not copied again.
     fingerprint=seed_fingerprint(seed,lists)

@@ -148,9 +148,15 @@ class FullHD(unittest.TestCase):
     def test_mac_pipelines_are_made_again_for_another_runtime(self):
         """The cached Mac pipelines (build/ios-pipelines) are this runtime's descriptions: their stamp holds the runtime
         binary as well as the shaders and lists (2026-11-03: narrowed vertex formats were never seen otherwise)."""
+        # the steps are device_pipelines.make since 2026-11-21 (shared with the ports' build_port_ipa.py): the stamp hashes
+        # every want_from file, and build_ipa.py names the host among them
         ipa = (TOOLS/'build_ipa.py').read_text()
-        self.assertIn("+host.read_bytes()).hexdigest()", ipa)
-        self.assertLess(ipa.index("host=tree/"), ipa.index("+host.read_bytes()).hexdigest()"))
+        call = ipa[ipa.index('make_device_pipelines(gpus,'):]
+        call = call[:call.index('\n    ', call.index('\n') + 1)]
+        self.assertIn("lists/'pso_title.tsv',host]", call.replace(' ', ''))
+        self.assertLess(ipa.index("host=tree/"), ipa.index('make_device_pipelines(gpus,'))
+        tool = (TOOLS/'device_pipelines.py').read_text()
+        self.assertIn("b''.join(Path(p).read_bytes() for p in want_from)).hexdigest()", tool)
 
 
 

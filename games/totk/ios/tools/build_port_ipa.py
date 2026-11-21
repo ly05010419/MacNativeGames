@@ -23,6 +23,7 @@ SHELL = TOTK / 'ios/Sources'     # the shared iPhone / iPad app
 sys.path.insert(0, str(TOOLS))
 from xcode_dir import developer_dir  # noqa: E402
 from compile_seed import seed_flags  # noqa: E402   Zelda's device libraries (compile_seed.py)
+from device_pipelines import device_gpus, make as make_device_pipelines, seed_check  # noqa: E402   Zelda's device pipelines
 
 APP = 'TOTK'   # the product: TOTK.app, which install_device.py signs and installs
 NOT_SOURCES = ('**/*.md', '**/*.py', '**/*.txt', '**/*.inc')   # notes and #included fragments: not app resources
@@ -72,7 +73,7 @@ class Port:
     game_data: Callable = None  # (res, work, layout, extra) -> copy the port's own files into GameData
     pane: Callable = None      # (root specs) -> the port's changes to the shared Settings pane
     pane_app: str = None       # build_ipa.py pane_for's app (default: game)
-    mac_only: tuple = ('frontend.m', 'loader.c')   # runtime files the iPhone app leaves out (loader.c is added as main)
+    mac_only: tuple = ('frontend.m', 'loader.c', 'game_info.plist')   # runtime files the iPhone app leaves out (loader.c is added as main; the Mac host's bundle id)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -262,6 +263,53 @@ def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None):
     return fingerprint
 
 
+def port_lists(sources, out):
+    """The pipeline list the Mac makes the device's pipelines from (device_pipelines.make): the R (render) and C (compute)
+    rows of the Mac build's list (<build>/pso_manifest.tsv, Odyssey's) and of what the Mac app collected while playing (its
+    shader cache's pso_collected.tsv), each once, in that order. The ports carry no curated list like Zelda's shader_list.tsv
+    (its pso_list.tsv / pso_title.tsv); rows whose shaders the seed lacks are counted and left to the device."""
+    rows, seen = [], set()
+    for src in sources:
+        if not src or not Path(src).is_file(): continue
+        for line in Path(src).read_text(errors='replace').splitlines():
+            if len(line) > 2 and line[1] == '\t' and line[0] in 'RC' and line not in seen:
+                seen.add(line); rows.append(line)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text('# the device pipelines\' list (build_port_ipa.py port_lists)\n' + ''.join(r + '\n' for r in rows))
+    return len(rows)
+
+
+def seed_fingerprint(seed):
+    """What install_device.py compares to push the seed once per content (fingerprint.txt): the manifest, and every
+    pipelines-* file by name (the name carries the GPU) and content, as Zelda's build_ipa.py seed_fingerprint: a build for
+    another device's GPU is pushed again."""
+    import hashlib
+    fp = hashlib.sha256((seed / 'seed-manifest.json').read_bytes())
+    for f in sorted(seed.glob('pipelines-*')): fp.update(f.name.encode() + b'\0' + hashlib.sha256(f.read_bytes()).digest())
+    return fp.hexdigest()
+
+
+def device_pipelines(port, L, seed, cache, work, logs, env, requested):
+    """The device's pipelines in the seed (pipelines-<arch>-*), made as Zelda's build_ipa.py makes them (device_pipelines.make:
+    the Mac host's pipeline-archive mode from the seed's device libraries, metal-tt for each GPU on the cable, kept in
+    <work>/ios-pipelines between builds): the first start takes the pipelines from them, and the warm-up loads no shader
+    library for itself (nvn_mtl.m warm_start, g_par_valid; the iPad's start warmed 61,896 items before, 2026-11-21).
+    Then the seed's fingerprint with them; every cabled GPU's are checked (seed_check). Returns the fingerprint."""
+    gpus = device_gpus(requested, env)
+    pipe_work = work / 'ios-pipelines'
+    listed = port_lists([L.build / 'pso_manifest.tsv', cache / 'pso_collected.tsv'], pipe_work / 'pso_list.tsv')
+    print(f'pipelines: {listed} rows from the Mac build\'s list and what the Mac app collected')
+    lists = [pipe_work / 'pso_list.tsv', seed / 'pso_manifest.tsv']
+    make_device_pipelines(gpus, L.host, L.rewritten, lists, [seed / 'seed-manifest.json', pipe_work / 'pso_list.tsv', L.host],
+                          seed, pipe_work, 'iphoneos', run, work, logs, env, clone, variants=False)
+    for g in gpus:   # what goes to the device carries each cabled GPU's pipelines (install_device.py checks it again)
+        state, line = seed_check(seed, g)
+        if state != 'ok': raise RuntimeError(f'{seed}: {line}')
+    fingerprint = seed_fingerprint(seed)
+    (seed / 'fingerprint.txt').write_text(fingerprint + '\n')
+    return fingerprint
+
+
 def drop_group(specs, first, keys):
     """Removes a pane group (its heading before the row keyed first) and its rows."""
     at = next(i for i, x in enumerate(specs) if x.get('Key') == first)
@@ -276,6 +324,8 @@ def main(port, argv=None):
     p.add_argument('--image-outside', action='store_true', help='leave romfs.bin out: the device keeps it in Documents/GameData '
                    '(install_device.py --game-data <romfs.bin>)')
     p.add_argument('--mac-shader-cache', type=Path, help='the shaders the Mac app translated while playing (default: the Mac app\'s)')
+    p.add_argument('--device-gpu', action='append', help='a GPU architecture to compile the device\'s pipelines for (e.g. applegpu_g15p, '
+                   'the iPad A16); default auto: the iPhones / iPads on the cable; none: the device builds them itself (as Zelda\'s build_ipa.py)')
     a = p.parse_args(argv)
     work, out = a.work.expanduser().resolve(), a.out.expanduser().resolve()
     if out.suffix.lower() not in ('.ipa', '.app'):
@@ -362,10 +412,12 @@ def main(port, argv=None):
         # translations go into the same seed, named in its manifest, so its integrity check covers them too.
         seed_out = out.with_name(out.stem + '-shader-seed')
         fingerprint = seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env)
+        fingerprint = device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
         print(f'shaders: the seed, the Mac\'s translations and their device libraries beside the app: {seed_out} ({fingerprint[:12]})')
     else:   # the same seed, inside the app
         seed_out = work / 'ios-shader-seed'
         seed_with_mac_cache(L.seed, cache, seed_out, run, logs / 'iphoneos-shaders.log', env)
+        device_pipelines(port, L, seed_out, cache, work, logs / 'pipelines', env, a.device_gpu)
         for f in sorted(seed_out.iterdir()):
             if f.is_file() and f.name not in ('fingerprint.txt', 'inputs.txt'):
                 clone(f, res / 'shader-seed' / f.name)

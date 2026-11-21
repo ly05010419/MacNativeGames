@@ -5441,6 +5441,16 @@ static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
     return lib;
 }
 #endif
+/* The seed's libraries are the device's (iOS; on the Mac TOTK_SHADER_DEVICE_LIBS=1, the iPhone packaging's archive mode), as Tears of
+   the Kingdom's shader_device_libs. */
+static int shader_device_libs(void) {
+#if TARGET_OS_IPHONE
+    return 1;
+#else
+    static int on = -1; if (on < 0) { const char *dl = getenv("TOTK_SHADER_DEVICE_LIBS"); on = dl && !strcmp(dl, "1"); }
+    return on;
+#endif
+}
 static NvShader *shader_load(NSString *pc, int stage) {
     NSError *e = nil;
     // TOTK: runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
@@ -5449,11 +5459,16 @@ static NvShader *shader_load(NSString *pc, int stage) {
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
     id<MTLLibrary> lib = nil;
     if (rt) {
-#if TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE
+        /* TOTK_SHADER_DEVICE_LIBS=1 (Mac, the iPhone packaging's archive mode): the seed's device libraries the way iOS loads them, so
+           the pipelines made here describe the very libraries an iPhone loads (as Tears of the Kingdom's shader_load_mode) */
+        if (shader_device_libs())
+#endif
+        {
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = [NSString stringWithFormat:@"%@/%@.metallib", totk_rt_dir(), pc];
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
-#endif
+        }
         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) atomic_fetch_add(&g_rt_prebuilt, 1);
@@ -6714,67 +6729,7 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
     }
     enc_r_args(en, MTLRenderStageFragment, buf.gpuAddress + (uint64_t)(fr % NT_SLOTS) * NT_SLOT_WORDS * 4, 29);
 }
-#include "totk_pipeline_archive.h"
-/* Odyssey (22 October 2026), from upstream MacNativeGames 27baca0 / 6446e09 / ea6c5a7 / 1eff989: the game's pipelines are
-   made with the pipeline archive (totk_pipeline_archive.h). A pipeline is first asked of its own archive file alone
-   (MTLPipelineOptionFailOnBinaryArchiveMiss). Found: done. Not found: it is compiled as usual and written to its file
-   when the game is idle. key: pso_archive_key / cs_archive_key; nil = not archived. TOTK_PIPELINE_ARCHIVE=0 turns it off. */
-static _Atomic uint64_t g_par_hits, g_par_misses;
-static void par_count(int hit) {
-    uint64_t h = hit ? atomic_fetch_add(&g_par_hits, 1) + 1 : atomic_load(&g_par_hits), m = hit ? atomic_load(&g_par_misses) : atomic_fetch_add(&g_par_misses, 1) + 1;
-    if ((h + m) % 1000 == 0) MLOG("管线存档：建管线 %llu 次，从存档取 %llu 次，现编 %llu 次", (unsigned long long)(h + m), (unsigned long long)h, (unsigned long long)m);
-}
-static NSString *pso_archive_key(const pso_key *k, NvShader *vs, NvShader *fs, int merged) {
-    pso_skey sk; pso_skey_from(k, vs, fs, merged, NULL, &sk); return par_hash(&sk, sizeof sk);
-}
-static NSString *cs_archive_key(NvShader *cs) { return cs ? [@"c" stringByAppendingString:par_hash(cs->key, strnlen(cs->key, sizeof cs->key))] : nil; }
-static id<MTLRenderPipelineState> pso_new_(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e);
-static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
-    DM_SP_BEGIN(sp, "pipeline-render", "%{public}s", key ? key.UTF8String : "-");
-    id<MTLRenderPipelineState> ps = pso_new_(d, key, e);
-    DM_SP_END(sp, "pipeline-render");
-    return ps;
-}
-static id<MTLRenderPipelineState> pso_new_(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
-    id<MTLRenderPipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
-    if (a) {
-        d.binaryArchives = @[a];
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        d.binaryArchives = nil;
-        if (ps) { par_count(1); return ps; }
-    }
-    if (key && g_par_on) par_count(0);
-    ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
-    atomic_store(&g_par_last_compile_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    if (ps) par_add(g_dev, key, d);
-    return ps;
-}
-static id<MTLComputePipelineState> cs_new_(NvShader *cs, NSError **e);
-static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
-    DM_SP_BEGIN(sp, "pipeline-compute", "%{public}s", cs ? cs->key : "-");
-    id<MTLComputePipelineState> ps = cs_new_(cs, e);
-    DM_SP_END(sp, "pipeline-compute");
-    return ps;
-}
-static id<MTLComputePipelineState> cs_new_(NvShader *cs, NSError **e) {
-    if (!cs || !cs->fn) return nil;
-    NSString *key = cs_archive_key(cs);
-    MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn;
-    id<MTLComputePipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
-    if (a) {
-        d.binaryArchives = @[a];
-        ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        d.binaryArchives = nil;
-        if (ps) { par_count(1); return ps; }
-    }
-    if (g_par_on) par_count(0);
-    ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
-    atomic_store(&g_par_last_compile_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    if (ps) par_add(g_dev, key, d);
-    return ps;
-}
+#include "totk_pipeline_archive_port.h"   /* Tears of the Kingdom's pipeline archive (shared): pso_new, cs_new, the archive keys */
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
@@ -7253,6 +7208,7 @@ static int warm_observed(void) {
     if (v < 0) { const char *e = getenv("TOTK_WARM_SCOPE"); v = e && !strcmp(e, "observed"); }
     return v;
 }
+static int g_warm_pipelines_only;   // a pipeline archive is used: the lists' S rows (shader libraries alone) are skipped (warm_start)
 static void warm_plan(NSArray<NSString *> *paths, NSArray<NSString *> *files, NSMutableSet<NSString *> *keys,
                       NSMutableSet<NSString *> *eligible,
                       uint64_t *tasks, uint64_t *shaders, uint64_t *pipelines) {
@@ -7265,7 +7221,7 @@ static void warm_plan(NSArray<NSString *> *paths, NSArray<NSString *> *files, NS
             [rows addObject:line];
             NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
             if ([c[0] isEqualToString:@"S"] && c.count >= 3 && [c[1] length]) {
-                if (!warm_available(c[1])) continue;
+                if (g_warm_pipelines_only || !warm_available(c[1])) continue;
                 [keys addObject:c[1]];
             }
             else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
@@ -7309,6 +7265,10 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         NSUInteger path_index = 0;
         MLOG("后台预热：着色器库用 %d 个线程编（TOTK_WARM_THREADS），进世界后最多 2 个", warm_threads());
+        /* A pipeline the archive lacks (one met in play last time, from the device's list) goes into it as soon as this
+           compiled it, so the next start takes it from there (totk_pipeline_archive.h par_add), as Tears of the Kingdom's
+           warm_worker. The pipelines built in play are not written; the device's list has them for the next warm-up. */
+        par_write_in_place = 1;
         uint64_t done = 0;
         for (NSString *path in paths) {
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
@@ -7372,7 +7332,8 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         // extend the measured total rather than being silently omitted.
         NSMutableArray<NSString *> *cache_files = [files mutableCopy];
         NSMutableSet<NSString *> *known_files = [NSMutableSet setWithArray:files];
-        NSArray<NSString *> *latest = warm_observed() ? @[] : cache_names(rt);
+        par_flush_thread(); par_pre_check();   // the lists' pipelines written; the app's Mac-built ones this Metal refuses are dropped
+        NSArray<NSString *> *latest = warm_observed() || g_par_valid ? @[] : cache_names(rt);   // with a pipeline archive the rest is made when first drawn
         for (NSString *file in latest) if ([file hasSuffix:@"_b.metal"] && ![known_files containsObject:file]) {
             // The native service publishes reflection last. A newly written
             // MSL with no reflection yet is still in flight, not a failed shader.
@@ -7419,6 +7380,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
     }
     atomic_store(&g_warm_lists_done, 1);
+    par_flush_thread(); par_write_in_place = 0;   // a queue thread: other work may run on it next
     atomic_store(&g_warm_running, 0);
     if (runtime_warm_done) runtime_warm_done();
 }
@@ -7477,14 +7439,6 @@ static void warm_filled(void) {
    cache take a few ms each. TOTK_WARM_LIGHT=0 turns it off. */
 static _Atomic int g_world_on;   // set at the first world frame (hle_nvn.c, nvnQueuePresentTexture)
 void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }   // the leaderboard counts from the first world frame (fps_board.c)
-static int par_game_idle(void) {   // totk_pipeline_archive.h: additions to the archive wait for this
-#ifdef GAME_ODYSSEY   /* Odyssey's world gate (>2000 draws in a frame) is unverified: idle = warm-up done and no compile for 3 s */
-    return !atomic_load(&g_warm_running) && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_par_last_compile_ns) > PAR_IDLE_NS;
-#else
-    return atomic_load(&g_world_on) && !atomic_load(&g_warm_running) &&
-           clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_par_last_compile_ns) > PAR_IDLE_NS;
-#endif
-}
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
@@ -7534,6 +7488,7 @@ static NSArray<NSString *> *cache_names(NSString *dir) {
     [names sortUsingSelector:@selector(compare:)];
     return names;
 }
+#include "totk_pipeline_archive_port_fill.h"   /* the iPhone packaging's mode: the lists' pipelines into the archive (mtl_pipeline_archive_tool) */
 static void warm_start(void) {
     if (g_warm_started++) return;
     warm_filled();
@@ -7573,7 +7528,14 @@ static void warm_start(void) {
                              : "另加翻译缓存里的全部着色器");
     }
     if (!g_warm_items) g_warm_items = [NSMutableArray array];
-    NSArray<NSString *> *files = warm_observed() ? @[] : cache_names(totk_rt_dir());
+    /* The pipeline archive (totk_pipeline_archive.h; on the device the Mac's files for its GPU, par_load_prebuilt): with
+       valid files the lists' pipelines are made from them, and the rest when first drawn. Skipped then, as Tears of the
+       Kingdom's warm_start: the shader libraries alone, every S row of the lists (the seed's list is nearly all S rows:
+       30,906 for Odyssey) and every other shader of the cache (the iPad's start warmed 61,896 items, 2026-11-21). */
+    par_open_dir(g_dev);
+    g_warm_pipelines_only = g_par_valid;
+    if (g_par_valid) MLOG("预热：有管线存档，只建管线清单里的管线（不单独加载着色器库），其余用到时从存档取");
+    NSArray<NSString *> *files = warm_observed() || g_par_valid ? @[] : cache_names(totk_rt_dir());
     uint64_t total = 0, shader_total = 0, pipeline_total = 0;
     NSMutableSet<NSString *> *planned_keys = [NSMutableSet set];
     NSMutableSet<NSString *> *eligible = [NSMutableSet set];

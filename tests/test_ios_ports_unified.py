@@ -134,5 +134,158 @@ class Ports(unittest.TestCase):
                     self.assertRegex(front, rf'\b{name}\(', name)
 
 
+
+NVN = 'third_party/d2r_gfx/gfx/nvn'
+SHARED_NVN = ROOT / 'shared' / NVN
+TOOLS = ROOT / 'games/totk/ios/tools'
+ARCHIVE = ('totk_pipeline_archive.h', 'totk_pipeline_archive_files.h', 'totk_pipeline_archive_folders.h',
+           'totk_pipeline_archive_publish.h', 'nvn_archive_map.h', 'nvn_compiler_retry.h')
+PORT_ARCHIVE = ('totk_pipeline_archive_port.h', 'totk_pipeline_archive_port_fill.h')
+
+
+def load_tool(name):
+    import importlib.util, sys
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location(f'ports_{name}', TOOLS / f'{name}.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+class PipelineArchive(unittest.TestCase):
+    """The ports make their pipelines with Tears of the Kingdom's pipeline archive and get the device's pipelines the way
+    Zelda's iPhone / iPad build makes them (user 2026-11-21: "统一 … 用测试保证 不靠记忆"): the iPad warmed 61,896 items
+    (every shader library of the seed) at every start of Odyssey and Animal Crossing, while Zelda takes its pipelines from
+    the archive the Mac compiled for the device's GPU and loads no library for itself."""
+
+    def test_one_archive_for_every_game(self):
+        for name in ARCHIVE + PORT_ARCHIVE:
+            self.assertTrue((SHARED_NVN / name).is_file() and not (SHARED_NVN / name).is_symlink(), name)
+        for game in ('totk', *PORTS):
+            for name in ARCHIVE + (PORT_ARCHIVE if game in PORTS else ()):
+                with self.subTest(game=game, name=name):
+                    link = ROOT / 'games' / game / NVN / name
+                    self.assertTrue(link.is_symlink() and link.resolve() == (SHARED_NVN / name).resolve())
+        for game in PORTS:
+            # the translation chain and the cache folder stay each game's: the shared header's quoted includes find them
+            # beside the link (dmsh_chain.h: the ports' v4, Zelda's v9)
+            for own in ('dmsh_chain.h', 'totk_shader_rt.h'):
+                self.assertFalse((ROOT / 'games' / game / NVN / own).is_symlink(), f'{game}: {own} is its own')
+        self.assertIn('#include "dmsh_chain.h"', (SHARED_NVN / 'totk_pipeline_archive.h').read_text())
+
+    def test_ports_make_pipelines_from_the_archive(self):
+        hooks = (SHARED_NVN / 'totk_pipeline_archive_port.h').read_text()
+        self.assertIn('#include "totk_pipeline_archive.h"', hooks)
+        for head in ('static id<MTLRenderPipelineState> pso_new_(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {',
+                     'static id<MTLComputePipelineState> cs_new_(NvShader *cs, NSError **e) {'):
+            body = hooks[hooks.index(head):]
+            body = body[:body.index('\n}\n')]
+            with self.subTest(fn=head):
+                for need in ('par_archive_for(g_dev, key)', 'MTLPipelineOptionFailOnBinaryArchiveMiss', 'par_pre_note(ps != nil)',
+                             'par_stale(key)', 'par_add(g_dev, key, d)'):
+                    self.assertIn(need, body)
+        self.assertIn('if (!merged && ((k->a2c & PSO_VBORDER) || k->fsfn)) return nil;', hooks, 'a border variant is not archived (PAR_SCHEMA 5)')
+        for game in PORTS:
+            with self.subTest(game=game):
+                gfx = (ROOT / 'games' / game / NVN / 'nvn_mtl.m').read_text()
+                self.assertIn('#include "totk_pipeline_archive_port.h"', gfx)
+                self.assertIn('#include "totk_pipeline_archive_port_fill.h"', gfx)
+                self.assertNotIn('#include "totk_pipeline_archive.h"', gfx, 'through the ports\' hooks only')
+                for old in ('static id<MTLRenderPipelineState> pso_new_(', 'par_game_idle', 'g_par_last_compile_ns', 'PAR_IDLE_NS'):
+                    self.assertNotIn(old, gfx, f'no private archive of its own: {old}')
+
+    def test_warm_up_skips_the_libraries_with_an_archive(self):
+        for game in PORTS:
+            with self.subTest(game=game):
+                gfx = (ROOT / 'games' / game / NVN / 'nvn_mtl.m').read_text()
+                start = gfx[gfx.index('static void warm_start(void) {'):]
+                self.assertLess(start.index('par_open_dir(g_dev);'), start.index('warm_plan(paths,files'))
+                self.assertIn('g_warm_pipelines_only = g_par_valid;', start)
+                self.assertIn('warm_observed() || g_par_valid ? @[] : cache_names(totk_rt_dir())', start, 'no cache-wide libraries')
+                self.assertIn('if (g_warm_pipelines_only || !warm_available(c[1])) continue;', gfx, 'no S rows')
+                worker = gfx[gfx.index('MLOG("后台预热：着色器库用'):gfx.index('int mtl_warm_wait(int timeout_ms) {')]
+                self.assertIn('par_write_in_place = 1;', worker, 'what the archive lacked is written by the warm-up')
+                self.assertIn('warm_observed() || g_par_valid ? @[] : cache_names(rt)', worker)
+                self.assertIn('par_flush_thread(); par_write_in_place = 0;', worker)
+                self.assertIn('if (shader_device_libs())', gfx, 'the Mac\'s packaging mode loads the device libraries')
+
+    def test_hosts_have_the_pipeline_archive_mode(self):
+        fill = (SHARED_NVN / 'totk_pipeline_archive_port_fill.h').read_text()
+        self.assertIn('int mtl_pipeline_archive_tool(int argc, char **argv) {', fill)
+        for need in ('setenv("TOTK_SHADER_DEVICE_LIBS", "1", 1)', 'setenv("TOTK_PIPELINE_ARCHIVE_BATCH", "1", 1)',
+                     'setenv("TOTK_PIPELINE_PREBUILT", "0", 1)', 'par_prune_superseded()', 'par_flush_thread();'):
+            self.assertIn(need, fill)
+        for game in PORTS:
+            with self.subTest(game=game):
+                loader = (ROOT / 'games' / game / 'runtime/loader.c').read_text()
+                self.assertIn('need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive")),', loader)
+                self.assertIn('if(!strcmp(argv[2],"pipeline-archive"))return mtl_pipeline_archive_tool(argc-3,argv+3);', loader)
+                self.assertIn('int mtl_pipeline_archive_tool(int argc, char **argv);', (ROOT / 'games' / game / 'runtime/runtime.h').read_text())
+                # Metal's archive builder needs a cache folder of the binary's own (totk_pipeline_archive_folders.h): a bundle id
+                make = (ROOT / 'games' / game / 'Makefile').read_text()
+                self.assertIn('GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist', make)
+                self.assertRegex(make, rf'xcrun clang -std=c11 \$\(NATIVE_OPT\) \$\(GAME_INFO\)')
+                self.assertIn(f'org.macnativegames.{game}-native', (ROOT / 'games' / game / 'runtime/game_info.plist').read_text())
+        self.assertIn("'game_info.plist'", SHARED_BUILD.read_text().split('mac_only: tuple = ')[1].split('\n')[0], 'not an app resource')
+
+    def test_builds_make_the_device_pipelines_the_zelda_way(self):
+        tool = (TOOLS / 'device_pipelines.py').read_text()
+        self.assertIn("run([tool, rewritten, 'pipeline-archive', *lists]", tool)
+        for build in (TOOLS / 'build_ipa.py', SHARED_BUILD):
+            with self.subTest(build=build.name):
+                text = build.read_text()
+                self.assertIn('from device_pipelines import device_gpus, make as make_device_pipelines, seed_check', text)
+                self.assertIn('device_gpus(', text)
+                self.assertIn('make_device_pipelines(gpus', text)
+                self.assertIn('seed_check(', text)
+                self.assertNotIn("'pipeline-archive'", text, 'the steps are device_pipelines.make, not a copy')
+        port = SHARED_BUILD.read_text()
+        self.assertIn('variants=False', port, 'the ports record no variants: one run')
+        self.assertEqual(port.count('device_pipelines(port, L, seed_out, cache, work,'), 2, 'outside and inside the app')
+        self.assertIn("'--device-gpu'", port)
+
+    def test_make_runs_zeldas_steps(self):
+        import tempfile
+        dp = load_tool('device_pipelines')
+        for variants in (True, False):
+            with self.subTest(variants=variants), tempfile.TemporaryDirectory() as d:
+                d = Path(d); host = d / 'host'; host.write_bytes(b'h'); seed = d / 'seed'; seed.mkdir()
+                (seed / 'seed-manifest.json').write_text('{}'); (seed / 'variant-x.metallib').write_text('old')
+                lst = d / 'pso_list.tsv'; lst.write_text('R\tk\n'); logs = d / 'logs'; logs.mkdir()
+                calls = []
+                def run(args, cwd, log, env):
+                    args = [str(x) for x in args]; calls.append((args, log.name, env.get('TOTK_PAR_RECHECK')))
+                    if '--variants' in args: log.write_text('{"variants": 0, "compiled": 0, "kept": 0, "failed": 0}\n')
+                    if '--mac' in args: log.write_text('{"archs": [{"arch": "applegpu_g15p", "pipelines": 1, "compiled": 1, "kept": 0, "failed": 0}], "library from source": 0}\n')
+                import contextlib, io
+                with contextlib.redirect_stdout(io.StringIO()):
+                    dp.make(['applegpu_g15p'], host, d / 'rewritten', [lst], [seed / 'seed-manifest.json', lst, host], seed, d / 'work',
+                            'iphoneos', run, d, logs, {}, lambda s, t: t.write_bytes(s.read_bytes()), variants=variants)
+                modes = [('archive' if 'pipeline-archive' in a else '--variants' if '--variants' in a else '--mac') for a, _, _ in calls]
+                self.assertEqual(modes, ['archive', '--variants', 'archive', '--mac'] if variants else ['archive', '--mac'])
+                archive = [c for c in calls if 'pipeline-archive' in c[0]]
+                self.assertTrue(all(a[0].endswith('ios-pipeline-archive') for a, _, _ in archive), 'a tool, not a game (game_slot.c)')
+                self.assertTrue(all(r == '1' for _, _, r in archive), 'a new cache is checked against the runtime (mac_cache)')
+                self.assertEqual(archive[-1][0][-1], str(lst))
+                self.assertEqual((d / 'work/mac-cache/seed.txt').is_file(), True)
+                self.assertEqual((seed / 'variant-x.metallib').exists(), not variants, 'the scan starts without the last build\'s variants')
+                mac = calls[-1][0]
+                self.assertEqual(mac[mac.index('--arch') + 1], 'applegpu_g15p')
+                self.assertEqual(mac[mac.index('--mac') + 1], str(d / 'work/mac-cache/pipelines'))
+
+    def test_port_lists_and_fingerprint(self):
+        import tempfile
+        port = load_tool('build_port_ipa')
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); a, b = d / 'a.tsv', d / 'b.tsv'
+            a.write_text('# head\nR\tx\nS\ts\t0\nC\tc\n'); b.write_text('R\tx\nR\ty\n')
+            self.assertEqual(port.port_lists([a, b, d / 'missing.tsv'], d / 'out/pso_list.tsv'), 3)
+            self.assertEqual([l for l in (d / 'out/pso_list.tsv').read_text().splitlines() if not l.startswith('#')], ['R\tx', 'C\tc', 'R\ty'])
+            seed = d / 'seed'; seed.mkdir(); (seed / 'seed-manifest.json').write_text('{}')
+            plain = port.seed_fingerprint(seed)
+            (seed / 'pipelines-applegpu_g15p.json').write_text('{}')
+            ipad = port.seed_fingerprint(seed)
+            (seed / 'pipelines-applegpu_g15p.json').unlink(); (seed / 'pipelines-applegpu_g14p.json').write_text('{}')
+            self.assertEqual(len({plain, ipad, port.seed_fingerprint(seed)}), 3, 'another GPU\'s pipelines are pushed again')
+
 if __name__ == '__main__':
     unittest.main()
