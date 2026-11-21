@@ -129,7 +129,59 @@ the fix; all four cases pass afterwards. This verifies routing, while an actual
 in-game listening check is still needed to establish the cause of a particular
 missing-sound report.
 
+## Spatial audio and 5.1 (Mac, Tears of the Kingdom, 2026-11-19)
+
+With spatial audio on (`auto`, the default for Tears of the Kingdom on the Mac) the game is told it has 6 channels
+when its renderer opens, so it renders its 5.1 mix, and the output picks a route for the Mac's default output device,
+again whenever that device changes (`games/totk/runtime/audio_route.h` decides, `audio_mixer.c` applies):
+
+| default output device | route | what plays |
+|---|---|---|
+| 6+ channels with a centre and an LFE channel in its layout (a Studio Display: 8 channels) | `surround` | the 5.1 float mix straight to the device |
+| headphones: Bluetooth (AirPods), or a built-in device whose data source is headphones (`hdpn`; not tried yet) | `system-spatial` | the 5.1 float mix with its channel layout through `AVSampleBufferAudioRenderer` (`audio_spatial.m`), so the Sound menu offers Spatial Audio (Off / Fixed / Head Tracked) |
+| the built-in speakers (built-in, at most 2 channels, data source `ispk` or none) | `speaker-spatial` | `AUSpatialMixer` rendering the 5.1 mix for the built-in speakers |
+| anything else (USB DAC, AirPlay, HDMI stereo), or a route that fails to open | `stereo` | the 5.1 mix folded to stereo with the game's own downmix coefficients (LFE dropped, as the stereo mix always did) |
+
+The mixer is then paced by the device (the render thread waits until the device has taken a frame) instead of a
+5 ms wall-clock timer, so the queue stays at the prefill plus one device period; after three timeouts (a Bluetooth
+reconnect) it falls back to the wall clock until the device pulls again. One `[audio] route ...` log line per
+decision (`TOTK_DEBUG_LOG=1`) names the device, the route, the channel counts and the device period.
+
+Switches:
+
+- The settings panel's **Spatial audio (from the next launch)** row on the Display page: Auto / Off, saved in
+  `audio-spatial.txt` only when changed. `TOTK_SPATIAL_AUDIO=auto|0` decides over it. Off (or `0`) is the output as it
+  was: the game is told the device's channel count, stereo for a stereo device, wall-clock pacing.
+  Breath of the Wild, the Switch 2 titles and iOS keep it off.
+- `TOTK_SPATIAL_LEAD_MS` (60..500, default 150): how far the headphone route runs ahead of its clock. Lower is less
+  latency; too low stutters.
+- `TOTK_SPATIAL_GAIN_DB` (-12..12, default 0): gain on the headphone and speaker routes.
+- `TOTK_AUDIO_PACING=clock`: wall-clock mixing with spatial audio on, for an A/B.
+- `TOTK_AUDIO_CHANNELS=2`: tell the game 2 channels even with spatial audio on.
+
+What the game renders: a capture with `TOTK_AUDIO_CHANNELS=6 TOTK_AUDIO_CAPTURE=<new file>
+TOTK_AUDIO_CAPTURE_DELAY_S=60` writes 30 s of the mix (raw float32, interleaved, FL FR C LFE RL RR) from the first
+sound plus the delay. On Tears of the Kingdom 1.4.3, in the world, 30 s: **FL / FR and RL / RR carry sound (a quad
+mix); C and LFE stay silent.** The rears were 12.8 dB (RL) and 18.1 dB (RR) below the fronts on average, varying over
+time. So the surround information is real; dialogue and bass sit in the fronts. Per-channel RMS of such a file is
+enough to see this (any tool that reads raw float32 with 6 channels).
+
+Checks without game data: `tests/test_audio_route.c` (also in `make check-c`: the route table for the measured devices,
+the setting's precedence, the fold, a pacing simulation with stalls) and `tests/test_audio_routing.py` (the probe's
+spatial output case: the fold through the ring, the 5.1 copy, pacing with a real semaphore).
+
 ## 中文说明
+
+### 空间音频与 5.1（Mac，王国之泪，2026-11-19）
+
+空间音频打开时（`auto`，Mac 上王国之泪的默认值），渲染器打开时告诉游戏有 6 个声道，游戏就输出它的 5.1 混音；输出端按 Mac
+的默认输出设备选路线，设备一变就重新选：有中置和低音声道的 6 声道以上设备（Studio Display）直接送 5.1；耳机（AirPods 等蓝牙耳机、
+内置耳机孔）经 `AVSampleBufferAudioRenderer` 送带声道布局的 5.1，于是“声音”菜单里可以选空间音频（关 / 固定 / 头部追踪）；内置扬声器
+用 `AUSpatialMixer`；其他设备（USB 解码器、AirPlay）用游戏自己的缩混系数折成立体声。混音改为跟着设备的时钟走，设备卡住时退回
+原来的计时器。设置面板“画面”页的“空间音频（下次启动生效）”可选自动 / 关，只在改动时写入 `audio-spatial.txt`；`TOTK_SPATIAL_AUDIO=auto|0`
+优先。关就是原来的输出。旷野之息、Switch 2 游戏和 iOS 保持关。调节：`TOTK_SPATIAL_LEAD_MS`（默认 150）、`TOTK_SPATIAL_GAIN_DB`（默认 0）、
+`TOTK_AUDIO_PACING=clock`。用 `TOTK_AUDIO_CHANNELS=6 TOTK_AUDIO_CAPTURE=<新文件>` 录 30 秒混音（1.4.3，野外）：前左右和后左右都有声音
+（四声道），中置和低音声道无声，后置平均比前置低 12.8 / 18.1 dB。
 
 ### 多级混音分流导致音效丢失（2026-10-22）
 

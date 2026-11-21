@@ -53,6 +53,7 @@ void audio_mixer_update_effects(AudioRenderer *r);
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size);
 uint32_t audio_mixer_sink_written(AudioRenderer *r, int id);
 void audio_mixer_render(AudioRenderer *r, double seconds);   /* called with r->lock held, after audio_voices_prepare, before voices advance */
+int audio_mixer_pace(AudioRenderer *r);                      /* renderer thread, before a frame, without r->lock: 1 = paced by the device (it waited), 0 = wall clock */
 void audio_voices_prepare(AudioRenderer *r);                 /* audio_renderer.c: each render frame's voice state changes (flush, stop, start) */
 #ifdef GAME_BOTW
 int audio_mixer_voice_release(AudioRenderer *r, ServerVoice *v);   /* queues the tail of a stopped or paused voice before audio_renderer.c resets it; 1 if it did */
