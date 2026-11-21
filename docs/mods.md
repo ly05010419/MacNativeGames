@@ -45,6 +45,9 @@ Only the files listed in `manifest.tsv` are served. Each line has four tab-separ
 At startup the loader checks each listed file's size and SHA-256, and checks the original's SHA-256
 against the game image. `-` in the last field adds a file the game's RomFS does not have (used by mods
 that add assets). Paths are case-sensitive and keep the RomFS spelling.
+Breath of the Wild on the Mac keeps a record of the mods folder after a full check (in the game's data folder, never in
+the mods folder): while the manifest's text and every listed file's size, dates and file identity stay the same, the next start reuses
+the check instead of hashing again. Another mods folder or a changed file hashes again; `TOTK_ROMFS_VERIFY=full` always does.
 
 A folder without `manifest.tsv` means "no mod". Files copied into the folder but not listed are not
 used. In detail:
@@ -617,6 +620,9 @@ python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNa
 
 启动时加载器会逐个核对 mod 文件的大小和 SHA-256，并核对原版文件的 SHA-256。最后一个字段是 `-`
 表示这是游戏 RomFS 里没有的新文件（用于新增资源）。路径区分大小写，必须和 RomFS 里的写法一致。
+Mac 版旷野之息在一次完整核对之后为 mod 目录留一份记录（放在游戏数据目录里，不放进 mod 目录）：清单的内容，以及清单里每个文件的
+大小、日期和文件身份都没变时，下次启动沿用这次核对，不再重新计算哈希。换一个 mod 目录或改了文件就重新核对；
+`TOTK_ROMFS_VERIFY=full` 每次都完整核对。
 
 没有 `manifest.tsv` 就等于没有 mod。只把文件复制进目录但不写进清单，游戏不会使用：
 

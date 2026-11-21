@@ -243,7 +243,10 @@ static void overlay_load(const char *dir,int required,int mods) {
  if(!m){fprintf(stderr,"[totk] RomFS overlay: none (%s)\n",path);return;}
  char line[8192];size_t first=noverlay,replaced=0;uint64_t hashed=0,t0=runtime_now_ns();
 #if defined(GAME_BOTW) && !TARGET_OS_IPHONE
- uint8_t mkey[32];int mkeyok=mods&&mods_key(dir,mkey),trusted=mkeyok&&mods_proof_matches(mkey);
+ /* only the player's mods folder: the button icons (TOTK_ROMFS_BUTTON_ICONS) are also loaded as a mod, and a second record
+    for them would overwrite this one at every start; they are small and hash in milliseconds */
+ const char *mv=getenv("TOTK_ROMFS_MODS");
+ uint8_t mkey[32];int mkeyok=mods&&mv&&!strcmp(dir,mv)&&mods_key(dir,mkey),trusted=mkeyok&&mods_proof_matches(mkey);
 #else
  const int trusted=0;
 #endif
