@@ -20,14 +20,10 @@ sys.path.insert(0, str(ROOT))
 
 from tools.builder_jobs import build_job, checks, classify, history, installed, repo  # noqa: E402
 from tools.builder_jobs.events import Emitter  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tests'))
+import switch_packages as sp  # noqa: E402
 
-KEYS = 'header_key = ' + 'ab' * 32 + '\n'
-
-
-def pfs0(path, size=64):
-    """A PFS0 package with no files (no tickets): its game comes from its name."""
-    path.write_bytes(b'PFS0' + b'\0' * (size - 4))
-    return path
+KEYS = sp.keys_text()   # a game file's game is read from its content metas with these (tests/test_launcher_identify.py)
 
 
 class Classify(unittest.TestCase):
@@ -41,17 +37,22 @@ class Classify(unittest.TestCase):
     def roles(self, *paths):
         return {Path(i.path).name: (i.role, i.game, i.version) for i in classify.classify(paths)}
 
+    def keys(self):
+        path = self.dir / 'prod.keys'
+        path.write_text(KEYS)
+        return path
+
     def test_files_by_their_title_ids_and_versions(self):
-        pfs0(self.dir / 'TOTK [0100F2C0115B6000][v0].nsp')
-        pfs0(self.dir / 'v1.4.3 [0100F2C0115B6800][v720896][UPD].nsp')
-        pfs0(self.dir / '1.9.0 01007EF00011E800.nsz')
-        (self.dir / 'prod.keys').write_text(KEYS)
+        sp.nsp(self.dir / 'TOTK [0100F2C0115B6000][v0].nsp', [('0100F2C0115B6000', 'base', 0)])
+        sp.nsp(self.dir / 'v1.4.3 [0100F2C0115B6800][v720896][UPD].nsp', [('0100F2C0115B6800', 'update', 720896)])
+        sp.nsp(self.dir / '1.9.0 01007EF00011E800.nsz', [('01007EF00011E800', 'update', 1114112)])
+        self.keys()
         (self.dir / 'title.keys').write_text('x = 00\n')
         (self.dir / '._prod.keys').write_text('resource fork')
         got = self.roles(self.dir)
         self.assertEqual(got['TOTK [0100F2C0115B6000][v0].nsp'], ('base', 'totk', 0))
         self.assertEqual(got['v1.4.3 [0100F2C0115B6800][v720896][UPD].nsp'], ('update', 'totk', 720896))
-        self.assertEqual(got['1.9.0 01007EF00011E800.nsz'], ('update', 'botw', 1114112))   # the display version, known
+        self.assertEqual(got['1.9.0 01007EF00011E800.nsz'], ('update', 'botw', 1114112))
         self.assertEqual(got['prod.keys'][0], 'keys')
         self.assertEqual(got['title.keys'][0], 'ignored')
         self.assertNotIn('._prod.keys', got)
@@ -75,40 +76,43 @@ class Classify(unittest.TestCase):
         self.assertEqual(self.roles(self.dir / 'dump')['dump'], ('ns2_dump', 'dkb', None))
 
     def test_plan_picks_the_newest_supported_update_and_needs_keys_and_fonts(self):
-        base = pfs0(self.dir / 'TOTK [0100F2C0115B6000][v0].nsp')
-        old = pfs0(self.dir / 'TOTK [0100F2C0115B6800][v131072].nsp')     # 1.1.2: removed from the repository
-        new = pfs0(self.dir / 'TOTK [0100F2C0115B6800][v393216].nsp')     # 1.2.1
-        p = classify.plan(classify.classify([base, old, new]))
+        base = sp.nsp(self.dir / 'TOTK [0100F2C0115B6000][v0].nsp', [('0100F2C0115B6000', 'base', 0)])
+        old = sp.nsp(self.dir / 'TOTK [0100F2C0115B6800][v131072].nsp', [('0100F2C0115B6800', 'update', 131072)])   # 1.1.0: not built
+        new = sp.nsp(self.dir / 'TOTK [0100F2C0115B6800][v393216].nsp', [('0100F2C0115B6800', 'update', 393216)])   # 1.2.1
+        p = classify.plan(classify.classify([base, old, new, self.keys()]))
         self.assertEqual((p.game, p.base, p.update), ('totk', str(base.resolve()), str(new.resolve())))
-        self.assertTrue(any('no keys' in b for b in p.blocks))
         self.assertTrue(p.open_fonts and not any('system fonts' in b for b in p.blocks))   # an NSP has none: the open ones, silently (2026-11-20)
         self.assertTrue(any(old.name in n for n in p.notes))
+        sp.nsp(base, [('0100F2C0115B6000', 'base', 0)], tickets=['0100F2C0115B6000'])   # without keys: its ticket's game
+        p = classify.plan(classify.classify([base]))
+        self.assertEqual(p.game, 'totk')
+        self.assertTrue(any('no keys' in b for b in p.blocks))
 
     def test_messages_follow_the_window_s_language(self):
-        u = pfs0(self.dir / 'u [0100F2C0115B6800][v720896].nsp')
+        u = sp.nsp(self.dir / 'u.nsp', [('0100F2C0115B6800', 'update', 720896)])
+        keys = self.keys()
         with mock.patch.dict(os.environ, {'MNG_LANG': 'zh'}):
-            self.assertIn('还没有游戏本体', classify.plan(classify.classify([u])).blocks[0])
+            self.assertIn('还没有游戏本体', classify.plan(classify.classify([u, keys])).blocks[0])
         with mock.patch.dict(os.environ, {'MNG_LANG': 'en'}):
-            self.assertIn('no game', classify.plan(classify.classify([u])).blocks[0])
+            self.assertIn('no game', classify.plan(classify.classify([u, keys])).blocks[0])
 
     def test_a_breath_of_the_wild_card_takes_the_open_fonts_too(self):
-        card = self.dir / 'BotW [01007EF00011E000][v786432].xci'
-        card.write_bytes(b'\0' * 0x100 + b'HEAD' + b'\0' * 60)
-        p = classify.plan(classify.classify([card]))
+        card = sp.xci(self.dir / 'BotW.xci', [('01007EF00011E000', 'base', 0), ('01007EF00011E800', 'update', 786432)])
+        p = classify.plan(classify.classify([card, self.keys()]))
         self.assertEqual(p.game, 'botw')
         self.assertTrue(p.open_fonts)   # its card holds no fonts: the open ones, no block (user 2026-11-20)
         self.assertFalse(any('system fonts' in b or '系统字体' in b for b in p.blocks))
 
     def test_plan_refuses_two_games(self):
-        a = pfs0(self.dir / 'a [0100F2C0115B6000].nsp')
-        b = pfs0(self.dir / 'b [01007EF00011E000].nsp')
-        p = classify.plan(classify.classify([a, b]))
+        a = sp.nsp(self.dir / 'a.nsp', [('0100F2C0115B6000', 'base', 0)])
+        b = sp.nsp(self.dir / 'b.nsp', [('01007EF00011E000', 'base', 0)])
+        p = classify.plan(classify.classify([a, b, self.keys()]))
         self.assertIsNone(p.game)
         self.assertIn('several games', p.blocks[0])
 
     def test_plan_without_a_base(self):
-        u = pfs0(self.dir / 'u [0100F2C0115B6800][v720896].nsp')
-        p = classify.plan(classify.classify([u]))
+        u = sp.nsp(self.dir / 'u.nsp', [('0100F2C0115B6800', 'update', 720896)])
+        p = classify.plan(classify.classify([u, self.keys()]))
         self.assertIn('an update alone', p.blocks[0])
 
 

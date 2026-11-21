@@ -2,10 +2,11 @@
 
 Contract: classify(paths) never raises for a bad file: every path becomes an Item, and one that is not a game file is
 'ignored' with the reason. A folder is looked into (two levels) unless it is itself a Switch 2 dump, a firmware folder
-or a shared-fonts folder. The game comes from the files: a package's ticket (title ID of its rights ID), a Switch 2
-dump's main.npdm, a .nup package (Ocarina of Time), or a 16-digit title ID in the file name. An XCI without one in its
-name is a game card whose game build_app.py tells at the start of the build. plan(items) picks one game and its files,
-and lists what still blocks a build."""
+or a shared-fonts folder. The game comes from the files, never from their names (as nxnative, user 2026-11-21: a
+Pokémon card was taken for Zelda): a package's content metas read with the keys (identify.contents: title ID, kind and
+version), else its ticket (the title ID of its rights ID; no version), a Switch 2 dump's main.npdm or a .nup package
+(Ocarina of Time). A package told by neither waits for the keys. plan(items) picks one game and its files, and lists what
+still blocks a build: files of more than one game, a game this repository does not build among them included."""
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
@@ -15,7 +16,6 @@ from tools.builder_jobs import repo
 from tools.builder_jobs.text import t
 
 GAME_SUFFIXES = {'.xci': 'xci', '.xcz': 'xci', '.nsp': 'nsp', '.nsz': 'nsp'}
-_TITLE_IN_NAME = re.compile(r'(?<![0-9A-Fa-f])(0[14]00[0-9A-Fa-f]{12})(?![0-9A-Fa-f])')
 _VERSION_IN_NAME = re.compile(r'(?<![0-9A-Za-z])v(\d{1,10})(?![0-9]|\.\d)', re.IGNORECASE)   # [v720896], (v131072), v720896
 _DISPLAY_IN_NAME = re.compile(r'(?<![0-9.])(\d+\.\d+\.\d+)(?![0-9]|\.\d)')                      # 1.2.1
 _HEADER_KEY = re.compile(r'^\s*header_key\s*=\s*[0-9A-Fa-f]{64}\s*$', re.MULTILINE)
@@ -27,8 +27,11 @@ class Item:
     role: str                 # keys | base | update | dlc | ns2_dump | nup | firmware | fonts | ignored
     game: str | None = None
     title: str | None = None
-    version: int | None = None   # from the file name's [vNNN], to pick the newest of several updates
+    version: int | None = None   # the content meta's, to pick the newest of several updates (None: no keys yet)
     note: str = ''
+    problem: str = ''         # the keys cannot read the file, or are too old for it (a block of the plan, at the keys)
+    inside: bool = False      # found in a dropped folder, not dropped itself: another game's file there is left out
+    holds_update: int | None = None   # a base game file that also holds an update (a combined card): that update's version
 
 
 @dataclass
@@ -76,7 +79,8 @@ _DISPLAY_VERSIONS = {'acnh': {'1.2.1': 458752, '3.0.1': 2097152, '3.0.3': 222822
 
 
 def _version(name, game=None):
-    """The title version a package's name gives: [vNNN], or a display version (1.2.1) of a version build_app.py knows."""
+    """The title version a package's name gives: [vNNN], or a display version (1.2.1) of a version build_app.py knows.
+    Only compared with the content meta's version (a name that says otherwise is noted, the contents win)."""
     found = _VERSION_IN_NAME.search(name)
     if found:
         return int(found.group(1))
@@ -90,29 +94,63 @@ def _version(name, game=None):
     return None
 
 
-def _package(path):
+_KIND_NAMES = {'base': ('base game', '本体'), 'update': ('update', '更新'), 'dlc': ('add-on', '追加内容')}
+
+
+def _package(path, keys=None, inside=False):
+    """A package by what it holds: its content metas with the keys, else its ticket; its name is never read for its
+    game (a [vNNN] that says otherwise than its content meta is noted)."""
     b = repo.build_app()
     try:
         if path.stat().st_size == 0:
-            return Item(str(path), 'ignored', note=t('empty file', '空文件'))
+            return Item(str(path), 'ignored', note=t('empty file', '空文件'), inside=inside)
         kind = GAME_SUFFIXES[path.suffix.lower()]
-        titles = b.ticket_title_ids(path) if kind == 'nsp' else []
+        tickets = b.ticket_title_ids(path) if kind == 'nsp' else []
     except OSError as e:
-        return Item(str(path), 'ignored', note=t(f'cannot be read: {e.strerror}', f'读不了：{e.strerror}'))
-    titles = titles or [m.group(1).upper() for m in _TITLE_IN_NAME.finditer(path.name)]
-    version = _version(path.name)
-    if not titles:
-        if kind == 'xci':
-            return Item(str(path), 'base', note=t('game card: its game is read with your keys', '游戏卡带：用你的 keys 读出是哪个游戏'), version=version)
-        return Item(str(path), 'ignored', note=t('no title ID in its tickets or name: rename it with its [title ID] or use an XCI',
-                                                 '票据和文件名里都没有标题 ID：文件名里加上 [标题 ID]，或用 XCI'))
-    title = titles[0]
-    _, role = b.title_kind(title)
+        return Item(str(path), 'ignored', note=t(f'cannot be read: {e.strerror}', f'读不了：{e.strerror}'), inside=inside)
+    metas, problem = (None, None)
+    if keys:
+        from tools.builder_jobs.identify import contents
+        metas, problem = contents(path, keys)
+    if metas is None:   # no keys yet (or no cryptography, or keys that cannot open it): the tickets, without versions
+        found = [(b.title_kind(title)[1], title, None) for title in tickets]
+    else:
+        found = [(m.kind, m.title, m.version) for m in metas]
+        if not found:
+            return Item(str(path), 'ignored', note=t('holds no base game, update or add-on', '里面没有本体、更新或追加内容'),
+                        problem=problem or '', inside=inside)
+    if not found:
+        if problem:
+            note = problem
+        elif keys:   # keys given and read, but no cryptography package here: build_app.py tells the game at its start
+            note = t('its game is told at the start of the build', '打包开始时认出是哪个游戏')
+        else:
+            note = t('its game is read with your keys', '选好 keys 后认出是哪个游戏')
+        return Item(str(path), 'base', note=note, problem=problem or '', inside=inside)
+    # a file of several titles (a card with its update and add-ons) is taken for its base game, else its update
+    role, title, version = min(found, key=lambda f: ('base', 'update', 'dlc').index(f[0]))
     game = repo.game_of_title(title)
-    version = _version(path.name, game)
-    if game is None:
-        return Item(str(path), 'ignored', title=title, note=t(f'title {title} is not a game this repository builds', f'{title} 不是本项目能打包的游戏'))
-    return Item(str(path), role, game=game, title=title, version=version)
+    notes = []
+    if len(found) > 1:
+        kinds = sorted({k for k, _, _ in found}, key=('base', 'update', 'dlc').index)
+        notes.append(t('holds ' + ' + '.join(_KIND_NAMES[k][0] for k in kinds), '里面有' + '、'.join(_KIND_NAMES[k][1] for k in kinds)))
+    named = _version(path.name, game)   # a combined card's name gives the version of its update: any of its titles
+    if version is not None and named is not None and named not in {v for _, _, v in found}:
+        notes.append(t(f'its name says v{named}, its contents v{version}: taken as v{version}',
+                       f'文件名写 v{named}，内容是 v{version}：按内容'))
+    application = b.title_kind(title)[0]
+    if game is None or application in b.NS2:
+        if application in b.NS2:   # Pokopia, Bananza: from a Switch 2 dump folder only
+            why = t(f'{repo.GAMES.get(b.NS2[application]["version"], application)} is built from its Switch 2 dump folder '
+                    '(base/, updates/), not from an XCI or NSP',
+                    f'{repo.GAMES.get(b.NS2[application]["version"], application)}要用 Switch 2 游戏文件夹（base/、updates/）打包，不能用 XCI 或 NSP')
+        else:
+            why = t(f'{title} ({_KIND_NAMES[role][0]}) is not a game this repository builds',
+                    f'{title}（{_KIND_NAMES[role][1]}）不是本项目能打包的游戏')
+        return Item(str(path), 'ignored', title=title, note='; '.join([why, *notes]), inside=inside)
+    updates = [v for k, _, v in found if k == 'update' and v is not None]
+    return Item(str(path), role, game=game, title=title, version=version, note='; '.join(notes),
+                problem=problem or '', inside=inside, holds_update=max(updates) if role == 'base' and updates else None)
 
 
 def _folder(path):
@@ -160,7 +198,7 @@ def _one(path, depth, out):
     elif suffix == '.keys' or path.name.lower() in ('prod.keys', 'keys.txt'):
         out.append(_keys(path))
     elif suffix in GAME_SUFFIXES:
-        out.append(_package(path))
+        out.append(('package', path, depth > 0))   # read once the keys among the paths are known (classify)
     elif suffix == '.nup':
         out.append(Item(str(path), 'nup', game='oot', title=repo.OOT_TITLE))
     elif depth == 0:
@@ -175,7 +213,13 @@ def classify(paths):
             out.append(Item(str(path), 'ignored', note=t('no such file', '文件不存在')))
             continue
         _one(path.resolve(), 0, out)
-    return list(dict.fromkeys(out))   # the same file dropped twice counts once
+    keys = [i.path for i in out if isinstance(i, Item) and i.role == 'keys']
+    out = [_package(i[1], keys[-1] if keys else None, i[2]) if isinstance(i, tuple) else i for i in out]
+    once = {}   # the same file dropped twice counts once, as dropped itself when it was also in a dropped folder
+    for i in out:
+        if i.path not in once or (once[i.path].inside and not i.inside):
+            once[i.path] = i
+    return list(once.values())
 
 
 def _newest(items):
@@ -331,14 +375,29 @@ def _plan(items, work=None, open_fonts=False):
     p.keys = keys[-1].path if keys else None
     bases = [i for i in items if i.role in ('base', 'ns2_dump', 'nup', 'ss_dump')]
     p.games_found = sorted({i.game for i in items if i.game})
-    known = [i for i in bases if i.game]
-    if len({i.game for i in known}) > 1:
-        names = ', '.join(repo.GAMES[g] for g in sorted({i.game for i in known}))
-        p.blocks.append(t(f'files of several games: drop the files of one game ({names})',
-                          f'放进来的是几个游戏的文件：一次只放一个游戏的（{names}）'))
+    # Every file told by its contents counts, of a game this repository builds or not (user 2026-11-21: a Pokémon card
+    # dropped beside Zelda files kept from before was built as Zelda): files of two games stop the plan, each named.
+    # Another game's file inside a dropped folder is left out (Animal Crossing's folder holds its Island Transfer Tool).
+    told = [i for i in items if i.title and (i.game or not i.inside) and i.role != 'keys']
+    b = repo.build_app()
+    owners = {}
+    for i in told:
+        owners.setdefault(b.title_kind(i.title)[0], []).append(i)
+    if len(owners) > 1:
+        def what(app, files):
+            game = next((i.game for i in files if i.game), None)
+            return repo.GAMES.get(game, game) if game else t(f'a game this repository does not build ({app})', f'本项目不能打包的游戏（{app}）')
+        lines = [f'{Path(i.path).name}: {what(app, files)}' for app, files in owners.items() for i in files]
+        p.blocks.append(t('files of several games: drop the files of one game (Choose Again)\n' + '\n'.join(lines),
+                          '放进来的是几个游戏的文件：一次只放一个游戏的（点“重新选择”）\n' + '\n'.join(lines)))
         return p
+    known = [i for i in bases if i.game]
     base = (known or bases or [None])[0]
     if base is None:
+        other = [i for i in items if i.role == 'ignored' and i.title and not i.inside]
+        if other:   # a game file of a game this repository does not build: said as what it is
+            p.blocks.append(other[0].note)
+            return p
         updates = by_role('update')
         p.blocks.append(t('no game: drop the base game (XCI or NSP), a Switch 2 dump folder or a .nup package' +
                           (' (an update alone is not enough)' if updates else ''),
@@ -366,18 +425,18 @@ def _plan(items, work=None, open_fonts=False):
     if not p.keys:
         p.keys_problems.append(t('no keys: choose the prod.keys dumped from your Switch', '还没有 keys：选择从你的 Switch 导出的 prod.keys'))
     else:
-        from tools.builder_jobs.identify import identify
-        title, problem = identify(p.base, p.keys)
+        from tools.builder_jobs.identify import load_keys
+        loaded, problem = load_keys(p.keys)
         if problem:
             p.keys_problems.append(problem)
-        if title and not p.game:
-            p.game = repo.game_of_title(title)
-            p.app_name = repo.GAMES.get(p.game)
-            p.games_found = sorted(set(p.games_found) | {p.game})
+        # the keys cannot read, or are too old for, a file of this game (the base among them): said once each
+        for i in items:
+            if i.problem and (i.game == p.game or i.path == p.base) and i.problem not in p.keys_problems:
+                p.keys_problems.append(i.problem)
     if not p.game and p.keys and not p.keys_problems:
         p.keys_problems.append(t('the game of this card cannot be read here (this Python has no cryptography package): '
-                          'rename the file with its [title ID], or build it with build_app.py',
-                          '这里读不出卡带是哪个游戏（这个 Python 没有 cryptography）：文件名里加上 [标题 ID]，或用 build_app.py 打包'))
+                          'build it with build_app.py',
+                          '这里读不出卡带是哪个游戏（这个 Python 没有 cryptography）：请用 build_app.py 打包'))
     updates = by_role('update', p.game)
     if updates:
         supported = _supported(p.game)
@@ -394,7 +453,7 @@ def _plan(items, work=None, open_fonts=False):
     # (tools/split_card.py), its update given as the card itself unless one is dropped separately
     if (p.game == 'acnh' and not p.update and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
             and (card_titles(p.base) or 0) > 1):
-        p.update, p.update_version = p.base, base.version
+        p.update, p.update_version = p.base, base.holds_update if base.holds_update is not None else base.version
         p.notes.append(t('this card image also holds the update and add-ons: the build takes them from it',
                          '这个卡带镜像里也有更新和追加内容：打包时直接从里面取'))
     firmware, fonts = by_role('firmware'), by_role('fonts')
