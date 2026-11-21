@@ -1,6 +1,7 @@
 #import "advanced_view.h"
 #import <GameController/GameController.h>
 #include "picture_settings.h"
+#include "port_features.h"
 #include "totk_ui_lang.h"
 #include "fps_overlay.h"   /* the overlay modes (shared), as the Mac panel's "性能信息" row */
 
@@ -30,11 +31,10 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     void (^_onBack)(void), (^_onStart)(void);
     pp_picture _pic;
     pp_metalfx _mfx;
-    BOOL _pad;
     UILabel *_profileLabel;
     UISegmentedControl *_mode, *_fps, *_aspect;
     UIButton *_scene, *_metalfx, *_hud, *_play;
-    UISwitch *_taa, *_switchSize;
+    UISwitch *_taa;
     NSMutableDictionary<NSValue *, UILabel *> *_effects;   // control -> the line under it
     NSArray<UIView *> *_controls;   // the controller's focus, top to bottom; Play last
     NSInteger _row;
@@ -45,7 +45,6 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
 - (instancetype)initWithFrame:(CGRect)frame onBack:(void (^)(void))onBack onStart:(void (^)(void))onStart {
     if (!(self = [super initWithFrame:frame])) return nil;
     _onBack = [onBack copy]; _onStart = [onStart copy];
-    _pad = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
     _pic = totk_current_picture(NULL, &_mfx);
     _held = YES;   // the press that opened this screen is still down: wait for every button to be let go first
     _effects = [NSMutableDictionary dictionary];
@@ -71,19 +70,17 @@ static const unsigned SCENE_COUNT = sizeof SCENE_WIDTHS / sizeof *SCENE_WIDTHS;
     NSMutableArray<UIView *> *rows = [NSMutableArray arrayWithObject:bar];
     NSMutableArray<UIView *> *controls = [NSMutableArray array];
     [self add:T(@"模式", @"Mode") control:_mode rows:rows controls:controls];
-#ifndef GAME_ACNH   // Animal Crossing draws its own scene and has no edge smoothing of ours (picture_profile.h PP_GAME_ACNH)
+#if !SHELL_PORT   // a port draws its own scene and has no edge smoothing of ours (port_features.h)
     [self add:T(@"场景", @"Scene") control:_scene rows:rows controls:controls];
 #endif
     [self add:@"MetalFX" control:_metalfx rows:rows controls:controls];
-#ifndef GAME_ACNH
+#if !SHELL_PORT
     [self add:T(@"边缘平滑", @"Edge smoothing") control:_taa rows:rows controls:controls];
 #endif
+#if SHELL_FPS_CHOICE   // Super Mario Odyssey runs at its own 60
     [self add:T(@"帧率", @"Frame rate") control:_fps rows:rows controls:controls];
-    if (_pad) {   // an iPhone's screen is already smaller than the Switch's
-        _switchSize = [UISwitch new]; [_switchSize addTarget:self action:@selector(switchSizeChanged) forControlEvents:UIControlEventValueChanged];
-        [self add:T(@"Switch 屏幕大小", @"Switch screen size") control:_switchSize rows:rows controls:controls];
-    }
-#if !defined(GAME_BOTW) && !defined(GAME_ACNH)   // Breath of the Wild's aspect key means ultrawide (a separate change); Animal Crossing has none
+#endif
+#if !defined(GAME_BOTW) && !SHELL_PORT   // Breath of the Wild's aspect key means ultrawide (a separate change); the ports have none
     _aspect = [self segments:@[T(@"填满", @"Fill"), @"16:9"] action:@selector(aspectChanged)];
     [self add:T(@"画面比例", @"Aspect ratio") control:_aspect rows:rows controls:controls];
 #endif
@@ -151,7 +148,7 @@ static NSString *scene_title(unsigned w) {
     return w ? [NSString stringWithFormat:@"%u×%u", w, w * 9 / 16] : T(@"自动", @"Automatic");
 }
 static NSString *metalfx_title(pp_metalfx m) {
-#ifdef GAME_ACNH
+#if SHELL_PORT
     if (m != PP_MFX_OFF) return T(@"到屏幕", @"To the screen");
 #endif
     return m == PP_MFX_OFF ? T(@"关", @"Off") : m == PP_MFX_SCENE ? T(@"场景", @"Scene") : T(@"场景＋屏幕", @"Scene + screen");
@@ -165,7 +162,6 @@ static NSString *metalfx_title(pp_metalfx m) {
     _mode.selectedSegmentIndex = _pic.mode == PP_DOCKED ? 1 : 0;
     _fps.selectedSegmentIndex = _pic.fps == 30 ? 0 : 1;
     _taa.on = _pic.taa != 0;
-    _switchSize.on = _pic.switch_size != 0;
     _aspect.selectedSegmentIndex = _pic.aspect_169 ? 1 : 0;
     __weak TOTKAdvancedView *weak = self;
     NSMutableArray<UIAction *> *scenes = [NSMutableArray array];
@@ -179,7 +175,7 @@ static NSString *metalfx_title(pp_metalfx m) {
     [self title:_scene text:scene_title(_pic.scene_w)];
     NSMutableArray<UIAction *> *mfx = [NSMutableArray array];
     for (int m = PP_MFX_OFF; m <= PP_MFX_SCREEN; m++) {
-#ifdef GAME_ACNH   // no smaller scene to upscale (picture_profile.h PP_GAME_ACNH): MetalFX is the picture to the screen, as on its Mac
+#if SHELL_PORT   // no smaller scene to upscale (port_features.h): MetalFX is the picture to the screen, as on their Macs
         if (m == PP_MFX_SCENE) continue;
 #endif
         UIAction *a = [UIAction actionWithTitle:metalfx_title((pp_metalfx)m) image:nil identifier:nil handler:^(UIAction *x) { (void)x; [weak setMetalfx:(pp_metalfx)m]; }];
@@ -202,24 +198,22 @@ static NSString *metalfx_title(pp_metalfx m) {
                                                : T(@"画面角上的帧数与信息，和 Mac 的“性能信息”一样。", @"The frame rate and information in the picture's corners, as the Mac's Overlay row.")];
 
     unsigned w = pp_scene_effective(&_pic, PP_THIS_GAME), limit = pp_scene_limit(&_pic, PP_THIS_GAME);
-    BOOL docked = _pic.mode == PP_DOCKED, small = _pad && _pic.switch_size;
+    BOOL docked = _pic.mode == PP_DOCKED;
     [self effect:_mode text:docked
-        ? [T(@"游戏的底座设置，输出 1920×1080。", @"The game's docked settings, 1920×1080 output.") stringByAppendingString:small
-           ? T(@"在 Switch 屏幕大小下画面会缩小，多出的像素白白耗费 GPU。", @" At the Switch's screen size the picture is scaled down: the extra pixels cost GPU for nothing.") : @""]
+        ? T(@"游戏的底座设置，输出 1920×1080。", @"The game's docked settings, 1920×1080 output.")
         : T(@"掌机设置，输出 1280×720。", @"Handheld settings, 1280×720 output.")];
     [self effect:_scene text:_pic.scene_w > w
         ? [NSString stringWithFormat:T(@"掌机模式最高 %u×%u：场景用 %u×%u。", @"Handheld goes up to %u×%u: the scene runs at %u×%u."), limit, limit * 9 / 16, w, w * 9 / 16]
         : [NSString stringWithFormat:T(@"场景 %u×%u。只影响 3D 世界：越低越凉、越省电，画面也越软。", @"Scene %u×%u. The 3D world only: lower runs cooler and saves battery, with a softer picture."), w, w * 9 / 16]];
-#ifdef GAME_ACNH   // as its Mac's picture row: MetalFX enlarges the game's picture to the screen's own pixels
+#if SHELL_PORT   // as their Macs' picture row: MetalFX enlarges the game's picture to the screen's own pixels
     NSString *mfxText = _mfx == PP_MFX_OFF ? T(@"系统直接拉伸到屏幕。", @"The system scales the picture to the screen.")
         : T(@"MetalFX 把游戏画面放大到屏幕的原生像素：更清晰，更耗 GPU。", @"MetalFX enlarges the game's picture to the screen's own pixels: sharper, heavier on the GPU.");
 #else
     NSString *mfxText = _mfx == PP_MFX_OFF ? T(@"游戏自己的放大。", @"The game's own upscale.")
         : !pp_mfx_scene_acts(&_pic, PP_THIS_GAME) ? T(@"场景不比画布小：MetalFX 没有场景要放大。", @"The scene is not smaller than the canvas: MetalFX has no scene to upscale.")
         : T(@"MetalFX 把场景放大到画布：更清晰，几乎不耗性能。", @"MetalFX upscales the scene into the canvas: sharper, at almost no cost.");
-    if (_mfx == PP_MFX_SCREEN) mfxText = [mfxText stringByAppendingString:small
-        ? T(@"再把画布放大到 Switch 大小的画面：最清晰，最耗 GPU。", @" It also enlarges the canvas to the Switch-sized picture: the sharpest, the heaviest on the GPU.")
-        : T(@"再把画布放大到屏幕：最清晰，最耗 GPU。", @" It also enlarges the canvas to the screen: the sharpest, the heaviest on the GPU.")];
+    if (_mfx == PP_MFX_SCREEN) mfxText = [mfxText stringByAppendingString:
+        T(@"再把画布放大到屏幕：最清晰，最耗 GPU。", @" It also enlarges the canvas to the screen: the sharpest, the heaviest on the GPU.")];
 #endif
     [self effect:_metalfx text:[mfxText stringByAppendingString:T(@"（独立于画面设置）", @" (a setting of its own, kept by every profile)")]];
     [self effect:_taa text:T(@"MetalFX 时间抗锯齿：边缘更稳，可能有轻微拖影。场景越大越吃 GPU：960×540 约 1 ms，1600×900 约 11 ms（iPad A16）。", @"MetalFX temporal anti-aliasing: steadier edges, slight ghosting possible. Its GPU cost grows with the scene: about 1 ms at 960×540, about 11 ms at 1600×900 (iPad A16).")];
@@ -233,8 +227,6 @@ static NSString *metalfx_title(pp_metalfx m) {
                                                @"60 fps, paced at the screen's 60 Hz (kept from the old custom settings; choosing the frame rate again makes it uncapped).")
                                           : T(@"60 fps：不固定上限，最高到屏幕的刷新率。", @"60 fps: no fixed cap, up to the screen's rate.")];
 #endif
-    if (_switchSize) [self effect:_switchSize text:T(@"画面显示成 Switch 屏幕的大小（6.2 英寸），居中、四周黑边：更小、更清晰。",
-                                                     @"The picture at the Switch's screen size (6.2 inches), centred on black: smaller and sharper.")];
     if (_aspect) [self effect:_aspect text:_pic.aspect_169 ? T(@"16:9，上下或左右加黑边。", @"16:9 with bars.")
                                                            : T(@"填满屏幕，不拉伸：镜头按屏幕比例取景。", @"Fills the screen without stretching: the camera takes the screen's shape.")];
 }
@@ -251,7 +243,6 @@ static NSString *metalfx_title(pp_metalfx m) {
 - (void)setScene:(unsigned)w { _pic.scene_w = w; [self changed]; }
 - (void)taaChanged { _pic.taa = _taa.on; [self changed]; }
 - (void)fpsChanged { _pic.fps = _fps.selectedSegmentIndex == 0 ? 30 : 60; _pic.present_60 = 0; [self changed]; }
-- (void)switchSizeChanged { _pic.switch_size = _switchSize.on; [self changed]; }
 - (void)aspectChanged { _pic.aspect_169 = _aspect.selectedSegmentIndex == 1; [self changed]; }
 - (void)setMetalfx:(pp_metalfx)m {
     _mfx = m;
@@ -285,13 +276,13 @@ static NSString *metalfx_title(pp_metalfx m) {
         [self setHud:HUD_MODES[i]];
     } else if (at == _metalfx) {
         int n = (int)_mfx + d; n = n < PP_MFX_OFF ? PP_MFX_OFF : n > PP_MFX_SCREEN ? PP_MFX_SCREEN : n;
-#ifdef GAME_ACNH
+#if SHELL_PORT
         n = d > 0 ? PP_MFX_SCREEN : PP_MFX_OFF;
 #endif
         [self setMetalfx:(pp_metalfx)n];
     } else if ([at isKindOfClass:UISwitch.class]) {
         UISwitch *s = (UISwitch *)at; s.on = d > 0;
-        if (s == _taa) [self taaChanged]; else [self switchSizeChanged];
+        if (s == _taa) [self taaChanged];
     } else if ([at isKindOfClass:UISegmentedControl.class]) {
         UISegmentedControl *s = (UISegmentedControl *)at;
         s.selectedSegmentIndex = MAX(0, MIN((NSInteger)s.numberOfSegments - 1, s.selectedSegmentIndex + d));

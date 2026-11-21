@@ -13,12 +13,12 @@ def pane_for(root, app):
     """The pane for one app, in place: app is 'totk', 'botw' or 'ns2' (Bananza, Pokopia). A row Root.plist marks with
     TOTKApp belongs to that app only, 'zelda' to Tears of the Kingdom, Breath of the Wild and Animal Crossing (the picture
     profile and MetalFX, user 2026-11-17: the picture is chosen in the game; Animal Crossing's app is built from these
-    sources too, games/acnh/ios/tools/build_ipa.py, user 2026-11-20 "塞尔达的 设置 都移植过来 要统一"); an unmarked
+    sources too, games/acnh/ios/tools/build_ipa.py, as Super Mario Odyssey's, user 2026-11-20 "塞尔达的 设置 都移植过来 要统一"); an unmarked
     row is everyone's. Any
     group the dropped rows leave empty goes too. tests/test_ios_packaging.py PicturePane checks the three panes."""
     def mine(s):
         mark=s.get('TOTKApp')
-        return mark is None or mark==app or (mark=='zelda' and app in ('totk','botw','acnh'))
+        return mark is None or mark==app or (mark=='zelda' and app in ('totk','botw','acnh','odyssey'))
     specs=[s for s in root['PreferenceSpecifiers'] if mine(s)]
     kept=[]
     for i,s in enumerate(specs):

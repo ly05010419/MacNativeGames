@@ -1,5 +1,4 @@
 #include "settings_map.h"
-#include <math.h>
 #include <string.h>
 
 /* The Full HD preset is the game's docked settings as the Vision Pro build uses them: 1920x1080 output on a 1080-row
@@ -32,21 +31,3 @@ int totk_preset_frame_env_build(const char *fps, totk_frame_env *out) {
 }
 
 int totk_frame_button_target(int held30) { return held30 ? 60 : 30; }
-
-/* iPad minis by model identifier (mini 4, 5, 6, A17 Pro); Apple publishes 326 ppi for them and 264 for every other
-   iPad. A mini this list does not know gets 264: its picture comes out about a fifth bigger than the Switch's, still
-   smaller than the screen. */
-double totk_ipad_ppi(const char *machine) {
-    static const char *const minis[] = {"iPad5,1", "iPad5,2", "iPad11,1", "iPad11,2", "iPad14,1", "iPad14,2", "iPad16,1", "iPad16,2"};
-    if (machine) for (unsigned i = 0; i < sizeof minis / sizeof minis[0]; i++) if (!strcmp(machine, minis[i])) return 326;
-    return 264;
-}
-
-int totk_switch_size(double view_w, double view_h, double ppi, double scale, double *w, double *h) {
-    if (ppi <= 0 || scale <= 0) return 0;
-    const double diagonal = 6.2, across = diagonal * 16 / sqrt(16 * 16 + 9 * 9);   /* 5.40 inches wide, 3.04 high */
-    double pw = across * ppi / scale, ph = pw * 9 / 16;
-    if (pw >= view_w || ph >= view_h) return 0;
-    *w = pw; *h = ph;
-    return 1;
-}

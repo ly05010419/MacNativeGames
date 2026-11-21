@@ -4689,7 +4689,10 @@ static int uw_on_canvas(void) {
 #else
 static int uw_on_canvas(void) { return g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas; }
 #endif
-/* The horizontal squeeze for this draw: the wide ratio over the canvas's, or 1 (not UI, or 16:9). */
+/* The squeeze for this draw: the screen's ratio over the canvas's, or 1 (not UI, or 16:9). Above 1 (a screen wider than
+   16:9, the iPhone) the UI is narrowed by it about the canvas centre; below 1 (taller, the iPad's 4:3) it is flattened by
+   it about the centre, so the presented picture, stretched to the screen, shows the UI in its own shape rather than
+   pulled tall (user 2026-11-21: "动森 在ipad上的全屏 是拉伸 不是 像iphone一样是扩展？"). */
 /* The TOTK_MFX UI vertex shaders and four more that draw UI quads (inventory tab labels, map icons). */
 static int uw_ui_vs(const char *vs) {
 #ifdef GAME_ACNH
@@ -4708,7 +4711,7 @@ static int uw_ui_vs(const char *vs) {
 static double uw_ui_squeeze(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th) {
     if (!g_uw_ui || !vs || !uw_ui_vs(vs) || (dw ? dw->count : di ? di->count : 0) != 6 || !uw_on_canvas() || !tw || !th) return 1;
     double f = uw_ratio() * th / tw;
-    return f > 1.001 ? f : 1;
+    return f > 1.001 || f < 0.999 ? f : 1;
 }
 /* TOTK_MFX: the scene is complete: end the pass (the draw that follows opens it again, loading the canvas, with the UI
    attachment) and copy the canvas into this frame's scene texture. */
@@ -10664,6 +10667,8 @@ frz_plain:;
     if (moff != g_ui_moff) { g_ui_moff = moff; args_dirty_stage(0); }
     double ux = uw_ui_squeeze(pr && pr->sh[0] ? pr->sh[0]->key : NULL, dw, di, tw, th), cx = tw / 2.0;   // key 4: UI squeezed by 1 / ux about the canvas centre
     double vx = S.has_vp ? S.vp[0][0] : 0, vw = S.has_vp ? S.vp[0][2] : tw;
+    double uy = 1, cy = th / 2.0;   // the iPad: UI flattened by uy about the canvas centre (uw_ui_squeeze below 1)
+    if (ux < 1) { uy = ux; ux = 1; }
     if (ux != 1) { vx = cx + (vx - cx) / ux; vw /= ux; }
     if ((atomic_load(&g_uw_log) > 0 && uw_on_canvas()) || atomic_load(&g_draw_log) > 0)
         MLOG("[uw] F%llu pass %llu ui %d squeeze %.3f vs %.8s fs %.8s count %u inst %d vp %s%g,%g,%g,%g sc %s%d,%d,%d,%d blend %#x tex %ux%u fmt %#x ser %llu bl %u,%u,%u/%u,%u,%u cm %#x prim %d",
@@ -10693,8 +10698,8 @@ frz_plain:;
             }
         }
     }
-    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx, S.vp[0][1] + vo, vw, S.vp[0][3] * vs, S.dr[0], S.dr[1]});
-    else enc_r_viewport(en, (MTLViewport){vx, vo, vw, th * vs, 0, 1});
+    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx, cy + (S.vp[0][1] + vo - cy) * uy, vw, S.vp[0][3] * vs * uy, S.dr[0], S.dr[1]});
+    else enc_r_viewport(en, (MTLViewport){vx, cy + (vo - cy) * uy, vw, th * vs * uy, 0, 1});
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
         long sx0 = R.sc.x, sx1 = (long)R.sc.x + R.sc.w;

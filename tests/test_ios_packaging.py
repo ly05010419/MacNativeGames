@@ -160,7 +160,7 @@ class PicturePane(unittest.TestCase):
     Bananza and Pokopia keep their own rows (Full HD / output size, frame rate)."""
     PICTURE = {'TOTK_DOCKED', 'TOTK_DOCKED_SCENE', 'TOTK_BOTW_SCENE', 'TOTK_PHONE_FPS', 'TOTK_CUSTOM_PICTURE',
                'TOTK_IOS_PICTURE_MODE', 'TOTK_RENDER_RES', 'TOTK_FPS_CAP', 'TOTK_MFX_UPSCALE', 'TOTK_TAA', 'TOTK_ASPECT',
-               'TOTK_OUTPUT_RES', 'TOTK_SWITCH_SIZE'}
+               'TOTK_OUTPUT_RES'}
 
     def root(self):
         import plistlib
@@ -361,7 +361,7 @@ class ProfileStartScreen(unittest.TestCase):
 class Advanced(unittest.TestCase):
     """The Advanced screen (user 2026-11-17): every control of the profiles, one line on what each choice does, inside
     a scroll view (an iPhone in landscape); any change but MetalFX makes the profile Custom; MetalFX is its own
-    setting. The Switch size only on an iPad, the aspect ratio only in Tears of the Kingdom."""
+    setting. The aspect ratio only in Tears of the Kingdom."""
     def setUp(self):
         self.view = (TOOLS.parent/'Sources/advanced_view.m').read_text()
 
@@ -384,11 +384,10 @@ class Advanced(unittest.TestCase):
         self.assertIn('pp_mfx_scene_acts(&_pic, PP_THIS_GAME)', self.view, 'says when the scene upscale has nothing to do')
 
     def test_device_and_game_rows(self):
-        self.assertIn('UIUserInterfaceIdiomPad', self.view[self.view.index('_switchSize'):], 'the Switch size row only on an iPad')
         aspect = self.view.index('_aspect = ')
         guard = self.view[self.view.rindex('#if', 0, aspect) - 1:aspect]
         self.assertIn('!defined(GAME_BOTW)', guard, 'no aspect row for Breath of the Wild')
-        self.assertIn('!defined(GAME_ACNH)', guard, 'nor for Animal Crossing (no aspect patch)')
+        self.assertIn('!SHELL_PORT', guard, 'nor for the ports (port_features.h: no aspect patch of ours)')
         self.assertIn('UIScrollView', self.view)
 
     def test_the_controller_reaches_every_control(self):
@@ -400,38 +399,52 @@ class Advanced(unittest.TestCase):
         self.assertIn('buttonB', self.view, 'B goes back')
 
 
-class SwitchSize(unittest.TestCase):
-    """The game at the Switch's 6.2-inch screen on an iPad (TOTK_SWITCH_SIZE=1, user 2026-11-17), centred, so a
-    low-resolution picture looks sharper. The app's picture settings hand the variable over (2026-11-17 profiles); a
-    phone screen is already smaller, so there it changes nothing."""
-    def test_the_game_view_takes_the_switch_size_when_the_game_starts(self):
-        import re
-        main = (TOOLS.parent/'Sources/main.m').read_text()
-        start = re.search(r'void \(\^start\)\(void\) = \^\{(.*?)\n    \};', main, re.S).group(1)
-        # read after the picture settings are handed over, placed before the drawable takes the view's shape
-        self.assertLess(start.index('apply_display_settings()'), start.index('getenv("TOTK_SWITCH_SIZE")'))
-        self.assertLess(start.index('getenv("TOTK_SWITCH_SIZE")'), start.index('[weak placeGameView];'))
-        self.assertLess(start.index('[weak placeGameView];'), start.index('runtime_ios_sync_drawable(weak.gameView);'))
-        place = re.search(r'- \(void\)placeGameView \{.*?\n}', main, re.S).group(0)
-        self.assertIn('UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad', place, 'iPad only')
-        self.assertIn('totk_switch_size(b.size.width, b.size.height, totk_ipad_ppi(machine), scale, &w, &h)', place)
-        front = (TOOLS.parents[1]/'runtime/frontend_ios.m').read_text()
-        self.assertIn('bootStage.autoresizingMask=centred;bootDetail.autoresizingMask=centred;', front)
+class NoSwitchScreenSize(unittest.TestCase):
+    """The "Switch screen size" setting is gone for good, for every game built with this app. The maintainer,
+    2026-11-21: "进阶里 永久 去掉 Switch 屏幕大小 这个设置，每个游戏都不需求" (remove the Switch screen size setting from
+    Advanced permanently; no game needs it). No row, no stored key, no environment variable, no view placement: the game
+    view fills the screen. Do not bring it back."""
+    WORDS = ('switch_size', 'SWITCH_SIZE', 'switchSize', 'Switch 屏幕大小', 'Switch 螢幕大小', "Switch's screen size",
+             "Switch\\'s screen size", 'placeGameView', 'totk_ipad_ppi')
 
-    def test_not_on_vision_pro(self):
-        """visionOS has no UIScreen (the xros build failed, 2026-11-18) and no Switch-sized picture: the placement code
-        and its window-resize hook sit inside #if !TARGET_OS_VISION."""
-        main = (TOOLS.parent/'Sources/main.m').read_text()
-        at = main.index('- (void)placeGameView {')
-        guard = main.rindex('#if !TARGET_OS_VISION', 0, at)
-        self.assertNotIn('#endif', main[guard:at], 'placeGameView is inside the non-visionOS block')
-        self.assertLess(main.index('- (void)viewDidLayoutSubviews', at), main.index('#endif', at))
+    def files(self):
+        ios = TOOLS.parent
+        for folder in (ios/'Sources', ios/'Settings.bundle', ios/'tools'):
+            for path in sorted(folder.rglob('*')):
+                if path.is_file() and '__pycache__' not in path.parts:
+                    yield path
+        yield from sorted(TOOLS.parents[2].glob('*/ios/tools/build_ipa.py'))
 
-    def test_no_pane_row(self):
-        import plistlib
-        root = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
-        self.assertNotIn('TOTK_SWITCH_SIZE', {s.get('Key') for s in root['PreferenceSpecifiers']},
-                         'the picture settings in the app own it (profiles)')
+    def test_no_trace_of_the_setting(self):
+        found = []
+        for path in self.files():
+            text = path.read_bytes().decode('utf-8', errors='ignore')
+            found += [f'{path}: {word}' for word in self.WORDS if word in text]
+        self.assertEqual(found, [], 'the Switch screen size setting was removed for good (user 2026-11-21)')
+
+    def test_the_game_view_fills_the_screen(self):
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        load = main[main.index('- (void)viewDidLoad {'):]
+        load = load[:load.index('\n}\n')]
+        self.assertIn('[[TOTKMetalView alloc] initWithFrame:self.view.bounds]', load)
+        self.assertIn('self.gameView.autoresizingMask = UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;', load)
+        self.assertNotIn('self.gameView.frame =', main, 'nothing resizes the game view away from the whole screen')
+
+
+class TouchButtonsPress(unittest.TestCase):
+    """A held touch button is drawn pressed, lit and a little smaller (user 2026-11-21: "点击 屏幕 按钮 没有 按下效果"),
+    in the shared touch controls every game's phone app uses."""
+
+    def test_held_buttons_are_drawn_pressed(self):
+        pad = (TOOLS.parent / 'Sources/touch_pad.m').read_text()
+        self.assertIn('held = s.buttons;', pad, 'the held buttons are kept for drawing')
+        self.assertIn('BOOL down = (held & b[i].bit) != 0;', pad)
+        self.assertIn('down ? lit.CGColor : fill', pad)
+        self.assertIn('b[i].size * (down ? kPressedScale : 1)', pad)
+        # one pressed button must not ring the others: the stroke is set per button (a label leaves its colour behind)
+        loop = pad[pad.index('BOOL down = (held & b[i].bit) != 0;'):]
+        loop = loop[:loop.index('\n    }')]
+        self.assertIn('CGContextSetStrokeColorWithColor(c, ink.CGColor)', loop)
 
 if __name__ == '__main__':
     unittest.main()

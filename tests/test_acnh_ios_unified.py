@@ -23,7 +23,7 @@ class OnlyItsOwnFiles(unittest.TestCase):
                          'gen_embed / build_deps / xcode_dir / install_device: use games/totk/ios/tools')
 
     def test_sources_are_zeldas(self):
-        self.assertEqual(files(ACNH / 'Sources'), {'ios_front.m', 'ACNH.entitlements', 'Info.plist'},
+        self.assertEqual(files(ACNH / 'Sources'), {'ios_front.m'},
                          'the app (main.m, start screen, touch controls, ...) is games/totk/ios/Sources')
         self.assertFalse((ACNH / 'Settings.bundle').exists(), 'the Settings pane is made from games/totk/ios/Settings.bundle')
 
@@ -38,15 +38,17 @@ class OnlyItsOwnFiles(unittest.TestCase):
 
 class BuiltFromTheSharedApp(unittest.TestCase):
     def test_compiles_the_shell_and_uses_the_tools(self):
-        self.assertIn("SHELL = TOTK / 'ios/Sources'", BUILD)
-        self.assertIn("- path: {SHELL}", BUILD)
+        # the shared port build (games/totk/ios/tools/build_port_ipa.py) with this game's profile
+        self.assertIn('import build_port_ipa as port_ipa', BUILD)
+        self.assertIn("define='GAME_ACNH'", BUILD)
+        self.assertIn('port_ipa.cli(PORT)', BUILD)
+        shared = (ROOT / 'games/totk/ios/tools/build_port_ipa.py').read_text()
+        self.assertIn("SHELL = TOTK / 'ios/Sources'", shared)
+        self.assertIn("APP = 'TOTK'", shared, 'TOTK.app, which games/totk/ios/tools/install_device.py signs and installs')
         for tool in ('gen_embed.py', 'build_deps.py'):
-            self.assertIn(f"ZELDA_TOOLS / '{tool}'", BUILD, tool)
-        self.assertIn('from xcode_dir import developer_dir', BUILD)
-        self.assertIn("APP = 'TOTK'", BUILD, 'TOTK.app, which games/totk/ios/tools/install_device.py signs and installs')
-        self.assertIn('-DGAME_ACNH=1', BUILD)
-        self.assertIn('pane_for(', BUILD, 'the pane is the shared one, through its own filter')
-        self.assertIn('--image-outside', BUILD, 'the game data stays out of the app as the Zelda builds\' can')
+            self.assertIn(f"TOOLS / '{tool}'", shared, tool)
+        self.assertIn('pane_for(', shared)
+        self.assertIn('--image-outside', shared)
 
     def test_the_shell_knows_the_game(self):
         main = (ZELDA / 'Sources/main.m').read_text()
@@ -65,6 +67,16 @@ class BuiltFromTheSharedApp(unittest.TestCase):
         loader = (ROOT / 'games/acnh/runtime/loader.c').read_text()
         self.assertIn('x0alt', loader, 'the 60 FPS text gen_embed.py --alt-text embeds')
 
+
+
+class TallScreenUI(unittest.TestCase):
+    def test_ui_keeps_its_shape_on_a_screen_taller_than_16_9(self):
+        # user 2026-11-21: "动森 在ipad上的全屏 是拉伸 不是 像iphone一样是扩展？": on the iPad (4:3) the camera already takes
+        # the screen's shape; the UI must be flattened about the centre (below 1), as it is narrowed on the iPhone (above 1)
+        gfx = (Path(__file__).resolve().parents[1] / 'games/acnh/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
+        self.assertIn('return f > 1.001 || f < 0.999 ? f : 1;', gfx)
+        self.assertIn('if (ux < 1) { uy = ux; ux = 1; }', gfx)
+        self.assertIn('S.vp[0][3] * vs * uy', gfx)
 
 if __name__ == '__main__':
     unittest.main()

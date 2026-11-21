@@ -1,7 +1,6 @@
-/* The presets' environment (Bananza / Pokopia; games/totk/ios/Sources/settings_map.c) and the Switch-sized picture
-   without UIKit. Tears of the Kingdom and Breath of the Wild use the picture profiles (tests/test_picture_profile.c). */
+/* The presets' environment (Bananza / Pokopia; games/totk/ios/Sources/settings_map.c) without UIKit.
+   Tears of the Kingdom and Breath of the Wild use the picture profiles (tests/test_picture_profile.c). */
 #include "settings_map.h"
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -69,26 +68,6 @@ int main(int argc, char **argv) {
     /* The in-game button switches between 30 and the normal rate. */
     if (totk_frame_button_target(0) != 30 || totk_frame_button_target(1) != 60) {
         failures++; fprintf(stderr, "the in-game frame-rate button mapping is wrong\n");
-    }
-
-    /* "Switch screen size": the picture is as big as the Switch's 6.2-inch 16:9 screen on any iPad, which needs the
-       panel's real density (a mini packs more pixels per inch); a view not bigger than that keeps filling it. */
-    {
-        double w = 0, h = 0;
-        if (!totk_switch_size(1180, 820, totk_ipad_ppi("iPad15,7"), 2, &w, &h) || fabs(w - 713.3) > 0.5 || fabs(h - 401.2) > 0.5 ||
-            fabs(w * 2 / 264 - 5.404) > 0.01) {   /* the iPad (A16): 5.40 inches wide */
-            failures++; fprintf(stderr, "Switch size on the iPad (A16): %.1fx%.1f points, want 713.3x401.2\n", w, h);
-        }
-        if (!totk_switch_size(1133, 744, totk_ipad_ppi("iPad16,1"), 2, &w, &h) || fabs(w - 880.8) > 0.5) {   /* the mini, 326 ppi */
-            failures++; fprintf(stderr, "Switch size on the iPad mini: %.1f points wide, want 880.8\n", w);
-        }
-        w = h = -1;
-        if (totk_switch_size(700, 400, 264, 2, &w, &h) || w != -1 || totk_switch_size(1180, 820, 0, 2, &w, &h)) {
-            failures++; fprintf(stderr, "a view no bigger than the Switch's screen (or no density) must keep filling it\n");
-        }
-        if (totk_ipad_ppi("iPad14,2") != 326 || totk_ipad_ppi("iPad15,7") != 264 || totk_ipad_ppi(NULL) != 264) {
-            failures++; fprintf(stderr, "iPad densities: minis 326, the others 264\n");
-        }
     }
     if (failures) return 1;
     puts("ios settings ok");

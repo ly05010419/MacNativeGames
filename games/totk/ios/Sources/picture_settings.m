@@ -19,7 +19,6 @@ pp_picture totk_current_picture(pp_profile *profile, pp_metalfx *mfx) {
         pic.scene_w = pp_scene_parse([d stringForKey:@"TOTK_CUSTOM_SCENE"].UTF8String, &w) ? w : 0;
         pic.taa = [d boolForKey:@"TOTK_CUSTOM_TAA"];
         pic.fps = [[d stringForKey:@"TOTK_CUSTOM_FPS"] isEqualToString:@"30"] ? 30 : 60;
-        pic.switch_size = [d boolForKey:@"TOTK_CUSTOM_SWITCH_SIZE"];
         pic.aspect_169 = [[d stringForKey:@"TOTK_CUSTOM_ASPECT"] isEqualToString:@"0"];
         pic.present_60 = [d boolForKey:@"TOTK_CUSTOM_PRESENT_60"];
     }
@@ -37,7 +36,6 @@ void totk_save_custom_picture(const pp_picture *p) {
     [d setObject:@(pp_scene_key(p->scene_w)) forKey:@"TOTK_CUSTOM_SCENE"];
     [d setBool:p->taa != 0 forKey:@"TOTK_CUSTOM_TAA"];
     [d setObject:p->fps == 30 ? @"30" : @"60" forKey:@"TOTK_CUSTOM_FPS"];
-    [d setBool:p->switch_size != 0 forKey:@"TOTK_CUSTOM_SWITCH_SIZE"];
     [d setObject:p->aspect_169 ? @"0" : @"" forKey:@"TOTK_CUSTOM_ASPECT"];
     [d setBool:p->present_60 != 0 forKey:@"TOTK_CUSTOM_PRESENT_60"];
     totk_choose_profile(PP_CUSTOM);
@@ -70,7 +68,8 @@ void totk_migrate_picture_rows(void) {
             .mfx_upscale = [stored[@"TOTK_MFX_UPSCALE"] boolValue],
             .taa = [stored[@"TOTK_TAA"] boolValue],
             .aspect = text(@"TOTK_ASPECT").UTF8String,
-#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143) && !defined(GAME_ACNH)
+#include "port_features.h"
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143) && !SHELL_PORT
             .totk_old = 1,   /* 1.0 and 1.2.1: the handheld scene without a size was 1280x720 */
 #endif
         };

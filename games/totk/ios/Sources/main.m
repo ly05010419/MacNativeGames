@@ -10,12 +10,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
-#include <sys/sysctl.h>
 #include "runtime.h"
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
 #include "picture_settings.h"
+#include "port_features.h"
 #include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "mng_active.h"            // the day's report of active players
@@ -176,8 +176,8 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
     fprintf(stderr, "[totk] shader pack unpacked: %llu files, %.0f MB\n", (unsigned long long)files, total / 1048576.0);
     return nil;
 }
-#ifdef GAME_ACNH
-/* Animal Crossing (games/acnh/ios/tools/build_ipa.py): the shaders its Mac app translated while playing come in the app
+#if SHELL_PORT
+/* A port (games/totk/ios/tools/build_port_ipa.py): the shaders its Mac app translated while playing come in the app
    (GameData/shader-cache) and are copied into the cache in Documents, on the game thread: thousands of files take longer
    than the 20 s iOS gives a launch (0x8badf00d, 2026-11-20). A .variants index gains only the rows it lacks. */
 static NSString *g_mac_shaders, *g_shader_cache;
@@ -207,7 +207,7 @@ static unsigned long import_mac_shaders(NSString *from, NSString *to) {
 #endif
 static void *run_host(void *unused) {
     (void)unused;
-#ifdef GAME_ACNH
+#if SHELL_PORT
     if (g_mac_shaders) {
         BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
         runtime_boot_status(zh ? "正在准备着色器" : "Preparing shaders", zh ? "复制 Mac 上翻译好的着色器（只在第一次）" : "copying the shaders translated on the Mac (first start only)");
@@ -282,28 +282,6 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
     runtime_ios_attach_layer((CAMetalLayer *)self.gameView.layer, self.gameView);
     TOTKTouchPad *pad=[[TOTKTouchPad alloc] initWithFrame:self.view.bounds];pad.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[self.view addSubview:pad];
 }
-/* "Switch screen size" (TOTK_SWITCH_SIZE=1; settings_map.c totk_switch_size; user 2026-11-17): once the game
-   starts, the game view is the Switch's 6.2-inch 16:9 screen, centred on the black view, so a low-resolution picture is
-   shown smaller and looks sharper; the touch controls keep the whole screen. iPad only: an iPhone's screen is smaller
-   than the Switch's. Off, or where that picture would not be smaller, the view fills the screen as before. */
-#if !TARGET_OS_VISION   // no UIScreen there, and the headset's window is no Switch-sized picture
-static BOOL g_switch_size;
-- (void)placeGameView {
-    CGRect b = self.view.bounds; double w = 0, h = 0;
-    char machine[32] = ""; size_t n = sizeof machine;
-    UIScreen *screen = self.view.window.windowScene.screen;
-    CGFloat scale = screen.nativeScale > 0 ? screen.nativeScale : self.view.traitCollection.displayScale;   // pixels per point
-    if (g_switch_size && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && !sysctlbyname("hw.machine", machine, &n, NULL, 0) &&
-        totk_switch_size(b.size.width, b.size.height, totk_ipad_ppi(machine), scale, &w, &h)) {
-        self.gameView.autoresizingMask = UIViewAutoresizingNone;
-        self.gameView.frame = CGRectMake(round((b.size.width - w) / 2), round((b.size.height - h) / 2), round(w), round(h));
-    } else {
-        self.gameView.autoresizingMask = UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
-        self.gameView.frame = b;
-    }
-}
-- (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; if (g_switch_size) [self placeGameView]; }   // a resized window
-#endif
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     static BOOL started; if (started) return; started = YES;
@@ -340,7 +318,7 @@ static BOOL g_switch_size;
         [timer invalidate];
         g_no_game_data = nil;
         fprintf(stderr, "[totk] the game data and the shaders are there: starting\n");
-    #ifndef GAME_ACNH
+    #if !defined(GAME_ACNH) && !defined(GAME_ODYSSEY)   /* their contribution headers have no prune (it only trims rows the seed serves) */
     if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
 #endif
         runtime_boot_status(zh ? "正在启动" : "Starting", NULL);
@@ -350,7 +328,7 @@ static BOOL g_switch_size;
 /* What follows the game data's check before the game starts: the save folder question, the shader question, then the
    start itself (prepareAndStart). */
 - (void)startAfterChecks {
-#ifdef GAME_ACNH   // its file system keeps the saves in Documents only (no sync folder): no question about one
+#if SHELL_PORT   // their file systems keep the saves in Documents only (no sync folder): no question about one
     if ([self offerShaderUpload]) return;
     [self prepareAndStart];
     return;
@@ -470,9 +448,6 @@ static void contrib_settings_sync(NSString *contrib) {
         apply_display_settings();
         // The 60/30 button was drawn before Play; it shows the frame rate the picture holds now.
         for (UIView *v in weak.view.subviews) if ([v isKindOfClass:TOTKTouchPad.class]) [v setNeedsDisplay];
-        const char *switch_size = getenv("TOTK_SWITCH_SIZE");   // the picture settings hand it over (apply_display_settings)
-        g_switch_size = switch_size && !strcmp(switch_size, "1");
-        [weak placeGameView];   // the Switch's screen size, when chosen, before the drawable takes the view's shape
         runtime_ios_sync_drawable(weak.gameView);   // the drawable follows the chosen picture (TOTK_IOS_DRAWABLE_H)
         [weak boot];
     };
@@ -631,9 +606,9 @@ static void apply_display_settings(void) {
     pp_env env;
     pp_env_build(&pic, mfx, PP_THIS_GAME, &env);   /* Breath of the Wild, Tears of the Kingdom 1.4.3, or 1.0 / 1.2.1 */
     for (int i = 0; i < env.n; i++) if (env.v[i].value) setenv(env.v[i].name, env.v[i].value, 0);
-    fprintf(stderr, "[totk] picture: profile %s, metalfx %s; %s, scene %s, taa %s, %s fps, Switch size %s, drawable %s\n",
+    fprintf(stderr, "[totk] picture: profile %s, metalfx %s; %s, scene %s, taa %s, %s fps, drawable %s\n",
             pp_profile_key(profile), pp_metalfx_key(mfx), getenv("TOTK_OPERATION_MODE") ?: "?", getenv("TOTK_RENDER_RES") ?: "?",
-            getenv("TOTK_TAA") ?: "?", pic.fps == 30 ? "30" : "60", getenv("TOTK_SWITCH_SIZE") ?: "?", getenv("TOTK_IOS_DRAWABLE_H") ?: "default");
+            getenv("TOTK_TAA") ?: "?", pic.fps == 30 ? "30" : "60", getenv("TOTK_IOS_DRAWABLE_H") ?: "default");
 #else
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
@@ -771,6 +746,8 @@ static void apply_settings(void) {
     mng_active_start(@GAME_INBOX_ID, mng_active_version());
 #elif defined(GAME_ACNH)
     mng_active_start(@"acnh", mng_active_version());
+#elif defined(GAME_ODYSSEY)
+    mng_active_start(@"odyssey", mng_active_version());
 #else
     mng_active_start(@"totk", mng_active_version());
 #endif
@@ -846,7 +823,9 @@ static void apply_settings(void) {
 #else
     NSString *contrib = totk_inbox_claim([docs stringByAppendingPathComponent:@"shader-list-contribution.txt"]);   // this game's file only
     g_contrib = contrib;
+#ifndef GAME_ODYSSEY   /* its contribution header has no prune (it only trims rows the seed serves) */
     if (!g_no_game_data) totk_contrib_prune(contrib, seedDir, seedDir);   // else once the shaders are there (waitForGameData)
+#endif
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
     contrib_settings_sync(contrib);
     totk_inbox_start(contrib, @"ios");   // the player chose "Contribute shaders" (offerShaderUpload): sent while playing
@@ -893,6 +872,16 @@ static void apply_settings(void) {
     setenv("TOTK_UNCAPPED", "0", 1);
     setenv("TOTK_MOVIE_PACE", "0", 1);
     setenv("TOTK_SHADER_ASYNC", "0", 0);
+#endif
+#ifdef GAME_ODYSSEY
+    /* Super Mario Odyssey's own (scripts/odyssey_app_launcher.c, the Mac app's): no render-size overlay (its docked size
+       is a code patch the phone cannot make), the version it was built from, its freeze watchdog and graphics file. */
+    setenv("TOTK_ROMFS_PATCHES", "0", 1);
+    setenv("ODYSSEY_GAME_VERSION", "1.3.0", 0);
+    setenv("ODYSSEY_FREEZE_WATCHDOG", "15", 0);
+    setenv("ODYSSEY_GFX_SETTINGS", [docs stringByAppendingPathComponent:@"graphics.txt"].fileSystemRepresentation, 0);
+#endif
+#if SHELL_PORT
     NSString *macShaders = [res stringByAppendingPathComponent:@"shader-cache"];
     if ([fm fileExistsAtPath:macShaders]) { g_mac_shaders = macShaders; g_shader_cache = cache; }
 #endif

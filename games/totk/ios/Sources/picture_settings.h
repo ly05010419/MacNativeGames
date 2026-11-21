@@ -6,6 +6,8 @@
 #define PP_THIS_GAME PP_GAME_BOTW
 #elif defined(GAME_ACNH)
 #define PP_THIS_GAME PP_GAME_ACNH
+#elif defined(GAME_ODYSSEY)
+#define PP_THIS_GAME PP_GAME_ODYSSEY
 #elif defined(TOTK_GAME_V143)
 #define PP_THIS_GAME PP_GAME_TOTK
 #else
@@ -15,7 +17,7 @@
 /* The picture choices as the app stores them (NSUserDefaults; the Settings pane writes the same two keys), for main.m
    (the environment at game start), the start screen and the Advanced screen. Tears of the Kingdom and Breath of the
    Wild only (not GAME_NS2). Keys: TOTK_PICTURE_PROFILE and TOTK_METALFX (the pane's rows), TOTK_CUSTOM_MODE / _SCENE /
-   _TAA / _FPS / _SWITCH_SIZE / _ASPECT / _PRESENT_60 (Custom, written by the app only), TOTK_PICTURE_MIGRATED. */
+   _TAA / _FPS / _ASPECT / _PRESENT_60 (Custom, written by the app only), TOTK_PICTURE_MIGRATED. */
 
 /* What the game will use: an unknown profile is Performance, Custom without a saved combination is Performance's
    values, an unknown MetalFX value is Off. */

@@ -11,15 +11,16 @@ typedef enum { PP_MFX_OFF, PP_MFX_SCENE, PP_MFX_SCREEN } pp_metalfx;
 /* PP_GAME_TOTK_OLD: Tears of the Kingdom 1.0 / 1.2.1, whose handheld scene without a size is the game's own 1280x720
    (game_patches.c render_res), where 1.4.3's and Breath of the Wild's is 960x540 (after PR #2287). */
 /* PP_GAME_ACNH: Animal Crossing (games/acnh/ios builds with these files): no scene size, edge smoothing or 16:9 bars of
-   its own; the mode, MetalFX to the screen, the Switch size and 30 / 60 (ACNH_FPS: its 60 FPS text, exported on the Mac). */
-typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH } pp_game;
+   its own; the mode, MetalFX to the screen and 30 / 60 (ACNH_FPS: its 60 FPS text, exported on the Mac). */
+/* PP_GAME_ODYSSEY: Super Mario Odyssey, as Animal Crossing without a frame-rate choice (its own 60; its render size is a
+   code patch the phone cannot make at run time). */
+typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH, PP_GAME_ODYSSEY } pp_game;
 
 typedef struct {
     pp_mode mode;
     unsigned scene_w;    /* 0: automatic (the game's own handheld scene, 1600x900 docked); else one of the listed widths */
     int taa;             /* edge smoothing (MetalFX temporal anti-aliasing) */
     int fps;             /* 30 or 60 (60: no fixed cap) */
-    int switch_size;     /* the picture at the Switch's 6.2-inch screen (iPad only; the app checks) */
     int aspect_169;      /* Tears of the Kingdom only: 16:9 with bars instead of filling the screen */
     int present_60;      /* Custom only, from the old custom layer's 60 fps cap: the display paces 60 (DM_PRESENT_HZ=60),
                             as it did before the profiles, instead of the uncapped path; any frame-rate change clears it
