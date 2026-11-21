@@ -44,6 +44,43 @@ stutter the first time.
 **Cheats:** put an Atmosphère cheat file for this build ID (`98B7F5E7E13B1A4D`) at `build/cheats.txt` before
 `make app` and the app gets a Cheats menu; nothing is downloaded.
 
+## Local story co-op controls (Mac)
+
+Connect two complete controllers, such as two Switch Pro Controllers. After the story unlocks Gooigi (傀易吉),
+open the game's **+** menu and choose **双人游玩** (Co-op). Connecting another controller alone does not change
+the story mode. After selection, the menu offers **单人游玩** to return to solo play.
+
+The host exposes separate FullKey controllers at player IDs 0 and 1. Each player has independent buttons, sticks,
+short presses and vibration channels. Disconnecting one device does not renumber the surviving device. The keyboard
+continues to assist player 1; it does not count as a second physical controller. Both devices use the existing saved
+button mapping. Motion remains on player 1's sensor; player 2 aims with the right stick. Single Joy-Con and online
+multiplayer are outside this change. The existing handheld/iOS input path remains single-player.
+
+If the game requests two players before both controllers are connected, a native panel waits for them and returns
+automatically once they are ready. **取消，返回游戏** cancels the request instead of reporting success with one pad.
+Game Controls, cheats and pairing panels suspend game input from both players; release held buttons and centre the
+sticks after closing a host panel. Pairing runs from the main run loop so connection notifications can still reach the
+main queue while its modal panel is open.
+
+### Input verification
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p test_controller_runloop.py -v
+TOTK_SLOT_OWNER=codex build/lm3-native rewritten/v120 probe-input
+```
+
+The isolated input probe exercises 198 checks, including controller slots, SDK routing, independent press edges,
+keyboard isolation, pairing constraints/cancellation and feedback routing. `TOTK_PROBE_NEGATIVE=123` deliberately
+misroutes player 2 feedback to player 1 and must fail. These are synthetic host snapshots, not physical-device tests.
+The run-loop regression uses the production dispatch helper without creating a window: the old `dispatch_sync(main)`
+strategy fails the same delivery check while the modal-mode timer continues to run.
+
+An earlier development integration with game 1.4.0 was played on an M1 Max with two Pro Controllers. The player
+confirmed independent movement/vacuum use and that disconnecting/reconnecting player 2 automatically closed the
+pairing panel and restored both controls. That integration also contained version/display changes outside this input
+change. The independently based contribution has not been played against the upstream-pinned 1.2.0 or on iOS;
+physical vibration quality and gyro aiming were not separately verified.
+
 ## What differs from Tears of the Kingdom
 
 - **SDK 7.3.2**: an older `nn::init` start sequence, rtld global symbol binding, and its own services (audout, the
