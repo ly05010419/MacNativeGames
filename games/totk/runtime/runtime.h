@@ -2,6 +2,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <pthread.h>
+#include <TargetConditionals.h>
+/* applet_host.c's virtual amiibo reader, chosen from frontend.m's amiibo menu and picker: Breath of the Wild and Tears of the
+   Kingdom on the Mac. The Switch 2 games and iPhone / iPad keep the "no NFC reader" answers. */
+#if !TARGET_OS_IPHONE && (defined(GAME_BOTW) || !defined(GAME_NS2))
+#define RUNTIME_AMIIBO 1
+#endif
 typedef struct { uint64_t where; unsigned kind, symbol; int64_t addend; } Reloc;
 typedef struct { const char *name; uint64_t value, size; unsigned defined, binding, type; } Symbol;
 typedef struct { uint64_t ret, original; unsigned timer, arg; } Gate;
@@ -65,6 +71,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute);
 void runtime_oe_push_message(uint32_t message);
 void hle_bind_system_event(void *event, int autoclear);
+void hle_signal_system_event(void *event);   /* runtime/threads.c: any thread, once bound */
 uint64_t runtime_svc(unsigned num, uint64_t *regs, const char *module, uint64_t offset);
 void runtime_gate(void);
 void runtime_thread_init(void);
@@ -170,6 +177,11 @@ void *runtime_ns2_codec_override(const char *name);
 void *runtime_ns2_audio_out_override(const char *name);
 void *runtime_ns2_opus_ms_override(const char *name);   /* nn::codec Opus multistream (runtime/ns2_opus_ms.c, GAME_NS2) */   /* nn::audio AudioOut (runtime/ns2_audio_out.c, GAME_NS2) */   /* nn::codec video and sync point events (runtime/ns2_codec.c, GAME_NS2) */   /* Switch 2 SDK calls (runtime/ns2_host.c, GAME_NS2 builds only) */
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
+int runtime_amiibo_count(void);              /* runtime/applet_host.c (GAME_BOTW): the virtual reader's figures */
+const char *runtime_amiibo_name(int index);
+int runtime_amiibo_current(void);            /* the figure on the reader or waiting for the next scan, -1 none */
+void runtime_amiibo_place(int index);        /* main thread: put a figure on the reader for one scan, -1 lifts it */
+void runtime_front_amiibo_picker(int show);  /* runtime/frontend.m (Mac, GAME_BOTW): the picker follows the game's scan; any thread */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
 void runtime_gamepad_start(void);
