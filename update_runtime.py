@@ -298,18 +298,15 @@ def shared_list_games():
 def newest_shader_list(game, work, given=None):
     """The shared shader list an update brings the app up to (user 2026-11-17: "极速更新也要补新着色器（包含 检查着色器的
     功能）"): the game's newest on GitHub, the one the Launcher's Check shaders reads (shader_update.download), so an
-    express update leaves nothing for that check to find. Offline, or when the download fails, the list of this
-    repository's code, with the reason in the log; given (--list) a file instead. Returns (file, where it came from)."""
+    express update leaves nothing for that check to find. In a released Launcher (no network needed), offline, or when
+    the download fails, the list of this code, with the reason in the log (shader_update.newest); given (--list) a file
+    instead. Returns (file, where it came from)."""
     import shader_update
     if given:
         return Path(given).expanduser().resolve(), 'given with --list'
-    own = build_app.REPO / shader_update.LISTS[game]
     folder = work / 'shader-list'
     folder.mkdir(parents=True, exist_ok=True)
-    try:
-        return shader_update.download(game, folder), 'the newest on GitHub'
-    except RuntimeError as e:
-        return own, f'this repository\'s copy ({e})'
+    return shader_update.newest(game, folder)
 
 
 def work_files_from_app(tree, app, version, logs):

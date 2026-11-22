@@ -61,11 +61,27 @@ def download(game, folder):
     if game not in LISTS:
         raise RuntimeError(f'no shared shader list for {game}')
     out = Path(folder) / f'{game}-shader_list.tsv'
+    # a host that cannot be reached (GitHub from China) fails in seconds, not after the whole 300 s
     r = subprocess.run(['/usr/bin/curl', '--fail', '--silent', '--show-error', '--location', '--compressed',
+                        '--connect-timeout', '15', '--speed-limit', '1024', '--speed-time', '30',
                         '--max-time', '300', '-o', str(out), f'{RAW}/{LISTS[game]}'], capture_output=True, text=True)
     if r.returncode or not out.is_file() or not out.stat().st_size:
         raise RuntimeError(f'could not download the shader list from GitHub: {(r.stderr or "empty file").strip()}')
     return out
+
+
+def newest(game, folder):
+    """(the list file, where it came from): the game's newest shared list on GitHub (download); in a released Launcher
+    (its offline store, tools/deps/offline.py: no network needed, user 2026-11-20) or when the download fails, the list
+    this code carries, which is the one the Launcher came with."""
+    own = REPO / LISTS[game]
+    from tools.deps.offline import store
+    if store() is not None:
+        return own, 'the list this Launcher carries'
+    try:
+        return download(game, folder), 'the newest on GitHub'
+    except RuntimeError as e:
+        return own, f'this code\'s own list ({e})'
 
 
 def identity(app):
@@ -263,7 +279,7 @@ def main(argv):
     try:
         game, _ = identity(app)
         with tempfile.TemporaryDirectory() as tmp:
-            listfile = a.list or download(game, tmp)
+            listfile = a.list or newest(game, tmp)[0]
             result = check(app, listfile) if a.check else update(app, listfile, a.work)
     except Exception as e:   # the reason, in words, for the window and the terminal
         print(json.dumps({'ok': False, 'error': str(e)}) if a.json else f'error: {e}')

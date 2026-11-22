@@ -17,7 +17,10 @@ import sys
 from pathlib import Path
 
 from .core import DepsError, cache, fetch, git_fetch, install, jobs, locked, run, say, unpack
+from .offline import activate as _offline
 from .pins import BUILD_TOOLS, SOURCES
+
+_offline()   # a released Launcher's store (offline.py) also for a Makefile's `python3 tools/deps …`
 
 # A build copies a game's sources into its work folder and runs scripts there; they find this repository (and so
 # tools/deps) through MNG_REPO, which every process that imported tools/deps passes on to the ones it starts.

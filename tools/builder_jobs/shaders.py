@@ -29,7 +29,7 @@ def check(app):
         if game not in shader_update.LISTS:
             raise RuntimeError(t('this game has no shader list to check yet', '这个游戏还不能检查着色器'))
         with tempfile.TemporaryDirectory() as tmp:
-            r = shader_update.check(Path(app).expanduser(), shader_update.download(game, tmp))
+            r = shader_update.check(Path(app).expanduser(), shader_update.newest(game, tmp)[0])
     except Exception as e:   # the reason in words for the window (a download, an app the check cannot read)
         return {'ok': False, 'error': str(e)}
     return {'ok': True, 'result': {**r, 'line': line(r), 'can_update': bool(r['new_shaders'] or r['new_pipelines'])}}

@@ -29,6 +29,8 @@ def main(argv):
     b.add_argument('request', type=Path)
     b.add_argument('--history', type=Path, default=HISTORY)
     a = ap.parse_args(argv)
+    from tools.deps.offline import activate
+    activate()   # a released Launcher's offline store (MNG_OFFLINE_STORE): every job and what it starts downloads nothing
     if a.job == 'classify':
         from tools.builder_jobs.classify import report
         print(json.dumps(report(a.paths, a.work, a.open_fonts), ensure_ascii=False))
