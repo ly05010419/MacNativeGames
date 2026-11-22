@@ -499,8 +499,8 @@ static int totk_ap_on(void) {   // holding G
            audio thread spins on IsMemoryPoolAttached without an SVC while the renderer update that ends the wait waits for
            a core (runtime/threads.c before 2026-11-21, when Odyssey moved onto this shared scheduler). Mario Kart 8 Deluxe
            (games/mk8dx, Odyssey's runtime and audio renderer) likewise: the phone runs as its Mac runs, where its races
-           were checked. */
-#if TARGET_OS_IPHONE && !defined(GAME_ODYSSEY) && !defined(GAME_MK8DX)
+           were checked; and Red Dead Redemption (games/rdr, Mario Kart 8 Deluxe's runtime), as on its Mac to Armadillo. */
+#if TARGET_OS_IPHONE && !defined(GAME_ODYSSEY) && !defined(GAME_MK8DX) && !defined(GAME_RDR)
         g_totk_ap = e && !strcmp(e, "1");
 #else
         g_totk_ap = !(e && !strcmp(e, "0"));

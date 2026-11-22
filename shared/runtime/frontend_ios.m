@@ -167,6 +167,18 @@ static uint32_t vi_window(void **out,void *layer){if(!out||layer!=&layerIdentity
 /* As the Mac front ends (frontend.m): the layer's scaling mode is the drawable's own. Mario Kart 8 Deluxe sets it at boot,
    and without this answer the SDK's own read a missing object (iPhone 14, 2026-11-22). */
 static uint32_t vi_scaling_mode(void *layer,int mode){if(layer!=&layerIdentity)return 0xf601;(void)mode;return 0;}
+/* As Red Dead Redemption's Mac front end (games/rdr/runtime/frontend.m; SDK 15.3.2): the layer created with a size (the
+   4-argument CreateLayer) and its crop; the drawable scales the game's picture itself, so the size and crop are logged,
+   not applied. Its exit path destroys the layer, closes the display and finalizes vi. */
+static uint32_t vi_layer_sized(void **out,void *display,int w,int h){uint32_t r=vi_layer(out,display);fprintf(stderr,"[totk] VI layer %dx%d\n",w,h);return r;}
+static int layerCrop[4];
+static void vi_layer_crop(void *layer,int x,int y,int w,int h){
+ if(layer!=&layerIdentity)runtime_fail("SetLayerCrop on an unknown layer");
+ int v[4]={x,y,w,h};if(memcmp(v,layerCrop,sizeof v)){memcpy(layerCrop,v,sizeof v);fprintf(stderr,"[totk] VI layer crop %d,%d %dx%d (not applied)\n",x,y,w,h);}
+}
+static void vi_destroy_layer(void *layer){if(layer!=&layerIdentity)runtime_fail("DestroyLayer on an unknown layer");}
+static void vi_close_display(void *display){if(display!=&displayIdentity)runtime_fail("CloseDisplay on an unknown display");}
+static void vi_finalize(void){}
 static uint32_t vi_vsync(void *ev,void *display){
  if(!ev||display!=&displayIdentity)return 0xf601;hle_bind_system_event(ev,1);
  pthread_mutex_lock(&vsyncLock);if(vsyncCount>=16)runtime_fail("VI display event limit");vsyncEvents[vsyncCount++]=ev;pthread_mutex_unlock(&vsyncLock);return 0;
@@ -176,6 +188,9 @@ void *runtime_front_override(const char *name){
  {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
  {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE",vi_layer},{"_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE",vi_window},
  {"_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE",vi_scaling_mode},
- {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
+ {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync},
+ {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayEii",vi_layer_sized},{"_ZN2nn2vi12SetLayerCropEPNS0_5LayerEiiii",vi_layer_crop},
+ {"_ZN2nn2vi12DestroyLayerEPNS0_5LayerE",vi_destroy_layer},{"_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE",vi_close_display},
+ {"_ZN2nn2vi8FinalizeEv",vi_finalize}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
