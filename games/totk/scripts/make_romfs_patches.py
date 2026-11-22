@@ -11,6 +11,12 @@ The same archive's anim/AutoBuilder_00_In.bflan exposes C_CaptureBG_00 at frame 
 visibility key to frame 0.0 as well. The available test save does not yet unlock AutoBuilder, so that screen
 still needs an in-game screenshot check.
 
+On 1.4.3, the same archive's blyt/PaSystemController_00.bflyt captures the faint controller diagram behind an
+interaction prompt before the live button-prompt atlases can be reflected in it. Remove the guarded
+DynamicCaptureOn = "RGBA8" entry from N_CapGuide_00's active usd1 table without resizing the layout. Its child glyph
+panes then keep drawing from the live atlases and follow prompt style and controller remaps. Earlier versions do not
+use the macOS live-prompt path and keep their original layout.
+
 Event/EventFlow/DmF_SY_GameOver.bfevfl.zs: after 重试 / 结束游戏 the game over flow requests GameOverPause (Event14)
 and then waits one frame (Event25, EventWait Frames 1) before the event ends and the game reloads or goes to the
 title. Shipping frame steps are one 30 fps frame or more, so that wait ends in the frame it starts; with the native
@@ -31,6 +37,9 @@ from pathlib import Path
 import compression.zstd as zstd
 
 root = Path(__file__).resolve().parents[1]
+
+PANE_MAGICS = (b'pan1', b'pic1', b'txt1', b'wnd1', b'bnd1', b'prt1', b'ali1', b'scr1')
+PROMPT_DIAGRAM = 'blyt/PaSystemController_00.bflyt'
 
 def sarc_members(data):
     """name -> (absolute start, end) of every SARC member."""
@@ -82,6 +91,13 @@ MEMBERS = {
 }
 
 
+def common_patch_members(version):
+    """Common archive members changed by the build for a game version."""
+    if version not in COMMON:
+        raise ValueError(f'unknown game version {version}')
+    return [*MEMBERS, *([PROMPT_DIAGRAM] if version == 'v143' else [])]
+
+
 def patch_capture(blarc, members, frame):
     """Move the capture panes' visibility keys in MEMBERS of the decompressed Common archive `blarc` (a bytearray, with
     `members` from sarc_members) from frame 1.0 to `frame`. Each pane must have the shipping keys (0.0, 0) (1.0, 1); a
@@ -99,6 +115,111 @@ def patch_capture(blarc, members, frame):
         if sorted(changed) != sorted(panes):
             raise ValueError(f'{member}: found the panes {changed}, expected {list(panes)}')
         patched[member] = changed
+    return patched
+
+
+def patch_prompt_diagram(blarc, members):
+    """Disable the stale one-time capture behind interaction prompts.
+
+    PaSystemController_00's N_CapGuide_00 pane has an adjacent usd1 user-data
+    section with a string entry ``DynamicCaptureOn = RGBA8``. Remove that entry
+    from the active table without resizing the layout, so its child button
+    glyphs keep using the live prompt atlases. All pointers in a usd1 entry are
+    relative to that entry's own start.
+    """
+    if PROMPT_DIAGRAM not in members:
+        raise ValueError(f'{PROMPT_DIAGRAM}: member not found')
+    lo, hi = members[PROMPT_DIAGRAM]
+    if not (0 <= lo <= hi <= len(blarc)):
+        raise ValueError(f'{PROMPT_DIAGRAM}: member bounds {lo}:{hi} are outside the archive')
+    if hi - lo < 0x14:
+        raise ValueError(f'{PROMPT_DIAGRAM}: truncated BFLYT header')
+    if bytes(blarc[lo:lo + 6]) != b'FLYT\xff\xfe':
+        raise ValueError(f'{PROMPT_DIAGRAM}: not a little-endian BFLYT')
+    header, declared = struct.unpack_from('<HxxxxI', blarc, lo + 6)
+    if declared != hi - lo:
+        raise ValueError(f'{PROMPT_DIAGRAM}: declared size {declared} differs from member size {hi - lo}')
+    if not 0x14 <= header <= declared:
+        raise ValueError(f'{PROMPT_DIAGRAM}: header size {header} is outside the declared file')
+    end = lo + declared
+    section_count = struct.unpack_from('<H', blarc, lo + 0x10)[0]
+    pos, targets = lo + header, []
+    for _ in range(section_count):
+        if pos + 8 > end:
+            raise ValueError(f'{PROMPT_DIAGRAM}: truncated section table')
+        magic = bytes(blarc[pos:pos + 4])
+        size = struct.unpack_from('<I', blarc, pos + 4)[0]
+        if size < 8 or pos + size > end:
+            raise ValueError(f'{PROMPT_DIAGRAM}: invalid {magic!r} section size {size}')
+        if magic in PANE_MAGICS:
+            if size < 36:
+                raise ValueError(f'{PROMPT_DIAGRAM}: pane section {magic!r} is too small for its name')
+            try:
+                name = bytes(blarc[pos + 12:pos + 36]).split(b'\0')[0].decode()
+            except UnicodeDecodeError as error:
+                raise ValueError(f'{PROMPT_DIAGRAM}: invalid pane name encoding') from error
+            if name == 'N_CapGuide_00':
+                targets.append(pos + size)
+        pos += size
+    if len(targets) != 1:
+        raise ValueError(f'{PROMPT_DIAGRAM}: N_CapGuide_00 pane not found exactly once (found {len(targets)})')
+    usd = targets[0]
+    if usd + 12 > end or bytes(blarc[usd:usd + 4]) != b'usd1':
+        raise ValueError(f'{PROMPT_DIAGRAM}: N_CapGuide_00 is not followed by usd1')
+    size = struct.unpack_from('<I', blarc, usd + 4)[0]
+    usd_end = usd + size
+    if size < 12 or usd_end > end:
+        raise ValueError(f'{PROMPT_DIAGRAM}: invalid usd1 section size {size}')
+    count = struct.unpack_from('<H', blarc, usd + 8)[0]
+    table = usd + 12
+    if table + count * 12 > usd_end:
+        raise ValueError(f'{PROMPT_DIAGRAM}: usd1 entry table exceeds the section')
+
+    entries = []
+    for i in range(count):
+        entry = table + i * 12
+        name_offset, data_offset, length, kind, padding = struct.unpack_from('<IIHBB', blarc, entry)
+        name_at, data_at = entry + name_offset, entry + data_offset
+        if not (table + count * 12 <= name_at < usd_end) or 0 not in blarc[name_at:usd_end]:
+            raise ValueError(f'{PROMPT_DIAGRAM}: usd1 entry {i} has an invalid name pointer')
+        name_end = blarc.index(0, name_at, usd_end)
+        try:
+            name = bytes(blarc[name_at:name_end]).decode()
+        except UnicodeDecodeError as error:
+            raise ValueError(f'{PROMPT_DIAGRAM}: usd1 entry {i} has an invalid name') from error
+        if not (table + count * 12 <= data_at <= usd_end) or data_at + length > usd_end:
+            raise ValueError(f'{PROMPT_DIAGRAM}: usd1 entry {name} has an invalid data pointer')
+        entries.append((entry, name, data_at, length, kind, padding))
+
+    matches = [(i, entry) for i, entry in enumerate(entries) if entry[1] == 'DynamicCaptureOn']
+    if len(matches) != 1:
+        raise ValueError(f'{PROMPT_DIAGRAM}: DynamicCaptureOn found {len(matches)} times, expected 1')
+    remove, (_, _, data_at, length, kind, _) = matches[0]
+    if kind != 0:
+        raise ValueError(f'{PROMPT_DIAGRAM}: DynamicCaptureOn has type {kind}, expected string (0)')
+    value = bytes(blarc[data_at:data_at + length]).decode(errors='replace')
+    if value != 'RGBA8':
+        raise ValueError(f"{PROMPT_DIAGRAM}: DynamicCaptureOn has value {value!r}, expected 'RGBA8'")
+    if data_at + length >= usd_end or blarc[data_at + length] != 0:
+        raise ValueError(f'{PROMPT_DIAGRAM}: DynamicCaptureOn string is not NUL-terminated')
+
+    # Compact only the active entry table. Payloads and the unused final entry
+    # stay in place, keeping every section and every later offset unchanged.
+    for i in range(remove + 1, count):
+        old = table + i * 12
+        new = old - 12
+        name_offset, data_offset, length, kind, padding = struct.unpack_from('<IIHBB', blarc, old)
+        struct.pack_into('<IIHBB', blarc, new, name_offset + 12, data_offset + 12, length, kind, padding)
+    struct.pack_into('<H', blarc, usd + 8, count - 1)
+    return [PROMPT_DIAGRAM]
+
+
+def patch_common(blarc, members, frame, version):
+    """Apply every guarded Common archive edit for `version`."""
+    patched = patch_capture(blarc, members, frame)
+    if version == 'v143':
+        for member in patch_prompt_diagram(blarc, members):
+            patched[member] = ['DynamicCaptureOn: removed']
     return patched
 
 
@@ -128,7 +249,7 @@ def main():
     info = zstd.get_frame_info(raw); dictionary = dictionaries[info.dictionary_id]
     blarc = bytearray(zstd.decompress(raw, zstd_dict=dictionary)); assert len(blarc) == info.decompressed_size
     members = sarc_members(blarc)
-    patched = patch_capture(blarc, members, args.capture_frame)
+    patched = patch_common(blarc, members, args.capture_frame, version)
     layout = []
     if args.aspect:
         import importlib.util
@@ -141,7 +262,7 @@ def main():
     assert check == bytes(blarc)
     original = zstd.decompress(raw, zstd_dict=dictionary)
     diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-    assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in [*MEMBERS, *layout])) for i in diff), diff[:20]
+    assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in [*common_patch_members(version), *layout])) for i in diff), diff[:20]
     data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary)
     assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id and zstd.get_frame_info(data).decompressed_size == len(blarc)
     target = out_dir / ARCHIVE; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)

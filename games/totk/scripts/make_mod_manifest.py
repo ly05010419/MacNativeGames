@@ -17,7 +17,8 @@ runtime-index.bin), or a build work folder's extracted/<version>/romfs.
 A mod file the build's own RomFS overlay also replaces (extracted/<version>/romfs-patches, scripts/make_romfs_patches.py)
 would stop the start, since two overlays may not replace one file. Translations replace the UI archive
 Common.Product.<n>.Nin_NX_NVN.blarc.zs for its textures with words, and the build moves the quick-menu capture keys in
-the same archive (issue #73). So the build's edit is applied to the mod's archive with the same checks as
+the same archive (issue #73). On 1.4.3 it also keeps the interaction controller diagram live. So the build's edit is
+applied to the mod's archive with the same checks as
 make_romfs_patches.py: the mod must not have changed the members the build patches, and the result must hold exactly
 the build's patched members. The merged archive takes the mod file's place (the mod's own file is kept next to it as
 <name>.mod-original, and used again on the next run), and its line names the SHA-256 of the build's patched file as the
@@ -291,7 +292,7 @@ def merge_build_patch(mod, name, romfs, index, folder, build_sha):
         import compression.zstd as zstd   # Python 3.14
     except ImportError:
         raise ValueError(f'{name}: merging it with the build\'s patch needs Python 3.14 (compression.zstd)') from None
-    from make_romfs_patches import MEMBERS, common_archive, patch_capture, sarc_members
+    from make_romfs_patches import common_archive, common_patch_members, patch_common, sarc_members
     if name not in {common_archive(v) for v in VERSIONS}:
         raise ValueError(f'{name}: the build patches this file too, and only the UI archive Common.Product.<n> can be merged; '
                          'leave it out of the mod')
@@ -311,28 +312,40 @@ def merge_build_patch(mod, name, romfs, index, folder, build_sha):
         if info.dictionary_id and info.dictionary_id not in dictionaries:
             raise ValueError(f'{name}: compressed with a zstd dictionary the game does not have')
         return bytearray(zstd.decompress(raw, zstd_dict=dictionaries[info.dictionary_id]) if info.dictionary_id else zstd.decompress(raw))
+    version = next(v for v in VERSIONS if common_archive(v) == name)
+    patched_members = common_patch_members(version)
     original, build = unpack(original_raw), unpack(build_raw)
     om, bm = sarc_members(original), sarc_members(build)
-    if any(original[slice(*om[k])] != build[slice(*bm[k])] for k in om if k not in MEMBERS) or om.keys() != bm.keys():
-        raise ValueError(f'{name}: the build\'s patch changes more than {", ".join(MEMBERS)}; this tool merges only those')
-    if target.is_file():   # the mod's own file, unless it is an earlier merge (it holds the build's edit) and the copy is kept
+    if any(original[slice(*om[k])] != build[slice(*bm[k])] for k in om if k not in patched_members) or om.keys() != bm.keys():
+        raise ValueError(f'{name}: the build\'s patch changes more than {", ".join(patched_members)}; this tool merges only those')
+    source, keep_target = None, False
+    if target.is_file():   # an earlier merge holds the build's edit; its kept copy remains the mod's source
         candidate = unpack(target.read_bytes()); cm = sarc_members(candidate)
-        if not kept.is_file() or not all(k in cm and candidate[slice(*cm[k])] == build[slice(*bm[k])] for k in MEMBERS):
-            target.replace(kept)
-    if not kept.is_file():
+        already_merged = all(k in cm and candidate[slice(*cm[k])] == build[slice(*bm[k])] for k in patched_members)
+        if already_merged:
+            if not kept.is_file():
+                raise ValueError(f'{name}: {kept.name} is missing, so the mod\'s own archive is unknown; copy the mod\'s file in again')
+            source = kept
+        else:
+            source, keep_target = target, True   # a new mod copy; preserve it only after every merge check succeeds
+    elif kept.is_file():
+        source = kept
+    if source is None:
         raise ValueError(f'{name}: {kept.name} is missing, so the mod\'s own archive is unknown; copy the mod\'s file in again')
-    blarc = unpack(kept.read_bytes()); members = sarc_members(blarc)
-    for k in MEMBERS:
+    blarc = unpack(source.read_bytes()); members = sarc_members(blarc)
+    for k in patched_members:
         if k not in members or blarc[slice(*members[k])] != original[slice(*om[k])]:
             raise ValueError(f'{name}: the mod changes {k}, which the build patches too, so the two can\'t be merged')
-    patch_capture(blarc, members, 0.0)
-    for k in MEMBERS:
+    patch_common(blarc, members, 0.0, version)
+    for k in patched_members:
         if blarc[slice(*members[k])] != build[slice(*bm[k])]:
             raise ValueError(f'{name}: after the edit, {k} differs from the build\'s (another capture frame?); not merged')
     dictionary = zstd.get_frame_info(build_raw).dictionary_id
     data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionaries[dictionary]) if dictionary else zstd.compress(bytes(blarc), level=19)
     if unpack(data) != blarc:
         raise ValueError(f'{name}: the merged archive does not decompress to itself')
+    if keep_target:
+        target.replace(kept)
     target.write_bytes(data)
     return True
 

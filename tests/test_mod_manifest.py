@@ -64,6 +64,25 @@ def bflan(panes, frame=1.0):
     return b'FLAN\xff\xfe' + b'\0' * 10 + struct.pack('<H', 1) + b'\0' * 2 + section
 
 
+def prompt_layout():
+    """A small BFLYT with N_CapGuide_00 and the two shipping capture user-data entries."""
+    def pane(name):
+        return b'pan1' + struct.pack('<I', 0x54) + b'\x03\0\xff\0' + name.encode().ljust(24, b'\0') + b'\0' * 48
+    # Two 12-byte entries. Offsets are relative to the entry itself, as in usd1.
+    entries = bytearray(24)
+    payload = bytearray(struct.pack('<III', 255, 255, 255) + b'RGBA8\0DynamicCaptureOn\0CaptureBGColor\0')
+    payload += b'\0' * (-len(payload) % 4)
+    table = 12
+    value_bg, value_dynamic = table + 24, table + 24 + 12
+    name_dynamic, name_bg = value_dynamic + 6, value_dynamic + 6 + len(b'DynamicCaptureOn\0')
+    struct.pack_into('<IIHBB', entries, 0, name_dynamic - table, value_dynamic - table, 5, 0, 0)
+    struct.pack_into('<IIHBB', entries, 12, name_bg - (table + 12), value_bg - (table + 12), 3, 1, 0)
+    user = b'usd1' + struct.pack('<IHH', 12 + len(entries) + len(payload), 2, 0) + entries + payload
+    sections = [pane('RootPane'), pane('N_CapGuide_00'), user]
+    body = b''.join(sections)
+    return b'FLYT\xff\xfe' + struct.pack('<HIIHH', 0x14, 0x09000000, 0x14 + len(body), len(sections), 0) + body
+
+
 def run(*args):
     return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)], capture_output=True, text=True)
 
@@ -285,11 +304,13 @@ class MergeWithBuildPatch(unittest.TestCase):
 
     def test_mod_that_changes_a_patched_member_is_refused(self):
         changed = bflan(CAPTURE['anim/AutoBuilder_00_In.bflan'], frame=0.5)
-        self.put_mod({**self.members, 'anim/AutoBuilder_00_In.bflan': changed})
+        mod = self.put_mod({**self.members, 'anim/AutoBuilder_00_In.bflan': changed})
         result = run(self.mod, '--romfs', self.romfs)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('the mod changes anim/AutoBuilder_00_In.bflan, which the build patches too', result.stderr)
         self.assertFalse((self.mod/'manifest.tsv').exists())
+        self.assertEqual((self.mod/COMMON).read_bytes(), mod)
+        self.assertFalse((self.mod/(COMMON + '.mod-original')).exists())
 
     def test_original_archive_in_the_mod_is_left_out(self):
         self.put_mod(self.members)
@@ -298,6 +319,72 @@ class MergeWithBuildPatch(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)   # nothing else in the folder: no manifest to write
         self.assertIn('replaces or adds no file', result.stderr)
         self.assertFalse((self.mod/(COMMON + '.mod-original')).exists())
+
+
+@unittest.skipUnless(HAS_ZSTD, 'needs Python 3.14 (compression.zstd)')
+class MergeV143PromptDiagram(unittest.TestCase):
+    """The v143-only prompt-diagram layout patch composes with a player's UI archive."""
+    COMMON = 'UI/LayoutArchive/Common.Product.140.Nin_NX_NVN.blarc.zs'
+
+    def setUp(self):
+        import compression.zstd as zstd
+        from make_romfs_patches import patch_common, sarc_members
+        self.zstd, self.sarc_members = zstd, sarc_members
+        samples = [f'v143 sample {i} '.encode() * (i % 5 + 1) + bytes(range(i % 251)) for i in range(400)]
+        self.dictionary = zstd.train_dict(samples, 4096)
+        pack = zstd.compress(sarc({'zs.zsdic': self.dictionary.dict_content}))
+        self.members = {name: bflan(panes) for name, panes in CAPTURE.items()}
+        self.members['blyt/PaSystemController_00.bflyt'] = prompt_layout()
+        self.members['timg/__Combined.bntx'] = b'original textures' * 40
+        self.original = sarc(self.members)
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.romfs = fake_romfs(root/'romfs', {'Pack/ZsDic.pack.zs': pack, self.COMMON: self.pack(self.original)})
+        build = bytearray(self.original)
+        patch_common(build, sarc_members(build), 0.0, 'v143')
+        self.build = self.pack(bytes(build))
+        (root/'romfs-patches/UI/LayoutArchive').mkdir(parents=True)
+        (root/'romfs-patches'/self.COMMON).write_bytes(self.build)
+        (root/'romfs-patches/manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256\n' + '\t'.join(
+            [self.COMMON, str(len(self.build)), hashlib.sha256(self.build).hexdigest(),
+             hashlib.sha256(self.pack(self.original)).hexdigest()]) + '\n')
+        self.mod = root/'mods/v143'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pack(self, data):
+        return self.zstd.compress(data, level=19, zstd_dict=self.dictionary)
+
+    def member(self, raw, name):
+        data = self.zstd.decompress(raw, zstd_dict=self.dictionary)
+        lo, hi = self.sarc_members(data)[name]
+        return data[lo:hi]
+
+    def put_mod(self, members):
+        (self.mod/self.COMMON).parent.mkdir(parents=True, exist_ok=True)
+        raw = self.pack(sarc(members))
+        (self.mod/self.COMMON).write_bytes(raw)
+        return raw
+
+    def test_translated_archive_receives_the_prompt_diagram_patch(self):
+        self.put_mod({**self.members, 'timg/__Combined.bntx': b'translated textures' * 40})
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        merged = (self.mod/self.COMMON).read_bytes()
+        self.assertEqual(self.member(merged, 'timg/__Combined.bntx'), b'translated textures' * 40)
+        self.assertEqual(self.member(merged, 'blyt/PaSystemController_00.bflyt'),
+                         self.member(self.build, 'blyt/PaSystemController_00.bflyt'))
+
+    def test_mod_that_changes_the_prompt_diagram_is_refused(self):
+        changed = bytearray(prompt_layout())
+        changed[changed.index(b'RootPane')] = ord('X')
+        mod = self.put_mod({**self.members, 'blyt/PaSystemController_00.bflyt': bytes(changed)})
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('the mod changes blyt/PaSystemController_00.bflyt, which the build patches too', result.stderr)
+        self.assertEqual((self.mod/self.COMMON).read_bytes(), mod)
+        self.assertFalse((self.mod/(self.COMMON + '.mod-original')).exists())
 
 
 class TheWriterToolsShare(unittest.TestCase):

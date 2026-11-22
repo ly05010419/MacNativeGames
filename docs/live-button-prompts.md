@@ -14,11 +14,12 @@ Controller icons name the physical button assigned to the action, including
 remaps. On a default Xbox layout, the Switch A action is the physical B button;
 on a DualSense it is Circle. Changing controller icon style does not remap input.
 
-This covers the icon-font prompts in menus and the eight shared HUD button
-textures, including normal gameplay interactions such as Examine. Baked drawings
-(tutorial animations and the faint controller diagram behind interaction prompts)
-are outside this feature. UI mods that replace the original
-HUD masks may not match the live replacements and need their own integration.
+This covers the icon-font prompts in menus, the eight shared HUD button
+textures, and the faint controller diagram behind normal gameplay interactions
+such as Examine. The 1.4.3 Common layout overlay disables that diagram's stale
+one-time capture, so its glyph panes continue to consume the same live atlases.
+Baked tutorial animations remain outside this feature. UI mods that replace
+the original HUD masks may not match the live replacements and need their own integration.
 Other game versions and iOS keep their existing prompt rendering.
 
 ## Implementation
@@ -35,6 +36,10 @@ Other game versions and iOS keep their existing prompt rendering.
   are modified. Replacement textures use the renderer's residency and deferred
   release paths. Prompt revisions invalidate descriptor views and argument
   buffers so already visible prompts refresh.
+- `scripts/make_romfs_patches.py` removes the guarded
+  `DynamicCaptureOn = "RGBA8"` user-data entry from the interaction diagram's
+  `N_CapGuide_00` pane without resizing the layout. Mod-archive merging applies
+  the same v143-only member edit and refuses a conflicting layout replacement.
 - `scripts/prepare_prompt_hud.py` fingerprints the eight HUD masks from the
   player's verified RomFS. `build/prompt-hud.tsv` contains dimensions and hashes,
   not images. Build and runtime-update packaging generate this file. An older
@@ -86,3 +91,7 @@ suite passed (1,545 tests, two skipped), along with the native runtime build,
 loader probe, app seal and self-check. A custom static mod was generated for
 all four font archives and the HUD masks. No physical controllers were available;
 the iOS SDK was unavailable, so an iOS build was not verified.
+
+The interaction diagram additionally needs an in-game check at an Examine/Take
+prompt: Xbox places Y/X/A/B at top/left/bottom/right; PlayStation, keyboard and
+Auto update without relaunching; Off preserves the original Switch diagram.
