@@ -144,6 +144,8 @@ def _package(path, keys=None, inside=False):
             why = t(f'{repo.GAMES.get(b.NS2[application]["version"], application)} is built from its Switch 2 dump folder '
                     '(base/, updates/), not from an XCI or NSP',
                     f'{repo.GAMES.get(b.NS2[application]["version"], application)}要用 Switch 2 游戏文件夹（base/、updates/）打包，不能用 XCI 或 NSP')
+        elif application in repo.NOT_IN_LAUNCHER:
+            why = not_in_launcher(application)
         else:
             why = t(f'{title} ({_KIND_NAMES[role][0]}) is not a game this repository builds',
                     f'{title}（{_KIND_NAMES[role][1]}）不是本项目能打包的游戏')
@@ -153,13 +155,20 @@ def _package(path, keys=None, inside=False):
                 problem=problem or '', inside=inside, holds_update=max(updates) if role == 'base' and updates else None)
 
 
+def not_in_launcher(application):
+    """Why a file of a game the Launcher does not build (repo.NOT_IN_LAUNCHER) is left out."""
+    en, zh, folder = repo.NOT_IN_LAUNCHER[application]
+    return t(f'MNG Launcher does not build {en}; the repository still does from the command line ({folder}/build.py)',
+             f'MNG Launcher 不打包{zh}；仓库里的命令行还能打包（{folder}/build.py）')
+
+
 def _folder(path):
     """A Switch 2 dump, a firmware or a shared-fonts folder, or None for a folder to look into."""
     b = repo.build_app()
     if (path/'ExeFS/main.npdm').is_file() and (path/'RomFS').is_dir():
         title = b.npdm_program_id(path/'ExeFS/main.npdm')
-        if title == '01002DA013484000':
-            return Item(str(path), 'ss_dump', game='ss', title=title, version=65536)
+        if b.title_kind(title)[0] in repo.NOT_IN_LAUNCHER:   # an extracted Skyward Sword HD
+            return Item(str(path), 'ignored', title=title, note=not_in_launcher(b.title_kind(title)[0]))
     if (path / 'base').is_dir() or (path / 'updates').is_dir():
         npdm = b.ns2_dump_exefs(path) / 'main.npdm'
         title = b.npdm_program_id(npdm) if npdm.is_file() else None
@@ -228,11 +237,9 @@ def _newest(items):
 
 def _supported(game):
     """The title versions of game build_app.py has verified values for (its VERSIONS), the base's 0 included."""
-    if game == 'ss':
-        return {65536}
     if game == 'dread':
         return {0, 327680}
-    if game in ('worldend', 'tmnt'):
+    if game == 'tmnt':
         return {0}
     if game == 'odyssey':   # 1.3.0 (262144) or 1.4.1, checked by hash in the build (scripts/inspect_version.py), not by number
         return None
@@ -332,7 +339,7 @@ def card_update_ncas(path):
 
 # The games whose Mac build tools/prebuilt.py covers (build_app.py's runtimes of games/totk/Makefile), so a release's
 # Launcher builds them with no developer tools; Ocarina of Time needs Xcode (oot_needs_metal), which brings them. The
-# others (ss, dread, worldend, tmnt, acnh: their own games/<game>/build.py) compile on this Mac.
+# others (dread, tmnt, acnh: their own games/<game>/build.py) compile on this Mac.
 PREBUILT_GAMES = {'totk', 'botw', 'dkb', 'pkp', 'oot'}
 
 
@@ -373,7 +380,7 @@ def _plan(items, work=None, open_fonts=False):
     by_role = lambda role, game=None: [i for i in items if i.role == role and (game is None or i.game in (game, None))]
     keys = by_role('keys')
     p.keys = keys[-1].path if keys else None
-    bases = [i for i in items if i.role in ('base', 'ns2_dump', 'nup', 'ss_dump')]
+    bases = [i for i in items if i.role in ('base', 'ns2_dump', 'nup')]
     p.games_found = sorted({i.game for i in items if i.game})
     # Every file told by its contents counts, of a game this repository builds or not (user 2026-11-21: a Pokémon card
     # dropped beside Zelda files kept from before was built as Zelda): files of two games stop the plan, each named.
@@ -405,10 +412,8 @@ def _plan(items, work=None, open_fonts=False):
         return p
     p.base, p.game = base.path, base.game
     p.app_name = repo.GAMES.get(base.game) if base.game else None
-    if base.role in ('ns2_dump', 'nup', 'ss_dump'):
+    if base.role in ('ns2_dump', 'nup'):
         p.needs_keys = False
-        if base.role == 'ss_dump':
-            p.update_version = 65536
         p.fonts = (by_role('fonts') or [Item('', '')])[-1].path or None
         # a Switch 2 dump holds no fonts: games/oot/build.py prepare_fonts and build_app.py main_ns2 take open-source ones
         if base.role in ('ns2_dump', 'nup') and not p.fonts:
@@ -463,14 +468,14 @@ def _plan(items, work=None, open_fonts=False):
     has_fonts = p.firmware or p.fonts or (work and b.fonts_valid(Path(work) / 'totk/extracted/firmware/shared-fonts'))
     # build_app.py: an NSP holds no system fonts, nor does a Breath of the Wild card image (step_data_botw)
     font_block = None
-    if p.game not in ('ss', 'dread', 'worldend', 'tmnt') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
+    if p.game not in ('dread', 'tmnt') and (GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'nsp' or p.game == 'botw') and not has_fonts:
         font_block = t('this game file holds no system fonts (an NSP, or a Breath of the Wild card): drop your unpacked firmware folder (or the shared-fonts folder of '
                        'an earlier build) too, or use the open-source fonts',
                        '这个游戏文件不含系统字体（NSP，或旷野之息的卡带）：把解开的固件文件夹（或以前打包留下的 shared-fonts 文件夹）也放进来，或者用开源字体')
     # a card image whose system update partition is missing or empty (merged / trimmed, "1G+1U") has no fonts either: said
     # here, before the build, instead of at its font step (after PR #2247, which made that step's error say the same);
     # the games that take no system fonts are left out, as in the check above (TMNT: after PR #2125)
-    elif (p.game not in ('ss', 'dread', 'worldend', 'tmnt') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
+    elif (p.game not in ('dread', 'tmnt') and GAME_SUFFIXES.get(Path(p.base).suffix.lower()) == 'xci'
           and not has_fonts and card_update_ncas(p.base) == 0):
         font_block = t('this card image keeps no system update partition (a merged or trimmed card, "1G+1U"), so no system '
                        'fonts: drop your unpacked firmware folder (or the shared-fonts folder of an earlier build) too, or use '
@@ -483,9 +488,7 @@ def _plan(items, work=None, open_fonts=False):
     # is no font_block. open_fonts (the button's) is kept for callers that pass it and changes nothing now.
     if font_block:
         p.open_fonts = True
-    if p.game == 'ss' and (not p.update or p.update_version not in (None, 65536)):
-        p.blocks.append(t('Skyward Sword HD needs update 1.0.1 (v65536)', '天空之剑 HD 需要 1.0.1 更新（v65536）'))
-    if p.game in ('dread', 'worldend', 'tmnt') and p.dlc:
+    if p.game in ('dread', 'tmnt') and p.dlc:
         p.blocks.append(t('This game does not accept add-on packages', '此游戏不接收附加内容包'))
     if p.game == 'eow' and p.update_version != 196608:
         p.blocks.append(t('Echoes of Wisdom needs its 1.1.0 update next to the base game', '智慧的再现需要和本体一起放入 1.1.0 更新'))
@@ -498,9 +501,7 @@ def _plan(items, work=None, open_fonts=False):
                           '动物森友会需要和本体一起放入 3.0.3 更新（或 3.0.1 / 1.2.1）'))
     if p.game == 'acnh' and p.dlc and p.update_version not in (2097152, 2228224):
         p.blocks.append(t('Animal Crossing\'s add-ons need the 3.0.1 or 3.0.3 update', '动物森友会的追加内容需要 3.0.1 或 3.0.3 更新'))
-    if p.game == 'ss' and p.dlc:
-        p.blocks.append(t('Skyward Sword HD does not accept add-on packages', '天空之剑 HD 不接收附加内容包'))
-    p.blocks = p.keys_problems + p.blocks
+    p.blocks =p.keys_problems + p.blocks
     return p
 
 

@@ -39,22 +39,23 @@ class PortPackaging(unittest.TestCase):
 
     def test_mng_build_inputs_and_version_routing(self):
         from tools.builder_jobs import repo, build_job, installed, classify
-        for game, title in (('dread', '010093801237C800'), ('worldend', '010048900CF64000')):
-            self.assertEqual(repo.game_of_title(title), game)
-            self.assertIn('org.macnativegames.'+game, installed.bundle_ids())
-            with tempfile.TemporaryDirectory() as tmp:
-                plan = {'game': game, 'base': '/base.nsp', 'keys': '/prod.keys'}
-                if game == 'dread': plan.update(update='/update.nsp', update_version=327680)
-                script, args, work, app, kind, result = build_job.command({'plan': plan, 'output_dir': tmp, 'work_root': tmp})
-                self.assertEqual(script, ROOT/f'games/{game}/build.py')
-                self.assertIn('/prod.keys', args)
-                if game == 'dread': self.assertIn('/update.nsp', args)
-                self.assertEqual((kind, result), ('full', game))
+        game, title = 'dread', '010093801237C800'
+        self.assertEqual(repo.game_of_title(title), game)
+        self.assertIn('org.macnativegames.'+game, installed.bundle_ids())
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = {'game': game, 'base': '/base.nsp', 'keys': '/prod.keys', 'update': '/update.nsp', 'update_version': 327680}
+            script, args, work, app, kind, result = build_job.command({'plan': plan, 'output_dir': tmp, 'work_root': tmp})
+            self.assertEqual(script, ROOT/f'games/{game}/build.py')
+            self.assertIn('/prod.keys', args)
+            self.assertIn('/update.nsp', args)
+            self.assertEqual((kind, result), ('full', game))
         self.assertEqual(classify._supported('dread'), {0, 327680})
-        self.assertEqual(classify._supported('worldend'), {0})
         self.assertTrue(build_job.same_version({'game':'dread'}, {'game':'dread','version':'v100'}))
         self.assertFalse(build_job.same_version({'game':'dread'}, {'game':'dread','version':'v210'}))
-        self.assertTrue(build_job.same_version({'game':'worldend'}, {'game':'worldend','version':'v0'}))
+        # WORLDEND SYNDROME is built from the command line only (user 2026-11-22: "去掉 WORLDEND SYNDROME", from the Launcher)
+        self.assertIsNone(repo.game_of_title('010048900CF64000'))
+        self.assertIn('010048900CF64000', repo.NOT_IN_LAUNCHER)
+        self.assertNotIn('org.macnativegames.worldend', installed.bundle_ids())
 
     def test_dread_version_keeps_each_identity(self):
         import update_runtime
