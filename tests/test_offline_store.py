@@ -100,6 +100,7 @@ class EveryDownloadIsCarried(unittest.TestCase):
         skipped |= {pins.DEPTH_MODEL_LICENSE[0]}
         skipped |= {url for env in pins.PYTHON_ENVIRONMENTS.values() for _, url, _ in env}
         skipped |= {pins.SOURCES[n][1] for n in offline.NOT_CARRIED if n in pins.SOURCES}
+        skipped |= {pins.SOURCES[n][1] for n in offline_pack.built_names()}   # carried made (built/), not as sources
         skipped |= {pins.PACKAGES[n][1] for n in offline.NOT_CARRIED if n in pins.PACKAGES}
         unexplained = []
         for path in build_code():
@@ -127,9 +128,39 @@ class EveryDownloadIsCarried(unittest.TestCase):
     def test_what_is_not_carried_is_left_out(self):
         from tools.deps import pins
         files = offline_pack.files_wanted()
-        self.assertEqual(offline.NOT_CARRIED, ('dotnet', 'libhac'))
-        self.assertNotIn(pins.SOURCES['dotnet'][2], files)
+        self.assertEqual(offline.NOT_CARRIED, ('dotnet', 'libhac', 'cmake', 'glslang', 'xcodegen'))
+        for name in ('dotnet', 'xcodegen'):
+            self.assertNotIn(pins.SOURCES[name][2], files)
         self.assertNotIn(pins.PACKAGES['libhac'][2], files)
+        self.assertNotIn(pins.SOURCES['glslang'][1], {url for url, _ in offline_pack.git_pins()})
+        self.assertFalse(any(l.startswith('cmake==') for _, lines in offline_pack.requirement_sets() for l in lines))
+
+    def test_no_launcher_game_mac_build_uses_cmake_glslang_or_xcodegen(self):
+        """CMake (54 MB), glslang and XcodeGen are not carried (user 2026-11-22: "好"): a Mac build of a Launcher game
+        uses none of them; spirv-cross is compiled with clang alone."""
+        uses = re.compile(r"""(?:program|prefix|path|build_tools)\([^)]*['"](?:cmake|glslang|glslangValidator|xcodegen)['"]"""
+                          r"""|CMAKE_SET|tools/deps program (?:glslangValidator|xcodegen)|_cmake_install\(""")
+        allowed = {'tools/deps/__init__.py': 'defines them, for iPhone / iPad builds and glslang',
+                   'build_app.py': 'cmake only for an iPhone / iPad build (codec_libraries target != macos)',
+                   'games/dread/build.py': 'the iPhone / iPad build (ios_prerequisites)'}
+        found = {str(p.relative_to(REPO)) for p in build_code() if uses.search(p.read_text(errors='replace'))}
+        self.assertEqual(found - set(allowed), set())
+        import inspect
+        import tools.deps as deps
+        self.assertNotIn('cmake', inspect.getsource(deps._spirv_cross))
+
+    def test_spirv_cross_revision_is_cmakes(self):
+        """--revision is the line SPIRV-Cross's CMake writes: nxnative keys its shader cache on it."""
+        import tools.deps as deps
+        with tempfile.TemporaryDirectory() as t:
+            env = dict(os.environ, GIT_AUTHOR_DATE='2026-09-16T13:27:19', GIT_COMMITTER_DATE='2026-09-16T13:27:19',
+                       GIT_AUTHOR_NAME='a', GIT_AUTHOR_EMAIL='a@b', GIT_COMMITTER_NAME='a', GIT_COMMITTER_EMAIL='a@b')
+            subprocess.run(['git', 'init', '-q', t], check=True, env=env)
+            (Path(t) / 'f').write_text('x')
+            subprocess.run(['git', '-C', t, 'add', 'f'], check=True, env=env)
+            subprocess.run(['git', '-C', t, 'commit', '-q', '-m', 'x'], check=True, env=env)
+            short = subprocess.check_output(['git', '-C', t, 'rev-parse', '--short', 'HEAD'], text=True).strip()
+            self.assertEqual(deps.spirv_cross_revision(t), f'Git commit: {short} Timestamp: 2026-09-16T13:27:19')
 
     def test_skyward_sword_and_worldend_are_not_launcher_games(self):
         """User 2026-11-22: "去掉 WORLDEND SYNDROME" (from the Launcher only), "去掉 塞尔达传说 御天之剑 HD"."""
@@ -288,6 +319,49 @@ class LaunchersOwnDownloads(unittest.TestCase):
             text = (REPO / script).read_text()
             self.assertIn("os.environ.get('MNG_OFFLINE_STORE')", text, script)
             self.assertIn("Path(store, 'files', source['sha256'])", text, script)
+
+
+class BuiltDependencies(unittest.TestCase):
+    """The tools/deps libraries and programs a released Launcher carries made at the release (user 2026-11-22: "做")."""
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.store = self.tmp / 'store'
+        from tools.deps import _folder
+        self.name = _folder('zstd')
+        made = self.store / 'built' / self.name
+        (made / 'bin').mkdir(parents=True)
+        (made / 'bin/zstd').write_bytes(b'made at the release')
+        (made / 'licences').mkdir()
+        (made / 'licences/LICENSE').write_text('BSD')
+        (self.store / 'manifest.json').write_text(json.dumps({'built': {self.name: offline.tree_files(made)}}))
+        patcher = mock.patch.dict(os.environ, {'MNG_OFFLINE_STORE': str(self.store), 'MNG_DEPS_CACHE': str(self.tmp / 'cache')})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_carried_copy_is_installed_and_nothing_is_compiled(self):
+        import tools.deps as deps
+        with mock.patch.dict(deps.RECIPES, {'zstd': mock.Mock(side_effect=AssertionError('compiled'))}):
+            folder = deps.prefix('zstd')
+        self.assertEqual((folder / 'bin/zstd').read_bytes(), b'made at the release')
+        self.assertEqual(folder, self.tmp / 'cache' / self.name)
+
+    def test_a_damaged_copy_is_refused(self):
+        import tools.deps as deps
+        (self.store / 'built' / self.name / 'bin/zstd').write_bytes(b'changed')
+        with self.assertRaisesRegex(deps.DepsError, 'damaged'):
+            deps.prefix('zstd')
+
+    def test_every_carried_source_is_carried_made_and_not_as_source(self):
+        from tools.deps import pins
+        names = offline_pack.built_names()
+        self.assertEqual(set(names), set(pins.SOURCES) - set(offline.NOT_CARRIED))
+        self.assertIn('spirv-cross', names)
+        files, git = offline_pack.files_wanted(), {url for url, _ in offline_pack.git_pins()}
+        for name in names:
+            version, url, pin = pins.SOURCES[name]
+            self.assertNotIn(pin, files, name)
+            self.assertFalse(url in git and (url, pin) in offline_pack.git_pins(), name)
 
 
 class PrebuiltTranslator(unittest.TestCase):

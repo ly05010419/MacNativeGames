@@ -48,6 +48,8 @@ def main(argv):
                     continue
                 print(f'{name} {prefix(name)}')
             for name in BUILD_TOOLS:
+                if name in NOT_CARRIED and store() is not None:
+                    continue
                 print(f'{name} {program(name)}')
         else:
             print(__doc__, file=sys.stderr)

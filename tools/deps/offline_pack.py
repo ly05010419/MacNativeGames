@@ -56,7 +56,8 @@ def constant(path, name):
 
 def git_pins():
     """[(url, commit)]: every commit a build fetches with git."""
-    pins = [(url, pin) for _, url, pin in SOURCES.values() if url.endswith('.git')]
+    pins = [(url, pin) for name, (_, url, pin) in SOURCES.items()
+            if url.endswith('.git') and name not in offline.NOT_CARRIED and name not in built_names()]
     pins += [constant('build_app.py', 'HACTOOL'), constant('build_app.py', 'SPIRV_CROSS'),
              constant('games/acnh/tools/build_hactool.py', 'HACTOOL'),
              constant('games/odyssey/scripts/build_odyssey.py', 'SPIRV_CROSS')]
@@ -73,11 +74,18 @@ def repo_name(url):
     return f'{owner}-{name}'
 
 
+def built_names():
+    """The tools/deps libraries and programs the store carries made (built/), not as sources: every pinned source but
+    what is not carried (user 2026-11-22: "做": a player's Mac compiles none of them)."""
+    return [name for name in SOURCES if name not in offline.NOT_CARRIED]
+
+
 def files_wanted():
-    """{digest: (url, what)}: every pinned download fetched by its digest (but offline.NOT_CARRIED)."""
+    """{digest: (url, what)}: every pinned download fetched by its digest (not offline.NOT_CARRIED, nor the sources of
+    what is carried built)."""
     from tools.deps.open_fonts import _url
     out = {pin: (url, f'{name} {version}') for name, (version, url, pin) in SOURCES.items()
-           if not url.endswith('.git') and name not in offline.NOT_CARRIED}
+           if not url.endswith('.git') and name not in offline.NOT_CARRIED and name not in built_names()}
     out.update({d: (url, filename) for name, (filename, url, d) in PACKAGES.items() if name not in offline.NOT_CARRIED})
     out[FONTTOOLS[2]] = (FONTTOOLS[1], FONTTOOLS[0])
     out.update({d: (_url(path), path) for _, _, path, d in OPEN_FONTS})
@@ -93,7 +101,7 @@ def requirement_sets():
     sets = [(f'{folder}/requirements.txt', [l.split('#')[0].strip() for l in (REPO / folder / 'requirements.txt').read_text().splitlines()
                                             if l.split('#')[0].strip()]) for folder in REQUIREMENTS]
     sets.append(('games/odyssey/build.py PACKAGES', list(constant('games/odyssey/build.py', 'PACKAGES'))))
-    sets.append(('tools/deps/pins.py BUILD_TOOLS', [f'{n}=={v}' for n, (v, _) in BUILD_TOOLS.items()]))
+    sets.append(('tools/deps/pins.py BUILD_TOOLS', [f'{n}=={v}' for n, (v, _) in BUILD_TOOLS.items() if n not in offline.NOT_CARRIED]))
     sets.append((ICONS_FONTTOOLS, [f"fonttools=={constant(ICONS_FONTTOOLS, 'VERSION')}"]))
     return sets
 
@@ -155,6 +163,10 @@ def build_git(store):
         run(['git', '-C', bare, 'update-ref', 'refs/heads/main', first])
         run(['git', '-C', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main'])
         say(f'git   {name}: {", ".join(c[:12] for c in sorted(r["commits"]))}')
+    for old in (store / 'git').glob('*.git'):   # a repository no longer pinned, or not carried (glslang, 2026-11-22)
+        if old.name.removesuffix('.git') not in repos:
+            say(f'git   removed {old.name}')
+            shutil.rmtree(old)
     return {name: sorted(r['urls']) for name, r in repos.items()}
 
 
@@ -196,16 +208,95 @@ def module(name, path):
     return loaded
 
 
+LICENCE_FILES = ('LICENSE', 'LICENCE', 'COPYING', 'PATENTS', 'NOTICE')
+
+
+def licences(name):
+    """The licence files of a pinned source (its top folder, or the one folder inside an archive)."""
+    from tools.deps import source
+    root = Path(source(name))
+    inside = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith('.')]
+    roots = [root] + (inside if len(inside) == 1 else [])
+    return [p for r in roots for p in sorted(r.iterdir()) if p.is_file() and p.name.upper().startswith(LICENCE_FILES)]
+
+
+RECIPES = ('tools/deps/__init__.py', 'tools/deps/core.py', 'tools/deps/pins.py')   # what says how each is made
+
+
+def recipe_digest():
+    return digest_of_files(REPO / p for p in RECIPES)
+
+
+def digest_of_files(paths):
+    import hashlib
+    h = hashlib.sha256()
+    for path in paths:
+        h.update(path.name.encode() + b'\0' + path.read_bytes() + b'\0')
+    return h.hexdigest()
+
+
+def build_built(store, old):
+    """({folder: {file: SHA-256}}, recipe digest): each of built_names() as tools/deps makes it on any Mac (prefix()),
+    copied into built/<its cache folder> with its licences (licences/). Made in an empty deps cache, so this Mac's
+    older builds are never taken; kept from the last store when the recipes (RECIPES) are the same and its files are
+    intact, so building the store again changes nothing (a compile is not byte for byte the same twice)."""
+    from tools.deps import _folder
+    folder = store / 'built'
+    folder.mkdir(exist_ok=True)
+    recipes = recipe_digest()
+    wanted = {_folder(name): name for name in built_names()}
+    kept = old.get('built') or {}
+    if old.get('built_recipes') == recipes and set(kept) == set(wanted) and all(
+            (folder / f).is_dir() and offline.tree_files(folder / f) == files for f, files in kept.items()):
+        say(f'built {", ".join(sorted(kept))}: kept (same recipes {recipes[:12]})')
+        return kept, recipes
+    out = {}
+    with tempfile.TemporaryDirectory() as t:
+        before = os.environ.get('MNG_DEPS_CACHE')
+        os.environ['MNG_DEPS_CACHE'] = str(Path(t) / 'cache')
+        try:
+            from tools.deps import prefix
+            for target_name, name in wanted.items():
+                made, target = prefix(name), folder / target_name
+                shutil.rmtree(target, ignore_errors=True)
+                shutil.copytree(made, target, symlinks=True)
+                found = licences(name)
+                if not found:
+                    raise RuntimeError(f'{name}: no licence file in its source; a built copy needs one beside it')
+                (target / 'licences').mkdir(exist_ok=True)
+                for path in found:
+                    shutil.copy2(path, target / 'licences' / path.name)
+                out[target_name] = offline.tree_files(target)
+                size = sum(p.stat().st_size for p in target.rglob('*') if p.is_file())
+                say(f'built {target_name} ({size / 1e6:.1f} MB; {", ".join(p.name for p in found)})')
+        finally:
+            if before is None:
+                os.environ.pop('MNG_DEPS_CACHE', None)
+            else:
+                os.environ['MNG_DEPS_CACHE'] = before
+    for stale in folder.iterdir():
+        if stale.name not in out:
+            shutil.rmtree(stale)
+    return out, recipes
+
+
 def build(store, python):
+    if offline.store() is not None:   # prefix() would take the built copies from that store instead of making them
+        raise RuntimeError(f'{offline.STORE_ENV} is set: build a store where no store is in use')
     store.mkdir(parents=True, exist_ok=True)
     for old in ('nuget', 'dotnet-tools'):   # what the store held on 2026-11-21, no longer carried
         shutil.rmtree(store / old, ignore_errors=True)
     build_files(store)
     git = build_git(store)
     build_wheels(store, python)
+    try:
+        old = json.loads((store / offline.MANIFEST).read_text())
+    except (OSError, ValueError):
+        old = {}
+    made, recipes = build_built(store, old)
     data = {'schema': offline.SCHEMA, 'git': git,   # no date: the same contents make the same manifest (CHECKED)
             'files': {d: what for d, (_, what) in files_wanted().items()},
-            'wheels': sorted(p.name for p in (store / 'wheels').glob('*.whl'))}
+            'wheels': sorted(p.name for p in (store / 'wheels').glob('*.whl')), 'built': made, 'built_recipes': recipes}
     (store / offline.MANIFEST).write_text(json.dumps(data, indent=1, sort_keys=True) + '\n')
     size = sum(p.stat().st_size for p in store.rglob('*') if p.is_file())
     say(f'store {store}: {size / 1e6:.0f} MB')
@@ -264,12 +355,15 @@ def check(store, python):
 def not_carried(python, env, tmp):
     """What the store leaves out is refused, not downloaded; TMNT's translator, the one .NET program a Launcher game
     runs, is its prebuilt NativeAOT file and starts with no .NET at all."""
-    for name in (n for n in offline.NOT_CARRIED if n in SOURCES):   # a package (LibHac) has no command of its own
-        r = subprocess.run([python, '-B', '-m', 'tools.deps', 'prefix', name], env=env, cwd=REPO, capture_output=True,
-                           text=True, timeout=300)
-        if r.returncode == 0 or 'not in the Launcher\'s offline store' not in r.stderr:
+    for name in offline.NOT_CARRIED:   # a package (LibHac) has no command of its own
+        command = 'prefix' if name in SOURCES else 'program' if name in BUILD_TOOLS else None
+        if command is None:
+            continue
+        r = subprocess.run([python, '-B', '-m', 'tools.deps', command, name], env=env, cwd=REPO, capture_output=True,
+                           text=True, timeout=600)
+        if r.returncode == 0:
             raise RuntimeError(f'{name}: made with the store in use ({(r.stdout + r.stderr)[-300:]})')
-        say(f'deps  {name}: not carried, refused')
+        say(f'deps  {name}: not carried, cannot be made')
     tmnt = module('tmnt_build_shader_tools', 'games/tmnt/scripts/build_shader_tools.py')
     _, service = tmnt.build(tmp / 'tmnt')
     r = subprocess.run([str(service), '--serve'], input='', capture_output=True, text=True, timeout=60,

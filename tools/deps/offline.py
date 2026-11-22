@@ -6,12 +6,16 @@ MNG-Launcher's bundled_job.py names it in MNG_OFFLINE_STORE (Contents/Resources/
     files/<sha256 or sha512>    every pinned download by its digest: source archives, fonts, icons
     wheels/                     every Python wheel a build installs (pip --no-index --find-links)
     git/<name>.git              shallow bare repositories holding every pinned commit (git's url.<store>.insteadOf)
-    manifest.json               what is in it, and the git address each repository stands for
+    built/<folder>/             each library and program of tools/deps made at the release, as tools/deps installs it
+                                into its cache (<folder> is that cache folder's name), with its licences: a player's
+                                Mac compiles none of them, and the store needs none of their sources (2026-11-22)
+    manifest.json               what is in it, the git address each repository stands for, each built file's SHA-256
 
 activate() points pip and git at the store through their own settings in the environment, which every process a job
 starts inherits: no build script needs to know about it, and anything missing from the store fails at once instead of
-reaching the network. fetch() (core.py) takes a file from files/ before it would download.
-Python 3.9 safe, as core.py."""
+reaching the network. fetch() (core.py) takes a file from files/ before it would download; prefix() (__init__.py) takes
+a built/ folder before it would make one. Python 3.9 safe, as core.py."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,10 +24,12 @@ STORE_ENV = 'MNG_OFFLINE_STORE'
 MANIFEST = 'manifest.json'
 SCHEMA = 2
 
-# Pinned in tools/deps/pins.py but not carried: no game the Launcher builds uses them (user 2026-11-21: "去掉 .net sdk",
-# 231 MB; 2026-11-22: Skyward Sword HD and WORLDEND SYNDROME, the games that ran .NET programs and LibHac, are no longer
-# built by the Launcher; TMNT's translator is prebuilt). A checkout still makes them for those games' command-line builds.
-NOT_CARRIED = ('dotnet', 'libhac')
+# Pinned in tools/deps/pins.py (SOURCES, PACKAGES, BUILD_TOOLS) but not carried: no Mac build of a game the Launcher makes
+# uses them, and a checkout still makes them for what does. The .NET SDK (231 MB) and LibHac: user 2026-11-21 "去掉 .net
+# sdk"; Skyward Sword HD and WORLDEND SYNDROME, which ran .NET programs, are no longer built by the Launcher (2026-11-22)
+# and TMNT's translator is prebuilt. CMake (54 MB), glslang and XcodeGen: iPhone / iPad builds and glslang only, since
+# spirv-cross is compiled with clang alone (user 2026-11-22: "好").
+NOT_CARRIED = ('dotnet', 'libhac', 'cmake', 'glslang', 'xcodegen')
 
 
 def store():
@@ -47,6 +53,41 @@ def stored_file(want):
         return None
     path = folder / 'files' / want
     return path if path.is_file() else None
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def tree_files(folder):
+    """{relative name: SHA-256 (a link: 'link:' and its target)} of everything in a folder."""
+    folder = Path(folder)
+    out = {}
+    for p in sorted(folder.rglob('*')):
+        if p.is_symlink():
+            out[p.relative_to(folder).as_posix()] = 'link:' + os.readlink(p)
+        elif p.is_file():
+            out[p.relative_to(folder).as_posix()] = file_sha256(p)
+    return out
+
+
+def built(name):
+    """The store's built/<name> (a tools/deps cache folder made at the release), or None: no store, or not carried built.
+    One whose files differ from the manifest is refused: a player's build would otherwise link a damaged library."""
+    folder = store()
+    if folder is None:
+        return None
+    files = (manifest(folder).get('built') or {}).get(name)
+    if files is None:
+        return None
+    path = folder / 'built' / name
+    if not path.is_dir() or tree_files(path) != files:
+        raise ValueError(f'{path}: the Launcher\'s copy of {name} is damaged; reinstall the Launcher')
+    return path
 
 
 def environment(folder, base=None):
