@@ -194,16 +194,10 @@ class Job(unittest.TestCase):
             with self.assertRaisesRegex(build_job.Refused, 'disk not connected'):
                 build_job.command({'update': '/Apps/Tears of the Kingdom.app', 'shaders': True})
 
-    def test_the_check_answers_in_one_json_object(self):
-        from tools.builder_jobs import shaders
-        result = {'game': 'totk', 'version': 'v143', 'new_shaders': 2, 'new_pipelines': 0, 'waiting': 1, 'listed_rows': 9}
-        with mock.patch.object(su, 'identity', return_value=('totk', 'v143')), \
-             mock.patch.object(su, 'download', return_value=Path('/x.tsv')), mock.patch.object(su, 'check', return_value=result):
-            answer = shaders.check('/Apps/Tears of the Kingdom.app')
-        self.assertTrue(answer['ok'] and answer['result']['can_update'])
-        self.assertIn('2', answer['result']['line'])
-        with mock.patch.object(su, 'identity', side_effect=RuntimeError('not an app')):
-            self.assertEqual(shaders.check('/nowhere.app'), {'ok': False, 'error': 'not an app'})
+    def test_the_launcher_has_no_check_shaders_job(self):
+        # user 2026-11-22: "launcher里 把 检查着色器 按钮去掉"; the express update takes the newest list by itself
+        self.assertFalse((REPO / 'tools/builder_jobs/shaders.py').exists())
+        self.assertNotIn("'shaders'", (REPO / 'tools/builder_jobs/__main__.py').read_text())
 
 
 if __name__ == '__main__':
