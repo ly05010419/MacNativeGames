@@ -18,7 +18,7 @@ each rebuild; these files are not.
 
 Options match the runtime's (totk_precise_opts): safe math, and invariant positions (DM_PRESERVE_INVARIANCE, which
 runtime/system_services.c sets). flags.txt records them for --check.
-usage: build_shader_libs.py [--work XC3_build] [--jobs N] [--seed | --check]
+usage: build_shader_libs.py --work <work folder> [--jobs N] [--seed | --check]
 """
 import argparse
 import concurrent.futures
@@ -212,7 +212,7 @@ def build_played(build, jobs, metal):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--work', type=Path, default=HERE / 'XC3_build')
+    ap.add_argument('--work', type=Path, required=True, help='the work folder (build.py and make pass it)')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
     ap.add_argument('--metal', help=argparse.SUPPRESS)   # tests: a stand-in compiler
     mode = ap.add_mutually_exclusive_group()

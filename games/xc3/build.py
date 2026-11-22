@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import platform
+import plistlib
 import re
 import shutil
 import signal
@@ -456,6 +457,17 @@ def step_shaders(py, work, version, logs):
         raise
 
 
+def record_work_folder(app, work):
+    """MNGWorkFolder (and the checkout and Python) in the app's Info.plist, as build_app.record_update_source writes them:
+    the next build without --work (build_app.default_work) and MNG Launcher reuse this work folder."""
+    sys.path.insert(0, str(REPO))
+    import build_app as shared_build
+    plist = app / 'Contents/Info.plist'
+    info = plistlib.loads(plist.read_bytes())
+    shared_build.record_update_source(info, work)
+    plist.write_bytes(plistlib.dumps(info))
+
+
 def step_app(py, work, version, icon_source, keys, out, logs, inputs):
     say(f'5/{STEPS} app: generating the runtime tables, compiling the runtime and the launcher, packing the app')
     partial = out.with_name(out.name + '.partial')
@@ -467,6 +479,7 @@ def step_app(py, work, version, icon_source, keys, out, logs, inputs):
     run(['make', 'app', *common, f'APP={partial}', f'GAME={icon_source}', f'KEYS={keys}'], logs / 'app.log')
     (partial / BUILD_INFO).parent.mkdir(parents=True, exist_ok=True)
     (partial / BUILD_INFO).write_text(json.dumps(build_info(version, inputs, work), indent=2) + '\n')
+    record_work_folder(partial, work)
     run(['codesign', '--force', '--sign', '-', partial], logs / 'codesign.log')
     if out.exists():
         old = out.with_name(f'{out.name}.replaced-{os.getpid()}')
@@ -508,7 +521,7 @@ def parse_args(argv):
                     help='optional, repeatable, 2.2.1 only: an Expansion Pass add-on NSP')
     ap.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys')
     ap.add_argument('-o', '--out', type=Path, help='the app to write (default: next to the game file)')
-    ap.add_argument('--work', type=Path, help='work folder (default: XC3_build next to the game file); the app does not need it to play')
+    ap.add_argument('--work', type=Path, help='work folder (default: the one the app at -o records, else MacNativeGames-work/xc3 beside the folder of the app); the app does not need it to play')
     ap.add_argument('--platform', choices=('macos', 'ios', 'visionos'), default='macos', help='macos only')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='optional: an unpacked firmware NCA directory for the system shared fonts')
@@ -553,7 +566,12 @@ def resolve_inputs(args):
     out = args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.app'
     if out.suffix.lower() != '.app':
         raise BuildError(f'the output must end in .app: {out}', code='input')
-    work = args.work.expanduser().resolve() if args.work else game.parent / 'XC3_build'
+    sys.path.insert(0, str(REPO))
+    import build_app as shared_build
+    # one rule for every port (build_app.default_work): the work folder the app at out records, else
+    # MacNativeGames-work/xc3 beside the folder of the app
+    work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else shared_build.default_work(out, 'xc3')
+    say(f'work folder {work} ({why})')
     if work == REPO or REPO in work.parents or out == work or work in out.parents or out in work.parents:
         raise BuildError('the work folder and the app must stay outside the checkout and outside each other', code='input')
     version = 'v221' if update else 'v100'

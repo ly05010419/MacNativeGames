@@ -2,6 +2,7 @@
 packages, and the checks that let a run reuse the work folder. Needs no game files."""
 import importlib.util
 import json
+import plistlib
 from pathlib import Path
 import struct
 import tempfile
@@ -97,7 +98,20 @@ class Inputs(unittest.TestCase):
         game, update, dlcs, *_, out, work, version = self.resolve()
         self.assertEqual((update, dlcs, version), (None, {}, 'v100'))
         self.assertEqual(out, self.dir.resolve() / 'Xenoblade Chronicles 3.app')
-        self.assertEqual(work, self.dir.resolve() / 'XC3_build')
+        self.assertEqual(work, self.dir.resolve().parent / 'MacNativeGames-work/xc3', 'build_app.default_work, as every port')
+
+    def test_a_rebuild_reuses_the_work_folder_the_app_records(self):
+        app = self.dir / 'Xenoblade Chronicles 3.app'
+        (app / 'Contents').mkdir(parents=True)
+        recorded = self.dir / 'elsewhere' / 'xc3'
+        recorded.parent.mkdir()
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleName': 'XC3'}))
+        build.record_work_folder(app, recorded)
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        self.assertEqual(info['MNGWorkFolder'], str(recorded.resolve()))
+        self.assertEqual(info['CFBundleName'], 'XC3')
+        *_, work, _ = self.resolve()
+        self.assertEqual(work, recorded.resolve())
 
     def test_the_update_makes_2_2_1_with_its_add_ons(self):
         dlc = nsp(self.dir / 'fr.nsp', ['010074F013263004'])

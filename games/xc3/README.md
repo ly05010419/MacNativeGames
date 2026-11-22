@@ -70,7 +70,7 @@ python3.14 games/xc3/build.py "<base>.nsp" -k prod.keys [--update "<2.2.1 update
     [--shared-fonts <folder>] [-o "Xenoblade Chronicles 3.app"] [--work <folder>]
 ```
 
-Without `--update` it builds 1.0.0; the add-ons need 2.2.1. It runs the steps below, each checked against `assets/expected-*.json`, reuses what the work folder already holds, translates every shader ahead of play and compiles them into Metal libraries (`make shader-libs`, about 10 minutes the first time), then packs the app. The app carries everything the game reads, so the work folder (about 18 GB) can live on another drive and is needed again only to build, update or rebuild.
+Without `--update` it builds 1.0.0; the add-ons need 2.2.1. It runs the steps below, each checked against `assets/expected-*.json`, reuses what the work folder already holds, translates every shader ahead of play and compiles them into Metal libraries (`make shader-libs`, about 10 minutes the first time), then packs the app. Without `--work` the work folder is the one the app at `-o` records (`MNGWorkFolder`), else `MacNativeGames-work/xc3` beside the folder of the app, as for every port. The app carries everything the game reads, so the work folder (about 18 GB) can live on another drive and is needed again only to build, update or rebuild.
 
 **By hand**, step by step:
 
