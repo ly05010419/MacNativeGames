@@ -20,11 +20,11 @@ id<MTLTexture> vr_ds_capture_target(id<MTLTexture> *from);
 void vr_ds_captured(void);
 /* Replay thread, vr_present_queued: the slot just captured, as a reference for the ticket (0: none). */
 uint32_t vr_ds_take_captured(void);
-/* VR thread: the left and right eye's pictures for the picture copy `slot` (its sequence seq) with depth reference
+/* VR thread: the left and right eye's pictures for the picture of sequence seq with depth reference
    dref; encoded into cb once per seq. tan_y / aspect: the vertical half-angle tangent and the width over height of the
    3D view the game rendered (it fills the picture's height, centred); half: half the eye distance (game units = m).
    1 with out[0] / out[1] set, 0 when the picture stays one for both eyes (the reason is counted). */
-int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t seq, uint32_t dref, float tan_y, float aspect,
+int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect,
                float half, __strong id<MTLTexture> out[2]);
 /* Statistics for the VR line (and reset): pictures warped, kept mono and why. */
 void vr_ds_stats(char *out, size_t n);

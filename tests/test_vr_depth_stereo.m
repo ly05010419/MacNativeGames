@@ -58,7 +58,7 @@ int main(void) {
         // the eyes: tan 1 (focal 64 px), the 3D view the whole width (aspect 2), half the eye distance 0.1
         __strong id<MTLTexture> eyes[2] = { nil, nil };
         cb = [q commandBuffer];
-        if (!vr_ds_eyes(cb, pic, 0, 1, ref, 1.0f, 2.0f, 0.1f, eyes) || !eyes[0] || !eyes[1]) return fail("no eye pictures");
+        if (!vr_ds_eyes(cb, pic, 1, ref, 1.0f, 2.0f, 0.1f, eyes) || !eyes[0] || !eyes[1]) return fail("no eye pictures");
         id<MTLBuffer> rb[2];
         b = [cb blitCommandEncoder];
         for (int k = 0; k < 2; k++) {
@@ -89,7 +89,7 @@ int main(void) {
         // a second call for the same picture sequence reuses the pictures (made once per new game picture)
         __strong id<MTLTexture> again[2] = { nil, nil };
         cb = [q commandBuffer];
-        if (!vr_ds_eyes(cb, pic, 0, 1, ref, 1.0f, 2.0f, 0.1f, again) || again[0] != eyes[0] || again[1] != eyes[1]) { fprintf(stderr, "depth stereo: not reused for the same sequence\n"); bad++; }
+        if (!vr_ds_eyes(cb, pic, 1, ref, 1.0f, 2.0f, 0.1f, again) || again[0] != eyes[0] || again[1] != eyes[1]) { fprintf(stderr, "depth stereo: not reused for the same sequence\n"); bad++; }
         [cb commit];
         free(px); free(dp);
         if (bad) return 1;

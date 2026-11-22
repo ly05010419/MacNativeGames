@@ -46,6 +46,16 @@ int main(void) {
 
     assert(vr_labo_mask_pair("1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13d", "eaa948a4d4c418616c67016b2ae92ad64c55dbf060a320710585da88c29e40be-seed"));
     assert(!vr_labo_mask_pair("1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13dX", "eaa948a4d4c418616c67016b2ae92ad64c55dbf060a320710585da88c29e40be"));
+    /* 1.9.0's own programs (run keys01): without them its eyes were never captured and the headset showed both lenses on a flat panel. */
+    assert(vr_labo_mask_pair("1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13d", "71f5167fe36c717fe88e94dc48a6a0f820ef7f5c797d4241653cb7527424dc87-b7530f698e76_b"));
+    assert(vr_labo_lens_pair("e0467470d532d62384dd46e87619cab73382a02de7d51a1522c0bd23c404245b", "cfa1bb2deb2e2cc1b367027250a3c03c4a48d105ecda5262a96b2c96d708918e"));
+    assert(vr_labo_lens_pair("4e08f0d81ca7280655a107f48dbba6363b0bdf6c5e07c9280c3447878a69675c-b7530f698e76_b", "9c8053675febfbb451eb9a9d6abf807e7f7e43045b663c6fc4b4c0fe381403e6-b7530f698e76_b"));
+    assert(!vr_labo_lens_pair("4e08f0d81ca7280655a107f48dbba6363b0bdf6c5e07c9280c3447878a69675c", "cfa1bb2deb2e2cc1b367027250a3c03c4a48d105ecda5262a96b2c96d708918e")); /* A pair, not two independent lists. */
+    assert(vr_native_ui_vertex("51deaed0b27374b944d36f6520039557b445d249cf8c19c2a11c220e54b8757e-b7530f698e76_b"));
+    assert(vr_native_ui_text_vertex("21fe759b8114941c46161cc7f5dad84707fa4c2540674cdc5ea75abf697634ed-b7530f698e76_b"));
+    assert(vr_native_ui_vertex("60e2041ed375cae126356c554e91a2349e3f82f89986e52ecc9c8d646fb7a396"));
+    assert(!vr_native_ui_text_vertex("51deaed0b27374b944d36f6520039557b445d249cf8c19c2a11c220e54b8757e"));
+    assert(!vr_native_ui_vertex("17dccd27ad609e8b7948c3ef48f0b108e404b9df6bfee34662d0fc6a0e4b744d")); /* CB0 65536 bytes: not the widget contract. */
     vr_labo_frame menu={0};float menu_p[16]={1.5f,0,0,0,0,2,0,0,0,0,-1,-2,0,0,-1,0};
     vr_labo_frame_menu_camera(&menu,0,menu_p);assert(!vr_labo_frame_menu_aspect(&menu));
     vr_labo_frame_menu_camera(&menu,1,menu_p);assert(fabsf(vr_labo_frame_menu_aspect(&menu)-4.f/3)<1e-6f);

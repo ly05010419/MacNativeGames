@@ -16,8 +16,8 @@ void vr_ds_note_scene(id<MTLTexture> depth, float near_plane, float cam_w, float
 id<MTLTexture> vr_ds_capture_target(id<MTLTexture> *from) { if (from) *from = nil; return nil; }
 void vr_ds_captured(void) {}
 uint32_t vr_ds_take_captured(void) { return 0; }
-int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t seq, uint32_t dref, float tan_y, float aspect, float half, __strong id<MTLTexture> out[2]) {
-    (void)cb; (void)pic; (void)slot; (void)seq; (void)dref; (void)tan_y; (void)aspect; (void)half; (void)out; return 0; }
+int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect, float half, __strong id<MTLTexture> out[2]) {
+    (void)cb; (void)pic; (void)seq; (void)dref; (void)tan_y; (void)aspect; (void)half; (void)out; return 0; }
 void vr_ds_stats(char *out, size_t n) { if (n) out[0] = 0; }
 #else
 #include <math.h>
@@ -35,7 +35,7 @@ int vr_dstereo(void);                                                           
 /* RING: a depth copy must outlive the presents queued after it (nvn_mtl.m PQ, 8) and the picture copies the VR thread
    may still warp (totk_vr.m SRC_SLOTS, 5). With 8 the stand-in run vr04 lost 39 and 19 pictures in two 10 s lines to
    "depth overwritten" while presents queued (camera hook 370 frames for 335 pictures). */
-enum { RING = 16, SLOTS = 8, TILE = 16 };
+enum { RING = 16, TILE = 16 };
 
 static struct {
     // replay thread
@@ -44,7 +44,7 @@ static struct {
     uint32_t gen; _Atomic uint32_t captured;   // the reference of the slot captured at this present (0 none)
     // VR thread
     id<MTLRenderPipelineState> ps_disp, ps_tile; id<MTLRenderPipelineState> ps_eye[4]; MTLPixelFormat eye_fmt[4];
-    id<MTLSamplerState> smp; id<MTLTexture> disp, tile; id<MTLTexture> out[SLOTS][2]; uint64_t out_seq[SLOTS];
+    id<MTLSamplerState> smp; id<MTLTexture> disp, tile; id<MTLTexture> out[2]; uint64_t out_seq;   // one pair: the VR thread shows the newest picture and waits for each frame
     int said, said_on;
     _Atomic uint64_t warped, mono_none, mono_stale, mono_size, mono_off, captures;
 } d;
@@ -178,10 +178,11 @@ static void pass(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPip
     [e endEncoding];
 }
 
-int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t seq, uint32_t dref, float tan_y, float aspect,
+int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect,
+
                float half, __strong id<MTLTexture> out[2]) {
     if (!vr_dstereo()) { atomic_fetch_add(&d.mono_off, 1); return 0; }
-    if (!dref || !pic || slot < 0 || slot >= SLOTS || !(half > 0) || !(tan_y > 0.1f) || !(aspect > 0.1f)) { atomic_fetch_add(&d.mono_none, 1); return 0; }
+    if (!dref || !pic || !(half > 0) || !(tan_y > 0.1f) || !(aspect > 0.1f)) { atomic_fetch_add(&d.mono_none, 1); return 0; }
     const int ri = (int)(dref & 15); if (ri >= RING || atomic_load(&d.ring_pub[ri]) != dref) { atomic_fetch_add(&d.mono_stale, 1); return 0; }
     id<MTLTexture> dt = d.ring[ri]; const float near_plane = d.ring_near[ri];
     /* the depth covers the whole picture (OOT: the 1920x1080 canvas and its depth; the headset's MetalFX picture is twice
@@ -191,7 +192,7 @@ int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t s
         if (d.said < 3) { d.said++; DLOG("picture %lux%lu and depth %lux%lu differ in shape: one picture for both eyes", (unsigned long)pic.width, (unsigned long)pic.height, (unsigned long)(dt ? dt.width : 0), (unsigned long)(dt ? dt.height : 0)); }
         return 0;
     }
-    if (d.out_seq[slot] == seq && d.out[slot][0] && d.out[slot][1]) { out[0] = d.out[slot][0]; out[1] = d.out[slot][1]; return 1; }
+    if (d.out_seq == seq && d.out[0] && d.out[1]) { out[0] = d.out[0]; out[1] = d.out[1]; return 1; }
     id<MTLDevice> dev = cb.device;
     if (!setup(dev)) return 0;
     id<MTLRenderPipelineState> pe = eye_pipeline(dev, pic.pixelFormat);
@@ -200,10 +201,10 @@ int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t s
     if (!d.disp || d.disp.width != dt.width || d.disp.height != dt.height) d.disp = mk(dev, MTLPixelFormatR16Float, dt.width, dt.height, 0);
     if (!d.tile || d.tile.width != tw || d.tile.height != dt.height) d.tile = mk(dev, MTLPixelFormatR16Float, tw, dt.height, 0);
     for (int k = 0; k < 2; k++) {
-        id<MTLTexture> o = d.out[slot][k];
-        if (!o || o.width != pic.width || o.height != pic.height || o.pixelFormat != pic.pixelFormat) d.out[slot][k] = mk(dev, pic.pixelFormat, pic.width, pic.height, 1);
+        id<MTLTexture> o = d.out[k];
+        if (!o || o.width != pic.width || o.height != pic.height || o.pixelFormat != pic.pixelFormat) d.out[k] = mk(dev, pic.pixelFormat, pic.width, pic.height, 1);
     }
-    if (!d.disp || !d.tile || !d.out[slot][0] || !d.out[slot][1]) return 0;
+    if (!d.disp || !d.tile || !d.out[0] || !d.out[1]) return 0;
     /* f: the picture's focal length in pixels (its 3D fills the height: half the height over the half-angle tangent) */
     const float W = (float)pic.width, H = (float)pic.height, f = H * 0.5f / tan_y, w3 = H * aspect;
     const float maxpx = 64.0f * H / 1080.0f;
@@ -214,14 +215,14 @@ int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, int slot, uint64_t s
     for (int k = 0; k < 2; k++) {
         struct { float pic[2], dsz[2], s, maxpx, x0, x1; } eu = { { W, H }, { (float)dt.width, (float)dt.height }, k == 0 ? 1.0f : -1.0f, maxpx, du.x0, du.x1 };
         id<MTLSamplerState> smp = d.smp;
-        pass(cb, d.out[slot][k], pe, ^(id<MTLRenderCommandEncoder> e) {
+        pass(cb, d.out[k], pe, ^(id<MTLRenderCommandEncoder> e) {
             [e setFragmentTexture:pic atIndex:0]; [e setFragmentTexture:disp atIndex:1]; [e setFragmentTexture:tile atIndex:2];
             [e setFragmentSamplerState:smp atIndex:0]; [e setFragmentBytes:&eu length:sizeof eu atIndex:0]; });
     }
     id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-    [b generateMipmapsForTexture:d.out[slot][0]]; [b generateMipmapsForTexture:d.out[slot][1]];
+    [b generateMipmapsForTexture:d.out[0]]; [b generateMipmapsForTexture:d.out[1]];
     [b endEncoding];
-    d.out_seq[slot] = seq; out[0] = d.out[slot][0]; out[1] = d.out[slot][1];
+    d.out_seq = seq; out[0] = d.out[0]; out[1] = d.out[1];
     atomic_fetch_add(&d.warped, 1);
     if (!d.said_on++)
         DLOG("on: each eye's picture from the scene depth (picture %lux%lu %lu, depth %lux%lu, near %g, focal %.1f px, half the eye distance %.4f, "

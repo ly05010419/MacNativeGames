@@ -294,15 +294,20 @@ void vr_set_ipd_pct(int pct) { pct = pct < 30 ? 30 : pct > 200 ? 200 : pct; vr_o
 /* Depth-reprojected stereo (vr_depth_stereo.m; Ocarina of Time, user 2026-11-22: "转头时才显得拉伸，那就是缺立体"):
    each eye's picture made from the game's one picture and its scene depth. Option dstereo, off by default (the user
    on the Quest after quest05: "还是不行"; an unfinished candidate stays off until it is right); flag vr_dstereo 0/1.
-   Only where a game hands its scene depth over (OOT); alternating eyes (afr) takes precedence. */
+   Only where a game hands its scene depth over (OOT, TotK 1.4.3); alternating eyes (afr) takes precedence.
+   TOTK_VR_DSTEREO=1 starts with it on; key U and the flag switch it for this session only (user 2026-11-22: "键盘i建
+   可以切换 对比"), so a comparison never changes the saved option. */
+static _Atomic int g_dstereo = -1;
 int vr_dstereo(void) {
-#ifdef GAME_OOT
-    return vr_option("dstereo", 0) != 0;
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
+    int v = atomic_load_explicit(&g_dstereo, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("TOTK_VR_DSTEREO"); v = e ? atoi(e) != 0 : vr_option("dstereo", 0) != 0; atomic_store(&g_dstereo, v); }
+    return v;
 #else
     return 0;
 #endif
 }
-void vr_set_dstereo(int on) { vr_option_set("dstereo", on != 0); VLOG("stereo from the scene depth: %s", on ? "on" : "off (one picture for both eyes)"); }
+void vr_set_dstereo(int on) { atomic_store(&g_dstereo, on != 0); VLOG("stereo from the scene depth: %s", on ? "on" : "off (one picture for both eyes)"); }
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_afr(int on) { vr_option_set("afr", on != 0); VLOG("stereo by alternating eyes: %s", on ? "on (the game renders each eye in turn)" : "off (one camera for both eyes)"); }
 #elif defined(TOTK_GAME_V143)
@@ -917,7 +922,7 @@ void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's 
     g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
 #endif
     atomic_store(&g.ticket_native[ticket % 64], atomic_exchange(&g.frame_native, 0));
-#ifdef GAME_OOT
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
     atomic_store(&g.ticket_depth[ticket % 64], vr_ds_take_captured());   // depth stereo: this frame's depth copy goes with its picture
 #endif
     if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
@@ -1190,6 +1195,12 @@ static id<MTLTexture> hud_update(void) {   // VR thread, between frames (the GPU
     if (!hud_snapshot(HUD_FPS, l0, sizeof l0, &hl) || !fps_overlay_line_pixel_font(l0)) {
         int f = fps_overlay_value(); if (f >= 0) snprintf(l0, sizeof l0, "FPS %d", f); else snprintf(l0, sizeof l0, "FPS --");
     }
+#ifdef TOTK_GAME_V143
+    /* Which way the stereo is made now, in front of the frame rate (user 2026-11-22: "fps 面板显示 u变化的 方式名称 让我知道
+       按u之后 现在是什么方式"; key U, runtime/input.c). Added after the pixel-font test above: the line goes to the system font. */
+    { extern int mtl_stereo_project(void); char t[sizeof l0];
+      snprintf(t, sizeof t, "%s  %s", vr_dstereo() ? "深度重投影" : mtl_stereo_project() ? "每眼重画" : "单画面", l0); memcpy(l0, t, sizeof l0); }
+#endif
     /* What the Quest reports it showed (user 2026-10-30: "quest里 vr 还是显示72帧 为什么？": this line was the frames the
        Mac handed to the streamer, not what the headset showed); the frames sent after it. */
     const int sent = dt > 0 ? (int)((frames - g.hud_frames) / dt + 0.5) : 0; float qs, ql;
@@ -1355,7 +1366,12 @@ static void place_native_picture(const vr_pose *eye, const float fov[4], const f
 static void draw_picture(id<MTLRenderCommandEncoder> e, const quad_u *u, id<MTLTexture> pic) {
     /* Labo's canvas is linear R11G11B10F. Its original window attachment is
        sRGB, whereas the streamer's BGRA IOSurface stores already encoded bytes. */
+#ifdef GAME_BOTW190
+    /* 1.9.0's canvas is RGB10A2 (keys02: format 90) and also linear: its lens pass writes it to an sRGB window image. */
+    const int linear = pic.pixelFormat == MTLPixelFormatRG11B10Float || pic.pixelFormat == MTLPixelFormatRGB10A2Unorm;
+#else
     const int linear = pic.pixelFormat == MTLPixelFormatRG11B10Float;
+#endif
     [e setRenderPipelineState:linear ? g.ps_linear : g.ps]; [e setVertexBytes:u length:sizeof *u atIndex:0];
     [e setFragmentTexture:pic atIndex:0]; [e setFragmentSamplerState:g.smp atIndex:0];
     [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -1446,9 +1462,12 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         pics[k] = t >= 0 ? (stereo ? g.src_views[t][k] : g.src[t]) : nil;
         useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = stereo ? k : t >= 0 ? g.src_eye[t] : -1;
     }
-#ifdef GAME_OOT
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
     /* depth stereo: the picture's depth copy and its sequence (its eye pictures are made once per sequence) */
     const uint32_t ds_ref = s >= 0 && !stereo && !own ? g.src_dref[s] : 0; const uint64_t ds_seq = s >= 0 ? g.seq[s] : 0;
+#endif
+#ifdef TOTK_GAME_V143
+    const int ds_world = s >= 0 && !stereo && g.src_both[s];   // one world picture whose rays cover both eyes
 #endif
 #ifdef TOTK_GAME_V143
     if(!stereo&&s>=0&&g.src_both[s]){   /* one world picture for both eyes: each eye looks it up by its own rays */
@@ -1517,7 +1536,19 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
        a copy overwritten) the one picture stays for both eyes; vr_ds_stats counts why. */
     if (!own && s >= 0 && pics[0] && useds[0] && g.fov_on > 0 && ipd_ok) {
         id<MTLTexture> eyes[2] = { nil, nil }; const float h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
-        if (vr_ds_eyes(cb, pics[0], s, ds_seq, ds_ref, g.fov_tanh, g.fov_aspect, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
+        if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, g.fov_tanh, g.fov_aspect, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
+    }
+#elif defined(TOTK_GAME_V143)
+    /* Depth stereo on TotK 1.4.3's one world picture: its 3D fills the whole picture over rays that are not centred, so
+       the focal length is the width over the span of tangents, passed as vr_ds_eyes' height-based tangent and ratio.
+       place_native_picture puts the plane relative to each eye: what has no disparity is at infinity, as the warp means. */
+    if (ds_world && pics[0] && v->ipd > 0.03f && v->ipd < 0.09f) {
+        const float span = tanf(native_fov[0][1]) - tanf(native_fov[0][0]);
+        if (span > 0.1f) {
+            const float W = (float)pics[0].width, H = (float)pics[0].height, fx = W / span, h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
+            id<MTLTexture> eyes[2] = { nil, nil };
+            if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, H / (2 * fx), W / H, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; }
+        }
     }
 #endif
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1943,7 +1974,7 @@ void vr_stats(char *out, size_t n) {
           snprintf(q + k, sizeof q - k, "; alternating eyes %s: %llu headset frames with each eye's own picture, %llu with one", vr_afr() ? "on" : "off", ap, am);
 #endif
       } }
-#ifdef GAME_OOT
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
     { char ds[320]; vr_ds_stats(ds, sizeof ds); size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; %s", ds); }
 #endif
 #ifndef GAME_BOTW

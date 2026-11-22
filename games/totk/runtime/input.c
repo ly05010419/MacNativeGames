@@ -96,6 +96,24 @@ static void vr_view_key(void){if(!vr_on()||!vr_first_person||!vr_set_first_perso
 /* O (Mac key code 31) recentres VR (user 2026-11-01: "添加一个键 o把 摆正 重置 vr 镜头"): straight ahead becomes where the head
    looks now and the head's position starts from here, as both stick clicks do (gfx/nvn/totk_vr.m vr_recenter). */
 static void vr_recenter_key(void){if(vr_on()&&vr_recenter){vr_recenter();fprintf(stderr,"[totk-input] O: VR recentred\n");}}
+/* U (Mac key code 32), TotK 1.4.3 in VR: switches between the two ways of making stereo, for this session (user 2026-11-22:
+   "改成 u键", "切换 fps ... 理论应该有1倍的 区别"): depth reprojection (the game renders once, gfx/nvn/totk_vr.m
+   vr_set_dstereo) and each eye rendered (every frame replayed per eye, flag stereo_replay 2). First on I, which is the
+   game's menu in the default layout, and against one picture, which also renders once. A real key only: scripted presses
+   keep U as the Y button (runtime_input_key_synthetic). U is in no default layout (tests/test_keyboard_map.c); a player
+   who binds it to a game action keeps that action and has no switch. */
+enum { KEY_VR_DSTEREO = 32 };
+extern int vr_dstereo(void) __attribute__((weak_import));
+extern void vr_set_dstereo(int on) __attribute__((weak_import));
+static void vr_dstereo_key(void){
+#ifdef TOTK_GAME_V143
+ extern void dm_gfx_set_flag(const char *name,int v);
+ if(!vr_on()||!vr_dstereo||!vr_set_dstereo)return;
+ const int depth=!vr_dstereo();
+ if(depth){dm_gfx_set_flag("stereo_replay",0);vr_set_dstereo(1);}else{vr_set_dstereo(0);dm_gfx_set_flag("stereo_replay",2);}
+ fprintf(stderr,"[totk-input] U: VR stereo by %s\n",depth?"depth reprojection (one render)":"rendering each eye (two renders)");
+#endif
+}
 /* The screenshot action (keyboard_map.h KEYMAP_SCREENSHOT, P by default; user 2026-11-11): a press of one of its inputs takes
    the capture button's picture (gamepad.m runtime_capture_press -> screenshot.h). Its inputs drive nothing in the game
    (keymap_apply). With VR on, P and O keep their VR use above and take no picture. */
@@ -112,10 +130,11 @@ void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pth
 void runtime_input_key(unsigned code,int down){
  if(code>=128||ignore_user())return;if(down)user_input("keyboard");
  if(down&&runtime_prompt_note_input)runtime_prompt_note_input(PROMPT_KEYBOARD);
- pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int shot=press&&screenshot_input_locked((int)code);pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();int shot=press&&screenshot_input_locked((int)code),stereo_key=press&&code==KEY_VR_DSTEREO&&keymap_action_of(&keyMap,(int)code,NULL)<0;pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
  if(press&&code==KEY_VR_VIEW)vr_view_key();
  if(press&&code==KEY_VR_RECENTER)vr_recenter_key();
+ if(stereo_key)vr_dstereo_key();
  if(shot)screenshot_input((int)code);
 }
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */

@@ -6354,6 +6354,7 @@ static struct { uint32_t cfmt[8], dfmt, sfmt, samples; int hd, hs; NSUInteger tw
 #define MFX_ROLE_UI 2
 #define MFX_ROLE_UI_OPAQUE 3
 static struct { uint64_t canvas, last_c0, swap[4]; uint32_t swap_w, swap_h; int nswap, scene_done, ui_cleared, depth_done, want_cam, role; uint64_t frames; } g_mfx;
+static id<MTLTexture> g_vr_ds_depth;           // TotK 1.4.3 depth stereo: the G-buffer's depth, until its first draw gives the camera (mfx_take_camera)
 #ifdef GAME_OOT
 static id<MTLTexture> g_mfx_depth_candidate;   // Ocarina of Time: this pass's 32-bit depth, the scene's if its draws use the main camera (mfx_take_camera)
 static uint64_t g_mfx_depth_pass;
@@ -7121,7 +7122,7 @@ static void mfx_pass_setup(MTL4RenderPassDescriptor *pd) {
 #else
     if (!g_mfx.depth_done && dt && c0 && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.width == c0.width && dt.height == c0.height && dt.width >= 320) {
         int nc = 0; for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
-        if (nc >= 3) { mfx_note_depth(dt); g_mfx.depth_done = 1; g_mfx.want_cam = 1; }
+        if (nc >= 3) { mfx_note_depth(dt); g_mfx.depth_done = 1; g_mfx.want_cam = 1; if (vr_wants_camera() && vr_dstereo()) g_vr_ds_depth = dt; }
     }
 #endif
     if (t0 && c0 && g_mfx.scene_done && g_mfx.canvas == t0->serial && R.rt.n <= 7 && pd.colorAttachments[0].level == 0 && !pd.colorAttachments[7].texture) {
@@ -7444,7 +7445,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL; id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil, dt = pd.depthAttachment.texture;
         if (dt && c0 && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.width == c0.width && dt.height == c0.height && dt.width >= 320) {
             int nc = 0; for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
-            if (nc >= 3) { g_vr_cam_taken = 1; g_mfx.want_cam = 1; g_fl_cam_pass = g_fl_npass - 1; }
+            if (nc >= 3) { g_vr_cam_taken = 1; g_mfx.want_cam = 1; g_fl_cam_pass = g_fl_npass - 1; if (vr_dstereo()) g_vr_ds_depth = dt; }
         }
 #endif
     }
@@ -17671,6 +17672,7 @@ static void mfx_take_camera(void) {
         mfx_note_camera(cam, 84);
         if (taa_active()) taa_note_camera(cam, 84);
         vr_note_camera(cam);   // VR head look: which head pose this frame was rendered with
+        if (g_vr_ds_depth) { vr_ds_note_scene(g_vr_ds_depth, cam[56], cam[72], cam[73]); g_vr_ds_depth = nil; }   // TotK 1.4.3 depth stereo: copied at this frame's present
         g_fl_cam_fov = cam[70] * 180 / (float)M_PI;   // diagnostic (TOTK_VR_FRAMELOG): the vertical view, degrees
         { extern float g_vr_cam_pos[3]; extern uint64_t g_vr_cam_pass, g_vr_cam_frame; g_vr_cam_pass = g_stat_pass; g_vr_cam_frame = atomic_load(&g_cur_frame);   // the body gap diagnostic: this frame's camera position, -R^T t of its view matrix (3x4 rows)
           for (int j = 0; j < 3; j++) g_vr_cam_pos[j] = -(cam[j] * cam[3] + cam[4 + j] * cam[7] + cam[8 + j] * cam[11]);
@@ -23247,8 +23249,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
                                                                 (unsigned long long)g_pring_n, (unsigned long long)g_pring_full, rr.w, rr.h, rr.x, rr.y, (unsigned long)rsrc.width, (unsigned long)rsrc.height);
         }
     }
-#ifdef GAME_OOT
-    /* zeldaVR depth stereo (vr_depth_stereo.h): this frame's scene depth into a ring slot of ours, in the frame's own
+#ifndef GAME_BOTW
+    /* zeldaVR depth stereo (vr_depth_stereo.h; OOT, TotK 1.4.3): this frame's scene depth into a ring slot of ours, in the frame's own
        command order (after its passes, before the next frame reuses the depth), as the picture is copied just above;
        vr_present_queued below hands the slot to this present's ticket. */
     if (!discard && !nogpu()) {
