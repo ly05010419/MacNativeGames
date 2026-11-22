@@ -12,6 +12,6 @@
 /* The add-on content this host can mount: the Booster Course Pass (0100152000023001, index 1). Its data is only
    contents.dat and version.txt (the courses are in the update), extracted to extracted/aoc/<index>/. */
 #define GAME_AOC_BASE_ID 0x0100152000023000ULL
-/* The game's id for the shader inbox, the frame-rate board and screenshot sharing (totk_contrib_upload.h; it is
-   "odyssey" there by default, which this game must not report as). */
+/* The game's id for the shader inbox, the frame-rate board and screenshot sharing (totk_contrib_upload.h names it
+   too, since 2026-11-22: its copy came from Odyssey's and said "odyssey"; the inbox lists this id). */
 #define GAME_INBOX_ID "mk8dx"

@@ -23,7 +23,7 @@
 #define TOTK_CONTRIB_INBOX "https://mac-native-games.com/v1/contrib"   /* empty: nothing is sent and nothing is asked */
 #endif
 #ifndef GAME_INBOX_ID
-#define GAME_INBOX_ID "odyssey"    /* the game's id in the inbox (its lib/validate.js GAMES) */
+#define GAME_INBOX_ID "mk8dx"      /* the game's id in the inbox (its lib/validate.js GAMES) */
 #endif
 #define TOTK_INBOX_CHUNK 2000           /* rows per request (the inbox takes 5,000; a row is about 1.2 KB at most) */
 #define TOTK_INBOX_FIRST 20             /* seconds after start: the game's own start-up goes first */

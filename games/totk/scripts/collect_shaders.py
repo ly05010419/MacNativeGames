@@ -49,7 +49,8 @@ from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, list_key_rule  # noqa: 
 
 TITLES = {'tmnt': "Teenage Mutant Ninja Turtles: Shredder's Revenge", 'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
           'ssbu': 'Super Smash Bros. Ultimate', 'wonder': 'Super Mario Bros. Wonder', 'mvdk': 'Mario vs. Donkey Kong',
-          'dkb': 'Donkey Kong Bananza', 'pokopia': 'Pokémon Pokopia', 'oot': 'Ocarina of Time'}
+          'dkb': 'Donkey Kong Bananza', 'pokopia': 'Pokémon Pokopia', 'oot': 'Ocarina of Time',
+          'mk8dx': 'Mario Kart 8 Deluxe'}   # games/mk8dx's seed reads its list; not games/rdr's (its seed takes its own rules)
 # Each game's list, by the game's id in the inbox (its lib/validate.js GAMES and the apps' GAME_INBOX_ID)
 GAMES = {game: TOTK.parent / game / 'assets/shader_list.tsv' for game in TITLES}
 GAMES['totk'] = TOTK / 'assets/shader_list.tsv'

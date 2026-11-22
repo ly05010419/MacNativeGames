@@ -567,6 +567,36 @@ class OneContributionFilePerGameTests(unittest.TestCase):
             self.assertIsNone(shared.search(launcher.read_text()), f'{launcher}: one contribution file for several games')
 
 
+@unittest.skipUnless((INBOX / 'lib/validate.js').is_file(), 'needs the shader inbox checkout (SHADER_INBOX_DIR)')
+class InboxKnowsEveryGameTests(unittest.TestCase):
+    """The inbox takes a game's rows only under an id in its lib/validate.js GAMES ("unknown game", HTTP 400 otherwise), and
+    the board and the screenshot wall check the same list. 2026-11-22: Mario Kart 8 Deluxe (games/mk8dx) and Red Dead
+    Redemption (games/rdr) report as "mk8dx" / "rdr", which the inbox did not list, so every upload of theirs was refused;
+    Shredder's Revenge ("tmnt") the same, so its export failed in each merge."""
+
+    @staticmethod
+    def inbox_games():
+        text = (INBOX / 'lib/validate.js').read_text()
+        body = re.search(r'export const GAMES = Object\.freeze\(new Set\(\[(.*?)\]\)\)', text, re.S)
+        return set(re.findall(r"'(\w+)'", body.group(1)))
+
+    def test_every_id_a_game_reports_is_one_the_inbox_takes(self):
+        reported = {}
+        for path in sorted(TOTK.parent.glob('*/runtime/game_version.h')) + upload_copies():
+            for game in re.findall(r'#define GAME_INBOX_ID "(\w+)"', path.read_text()):
+                reported.setdefault(game, path)
+        self.assertGreaterEqual(len(reported), 8)
+        known = self.inbox_games()
+        for game, path in sorted(reported.items()):
+            with self.subTest(game=game):
+                self.assertIn(game, known, f'{path} reports as "{game}": add it to {INBOX}/lib/validate.js GAMES and deploy')
+
+    def test_every_game_the_merge_reads_is_one_the_inbox_takes(self):
+        sys.path.insert(0, str(TOTK / 'scripts'))
+        import collect_shaders
+        self.assertLessEqual(set(collect_shaders.TITLES), self.inbox_games())
+
+
 @unittest.skipUnless(shutil.which('xcrun'), 'needs the Xcode command line tools')
 class ContributionOwnerTests(unittest.TestCase):
     """Every game writes and sends only a contribution file of its own (user 2026-11-12: "每个游戏的着色器都独立 … 上传独立"):
