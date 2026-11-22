@@ -1,17 +1,21 @@
-/* The host movie::Decoder's pacing (runtime/movie_host.c) when the game seeks or loops without Flush.
-   Mario Kart 8 Deluxe's mode-menu preview is one H.264 file of clips. A on Grand Prix moves the reader from ~10 s to the
-   engine-class clip at 144 s without a Flush, and the menu opens only when that clip's first frame comes out. The
-   pacing counted 144 s from the first frame of the preview, so the menu waited 134 s on the Mac (and about a minute on
-   the iPhone, where the player had sat longer in the menus) with every output slot held (2026-11-22).
-   Here, with no game file: VP9 frames from libvpx's own encoder (the pacing is the same for both codecs), a fake clock
-   that moves one 60 Hz game frame per tick, and the game's side as the stand-ins of games/eow/tests/movie_stop: each
-   tick calls movie_host_tick (a present), acquires one output and releases it.
+/* The host movie::Decoder's pacing (a game's runtime/movie_host.c) when the game seeks or loops without Flush.
+   Every Zelda-line port has a movie_host.c that hands decoded frames over when their presentation time is due, counted
+   from an anchor (the host time and pts of the first frame handed over) that only Flush and Stop dropped. Mario Kart 8
+   Deluxe's mode-menu preview is one H.264 file of clips: A on Grand Prix moves the reader from ~10 s to the engine-class
+   clip at 144 s without a Flush, and the menu opens only when that clip's first frame comes out. Counted from the old
+   anchor, the menu waited 134 s on the Mac with every output slot held (2026-11-22). shared/runtime/movie_pace.h: a pts
+   going back or jumping more than 1 s ahead starts the count again.
+   Built against one game's runtime/movie_host.c (-I that game's runtime/; tests/test_movie_pacing.py builds it for
+   every port, games/mk8dx/tests/test_mk8dx.py for Mario Kart). Here, with no game file: VP9 frames from libvpx's own
+   encoder (the pacing is the same for every codec), a fake clock that moves one 60 Hz game frame per tick, and the
+   game's side as stand-ins (as games/eow/tests/movie_stop): each tick calls movie_host_tick (a present), acquires one
+   output and releases it.
    - forward: pts 16.7, 33.3, 50 ms, then 144.0167, 144.0333, 144.05 s: every frame comes out, one per tick, the frame
-     after the jump on the tick after the one before it (before the fix: ~8,000 ticks later);
-   - backward (a loop): pts 5.0167 .. 5.05 s, then 16.7 .. 50 ms: every frame comes out, none dropped as "late" (before
-     the fix the frames after the jump were all due at once and two of three were dropped).
+     after the jump on the tick after the one before it (without the rule: ~8,000 ticks later);
+   - backward (a loop): pts 5.0167 .. 5.05 s, then 16.7 .. 50 ms: every frame comes out, none dropped as "late" (without
+     the rule the frames after the jump were all due at once and two of three were dropped).
    Prints one JSON line; exit 0 = pass. */
-#include "../runtime/movie_host.h"
+#include "movie_host.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,8 +23,14 @@
 #include <vpx/vp8cx.h>
 #include <vpx/vpx_encoder.h>
 
-_Noreturn void runtime_fail(const char *s) { fprintf(stderr, "movie pace probe: runtime_fail: %s\n", s); exit(3); }
-void *runtime_symbol(const char *name) { (void)name; return NULL; }
+/* The host functions a port's movie_host.c calls outside itself; only the texture-mode paths (not run here) reach the
+   graphics ones. Weak, so a port that links its own keeps it. */
+#define WEAK __attribute__((weak))
+WEAK _Noreturn void runtime_fail(const char *s) { fprintf(stderr, "movie pace probe: runtime_fail: %s\n", s); exit(3); }
+WEAK void *runtime_symbol(const char *name) { (void)name; return NULL; }
+WEAK void dm_nvn_write_texels(const void *t, const void *r, const void *src) { (void)t; (void)r; (void)src; }   /* eow */
+WEAK int dm_nvn_texture_write_rgba(const void *obj, int w, int h, const void *rgba) { (void)obj; (void)w; (void)h; (void)rgba; return 0; }   /* lm3, mvdk */
+WEAK void *nvn_slot_fn(const char *name) { (void)name; return NULL; }   /* dread */
 
 static int checks;
 static void need(int c, const char *fmt, ...) {
@@ -119,8 +129,11 @@ static void check_run(const char *what, const int64_t pts[FRAMES], int n, const 
 }
 
 int main(void) {
-    MovieGuest api = {signal_event, buf_set_range, buf_set_data, buf_base, buf_capacity, md_find_int32, md_find_string,
-                      md_set_int32, md_set_rect, md_set_string, NULL, NULL, NULL, fake_vtable + 0x10, {0}};
+    /* Designated: the ports' MovieGuest differ in their optional members (Odyssey's H.264 codec data, Dread's NVNsync). */
+    MovieGuest api = {.signal_event = signal_event, .buf_set_range = buf_set_range, .buf_set_data = buf_set_data,
+                      .buf_base = buf_base, .buf_capacity = buf_capacity, .md_find_int32 = md_find_int32,
+                      .md_find_string = md_find_string, .md_set_int32 = md_set_int32, .md_set_rect = md_set_rect,
+                      .md_set_string = md_set_string, .vptr = fake_vtable + 0x10};
     movie_host_set_guest(&api);
     movie_host_set_clock(fake_clock);
     clock_ns = 1000000000ULL;

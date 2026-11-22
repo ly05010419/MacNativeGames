@@ -2,8 +2,8 @@
 
 - runtime/mii_host.c (the Mii database the host answers) and runtime/romfs_work_size.h (the add-on content mount
   cache), through tests/mii_probe.c;
-- the movie decoder's pacing across a seek or loop without Flush (runtime/movie_host.c, tests/movie_pace_probe.c: the
-  Grand Prix wait);
+- the movie decoder's pacing across a seek or loop without Flush (runtime/movie_host.c, the repository's
+  tests/movie_pace_probe.c, which tests/test_movie_pacing.py runs for every port: the Grand Prix wait);
 - scripts/index_romfs_image.py (the runtime's RomFS index from a merged image, either layout);
 - the rewriter rows registered for this game's subsdk0, found by scripts/find_signed_tables.py;
 - that the port carries no nxnative code and is built on the Zelda line (games/odyssey's runtime and graphics layer)."""
@@ -43,7 +43,8 @@ class MiiAndCache(unittest.TestCase):
 
 class MoviePacing(unittest.TestCase):
     """A on Grand Prix waited a minute or two: the mode-menu preview seeks from ~10 s to 144 s without Flush and the
-    host's pacing held that frame until 144 s after the preview began (tests/movie_pace_probe.c, shared/runtime/movie_pace.h)."""
+    host's pacing held that frame until 144 s after the preview began (the repository's tests/movie_pace_probe.c,
+    shared/runtime/movie_pace.h)."""
 
     def test_seek_and_loop_without_flush(self):
         vpx = subprocess.run([sys.executable, str(ROOT / 'tools/deps'), 'prefix', 'libvpx'], capture_output=True, text=True)
@@ -52,8 +53,8 @@ class MoviePacing(unittest.TestCase):
             self.skipTest('libvpx from tools/deps is not built on this Mac')
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / 'movie_pace_probe'
-            subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', f'-I{prefix}/include',
-                            str(HERE / 'tests/movie_pace_probe.c'), str(HERE / 'runtime/movie_host.c'), str(prefix / 'lib/libvpx.a'),
+            subprocess.run(['xcrun', 'clang', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', f'-I{HERE}/runtime', f'-I{prefix}/include',
+                            str(ROOT / 'tests/movie_pace_probe.c'), str(HERE / 'runtime/movie_host.c'), str(prefix / 'lib/libvpx.a'),
                             '-framework', 'VideoToolbox', '-framework', 'CoreMedia', '-framework', 'CoreVideo',
                             '-framework', 'CoreFoundation', '-o', str(exe)], check=True)
             out = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)

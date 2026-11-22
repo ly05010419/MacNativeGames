@@ -172,3 +172,14 @@ Each entry says what was found, what was done and how it was checked. Addresses 
   `grand-prix-run.log`.
 - `python3 -m unittest tests.test_mk8dx`; the repository's `tests.test_ios_ports_unified tests.test_hud_panel_shared
   tests.test_active_players`.
+
+### Then: every port
+- The other Zelda-line ports' `movie_host.c` had the same one-anchor pacing (each probe run: 3 of 6 frames after a forward
+  seek without Flush). All of them take `movie_pace.h` now (a `runtime/movie_pace.h` link each). The ten copies that were
+  the same file (TotK's, byte for byte in mkw, oot and wonder; alc, by3, ot0, pla, tomodachi and unicorn had it without
+  its `GAME_BOTW` default, a branch only Breath of the Wild's build takes) are one file, `shared/runtime/movie_host.c`, linked as `runtime/movie_host.c`; acnh, dread, eow, kirby, lm3,
+  mvdk, odyssey, ori, pokesv, ssbu, tmnt, xc3 and xcx keep their own copies with the same change as this port's.
+- The probe moved to the repository's `tests/movie_pace_probe.c` (designated `MovieGuest`, weak stand-ins for the
+  graphics calls some copies make); `tests/test_movie_pacing.py` builds and runs it against every port's `movie_host.c`
+  with pacing on (`TOTK_MOVIE_PACE=1` / `PSV_MOVIE_PACE=1`: Animal Crossing and Mario vs. Donkey Kong have it off by
+  default) and keeps the include and the link in each; `tests/test_mk8dx.py` `MoviePacing` builds the same probe.

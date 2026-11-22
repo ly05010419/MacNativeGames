@@ -80,7 +80,7 @@ goes beside the IPA (`<name>-shader-seed`) and the installer pushes it once per 
 ## Tests
 
 `python3 -m unittest tests.test_mk8dx` (from this folder): the Mii database answers and the add-on content cache size
-(`tests/mii_probe.c`), the movie decoder's pacing across a seek or loop without Flush (`tests/movie_pace_probe.c`, the
-Grand Prix wait; libvpx from `tools/deps`), the RomFS image index, the rewriter rows, and that the port is on the Zelda line (no nxnative,
+(`tests/mii_probe.c`), the movie decoder's pacing across a seek or loop without Flush (the repository's
+`tests/movie_pace_probe.c`, which `tests/test_movie_pacing.py` runs for every port; the Grand Prix wait; libvpx from `tools/deps`), the RomFS image index, the rewriter rows, and that the port is on the Zelda line (no nxnative,
 the shared links). The repository's `tests/test_hud_panel_shared.py` lists this game on the shared panel, and
 `tests/test_ios_ports_unified.py` keeps its iPhone / iPad app on the shared build (`Mk8dxPort`).
