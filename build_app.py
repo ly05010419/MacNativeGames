@@ -50,10 +50,12 @@ app, so moving or rebuilding it does not repeat that work at launch.
 """
 import argparse, concurrent.futures, ctypes, errno, glob, hashlib, itertools, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 REPO = Path(__file__).resolve().parent
 GAME = REPO / 'games/totk'
 sys.path.insert(0, str(GAME/'scripts'))
+from tools.nup_input import OOT_TITLE  # noqa: E402
 import mod_folder                  # noqa: E402  the player's RomFS mod folder: replaced only when --install-mod-romfs is given
 EXPECTED = json.loads((GAME / 'assets/expected-v1.0.0.json').read_text())
 UPDATED121 = json.loads((GAME / 'assets/expected-v1.2.1.json').read_text())
@@ -86,6 +88,7 @@ for _g in NS2.values():
     VERSIONS[_g['version']] = json.loads((_g['folder'] / 'assets' / _g['expected']).read_text())
 APPS['pkp'] = ('Pokémon Pokopia', 'org.macnativegames.pokopia', 'Pokopia')
 APPS['dkb'] = ('Donkey Kong Bananza', 'org.macnativegames.bananza', 'Bananza')
+NUP_VERSIONS = {OOT_TITLE: 131072, **{title: int(game['update']) for title, game in NS2.items()}}
 
 
 def ns2_game(version):
@@ -2938,7 +2941,7 @@ def main_ns2(args, dump):
         raise BuildError('a Switch 2 dump folder holds its update itself: leave out --update, --dlc and --mod')
     exefs = ns2_dump_exefs(dump)
     title = npdm_program_id(exefs / 'main.npdm') if (exefs / 'main.npdm').is_file() else None
-    if title == '0400486024DEC000':
+    if title == OOT_TITLE:
         return build_oot(args, dump)
     g = NS2.get(title or '')
     if not g:
@@ -3309,7 +3312,7 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, or a base NSP with its separate 1.6.0 or 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0 (Breath of the Wild: the 1.6.0 card image, or the base NSP with --update); '
-                    'or a Switch 2 dump folder (base/, updates/<version>/ with exefs/ and romfs/: Pokemon Pokopia 2.0.1)')
+                    'or a supported Switch 2 NUP or dump folder (base/, updates/<version>/ with exefs/ and romfs/)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app (Breath of the Wild: the 1.9.0 update NSP, not for a card image)')
     ap.add_argument('--dlc', type=Path, action='append', metavar='DLC.nsp', help='Breath of the Wild with a separate 1.6.0 or 1.9.0 --update: an add-on content (DLC) NSP; repeat for the second pack (01007EF00011F001, 01007EF00011F002); each is optional, and a pack left out is not in the app; such a build takes its packs from --dlc only, also when the game file is a card image')
     ap.add_argument('--platform', choices=('macos','ios','visionos'), default='macos', help='build a macOS app (default), unsigned iPhone/iPad IPA, or native Vision Pro IPA')
@@ -3375,10 +3378,42 @@ def build_oot(args, source):
                            shader_chain=shader_chain), args)
 
 
+def main_nup(args, source):
+    from tools import nup_input
+
+    try:
+        title, version = nup_input.inspect(source, NUP_VERSIONS)
+    except nup_input.READ_ERRORS as error:
+        raise BuildError(f'{source.name}: {error}') from error
+    if title == OOT_TITLE:
+        return build_oot(args, source)
+
+    game = NS2[title]['version']
+    app_name = APPS[game][0]
+    if args.out is None:
+        suffix = '.ipa' if args.platform == 'ios' else '.app'
+        args.out = source.parent / f'{app_name}{suffix}'
+    if args.work is None:
+        args.work, _ = default_work(args.out.expanduser().resolve(), game)
+    args.work = args.work.expanduser().resolve()
+    args.work.mkdir(parents=True, exist_ok=True)
+    say(f'{app_name}: reading NUP update {version}')
+    with TemporaryDirectory(prefix='.nup-', dir=args.work) as stage:
+        dump = Path(stage)
+        try:
+            nup_input.extract_update(source, dump, NUP_VERSIONS, title)
+            npdm = ns2_dump_exefs(dump, str(version)) / 'main.npdm'
+            if not npdm.is_file() or npdm_program_id(npdm) != title:
+                raise nup_input.InputError('main.npdm does not match the NUP game ID', title)
+        except nup_input.READ_ERRORS as error:
+            raise BuildError(f'{source.name}: {error}') from error
+        return main_ns2(args, dump)
+
+
 def main(argv):
     args = parse_args(argv)
     if args.game.suffix.lower() == '.nup':
-        return build_oot(args, args.game.expanduser().resolve())
+        return main_nup(args, args.game.expanduser().resolve())
     if args.game.expanduser().is_dir():   # a Switch 2 dump folder
         return main_ns2(args, args.game.expanduser().resolve())
     if not args.keys:
