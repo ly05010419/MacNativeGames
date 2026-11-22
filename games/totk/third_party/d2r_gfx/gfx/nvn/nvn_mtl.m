@@ -3463,6 +3463,29 @@ void mtl_blit_stats(uint64_t v[6]) { v[0] = g_blit_opens; v[1] = g_blit_splits; 
    committed after the wait as before, so the GPU sees the same commits in the same order. Nothing is replayed in
    between, so no upload can be recorded after the flush for this chunk. */
 static int split_early_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_SPLIT_EARLY"); v = !(e && !atoi(e)); if (!v) MLOG("TOTK_SPLIT_EARLY=0: a chunk split waits for the encode stage first"); } return v; }
+/* OOT_GPU_READ_FENCE=2 (2026-11-22, Breath of the Wild's sync lag, PR #2201): a page the GPU reads is marked with the command
+   buffer that reads it -- each mid-submission chunk and the final command buffer get a number in commit order -- instead of
+   the submission's fence, so a CPU write waits only until that chunk has completed, not for the whole frame (=1: 15,188
+   waits, 106.5 s in 10,800 frames, 97 fps against 115 without the fence; the vertex-buffer writes waited about 10 ms each).
+   Encoders start with a queue barrier (above), so the command buffers complete in commit order; a read in a command buffer
+   committed earlier (an upload batch) is covered by the later number, which can only wait longer. */
+static uint64_t g_rdseq, g_rdseq_done;   // command buffers committed / completed (published after q4_commit / in the feedback)
+/* OOT_RACE_CHECK uses the same numbers: when each command buffer's feedback ran (later than its GPU end, so a write after it
+   is certainly after the GPU finished that command buffer). A raced range whose first recorded write came after the
+   command buffer that read it had completed is no race: the GPU read the bytes before the CPU changed them. */
+static _Atomic uint64_t g_rdseq_t[4096], g_rdseq_tseq[4096];
+static int rdf_chunk(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_GPU_READ_FENCE"); v = e && atoi(e) == 2; } return v; }
+static uint64_t rdseq_begin(TotkCommitOptions *o) {   // before q4_commit: the number of the command buffer about to be committed
+    if (!(rdf_on() && rdf_chunk()) && !race_on()) return 0;
+    uint64_t s = g_rdseq + 1;
+    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f;   // the time first: a write the fence releases below is recorded after it
+        atomic_store(&g_rdseq_t[s & 4095], clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); atomic_store(&g_rdseq_tseq[s & 4095], s);
+        uint64_t v = __atomic_load_n(&g_rdseq_done, __ATOMIC_ACQUIRE);
+        while (v < s && !__atomic_compare_exchange_n(&g_rdseq_done, &v, s, 1, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {} }];
+    return s;
+}
+static uint64_t rdseq_done_at(uint64_t s) { return s && atomic_load(&g_rdseq_tseq[s & 4095]) == s ? atomic_load(&g_rdseq_t[s & 4095]) : 0; }   // 0: not known (yet)
+static void rdseq_end(uint64_t s) { if (s) __atomic_store_n(&g_rdseq, s, __ATOMIC_RELEASE); }   // after q4_commit: marks made from now on name the next one
 static void mtl_sub_split_done(dispatch_semaphore_t completed) {
     uint64_t fc0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); int fc_first = g_sub_chunks == 0, early = split_early_on();
     uint64_t fc1 = fc0, fc2, fc3, w0 = 0;
@@ -3490,7 +3513,9 @@ static void mtl_sub_split_done(dispatch_semaphore_t completed) {
     if (early) { w0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); rs_sync(); fc1 = fc0 + (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w0); }   // fc1 - fc0: the wait, as before
     cb_submit_label(g_cb, gpu_f, "main-mid", fence_next, tlid);
     [g_cb endCommandBuffer];
+    uint64_t rds = rdseq_begin(o);   // OOT_GPU_READ_FENCE=2
     q4_commit(g_cb, o);
+    rdseq_end(rds);
     g_cb = next;
     [g_cb beginCommandBufferWithAllocator:g_alloc4[g_alloc_cur]];
     g_sub_chunks++; g_chunk_commits++; g_chunk_mark = g_stat_draw;
@@ -3651,7 +3676,9 @@ uint64_t mtl_sub_commit(void) {
     g_vr_native_slots = nil;
     cb_submit_label(g_cb, gpu_f, "main-final", fence, tlid);
     [g_cb endCommandBuffer];
+    uint64_t rds = rdseq_begin(o);   // OOT_GPU_READ_FENCE=2
     q4_commit(g_cb, o);
+    rdseq_end(rds);
     if (nogpu()) g_ev.signaledValue = fence; else [g_q4 signalEvent:g_ev value:fence];
     dead_put_flush();   // textures created for finalized serials: released once this submission completes
     stor_sweep(fence);   // TOTK: storage-shared textures nobody held for a while
@@ -12888,7 +12915,9 @@ static uint64_t sbuf_snap_get(const p_bind_buf *u) {
    GPU completed the submission (the stall a write-time wait for that GPU work would have cost). Totals per kind and
    histograms every 600 frames ([race-sum]). */
 static int race_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_RACE_CHECK"); on = e && atoi(e); if (on) nvn_dirty_recent_enable(); } return on; }
-typedef struct { uint64_t addr, size, stamp, hash; uint8_t *copy; const char *key; char kind; } race_ent;
+typedef struct { uint64_t addr, size, stamp, hash; uint8_t *copy; const char *key; char kind; uint64_t seq; char why; } race_ent;   // seq: the command buffer that reads it (rdseq_begin); why: OOT_VBUF_SNAPSHOT's decision for a vertex range (race_why)
+static const char g_vwhy_ch[] = "-fkbgu"; static uint64_t g_race_vwhy[6];   // vertex races by why: - no decision, f first sight, k clean, b over the limit, g GPU writes pending, u untracked
+static uint64_t g_race_late_n[9], g_race_late_total;   // RACE_KINDS: changed, but first written after the reading command buffer had completed (no race)
 typedef struct { uint64_t serial, frame, t_enc0, t_commit; _Atomic int done; int n; race_ent e[4096]; } race_list;
 static race_list *g_rl;
 static void race_commit_mark(void) { if (g_rl && g_rl->serial == g_sub_serial) g_rl->t_commit = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }   // writes before it happened during the encode
@@ -12912,14 +12941,18 @@ static void race_check(race_list *rl) {
     double maxslack = -1; int hits = 0;
     for (int i = 0; i < rl->n; i++) {
         const race_ent *e = &rl->e[i];
+        if (!e->size) { free(e->copy); continue; }   // dropped: the GPU reads a copy made at the encode (race_drop)
         int dirty = nvn_dirty_tracked((const void *)(uintptr_t)e->addr, (size_t)e->size) && nvn_dirty_since((const void *)(uintptr_t)e->addr, (size_t)e->size, e->stamp);
         int changed = dirty && (e->copy ? memcmp(e->copy, (const void *)(uintptr_t)e->addr, (size_t)e->size) != 0 : race_hash((const uint8_t *)(uintptr_t)e->addr, e->size) != e->hash);
         free(e->copy);
         if (!changed) continue;   // the page was written, these bytes were not
-        total++; hits++; int ki = race_kind_i(e->kind); g_race_hit_n[ki]++; g_race_hit_bytes[ki] += e->size;
         uintptr_t lo = (uintptr_t)e->addr & ~(uintptr_t)16383, hi = (uintptr_t)(e->addr + e->size);   // the earliest recorded write to the entry's pages since the encode began
         int a = 0, b = nrecs; while (a < b) { int m = (a + b) / 2; if (recs[m].page < lo) a = m + 1; else b = m; }
         const nvn_dirty_rec *w = NULL; for (int k = a; k < nrecs && recs[k].page < hi; k++) if (recs[k].t >= rl->t_enc0 && (!w || recs[k].t < w->t)) w = &recs[k];
+        int ki = race_kind_i(e->kind);
+        { uint64_t done_t = rdseq_done_at(e->seq); if (w && done_t && w->t > done_t) { g_race_late_n[ki]++; g_race_late_total++; continue; } }   // written after its reader finished: no race
+        total++; hits++; g_race_hit_n[ki]++; g_race_hit_bytes[ki] += e->size;
+        if (e->kind == 'v') { const char *wp = e->why ? strchr(g_vwhy_ch, e->why) : NULL; g_race_vwhy[wp ? wp - g_vwhy_ch : 0]++; }
         double after = w ? ((double)w->t - (double)rl->t_commit) / 1e6 : 0, slack = w ? ((double)now - (double)w->t) / 1e6 : 0;
         const char *mn = "?"; uint64_t mo = 0;
         if (w) { runtime_module_offset(w->pc, &mn, &mo); g_race_slack_h[race_bucket(slack)]++; g_race_after_h[after < 0 ? 0 : after < 1 ? 1 : after < 4 ? 2 : after < 8 ? 3 : 4]++; if (slack > maxslack) maxslack = slack;
@@ -12943,6 +12976,10 @@ static void race_check(race_list *rl) {
              (unsigned long long)s[0], (unsigned long long)s[1], (unsigned long long)s[2], (unsigned long long)s[3], (unsigned long long)s[4], (unsigned long long)s[5], (unsigned long long)s[6],
              (unsigned long long)x[0], (unsigned long long)x[1], (unsigned long long)x[2], (unsigned long long)x[3], (unsigned long long)x[4], (unsigned long long)x[5], (unsigned long long)x[6],
              (unsigned long long)f[0], (unsigned long long)f[1], (unsigned long long)f[2], (unsigned long long)f[3], (unsigned long long)f[4]);
+        { char late[256]; int m = 0; for (int k = 0; k < RACE_KINDS; k++) m += snprintf(late + m, sizeof late - (size_t)m, " %c=%llu", g_race_kind_ch[k], (unsigned long long)g_race_late_n[k]);
+          MLOG("[race-sum] written after the reading command buffer completed (no race): %llu |%s", (unsigned long long)g_race_late_total, late);
+          MLOG("[race-sum] vertex races by OOT_VBUF_SNAPSHOT decision: none %llu, first sight %llu, clean %llu, over the limit %llu, GPU writes pending %llu, untracked %llu",
+               (unsigned long long)g_race_vwhy[0], (unsigned long long)g_race_vwhy[1], (unsigned long long)g_race_vwhy[2], (unsigned long long)g_race_vwhy[3], (unsigned long long)g_race_vwhy[4], (unsigned long long)g_race_vwhy[5]); }
         for (int r = 0; r < 12; r++) { int best = -1; for (int k = 0; k < g_race_nw; k++) if (g_race_w[k].n && (best < 0 || g_race_w[k].n > g_race_w[best].n)) best = k; if (best < 0) break;
             MLOG("[race-sum] writer %s+%#llx kind %c: %llu races since the last summary", g_race_w[best].mod, (unsigned long long)g_race_w[best].off, g_race_w[best].kind, (unsigned long long)g_race_w[best].n); g_race_w[best].n = 0; }
     }
@@ -12959,10 +12996,65 @@ static void race_note(uint64_t addr, uint64_t size, const char *key, char kind) 
     if (g_rl->n >= 4096) return;
     { int ki = race_kind_i(kind); g_race_noted_n[ki]++; g_race_noted_bytes[ki] += size; }
     uint64_t st = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size);
-    race_ent e = {addr, size, st, 0, NULL, key, kind};
+    race_ent e = {addr, size, st, 0, NULL, key, kind, g_rdseq + 1, 0};   // the command buffer being encoded
     if (size <= 65536) { e.copy = malloc((size_t)size); if (e.copy) memcpy(e.copy, (const void *)(uintptr_t)addr, (size_t)size); }
     else e.hash = race_hash((const uint8_t *)(uintptr_t)addr, size);
     g_rl->e[g_rl->n++] = e;
+}
+static void race_drop(uint64_t addr, uint64_t size, char kind) {   // the GPU reads a copy of this range, not memory: no race to check
+    if (!race_on() || !g_rl || g_rl->serial != g_sub_serial) return;
+    for (int i = g_rl->n - 1; i >= 0 && i >= g_rl->n - 64; i--) if (g_rl->e[i].addr == addr && g_rl->e[i].size == size && g_rl->e[i].kind == kind) { g_rl->e[i].size = 0; return; }
+}
+static void race_why(uint64_t addr, uint64_t size, char kind, char why) {   // why a range was read from memory (vertex races by decision)
+    if (!race_on() || !g_rl || g_rl->serial != g_sub_serial) return;
+    for (int i = g_rl->n - 1; i >= 0 && i >= g_rl->n - 64; i--) if (g_rl->e[i].addr == addr && g_rl->e[i].kind == kind) { if (!g_rl->e[i].why) g_rl->e[i].why = why; return; }
+    (void)size;
+}
+/* OOT_VBUF_SNAPSHOT=<KB> (2026-11-22, Breath of the Wild's sync lag, PR #2201; off by default, =1: 1024 KB): a vertex range the
+   CPU wrote since the last draw that read it is copied at the encode into the submission's arena and the draw reads the
+   copy, as OOT_SBUF_SNAPSHOT does for small read-only storage buffers. With TOTK_SYNC_LAG the game's wait for the frame it
+   just submitted returns a frame early, and it rewrites its dynamic vertex data while the GPU still draws with it (race
+   check, sync lag + storage copies: 62,000 vertex ranges, 312 MB in 13,800 submissions, against 137 races of any kind with
+   the sync lag off). The bytes as of the submission are what the GPU reads when the wait is honoured.
+   Which ranges (2026-11-22 race attribution, first version copied only ranges written since they were last drawn: of 63,125
+   remaining vertex races 29,370 were "clean" at the encode and written right after it -- 70,297 races were written during
+   the encode, by the game's other threads already working on the next frame -- and 11,121 were first sights):
+   - one copy per submission: later draws of the range in the same submission reuse it, also when the CPU wrote the range
+     meanwhile (with the sync lag that write is the next frame's data);
+   - a range the CPU wrote within the last 8 frames is hot and copied at every submission, written since or not;
+   - a range seen for the first time is copied once (and learnt); a range not written for 8 frames is read live (static
+     models are not copied every frame); a range with GPU writes pending is the GPU's own data, read live. */
+static int vsnap_limit_kb(void) { static int v = -2; if (v == -2) { const char *e = getenv("OOT_VBUF_SNAPSHOT"); v = e ? atoi(e) : 0; if (v == 1) v = 1024;
+    if (v > 0) MLOG("[vbuf-snapshot] on: vertex ranges up to %d KB the CPU wrote in the last 8 frames are copied once per submission", v); } return v; }
+typedef struct { uint64_t addr, size, stamp, sub, gpu, hot_until; } vsnap_ent;
+static vsnap_ent g_vsnap[32768];
+static uint64_t g_vsnap_copies, g_vsnap_bytes, g_vsnap_hits, g_vsnap_clean, g_vsnap_first, g_vsnap_big, g_vsnap_live, g_vsnap_overflow;
+static int pool_range_write_exact(const p_bind_buf *u, int *overflow);
+static uint64_t vsnap_get(uint64_t addr, uint64_t size) {   // the copy's GPU address, or 0: bind memory
+    int kb = vsnap_limit_kb(); if (kb <= 0 || !addr || !size) return 0;
+    if (size > ((uint64_t)kb << 10)) { g_vsnap_big++; race_why(addr, size, 'v', 'b'); return 0; }
+    if (!nvn_dirty_tracked((const void *)(uintptr_t)addr, (size_t)size)) { race_why(addr, size, 'v', 'u'); return 0; }
+    unsigned h = (unsigned)(((addr >> 4) ^ size) * 2654435761u) & 32767; vsnap_ent *e = &g_vsnap[h];
+    uint64_t f = atomic_load(&g_cur_frame);
+    int first = e->addr != addr || e->size != size;
+    if (!first && e->sub == g_sub_serial && e->gpu) { g_vsnap_hits++; race_drop(addr, size, 'v'); return e->gpu; }   // this submission's copy
+    if (first) { *e = (vsnap_ent){addr, size, 0, 0, 0, 0}; g_vsnap_first++; }
+    else if (nvn_dirty_since((const void *)(uintptr_t)addr, (size_t)size, e->stamp)) e->hot_until = f + 8;
+    else if (f > e->hot_until) { g_vsnap_clean++; race_why(addr, size, 'v', 'k'); return 0; }   // not written for 8 frames
+    p_bind_buf u = {0}; u.addr = addr; u.size = size; int over = 0;
+    if (pool_range_write_exact(&u, &over)) { g_vsnap_live++; race_why(addr, size, 'v', 'g'); e->stamp = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size); return 0; }   // the GPU's own data
+    g_vsnap_overflow += over;   // copied although the pending table had overflowed: no tracked write overlaps these bytes
+    __unsafe_unretained id<MTLBuffer> buf = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
+    arena_alloc_u((size_t)size, &buf, &cpu, &gpu);
+    uint64_t st = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size);   // a write from now on is seen next time
+    memcpy(cpu, (const void *)(uintptr_t)addr, (size_t)size);
+    e->stamp = st; e->sub = g_sub_serial; e->gpu = gpu;
+    g_vsnap_copies++; g_vsnap_bytes += size; race_drop(addr, size, 'v');
+    static uint64_t last;
+    if (f >= last + 600) { last = f; MLOG("[vbuf-snapshot] F%llu copies=%llu %.1f MB hits=%llu clean=%llu first=%llu over-limit=%llu gpu-written=%llu copied-past-overflow=%llu", (unsigned long long)f,
+        (unsigned long long)g_vsnap_copies, g_vsnap_bytes / 1048576.0, (unsigned long long)g_vsnap_hits, (unsigned long long)g_vsnap_clean, (unsigned long long)g_vsnap_first,
+        (unsigned long long)g_vsnap_big, (unsigned long long)g_vsnap_live, (unsigned long long)g_vsnap_overflow); }
+    return gpu;
 }
 /* OOT_GPU_READ_FENCE=1 (2026-11-09, default off until measured): every guest range a submission reads on the GPU is
    marked per page with the submission's fence and set read-only (nvn_dirty_read_mark); a CPU write to such a page waits in
@@ -12970,7 +13062,13 @@ static void race_note(uint64_t addr, uint64_t size, const char *key, char kind) 
    by a frame) this keeps the CPU from overwriting what the GPU still reads: the wait moves from "the whole previous
    frame, at frame start" to "this page's last reader, at the write". The encoding thread is exempt while it encodes. */
 static int rdf_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_GPU_READ_FENCE"); on = e && atoi(e);
-    if (on) { nvn_dirty_read_fence_setup(&g_done, &g_fence); MLOG("[gpu-read-fence] on: a CPU write to a page a pending submission reads waits for that submission"); } } return on; }
+    if (on && rdf_chunk()) { nvn_dirty_read_fence_setup(&g_rdseq_done, &g_rdseq); MLOG("[gpu-read-fence] on (=2): a CPU write to a page a pending command buffer (mid-submission chunk or final) reads waits for that command buffer"); }
+    else if (on) { nvn_dirty_read_fence_setup(&g_done, &g_fence); MLOG("[gpu-read-fence] on: a CPU write to a page a pending submission reads waits for that submission"); } } return on; }
+/* OOT_GPU_READ_FENCE_KINDS=<letters> (2026-11-22): only these kinds of GPU reads are marked (the race check's letters: u s i v t c a m w);
+   unset = all. Measures what each kind costs: Breath of the Wild's index buffers waited 338 times in 800 waits while the race
+   check found none of their bytes changed (CPU writes to other bytes of the same pages). */
+static int rdf_kind(char k) { static const char *ks; static int init; if (!init) { init = 1; ks = getenv("OOT_GPU_READ_FENCE_KINDS"); if (ks && !*ks) ks = NULL;
+    if (ks) MLOG("[gpu-read-fence] kinds: %s only (OOT_GPU_READ_FENCE_KINDS)", ks); } return !ks || (k && strchr(ks, k)); }
 static const char *g_rdm_key[1024]; static char g_rdm_kind[1024];   // marker ids for the wait log: (shader key / label pointer, kind) -> 1..1024
 /* OOT_NOREAD_PROBE=1 (diagnostic, 2026-11-09): the storage buffers bound writable by this frame's shaders are made inaccessible at
    the present; the first CPU access to each page (read or write) in the next frame is recorded with its pc (nvn_dirty_noread_mark).
@@ -13018,12 +13116,12 @@ static void rdf_drain_log(void) {   // the CPU writes that waited since the last
     }
 }
 static void gpu_read_input(uint64_t addr, uint64_t size, const char *key, char kind) {
-    if (rdf_on() && g_commit_blocks && addr && size && size <= (256u << 20)) {   // inside a submission only: the mark is the in-progress fence
+    if (rdf_on() && g_commit_blocks && addr && size && size <= (256u << 20) && rdf_kind(kind)) {   // inside a submission only: the mark is the in-progress fence (=2: the in-progress command buffer)
         if (!key) key = "-";
         unsigned h = (unsigned)((((uintptr_t)key >> 3) * 2654435761u) >> 22) & 1023, tries = 0;
         while (tries++ < 1024 && g_rdm_key[h] && (g_rdm_key[h] != key || g_rdm_kind[h] != kind)) h = (h + 1) & 1023;
         if (!g_rdm_key[h]) { g_rdm_key[h] = key; g_rdm_kind[h] = kind; }
-        nvn_dirty_read_mark((const void *)(uintptr_t)addr, (size_t)size, g_fence + 1, (uint16_t)(h + 1), (uint8_t)kind);
+        nvn_dirty_read_mark((const void *)(uintptr_t)addr, (size_t)size, rdf_chunk() ? g_rdseq + 1 : g_fence + 1, (uint16_t)(h + 1), (uint8_t)kind);
         static uint64_t last; uint64_t f = atomic_load(&g_cur_frame);
         if (f >= last + 600) { last = f; uint64_t marks, pages, waits, ns, mx, to; nvn_dirty_read_wait_stats(&marks, &pages, &waits, &ns, &mx, &to);
             MLOG("[gpu-read-fence] F%llu marks=%llu pages=%llu | CPU writes that waited=%llu total %.1f ms max %.2f ms timeouts=%llu | mesh-src-cpu=%llu sbuf-snapshot copies=%llu hits=%llu live=%llu %.1f MB", (unsigned long long)f,
@@ -14031,6 +14129,21 @@ static uint64_t pool_range_write_fence(const p_bind_buf *u) {
     for(int i=0;i<g_npend;i++)if(g_pend_fence[i]>done&&u->addr<g_pend_hi[i]&&u->addr+u->size>g_pend_lo[i])fence=MAX(fence,g_pend_fence[i]);
     for(int i=0;i<g_ngw;i++){const gw_t *w=&g_gw[i];if(w->ready_ticket&&w->ready_ticket<=writer_done)continue;if(w->fence>done&&w->lo<u->addr+u->size&&w->hi>u->addr)fence=MAX(fence,w->fence);}
     return fence&&!precise?g_fence+1:fence;
+}
+/* OOT_VBUF_SNAPSHOT: a pending write that overlaps these exact bytes (a tracked command-stream update or GPU writer); the
+   pending table's overflow alone (g_pend_over_fence) is reported apart (*overflow), it says nothing about these bytes.
+   (2026-11-22: with the overflow counted, 45,320 of 52,406 remaining vertex races were ranges read live for "GPU writes
+   pending".) */
+static int pool_range_write_exact(const p_bind_buf *u,int *overflow) {
+    *overflow=0;
+    if(g_pool_safe_epoch==g_pool_write_epoch)return 0;
+    int precise=pool_wait_precise_on();
+    uint64_t done=precise?g_ev.signaledValue:__atomic_load_n(&g_done,__ATOMIC_ACQUIRE);
+    uint64_t writer_done=precise&&writer_boundary_on()?g_writer_event.signaledValue:0;
+    for(int i=0;i<g_npend;i++)if(g_pend_fence[i]>done&&u->addr<g_pend_hi[i]&&u->addr+u->size>g_pend_lo[i])return 1;
+    for(int i=0;i<g_ngw;i++){const gw_t *w=&g_gw[i];if(w->ready_ticket&&w->ready_ticket<=writer_done)continue;if(w->fence>done&&w->lo<u->addr+u->size&&w->hi>u->addr)return 1;}
+    *overflow=g_pend_over_fence>done;
+    return 0;
 }
 static void pool_wait_trace(NvShader *sh,const p_bind_buf *u,const char *reason) {
     int count=atomic_load(&g_pool_wait_trace);if(count<=0)return;
@@ -18588,8 +18701,10 @@ static void bind_vertex_streams(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
     if(g_vertex_streams_negative)mask&=~(1u<<5);
     for(unsigned stream=0;stream<16;stream++) {
         if(!S.vbuf[stream].address)continue;
-        if(!(mask&(1u<<stream))){omitted++;continue;}
+        if(!(mask&(1u<<stream))){omitted++;race_drop(S.vbuf[stream].address,S.vbuf[stream].size,'v');continue;}   // not read by this vertex shader: nothing the GPU reads (race check)
         void *mb;uint64_t mo,gpu;
+        uint64_t sg=vsnap_get(S.vbuf[stream].address,S.vbuf[stream].size);   // OOT_VBUF_SNAPSHOT: the CPU's bytes as of the encode
+        if(sg){enc_r_vbuf(en,16+stream,sg);bound++;continue;}
         if(mtl_gpu_addr(S.vbuf[stream].address,1,&mb,&mo,&gpu)) {
             enc_r_vbuf(en,16+stream,gpu);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;
         }
