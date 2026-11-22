@@ -485,7 +485,10 @@ class Mk8dxPort(unittest.TestCase):
         self.assertLess(main.index('#ifdef GAME_INBOX_ID'), main.index('mng_active_start(@"totk"'))
         # no shader inbox, as Animal Crossing and Pokémon Legends: Arceus
         self.assertEqual(main.count('defined(GAME_PLA) || defined(GAME_MK8DX)'), 3)
-        self.assertIn('PP_GAME_MK8DX = PP_GAME_ODYSSEY, PP_GAME_PLA = PP_GAME_ODYSSEY } pp_game;', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        self.assertIn('PP_GAME_MK8DX = PP_GAME_ODYSSEY,', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        # the discarded nxnative-based iPhone attempt (games/mk8d/ios, removed) left no branch in the shell
+        for f in [*(ROOT / 'games/totk/ios/Sources').glob('*.[hmc]'), ROOT / 'games/totk/ios/tools/build_ipa.py']:
+            self.assertNotRegex(f.read_text(), r"\bGAME_MK8D\b|'mk8d'", f.name)
         self.assertRegex((ROOT / 'games/totk/ios/Sources/port_features.h').read_text(), r'#if [^\n]*defined\(GAME_MK8DX\)[^\n]*\n#define SHELL_FPS_CHOICE 0')
         import plistlib
         root = load_tool('build_ipa').pane_for(plistlib.loads((ROOT / 'games/totk/ios/Settings.bundle/Root.plist').read_bytes()), 'mk8dx')
@@ -595,6 +598,20 @@ class PlaOfflineConsole(unittest.TestCase):
         self.assertIn('defined(GAME_PLA)', (ROOT / 'shared/runtime/offline_host.c').read_text())
         src = (ROOT / 'games/pla/runtime/services.c').read_text()
         self.assertIn('return runtime_offline_override(name);', src)
+
+
+class PhoneFrontAnswersTheMacsDisplayCalls(unittest.TestCase):
+    def test_every_vi_call_a_mac_front_answers_the_phone_answers(self):
+        # Mario Kart 8 Deluxe crashed at boot on the iPhone in nn::vi::SetLayerScalingMode: its Mac front end answers it,
+        # the shared phone front end did not (2026-11-22). Every vi entry of a port's Mac frontend.m is in the phone's.
+        import re
+        phone = (ROOT / 'shared/runtime/frontend_ios.m').read_text()
+        for game in ('acnh', 'odyssey', 'mk8dx', 'pla'):
+            mac = ROOT / 'games' / game / 'runtime/frontend.m'
+            if not mac.is_file(): continue
+            for name in sorted(set(re.findall(r'"(_ZN2nn2vi\w+)"', mac.read_text()))):
+                with self.subTest(game=game, name=name):
+                    self.assertIn(name, phone)
 
 if __name__ == '__main__':
     unittest.main()

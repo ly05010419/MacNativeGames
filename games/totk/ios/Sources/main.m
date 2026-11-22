@@ -318,7 +318,7 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         [timer invalidate];
         g_no_game_data = nil;
         fprintf(stderr, "[totk] the game data and the shaders are there: starting\n");
-    #if !defined(GAME_ACNH) && !defined(GAME_ODYSSEY) && !defined(GAME_MK8D) && !defined(GAME_PLA) && !defined(GAME_MK8DX)   /* their contribution headers have no prune (it only trims rows the seed serves) */
+    #if !defined(GAME_ACNH) && !defined(GAME_ODYSSEY) && !defined(GAME_PLA) && !defined(GAME_MK8DX)   /* their contribution headers have no prune (it only trims rows the seed serves) */
     if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
 #endif
         runtime_boot_status(zh ? "正在启动" : "Starting", NULL);
@@ -351,7 +351,7 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
    choice (totk_contrib_upload.h): once the switch has a value, it decides; an answer to the question sets the switch. */
 static NSString *const ContributeKey = @"TOTK_CONTRIBUTE_SHADERS";
 static void contrib_settings_sync(NSString *contrib) {
-#if defined(GAME_ACNH) || defined(GAME_MK8D) || defined(GAME_PLA) || defined(GAME_MK8DX)   // no shader inbox (Mario Kart 8 Deluxe: its shaders are all translated on the Mac; Pokémon Legends: Arceus: its rows stay in Documents, as Animal Crossing's) (games/acnh/third_party/COPIES.md: its totk_contrib_upload.h keeps the identity part only)
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX)   // no shader inbox (Pokémon Legends: Arceus and Mario Kart 8 Deluxe: their rows stay in Documents, as Animal Crossing's) (games/acnh/third_party/COPIES.md: its totk_contrib_upload.h keeps the identity part only)
     (void)contrib;
 #else
     id v = [NSUserDefaults.standardUserDefaults objectForKey:ContributeKey];
@@ -366,7 +366,7 @@ static void contrib_settings_sync(NSString *contrib) {
    the player has not chosen yet (no row threshold, user 2026-11-10). The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
    what the app serves in prepareAndStart, so the first count after a new build can be a little high.) */
 - (BOOL)offerShaderUpload {
-#if defined(GAME_ACNH) || defined(GAME_MK8D) || defined(GAME_PLA) || defined(GAME_MK8DX)
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX)
     return NO;
 #else
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -748,8 +748,6 @@ static void apply_settings(void) {
     mng_active_start(@"acnh", mng_active_version());
 #elif defined(GAME_ODYSSEY)
     mng_active_start(@"odyssey", mng_active_version());
-#elif defined(GAME_MK8D)
-    mng_active_start(@"mk8d", mng_active_version());   /* the id of its Mac app (runtime/host/front_mac.m) */
 #elif defined(GAME_PLA)
     mng_active_start(@"pla", mng_active_version());    /* the id of its Mac app (games/pla/app/launcher.m) */
 #else
@@ -821,7 +819,7 @@ static void apply_settings(void) {
     });
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
     // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
-#if defined(GAME_ACNH) || defined(GAME_MK8D) || defined(GAME_PLA) || defined(GAME_MK8DX)   // the rows the device lacks stay in Documents, as on its Mac (no inbox)
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX)   // the rows the device lacks stay in Documents, as on its Mac (no inbox)
     NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
 #else

@@ -18,7 +18,7 @@ def pane_for(root, app):
     group the dropped rows leave empty goes too. tests/test_ios_packaging.py PicturePane checks the three panes."""
     def mine(s):
         mark=s.get('TOTKApp')
-        return mark is None or mark==app or (mark=='zelda' and app in ('totk','botw','acnh','odyssey','mk8d','pla','mk8dx'))
+        return mark is None or mark==app or (mark=='zelda' and app in ('totk','botw','acnh','odyssey','pla','mk8dx'))
     specs=[s for s in root['PreferenceSpecifiers'] if mine(s)]
     kept=[]
     for i,s in enumerate(specs):

@@ -76,7 +76,8 @@ Each entry says what was found, what was done and how it was checked. Addresses 
 - Also added: `GAME_INBOX_ID "mk8dx"` (the copied graphics layer reported as "odyssey" to the shader inbox / board) and
   `mng_active_start(@"mk8dx")` (tests/test_active_players.py lists the game).
 - **Open**: A on Grand Prix is seen by the game (`TOTK_INPUT_TRACE`: buttons 0x1 for 300 ms) and a play report is saved,
-  but the engine-class menu does not open; VS Race, B and the d-pad work. Not traced yet.
+  but the engine-class menu does not open; VS Race, B and the d-pad work. Not traced yet (found and fixed on
+  22 November: the preview's pacing, below).
 - Next: a race through to the results and Grand Prix; the app and MNG Launcher card; extraction straight from the NSPs;
   a shader seed; the iPhone / iPad app on the Zelda shell (`games/totk/ios/tools/build_port_ipa.py` with a `GAME_MK8DX`
   profile, as Odyssey's `ios/tools/build_ipa.py` + `ios/Sources/ios_front.m`).
@@ -122,7 +123,52 @@ Each entry says what was found, what was done and how it was checked. Addresses 
 ### The build (`ios/tools/build_ipa.py --image-outside --device-gpu applegpu_g14p --device-gpu applegpu_g15p`)
 - IPA 73 MB (unsigned; no image), the shaders beside it (`<name>-shader-seed`, 1.4 GB, 128,142 files): the seed plus
   the Mac's 1,101 translations, 32,808 device libraries (`compile_seed.py`, about 16 minutes on an M4), and the
-  pipelines the Mac collected (1,154 rows) compiled for the iPhone 14 (applegpu_g14p) and the iPad A16
-  (applegpu_g15p): 1,175 each in 10 files, none failed; 7 still use a shader the device compiles itself. `seed_check`
+  pipelines the Mac collected (1,200 rows after the seed check run) compiled for the iPhone 14 (applegpu_g14p) and the
+  iPad A16 (applegpu_g15p): 1,221 each in 10 files, none failed; 7 still use a shader the device compiles itself. `seed_check`
   is ok for both GPUs.
 - Not yet run on a device (first install 22 November).
+
+### The shell without the discarded attempt
+- The branches of the earlier nxnative-based iPhone app (`GAME_MK8D`, `PP_GAME_MK8D`, `'mk8d'` in `pane_for`; its
+  `games/mk8d/ios` is gone) are removed from `games/totk/ios`; `GAME_MK8DX` is this game's. `tests/test_ios_ports_unified.py`
+  keeps them out. The IPA was built again with it (the pipelines then: 1,221 per GPU).
+
+## 2026-11-22 — Grand Prix: the one-minute wait after A
+
+### What waited on what
+- On the iPhone 14, A on Grand Prix (Single Player) left the mode menu standing for about a minute at 60 fps, then the
+  engine-class menu opened; on the Mac it was "A on Grand Prix does nothing" (still there after 124 s). VS Race went on
+  at once.
+- Traced on the Mac (`TOTK_INPUT_FILE` `threads`, `hletrace`, `TOTK_MOVIE_LOG=1`): no guest thread was stuck in a host
+  call; the preview's movie calls stopped 1.5 s after A (103 `AcquireInputBufferIndex` in 85 s) with the decoder full
+  (inputs free 0 / pending 4, held 20, decoded-and-paced 8, ready 0), the game's movie thread (main+0x37baa4) waiting on
+  its events and its feeder (main+0x37b920) on a condition variable. The paced queue's next frame had pts **144.017 s**,
+  10.47 s after the preview's first frame: the mode-menu preview is one H.264 file of clips, and A on Grand Prix moves
+  its reader to the engine-class clip at 144 s **without a Flush** (none of Flush / Stop / Reset is called). The game
+  opens the engine-class menu only when that clip's first frame comes out.
+- The host decoder (`runtime/movie_host.c`, Odyssey's copy) paces frames from one anchor, the first frame handed over
+  (TotK's 30 fps cutscenes at 60+ fps); only Flush / Stop dropped it. So the 144 s frame was due 144 s after the preview
+  began: 134 s after A on the Mac (confirmed: the engine-class menu opened at 144.0 s since the first frame,
+  `<work>/evidence` run of 22 November), about a minute on the phone, where the player had sat longer in the menus.
+  A backward jump (a loop) went wrong the other way: every frame after it was due at once, and the frames queued behind
+  one another were dropped as "late" until the pts caught up with the old clock.
+
+### Fix
+- `shared/runtime/movie_pace.h` (new, linked into `runtime/`): `movie_pace_jump(prev, pts)`: a pts that goes backwards
+  or more than 1 s ahead of the previous frame starts a new run. `movie_host.c` keeps the last frame handed over (or
+  dropped) and starts the pacing again at such a frame (`[movie] pts … a seek or loop without Flush` in the log), and
+  never drops a frame as late across a jump. Shared, because every port's `movie_host.c` paces the same way
+  (Odyssey, TotK, ACNH, PLA … have the same latent rule; not changed here).
+- Test: `tests/movie_pace_probe.c` (run by `tests/test_mk8dx.py` `MoviePacing`) drives the real `movie_host.c` with
+  stand-ins, libvpx-encoded VP9 frames and a fake 60 Hz clock: a forward seek (50 ms → 144.017 s) and a loop
+  (5.05 s → 16.7 ms) with no Flush must give every frame, one per game frame. Against the old pacing (Odyssey's file)
+  the forward case gives 3 of 6 frames within 600 game frames and the loop 4 of 6.
+
+### Checked
+- Mac (M4, fresh `TOTK_PROFILE_DIR`): A on Grand Prix → the engine-class menu in under a second (screenshots every
+  0.5 s: leaving at 0.7 s, 50cc–200cc shown at 2.2 s), then character, kart, Mushroom Cup "Start Grand Prix?" → **a
+  Grand Prix race at Mario Kart Stadium** (lap 1/3, 12th, map). Before: still on the mode menu 124 s after A, menu at
+  134 s. `<work>/evidence/8-grand-prix-engine-class.png`, `9-grand-prix-start.png`, `10-grand-prix-race.png`,
+  `grand-prix-run.log`.
+- `python3 -m unittest tests.test_mk8dx`; the repository's `tests.test_ios_ports_unified tests.test_hud_panel_shared
+  tests.test_active_players`.

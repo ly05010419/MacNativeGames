@@ -11,7 +11,7 @@ was checked: [CHANGELOG.md](CHANGELOG.md).
 and your own Switch firmware (the system fonts and the Mii parts come from it). The work folder holds game data: never
 commit or share it.
 
-## Status (21 November 2026, Mac, Apple M4)
+## Status (22 November 2026, Mac, Apple M4)
 
 | Works | Evidence |
 |---|---|
@@ -19,12 +19,12 @@ commit or share it.
 | Select a Mii: the six default Miis **with their heads** (the MiiModel parts from your firmware) | screenshot |
 | Main menu, mode menu with the playing H.264 preview, VS Race, character select, cups and courses, "Start Race?" | screenshots |
 | A VS race at Mario Kart Stadium: driving, HUD, map; 60 fps (p50 16.67 ms) once the shaders are built, GPU ~4 ms (M4) | screenshots, frame log |
+| Grand Prix: A opens the engine-class menu at once (it waited a minute or more: the preview's pacing across a seek, fixed 22 November), cup, a Grand Prix race at Mario Kart Stadium | screenshots, CHANGELOG |
 | Sound (audio renderer REV4), saves (device and user saves apart), add-on content | logs |
 
 | Not yet | |
 |---|---|
 | A race seen through to the results; no stutter on first sight | the first race compiles about 800 shaders and pipelines on the spot (a 29 s frame on an empty cache) on the Mac without a seed; the whole-game seed (`scripts/prepare_mk8dx_shader_seed.py`, `build/shader-seed`) serves the phone and is imported by the Mac host at its next start |
-| Grand Prix: A on Grand Prix does nothing (VS Race works) | CHANGELOG, open |
 | The app (`.app`), MNG Launcher card | next |
 | The iPhone / iPad app (built, see below) run on a device | first install 22 November |
 | Mii editor (cancelled), online, local wireless | answered as offline |
@@ -80,6 +80,7 @@ goes beside the IPA (`<name>-shader-seed`) and the installer pushes it once per 
 ## Tests
 
 `python3 -m unittest tests.test_mk8dx` (from this folder): the Mii database answers and the add-on content cache size
-(`tests/mii_probe.c`), the RomFS image index, the rewriter rows, and that the port is on the Zelda line (no nxnative,
+(`tests/mii_probe.c`), the movie decoder's pacing across a seek or loop without Flush (`tests/movie_pace_probe.c`, the
+Grand Prix wait; libvpx from `tools/deps`), the RomFS image index, the rewriter rows, and that the port is on the Zelda line (no nxnative,
 the shared links). The repository's `tests/test_hud_panel_shared.py` lists this game on the shared panel, and
 `tests/test_ios_ports_unified.py` keeps its iPhone / iPad app on the shared build (`Mk8dxPort`).

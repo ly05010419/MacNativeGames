@@ -75,8 +75,8 @@ class Port:
     pane_app: str = None       # build_ipa.py pane_for's app (default: game)
     mac_only: tuple = ('frontend.m', 'loader.c', 'game_info.plist')   # runtime files the iPhone app leaves out (loader.c is added as main; the Mac host's bundle id)
     extra: dict = field(default_factory=dict)
-    # A port whose runtime is of another line (Mario Kart 8 Deluxe: nxnative's host) answers these; None keeps the Zelda line's
-    # steps below as they are (Animal Crossing, Super Mario Odyssey). tests/test_ios_ports_unified.py Mk8dPort checks both.
+    # A port's own steps where the Zelda line's default does not fit (Pokémon Legends: Arceus: prepare, check); None keeps the
+    # Zelda line's steps below as they are (Animal Crossing, Super Mario Odyssey, Mario Kart 8 Deluxe).
     prepare: Callable = None   # (L, gen, env, run, logs, work) -> stage what the steps below read (before the checks)
     check: Callable = None     # (L) -> raise RuntimeError for what the Mac build has not made (default: check_mac_build)
     modules: Callable = None   # (L) -> the module names (default: the generated runtime_tables.h's)
@@ -357,8 +357,8 @@ def check_mac_build(port, L):
 
 
 def seed_from_files(files, out):
-    """A seed folder for install_device.py from a runtime's own shader files (Port.shaders; Mario Kart 8 Deluxe's iOS
-    libraries and tables): files {name: path}, cloned into out with seed-manifest.json (each file's SHA-256) and
+    """A seed folder for install_device.py from a runtime's own shader files (Port.shaders: a runtime that
+    makes its own iOS libraries and tables): files {name: path}, cloned into out with seed-manifest.json (each file's SHA-256) and
     fingerprint.txt, which install_device.py compares to push it once per content. Made again only when the inputs changed
     (their names, sizes and times). Returns the fingerprint."""
     import hashlib
@@ -440,7 +440,7 @@ def main(port, argv=None):
     deps = work / 'ios-deps'
     if port.libs and not all((deps / 'lib' / lib).is_file() for lib in port.libs):
         run([sys.executable, TOOLS / 'build_deps.py', deps, 'iphoneos', *port.deps_args], work, logs / 'dependencies.log', env)
-    if port.libs:   # a runtime that builds its own (Mario Kart 8 Deluxe compiles libvpx from its sources) takes none
+    if port.libs:   # a runtime that builds its own libraries takes none
         shutil.copytree(deps / 'include', gen / 'deps/include', dirs_exist_ok=True)
     for lib in port.libs:
         clone(deps / 'lib' / lib, gen / 'deps/lib' / lib)

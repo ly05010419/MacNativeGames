@@ -8,8 +8,6 @@
 #define PP_THIS_GAME PP_GAME_ACNH
 #elif defined(GAME_ODYSSEY)
 #define PP_THIS_GAME PP_GAME_ODYSSEY
-#elif defined(GAME_MK8D)
-#define PP_THIS_GAME PP_GAME_MK8D
 #elif defined(GAME_PLA)
 #define PP_THIS_GAME PP_GAME_PLA
 #elif defined(GAME_MK8DX)
