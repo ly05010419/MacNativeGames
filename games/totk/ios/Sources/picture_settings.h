@@ -14,6 +14,8 @@
 #define PP_THIS_GAME PP_GAME_MK8DX
 #elif defined(GAME_RDR)
 #define PP_THIS_GAME PP_GAME_RDR
+#elif defined(GAME_AOCX)
+#define PP_THIS_GAME PP_GAME_AOCX
 #elif defined(TOTK_GAME_V143)
 #define PP_THIS_GAME PP_GAME_TOTK
 #else

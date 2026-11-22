@@ -2,14 +2,14 @@
    console. Network requests are never accepted, so a game keeps its offline paths (no sockets, friends or local wireless
    follow). From games/wonder (Super Mario Bros. Wonder imports them); here for the Switch 2 games (GAME_NS2: Donkey Kong
    Bananza initializes nifm at boot) and Mario Kart 8 Deluxe (GAME_MK8DX, games/mk8dx: the same answers for its SDK 4.4
-   imports) and Red Dead Redemption (GAME_RDR, games/rdr, SDK 15.3.2). TOTK and BotW import none of them and do not build
-   this file.
+   imports), Red Dead Redemption (GAME_RDR, games/rdr, SDK 15.3.2) and Hyrule Warriors: Age of Calamity (GAME_AOCX,
+   games/aocx, SDK 9.6.0) and Persona 5 Royal (GAME_P5R, games/p5r, SDK 13.3.2). TOTK and BotW import none of them and do not build this file.
    shared/runtime/offline_host.c since 2026-11-21 (games/totk/runtime/offline_host.c, games/mk8dx/runtime and
-   games/rdr/runtime link it). */
+   games/rdr/runtime and games/aocx/runtime link it). */
 /* Only the Switch 2 games and Mario Kart 8 Deluxe build this: services.c calls runtime_offline_override under GAME_NS2
    (games/mk8dx: always), and the iOS project compiles every file in runtime/, where TOTK and BotW have no GAME_TITLE_ID. */
 #include "game_version.h"
-#if defined(GAME_NS2) || defined(GAME_MK8DX) || defined(GAME_PLA) || defined(GAME_RDR)
+#if defined(GAME_NS2) || defined(GAME_MK8DX) || defined(GAME_PLA) || defined(GAME_RDR) || defined(GAME_AOCX) || defined(GAME_P5R)
 #include "runtime.h"
 void hle_signal_system_event(void *event);
 #include "game_version.h"
@@ -224,4 +224,4 @@ void *runtime_offline_override(const char *name) {
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;
 }
-#endif   /* GAME_NS2 || GAME_MK8DX || GAME_PLA || GAME_RDR */
+#endif   /* GAME_NS2 || GAME_MK8DX || GAME_PLA || GAME_RDR || GAME_AOCX || GAME_P5R */

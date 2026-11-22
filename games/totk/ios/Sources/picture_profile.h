@@ -21,8 +21,10 @@ typedef enum { PP_MFX_OFF, PP_MFX_SCENE, PP_MFX_SCREEN } pp_metalfx;
    same value, so the other games' code is as it was. */
 /* PP_GAME_RDR: Red Dead Redemption on the Zelda line (games/rdr/ios, Mario Kart 8 Deluxe's runtime), Super Mario Odyssey's
    picture: the mode (TOTK_OPERATION_MODE) and MetalFX to the screen, no frame-rate choice (its own 30). The same value. */
+/* PP_GAME_AOCX: Hyrule Warriors: Age of Calamity on the Zelda line (games/aocx/ios, Red Dead Redemption's runtime), Super
+   Mario Odyssey's picture: the mode (TOTK_OPERATION_MODE) and MetalFX to the screen, no frame-rate choice (its own 30). */
 typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH, PP_GAME_ODYSSEY, PP_GAME_MK8DX = PP_GAME_ODYSSEY,
-               PP_GAME_RDR = PP_GAME_ODYSSEY, PP_GAME_PLA = PP_GAME_ODYSSEY } pp_game;
+               PP_GAME_RDR = PP_GAME_ODYSSEY, PP_GAME_AOCX = PP_GAME_ODYSSEY, PP_GAME_PLA = PP_GAME_ODYSSEY } pp_game;
 
 typedef struct {
     pp_mode mode;

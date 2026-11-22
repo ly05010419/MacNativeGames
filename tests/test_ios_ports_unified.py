@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PORTS = {'acnh': 'GAME_ACNH', 'odyssey': 'GAME_ODYSSEY', 'pla': 'GAME_PLA', 'mk8dx': 'GAME_MK8DX', 'rdr': 'GAME_RDR'}
+PORTS = {'acnh': 'GAME_ACNH', 'odyssey': 'GAME_ODYSSEY', 'pla': 'GAME_PLA', 'mk8dx': 'GAME_MK8DX', 'rdr': 'GAME_RDR', 'aocx': 'GAME_AOCX'}
 SHARED_BUILD = ROOT / 'games/totk/ios/tools/build_port_ipa.py'
 
 
@@ -19,7 +19,7 @@ def files(folder):
 # or its Mac-only files have it). Pokémon Legends: Arceus keeps its 16:9 picture with bars, its own HUD (not hud_panel.inc)
 # and controllers-only gamepad.m.
 FRONT_OWN = {'acnh': ('runtime_display_max_hz',), 'odyssey': ('runtime_display_max_hz',), 'mk8dx': ('runtime_display_max_hz',),
-             'rdr': ('runtime_display_max_hz',),
+             'rdr': ('runtime_display_max_hz',), 'aocx': ('runtime_display_max_hz',),
              'pla': ('runtime_aspect_view', 'mtl_hud_safe_area', 'runtime_keyboard_capture', 'runtime_motion_phone',
                      'runtime_shortcut_help_toggle')}
 
@@ -574,7 +574,7 @@ class PortEntitlements(unittest.TestCase):
         self.assertIn("entitlements: tuple = ()", build, 'the other ports ask for nothing more')
         self.assertIn("MNGEntitlements", build)
         self.assertIn("entitlements=('com.apple.developer.kernel.extended-virtual-addressing',)", (ROOT / 'games/pla/ios/tools/build_ipa.py').read_text())
-        for g in ('acnh', 'odyssey', 'mk8dx', 'rdr'):
+        for g in ('acnh', 'odyssey', 'mk8dx', 'rdr', 'aocx'):
             self.assertNotIn('entitlements=', (ROOT / 'games' / g / 'ios/tools/build_ipa.py').read_text(), g)
         inst = (ROOT / 'games/totk/ios/tools/install_device.py').read_text()
         self.assertIn('extra = wanted_entitlements(a.ipa)', inst)
@@ -607,7 +607,7 @@ class PhoneFrontAnswersTheMacsDisplayCalls(unittest.TestCase):
         # the shared phone front end did not (2026-11-22). Every vi entry of a port's Mac frontend.m is in the phone's.
         import re
         phone = (ROOT / 'shared/runtime/frontend_ios.m').read_text()
-        for game in ('acnh', 'odyssey', 'mk8dx', 'pla', 'rdr'):
+        for game in ('acnh', 'odyssey', 'mk8dx', 'pla', 'rdr', 'aocx'):
             mac = ROOT / 'games' / game / 'runtime/frontend.m'
             if not mac.is_file(): continue
             for name in sorted(set(re.findall(r'"(_ZN2nn2vi\w+)"', mac.read_text()))):
@@ -732,6 +732,96 @@ class RdrPort(unittest.TestCase):
         self.assertIn('depth_minus_w=False', tool, 'its NVN 0..1 depth (every vertex row of its Mac cache)')
         self.assertIn("import rpf6", tool)
         self.assertIn('prepare_rdr_shader_seed.py', (RDR / 'scripts/build_rdr.py').read_text())
+
+
+AOCX = ROOT / 'games/aocx'
+
+
+def load_aocx_profile():
+    import importlib.util, sys
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location('aocx_ios_profile', AOCX / 'ios/tools/build_ipa.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+class AocxPort(unittest.TestCase):
+    """Hyrule Warriors: Age of Calamity 1.4.1 on the Zelda line (games/aocx, Red Dead Redemption's runtime; no nxnative code)
+    on Zelda's app, build, installer and seed folder, as the other ports (the maintainer 2026-11-22: "统一 … 用测试保证").
+    What is its own: the add-on content in GameData, no font in the app, the host's VP9 movies (libvpx for the device), its
+    own 30 fps, and a seed read from its RDB data files and main (scripts/ktgl_shaders.py, prepare_aocx_shader_seed.py)."""
+
+    def test_its_layout_icon_and_libraries(self):
+        mod = load_aocx_profile()
+        L = mod.layout(Path('/w'))
+        self.assertEqual((L.host, L.rewritten, L.romfs, L.seed, L.version),
+                         (Path('/w/build/aocx-native'), Path('/w/rewritten/local'), Path('/w/extracted/local/romfs'),
+                          Path('/w/build/shader-seed'), '1.4.1'))
+        self.assertIsNone(L.icon, 'build/AppIcon.icns, from its control data (scripts/build_aocx.py)')
+        self.assertIn("extract_app_icon.py", (AOCX / 'scripts/build_aocx.py').read_text())
+        self.assertEqual(mod.PORT.libs, ('libopus.a', 'libvpx.a'), 'its VP9 movies are decoded by the host (libvpx)')
+        self.assertEqual(mod.CHAIN_CACHE.split('rt-')[1], re.search(r'#define DMSH_CHAIN "([^"]+)"', (AOCX / NVN / 'dmsh_chain.h').read_text()).group(1))
+        self.assertNotIn('nxnative', (AOCX / 'ios/tools/build_ipa.py').read_text())
+
+    def test_add_on_content_and_no_font_in_the_app(self):
+        import tempfile
+        mod = load_aocx_profile()
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d); L = mod.layout(work)
+            L.fonts.mkdir(); (L.fonts / 'old.ttf').write_text('x')
+            mod.prepare(L, None, {}, None, None, work)
+            self.assertEqual(list(L.fonts.iterdir()), [], 'no macOS or firmware font: the game draws with its own')
+            aoc = work / 'extracted/aoc'; (aoc / '2/asset').mkdir(parents=True)
+            (aoc / '2/asset/a.bin').write_text('a'); (aoc / '2/DLCDATA.dat').write_text('d'); (aoc / '2.json').write_text('{}')
+            res = work / 'res'
+            mod.game_data(res, work, L, None)
+            self.assertEqual(sorted(str(p.relative_to(res)) for p in res.rglob('*') if p.is_file()),
+                             ['aoc/2/DLCDATA.dat', 'aoc/2/asset/a.bin'], 'the add-ons, not their reports')
+            with self.assertRaises(RuntimeError):
+                mod.check(L)
+
+    def test_the_shell_knows_it(self):
+        main = (ROOT / 'games/totk/ios/Sources/main.m').read_text()
+        block = main[main.index('#ifdef GAME_AOCX'):]
+        block = block[:block.index('#endif')]
+        self.assertIn('setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);', block)
+        self.assertIn('setenv("TOTK_AOC_DIR", [res stringByAppendingPathComponent:@"aoc"]', block)
+        self.assertIn('#define GAME_INBOX_ID "aocx"', (AOCX / 'runtime/game_version.h').read_text(), 'its active players\' id')
+        self.assertEqual(main.count('defined(GAME_RDR) || defined(GAME_AOCX)'), 3, 'no shader inbox')
+        self.assertIn('#if !defined(GAME_AOCX) && !defined(GAME_ACNH)', main, 'no contribution prune')
+        self.assertRegex((ROOT / 'games/totk/ios/Sources/port_features.h').read_text(),
+                         r'#if [^\n]*defined\(GAME_AOCX\)[^\n]*\n#define SHELL_FPS_CHOICE 0')
+        self.assertIn('PP_GAME_AOCX = PP_GAME_ODYSSEY,', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        self.assertIn('int runtime_phone_fps(void) { return 30; }', (AOCX / 'ios/Sources/ios_front.m').read_text())
+        import plistlib
+        mod = load_aocx_profile()
+        root = load_tool('build_ipa').pane_for(plistlib.loads((ROOT / 'games/totk/ios/Settings.bundle/Root.plist').read_bytes()), 'aocx')
+        mod.pane(root['PreferenceSpecifiers'])
+        keys = {x.get('Key') for x in root['PreferenceSpecifiers']} - {None}
+        self.assertTrue({'TOTK_LANG', 'TOTK_PICTURE_PROFILE', 'TOTK_METALFX'} <= keys)
+        self.assertFalse(keys & {'TOTK_CLOUD_SAVE_PICK', 'TOTK_CONTRIBUTE_SHADERS'})
+
+    def test_phone_code_holds_no_host_address(self):
+        patches = (AOCX / 'runtime/game_patches.c').read_text()
+        body = patches[patches.index('void runtime_game_patches(Module *main_module) {'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('(void)main_module;', body)
+        for word in ('patch_', 'emit_', 'memcpy', 'getenv'):
+            self.assertNotIn(word, body)
+
+    def test_the_phone_schedules_as_its_mac(self):
+        self.assertIn('&& !defined(GAME_RDR) && !defined(GAME_AOCX)', (ROOT / 'shared/runtime/threads.c').read_text())
+        for name in ('threads.c', 'offline_host.c', 'movie_host.c', 'movie_pace.h', 'audio_out.c'):
+            link = AOCX / 'runtime' / name
+            self.assertTrue(link.is_symlink() and link.resolve() == (ROOT / 'shared/runtime' / name).resolve(), name)
+        self.assertIn('defined(GAME_AOCX)', (ROOT / 'shared/runtime/offline_host.c').read_text())
+
+    def test_its_seed_is_the_zelda_lines_tool(self):
+        tool = (AOCX / 'scripts/prepare_aocx_shader_seed.py').read_text()
+        self.assertIn("GAME.parent / 'odyssey/scripts/prepare_odyssey_shader_seed.py'", tool, 'the tool is run, not copied')
+        self.assertIn('depth_minus_w=False', tool, 'its NVN 0..1 depth')
+        self.assertIn('import ktgl_shaders', tool)
+        self.assertIn('prepare_aocx_shader_seed.py', (AOCX / 'scripts/build_aocx.py').read_text())
 
 
 if __name__ == '__main__':

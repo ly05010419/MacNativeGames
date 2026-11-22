@@ -23,6 +23,8 @@ SHELL = TOTK / 'ios/Sources'     # the shared iPhone / iPad app
 sys.path.insert(0, str(TOOLS))
 from xcode_dir import developer_dir  # noqa: E402
 from compile_seed import seed_flags  # noqa: E402   Zelda's device libraries (compile_seed.py)
+import msl_loop_cap  # noqa: E402   the loop cap of every translated shader (shared msl_loop_cap.h's rewrite)
+LOOP_CAP_ID = f'{msl_loop_cap.LOOP_CAP}-1'   # the rewrite's identity in the seed's fingerprint (bump the suffix when the rewrite changes)
 from device_pipelines import device_gpus, make as make_device_pipelines, seed_check  # noqa: E402   Zelda's device pipelines
 
 APP = 'TOTK'   # the product: TOTK.app, which install_device.py signs and installs
@@ -266,6 +268,7 @@ def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None, fix=None
     for f in mac: st = f.stat(); inputs.update(f'{f.name}\0{st.st_size}\0{st.st_mtime_ns}\n'.encode())
     if run: inputs.update(f'metallibs\0{seed_flags("iphoneos")}'.encode())
     if fix: inputs.update(f'fix\0{fix_id}'.encode())
+    if run: inputs.update(f'loopcap\0{LOOP_CAP_ID}'.encode())
     want = inputs.hexdigest()
     stamp = out / 'fingerprint.txt'
     if stamp.is_file() and (out / 'inputs.txt').is_file() and (out / 'inputs.txt').read_text().strip() == want:
@@ -289,6 +292,9 @@ def seed_with_mac_cache(seed, cache, out, run=None, log=None, env=None, fix=None
         files[f.name] = hashlib.sha256(target.read_bytes()).hexdigest()
     if fix:   # the port's source fixes, then the manifest names the sources as they now are (compile_seed.py keys libraries by them)
         fix(out)
+    if run:   # every port: no loop of a translated shader runs unbounded on the device (msl_loop_cap.py, the shared header's rewrite)
+        msl_loop_cap.cap_folder(out)
+    if fix or run:
         for name in [n for n in files if n.endswith('_b.metal')]:
             if (out / name).is_file(): files[name] = hashlib.sha256((out / name).read_bytes()).hexdigest()
     (out / 'seed-manifest.json').unlink()

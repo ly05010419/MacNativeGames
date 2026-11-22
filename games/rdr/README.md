@@ -91,7 +91,7 @@ What is this game's there:
   layouts the Mac met (6,754 variants, NVN's 0..1 depth), by Odyssey's copy of the Zelda line's seed tool. The 672
   variants the Mac translated to Armadillo: 670 are in the seed byte for byte, 2 (464-byte shaders the game builds at
   run time) come from the Mac's cache (`build_port_ipa.py` merges it). Every shader is compiled for the device
-  (`compile_seed.py`: 7,426 libraries) and the 452 pipelines the Mac built for each GPU (`device_pipelines.py`).
+  (`compile_seed.py`: 7,426 libraries) and the 485 pipelines the Mac built for each GPU (`device_pipelines.py`).
 
 ## Tests
 

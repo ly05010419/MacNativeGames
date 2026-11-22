@@ -1,0 +1,11 @@
+{
+  "title_id": "01004D4A53510000",
+  "name": "明星三缺一 2013 (StarMahjong), a libnx homebrew port of the Windows game",
+  "exefs_sha256": {
+    "main": "121a50b4798c53af7bfceff77fd0692f30c43695d1b0d325272264b0ad46be99",
+    "main.npdm": "80d83046bba59eb450b1b5a56c170636cb7f8a57321f601d998602151ca2e8c1"
+  },
+  "romfs_size": 263858776,
+  "romfs_sha256": "74d84e61d7231c18108617c1032b0d3440f3ce6bd20ea252cdae784184f056b5",
+  "rewritten_sha256": "de657c5d2bfd4ca9ae1323873e5e16a73b223141f7ced4de65b958e6c9d62142"
+}

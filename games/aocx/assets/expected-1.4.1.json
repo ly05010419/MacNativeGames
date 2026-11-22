@@ -1,0 +1,24 @@
+{
+  "title_id": "01002B00111A2000",
+  "update_title_id": "01002B00111A2800",
+  "version": "1.4.1",
+  "version_raw": 458752,
+  "sdk": "9.6.0",
+  "main_build_id": "e5f275b5d0889899e55de1a164eef060",
+  "subsdk0_build_id": "3ab92c3444d4ece2f52417b5d8ee86eb",
+  "sdk_build_id": "95832210b36121e88b4f9b7b66239dad",
+  "exefs_sha256": {
+    "main": "126a76b9ab991abccb44dd7f1fac76b2256c498f969a2b287a40835ae179e37b",
+    "subsdk0": "b515e170ed8799af63e0f2e1a58b344ec8c78605976a2148374d13e6ced93d30",
+    "sdk": "71a49827250b6bc2883ac44e5d42f4d20110a95d930c2387311c7ff415eb4534",
+    "main.npdm": "f7a6c8f45352de0c59891ad2c816c06952ec250f9b069a3fd1ab5cd53fadc744"
+  },
+  "romfs_probe": "asset/MaterialEditor.rdb.bin",
+  "romfs_files": 1102,
+  "romfs_sha256": "42192ad84676805dbc76f5cdd834b8d27c84b7849de6d7eebbdcce8f6e837f6c",
+  "rewritten_sha256": {
+    "main.patched.bin": "e00377915cacf13214e40b2140e0fe5c1113f38b44855a9c7290dc54730da065",
+    "subsdk0.patched.bin": "7909d5c3dd7d9df1531e203a1a39bfd9c9e59034cfb1ee9ada2d8ee4237c8b95",
+    "sdk.patched.bin": "7e8a61a776bfa05ee8b58fe89d1e442414c65accd1b7b973dc9588488df4f6f2"
+  }
+}

@@ -5,6 +5,58 @@ build ID 37531419…, sdk 86188952… = SDK 15.3.2; modules main and sdk only). 
 (`dm/games/01007820196A6000/README.md`, `game.tsv`, read from a clone outside the repository) were read for findings; no
 nxnative code is used.
 
+## 2026-11-22 — the iPhone / iPad app on the shared shell
+
+### What was done
+- **The app**: `ios/tools/build_ipa.py` (this game's profile of `games/totk/ios/tools/build_port_ipa.py`, as Mario Kart 8
+  Deluxe's) and `ios/Sources/ios_front.m` (the screen's refresh rate, its own 30 fps); the shared shell's `GAME_RDR`
+  branches: `SHELL_PORT`, no frame-rate choice (`port_features.h`), Odyssey's picture (`PP_GAME_RDR`), no shader inbox,
+  its environment block in `main.m` (no RomFS overlay or mods), its active players' id from `GAME_INBOX_ID` ("rdr"), the
+  Settings pane's picture rows (`pane_for`). `shared/runtime/threads.c` keeps asynchronous preemption on for it on the
+  phone, as on its Mac (Mario Kart's and Odyssey's rule).
+- **The vi calls**: the shared phone front end (`shared/runtime/frontend_ios.m`) answers the sized `CreateLayer`,
+  `SetLayerCrop`, `DestroyLayer`, `CloseDisplay` and `vi::Finalize` as `runtime/frontend.m` does
+  (`PhoneFrontAnswersTheMacsDisplayCalls` now checks this game too).
+- **main's leading patch area in the app**: the shared `games/totk/ios/tools/gen_embed.py` takes `PATCH_LEAD` (Metroid
+  Dread's own copy had it; additive, the other layouts as they were): x1 is the file's patch area [0, lead), x0 the
+  exported text, w the data up to the end of the file. The loader's iPhone path (already in `loader.c`) maps them back
+  into one zero-filled reservation with .bss and the key page. Checked: export-ios wrote main's text unpatched
+  (`patched_words=0`, no game patch: the phone code holds no Mac patch and no host address), the app links with
+  `__TOTKX` 45.7 MB, `__TOTKmainW` 15.8 MB, `__TOTKsdkW` 8.4 MB; the IPA is 81 MB.
+- **The icon** of the game's control data (games/pla's `extract_app_icon.py`, `build/AppIcon.icns`; step 5 of
+  `scripts/build_rdr.py`). **No font** in the app (the game never asks for a system font) and only libopus for the
+  device (main decodes its Bink movies).
+
+### The shader seed: shaders.rpf and main, read the Zelda way
+- `scripts/rpf6.py` (new): RPF6's header (big-endian: entry count, debug area / 8, an encryption word; the entry table
+  and the debug area are encrypted) and its files, which are Zstandard frames back to back on 8-byte boundaries: 131 in
+  `shaders.rpf` (139 entries with the folders), the effect list and 128 RAGE effects (`rgxd`). An effect keeps each NVN
+  program as a record: 0x19866891, the code's size, the control section's size, the code (magic 0x12345678), the control
+  section (magic 0x98761234). The key is the runtime's (`nvn_mtl.m prog_get`).
+- Checked against the runtime: a Mac run to the opening with `TOTK_CTL_DUMP` (560 shaders bound): every control section
+  is one of these records byte for byte, 546 in `shaders.rpf` and 14 in main. The reader finds 3,413 shaders in the
+  archive and 168 in main (3,581).
+- `scripts/prepare_rdr_shader_seed.py` (new) runs Odyssey's copy of the Zelda line's seed tool (as Mario Kart's does) with
+  this game's discovery, NVN's 0..1 depth (every vertex row of the Mac's cache has `depth_minus_w` false; the tool's
+  requests and Odyssey's rows say true) and rules: the 12 vertex layouts of the Mac's cache, as listed bind states of
+  every vertex shader. The translator reads an unanswered input's type from its use, so the default translation of the
+  skinned shaders takes inputs 1 and 2 as uint where the game binds input 2 as float: 176 of the Mac's 672 variants
+  were such layouts. Result: 6,754 variants of 3,581 shaders, none skipped, in 11 s on the M4; **670 of the Mac's 672
+  variants are in the seed with the same MSL byte for byte**; the other 2 are 464-byte shaders found in no file (built
+  at run time), which the port build merges from the Mac's cache.
+- The port build compiled 7,426 device libraries (`compile_seed.py`) and the 485 pipelines the Mac collected for
+  applegpu_g14p (iPhone 14) and applegpu_g15p (iPad A16), 485 / 485 each (`device_pipelines.py`).
+
+### The Mac after these changes
+- The Mac host rebuilt from the same tree (`make runtime`) and run with a clone of the bring-up's profile: title, + →
+  Normal, the opening's train, then **John Marston at Armadillo Station** with the HUD and minimap
+  (`evidence/13-armadillo-after-ios-port.png`); no failure in the log; footprint 1.65 GB with 1.96 GB of Metal allocations
+  at the station.
+
+### Not yet checked
+- A start on the iPhone / iPad. Memory: main's reservation is 1.3 GB of address space (touched as RAGE's 400 MB and 800
+  MB heaps fill); nxnative measured 2.5 GB in the world, and the app has the increased-memory-limit entitlement only.
+
 ## 2026-11-22 — from nothing to the title, the agreements, the difficulty menu and the opening
 
 ### Inputs and extraction
