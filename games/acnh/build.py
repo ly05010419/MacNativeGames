@@ -60,8 +60,15 @@ def python_for(work):
 
 
 def hactool_for(work, python):
+    """The pinned hactool: the release's prebuilt one when this source has it (tools/prebuilt.py: build_app.build_hactool,
+    the same commit and hooks as tools/build_hactool.py; user 2026-11-22: a player compiles nothing), else built here."""
     tool = work / 'tools/hactool/hactool'
+    sys.path.insert(0, str(REPO))
+    import tools.prebuilt as prebuilt
+    if prebuilt.keep_placed(REPO, 'hactool', tool):
+        return tool
     if not (tool.is_file() and os.access(tool, os.X_OK)):
+        prebuilt.compiler_needed('hactool')
         run([python, GAME / 'tools/build_hactool.py', '--work', work], work, 'hactool')
     return tool
 

@@ -67,11 +67,18 @@ $(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos
 	@mkdir -p "$(dir $@)"
 	test "$$(shasum -a 256 "$<" | cut -d' ' -f1)" = "$$(cut -d' ' -f1 prebuilt/macos-arm64/totk_xlate.sha256)"
 	cp "$<" "$@" && chmod +x "$@"
+ifeq ($(PREBUILT_SPIRV_CROSS),1)
+# scripts/build_odyssey.py put the release's prebuilt spirv-cross there (tools/prebuilt.py: the same commit, sources
+# and flags as the rules below): nothing to compile
+$(OUT)/spirv-cross/spirv-cross:
+	test -x "$@"
+else
 $(OUT)/spirv-cross/obj/%.cpp.o: $(WORK)/src/SPIRV-Cross/%.cpp Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang++ -O3 -DNDEBUG -std=c++11 -arch arm64 -Wno-deprecated-declarations -c "$<" -o "$@"
 $(OUT)/spirv-cross/spirv-cross: $(SPIRV_CROSS_OBJECTS)
 	xcrun clang++ -arch arm64 $(SPIRV_CROSS_OBJECTS) -o "$@"
+endif
 
 clean:
 	rm -rf "$(OUT)/obj" "$(OUT)/odyssey-native"

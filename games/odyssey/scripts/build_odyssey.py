@@ -183,14 +183,22 @@ def main():
     done(t)
 
     t = step(6, "Shader tools and the runtime")
-    src = work / "src/SPIRV-Cross"
-    if not (src / ".git").is_dir():
-        run(["git", "clone", "--quiet", SPIRV_CROSS[0], src])
-    run(["git", "-C", src, "checkout", "--quiet", SPIRV_CROSS[1]])
+    # the release's spirv-cross (tools/prebuilt.py: build_app.build_spirv_cross, the same commit, sources and flags as
+    # the Makefile's rules; user 2026-11-22: a player compiles nothing): no sources fetched, PREBUILT_SPIRV_CROSS=1
+    sys.path.insert(0, str(GAME_DIR.parents[1]))
+    import tools.prebuilt as prebuilt
+    placed = prebuilt.keep_placed(GAME_DIR.parents[1], "spirv-cross", work / "build/spirv-cross/spirv-cross")
+    if not placed:
+        prebuilt.compiler_needed("SPIRV-Cross")
+        src = work / "src/SPIRV-Cross"
+        if not (src / ".git").is_dir():
+            run(["git", "clone", "--quiet", SPIRV_CROSS[0], src])
+        run(["git", "-C", src, "checkout", "--quiet", SPIRV_CROSS[1]])
     # make cannot handle spaces in target paths: the work folder goes in relative to games/odyssey (the checkout itself
     # may sit in a folder with a space), and a work folder with a space through make_path's link without one.
     make_work = os.path.relpath(make_path(work, "odyssey"), GAME_DIR)
-    run(["make", f"-j{args.jobs}", "runtime", f"WORK={make_work}", f"PY={py}"], env={"DEVELOPER_DIR": args.developer_dir})
+    run(["make", f"-j{args.jobs}", "runtime", f"WORK={make_work}", f"PY={py}", *(["PREBUILT_SPIRV_CROSS=1"] if placed else [])],
+        env={"DEVELOPER_DIR": args.developer_dir})
     done(t)
 
     seed = work / "build/shader-seed"

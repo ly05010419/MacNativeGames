@@ -71,10 +71,23 @@ def runtime_source_digest(root=None):
                 h.update(f'{rel/name}\0{sha(Path(top)/name)}\n'.encode())
     return h.hexdigest()
 
+def prebuilt_runtime(work):
+    """The release's prebuilt runtime and pool sources reader in work/build (tools/prebuilt.py, made from this very
+    source; user 2026-11-22: "时之笛的运行时改成发布时编好"), or False: a checkout, which compiles them."""
+    sys.path.insert(0,str(GAME.parents[1]))
+    import tools.prebuilt as prebuilt
+    return all(prebuilt.keep_placed(GAME.parents[1],name,work/'build'/made) for name,made in prebuilt.OOT_PROGRAMS.items())
+
 def build_runtime(work,log,jobs,env):
-    """make the runtime into work/build; with -B when the sources' content is not the last build's (above)."""
+    """make the runtime into work/build; with -B when the sources' content is not the last build's (above). The
+    release's prebuilt programs when the source has them: nothing is compiled."""
     stamp=work/'build'/RUNTIME_STAMP
     digest=runtime_source_digest()
+    if prebuilt_runtime(work):
+        stamp.parent.mkdir(parents=True,exist_ok=True);stamp.write_text(digest+'\n')
+        return
+    import tools.prebuilt as prebuilt
+    prebuilt.compiler_needed('the Ocarina of Time runtime')
     old=stamp.read_text().strip() if stamp.is_file() else ''
     cmd=['make','-C',str(GAME),'WORK='+str(make_path(work,'oot')),'-j'+str(jobs)]
     if old!=digest:
