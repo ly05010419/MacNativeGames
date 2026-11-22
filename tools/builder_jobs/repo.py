@@ -36,6 +36,12 @@ GAMES = {
 }
 OOT_TITLE = '0400486024DEC000'   # build_app.main_ns2
 
+# The games/ folders each game's Mac build reads (Breath of the Wild: Tears of the Kingdom's code and its own shader list;
+# Bananza and Pokopia: Tears of the Kingdom's code and their own assets). tools/launcher_source.py carries these alone.
+GAME_FOLDERS = {'totk': ('totk',), 'botw': ('totk', 'botw'), 'oot': ('oot', 'totk'), 'dkb': ('totk', 'dkb'),
+                'pkp': ('totk', 'pokopia'), 'dread': ('dread',), 'tmnt': ('tmnt',), 'acnh': ('acnh',), 'eow': ('eow',),
+                'odyssey': ('odyssey',)}
+
 # Games this repository builds from the command line (games/<folder>/build.py) that the Launcher does not (user
 # 2026-11-22: "去掉 WORLDEND SYNDROME", only from the Launcher; "去掉 塞尔达传说 御天之剑 HD"). Both ran .NET programs,
 # which a Launcher, carrying no .NET SDK, cannot build. A file of one is named and left out, not taken for another game.
