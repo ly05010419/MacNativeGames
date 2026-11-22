@@ -16,7 +16,6 @@ def main():
     parser.add_argument('--shared-fonts', type=Path, help='optional verified shared-font directory')
     parser.add_argument('--work', type=Path, help='private work directory; existing contents are retained')
     parser.add_argument('-o', '--out', required=True, type=Path, help='output .app; an existing TMNT app is updated in place')
-    parser.add_argument('--dotnet', help='optional .NET 10 SDK executable')
     args = parser.parse_args()
     sys.path.insert(0, str(GAME.parents[1]))
     from build_app import default_work
@@ -57,8 +56,7 @@ def main():
                     '--output', run_work / 'romfs')
         steps.run('romfs', identity, [run_work / 'romfs'], romfs)
         run('build_private_bundle.py', '--exefs', run_work / 'exefs', '--romfs', run_work / 'romfs',
-            *(['--fonts', args.shared_fonts] if args.shared_fonts else []), '--work', run_work / 'build-work', '--out', out, '--app', '--record-work', work,
-            *(['--dotnet', args.dotnet] if args.dotnet else []))
+            *(['--fonts', args.shared_fonts] if args.shared_fonts else []), '--work', run_work / 'build-work', '--out', out, '--app', '--record-work', work)
 
 
 

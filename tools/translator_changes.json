@@ -316,6 +316,19 @@
     }
    ]
   },
+  "games/tmnt/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "dabf9601f77071390862fb6e40cbe91f8f9b772d4c3fcbe33f6592314237db2e",
+   "history": [
+    {
+     "code_sha256": "dabf9601f77071390862fb6e40cbe91f8f9b772d4c3fcbe33f6592314237db2e",
+     "date": "2026-11-22",
+     "commit": "",
+     "why": "新增：忍者龟的翻译服务原来在每次打包时用 .NET SDK 现编（games/tmnt/tools/totk_xlate/publish_native.sh），现在和王国之泪、时之笛、动物森友会等一样放进仓库当预编译文件。源码没有改：同一份 games/tmnt/third_party/ryujinx、补丁和 Service.cs，用固定的 .NET SDK 10.0.401 编。用户 2026-11-22：“对 做吧”（问的是“要把忍者龟的翻译器改成仓库里的预编译文件吗？”）。",
+     "necessary": "玩家的 Launcher 不再带 .NET SDK（用户 2026-11-21：“去掉 .net sdk”，SDK 占离线包 477 MB 里的 231 MB），玩家 Mac 上不能现编；只改运行时或打包脚本做不到，必须有一份编好的程序。翻译输出不变。",
+     "evidence": "两份不同目录编出的程序（文件哈希 bb1d3cae… 与 9d153c50…，NativeAOT 换目录哈希就变）回放旷野之息缓存 rt-totk-native-v4-unverified 的 179 个着色器：都 179 个成功，716 个输出文件（MSL / SPIR-V / 反射）逐字节相同（keep/tools/xlate-rebuild/replay.py --compare，scratch/runs/2026-11/offline-pack/tmnt-prebuilt/）"
+    }
+   ]
+  },
   "games/tomodachi/prebuilt/macos-arm64/totk_xlate": {
    "code_sha256": "1ab968179b5f843710ea19fa9c0cdad3a851fd33410cb4919926cd811139b7b1",
    "history": [

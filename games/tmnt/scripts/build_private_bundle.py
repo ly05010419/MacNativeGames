@@ -77,9 +77,9 @@ def _build(args):
     cached('nro-digest', [inventory(prepared_nro), inventory(rewritten_nro)], [generated / 'tmnt_nro_digest.h'],
            lambda: script('prepare_nro_digest.py', '--prepared', prepared_nro,
                           '--rewritten', rewritten_nro, '--out', generated / 'tmnt_nro_digest.h'))
-    cached('shader-tools', {'dotnet': args.dotnet}, [shader_tools],
-           lambda: script('build_shader_tools.py', '--out', shader_tools,
-                          *(['--dotnet', args.dotnet] if args.dotnet else [])))
+    from build_shader_tools import service_digest   # the prebuilt translator (no .NET SDK)
+    cached('shader-tools', {'service': service_digest()}, [shader_tools],
+           lambda: script('build_shader_tools.py', '--out', shader_tools))
     call('make', '-C', GAME, 'runtime', f'WORK={make_path(work, "tmnt")}', f'PY={sys.executable}')
     # The loader checks the registered NRO even in link-only mode. Stage it
     # beside the modules before validation, rather than relying on packaging.
@@ -117,8 +117,6 @@ def main():
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--fonts', type=Path, help='optional verified shared-font directory')
     parser.add_argument('--record-work', type=Path, help='common work root recorded by the container builder')
-    parser.add_argument('--dotnet',
-                        help='path to a .NET 10 SDK executable')
     parser.add_argument('--link-romfs', action='store_true',
                         help='save disk space; the bundle then depends on the input RomFS path')
     parser.add_argument('--app', action='store_true', help='build a private macOS .app bundle')
