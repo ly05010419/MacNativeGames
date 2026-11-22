@@ -1,0 +1,19 @@
+{
+  "title_id": "01007820196A6000",
+  "update_title_id": "01007820196A6800",
+  "version": "1.0.4",
+  "version_raw": 262144,
+  "sdk": "15.3.2",
+  "main_build_id": "37531419da7654ec3f5b586693f7f331",
+  "sdk_build_id": "8618895246b420329b77746b960a66ab",
+  "exefs_sha256": {
+    "main": "eb9d7829618d4944afbd31e964d9453472fc531a4649c609186af58c10b42629",
+    "sdk": "50f4d98aee0d9170be6d5d929222dd4b4558cb212a4803ec26b404851b4fbf6e",
+    "main.npdm": "0b88ce843c57af662c5feac7ecc530a2a099712bcf2e462f78c8343f8dae21d1"
+  },
+  "romfs_probe": "audio_switch.rpf",
+  "rewritten_sha256": {
+    "main.patched.bin": "0294bdb526f68560d8471870728ea1be17fa0b770830d91754c35e7144e5afe7",
+    "sdk.patched.bin": "c1acb1aa38a7f78d6ca13df9af5ca798ab79ab19ffe4f49b9ab8fe0272d1bcfa"
+  }
+}

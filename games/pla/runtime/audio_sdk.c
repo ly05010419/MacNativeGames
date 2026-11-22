@@ -6,6 +6,7 @@
    through the audout:u IPC service alone was not enough: PLA never opened that service.
    Buffer layout is the public one (switchbrew AudioOutBuffer, 0x28 bytes): next, buffer, capacity, data_size, data_offset. */
 #include "runtime.h"
+#include <TargetConditionals.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1018,6 +1019,10 @@ void runtime_audio_boot_resume_install(void) {
     if (!nnmain) { fprintf(stderr, "[audboot] no nnMain\n"); return; }
     uint8_t *site = (uint8_t *)nnmain - 0x2779f70ULL + 0x2dc90b8ULL;
     uint32_t w; memcpy(&w, site, 4);
+#if TARGET_OS_IPHONE   /* the text came patched (export-ios): instructions only, checked, never written here */
+    fprintf(stderr, "[audboot] boot suspend -> resume: %s at build time\n", w == 0x52800000u ? "patched" : "【红】NOT patched");
+    return;
+#endif
     if (w != 0x52800020u) { fprintf(stderr, "[audboot] boot-suspend site differs (%#x): not patched\n", w); return; }
     uint32_t m = 0x52800000u; memcpy(site, &m, 4); sys_icache_invalidate(site, 4);
     fprintf(stderr, "[audboot] boot suspend -> resume (main+0x2dc90b8: mov w0, #0)\n");
@@ -3532,16 +3537,17 @@ void runtime_audio_bank_bootstrap_install(void) {
     uint8_t *base = (uint8_t *)nnmain - 0x2779f70ULL;
     uint8_t *fn = base + 0x2813338ULL;                 /* PostEvent wrapper: the earliest point with the engine up */
     uint32_t ex[3]; memcpy(ex, fn, sizeof ex);
+#if !TARGET_OS_IPHONE   /* iPhone / iPad: the text came patched (export-ios); runtime_hook_branch checks the words */
     if (ex[0] != 0xd10203ffu || ex[1] != 0xf9001bf9u || ex[2] != 0xa9045ff8u) {
         fprintf(stderr, "[audbank] PostEvent prologue differs (%#x %#x %#x): bootstrap not installed\n", ex[0], ex[1], ex[2]);
         return;
     }
+#endif
     bank_bootstrap_entry = fn;
     bank_bootstrap_cont = fn + 12;
-    uint32_t pt[3] = {0, 0, 0};
-    emit_adrp_br(pt, (uintptr_t)fn, (const void *)bank_bootstrap_stub);
-    memcpy(fn, pt, sizeof pt);
-    sys_icache_invalidate(fn, sizeof pt);
+    /* The words load the stub's address from the module's key page (loader.c runtime_hook_branch): no Mac address in the
+       text the iPhone embeds. */
+    if (!runtime_hook_branch(HOOK_SLOT_BANK_BOOTSTRAP, fn, (const void *)bank_bootstrap_stub, "bank bootstrap")) { bank_bootstrap_entry = NULL; return; }
     fprintf(stderr, "[audbank] bank bootstrap installed at %p (entry+12 = %p)\n", (void *)fn, (void *)bank_bootstrap_cont);
     fflush(stderr);
     {extern void runtime_audio_render_drive_install(void); runtime_audio_render_drive_install();}

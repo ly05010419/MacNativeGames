@@ -318,7 +318,7 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         [timer invalidate];
         g_no_game_data = nil;
         fprintf(stderr, "[totk] the game data and the shaders are there: starting\n");
-    #if !defined(GAME_ACNH) && !defined(GAME_ODYSSEY)   /* their contribution headers have no prune (it only trims rows the seed serves) */
+    #if !defined(GAME_ACNH) && !defined(GAME_ODYSSEY) && !defined(GAME_PLA) && !defined(GAME_MK8DX) && !defined(GAME_RDR)   /* their contribution headers have no prune (it only trims rows the seed serves) */
     if (g_contrib) totk_contrib_prune(g_contrib, g_seed_dir, g_seed_dir);
 #endif
         runtime_boot_status(zh ? "正在启动" : "Starting", NULL);
@@ -351,7 +351,7 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
    choice (totk_contrib_upload.h): once the switch has a value, it decides; an answer to the question sets the switch. */
 static NSString *const ContributeKey = @"TOTK_CONTRIBUTE_SHADERS";
 static void contrib_settings_sync(NSString *contrib) {
-#ifdef GAME_ACNH   // no shader inbox (games/acnh/third_party/COPIES.md: its totk_contrib_upload.h keeps the identity part only)
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX) || defined(GAME_RDR)   // no shader inbox (Pokémon Legends: Arceus, Mario Kart 8 Deluxe and Red Dead Redemption: their rows stay in Documents, as Animal Crossing's) (games/acnh/third_party/COPIES.md: its totk_contrib_upload.h keeps the identity part only)
     (void)contrib;
 #else
     id v = [NSUserDefaults.standardUserDefaults objectForKey:ContributeKey];
@@ -366,7 +366,7 @@ static void contrib_settings_sync(NSString *contrib) {
    the player has not chosen yet (no row threshold, user 2026-11-10). The game starts after the answer. NO when there is nothing to ask. (The file is pruned of
    what the app serves in prepareAndStart, so the first count after a new build can be a little high.) */
 - (BOOL)offerShaderUpload {
-#ifdef GAME_ACNH
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX) || defined(GAME_RDR)
     return NO;
 #else
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -748,6 +748,8 @@ static void apply_settings(void) {
     mng_active_start(@"acnh", mng_active_version());
 #elif defined(GAME_ODYSSEY)
     mng_active_start(@"odyssey", mng_active_version());
+#elif defined(GAME_PLA)
+    mng_active_start(@"pla", mng_active_version());    /* the id of its Mac app (games/pla/app/launcher.m) */
 #else
     mng_active_start(@"totk", mng_active_version());
 #endif
@@ -817,7 +819,7 @@ static void apply_settings(void) {
     });
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
     // What this app's seed and warm lists (beside the seed: DM_NVN_SHMAP) serve leaves it first, so the Mac sends only the rest.
-#ifdef GAME_ACNH   // the rows the device lacks stay in Documents, as on its Mac (no inbox)
+#if defined(GAME_ACNH) || defined(GAME_PLA) || defined(GAME_MK8DX) || defined(GAME_RDR)   // the rows the device lacks stay in Documents, as on its Mac (no inbox)
     NSString *contrib = [docs stringByAppendingPathComponent:@"shader-list-contribution.txt"];
     setenv("TOTK_SHADER_CONTRIB",contrib.fileSystemRepresentation,1);
 #else
@@ -880,6 +882,35 @@ static void apply_settings(void) {
     setenv("ODYSSEY_GAME_VERSION", "1.3.0", 0);
     setenv("ODYSSEY_FREEZE_WATCHDOG", "15", 0);
     setenv("ODYSSEY_GFX_SETTINGS", [docs stringByAppendingPathComponent:@"graphics.txt"].fileSystemRepresentation, 0);
+#endif
+#ifdef GAME_PLA
+    /* Pokémon Legends: Arceus's own (games/pla/app/launcher.m, the Mac app's): the game's own 30 fps step (its 60 fps track
+       runs the game too fast and rewrites code), none of the Mac's exefs patches or RomFS mods, the HUD drawn on the game
+       picture, and the one plain TrueType font it hands the game for every shared-font type (runtime/shared_font.c: the Mac
+       reads macOS's Arial Unicode; the app carries the same file, games/pla/ios/tools/build_ipa.py). Its saves stay in
+       Documents/save. */
+    setenv("PLA_REALTIME", "0", 1); unsetenv("PLA_PATCHES");
+    setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);
+    setenv("PLA_HUD_RENDER", "1", 0);
+    NSString *plaFont = [res stringByAppendingPathComponent:@"shared-fonts/stand-in.ttf"];
+    if ([fm fileExistsAtPath:plaFont]) setenv("PLA_SHARED_FONT_TTF", plaFont.fileSystemRepresentation, 0);
+#endif
+#ifdef GAME_MK8DX
+    /* Mario Kart 8 Deluxe's own (games/mk8dx/README.md, the Mac host's run): no RomFS overlay or mods (its picture is the
+       game's own 1920x1080), the Mii parts of the player's firmware (runtime/mii_model.c; the game cannot run without
+       them) and the Booster Course Pass's files (runtime/fs_host.c), both carried in GameData by
+       games/mk8dx/ios/tools/build_ipa.py. Its saves stay in Documents/save (the device save in save/device). Its active
+       players' id is GAME_INBOX_ID, "mk8dx" (its runtime/game_version.h). */
+    setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);
+    setenv("TOTK_MII_MODEL", [res stringByAppendingPathComponent:@"mii-model"].fileSystemRepresentation, 1);
+    setenv("TOTK_AOC_DIR", [res stringByAppendingPathComponent:@"aoc"].fileSystemRepresentation, 1);
+#endif
+#ifdef GAME_RDR
+    /* Red Dead Redemption's own (games/rdr/README.md, the Mac host's run): no RomFS overlay or mods (its picture is the
+       game's own 1920x1080 layer). It needs nothing else in GameData: main decodes its Bink movies itself, it asks for no
+       system font and has no add-on content. Its saves stay in Documents/save (PREBOOT.SAV keeps the agreements). Its
+       active players' id is GAME_INBOX_ID, "rdr" (its runtime/game_version.h). */
+    setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);
 #endif
 #if SHELL_PORT
     NSString *macShaders = [res stringByAppendingPathComponent:@"shader-cache"];

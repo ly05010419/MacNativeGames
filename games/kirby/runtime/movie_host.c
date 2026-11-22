@@ -21,7 +21,8 @@
    would pile up in its own queue), and when the game falls behind (a loading hitch: ~15 fps for a few seconds under the
    blood moon) a frame more than 1.5 frame periods late is dropped if the next one is due too: the picture stays in time
    with the cutscene's sound instead of lagging and then running fast to catch up. TOTK_MOVIE_PACE=0 hands every frame
-   over as soon as it is decoded.
+   over as soon as it is decoded. A pts that goes backwards or jumps ahead (a seek or loop without Flush: Mario Kart 8
+   Deluxe's mode-menu preview at A on Grand Prix) starts the count again from that frame (shared/runtime/movie_pace.h).
    Odyssey (2026-10-22): its 44 movies (the .mp4 files in MovieData, 41 with an AAC track: the PlayGuide clips Cappy shows, the world postcards) are H.264
    (Baseline / Main / High, 480x272 to 640x360, 4-byte NAL lengths, most with B-frames). The game asks for decoder
    type 1 ("video/avc"), which aborted in NvMMLiteOpenBlock -> NvRmChannelOpen -> NvOsDrvOpen right after the skipped
@@ -37,6 +38,7 @@
    is offered, and with as few audio outputs as video ones its extractor stops at a full audio track. */
 #include "runtime.h"
 #include "movie_host.h"
+#include "movie_pace.h"
 #include <arm_neon.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -97,7 +99,8 @@ typedef struct {
     Ready ready[OUT_BUFS]; int nready;
     Ready decoded[OUT_BUFS]; int ndecoded;   /* paced: decoded, not due yet */
     uint64_t t0; int64_t pts0;               /* paced: host time and presentation time of the first frame handed over */
-    uint64_t frames, decode_ns, errors, dropped;
+    int64_t last_pts;                        /* paced: the last frame handed over or dropped (valid while t0 is set) */
+    uint64_t frames, decode_ns, errors, dropped, jumps;
     pthread_mutex_t mu;
 } Movie;
 
@@ -195,13 +198,19 @@ static uint64_t due_at(Movie *m, const Ready *d) {
     int64_t ahead = d->time - m->pts0; if (ahead < 0) ahead = 0;
     return m->t0 + (uint64_t)ahead * 1000;
 }
-/* One game frame (a present): drop leading frames that are more than 1.5 frame periods late while the next one is due
-   too, then hand over at most one due frame (end of stream right after the last frame). */
+/* One game frame (a present): start the clock again at a seek or loop the game made without Flush (movie_pace.h), drop
+   leading frames that are more than 1.5 frame periods late while the next one of the same run is due too, then hand
+   over at most one due frame (end of stream right after the last frame). */
 static void release_due(Movie *m, Signals *s, uint64_t now) {
-    while (m->ndecoded > 1 && !(m->decoded[0].flags & FLAG_EOS) && !(m->decoded[1].flags & FLAG_EOS) && m->t0) {
+    if (m->ndecoded && m->t0 && !(m->decoded[0].flags & FLAG_EOS) && movie_pace_jump(m->last_pts, m->decoded[0].time)) {
+        if (++m->jumps <= 8) LOG("pts %lld us after %lld us: a seek or loop without Flush, pacing starts again there", (long long)m->decoded[0].time, (long long)m->last_pts);
+        m->t0 = now; m->pts0 = m->decoded[0].time;
+    }
+    while (m->ndecoded > 1 && !(m->decoded[0].flags & FLAG_EOS) && !(m->decoded[1].flags & FLAG_EOS) && m->t0 &&
+           !movie_pace_jump(m->decoded[0].time, m->decoded[1].time)) {
         uint64_t due = due_at(m, &m->decoded[0]), next = due_at(m, &m->decoded[1]);
         if (now < next || now - due <= (next - due) * 3 / 2) break;
-        m->out_held[m->decoded[0].index] = 0; m->dropped++;
+        m->out_held[m->decoded[0].index] = 0; m->dropped++; m->last_pts = m->decoded[0].time;
         memmove(m->decoded, m->decoded + 1, (size_t)--m->ndecoded * sizeof m->decoded[0]);
     }
     if (!m->ndecoded) return;
@@ -209,6 +218,7 @@ static void release_due(Movie *m, Signals *s, uint64_t now) {
     if (!(d.flags & FLAG_EOS)) {
         if (!m->t0) { m->t0 = now; m->pts0 = d.time; }
         if (now < due_at(m, &d)) return;
+        m->last_pts = d.time;
     }
     memmove(m->decoded, m->decoded + 1, (size_t)--m->ndecoded * sizeof m->decoded[0]);
     m->ready[m->nready++] = d; note(m, s, EV_OUTPUT);

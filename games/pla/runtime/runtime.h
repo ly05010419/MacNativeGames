@@ -131,6 +131,17 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
+/* The iPhone / iPad app's shell (games/totk/ios/Sources, shared with Tears of the Kingdom and its ports) */
+void runtime_audio_output_restart(int recreate);   /* audio_mixer.c: start the outputs again after an audio session interruption (iOS) */
+int runtime_phone_fps(void);                /* iOS: 30, this game's own step (games/pla/ios/Sources/ios_front.m) */
+void runtime_aspect_view(double w, double h);   /* iOS (ios_front.m): the drawable's shape; the picture keeps 16:9 with bars */
+void runtime_keyboard_capture(int on);      /* iOS (ios_front.m): a UIKit text field takes the hardware keyboard */
+void runtime_motion_phone(int on);          /* iOS (ios_front.m): the phone's own sensor starts (1) / stops (0) feeding runtime_motion_feed */
+void runtime_phone_fps_set(int fps);        /* nothing to switch (ios_front.m) */
+int runtime_hook_branch(unsigned slot, uint8_t *at, const void *target, const char *what);   /* loader.c: a guest-text jump to a host function, phone-safe */
+enum { HOOK_SLOT_FONT = 0, HOOK_SLOT_BANK_BOOTSTRAP = 1 };   /* runtime_hook_branch slots (one per hook) */
+int mtl_pipeline_archive_tool(int argc, char **argv);   /* Mac only (nvn_mtl.m): the device's pipeline archive for packaging */
+int mtl_msl_rewrite_tool(const char *folder);           /* Mac only (nvn_mtl.m): the device's shader sources with PLA's MSL fixes */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
@@ -153,3 +164,4 @@ void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 void runtime_feedback_attach(GCController *controller);
 void runtime_feedback_detach(GCController *controller);
 #endif
+void *runtime_offline_override(const char *name);   /* shared/runtime/offline_host.c */

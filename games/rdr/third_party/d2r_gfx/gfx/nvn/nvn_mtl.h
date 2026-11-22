@@ -1,0 +1,76 @@
+// NVN 空设备的 Metal 执行层（C 接口）：内存池 = 零拷贝 MTLBuffer，提交 = MTLCommandBuffer，同步 = MTLSharedEvent。
+// 时序约定（防 x86 路线 GO_MAP_SHARE 花屏的覆辙）：一切「GPU 完成」的可见效果（同步对象就绪、事件值、计数器）
+// 只在 Metal 命令缓冲真正完成之后才发生；CPU 侧等待只看 MTLSharedEvent 的已完成值。
+// Metal execution layer of the NVN null device (C interface): memory pool = zero-copy MTLBuffer, submit = MTLCommandBuffer, sync = MTLSharedEvent.
+// Ordering convention (to avoid repeating the GO_MAP_SHARE corrupted-picture mistake of the x86 route): every visible effect of "GPU completion" (sync object ready, event values, counters)
+// happens only after the Metal command buffer has actually completed; CPU-side waits look only at the completed value of the MTLSharedEvent.
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
+
+void mtl_init(void);
+void bf_want_note(const char *key);
+
+// 内存池：[mem, mem+size) 外扩到页边界建零拷贝缓冲；按 GPU 地址（= CPU 地址）反查缓冲与偏移
+// Memory pool: [mem, mem+size) is expanded outward to page boundaries to build a zero-copy buffer; look up the buffer and offset by GPU address (= CPU address)
+void mtl_pool_add(const void *mem, uint64_t size);
+void mtl_pool_del(const void *mem);
+int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 成功 1；buf 是 (__bridge) id<MTLBuffer> | 1 on success; buf is a (__bridge) id<MTLBuffer>
+
+typedef struct {
+    uint32_t pso, cps, shaders, dss;
+    uint32_t view_nonnull, view_slots, live_tex, sview_nonnull;
+    uint32_t pools;
+    uint64_t pool_adds;
+    uint32_t c1_bufs; uint64_t c1_alloc, c1_data;   // 着色器 c1 常数段：缓冲个数（4 MiB 块 + 独占 64 KiB）、分配字节、实际字节 | Shader c1 constant segment: buffer count (4 MiB blocks + dedicated 64 KiB), allocated bytes, actual bytes
+} mtl_res_count;
+void mtl_res_counts(uint32_t tick, const char *why);   // 打一行资源计数（宿主按拍 / 事件调用，见 dm.h dm_res_report_register） | Print one line of resource counts (the host calls it per tick / event, see dm_res_report_register in dm.h)
+void mtl_res_snapshot(mtl_res_count *out);
+
+// 一次提交：begin → 若干操作 → commit（返回本次提交完成时的栅栏值）
+// One submit: begin -> several operations -> commit (returns the fence value at which this submit completes)
+void mtl_sub_begin(void);
+/* TOTK: uniform contents as of the submit call. capture runs in nvnQueueSubmitCommands (game thread) when the replay is
+   handed to the translation thread; snapshot_cap builds the submission's copies at the start of its replay (cap may be
+   NULL: copy from memory now) and frees cap. */
+void *mtl_sub_capture_ubos(const uint64_t *h, int n);
+void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *cap);
+void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n);               // GPU 时序上的缓冲拷贝 | Buffer copy in GPU ordering
+void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v);   // 完成后写事件值（0 写 / 1 加） | Write the event value after completion (0 write / 1 add)
+void mtl_sub_counter(uint64_t addr, uint32_t type);                       // 完成后写计数器记录 | Write the counter record after completion
+uint64_t mtl_sub_commit(void);
+int mtl_probe_vertex_streams(void);
+int mtl_probe_arg_epoch(void);
+int mtl_probe_tex_slots(void);
+int mtl_probe_pool_retire(void);
+int mtl_probe_anomaly(void);
+int mtl_probe_widen(void);     // TOTK: standalone probes of isolated GPU paths (die on mismatch, return checked count)
+int mtl_probe_blockrt(void);
+int mtl_probe_midclear(void);
+int mtl_probe_srgb_view(void);
+int mtl_probe_storage_view(void);
+int mtl_probe_compressed_alias(void);
+int mtl_probe_linear_rt_upload(void);
+int mtl_probe_texture_retire(void);
+int mtl_probe_ds_clear(void);
+int mtl_probe_ub_rename(void);
+int mtl_probe_ubo_snapshot(void);
+int mtl_probe_drv_c0(void);
+int mtl_probe_dispatch_chain(void);
+int mtl_probe_copy_alias(void);
+int mtl_probe_layer_merge(void);
+int mtl_probe_cube_merge(void);
+void mtl_cube_merge_stats(uint64_t v[4]);
+int mtl_probe_winding(void);
+int mtl_probe_depth_output(void);
+int mtl_probe_tile(void);
+
+uint64_t mtl_last_fence(void);                       // 最近一次提交的栅栏值（0 = 从未提交） | Fence value of the most recent submit (0 = never submitted)
+int mtl_wait(uint64_t fence, uint64_t timeout_ns);   // GPU 完成到 fence 返回 1，超时 0 | Returns 1 when the GPU has completed up to fence, 0 on timeout
+void mtl_finish(void);                               // 等所有已提交的命令完成 | Wait for all submitted commands to complete
+void mtl_drain(void);                                // 等队列上全部命令（含出图）完成：提交空命令缓冲并等它 | Wait for all commands on the queue (including presents) to complete: submit an empty command buffer and wait for it
+void mtl_xv_window_tex(uint64_t serial);   // 登记窗口（交换链）贴图：跨提交有效性账本永不收它 | Register a window (swapchain) texture: the cross-submit validity ledger never collects it
+void mtl_ui_ghost(int on, float px, float py, const float grid[4], float cx, float cy);   // 拖货跟手图：on=1 时把盖住屏幕点 (px,py)、压在货架格网 grid（左上角 x,y、一格宽高）上的那件货的图标在界面趟末尾平移到中心 (cx,cy) 再画一遍（归一化，左上原点）；任意线程调 | Drag-follow image for shop items: when on=1, the icon of the item that covers screen point (px,py) and sits on the shop shelf grid `grid` (top-left x,y, width and height of one cell) is translated to center (cx,cy) and drawn once more at the end of the UI pass (normalized, top-left origin); callable from any thread
+int mtl_ui_ghost_rect(float r[4]);   // 上面认到的那件货的屏幕矩形（归一化）；还没认到返回 0 | Screen rectangle (normalized) of the item recognized above; returns 0 if not recognized yet
+
+int mtl_probe_upload_batch(void);

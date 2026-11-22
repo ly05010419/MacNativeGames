@@ -2,6 +2,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/odyssey_graphics.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include <TargetConditionals.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -42,6 +43,11 @@ static int render_size(unsigned *w, unsigned *h, const char **from) {
     static int done; static unsigned sw, sh; static const char *src = "TOTK_RENDER_RES";
     if (!done) {
         done = 1;
+        /* Not in the phone's code: the render size is a Mac setting (its settings window writes romfs-patches/
+           render-res.txt), and the iOS export ran with the Mac's 2560x1440, so the iPad drew its 3D scene at that size
+           once the key 3 cap was left out and froze at the menu (2026-11-21). As Zelda's game_patches_botw.c: Mac-only
+           switches are ignored by the export, and the phone plays the game's own docked size. */
+        if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS")) { *w = 0; *h = 0; if (from) *from = "the game (phone)"; return 0; }
         const char *e = getenv("TOTK_RENDER_RES"); static char buf[32];
         if (!e) e = render_res_from_overlay(buf, sizeof buf, &src);
         if (e && *e && strcmp(e, "0") && strcmp(e, "1600x900")) {
@@ -223,8 +229,13 @@ static void scene_log(void) {
 
 void runtime_game_patches(Module *main_module) {
     patch_render_res(main_module);
-    if (g_render_w) { patch_scene_pick(main_module); patch_rt_pool(main_module); }
-    fprintf(stderr, "[odyssey] game patches: %s\n", g_render_w ? "docked render size, key 3 scene size" : "none");
+    /* Not in the phone's code (TOTK_EXPORT_IOS, the iOS export, and the device itself): patch_scene_pick writes this
+       process's address of odyssey_scene_pick into the game's text, and the export embeds that text, so the iPad jumped
+       to a Mac address once a scene was built (about 20 s in; iPad 2026-11-21, x17 = 0x102bf92b0 in main+0x5efc28). Key 3
+       is a Mac key anyway. As Zelda's game_patches_botw.c: the phone's code holds instructions, never host addresses. */
+    int phone_code = TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") != NULL;
+    if (g_render_w) { if (!phone_code) patch_scene_pick(main_module); patch_rt_pool(main_module); }
+    fprintf(stderr, "[odyssey] game patches: %s\n", g_render_w ? phone_code ? "docked render size" : "docked render size, key 3 scene size" : "none");
     odyssey_aspect_install(main_module);
 }
 void runtime_frame_step_pin(double ms) { (void)ms; }

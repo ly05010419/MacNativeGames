@@ -609,10 +609,16 @@ def rd(o, enc):
     if app == 0x10: v += o
     if app == 0x30: v += ehs
     return v, sz
-_, penc, cenc, tenc = IMG[ehs:ehs + 4]
+ehe = m0 + struct.unpack_from('<i', IMG, m0 + 20)[0]
+# A homebrew (libnx) module may be linked without unwind tables: MOD0's eh_frame_hdr is empty (start == end). Then no
+# function boundaries are known and every rewrite site stays a window of its own instruction (func_of: (a, a + 4)),
+# which needs no boundary; a `br x18` jump table or `blr x18` call window still has to be proven and fails its assert.
+_, penc, cenc, tenc = IMG[ehs:ehs + 4] if ehe > ehs else (1, 0x3, 0x3, 0x3)
 o = ehs + 4
-_, s = rd(o, penc); o += s
-nfde, s = rd(o, cenc); o += s
+nfde = 0
+if ehe > ehs:
+    _, s = rd(o, penc); o += s
+    nfde, s = rd(o, cenc); o += s
 starts = set()
 for _ in range(nfde):
     a, s = rd(o, tenc); o += s
@@ -623,7 +629,16 @@ starts = sorted(x for x in starts if x < TEXT_END)
 # ---- 线性扫描找全部改写点（不靠寄存器读写报告）----
 # ---- Linear scan to find all rewrite points (not relying on register read/write reports) ----
 kinds = {}
+# libnx's crt0 ("HOMEBREW" at +8) keeps data in its text: the header words after `b startup` and MOD0 with libnx's
+# "LNY<n>" records (12 bytes each) after it. A data word that decodes as an x18 instruction must stay as it is.
+TEXT_DATA = set()
+if IMG[8:16] == b'HOMEBREW':
+    TEXT_DATA |= set(range(4, 16, 4))
+    lny = m0 + 0x1c
+    while IMG[lny:lny + 3] == b'LNY': lny += 12
+    TEXT_DATA |= set(range(m0, lny, 4))
 for o in range(0, TEXT_END, 4):
+    if o in TEXT_DATA: continue
     w = struct.unpack_from('<I', IMG, o)[0]
     if w & 0xFFE0001F == 0xD4000001: kinds[o] = ('svc', (w >> 5) & 0xFFFF); continue
     if w & 0xFFFFFFE0 == 0xD53BD040: kinds[o] = ('tpidr_r', None); continue

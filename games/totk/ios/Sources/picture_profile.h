@@ -14,7 +14,15 @@ typedef enum { PP_MFX_OFF, PP_MFX_SCENE, PP_MFX_SCREEN } pp_metalfx;
    its own; the mode, MetalFX to the screen and 30 / 60 (ACNH_FPS: its 60 FPS text, exported on the Mac). */
 /* PP_GAME_ODYSSEY: Super Mario Odyssey, as Animal Crossing without a frame-rate choice (its own 60; its render size is a
    code patch the phone cannot make at run time). */
-typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH, PP_GAME_ODYSSEY } pp_game;
+/* PP_GAME_PLA: Pokémon Legends: Arceus (games/pla/ios), Super Mario Odyssey's picture: the mode (TOTK_OPERATION_MODE) and
+   MetalFX to the screen, no frame-rate choice (its own 30 step). The same value, so the other games' code is as it was. */
+/* PP_GAME_MK8DX: Mario Kart 8 Deluxe on the Zelda line (games/mk8dx/ios, Super Mario Odyssey's runtime), Super Mario
+   Odyssey's picture: the mode (TOTK_OPERATION_MODE) and MetalFX to the screen, no frame-rate choice (its own 60). The
+   same value, so the other games' code is as it was. */
+/* PP_GAME_RDR: Red Dead Redemption on the Zelda line (games/rdr/ios, Mario Kart 8 Deluxe's runtime), Super Mario Odyssey's
+   picture: the mode (TOTK_OPERATION_MODE) and MetalFX to the screen, no frame-rate choice (its own 30). The same value. */
+typedef enum { PP_GAME_TOTK, PP_GAME_BOTW, PP_GAME_TOTK_OLD, PP_GAME_ACNH, PP_GAME_ODYSSEY, PP_GAME_MK8DX = PP_GAME_ODYSSEY,
+               PP_GAME_RDR = PP_GAME_ODYSSEY, PP_GAME_PLA = PP_GAME_ODYSSEY } pp_game;
 
 typedef struct {
     pp_mode mode;

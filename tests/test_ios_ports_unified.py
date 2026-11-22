@@ -7,12 +7,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PORTS = {'acnh': 'GAME_ACNH', 'odyssey': 'GAME_ODYSSEY'}
+PORTS = {'acnh': 'GAME_ACNH', 'odyssey': 'GAME_ODYSSEY', 'pla': 'GAME_PLA', 'mk8dx': 'GAME_MK8DX', 'rdr': 'GAME_RDR'}
 SHARED_BUILD = ROOT / 'games/totk/ios/tools/build_port_ipa.py'
 
 
 def files(folder):
     return {p.name for p in folder.iterdir() if p.is_file() and p.name != '.DS_Store'} if folder.is_dir() else set()
+
+
+# What a port's ios_front.m answers beyond the shell's frame rate: what its own runtime does not have (its Mac frontend.m
+# or its Mac-only files have it). Pokémon Legends: Arceus keeps its 16:9 picture with bars, its own HUD (not hud_panel.inc)
+# and controllers-only gamepad.m.
+FRONT_OWN = {'acnh': ('runtime_display_max_hz',), 'odyssey': ('runtime_display_max_hz',), 'mk8dx': ('runtime_display_max_hz',),
+             'rdr': ('runtime_display_max_hz',),
+             'pla': ('runtime_aspect_view', 'mtl_hud_safe_area', 'runtime_keyboard_capture', 'runtime_motion_phone',
+                     'runtime_shortcut_help_toggle')}
 
 
 class Ports(unittest.TestCase):
@@ -49,8 +58,9 @@ class Ports(unittest.TestCase):
             with self.subTest(game=game):
                 self.assertIn(f'defined({define})', features)
                 self.assertRegex(settings, rf'defined\({define}\)\s*\n#define PP_THIS_GAME PP_GAME_{game.upper()}')
-        self.assertIn("('totk','botw','acnh','odyssey')", (ROOT / 'games/totk/ios/tools/build_ipa.py').read_text().replace(' ', ''),
-                      'pane_for gives every port the picture rows')
+        zelda = re.search(r"app in \(([^)]*)\)\)", (ROOT / 'games/totk/ios/tools/build_ipa.py').read_text()).group(1)
+        for app in ('totk', 'botw', *PORTS):
+            self.assertIn(f"'{app}'", zelda, 'pane_for gives every port the picture rows')
 
     def test_shaders_outside_the_app_as_zeldas(self):
         # user 2026-11-21: "为什么 安装 这么慢 … 这个不是标准吗 为什么又发明一遍 ？？？ 写测试保证": with --image-outside
@@ -130,7 +140,7 @@ class Ports(unittest.TestCase):
                 self.assertIn('void runtime_audio_output_restart(int recreate)', (rt / 'audio_mixer.c').read_text())
                 self.assertIn('TOTK_ROMFS_DATA', (rt / 'romfs.c').read_text(), 'the image in Documents/GameData (install_device.py --game-data)')
                 front = (ROOT / 'games' / game / 'ios/Sources/ios_front.m').read_text()
-                for name in ('runtime_phone_fps', 'runtime_phone_fps_set', 'runtime_display_max_hz'):
+                for name in ('runtime_phone_fps', 'runtime_phone_fps_set', *FRONT_OWN.get(game, ())):
                     self.assertRegex(front, rf'\b{name}\(', name)
 
 
@@ -200,11 +210,12 @@ class PipelineArchive(unittest.TestCase):
                 start = gfx[gfx.index('static void warm_start(void) {'):]
                 self.assertLess(start.index('par_open_dir(g_dev);'), start.index('warm_plan(paths,files'))
                 self.assertIn('g_warm_pipelines_only = g_par_valid;', start)
-                self.assertIn('warm_observed() || g_par_valid ? @[] : cache_names(totk_rt_dir())', start, 'no cache-wide libraries')
+                self.assertRegex(start, r'(warm_observed\(\) \|\| )?g_par_valid \? @\[\] :\s*(cache_names\(totk_rt_dir\(\)\)|\[\[NSFileManager\.defaultManager contentsOfDirectoryAtPath:totk_rt_dir\(\))',
+                                 'no cache-wide libraries')
                 self.assertIn('if (g_warm_pipelines_only || !warm_available(c[1])) continue;', gfx, 'no S rows')
                 worker = gfx[gfx.index('MLOG("后台预热：着色器库用'):gfx.index('int mtl_warm_wait(int timeout_ms) {')]
                 self.assertIn('par_write_in_place = 1;', worker, 'what the archive lacked is written by the warm-up')
-                self.assertIn('warm_observed() || g_par_valid ? @[] : cache_names(rt)', worker)
+                self.assertRegex(worker, r'(warm_observed\(\) \|\| )?g_par_valid \? @\[\] :[^\n]*\n?\s*(cache_names\(rt\)|\[\[NSFileManager\.defaultManager contentsOfDirectoryAtPath:rt)')
                 self.assertIn('par_flush_thread(); par_write_in_place = 0;', worker)
                 self.assertIn('if (shader_device_libs())', gfx, 'the Mac\'s packaging mode loads the device libraries')
 
@@ -223,7 +234,7 @@ class PipelineArchive(unittest.TestCase):
                 # Metal's archive builder needs a cache folder of the binary's own (totk_pipeline_archive_folders.h): a bundle id
                 make = (ROOT / 'games' / game / 'Makefile').read_text()
                 self.assertIn('GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist', make)
-                self.assertRegex(make, rf'xcrun clang -std=c11 \$\(NATIVE_OPT\) \$\(GAME_INFO\)')
+                self.assertRegex(make, rf'xcrun clang (\$\(MACOS_MIN\) )?-std=c11 \$\(NATIVE_OPT\) \$\(GAME_INFO\)')
                 self.assertIn(f'org.macnativegames.{game}-native', (ROOT / 'games' / game / 'runtime/game_info.plist').read_text())
         self.assertIn("'game_info.plist'", SHARED_BUILD.read_text().split('mac_only: tuple = ')[1].split('\n')[0], 'not an app resource')
 
@@ -286,6 +297,442 @@ class PipelineArchive(unittest.TestCase):
             ipad = port.seed_fingerprint(seed)
             (seed / 'pipelines-applegpu_g15p.json').unlink(); (seed / 'pipelines-applegpu_g14p.json').write_text('{}')
             self.assertEqual(len({plain, ipad, port.seed_fingerprint(seed)}), 3, 'another GPU\'s pipelines are pushed again')
+
+
+class PhoneCodeHoldsNoHostAddress(unittest.TestCase):
+    """The phone's game code is patched on the Mac and embedded (export-ios): a patch that writes this process's address
+    of a host function into the text sends the device to a Mac address. Odyssey's key 3 scene-size veneer did, and the
+    iPad crashed about 20 s in (2026-11-21). As Zelda's game_patches_botw.c, such a patch stays out of the phone's code."""
+
+    def test_odyssey_scene_pick_is_mac_only(self):
+        src = (ROOT / 'games/odyssey/runtime/game_patches.c').read_text()
+        self.assertIn('int phone_code = TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") != NULL;', src)
+        self.assertIn('if (!phone_code) patch_scene_pick(main_module);', src)
+        self.assertEqual(src.count('patch_scene_pick(main_module)'), 1, 'called only behind the phone check')
+
+    def test_odyssey_render_size_is_mac_only(self):
+        # the export took the Mac's 2560x1440 (romfs-patches/render-res.txt) into the phone's code; the iPad froze
+        src = (ROOT / 'games/odyssey/runtime/game_patches.c').read_text()
+        body = src[src.index('static int render_size('):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS")) { *w = 0; *h = 0;', body)
+        self.assertLess(body.index('TOTK_EXPORT_IOS'), body.index('getenv("TOTK_RENDER_RES")'), 'before any Mac setting is read')
+
+
+class SharedScheduler(unittest.TestCase):
+    """Super Mario Odyssey runs on Tears of the Kingdom's guest-thread scheduler, shared (user 2026-11-21: Odyssey's sound
+    stuttered on the iPad, "统一 … 和塞尔达 统一 写测试保证"). Its older copy lacked moving a waiting thread to an idle core
+    (core_migrate) and priority inheritance; it kept its own 2 ms preemption, which the shared one keeps on for Odyssey."""
+
+    def test_one_scheduler(self):
+        shared = ROOT / 'shared/runtime/threads.c'
+        for game in ('totk', 'odyssey'):
+            link = ROOT / 'games' / game / 'runtime/threads.c'
+            self.assertTrue(link.is_symlink() and link.resolve() == shared.resolve(), game)
+            stats = ROOT / 'games' / game / 'third_party/d2r_gfx/gfx/nvn/include/dm_wait_stats.h'
+            self.assertTrue(stats.is_symlink() and stats.resolve() == (ROOT / 'shared/third_party/d2r_gfx/gfx/nvn/include/dm_wait_stats.h').resolve(), game)
+        src = shared.read_text()
+        self.assertIn('static int core_migrate(thr_t *w)', src)
+        self.assertIn('#if TARGET_OS_IPHONE && !defined(GAME_ODYSSEY)', src, 'Odyssey preempts on the phone too, as before')
+        self.assertIn('int runtime_guest_code_pc(uint64_t pc)', (ROOT / 'games/odyssey/runtime/loader.c').read_text())
+
+PLA = ROOT / 'games/pla'
+
+
+def load_pla_profile():
+    import importlib.util, sys
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location('pla_ios_profile', PLA / 'ios/tools/build_ipa.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+class PlaPort(unittest.TestCase):
+    """Pokémon Legends: Arceus (games/pla, the Zelda line through Bayonetta 3's copy) on Zelda's app, build, installer and
+    seed folder, as Animal Crossing and Super Mario Odyssey (user 2026-11-21: "统一 … 用测试保证"). What is its own: its
+    hooks into the game's text jump to host functions through a slot of the module's key page (the phone's code holds no
+    Mac address), the Mac runtime's MSL fixes go into the device's shader sources before they are compiled, and its one
+    stand-in shared font travels with the app."""
+
+    def test_phone_code_holds_no_host_address(self):
+        loader = (PLA / 'runtime/loader.c').read_text()
+        body = loader[loader.index('int runtime_hook_branch(unsigned slot,uint8_t *at,const void *target,const char *what) {'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('0xf9400210u', body, 'ldr x16, [x16, #slot]: the address is loaded, not encoded')
+        self.assertIn('memcpy((void *)slot_at,&v,8);', body, 'the slot is written on the Mac and on the device')
+        self.assertLess(body.index('#if TARGET_OS_IPHONE'), body.index('memcmp(at,w,sizeof w)'), 'the device only checks the words')
+        for name, slot in (('font_hook.c', 'HOOK_SLOT_FONT'), ('audio_sdk.c', 'HOOK_SLOT_BANK_BOOTSTRAP')):
+            with self.subTest(name=name):
+                self.assertIn(f'runtime_hook_branch({slot},', (PLA / 'runtime' / name).read_text())
+        self.assertNotIn('emit_adrp_br', (PLA / 'runtime/font_hook.c').read_text(), 'no adrp to a host function')
+        audio = (PLA / 'runtime/audio_sdk.c').read_text()
+        bank = audio[audio.index('void runtime_audio_bank_bootstrap_install(void) {'):]
+        self.assertNotIn('emit_adrp_br', bank[:bank.index('\n}\n')], 'the default-on bootstrap: no adrp to a host function')
+        patches = (PLA / 'runtime/game_patches.c').read_text()
+        self.assertIn('int phone_code = TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") != NULL;', patches)
+        self.assertIn('int mode = phone_code ? 0 : pla_realtime_mode();', patches, 'no 60 fps track (code rewritten at run time)')
+        self.assertIn('const char *list = phone_code ? NULL : getenv("PLA_PATCHES");', patches, 'no Mac exefs patches')
+        self.assertIn('if (!TARGET_OS_IPHONE) apply_compat(main_module);', patches, 'the device\'s text is read-only')
+
+    def test_device_libraries_carry_the_mac_msl_fixes(self):
+        gfx = (PLA / NVN / 'nvn_mtl.m').read_text()
+        tool = gfx[gfx.index('int mtl_msl_rewrite_tool(const char *folder) {'):]
+        tool = tool[:tool.index('\n}\n')]
+        self.assertIn('msl_init_vertex_outputs(src) : msl_zero_unwritten_colors(src)', tool, 'the fixes shader_load makes')
+        self.assertIn('already seeded', gfx, 'the vertex fix leaves a fixed source as it is')
+        self.assertIn('if(argc==4&&!strcmp(argv[2],"msl-rewrite"))return mtl_msl_rewrite_tool(argv[3]);', (PLA / 'runtime/loader.c').read_text())
+        mod = load_pla_profile()
+        self.assertIs(mod.PORT.sources_fix, mod.sources_fix)
+        calls = []
+        mod.sources_fix(type('L', (), {'host': Path('/h'), 'rewritten': Path('/r')})(), Path('/s/seed'), lambda *a: calls.append(a), Path('/l'), {})
+        self.assertEqual(calls[0][0], [Path('/h'), Path('/r'), 'msl-rewrite', Path('/s/seed')])
+        self.assertIsNone(load_tool('build_port_ipa').Port.__dataclass_fields__['sources_fix'].default, 'the other ports: as translated')
+
+    def test_fixed_sources_are_named_by_their_new_hashes(self):
+        import hashlib, json, tempfile
+        port = load_tool('build_port_ipa')
+        with tempfile.TemporaryDirectory() as d:
+            seed, cache, out = Path(d, 'seed'), Path(d, 'cache'), Path(d, 'out')
+            seed.mkdir(); cache.mkdir()
+            shader = 'a' * 64 + '-' + 'b' * 12 + '_b.metal'
+            (seed / shader).write_text('raw'); (seed / 'seed-manifest.json').write_text(json.dumps({'files': {shader: 'x'}}))
+            def fix(folder):
+                (folder / shader).unlink(); (folder / shader).write_text('fixed')
+            first = port.seed_with_mac_cache(seed, cache, out, fix=fix, fix_id='1')
+            files = json.loads((out / 'seed-manifest.json').read_text())['files']
+            self.assertEqual(files[shader], hashlib.sha256(b'fixed').hexdigest())
+            self.assertEqual((seed / shader).read_text(), 'raw', 'the prepared seed is not written through')
+            self.assertEqual(port.seed_with_mac_cache(seed, cache, out, fix=fix, fix_id='1'), first, 'kept')
+            (out / 'inputs.txt').write_text('other\n'); stamp = (out / 'inputs.txt').read_text()
+            port.seed_with_mac_cache(seed, cache, out, fix=fix, fix_id='2')
+            self.assertNotEqual((out / 'inputs.txt').read_text(), stamp, 'another fix makes it again')
+
+    def test_the_shell_and_its_font(self):
+        main = (ROOT / 'games/totk/ios/Sources/main.m').read_text()
+        self.assertIn('mng_active_start(@"pla", mng_active_version());', main)
+        block = main[main.index('#ifdef GAME_PLA'):]
+        block = block[:block.index('#endif')]
+        mod = load_pla_profile()
+        self.assertIn(f'@"shared-fonts/{mod.STAND_IN}"', block, 'the font the profile puts in GameData/shared-fonts')
+        self.assertIn('setenv("PLA_SHARED_FONT_TTF"', block)
+        self.assertIn('setenv("PLA_REALTIME", "0", 1)', block)
+        self.assertIn('getenv("PLA_SHARED_FONT_TTF")', (PLA / 'runtime/shared_font.c').read_text())
+        self.assertIn('#define GAME_FOLDER "PLA"', (PLA / 'runtime/game_version.h').read_text(), 'main.m names its shader rows')
+        self.assertIn('PP_GAME_PLA = PP_GAME_ODYSSEY } pp_game;', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        features = (ROOT / 'games/totk/ios/Sources/port_features.h').read_text()
+        self.assertRegex(features, r'#if [^\n]*defined\(GAME_PLA\)\n#define SHELL_FPS_CHOICE 0', 'its own 30 fps step')
+        import plistlib
+        totk = load_tool('build_ipa')
+        root = totk.pane_for(plistlib.loads((ROOT / 'games/totk/ios/Settings.bundle/Root.plist').read_bytes()), 'pla')
+        mod.pane(root['PreferenceSpecifiers'])
+        keys = {x.get('Key') for x in root['PreferenceSpecifiers']} - {None}
+        self.assertTrue({'TOTK_LANG', 'TOTK_PICTURE_PROFILE', 'TOTK_METALFX'} <= keys)
+        self.assertFalse(keys & {'TOTK_CLOUD_SAVE_PICK', 'TOTK_CONTRIBUTE_SHADERS'})
+
+    def test_its_icon_and_layout(self):
+        mod = load_pla_profile()
+        L = mod.layout(Path('/w'))
+        self.assertIsNone(L.icon, 'build/AppIcon.icns, the Makefile\'s (scripts/extract_app_icon.py)')
+        self.assertEqual((L.host, L.rewritten, L.romfs), (Path('/w/build/pla-native'), Path('/w/rewritten/v1101'), Path('/w/extracted/v1101/romfs')))
+        self.assertEqual(mod.CHAIN_CACHE.split('rt-')[1], re.search(r'#define DMSH_CHAIN "([^"]+)"', (PLA / NVN / 'dmsh_chain.h').read_text()).group(1))
+
+
+MK8DX = ROOT / 'games/mk8dx'
+
+
+def load_mk8dx_profile():
+    import importlib.util, sys
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location('mk8dx_ios_profile', MK8DX / 'ios/tools/build_ipa.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+class Mk8dxPort(unittest.TestCase):
+    """Mario Kart 8 Deluxe on the Zelda line (games/mk8dx, Super Mario Odyssey's runtime; no nxnative code: games/mk8d is
+    not used) on Zelda's app, build, installer and seed folder, as the other ports (the maintainer 2026-11-21: "统一 …
+    用测试保证"). What is its own: the Mii parts of the player's firmware and the Booster Course Pass's files travel in
+    GameData, and its seed is Odyssey's seed tool run on this game."""
+
+    def test_its_layout_and_game_data(self):
+        mod = load_mk8dx_profile()
+        L = mod.layout(Path('/w'))
+        self.assertEqual((L.host, L.rewritten, L.romfs, L.fonts, L.seed),
+                         (Path('/w/build/mk8dx-native'), Path('/w/rewritten/local'), Path('/w/extracted/local/romfs'),
+                          Path('/w/extracted/firmware/shared-fonts'), Path('/w/build/shader-seed')))
+        self.assertEqual(L.icon, Path('/w/extracted/local/icon.jpg'), 'the icon of its control data')
+        self.assertEqual(mod.CHAIN_CACHE.split('rt-')[1], re.search(r'#define DMSH_CHAIN "([^"]+)"', (MK8DX / NVN / 'dmsh_chain.h').read_text()).group(1))
+        self.assertIs(mod.PORT.game_data, mod.game_data)
+        self.assertNotIn('nxnative', (MK8DX / 'ios/tools/build_ipa.py').read_text().replace('no nxnative', ''))
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            work, res = Path(d, 'work'), Path(d, 'GameData')
+            for rel in mod.GAME_DATA.values(): (work / rel / 'x').mkdir(parents=True); (work / rel / 'x/f.dat').write_text(rel)
+            mod.game_data(res, work, L, [])
+            self.assertEqual({str(p.relative_to(res)) for p in res.rglob('*') if p.is_file()}, {f'{n}/x/f.dat' for n in mod.GAME_DATA})
+
+    def test_the_shell_reads_its_game_data(self):
+        main = (ROOT / 'games/totk/ios/Sources/main.m').read_text()
+        block = main[main.index('#ifdef GAME_MK8DX'):]
+        block = block[:block.index('#endif')]
+        mod = load_mk8dx_profile()
+        self.assertEqual(set(mod.GAME_DATA), {'mii-model', 'aoc'})
+        self.assertIn('setenv("TOTK_MII_MODEL", [res stringByAppendingPathComponent:@"mii-model"]', block)
+        self.assertIn('setenv("TOTK_AOC_DIR", [res stringByAppendingPathComponent:@"aoc"]', block)
+        self.assertIn('getenv("TOTK_MII_MODEL")', (MK8DX / 'runtime/mii_model.c').read_text())
+        self.assertIn('getenv("TOTK_AOC_DIR")', (MK8DX / 'runtime/fs_host.c').read_text())
+        # the active players' id: GAME_INBOX_ID of its game_version.h, which main.m reports first
+        self.assertIn('#define GAME_INBOX_ID "mk8dx"', (MK8DX / 'runtime/game_version.h').read_text())
+        self.assertLess(main.index('#ifdef GAME_INBOX_ID'), main.index('mng_active_start(@"totk"'))
+        # no shader inbox, as Animal Crossing and Pokémon Legends: Arceus
+        self.assertEqual(main.count('defined(GAME_PLA) || defined(GAME_MK8DX)'), 3)
+        self.assertIn('PP_GAME_MK8DX = PP_GAME_ODYSSEY,', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        # the discarded nxnative-based iPhone attempt (games/mk8d/ios, removed) left no branch in the shell
+        for f in [*(ROOT / 'games/totk/ios/Sources').glob('*.[hmc]'), ROOT / 'games/totk/ios/tools/build_ipa.py']:
+            self.assertNotRegex(f.read_text(), r"\bGAME_MK8D\b|'mk8d'", f.name)
+        self.assertRegex((ROOT / 'games/totk/ios/Sources/port_features.h').read_text(), r'#if [^\n]*defined\(GAME_MK8DX\)[^\n]*\n#define SHELL_FPS_CHOICE 0')
+        import plistlib
+        root = load_tool('build_ipa').pane_for(plistlib.loads((ROOT / 'games/totk/ios/Settings.bundle/Root.plist').read_bytes()), 'mk8dx')
+        mod.pane(root['PreferenceSpecifiers'])
+        keys = {x.get('Key') for x in root['PreferenceSpecifiers']} - {None}
+        self.assertTrue({'TOTK_LANG', 'TOTK_PICTURE_PROFILE', 'TOTK_METALFX'} <= keys)
+        self.assertFalse(keys & {'TOTK_CLOUD_SAVE_PICK', 'TOTK_CONTRIBUTE_SHADERS'})
+
+    def test_phone_code_holds_no_host_address(self):
+        # its game patches write nothing into the game's text (the iOS export embeds that text): no host address, no
+        # Mac-only switch (PhoneCodeHoldsNoHostAddress)
+        patches = (MK8DX / 'runtime/game_patches.c').read_text()
+        body = patches[patches.index('void runtime_game_patches(Module *main_module) {'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('(void)main_module;', body)
+        for word in ('patch_', 'emit_', 'memcpy', 'getenv'):
+            self.assertNotIn(word, body)
+
+    def test_the_phone_schedules_as_its_mac(self):
+        # Odyssey's runtime and audio renderer: the asynchronous preemption on, on the phone as on the Mac
+        self.assertIn('#if TARGET_OS_IPHONE && !defined(GAME_ODYSSEY) && !defined(GAME_MK8DX)', (ROOT / 'shared/runtime/threads.c').read_text())
+        link = MK8DX / 'runtime/threads.c'
+        self.assertTrue(link.is_symlink() and link.resolve() == (ROOT / 'shared/runtime/threads.c').resolve())
+        self.assertIn('int runtime_guest_code_pc(uint64_t pc)', (MK8DX / 'runtime/loader.c').read_text())
+
+    def test_its_seed_is_odysseys_tool(self):
+        import importlib.util
+        tool = MK8DX / 'scripts/prepare_mk8dx_shader_seed.py'
+        text = tool.read_text()
+        self.assertIn("GAME.parent / 'odyssey/scripts/prepare_odyssey_shader_seed.py'", text, 'the tool is run, not copied')
+        self.assertFalse((MK8DX / 'scripts/prepare_shader_seed.py').exists())
+        spec = importlib.util.spec_from_file_location('mk8dx_seed', tool)
+        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cache = Path(d)
+            rows = {'vs': [{'variant': 'a-1', 'deps': {'attr': {'6': 'uint', '0': 'float'}}}],
+                    'ps': [{'variant': 'b-1', 'deps': {'tex': {'0': '*'}, 'fout': {'0': 'uint'}}}]}
+            for i, (stage, rs) in enumerate(rows.items()):
+                (cache / f'{i}.variants').write_text(json.dumps(rs))
+                (cache / f'{rs[0]["variant"]}_b.json').write_text(json.dumps({'stage': stage}))
+            self.assertEqual(mod.rules_from_cache(cache), {'vs': [{'attr': {'6': 'uint'}}]})
+        # its UI layout archives name no members (SFAT attributes 0): read by hash, other refusals stand
+        import struct
+        def archive(attribute, hi=4):
+            body = struct.pack('<4sHHIIHH', b'SARC', 0x14, 0xfeff, 0x3c, 0x38, 0x100, 0) + struct.pack('<4sHHI', b'SFAT', 0xc, 1, 0x65)
+            body += struct.pack('<4I', 0xabc, attribute, 0, hi) + struct.pack('<4sHH', b'SFNT', 8, 0)
+            return body + b'data'
+        def strict(data): raise ValueError('invalid SARC member')
+        read = mod.unnamed_sarc(strict)
+        self.assertEqual(read(archive(0)), {'#00000abc': b'data'})
+        for bad in (archive(0x1000000), archive(0, hi=9)):
+            with self.assertRaises(ValueError): read(bad)
+
+
+class PhoneFontsAreOpen(unittest.TestCase):
+    def test_no_macos_system_font_goes_into_a_phone_app(self):
+        # user 2026-11-20: without firmware fonts, the open-source fonts (tools/deps/open_fonts.py); Arceus's first phone
+        # build had copied macOS's Arial Unicode into the app (2026-11-21)
+        for f in sorted(ROOT.glob('games/*/ios/tools/*.py')):
+            with self.subTest(f=str(f.relative_to(ROOT))):
+                self.assertNotIn('/System/Library/Fonts', f.read_text())
+        self.assertIn('from tools.deps.open_fonts import open_fonts', (ROOT / 'games/pla/ios/tools/build_ipa.py').read_text())
+
+
+class PlaPhoneMapping(unittest.TestCase):
+    def test_phone_maps_the_room_behind_the_image_as_the_mac(self):
+        # Arceus's relative relocations past its image need zero-filled room behind it; the phone's mapping lacked it
+        # and stopped at "relative addend" (iPhone 14, 2026-11-21): one sizing rule for both
+        src = (ROOT / 'games/pla/runtime/loader.c').read_text()
+        self.assertEqual(src.count('m->size=module_map_size(m);'), 2, 'the Mac and the phone paths')
+        self.assertNotIn('m->size=page_up(m->file_size)', src)
+
+
+class PortEntitlements(unittest.TestCase):
+    """A port may ask for entitlements beyond the increased memory limit (Info.plist MNGEntitlements, written from
+    Port.entitlements; install_device.py requests them in the profile and signs with them). Arceus asks for extended
+    virtual addressing: its 32 GiB address region did not fit the phone's default address space (2026-11-21)."""
+
+    def test_only_arceus_asks_and_the_installer_honours_it(self):
+        build = SHARED_BUILD.read_text()
+        self.assertIn("entitlements: tuple = ()", build, 'the other ports ask for nothing more')
+        self.assertIn("MNGEntitlements", build)
+        self.assertIn("entitlements=('com.apple.developer.kernel.extended-virtual-addressing',)", (ROOT / 'games/pla/ios/tools/build_ipa.py').read_text())
+        for g in ('acnh', 'odyssey', 'mk8dx', 'rdr'):
+            self.assertNotIn('entitlements=', (ROOT / 'games' / g / 'ios/tools/build_ipa.py').read_text(), g)
+        inst = (ROOT / 'games/totk/ios/tools/install_device.py').read_text()
+        self.assertIn('extra = wanted_entitlements(a.ipa)', inst)
+        self.assertIn("plistlib.dumps({ENTITLEMENT: True, **{k: True for k in extra}})", inst)
+        self.assertIn("'get-task-allow', ENTITLEMENT, *extra) if k in ents", inst)
+
+    def test_arceus_reserves_its_region_where_the_phone_can(self):
+        src = (ROOT / 'games/pla/runtime/services.c').read_text()
+        self.assertIn('TARGET_OS_IPHONE?VM_FLAGS_ANYWHERE:VM_FLAGS_FIXED', src)
+        self.assertIn('#define VAMM_SPACE_AT ((uint64_t)(uintptr_t)vamm_space)', src)
+        ios = src[src.index('static void memory_init(void) {'):]
+        ios = ios[:ios.index('#else')]
+        self.assertLess(ios.index('VM_FLAGS_ANYWHERE'), ios.index('alias_requested()'), 'the VAMM region before the alias region shrinks')
+
+
+class PlaOfflineConsole(unittest.TestCase):
+    def test_arceus_answers_the_exit_section_from_the_shared_offline_host(self):
+        # saving enters nn::oe's exit-request section; the SDK's own read a missing applet object and the iPhone crashed
+        # converting an older save (2026-11-21): the shared offline console answers it, after Arceus's own entries
+        link = ROOT / 'games/pla/runtime/offline_host.c'
+        self.assertTrue(link.is_symlink() and link.resolve() == (ROOT / 'shared/runtime/offline_host.c').resolve())
+        self.assertIn('defined(GAME_PLA)', (ROOT / 'shared/runtime/offline_host.c').read_text())
+        src = (ROOT / 'games/pla/runtime/services.c').read_text()
+        self.assertIn('return runtime_offline_override(name);', src)
+
+
+class PhoneFrontAnswersTheMacsDisplayCalls(unittest.TestCase):
+    def test_every_vi_call_a_mac_front_answers_the_phone_answers(self):
+        # Mario Kart 8 Deluxe crashed at boot on the iPhone in nn::vi::SetLayerScalingMode: its Mac front end answers it,
+        # the shared phone front end did not (2026-11-22). Every vi entry of a port's Mac frontend.m is in the phone's.
+        import re
+        phone = (ROOT / 'shared/runtime/frontend_ios.m').read_text()
+        for game in ('acnh', 'odyssey', 'mk8dx', 'pla', 'rdr'):
+            mac = ROOT / 'games' / game / 'runtime/frontend.m'
+            if not mac.is_file(): continue
+            for name in sorted(set(re.findall(r'"(_ZN2nn2vi\w+)"', mac.read_text()))):
+                with self.subTest(game=game, name=name):
+                    self.assertIn(name, phone)
+
+RDR = ROOT / 'games/rdr'
+
+
+def load_rdr_profile():
+    import importlib.util, sys
+    sys.path.insert(0, str(TOOLS))
+    spec = importlib.util.spec_from_file_location('rdr_ios_profile', RDR / 'ios/tools/build_ipa.py')
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+class RdrPort(unittest.TestCase):
+    """Red Dead Redemption 1.0.4 on the Zelda line (games/rdr, Mario Kart 8 Deluxe's runtime; no nxnative code) on Zelda's
+    app, build, installer and seed folder, as the other ports (the maintainer 2026-11-22: "统一 … 用测试保证"). What is its
+    own: main's 1.2 GiB .bss and 16 MiB leading patch area (the shared gen_embed.py embeds the file's three parts, the
+    loader zero-fills the rest), no font and no movie library in the app, its own 30 fps, and a seed read from its RPF6
+    shader archive and main (scripts/rpf6.py, scripts/prepare_rdr_shader_seed.py)."""
+
+    def test_its_layout_icon_and_libraries(self):
+        mod = load_rdr_profile()
+        L = mod.layout(Path('/w'))
+        self.assertEqual((L.host, L.rewritten, L.romfs, L.seed, L.version),
+                         (Path('/w/build/rdr-native'), Path('/w/rewritten/local'), Path('/w/extracted/local/romfs'),
+                          Path('/w/build/shader-seed'), '1.0.4'))
+        self.assertIsNone(L.icon, 'build/AppIcon.icns, from its control data (scripts/build_rdr.py)')
+        self.assertIn("extract_app_icon.py", (RDR / 'scripts/build_rdr.py').read_text())
+        self.assertEqual(mod.PORT.libs, ('libopus.a',), 'main decodes its Bink movies itself: no libvpx')
+        self.assertEqual(mod.CHAIN_CACHE.split('rt-')[1], re.search(r'#define DMSH_CHAIN "([^"]+)"', (RDR / NVN / 'dmsh_chain.h').read_text()).group(1))
+        self.assertNotIn('nxnative', (RDR / 'ios/tools/build_ipa.py').read_text())
+
+    def test_no_font_in_the_app(self):
+        # the game draws with its own fonts (fonts.rpf) and asks for no system font on the Mac: the app carries none
+        import tempfile
+        mod = load_rdr_profile()
+        with tempfile.TemporaryDirectory() as d:
+            L = mod.layout(Path(d))
+            L.fonts.mkdir(); (L.fonts / 'old.ttf').write_text('x')
+            mod.prepare(L, None, {}, None, None, Path(d))
+            self.assertEqual(list(L.fonts.iterdir()), [])
+            with self.assertRaises(RuntimeError):
+                mod.check(L)
+        self.assertNotIn('shared-fonts', (RDR / 'scripts/prepare_runtime.py').read_text().split('def shared_fonts_config')[0])
+
+    def test_the_shell_knows_it(self):
+        main = (ROOT / 'games/totk/ios/Sources/main.m').read_text()
+        block = main[main.index('#ifdef GAME_RDR'):]
+        block = block[:block.index('#endif')]
+        self.assertIn('setenv("TOTK_ROMFS_PATCHES", "0", 1); setenv("TOTK_ROMFS_MODS", "0", 1);', block)
+        self.assertIn('#define GAME_INBOX_ID "rdr"', (RDR / 'runtime/game_version.h').read_text(), 'its active players\' id')
+        self.assertEqual(main.count('defined(GAME_MK8DX) || defined(GAME_RDR)'), 3, 'no shader inbox')
+        self.assertIn('&& !defined(GAME_MK8DX) && !defined(GAME_RDR)   /* their contribution headers have no prune', main)
+        self.assertRegex((ROOT / 'games/totk/ios/Sources/port_features.h').read_text(),
+                         r'#if [^\n]*defined\(GAME_RDR\)[^\n]*\n#define SHELL_FPS_CHOICE 0')
+        self.assertIn('PP_GAME_RDR = PP_GAME_ODYSSEY,', (ROOT / 'games/totk/ios/Sources/picture_profile.h').read_text())
+        self.assertIn('int runtime_phone_fps(void) { return 30; }', (RDR / 'ios/Sources/ios_front.m').read_text())
+        import plistlib
+        mod = load_rdr_profile()
+        root = load_tool('build_ipa').pane_for(plistlib.loads((ROOT / 'games/totk/ios/Settings.bundle/Root.plist').read_bytes()), 'rdr')
+        mod.pane(root['PreferenceSpecifiers'])
+        keys = {x.get('Key') for x in root['PreferenceSpecifiers']} - {None}
+        self.assertTrue({'TOTK_LANG', 'TOTK_PICTURE_PROFILE', 'TOTK_METALFX'} <= keys)
+        self.assertFalse(keys & {'TOTK_CLOUD_SAVE_PICK', 'TOTK_CONTRIBUTE_SHADERS'})
+
+    def test_phone_code_holds_no_host_address(self):
+        patches = (RDR / 'runtime/game_patches.c').read_text()
+        body = patches[patches.index('void runtime_game_patches(Module *main_module) {'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('(void)main_module;', body)
+        for word in ('patch_', 'emit_', 'memcpy', 'getenv'):
+            self.assertNotIn(word, body)
+
+    def test_the_phone_schedules_as_its_mac(self):
+        self.assertIn('#if TARGET_OS_IPHONE && !defined(GAME_ODYSSEY) && !defined(GAME_MK8DX) && !defined(GAME_RDR)',
+                      (ROOT / 'shared/runtime/threads.c').read_text())
+        link = RDR / 'runtime/threads.c'
+        self.assertTrue(link.is_symlink() and link.resolve() == (ROOT / 'shared/runtime/threads.c').resolve())
+
+    def test_the_phone_maps_mains_leading_patch_area(self):
+        loader = (RDR / 'runtime/loader.c').read_text()
+        phone = loader[loader.index('static void map_module(Module *m,const char *dir) {'):loader.index('#else\nstatic void map_module')]
+        self.assertIn('"embedded leading patch layout"', phone)
+        self.assertIn('mach_vm_allocate(mach_task_self(),&reserved,m->patch_lead+m->size,VM_FLAGS_ANYWHERE)', phone,
+                      'the patch area, the image and its .bss in one zero-filled reservation')
+        self.assertIn('remap_at(m,base+m->patch_off,x1,z1,FALSE,VM_PROT_READ|VM_PROT_EXECUTE);', phone)
+
+    def test_gen_embed_takes_a_leading_patch_area(self):
+        # the shared gen_embed.py (Metroid Dread's own copy had it): x1 the patch area [0, lead), x0 the exported text,
+        # w the image's data up to the end of the file; .bss and the key page are not in the app
+        import hashlib, subprocess, sys, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); rw, text = d / 'rw', d / 'text'; rw.mkdir(); text.mkdir()
+            lead, x0, data_end, key = 0x8000, 0x4000, 0xc000, 0x400000
+            image = bytes([1]) * lead + bytes([2]) * x0 + bytes([3]) * (data_end - x0)
+            (rw / 'main.patched.bin').write_bytes(image)
+            (rw / 'main.fixups.tsv').write_text(''.join(f'# {k}\t{v}\n' for k, v in (
+                ('PATCH_OFF', f'-{lead:#x}'), ('KEY_PAGE_OFF', f'{key:#x}'), ('TEXT_END', f'{x0 - 0x100:#x}'),
+                ('PATCH_LEAD', f'{lead:#x}'), ('IMAGE_SIZE', f'{key + 0x4000:#x}'))))
+            exported = bytes([4]) * x0   # the text as the game patches leave it (export-ios)
+            (text / 'main.x0.bin').write_bytes(exported)
+            subprocess.run([sys.executable, TOOLS / 'gen_embed.py', rw, d / 'embed.S', '--text-dir', text, 'main'],
+                           check=True, capture_output=True)
+            header = (d / 'ios_embed.h').read_text()
+            sha = lambda b: hashlib.sha256(b).hexdigest()
+            self.assertIn(f'{{"main","{sha(exported)}","{sha(image[lead + x0:])}","{sha(image[:lead])}",""}}', header)
+            asm = (d / 'embed.S').read_text()
+            self.assertIn(f'main.patched.bin", {lead + x0:#x}, {data_end - x0:#x}', asm)
+            self.assertIn(f'main.patched.bin", 0x0, {lead:#x}', asm)
+            self.assertNotIn(f'{key:#x}', asm, 'no .bss in the app')
+            (rw / 'main.fixups.tsv').write_text((rw / 'main.fixups.tsv').read_text().replace(f'-{lead:#x}', '-0x4000'))
+            self.assertNotEqual(subprocess.run([sys.executable, TOOLS / 'gen_embed.py', rw, d / 'embed.S', '--text-dir', text,
+                                                'main'], capture_output=True).returncode, 0, 'a patch area that is not the lead')
+
+    def test_its_seed_is_the_zelda_lines_tool(self):
+        tool = (RDR / 'scripts/prepare_rdr_shader_seed.py').read_text()
+        self.assertIn("GAME.parent / 'odyssey/scripts/prepare_odyssey_shader_seed.py'", tool, 'the tool is run, not copied')
+        self.assertIn('depth_minus_w=False', tool, 'its NVN 0..1 depth (every vertex row of its Mac cache)')
+        self.assertIn("import rpf6", tool)
+        self.assertIn('prepare_rdr_shader_seed.py', (RDR / 'scripts/build_rdr.py').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

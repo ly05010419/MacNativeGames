@@ -323,7 +323,7 @@
       "origin": "games/ssbu/runtime/movie_host.c",
       "commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
       "source_blob": "5a82050647b9d45fa7e8e8bf7895695f57304b54",
-      "sha256": "23b18addb9fbc08f062634979e9c53b7c2817493dcb76ad7bde31643081124b8"
+      "sha256": "e06ed5faf0c405e8e54b00b492af22fa77acc8c1d4d37fd6647566bf41109f75"
     },
     "runtime/movie_host.h": {
       "origin": "games/ssbu/runtime/movie_host.h",
@@ -3501,6 +3501,7 @@
     "runtime/graphics_phase.c",
     "runtime/graphics_phase.h",
     "runtime/mng_active.h",
+    "runtime/movie_pace.h",
     "runtime/romfs_read_exact.h",
     "runtime/symbols.c",
     "runtime/symbols.h",

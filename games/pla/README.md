@@ -64,10 +64,33 @@ plays, but only part of the game has been walked through.
 | Native 60 fps | the 60 fps track (`PLA_REALTIME=1`, or key 5 in play) makes the game run at **double speed**: part of the simulation advances once per update instead of by dt. The default is the game's own 30 fps step, which is speed-correct. Frame interpolation is not pursued |
 | Later areas, long sessions | only the first area and short sessions have been played; crashes from a RomFS read into an unmapped guest page are fixed (CHANGELOG) but long runs are not re-verified |
 | Add-on content, world freeze | not implemented; the launcher/uibox show these greyed out |
-| iPhone / iPad | not built |
+| iPhone / iPad | built with the Zelda app and tools (`ios/tools/build_ipa.py`, below); not yet run on a device |
 | Shader warm list | grown from play so far (571 variants, 571 shader libraries, 502 render pipelines); most of the game's shaders are still missing, so new areas may compile (or hiccup) on first sight |
 
 Keys in play: key 1 FPS/HUD, key 2 frame interpolation (diagnostic only), key 3 output scaling, key 4 21:9, key 5 the
 experimental 60 fps track.
 
 Integration note (2026-11-04): the fixed-address exchange patch has been replaced by a checked ARM64 instruction lowering: acquire/release exclusive exchange loops with an intervening stack spill become LSE exchanges, preserving the spill and store status. Alternate direct branch entries reject the transformation. A native test runs the lowered sequence 100,000 times with the spill in the same reservation granule. This is a native instruction regression, not a new gameplay run. All textures retain their complete mip chains.
+
+## iPhone / iPad
+
+Built like Animal Crossing and Super Mario Odyssey: Tears of the Kingdom's app (`games/totk/ios/Sources`, compiled with
+`GAME_PLA`) and its shared port build (`games/totk/ios/tools/build_port_ipa.py`); this folder holds only the profile
+(`ios/tools/build_ipa.py`) and the answers its runtime does not have (`ios/Sources/ios_front.m`). From the Mac build's work
+folder, with its shader seed (`scripts/prepare_pla_shader_seed.py`) and icon (`make app GAME=... KEYS=...` or
+`scripts/extract_app_icon.py --output $WORK/build/AppIcon.icns`):
+
+```sh
+python3 games/pla/ios/tools/build_ipa.py --work "$WORK" --out "<folder>/Pokemon Legends Arceus.ipa" --image-outside \
+    --device-gpu applegpu_g14p --device-gpu applegpu_g15p
+python3 games/totk/ios/tools/install_device.py "<folder>/Pokemon Legends Arceus.ipa" --device "<name>" \
+    --game-data "$WORK/extracted/v1101/romfs/romfs.bin"
+```
+
+The game's code is patched on the Mac and compiled into the app (`export-ios`): the hooks into its text that jump to the
+runtime (the shared-font loader, the sound bank start) load the address from a slot of the module's key page
+(`runtime/loader.c` `runtime_hook_branch`), and the 60 fps track and the player's exefs patches stay on the Mac. The shaders
+go beside the app with device libraries compiled from sources that already carry the Mac runtime's MSL fixes (the host's
+`msl-rewrite`), and the device pipelines for each GPU named (Tears of the Kingdom's pipeline archive, shared). The phone
+gets the same stand-in shared font the Mac reads (`GameData/shared-fonts/stand-in.ttf`) and the game's own 30 fps step.
+

@@ -10,7 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "mach_vm_compat.h"   /* mach_vm_* on the Mac and on iOS (whose SDK refuses <mach/mach_vm.h>), as loader.c */
 #include <errno.h>
 typedef struct{const char *path;uint64_t file_bytes,font_bytes;const char *sha256;} FontRow;
 static const FontRow rows[SHARED_FONT_COUNT]={SHARED_FONT_ROWS};

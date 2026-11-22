@@ -387,6 +387,8 @@ static void probe(void) {
  for(unsigned i=0;i<NM;i++){Module *m=&modules[i];printf("%s{\"name\":\"%s\",\"relative\":%u,\"symbolic\":%u,\"cross\":%u,\"weak_zero\":%u}",i?",":"",m->name,m->relative,m->symbolic,m->cross,m->weak);}
  puts("],\"scope\":\"cross-module calls; constructors and game entry not run\"}");
 }
+/* A pc in a guest module's text (threads.c, Tears of the Kingdom's scheduler: asynchronous preemption only there). */
+int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
 int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
  for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){*name=modules[i].name;*off=pc-(uintptr_t)modules[i].base;return 1;}
  return 0;

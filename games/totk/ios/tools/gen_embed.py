@@ -36,7 +36,16 @@ for name in names:
     x0, x1 = up(text_end), up(len(data))
     if len(text_data) != x0:
         raise ValueError(f'{name}: exported x0 must be exactly {x0:#x} bytes, got {len(text_data):#x}')
-    if patch < 0:
+    lead = int(hdr.get('PATCH_LEAD', '0'), 16)
+    if lead:
+        # A leading patch area (patch_nso.py PATCH_LEAD; Metroid Dread's and Red Dead Redemption's main, whose .bss puts a
+        # patch area after the image out of branch reach): the file is the patch area [0, lead), then the image up to the
+        # end of data. x0 and w are the image (file offset lead on), x1 the patch area; .bss and the key page are not in
+        # the file and stay the loader's zero fill (loader.c map_module), so a 1.2 GiB .bss is not in the app.
+        if lead % PG or patch != -lead or len(data) % PG or lead + x0 > len(data) or key % PG or len(data) - lead > key:
+            raise ValueError(f'{name}: invalid leading patch layout')
+        parts = [(f'__TOTKX,__{name}x0', lead, lead + x0), (f'__TOTK{name}W,__img', lead + x0, len(data)), (f'__TOTKX,__{name}x1', 0, lead)]
+    elif patch < 0:
         file_end = int(hdr['FILE_IMAGE_LEN'], 16)
         if file_end % PG or x0 > file_end or key % PG: raise ValueError(f'{name}: invalid far patch layout')
         parts = [(f'__TOTKX,__{name}x0', 0, x0), (f'__TOTK{name}W,__img', x0, file_end), (f'__TOTKX,__{name}x1', file_end, x1)]
@@ -48,7 +57,9 @@ for name in names:
         if any(len(s) > 16 for s in sect.split(',')): raise ValueError(f'{name}: Mach-O section name too long: {sect}')
         asm += [f'    .section {sect}', '    .p2align 14']
         section_image = text_image if sect == f'__TOTKX,__{name}x0' else image
-        if sect == f'__TOTKX,__{name}x0': chunk_source = text_data
+        if sect == f'__TOTKX,__{name}x0':
+            chunk_source = text_data
+            if text_dir: lo, hi = 0, x0   # the exported text starts at its own offset 0, also after a leading patch area
         else: chunk_source = data
         # The patch area as the export left it (loader.c export-ios: Breath of the Wild's exclusive-acquire patch changes it)
         x1_export = text_dir / f'{name}.x1.bin' if text_dir else None
