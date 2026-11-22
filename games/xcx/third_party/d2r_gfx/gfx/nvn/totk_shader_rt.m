@@ -5,6 +5,7 @@
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
 #import <Foundation/Foundation.h>
+#include "compute_shared.h"
 #include "totk_ui_lang.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
@@ -182,7 +183,8 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         NSString *msl = checked ? nil :
             [NSString stringWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", found]
                                              encoding:NSUTF8StringEncoding error:nil];
-        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
+        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"] ||
+                          (stage == 5 && !totk_rt_msl_shared_ok(msl.UTF8String, totk_rt_compute_shared_request(control))))) {   // compute_shared.h: a threadgroup array too small for the kernel
             [vs removeObjectAtIndex:i];  /* regenerate missing or previously un-compilable Metal variant */
             break;
         }
@@ -194,7 +196,8 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
     NSString *stage_name = stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil;
     if (!stage_name) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
-    uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
+    uint8_t md[32]; NSMutableDictionary *skey = [answers mutableCopy]; if (stage == 5 && totk_rt_compute_shared_request(control)) skey[@"shared"] = @(totk_rt_compute_shared_request(control));   // compute_shared.h: its own variant name
+    NSData *ad = [json_string(skey) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
@@ -203,6 +206,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name, @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (stage == 5 && totk_rt_compute_shared_request(control)) rq[@"shared"] = @(totk_rt_compute_shared_request(control));   // compute_shared.h
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     if (no_translator()) {
     // No translator on the phone (Python + .NET + SPIRV-Cross): the variant cache is translated on the Mac and copied over.

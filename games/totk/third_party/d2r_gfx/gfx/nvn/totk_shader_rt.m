@@ -5,6 +5,7 @@
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
 #import <Foundation/Foundation.h>
+#include "compute_shared.h"
 #include <os/lock.h>
 #include <stdatomic.h>
 #include <unistd.h>
@@ -451,7 +452,7 @@ void totk_rt_service_prestart(void) {
 
 /* The cached variant whose deps match the answers, or nil (g_rt_lock held). A variant whose Metal source is missing or
    could not be compiled before is dropped from the index, so it is translated again. */
-static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
+static NSString *variant_lookup(NSString *shader, NSDictionary *answers, uint32_t need_shared) {   // need_shared: compute_shared.h (0 = any)
     NSMutableArray *vs = variants_of(shader);
     for (NSUInteger i = 0; i < vs.count; i++) {
         NSDictionary *v = vs[i];
@@ -462,11 +463,12 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
            replay's thread, was the first cause of replays held over 100 ms in the world (img-1, 2026-11-17: 9 of 53). */
         NSString *msl_name = [found stringByAppendingString:@"_b.metal"];
         BOOL checked = [g_msl_checked containsObject:found] ||
-            (g_seed_sealed && [g_seed_names containsObject:msl_name] && !seed_broken(msl_name));
+            (!need_shared && g_seed_sealed && [g_seed_names containsObject:msl_name] && !seed_broken(msl_name));   // a kernel above 4 KiB of shared memory is always read
         NSString *msl = checked ? nil :
             totk_rt_text(totk_rt_file([found stringByAppendingString:@"_b.metal"]));
         /* missing, empty (a translation cut short: 0 bytes, 2026-10-30) or previously un-compilable: translated again */
-        if (!checked && (!msl || msl.length < 64 || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
+        if (!checked && (!msl || msl.length < 64 || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"] ||
+                         !totk_rt_msl_shared_ok(msl.UTF8String, need_shared))) {   // compute_shared.h: a threadgroup array too small for the kernel
             [vs removeObjectAtIndex:i];
             if (msl && msl.length < 64) { LOG("[shader] 【红】%s 的 Metal 源是空的（翻译当时没写完）：重新翻译", found.UTF8String);
                 seed_mark_broken([found stringByAppendingString:@"_b.metal"]); seed_mark_broken([found stringByAppendingString:@"_b.json"]); }
@@ -576,7 +578,9 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     uint32_t ninst = c1t; if (nvn2) memcpy(&ninst, control + 0x38, 4);
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (nvn2 && ninst > c1o) || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
-    uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
+    uint32_t big_shared = stage == 5 && !nvn2 ? totk_rt_compute_shared_request(control) : 0;   // compute_shared.h (Switch 2 kernels: +0x64 below)
+    NSMutableDictionary *key = [answers mutableCopy]; if (big_shared) key[@"shared"] = @(big_shared);   // its own variant name
+    uint8_t md[32]; NSData *ad = [json_string(key) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
@@ -587,6 +591,7 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (big_shared) rq[@"shared"] = @(big_shared);
     if (nvn2) {
         rq[@"arch"] = @"sm86";
         if (stage == 3 || stage == 4) rq[@"mesh_ctl"] = hex(control, 0xe0);
@@ -942,7 +947,7 @@ static NSString *seed_verified(NSString *shader, int stage, const uint8_t *contr
             ? variant_request(shader, stage, control, code, made, local, &unused)[@"_request"] : nil;
         if (now && [now isEqualToString:entry[@"request"]]) { [g_seed_verified addObject:found]; g_seed_kept++; break; }
         seed_forget(shader, found);
-        found = variant_lookup(shader, answers);
+        found = variant_lookup(shader, answers, stage == 5 && !nvn2_ctl(control) ? totk_rt_compute_shared_request(control) : 0);
     }
     return found;
 }
@@ -963,9 +968,9 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     // Called for the game's actual shader bytes, including when a prepared
     // variant already exists. Old cache files alone never become observed keys.
     totk_shader_observed_note(observed_keys_state(), shader);
-    NSString *found = variant_lookup(shader, answers);
+    NSString *found = variant_lookup(shader, answers, stage == 5 && !nvn2_ctl(control) ? totk_rt_compute_shared_request(control) : 0);
     if (seed_verify()) found = seed_verified(shader, stage, control, code, local, answers, found);
-    for (NSMutableArray *job; !found && !may_defer && (job = g_rt_pending[shader]); found = variant_lookup(shader, answers)) {
+    for (NSMutableArray *job; !found && !may_defer && (job = g_rt_pending[shader]); found = variant_lookup(shader, answers, stage == 5 && !nvn2_ctl(control) ? totk_rt_compute_shared_request(control) : 0)) {
         if ([job[0] intValue] == RT_JOB_QUEUED) { job[0] = @(RT_JOB_TAKEN); [g_rt_pending removeObjectForKey:shader]; break; }
         uint64_t w0 = dm_wait_stats_enabled() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
         pthread_cond_wait(&g_rt_done, &g_rt_lock);

@@ -245,6 +245,9 @@ def request(variant, stage, control, code, code_path, answers=ANSWERS):
               depth_minus_w=stage == "vs", **answers)
     if stage == "cs":
         rq["local"] = list(struct.unpack_from("<III", control, 0x748))
+        shared = (struct.unpack_from("<I", control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+        if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+            rq["shared"] = shared
     return rq
 
 

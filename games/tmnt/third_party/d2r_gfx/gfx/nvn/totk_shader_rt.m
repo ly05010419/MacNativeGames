@@ -5,6 +5,7 @@
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
 #import <Foundation/Foundation.h>
+#include "compute_shared.h"
 #include "totk_ui_lang.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
@@ -292,7 +293,7 @@ int totk_rt_can_translate(void) { return !no_translator(); }
 
 /* The cached variant whose deps match the answers, or nil (g_rt_lock held). A variant whose Metal source is missing or
    could not be compiled before is dropped from the index, so it is translated again. */
-static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
+static NSString *variant_lookup(NSString *shader, NSDictionary *answers, uint32_t need_shared) {   // need_shared: compute_shared.h (0 = any)
     NSMutableArray *vs = variants_of(shader);
     for (NSUInteger i = 0; i < vs.count; i++) {
         NSDictionary *v = vs[i];
@@ -303,7 +304,8 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
         NSString *msl = checked ? nil :
             [NSString stringWithContentsOfFile:totk_rt_file([found stringByAppendingString:@"_b.metal"])
                                              encoding:NSUTF8StringEncoding error:nil];
-        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
+        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"] ||
+                         !totk_rt_msl_shared_ok(msl.UTF8String, need_shared))) {   // compute_shared.h: a threadgroup array too small for the kernel
             [vs removeObjectAtIndex:i];  /* regenerate missing or previously un-compilable Metal variant */
             return nil;
         }
@@ -320,12 +322,18 @@ static NSString *variant_name(NSString *shader, NSDictionary *answers) {   // <s
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
+/* compute_shared.h: a compute kernel above 4 KiB of shared memory gets its own variant name (the size is in its request). */
+static NSDictionary *shared_key(NSDictionary *answers, int stage, const uint8_t *control) {
+    uint32_t sh = stage == 5 ? totk_rt_compute_shared_request(control) : 0;
+    if (!sh) return answers;
+    NSMutableDictionary *k = [answers mutableCopy]; k[@"shared"] = @(sh); return k;
+}
 static NSMutableDictionary *variant_request(NSString *shader, int stage, const uint8_t *control, const uint8_t *code,
                                             NSDictionary *answers, NSArray *local, NSData **code_out) {
     uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
-    NSString *variant = variant_name(shader, answers);
+    NSString *variant = variant_name(shader, shared_key(answers, stage, control));
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
     size_t skip = stage == 5 ? 0 : 0x30;
@@ -335,6 +343,7 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (stage == 5 && totk_rt_compute_shared_request(control)) rq[@"shared"] = @(totk_rt_compute_shared_request(control));   // compute_shared.h
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     if (no_translator()) rq[@"code_hex"] = hex(code + skip, c1t - skip);
     return rq;
@@ -566,8 +575,8 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     // Called for the game's actual shader bytes, including when a prepared
     // variant already exists. Old cache files alone never become observed keys.
     totk_shader_observed_note(observed_keys_state(), shader);
-    NSString *found = variant_lookup(shader, answers);
-    for (NSMutableArray *job; !found && !may_defer && (job = g_rt_pending[shader]); found = variant_lookup(shader, answers)) {
+    NSString *found = variant_lookup(shader, answers, stage == 5 ? totk_rt_compute_shared_request(control) : 0);
+    for (NSMutableArray *job; !found && !may_defer && (job = g_rt_pending[shader]); found = variant_lookup(shader, answers, stage == 5 ? totk_rt_compute_shared_request(control) : 0)) {
         if ([job[0] intValue] == RT_JOB_QUEUED) { job[0] = @(RT_JOB_TAKEN); [g_rt_pending removeObjectForKey:shader]; break; }
         pthread_cond_wait(&g_rt_done, &g_rt_lock);
     }
@@ -577,7 +586,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         pthread_mutex_unlock(&g_rt_lock); return nil;
     }
     if (found || g_rt_pending[shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
-    if (g_rt_failed.count && [g_rt_failed containsObject:variant_name(shader, answers)]) { pthread_mutex_unlock(&g_rt_lock); return nil; }   // Q92: failed once, its draws stay skipped
+    if (g_rt_failed.count && [g_rt_failed containsObject:variant_name(shader, shared_key(answers, stage, control))]) { pthread_mutex_unlock(&g_rt_lock); return nil; }   // Q92: failed once, its draws stay skipped
     NSData *code_bytes = nil;   // written by the job when it is not translated here
     NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local, may_defer && !no_translator() ? &code_bytes : NULL);
     if (no_translator()) { record_miss(shader, rq, answers); pthread_mutex_unlock(&g_rt_lock); return nil; }

@@ -251,6 +251,9 @@ def translation_request(variant, stage, control, code, answers, code_path, depth
                    depth_minus_w=depth_minus_w, **answers)
     if stage == 'cs':
         request['local'] = list(struct.unpack_from('<III', control, 0x748))
+        shared = (struct.unpack_from('<I', control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+        if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+            request['shared'] = shared
     return request
 
 

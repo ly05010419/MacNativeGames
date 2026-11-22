@@ -229,9 +229,19 @@ def translation_request(variant, stage, control, code, answers, code_path):
                    depth_minus_w=True, **answers)
     if stage == 'cs':
         request['local'] = list(struct.unpack_from('<III', control, 0x748))
+        if big_shared(control):   # compute_shared.h: the kernel's shared memory above the translator's 4 KiB default
+            request['shared'] = big_shared(control)
     if early_fragment_tests(stage, control):
         request['early_fragment_tests'] = True
     return request
+
+
+def big_shared(control):
+    """A compute kernel's shared memory bytes (control+0x754, rounded up to 16) when above the translator's 4 KiB default,
+    else 0: the rule of shared/third_party/d2r_gfx/gfx/nvn/compute_shared.h (totk_rt_compute_shared_request)."""
+    raw = struct.unpack_from('<I', control, 0x754)[0]
+    shared = (raw + 15) // 16 * 16
+    return shared if raw <= 32768 and shared > 4096 else 0
 
 
 def translation_input(stage, control, code):
@@ -241,7 +251,8 @@ def translation_input(stage, control, code):
     same files: 3,416 of Tears of the Kingdom 1.4.3's 28,771, nearly all effects, differ only at +0x7d0..+0x7df."""
     c1, length = struct.unpack_from('<II', control, 0x700)
     return digest(stage.encode() + struct.pack('<II', c1, length) + code[min(c1, 0 if stage == 'cs' else 0x30):length] +
-                  (control[0x748:0x754] if stage == 'cs' else b'') + (b'E' if early_fragment_tests(stage, control) else b''))
+                  (control[0x748:0x754] if stage == 'cs' else b'') + (b'E' if early_fragment_tests(stage, control) else b'') +
+                  (struct.pack('<I', big_shared(control)) if stage == 'cs' and big_shared(control) else b''))   # only such kernels' digests change
 
 
 def translations_folder(beside, identity):

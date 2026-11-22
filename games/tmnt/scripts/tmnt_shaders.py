@@ -141,7 +141,11 @@ def prepare(romfs, rewritten, output, translator, spirv_cross):
         constants = struct.unpack_from('<I', control, 0x700)[0]
         request = dict(variant=variant, stage={0:'vs', 1:'ps', 5:'cs'}[stage], code=str(code_path),
                        c1=code[constants:].hex(), depth_minus_w=True, **answers)
-        if stage == 5: request['local'] = list(struct.unpack_from('<III', control, 0x748))
+        if stage == 5:
+            request['local'] = list(struct.unpack_from('<III', control, 0x748))
+            shared = (struct.unpack_from('<I', control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+            if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+                request['shared'] = shared
         result = subprocess.run([str(translator), '--service', '--spirv-cross', str(spirv_cross), '--out', str(output), '--chain', chain()],
                                 input=json.dumps(request)+'\n', capture_output=True, text=True, check=True)
         response = json.loads(result.stdout.splitlines()[-1])
