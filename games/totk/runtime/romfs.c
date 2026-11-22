@@ -199,10 +199,11 @@ static int path_ok(const char *p);
    (the build's romfs-patches) replaces that overlay: scripts/make_mod_manifest.py wrote it by applying the build's edit to the
    mod's own file (issue #73: translations replace the UI archive the build patches for the quick-menu capture). Its
    original is then the build's checked file, so the RomFS original is not read again. Any other collision stops the start. */
-#if defined(GAME_BOTW) && !TARGET_OS_IPHONE
-/* Breath of the Wild on the Mac: a verification record for the player's mods (TOTK_ROMFS_MODS), as the RomFS image has one.
-   The HD texture pack is 3,657 files: its full check hashes 24.5 GB (the pack and the RomFS originals it replaces) and took
-   61 s at every start on the M2 Air (2026-11-20). The record is a SHA-256 over the manifest's bytes, the RomFS image's
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
+/* Tears of the Kingdom and Breath of the Wild on the Mac (PR #2341; Tears of the Kingdom too since 2026-11-22, user's call):
+   a verification record for the player's mods (TOTK_ROMFS_MODS), as the RomFS image has one. Breath of the Wild's HD
+   texture pack is 3,657 files: its full check hashes 24.5 GB (the pack and the RomFS originals it replaces) and took 61 s
+   at every start on the M2 Air (2026-11-20). iOS and the Switch 2 games keep the full check. The record is a SHA-256 over the manifest's bytes, the RomFS image's
    identity (the originals are slices of it) and each listed file's identity (device, inode, size, mtime, birth time; ctime
    left out as in chunk_proofs). It lives in TOTK_ROMFS_PROOF_DIR (the player's data folder), never in the mods folder, and
    holds one set: another pack or a changed file hashes again. Like the RomFS record it is a startup shortcut for unchanged
@@ -249,7 +250,7 @@ static void overlay_load(const char *dir,int required,int mods) {
  if(!m&&required){fprintf(stderr,"[totk] RomFS overlay: %s missing; build it with scripts/make_output_res_overlay.py <w>x<h>\n",path);runtime_fail("true-2K HeapDef overlay missing (make romfs-patches-out OUTPUT_RES=<w>x<h>)");}
  if(!m){fprintf(stderr,"[totk] RomFS overlay: none (%s)\n",path);return;}
  char line[8192];size_t first=noverlay,replaced=0;uint64_t hashed=0,t0=runtime_now_ns();
-#if defined(GAME_BOTW) && !TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
  /* only the player's mods folder: the button icons (TOTK_ROMFS_BUTTON_ICONS) are also loaded as a mod, and a second record
     for them would overwrite this one at every start; they are small and hash in milliseconds */
  const char *mv=getenv("TOTK_ROMFS_MODS");
@@ -277,7 +278,7 @@ static void overlay_load(const char *dir,int required,int mods) {
  }
  fclose(m);
  if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first+replaced,dir,noverlay-first-16);
-#if defined(GAME_BOTW) && !TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
  if(trusted&&(noverlay>first||replaced)){fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, unchanged since their full SHA-256 check: record reused in %.2f s (TOTK_ROMFS_VERIFY=full hashes again)\n",dir,noverlay-first+replaced,(runtime_now_ns()-t0)/1e9);return;}
  if(mkeyok&&(noverlay>first||replaced)){uint8_t again[32];if(mods_key(dir,pre,again)&&!memcmp(again,mkey,32))mods_proof_write(mkey);}   /* only when nothing moved during the hash */
 #endif
