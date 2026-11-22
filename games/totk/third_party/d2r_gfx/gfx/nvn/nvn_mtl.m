@@ -12890,7 +12890,12 @@ static uint64_t pool_range_write_fence(const p_bind_buf *u);
    (text shader 21fe759b, cutscene name cards, the Game Over title) while the GPU has still to read it. Desktop BotW 1.9 app,
    M4, the player's save, 100 s standing: read-only storage races 12,909 -> 0 (OOT_RACE_CHECK), 135.1 against 135.2 fps,
    p95 9.74 against 9.75 ms. The sync lag itself stays: honouring the wait (TOTK_SYNC_LAG=0) cost 18% (110.5 fps), a
-   per-page read fence 8-23% (OOT_GPU_READ_FENCE). */
+   per-page read fence 8-23% (OOT_GPU_READ_FENCE).
+   DO NOT TURN THIS OFF for Breath of the Wild while its TOTK_SYNC_LAG stays on (user 2026-11-22: "以后不要又改回去了 如果改回去
+   必须解决现在这个问题"). Turning it off brings the Game Over / name-card glyph corruption back. Before turning it off,
+   first make the game's wait honest another way (TOTK_SYNC_LAG off by default, or a fence that costs no frame rate) and
+   show with OOT_RACE_CHECK=1 on the same save that read-only storage races stay 0 ("raced/noted per kind ... s=0/...").
+   tests/test_botw_sync_lag_copies.py holds this. Records: issues_lessons.md 2026-11-22, Pullrequest.md "#2201 定稿". */
 #ifdef GAME_BOTW
 #define SBUF_SNAP_DEFAULT 1
 #else
