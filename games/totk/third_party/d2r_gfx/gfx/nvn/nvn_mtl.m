@@ -67,6 +67,7 @@ static _Atomic int g_mesh_trace_frames;
 #include "totk_taa.h"
 #include "../../../../zeldaVR/runtime/vr_camera.h"   // zeldaVR diagnostics read the first-person state
 #include "../../../../zeldaVR/gfx/totk_vr.h"
+#include "../../../../zeldaVR/gfx/vr_depth_stereo.h"
 #include "../../../../zeldaVR/gfx/vr_labo_shader.h"
 #include "../../../../zeldaVR/gfx/vr_labo_frame.h"
 #include "../../../../zeldaVR/gfx/vr_projection.h"
@@ -4174,6 +4175,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "vr_afr")) { vr_set_afr(v); return; }            // stereo by alternating eyes: 1 on, 0 one camera
 #endif
     if (!strcmp(name, "vr_ipd_pct")) { vr_set_ipd_pct(v); return; }   // its eye distance, percent of the headset's (30..200)
+    if (!strcmp(name, "vr_dstereo")) { vr_set_dstereo(v); return; }   // OOT: stereo from the scene depth, 1 on, 0 one picture (default)
     if (!strcmp(name, "vr_recenter")) { vr_recenter(); MLOG("[flag] vr_recenter: straight ahead is where the head looks now"); return; }
 #ifndef GAME_BOTW
     if (!strcmp(name, "vr_collapse")) { extern long g_vr_collapse; g_vr_collapse = v > 0; MLOG("[flag] vr_collapse: %s", v > 0 ? "the head bone scaled to nothing" : "off (the head's meshes hidden)"); return; }
@@ -7432,11 +7434,19 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // TOTK_TAA: the G-buffer pass found; its first draw gives the camera
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
     else if (!g_vr_cam_taken && vr_wants_camera() && g_vr_camtake) {   // VR head look: this frame's camera, from the G-buffer pass's first draw (as MetalFX finds it)
+#ifdef GAME_OOT
+        /* Ocarina of Time has no G-buffer: the main camera's block in a pass with the scene's 32-bit depth, the test
+           mfx_take_camera makes for MetalFX (zeldaVR for OOT, 2026-11-22) */
+        id<MTLTexture> dt = pd.depthAttachment.texture;
+        int cand = dt && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.textureType == MTLTextureType2D && dt.width >= 320;
+        g_mfx_depth_candidate = cand ? dt : nil; g_mfx_depth_pass = g_stat_pass + 1; g_mfx.want_cam = cand;
+#else
         const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL; id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil, dt = pd.depthAttachment.texture;
         if (dt && c0 && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.width == c0.width && dt.height == c0.height && dt.width >= 320) {
             int nc = 0; for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
             if (nc >= 3) { g_vr_cam_taken = 1; g_mfx.want_cam = 1; g_fl_cam_pass = g_fl_npass - 1; }
         }
+#endif
     }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
     if (g_eye_pass) eye_note_pass(pd);   // stereo replay: this eye's picture
@@ -17642,8 +17652,12 @@ static void mfx_take_camera(void) {
                 cam[72], cam[73], (unsigned long)dt.width, (unsigned long)dt.height, (unsigned long long)atomic_load(&g_cur_frame)); }
             continue;
         }
-        mfx_note_depth(dt); mfx_note_camera(cam, 84);
-        g_mfx.depth_done = 1; g_mfx.want_cam = 0; g_mfx_depth_candidate = nil;
+        if (mfx_enabled()) { mfx_note_depth(dt); mfx_note_camera(cam, 84); g_mfx.depth_done = 1; }
+        if (vr_wants_camera()) {   // zeldaVR: which head pose this frame was rendered with (the hook's ring, oot_vr.h)
+            vr_note_camera(cam); g_vr_cam_taken = 1; g_fl_cam_fov = cam[70] * 180 / (float)M_PI;
+            vr_ds_note_scene(dt, cam[56], cam[72], cam[73]);   // depth stereo: this frame's scene depth, copied at its present
+        }
+        g_mfx.want_cam = 0; g_mfx_depth_candidate = nil;
         static int said; if (said < 3) { said++; MLOG("[mfx] scene depth %lux%lu and camera (stage %d slot %d, field of view %.1f deg, %.0fx%.0f) from pass %llu, frame %llu",
             (unsigned long)dt.width, (unsigned long)dt.height, stages[i], sl, cam[70] * 180 / M_PI, cam[72], cam[73], g_stat_pass, (unsigned long long)atomic_load(&g_cur_frame)); }
         return;
@@ -23233,6 +23247,23 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
                                                                 (unsigned long long)g_pring_n, (unsigned long long)g_pring_full, rr.w, rr.h, rr.x, rr.y, (unsigned long)rsrc.width, (unsigned long)rsrc.height);
         }
     }
+#ifdef GAME_OOT
+    /* zeldaVR depth stereo (vr_depth_stereo.h): this frame's scene depth into a ring slot of ours, in the frame's own
+       command order (after its passes, before the next frame reuses the depth), as the picture is copied just above;
+       vr_present_queued below hands the slot to this present's ticket. */
+    if (!discard && !nogpu()) {
+        id<MTLTexture> from = nil, to = vr_ds_capture_target(&from);
+        if (to && from) {
+            static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
+            mtl_sub_begin();
+            id<MTL4ComputeCommandEncoder> b = blit();
+            enc_b_copy_texture(b, from, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(from.width, from.height, 1), to, 0, 0, MTLOriginMake(0, 0, 0));
+            enc_b_end(g_blit); g_blit = nil;
+            mtl_sub_commit();
+            vr_ds_captured();
+        }
+    }
+#endif
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 队满才等；正常由 AcquireTexture 先挡住 | Wait only when the queue is full; normally AcquireTexture blocks first
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};

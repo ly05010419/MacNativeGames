@@ -49,3 +49,5 @@ int vr_afr(void);
 void vr_set_afr(int on);
 int vr_ipd_pct(void);            /* its eye distance, percent of the headset's IPD (30..200; flag vr_ipd_pct) */
 void vr_set_ipd_pct(int pct);
+int vr_dstereo(void);            /* stereo from the scene depth (vr_depth_stereo.h; OOT, option dstereo, flag vr_dstereo) */
+void vr_set_dstereo(int on);

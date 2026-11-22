@@ -8,6 +8,7 @@
 //   headset's own field of view and IPD), waits for the GPU and sends FRAME_READY with that pose's tracking timestamp,
 //   so the Quest can match it to the pose and reproject. The game's frame rate does not limit the headset's.
 #import "totk_vr.h"
+#import "vr_depth_stereo.h"
 #include <sys/time.h>   // futimes: the VR activity file
 #include <TargetConditionals.h>
 #include <math.h>
@@ -95,6 +96,9 @@ int vr_afr(void) { return 0; }
 void vr_set_afr(int on) { (void)on; }
 int vr_ipd_pct(void) { return 100; }
 void vr_set_ipd_pct(int pct) { (void)pct; }
+int vr_dstereo(void) { return 0; }
+void vr_set_dstereo(int on) { (void)on; }
+void vr_residency_swap(id<MTLAllocation> old, id<MTLAllocation> replacement) { (void)old; (void)replacement; }
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -142,6 +146,7 @@ static struct {
     _Atomic uint64_t native_pairs, native_menu_pairs, native_reprojected, native_uncompensated, native_no_rotation, native_no_owner, native_bad_rotation;
     _Atomic uint64_t native_fov_calibrated,native_fov_uncalibrated;
     _Atomic int frame_native, ticket_native[64];
+    _Atomic uint32_t ticket_depth[64]; uint32_t src_dref[SRC_SLOTS];   // depth stereo: the frame's depth copy (vr_depth_stereo.h), by ticket / picture
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 void vr_packet_trace(int packets){atomic_store(&g.packet_trace,packets>0?packets:0);}
 void vr_head_only_set(int on){atomic_store(&g.head_only_off,!on);VLOG("reprojection for the head's turn only: %s",on?"on":"off (the game camera's newest base, as before)");}
@@ -286,6 +291,18 @@ int vr_afr(void) {
    30-200吗？": above 100 the world looks smaller and deeper. Option ipd_pct, 30..200, 100 by default. */
 int vr_ipd_pct(void) { int v = vr_option("ipd_pct", 100); return v < 30 ? 30 : v > 200 ? 200 : v; }
 void vr_set_ipd_pct(int pct) { pct = pct < 30 ? 30 : pct > 200 ? 200 : pct; vr_option_set("ipd_pct", pct); VLOG("stereo: the eyes %d%% of the headset's distance apart", pct); }
+/* Depth-reprojected stereo (vr_depth_stereo.m; Ocarina of Time, user 2026-11-22: "转头时才显得拉伸，那就是缺立体"):
+   each eye's picture made from the game's one picture and its scene depth. Option dstereo, off by default (the user
+   on the Quest after quest05: "还是不行"; an unfinished candidate stays off until it is right); flag vr_dstereo 0/1.
+   Only where a game hands its scene depth over (OOT); alternating eyes (afr) takes precedence. */
+int vr_dstereo(void) {
+#ifdef GAME_OOT
+    return vr_option("dstereo", 0) != 0;
+#else
+    return 0;
+#endif
+}
+void vr_set_dstereo(int on) { vr_option_set("dstereo", on != 0); VLOG("stereo from the scene depth: %s", on ? "on" : "off (one picture for both eyes)"); }
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_afr(int on) { vr_option_set("afr", on != 0); VLOG("stereo by alternating eyes: %s", on ? "on (the game renders each eye in turn)" : "off (one camera for both eyes)"); }
 #elif defined(TOTK_GAME_V143)
@@ -778,8 +795,15 @@ static void headlook_fov(const vr_views *v) {
    game's vertical field of view in degrees, 50 by default; the width from the picture's shape). The headset then
    reprojects it to the current pose, so the world stays put while the head turns. */
 static void headlook_place(const vr_pose *p, double aspect) {
+#ifdef GAME_OOT
+    /* Ocarina of Time draws the headset's view at the canvas's full height, centred, with bars at the sides (vr01: the
+       3D 1202x1080 in a 1920x1080 canvas, 1.113 = the headset's ratio): the plane spans the whole canvas, the bars
+       outside the view and the game's HUD around it. */
+    const float D = 10, hh = 2 * D * (g.fov_on > 0 ? g.fov_tanh : tanf(game_vfov() * (float)M_PI / 360)), ww = hh * (float)aspect;
+#else
     const float D = 10, hh = 2 * D * (g.fov_on > 0 ? g.fov_tanh : tanf(game_vfov() * (float)M_PI / 360)),
                 ww = hh * (g.fov_on > 0 ? g.fov_aspect : (float)aspect);
+#endif
     const float nz[3] = { 0, 0, -D }, ex[3] = { ww, 0, 0 }, ey[3] = { 0, hh, 0 };
     float f[3]; qrot(p->q, nz, f); qrot(p->q, ex, g.right); qrot(p->q, ey, g.up);
     for (int i = 0; i < 3; i++) g.center[i] = p->p[i] + f[i];
@@ -893,6 +917,9 @@ void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's 
     g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
 #endif
     atomic_store(&g.ticket_native[ticket % 64], atomic_exchange(&g.frame_native, 0));
+#ifdef GAME_OOT
+    atomic_store(&g.ticket_depth[ticket % 64], vr_ds_take_captured());   // depth stereo: this frame's depth copy goes with its picture
+#endif
     if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
 }
 void vr_source_native_frame(void) { atomic_store(&g.frame_native, 1); }
@@ -941,6 +968,8 @@ static void vr_residency_replace(id<MTLAllocation> old,id<MTLAllocation> replace
     [g.rs addAllocation:replacement];[g.rs commit];
     pthread_mutex_unlock(&mutex);
 }
+/* vr_depth_stereo.m: its depth copies are written on the game's queue too */
+void vr_residency_swap(id<MTLAllocation> old, id<MTLAllocation> replacement) { if (g.rs && replacement) vr_residency_replace(old, replacement); }
 
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect);
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2, NULL, NULL, 0); }
@@ -1009,6 +1038,7 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
                       if (kind == VR_NATIVE_WORLD) memcpy(g.src_fov[s], fov, sizeof g.src_fov[s]);
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
+                         g.src_dref[s] = atomic_exchange(&g.ticket_depth[ticket % 64], 0);   // depth stereo: 0 none
                          g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }
                   g.src_order[s]=stereo?++g.capture_order:g.ticket_order[ticket%64];   /* a native pair is encoded at its place in the replay order, before its frame's present */
     }   // B1: the eye it was rendered for, -1 not known
@@ -1290,6 +1320,19 @@ static void zoom_fov(const float fov[4], float z, float out[4]) {
    to the eye it was rendered for (the hook moved the camera there by half the IPD, vr_camera.h eye_half), so the
    picture sits exactly where that eye saw it from. Sets g.center / right / up, which the HUD and the panel follow. */
 static void place_picture(id<MTLTexture> pic, uint32_t used, int pic_eye, float half) {
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
+    /* Head look without a native eye path (Ocarina of Time, the older TotK versions): a world picture goes where the
+       head looked when it was rendered (its matched pose), so it stays put in the world while the head turns. 9fe3fdc1
+       (2026-11-06) left only the room's big screen here, made for TotK 1.4.3's native path: with OOT's head look the
+       picture stayed fixed in the room and turned out of view (vr01, 2026-11-22: the stand-in headset turning 20 degrees
+       a second saw a sliver at 40 s and black at 60 s). Pictures with no matched pose (title, loading) keep the screen. */
+    if (pic && used && g_vr_headlook) {
+        vr_pose p = g.hl_pose[used % 64];
+        if (pic_eye >= 0 && half > 0) { const float ex[3] = { pic_eye ? half : -half, 0, 0 }; float o[3]; qrot(p.q, ex, o); for (int k = 0; k < 3; k++) p.p[k] += o[k]; }
+        headlook_place(&p, (double)pic.width / pic.height);
+        return;
+    }
+#endif
     (void)used;(void)pic_eye;(void)half;
     memcpy(g.center,g.menu_center,sizeof g.center);memcpy(g.right,g.menu_right,sizeof g.right);memcpy(g.up,g.menu_up,sizeof g.up);
     if(pic && pic.width && pic.height){
@@ -1375,7 +1418,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
 #else
     const int ipd_ok = v->ipd > 0.03f && v->ipd < 0.09f;
     const int afr = g_vr_headlook && vr_afr() && ipd_ok;
-    const float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%)
+    float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%); depth stereo sets it below
     if (g_vr_headlook) { uint32_t hb; memcpy(&hb, &half, 4); __atomic_store_n((uint32_t *)(void *)&g_vr_headlook->eye_half, hb, __ATOMIC_RELAXED); }   // read by the hook on the game's thread
     int own = afr;
 #endif
@@ -1403,6 +1446,10 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         pics[k] = t >= 0 ? (stereo ? g.src_views[t][k] : g.src[t]) : nil;
         useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = stereo ? k : t >= 0 ? g.src_eye[t] : -1;
     }
+#ifdef GAME_OOT
+    /* depth stereo: the picture's depth copy and its sequence (its eye pictures are made once per sequence) */
+    const uint32_t ds_ref = s >= 0 && !stereo && !own ? g.src_dref[s] : 0; const uint64_t ds_seq = s >= 0 ? g.seq[s] : 0;
+#endif
 #ifdef TOTK_GAME_V143
     if(!stereo&&s>=0&&g.src_both[s]){   /* one world picture for both eyes: each eye looks it up by its own rays */
         world=1;oriented=1;
@@ -1463,6 +1510,16 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     int pw = 0, ph = 0; id<MTLTexture> panel = panel_update(&pw, &ph);
     vr_view_submit vs[2];
     id<MTLCommandBuffer> cb = [g.q commandBuffer];
+#ifdef GAME_OOT
+    /* Depth stereo (vr_depth_stereo.h): a world picture rendered with a head pose (useds) becomes a left and a right
+       eye's picture, made from the scene depth of its frame; each is placed straight ahead of its eye as it was when
+       the frame was rendered (place_picture with the eye and half the eye distance). Without its depth (title, menus,
+       a copy overwritten) the one picture stays for both eyes; vr_ds_stats counts why. */
+    if (!own && s >= 0 && pics[0] && useds[0] && g.fov_on > 0 && ipd_ok) {
+        id<MTLTexture> eyes[2] = { nil, nil }; const float h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
+        if (vr_ds_eyes(cb, pics[0], s, ds_seq, ds_ref, g.fov_tanh, g.fov_aspect, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
+    }
+#endif
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = g.img[im]; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0.02, 0.02, 0.025, 1); rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1842,7 +1899,7 @@ static void start_thread(id<MTLDevice> dev) {   // present thread, once
 
 void vr_stats(char *out, size_t n) {
     char l[160]; vr_link_stats(l, sizeof l);
-    float qs, ql; char q[1200];   // what the Quest reports it showed (vr_link_headset), and the game camera's view
+    float qs, ql; char q[1600];   // what the Quest reports it showed (vr_link_headset), and the game camera's view
     if (!vr_link_headset(&qs, &ql)) snprintf(q, sizeof q, "the Quest reports nothing (older streamer, or not connected)");
     else if (qs > 0) snprintf(q, sizeof q, "the Quest shows %.0f fps, %.0f ms", qs, ql);
     else snprintf(q, sizeof q, "【红】the Quest shows no picture");
@@ -1886,6 +1943,9 @@ void vr_stats(char *out, size_t n) {
           snprintf(q + k, sizeof q - k, "; alternating eyes %s: %llu headset frames with each eye's own picture, %llu with one", vr_afr() ? "on" : "off", ap, am);
 #endif
       } }
+#ifdef GAME_OOT
+    { char ds[320]; vr_ds_stats(ds, sizeof ds); size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; %s", ds); }
+#endif
 #ifndef GAME_BOTW
     { const int sd = atomic_exchange(&g_spring_dev_mm, 0);
       if (sd) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the head's spring (%d ms) kept the camera at most %.1f cm off the head bone's eyes", vr_eye_spring_ms(), sd / 10.0); } }

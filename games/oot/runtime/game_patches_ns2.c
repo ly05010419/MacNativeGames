@@ -141,8 +141,8 @@ int runtime_aspect_set_ratio(float r) {
     (void)r;return 0;
 #endif
 }
-/* TOTK's VR and camera-distance hooks (zeldaVR, the settings panel) are left to their weak defaults (zeldaVR/gfx/vr_defaults.c):
-   no sites in a Switch 2 game, so VR and the camera row stay off. */
+/* TOTK's VR and camera-distance hooks (zeldaVR, the settings panel) are left to their weak defaults (zeldaVR/gfx/vr_defaults.c),
+   except Ocarina of Time on the Mac, whose head look and field of view are oot_vr.h's (TOTK_VR_CONTROL only). */
 float runtime_aspect_ratio(void) {
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
     unsigned w,h;if(!atomic_load(&output_page)||!runtime_output_res(&w,&h))return 0;
@@ -582,6 +582,7 @@ static void patch_oot_aspect(Module *m) {
     memcpy(m->base + stub, code, sizeof code); memcpy(m->base + site, &jump, 4);
     fprintf(stderr, "[oot] aspect veneer at main+0x%llx; ratio %g (0 = the game's 16:9)\n", (unsigned long long)site, r);
 }
+#include "oot_vr.h"   /* zeldaVR (TOTK_VR_CONTROL only): the head turns the gameplay view; uses oot_aspect_cell */
 #endif
 #if defined(GAME_OOT) && TARGET_OS_IPHONE
 /* iOS (user 2026-11-09): the phone's resolution pick. The export wrote export_oot_fixed_res_ios's code in; the data page cell it
@@ -667,6 +668,7 @@ void runtime_game_patches(Module *m) {
     patch_oot_timestep(m);
     patch_oot_fixed_res(m);
     patch_oot_aspect(m);
+    oot_vr_install(m);
     patch_oot_window_textures(m);
     patch_oot_render_target_pool(m);
     if (getenv("TOTK_EXPORT_IOS")) export_oot_fixed_res_ios(m);   /* only when exporting for the phone */
