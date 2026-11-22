@@ -12885,7 +12885,18 @@ static const uint8_t *bound_uniform_bytes(uint64_t gpu, size_t size, id<MTLBuffe
    saw: a copy in the submission's arena. A range with GPU writes not yet complete (this or an earlier submission) is
    read live, so GPU-produced data is never replaced by a CPU copy. OOT_SBUF_SNAPSHOT=0 reads memory as before. */
 static uint64_t pool_range_write_fence(const p_bind_buf *u);
-static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e ? atoi(e) : 0; } return on; }   // off by default; =1: ranges up to 256 KB; =<n> (n > 1): up to n KB (2026-11-09: 1024 covers the main scene's 720 KB block)
+/* Breath of the Wild: on by default (PR #2201, 2026-11-22; OOT_SBUF_SNAPSHOT=0 turns it off). Its default TOTK_SYNC_LAG
+   settles the game's wait for the submission that read the glyph block for the one before, so the game refills the block
+   (text shader 21fe759b, cutscene name cards, the Game Over title) while the GPU has still to read it. Desktop BotW 1.9 app,
+   M4, the player's save, 100 s standing: read-only storage races 12,909 -> 0 (OOT_RACE_CHECK), 135.1 against 135.2 fps,
+   p95 9.74 against 9.75 ms. The sync lag itself stays: honouring the wait (TOTK_SYNC_LAG=0) cost 18% (110.5 fps), a
+   per-page read fence 8-23% (OOT_GPU_READ_FENCE). */
+#ifdef GAME_BOTW
+#define SBUF_SNAP_DEFAULT 1
+#else
+#define SBUF_SNAP_DEFAULT 0
+#endif
+static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e ? atoi(e) : SBUF_SNAP_DEFAULT; } return on; }   // off by default except Breath of the Wild; =1: ranges up to 256 KB; =<n> (n > 1): up to n KB (2026-11-09: 1024 covers the main scene's 720 KB block)
 static size_t sbuf_snap_limit(void) { int v = sbuf_snap_on(); return v > 1 ? (size_t)v << 10 : 262144; }
 typedef struct { uint64_t addr, size, sub, gpu; int npend; } sbuf_snap_ent;   // npend: pend entries at the copy; later entries of the same submission are checked for overlap (the table only grows within a submission)
 static sbuf_snap_ent g_sbuf_snap[256]; static uint64_t g_sbuf_snap_copies, g_sbuf_snap_hits, g_sbuf_snap_live, g_sbuf_snap_bytes;
