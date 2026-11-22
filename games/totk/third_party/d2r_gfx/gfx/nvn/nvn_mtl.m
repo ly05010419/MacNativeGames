@@ -1685,8 +1685,10 @@ static int g_usnap_drop_off;   // probe-gpu-ubo-snapshot negative control only
 static void mesh_indirect_write(uint64_t a,uint64_t n);
 static void mesh_batch_write(uint64_t a,uint64_t n);
 static uint64_t g_sbufu_write_drops;   // storage writes through uniform-held pointers (whole pool dropped)
+static void sbuf_snap_drop(uint64_t a, uint64_t n);
 static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) within this submission
     if (!n) return;
+    sbuf_snap_drop(a, n);
     g_pool_write_epoch++;pool_input_invalidate(a,n);
     mesh_indirect_write(a,n);
     mesh_batch_write(a,n);
@@ -12887,12 +12889,19 @@ static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e 
 static size_t sbuf_snap_limit(void) { int v = sbuf_snap_on(); return v > 1 ? (size_t)v << 10 : 262144; }
 typedef struct { uint64_t addr, size, sub, gpu; int npend; } sbuf_snap_ent;   // npend: pend entries at the copy; later entries of the same submission are checked for overlap (the table only grows within a submission)
 static sbuf_snap_ent g_sbuf_snap[256]; static uint64_t g_sbuf_snap_copies, g_sbuf_snap_hits, g_sbuf_snap_live, g_sbuf_snap_bytes;
+/* A GPU write in this submission (usnap_drop) ends the reuse of the copies it overlaps: a shader write whose wait has already
+   completed leaves no pending entry, so the reuse check alone would return the bytes from before that write. */
+static void sbuf_snap_drop(uint64_t a, uint64_t n) {
+    if (!sbuf_snap_on()) return;
+    uint64_t hi = n > UINT64_MAX - a ? UINT64_MAX : a + n;
+    for (int i = 0; i < 256; i++) { sbuf_snap_ent *e = &g_sbuf_snap[i]; if (e->sub == g_sub_serial && e->addr < hi && a < e->addr + e->size) { e->sub = UINT64_MAX; g_usnap_drops++; } }   // g_usnap_drops: argument buffers cached with the dropped copy's address are built again
+}
 static uint64_t sbuf_snap_get(const p_bind_buf *u) {
     if (u->size > sbuf_snap_limit() || !mtl_addr_known(u->addr, u->size)) return 0;
     if (pool_range_write_fence(u)) { g_sbuf_snap_live++; return 0; }   // GPU writes pending on these bytes: the GPU's own data
     unsigned h = (unsigned)(((u->addr >> 4) ^ u->size) * 2654435761u) & 255;
     sbuf_snap_ent *e = &g_sbuf_snap[h];
-    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && !pend_over()) {   // same submission: still the bytes the GPU should read unless a write landed on the range since the copy
+    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && !pend_over()) {   // same submission: still the bytes the GPU should read unless a write landed on the range since the copy (CPU updates: the pend scan below; GPU writes: sbuf_snap_drop)
         int clean = 1; for (int i = e->npend; i < g_npend; i++) if (u->addr < g_pend_hi[i] && u->addr + u->size > g_pend_lo[i]) { clean = 0; break; }
         if (clean) { e->npend = g_npend; g_sbuf_snap_hits++; return e->gpu; } }
     __unsafe_unretained id<MTLBuffer> buf = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
