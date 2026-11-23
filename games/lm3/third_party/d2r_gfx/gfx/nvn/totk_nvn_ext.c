@@ -174,7 +174,7 @@ NVN(nvnBlendStateGetBlendFunc, void, const NVNblendState *s, NVNblendFunc *sr, N
     const blend_st *b = CS(blend_st, s); *sr = (NVNblendFunc)b->src_rgb; *dr = (NVNblendFunc)b->dst_rgb; *sa = (NVNblendFunc)b->src_a; *da = (NVNblendFunc)b->dst_a;
 }
 NVN(nvnBlendStateGetBlendEquation, void, const NVNblendState *s, NVNblendEquation *rgb, NVNblendEquation *a) { *rgb = (NVNblendEquation)CS(blend_st, s)->eq_rgb; *a = (NVNblendEquation)CS(blend_st, s)->eq_a; }
-NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode m) { (void)s; if (m) die("advanced blend mode %d not implemented", (int)m); }
+/* nvnBlendStateSetAdvancedMode: hle_nvn.c, next to the blend state it rewrites */
 NVN(nvnBlendStateSetAdvancedOverlap, void, NVNblendState *s, NVNblendAdvancedOverlap o) { (void)s; (void)o; }   /* only meaningful with an advanced mode */
 NVN(nvnBlendStateSetAdvancedPremultipliedSrc, void, NVNblendState *s, uint32_t v) { (void)s; (void)v; }
 NVN(nvnBlendStateSetAdvancedNormalizedDst, void, NVNblendState *s, uint32_t v) { (void)s; (void)v; }

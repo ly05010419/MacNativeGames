@@ -1897,6 +1897,33 @@ NVN(nvnBlendStateSetBlendFunc, void, NVNblendState *s, NVNblendFunc sr, NVNblend
     blend_st *o = ST(blend_st, s); o->src_rgb = sr; o->dst_rgb = dr; o->src_a = sa; o->dst_a = da;
 }
 NVN(nvnBlendStateSetBlendEquation, void, NVNblendState *s, NVNblendEquation er, NVNblendEquation ea) { ST(blend_st, s)->eq_rgb = er; ST(blend_st, s)->eq_a = ea; }
+/* Advanced blend modes (from games/mvdk; Luigi's Mansion 3 sets SCREEN, mode 0x16). NVN's default for advanced blending is
+   a premultiplied source with uncorrelated overlap: the Porter-Duff modes, PLUS and SCREEN (Cs + Cd - Cs*Cd) are then exact
+   as ordinary blend factors with the ADD equation. MULTIPLY is exact over an opaque destination (Cd * (Cs + 1 - As)). The
+   other modes need the destination in the shader: they draw as SRC_OVER, logged once each, instead of stopping the game. */
+NVN(nvnBlendStateSetAdvancedMode, void, NVNblendState *s, NVNblendAdvancedMode m) {
+    enum { Z = NVN_BLEND_FUNC_ZERO, O = NVN_BLEND_FUNC_ONE, SA = NVN_BLEND_FUNC_SRC_ALPHA, ISA = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA,
+           DA = NVN_BLEND_FUNC_DST_ALPHA, IDA = NVN_BLEND_FUNC_ONE_MINUS_DST_ALPHA, ISC = NVN_BLEND_FUNC_ONE_MINUS_SRC_COLOR,
+           DC = NVN_BLEND_FUNC_DST_COLOR };
+    static const struct { int mode, src, dst, src_a, dst_a; } pd[] = {
+        {NVN_BLEND_ADVANCED_MODE_ZERO, Z, Z, Z, Z},         {NVN_BLEND_ADVANCED_MODE_SRC, O, Z, O, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST, Z, O, Z, O},          {NVN_BLEND_ADVANCED_MODE_SRC_OVER, O, ISA, O, ISA},
+        {NVN_BLEND_ADVANCED_MODE_DST_OVER, IDA, O, IDA, O}, {NVN_BLEND_ADVANCED_MODE_SRC_IN, DA, Z, DA, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST_IN, Z, SA, Z, SA},     {NVN_BLEND_ADVANCED_MODE_SRC_OUT, IDA, Z, IDA, Z},
+        {NVN_BLEND_ADVANCED_MODE_DST_OUT, Z, ISA, Z, ISA},  {NVN_BLEND_ADVANCED_MODE_SRC_ATOP, DA, ISA, Z, O},
+        {NVN_BLEND_ADVANCED_MODE_DST_ATOP, IDA, SA, O, Z},  {NVN_BLEND_ADVANCED_MODE_XOR, IDA, ISA, IDA, ISA},
+        {NVN_BLEND_ADVANCED_MODE_PLUS, O, O, O, O},         {NVN_BLEND_ADVANCED_MODE_PLUS_CLAMPED, O, O, O, O},
+        {NVN_BLEND_ADVANCED_MODE_PLUS_CLAMPED_ALPHA, O, O, O, O},
+        {NVN_BLEND_ADVANCED_MODE_SCREEN, O, ISC, O, ISA},   {NVN_BLEND_ADVANCED_MODE_MULTIPLY, DC, ISA, O, ISA}};
+    if (m == NVN_BLEND_ADVANCED_MODE_NONE) return;
+    blend_st *o = ST(blend_st, s); size_t i = 0;
+    while (i < sizeof pd / sizeof *pd && pd[i].mode != (int)m) i++;
+    int known = i < sizeof pd / sizeof *pd; if (!known) i = 3;   /* SRC_OVER */
+    o->src_rgb = pd[i].src; o->dst_rgb = pd[i].dst; o->src_a = pd[i].src_a; o->dst_a = pd[i].dst_a;
+    o->eq_rgb = o->eq_a = NVN_BLEND_EQUATION_ADD;
+    static uint64_t said; if (!(said & 1ull << (m & 63))) { said |= 1ull << (m & 63);
+        LOG("advanced blend mode %#x %s", (int)m, known ? "as ordinary blend factors (premultiplied)" : "not implemented: drawn as SRC_OVER"); }
+}
 NVN(nvnColorStateSetDefaults, void, NVNcolorState *s) { *ST(color_st, s) = (color_st){0, NVN_LOGIC_OP_COPY, NVN_ALPHA_FUNC_ALWAYS}; }
 NVN(nvnColorStateSetBlendEnable, void, NVNcolorState *s, int i, uint32_t en) {
     color_st *o = ST(color_st, s); if (i < 0 || i > 7) return;
