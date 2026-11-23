@@ -84,6 +84,8 @@ static void settings_pointer_used(void);
 @property(copy) NSString *buttonTitle;           /* the button at the row's end (with text) */
 @property(copy) void (^buttonAction)(void);
 @property int sliderMin, sliderMax;              /* a slider when sliderMax > sliderMin */
+@property BOOL stops;                            /* with choices / values: a slider that rests on the labelled choices, applied on release (settings_stops) */
+@property(copy) BOOL (^enabled)(void);           /* nil: always; NO greys the control out (refresh) and the controller skips it */
 @property NSInteger page;                        /* SETTINGS_PAGE_DISPLAY, _INPUT, _EFFECTS or _VR */
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
@@ -96,10 +98,12 @@ static void settings_pointer_used(void);
 -(BOOL)slider{return self.sliderMax>self.sliderMin;}
 -(void)changed:(id)sender{
  if(self.buttonAction){self.buttonAction();return;}   /* the text row's button: it acts itself, no value comes back */
- int v=[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
+ NSInteger stop=0;
+ if(self.stops){stop=MAX(0,MIN((NSInteger)self.choices.count-1,((NSSlider *)sender).integerValue));}
+ int v=self.stops?self.values[(NSUInteger)stop].intValue:[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
   self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
- if(self.valueLabel)self.valueLabel.stringValue=[NSString stringWithFormat:@"%d",v];
+ if(self.valueLabel)self.valueLabel.stringValue=self.stops?self.choices[(NSUInteger)stop]:[NSString stringWithFormat:@"%d",v];
  [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
@@ -110,7 +114,10 @@ static void settings_pointer_used(void);
    CGFloat size=fmax(9,fmin(11,11*self.textLabel.bounds.size.width/fmax(1,width)));
    if(fabs(self.textLabel.font.pointSize-size)>.01)self.textLabel.font=[NSFont monospacedSystemFontOfSize:size weight:NSFontWeightRegular];}
   return;}
+ if(self.enabled){BOOL on=self.enabled();if(self.control.enabled!=on)self.control.enabled=on;}
  int v=self.get?self.get():0;
+ if(self.stops){NSUInteger i=[self.values indexOfObject:@(v)];if(i==NSNotFound)i=0;NSSlider *s=(NSSlider *)self.control;
+  if(s.integerValue!=(NSInteger)i)s.integerValue=(NSInteger)i;self.valueLabel.stringValue=self.choices[i];return;}
  if(self.slider){NSSlider *s=(NSSlider *)self.control;if(s.intValue!=v)s.intValue=v;self.valueLabel.stringValue=[NSString stringWithFormat:@"%d",v];return;}
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
  NSPopUpButton *p=(NSPopUpButton *)self.control;
@@ -124,6 +131,11 @@ static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_U
 static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                     int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
+}
+/* A slider with a label at each of its choices (values[i] is what choice i sets); it applies when released. */
+static TOTKSettingRow *settings_stops(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
+                                      int (^get)(void), void (^set)(int)) {
+ TOTKSettingRow *r=settings_row(title,choices,values,get,set);r.stops=choices.count>1;r.sliderMin=0;r.sliderMax=(int)choices.count-1;return r;
 }
 /* A setting this game or start cannot change: its one value, greyed out. */
 static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
@@ -486,8 +498,8 @@ static NSString *settings_version_text(void) {
    down to SETTINGS_NARROW_W (the width before the 截图分享 tab). */
 enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 90, SETTINGS_BOTTOM = 34, SETTINGS_POP_W = 260, SETTINGS_POP_MAX_W = 304, SETTINGS_LABEL_W = 350,
        SETTINGS_CELL_W = 118, SETTINGS_CELL_MAX_W = 140, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
--(instancetype)init{
- NSArray<TOTKSettingRow *> *rows=settings_rows();
+-(instancetype)init{return [self initWithRows:settings_rows()];}
+-(instancetype)initWithRows:(NSArray<TOTKSettingRow *> *)rows{
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
  NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
  NSUInteger most=MAX(perPage[SETTINGS_PAGE_VR],perPage[SETTINGS_PAGE_OCARINA]);for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
@@ -538,8 +550,10 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
    if(r.slider){
     NSSlider *s=[NSSlider sliderWithValue:r.get?r.get():r.sliderMin minValue:r.sliderMin maxValue:r.sliderMax target:nil action:nil];
     s.continuous=YES;s.frame=NSMakeRect(rw-popW-8,floor((rowH-20)/2),popW-44,20);r.control=s;
+    CGFloat valueW=34;   /* a stops row's label is a choice ("2K (2560×1440)"): wider, the slider shorter by as much */
+    if(r.stops){valueW=124;s.continuous=NO;s.numberOfTickMarks=(NSInteger)r.choices.count;s.allowsTickMarkValuesOnly=YES;s.frame=NSMakeRect(rw-popW-8,floor((rowH-20)/2),popW-44-(valueW-34),20);}
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
-    value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
+    value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-12-valueW,floor((rowH-18)/2),valueW,18);[band addSubview:value];r.valueLabel=value;
    }else if(r.text){   /* a fixed value with the button that changes it at the row's end (the screenshot folder) */
     NSButton *b=[NSButton buttonWithTitle:r.buttonTitle?:@"" target:nil action:nil];
     b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];[b sizeToFit];
@@ -1058,7 +1072,8 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  TOTKSettingRow *r=self.rows[i];
  if(r.text&&!r.buttonAction)return;
  if(r.buttonAction){if(select)[r changed:r.control];[self controllerHighlight];return;}   /* the text row: A is its button */
- if(r.slider){if(select)return;NSSlider *s=(NSSlider *)r.control;s.intValue=MAX(r.sliderMin,MIN(r.sliderMax,s.intValue+step*5));}
+ if(r.stops){if(select)return;NSSlider *s=(NSSlider *)r.control;s.integerValue=MAX(0,MIN((NSInteger)r.choices.count-1,s.integerValue+step));}   /* one stop */
+ else if(r.slider){if(select)return;NSSlider *s=(NSSlider *)r.control;s.intValue=MAX(r.sliderMin,MIN(r.sliderMax,s.intValue+step*5));}
  else if(r.choices){
   NSPopUpButton *p=(NSPopUpButton *)r.control;NSInteger n=p.numberOfItems;if(n<2)return;
   NSInteger index=p.indexOfSelectedItem;if(index<0)index=0;

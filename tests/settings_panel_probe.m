@@ -1043,6 +1043,36 @@ static void contrib_probe(void) {
     settings_home_open = settings_home_open_default;
     settings_show(0);
 }
+/* The labelled-stops slider and a row that greys out (settings_stops, TOTKSettingRow.enabled), on a panel of just those two rows. */
+static void stops_probe(void) {
+    [NSApplication sharedApplication];
+    __block int current = 20, last = -1; __block BOOL on = YES;
+    TOTKSettingRow *stops = settings_stops(@"Stops", @[@"a", @"b", @"c"], @[@10, @20, @30], ^int{ return current; }, ^(int v) { current = last = v; });
+    TOTKSettingRow *sw = settings_row(@"Switch", nil, nil, ^int{ return 1; }, ^(int v) { (void)v; });
+    sw.enabled = ^BOOL{ return on; };
+    stops.page = sw.page = SETTINGS_PAGE_DISPLAY;
+    settingsPanel = [[TOTKSettingsPanel alloc] initWithRows:@[stops, sw]];
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; settings_refresh_all();
+    NSSlider *s = (NSSlider *)stops.control;
+    assert([s isKindOfClass:NSSlider.class] && s.numberOfTickMarks == 3 && !s.continuous && s.allowsTickMarkValuesOnly);
+    assert(s.minValue == 0 && s.maxValue == 2);
+    assert(s.integerValue == 1 && [stops.valueLabel.stringValue isEqualToString:@"b"]);
+    assert(stops.valueLabel.alignment == NSTextAlignmentRight);
+    NSString *wide = @"2K (2560×1440)";
+    assert([wide sizeWithAttributes:@{NSFontAttributeName: stops.valueLabel.font}].width <= stops.valueLabel.frame.size.width);
+    s.integerValue = 2; [stops changed:s];
+    assert(last == 30 && [stops.valueLabel.stringValue isEqualToString:@"c"]);
+    last = -1; settingsPanel.controllerIndex = 0;
+    [settingsPanel controllerChange:1 select:NO];   /* right from the last stop stays there */
+    assert(s.integerValue == 2 && last == 30 && [stops.valueLabel.stringValue isEqualToString:@"c"]);
+    [settingsPanel controllerChange:-1 select:NO];
+    assert(s.integerValue == 1 && last == 20 && [stops.valueLabel.stringValue isEqualToString:@"b"]);
+    assert(sw.control.enabled);
+    on = NO; settings_refresh_all();
+    assert(!sw.control.enabled && ![settingsPanel controllerEnabled:1] && [settingsPanel controllerEnabled:0]);
+    on = YES; settings_refresh_all(); assert(sw.control.enabled);
+    puts("pass: slider stops");
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
@@ -1087,6 +1117,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
 #if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif
+    if (argc==2 && !strcmp(argv[1],"stops")) { setenv("TOTK_UI_LANG","en",1); stops_probe(); return 0; }
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     if (argc==2 && !strcmp(argv[1],"hdr")) { setenv("TOTK_UI_LANG","en",1); hdr_probe(); return 0; }
     [NSApplication sharedApplication];

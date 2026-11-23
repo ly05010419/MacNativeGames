@@ -1,11 +1,14 @@
 """The fixed MetalFX upscale size: the fit, the "Upscale to" list and the saved choice (mfx_target.h)."""
 from pathlib import Path
+import os
 import shutil
+import sys
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+GFX = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
 
 
 class MfxTarget(unittest.TestCase):
@@ -24,6 +27,31 @@ class MfxTarget(unittest.TestCase):
             run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('pass: mfx target', run.stdout)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Mac source probe')
+    def test_slider_stops(self):
+        """The Display page's Resolution / MetalFX / Upscale to rows rest on labelled stops that apply on release,
+        and a row can grey out: the panel offers both to every game, with the controller moving one stop at a time."""
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'stops'
+            command = ['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
+                       '-Wno-deprecated-declarations', '-I' + str(GFX / 'include'),
+                       '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
+                       str(ROOT / 'tests/settings_panel_probe.m'),
+                       str(ROOT / 'tests/settings_output_fixture.c'),
+                       str(GFX / 'totk_mfx.m'), str(GFX / 'totk_mfx_up.m'),
+                       str(GFX / 'totk_taa.m'), str(GFX / 'fps_overlay.c'),
+                       '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'MetalFX',
+                       '-framework', 'QuartzCore', '-framework', 'CoreVideo', '-o', str(executable)]
+            build = subprocess.run(command, capture_output=True, text=True, timeout=90)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            folder = Path(directory) / 'settings'
+            folder.mkdir()
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('TOTK_', 'DM_', 'MNG_'))}
+            env.update(SETTINGS_TEST_DIR=str(folder), TOTK_UI_LANG='en')
+            run = subprocess.run([str(executable), 'stops'], capture_output=True, text=True, timeout=30, env=env)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('pass: slider stops', run.stdout)
 
 
 if __name__ == '__main__':
