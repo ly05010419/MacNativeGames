@@ -1,6 +1,5 @@
 #pragma once
 enum { VR_STREAM_EYE_WIDTH=2048,VR_STREAM_EYE_HEIGHT=2208,VR_RENDER_SIZE_COUNT=8 };
-enum { VR_OOT_STREAM_WIDTH=1680,VR_OOT_STREAM_HEIGHT=1760 };   /* Ocarina of Time: the video, whatever the render size */
 static const int vr_render_sizes[VR_RENDER_SIZE_COUNT][2]={
     {1280,1380},{1536,1656},{1792,1932},{2048,2208},{2560,2760},{3072,3312},{3584,3864},{4096,4416}
 };

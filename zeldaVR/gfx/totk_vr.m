@@ -1667,10 +1667,6 @@ static void stream_eye_size(int *w,int *h){
 #ifdef TOTK_GAME_V143
         else if(g_res_loaded&&g_res_w>=640&&g_res_h>=640){sw=g_res_w<VR_STREAM_EYE_WIDTH?g_res_w:VR_STREAM_EYE_WIDTH;sh=g_res_h<VR_STREAM_EYE_HEIGHT?g_res_h:VR_STREAM_EYE_HEIGHT;sw&=~1;sh&=~1;}
         else{*w=VR_STREAM_EYE_WIDTH;*h=VR_STREAM_EYE_HEIGHT;return;}   /* the render size is not loaded yet: not fixed yet */
-#elif defined(GAME_OOT)
-        /* Ocarina of Time: the video keeps this size whatever the VR page renders at (user 2026-11-23: at 1344x1408 for both
-           "全是马赛克" while the game's own picture was clean, run mosaic01). 1680x1760 is the largest that holds 72 Hz. */
-        else{sw=VR_OOT_STREAM_WIDTH;sh=VR_OOT_STREAM_HEIGHT;}
 #else
         else{sw=VR_STREAM_EYE_WIDTH;sh=VR_STREAM_EYE_HEIGHT;}
 #endif
@@ -1678,7 +1674,7 @@ static void stream_eye_size(int *w,int *h){
     *w=sw;*h=sh;
 }
 void vr_stream_resolution(int *w,int *h) {
-#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143) || defined(GAME_OOT)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     if(vr_streamer_managed()){stream_eye_size(w,h);return;}
     vr_link_view_size(w,h);
 #else
@@ -1697,13 +1693,16 @@ static void streamer_start_locked(void) {
     extern char **environ;
     const char *bin = getenv("TOTK_VR_STREAMER"), *ctl = getenv("TOTK_VR_CONTROL"), *mb = getenv("TOTK_VR_MBPS");
     char res[32], mbps[16], log[1100]; res_load();
-#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143) || defined(GAME_OOT)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     {int sw,sh;stream_eye_size(&sw,&sh);snprintf(res, sizeof res, "%dx%d", sw, sh);}
-#if defined(TOTK_GAME_V143) || defined(GAME_OOT)
+#ifdef TOTK_GAME_V143
     setenv("BASALT_CODEC","hevc",0);   /* the Quest decodes HEVC in about 20 ms, H.264 in 31 to 39 (q-matrix.txt); BASALT_CODEC=h264 keeps H.264 */
 #endif
 #else
     snprintf(res, sizeof res, "%dx%d", g_res_w, g_res_h);
+#ifdef GAME_OOT
+    setenv("BASALT_CODEC","hevc",0);   /* Ocarina of Time: the video is the VR page's size (user 2026-11-23: "不要固定 和 输出分辨率一样"), in HEVC */
+#endif
 #endif
     snprintf(mbps, sizeof mbps, "%d", mb && atoi(mb) > 0 && atoi(mb) <= 500 ? atoi(mb) : 150);
     snprintf(log, sizeof log, "%s.streamer.log", ctl);
@@ -1760,11 +1759,11 @@ int vr_set_resolution(int w, int h) {   // the settings panel (main thread)
         if (f) { fprintf(f, "%dx%d\n", w, h); fclose(f); }
 #if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         VLOG("VR render resolution %dx%d requested immediately; stream fixed at %dx%d",w,h,VR_STREAM_EYE_WIDTH,VR_STREAM_EYE_HEIGHT);
-#elif defined(GAME_OOT)
-        { extern void runtime_oot_vr_canvas(unsigned, unsigned); if (g.fov_on > 0) runtime_oot_vr_canvas((unsigned)w, (unsigned)h); }   // the render size; the stream stays
-        VLOG("VR render resolution %dx%d; stream fixed", w, h);
 #else
         VLOG("VR resolution %dx%d per eye: restarting the streamer", w, h);
+#ifdef GAME_OOT
+        { extern void runtime_oot_vr_canvas(unsigned, unsigned); if (g.fov_on > 0) runtime_oot_vr_canvas((unsigned)w, (unsigned)h); }   // the game renders at it too
+#endif
         streamer_stop_locked(); streamer_start_locked();   // the VR thread sees the teardown and reconnects
 #endif
     }

@@ -226,10 +226,10 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
   @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];
  static const int sizes[][2]={{1344,1408},{1680,1760},{1920,2048},{2048,2208}};
- NSArray<NSString *> *names=@[settings_text("1344×1408（流畅）","1344×1408 (smooth)"),
-  settings_text("1680×1760（推荐）","1680×1760 (recommended)"),
-  settings_text("1920×2048（更清楚）","1920×2048 (sharper)"),
-  settings_text("2048×2208（最清楚）","2048×2208 (sharpest)")];
+ NSArray<NSString *> *names=@[settings_text("1344×1408（流畅，72 帧）","1344×1408 (smooth, 72 Hz)"),
+  settings_text("1680×1760（推荐，72 帧）","1680×1760 (recommended, 72 Hz)"),
+  settings_text("1920×2048（更清楚，约 60 帧）","1920×2048 (sharper, about 60 Hz)"),
+  settings_text("2048×2208（最清楚，约 54 帧）","2048×2208 (sharpest, about 54 Hz)")];
  NSString *title=settings_text("VR 设置 · 分辨率（每眼）","VR · resolution (per eye)");
  if(!vr_streamer_managed()){int w=0,h=0;vr_resolution(&w,&h);
   [rows addObject:settings_fixed(title,w>0?[NSString stringWithFormat:@"%d×%d",w,h]:settings_text("未连接","not connected"))];return;}

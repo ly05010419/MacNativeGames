@@ -92,23 +92,26 @@ class Wiring(unittest.TestCase):
         self.assertGreaterEqual(guard, 0)
         self.assertLess(guard, store)
 
-    def test_the_row_changes_the_render_and_the_stream_stays(self):
-        """1344x1408 as both render and stream was full of blocks on the Quest while the game's own picture was clean
-        (run mosaic01): the row is the render size, the video keeps its own."""
+    def test_the_row_sets_the_render_and_the_stream_together(self):
+        """User 2026-11-23: "串流 ... 不要固定 和 输出分辨率一样": one size for the game's canvas and the video."""
         body = function(VR.read_text(), 'vr_set_resolution')
-        oot = body[body.index('#elif defined(GAME_OOT)'):]
-        oot = oot[:oot.index('#else')]
-        self.assertIn('runtime_oot_vr_canvas', oot)
-        self.assertNotIn('streamer_stop_locked', oot)
+        canvas = body.index('runtime_oot_vr_canvas')
+        self.assertLess(canvas, body.index('streamer_stop_locked(); streamer_start_locked();'))
+        self.assertNotIn('#elif defined(GAME_OOT)', body)
 
-    def test_the_stream_is_1680x1760_in_hevc(self):
-        self.assertIn('VR_OOT_STREAM_WIDTH=1680,VR_OOT_STREAM_HEIGHT=1760', (ROOT / 'zeldaVR/gfx/vr_resolution_policy.h').read_text())
+    def test_the_stream_is_the_render_size_in_hevc(self):
+        self.assertNotIn('VR_OOT_STREAM', (ROOT / 'zeldaVR/gfx/vr_resolution_policy.h').read_text())
         source = VR.read_text()
-        self.assertIn('VR_OOT_STREAM_WIDTH', function(source, 'stream_eye_size'))
-        self.assertIn('defined(GAME_OOT)', function(source, 'vr_stream_resolution'))
+        self.assertNotIn('VR_OOT_STREAM', source)
+        self.assertNotIn('GAME_OOT', function(source, 'vr_stream_resolution'))
         start = function(source, 'streamer_start_locked')
-        self.assertIn('stream_eye_size(&sw,&sh)', start)
-        self.assertRegex(start, r'#if defined\(TOTK_GAME_V143\) \|\| defined\(GAME_OOT\)\n\s*setenv\("BASALT_CODEC","hevc",0\)')
+        self.assertRegex(start, r'snprintf\(res, sizeof res, "%dx%d", g_res_w, g_res_h\);\n#ifdef GAME_OOT\n\s*setenv\("BASALT_CODEC","hevc",0\)')
+
+    def test_the_row_names_the_headset_rate_of_each_size(self):
+        """The video follows the row again, so its refresh notes are true again."""
+        row = SETTINGS.read_text()
+        for name in ('1344×1408（流畅，72 帧）', '1680×1760（推荐，72 帧）', '1920×2048（更清楚，约 60 帧）', '2048×2208（最清楚，约 54 帧）'):
+            self.assertIn(name, row)
 
     def test_the_vr_canvas_is_rendered_at_full_scale(self):
         body = function(PATCHES.read_text(), 'runtime_oot_vr_canvas')
