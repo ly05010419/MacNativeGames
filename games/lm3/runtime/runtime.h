@@ -100,6 +100,7 @@ void runtime_shortcut_help_toggle(void);
 int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
 int runtime_aspect_set_ratio(float r);   /* runtime/aspect_patch.h: the settings panel, 0 = 16:9; 0 where unavailable */
+int runtime_frame_target_set(float ms);   /* runtime/game_patches.c: the game's target frame time (1.4.0), 0 = no sleep; 0 where unavailable */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 int fps_overlay_hud_mode(void);     /* gfx/nvn/fps_overlay.c (shared): the settings panel's overlay mode, HUD_MODE_* */
 int fps_overlay_full_hud(void);

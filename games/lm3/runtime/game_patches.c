@@ -280,8 +280,51 @@ static void patch_pchtxt(Module *m) {
     fprintf(stderr, "[totk] TOTK_PCHTXT %s: %u patches, %u bytes in main (build id %s)\n", path, count, bytes, want);
 }
 
+/* Frame rate (1.4.0). The game holds itself at 30 FPS: once a frame, main+0x7a3e70 (a callback of the frame function
+   main+0xb7bd90, registered at main+0xb5f15c) takes a target frame time of 33.333 ms (main+0x13c94dc, read only there),
+   raises it to the GPU's recent frame time when that is longer, and sleeps (svcSleepThread) whatever is left of it after
+   this frame's work. Game time does not count frames: main+0x79f320 advances it by the measured frame time (ticks x 0.001,
+   at most 0.35 s), so a shorter target only makes more frames. The two loads of the target read the data page after main
+   instead (+60, a float in ms), which the settings panel's frame limit writes (runtime_frame_target_set):
+     main+0x7a3e9c  adrp x12, 0x13c9000         -> adrp x12, <data page>   (x12 is not read again before it is rewritten)
+     main+0x7a3ea8  ldr  s0, [x12, #0x4dc]      -> ldr  s0, [x12, #60]
+     main+0x7a3f18  ldr  s2, [x12, #0x4dc]      -> ldr  s2, [x12, #60]
+   The window's present interval the game still asks for (2) is not followed while the panel paces the frames
+   (nvn_control_pacing). */
+#define FRAME_TARGET_SLOT 60
+static _Atomic(uint32_t) *g_frame_target;
+static float g_frame_target_pending = -1;   /* asked before main was loaded: written at install */
+int runtime_frame_target_set(float ms) {
+    if (!(ms >= 0 && ms <= 100)) ms = 1000.0f / 30;
+    if (!g_frame_target) { g_frame_target_pending = ms; return 0; }
+    uint32_t bits; memcpy(&bits, &ms, 4);
+    if (atomic_exchange(g_frame_target, bits) != bits) fprintf(stderr, "[totk] frame target %.3f ms (%s)\n", ms, ms > 0 ? "the game sleeps up to it" : "no sleep");
+    return 1;
+}
+static void frame_target_install(Module *m, uint64_t data_off) {
+#if TARGET_OS_IPHONE
+    (void)m; (void)data_off;
+#else
+    static const uint64_t at[3] = {0x7a3e9c, 0x7a3ea8, 0x7a3f18};
+    static const uint32_t want[3] = {0xd000612c, 0xbd44dd80, 0xbd44dd82};
+    for (int i = 0; i < 3; i++) { uint32_t w; memcpy(&w, m->base + at[i], 4); if (w != want[i]) { fprintf(stderr, "[totk] frame target: main+%#llx is %08x, not %08x; the game keeps its 30 FPS\n", (unsigned long long)at[i], w, want[i]); return; } }
+    if (data_off + FRAME_TARGET_SLOT + 4 > m->size) runtime_fail("frame target: no data page after main");
+    int64_t pages = (int64_t)(data_off >> 12) - (int64_t)(at[0] >> 12);
+    if (pages < -(1 << 20) || pages >= (1 << 20)) runtime_fail("frame target: data page out of ADRP range");
+    uint32_t imm = (uint32_t)pages & 0x1fffff;
+    uint32_t word[3] = {0x90000000u | ((imm & 3) << 29) | ((imm >> 2) << 5) | 12,
+                        0xbd400000u | (FRAME_TARGET_SLOT / 4) << 10 | 12 << 5 | 0,
+                        0xbd400000u | (FRAME_TARGET_SLOT / 4) << 10 | 12 << 5 | 2};
+    g_frame_target = (_Atomic(uint32_t) *)(void *)(m->base + data_off + FRAME_TARGET_SLOT);
+    float ms = 1000.0f / 30; uint32_t bits; memcpy(&bits, &ms, 4); atomic_store(g_frame_target, bits);
+    for (int i = 0; i < 3; i++) memcpy(m->base + at[i], &word[i], 4);
+    if (g_frame_target_pending >= 0) runtime_frame_target_set(g_frame_target_pending);
+    fprintf(stderr, "[totk] 1.4.0 frame rate: the game's 30 FPS target follows the settings' frame limit\n");
+#endif
+}
+
 void runtime_game_patches(Module *m) {
-    /* Luigi's Mansion 3 runs unmodified: only the player's own patches, if any. (The copied Tears of the Kingdom body after
+    /* The player's own patches, if any, then this runtime's (1.4.0: picture shape, frame rate). (The copied Tears of the Kingdom body after
        this, 60 FPS and real-time step at that game's addresses, was never reached and is gone, after PR #218.) */
     patch_pchtxt(m);
     /* Other picture shapes (aspect_patch.h): in 1.4.0 every engine camera that builds a perspective matrix (main+0x6aab4,
@@ -292,5 +335,6 @@ void runtime_game_patches(Module *m) {
     if (!strcmp(TOTK_GAME_VERSION, "1.4.0")) {
         static const uint64_t sites[] = {0x67c24};
         aspect_install(m, "1.4.0", sites, 1, (m->text_end + 15) & ~15ULL, (m->file_size + 0x3fff) & ~0x3fffULL);
+        frame_target_install(m, (m->file_size + 0x3fff) & ~0x3fffULL);
     } else if (aspect_requested()) runtime_fail("TOTK_ASPECT: Luigi's Mansion 3 1.4.0 only so far");
 }

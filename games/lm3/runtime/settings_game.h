@@ -13,7 +13,8 @@
                                                          picture keeps it in the window
      window mode          windowed / full screen / borderless
      vertical sync        switch
-     frame limit          off / 30 / 60 / 120            the real frames' limiter (nvn_control_pacing)
+     frame limit          off / 30 / 60 / 120            the real frames' limiter (nvn_control_pacing) and the game's own
+                                                         target frame time (runtime_frame_target_set, 1.4.0)
      frame generation     switch                         MetalFX frame generation, one frame between each pair
    Input
      controller type      auto / Xbox / PlayStation / Switch   runtime_gamepad_type_set (gamepad.m), controller-type.txt

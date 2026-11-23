@@ -57,7 +57,10 @@ there are cheats.
 
 - **SDK 7.3.2**: an older `nn::init` start sequence, rtld global symbol binding, and its own services (audout, the
   movie library) in `runtime/`.
-- **No game patches**: the game runs unmodified, at its own 30 FPS. Its dynamic resolution reads GPU timestamps that
+- **Frame rate**: the game sleeps up to a 33.3 ms target each frame (30 FPS). On 1.4.0 that target follows the settings
+  panel's frame limit (30, 60, 120, or off: the display's rate with vsync), see `runtime/game_patches.c`; game time
+  advances by the measured frame time, so the game keeps its speed.
+- **Few game patches**: the frame-rate target and the picture shape (1.4.0) only. Its dynamic resolution reads GPU timestamps that
   stand still (`LM3_GPU_CLOCK`, see `nvn_mtl.m`), so it stays at 1920x1080. Render targets
   the game re-initializes at a new size without finalizing the old ones are released by the graphics layer, so the GPU
   memory stays flat.

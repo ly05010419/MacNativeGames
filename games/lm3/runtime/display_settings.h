@@ -67,6 +67,9 @@ static void controls_apply(void){
  unsigned w=displaySizes[displayResolution][0],h=displaySizes[displayResolution][1];
  runtime_render_configure(w,h,controlQuality);
  { const char *env=getenv("TOTK_ASPECT"); if(!env||!*env)runtime_aspect_set_ratio(displayAspects[displayAspect]); }nvn_control_pacing(controlVsync,controlCap);mfx_set(controlFI?3:0);
+ { /* the game's own 30 FPS target (game_patches.c, 1.4.0) follows the frame limit: off = the display's rate with vsync, none without */
+   NSInteger hz=(window.screen?:NSScreen.mainScreen).maximumFramesPerSecond;
+   runtime_frame_target_set(controlCap>0?1000.0f/controlCap:controlVsync&&hz>0?1000.0f/(float)hz:0.0f); }
  if(window&&metalLayer){front_sync_drawable();display_apply_mode();}
 }
 void runtime_controls_prepare(void){@autoreleasepool{if(!controlsLoaded)display_load();controls_apply();}}
