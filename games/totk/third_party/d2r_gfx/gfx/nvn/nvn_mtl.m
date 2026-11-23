@@ -4161,6 +4161,12 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "vr_ui_layout")) { atomic_store(&g_vr_ui_layout_on,v!=0); MLOG("[flag] native UI camera viewport fitting %s",v?"on":"off"); return; }
     if (!strcmp(name,"vr_packet_log")){vr_packet_trace(v);return;}
     if (!strcmp(name,"vr_head_only")){extern void vr_head_only_set(int on);vr_head_only_set(v!=0);return;}
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    if (!strcmp(name, "vr_keep_whole")) { extern void oot_keep_whole_set(int on); oot_keep_whole_set(v); return; }         // 0: the game may fade Link in first person
+    if (!strcmp(name, "vr_arm_per_draw")) { extern void oot_arm_set_per_draw(int on); oot_arm_set_per_draw(v); return; }   // diagnostic: the arms read the controllers at every draw
+    if (!strcmp(name, "vr_arm_jitter")) { extern void oot_arm_set_jitter(int on); oot_arm_set_jitter(v); return; }         // diagnostic: each reading moves the hands 1 mm
+    if (!strcmp(name, "vr_body_trace")) { extern void oot_body_trace_next(long n); oot_body_trace_next(v); return; }   // diagnostic: Link's draws and what first person decided, for <v> frames
+#endif
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
     if (!strcmp(name, "vr_pitch")) { vr_set_pitch_lock(v); return; }   // 1: up / down only from the headset
@@ -13414,6 +13420,11 @@ static int ui_mat_ok(void) { const p_bind_buf *u = &S.ubo[0][0]; void *mb; uint6
 long g_vr_head_bone = -2;        // the head bone's index in the head mesh's palette (70 in 1.4.3: the eyes follow it, user 2026-10-30)
 long g_vr_collapse = -1;         // the collapse itself, off by default (user 2026-10-30: "头 还是用 原来的方案吧": the head's meshes hidden)
 long g_vr_collapse_j_cm = -1;
+#if defined(GAME_OOT) && TARGET_OS_OSX   /* OOT also rewrites the fragment stage's material block for these draws (oot_vr_whole.inc) */
+#define VR_MATERIAL_STAGE(stage) ((stage) <= 1)
+#else
+#define VR_MATERIAL_STAGE(stage) ((stage) == 0)
+#endif
 static int g_vr_collapse_draw;   // set per draw (vr_head_eye_note's caller), read by encode_args
 static float g_vr_head_m[12]; static int g_vr_head_m_have, g_vr_head_n;   // the head bone's matrix at the head mesh's last draw, its palette's size
 static int vr_head_bone(void) {
@@ -13571,7 +13582,7 @@ static void body_tris_draw(id en, MTLPrimitiveType mp, const p_draw_idx *di, con
 #endif
 static uint64_t vr_palette_patch(const uint8_t *src, uint64_t size) {   // 0: nothing to change
     if (!src || size < 48 || size > 48 * 256) return 0;
-    if (g_vr_collapse_draw == 3) return 0;   // the body by its own triangles (body_tris_draw): its bones as they are
+    if (g_vr_collapse_draw >= 3) return 0;   // the body by its own triangles (body_tris_draw), or what he holds: their bones as they are
     if (g_vr_collapse_draw == 2) {   // the body: its arms and hands only
         if (size != 64 * 48) return 0;
         static float bb[64 * 12]; memcpy(bb, src, size); vr_body_collapse(bb, 64);
@@ -14600,7 +14611,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         registry_unlock();
     }
     int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && shader_ab_current(sh) && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
-        !((g_vr_collapse_draw || g_vr_ui_ray_draw) && nvn_stage == 0) &&   // Per-draw palette/HUD projection copies must be bound anew.
+        !((g_vr_collapse_draw && VR_MATERIAL_STAGE(nvn_stage)) || (g_vr_ui_ray_draw && nvn_stage == 0)) &&   // Per-draw palette/HUD projection copies must be bound anew.
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
     if (reuse) {
@@ -14659,7 +14670,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (g_eye_pass == 1 && g_eseg_n && u && u->addr) eseg_ubo(u->addr, u->size, nvn_stage, reg);   // stereo replay: does this segment use an eye matrix
             cbc_ent *ce = NULL; cbc_ctx cx; int ce_hit = 0;   // TOTK_CBUF_CACHE
             const uint64_t win = u ? (bl ? u->size : ubo_window(u->size, b->rd)) : 0;   // the bytes this shader reads (DM_NVN_CBDUMP saves the whole range)
-            if (cbc && u && u->addr && !g_usnap_skip && !g_usnap_keyskip && !g_usnap_keyskip3 && !(nvn_stage == 0 && reg == 0 && (ui_mat_on() || g_vr_ui_ray_draw)) && !(g_vr_collapse_draw && nvn_stage == 0 && reg == 2)) {
+            if (cbc && u && u->addr && !g_usnap_skip && !g_usnap_keyskip && !g_usnap_keyskip3 && !(nvn_stage == 0 && reg == 0 && (ui_mat_on() || g_vr_ui_ray_draw)) && !(g_vr_collapse_draw && VR_MATERIAL_STAGE(nvn_stage) && reg == 2)) {
                 cbc_ctx_now(&cx); ce = &g_cbc[cbc_slot(u->addr, u->size)];
                 ce_hit = ce->addr == u->addr && ce->size == u->size && ce->win == win && !memcmp(&ce->cx, &cx, sizeof cx);
                 if (ce_hit) { g_cbc_hits++; if (cbc < 2) { slots[aid] = ce->gpu; watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, ce->gpu, nil, "cache");
@@ -14684,7 +14695,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
 #if defined(GAME_OOT) && TARGET_OS_OSX
             if (g_vr_collapse_draw == 4 && nvn_stage == 0 && reg == g_oot_prop_reg && u->size <= 48 * 256) {   // zeldaVR: what he holds goes with his hand (oot_vr_props.inc)
                 static uint8_t oot_prop[48 * 256]; pend_materialize(u->addr, oot_prop, (size_t)u->size, 0);
-                uint64_t pg = oot_prop_palette(oot_prop, u->size); if (pg) gpu = pg; }
+                uint64_t pg = oot_prop_palette(u->addr, oot_prop, u->size); if (pg) gpu = pg; }
+            if (g_vr_collapse_draw >= 3 && nvn_stage <= 1 && reg == 2) { const uint64_t pg = oot_whole_block(u); if (pg) gpu = pg; }   // zeldaVR: his arms and what he holds are not faded (oot_vr_whole.inc)
 #endif
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
@@ -19478,6 +19490,9 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     __unsafe_unretained NvProg *pr = g_geo_ras.pr;   // a geometry draw's output: the reader and the fragment shader (geo_draw)
     if (!pr) { g_prog_for_draw = 1; pr = prog_get(S.prog); g_prog_for_draw = 0; }
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    oot_body_trace_entry(pr, dw, di);
+#endif
     if (pr && pr->missing && async_shaders()) { shader_predict_maybe(); prog_resolve(pr, draw_may_skip(pr)); }
     if (pr && pr->missing) {
         /* TOTK_SKIP_LOG=1 (diagnostic): each program whose draws are skipped for a missing stage, once, with its stages */
@@ -19810,7 +19825,8 @@ frz_plain:;
         if (r2 && S.ubo[0][2].size == 64 * 48 && vr_player_head_mesh(pr->sh[0])) { g_body_tris_cur = body_tris_prepare(di, 64); g_vr_collapse_draw = g_body_tris_cur ? 3 : 2; }   // 3: its own triangles (body_tris_draw)
     }
 #if defined(GAME_OOT) && TARGET_OS_OSX
-    { const int body = oot_body_draw(di, pr->sh[0]); if (body < 0) return; if (body == 1) g_vr_collapse_draw = 3; else if (body == 2) g_vr_collapse_draw = 4; }   // zeldaVR: first person shows his arms (oot_vr_body.inc)
+    { const int body = oot_body_draw(di, pr->sh[0]); oot_body_trace_result(dw, di, body); if (body < 0) return; if (body == 1) g_vr_collapse_draw = 3; else if (body == 2) g_vr_collapse_draw = 4;
+      if (g_vr_collapse_draw >= 3 && S.ds.dt && !S.ds.dw && g_pass.hd && oot_whole_faded()) { S.ds.dw = 1; cur_ds = dss_get(g_pass.hd, g_pass.hs); S.ds.dw = 0; g_dss_dirty = 1; } }   // zeldaVR: first person shows his arms (oot_vr_body.inc)
 #endif
     { const int hide = vr_hidehead_on() && !vr_collapse_on();   // zeldaVR: the player's head (hidden, unless collapsed: g_vr_collapse_draw) (vr_head_mesh: which meshes; vr_player_mesh: the player's, not someone else's)
       if (g_vr_hidemesh || hide || atomic_load(&g_vr_meshlog) > 0) {
@@ -19999,6 +20015,9 @@ frz_plain:;
     vbuf_log(pr->sh[0], pr->sh[1], dw, di);
     if (g_lay.active) enc_r_vbuf(en, LAY_BUF_INDEX, lay_gpu(g_lay_probe_neg == 1 ? 0 : g_lay.cur - g_lay.base));   // TOTK: this draw's layer within the layered pass
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
+#if defined(GAME_OOT) && TARGET_OS_OSX
+    if (pr->sh[1] && g_vr_collapse_draw) pr->sh[1]->ab_pass = 0;   // its material block may be our copy (oot_vr_whole.inc)
+#endif
     if (pr->sh[0] && (g_vr_collapse_draw||g_vr_ui_ray_draw)) pr->sh[0]->ab_pass = 0;   // Per-draw immutable palette/HUD bytes cannot leak to the next draw.
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。

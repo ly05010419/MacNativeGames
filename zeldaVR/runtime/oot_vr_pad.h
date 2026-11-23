@@ -28,7 +28,7 @@ typedef struct {
     uint64_t bits;
     float stick[4];
     float yaw;            /* radians to add to the first-person heading, + is to the right */
-    int recenter, toggle_person, toggle_screen;
+    int recenter, toggle_person, toggle_screen, toggle_mono;
 } oot_pad_out;
 
 typedef struct {
@@ -55,7 +55,7 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
     if (pressed & OOT_PAD_LSTICK) { s->l3_at = now; s->chord_used = 0; }
     if (b & OOT_PAD_A) out->bits |= B << OOT_SW_A;
     if (b & OOT_PAD_B) out->bits |= B << OOT_SW_B;
-    if (b & OOT_PAD_X) out->bits |= B << OOT_SW_X;
+    if ((b & OOT_PAD_X) && !shift) out->bits |= B << OOT_SW_X;
     if (in->ltrig > 0.5f) out->bits |= B << OOT_SW_ZL;
     if (in->rtrig > 0.5f) out->bits |= B << OOT_SW_ZR;
 
@@ -70,6 +70,7 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
         if (in->rgrip > 0.5f) { s->chord_used = 1; out->bits |= B << OOT_SW_R; }
         if (pressed & OOT_PAD_MENU) { s->chord_used = 1; out->toggle_screen = 1; }
         if (pressed & OOT_PAD_Y) { s->chord_used = 1; out->toggle_person = 1; }
+        if (pressed & OOT_PAD_X) { s->chord_used = 1; out->toggle_mono = 1; }
         s->menu_at = 0; s->menu_long = 0;
         rx = ry = 0;
     } else {

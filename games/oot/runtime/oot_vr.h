@@ -128,6 +128,12 @@ static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
     float feet[3]; memcpy(feet, actor + 796, sizeof feet);
     if (!isfinite(feet[0]) || !isfinite(feet[1]) || !isfinite(feet[2])) return;
     const uintptr_t holder = oot_vr_load64(base + OOT_VR_EVENT_SLOT), events = holder ? oot_vr_load64(holder) : 0;
+    {   /* the log: the event manager's word as it changes (a few lines a scene) */
+        static uint64_t last_event = ~0ull; static int said;
+        const uint64_t word = events ? oot_vr_load64(events + 104) : 0;
+        if (word != last_event && said < 200) { said++; fprintf(stderr, "[vr-event] +104 = %#llx (was %#llx) at %.2f s\n", (unsigned long long)word, (unsigned long long)last_event, (double)oot_vr_now() / 1e9); }
+        last_event = word;
+    }
     /* A scene of the game takes the camera after 0.3 s: a flag up for a moment (opening a chest's first frame) keeps the eyes. */
     if (events && oot_vr_load64(events + 104) != 0) {
         uint64_t none = 0; const uint64_t now = oot_vr_now();
@@ -174,11 +180,25 @@ int runtime_vr_base_view(float out[12]) {
     return valid;
 }
 
+/* Diagnostic log (TOTK_VR_HOOKLOG=1): how the camera hook's calls ended, per second. */
+enum { OOT_HOOK_KIND, OOT_HOOK_OTHER_VIEW, OOT_HOOK_OFF, OOT_HOOK_NAN, OOT_HOOK_TURNED, OOT_HOOK_N };
+static _Atomic uint64_t oot_vr_hook_ends[OOT_HOOK_N];
+static void oot_vr_hook_end(int why, const uint8_t *view) {
+    static int on = -1; if (on < 0) on = getenv("TOTK_VR_HOOKLOG") != NULL;
+    if (!on) return;
+    atomic_fetch_add_explicit(&oot_vr_hook_ends[why], 1, memory_order_relaxed);
+    static _Atomic uint64_t at; const uint64_t now = oot_vr_now(), was = atomic_load(&at);
+    if (now - was < 1000000000ull || !atomic_compare_exchange_strong(&at, &(uint64_t){was}, now)) return;
+    fprintf(stderr, "[vr-hook] other kind %llu, other view %llu, off %llu, not finite %llu, turned %llu; this view %p, gameplay view %p\n",
+            (unsigned long long)atomic_exchange(&oot_vr_hook_ends[OOT_HOOK_KIND], 0), (unsigned long long)atomic_exchange(&oot_vr_hook_ends[OOT_HOOK_OTHER_VIEW], 0),
+            (unsigned long long)atomic_exchange(&oot_vr_hook_ends[OOT_HOOK_OFF], 0), (unsigned long long)atomic_exchange(&oot_vr_hook_ends[OOT_HOOK_NAN], 0),
+            (unsigned long long)atomic_exchange(&oot_vr_hook_ends[OOT_HOOK_TURNED], 0), (const void *)view, (void *)oot_vr_gameplay_view());
+}
 /* The game's thread, right after it wrote a view's matrix (the veneer at main+0x4c5068). */
 static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     if (!oot_vr_base || !view) return;
-    if (oot_vr_load64((uintptr_t)view) != (uintptr_t)oot_vr_base + OOT_VR_VIEW_VTABLE) return;   /* another kind of view */
-    if ((uintptr_t)view != oot_vr_gameplay_view()) return;                                       /* not the gameplay camera */
+    if (oot_vr_load64((uintptr_t)view) != (uintptr_t)oot_vr_base + OOT_VR_VIEW_VTABLE) { oot_vr_hook_end(OOT_HOOK_KIND, view); return; }   /* another kind of view */
+    if ((uintptr_t)view != oot_vr_gameplay_view()) { oot_vr_hook_end(OOT_HOOK_OTHER_VIEW, view); return; }                                       /* not the gameplay camera */
     float game_fov = 0;
     if (camera) { memcpy(&game_fov, camera + 0x13c, 4); if (isfinite(game_fov)) atomic_store(&oot_vr_game_fov_bits, oot_vr_float_bits(game_fov)); }
     { static _Atomic int said; if (!atomic_exchange(&said, 1)) fprintf(stderr, "[vr] OOT: the game's own vertical angle %.2f degrees\n", (double)(game_fov * 57.2957795f)); }
@@ -186,11 +206,12 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     vr_camera_control_read(&control);
     if (!control.on) {
         pthread_mutex_lock(&oot_vr_mu); oot_vr_base_valid = 0; pthread_mutex_unlock(&oot_vr_mu);
+        oot_vr_hook_end(OOT_HOOK_OFF, view);
         return;
     }
     float m[12];
     memcpy(m, view + 8, sizeof m);
-    for (int i = 0; i < 12; i++) if (!isfinite(m[i]) || !isfinite(control.h[i])) return;
+    for (int i = 0; i < 12; i++) if (!isfinite(m[i]) || !isfinite(control.h[i])) { oot_vr_hook_end(OOT_HOOK_NAN, view); return; }
     for (int i = 0; i < 3; i++) if (!isfinite(control.off[i])) return;
     if (!isfinite(control.cam_back)) return;
     if (control.level) vr_view_level(m);
@@ -233,6 +254,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     __atomic_store_n(&oot_vr_cam.used, control.seq, __ATOMIC_RELEASE);
     __atomic_store_n(&oot_vr_cam.cam, (uint64_t)(uintptr_t)view, __ATOMIC_RELEASE);
     __atomic_store_n(&oot_vr_cam.calls, calls, __ATOMIC_RELEASE);
+    oot_vr_hook_end(OOT_HOOK_TURNED, view);
     if (calls < 4)
         fprintf(stderr, "[vr] OOT gameplay view %p turned by the head (sequence %u), view t %.3f %.3f %.3f\n", (void *)view,
                 control.seq, (double)m[3], (double)m[7], (double)m[11]);

@@ -23,6 +23,7 @@ class ArenaLifetime(unittest.TestCase):
         source=source.replace('// ARENA_IMPLEMENTATION',idle+'\n'+arena)
         expression=re.search(r'    int reuse = (.*?);\n    int verify_epoch',src,re.S)[1]
         wiring='''
+#define VR_MATERIAL_STAGE(stage) ((stage) == 0)
 static struct { uint64_t serial; } g_pass={1};
 static int g_args_dirty[6],g_vr_collapse_draw,g_vr_ui_ray_draw;
 static int shader_uses_pool(const NvShader *sh) {(void)sh;return 0;}

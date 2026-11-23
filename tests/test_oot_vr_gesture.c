@@ -36,10 +36,10 @@ int main(void) {
 
     /* the hand open for 0.45 s puts it away; a shorter opening does not */
     step(150);
-    h[1].grip = 0.1f; step(10); o = step(300); assert(s.sword && !(o.bits & OOT_GEST_B));
+    h[1].grip = 0.1f; step(10); o = step(300); assert(s.sword && !(o.bits & OOT_GEST_AWAY));
     h[1].grip = 0.9f; step(10);
     h[1].grip = 0.1f; step(10); step(440); assert(s.sword);
-    o = step(20); assert(!s.sword && (o.bits & OOT_GEST_B));
+    o = step(20); assert(!s.sword && (o.bits & OOT_GEST_AWAY));
 
     /* grip between the two thresholds keeps the state */
     reset();
@@ -60,6 +60,21 @@ int main(void) {
     step(200); h[1].grip = 0.1f; o = step(10); assert(!s.carrying && (o.bits & OOT_GEST_A));
     reset();
     h[1].u = -0.7f; h[1].v[0] = 2; h[1].grip = 0.9f; o = step(10); assert(!s.carrying && !(o.bits & OOT_GEST_A));
+    /* the sword goes back at once when the hand opens behind the shoulder */
+    reset();
+    h[1].f = -0.1f; h[1].r = 0.2f; h[1].u = 0.1f; h[1].grip = 0.9f; step(10); step(200); assert(s.sword);
+    h[1].grip = 0.1f; o = step(10); assert(!s.sword && (o.bits & OOT_GEST_AWAY));
+    /* a fast opening throws: the stick the way the hand went, then A */
+    reset();
+    h[1].u = -0.7f; h[1].grip = 0.9f; step(10); assert(s.carrying && s.carry_hand == 1);
+    step(200); h[1].v[2] = -2; h[1].vf = 2; step(20); h[1].grip = 0.1f; o = step(10);
+    assert(!s.carrying && o.has_stick && o.stick[1] > 0.9f && !(o.bits & OOT_GEST_A));
+    o = step(100); assert(o.has_stick && (o.bits & OOT_GEST_A));
+    o = step(200); assert(!o.has_stick && !(o.bits & OOT_GEST_A));
+    /* the left hand lifts too, and a slow opening puts down */
+    reset();
+    h[0].u = -0.7f; h[0].grip = 0.9f; o = step(10); assert(s.carrying && s.carry_hand == 0 && (o.bits & OOT_GEST_A));
+    step(200); h[0].grip = 0.1f; o = step(10); assert(!s.carrying && (o.bits & OOT_GEST_A) && !o.has_stick);
     /* hands closing at rest in front of the body do nothing */
     reset();
     h[0].grip = h[1].grip = 0.9f; o = step(10); assert(!o.bits && !s.sword && !s.shield && !s.carrying);

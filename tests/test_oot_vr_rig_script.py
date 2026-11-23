@@ -58,7 +58,7 @@ class VrRig(unittest.TestCase):
             tmp = Path(tmp)
             model = self.make(tmp)
             out = tmp / 'rig'
-            self.assertEqual(rig.generate(tmp, out), 2)
+            self.assertEqual(rig.generate(tmp, out), len(rig.MODELS))
             self.assertEqual((out / 'Player_Child.bfres').read_bytes(), model + b'Player_Child')
             self.assertEqual((out / 'Player_Adult.bfres').read_bytes(), model + b'Player_Adult')
             before = os.stat(out / 'Player_Child.bfres').st_mtime_ns

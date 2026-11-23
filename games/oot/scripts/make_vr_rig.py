@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Link's two models, decompressed from the player's own RomFS, for the VR first-person body (zeldaVR/runtime/oot_bfres.h).
+"""Link's two models and the slingshot's and bow's, decompressed from the player's own RomFS, for the VR first-person body (zeldaVR/runtime/oot_bfres.h).
 
 The runtime has no zstd, the packaging Python has it in its standard library, so the App carries the two models as plain
 files next to its other game data. Generated game content stays outside the checkout.
@@ -11,7 +11,13 @@ import os
 from pathlib import Path
 import struct
 
-MODELS = {'Player_Child': 'Model/Player_Child.Player_Child.bfres.zs', 'Player_Adult': 'Model/Player_Adult.Player_Adult.bfres.zs'}
+MODELS = {'Player_Child': 'Model/Player_Child.Player_Child.bfres.zs', 'Player_Adult': 'Model/Player_Adult.Player_Adult.bfres.zs',
+          'Weapon_Range_SlingShot': 'Model/Weapon_Range_SlingShot.Weapon_Range_SlingShot.bfres.zs',
+          'Weapon_Range_Bow': 'Model/Weapon_Range_Bow.Weapon_Range_Bow.bfres.zs',
+          'Weapon_Range_BowAndArrow_Normal': 'Model/Weapon_Range_Bow.Weapon_Range_BowAndArrow_Normal.bfres.zs',
+          'Weapon_Range_BowAndArrow_Fire': 'Model/Weapon_Range_Bow.Weapon_Range_BowAndArrow_Fire.bfres.zs',
+          'Weapon_Range_BowAndArrow_Ice': 'Model/Weapon_Range_Bow.Weapon_Range_BowAndArrow_Ice.bfres.zs',
+          'Weapon_Range_BowAndArrow_Light': 'Model/Weapon_Range_Bow.Weapon_Range_BowAndArrow_Light.bfres.zs'}
 DICTIONARIES = 'Pack/ZsDic.pack.zs'
 
 

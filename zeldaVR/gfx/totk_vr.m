@@ -491,7 +491,9 @@ int vr_oot_hand_tilt(void) { const int v = vr_option("hand_tilt", 0); return v <
 void vr_oot_set_hand_tilt(int deg) { vr_option_set("hand_tilt", deg < -60 ? -60 : deg > 60 ? 60 : deg); VLOG("the hand's tilt: %d degrees", deg); }
 static _Atomic int g_oot_holding;   /* the sword is out, or something is carried: the fingers stop around it */
 int vr_oot_holding(void) { return atomic_load(&g_oot_holding); }
-int vr_oot_left_handed(void) { return vr_option("lefty", 0) != 0; }
+static _Atomic int g_oot_aiming;    /* the game is aiming the slingshot or the bow (its own narrower view) */
+int vr_oot_aiming(void) { return atomic_load(&g_oot_aiming); }
+int vr_oot_left_handed(void) { const char *e = getenv("TOTK_VR_LEFTY"); return e ? !strcmp(e, "1") : vr_option("lefty", 0) != 0; }   /* the environment: a test run, the player's setting untouched */
 void vr_oot_set_left_handed(int on) { vr_option_set("lefty", on != 0); VLOG("the sword hand: %s", on ? "left" : "right"); }
 /* The hands in the head's level frame for the gestures, and in the recentred frame the game's aim looks along for the bow.
    Left-handed: the hands change places and the sides mirror, so the same gestures hold for the other hand. */
@@ -508,6 +510,7 @@ static int oot_hands(const vr_controls *c, int lefty, oot_hand out[2], float aim
         oot_hand *o = &out[i]; memset(o, 0, sizeof *o); o->have = 1;
         o->f = d[0] * fx + d[2] * fz; o->r = (d[0] * rx + d[2] * rz) * (lefty ? -1 : 1); o->u = d[1];
         memcpy(o->v, h[k].v, sizeof o->v);
+        o->vf = h[k].v[0] * fx + h[k].v[2] * fz; o->vr = (h[k].v[0] * rx + h[k].v[2] * rz) * (lefty ? -1 : 1);
         o->grip = k ? c->rgrip : c->lgrip;
         const float tip0[3] = { 0, 0, -0.30f }; float t[3]; qrot(h[k].q, tip0, t);   /* the sword's tip, 30 cm along the controller */
         const float w[3] = { h[k].w[1] * t[2] - h[k].w[2] * t[1], h[k].w[2] * t[0] - h[k].w[0] * t[2], h[k].w[0] * t[1] - h[k].w[1] * t[0] };
@@ -521,14 +524,17 @@ extern int runtime_oot_vr_fp_active(void) __attribute__((weak_import));
 extern float runtime_oot_vr_move_turn(void) __attribute__((weak_import));
 extern void runtime_oot_vr_yaw_add(float radians) __attribute__((weak_import));
 extern int runtime_oot_vr_child(void) __attribute__((weak_import));
+extern int runtime_oot_vr_in_event(void) __attribute__((weak_import));
 static _Atomic int g_oot_big_screen;   /* the left-stick shift + Menu: the big screen instead of the head view */
 int vr_oot_big_screen(void) { return atomic_load(&g_oot_big_screen); }
 static float oot_snap_degrees(void) { const int ms = vr_snap_ms(); return ms <= 0 ? 0 : ms <= 120 ? 20 : ms <= 200 ? 30 : 45; }
+extern int vr_oot_weapon_in_hand(void) __attribute__((weak));   /* oot_vr_props.inc: the game has a weapon in his hand */
 static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static oot_pad_state st; static uint64_t last_bits; static int said;
     const int world = world_camera_running(now), lefty = vr_oot_left_handed(), motion = world && vr_motion();
     const float game_fov = world && runtime_oot_vr_game_fov_deg ? runtime_oot_vr_game_fov_deg() : 0;
     const int aiming = oot_bow_is_aiming(game_fov);
+    atomic_store(&g_oot_aiming, aiming);
     oot_pad_in in = { c->buttons, lefty ? c->rtrig : c->ltrig, lefty ? c->ltrig : c->rtrig, lefty ? c->rgrip : c->lgrip, lefty ? c->lgrip : c->rgrip,
                       { ax[0], ax[1], ax[2], ax[3] },
                       world && !aiming && runtime_oot_vr_fp_active && runtime_oot_vr_fp_active(), !motion, oot_snap_degrees(),
@@ -536,6 +542,8 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
     oot_pad_out o;
     oot_hand hands[2]; float aim[2][3]; const int have_hands = motion && oot_hands(c, lefty, hands, aim);
     in.grips_are_buttons = !have_hands;   /* no tracked hands: the grips stay L and R */
+    { static int was = -1; const int event = runtime_oot_vr_in_event && runtime_oot_vr_in_event(), now_state = world | motion << 1 | have_hands << 2 | event << 3;
+      if (now_state != was) { was = now_state; VLOG("controllers: world %d, motion %d, hands %d, game event %d", world, motion, have_hands, event); } }
     pthread_mutex_lock(&mu);
     oot_pad_step(&st, now, &in, &o);
     if (have_hands && !(c->buttons & VR_PAD_LSTICK)) {   /* the left-stick shift has the grips */
@@ -543,9 +551,13 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
         oot_gesture_step(&gs, now, hands, &go);
         atomic_store(&g_oot_holding, gs.sword || gs.carrying);
         if (go.bits & OOT_GEST_A) o.bits |= 1ull << OOT_SW_A;
-        if (go.bits & OOT_GEST_B) o.bits |= 1ull << OOT_SW_B;
+        if ((go.bits & OOT_GEST_AWAY) && vr_oot_weapon_in_hand && vr_oot_weapon_in_hand()) o.bits |= 1ull << OOT_SW_X;   /* without a weapon X is another action */
         if (go.bits & OOT_GEST_Y) o.bits |= 1ull << OOT_SW_Y;
         if (go.bits & OOT_GEST_ZL) o.bits |= 1ull << OOT_SW_ZL;
+        if (go.has_stick) {   /* a throw goes the way the hand went, in the view's frame as the left stick does */
+            const float tc = cosf(in.move_turn), ts = sinf(in.move_turn);
+            o.stick[0] = go.stick[0] * tc + go.stick[1] * ts; o.stick[1] = -go.stick[0] * ts + go.stick[1] * tc;
+        }
         for (int i = 0; i < 2; i++) if (go.buzz[i]) vr_link_send_haptic(lefty ? 1 - i : i, 30000000ull, 200, 0.4f);
         if (aiming) {   /* the line from the drawing hand to the bow hand aims the shot */
             oot_bow_out b; oot_bow_step(game_fov, aim[0], aim[1], &b);
@@ -558,6 +570,7 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
     if (o.yaw != 0 && runtime_oot_vr_yaw_add) runtime_oot_vr_yaw_add(o.yaw);
     if (o.recenter) { vr_recenter(); VLOG("Menu held: recentred"); }
     if (o.toggle_person) vr_set_first_person(!vr_first_person());
+    if (o.toggle_mono) vr_set_dstereo(!vr_dstereo());
     if (o.toggle_screen) { const int big = !atomic_load(&g_oot_big_screen); atomic_store(&g_oot_big_screen, big); VLOG("view: %s", big ? "big screen" : "head view"); }
     *buttons = o.bits; *lx = (int32_t)(o.stick[0] * 32767); *ly = (int32_t)(o.stick[1] * 32767);
     *rx = (int32_t)(o.stick[2] * 32767); *ry = (int32_t)(o.stick[3] * 32767);
@@ -887,7 +900,8 @@ static void headlook_update(const vr_pose *head, int recenter) {
     vr_cam_state *s = g_vr_headlook;
     if (!s) return;
 #ifdef GAME_OOT
-    if (vr_oot_big_screen()) { __atomic_store_n(&s->on, 0, __ATOMIC_RELEASE); return; }   /* the game's own camera, on the big screen */
+    /* the game's own camera, on the big screen: asked for, or a cutscene in first person */
+    if (vr_oot_big_screen() || (vr_first_person() && runtime_oot_vr_in_event && runtime_oot_vr_in_event())) { __atomic_store_n(&s->on, 0, __ATOMIC_RELEASE); return; }
 #endif
     if (atomic_load(&g_pitch_lock) < 0) { const char *e = getenv("TOTK_VR_PITCH"); atomic_store(&g_pitch_lock, !(e && !strcmp(e, "0"))); }
     __atomic_store_n(&s->level, (uint32_t)atomic_load(&g_pitch_lock), __ATOMIC_RELAXED);
@@ -911,7 +925,7 @@ static void headlook_update(const vr_pose *head, int recenter) {
     float band = atomic_load(&g_deadband_tenths) / 10.0f * (float)M_PI / 180;
     if (g.hl_have_sent && !recenter && band > 0) {
         float d = fabsf(r[0] * g.hl_sent[0] + r[1] * g.hl_sent[1] + r[2] * g.hl_sent[2] + r[3] * g.hl_sent[3]);
-        if (2 * acosf(fminf(d, 1)) < band) { atomic_fetch_add(&g.hl_held, 1); return; }
+        if (2 * acosf(fminf(d, 1)) < band) { atomic_fetch_add(&g.hl_held, 1); __atomic_store_n(&s->on, 1, __ATOMIC_RELEASE); return; }   // on again after the big screen or a scene, with the head held still
     }
 #endif
     memcpy(g.hl_sent, r, sizeof r); g.hl_have_sent = 1;

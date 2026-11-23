@@ -56,6 +56,7 @@ static const char *oot_rig_load_one(oot_rig *r, const char *path) {
     }
     return NULL;
 }
+static void oot_items_load(void);   /* oot_vr_props.inc */
 static void oot_rig_load(void) {
     static const char *const paths[2] = { "extracted/oot/vr-rig/Player_Child.bfres", "extracted/oot/vr-rig/Player_Adult.bfres" };
     int ok = 1;
@@ -66,6 +67,7 @@ static void oot_rig_load(void) {
         MLOG("[vr] Link's body: %s, %u bones, palette %u bytes, %u shapes, %u with arm triangles", i ? "adult" : "child",
              g_oot_rigs[i].m.bone_count, g_oot_rigs[i].palette_bytes, g_oot_rigs[i].nshapes, arms);
     }
+    if (ok) oot_items_load();
     atomic_store(&g_oot_rig_state, ok ? 2 : 3);
 }
 static const oot_rig *oot_rig_for(uint64_t palette_bytes) {
@@ -117,35 +119,69 @@ static body_tris_t *oot_body_tris(const p_draw_idx *di, const oot_rig_shape *sha
 /* -1: this draw is not drawn; 0: as the game draws it; 1: g_body_tris_cur has its arm triangles. */
 static int oot_prop_draw(__unsafe_unretained NvShader *vs);   /* oot_vr_props.inc */
 static int g_oot_palette_reg = -1;   /* the vertex uniform block holding this draw's palette (pass dump arms03: 3 or 4, by shader) */
+/* Diagnostic, off by default: "flag vr_body_trace <frames>" logs each draw holding Link's palette as it enters draw_inner, and
+   what oot_body_draw decided and why. It tells a draw the game never made from one first person dropped. */
+static const char *g_oot_body_why = "";
+static float oot_block_opacity(const p_bind_buf *u);   /* oot_vr_whole.inc */
+static _Atomic long g_oot_body_trace_until = -1;
+#define OOT_BODY_RET(value, why) do { g_oot_body_why = (why); return (value); } while (0)
+void oot_body_trace_next(long n) {
+    const long until = n > 0 ? (long)atomic_load(&g_cur_frame) + n : -1;
+    atomic_store(&g_oot_body_trace_until, until);
+    MLOG("[vr-body] tracing Link's draws until frame %ld", until);
+}
+static int oot_body_trace_on(void) {
+    const long until = atomic_load_explicit(&g_oot_body_trace_until, memory_order_relaxed);
+    return until >= 0 && (long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed) <= until;
+}
+static int oot_body_tracing(void) {
+    const long until = atomic_load_explicit(&g_oot_body_trace_until, memory_order_relaxed);
+    if (until < 0 || (long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed) > until) return 0;
+    for (int reg = 3; reg <= 4; reg++) if (S.ubo[0][reg].size == 13440 || S.ubo[0][reg].size == 13488) return 1;
+    return 0;
+}
+static void oot_body_trace_entry(__unsafe_unretained NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+    if (!oot_body_tracing()) return;
+    NSString *vs = pr ? pr->key[0] : nil, *fs = pr ? pr->key[1] : nil;
+    MLOG("[vr-body] F%llu enter count=%d indexed=%d pass=%dx%d rt=%d mask=%#x missing=%#x vs=%.16s fs=%.16s", (unsigned long long)atomic_load(&g_cur_frame),
+         di ? (int)di->count : dw ? (int)dw->count : -1, di != NULL, (int)g_pass.tw, (int)g_pass.th, (int)R.rt.n, (unsigned)S.chmask.mask, pr ? (unsigned)pr->missing : 0,
+         vs ? vs.UTF8String : "-", fs ? fs.UTF8String : "-");
+}
+static void oot_body_trace_result(const p_draw *dw, const p_draw_idx *di, int body) {
+    if (!oot_body_tracing()) return;
+    MLOG("[vr-body] F%llu decided count=%d body=%d why=%s palette=%d opacity=%.3f/%.3f dw=%d df=%d", (unsigned long long)atomic_load(&g_cur_frame),
+         di ? (int)di->count : dw ? (int)dw->count : -1, body, g_oot_body_why, g_oot_palette_reg,
+         (double)oot_block_opacity(&S.ubo[0][2]), (double)oot_block_opacity(&S.ubo[1][2]), (int)S.ds.dw, (int)S.ds.df);
+}
 static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs) {
     g_oot_palette_reg = -1;
-    if (!vs) return 0;
+    if (!vs) OOT_BODY_RET(0, "no vertex shader");
     uint64_t bytes = 0;
     for (int i = 0; i < vs->rf.nb && !bytes; i++) {
         if (vs->rf.b[i].kind != NVN_RB_CBUF || vs->rf.b[i].reg < 0 || vs->rf.b[i].reg >= 16) continue;
         const uint64_t size = S.ubo[0][vs->rf.b[i].reg].size;
         if (size == 13440 || size == 13488) { bytes = size; g_oot_palette_reg = vs->rf.b[i].reg; }
     }
-    if (!bytes) return oot_prop_draw(vs);
+    if (!bytes) { const int prop = oot_prop_draw(vs); OOT_BODY_RET(prop, "not a palette in this shader's blocks: prop rule"); }
     if (runtime_oot_vr_set_child) runtime_oot_vr_set_child(bytes == 13440);
-    if (!runtime_oot_vr_fp_active || !runtime_oot_vr_fp_active() || !di || R.rt.n < 1) return 0;
-    if (g_pass.tw < 640 || g_pass.th < 360 || g_pass.tw == g_pass.th) return 0;   /* his shadow and reflections stay whole */
+    if (!runtime_oot_vr_fp_active || !runtime_oot_vr_fp_active() || !di || R.rt.n < 1) OOT_BODY_RET(0, "not first person, not indexed, or no colour target");
+    if (g_pass.tw < 640 || g_pass.th < 360 || g_pass.tw == g_pass.th) OOT_BODY_RET(0, "shadow or small target");   /* his shadow and reflections stay whole */
     const int mode = vr_oot_body_mode();
-    if (mode == 2) return 0;
+    if (mode == 2) OOT_BODY_RET(0, "body option: whole");
     const oot_rig *r = oot_rig_for(bytes);
-    if (!r) return 0;
+    if (!r) OOT_BODY_RET(0, "no model for this palette");
     const uint32_t stride = S.stream[0].stride;
-    if (!stride || !S.vbuf[0].size) return 0;
+    if (!stride || !S.vbuf[0].size) OOT_BODY_RET(0, "no vertex stream");
     const unsigned verts = (unsigned)(S.vbuf[0].size / stride);
     const oot_rig_shape *shape = NULL;
     for (unsigned s = 0; s < r->nshapes && !shape; s++) if (r->shapes[s].verts == verts) shape = &r->shapes[s];
-    if (!shape) return 0;   /* another model with a palette of this size */
-    if (mode == 1 || !shape->any) { g_oot_body_hidden++; return -1; }
+    if (!shape) OOT_BODY_RET(0, "no shape with this vertex count");   /* another model with a palette of this size */
+    if (mode == 1 || !shape->any) { g_oot_body_hidden++; OOT_BODY_RET(-1, mode == 1 ? "body option: hidden" : "shape has no arm triangles"); }
     body_tris_t *bt = oot_body_tris(di, shape);
-    if (!bt) { g_oot_body_hidden++; return -1; }
-    if (!bt->n) { g_oot_body_hidden++; return -1; }
+    if (!bt) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no triangle list (table full or failed)"); }
+    if (!bt->n) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no arm triangles in this draw"); }
     g_body_tris_cur = bt; g_oot_body_drawn++;
     if (g_oot_body_drawn == 1) MLOG("[vr] Link's body: first person shows his arms (%d of %d indices of this draw)", bt->n, di->count);
-    return 1;
+    OOT_BODY_RET(1, "arm triangles");
 }
 #include "oot_vr_arms.inc"

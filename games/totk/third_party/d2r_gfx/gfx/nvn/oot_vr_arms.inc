@@ -5,14 +5,18 @@
    is the camera in first person; game units per metre come from Link's arm against the player's (option arm_cm).
    Included by oot_vr_body.inc. */
 #include "../../../../zeldaVR/runtime/oot_vr_pose.h"
+#include "../../../../zeldaVR/runtime/oot_vr_hold.h"
+#include "../../../../zeldaVR/runtime/oot_vr_items.h"
 int vr_oot_arm_cm(void);        /* totk_vr.m: the player's arm, shoulder to wrist */
 int vr_oot_hand_tilt(void);     /* totk_vr.m: degrees the hand is turned about the controller's side axis */
 int vr_oot_holding(void);       /* totk_vr.m: something is in the hand */
+int vr_oot_left_handed(void);   /* totk_vr.m: the sword in the player's left hand */
+int vr_oot_aiming(void);        /* totk_vr.m: the game is aiming the slingshot or the bow */
 void vr_oot_set_world_scale(float s);   /* totk_vr.m: game units per metre of the player */
 
 enum { OOT_PART_NONE, OOT_PART_CLAVICLE, OOT_PART_UPPER, OOT_PART_FORE, OOT_PART_ASSIST_A, OOT_PART_ASSIST_B, OOT_PART_HAND, OOT_PART_FINGER };
 typedef struct { uint8_t side, part; } oot_rig_part;
-typedef struct { oot_rig_part *parts; oot_arm_rest rest[2]; float arm_length, chest_rest[3]; int wrist_matrix[2], chest_matrix, ok; } oot_rig_arms;
+typedef struct { oot_rig_part *parts; oot_arm_rest rest[2]; float grip_rest[2][12], arm_length, chest_rest[3]; int wrist_matrix[2], chest_matrix, ok; } oot_rig_arms;
 static oot_rig_arms g_oot_arms[2];
 
 static int oot_arms_bone(const oot_bfres *m, const char *stem, int side, char finger, int joint) {
@@ -53,6 +57,7 @@ static const char *oot_arms_prepare(const oot_rig *r, oot_rig_arms *a) {
             tag[b] = 1 + side + 2 * (OOT_PART_FINGER + f * OOT_FINGER_JOINTS + j);
             oot_arms_at(world, b, a->rest[side].finger[f][j]);
         }
+        if (!e && !oot_hold_grip_rest(&a->rest[side], a->grip_rest[side])) e = "a hand has no grip frame";
     }
     if (!e) {
         a->wrist_matrix[0] = a->wrist_matrix[1] = a->chest_matrix = -1;
@@ -95,9 +100,34 @@ static void oot_cam_dir_to_palette(const float view[12], const float c[3], float
                          view[2] * c[0] + view[6] * c[1] + view[10] * c[2] };
     memcpy(out, r, sizeof r);
 }
+/* The headset's input for this game frame, read once. Link's depth pass and his colour pass are separate draws, and the colour
+   pass keeps only the pixels whose depth equals the depth pass's: both must be posed from the same controllers.
+   Diagnostics: "flag vr_arm_per_draw 1" reads them at every draw again, "flag vr_arm_jitter 1" moves each reading by 1 mm. */
+typedef struct { uint64_t frame; int have, holding, main_hand; vr_hand hands[2]; vr_pose head; vr_controls pad; } oot_arm_input;
+static _Atomic int g_oot_arm_per_draw, g_oot_arm_jitter;
+void oot_arm_set_per_draw(int on) { atomic_store(&g_oot_arm_per_draw, on != 0); MLOG("[flag] vr_arm_per_draw = %d", on != 0); }
+void oot_arm_set_jitter(int on) { atomic_store(&g_oot_arm_jitter, on != 0); MLOG("[flag] vr_arm_jitter = %d", on != 0); }
+static const oot_arm_input *oot_arm_input_now(void) {
+    static oot_arm_input in = { .frame = UINT64_MAX };
+    static unsigned readings;
+    const uint64_t frame = atomic_load(&g_cur_frame);
+    if (in.frame == frame && !atomic_load_explicit(&g_oot_arm_per_draw, memory_order_relaxed)) return in.have ? &in : NULL;
+    in.frame = frame;
+    memset(&in.pad, 0, sizeof in.pad);
+    vr_link_hands(in.hands);
+    in.have = vr_link_pose(&in.head);
+    (void)vr_link_controls(&in.pad);
+    in.holding = vr_oot_holding();
+    in.main_hand = vr_oot_left_handed() ? 0 : 1;
+    if (atomic_load_explicit(&g_oot_arm_jitter, memory_order_relaxed)) {
+        const float d = (++readings & 1) ? 0.001f : -0.001f;
+        for (int side = 0; side < 2; side++) in.hands[side].p[2] += d;
+    }
+    return in.have ? &in : NULL;
+}
 /* One arm's target in the palette's space. */
 static void oot_arm_target_for(int side, const vr_hand *hand, const vr_pose *head, const vr_controls *pad, const float view[12], const float off[3],
-                               float scale, const float up_c[3], const float fw_c[3], const float rt_c[3], float tilt, oot_arm_target *t) {
+                               float scale, const float up_c[3], const float fw_c[3], const float rt_c[3], float tilt, int holding, oot_arm_target *t) {
     const float qi[4] = { -head->q[0], -head->q[1], -head->q[2], head->q[3] }, out = side ? 1.f : -1.f;
     float sh_c[3], pole_c[3], rel[3], grip_c[3], f_c[3], u_c[3], f_h[3], u_h[3];
     for (int i = 0; i < 3; i++) {
@@ -107,13 +137,15 @@ static void oot_arm_target_for(int side, const vr_hand *hand, const vr_pose *hea
     }
     oot_q_rotate(qi, rel, grip_c);
     for (int i = 0; i < 3; i++) grip_c[i] *= scale;
-    const float c = cosf(tilt), s = sinf(tilt), along[3] = { 0, s, -c }, back[3] = { 0, c, s };   /* the controller's -z and +y, tilted about its x */
+    /* OpenXR's grip pose on a hand: -y along the open fingers, -z toward the thumb, +x out of the back of the right hand and the palm
+       of the left. The tilt turns the hand about that x. */
+    const float c = cosf(tilt), s = sinf(tilt), along[3] = { 0, -c, -s }, back[3] = { side ? 1.f : -1.f, 0, 0 };
     oot_q_rotate(hand->q, along, f_h); oot_q_rotate(hand->q, back, u_h);
     oot_q_rotate(qi, f_h, f_c); oot_q_rotate(qi, u_h, u_c);
     memset(t, 0, sizeof *t);
     oot_cam_to_palette(view, off, sh_c, t->shoulder); oot_cam_to_palette(view, off, grip_c, t->grip);
     oot_cam_dir_to_palette(view, f_c, t->forward); oot_cam_dir_to_palette(view, u_c, t->up); oot_cam_dir_to_palette(view, pole_c, t->pole);
-    t->left = !side; t->trigger = side ? pad->rtrig : pad->ltrig; t->squeeze = side ? pad->rgrip : pad->lgrip; t->holding = side && vr_oot_holding();
+    t->left = !side; t->trigger = side ? pad->rtrig : pad->ltrig; t->squeeze = side ? pad->rgrip : pad->lgrip; t->holding = holding;
 }
 static const float *oot_part_matrix(const oot_arm_matrices *o, unsigned part) {
     switch (part) {
@@ -136,6 +168,7 @@ static uint8_t *oot_palette_ring(uint64_t size, uint64_t *gpu) {
     *gpu = ring_gpu + at; at += need;
     return to;
 }
+#include "oot_vr_whole.inc"
 #include "oot_vr_props.inc"
 /* The palette with the arms on the controllers, in a ring of ours; 0 leaves the game's. */
 static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
@@ -149,10 +182,10 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
         else MLOG("[vr] Link's arms: %.3f game units from shoulder to wrist", (double)arms->arm_length);
     }
     if (!arms->ok) return 0;
-    vr_hand hands[2]; vr_pose head; vr_controls pad; memset(&pad, 0, sizeof pad);
-    vr_link_hands(hands);
-    if (!vr_link_pose(&head)) return 0;
-    (void)vr_link_controls(&pad);
+    g_oot_arm_length = arms->arm_length;
+    const oot_arm_input *input = oot_arm_input_now();
+    if (!input) return 0;
+    const vr_hand *hands = input->hands; const vr_pose head = input->head; const vr_controls pad = input->pad;
     float view[12], model[19];
     if (S.ubo[0][0].size != 13568 || S.ubo[0][1].size < sizeof model) return 0;
     pend_materialize(S.ubo[0][0].addr, (uint8_t *)view, sizeof view, 0);
@@ -174,7 +207,7 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
     for (int side = 0; side < 2; side++) {
         if (!hands[side].have) continue;
         oot_arm_target t;
-        oot_arm_target_for(side, &hands[side], &head, &pad, view, off, scale, up_c, fw_c, rt_c, tilt, &t);
+        oot_arm_target_for(side, &hands[side], &head, &pad, view, off, scale, up_c, fw_c, rt_c, tilt, side == input->main_hand && input->holding, &t);
         have[side] = oot_arm_matrices_solve(&arms->rest[side], &t, &done[side]);
     }
     if (!have[0] && !have[1]) return 0;
@@ -189,7 +222,7 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
       for (int side = 0; side < 2; side++) {
           if (!have[side] || arms->wrist_matrix[side] < 0) continue;
           float game_hand[12]; memcpy(game_hand, src + (size_t)arms->wrist_matrix[side] * 48, 48);
-          oot_track_hand(side, game_hand, done[side].hand, arms->rest[side].wrist, chest, off);
+          oot_track_hand(side, game_hand, done[side].hand, arms->rest[side].wrist, chest, off, arms->grip_rest[side]);
       } }
     static int said;
     if (!said) {

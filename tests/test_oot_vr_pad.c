@@ -72,6 +72,11 @@ int main(void) {
     reset();
     in = n; in.stick[1] = 1; in.move_turn = (float)M_PI / 2; o = step(in, 10);
     assert(fabsf(o.stick[0] - 1) < 1e-5f && fabsf(o.stick[1]) < 1e-5f);
+    /* the left stick pressed + X: one picture for both eyes; X alone is the game's X */
+    in = n; in.buttons = OOT_PAD_LSTICK; step(in, 10);
+    in.buttons = OOT_PAD_LSTICK | OOT_PAD_X; o = step(in, 10); assert(o.toggle_mono && !(o.bits & (1ull << OOT_SW_X)));
+    in = n; step(in, 10);
+    in.buttons = OOT_PAD_X; o = step(in, 10); assert(!o.toggle_mono && (o.bits & (1ull << OOT_SW_X)));
     puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning, the move direction");
     return 0;
 }
