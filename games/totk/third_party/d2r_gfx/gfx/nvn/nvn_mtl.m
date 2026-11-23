@@ -4301,6 +4301,11 @@ void dm_gfx_set_flag(const char *name, int v) {
         MLOG("[flag] diagnostic skipfs %.16s = %d (incomplete geometry; invalid FPS)", p, v != 0); return;
     }
     if (!strcmp(name, "fxaa_off")) { extern void dm_gfx_fxaa_set(int on); dm_gfx_fxaa_set(!v); return; }   // totk_finish.h
+    // The effects page's anti-aliasing rows for an in-session A/B (totk_aa_config.h; not saved): 0 off, 1 FXAA, 2 SMAA;
+    // SMAA 0 Low .. 3 Ultra; FXAA 0 Original, 1 Quality. A value out of range is ignored.
+    if (!strcmp(name, "aa_method")) { extern void dm_gfx_aa_method_set(int m); dm_gfx_aa_method_set(v); return; }
+    if (!strcmp(name, "smaa_quality")) { extern void dm_gfx_smaa_quality_set(int q); dm_gfx_smaa_quality_set(v); MLOG("[flag] smaa_quality = %d", v); return; }
+    if (!strcmp(name, "fxaa_quality")) { extern void dm_gfx_fxaa_quality_set(int q); dm_gfx_fxaa_quality_set(v); MLOG("[flag] fxaa_quality = %d", v); return; }
     if (!strcmp(name, "sharpen_pct")) { extern void dm_gfx_sharpen_set(int pct); dm_gfx_sharpen_set(v); return; }
     if (!strncmp(name, "fx_", 3)) {   // "flag fx_<id> <0|1>": an effect switch (totk_fx.h), 0 = off
         extern int dm_gfx_fx_count(void); extern const char *dm_gfx_fx_id(int i); extern void dm_gfx_fx_set(int i, int on);
