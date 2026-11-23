@@ -135,7 +135,7 @@ def main():
     if a.merge:
         lst = GAME / 'assets/shader_list.tsv'
         caches = [str(d) for d in cache.iterdir() if d.is_dir() and any(d.glob('*.variants'))]
-        cmd = [sys.executable, '-I', str(GAME / 'scripts/shader_list.py'), 'merge', str(lst), *caches, str(seed), str(contrib), str(device_list)]
+        cmd = [sys.executable, '-I', '-B', str(GAME / 'scripts/shader_list.py'), 'merge', str(lst), *caches, str(seed), str(contrib), str(device_list)]
         merged = subprocess.run(cmd, capture_output=True, text=True)
         result['merge'] = dict(returncode=merged.returncode, out=merged.stdout.strip()[-800:], err=merged.stderr.strip()[-800:])
         print('merge:', merged.stdout.strip().splitlines()[-1:] or merged.stderr.strip()[-300:], flush=True)

@@ -164,7 +164,7 @@ def _tar(archive, into, cancel):
     if declared > MAX_BYTES:
         raise Refused('zip_big', archive.name)
     _space(into, declared, archive)
-    code, _, err = _run([sys.executable, '-I', '-c', LIMIT, str(FILE_BYTES), TAR, '-xf', archive, '-C', into,
+    code, _, err = _run([sys.executable, '-I', '-B', '-c', LIMIT, str(FILE_BYTES), TAR, '-xf', archive, '-C', into,
                          '--no-same-owner', '--no-same-permissions', '--exclude', SKIPPED], cancel, EXTRACT_S)
     if code == -signal.SIGXFSZ:
         raise Refused('zip_big', archive.name)
