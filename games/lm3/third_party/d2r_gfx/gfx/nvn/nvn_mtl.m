@@ -1954,15 +1954,17 @@ uint64_t mtl_sub_commit(void) {
         uint64_t ts_clock = gpu_ticks();
 #ifdef GAME_LM3
         /* Luigi's Mansion 3 sizes its dynamic resolution from two TIMESTAMP reports, at the start and the end of a frame's
-           GPU work. Stamped with the host clock when each submission completes, their difference also counted the time
-           between the frame's submissions (CPU replay), so the game always saw a GPU near its budget and lowered the
-           resolution (it swept between 1920x1080 and 1600x900). The clock here advances by the GPU's working time only:
-           the difference is the GPU time of the frame. LM3_GPU_CLOCK=host restores the host clock. */
-        { static int host = -1; if (host < 0) { const char *gc = getenv("LM3_GPU_CLOCK"); host = gc && !strcmp(gc, "host"); if (host) MLOG("LM3_GPU_CLOCK=host: timestamps from the host clock"); }
+           GPU work (1920x1080 down to 1600x900). Stamped with the host clock when each submission completed, their
+           difference also counted the time between the frame's submissions, so the game lowered the resolution all the
+           time; with the GPU's working time it still did during door transitions (room loading). The Mac GPU renders a
+           frame in a few milliseconds, so by default the clock stands still: the game measures no GPU time and keeps
+           1920x1080. LM3_GPU_CLOCK=gpu advances it by each submission's GPU time, LM3_GPU_CLOCK=host is the host clock. */
+        { static int mode = -1; if (mode < 0) { const char *gc = getenv("LM3_GPU_CLOCK"); mode = gc && !strcmp(gc, "host") ? 2 : gc && !strcmp(gc, "gpu") ? 1 : 0;
+              MLOG("GPU timestamps: %s (LM3_GPU_CLOCK)", mode == 2 ? "host clock" : mode == 1 ? "advance by GPU working time" : "fixed, the dynamic resolution stays at its maximum"); }
           static _Atomic uint64_t vclock; uint64_t z = 0; atomic_compare_exchange_strong(&vclock, &z, ts_clock);
-          double busy = cb.GPUEndTime - cb.GPUStartTime; uint64_t add = busy > 0 && busy < 1 ? (uint64_t)(busy * 19200000.0) : 0;
+          double busy = cb.GPUEndTime - cb.GPUStartTime; uint64_t add = mode == 1 && busy > 0 && busy < 1 ? (uint64_t)(busy * 19200000.0) : 0;
           uint64_t v = atomic_fetch_add(&vclock, add) + add;
-          if (!host) ts_clock = v; }
+          if (mode != 2) ts_clock = v; }
 #endif
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {

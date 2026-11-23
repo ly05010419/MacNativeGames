@@ -300,8 +300,9 @@ NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { TB(b
     /* TOTK_SIZE_CHAIN=<w>x<h> (diagnostic): the game call chain of the first 60 textures given this size (where render target sizes come from) */
     size_chain(w, h); }
 static void size_chain(int w, int h) {
-    static int sw = -1, sh, n; if (sw < 0) { const char *e = getenv("TOTK_SIZE_CHAIN"); if (!e || sscanf(e, "%dx%d", &sw, &sh) != 2) sw = 0; }
-    if (sw && w == sw && h == sh && n++ < 60) { char m[64]; snprintf(m, sizeof m, "texture size %dx%d", w, h); guest_chain(m); }
+    static int sw = -1, sh, n; if (sw < 0) { const char *e = getenv("TOTK_SIZE_CHAIN"); if (e && !strcmp(e, "dyn")) sw = -2; else if (!e || sscanf(e, "%dx%d", &sw, &sh) != 2) sw = 0; }
+    /* "dyn": the sizes a 1920x1080 dynamic resolution steps through (1500..1919 wide, 800..1079 high) */
+    if (sw && (sw == -2 ? w >= 1500 && w < 1920 && h >= 800 && h < 1080 : w == sw && h == sh) && n++ < 60) { char m[64]; snprintf(m, sizeof m, "texture size %dx%d", w, h); guest_chain(m); }
 }
 NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width=w;TB(b)->d.height=h;TB(b)->d.depth=d; }
 NVN(nvnTextureBuilderSetLevels, void, NVNtextureBuilder *b, int v) { TB(b)->d.levels = v; }
@@ -1102,6 +1103,7 @@ static int cmdlog_on(void) {
     if (!on) return 0; if (f0 < 0) return 1; extern uint64_t g_frame_pub; return (long)g_frame_pub >= f0 && (long)g_frame_pub <= f1;
 }
 NVN(nvnCommandBufferReportCounter, void, NVNcommandBuffer *c, NVNcounterType t, NVNbufferAddress a) {
+    { static int on = -1, n; if (on < 0) on = getenv("TOTK_TS_CHAIN") != NULL; if (on && t == 0 && n++ < 4) { char m[64]; snprintf(m, sizeof m, "timestamp report -> %#llx", (unsigned long long)a); guest_chain(m); } }   /* diagnostic: which game code reports TIMESTAMP counters */
     if (cmdlog_on()) LOG("[cmd] F%llu ReportCounter type=%d addr=%#llx", (unsigned long long)g_frame_pub, (int)t, (unsigned long long)a);
     uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_REPORT_COUNTER, 24); uint64_t tt = t; memcpy(p + 8, &tt, 8); memcpy(p + 16, &a, 8);
 }

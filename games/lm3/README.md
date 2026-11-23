@@ -48,7 +48,8 @@ stutter the first time.
 
 - **SDK 7.3.2**: an older `nn::init` start sequence, rtld global symbol binding, and its own services (audout, the
   movie library) in `runtime/`.
-- **No game patches**: the game runs unmodified, at its own 30 FPS and with its own dynamic resolution. Render targets
+- **No game patches**: the game runs unmodified, at its own 30 FPS. Its dynamic resolution reads GPU timestamps that
+  stand still (`LM3_GPU_CLOCK`, see `nvn_mtl.m`), so it stays at 1920x1080. Render targets
   the game re-initializes at a new size without finalizing the old ones are released by the graphics layer, so the GPU
   memory stays flat.
 - **Movies**: VP9 decoded on the host with libvpx into the game's NVN texture (`runtime/movie_host.c`).
@@ -62,7 +63,5 @@ stutter the first time.
 ## Known gaps
 
 - Triangle fans (primitive type 6) are not drawn yet, and primitive restart uses Metal's all-ones index only.
-- One texture-to-texture copy shape (1920x1080 to 160x90) is not implemented.
 - The app has no settings window yet (window size, full screen, frame rate).
-- The dynamic resolution never settles: it sweeps between 1920x1080 and 1600x900, so the picture's sharpness varies.
-- Only version 1.2.0 is supported.
+- Versions 1.2.0 (default) and 1.4.0 (`make app LM3_VERSION=1.4.0`); the DLC are not loaded.
