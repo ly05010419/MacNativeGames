@@ -19,6 +19,10 @@ uint32_t vr_ds_take_captured(void) { return 0; }
 int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect, float half, __strong id<MTLTexture> out[2]) {
     (void)cb; (void)pic; (void)seq; (void)dref; (void)tan_y; (void)aspect; (void)half; (void)out; return 0; }
 void vr_ds_stats(char *out, size_t n) { if (n) out[0] = 0; }
+id<MTLTexture> vr_ui_scene_target(id<MTLTexture> canvas) { (void)canvas; return nil; }
+void vr_ui_scene_captured(void) {}
+uint32_t vr_ui_take_scene(void) { return 0; }
+int vr_ui_split(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t ref, __strong id<MTLTexture> *scene, __strong id<MTLTexture> *ui) { (void)cb; (void)pic; (void)seq; (void)ref; (void)scene; (void)ui; return 0; }
 #else
 #include <math.h>
 #include <pthread.h>
@@ -237,5 +241,86 @@ void vr_ds_stats(char *out, size_t n) {
              (unsigned long long)atomic_exchange(&d.warped, 0), (unsigned long long)atomic_exchange(&d.captures, 0),
              (unsigned long long)atomic_exchange(&d.mono_off, 0), (unsigned long long)atomic_exchange(&d.mono_none, 0),
              (unsigned long long)atomic_exchange(&d.mono_stale, 0), (unsigned long long)atomic_exchange(&d.mono_size, 0));
+}
+
+// ---- the HUD on a plane of its own ----
+static struct {
+    id<MTLTexture> ring[RING]; uint32_t ring_gen[RING]; _Atomic uint32_t ring_pub[RING]; int next, copy_slot; uint32_t gen; _Atomic uint32_t captured;   // replay thread
+    id<MTLRenderPipelineState> ps; id<MTLSamplerState> smp; id<MTLLibrary> lib; id<MTLTexture> scene, hud; uint64_t seq; int said;                      // VR thread
+} u;
+id<MTLTexture> vr_ui_scene_target(id<MTLTexture> canvas) {
+    u.copy_slot = 0;
+    if (!canvas || canvas.textureType != MTLTextureType2D || !vr_residency()) return nil;
+    const int i = u.next; u.next = (u.next + 1) % RING;
+    id<MTLTexture> t = u.ring[i];
+    if (!t || t.width != canvas.width || t.height != canvas.height || t.pixelFormat != canvas.pixelFormat) {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:canvas.pixelFormat width:canvas.width height:canvas.height mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead; td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> n = [canvas.device newTextureWithDescriptor:td];
+        if (!n) return nil;
+        n.label = [NSString stringWithFormat:@"vr scene ring %d", i];
+        vr_residency_swap(t, n); u.ring[i] = n; t = n;
+    }
+    u.gen = (u.gen + 1) & 0x0fffffff; if (!u.gen) u.gen = 1;
+    u.ring_gen[i] = u.gen;
+    atomic_store(&u.ring_pub[i], (u.gen << 4) | (uint32_t)i);
+    u.copy_slot = i + 1;
+    return t;
+}
+void vr_ui_scene_captured(void) {
+    if (u.copy_slot <= 0) return;
+    const int i = u.copy_slot - 1; u.copy_slot = 0;
+    atomic_store(&u.captured, (u.ring_gen[i] << 4) | (uint32_t)i);
+}
+uint32_t vr_ui_take_scene(void) { return atomic_exchange(&u.captured, 0); }
+
+static const char *k_ui_msl =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct VO { float4 pos [[position]]; float2 uv; };\n"
+    "struct SO { float4 scene [[color(0)]]; float4 hud [[color(1)]]; };\n"
+    "vertex VO ui_vs(uint i [[vertex_id]]) { float2 p = float2((i << 1) & 2, i & 2); VO o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); o.uv = float2(p.x, 1.0 - p.y); return o; }\n"
+    // pic: the finished picture as stored (display encoded); sc: the canvas before the UI (linear)
+    "fragment SO ui_split(VO i [[stage_in]], texture2d<float> pic [[texture(0)]], texture2d<float> sc [[texture(1)]], sampler s [[sampler(0)]]) {\n"
+    "  float3 p = pic.sample(s, i.uv).rgb, c = max(sc.sample(s, i.uv).rgb, float3(0));\n"
+    "  float3 e = select(1.055 * pow(c, float3(1.0 / 2.4)) - 0.055, 12.92 * c, c <= 0.0031308);\n"
+    "  float3 d = abs(p - e); float a = smoothstep(0.016, 0.06, max(d.r, max(d.g, d.b)));\n"
+    "  SO o; o.scene = float4(mix(p, e, a), 1.0); o.hud = float4(p, a); return o; }\n";
+static int ui_setup(id<MTLDevice> dev, MTLPixelFormat f) {
+    if (u.ps && u.ps.device == dev) return 1;
+    NSError *e = nil; u.lib = [dev newLibraryWithSource:@(k_ui_msl) options:[MTLCompileOptions new] error:&e];
+    if (!u.lib) { DLOG("【红】HUD plane: %s", e.localizedDescription.UTF8String); return 0; }
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [u.lib newFunctionWithName:@"ui_vs"]; pd.fragmentFunction = [u.lib newFunctionWithName:@"ui_split"];
+    pd.colorAttachments[0].pixelFormat = f; pd.colorAttachments[1].pixelFormat = f;
+    u.ps = [dev newRenderPipelineStateWithDescriptor:pd error:&e];
+    MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+    sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    u.smp = [dev newSamplerStateWithDescriptor:sd];
+    if (!u.ps || !u.smp) { DLOG("【红】HUD plane pipeline: %s", e ? e.localizedDescription.UTF8String : "?"); u.ps = nil; return 0; }
+    return 1;
+}
+int vr_ui_split(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t ref, __strong id<MTLTexture> *scene, __strong id<MTLTexture> *hud) {
+    if (!ref || !pic) return 0;
+    const int i = (int)(ref & 15); if (atomic_load(&u.ring_pub[i]) != ref) return 0;
+    id<MTLTexture> sc = u.ring[i];
+    if (!sc || fabs((double)pic.width * sc.height / ((double)pic.height * sc.width) - 1) > 0.01) return 0;
+    if (u.seq != seq || !u.scene) {
+        id<MTLDevice> dev = cb.device;
+        if (!ui_setup(dev, pic.pixelFormat)) return 0;
+        if (!u.scene || u.scene.width != pic.width || u.scene.height != pic.height || u.scene.pixelFormat != pic.pixelFormat) {
+            u.scene = mk(dev, pic.pixelFormat, pic.width, pic.height, 1); u.hud = mk(dev, pic.pixelFormat, pic.width, pic.height, 1);
+            if (!u.scene || !u.hud) { u.scene = u.hud = nil; return 0; }
+        }
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        for (int k = 0; k < 2; k++) { rp.colorAttachments[k].texture = k ? u.hud : u.scene; rp.colorAttachments[k].loadAction = MTLLoadActionDontCare; rp.colorAttachments[k].storeAction = MTLStoreActionStore; }
+        id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+        [e setRenderPipelineState:u.ps]; [e setFragmentTexture:pic atIndex:0]; [e setFragmentTexture:sc atIndex:1]; [e setFragmentSamplerState:u.smp atIndex:0];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [e endEncoding];
+        id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder]; [b generateMipmapsForTexture:u.scene]; [b generateMipmapsForTexture:u.hud]; [b endEncoding];
+        u.seq = seq;
+        if (!u.said++) DLOG("the HUD is on a plane of its own (picture %lux%lu, scene copy %lux%lu format %lu)", (unsigned long)pic.width, (unsigned long)pic.height, (unsigned long)sc.width, (unsigned long)sc.height, (unsigned long)sc.pixelFormat);
+    }
+    *scene = u.scene; *hud = u.hud;
+    return 1;
 }
 #endif

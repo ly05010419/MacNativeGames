@@ -4,6 +4,10 @@
 //                                               waits for the game (TOTK_VR_CONTROL=<control file>), sends a head pose at
 //                                               72 Hz (turning by the given rate), checks every FRAME_READY against the pose
 //                                               it was rendered with, saves frame 30 and every 1440th (20 s) as <prefix>-<n>.png
+//                                               FAKE_INPUT=<file>: the controllers, from lines appended to that file (never
+//                                               edited in place): button a|b|x|y|menu|l3|r3 0|1, axis lx|ly|rx|ry|lt|rt|lg|rg <v>,
+//                                               hand 0|1 <x y z> [<qx qy qz qw> [<vx vy vz>]] (held and sent at 72 Hz);
+//                                               each vibration the game sends is printed as "haptic <hand> <ms> <Hz> <amp>"
 // It speaks the BasaltVR v9 control protocol (runtime/pe/basalt_control_protocol.h) from the daemon side.
 #include "../gfx/totk_vr_link.h"
 #include <ApplicationServices/ApplicationServices.h>
@@ -64,6 +68,53 @@ static void *pose_thread(void *arg) {
     return NULL;
 }
 
+/* The controllers, as the streamer sends them: BUTTON_STATE (11) by the ALVR path ids, CONTROLLER_MOTION (10). */
+static const struct { const char *name; uint64_t id; } k_inputs[] = {
+    {"a", 0xc72a0ba6ca52fba7ull}, {"b", 0x955047466e34669bull}, {"x", 0xb1a13c485685e33cull}, {"y", 0x521496d23e3e9883ull},
+    {"menu", 0x6268a669e87cf910ull}, {"l3", 0xdfc8a61273cf2569ull}, {"r3", 0x00ac9a92f4453d61ull},
+    {"lx", 0xc3d709ed0d794ea1ull}, {"ly", 0xcb7d928706263554ull}, {"rx", 0xd7c23648f060c6dfull}, {"ry", 0xcee8c338e02e0131ull},
+    {"lt", 0x0b66bbe3dc2dc49full}, {"rt", 0xede7e982d5eedf21ull}, {"lg", 0x01f1b9c689804b82ull}, {"rg", 0xdd5935cc005136f1ull},
+};
+static int send_input(int fd, const char *name, float v) {
+    for (size_t i = 0; i < sizeof k_inputs / sizeof k_inputs[0]; i++) {
+        if (strcmp(k_inputs[i].name, name)) continue;
+        uint8_t m[16]; const uint32_t kind = i < 7 ? 0 : 1;
+        memcpy(m, &k_inputs[i].id, 8); memcpy(m + 8, &kind, 4); memcpy(m + 12, &v, 4);
+        return snd(fd, 11, m, sizeof m);
+    }
+    printf("input: no such control \"%s\"\n", name);
+    return 0;
+}
+typedef struct { int have; float q[4], p[3], v[3]; } fake_hand;
+static void input_line(int fd, const char *line, fake_hand hands[2]) {
+    char name[16]; float v; int hand; float a[10];
+    if (sscanf(line, "button %15s %f", name, &v) == 2 || sscanf(line, "axis %15s %f", name, &v) == 2) { send_input(fd, name, v); return; }
+    if (sscanf(line, "hand %d", &hand) != 1 || hand < 0 || hand > 1) { if (*line && *line != '\n') printf("input: cannot read \"%s\"\n", line); return; }
+    const int n = sscanf(line, "hand %*d %f %f %f %f %f %f %f %f %f %f", a, a+1, a+2, a+3, a+4, a+5, a+6, a+7, a+8, a+9);
+    if (n != 3 && n != 7 && n != 10) { printf("input: a hand takes 3, 7 or 10 numbers: \"%s\"\n", line); return; }
+    fake_hand *h = &hands[hand];
+    memcpy(h->p, a, 12);
+    if (n >= 7) memcpy(h->q, a + 3, 16); else if (!h->have) { h->q[0] = h->q[1] = h->q[2] = 0; h->q[3] = 1; }
+    if (n == 10) memcpy(h->v, a + 7, 12); else memset(h->v, 0, sizeof h->v);
+    h->have = 1;
+}
+static void *input_thread(void *arg) {
+    daemon_t *d = arg; const char *path = getenv("FAKE_INPUT"); FILE *f = NULL; char line[256]; fake_hand hands[2] = {{0}};
+    while (!d->stop) {
+        if (!f) f = fopen(path, "r");
+        if (f) { clearerr(f); while (fgets(line, sizeof line, f)) input_line(d->fd, line, hands); }
+        const uint64_t t = now_ns();
+        for (uint32_t i = 0; i < 2; i++) {
+            if (!hands[i].have) continue;
+            uint8_t m[68] = {0}; memcpy(m, &t, 8); memcpy(m + 8, &i, 4); memcpy(m + 16, hands[i].q, 16); memcpy(m + 32, hands[i].p, 12); memcpy(m + 44, hands[i].v, 12);
+            if (snd(d->fd, 10, m, sizeof m)) { if (f) fclose(f); return NULL; }
+        }
+        usleep(13889);
+    }
+    if (f) fclose(f);
+    return NULL;
+}
+
 static void save_png(IOSurfaceRef s, const int32_t rect[4], const char *path) {
     IOSurfaceLock(s, kIOSurfaceLockReadOnly, NULL);
     size_t row = IOSurfaceGetBytesPerRow(s); uint8_t *base = IOSurfaceGetBaseAddress(s);
@@ -99,7 +150,9 @@ static int serve(daemon_t *d) {
     uint16_t rl; memcpy(&rl, p + 42, 2); printf("hello from \"%.*s\"\n", rl, (const char *)p + 44);
     uint16_t ack = 9; snd(d->fd, 2, &ack, 2);
     uint8_t vc[36]; float ipd = 0.063f; memcpy(vc, &ipd, 4); memcpy(vc + 4, FOV, 32); snd(d->fd, 15, vc, 36);
-    pthread_t pt; pthread_create(&pt, NULL, pose_thread, d);
+    pthread_t pt, it; pthread_create(&pt, NULL, pose_thread, d);
+    const int scripted = getenv("FAKE_INPUT") != NULL;
+    if (scripted) pthread_create(&it, NULL, input_thread, d);
 
     IOSurfaceRef surf[8] = {0}; uint64_t chain = 0; int frames = 0, bad = 0, nimg = 0, gaps = 0; uint64_t last_fr = 0; uint64_t t_end = now_ns() + (uint64_t)(d->seconds * 1e9), first_ns = 0;
     double mean_sum = 0;
@@ -133,9 +186,13 @@ static int serve(daemon_t *d) {
             if (fr != last_fr + 1) { if (!gaps++) printf("frame number %llu after %llu: the streamer would acknowledge nothing after %llu\n",
                                                         (unsigned long long)fr, (unsigned long long)last_fr, (unsigned long long)last_fr); }
             else { last_fr = fr; snd(d->fd, 17, &fr, 8); }
+        } else if (type == 12 && n == 20) {   /* HAPTIC: u32 hand, u64 ns, f32 Hz, f32 0..1 */
+            uint32_t hand; uint64_t ns; float hz, amp; memcpy(&hand, p, 4); memcpy(&ns, p + 4, 8); memcpy(&hz, p + 12, 4); memcpy(&amp, p + 16, 4);
+            printf("haptic %u %.0f %.0f %.2f\n", hand, ns / 1e6, hz, amp);
         } else if (type == 8) { printf("runtime teardown\n"); break; }
     }
     d->stop = 1; pthread_join(pt, NULL);
+    if (scripted) pthread_join(it, NULL);
     double secs = first_ns ? (now_ns() - first_ns) / 1e9 : 0;
     printf("frames %d (%.1f fps), poses sent %d, frames with an unknown pose timestamp %d, frame-number gaps %d, left-eye centre mean %.1f\n",
            frames, secs > 0 ? frames / secs : 0, d->sent_poses, bad, gaps, frames ? mean_sum / frames : 0);

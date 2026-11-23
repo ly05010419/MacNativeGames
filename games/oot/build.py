@@ -594,6 +594,10 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
                     '--output',opening_overlay],check=True)
     took('opening overlay')
+    vr_rig=tree/'extracted/oot/vr-rig'   # Link's two models for the VR body; a game without them plays on with him drawn whole
+    made=subprocess.run([sys.executable,GAME/'scripts/make_vr_rig.py','--romfs',tree/'extracted/oot/romfs','--output',vr_rig])
+    if made.returncode:print('   VR models could not be made: first person in VR shows his whole body',flush=True)
+    took('VR models')
     temporary=out.with_name('.'+out.name+'.ready')
     if temporary.exists():raise ValueError('unfinished App staging directory exists; left untouched: '+str(temporary))
     mac=temporary/'Contents/MacOS';res=temporary/'Contents/Resources';data=res/'totk'
@@ -621,6 +625,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     shutil.copytree(tree/'extracted/oot/romfs',data/'extracted/oot/romfs',copy_function=clone_file,
                     ignore=shutil.ignore_patterns('romfs.bin','.romfs-verified*'))
     shutil.copytree(opening_overlay,data/'extracted/oot/romfs-patches',copy_function=clone_file)
+    if not made.returncode:shutil.copytree(vr_rig,data/'extracted/oot/vr-rig',copy_function=clone_file)
     # Reuse the repository's existing game-data packaging. Its signed helper
     # avoids hashing an unchanged 26 GB image on every native runtime update.
     build_app=build_helpers()
