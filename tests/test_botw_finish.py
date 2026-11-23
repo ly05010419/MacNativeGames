@@ -66,7 +66,9 @@ class Passes(unittest.TestCase):
         self.assertLess(up.index('if (replaced || !ours) return 0;'), up.index('rp_end();'))   # MetalFX's or the game's FXAA: never ours
         # The game's own FXAA is the only method that keeps its draw: off, SMAA and FXAA Quality all replace it.
         self.assertIn('int ours = off || smaa || quality;', up)
-        self.assertIn('int smaa = !off && atomic_load_explicit(&g_fin_smaa', up)
+        # SMAA wins over FXAA off (a "flag fxaa_off 1" with SMAA chosen): the page says SMAA, so the picture has it.
+        self.assertIn('int smaa = atomic_load_explicit(&g_fin_smaa', up)
+        self.assertIn('return dm_gfx_smaa_on()?TOTK_AA_SMAA:', (NVN / 'totk_aa_config.h').read_text())
         self.assertIn('int quality = !off && !smaa && atomic_load_explicit(&g_fin_fxaa_quality', up)
         for need in ('!(S.color.blend_en & 1)', 'bfin_mask_rgb_only(S.chmask.mask)', 'scissor_full(R.rt.color[0], cv, hv)',
                      'R.rt.n == 1'):

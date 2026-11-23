@@ -91,7 +91,7 @@ static int botw_fin_upscale(__unsafe_unretained NvShader *fs, int replaced) {
     if (strncmp(fs->key, BOTW_MFXUP_KEY, 65)) return 0;
     uint64_t frame = atomic_load(&g_cur_frame);
     int off = atomic_load_explicit(&g_fin_fxaa_off, memory_order_relaxed), pct = atomic_load_explicit(&g_fin_sharpen, memory_order_relaxed);
-    int smaa = !off && atomic_load_explicit(&g_fin_smaa, memory_order_relaxed);
+    int smaa = atomic_load_explicit(&g_fin_smaa, memory_order_relaxed);   // SMAA wins over FXAA off, as dm_gfx_aa_method and 1.4.3's fin_draw
     int quality = !off && !smaa && atomic_load_explicit(&g_fin_fxaa_quality, memory_order_relaxed);
     int ours = off || smaa || quality;   // 0: the game's own FXAA
     if (replaced) g_bfin.replaced_frame = frame;
