@@ -165,6 +165,72 @@ def mac_cache(folder, want):
     return {'TOTK_PAR_RECHECK': '1' if recheck else '0'}
 
 
+def device_gpus(requested, env):
+    """The GPU architectures a build compiles the device's pipelines for: its --device-gpu values, 'auto' (the default) for
+    the iPhones / iPads on the cable (connected_gpus), 'none' for none. Without one the device's first start builds them."""
+    gpus = []
+    for g in requested or ['auto']:
+        if g == 'auto':
+            found = connected_gpus(env)
+            for name, product, arch in found: print(f'pipelines: {name} ({product}) on the cable: ' + (arch or 'GPU not known here, its first start fills them'))
+            if not found: print('pipelines: no iPhone / iPad on the cable, so its first start fills them (about 10 minutes); connect it, or --device-gpu <arch>')
+            gpus += [arch for _, _, arch in found if arch]
+        elif g != 'none': gpus.append(g)
+    return sorted(set(gpus))
+
+
+def make(gpus, host, rewritten, lists, want_from, seed, work, sdk, run, cwd, logs, env, clone, variants=True):
+    """The device's pipeline archive, made while packaging (2026-10-29), as every iPhone / iPad build makes it: Tears of the
+    Kingdom's and Breath of the Wild's build_ipa.py and the ports' build_port_ipa.py (Animal Crossing, Super Mario Odyssey;
+    user 2026-11-21: "统一 … 用测试保证"). The Mac game binary makes every pipeline of the lists from the device seed's
+    metallibs (its pipeline-archive mode), this script compiles them for each GPU of gpus with metal-tt into the seed
+    (pipelines-<arch>-*). The first start then takes them from there instead of filling its own archive: Breath of the
+    Wild 1.6.0 on an iPhone 14 spent 567.8 s on that before the title. Without a GPU to build for, the device fills it as
+    before. Kept in work, so a build whose lists did not change is quick.
+    variants: two runs of the Mac binary's mode; the first records the patched variants the runtime compiles from source
+    (variant-scan/variants), --variants compiles them for the device into the seed, and the second makes every pipeline
+    from the seed's libraries, those variants included (the ports record none: one run). Both caches are kept between
+    builds, also when the runtime changed: only the pipelines it describes otherwise are made again (mac_cache).
+    want_from: the files the Mac caches are made from (the seed's manifest, the lists, the host): the pipelines are this
+    runtime's descriptions too (vertex formats, blend, ...), and a runtime that builds them otherwise makes them again
+    (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the stamp held only the shaders
+    and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
+    run(args, cwd, log, env) and clone(src, dst) are the build's own."""
+    import time
+    script = Path(__file__).resolve()
+    want = hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode() + b''.join(Path(p).read_bytes() for p in want_from)).hexdigest()
+    # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
+    # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
+    tool = host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host, tool)
+    def mac_pipelines(folder, log):
+        stamp = folder / 'seed.txt'
+        recheck = mac_cache(folder, want)   # kept and checked against this runtime, never thrown away (device_pipelines.mac_cache)
+        run([tool, rewritten, 'pipeline-archive', *lists], cwd, logs / log, dict(env, TOTK_SHADER_CACHE=str(folder), TOTK_SHADER_SEED_DIR=str(seed), TOTK_DEBUG_LOG='1', **recheck))
+        stamp.write_text(want + '\n')
+    t0 = time.time()
+    if variants:
+        if gpus:   # without the last build's variant libraries, so the first run compiles and records every variant it meets
+            for p in seed.glob('variant-*'): p.unlink()
+            mac_pipelines(work / 'variant-scan', 'device-pipelines-scan.log')
+        run([sys.executable, script, '--variants', work / ('variant-scan/variants' if gpus else 'none'), '--seed', seed, '--cache', work,
+             '--sdk', sdk], cwd, logs / 'device-variants.log', env)
+    if gpus:
+        mac_pipelines(work / 'mac-cache', 'device-pipelines-mac.log')
+        if variants:
+            v = json.loads((logs / 'device-variants.log').read_text().strip().splitlines()[-1])
+            print(f"pipelines: made on the Mac in {time.time()-t0:.0f} s, with {v['variants']} variants compiled for the device ({v['compiled']} new, "
+                  f"{v['failed']} failed); compiling them for {', '.join(gpus)}", flush=True)
+        else:
+            print(f"pipelines: made on the Mac in {time.time()-t0:.0f} s; compiling them for {', '.join(gpus)}", flush=True)
+    t0 = time.time()
+    run([sys.executable, script, '--mac', work / 'mac-cache/pipelines', '--seed', seed, '--cache', work, '--sdk', sdk,
+         *[x for g in gpus for x in ('--arch', g)]], cwd, logs / 'device-pipelines.log', env)
+    if gpus:
+        done = json.loads((logs / 'device-pipelines.log').read_text().strip().splitlines()[-1])
+        for r in done['archs']: print(f"pipelines: {r['arch']}: {r['pipelines']} ({r['compiled']} compiled, {r['kept']} kept from earlier builds, "
+                                      f"{r['failed']} failed) in {time.time()-t0:.0f} s; {done['library from source']} still use shaders the device compiles itself")
+
+
 def variants(folder, seed, cache, sdk, env):
     """The recorded variant sources compiled into the seed as variant-<SHA-256>.metallib (see the top); the last build's
     that are not recorded now are removed. Returns the report."""

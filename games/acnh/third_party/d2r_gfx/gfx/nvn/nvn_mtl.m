@@ -135,7 +135,7 @@ static struct { char text[96]; int scale; } g_load_key[4];
 static id<MTLTexture> g_shd_tex[4];
 static id<MTLBuffer> g_shd_uv[3];
 static int g_shd_box[4][2];
-static struct { char text[48]; int hl, scale; } g_shd_key[4];
+static struct { char text[160]; int hl, scale; } g_shd_key[4];
 int g_bloom_q = -1;   // 泛光 1/4 起点（非 static：真机同进程交替直接改 0 / 1） | Bloom 1/4 starting point (non-static: real-device same-process alternation sets it to 0 / 1 directly)
 static id<MTL4ArgumentTable> g_bloomq_args;
 static id<MTLBuffer> g_bloomq_const[3];
@@ -631,7 +631,9 @@ void mtl_init(void) {
         g_fps_tex[i] = [g_dev newTextureWithDescriptor:fd];
         if (!g_fps_tex[i]) MDIE("建立帧数贴图[%d] 失败", i);
         res_add(g_fps_tex[i]);
-        g_shd_tex[i] = [g_dev newTextureWithDescriptor:fd];
+        MTLTextureDescriptor *sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:LOAD_OVERLAY_TEX_W height:FPS_OVERLAY_TEX_H mipmapped:NO];
+        sd.usage = MTLTextureUsageShaderRead; sd.storageMode = MTLStorageModeShared;   // shaders and render pipelines in one line (hud_panel.inc)
+        g_shd_tex[i] = [g_dev newTextureWithDescriptor:sd];
         if (!g_shd_tex[i]) MDIE("建立着色器计数框贴图[%d] 失败", i);
         res_add(g_shd_tex[i]);
         MTLTextureDescriptor *ld = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:LOAD_OVERLAY_TEX_W height:FPS_OVERLAY_TEX_H mipmapped:NO];
@@ -2929,7 +2931,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 5: d.textureType = MTLTextureType2DMultisample; d.sampleCount = t->d.samples; d.mipmapLevelCount = 1; break;
         case 6: d.textureType = MTLTextureType2DMultisampleArray; d.sampleCount = t->d.samples; d.arrayLength = t->d.depth; d.mipmapLevelCount = 1; break;
         case 8: d.textureType = MTLTextureTypeCube; break;
-        case 9: d.textureType = MTLTextureTypeCubeArray; d.arrayLength = t->d.depth; break;
+        case 9: d.textureType = MTLTextureTypeCubeArray; d.arrayLength = MAX(t->d.depth / 6, 1u); break;   // NVN depth counts layer-faces, Metal arrayLength counts cubes (3c482a7d)
         case 10: RED_ONCE(1, "缓冲贴图（TARGET_BUFFER）未实现"); return nil;
         default: d.textureType = MTLTextureType2D; break;
     }
@@ -3625,8 +3627,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     if (!pkg_hashed(t)) nvn_dirty_protect(t->mem, t->L.size);
     if (profile) profile_protect = bp_now();
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
-    unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;
-    if (t->d.target == 9) layers *= 6;
+    unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;   // cube array depth = layer-faces (3c482a7d)
     int tca = tex_astc(t);   // TOTK: BC1 -> ASTC 4x4 (see tex_astc)
     int tck = !tca && tc_pf(t->d.format) != MTLPixelFormatInvalid && d.pixelFormat == tc_pf(t->d.format);   // TOTK: BC2/3/4/5/7 transcoded (tex_tc decided in tex_desc)
     int tco = t->d.format == 0x49 ? 8 : 16;   // output bytes per block
@@ -4676,10 +4677,32 @@ static void uw_note_present(const tex_t *t) {
     if (!known) g_mfx.swap[g_mfx.nswap < 4 ? g_mfx.nswap++ : (int)(t->serial % 4)] = t->serial;
     g_mfx.swap_w = t->d.width; g_mfx.swap_h = t->d.height;
 }
+#ifdef GAME_ACNH
+/* Animal Crossing draws its HUD into a 16:9 target of the mode's size (1280x720 handheld, 1920x1080 docked) and only then
+   copies the picture through another texture to the presented one, so the canvas canvas_learn finds is not where the UI
+   went (iPhone 14, 2026-11-20: UI into texture 4303, canvas 4581). Its UI quads (uw_ui_vs) count on any full-size 16:9
+   target; its layouts' off-screen captures (400x200, 234x133, ...) are not 16:9 and keep their shape. */
+static int uw_on_canvas(void) {
+    const tex_t *t = R.rt.n > 0 ? R.rt.color[0] : NULL;
+    return t && t->d.width >= 640 && (uint64_t)t->d.width * 9 == (uint64_t)t->d.height * 16;
+}
+#else
 static int uw_on_canvas(void) { return g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas; }
-/* The horizontal squeeze for this draw: the wide ratio over the canvas's, or 1 (not UI, or 16:9). */
+#endif
+/* The squeeze for this draw: the screen's ratio over the canvas's, or 1 (not UI, or 16:9). Above 1 (a screen wider than
+   16:9, the iPhone) the UI is narrowed by it about the canvas centre; below 1 (taller, the iPad's 4:3) it is flattened by
+   it about the centre, so the presented picture, stretched to the screen, shows the UI in its own shape rather than
+   pulled tall (user 2026-11-21: "动森 在ipad上的全屏 是拉伸 不是 像iphone一样是扩展？"). */
 /* The TOTK_MFX UI vertex shaders and four more that draw UI quads (inventory tab labels, map icons). */
 static int uw_ui_vs(const char *vs) {
+#ifdef GAME_ACNH
+    /* Animal Crossing 3.0.3's nn::ui2d quads into the canvas (draw_log on the Mac, 2026-11-20): the title's (171c8262,
+       25c5829f, 302b31ef), a dialog's (976839d3) and the island HUD's, the phone, clock, minimap and their icons
+       (44dd4786, f0919299, 5ddfd93b). The 3D scene's composite into the canvas (35de5c92, a full-screen triangle) is not UI. */
+    static const char *const acnh[] = {"171c8262", "25c5829f", "302b31ef", "976839d3", "44dd4786", "f0919299", "5ddfd93b"};
+    for (size_t i = 0; i < sizeof acnh / sizeof *acnh; i++) if (!strncmp(vs, acnh[i], 8)) return 1;
+    return 0;
+#endif
     static const char *const more[] = {"1a40e5f5", "2117f58b", "8d4e36d0", "1469983f"};
     if (mfx_ui_vs(vs)) return 1;
     for (size_t i = 0; i < sizeof more / sizeof *more; i++) if (!strncmp(vs, more[i], 8)) return 1;
@@ -4688,7 +4711,7 @@ static int uw_ui_vs(const char *vs) {
 static double uw_ui_squeeze(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th) {
     if (!g_uw_ui || !vs || !uw_ui_vs(vs) || (dw ? dw->count : di ? di->count : 0) != 6 || !uw_on_canvas() || !tw || !th) return 1;
     double f = uw_ratio() * th / tw;
-    return f > 1.001 ? f : 1;
+    return f > 1.001 || f < 0.999 ? f : 1;
 }
 /* TOTK_MFX: the scene is complete: end the pass (the draw that follows opens it again, loading the canvas, with the UI
    attachment) and copy the canvas into this frame's scene texture. */
@@ -5350,6 +5373,16 @@ static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
     return lib;
 }
 #endif
+/* The seed's libraries are the device's (iOS; on the Mac TOTK_SHADER_DEVICE_LIBS=1, the iPhone packaging's archive mode), as Tears of
+   the Kingdom's shader_device_libs. */
+static int shader_device_libs(void) {
+#if TARGET_OS_IPHONE
+    return 1;
+#else
+    static int on = -1; if (on < 0) { const char *dl = getenv("TOTK_SHADER_DEVICE_LIBS"); on = dl && !strcmp(dl, "1"); }
+    return on;
+#endif
+}
 static NvShader *shader_load(NSString *pc, int stage) {
     NSError *e = nil;
     // TOTK: runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
@@ -5358,11 +5391,16 @@ static NvShader *shader_load(NSString *pc, int stage) {
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
     id<MTLLibrary> lib = nil;
     if (rt) {
-#if TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE
+        /* TOTK_SHADER_DEVICE_LIBS=1 (Mac, the iPhone packaging's archive mode): the seed's device libraries the way iOS loads them, so
+           the pipelines made here describe the very libraries an iPhone loads (as Tears of the Kingdom's shader_load_mode) */
+        if (shader_device_libs())
+#endif
+        {
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = [NSString stringWithFormat:@"%@/%@.metallib", totk_rt_dir(), pc];
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
-#endif
+        }
         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
                     if (raw && stage == 0) {
                         NSString *source = [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding];
@@ -6618,67 +6656,7 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
     }
     enc_r_args(en, MTLRenderStageFragment, buf.gpuAddress + (uint64_t)(fr % NT_SLOTS) * NT_SLOT_WORDS * 4, 29);
 }
-#include "totk_pipeline_archive.h"
-/* Odyssey (22 October 2026), from upstream MacNativeGames 27baca0 / 6446e09 / ea6c5a7 / 1eff989: the game's pipelines are
-   made with the pipeline archive (totk_pipeline_archive.h). A pipeline is first asked of its own archive file alone
-   (MTLPipelineOptionFailOnBinaryArchiveMiss). Found: done. Not found: it is compiled as usual and written to its file
-   when the game is idle. key: pso_archive_key / cs_archive_key; nil = not archived. TOTK_PIPELINE_ARCHIVE=0 turns it off. */
-static _Atomic uint64_t g_par_hits, g_par_misses;
-static void par_count(int hit) {
-    uint64_t h = hit ? atomic_fetch_add(&g_par_hits, 1) + 1 : atomic_load(&g_par_hits), m = hit ? atomic_load(&g_par_misses) : atomic_fetch_add(&g_par_misses, 1) + 1;
-    if ((h + m) % 1000 == 0) MLOG("管线存档：建管线 %llu 次，从存档取 %llu 次，现编 %llu 次", (unsigned long long)(h + m), (unsigned long long)h, (unsigned long long)m);
-}
-static NSString *pso_archive_key(const pso_key *k, NvShader *vs, NvShader *fs, int merged) {
-    pso_skey sk; pso_skey_from(k, vs, fs, merged, NULL, &sk); return par_hash(&sk, sizeof sk);
-}
-static NSString *cs_archive_key(NvShader *cs) { return cs ? [@"c" stringByAppendingString:par_hash(cs->key, strnlen(cs->key, sizeof cs->key))] : nil; }
-static id<MTLRenderPipelineState> pso_new_(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e);
-static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
-    DM_SP_BEGIN(sp, "pipeline-render", "%{public}s", key ? key.UTF8String : "-");
-    id<MTLRenderPipelineState> ps = pso_new_(d, key, e);
-    DM_SP_END(sp, "pipeline-render");
-    return ps;
-}
-static id<MTLRenderPipelineState> pso_new_(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
-    id<MTLRenderPipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
-    if (a) {
-        d.binaryArchives = @[a];
-        ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        d.binaryArchives = nil;
-        if (ps) { par_count(1); return ps; }
-    }
-    if (key && g_par_on) par_count(0);
-    ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
-    atomic_store(&g_par_last_compile_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    if (ps) par_add(g_dev, key, d);
-    return ps;
-}
-static id<MTLComputePipelineState> cs_new_(NvShader *cs, NSError **e);
-static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
-    DM_SP_BEGIN(sp, "pipeline-compute", "%{public}s", cs ? cs->key : "-");
-    id<MTLComputePipelineState> ps = cs_new_(cs, e);
-    DM_SP_END(sp, "pipeline-compute");
-    return ps;
-}
-static id<MTLComputePipelineState> cs_new_(NvShader *cs, NSError **e) {
-    if (!cs || !cs->fn) return nil;
-    NSString *key = cs_archive_key(cs);
-    MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn;
-    id<MTLComputePipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
-    if (a) {
-        d.binaryArchives = @[a];
-        ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
-        d.binaryArchives = nil;
-        if (ps) { par_count(1); return ps; }
-    }
-    if (g_par_on) par_count(0);
-    ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
-    atomic_store(&g_par_last_compile_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
-    if (ps) par_add(g_dev, key, d);
-    return ps;
-}
+#include "totk_pipeline_archive_port.h"   /* Tears of the Kingdom's pipeline archive (shared): pso_new, cs_new, the archive keys */
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
@@ -7090,6 +7068,7 @@ static int warm_observed(void) {
     if (v < 0) { const char *e = getenv("TOTK_WARM_SCOPE"); v = e && !strcmp(e, "observed"); }
     return v;
 }
+static int g_warm_pipelines_only;   // a pipeline archive is used: the lists' S rows (shader libraries alone) are skipped (warm_start)
 static void warm_plan(NSArray<NSString *> *paths, NSArray<NSString *> *files, NSMutableSet<NSString *> *keys,
                       NSMutableSet<NSString *> *eligible,
                       uint64_t *tasks, uint64_t *shaders, uint64_t *pipelines) {
@@ -7102,7 +7081,7 @@ static void warm_plan(NSArray<NSString *> *paths, NSArray<NSString *> *files, NS
             [rows addObject:line];
             NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
             if ([c[0] isEqualToString:@"S"] && c.count >= 3 && [c[1] length]) {
-                if (!warm_available(c[1])) continue;
+                if (g_warm_pipelines_only || !warm_available(c[1])) continue;
                 [keys addObject:c[1]];
             }
             else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
@@ -7146,6 +7125,10 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         NSUInteger path_index = 0;
         MLOG("后台预热：着色器库用 %d 个线程编（TOTK_WARM_THREADS），进世界后最多 2 个", warm_threads());
+        /* A pipeline the archive lacks (one met in play last time, from the device's list) goes into it as soon as this
+           compiled it, so the next start takes it from there (totk_pipeline_archive.h par_add), as Tears of the Kingdom's
+           warm_worker. The pipelines built in play are not written; the device's list has them for the next warm-up. */
+        par_write_in_place = 1;
         uint64_t done = 0;
         for (NSString *path in paths) {
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
@@ -7208,7 +7191,8 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         // extend the measured total rather than being silently omitted.
         NSMutableArray<NSString *> *cache_files = [files mutableCopy];
         NSMutableSet<NSString *> *known_files = [NSMutableSet setWithArray:files];
-        NSArray<NSString *> *latest = warm_observed() ? @[] : cache_names(rt);
+        par_flush_thread(); par_pre_check();   // the lists' pipelines written; the app's Mac-built ones this Metal refuses are dropped
+        NSArray<NSString *> *latest = warm_observed() || g_par_valid ? @[] : cache_names(rt);   // with a pipeline archive the rest is made when first drawn
         for (NSString *file in latest) if ([file hasSuffix:@"_b.metal"] && ![known_files containsObject:file]) {
             // The native service publishes reflection last. A newly written
             // MSL with no reflection yet is still in flight, not a failed shader.
@@ -7254,6 +7238,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
     }
+    par_flush_thread(); par_write_in_place = 0;   // a queue thread: other work may run on it next
     atomic_store(&g_warm_running, 0);
     if (runtime_warm_done) runtime_warm_done();
 }
@@ -7308,14 +7293,6 @@ static void warm_filled(void) {
    cache take a few ms each. TOTK_WARM_LIGHT=0 turns it off. */
 static _Atomic int g_world_on;   // set at the first world frame (hle_nvn.c, nvnQueuePresentTexture)
 void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }   // the leaderboard counts from the first world frame (fps_board.c)
-static int par_game_idle(void) {   // totk_pipeline_archive.h: additions to the archive wait for this
-#ifdef GAME_ODYSSEY   /* Odyssey's world gate (>2000 draws in a frame) is unverified: idle = warm-up done and no compile for 3 s */
-    return !atomic_load(&g_warm_running) && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_par_last_compile_ns) > PAR_IDLE_NS;
-#else
-    return atomic_load(&g_world_on) && !atomic_load(&g_warm_running) &&
-           clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g_par_last_compile_ns) > PAR_IDLE_NS;
-#endif
-}
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
@@ -7365,6 +7342,7 @@ static NSArray<NSString *> *cache_names(NSString *dir) {
     [names sortUsingSelector:@selector(compare:)];
     return names;
 }
+#include "totk_pipeline_archive_port_fill.h"   /* the iPhone packaging's mode: the lists' pipelines into the archive (mtl_pipeline_archive_tool) */
 static void warm_start(void) {
     if (g_warm_started++) return;
     warm_filled();
@@ -7404,7 +7382,14 @@ static void warm_start(void) {
                              : "另加翻译缓存里的全部着色器");
     }
     if (!g_warm_items) g_warm_items = [NSMutableArray array];
-    NSArray<NSString *> *files = warm_observed() ? @[] : cache_names(totk_rt_dir());
+    /* The pipeline archive (totk_pipeline_archive.h; on the device the Mac's files for its GPU, par_load_prebuilt): with
+       valid files the lists' pipelines are made from them, and the rest when first drawn. Skipped then, as Tears of the
+       Kingdom's warm_start: the shader libraries alone, every S row of the lists (the seed's list is nearly all S rows:
+       30,906 for Odyssey) and every other shader of the cache (the iPad's start warmed 61,896 items, 2026-11-21). */
+    par_open_dir(g_dev);
+    g_warm_pipelines_only = g_par_valid;
+    if (g_par_valid) MLOG("预热：有管线存档，只建管线清单里的管线（不单独加载着色器库），其余用到时从存档取");
+    NSArray<NSString *> *files = warm_observed() || g_par_valid ? @[] : cache_names(totk_rt_dir());
     uint64_t total = 0, shader_total = 0, pipeline_total = 0;
     NSMutableSet<NSString *> *planned_keys = [NSMutableSet set];
     NSMutableSet<NSString *> *eligible = [NSMutableSet set];
@@ -10575,7 +10560,11 @@ frz_plain:;
         PD("L %llu 分层通道内的绘制不能写层号，在此切开", g_stat_pass); rp_end(); g_lay.refuse = 1; g_lay.refused++; }
     if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && MFX_UI_DRAW(pr) && mfx_enabled())
         mfx_snapshot_scene();   // TOTK_MFX: first UI draw into the canvas: copy the finished scene first
+#ifdef GAME_ACNH
+    if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && uw_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // the screen's shape: this game's UI begins
+#else
     if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // key 4: the UI begins
+#endif
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { g_draw_skip[8]++; PD("S %llu no-encoder has_rt=%d n=%d why=%d mode=%d", g_stat_pass, R.has_rt, R.rt.n, g_rpb_why, mode); return; }
@@ -10640,6 +10629,8 @@ frz_plain:;
     if (moff != g_ui_moff) { g_ui_moff = moff; args_dirty_stage(0); }
     double ux = uw_ui_squeeze(pr && pr->sh[0] ? pr->sh[0]->key : NULL, dw, di, tw, th), cx = tw / 2.0;   // key 4: UI squeezed by 1 / ux about the canvas centre
     double vx = S.has_vp ? S.vp[0][0] : 0, vw = S.has_vp ? S.vp[0][2] : tw;
+    double uy = 1, cy = th / 2.0;   // the iPad: UI flattened by uy about the canvas centre (uw_ui_squeeze below 1)
+    if (ux < 1) { uy = ux; ux = 1; }
     if (ux != 1) { vx = cx + (vx - cx) / ux; vw /= ux; }
     if ((atomic_load(&g_uw_log) > 0 && uw_on_canvas()) || atomic_load(&g_draw_log) > 0)
         MLOG("[uw] F%llu pass %llu ui %d squeeze %.3f vs %.8s fs %.8s count %u inst %d vp %s%g,%g,%g,%g sc %s%d,%d,%d,%d blend %#x tex %ux%u fmt %#x ser %llu bl %u,%u,%u/%u,%u,%u cm %#x prim %d",
@@ -10669,8 +10660,8 @@ frz_plain:;
             }
         }
     }
-    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx, S.vp[0][1] + vo, vw, S.vp[0][3] * vs, S.dr[0], S.dr[1]});
-    else enc_r_viewport(en, (MTLViewport){vx, vo, vw, th * vs, 0, 1});
+    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx, cy + (S.vp[0][1] + vo - cy) * uy, vw, S.vp[0][3] * vs * uy, S.dr[0], S.dr[1]});
+    else enc_r_viewport(en, (MTLViewport){vx, cy + (vo - cy) * uy, vw, th * vs * uy, 0, 1});
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
         long sx0 = R.sc.x, sx1 = (long)R.sc.x + R.sc.w;
@@ -12241,90 +12232,22 @@ static void present_pipeline(MTLPixelFormat format) {
 // Present samples only the valid source rectangle declared by NVN; kept separate from the raw swapchain readback screenshot. Edges are clamped to the texel centers of the valid area, so bilinear does not read the black texels outside.
 // TOTK: FPS and on-screen picture size in the top-right corner of the game picture (pixels come from fps_overlay.c). Rasterises into
 // the slot's texture only when what is shown changes, and returns the viewport and source rectangle to draw.
-static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_hints_enabled() || !fps_overlay_enabled() || slot < 0 || slot > 3 || !g_fps_tex[slot]) return 0;
-    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    static uint8_t px[FPS_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
-    int scale = fps_overlay_scale(vp.height);
-    uint64_t mfx_at = atomic_load(&g_mfxup_last), gen_at = atomic_load(&g_mfxi_last), cur = atomic_load(&g_cur_frame);   // the last game frame MetalFX did the upscale (" MFX") / an interpolated frame was shown ("+50")
-    int gen = gen_at && cur - gen_at < 30 ? fps_overlay_gen_value() : 0;
-    uint64_t src = atomic_load(&g_pic_src);   // the internal resolution, in brackets: the game frame presented (TOTK reads its compose shader's scene)
-    fps_overlay_info info = {fps_overlay_value(), (int)lround(vp.width), (int)lround(vp.height), mfx_at && cur - mfx_at < 30, gen > 0 ? gen : 0, atomic_load(&g_pic_big),
-                             (int)(src & 0xffffffff), (int)(src >> 32)};
-    if (hud_compact()) { char text[96]; fps_overlay_text(&info, text, sizeof text); hud_publish(HUD_FPS, text, 0); return 0; }   // shown in the window's corner panel
-    pthread_mutex_lock(&mu);
-    if (g_fps_key[slot].scale != scale || memcmp(&g_fps_key[slot].info, &info, sizeof info)) {
-        fps_overlay_raster(&info, scale, px, &g_fps_box[slot][0], &g_fps_box[slot][1]);
-        [g_fps_tex[slot] replaceRegion:MTLRegionMake2D(0, 0, FPS_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H) mipmapLevel:0 withBytes:px bytesPerRow:FPS_OVERLAY_TEX_W * 4];
-        g_fps_key[slot].info = info; g_fps_key[slot].scale = scale;
-    }
-    float bw = g_fps_box[slot][0], bh = g_fps_box[slot][1], W = FPS_OVERLAY_TEX_W, H = FPS_OVERLAY_TEX_H;
-    pthread_mutex_unlock(&mu);
-    double m = 3.0 * scale;
-    *ovp = (MTLViewport){vp.originX + vp.width - m - bw, vp.originY + m, bw, bh, 0, 1};   // top-right corner
-    const float u[8] = {0, 0, bw / W, bh / H, 0.5f / W, 0.5f / H, (bw - 0.5f) / W, (bh - 0.5f) / H};
-    memcpy(uv, u, sizeof u);
-    return 1;
+/* The corner panel's numbers for the shared panel (hud_panel.inc, Tears of the Kingdom's; user 2026-11-20: "fps pannel 也要
+   统一"): the output size is the drawable viewport's (0), the internal one the game frame presented (g_pic_src). */
+static void hud_fps_sizes(uint64_t cur, int *ow, int *oh, int *sw, int *sh) {
+    (void)cur; uint64_t src = atomic_load(&g_pic_src);
+    *ow = 0; *oh = 0; *sw = (int)(src & 0xffffffff); *sh = (int)(src >> 32);
 }
-/* TOTK automatic shader collection, bottom-left box (user, 2026-10-16 night: "is anything new being found and collected"):
-   "SHADER +<variants new to the translation cache this run>/<variants in the cache> PSO +<pipelines added to the warm
-   lists this run>", yellow for 3 s after something new was collected. Same texture size, font and scale as the FPS box. */
-static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_full_hud() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
-    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    static uint8_t px[FPS_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
-    uint64_t fresh = 0, last = 0; int64_t total = -1; totk_rt_counts(&fresh, &total, &last);
-    uint64_t pso = atomic_load(&g_collect_new[1]) + atomic_load(&g_collect_new[2]), plast = atomic_load(&g_collect_last_ns);
-    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), newest = last > plast ? last : plast;
-    char text[48]; shader_overlay_text(text, sizeof text, fresh, total, pso);
-    int hl = newest && now - newest < 3000000000ull, scale = fps_overlay_scale(vp.height);
-    if (hud_compact()) {
-        char line[64]; pso_overlay_text(line, sizeof line, atomic_load(&g_collect_new[1]), (int64_t)g_pso.n);
-        hud_publish(HUD_SHADER, text, hl);
-        hud_publish(HUD_PSO, line, newest == plast && hl);   // yellow while a new render or compute pipeline was just collected
-        hitch_overlay_publish(now);   // "FPS 全信息": every long frame (hle_nvn.c notes them), the last ones split into their parts
-        return 0;
-    }
-    pthread_mutex_lock(&mu);
-    if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, text)) {
-        fps_overlay_raster_line(text, hl, scale, px, &g_shd_box[slot][0], &g_shd_box[slot][1]);
-        [g_shd_tex[slot] replaceRegion:MTLRegionMake2D(0, 0, FPS_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H) mipmapLevel:0 withBytes:px bytesPerRow:FPS_OVERLAY_TEX_W * 4];
-        snprintf(g_shd_key[slot].text, sizeof g_shd_key[slot].text, "%s", text); g_shd_key[slot].hl = hl; g_shd_key[slot].scale = scale;
-    }
-    float bw = g_shd_box[slot][0], bh = g_shd_box[slot][1], W = FPS_OVERLAY_TEX_W, H = FPS_OVERLAY_TEX_H;
-    pthread_mutex_unlock(&mu);
-    double m = 3.0 * scale;
-    *ovp = (MTLViewport){vp.originX + m, vp.originY + vp.height - m - bh, bw, bh, 0, 1};   // bottom-left corner
-    const float u[8] = {0, 0, bw / W, bh / H, 0.5f / W, 0.5f / H, (bw - 0.5f) / W, (bh - 0.5f) / H};
-    memcpy(uv, u, sizeof u);
-    return 1;
+static void hud_pso_counts(uint64_t *fresh, uint64_t *last_ns) {
+    *fresh = atomic_load(&g_collect_new[1]) + atomic_load(&g_collect_new[2]); *last_ns = atomic_load(&g_collect_last_ns);
 }
-/* TOTK load line, bottom-right (user, 2026-10-16 night: every CPU core and the GPU, one line like the FPS counter):
-   "P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%  GPU 99% (70%)" -- performance / efficiency cores, the busiest thread, the GPU as macOS reports it (our
-   keep-alive keeps it near 100 %) and in brackets the GPU time of the game's own work. Values from totk_sysload.c (0.5 s). */
-static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_full_hud() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
-    sysload_start();
-    sysload_info li; if (!sysload_get(&li)) return 0;
-    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    static uint8_t px[LOAD_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
-    char text[96]; sysload_text(text, sizeof text, &li);
-    if (hud_compact()) { hud_publish(HUD_LOAD, text, 0); return 0; }
-    int scale = fps_overlay_scale(vp.height);
-    pthread_mutex_lock(&mu);
-    if (g_load_key[slot].scale != scale || strcmp(g_load_key[slot].text, text)) {
-        fps_overlay_raster_line_tex(text, 0, scale, px, LOAD_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H, &g_load_box[slot][0], &g_load_box[slot][1]);
-        [g_load_tex[slot] replaceRegion:MTLRegionMake2D(0, 0, LOAD_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H) mipmapLevel:0 withBytes:px bytesPerRow:LOAD_OVERLAY_TEX_W * 4];
-        snprintf(g_load_key[slot].text, sizeof g_load_key[slot].text, "%s", text); g_load_key[slot].scale = scale;
-    }
-    float bw = g_load_box[slot][0], bh = g_load_box[slot][1], W = LOAD_OVERLAY_TEX_W, H = FPS_OVERLAY_TEX_H;
-    pthread_mutex_unlock(&mu);
-    double m = 3.0 * scale;
-    *ovp = (MTLViewport){vp.originX + vp.width - m - bw, vp.originY + vp.height - m - bh, bw, bh, 0, 1};   // bottom-right corner
-    const float u[8] = {0, 0, bw / W, bh / H, 0.5f / W, 0.5f / H, (bw - 0.5f) / W, (bh - 0.5f) / H};
-    memcpy(uv, u, sizeof u);
-    return 1;
-}
+static void hud_pso_total(uint64_t *fresh, int64_t *all) { *fresh = atomic_load(&g_collect_new[1]); *all = (int64_t)g_pso.n; }
+#if TARGET_OS_IPHONE
+uint64_t totk_rt_missed(void);   // totk_shader_rt.m
+static uint64_t hud_rt_missed(void) { return totk_rt_missed(); }
+#endif
+static void hud_more_lines(uint64_t now) { (void)now; }   // no shader library / play / kinds / misc / miss counts in this graphics layer
+#include "hud_panel.inc"   /* shared: the FPS / shader / load boxes and the corner panel */
 /* TOTK 2K output (user, 2026-10-16 night: "2K output with MetalFX"): when the window or the full screen shows the game
    picture bigger than it is (the 1920x1080 picture at 2560x1440 full screen on the user's 3440x1440 display), MetalFX
    upscales it to the viewport (perceptual: display values) and the present draws the result 1:1, instead of the bilinear

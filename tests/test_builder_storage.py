@@ -1,5 +1,7 @@
 """tools/builder/storage.py (S2.2): where each cache is, what it holds, and the guards that keep a clean or a move
 away from a root, the home folder, a system folder and the game, save or app a caller protects."""
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,6 +46,25 @@ class Measure(unittest.TestCase):
             size = storage.measure(root)
         self.assertEqual((size.bytes, size.files, size.errors), (6, 2, ()))
         self.assertTrue(size.clean)
+
+    def test_own_counts_only_the_blocks_nothing_outside_shares(self):
+        # user 2026-11-18 "改成实际占用": Ocarina of Time's work folder held 79.9 GB of files, 1.7 GB of them its own
+        with tempfile.TemporaryDirectory() as folder:
+            root, outside = Path(folder) / 'work', Path(folder) / 'app'
+            data = os.urandom(1 << 20)
+            write(root / 'mine.bin', data)
+            write(outside / 'game.bin', data)
+            if storage.private_size(root / 'mine.bin') is None:
+                self.skipTest('this disk does not report private sizes (not APFS)')
+            subprocess.run(['cp', '-c', outside / 'game.bin', root / 'clone.bin'], check=True)   # an APFS clone
+            write(outside / 'shared.bin', data[:4096] * 64)
+            os.link(outside / 'shared.bin', root / 'linked-out.bin')                            # a link to outside
+            write(root / 'both/a.bin', data[:4096] * 32)
+            os.link(root / 'both/a.bin', root / 'both/b.bin')                                   # both links inside
+            size = storage.measure(root)
+        self.assertEqual(size.files, 5)
+        self.assertEqual(size.bytes, (1 << 20) * 2 + 4096 * 64 + 4096 * 32 * 2)              # every file's size
+        self.assertEqual(size.own, (1 << 20) + 4096 * 32)        # mine.bin, and the inside-linked file once
 
     def test_a_missing_folder_measures_as_empty(self):
         with tempfile.TemporaryDirectory() as folder:

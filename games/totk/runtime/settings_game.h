@@ -238,7 +238,7 @@ static void settings_effects_restore(void) {}
 static void settings_restore_begin(void) {
  extern int vr_enabled(void);
  int v;char word[32];
- if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v);
+ if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v);
  if(!getenv("TOTK_MFX")&&runtime_setting_word("graphics-frame.txt",word,sizeof word)){
   int n=0;char tail=0;
   if(sscanf(word,"lock-%d %c",&n,&tail)==1&&(n>0&&totk_fps_limit_valid(n))){dm_gfx_set_flag("mfx_interp",MFX_OFF);nvn_fps_lock_set(n);}
@@ -669,10 +669,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),
-  @[settings_text("全部（FPS、着色器、读取、游玩时间）","All (FPS, shaders, load, playtime)"),
-    settings_text("FPS 全信息（另加卡顿、着色器库、管线、存档没命中）","FPS full information (also hitches, libraries, pipelines, archive misses)"),   // user 2026-11-16
-    settings_text("FPS 与游玩时间","FPS + playtime"),settings_on_off(0)],
-  @[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
+  @[settings_on_off(0),settings_text("极简 FPS","Bare FPS"),settings_text("FPS 与游玩时间","FPS + playtime"),settings_text("全部","All"),
+    settings_text("FPS 和帧调试信息","FPS and frame debug info")],   // user 2026-11-18: no notes in brackets, in reverse, the debug one last
+  @[@(HUD_MODE_OFF),@(HUD_MODE_BARE),@(HUD_MODE_MINIMAL),@(HUD_MODE_ALL),@(HUD_MODE_FULL)],
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_shared_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
@@ -776,10 +775,12 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
  settings_dsu_rows(rows);
+#ifdef RUNTIME_STICK_CALIBRATION
  /* The stick-calibration tool (user 2026-11-13): a full-width block at the foot of the Input page. It always shows (its
     own buttons grey out with no controller), so the page keeps a fixed, discoverable spot for it. */
  {TOTKSettingRow *cal=[TOTKSettingRow new];cal.title=@"";
   cal.customView=[TOTKStickCalibrationView new];cal.customRows=11;[rows addObject:cal];}
+#endif
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */

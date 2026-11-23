@@ -223,11 +223,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
 
     /* Overlay: all -> FPS + playtime -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
-    shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    shows(@"Overlay", @"All");
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue hasPrefix:@"FPS 60  2560x1440\nSession  0 h 00 m | Total  0 h 00 m\nSettings: key 1"]); }
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
-    pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    pick(@"Overlay", @"All");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
 
     if (hudBox) assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Session  0 h 00 m | Total  0 h 00 m"]);

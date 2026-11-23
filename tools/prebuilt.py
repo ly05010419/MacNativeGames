@@ -33,9 +33,11 @@ def runtime_name(version):
     return 'totk-native' if version == 'v0' else f'totk-native-{version}'
 
 
-# Ocarina of Time is not here: its build compiles its shader libraries with Xcode's Metal compiler, so a Mac that builds
-# it has Xcode, and with it the command line tools (classify.oot_needs_metal)
-NAMES = (*(runtime_name(v) for v in TOTK_VERSIONS), 'spirv-cross', 'warm-metal-cache', 'hactool')
+# Ocarina of Time's runtime and its pool sources reader (games/oot/Makefile: made from the repository alone, nothing of
+# the game; user 2026-11-22: "时之笛的运行时改成发布时编好"). Its build still compiles the game's shader libraries with
+# Xcode's Metal compiler (classify.oot_needs_metal): those are made from the player's game files.
+OOT_PROGRAMS = {'oot-native': 'oot-native', 'oot-pool-sources-list': 'pool-sources-list'}   # name here: name in build/
+NAMES = (*(runtime_name(v) for v in TOTK_VERSIONS), 'spirv-cross', 'warm-metal-cache', 'hactool', *OOT_PROGRAMS)
 
 
 class Missing(Exception):
@@ -102,6 +104,19 @@ def place(source, name, dest, why=''):
     return True
 
 
+def keep_placed(source, name, dest):
+    """place(), but a dest already holding the same bytes is left as it is (its time too, so what make builds from it
+    is not made again); True when the release's program is there."""
+    path = program(source, name)
+    if path is None:
+        return place(source, name, dest)
+    dest = Path(dest)
+    if dest.is_file() and _sha256(dest) == _sha256(path):
+        print(f'   {name}: the release\'s prebuilt program (already in place)', flush=True)
+        return True
+    return place(source, name, dest)
+
+
 def complete(source):
     """Every program is there for this source: a build of any game needs no compiler (build_app.prerequisites)."""
     return all(program(source, n) is not None for n in NAMES)
@@ -143,7 +158,12 @@ def build(source):
     build_app.build_warm_tool(totk, logs, env)
     shutil.copy2(totk / 'build/warm-metal-cache', out / 'warm-metal-cache')
     shutil.copy2(build_app.build_hactool(totk, logs), out / 'hactool')
-    files = {n: {'sha256': _sha256(out / n), 'bytes': (out / n).stat().st_size} for n in NAMES}
+    oot_work = Path(tempfile.mkdtemp(prefix='mng-prebuilt-oot-'))   # make's WORK: outside the source, with no space
+    build_app.run(['make', '-C', source / 'games/oot', f'-j{jobs}', f'WORK={oot_work}', 'runtime'], logs / 'oot.log', env=env)
+    for name, made in OOT_PROGRAMS.items():
+        shutil.copy2(oot_work / 'build' / made, out / name)
+    shutil.rmtree(oot_work, ignore_errors=True)
+    files ={n: {'sha256': _sha256(out / n), 'bytes': (out / n).stat().st_size} for n in NAMES}
     (out / 'manifest.json').write_text(json.dumps({'schema': SCHEMA, 'commit': commit, 'files': files}, indent=1) + '\n')
     print(f'{len(files)} prebuilt programs for {commit[:12]} in {out}', flush=True)
     return out

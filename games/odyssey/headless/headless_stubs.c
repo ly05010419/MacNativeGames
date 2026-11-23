@@ -40,4 +40,5 @@ void dm_gfx_window_shot(const char *path) { (void)path; }
 uint64_t dm_nvn_frame_count(void) { return 0; }
 uint64_t mtl_present_count(void) { return 0; }
 void mtl_wait_state_dump(void) {}
+int mtl_pipeline_archive_tool(int argc, char **argv) { (void)argc; (void)argv; return 1; }   /* no graphics layer here */
 int mfxup_enabled(void) { return 0; }

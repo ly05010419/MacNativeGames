@@ -5,6 +5,7 @@
 #include <CommonCrypto/CommonDigest.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>
 #include "totk_prompt_icons.h"
 #include "../tex/nvn_deswizzle.h"
 #include "input_prompts.h"   /* the game's own runtime (its build puts runtime/ on the include path): a path relative to
@@ -106,6 +107,15 @@ static unsigned identify_hud(const tex_t *t, const uint8_t *pixels) {
     return 0;
 }
 
+static uint8_t *(*stage_bytes)(size_t);
+static id<MTLTexture> (*stage_upload)(MTLPixelFormat, unsigned, unsigned);
+static uint64_t copies_built, copies_ns;
+void totk_prompt_set_upload(uint8_t *(*stage)(size_t), id<MTLTexture> (*upload)(MTLPixelFormat, unsigned, unsigned)) {
+    stage_bytes = stage; stage_upload = upload;
+}
+void totk_prompt_stats(uint64_t *copies, uint64_t *nanoseconds) { *copies = copies_built; *nanoseconds = copies_ns; }
+void totk_prompt_invalidate(void) { atomic_fetch_add(&atlas_revision, 1); }
+
 id<MTLTexture> totk_prompt_texture(const tex_t *t, id<MTLTexture> original,
                                   void (*resident)(id<MTLResource>), void (*retire)(id)) {
     if (!atomic_load(&enabled) || !original || !t->mem || t->d.format != NVN_FORMAT_R8 || t->d.levels != 1 ||
@@ -139,11 +149,15 @@ id<MTLTexture> totk_prompt_texture(const tex_t *t, id<MTLTexture> original,
 
     PromptBindings b; runtime_prompt_snapshot(&b);
     size_t width = t->d.width, height = t->d.height;
-    NSMutableData *data = [NSMutableData dataWithLength:width * height];
-    uint8_t *pixels = data.mutableBytes;
+    uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    /* The copy is built in the renderer's upload staging when it gives one (totk_prompt_set_upload): every byte of it is
+       written below. Else in new memory, written into a shared texture with replaceRegion. */
+    uint8_t *staged = stage_bytes && stage_upload ? stage_bytes(width * height) : NULL;
+    NSMutableData *data = staged ? nil : [NSMutableData dataWithLength:width * height];
+    uint8_t *pixels = staged ?: data.mutableBytes;
     if (atlas.memory && nvn_tex_is_linear(&t->d)) {
         for (size_t y = 0; y < height; y++) memcpy(pixels + y * width, t->mem + y * atlas.stride, width);
-    } else if (nvn_deswizzle(&t->d, 0, 0, t->mem, pixels, width)) return original;
+    } else if (nvn_deswizzle(&t->d, 0, 0, t->mem, pixels, width)) { if (staged) stage_upload(original.pixelFormat, 0, 0); return original; }
     int changed = 0;
     if (atlas.memory) {
         for (unsigned i = 0; i < atlas.count; i++) {
@@ -166,7 +180,10 @@ id<MTLTexture> totk_prompt_texture(const tex_t *t, id<MTLTexture> original,
         if (entry.hud) changed = runtime_prompt_draw(&b, entry.hud, pixels, (unsigned)width, (unsigned)height, width);
     }
     id<MTLTexture> replacement = nil;
-    if (changed) {
+    if (staged) {
+        replacement = stage_upload(original.pixelFormat, changed ? (unsigned)width : 0, (unsigned)height);
+        if (changed && !replacement) return original;
+    } else if (changed) {
         MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:original.pixelFormat
                                                                                    width:width height:height mipmapped:NO];
         desc.storageMode = MTLStorageModeShared;
@@ -178,6 +195,7 @@ id<MTLTexture> totk_prompt_texture(const tex_t *t, id<MTLTexture> original,
     }
     if (entry.texture) retire(entry.texture);
     entry.texture = replacement; entry.source = (uintptr_t)(__bridge void *)original; entry.revision = revision;
+    copies_built++; copies_ns += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started;
     if (cache.count > MAX_TEXTURES) {
         NSNumber *oldest = nil; uint64_t age = UINT64_MAX;
         for (NSNumber *k in cache) if (cache[k].used < age) { oldest = k; age = cache[k].used; }

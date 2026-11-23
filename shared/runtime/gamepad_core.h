@@ -139,7 +139,7 @@ static void calibration_sample_invalidate(void) {
     calibrationDevice=0; calibrationDomain=0;
 }
 static void hid_calibration_changed(void);
-/* The stick calibration (the settings panel's tool, controller-calibration.txt): center is where the stick rests when
+/* The stick calibration (the settings panel's tool, current connection only): center is where the stick rests when
    released and scale stretches its real travel to full range. It applies before the deadzone so a drifting stick that has
    been re-centred reads as centred, and a worn stick that no longer reaches the edge still reads full travel. */
 static RuntimeGamepadCalibration calibration = { .left = {.scaleX=1, .scaleY=1}, .right = {.scaleX=1, .scaleY=1} };
@@ -170,16 +170,6 @@ static float stick_calibrate(int axis, float value) {
     return out > 1.0f ? 1.0f : out < -1.0f ? -1.0f : out;
 }
 
-static inline int stick_capture_active(float lx,float ly,float rx,float ry) {
-    return hypotf(stick_calibrate(0,lx),stick_calibrate(1,ly)) > .12f ||
-           hypotf(stick_calibrate(2,rx),stick_calibrate(3,ry)) > .12f;
-}
-
-static int source_capture_active(int right,float x,float y,int apply) {
-    if (apply) { x=stick_calibrate(right?2:0,x);y=stick_calibrate(right?3:1,y); }
-    return hypotf(x,y)>.12f; /* retain the default neutral tolerance, independent of configured gameplay DZ */
-}
-
 /* Radial response preserves direction and bounds diagonal travel to the unit circle.
    Raw samples remain untouched for centre/range calibration and diagnostics. */
 #include "stick_response.h"
@@ -193,14 +183,15 @@ static int32_t stick_component(int axis, float x, float y) {
 }
 
 #endif
-static inline int32_t stick_axis(float value) {
-    const float deadzone = 0.12f;
+static inline int32_t stick_axis_deadzone(float value, float deadzone) {
     float magnitude = fabsf(value);
     if (magnitude <= deadzone) return 0;
     if (magnitude > 1.0f) magnitude = 1.0f;
     int32_t result = (int32_t)((magnitude - deadzone) / (1.0f - deadzone) * 32767.0f);
     return value < 0 ? -result : result;
 }
+
+static inline int32_t stick_axis(float value) { return stick_axis_deadzone(value, 0.12f); }
 
 #ifndef RUNTIME_STICK_CALIBRATION
 static inline int calibration_source_matches(GCController *controller,int right,int raw) { (void)controller;(void)right;(void)raw;return 0; }
@@ -209,13 +200,28 @@ static inline int calibration_hid_matches(void) { return 0; }
 static int32_t native_stick_component(int axis, float x, float y, int apply) {
 #ifdef RUNTIME_STICK_CALIBRATION
     if (apply) return stick_component(axis, x, y);
-    float gain=stick_response_gain(x,y,stickDeadzone[axis>=STICK_RX]);
-    return (int32_t)(((axis&1)?y:x)*gain*32767.f);
+    float value = (axis & 1) ? y : x;
+    return isfinite(value) ? stick_axis_deadzone(value, stickDeadzone[axis >= STICK_RX]) : 0;
 #else
     (void)apply;
     return stick_axis((axis & 1) ? y : x);
 #endif
 }
+
+#ifdef RUNTIME_STICK_CALIBRATION
+/* Mirror each source's response shape. Keep the stock 12% release floor for tiny
+   residuals at low configured deadzones, but never hold capture on gameplay-neutral drift. */
+static int source_capture_active(int right,float x,float y,int apply) {
+    float deadzone = fmaxf(0.12f, stickDeadzone[right != 0]);
+    if (!apply) return (isfinite(x) && stick_axis_deadzone(x, deadzone)) ||
+                       (isfinite(y) && stick_axis_deadzone(y, deadzone));
+    int base = right ? STICK_RX : STICK_LX;
+    x = stick_calibrate(base, x); y = stick_calibrate(base + 1, y);
+    if (!isfinite(x) || !isfinite(y)) return 0;
+    float gain = stick_response_gain(x, y, deadzone);
+    return (int32_t)(x * gain * 32767.0f) || (int32_t)(y * gain * 32767.0f);
+}
+#endif
 
 static int32_t stronger_axis(int32_t a, int32_t b) {
     return abs(b) > abs(a) ? b : a;
@@ -336,37 +342,7 @@ static void load_controller_type(void) {
 static void save_controller_type(int type) { setting_write("controller-type.txt", gamepad_type_name(type), "controller type"); }
 
 #ifdef RUNTIME_STICK_CALIBRATION
-/* v2 stores independent +/- gains and the HID coordinate convention. Legacy eight-number
-   profiles keep their adaptive HID convention until the user recalibrates; never reinterpret
-   an adaptive centre as a descriptor-normalized one. Missing/bad files leave defaults intact. */
-static void load_calibration(void) {
-    calibration_unbind(); /* no trustworthy persistent per-device identity: retain file, never guess its owner */
-    char path[4096], word[512] = {0}, extra;
-    if (!setting_read("controller-calibration.txt", word, sizeof word, path, sizeof path)) return;
-    float v[12]; int stable = 0, modern = !strncmp(word, "v2 ", 3);
-    int count = modern ? sscanf(word, "v2 %d %f %f %f %f %f %f %f %f %f %f %f %f %c", &stable,
-        &v[0],&v[1],&v[2],&v[3],&v[4],&v[5],&v[6],&v[7],&v[8],&v[9],&v[10],&v[11],&extra) :
-        sscanf(word,"%f %f %f %f %f %f %f %f %c",&v[0],&v[1],&v[2],&v[3],&v[6],&v[7],&v[8],&v[9],&extra);
-    if (count != (modern ? 13 : 8) || (stable != 0 && stable != 1)) return;
-    if (!modern) { v[4]=v[2]; v[5]=v[3]; v[10]=v[8]; v[11]=v[9]; }
-    for (int i=0;i<12;i++) {
-        if (!isfinite(v[i])) return;
-        if (i%6<2 ? fabsf(v[i])>.9f : (v[i] < (modern?.5f:1.f) || v[i]>8.f)) return;
-    }
-    calibration = (RuntimeGamepadCalibration){
-        .left={v[0],v[1],v[2],v[3],v[4],v[5]}, .right={v[6],v[7],v[8],v[9],v[10],v[11]}, .stableHID=stable};
-    fprintf(stderr, "[totk-input] stick calibration: %s%s\n", path,
-        " (archived profile; recalibrate this controller to activate for this connection)");
-}
-static void save_calibration(void) {
-    char word[512];
-    RuntimeStickCalibration l=calibration.left, r=calibration.right;
-    snprintf(word,sizeof word,"v2 %d %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n",
-        calibration.stableHID,l.centerX,l.centerY,l.scaleX,l.scaleY,
-        l.scaleNegX>0?l.scaleNegX:l.scaleX,l.scaleNegY>0?l.scaleNegY:l.scaleY,
-        r.centerX,r.centerY,r.scaleX,r.scaleY,r.scaleNegX>0?r.scaleNegX:r.scaleX,r.scaleNegY>0?r.scaleNegY:r.scaleY);
-    setting_write("controller-calibration.txt", word, "stick calibration");
-}
+/* Calibration is connection-local: do not write or consume legacy unbound profiles. */
 void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = calibration; }
 void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) {
     calibration = *in;
@@ -375,7 +351,6 @@ void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) {
         calibrationOwner=calibrationSampleController;calibrationOwnerDomain=calibrationDomain;
         if (calibrationDomain==8) calibrationOwnerHID=hidConnectionGeneration;
     }
-    save_calibration();
     hid_calibration_changed();
     refresh_gamepads();
     fprintf(stderr, "[totk-input] stick calibration: changed in the settings panel\n");
@@ -383,8 +358,6 @@ void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) {
 void runtime_gamepad_calibration_reset(void) {
     calibration_unbind();
     calibration = (RuntimeGamepadCalibration){ .left = {.scaleX=1, .scaleY=1}, .right = {.scaleX=1, .scaleY=1} };
-    char path[4096];
-    if (setting_path("controller-calibration.txt", path, sizeof path)) unlink(path);
     hid_calibration_changed();
     refresh_gamepads();
     fprintf(stderr, "[totk-input] stick calibration: default (reset)\n");
@@ -400,7 +373,7 @@ void runtime_gamepad_stick_deadzone_set(int right, float value) {
     right = right != 0;
     stickDeadzone[right] = fmaxf(0.0f, fminf(0.5f, value));
     char word[32]; snprintf(word, sizeof word, "%.3f", stickDeadzone[right]);
-    setting_write(stick_deadzone_file(right), word, "radial stick deadzone");
+    setting_write(stick_deadzone_file(right), word, "stick deadzone");
     hid_calibration_changed();
     refresh_gamepads();
 }
@@ -412,8 +385,10 @@ void runtime_gamepad_deadzone_set(float value) {
 }
 void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY) {
     int base = right ? STICK_RX : STICK_LX;
-    *outX = stick_component(base, x, y) / 32767.0f;
-    *outY = stick_component(base + 1, x, y) / 32767.0f;
+    int apply = calibrationSample.valid && (calibrationDomain == 8 ? calibration_hid_matches() :
+        calibration_source_matches(calibrationSampleController, right, calibrationDomain & (right ? 4 : 2)));
+    *outX = native_stick_component(base, x, y, apply) / 32767.0f;
+    *outY = native_stick_component(base + 1, x, y, apply) / 32767.0f;
 }
 static int read_stick_deadzone(const char *name, float *out) {
     char path[4096], word[64], extra; float value;
@@ -825,7 +800,6 @@ void runtime_gamepad_start(void) {
     load_controller_map();
     load_controller_type();
 #ifdef RUNTIME_STICK_CALIBRATION
-    load_calibration();
     load_stick_deadzone();
 #endif
     load_settings_button();

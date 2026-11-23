@@ -74,7 +74,22 @@ static void fn4_release(uint64_t id) {
    compiled where it is drawn, as before the archive had it. */
 /* On par4_queue: the pipelines (keys, their Metal 4 descriptions) compiled into a period of their own and written; a write
    that fails is done again in halves (par4_resplit). */
-static void par4_capture_chunk(NSArray<NSString *> *k, NSArray *d) {
+static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries);
+static void par4_capture_chunk(NSArray<NSString *> *k, NSArray *d) { par4_capture_chunk_n(k, d, 0); }
+/* On par4_queue: a period dropped because the compiler service died since it began (par4_write), or a chunk the service
+   died under again: its pipelines compiled again into a new period (the service restarts on the next request), at most
+   PAR4_RECAPTURE_TRIES times; a pipeline whose own compile kills the service is not among them (it was never captured). */
+#define PAR4_RECAPTURE_TRIES 4
+static void par4_recapture(NSArray<NSString *> *keys, NSArray *descs, int tries) {
+    if (!keys.count) return;
+    if (keys.count != descs.count || tries > PAR4_RECAPTURE_TRIES) {
+        atomic_fetch_add(&g_par4_lost, keys.count);
+        MLOG("【红】Metal 4 管线存档：编译服务又崩溃了 %d 次，%lu 条不存（画到时现编）", tries - 1, (unsigned long)keys.count);
+        return;
+    }
+    par4_capture_chunk_n(keys, descs, tries);
+}
+static void par4_capture_chunk_n(NSArray<NSString *> *k, NSArray *d, int tries) {
     Par4Period *q = par4_new_period(g_dev);
     if (!q) { atomic_fetch_add(&g_par4_lost, k.count); return; }
     NSMutableArray<NSString *> *got = [NSMutableArray array]; NSMutableArray *gotd = [NSMutableArray array];
@@ -95,7 +110,13 @@ static void par4_capture_chunk(NSArray<NSString *> *k, NSArray *d) {
         [lk lock];
         if (ps) { [got addObject:k[i]]; [gotd addObject:desc]; } else atomic_fetch_add(&g_par4_lost, 1);
         [lk unlock];
+        if (!ps) par4_compiler_died(e);   // counts only a death (par4_err_died)
     } });
+    if (atomic_load(&g_par4_deaths) != q->deaths) {   // the service died under these compiles, or under any other since q began
+        par4_release(q);
+        par4_recapture(got, gotd, tries + 1);
+        return;
+    }
     NSError *why = nil;
     BOOL ok = !got.count || par4_publish(q, got, &why);
     par4_release(q);
@@ -156,15 +177,28 @@ static id par4_make(int kind, id desc4, NSString *key) {
     NSError *ce = nil;
     if (c) ps = kind == PAR_RENDER ? (id)[c newRenderPipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce]
                                    : (id)[c newComputePipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce];
+    /* Test TOTK_PSO4_TEST_DEATH=<n>: the n-th capture reports the compiler service's death (the error Metal gives then) instead
+       of its pipeline, so a run shows par4_compiler_died / par4_write dropping the period (the pipeline is compiled again below). */
+    { static int nth = -1; static _Atomic int seen; if (nth < 0) { const char *t = getenv("TOTK_PSO4_TEST_DEATH"); nth = t ? atoi(t) : 0; }
+      if (p && ps && nth > 0 && atomic_fetch_add(&seen, 1) + 1 == nth) { ps = nil; ce = [NSError errorWithDomain:@"AGXMetalTest" code:2 userInfo:@{NSLocalizedDescriptionKey: @"Compiler encountered XPC_ERROR_CONNECTION_INTERRUPTED (TOTK_PSO4_TEST_DEATH)"}]; } }
     if (p) par4_leave(p, key, desc4, ps != nil);
     if (claimed) fn4_release(fid);
-    if (!ps && p) {   // refused through the capturing compiler: the period is written as it is, then once more without capture
-        par4_refused(p);
-        if (atomic_fetch_add(&g_par4_failed, 1) < 4) MLOG("【红】Metal 4 管线存档：捕获时编不了 %s（%s），改不捕获再编", key.UTF8String, ce.localizedDescription.UTF8String ?: "?");
-        id<MTL4Compiler> plain = par4_plain(g_dev); ce = nil;
-        if (plain) ps = kind == PAR_RENDER ? (id)[plain newRenderPipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce]
-                                           : (id)[plain newComputePipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce];
+    if (!ps && p) {   // refused through the capturing compiler: the period is written as it is (dropped when the compiler service died, par4_compiler_died), then once more
+        int died = par4_err_died(ce);
+        if (died) par4_compiler_died(ce); else par4_refused(p);
+        if (atomic_fetch_add(&g_par4_failed, 1) < 4) MLOG("【红】Metal 4 管线存档：捕获时编不了 %s（%s），%s", key.UTF8String, ce.localizedDescription.UTF8String ?: "?", died ? "编译服务重启后捕获进新的一期再编" : "改不捕获再编");
+        /* The service died (it restarts on the next request): captured again, into the new period par4_compiler_died left for
+           the next capture, so packaging has it (2026-11-20: compiled without capture it was missing from the archive). Refused: once more without capture. */
+        int reclaimed = died && fn4_claim(fid);
+        Par4Period *q = reclaimed ? par4_enter(g_dev) : nil;
+        id<MTL4Compiler> again = q ? q->comp : par4_plain(g_dev); ce = nil;
+        if (again) ps = kind == PAR_RENDER ? (id)[again newRenderPipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce]
+                                           : (id)[again newComputePipelineStateWithDescriptor:desc4 compilerTaskOptions:nil error:&ce];
+        if (q) par4_leave(q, key, desc4, ps != nil);
+        if (reclaimed) fn4_release(fid);
     }
+    else if (!ps) par4_compiler_died(ce);   // a plain compile (no key, or no period) the service died under
+    if (!ps && ce && p) par4_compiler_died(ce);   // the retry without capture died too
     if (ps) atomic_fetch_add(&g_par4_built, 1);
     return ps;   // nil: the old path compiles it and reports the error
 }

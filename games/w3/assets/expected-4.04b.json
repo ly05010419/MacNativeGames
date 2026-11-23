@@ -1,0 +1,20 @@
+{
+  "title_id": "0100E67012924000",
+  "update_title_id": "0100E67012924800",
+  "version": "4.04b",
+  "main_build_id": "b151a224a429f9a73abb05c5a3de9468",
+  "sdk_build_id": "d5a1029a57d8cd4fdf4eacad87b0cfd0",
+  "exefs_sha256": {
+    "main": "6913e8e98b27e95bc4ecfdab81e5e0f0bad54d327570915439ddbbe7a6b8e6de",
+    "sdk": "040daafb8792342d7a5c61f06b20e9b15ead5fa77fef9433e3eb183e0e3c0afa",
+    "main.npdm": "e3e88216662303d1f561fca38a3816b6eab4ed687b99c862d2e61b78a839c8c9",
+    "rtld": "28317605926caa40a5cbee3e3cb290c65783b4d9f8c3697b43ca41ab2866a44d"
+  },
+  "romfs_probe": "content/content0/bundles/blob.bundle",
+  "romfs_size": 21420806032,
+  "romfs_sha256": "c5800b0bb727f6d1bd8ea49ec12556592e507937e1dae3d387e0e10b75fec41a",
+  "rewritten_sha256": {
+    "main.patched.bin": "fef9f26c00eafd08ddc3c9ed1656c091ff88c58c3c1937356ec0cee8bdf8ee0a",
+    "sdk.patched.bin": "e1396b861812f25286b96c3a8adf4a95a75476c9adac4cd5cd13672cd0e71a9e"
+  }
+}

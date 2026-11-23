@@ -516,6 +516,24 @@
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>活跃度统计 · Active players</string>
+			<key>FooterText</key>
+			<string>每天最多上报一次：设备的随机安装号（开发者范围内的标识的哈希）、游戏、平台和版本，用来统计日活、周活、月活和流失率。不发名字、账号或游戏文件；网站只存安装号的加盐哈希，不存 IP · Once a day: a random install id of the device (a hash of the vendor id), the game, platform and version, to count daily, weekly and monthly players. No name, account or game file; the site keeps only a salted hash of the id and no IP</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_USAGE_STATS</string>
+			<key>Title</key>
+			<string>匿名统计活跃度 · Count me as an active player</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
 	</array>
 </dict>
 </plist>

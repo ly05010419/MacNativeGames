@@ -417,6 +417,36 @@ class ListFileTests(unittest.TestCase):
                 self.assertIn('1 naming bind states the file does not give', part)
 
 
+class FileInputTests(unittest.TestCase):
+    """--file <game>=<path> (2026-11-18, user: "搜集 issue里的"): a contribution file at hand goes through the same merge as
+    the inbox's rows; auto takes the game whose keys hold most of its shaders, and the rows still go by owner."""
+
+    def rows(self, *keys):
+        return ''.join(f'V\t{k}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}\n' for k in keys)
+
+    def test_auto_takes_the_game_holding_most_of_its_shaders(self):
+        a, b, c = 'a' * 64, 'b' * 64, 'c' * 64
+        keys = {'totk': {a, b}, 'botw': {c}}
+        self.assertEqual(collect_shaders.file_game(self.rows(a, b, c), keys), 'totk')
+        self.assertEqual(collect_shaders.file_game(self.rows(c), keys), 'botw')
+        self.assertIsNone(collect_shaders.file_game(self.rows(a, c), keys))          # as many: no default
+        self.assertIsNone(collect_shaders.file_game(self.rows('d' * 64), keys))      # no game holds any
+
+    def test_a_file_merges_like_the_inbox_and_an_unknown_game_is_left_out(self):
+        a = 'a' * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'shader-list-contribution.txt'
+            path.write_text('# a player\'s file\n' + self.rows(a))
+            lists = lists_for(('totk', 'botw'))
+            keys = {'totk': set(), 'botw': set()}
+            with mock.patch.object(collect_shaders, 'GAMES', {g: collect_shaders.GAMES[g] for g in ('totk', 'botw')}):
+                lines = collect_shaders.merge_files([f'totk={path}', f'nope={path}'], lists, keys, {})
+        self.assertEqual(len(lists['totk'].variants), 1)
+        self.assertEqual(len(lists['botw'].variants), 0)
+        self.assertIn('(totk)', lines[0])
+        self.assertIn('no game (nope): left out', lines[1])
+
+
 class NoIssueRouteTests(unittest.TestCase):
     """User 2026-11-12: contributions come only through the apps' upload; nothing reads or asks for GitHub issues."""
 
@@ -535,6 +565,36 @@ class OneContributionFilePerGameTests(unittest.TestCase):
         shared = re.compile(r'strcmp\(GAME_FOLDER, "\w+"\) \? @"shader-list-contribution[^"]*"\s*: @"shader-list-contribution')
         for launcher in sorted(TOTK.parent.glob('*/app/launcher.m')):
             self.assertIsNone(shared.search(launcher.read_text()), f'{launcher}: one contribution file for several games')
+
+
+@unittest.skipUnless((INBOX / 'lib/validate.js').is_file(), 'needs the shader inbox checkout (SHADER_INBOX_DIR)')
+class InboxKnowsEveryGameTests(unittest.TestCase):
+    """The inbox takes a game's rows only under an id in its lib/validate.js GAMES ("unknown game", HTTP 400 otherwise), and
+    the board and the screenshot wall check the same list. 2026-11-22: Mario Kart 8 Deluxe (games/mk8dx) and Red Dead
+    Redemption (games/rdr) report as "mk8dx" / "rdr", which the inbox did not list, so every upload of theirs was refused;
+    Shredder's Revenge ("tmnt") the same, so its export failed in each merge."""
+
+    @staticmethod
+    def inbox_games():
+        text = (INBOX / 'lib/validate.js').read_text()
+        body = re.search(r'export const GAMES = Object\.freeze\(new Set\(\[(.*?)\]\)\)', text, re.S)
+        return set(re.findall(r"'(\w+)'", body.group(1)))
+
+    def test_every_id_a_game_reports_is_one_the_inbox_takes(self):
+        reported = {}
+        for path in sorted(TOTK.parent.glob('*/runtime/game_version.h')) + upload_copies():
+            for game in re.findall(r'#define GAME_INBOX_ID "(\w+)"', path.read_text()):
+                reported.setdefault(game, path)
+        self.assertGreaterEqual(len(reported), 8)
+        known = self.inbox_games()
+        for game, path in sorted(reported.items()):
+            with self.subTest(game=game):
+                self.assertIn(game, known, f'{path} reports as "{game}": add it to {INBOX}/lib/validate.js GAMES and deploy')
+
+    def test_every_game_the_merge_reads_is_one_the_inbox_takes(self):
+        sys.path.insert(0, str(TOTK / 'scripts'))
+        import collect_shaders
+        self.assertLessEqual(set(collect_shaders.TITLES), self.inbox_games())
 
 
 @unittest.skipUnless(shutil.which('xcrun'), 'needs the Xcode command line tools')

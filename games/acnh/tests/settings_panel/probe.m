@@ -175,13 +175,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
       assert(settingsPanel.allRows.count == 13); }
 
     /* The overlay: the Zelda games' four choices; FPS + playtime and the corner box. */
-    assert([choices(@"Overlay") isEqualToArray:(@[@"All (FPS, shaders, load, playtime)",
-        @"FPS full information (also hitches, libraries, pipelines, archive misses)", @"FPS + playtime", @"Off"])]);
+    assert([choices(@"Overlay") isEqualToArray:(@[@"Off", @"Bare FPS", @"FPS + playtime", @"All", @"FPS and frame debug info"])]);   /* user 2026-11-18 */
     hud_publish(HUD_FPS, "FPS 30  1920x1080", 0);
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL && !strcmp(savedWord, "2"));
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue hasPrefix:@"FPS 30  1920x1080\nSession"] && [b.label.stringValue containsString:@"Settings: key 1"]); }
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
-    pick(@"Overlay", @"FPS full information (also hitches, libraries, pipelines, archive misses)"); assert(fps_overlay_hud_mode() == HUD_MODE_FULL && !strcmp(savedWord, "3"));
+    pick(@"Overlay", @"FPS and frame debug info"); assert(fps_overlay_hud_mode() == HUD_MODE_FULL && !strcmp(savedWord, "3"));
     flip(@"FPS graph", YES); assert(fpsGraphEnabled && [setting_text("fps-graph.txt") isEqualToString:@"on\n"]); flip(@"FPS graph", NO); assert(!fpsGraphEnabled);
 
     /* The frame rate on this 60 Hz screen: 30 and 60, 60 in force; 120 is not offered (frame_rate.c display_holds). */

@@ -24,6 +24,8 @@ def seed_files(folder):
         f'{KEY}-b7530f698e76_b.json': b'{"chain": "x"}',
         f'{KEY}-b7530f698e76_b.metallib': bytes(range(256)) * 40,
         f'{KEY}.variants': b'[]',
+        f'{"e" * 64}.variants': b'[{"variant": "' + b'e' * 64 + b'-b7530f698e76", "deps": {}}]' * 9,   # parts of 6000 bytes: in another part
+        f'{"f" * 64}.variants': b'',
         f'{"b" * 64}-b7530f698e76_b.metal': b'',
         f'{"c" * 64}-b7530f698e76_b.metal': b'x' * 5000,
         'seed-manifest.json': b'{}', 'pso_title.tsv': b'R\tx\n', 'variant-' + 'd' * 64 + '.metallib': b'MTLB',
@@ -75,12 +77,26 @@ class RuntimeReader(unittest.TestCase):
             asked = names + ['seed-manifest.json', 'nothing']
             out = subprocess.run([str(exe), str(Path(d) / 'shader-seed-x'), *asked], capture_output=True, text=True, timeout=60).stdout.splitlines()
             self.assertEqual(out[0], f'parts {len(parts)}')
-            want = [f'{n} {len(files[n])} {hashlib.sha256(files[n]).hexdigest()}' for n in names] + ['seed-manifest.json missing', 'nothing missing']
-            self.assertEqual(out[1:], want)
-            # A damaged part ends the image there: the folder's files are read instead
+            variants = [n for n in names if n.endswith('.variants')]
+            self.assertEqual(out[1], f'preloaded {len(variants)} {sum(len(files[n]) for n in variants)}')
+            # Every variant index is served from memory, byte for byte the image's (2026-11-19: the replay waited on the disk);
+            # the other files are not copied
+            want = [f'{n} {len(files[n])} {hashlib.sha256(files[n]).hexdigest()}' + (' preloaded' if n.endswith('.variants') else '')
+                    for n in names] + ['seed-manifest.json missing', 'nothing missing']
+            self.assertEqual(out[2:], want)
+            self.assertGreater(len({p for p in parts for n in variants if n in seed_image.read_part(p)}), 1, 'the indexes span parts')
+            # A damaged part ends the image there: the folder's files are read instead, nothing is preloaded
             raw = bytearray(parts[0].read_bytes()); raw[16] ^= 0xff; parts[0].write_bytes(bytes(raw))
             out = subprocess.run([str(exe), str(Path(d) / 'shader-seed-x')], capture_output=True, text=True, timeout=60).stdout.splitlines()
-            self.assertEqual(out[0], 'parts 0')
+            self.assertEqual(out[:2], ['parts 0', 'preloaded 0 0'])
+
+    def test_variant_indexes_are_preloaded_off_the_replay_thread(self):
+        rt = (NVN / 'totk_shader_rt.m').read_text()
+        opened = rt[rt.index('seed_image_open(&g_seed_img, source);'):]
+        self.assertLess(opened.index('dispatch_async('), opened.index('seed_image_preload(&g_seed_img, ".variants")'))
+        reader = rt[rt.index('static NSData *seed_image_file(NSString *path) {'):]
+        reader = reader[:reader.index('\n}\n')]
+        self.assertLess(reader.index('seed_image_preloaded_data(atomic_load(&g_seed_pre)'), reader.index('seed_image_data(&g_seed_img, name)'))
 
     def test_seed_reads_go_through_the_image(self):
         """Every read of a seed file by its totk_rt_file path can find it in the image."""

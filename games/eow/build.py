@@ -38,6 +38,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from tools.port_app import adapter  # noqa: E402  MNG Launcher's side every port's build.py shares
 from tools.port_app.adapter import metal_env, say, stamp  # noqa: E402
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 
 def stage(number, words):
@@ -138,8 +139,13 @@ def rewrite(work, python):
 def host(work, python, seed=True):
     """make prepare (every input against the pinned hashes) runtime shader-tools, then the shader seed."""
     stage(6, 'Building the native host and the shaders')
-    make = ['make', f'PY={python}', f'WORK={work}']
+    make = ['make', f'PY={python}', f'WORK={make_path(work, "eow")}']
     env = {'MACOSX_DEPLOYMENT_TARGET': os.environ.get('MACOSX_DEPLOYMENT_TARGET', '26.0')}
+    # the release's spirv-cross (tools/prebuilt.py: build_app.build_spirv_cross, the commit, sources and flags of the
+    # Makefile's own rule; user 2026-11-22: a player compiles nothing): in place, make's rule (no prerequisites) is done
+    import tools.prebuilt as prebuilt
+    if not prebuilt.keep_placed(REPO, 'spirv-cross', work / 'build/spirv-cross/spirv-cross'):
+        prebuilt.compiler_needed('SPIRV-Cross')
     run([*make, 'prepare', 'runtime', 'shader-tools'], work, 'make', env)
     if seed:
         run([*make, 'shader-seed'], work, 'shader-seed', {**env, **metal_env()})

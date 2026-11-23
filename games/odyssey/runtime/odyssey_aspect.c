@@ -26,7 +26,7 @@
 #include "aspect_math.h"
 #include <TargetConditionals.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "mach_vm_compat.h"   /* mach_vm_* on the Mac and on iOS (whose SDK refuses <mach/mach_vm.h>), as loader.c */
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>

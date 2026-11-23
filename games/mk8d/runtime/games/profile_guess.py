@@ -260,7 +260,7 @@ def build_sources(exefs, romfs, modules):
     spirv = 0
     if any(re.match(r'vk[A-Z]', s) for s in imports):   # only a Vulkan game's RomFS is read
         spirv = sum(1 for _, _, head in romfs_files(romfs) if head.startswith(bytes.fromhex('03022307')))
-    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); import uepak
+    sys.path.insert(0, str(HERE.parent / 'gfx/tools')); from shader_split_unreal import unreal_paks   # footers only: Unreal games are refused
     trinity = 0
     for d, _, names in os.walk(romfs):
         for n in names:
@@ -284,7 +284,7 @@ def build_sources(exefs, romfs, modules):
                     if h[:8] == b'GFLXPACK':
                         cnt, _, tab = struct.unpack_from('<IIQ', h, 0x10); f.seek(tab); t = f.read(0x18 * cnt)   # the file table: 0x18 bytes per file, u16 compression at +2 (shader_split.py gfpak_members)
                         oodle_gfpak += any(struct.unpack_from('<H', t, 0x18 * i + 2)[0] == 3 for i in range(len(t) // 0x18))
-    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), inline=False)), trinity, len(uepak.unreal_paks(str(romfs), inline=True)), gl_names, gl_src, gl_files, oodle_pkz, nro_imp,
+    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(unreal_paks(str(romfs), inline=False)), trinity, len(unreal_paks(str(romfs), inline=True)), gl_names, gl_src, gl_files, oodle_pkz, nro_imp,
                           oodle_gfpak=oodle_gfpak)
 
 

@@ -149,6 +149,16 @@ class SeedVariantsFirst(unittest.TestCase):
         # once the seed is known (g_seed_dir) and before the iOS fill import / the warm-up
         self.assertLess(rt.index('g_seed_dir = source;'), rt.index('NSUInteger mapped = rt_list_put_on_seed();'))
 
+    def test_nothing_in_totk_rt_dirs_dispatch_once_takes_g_rt_lock(self):
+        # #2267 (2026-11-17): with TOTK_SHADER_PREFETCH=1 the first totk_rt_dir call came under g_rt_lock
+        # (totk_rt_known_variants, totk_rt_variant, totk_rt_portable_variant), and its dispatch_once ran
+        # rt_list_put_on_seed -> totk_rt_row_prefer_seed, which took the same lock: the boot stopped there
+        rt = SOURCE.read_text()
+        for name in ('NSString *totk_rt_row_prefer_seed(NSString *line) {', 'static NSUInteger rt_list_put_on_seed(void) {'):
+            body = function(rt, name)
+            self.assertNotIn('g_rt_lock', body, name)
+        self.assertIn('pthread_mutex_lock(&g_prefer_lock);', function(rt, 'NSString *totk_rt_row_prefer_seed(NSString *line) {'))
+
     def test_the_devices_collected_list_is_not_an_app_list(self):
         # the same evening: the cache's pso_collected.tsv (this device's, never archived at packaging) was counted as an
         # App list, so its 1,716 unarchived rows read "App 自带清单 没存过" in red

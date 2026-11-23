@@ -1,0 +1,22 @@
+{
+  "title_id": "01004B10157F2000",
+  "update_title_id": "01004B10157F2800",
+  "version": "1.0.2",
+  "version_raw": 65536,
+  "sdk": "13.3.2",
+  "main_build_id": "d4b150b29a931cd381e2a30318fc299f",
+  "subsdk0_build_id": "a8cb97803f7f442a3b6cce1c7cd4ee4a",
+  "sdk_build_id": "357efc198e728cb5d55265aff304f03c",
+  "exefs_sha256": {
+    "main": "180ebe34914fe6136d4eb20573cec4e8d9e43892e82380f1d57e9303f149b32d",
+    "subsdk0": "f38d30e8241ee208cbf3090f44613e328af517ad199eb5985619416bb2cbcb55",
+    "sdk": "2a89fa1c0e677710e89ed29b578162affef530a0c9b8c93cda15d50a57a20d28",
+    "main.npdm": "6f473769bb4ab3e6b330b0c7e9d88fcf37502e8e7b0b9888eaec88d967528e4b"
+  },
+  "romfs_probe": "CPK/PATCH1.CPK",
+  "rewritten_sha256": {
+    "main.patched.bin": "afc42142838aad40e439af07e0db423fa8eb6cf7e76cff286f3e32598db5409d",
+    "subsdk0.patched.bin": "348ec2d088bff83c9bc72905b239c94a1f471bf06cc499b16a1de8435675f9e2",
+    "sdk.patched.bin": "ad72aea69a60a0debd6e0dc34aee10bb4d1308c5509ebb8ccc97aaca37ce317f"
+  }
+}

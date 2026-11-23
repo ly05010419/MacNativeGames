@@ -18,6 +18,7 @@ void *runtime_symbol(const char *name);
 void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);
 void runtime_gpu_path_probe(const char *which);
+int mtl_pipeline_archive_tool(int argc, char **argv);   // Mac only (nvn_mtl.m): the device's pipeline archive for packaging
 void runtime_audio_probe(void);
 void *runtime_hle_wrap(void *fn);
 void runtime_hle_stack_set(uintptr_t top);
@@ -112,6 +113,7 @@ int fps_overlay_hud_mode(void);
 int fps_overlay_full_hud(void);
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
+void runtime_aspect_view(double w, double h);   /* the drawable's size (frontend.m / frontend_ios.m): the phone's screen shape */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..2: FPS, shaders, load; 0 = not published */
 
@@ -148,6 +150,13 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
+/* The iPhone / iPad app's shell (games/totk/ios/Sources, shared with Tears of the Kingdom) */
+void runtime_audio_output_restart(int recreate);   /* audio_mixer.c: start the outputs again after an audio session interruption (iOS) */
+void runtime_keyboard_capture(int on);   /* iOS only (shared gamepad_core.h): a UIKit text field takes the hardware keyboard; it must not also drive the game */
+void runtime_motion_phone(int on);  /* shared motion_fusion.c: the iPhone's own sensor feeds the six-axis device (1) / stops (0) */
+int runtime_phone_fps(void);                /* iOS: 30 (Animal Crossing plays at 30 FPS there; ios_front.m) */
+void runtime_phone_fps_set(int fps);        /* the touch controls' frame-rate button: nothing to switch (ios_front.m) */
+void runtime_settings_page(int page);   /* the Mac settings panel's page; nothing on the phone */
 /* The settings panel (runtime/settings_panel.h) and runtime/gamepad.m: the controller layout (controller_map.h), the
    controller type (gamepad_layout.h GAMEPAD_TYPE_*), the controller's way to the panel (L3 + R3, or one button), and the
    controller read by the panel while it owns the input. */

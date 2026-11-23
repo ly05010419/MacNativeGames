@@ -68,6 +68,15 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_gamepad_stick_raw(NULL, NULL, NULL, NULL, &connected); CHECK(!connected);
 
     RuntimeGamepadState out;
+    /* DSU must use the same axial neutral test when dismissing settings as during play. */
+    dsuInput = (DSUInput){.connected=1,.axes={140,140,128,128}};dsuAt=testNow;
+    runtime_gamepad_text_capture(1);runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);
+    CHECK(out.connected && !out.lx && !out.ly && textCapture==0);
+    dsuInput.axes[0]=160;
+    runtime_gamepad_text_capture(1);runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);
+    CHECK(textCapture==2 && !out.lx);
+    dsuInput.axes[0]=140;refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==0);
+    dsuInput=(DSUInput){0};dsuAt=0;refresh_gamepads();
     float lt = -1, rt = -1;
     /* HID fallback: digital ZL/ZR are raw 0/1 triggers, independent of calibration. */
     hidPad = (HIDPadState){.present = 1};
@@ -181,34 +190,29 @@ int main(int argc, char **argv) { @autoreleasepool {
     custom.left.centerX=.35f;
     runtime_gamepad_calibration_set(&custom);runtime_gamepad_read(&out);
     CHECK(out.lx==0 && out.rx==rightBefore); /* changing left never changes right */
-    calibration=(RuntimeGamepadCalibration){.left={.scaleX=1, .scaleY=1},.right={.scaleX=1, .scaleY=1}};
-    load_calibration(); /* restart-equivalent loading, not the UI's in-memory copy */
-    RuntimeGamepadCalibration restored;runtime_gamepad_calibration_get(&restored);
-    CHECK(fabsf(restored.left.centerX-.35f)<1e-6f && restored.left.scaleX==2);
-    CHECK(fabsf(restored.right.centerX+.1f)<1e-6f && fabsf(restored.right.scaleX-1.2f)<1e-6f);
-    CHECK(!calibration_hid_matches()); /* archived file is never bound to whichever pad happens to be connected */
-    runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&restored);
-    runtime_gamepad_read(&out);CHECK(out.lx==0 && out.rx==rightBefore);
-
-    /* Old eight-value profiles load with legacy coordinates. New files retain asymmetric gains. */
+    /* Calibration remains in memory only; a pre-existing unbound profile is neither read nor overwritten. */
+    char calPath[4096], oldProfile[128];
+    CHECK(!setting_read("controller-calibration.txt",oldProfile,sizeof oldProfile,calPath,sizeof calPath));
     setting_write("controller-calibration.txt","0.1235 0 2 1 0 0 1 1","legacy test");
-    load_calibration(); CHECK(!calibration.stableHID && calibration.left.scaleNegX==2);
-    CHECK(fabsf(stick_calibrate(0,.1235f))<1e-6f && !calibration_hid_matches());
-    runtime_gamepad_calibration_get(&restored);runtime_gamepad_calibration_sample(&ownerSample);
-    runtime_gamepad_calibration_set(&restored); /* explicit calibration of the sampled device activates it */
+    runtime_gamepad_calibration_reset();
+    CHECK(!calibration_hid_matches());
+    RuntimeGamepadCalibration restored={.left={.centerX=.1235f,.scaleX=2,.scaleY=1,.scaleNegX=2},
+        .right={.scaleX=1,.scaleY=1}};
+    runtime_gamepad_calibration_sample(&ownerSample);
+    runtime_gamepad_calibration_set(&restored);
+    CHECK(setting_read("controller-calibration.txt",oldProfile,sizeof oldProfile,calPath,sizeof calPath));
+    CHECK(!strcmp(oldProfile,"0.1235 0 2 1 0 0 1 1"));
     /* At 0% deadzone quantization/ADC residuals must not trap UI capture; buttons still block release. */
     hidX=.123456f;hidY=hidZ=hidRz=0;runtime_gamepad_deadzone_set(0);
     runtime_gamepad_text_capture(1); runtime_gamepad_text_capture(0);
     runtime_gamepad_read(&out);CHECK(textCapture==0);
     hidX=.3f; hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(out.lx>1000);
     runtime_gamepad_deadzone_set(.5f); hidX=.3f;hid_pad_compute();refresh_gamepads();
-    runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==2); /* large game DZ is not neutral */
-    hidX=.123456f;hidButtons[1]=1;hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==2);
+    runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==0); /* gameplay-neutral drift is neutral for release */
+    hidX=.123456f;hidButtons[1]=1;hid_pad_compute();refresh_gamepads();runtime_gamepad_text_capture(0);runtime_gamepad_read(&out);CHECK(textCapture==2);
     hidButtons[1]=0;hid_pad_compute();refresh_gamepads();runtime_gamepad_read(&out);CHECK(textCapture==0);
     custom=(RuntimeGamepadCalibration){.left={.centerX=.15f,.centerY=-.1f,.scaleX=1/.65f,.scaleY=1/.8f,
         .scaleNegX=1/.95f,.scaleNegY=1/.6f},.right={.scaleX=1,.scaleY=1},.stableHID=1};
-    runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);load_calibration();
-    CHECK(!calibration_hid_matches());
     runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);
     CHECK(calibration.stableHID && fabsf(calibration.left.scaleNegX-1/.95f)<1e-6f);
     CHECK(stick_calibrate(0,.8f)>.9999f && stick_calibrate(0,-.8f)<-.9999f);
@@ -219,7 +223,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(fabsf(hidRawLx-.15f)<1e-6f && fabsf(hidRawLy+.1f)<1e-6f);
     hidX=.8f;hid_pad_compute();int calibratedEdge=hidPad.lx;CHECK(calibratedEdge>32760);
     memset(hidReach,0,sizeof hidReach);hid_pad_compute();CHECK(hidPad.lx==calibratedEdge);
-    hid_pad_reset();hidOrder=GAMEPAD_HID_SWITCH_PRO;hidX=.15f;hidY=.1f;hidZ=hidRz=0;
+    CHECK(hidCaptureActive);
+    hid_pad_reset();
+    CHECK(!hidCaptureActive); /* reconnect with no primed axes must not inherit a held stick */
+    hidPad.present=1;refresh_gamepads();runtime_gamepad_text_capture(1);runtime_gamepad_text_capture(0);
+    runtime_gamepad_read(&out);CHECK(textCapture==0);
+    hidOrder=GAMEPAD_HID_SWITCH_PRO;hidX=.15f;hidY=.1f;hidZ=hidRz=0;
     hid_pad_compute();CHECK(!calibration_hid_matches() && hidPad.lx!=0); /* reconnect never inherits an unverified identity */
     hidSampleAxes=15;runtime_gamepad_calibration_sample(&ownerSample);runtime_gamepad_calibration_set(&custom);
     CHECK(hidPad.lx==0 && hidPad.ly==0); /* explicit re-calibration restores this connection */

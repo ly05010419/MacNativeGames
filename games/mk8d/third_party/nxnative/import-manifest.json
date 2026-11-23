@@ -1135,11 +1135,6 @@
       "sha256": "a83fb7fe88d2b86bfce6c1df421b919d534930c85d512d1579d1ca041349938e"
     },
     {
-      "source": "dm/gfx/tools/uepak.py",
-      "destination": "runtime/gfx/tools/uepak.py",
-      "sha256": "66c7926d1f7c64f42fb4905f9f28029635c5f6f92eb644df427df8714bb23983"
-    },
-    {
       "source": "dm/gfx/tools/unityfs.py",
       "destination": "runtime/gfx/tools/unityfs.py",
       "sha256": "ad0f0f1cb120141d442aba091269e25e11f4af5f59bb74adb936c066e522e275"

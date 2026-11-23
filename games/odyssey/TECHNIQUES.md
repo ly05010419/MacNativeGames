@@ -37,6 +37,8 @@ Each run warms the collected pipeline lists and Metal's system cache for the nex
 
 ## Pipeline binary archive — ported 22 October
 
+**Since 21 November** Odyssey and Animal Crossing use Tears of the Kingdom's archive itself: the headers are shared (`shared/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive*.h`, linked into each game; `totk_pipeline_archive_port.h` holds the ports' `pso_new` / `cs_new`, `totk_pipeline_archive_port_fill.h` the `pipeline-archive` packaging mode). Files hold batches of pipelines with their `.keys`; the warm-up's thread writes what the archive lacked, nothing waits for an idle moment; the iPhone / iPad build compiles the device's pipelines on the Mac (`games/totk/ios/tools/device_pipelines.py make`, as Zelda's build), and with a valid archive the warm-up loads no shader library for itself. The notes below describe the first port (one file per pipeline, idle writes) and are kept for its measurements. `tests/test_ios_ports_unified.py PipelineArchive` checks the shared form.
+
 From upstream `27baca0`, `6446e09`, `ea6c5a7`, `1eff989` and `610d735`, Mac path only. `nvn/totk_pipeline_archive.h` is the upstream header unchanged.
 
 - **Where it is called.** `pso_new` and `cs_new` in `nvn_mtl.m` wrap every game pipeline creation: draw, prediction kick, warm-up, light warm-up and compute dispatch. Built-in helper pipelines are not wrapped.

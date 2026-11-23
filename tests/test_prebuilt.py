@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -16,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import build_app  # noqa: E402
 from tools import prebuilt  # noqa: E402
-from tools.builder_app import make_app  # noqa: E402
+# a release's source.tar.gz carrying .prebuilt (make_app.source_archive) is checked in MNG-Launcher, the Launcher's own
+# repository since 2026-11-20 (tests/test_porting_contract.py SourceArchive)
 
 
 def source_with(root, programs, commit='c0ffee', manifest_commit=None):
@@ -102,6 +104,37 @@ class BuildUsesThem(unittest.TestCase):
                 build_app.make_runtime(tree, 'v143', root / 'logs', {})
                 build_app.make_runtime(tree, 'v0', root / 'logs', {}, data=False)
             self.assertEqual([call.args[0][-1] for call in run.call_args_list], ['runtime-v143', 'binary'])
+
+    @staticmethod
+    def makefile_game_data():
+        """games/totk/Makefile, per version: the files game-data-<version> makes and the Python steps that make them."""
+        text = (ROOT / 'games/totk/Makefile').read_text()
+        define = text.split('define GAME_DATA\n', 1)[1].split('\nendef', 1)[0]
+        recipe = r'^({target}): .*\n\t.*?"\$+\(PY\)" scripts/(\S+\.py) --version {version}(.*)$'
+        found = {}
+        for v in re.findall(r'^\$\(eval \$\(call GAME_DATA,(\w+),', text, re.M):
+            files, steps = set(), set()
+            for m in re.finditer(recipe.format(target=r'build/game-data/\S+', version=r'\S+'), define.replace('$(1)', v), re.M):
+                files.add(m[1].rsplit('/', 1)[-1]); steps.add((m[2], *m[3].split()))
+            for line in re.findall(rf'^game-data-{v}: (.*)$', text, re.M):   # a version's own rules (BotW's aoc-config.txt)
+                for target in line.split():
+                    m = re.search(recipe.format(target=re.escape(target), version=v), text, re.M)
+                    files.add(target.rsplit('/', 1)[-1]); steps.add((m[2], *m[3].split()))
+            found[v] = files, steps
+        return found
+
+    def test_game_data_steps_are_the_makefiles(self):
+        """#2282, #2318: with the release's prebuilt runtime the Python steps stood in for make game-data-botw190 without
+        its aoc-config.txt rule, and no Breath of the Wild build got past placing the game data."""
+        found = self.makefile_game_data()
+        self.assertIn(('prepare_romfs_backend.py', '--aoc'), found['botw190'][1])
+        self.assertEqual(set(found), {'v0', 'v121', 'v143', 'botw160', 'botw190', 'dkb', 'pkp'})
+        for version, (files, steps) in found.items():
+            with self.subTest(version), mock.patch.object(build_app, 'run') as run:
+                build_app.make_game_data(Path('/w'), version, Path('/logs'), {})
+                ran = {(c.args[0][1].rsplit('/', 1)[-1], *c.args[0][4:]) for c in run.call_args_list}
+                self.assertEqual(ran, steps)
+                self.assertLessEqual(set(build_app.game_data_files(version)), files)   # what place_game_data wants
 
     def test_warm_tool_and_hactool_from_the_release(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,35 +246,18 @@ class GamesTheProgramsDoNotCover(unittest.TestCase):
                 self.assertFalse(classify.no_developer_tools())
             self.assertEqual({c[0] for c in calls}, {'/usr/bin/xcode-select'})
 
-
-class SourceArchive(unittest.TestCase):
-    def test_the_archive_carries_the_folder(self):
+    def test_a_full_xcode_counts(self):
+        """xcode-select naming Xcode.app: clang is in its default toolchain, not in Developer/usr/bin (issue #2284)."""
+        from tools.builder_jobs import classify
         with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp) / 'repo'; repo.mkdir()
-            def git(*args):
-                return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
-            git('init', '-q')
-            for name in ('build_app.py', 'tools/builder_jobs/__main__.py', 'tools/builder_app/bundled_job.py',
-                         'tools/builder_app/source_updates.py', 'tools/builder_app/source_signing.pub',
-                         'games/totk/third_party/d2r_gfx/gfx/nvn/totk_seed_image.h',
-                         'games/oot/ios/tools/seed_image.py', 'games/totk/ios/tools/seed_image.py'):
-                (repo / name).parent.mkdir(parents=True, exist_ok=True)
-                (repo / name).write_text('# fixture\n')
-            git('add', '.')
-            git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'x')
-            folder = Path(tmp) / 'p/.prebuilt'; folder.mkdir(parents=True)
-            (folder / 'manifest.json').write_text('{}'); (folder / 'hactool').write_bytes(b'hac')
-            archive = Path(tmp) / 'source.tar.gz'
-            make_app.source_archive(repo, archive, prebuilt=folder)
-            with tarfile.open(archive) as tar:
-                names = tar.getnames()
-                self.assertIn('build_app.py', names)
-                self.assertIn('.prebuilt/hactool', names)
-                self.assertEqual(tar.getmember('.prebuilt/hactool').uname, '')
-
-    def test_a_portable_launcher_carries_them(self):
-        text = (ROOT / 'tools/builder_app/make_app.py').read_text()
-        self.assertIn("source_archive(REPO, stage / 'Contents/Resources/source.tar.gz', prebuilt=programs)", text)
+            run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, tmp + '\n', '')
+            with mock.patch.object(classify.subprocess, 'run', side_effect=run):
+                (Path(tmp) / 'usr/bin').mkdir(parents=True)
+                self.assertTrue(classify.no_developer_tools())
+                clang = Path(tmp) / 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang'
+                clang.parent.mkdir(parents=True)
+                clang.write_text('')
+                self.assertFalse(classify.no_developer_tools())
 
 
 if __name__ == '__main__':

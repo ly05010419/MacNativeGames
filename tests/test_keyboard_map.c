@@ -44,6 +44,9 @@ int main(void) {
     expect(buttons_of(&d, KEY_2) == 1u << KEYMAP_DLEFT && buttons_of(&d, KEY_3) == 1u << KEYMAP_DUP && buttons_of(&d, KEY_4) == 1u << KEYMAP_DRIGHT &&
            buttons_of(&d, KEY_5) == 1u << KEYMAP_DDOWN, "2 3 4 5: the d-pad");
     expect(!buttons_of(&d, KEY_J) && !buttons_of(&d, KEY_K) && !buttons_of(&d, KEY_1), "J, K and key 1 drive nothing");
+    /* U (key code 32) is VR's stereo switch (runtime/input.c KEY_VR_DSTEREO; on I, the menu's second key, each switch
+       opened the menu too, 2026-11-22): the default layout must leave it free. */
+    expect(keymap_action_of(&d, 32, NULL) == -1, "U is in no default action (VR's stereo switch)");
     /* The screenshot (user 2026-11-11): P by default, and nothing of it reaches the game. */
     expect(d.slot[KEYMAP_SCREENSHOT][0] == KEY_P && d.slot[KEYMAP_SCREENSHOT][1] == KEYMAP_NONE && keymap_action_of(&d, KEY_P, NULL) == KEYMAP_SCREENSHOT,
            "P takes the screenshot");

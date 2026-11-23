@@ -286,8 +286,15 @@ uint64_t runtime_desired_language(void) {
   const char *portuguese="pt";
 #endif
   const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?portuguese:"en-US";
+  /* Chinese as this game knows it (user 2026-11-21: "Mario 不是中文 是日语"): Odyssey's code predates zh-Hans / zh-Hant
+     (system 4.0) and only takes the older zh-CN / zh-TW (its CNzh / TWzh text); the newer codes reached its fallback,
+     Japanese. As a Switch hands an older game the code it supports: Traditional for a Hant script or Taiwan, Hong
+     Kong and Macao, Simplified otherwise. */
+  if(!strcmp(language,"zh"))selected=(tag&&strstr(tag,"Hant"))||!strcmp(region,"TW")||!strcmp(region,"HK")||!strcmp(region,"MO")?"zh-TW":"zh-CN";
   memcpy(code,selected,strlen(selected));
  }
+ if(!strcmp(code,"zh-Hans"))memcpy(code,"zh-CN\0\0",8);   /* the settings' choice, as above */
+ else if(!strcmp(code,"zh-Hant"))memcpy(code,"zh-TW\0\0",8);
  uint64_t result;memcpy(&result,code,8);return result;
 }
 static uint32_t observed_region(uint64_t *out,uint64_t size){

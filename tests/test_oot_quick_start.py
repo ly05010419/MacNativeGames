@@ -321,22 +321,11 @@ class LauncherQuickStart(unittest.TestCase):
             self.build_job.command({'update': '/Apps/Ocarina of Time.app'})
         self.assertIsNone(seen['env'])   # an ordinary update is judged as before
 
-    def test_the_card_button_follows_the_game_pages_and_sends_the_same_request(self):
-        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
-        home = (swift / 'HomePage.swift').read_text()
-        self.assertLess(home.index('ForEach(T.gamePages.filter'), home.index('Button(T.quickStart) { model.quickStart(app) }'))
-        model = (swift / 'Model.swift').read_text()
-        self.assertIn('start(BuildRequest(update: app.app, quick: true))', model)
-        self.assertIn('quick: quick ? true : nil))', model)   # the Build page's switch: the same field
-        self.assertIn('Toggle(T.quickStart', (swift / 'ActionSection.swift').read_text())
-
+    # the window's half (the card's 快速启动 sends this request; a quick App shown as one): checked in MNG-Launcher, the
+    # Launcher's own repository since 2026-11-20 (tests/test_porting_contract.py)
     def test_the_installed_list_names_a_quick_app(self):
         text = (ROOT / 'tools/builder_jobs/installed.py').read_text()
         self.assertIn("'shaders': info.get('MNGShaders') or 'full'", text)
-        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
-        self.assertIn('if app.shaders == "title"', (swift / 'HomePage.swift').read_text())
-        self.assertIn('model.updateShaders(app)', (swift / 'HomePage.swift').read_text())
-        self.assertIn('var quick: Bool? = nil', (swift / 'Reports.swift').read_text())
 
 
 class QuickStartCarriesDiagnostics(unittest.TestCase):
@@ -378,19 +367,8 @@ class QuickStartCarriesDiagnostics(unittest.TestCase):
         self.assertNotIn('diag', tabs.TABS)
         self.assertTrue(all('diag' not in pages for pages in games.PAGES.values()))
         self.assertFalse((ROOT / 'tools/builder_jobs/tab_diag.py').exists())
-        swift = ROOT / 'tools/builder_app/Sources/MNGBuilder'
-        self.assertFalse((swift / 'DiagTab.swift').exists())
-        for name in ('Model.swift', 'HomePage.swift', 'Strings.swift'):
-            text = (swift / name).read_text()
-            self.assertNotIn('"diag"', text, name)
-            self.assertNotIn('DiagPage', text, name)
-
-    def test_the_quick_start_says_it_carries_the_diagnostics(self):
-        strings = (ROOT / 'tools/builder_app/Sources/MNGBuilder/Strings.swift').read_text()
-        start = strings.index('static let quickStartHelp')
-        definition = strings[start:strings.index('static let', start + 1)]   # both languages, over two lines
-        self.assertIn('诊断', definition)
-        self.assertIn('diagnostic', definition)
+        # the window has no such page, and its 快速启动 says it carries the diagnostics: checked in MNG-Launcher, the
+        # Launcher's own repository since 2026-11-20 (tests/test_porting_contract.py)
 
 
 class NoSetuidPs(unittest.TestCase):

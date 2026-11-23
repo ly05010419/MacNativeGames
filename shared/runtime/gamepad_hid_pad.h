@@ -180,6 +180,7 @@ static void hid_pad_reset(void) {
     hidPad = (HIDPadState){0};
 #ifdef RUNTIME_STICK_CALIBRATION
     hidRawLx = hidRawLy = hidRawRx = hidRawRy = 0;
+    hidCaptureActive = 0;
     hidSampleAxes=0;hidConnectionGeneration++;calibration_sample_invalidate();
 #endif
 }

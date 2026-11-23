@@ -28,15 +28,25 @@ GAMES = {
     'oot': 'Ocarina of Time',
     'dkb': 'Donkey Kong Bananza',
     'pkp': 'Pokémon Pokopia',
-    'ss': 'The Legend of Zelda: Skyward Sword HD',
     'dread': 'Metroid Dread',
-    'worldend': 'Worldend Syndrome',
     'tmnt': "TMNT Shredder's Revenge",
     'acnh': 'Animal Crossing New Horizons',   # games/acnh/build.py APP_NAME
     'eow': 'The Legend of Zelda Echoes of Wisdom',   # games/eow/build.py APP_NAME
     'odyssey': 'Super Mario Odyssey',   # games/odyssey/build.py APP_NAME
 }
 OOT_TITLE = '0400486024DEC000'   # build_app.main_ns2
+
+# The games/ folders each game's Mac build reads (Breath of the Wild: Tears of the Kingdom's code and its own shader list;
+# Bananza and Pokopia: Tears of the Kingdom's code and their own assets). tools/launcher_source.py carries these alone.
+GAME_FOLDERS = {'totk': ('totk',), 'botw': ('totk', 'botw'), 'oot': ('oot', 'totk'), 'dkb': ('totk', 'dkb'),
+                'pkp': ('totk', 'pokopia'), 'dread': ('dread',), 'tmnt': ('tmnt',), 'acnh': ('acnh',), 'eow': ('eow',),
+                'odyssey': ('odyssey',)}
+
+# Games this repository builds from the command line (games/<folder>/build.py) that the Launcher does not (user
+# 2026-11-22: "去掉 WORLDEND SYNDROME", only from the Launcher; "去掉 塞尔达传说 御天之剑 HD"). Both ran .NET programs,
+# which a Launcher, carrying no .NET SDK, cannot build. A file of one is named and left out, not taken for another game.
+NOT_IN_LAUNCHER = {'01002DA013484000': ('The Legend of Zelda: Skyward Sword HD', '塞尔达传说 御天之剑 HD', 'games/ss'),
+                   '010048900CF64000': ('WORLDEND SYNDROME', 'WORLDEND SYNDROME', 'games/worldend')}
 
 
 def game_of_title(title):
@@ -52,14 +62,10 @@ def game_of_title(title):
         return 'tmnt'
     if application == '010093801237C000':
         return 'dread'
-    if application == '010048900CF64000':
-        return 'worldend'
     if application == '01006F8002326000':
         return 'acnh'
     if application == '01008CF01BAAC000':
         return 'eow'
     if application == '0100000000010000':
         return 'odyssey'
-    if application == '01002DA013484000':
-        return 'ss'
     return b.TITLES.get(application)

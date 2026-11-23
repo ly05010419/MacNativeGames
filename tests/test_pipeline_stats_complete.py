@@ -22,9 +22,10 @@ COUNTED_MAKERS = {'mtl_counted_library', 'mtl_counted_render', 'mtl_counted_comp
 # par4_make (nvn_pso4_build.h, the Metal 4 pipeline archive, 2026-11-17): the pipeline pso_new / cs_new_ are making, taken
 # from the archive or compiled by the period's compiler; reached only from those two, so it is counted with them
 GAME_PATHS = {'lib_from_file', 'totk_msl_library', 'pso_new', 'cs_new_', 'mtk_build', 'par4_make'}
-# par4_capture_chunk: a period of the archive whose file could not be written is compiled again in halves, on the
-# archive's own queue (par4_write -> par4_resplit); the frame that first made each of those pipelines counted it
-ARCHIVE_REWRITES = {'par4_capture_chunk'}
+# par4_capture_chunk_n: a period of the archive whose file could not be written is compiled again in halves, and one
+# dropped after a compiler service death is compiled again whole, on the archive's own queue (par4_write -> par4_resplit /
+# par4_recapture); the frame that first made each of those pipelines counted it
+ARCHIVE_REWRITES = {'par4_capture_chunk_n'}
 
 
 def calls():

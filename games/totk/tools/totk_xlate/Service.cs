@@ -344,14 +344,24 @@ static partial class ShaderService
         var dr = new JsonObject();
         foreach (int bank in new[] { 0, 2 })
         {
-            var offs = new SortedSet<long>(); bool dyn = false;
-            foreach (Match m in Regex.Matches(src, StagePrefix[stage] + "_c" + bank.ToString(CultureInfo.InvariantCulture) + @"\)\._m0\[([^\]]+)\]"))
+            var offs = new SortedSet<long>(); var words = new SortedSet<long>(); bool dyn = false;
+            // The components read as well (.z of the vec4 at 0x160 is the word at 0x168): a vec4 that straddles a filled and an
+            // unfilled range is unfillable only when an unfilled word is read (The Witcher 3's fragment shader 624aa677 reads
+            // c2[22].z, texture handle slot 0, next to the image handles 0x120..0x168, 2026-11-23). No swizzle: all four words.
+            foreach (Match m in Regex.Matches(src, StagePrefix[stage] + "_c" + bank.ToString(CultureInfo.InvariantCulture) + @"\)\._m0\[([^\]]+)\](?:\.([xyzw]+)\b)?"))
             {
                 string idx = m.Groups[1].Value.TrimEnd('u');
-                if (idx.Length > 0 && idx.All(c => c >= '0' && c <= '9')) offs.Add(ParseInt(idx) * 16); else dyn = true;
+                if (idx.Length > 0 && idx.All(c => c >= '0' && c <= '9'))
+                {
+                    long o = ParseInt(idx) * 16; offs.Add(o);
+                    string comps = m.Groups[2].Success ? m.Groups[2].Value : "xyzw";
+                    foreach (char c in comps) words.Add(o + 4 * "xyzw".IndexOf(c));
+                }
+                else dyn = true;
             }
             if (offs.Count > 0 || dyn)
-                dr[bank.ToString(CultureInfo.InvariantCulture)] = new JsonObject { ["vec4_offsets"] = new JsonArray(offs.Select(o => (JsonNode)o).ToArray()), ["dynamic"] = dyn };
+                dr[bank.ToString(CultureInfo.InvariantCulture)] = new JsonObject { ["vec4_offsets"] = new JsonArray(offs.Select(o => (JsonNode)o).ToArray()),
+                    ["word_offsets"] = new JsonArray(words.Select(o => (JsonNode)o).ToArray()), ["dynamic"] = dyn };
         }
         return dr;
     }
@@ -365,7 +375,7 @@ static partial class ShaderService
             if ((bool)d["dynamic"]) bad.Add((JsonNode)$"c{kv.Key} dynamic index");
             long bank = ParseInt(kv.Key);
             var ranges = bank == 2 ? DrvFillC2 : bank == 0 ? DrvFillC0[stage] : Array.Empty<(long lo, long hi)>();
-            foreach (JsonNode o in d["vec4_offsets"].AsArray())
+            foreach (JsonNode o in (d["word_offsets"] ?? d["vec4_offsets"]).AsArray())
             {
                 long ov = Long(o);
                 if (!ranges.Any(r => r.lo <= ov && ov < r.hi)) bad.Add((JsonNode)$"c{kv.Key}+0x{ov.ToString("x", CultureInfo.InvariantCulture)}");

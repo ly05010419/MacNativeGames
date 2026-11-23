@@ -24,12 +24,11 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/board_upload.h`, `runtime/board_tab.h` | The frame-rate board: its rounds and upload (我要上榜), and the panel's 性能排行榜 page | totk, oot, odyssey, acnh, eow |
 | `runtime/shot_upload.h`, `runtime/shot_tab.h` | Screenshot sharing (分享我的截图) and the panel's 截图分享 page | totk, oot, odyssey, acnh, eow |
 | `runtime/nick_row.h` | The player's nickname row on those two pages | totk, oot, odyssey, acnh, eow |
-| `runtime/users.h`, `runtime/account.c` | Local users, one save area each (the User page); Odyssey's own account entries behind `GAME_ODYSSEY`. Animal Crossing keeps its own single-user account.c: one island per console, see its settings_game.h; Echoes of Wisdom keeps its own too: its saves stay under their one account until moving them has been tried on a real profile | totk, oot, odyssey |
+| `runtime/users.h`, `runtime/account.c` | Local users, one save area each (the User page); Odyssey's own account entries behind `GAME_ODYSSEY`; Breath of the Wild's and Mario Kart 8 Deluxe's (SDK 7 / 4.4) behind `GAME_BOTW` / `GAME_MK8DX`. Animal Crossing keeps its own single-user account.c: one island per console, see its settings_game.h; Echoes of Wisdom keeps its own too: its saves stay under their one account until moving them has been tried on a real profile | totk, oot, odyssey |
 | `runtime/dsu_client.h`, `runtime/dsu_protocol.h`, `runtime/dsu_settings_rows.h` | DSU (cemuhook) motion and input over UDP, and its input-page rows. Ocarina of Time links the client and the protocol for the shared `gamepad_core.h` but has no rows, so DSU stays off there | totk, odyssey, acnh, eow (oot: no rows) |
 | `third_party/d2r_gfx/gfx/nvn/fps_board.{c,h}` | The board's frame record: frame times after the world started | totk, oot, odyssey, acnh, eow |
 | `third_party/d2r_gfx/gfx/nvn/nvn_capture_region.h` | The present's crop as a capture region (the screenshot's game frame) | totk, oot, odyssey, acnh, eow |
-| `app/app_launcher.h` | The app launcher's plumbing: the bundle by the real executable path, the data folder in `~/Library/Application Support/MacNativeGames/<folder>` and its one-time move from next to the app, save backups (the newest five), the Mac's first preferred language, the common environment (profile, shader cache, RomFS, fonts, slot, input file, board folder), log rotation, and the run loop with the start again that `restart-requested.txt` asks for. Each game's launcher keeps its own `main()`: its tuning (GPU and presentation variables, Animal Crossing's frame rates and add-ons, Odyssey's session limit, display, face buttons and MetalFX, Echoes of Wisdom's start by the runtime's real path), its checks and its `TOTK_CONTROLS` line. Linked as `scripts/app_launcher.h` (odyssey, acnh) and `app/app_launcher.h` (eow) | odyssey, acnh, eow |
-
+| `app/app_launcher.h` | The app launcher's plumbing: the bundle by the real executable path, the data folder in `~/Library/Application Support/MacNativeGames/<folder>` and its one-time move from next to the app, save backups (the newest five), the Mac's first preferred language, the common environment (profile, shader cache, RomFS, fonts, slot, input file, board folder), log rotation, and the run loop with the start again that `restart-requested.txt` asks for. Each game's launcher keeps its own `main()`: its tuning (GPU and presentation variables, Animal Crossing's frame rates and add-ons, Odyssey's session limit, display, face buttons and MetalFX, Echoes of Wisdom's start by the runtime's real path), its checks and its `TOTK_CONTROLS` line. Linked as `scripts/app_launcher.h` (odyssey, acnh) and `app/app_launcher.h` (eow, mj2013; `launcher_play`'s `saves` names a save folder other than `<profile>/save`: 明星三缺一's SD card) | odyssey, acnh, eow, mj2013 |
 | `third_party/d2r_gfx/gfx/nvn/totk_mfx_up.{m,h}` | The MetalFX spatial upscaler: its scene, docked, output and VR contexts, background builds and kept scalers | totk, oot, odyssey, acnh, eow |
 | `third_party/d2r_gfx/gfx/nvn/totk_sysload.{c,h}` | The load line of FPS full information: the game's own GPU share, then the CPU cores and the busiest thread | totk, oot, odyssey, acnh, eow |
 | `runtime/playtime.h` | The corner box's playtime: this session and the total (`profile/playtime.json`) | totk, oot, odyssey, acnh, eow |
@@ -38,6 +37,12 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/motion_fusion.c` | Controller, phone and mouse motion as the console's 5 ms sensor states, with the gyro's bias learned at rest | totk, oot, odyssey, acnh, eow |
 | `runtime/swkbd_host.c` | Text entry (`nn::swkbd::ShowKeyboard`) in a bar in the game window; its probe's addresses come from `GAME_ADDR` in a game with TotK's version table and are unmapped elsewhere | totk, oot, odyssey, acnh, eow |
 | `runtime/ipc.{c,h}` | The in-process HIPC / CMIF / TIPC server, with CMIF domains (from Odyssey); each game's `threads.c` has `runtime_handle_take_session` | totk, oot, odyssey, acnh, eow |
+| `runtime/offline_host.c` | The offline console's answers (nifm, ldn, friends, sockets, SSL, play reports, the profanity filter, `oe` exit sections, display version and pseudo device id); moved here from games/totk on 2026-11-21 | totk (its Switch 2 games, `GAME_NS2`), mk8dx, rdr |
+| `runtime/audio_out.c` | audout:u (nn::audio AudioOut) as a Core Audio queue, with a silent real-time sink (`BY3_AUDIO=0`); added on 2026-11-22 as the file by3, kirby, mk8dx, odyssey, rdr, unicorn and xcx keep as identical copies (they may link it in their own time). A client spinning on GetReleasedAudioOutBuffers (16 empty answers in a row, each within 10 us) is held until a buffer is played or 1 ms (`TOTK_AUDOUT_POLL_WAIT_US`, 0 = off); underruns are logged | mj2013 |
+| `third_party/d2r_gfx/gfx/nvn/msl_loop_cap.h` | A cap on every loop of a translated shader (65,536 iterations, then `break`), applied to every MSL a host compiles; added on 2026-11-22 after Age of Calamity's first battle hung the GPU (a buffer texture read as 2D gave its loops garbage counts; the Mac panicked). `games/totk/ios/tools/msl_loop_cap.py` is the same rewrite for every port's device seed (`build_port_ipa.py`); `tests/test_msl_loop_cap.py` keeps both equal and lists the hosts that call it | aocx (acnh, kirby, mk8dx, odyssey, p5r, rdr pending) |
+| `third_party/d2r_gfx/gfx/nvn/compute_shared.h` | A compute kernel's shared memory (NVN control +0x754) for the translation request, the variant name and the cache check, above the translator's 4 KiB default only; every port's `totk_shader_rt.m` includes it; added on 2026-11-22 (Age of Calamity's first-battle GPU hang, `tests/test_compute_shared_memory.py`) |
+| `runtime/movie_pace.h` | When a host movie decoder's pacing starts again: a pts that goes backwards or jumps more than 1 s (a seek or loop the game makes without Flush); added on 2026-11-22 for Mario Kart 8 Deluxe's Grand Prix wait (134 s), then taken by every port's `movie_host.c` the same day, which all paced from one anchor that only Flush and Stop dropped. `tests/test_movie_pacing.py` runs `tests/movie_pace_probe.c` against each port's real `movie_host.c` (a forward seek and a loop, no Flush: every frame, none dropped) and keeps the include in every copy | every Zelda-line port with a `movie_host.c` (acnh, alc, by3, dread, eow, kirby, lm3, mk8dx, mkw, mvdk, odyssey, oot, ori, ot0, pla, pokesv, ssbu, tmnt, tomodachi, totk, unicorn, wonder, xc3, xcx) |
+| `runtime/movie_host.c` | The host VP9 movie decoder (libvpx) of the ports whose copies were already the same file: TotK's, with Breath of the Wild's pacing default behind `GAME_BOTW`. The other ports keep their own (H.264 through VideoToolbox, texture modes, Vorbis sound, Pokémon Scarlet's and Xenoblade 3's end-of-stream inputs, Xenoblade X's `movie_host_playing`) with the same pacing | totk (also BotW, DKB, PKP), oot, mkw, wonder, alc, by3, ot0, pla, tomodachi, unicorn |
 | `runtime/time_host.c` | `nn::time` from the Mac's clock and time zone. Ocarina of Time keeps its own (its POSIX clock providers for the SDK's `clock_gettime`), and Animal Crossing keeps its own too (its extra `nn::time` answers). The other games' modules reference these names too, so sharing those answers would replace code those games run | totk, odyssey, eow |
 | `runtime/bindings_diagram.h` | The key bindings drawings of the panel; what each action is called on a key, its kind and colour, the legend's words and the mouse's and right stick's captions are in each game's `runtime/bindings_game.h` | totk, oot, odyssey, acnh, eow |
 | `runtime/shared_font.c` | The system fonts from `shared-fonts.txt` in the game data, decoded as the pl service gives them | totk, oot |
@@ -56,6 +61,9 @@ a shared file is resolved from the link's folder, so it finds that game's own he
 | `runtime/romfs_path.h` | The RomFS path checks of `romfs.c` (`tests/test_romfs_paths.c`). Ocarina of Time keeps its own, with `//` inside a path collapsed | totk, odyssey, acnh, eow |
 | `runtime/text_keyboard.h` | The Mac's text entry keyboard that a controller can operate (`frontend.m` includes it) | totk, oot, odyssey |
 | `runtime/freeze_watchdog.c` | `ODYSSEY_FREEZE_WATCHDOG`: what the game's threads do when frames stop; it only logs | odyssey, acnh |
+| `third_party/d2r_gfx/gfx/tex/*` but `nvn_deswizzle_gpu.{m,h}`, `third_party/d2r_gfx/third_party/bcdec/*` | Texture decoding: the block-linear deswizzle (the Switch 2's GOB order under `GAME_NS2`), the BCn decoder and the BCn to ASTC/EAC transcoder for GPUs without BC, the NVN to Metal formats (Ocarina of Time's depth reads under `GAME_OOT`) | totk, oot, odyssey, acnh, eow |
+| `third_party/d2r_gfx/host/{dm,front,hle}.h`, `gfx/nvn/include/{nvn.h,mach_vm_compat.h}`, `gfx/nvn/nvn_impl.h`, `nvn_entry.S` | The graphics layer's host interfaces, NVN's types, and the entry thunk every NVN call goes through | totk, oot, odyssey, acnh, eow |
+| `third_party/d2r_gfx/gfx/nvn/` `nvn_arg_address_cache.h`, `nvn_copy_alias_probe.h`, `nvn_cover.h`, `nvn_cube_group_probe.h`, `nvn_depth_clear.h`, `nvn_diag_range.h`, `nvn_encode_fifo.h`, `nvn_hmap.h`, `nvn_pace.h`, `nvn_pool_index.h`, `nvn_pool_retire_probe.h`, `nvn_tex.{c,h}`, `nvn_tex_slots_probe.h`, `nvn_texture_plan.h`, `rt_range_check.inc`, `totk_serial_set.h`, `totk_vpool.{c,h}` | Pieces of the graphics layer that are the same for every game: the hash map (8-byte keys compared as one word), pool and range indexes, the encoder FIFO, frame pacing, the texture descriptor, the virtual pool, and their probes | totk, oot, odyssey, acnh, eow |
 
 The platform layer that runs the game (2026-11-18, step 4) is shared only where the copies were already the same file
 (above); each game's copy of the rest stays its own, because the copies carry that game's tuning or answers:
@@ -64,8 +72,8 @@ Animal Crossing's starvation rule and core watch; Echoes of Wisdom's is an older
 on TotK's scheduling there); `fs_host.c` (each game's save layout and answers, OoT's drive waits off the core, b1b65908)
 and `fs_host.h`; `romfs.c` (each game reads its data its own way); `audio_mixer.{c,h}`, `audio_renderer.c` and
 `audio_out.c` (end-of-stream behaviour, ramps and depop, and the warm-up hold differ per game); `opus_codec.c`
-(Animal Crossing's extra overload); `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.{c,h}`
-(per-game SDK starts, heaps, service answers and movie codecs); `autoload.{c,h}` and `game_patches.h` (headers of
+(Animal Crossing's extra overload); `loader.c`, `services.c`, `system_services.c`, `applet_host.c`, `movie_host.h` and the
+`movie_host.c` of the ports not above (per-game SDK starts, heaps, service answers and movie codecs); `autoload.{c,h}` and `game_patches.h` (headers of
 per-game code); `world_survey.{c,h}`, `gfx_bridge.c`, `gfx_probe.c`, `vpool_probe.m`, `gpu_path_probe.m` (each follows
 its game's own graphics layer or diagnostics); `audio_renderer.h` (with its renderer). Where Odyssey, Animal Crossing and
 Echoes of Wisdom have the same older copy, sharing it would only freeze it.
@@ -102,3 +110,30 @@ translator until someone has checked its picture with TotK's. A switch needs:
 - the game's shader libraries rebuilt;
 - its seed translated again (Odyssey's and EoW's express updates do not do this by themselves);
 - a runtime cache identity bump, because their `rt-totk-native-v4-unverified` cache has no translator in its name.
+
+## The graphics layer (step 6)
+
+On 2026-11-18 the graphics layer (`third_party/d2r_gfx`) was shared where it changes nothing a game runs: the files
+that were already the same in TotK, Odyssey, Animal Crossing and Echoes of Wisdom, and seven where TotK's copy only
+adds code under `GAME_NS2` / `GAME_OOT`, a query nobody else calls, or a faster equal lookup (`nvn_deswizzle.c` and
+`nvn_fmt_mtl.c` compile to the same instructions for the three). The rest stays each game's own:
+- `hle_nvn.c`, `nvn_mtl.m`, `nvn_refl.m`, `nvn_obj.h`, `nvn_dirty.c`, `totk_shader_rt.m`, `totk_mfx.m`, `totk_mfx_mode.h`,
+  `totk_nvn_ext.c`, `totk_timeline.{c,h}`, `totk_shader_seed.h`, `totk_contrib_upload.h` and the rest that differ in
+  every copy: each game's rendering work, its present and MetalFX choices, its caches and its probes.
+- `nvn_protos.h`, `names.txt`, `nvn_count.h`, `nvn_thunks.S`, `nvn_mtl.h`, `nvn_pso_skey.h`: made for the NVN functions a
+  game's layer implements (TotK 739, the three 523). Sharing them means taking TotK's whole layer.
+- `dmsh_chain.h`: the game's shader cache identity (TotK `totk-native-v9-unverified`, the three `v4`).
+- `nvn_rtex.inc`, `nvn_cube_group.h`: TotK's count their Metal compiles through `nvn_counted.h`, which the others lack.
+- `nvn_deswizzle_gpu.{m,h}`, `totk_lifelog.{c,h}`: TotK's add the Switch 2's GOB order, a region kernel and OoT's
+  texture lifetime trace.
+
+`nvn_tex.c` (the texture sizes) is shared too, since 2026-11-18: TotK's 3c482a7d (cube array sizes, a packaged 3D
+texture's block depth, linear BCn sizes in pixel rows, all measured against the original driver) now applies to the three,
+with its two lines of `nvn_mtl.m` in each game's own copy (Metal's cube array length is depth / 6 cubes; the upload does
+not multiply the layers by six). Up to the title screen, only Animal Crossing has such a texture: two cube arrays of one
+cube each (4x4 and 256x256), whose storage was six times too large; its title screen looks the same.
+
+明星三缺一 2013 (`games/mj2013`, 2026-11-22) is a libnx homebrew, not an SDK game: it links `ipc.{c,h}`, `threads.c`,
+`gate.S`, `thread_enter.S`, `thread_compat.h`, `hle_stack.c`, `input_file.h` and `audio_out.c` from here, the
+block-linear addressing from `third_party/d2r_gfx/gfx/tex`, and the rewriter from games/totk; the IPC answers a homebrew
+needs (sm's services, appletOE, hid's shared memory, fsp-srv, vi / binder / nvdrv) are its own (games/mj2013/third_party/COPIES.md).

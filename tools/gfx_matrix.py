@@ -112,7 +112,9 @@ def main():
     targets = a.targets.split(',')
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        arch = subprocess.run(['git', 'archive', a.base, 'games/totk', 'games/oot/runtime', 'zeldaVR'], cwd=ROOT, capture_output=True, check=True).stdout
+        # shared: the layer's files that are the same for every game are links into it (64e64877); without it the
+        # reference tree compiles nothing and every old warning counts as new
+        arch = subprocess.run(['git', 'archive', a.base, 'games/totk', 'games/oot/runtime', 'zeldaVR', 'shared'], cwd=ROOT, capture_output=True, check=True).stdout
         subprocess.run(['tar', '-x', '-C', str(base)], input=arch, check=True)
         before = run(base / 'games/totk', configs, targets, a.j)
         after = run(GAME_DIR, configs, targets, a.j)

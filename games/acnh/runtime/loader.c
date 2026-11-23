@@ -154,13 +154,17 @@ static void map_module(Module *m,const char *dir) {
  const IosEmbed *e=NULL;for(unsigned i=0;i<sizeof(ios_embed)/sizeof(*ios_embed);i++)if(!strcmp(ios_embed[i].name,m->name))e=&ios_embed[i];
  need(e!=NULL,"module missing from ios_embed.h");
  char sx0[17],sx1[17],sw[17];snprintf(sx0,sizeof sx0,"__%sx0",m->name);snprintf(sx1,sizeof sx1,"__%sx1",m->name);snprintf(sw,sizeof sw,"__TOTK%sW",m->name);
+ /* At 60 FPS main's text is the one exported with the speed corrections applied (ios/tools/gen_embed.py --alt-text,
+    section __mainx0f): iOS cannot patch code at run time (frame_rate.c writes only the data words there). */
+ int alt=e->x0alt[0]&&runtime_frame_rate_active()==60;const char *want_x0=alt?e->x0alt:e->x0;
+ if(alt)snprintf(sx0,sizeof sx0,"__%sx0f",m->name);
  unsigned long z0=0,zw=0,z1=0;
  const uint8_t *x0=getsectiondata(&_mh_execute_header,"__TOTKX",sx0,&z0),*w=getsectiondata(&_mh_execute_header,sw,"__img",&zw),*x1=getsectiondata(&_mh_execute_header,"__TOTKX",sx1,&z1);
  need(x0&&w&&x1,"embedded module sections missing");
  need(z0==page_up(m->text_end)&&z0+zw==m->patch_off&&m->patch_off+z1==page_up(m->file_size),"embedded module layout");
  need(!((uintptr_t)x0&0x3fff)&&!((uintptr_t)w&0x3fff)&&!((uintptr_t)x1&0x3fff),"embedded sections not 16 KiB aligned");
  char hex[65];
- digest_hex(x0,z0,hex);need(!strcmp(hex,e->x0),"embedded text SHA256 differs from the exported patched text");
+ digest_hex(x0,z0,hex);need(!strcmp(hex,want_x0),"embedded text SHA256 differs from the exported patched text");
  digest_hex(w,zw,hex);need(!strcmp(hex,e->w),"embedded data SHA256 differs from verified rewrite");
  digest_hex(x1,z1,hex);need(!strcmp(hex,e->x1),"embedded patch area SHA256 differs from verified rewrite");
  m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
@@ -173,7 +177,7 @@ static void map_module(Module *m,const char *dir) {
  uint64_t *key=(void *)(m->base+m->key_off);
  for(unsigned i=0;i<8;i++)key[i]=runtime_keys[i]*8;
  make_hash(m);
- fprintf(stderr,"[totk] mapped embedded %s at %p size=%zu symbols=%u\n",m->name,m->base,m->size,m->nsym);
+ fprintf(stderr,"[totk] mapped embedded %s%s at %p size=%zu symbols=%u\n",m->name,alt?" (60 FPS text)":"",m->base,m->size,m->nsym);
 }
 #else
 static void map_module(Module *m,const char *dir) {
@@ -441,7 +445,7 @@ static void abort_report(int num) {
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
 int main(int argc,char **argv) {
- need(argc==3,"usage: acnh-native rewritten-dir probe-map|probe|probe-startup|boot");
+ need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive")),"usage: acnh-native rewritten-dir probe-map|probe|probe-startup|boot (pipeline-archive <list>...)");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(!strncmp(argv[2],"probe-gpu",9)||!strncmp(argv[2],"probe-gfx",9)||!strcmp(argv[2],"probe-vpool"))setenv("TOTK_PROBE_GPU","1",1);
@@ -458,6 +462,7 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
+ if(!strcmp(argv[2],"pipeline-archive"))return mtl_pipeline_archive_tool(argc-3,argv+3);   // packaging: the device's pipelines made on the Mac (games/totk/ios/tools/device_pipelines.py make)
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}

@@ -17,6 +17,20 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 ## Log
 
+### 2026-11-19: RomFS mods load when the app starts from Finder (#1788)
+
+The runtime serves a player's RomFS overlay from the folder `TOTK_ROMFS_MODS` names (runtime/romfs.c), but the app's
+launcher never set the variable, so a mod (a translation in the issue) loaded only when the app was started from
+a shell with the variable given. `scripts/odyssey_app_launcher.c` now sets it to
+`~/Library/Application Support/MacNativeGames/Odyssey/mods/<version>`, `v130` or `v141` by the app's
+`game-version.txt` (`v130` without one); a variable given to the app still decides first. `scripts/make_mod_manifest.py`
+(a copy of `games/by3/scripts/make_mod_manifest.py`, see third_party/COPIES.md) writes the folder's manifest against the
+app's RomFS (`--app`) and leaves out the file the app's own overlay replaces. How to install a mod: docs/mods.md.
+
+Tested: the launcher compiled as its packager compiles it, tests/test_app_launcher_shared.py and
+tests/test_odyssey_mod_manifest.py. Not played here; the reporter's log in the issue shows this runtime loading such a
+folder when the variable is set by hand.
+
 ### 2026-11-08: Luncheon Kingdom: no poison on clean sand in the Spewart fight (#1901)
 
 Mario was poisoned on clean sand within ~2 s of every Spewart fight, before any goo was spat, and the fight could not

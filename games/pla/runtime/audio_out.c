@@ -157,6 +157,21 @@ __attribute__((constructor)) static void aq_worker_start(void) {
     if (pthread_create(&g_aqw_thread, NULL, aq_worker, NULL) == 0) g_aqw_on = 1;
 }
 
+/* The open queues, so an iOS audio session interruption (a call, Siri, another app's audio) can start the started ones
+   again: audio_mixer.c runtime_audio_output_restart, which the shared iPhone / iPad app calls when the session comes
+   back (games/totk/ios/Sources/main.m). An interruption stops the queues; the game's own state still says started. */
+static pthread_mutex_t g_aq_live_mu = PTHREAD_MUTEX_INITIALIZER;
+static AudioOut *g_aq_live[8];
+void audio_out_restart(int recreate);
+void audio_out_restart(int recreate) {
+    pthread_mutex_lock(&g_aq_live_mu);
+    for (int i = 0; i < 8; i++) {
+        AudioOut *o = g_aq_live[i]; if (!o || o->silent) continue;
+        pthread_mutex_lock(&o->lock); int started = o->running && o->state == STATE_STARTED; pthread_mutex_unlock(&o->lock);
+        if (started) { aq_post(o, AQ_START, NULL, 0, 0); fprintf(stderr, "[totk-audio] AudioOut queue started again%s\n", recreate ? " (media services reset)" : ""); }
+    }
+    pthread_mutex_unlock(&g_aq_live_mu);
+}
 static void open_device(AudioOut *o) {
     const char *e = getenv("PLA_AUDIO");
     o->silent = e && !strcmp(e, "0");
@@ -171,6 +186,7 @@ static void open_device(AudioOut *o) {
            while started, as it does here. */
         OSStatus s = AudioQueueNewOutput(&f, played, o, NULL, kCFRunLoopCommonModes, 0, &o->aq);
         if (s) { fprintf(stderr, "[totk-audio] AudioOut: no Core Audio output (%d); continuing silent\n", (int)s); o->silent = 1; }
+        else { pthread_mutex_lock(&g_aq_live_mu); for (int i = 0; i < 8; i++) if (!g_aq_live[i]) { g_aq_live[i] = o; break; } pthread_mutex_unlock(&g_aq_live_mu); }
     }
     if (o->silent) need(pthread_create(&o->thread, NULL, silent_playback, o) == 0, "AudioOut playback thread");
 }
@@ -264,6 +280,7 @@ static void audio_out_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *
 }
 static void audio_out_close(void *p) {
     AudioOut *o = p;
+    pthread_mutex_lock(&g_aq_live_mu); for (int i = 0; i < 8; i++) if (g_aq_live[i] == o) g_aq_live[i] = NULL; pthread_mutex_unlock(&g_aq_live_mu);
     pthread_mutex_lock(&o->lock); o->running = 0; pthread_mutex_unlock(&o->lock);
     if (!o->silent) { aq_post(o, AQ_DISPOSE, NULL, 0, 1);
         pthread_mutex_lock(&o->lock);

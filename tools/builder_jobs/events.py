@@ -10,7 +10,7 @@
   log         text                                any other line build_app.py printed
   cancelling                                      a cancel was received and sent to the build
   done        ok, and app/elapsed, or cancelled/message/detail/step_log/log
-The window (tools/builder_app, BuildEvent.swift) decodes exactly these; a new field is optional there."""
+The window (MNG-Launcher mac/, BuildEvent.swift) decodes exactly these; a new field is optional there."""
 import json
 import threading
 import time

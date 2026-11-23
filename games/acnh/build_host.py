@@ -19,6 +19,7 @@ from games.acnh.tools.common import clone_file, outside_repository, verified_fil
 from games.acnh.tools.runtime_preflight import prepare as preflight
 from games.acnh.tools.prepare_fps import prepare_fps
 from games.acnh.tools.prepare_dlc import config_header as dlc_config_header
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 
 def write_changed(path, data):
@@ -192,7 +193,7 @@ def main():
         work = args.work.expanduser().resolve()
         prepare_host(args.prepared, work, args.shared_fonts, args.fps_mod, args.dlc, forget)
         with (work / "logs/build.log").open("w") as log:
-            result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={work}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
+            result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={make_path(work, 'acnh')}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
         require(result.returncode == 0, f"Host compilation failed; see {work / 'logs/build.log'}")
         print(work / "build/acnh-native")
     except (OSError, ValueError, KeyError) as error:

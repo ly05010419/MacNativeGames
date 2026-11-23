@@ -66,10 +66,42 @@ class PromptAssets(unittest.TestCase):
                 self.assertEqual(command[-1], staged / 'Contents/Resources/totk/build/prompt-hud.tsv')
                 romfs = tree / 'extracted/v143/romfs'
                 romfs.mkdir(parents=True)
-                (romfs / 'romfs.bin').touch()
+                for name in ('romfs.bin', 'index.json', 'runtime-index.bin'):
+                    (romfs / name).touch()
                 build_app.prepare_prompt_assets(tree, staged, 'v143', logs)
                 command = run.call_args.args[0]
                 self.assertEqual(command[command.index('--romfs') + 1], romfs)
+
+    def test_an_adopted_image_gets_its_runtime_index_first(self):
+        """#2303: an express update took the app's image into the work folder (romfs.bin and index.json, no
+        runtime-index.bin), and prepare_prompt_hud.py stopped on the missing index. The index is made from index.json
+        first, as make game-data makes it; a folder that cannot have one leaves the HUD masks to the app's image."""
+        import build_app
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree, staged, logs = root / 'tree', root / 'staged.app', root / 'logs'
+            romfs = tree / 'extracted/v143/romfs'
+            romfs.mkdir(parents=True)
+            (romfs / 'romfs.bin').touch()
+            (romfs / 'index.json').touch()
+
+            def fake_run(command, log, **kwargs):
+                if str(command[1]).endswith('prepare_romfs_backend.py'):
+                    (romfs / 'runtime-index.bin').touch()
+            with patch.object(build_app, 'run', side_effect=fake_run) as run:
+                build_app.prepare_prompt_assets(tree, staged, 'v143', logs)
+                steps = [[str(c) for c in call.args[0]] for call in run.call_args_list]
+                self.assertEqual(steps[0][1:], ['scripts/prepare_romfs_backend.py', '--version', 'v143'])
+                self.assertIn('--romfs', steps[1])
+                run.reset_mock()
+                build_app.prepare_prompt_assets(tree, staged, 'v143', logs)   # it is there now: not made again
+                self.assertEqual(len(run.call_args_list), 1)
+            (romfs / 'runtime-index.bin').unlink()
+            (romfs / 'index.json').unlink()
+            with patch.object(build_app, 'run') as run:   # an image without its listing: the app's image is read
+                build_app.prepare_prompt_assets(tree, staged, 'v143', logs)
+                self.assertEqual(len(run.call_args_list), 1)
+                self.assertIn('--app', [str(c) for c in run.call_args.args[0]])
 
     def test_preparation_reads_a_synthetic_romfs(self):
         import compression.zstd as zstd

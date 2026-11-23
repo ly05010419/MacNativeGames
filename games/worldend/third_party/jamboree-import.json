@@ -697,11 +697,6 @@
       "sha256": "a83fb7fe88d2b86bfce6c1df421b919d534930c85d512d1579d1ca041349938e"
     },
     {
-      "source": "games/jamboree/runtime/gfx/tools/uepak.py",
-      "destination": "runtime/gfx/tools/uepak.py",
-      "sha256": "c48d151b82d27880f91ec91e1ba3811fc96a0db949666126fc3736c575f962c7"
-    },
-    {
       "source": "games/jamboree/runtime/gfx/tools/unityfs.py",
       "destination": "runtime/gfx/tools/unityfs.py",
       "sha256": "6c0d858fce83a994f4bcd10518170a67b8b2cd22acf776d2fb863871db5eac22"

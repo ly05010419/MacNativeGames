@@ -18,6 +18,19 @@ class HudEveryKind(unittest.TestCase):
         cls.header = (NVN / 'fps_overlay.h').read_text()
         cls.mtl = (NVN / 'nvn_mtl.m').read_text()
         cls.mesh = (NVN / 'nvn_mesh_tasks.inc').read_text()
+        cls.panel = (NVN / 'hud_panel.inc').read_text()   # the corner panel every game shares (61b95acc, "fps pannel 也要统一")
+
+    def corner_panel(self):
+        """What the window's corner panel publishes: the shared branch in hud_panel.inc plus the lines Tears of the
+        Kingdom adds in nvn_mtl.m (hud_more_lines), and nvn_mtl.m's pipeline counts the shared code reads."""
+        self.assertIn('#include "hud_panel.inc"', self.mtl)
+        start = self.panel.index('if (hud_compact()) {   // the window\'s corner panel')
+        branch = self.panel[start:self.panel.index('return 0;', start)]
+        self.assertIn('hud_more_lines(now);', branch)
+        more = self.mtl[self.mtl.index('static void hud_more_lines(uint64_t now) {'):]
+        more = more[:more.index('\n}')]
+        counts = self.mtl[self.mtl.index('static void hud_pso_counts('):self.mtl.index('static void hud_more_lines(')]
+        return branch + more, counts
 
     def lines(self):
         enum = re.search(r'enum \{ (HUD_FPS[^}]*) \};', self.header).group(1)
@@ -43,13 +56,34 @@ class HudEveryKind(unittest.TestCase):
         for game in ('oot', 'totk', 'odyssey'):
             with self.subTest(game=game):
                 panel = (ROOT / f'games/{game}/runtime/settings_game.h').read_text()   # its rows and restore (the shared panel reads it)
-                self.assertIn('settings_text("FPS 全信息', panel)
-                self.assertIn('@[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)]', panel)
-                self.assertIn('v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v)', panel)   # kept between runs
+                # user 2026-11-18: "不要显示 括号里的 内容， 然后 全部 倒序", then "FPS 全信息" "改名 FPS和帧调试信息， 放最后"
+                self.assertIn('@[settings_on_off(0),settings_text("极简 FPS","Bare FPS"),settings_text("FPS 与游玩时间","FPS + playtime"),settings_text("全部","All"),\n'
+                              '    settings_text("FPS 和帧调试信息","FPS and frame debug info")]', panel)
+                self.assertIn('@[@(HUD_MODE_OFF),@(HUD_MODE_BARE),@(HUD_MODE_MINIMAL),@(HUD_MODE_ALL),@(HUD_MODE_FULL)]', panel)
+                self.assertNotIn('（只有 FPS 和分辨率', panel)
+                self.assertNotIn('FPS 全信息', panel)
+                self.assertIn('v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v)', panel)   # kept between runs
+
+    def test_bare_fps_is_a_settings_choice(self):
+        """User 2026-11-18: "fps 添加新布局 设置里 添加 极简fps 只显示 fps和分辨率， 放大3倍（只有这个 放大3倍）"."""
+        self.assertIn('HUD_MODE_BARE = 4', self.header)
+        self.assertIn('enum { HUD_BARE_SCALE = 3 };', self.header)
+        for game in ('oot', 'totk', 'odyssey', 'acnh', 'eow'):   # every game that links the shared corner box
+            with self.subTest(game=game):
+                panel = (ROOT / f'games/{game}/runtime/settings_game.h').read_text()
+                self.assertIn('settings_text("极简 FPS","Bare FPS")', panel)
+                self.assertIn('@[@(HUD_MODE_OFF),@(HUD_MODE_BARE),@(HUD_MODE_MINIMAL),@(HUD_MODE_ALL),@(HUD_MODE_FULL)]', panel)
+        overlay = (HUD_BOX.parents[1] / 'third_party/d2r_gfx/gfx/nvn/fps_overlay.c').read_text()
+        self.assertIn('case HUD_MODE_MINIMAL: case HUD_MODE_BARE: return line == HUD_FPS;', overlay)   # its one line
+        self.assertIn('snprintf(text, n, "FPS %s%s  %s", fps, gen, ss);', overlay)                     # the rate and the output size only
+        self.assertIn('if (fps_overlay_hud_mode() == HUD_MODE_BARE) s *= HUD_BARE_SCALE;', overlay)     # in the picture's corner
+        box = HUD_BOX.read_text()
+        self.assertIn('monospacedSystemFontOfSize:bare?10.5*HUD_BARE_SCALE:10.5', box)                  # this mode alone is larger
+        for line in ('if(playtime&&!bare)', 'int bpct=bare?-1:', 'NSString *build=bare?nil:', 'if(!bare)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[hud_settings_hint()'):
+            self.assertIn(line, box)   # nothing under the FPS line
 
     def test_every_line_but_fps_and_load_is_published_on_its_own(self):
-        start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')
-        branch = self.mtl[start:self.mtl.index('return 0;', start)]
+        branch, _ = self.corner_panel()
         self.assertIn('hitch_overlay_publish(now);', branch)   # the hitch lines (fps_overlay.c publishes them)
         for line in self.lines():
             if line in ('HUD_FPS', 'HUD_LOAD') or line.startswith('HUD_HITCH'):
@@ -63,11 +97,10 @@ class HudEveryKind(unittest.TestCase):
         self.assertEqual(recorded, set('SRCMTB'))
         switch = self.mtl[self.mtl.index('static int collect_kind(char c)'):]
         switch = switch[:switch.index('\n}')]
-        start = self.mtl.index('if (hud_compact()) {   // the window\'s corner panel')
-        branch = self.mtl[start:self.mtl.index('return 0;', start)]
+        branch, counts = self.corner_panel()
         shown = set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', branch))
-        prepare = self.mtl[self.mtl.index('static int shader_overlay_prepare('):start]
-        shown |= set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', prepare)) & {'R'}   # the render line's count (pso_new)
+        self.assertIn('hud_pso_counts(&pso, &plast);', self.panel)   # shader_overlay_prepare reads the counts below
+        shown |= set(re.findall(r'g_collect_new\[COLLECT_([A-Z])\]', counts)) & {'R'}   # the render line's count (pso_new)
         for kind in sorted(recorded):
             with self.subTest(kind=kind):
                 self.assertIn(f"case '{kind}': return COLLECT_{kind};", switch)

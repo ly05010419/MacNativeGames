@@ -9,6 +9,9 @@ from dread_bundle import Digests, check_output, signed_bundle, link_data, publis
 from dread_pipelines import mac_pipelines, check_archive_lists
 
 GAME = Path(__file__).resolve().parents[1]
+if str(GAME.parents[1]) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(GAME.parents[1]))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 
 
 def shader_identity(work):
@@ -32,7 +35,7 @@ def package(builder, py, work, out, logs, inputs):
     partial = out.with_name(out.stem+'.partial.app')
     if partial.exists(): raise ValueError(f'partial output exists; inspect it first: {partial}')
     # make compiles the host and launcher into work; it executes neither inside App.
-    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={work}', f'PY={py}', f'APP={partial}'], logs/'app.log')
+    builder.run(['make', 'prepare', 'runtime', 'app', f'WORK={make_path(work, "dread")}', f'PY={py}', f'APP={partial}'], logs/'app.log')
     profile = work/'build'
     seed = profile/'shader-seed'
     # These are the same lists imported by the runtime; packaging and warm-up share them.

@@ -42,9 +42,14 @@ def main(argv):
         elif command == 'path' and names:
             print(':'.join(path(*names)))
         elif command == 'all' and not names:
+            from tools.deps.offline import NOT_CARRIED, store
             for name in SOURCES:
+                if name in NOT_CARRIED and store() is not None:   # no game a released Launcher builds uses it
+                    continue
                 print(f'{name} {prefix(name)}')
             for name in BUILD_TOOLS:
+                if name in NOT_CARRIED and store() is not None:
+                    continue
                 print(f'{name} {program(name)}')
         else:
             print(__doc__, file=sys.stderr)

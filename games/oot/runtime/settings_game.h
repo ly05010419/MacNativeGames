@@ -13,6 +13,9 @@
 #define SETTINGS_HAS_BOARD 1
 #define SETTINGS_HAS_SHOTS 1
 #define SETTINGS_HAS_VR 1
+#if !TARGET_OS_IPHONE
+#define SETTINGS_HAS_OCARINA 1   /* the 陶笛 page: the songs played into the game's microphone (user 2026-11-20) */
+#endif
 #include "totk_fps_limit.h"   /* totk_fps_limits: the frame lock choices */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
@@ -70,7 +73,7 @@ static NSTimer *settingsRestoreTimer;
 /* The saved resolution choice (graphics-canvas.txt), or the default. Also the size the window opens at (frontend.m): it
    used to open at 1920x1080 and take the choice's size 1.5 s later, larger first and then smaller once 720p became the
    default (user 2026-11-10: "窗口 为什么 先变大 后变小？"). */
-static int settings_oot_canvas_saved(void){int v;return settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<6)||v==8)?v==8?0:v:1;}
+static int settings_oot_canvas_saved(void){int v;return settings_read_int("graphics-canvas.txt",&v)&&((v>=0&&v<=7)||v==8)?v==8?0:v:1;}   /* 6 and 7: 4K from 2K and native 4K, since 2026-11-18 */
 #endif
 static void settings_save_frame(void) {
  char word[32];int fps=nvn_fps_lock(),mfx=mfx_requested();
@@ -96,7 +99,7 @@ static void settings_ssao_restore(void) {
 static void settings_effects_restore(void) {}
 static void settings_restore_begin(void) {
  int v;char word[32];
- if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v);
+ if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v);
  if(!getenv("TOTK_MFX")&&runtime_setting_word("graphics-frame.txt",word,sizeof word)){
   int n=0;char tail=0;
   if(sscanf(word,"lock-%d %c",&n,&tail)==1&&(n>0&&totk_fps_limit_valid(n))){dm_gfx_set_flag("mfx_interp",MFX_OFF);nvn_fps_lock_set(n);}
@@ -110,7 +113,7 @@ static void settings_restore_begin(void) {
  {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
  {extern void runtime_operation_mode_choose(int,int);if(!getenv("TOTK_OPERATION_MODE")&&!(settings_read_int("graphics-profile.txt",&v)&&v==0))runtime_operation_mode_choose(0,0);}   /* no choice saved: the handheld quality profile (user 2026-11-10, after comparing in the panel) */   /* the handheld quality profile, before the guest starts */
  {extern void netbp_copy_set_flag(int);if(!getenv("OOT_NET_COPY")&&settings_read_int("graphics-net-copy.txt",&v)&&(v==0||v==1))netbp_copy_set_flag(v);}
- {int c=settings_oot_canvas_saved();   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 6, 7: a 4K canvas, not offered until the game has the memory for it; 9: no longer listed */
+ {int c=settings_oot_canvas_saved();   /* no choice saved: 1, 720p native (user 2026-11-10: "默认 用 掌机， 跳过 收尾网络 720原生"; it was 2, 1080p from 720p, since 2026-11-09); 9: no longer listed */
  settingsOotCanvas=c;runtime_oot_canvas_set(c,0);dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(1.5*NSEC_PER_SEC)),dispatch_get_main_queue(),^{settings_oot_window_sync();});}
 #endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
@@ -258,6 +261,53 @@ static TOTKSettingRow *settings_ssao_row(void) {
 static TOTKSettingRow *settings_botw_shadow_row(void);   /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
 static TOTKSettingRow *settings_botw_fov_row(void);      /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#import <AVFAudio/AVFAudio.h>
+/* The microphone (runtime/audio_input.h; user 2026-11-20, the Mac only, off by default): saved in microphone.txt, read by
+   the launcher (app/launcher.m microphone_setting). The game lists its input device when its audio starts, so the switch
+   takes effect at the next start; turning it on asks macOS for access now if it never has, so the next start does not
+   stop at the question. The game's own "Ocarina Mic Input" option is the other half. */
+static int settings_oot_mic_on(void){int v;return settings_read_int("microphone.txt",&v)&&v==1;}
+#include "audio_input.h"
+/* The 陶笛 page (user 2026-11-20: "这几首歌放在 设置里 我点击 就播放 新开 tab 叫做 陶笛"): the songs of the first part of
+   the game, played into the game's microphone at the ocarina's own pitches (A D4, C-down F4, C-right A4, C-left B4, C-up
+   D5), 0.45 s a note, while the game listens (the ocarina out, its Ocarina Mic Input on, the microphone switch on at the
+   start); the first row says which of those is missing. */
+typedef struct { const char *zh, *en, *keys; double hz[6]; } OotSong;
+static const OotSong oot_songs[] = {
+ {"塞尔达摇篮曲","Zelda's Lullaby","← ↑ → ← ↑ →",{493.88,587.33,440.0,493.88,587.33,440.0}},
+ {"艾波娜之歌","Epona's Song","↑ ← → ↑ ← →",{587.33,493.88,440.0,587.33,493.88,440.0}},
+ {"萨里亚之歌","Saria's Song","↓ → ← ↓ → ←",{349.23,440.0,493.88,349.23,440.0,493.88}},
+ {"太阳之歌","Sun's Song","→ ↓ ↑ → ↓ ↑",{440.0,349.23,587.33,440.0,349.23,587.33}},
+ {"时之歌","Song of Time","→ A ↓ → A ↓",{440.0,293.66,349.23,440.0,293.66,349.23}},
+ {"暴风雨之歌","Song of Storms","A ↓ ↑ A ↓ ↑",{293.66,349.23,587.33,293.66,349.23,587.33}},
+};
+static TOTKSettingRow *settings_oot_mic_row(void);   /* below */
+static void settings_oot_ocarina_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+ [rows addObject:settings_oot_mic_row()];   /* the microphone switch heads the page (user 2026-11-20: "放在 陶笛tab里") */
+ TOTKSettingRow *state=[TOTKSettingRow new];state.title=@"";state.fullWidthText=YES;
+ state.text=^NSString *{
+  if(!dm_audio_input_available())return settings_text("麦克风没开：打开上面的“麦克风吹陶笛”，再重开游戏","The microphone is off: turn on the switch above, then start the game again");
+  if(dm_audio_input_playing())return settings_text("正在播放…","Playing…");
+  if(!dm_audio_input_listening())return settings_text("游戏没在听：拿出陶笛（游戏选项里也要开 Ocarina Mic Input）","The game is not listening: take out the ocarina (with the game's Ocarina Mic Input on)");
+  return settings_text("游戏在听：点“播放”把曲子吹给它","The game is listening: press Play");};
+ [rows addObject:state];
+ for(NSUInteger i=0;i<sizeof oot_songs/sizeof *oot_songs;i++){
+  const OotSong *song=&oot_songs[i];
+  TOTKSettingRow *r=[TOTKSettingRow new];r.title=@(TOTK_UI(song->zh,song->en));
+  r.text=^NSString *{return @(song->keys);};r.buttonTitle=settings_text("播放","Play");
+  r.buttonAction=^{dm_audio_input_play_notes(song->hz,6,0.45,0.1);settings_refresh_all();};
+  [rows addObject:r];
+ }
+}
+static TOTKSettingRow *settings_oot_mic_row(void) {
+ return settings_row(settings_text("麦克风吹陶笛（下次启动生效；游戏里也要开 Ocarina Mic Input）","Play the ocarina into the microphone (from the next start; also turn on the game's Ocarina Mic Input)"),nil,nil,
+  ^int{return settings_oot_mic_on();},
+  ^(int v){settings_save_int("microphone.txt",v?1:0,"microphone");
+   if(v&&AVAudioApplication.sharedInstance.recordPermission==AVAudioApplicationRecordPermissionUndetermined)
+    [AVAudioApplication requestRecordPermissionWithCompletionHandler:^(BOOL granted){fprintf(stderr,"[ns2-audio] audio input: macOS access %s\n",granted?"granted":"refused");}];});
+}
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
 /* The upscaler at the end of the frame: the game's own network or MetalFX (oot_net_bypass.inc). Takes effect on the next frame. */
 extern int netbp_flag(void); extern void netbp_set_flag(int);
 static TOTKSettingRow *settings_oot_upscaler_row(void) {
@@ -289,8 +339,9 @@ static TOTKSettingRow *settings_oot_profile_row(void) {
 /* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
  return settings_row(settings_text("分辨率","Resolution"),
-  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生，默认）","720p (native, default)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)")],
-  @[@0,@1,@2,@3,@4,@5],^int{return settingsOotCanvas;},^(int v){
+  @[settings_text("720p（480p 放大）","720p (from 480p)"),settings_text("720p（原生，默认）","720p (native, default)"),settings_text("1080p（720p 放大）","1080p (from 720p)"),settings_text("1080p（原生）","1080p (native)"),settings_text("2K（1080p 放大）","2K (from 1080p)"),settings_text("2K（2560×1440 原生）","2K (2560×1440 native)"),
+    settings_text("4K（2K 放大）","4K (from 2K)"),settings_text("4K（3840×2160 原生）","4K (3840×2160 native)")],   /* user 2026-11-18: "设置里 添加 4k（2k放大）和 原生4k 分辨率支持"; the window textures are 3840x2160 and the render target pool has the room (game_patches_ns2.c patch_oot_window_textures, patch_oot_render_target_pool) */
+  @[@0,@1,@2,@3,@4,@5,@6,@7],^int{return settingsOotCanvas;},^(int v){
    settingsOotCanvas=v;runtime_oot_canvas_set(v,1);settings_save_int("graphics-canvas.txt",v,"resolution");dispatch_async(dispatch_get_main_queue(),^{settings_oot_window_sync();});});
 }
 #endif
@@ -337,10 +388,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),
-  @[settings_text("全部（FPS、着色器、读取、游玩时间）","All (FPS, shaders, load, playtime)"),
-    settings_text("FPS 全信息（另加卡顿、着色器库、管线、存档没命中）","FPS full information (also hitches, libraries, pipelines, archive misses)"),   // user 2026-11-16
-    settings_text("FPS 与游玩时间","FPS + playtime"),settings_on_off(0)],
-  @[@(HUD_MODE_ALL),@(HUD_MODE_FULL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
+  @[settings_on_off(0),settings_text("极简 FPS","Bare FPS"),settings_text("FPS 与游玩时间","FPS + playtime"),settings_text("全部","All"),
+    settings_text("FPS 和帧调试信息","FPS and frame debug info")],   // user 2026-11-18: no notes in brackets, in reverse, the debug one last
+  @[@(HUD_MODE_OFF),@(HUD_MODE_BARE),@(HUD_MODE_MINIMAL),@(HUD_MODE_ALL),@(HUD_MODE_FULL)],
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_shared_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
@@ -440,6 +490,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_aniso_row()];
  [rows addObjectsFromArray:settings_effect_rows()];
  for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:i<users?SETTINGS_PAGE_USERS:SETTINGS_PAGE_EFFECTS;
+#if SETTINGS_HAS_OCARINA
+ {NSUInteger ocarina=rows.count;settings_oot_ocarina_rows(rows);for(NSUInteger i=ocarina;i<rows.count;i++)rows[i].page=SETTINGS_PAGE_OCARINA;}
+#endif
  if(vr_enabled()){   /* zeldaVR, its own page: the game's render resolution again (the display page's setting), camera, VR settings */
   NSUInteger vr=rows.count;
   if(res.count>=2)[rows addObject:settings_row(settings_text("游戏渲染分辨率","Game render resolution"),res,resModes,

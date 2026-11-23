@@ -2,9 +2,30 @@
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
 static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
+/* A mesh shader with no task shader launches its workgroups through its own object function, MTK_OBJECT_BLOCK at a time
+   (MeshStage.cs ObjectEntry / ObjectBlock / ObjectCountBuffer, the same constants; after nxnative 09dcb627, MIT): Metal holds
+   a mesh grid to 1024 threadgroups, and Ocarina of Time's foliage drew up to 1,238 in one indirect draw here (1,771 at
+   nxnative, a GPU page fault on an M2 Max). An indirect draw's count is read on the GPU, so it launches
+   MTK_OBJECT_BLOCKS_INDIRECT blocks (16,384 workgroups; the blocks past the count launch nothing). A translation without the
+   object function (an older chain, the probes) draws as before. OOT_MESH_BLOCKS=0: one mesh grid as before, to compare. */
+enum { MTK_OBJECT_BLOCK=1024, MTK_OBJECT_BLOCKS_INDIRECT=16, MTK_OBJECT_COUNT_BUFFER=30 };
+static _Atomic uint64_t g_mtk_block_draws;
+static int mtk_blocks_on(const NvShader *ms) {
+    static _Atomic int on=-1;int v=atomic_load_explicit(&on,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_MESH_BLOCKS");v=!(e&&!strcmp(e,"0"));if(atomic_exchange(&on,v)<0&&!v)MLOG("[mesh] OOT_MESH_BLOCKS=0: a mesh shader with no task shader draws its workgroups as one mesh grid");}
+    return v&&ms&&ms->mesh_notask&&ms->ofn;
+}
 static int mtk_owners(NvShader **ts,NvShader **ms){if(!g_mtk.on)return 0;*ts=g_mtk.ts;*ms=g_mtk.ms;return 1;}   // nvn_mesh_batch.inc: the mesh draw's real task / mesh owners (draw_inner sees a raster-only program)
 typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
+/* PATCH, not the root fix (#2107, #2310; user 2026-11-20 "3补丁"): macOS 27's AGX compiler crashes on a few OOT mesh
+   pipelines (mesh ac2f3feb on M1 / M2), and the Mac ended the game at the first draw that needs one, on every load of a
+   save past it. A mesh pipeline Metal refuses is now handled as on the phone: the draw is skipped, and its key is kept
+   here so it is not compiled again this run (each attempt takes the compiler service down for seconds and draws nothing).
+   The root fix is in the translation (avoid the construct the compiler crashes on) and waits for a reproduction.
+   TOTK_MESH_FAIL_DIE=1 brings back the exit on the Mac. Same thread as g_mtk_cache (mtk_pso). */
+static nvn_hmap g_mtk_failed={.klen=sizeof(mtk_pso_key)};
+static uint64_t g_mtk_failed_n;
 #include "nvn_mesh_capture.inc"
 #include "nvn_mesh_translation.inc"
 #include "nvn_mesh_pack.inc"
@@ -151,6 +172,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
     if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
+    else if(mtk_blocks_on(ms)){m.objectFunction=ms->ofn;m.payloadMemoryLength=16;m.maxTotalThreadsPerObjectThreadgroup=1;}   // its workgroups in blocks of MTK_OBJECT_BLOCK (mtk_encode)
     m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];
     m.depthAttachmentPixelFormat=d.depthAttachmentPixelFormat;m.stencilAttachmentPixelFormat=d.stencilAttachmentPixelFormat;
@@ -179,7 +201,11 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     if(akey&&g_par_on){par_count(0);atomic_fetch_add(&g_mtk_archive_misses,1);}
     id<MTLRenderPipelineState> ps=[g_dev newRenderPipelineStateWithMeshDescriptor:m options:MTLPipelineOptionNone reflection:nil error:error];
     if(ps&&akey)par_add(g_dev,akey,m);
-    if(!ps)gpu_compile_error(error?*error:nil,m.label);
+    if(!ps){gpu_compile_error(error?*error:nil,m.label);
+#ifdef PSO4_BUILT
+        par4_compiler_died(error?*error:nil);   // the service's death also takes the Metal 4 captures under way (nvn_pso4.h)
+#endif
+    }
     return ps;
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
@@ -194,15 +220,22 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     int pack=mtk_pack_on()&&!g_mtk_geometry&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);   // the geometry capture diagnostic and the HDR twin read the unpacked layout
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
+    if(nvn_hm_get(&g_mtk_failed,&key))return nil;   // refused earlier this run: skipped again without compiling (the patch above)
     uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived);
     /* Counted with the render pipelines made at a draw, as pso_get counts them (archive hits included): until 2026-11-15 a
        mesh pipeline built here was missing from the long-frame line's and the per-frame record's pipeline count and time
        (an OOT world entry: 32 mesh pipelines, 75 s, none of it counted). */
     g_bp_pso_n++;atomic_fetch_add_explicit(&g_bp_pso_ns,bp_now()-build_t0,memory_order_relaxed);
-#if TARGET_OS_IPHONE
-    if(!ps){MLOG("【红】网格管线没建成，跳过这次绘制（mesh %s）：%s",ms->key,error.localizedDescription.UTF8String);return nil;}   // the fallback: never an exit on the phone
+    if(!ps){   // the patch above: skip the draw (never an exit on the phone; on the Mac unless TOTK_MESH_FAIL_DIE=1)
+#if !TARGET_OS_IPHONE
+        static int die=-1;if(die<0){const char *e=getenv("TOTK_MESH_FAIL_DIE");die=e&&atoi(e)>0;}
+        if(die)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
 #endif
-    if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
+        nvn_hm_put(&g_mtk_failed,&key,(void *)1);g_mtk_failed_n++;
+        MLOG("【红】网格管线没建成，跳过它的绘制，本局不再重编（第 %llu 条；task %s mesh %s fragment %s）：%s",(unsigned long long)g_mtk_failed_n,
+             ts?ts->key:"-",ms->key,fs?fs->key:"-",error.localizedDescription.UTF8String);
+        return nil;
+    }
     hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] %s task %s mesh %s fragment %s in %.1f ms at the draw",archived?"from the archive":"compiled",ts?ts->key:"-",ms->key,fs?fs->key:"-",(bp_now()-build_t0)/1e6);
     if(!g_mtk_geometry){   // the next start builds it ahead (mtk_warm_row); the geometry diagnostic's variant is not a pipeline of the game
         pso_skey sk;char hex[sizeof sk*2+1];pso_skey_from(&key.p,ms,fs,0,NULL,&sk);pso_skey_hex(&sk,hex);
@@ -296,8 +329,9 @@ static void mtk_scratch_report(void) {
 }
 static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms;
-    if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={!!ts}},0);
-    else {[en setArgumentTable:g_vt atStages:MTLRenderStageMesh];if(ts)[en setArgumentTable:g_ot atStages:MTLRenderStageObject];}
+    const int blocks=!ts&&mtk_blocks_on(ms);   // the mesh's own object function launches its workgroups MTK_OBJECT_BLOCK at a time
+    if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={ts||blocks}},0);
+    else {[en setArgumentTable:g_vt atStages:MTLRenderStageMesh];if(ts||blocks)[en setArgumentTable:g_ot atStages:MTLRenderStageObject];}
     uint64_t first=g_mtk.first_gpu;
     if(!first){id<MTLBuffer>b;size_t o=arena_alloc(16,&b);memcpy((uint8_t *)b.contents+o,&g_mtk.first,4);first=b.gpuAddress+o;}
     if(ts){g_args_dirty[3]=1;encode_args((id<MTLCommandEncoder>)en,ts,3,0);
@@ -306,13 +340,77 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());mtk_scratch_report();   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
     int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
-    if(g_mtk.indirect_gpu){
+    if(blocks){
+        /* The object stage reads the workgroup count from word 0 of the grid record (an indirect draw's converted record, a
+           direct draw's copy) and each object threadgroup launches its block. An indirect draw's count is known only on the
+           GPU, so it gets MTK_OBJECT_BLOCKS_INDIRECT object threadgroups; the ones past the count launch nothing. */
+        uint64_t count=g_mtk.indirect_gpu;uint32_t groups=g_mtk.indirect_gpu?MTK_OBJECT_BLOCKS_INDIRECT:(g_mtk.count+MTK_OBJECT_BLOCK-1)/MTK_OBJECT_BLOCK;
+        if(!count){id<MTLBuffer>b;size_t o=arena_alloc(16,&b);memcpy((uint8_t *)b.contents+o,&g_mtk.count,4);count=b.gpuAddress+o;}
+        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={MTK_OBJECT_COUNT_BUFFER,count}},0);else[g_ot setAddress:count atIndex:MTK_OBJECT_COUNT_BUFFER];
+        atomic_fetch_add(&g_mtk_block_draws,1);
+        if(groups){
+            if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={groups,1,ms->mesh_threads}},1);
+            else [en drawMeshThreadgroups:MTLSizeMake(groups,1,1) threadsPerObjectThreadgroup:MTLSizeMake(1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+        }
+    }
+    else if(g_mtk.indirect_gpu){
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH_INDIRECT,.u={g_mtk.indirect_gpu,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
         else [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.indirect_gpu threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
     }
     else if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={g_mtk.count,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
     else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count,1,1) threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
     ms_time_stamp(en,timing,1);
+}
+/* Mesh draws in render passes of their own on Apple GPUs before the Apple9 family (M1 / M2), 2026-11-16. On an M1 Pro the
+   GPU hung (kIOGPUCommandBufferCallbackErrorHang) within seconds of looking up in Kokiri, in a render pass that mixed task +
+   mesh draws with ordinary draws (#2036, #2040, #2103, #2108, #2112 report the same hang on M1 Max and M2 Pro). Skipping
+   every mesh draw, or the two task shaders' draws, avoided it; skipping single task or mesh shaders, full barriers
+   (OOT_DRAW_BARRIERS=0 OOT_MESH_BATCH=0), clamped vertex indices and at least one launched mesh group did not. Ending the
+   render pass before and after each mesh draw did: no GPU error in 45 minutes of Kokiri with one submission a pass, and
+   through the Deku Tree with the normal submissions. The cost is the passes' load / store on the tile memory.
+   OOT_MESH_PASS_SPLIT=1 / 0 forces it on / off on any Mac. OOT_MESH_RING=1 (diagnostic) also keeps each mesh draw in a
+   ring with its frame / chunk, shaders, counts and the GPU's copy of an indirect draw's arguments, printed at the first
+   GPU hang (mtk_ring_dump, from gpu_hang_guard); with TOTK_CHUNK_DRAWS=1 TOTK_CHUNK_FIRST=1 a hang report names one draw. */
+typedef struct { uint64_t frame; int chunk; uint32_t count, first; int indirect; char ts[17], ms[17], fs[17]; } mtk_ring_ent;
+#define MTK_RING 256
+static mtk_ring_ent g_mtk_ring[MTK_RING]; static uint64_t g_mtk_ring_n; static id<MTLBuffer> g_mtk_ring_args;
+static int mtk_split_on(void) {
+    static int v=-1;
+    if(v<0){const char *e=getenv("OOT_MESH_PASS_SPLIT");
+        v=e&&*e?atoi(e)!=0:![g_dev supportsFamily:MTLGPUFamilyApple9];
+        MLOG("[mesh] mesh draws %s (OOT_MESH_PASS_SPLIT%s)",v?"in render passes of their own":"share render passes",e&&*e?"":", by GPU family");}
+    return v;
+}
+static int mtk_ring_on(void) { static int v=-1; if(v<0){const char *e=getenv("OOT_MESH_RING");v=e&&atoi(e)!=0;} return v; }
+static void mtk_ring_dump(void) {
+    if(!mtk_ring_on()||!g_mtk_ring_n)return;
+    static int done; if(done++)return;
+    uint64_t n=g_mtk_ring_n<MTK_RING?g_mtk_ring_n:MTK_RING; const uint32_t *args=g_mtk_ring_args?g_mtk_ring_args.contents:NULL;
+    MLOG("[mesh-ring] last %llu mesh draws (frame / chunk as in the [gpu-error] lines; args = the GPU's copy of an indirect draw's arguments):",(unsigned long long)n);
+    for(uint64_t i=g_mtk_ring_n-n;i<g_mtk_ring_n;i++){const mtk_ring_ent *r=&g_mtk_ring[i%MTK_RING];const uint32_t *a=args?args+(i%MTK_RING)*4:NULL;
+        MLOG("[mesh-ring] #%llu frame=%llu chunk=%d task %s mesh %s fs %s %s count %u first %u args %u %u %u %u",(unsigned long long)i,(unsigned long long)r->frame,r->chunk,r->ts,r->ms,r->fs,
+             r->indirect?"indirect":"direct",r->count,r->first,a&&r->indirect?a[0]:0,a&&r->indirect?a[1]:0,a&&r->indirect?a[2]:0,a&&r->indirect?a[3]:0);}
+}
+/* At a GPU hang (gpu_hang_guard, before the game stops), always: the device stage memory as the GPU left it. The M1 / M2
+   hangs (#2036 #2040 #2103 #2108 #2112 #2239) are in passes drawing task a5288d0a + mesh 3439aaa0, and 3439aaa0 keeps its
+   stage memory here: a threadgroup claims a slot in a loop of up to 65,536 tries (MeshStage.cs ScratchSpinLimit), then
+   takes one still in use. Every slot held, or forced takes, at the hang points at that claim (nxnative gives up after 64
+   tries and skips the threadgroup's primitives); few slots held and no forced takes rule it out. The every-600-frames
+   report (mtk_scratch_report) said nothing about the moment of the hang: #2036's last one was 25 frames before it. */
+static void mtk_scratch_hang_report(void) {
+    if(!g_mtk_scratch){MLOG("[mesh] at the GPU hang: no mesh draw had used device stage memory");return;}
+    const uint32_t *h=g_mtk_scratch.contents;unsigned held=0;for(unsigned i=0;i<g_mtk_scratch_slots;i++)held+=h[MTK_SCRATCH_FLAGS+i]!=0;
+    MLOG("【红】[mesh] at the GPU hang (frame %llu): device stage memory slots held %u of %u, counter %u, forced takes %u; mesh draws %s",
+         (unsigned long long)atomic_load(&g_cur_frame),held,g_mtk_scratch_slots,h[0],h[MTK_SCRATCH_FORCED],
+         mtk_split_on()?"in render passes of their own":"share render passes");
+}
+static void mtk_ring_note(const p_draw *dw,NvShader *ts,NvShader *ms,NvShader *fs) {
+    if(!mtk_ring_on())return;
+    if(!g_mtk_ring_args){g_mtk_ring_args=[g_dev newBufferWithLength:MTK_RING*16 options:MTLResourceStorageModeShared];g_mtk_ring_args.label=@"OOT mesh ring";res_add(g_mtk_ring_args);memset(g_mtk_ring_args.contents,0xff,MTK_RING*16);}
+    uint64_t i=g_mtk_ring_n++; mtk_ring_ent *r=&g_mtk_ring[i%MTK_RING];
+    *r=(mtk_ring_ent){.frame=atomic_load(&g_cur_frame),.chunk=g_sub_chunks,.count=(uint32_t)dw->count,.first=(uint32_t)dw->first,.indirect=dw->ind!=0};
+    snprintf(r->ts,17,"%.16s",ts?ts->key:"none");snprintf(r->ms,17,"%.16s",ms?ms->key:"-");snprintf(r->fs,17,"%.16s",fs?fs->key:"-");
+    if(dw->ind){void *src;uint64_t off,gpu;if(mtl_gpu_addr(dw->ind,16,&src,&off,&gpu))enc_b_copy_buffer(blit(),(__bridge id<MTLBuffer>)src,off,g_mtk_ring_args,(i%MTK_RING)*16,16);}
 }
 static void mesh_tasks_draw(const p_draw *dw) {
     if(!S.prog||dw->count<=0)return;
@@ -326,6 +424,16 @@ static void mesh_tasks_draw(const p_draw *dw) {
     if(fit<0)MDIE("mesh shader translation is unavailable");
     NvShader *ts=pr->sh[3],*ms=pr->sh[4];
     if(ts&&ts->mesh_kind!=1)MDIE("task stage is not a task shader");
+    /* Diagnostic DM_NVN_SKIP_MESH=all|<key prefix>[,<key prefix>...] (up to 16; off by default): drops the mesh draws whose mesh
+       or task shader key starts with one of the prefixes, as DM_NVN_SKIP_FS does for ordinary draws (mesh draws never reach
+       draw_inner). Bisects a GPU hang at the first mesh-drawn scene on an M1 Pro (2026-11-16) without changing a translation. */
+    {static char sk[16][20];static int nsk=-1,all;
+     if(nsk<0){nsk=0;const char *q=getenv("DM_NVN_SKIP_MESH");if(q&&!strcmp(q,"all"))all=1;
+        else for(;q&&*q&&nsk<16;q=strchr(q,',')?strchr(q,',')+1:q+strlen(q)){size_t n=strcspn(q,",");if(n>16)n=16;if(!n)continue;memcpy(sk[nsk],q,n);sk[nsk][n]=0;nsk++;}
+        if(all||nsk)MLOG("[mesh] DM_NVN_SKIP_MESH: dropping %s mesh draws (diagnostic, the picture is wrong)",all?"all":"the listed");}
+     if(all)return;
+     for(int i=0;i<nsk;i++)if((ms&&!strncmp(ms->key,sk[i],strlen(sk[i])))||(ts&&!strncmp(ts->key,sk[i],strlen(sk[i])))){
+        static int told;if(told++<16)MLOG("[mesh] DM_NVN_SKIP_MESH: dropped a draw of %.16s",ms?ms->key:"?");return;}}
 #if TARGET_OS_IPHONE
     if(!ms||!ms->fn||(ts&&!ts->fn)){draw_skipped();return;}
     if(!mtk_device_compiles()){mtk_note_skip(ms);draw_skipped();return;}   // the fallback: no mesh pipeline is made on the phone
@@ -359,11 +467,14 @@ static void mesh_tasks_draw(const p_draw *dw) {
             [g_commit_blocks addObject:^{[[NSData dataWithBytes:(uint8_t *)capture.contents+ca length:8]writeToFile:path atomically:YES];}];
         }
     }
+    if(mtk_split_on()&&g_enc)rp_end();
+    if(mtk_ring_on()){mtk_ring_note(dw,ts,ms,pr->sh[1]);if(g_blit){enc_b_end(g_blit);g_blit=nil;}}
     mtk_geo_prepare(ms,pr->sh[1]);mtk_capture_storage(pr);
     g_geo_ras.pr=raster;g_pso_dirty=1;
     p_draw tri={.prim=4,.count=3,.instances=1};draw_inner(&tri,NULL);
     g_geo_ras.pr=nil;g_mtk.on=0;args_dirty_all();g_pso_dirty=1;
     mesh_indirect_written(pr);mesh_indirect_stats();
     mesh_batch_written(pr);
+    if(mtk_split_on()&&g_enc)rp_end();
     static int once;if(!once++)MLOG("[mesh] first native draw: %u workgroups from %u",g_mtk.count,g_mtk.first);
 }

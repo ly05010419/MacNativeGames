@@ -8,6 +8,9 @@ VORBIS_PREFIX ?= $(or $(shell python3 ../../tools/deps prefix vorbis),$(error to
 WORK ?= ACNH_build
 OUT := $(WORK)/build
 NATIVE_OPT ?= -O2
+# The host's bundle id (runtime/game_info.plist), as Tears of the Kingdom's: Metal's archive builder then works in a cache
+# folder of its own, which the pipeline archive needs to write (totk_pipeline_archive_folders.h; the pipeline-archive mode).
+GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -39,8 +42,8 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) $(OUT)/version-config.h
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-$(OUT)/acnh-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS)
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Wno-error -Wno-deprecated-declarations \
+$(OUT)/acnh-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) runtime/game_info.plist
+	xcrun clang -std=c11 $(NATIVE_OPT) $(GAME_INFO) -g -Wall -Wextra -Wno-error -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -include $(OUT)/version-config.h -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
 	  -I$(VORBIS_PREFIX)/include -I$(OGG_PREFIX)/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a \

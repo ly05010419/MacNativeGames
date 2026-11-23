@@ -18,6 +18,10 @@ OUT := $(WORK)/build
 PY ?= python3
 NATIVE_OPT ?= -O2
 MACOS_MIN := -mmacosx-version-min=26.0
+# The host's bundle id (runtime/game_info.plist), as Tears of the Kingdom's and Super Mario Odyssey's: Metal's archive builder
+# then works in a cache folder of its own, which the pipeline archive needs to write (totk_pipeline_archive_folders.h; the
+# pipeline-archive mode the iPhone build runs, games/totk/ios/tools/device_pipelines.py).
+GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -45,8 +49,8 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile | check-paths
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(MACOS_MIN) $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-$(OUT)/pla-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang $(MACOS_MIN) -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+$(OUT)/pla-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) runtime/game_info.plist Makefile
+	xcrun clang $(MACOS_MIN) -std=c11 $(NATIVE_OPT) $(GAME_INFO) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -DSCENECAP_HOOKS=$(SCENECAP) \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a \

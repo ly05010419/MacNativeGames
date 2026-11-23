@@ -307,7 +307,11 @@ static TOTKSettingRow *row(NSString *title) {
 static NSPopUpButton *menu(NSString *title) { return (NSPopUpButton *)row(title).control; }
 static void footer_spacing_probe(void) {
     NSUInteger counts[SETTINGS_PAGES] = {0};
+#ifdef RUNTIME_STICK_CALIBRATION
     for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page] += r.customRows > 0 ? r.customRows : 1;
+#else
+    for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page]++;
+#endif
     NSInteger previous = settingsPanel.page, longest = SETTINGS_PAGE_DISPLAY;
     for (NSInteger p = 0; p < SETTINGS_PAGES; p++)
         if (counts[p] > counts[longest]) longest = p;
@@ -316,7 +320,11 @@ static void footer_spacing_probe(void) {
        page scroll. The footer sits below its viewport, not offscreen content. */
     NSView *page = settingsPanel.pages[(NSUInteger)longest];
     TOTKSettingRow *last = settingsPanel.rows.lastObject;
-    NSView *band = [page isKindOfClass:NSScrollView.class] ? page : (last.customView ?: last.control.superview);
+    NSView *lastRow = last.control.superview;
+#ifdef RUNTIME_STICK_CALIBRATION
+    lastRow = last.customView ?: lastRow;
+#endif
+    NSView *band = [page isKindOfClass:NSScrollView.class] ? page : lastRow;
     assert(band != nil);
     NSRect lastBand = [band convertRect:band.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
@@ -365,7 +373,10 @@ static void rows_fit(void) {
         }
         CGFloat previousBottom = NSMaxY(document.bounds);
         for (TOTKSettingRow *r in settingsPanel.allRows) if (r.page == page) {
-            NSView *band = r.customView ?: r.control.superview;
+            NSView *band = r.control.superview;
+#ifdef RUNTIME_STICK_CALIBRATION
+            band = r.customView ?: band;
+#endif
             assert(band && band.superview == document && band.frame.size.height >= 24);
             assert(NSContainsRect(document.bounds, band.frame));
             assert(NSMaxY(band.frame) <= previousBottom);   /* no overlapping rows */
@@ -1206,11 +1217,25 @@ int main(int argc, const char **argv) { @autoreleasepool {
 
     /* Overlay: all -> FPS + playtime -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
-    shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    shows(@"Overlay", @"All");
+    /* user 2026-11-18: no notes in brackets, the choices in reverse, "FPS 全信息" renamed and last */
+    assert([menu(@"Overlay").itemTitles isEqualToArray:(@[@"Off", @"Bare FPS", @"FPS + playtime", @"All", @"FPS and frame debug info"])]);
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nSession  0 h 00 m | Total  0 h 00 m\nSettings: key 1 · controller L3 + R3"]); }   /* the last line: how to open this panel (a DualSense connected) */
+    /* Bare FPS (user 2026-11-18: "极简fps 只显示 fps和分辨率， 放大3倍（只有这个 放大3倍）"): the FPS line alone, at three
+       times the font of the other modes. */
+    CGFloat usual = 0; if (hudBox) usual = [[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize];
+    pick(@"Overlay", @"Bare FPS"); assert(fps_overlay_hud_mode() == HUD_MODE_BARE);
+    assert(hud_line_shown(HUD_FPS) && !hud_line_shown(HUD_SHADER) && !hud_line_shown(HUD_LOAD));
+    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440"]);
+        NSFont *font = [b.label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL];
+        assert(usual > 0 && fabs(font.pointSize - HUD_BARE_SCALE * usual) < 0.01); }
+    { fps_overlay_info info = {.fps = 46, .screen_w = 2560, .screen_h = 1440, .mfx = 1, .gen = 0, .big = 1, .scene_w = 1707, .scene_h = 960}; char line[96];
+      fps_overlay_text(&info, line, sizeof line); assert(!strcmp(line, "FPS 46  2560x1440"));   /* no internal size, MetalFX or 2K mark */
+      pick(@"Overlay", @"FPS + playtime"); fps_overlay_text(&info, line, sizeof line); assert(strstr(line, "(1707x960)") && strstr(line, "MetalFX")); }
+    if (hudBox) assert(fabs([[((TOTKHudBox *)hudBox).label.attributedStringValue attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] pointSize] - usual) < 0.01);   /* only that mode is larger */
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
-    pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
+    pick(@"Overlay", @"All");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
 
     if (hudBox) assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Session  0 h 00 m | Total  0 h 00 m"]);
@@ -1622,6 +1647,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(!starButton.hidden && settingsPanel.controllerTargets.lastObject == starButton);   /* every page */
+#ifdef RUNTIME_STICK_CALIBRATION
     assert(settingsPanel.rows.count == 13 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
     /* The calibration block occupies its row index but is not controller-selectable;
        the footer after it must not be mistaken for a disabled custom row. */
@@ -1631,6 +1657,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(![settingsPanel controllerEnabled:(NSInteger)settingsPanel.rows.count-1]);
     assert(settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton);
     assert([settingsPanel controllerEnabled:(NSInteger)settingsPanel.rows.count]);
+#else
+    assert(settingsPanel.rows.count == 12 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
+#endif
 
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
@@ -1653,6 +1682,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
     /* The overlay keeps its build line too (user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
+    /* The Launcher that built the app comes first (user 2026-11-18: "版本号 旁边 显示 launcher的版本号（launcher版本号放第一）"). */
+    assert([hud_build_text(NULL, "abc1234") isEqualToString:@"build abc1234"] && [hud_build_text("", "abc1234") isEqualToString:@"build abc1234"]);
+    assert([hud_build_text("1.0.6", "abc1234") isEqualToString:@"Launcher 1.0.6 · build abc1234"]);
+    assert([hud_build_text("dev", "abc1234") isEqualToString:@"dev · build abc1234"]);
+    assert(!hud_build_text("1.0.6", NULL) && !hud_build_text("1.0.6", ""));
+    setenv("TOTK_LAUNCHER_VERSION", "1.0.6", 1);
+    if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Launcher 1.0.6 · build abc1234"]); }
+    unsetenv("TOTK_LAUNCHER_VERSION");
     footer_spacing_probe();   /* the longest page keeps the original tight footer spacing */
     [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];

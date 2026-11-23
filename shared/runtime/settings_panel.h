@@ -68,7 +68,7 @@ static inline int settings_read_number(const char *name, double lo, double hi, d
 /* The pages, in tab order. A page added here is counted in perPage (the panel height), given its tab, and its rows a
    SETTINGS_PAGE_* in the game's settings_rows. VR (zeldaVR) is last and only there while VR is on (settings_pages); a page
    the game does not have (its SETTINGS_HAS_*) has no tab (settings_page_present). */
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_VR, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_CONTRIB, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_OCARINA, SETTINGS_PAGE_VR, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
@@ -88,8 +88,10 @@ static void settings_pointer_used(void);
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
 @property(strong) NSTextField *textLabel;        /* the field showing text() */
+#ifdef RUNTIME_STICK_CALIBRATION
 @property(strong) NSView *customView;            /* a full-width block (the stick-calibration tool) */
 @property int customRows;                        /* its height in row units; 0: an ordinary row */
+#endif
 -(BOOL)slider;
 -(void)changed:(id)sender;
 -(void)refresh;
@@ -106,7 +108,9 @@ static void settings_pointer_used(void);
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
 -(void)refresh{
+#ifdef RUNTIME_STICK_CALIBRATION
  if(self.customView)return;   /* the stick-calibration block draws and updates itself */
+#endif
  if(self.text){NSString *t=self.text();
   if(![self.textLabel.stringValue isEqualToString:t]){self.textLabel.stringValue=t;self.textLabel.toolTip=t;}
   if(self.fullWidthText){CGFloat width=[t sizeWithAttributes:@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular]}].width;
@@ -127,9 +131,9 @@ static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_U
 #ifdef RUNTIME_STICK_CALIBRATION
 /* ---- The stick-calibration tool (Input page) ---- */
 /* Switch's "calibrate control sticks" recreated in the Input page (user 2026-11-13): each stick shows its live position
-   before calibration (the green dot) and the saved centre (the white cross), and a two-step flow. Release the stick (its
+   before calibration (the green dot) and the calibrated centre (the white cross), and a two-step flow. Release the stick (its
    still position becomes the centre), then sweep it around the edge (the real travel is stretched back to full range).
-   The result is saved through runtime_gamepad_calibration_set and applied to the game at once; with no controller the
+   The result is applied through runtime_gamepad_calibration_set for this connection; with no controller the
    buttons are greyed and the dots sit at centre. */
 enum { CAL_LEFT = 0, CAL_RIGHT = 1 };
 enum { CAL_IDLE = 0, CAL_AWAIT_CENTER, CAL_RECORD, CAL_READY };
@@ -172,7 +176,7 @@ static int settings_calibration_active(void) { return calRun[0].phase != CAL_IDL
     self.calibrateButton.controlSize=NSControlSizeSmall;
     self.calibrateButton.font=[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
     self.calibrateButton.refusesFirstResponder=YES;
-    self.calibrateButton.toolTip=settings_text("推至最外沿转满一圈，松开回中后自动保存；取消或关闭页面不保存本次采样。","Sweep both sticks at full travel, then release to save automatically; Cancel or closing the page discards this session.");
+    self.calibrateButton.toolTip=settings_text("推至最外沿转满一圈，松开回中后应用到本次连接；取消或关闭页面会丢弃本次采样。","Sweep both sticks at full travel, then release to apply for this connection; Cancel or closing the page discards this run.");
     [self.calibrateButton sizeToFit];[self addSubview:self.calibrateButton];
     self.deadzone=[NSSlider sliderWithValue:runtime_gamepad_stick_deadzone_get(0)*100 minValue:0 maxValue:50 target:self action:@selector(changeDeadzone:)];
     self.deadzone.continuous=YES;
@@ -237,7 +241,7 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
     [self drawStick:CAL_RIGHT];
     [self drawTrigger:CAL_LEFT];   /* LT */
     [self drawTrigger:CAL_RIGHT];  /* RT */
-    NSString *status=settings_calibration_active()?settings_text("推至最外沿补齐灰区；亮区已覆盖，松开回中自动保存","Sweep at full travel: bright = covered, grey = missing; release to save"):calibrationStatus;
+    NSString *status=settings_calibration_active()?settings_text("推至最外沿补齐灰区；亮区已覆盖，松开回中即应用","Sweep at full travel: bright = covered, grey = missing; release to apply"):calibrationStatus;
     if(status){
         NSMutableParagraphStyle *style=[NSMutableParagraphStyle new];style.alignment=NSTextAlignmentCenter;
         [status drawInRect:NSMakeRect(12,b.size.height-80,w-24,20) withAttributes:@{
@@ -555,6 +559,9 @@ enum { SETTINGS_BIND_PANEL = 100 };
 #ifndef SETTINGS_HAS_AA_ROWS
 #define SETTINGS_HAS_AA_ROWS 0
 #endif
+#ifndef SETTINGS_HAS_OCARINA
+#define SETTINGS_HAS_OCARINA 0   /* the 陶笛 page: songs played into the game's microphone (Ocarina of Time on the Mac) */
+#endif
 #ifndef SETTINGS_HAS_CONTRIB
 #define SETTINGS_HAS_CONTRIB 1
 #endif
@@ -585,6 +592,7 @@ static BOOL settings_page_present(NSInteger page) {
   case SETTINGS_PAGE_BOARD:return SETTINGS_HAS_BOARD;
   case SETTINGS_PAGE_SHOTS:return SETTINGS_HAS_SHOTS;
   case SETTINGS_PAGE_CONTRIB:return SETTINGS_HAS_CONTRIB;
+  case SETTINGS_PAGE_OCARINA:return SETTINGS_HAS_OCARINA;
 #if SETTINGS_HAS_VR
   case SETTINGS_PAGE_VR:return vr_enabled()!=0;
 #else
@@ -828,8 +836,13 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
- NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]+=r.customRows>0?r.customRows:1;
- NSUInteger most=perPage[SETTINGS_PAGE_VR];for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
+ NSUInteger perPage[SETTINGS_PAGES]={0};
+#ifdef RUNTIME_STICK_CALIBRATION
+ for(TOTKSettingRow *r in rows)perPage[r.page]+=r.customRows>0?r.customRows:1;
+#else
+ for(TOTKSettingRow *r in rows)perPage[r.page]++;
+#endif
+ NSUInteger most=MAX(perPage[SETTINGS_PAGE_VR],perPage[SETTINGS_PAGE_OCARINA]);for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
  CGFloat n=most,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
@@ -853,7 +866,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSArray<NSString *> *pageNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots"),@"VR"];   /* SETTINGS_PAGE_* order */
+ NSArray<NSString *> *pageNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots"),settings_text("陶笛","Ocarina"),@"VR"];   /* SETTINGS_PAGE_* order */
  NSMutableArray<NSString *> *tabNames=[NSMutableArray array];   /* the pages this game has (settings_page_present) */
  for(NSInteger p=0;p<SETTINGS_PAGES;p++)if(settings_page_present(p))[tabNames addObject:pageNames[(NSUInteger)p]];
  NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
@@ -864,6 +877,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
     350 ("GPU keep-alive (holds the clock up; hotter, more power)" is 348); 260 in a narrower panel */
  CGFloat popW=fmax(SETTINGS_POP_W,fmin(SETTINGS_POP_MAX_W,W-28-24-SETTINGS_LABEL_W));
  NSView *(^rowPage)(NSInteger)=^NSView *(NSInteger p){   /* the pages of rows: display, input, effects and (zeldaVR) VR */
+#ifdef RUNTIME_STICK_CALIBRATION
   /* The page's height: an ordinary row is rowH, a custom block (the stick calibration) spans its customRows. */
   CGFloat total=0;for(TOTKSettingRow *r in rows)if(r.page==p)total+=(r.customRows>0?r.customRows:1)*(rowH+gap);
   total=fmax(0,total-gap);
@@ -878,6 +892,14 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
     y-=gap;continue;
    }
    y-=rowH;CGFloat rw=W-28;
+#else
+  NSUInteger count=0;for(TOTKSettingRow *r in rows)if(r.page==p)count++;
+  CGFloat docH=fmax(body,count*(rowH+gap)-gap);
+  NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,docH)];NSUInteger k=0;
+  for(TOTKSettingRow *r in rows){
+   if(r.page!=p)continue;
+   CGFloat y=docH-(k+1)*rowH-k*gap,rw=W-28;k++;
+#endif
    NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
    band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
@@ -901,7 +923,9 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-popW-8,floor((rowH-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
+ #ifdef RUNTIME_STICK_CALIBRATION
    y-=gap;
+ #endif
   }
   if(docH>body){
    NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];
@@ -929,6 +953,11 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  NSView *shots=[self shotsPageWithFrame:bindingsFrame];[self addSubview:shots];[pages addObject:shots];   /* shot_tab.h */
 #else
  [pages addObject:[[NSView alloc] initWithFrame:NSZeroRect]];   /* no 截图分享 page */
+#endif
+#if SETTINGS_HAS_OCARINA
+ [pages addObject:rowPage(SETTINGS_PAGE_OCARINA)];   /* the game's rows on its 陶笛 page (settings_game.h) */
+#else
+ [pages addObject:[[NSView alloc] initWithFrame:NSZeroRect]];   /* no 陶笛 page: its place kept, self.pages[SETTINGS_PAGE_*] */
 #endif
 #if SETTINGS_HAS_VR
  if(vr_enabled())[pages addObject:rowPage(SETTINGS_PAGE_VR)];
@@ -1125,7 +1154,12 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 #if SETTINGS_HAS_SHOTS
  else if(self.page==SETTINGS_PAGE_SHOTS)[self.controllerTargets addObjectsFromArray:[self shotsPageTargets]];
 #endif
- else if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.customView?:r.control.superview];
+ else if(self.page!=SETTINGS_PAGE_BINDINGS){
+#ifdef RUNTIME_STICK_CALIBRATION
+  for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.customView?:r.control.superview];
+#else
+  for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
+#endif
   NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
   for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];
   for(NSButton *b in self.effectsButtons)if(!b.hidden)[self.controllerTargets addObject:b];}
@@ -1508,9 +1542,15 @@ static void settings_show(int open) {   /* main thread */
 #endif
  if(open){g_settings_controller_active=NO;settings_panel_replace();}else [settingsPanel endCapture];
  settingsOpen=open;
+#ifdef RUNTIME_STICK_CALIBRATION
  if(open)runtime_input_clear();
+#endif
  runtime_gamepad_text_capture(open);
- if(open){[settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
+ if(open){
+#ifndef RUNTIME_STICK_CALIBRATION
+  runtime_input_clear();
+#endif
+  [settingsPanel center];[settingsPanel refresh];[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
  else{[window makeFirstResponder:window.contentView];
   if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];}
  settingsPanel.hidden=!open;

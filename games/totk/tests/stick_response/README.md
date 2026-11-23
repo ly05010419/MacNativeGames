@@ -19,13 +19,13 @@ Manual macOS checks (not replaced by the probe):
    more samples (24 sectors, at least two samples each, radius >= 0.55).
 3. Both sticks must cover the complete outer ring and sufficient travel in all
    directions. Keep measuring until both are released to centre (within 0.15).
-   Calibration then saves once, reports completion and returns the button to
+   Calibration then applies once for the connection, reports completion and returns the button to
    Calibrate. A fully covered side alone does not commit a partial result.
 4. Cancel, closing/hiding the page or disconnecting discards the entire sampling
-   session without writing it. After cancellation/completion the dots are centred
+   session without applying it. After cancellation/completion the dots are centred
    and LT/RT display zero again, as they do before calibration starts.
-5. While calibrating, the circles preview the calibrated radial response used by
-   the game. Centre, travel and coverage are measured from unmodified raw input.
+5. While calibrating, the circles preview the current response used by the game
+   (per-axis until calibrated, radial for the calibrated source). Centre, travel and coverage are measured from unmodified raw input.
    Calibration cannot infer a device's physical stop: sweep to its actual edge.
 6. Left/right deadzones are independent (0–50%, default 12%). Restart with the
    same controls directory and verify `controller-deadzone-left.txt` and
@@ -42,18 +42,14 @@ Automated native state-machine coverage:
 `python3 -m unittest discover -s tests -p 'test_stick*.py' -q`
 The UI test compiles the actual calibration class from settings_panel.h and drives
 its methods without showing a window. Gamepad-background's probe uses gamepad.m
-itself to check L/R calibration, cached HID updates and restart-equivalent reload.
+itself to check L/R calibration, cached HID updates and connection-local calibration, capture release and HID reset.
 
-原始输入在对角线同时达到 X=1、Y=1 时模长为 √2，按坐标直接绘制会越出圆形。
-现在游戏输出和界面预览使用同一径向死区与单位圆限幅，保留方向，不对原始采样做
-裁剪；校准中心/行程仍用原始值。该改变影响实际手感，需真手柄确认。
+### Controller identity and calibration lifetime
 
-### Controller identity and saved calibration
-
-Calibration compensation is scoped to the sampled physical connection and each stick's
-native/HID coordinate source. It is never assigned by controller order or model name.
-The current runtime has no verified persistent identity for GameController devices, so
-reconnects and app restarts require calibration again. Existing legacy/v2 files remain
-readable as archived values, but loading never auto-binds them to an arbitrary controller.
-Explicitly completing calibration replaces the archive and activates only that connection.
-Dead-zone preferences remain persistent and independent of the 12% capture-release tolerance.
+Uncalibrated sticks retain the upstream per-axis response, including full diagonals.
+Calibrated sources use a circular response; calibration is scoped to the sampled
+physical connection and each stick's native/HID coordinates. Reconnects and app
+restarts require a new calibration. The runtime does not load, create, or overwrite
+the old unbound profile file. Left and right deadzone preferences still persist.
+Capture release uses the source response shape and the greater of the configured
+deadzone and 12%; DSU keeps its stock per-axis response for play and release.

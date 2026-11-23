@@ -46,13 +46,11 @@ def same_version(plan, update_plan):
         return False
     if plan['game'] == 'oot':   # one version is built (131072), checked by the build itself
         return True
-    if plan['game'] in ('worldend', 'tmnt'):
+    if plan['game'] == 'tmnt':
         return update_plan.get('version') == 'v0' and not plan.get('update')
     if plan['game'] == 'dread':
         expected = 327680 if update_plan.get('version') == 'v210' else 0 if update_plan.get('version') == 'v100' else None
         return expected is not None and (plan.get('update_version') if plan.get('update') else 0) == expected
-    if plan['game'] == 'ss':
-        return update_plan.get('version') == 'v65536' and plan.get('update_version') == 65536
     if plan['game'] == 'odyssey':   # 1.3.0 and 1.4.1 build the same app (the same code and merged data)
         return True
     if plan['game'] == 'eow':   # one version is built (1.1.0)
@@ -112,18 +110,18 @@ def command(request, python=sys.executable):
             return (repo.UPDATE_RUNTIME, [str(out)] + (['--seed'] if up['kind'] == 'fast' else []), Path(up['work']), out,
                     up['kind'], plan['game'])
     argv = [plan['base']]
-    if plan.get('keys') and plan['game'] in ('totk', 'botw', 'ss', 'dread', 'worldend', 'tmnt', 'acnh', 'eow', 'odyssey'):
+    if plan.get('keys') and plan['game'] in ('totk', 'botw', 'dread', 'tmnt', 'acnh', 'eow', 'odyssey'):
         argv += ['-k', plan['keys']]
     if plan.get('update'):
         argv += ['--update', plan['update']]
     for dlc in plan.get('dlc') or []:
         argv += ['--dlc', dlc]
-    if plan.get('firmware') and plan['game'] not in ('ss', 'worldend', 'tmnt'):
+    if plan.get('firmware') and plan['game'] != 'tmnt':
         argv += ['--firmware', plan['firmware']]
-    elif plan.get('fonts') and plan['game'] not in ('ss', 'worldend', 'tmnt'):
+    elif plan.get('fonts') and plan['game'] != 'tmnt':
         argv += ['--shared-fonts', plan['fonts']]
     argv += ['--work', str(work), '-o', str(out)]
-    script = repo.REPO/f'games/{plan["game"]}/build.py' if plan['game'] in ('ss', 'dread', 'worldend', 'tmnt', 'acnh', 'eow', 'odyssey') else repo.BUILD_APP
+    script = repo.REPO/f'games/{plan["game"]}/build.py' if plan['game'] in ('dread', 'tmnt', 'acnh', 'eow', 'odyssey') else repo.BUILD_APP
     return script, argv, work, out, 'full', plan['game']
 
 
@@ -182,6 +180,26 @@ def job_env(request, game):
     return env
 
 
+def with_open_fonts(argv, emit, make=None):
+    """用开源字体 (user 2026-11-18): the build's arguments with --shared-fonts <the open-source Noto fonts of
+    tools/deps/open_fonts.py>, made once per Mac, as Ocarina of Time takes them (games/oot/build.py prepare_fonts). Every
+    build that takes --shared-fonts (build_app.py, games/<game>/build.py) accepts the folder: its manifest has the six
+    rows build_app.py validate_fonts checks, and each runtime decodes a BFTTF by its header's key (0 here). A folder the
+    player gave (--firmware, --shared-fonts) wins. make stands in for open_fonts in the tests."""
+    if '--firmware' in argv or '--shared-fonts' in argv:
+        return argv
+    if make is None:
+        from tools.deps.open_fonts import open_fonts as make
+    emit('log', text=t('making the system fonts from open-source Noto fonts (downloaded once for this Mac)',
+                       '正在用开源 Noto 字体制作系统字体（这台 Mac 只下载一次）'))
+    try:
+        folder = Path(make())
+    except Exception as e:   # tools/deps DepsError (a download or fontTools step), or an OSError
+        raise Refused(t(f'the open-source fonts could not be made: {e}', f'开源字体没做成：{e}')) from None
+    at = argv.index('--work')
+    return argv[:at] + ['--shared-fonts', str(folder)] + argv[at:]
+
+
 def run(request, emit, history_dir, python=sys.executable, script=None, record=None):
     chosen, argv, work, out, kind, game = command(request, python)
     env = job_env(request, game)
@@ -202,8 +220,11 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
     start = time.time()
     LOGS.mkdir(parents=True, exist_ok=True)
     keep = LOGS / f'builder-app-{game}-{time.strftime("%Y%m%d-%H%M%S")}.log'
+    real_build = script is None   # tests pass a script of their own: nothing of theirs goes into the Launcher's list
     script = script or chosen
     # steps_last: how many steps the same kind of build took on this Mac last time (the window says "N steps last time")
+    if kind == 'full' and (request.get('plan') or {}).get('open_fonts'):
+        argv = with_open_fonts(argv, emit)
     emit('plan', game=game, app=str(out), work=str(work), log=str(keep), measured=estimator.last is not None,
          command=[str(script), *argv], kind=kind, steps_last=len(estimator.last) if estimator.last else None)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
@@ -284,6 +305,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
         history.record(record, steps.poll(end), end)
         if record_mods:
             record_mods(out)
+        if real_build:   # the app goes into the Launcher's own list (installed.py known-apps.json)
+            from tools.builder_jobs.installed import remember
+            remember([str(out)])
         emit('progress', fraction=1.0, left=0, elapsed=round(end - start), measured=True)
         emit('done', ok=True, app=str(out), elapsed=round(end - start), note=mods_note(game, out, True, ''))
         return 0

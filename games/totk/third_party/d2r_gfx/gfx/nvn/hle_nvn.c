@@ -3144,6 +3144,9 @@ extern uint32_t mtl_present_qos(void);
 uint64_t g_frame_pub;
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // 取图里节拍等待 / 等出图队列归还的累计，出图时按帧记（一帧内可有多次取图） | Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
+/* nvn_pace_follow (after nxnative b010f2b8): a frame the display link paced restarts the beat at its present. TOTK_PACE_FOLLOW=0:
+   every present steps the beat by one period, as before (it ran ahead of real time while the link paced faster than the period). */
+static int pace_follow_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_PACE_FOLLOW"); on = !(e && !strcmp(e, "0")); if (!on) LOG("[nvn] TOTK_PACE_FOLLOW=0: the beat steps by one period at every present, also for frames the display link paced"); } return on; }
 extern uint64_t g_t0_ns;   // 宿主进程起点（main.c；UIMSG 时间戳同基） | Host process start point (main.c; same base as the UIMSG timestamps)
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     NVN_BLOCKING();
@@ -3153,11 +3156,12 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     // 垂直同步阻塞在这里（真机 NVN：交换链里的贴图都在等显示时，等下一张被释放），不在出图里——游戏常持锁调出图
     // Vsync blocks here (real-device NVN: when all textures in the swapchain are waiting for display, wait for the next one to be released), not in present -- the game often calls present while holding a lock
     uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = at > now ? at - now : 0;
+    o->follow = 0;   // 1 only where the display link paced this frame: present then restarts the beat at it (nvn_pace_follow); 0: the slot time paced it, as before
     if (!dm_detclock_enabled()) {   // 取图线程登记为时间约束线程（不再只在「来早了」时才登记：热态一直落后时也要声明） | Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
         static uint64_t rt_period; uint64_t period = present_period(o);
         if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
         rt_comp_tick(period);
-        if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+        if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o))) o->follow = pace_follow_on(); else if (wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // 机器满载时帧只会更慢、后台得到的墙钟只会更多，所以「消息后第 N 帧」截到的画面与负载无关
@@ -3385,6 +3389,12 @@ static void tsummary(uint64_t frame) {
             LOG("[nvn] uniform 换副本 至帧 %llu：每帧更新 %.1f 次（内容未变跳过 %.1f 次），新副本 %.1f 个 / %.1f KB，提前写回 %.2f 次，开编码器后才发现重叠 %.2f 次，表满回退 %.2f 次", frame,
                 (v[0] - pr[0]) / nf, (v[6] - pr[6]) / nf, (v[1] - pr[1]) / nf, (v[2] - pr[2]) / nf / 1024, (v[3] - pr[3]) / nf, (v[4] - pr[4]) / nf, (v[5] - pr[5]) / nf); }
           memcpy(pr, v, sizeof pr); }
+        { static uint64_t pv[8]; uint64_t v[8]; void mtl_pend_overlay_stats(uint64_t[8]); mtl_pend_overlay_stats(v);   // nvn_mtl.m pend_overlay_x
+          if (pf && frame > pf) { double nf = (double)(frame - pf);
+            for (int t = 0; t < 2; t++) { const uint64_t *c = v + 4 * t, *p = pv + 4 * t; double calls = (double)(c[0] - p[0]);
+              LOG("[nvn] 待写叠加（%s）至帧 %llu：每帧 %.1f 次，每次扫描 %.1f 条、跳过已完成前缀 %.1f 条、应用 %.2f 条 | pending-write overlays (%s): per frame, scanned / completed prefix skipped / applied per call",
+                  t ? "拷贝例程" : "回放", frame, calls / nf, calls ? (c[1] - p[1]) / calls : 0, calls ? (c[2] - p[2]) / calls : 0, calls ? (c[3] - p[3]) / calls : 0, t ? "copy routine" : "replay"); } }
+          memcpy(pv, v, sizeof pv); }
         if (frame % 300 == 0) { unsigned wn = 0; uint32_t wq = dm_guest_work_qos(&wn); thread_extended_info_data_t xi; mach_msg_type_number_t xc = THREAD_EXTENDED_INFO_COUNT; int okx = thread_info(pthread_mach_thread_np(pthread_self()), THREAD_EXTENDED_INFO, (thread_info_t)&xi, &xc) == KERN_SUCCESS;
             thread_time_constraint_policy_data_t tp; mach_msg_type_number_t tc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0; int rt_live = thread_policy_get(pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&tp, &tc, &def) == KERN_SUCCESS && !def;   // def = 1：实时策略没在生效（没设上 / 被撤） | def = 1: the real-time policy is not in effect (never set / revoked)
             LOG("[nvn] 线程策略：主线程 实时 计算 %.2f ms / 周期 %.2f ms，实时策略%s，当前优先级 %d（基础 %d，调度类 %d）；工作线程 %u 条 QoS %#x；出图 QoS %#x", g_rt_comp_ms, g_rt_period_ms, rt_live ? "在生效" : "未生效", okx ? xi.pth_curpri : -1, okx ? xi.pth_priority : -1, okx ? xi.pth_policy : -1, wn, wq, mtl_present_qos()); }
@@ -3841,6 +3851,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);
         trow(f, "@drawable_ms", mtl_drawable_ns_take() / 1e6);
+        trow(f, "@scan_ms", mtl_shader_scan_ns_take() / 1e6);   // shader loads' scans of the MSL text (nvn_mtl.m shader_load_mode)
         trow(f, "@sub_wall_ms", atomic_exchange(&g_sub_wall_ns, 0) / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
@@ -3892,7 +3903,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
     if (totk_sr_on()) sr_frame(o);
     nvn_pacer pc = {o->pace};
-    uint64_t slot = now + nvn_pace(&pc, now, period);
+    uint64_t slot = now;   // a frame the display link paced is shown from its present on, and the beat follows it (nvn_pace_follow)
+    if (o->follow) nvn_pace_follow(&pc, now); else slot += nvn_pace(&pc, now, period);
     o->pace = pc.target;
     if (idx >= 0 && idx < 4) o->avail[idx] = period ? slot + period : 0;
     static uint64_t prev_slot; if (prev_slot && period) trow(f, "@display_ms", (slot - prev_slot) / 1e6); prev_slot = slot;   // 屏幕上相邻两帧的显示间隔（掉帧看这个） | display interval between two adjacent frames on screen (this is the one to look at for dropped frames)
@@ -3903,7 +3915,17 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         g_pres_iv[g_presn++ % TWIN] = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0);
         { double iv_ = a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0); mtl_ub_present(iv_); }   // 同进程交替测量（DM_NVN_UB）按相统计上屏间隔；没开时只是一次原子读 | same-process alternating measurement (DM_NVN_UB) tallies on-screen present intervals per phase; when off it is just one atomic read
         dm_perf_present(a_ < 0 ? -1 : (a_ > 0 && b_ > 0 ? (a_ - b_) * 1e3 : 0));   // 上屏间隔另存一圈，tsummary 每 300 帧报掉帧（M1 判据） | on-screen present intervals are also kept in a separate ring; tsummary reports dropped frames every 300 frames (M1 criterion)
-        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6); }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
+        if (a_ > 0) trow(f - 8, "@pres_at_ms", a_ * 1e3 - g_t0_ns / 1e6);
+        /* the display link's pacing of the same present (nvn_mtl.m mtl_present_diag): queued, taken at the tick, the
+           tick's target, the drawable copy's GPU end (ms since process start), older frames merged away */
+        double q_in, q_tick, q_tgt, q_blit; int q_merged;
+        if (frame_rec() && mtl_present_diag(n, &q_in, &q_tick, &q_tgt, &q_blit, &q_merged)) {
+            double z = g_t0_ns / 1e6;
+            trow(f - 8, "@pq_in_ms", q_in * 1e3 - z); trow(f - 8, "@pq_tick_ms", q_tick * 1e3 - z);
+            if (q_tgt > 0) trow(f - 8, "@pq_target_ms", q_tgt * 1e3 - z);
+            if (q_blit > 0) trow(f - 8, "@pq_blit_end_ms", q_blit * 1e3 - z);
+            trow(f - 8, "@pq_merged", q_merged);
+        } }   // 上屏时刻（进程起点 ms；presentedTime 与 mach_absolute_time 同基） | on-screen present time (ms since process start; presentedTime shares a time base with mach_absolute_time)
     if (f >= 8 && slow_on()) slow_emit(f - 8);
     PSTEP(PS_END); present_steps_report(f);
     prev_out = now_ns();

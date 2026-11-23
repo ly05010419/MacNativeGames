@@ -40,6 +40,9 @@ static inline int vr_view_level(float m[12]) {
     const float r[12]={x,0,z,0,0,1,0,0,-z,0,x,0};memcpy(m,r,sizeof r);
     vr_view_translation(m,p);return 1;
 }
+/* A view of ratio aspect squeezed across a whole w x h picture (Ocarina of Time's canvas, run pj01: the window draws it back
+   at its ratio). The vertical half-angle tangent that gives the picture's focal length across: h / 2 / result = its pixels. */
+static inline float vr_squeezed_tan_y(float w, float h, float tan_y, float aspect) { return w > 0 ? h * tan_y * aspect / w : 0; }
 static inline int vr_eye_intrinsics(const float f[4], float *fovy, float *aspect, float shift[2]) {
     for(int i=0;i<4;i++) if(!isfinite(f[i]) || fabsf(f[i])>=1.55f)return 0;
     float l=tanf(f[0]),r=tanf(f[1]),u=tanf(f[2]),d=tanf(f[3]);

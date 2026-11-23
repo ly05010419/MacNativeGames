@@ -38,21 +38,21 @@ probe-async-skip:
 prepare-tables:
 	@test -n "$(EXEFS)" || { echo 'set EXEFS to your verified private base ExeFS' >&2; exit 1; }
 	@mkdir -p "$(OUT)"
-	$(PY) scripts/module_metadata.py --exefs "$(EXEFS)" --rewritten "$(REWRITTEN)" --out "$(WORK)/metadata.json"
-	$(PY) scripts/prepare_host_tables.py --exefs "$(EXEFS)" --rewritten "$(REWRITTEN)" --metadata "$(WORK)/metadata.json" --out "$(OUT)/runtime_tables.h"
+	"$(PY)" scripts/module_metadata.py --exefs "$(EXEFS)" --rewritten "$(REWRITTEN)" --out "$(WORK)/metadata.json"
+	"$(PY)" scripts/prepare_host_tables.py --exefs "$(EXEFS)" --rewritten "$(REWRITTEN)" --metadata "$(WORK)/metadata.json" --out "$(OUT)/runtime_tables.h"
 
 prepare-resources:
 	@test -n "$(ROMFS)" || { echo 'set ROMFS to your verified private RomFS directory' >&2; exit 1; }
 	@mkdir -p "$(OUT)"
-	$(PY) scripts/prepare_resources.py --romfs "$(ROMFS)" --out "$(WORK)/resources" $(if $(FONTS),--fonts "$(FONTS)")
+	"$(PY)" scripts/prepare_resources.py --romfs "$(ROMFS)" --out "$(WORK)/resources" $(if $(FONTS),--fonts "$(FONTS)")
 	cp "$(WORK)/resources/romfs_config.h" "$(WORK)/resources/shared_fonts_config.h" "$(OUT)/"
 
 prepare-nro:
 	@test -n "$(ROMFS)" || { echo 'set ROMFS to your verified private RomFS directory' >&2; exit 1; }
 	@mkdir -p "$(OUT)"
-	$(PY) scripts/prepare_nro.py --romfs "$(ROMFS)" --out "$(NRO_PREPARED)"
-	$(PY) scripts/rewrite_nro.py --prepared "$(NRO_PREPARED)" --out "$(NRO_REWRITTEN)"
-	$(PY) scripts/prepare_nro_digest.py --prepared "$(NRO_PREPARED)" --rewritten "$(NRO_REWRITTEN)" --out "$(OUT)/tmnt_nro_digest.h"
+	"$(PY)" scripts/prepare_nro.py --romfs "$(ROMFS)" --out "$(NRO_PREPARED)"
+	"$(PY)" scripts/rewrite_nro.py --prepared "$(NRO_PREPARED)" --out "$(NRO_REWRITTEN)"
+	"$(PY)" scripts/prepare_nro_digest.py --prepared "$(NRO_PREPARED)" --rewritten "$(NRO_REWRITTEN)" --out "$(OUT)/tmnt_nro_digest.h"
 
 $(GENERATED):
 	@echo "missing private generated header $@: prepare verified user inputs first" >&2

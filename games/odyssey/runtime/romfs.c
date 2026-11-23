@@ -227,8 +227,12 @@ void runtime_fs_init(void) {
  need(file_count<1000000&&strings_offset==24+file_count*24&&strings_offset<index_size,"RomFS index layout");
  const char *previous=NULL;
  for(uint64_t i=0;i<file_count;i++){Entry e=entry(i);need(e.offset<=ROMFS_IMAGE_SIZE&&e.size<=ROMFS_IMAGE_SIZE-e.offset,"RomFS file bounds");need(e.name<index_size-strings_offset&&e.len>1&&e.len<=index_size-strings_offset-e.name,"RomFS name bounds");const char *name=entry_name(e);need(name[e.len-1]==0&&strlen(name)==e.len-1&&(!previous||strcmp(previous,name)<0),"RomFS sorted paths");previous=name;}
- need(snprintf(path,sizeof(path),"%s/romfs.bin",dir)<(int)sizeof(path),"RomFS image path");image_fd=open(path,O_RDONLY);
- if(image_fd<0)open_chunks(dir);
+ /* TOTK_ROMFS_DATA: the folder of the image (romfs.bin or its parts) when it is not the index's: the phone keeps it in
+    Documents/GameData (the shared app's main.m, games/totk/ios/tools/install_device.py --game-data), as Tears of the
+    Kingdom's and Animal Crossing's runtime/romfs.c. */
+ const char *data=getenv("TOTK_ROMFS_DATA");if(!data||!*data)data=dir;
+ need(snprintf(path,sizeof(path),"%s/romfs.bin",data)<(int)sizeof(path),"RomFS image path");image_fd=open(path,O_RDONLY);
+ if(image_fd<0)open_chunks(data);
  else need(fstat(image_fd,&st)==0&&(uint64_t)st.st_size==ROMFS_IMAGE_SIZE,"RomFS image size");
  verify_image(image_fd,dir);
  if(!nchunks&&getenv("TOTK_ROMFS_MMAP")&&strcmp(getenv("TOTK_ROMFS_MMAP"),"0")){

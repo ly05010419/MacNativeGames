@@ -134,22 +134,19 @@ static void refresh_gamepads(void) {
         if (hidPad.buttons & (1ULL << 9)) rawRT = 1.0f;
 #endif
     }
-#ifdef RUNTIME_STICK_CALIBRATION
-    stick_response_limit(&next.lx, &next.ly);
-    stick_response_limit(&next.rx, &next.ry);
-#endif
 #if TARGET_OS_OSX
     /* A DSU server's pad (dsu_client.h): its buttons (the physical order, controller_map.h) and sticks join the controllers'. */
     if (dsuInput.connected && dsuAt && runtime_now_ns() - dsuAt < 500000000ull) {
         next.connected = 1; physical |= dsuInput.buttons & CONTROLLER_OWN_BUTTONS;   /* never the mouse's buttons (games/acnh) */
         float axes[4];
         for (int i = 0; i < 4; i++) axes[i] = (dsuInput.axes[i] - 128) / (dsuInput.axes[i] >= 128 ? 127.f : 128.f);
+        int32_t lx = stick_axis(axes[0]), ly = stick_axis(axes[1]), rx = stick_axis(axes[2]), ry = stick_axis(axes[3]);
 #ifdef RUNTIME_STICK_CALIBRATION
-        captureActive |= hypotf(axes[0],axes[1]) > .12f || hypotf(axes[2],axes[3]) > .12f;
+        captureActive |= lx || ly || rx || ry;
 #endif
-        next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
-        next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
-        gamepad_game_dsu_input(dsuInput.buttons || stick_axis(axes[0]) || stick_axis(axes[1]) || stick_axis(axes[2]) || stick_axis(axes[3]));
+        next.lx = stronger_axis(next.lx, lx); next.ly = stronger_axis(next.ly, ly);
+        next.rx = stronger_axis(next.rx, rx); next.ry = stronger_axis(next.ry, ry);
+        gamepad_game_dsu_input(dsuInput.buttons || lx || ly || rx || ry);
     }
 #endif
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button

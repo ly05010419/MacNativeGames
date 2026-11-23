@@ -1458,15 +1458,41 @@ def variant_sources(game):
     return [p for p in found if len(p.stem) == 64 and sha256(p) == p.stem]
 
 
-def step_shader_libs(tree, logs, *, version='v0'):
+NO_METAL_COMPILER = ('no Metal shader compiler was found: it comes with an Xcode\'s Metal toolchain (Xcode > Settings > '
+                     'Components > Metal Toolchain, or xcodebuild -downloadComponent MetalToolchain), not with the command '
+                     'line tools xcode-select may point at; with an Xcode elsewhere, run with '
+                     'DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer (its path)')
+
+
+REFUSED_LIBS = 'refused.json'   # build/shader-libs/: the digests the compiler of compiler.txt did not compile
+
+
+def refused_shader_libs(tree, compiler):
+    """The startup shaders (by their source's SHA-256) the Metal compiler `compiler` (metal_compiler()'s second item)
+    refused in the work folder's last step_shader_libs; empty when another compiler made those libraries or none did."""
+    libs = tree/'build/shader-libs'
+    try:
+        if (libs/'compiler.txt').read_text() != ' '.join([compiler, *METAL_FLAGS]):
+            return frozenset()
+        return frozenset(json.loads((libs/REFUSED_LIBS).read_text()))
+    except (OSError, ValueError, TypeError):
+        return frozenset()
+
+
+def step_shader_libs(tree, logs, *, version='v0', required=False):
     """Compile the startup shaders ahead of time. Metal's own cache of shaders compiled at launch does not follow the
     app to a folder whose path has another length (step_warm_metal); these files go inside the app. Each is named by the
-    SHA-256 of its source, so the game loads only an exact match, and a rebuild reuses every shader that did not change."""
+    SHA-256 of its source, so the game loads only an exact match, and a rebuild reuses every shader that did not change.
+    required: no compiler is an error (update_runtime.py --seed / --shader-libs), not a skip. A new seed without its
+    libraries leaves the game compiling its shaders from source at every cold start: an app updated that way had
+    libraries for 1,890 of the 17,884 shaders its warm-up loads (2026-11-18)."""
     sources = sorted((tree/f'build/shader-seed/{version}').glob('*.metal'))
     found = metal_compiler()
     if not found:
-        say('3/4 shaders: no Metal toolchain (xcodebuild -downloadComponent MetalToolchain), so the startup shaders go '
-            "into Metal's cache for the app's location at the end of the build instead; moving the app makes them cold again")
+        if required:
+            raise BuildError(f'{NO_METAL_COMPILER}; the app was not changed')
+        say('3/4 shaders: WARNING: no Metal toolchain (xcodebuild -downloadComponent MetalToolchain), so the startup shaders '
+            "go into Metal's cache for the app's location at the end of the build instead; moving the app makes them cold again")
         return
     metal, compiler, metal_env = found
     libs = tree/'build/shader-libs'
@@ -1495,10 +1521,14 @@ def step_shader_libs(tree, logs, *, version='v0'):
         r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=metal_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
-            return f'{src.name}\n{r.stdout}{r.stderr}'
+            return digest, f'{src.name}\n{r.stdout}{r.stderr}'
         partial.replace(libs/f'{digest}.metallib')
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
-        failed = [f for f in pool.map(compile_one, todo.items()) if f]
+        refused = [f for f in pool.map(compile_one, todo.items()) if f]
+    failed = [text for _, text in refused]
+    # the sources this compiler (compiler.txt) refused: update_runtime.py does not count them as libraries to complete,
+    # so one shader the compiler cannot take does not send every later express update through the completion
+    (libs/REFUSED_LIBS).write_text(json.dumps(sorted(digest for digest, _ in refused)))
     log = logs/'shader-libs.log'
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text('\n'.join(failed))
@@ -1530,10 +1560,15 @@ SHADER_LISTS = {'botw160': '../botw/assets/shader_list.tsv', 'botw190': '../botw
 
 
 def make_game_data(tree, version, logs, env):
-    """make game-data-<version> (games/totk/Makefile GAME_DATA): its three Python steps, so no make is needed."""
+    """make game-data-<version> (games/totk/Makefile GAME_DATA, and Breath of the Wild's aoc-config.txt rule): its Python
+    steps, so no make is needed (tests/test_prebuilt.py checks them against the Makefile for every version)."""
     py = tree / '.venv/bin/python'
-    for script in ('prepare_runtime.py', 'prepare_romfs_backend.py', 'prepare_shared_fonts.py'):
-        run([py, f'scripts/{script}', '--version', version], logs / f'game-data-{script[:-3]}.log', cwd=tree, env=env)
+    steps = [('prepare_runtime.py',), ('prepare_romfs_backend.py',), ('prepare_shared_fonts.py',)]
+    if 'aoc-config.txt' in game_data_files(version):   # the add-on content volumes, none given or not
+        steps.append(('prepare_romfs_backend.py', '--aoc'))
+    for script, *extra in steps:
+        log = logs / f'game-data-{script[:-3]}{"".join(extra).replace("--", "-")}.log'
+        run([py, f'scripts/{script}', '--version', version, *extra], log, cwd=tree, env=env)
 
 
 def make_runtime(tree, version, logs, env, *, data=True):
@@ -1750,14 +1785,31 @@ def resolve_lists(tree, res, game, logs, shared=None):
          res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
+def romfs_runtime_index(tree, version, logs):
+    """extracted/<version>/romfs/runtime-index.bin, the runtime's index of the image, made from its index.json by
+    scripts/prepare_romfs_backend.py as make game-data makes it: again when it is missing or older than index.json. True
+    when the folder then holds romfs.bin, index.json and that index. #2303: an image an express update took from the app
+    (adopt_game_data, which writes romfs.bin and index.json) had no index, and prepare_prompt_hud.py stopped on it."""
+    folder = tree / f'extracted/{version}/romfs'
+    image, listing, index = folder / 'romfs.bin', folder / 'index.json', folder / 'runtime-index.bin'
+    if not image.is_file() or not listing.is_file():
+        return False
+    if not index.is_file() or index.stat().st_mtime_ns < listing.stat().st_mtime_ns:
+        say(f'   the work folder\'s {version} game data has no runtime index of its own yet: made from its index.json')
+        run([tree / '.venv/bin/python', 'scripts/prepare_romfs_backend.py', '--version', version],
+            logs / f'romfs-index-{version}.log', cwd=tree)
+    return index.is_file()
+
+
 def prepare_prompt_assets(tree, app, version, logs, *, prompt_app=None):
     """Bind the live HUD masks to this player's verified game image, without packaging pixels."""
     res = app / 'Contents/Resources/totk'
     if version == 'v143':
         # A fresh app has not received its GameData bundle yet. Runtime updates
         # can instead read the installed app when no extraction cache is kept.
+        # The work folder's image is read only with its runtime index (#2303).
         romfs = tree / f'extracted/{version}/romfs'
-        source = ['--romfs', romfs] if (romfs / 'romfs.bin').is_file() else ['--app', prompt_app or app]
+        source = ['--romfs', romfs] if romfs_runtime_index(tree, version, logs) else ['--app', prompt_app or app]
         run([tree / '.venv/bin/python', tree / 'scripts/prepare_prompt_hud.py', *source,   # Python 3.14: compression.zstd (#2099)
              '--version', version, '--output', res / 'build/prompt-hud.tsv'], logs / 'prompt-hud.log')
 
@@ -2377,6 +2429,47 @@ def source_commit():
     return result.stdout.strip() if result.returncode == 0 else ''
 
 
+LAUNCHER_BUNDLE_ID = 'org.macnativegames.launcher'
+
+
+def launcher_app():
+    """The MNG Launcher that runs this build, or None: the app bundled_job.py names (MNG_LAUNCHER_APP), else the one
+    whose bundled Python runs this script (an express update started from a terminal with the Python an app recorded)."""
+    named = os.environ.get('MNG_LAUNCHER_APP')
+    candidates = [Path(named)] if named else []
+    for python in (Path(sys.executable).absolute(), Path(sys.executable).resolve()):   # a virtual environment's links to it
+        candidates += [folder for folder in python.parents if folder.suffix == '.app']
+    for app in candidates:
+        try:
+            info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        if info.get('CFBundleIdentifier') == LAUNCHER_BUNDLE_ID:
+            return info
+    return None
+
+
+def launcher_version():
+    """For the HUD's build line (user 2026-11-18: "版本号 旁边 显示 launcher的版本号（launcher版本号放第一）"): the version of
+    the released MNG Launcher that runs this build (it carries its source archive, as the Launcher's own isRelease).
+    'dev' for a development build: a Launcher made from a checkout runs it (its version string is a placeholder, and the
+    Launcher's own label says 开发版 there), or it is run from a git checkout without a Launcher. '' otherwise."""
+    info = launcher_app()
+    if info is not None and isinstance(info.get('MNGSourceArchiveSHA256'), str):
+        return str(info.get('CFBundleShortVersionString') or '')
+    return 'dev' if info is not None or (REPO / '.git').exists() else ''
+
+
+def record_launcher_version(info):
+    """MNGLauncherVersion in an app's Info.plist (app/launcher.m -> TOTK_LAUNCHER_VERSION, shared/runtime/hud_box.h):
+    the Launcher of this build, not of an earlier one."""
+    version = launcher_version()
+    if version:
+        info['MNGLauncherVersion'] = version
+    else:
+        info.pop('MNGLauncherVersion', None)
+
+
 def write_main_build_id(nso, target):
     if not nso.is_file():
         return
@@ -2446,6 +2539,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
+    record_launcher_version(info)          # and, before it, the Launcher that built it
     record_update_source(info, tree.parent)
     if version in ('v143', 'botw160', 'botw190') and native_5k is not None:
         info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic
@@ -2530,7 +2624,11 @@ def mac_pipelines(tree, res, version, logs, installed=None):
         say('4/4 app: no warm-up lists or no seed, so the first start fills the pipeline archive itself')
         return
     work = tree / f'build/mac-pipelines/{version}'
-    want = hashlib.sha256(b''.join(p.read_bytes() for p in [manifest, *lists, build / 'totk-native'])).hexdigest()
+    # The compiled libraries the tool loads (shader-libs, named by their source's SHA-256) are inputs too: pipelines made
+    # while a shader was compiled from source may not match the function its offline library holds (a wrong file is a
+    # miss, totk_pipeline_archive.h), so a new library set checks the archive against them (TOTK_PAR_RECHECK).
+    libs = ''.join(f'{p.name}\n' for p in sorted((build / 'shader-libs').glob('*.metallib'))).encode()
+    want = hashlib.sha256(b''.join(p.read_bytes() for p in [manifest, *lists, build / 'totk-native']) + libs).hexdigest()
     stamp = work / 'inputs.txt'
     was = stamp.read_text().split() if stamp.is_file() else []
     kept = was == [want]

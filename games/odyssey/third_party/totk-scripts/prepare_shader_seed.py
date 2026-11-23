@@ -79,6 +79,37 @@ def answers_for(deps):
     return answers
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -190,6 +221,9 @@ def translation_request(variant, stage, control, code, answers, code_path):
                    depth_minus_w=True, **answers)
     if stage == 'cs':
         request['local'] = list(struct.unpack_from('<III', control, 0x748))
+        shared = (struct.unpack_from('<I', control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+        if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+            request['shared'] = shared
     return request
 
 
@@ -686,7 +720,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     listed = shared.variants
     identity = dict(schema=1, chain=CHAIN, version=version, game=game,
                     source_romfs_sha256=json.loads((romfs/'index.json').read_text())['romfs_sha256'],
-                    translator_sha256=digest(translator.read_bytes()),
+                    translator_code_sha256=code_digest(translator),   # its code, any signature (2026-11-18)
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
                     preparation_sha256=digest(Path(__file__).read_bytes()),
                     shader_list_sha256=digest(Path(shader_list).read_bytes()) if Path(shader_list).is_file() else None)
@@ -708,7 +742,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                    modules={p.name: digest(p.read_bytes()) for p in sorted(Path(modules).glob('*.patched.bin'))} if modules else {},
                    preparation_sha256=identity['preparation_sha256'])
     _, shaders, startup, archives = cached_inventory(romfs, modules, game, output.with_name(output.name+'.inventory'), scanned)
-    translations = dict(schema=TRANSLATIONS_SCHEMA, chain=CHAIN, translator_sha256=identity['translator_sha256'],
+    translations = dict(schema=TRANSLATIONS_SCHEMA, chain=CHAIN, translator_code_sha256=identity['translator_code_sha256'],
                         spirv_cross_sha256=identity['spirv_cross_sha256'],
                         request_sha256=digest(inspect.getsource(translation_request).encode()))
     folder, common = translations_folder(output.with_name(output.name+'.translations'), translations)
@@ -847,7 +881,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     wanted_final = wanted | {'pso_manifest.tsv', 'shader-keys.json'}
     # Each completed variant's two files are links to the translation cache, whose digests it keeps; the rest are read.
     linked = {variant+end for variant in completed for end in ('_b.metal', '_b.json')}
-    report = dict(**identity, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
+    report = dict(**identity, translator_sha256=digest(translator.read_bytes()), shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
                   all_default=GAMES[game]['all_default'],   # every shader has its default variant: the runtime contributes only other states
                   listed_variants=sum(1 for _, _, _, why in jobs if why == 'listed'), skipped=failed,
                   archives=archives, seconds=time.monotonic()-started,

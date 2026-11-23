@@ -5,6 +5,7 @@ usage: extract_app_icon.py <game.xci|game.nsp> --keys <prod.keys> [--title 0100f
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -54,9 +55,16 @@ def source_icon(spec, output):
     receipt = output.with_suffix('.source.json')
     def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
     if not image.is_file() or digest(image) != source['sha256']:
-        # macOS's curl, not urllib: python.org's Python has no CA certificates until its Install Certificates step
-        data = subprocess.run(['/usr/bin/curl', '-fsSL', '--max-time', '60', source['url']], check=True,
-                              capture_output=True).stdout
+        # a released Launcher carries it (tools/deps/offline.py, files/<sha256>): no network
+        store = os.environ.get('MNG_OFFLINE_STORE')
+        carried = Path(store, 'files', source['sha256']) if store else None
+        if carried is not None and carried.is_file():
+            data = carried.read_bytes()
+        elif store:
+            raise ValueError(f'the official app icon is not in the Launcher\'s offline store ({store})')
+        else:   # macOS's curl, not urllib: python.org's Python has no CA certificates until its Install Certificates step
+            data = subprocess.run(['/usr/bin/curl', '-fsSL', '--max-time', '60', source['url']], check=True,
+                                  capture_output=True).stdout
         if hashlib.sha256(data).hexdigest() != source['sha256']:
             raise ValueError('official app icon hash mismatch')
         image.parent.mkdir(parents=True, exist_ok=True)

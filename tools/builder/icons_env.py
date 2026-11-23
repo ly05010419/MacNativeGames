@@ -43,8 +43,11 @@ def requirements():
 
 
 def pip_argv(folder, requirements_file):
+    from tools.deps.offline import store
+    carried = store()   # a released Launcher carries the wheel (tools/deps/offline.py): no download
+    source = ['--no-index', '--find-links', str(carried / 'wheels')] if carried else ['--index-url', INDEX]
     return [python(folder), '-I', '-m', 'pip', 'install', '--isolated', '--disable-pip-version-check', '--no-input',
-            '--index-url', INDEX, '--no-deps', '--only-binary=:all:', '--require-hashes', '-r', requirements_file]
+            *source, '--no-deps', '--only-binary=:all:', '--require-hashes', '-r', requirements_file]
 
 
 def pip_env():

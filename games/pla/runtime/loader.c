@@ -131,6 +131,16 @@ void runtime_trace_guest(uint64_t fp,uint64_t lr) {
  }
 }
 static void *required(const char *name) { void *p=runtime_symbol(name);if(!p){fprintf(stderr,"missing %s\n",name);runtime_fail("required symbol");}return p; }
+/* The module's mapping: its image, main's extra key page, and room behind it for relative relocations past the image
+   (see the Mac loader below: the game overwrites that memory during init). One rule for the Mac and the phone: the
+   phone's mapping lacked the room and stopped at "relative addend" before the first frame (iPhone 14, 2026-11-21). */
+static size_t module_map_size(const Module *m){
+ uint64_t spare=0;
+ for(unsigned i=0;i<m->nreloc;i++){const Reloc *r=&m->relocs[i];
+  if(r->kind==1027&&r->addend>=(int64_t)m->key_off&&(uint64_t)r->addend+8>spare)spare=(uint64_t)r->addend+8;}
+ size_t size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
+ return spare>size?page_up(spare):size;
+}
 #if TARGET_OS_IPHONE
 /* iOS: code written into memory at run time cannot execute, so ios/tools/gen_embed.py compiles each rewritten image into
    this executable: the text (with the game patches already applied on the Mac, TOTK_EXPORT_IOS) and the patch area go
@@ -163,7 +173,7 @@ static void map_module(Module *m,const char *dir) {
  digest_hex(x0,z0,hex);need(!strcmp(hex,e->x0),"embedded text SHA256 differs from the exported patched text");
  digest_hex(w,zw,hex);need(!strcmp(hex,e->w),"embedded data SHA256 differs from verified rewrite");
  digest_hex(x1,z1,hex);need(!strcmp(hex,e->x1),"embedded patch area SHA256 differs from verified rewrite");
- m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
+ m->size=module_map_size(m);   // zero-filled room behind the image, as on the Mac
  mach_vm_address_t base=0;need(mach_vm_allocate(mach_task_self(),&base,m->size,VM_FLAGS_ANYWHERE)==KERN_SUCCESS,"reserve module range");
  remap_at(m,base,x0,z0,FALSE,VM_PROT_READ|VM_PROT_EXECUTE);
  remap_at(m,base+z0,w,zw,TRUE,VM_PROT_READ|VM_PROT_WRITE);
@@ -186,11 +196,7 @@ static void map_module(Module *m,const char *dir) {
     the game itself overwrites during init; on the Switch it lands in the heap mapped right after main). Grow
     the mapping so the largest such addend names zero-filled memory behind the image; relocate() accepts an
     addend either inside the image or inside this extra room. */
- uint64_t spare=0;
- for(unsigned i=0;i<m->nreloc;i++){const Reloc *r=&m->relocs[i];
-  if(r->kind==1027&&r->addend>=(int64_t)m->key_off&&(uint64_t)r->addend+8>spare)spare=(uint64_t)r->addend+8;}
- m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
- if(spare>m->size)m->size=page_up(spare);
+ m->size=module_map_size(m);
  m->base=mmap(NULL,m->size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
  need(m->base!=MAP_FAILED,"map module");need(fread(m->base,1,m->file_size,f)==m->file_size,"read image");fclose(f);
  unsigned char digest[32];CC_SHA256(m->base,(CC_LONG)m->file_size,digest);char hex[65];
@@ -414,6 +420,32 @@ static void probe(void) {
  for(unsigned i=0;i<NM;i++){Module *m=&modules[i];printf("%s{\"name\":\"%s\",\"relative\":%u,\"symbolic\":%u,\"cross\":%u,\"weak_zero\":%u}",i?",":"",m->name,m->relative,m->symbolic,m->cross,m->weak);}
  puts("],\"scope\":\"cross-module calls; constructors and game entry not run\"}");
 }
+/* PLA's hooks that send guest text to a host function (font_hook.c FSS_load_font, audio_sdk.c's bank bootstrap) load the
+   host address from a slot of the module's own key page instead of holding it: adrp x16, <slot page>; ldr x16, [x16,
+   <slot>]; br x16. The words are then the same in every process (the key page is at a fixed distance from the text), so
+   the text the Mac exports for the iPhone (export-ios, gen_embed.py) holds instructions, never a Mac address, as Tears of
+   the Kingdom's ports' game patches; the slot is written at every start, before seal(), on the Mac and on the device. The
+   key page's first 64 bytes are the rewrite's key indices (third_party/d2r/patch_nso.py KEY_INDEX); the slots are at its
+   end. iPhone / iPad: the text came patched (export-ios); only the words are checked. 1 = installed. */
+#define HOOK_SLOT_OFF 0x3f00u
+#define HOOK_SLOTS 32u
+int runtime_hook_branch(unsigned slot,uint8_t *at,const void *target,const char *what) {
+ Module *m=NULL;for(unsigned i=0;i<NM;i++)if(at>=modules[i].base&&at+12<=modules[i].base+modules[i].text_end)m=&modules[i];
+ need(m!=NULL&&slot<HOOK_SLOTS,"hook site outside a module's text");
+ uintptr_t slot_at=(uintptr_t)m->base+m->key_off+HOOK_SLOT_OFF+8u*slot,pc=(uintptr_t)at;
+ int64_t pages=((int64_t)(slot_at&~(uintptr_t)0xfff)-(int64_t)(pc&~(uintptr_t)0xfff))>>12;
+ need(pages>=-(1<<20)&&pages<(1<<20)&&!(slot_at&7),"hook slot out of ADRP range");
+ uint32_t w[3]={0x90000010u|((uint32_t)(pages&3)<<29)|((uint32_t)((pages>>2)&0x7ffff)<<5),   /* adrp x16, slot page */
+                0xf9400210u|((uint32_t)((slot_at&0xfff)/8)<<10),                                 /* ldr x16, [x16, #slot] */
+                0xd61f0200u};                                                                  /* br x16 */
+ uint64_t v=(uintptr_t)target;memcpy((void *)slot_at,&v,8);   /* the key page is still writable (seal makes it read-only) */
+#if TARGET_OS_IPHONE
+ if(memcmp(at,w,sizeof w)){fprintf(stderr,"[totk] hook %s %s+%#llx: the embedded text was not patched at build time (export-ios)\n",what,m->name,(unsigned long long)(at-m->base));return 0;}
+#else
+ memcpy(at,w,sizeof w);sys_icache_invalidate(at,sizeof w);(void)what;
+#endif
+ return 1;
+}
 int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
  for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){*name=modules[i].name;*off=pc-(uintptr_t)modules[i].base;return 1;}
  return 0;
@@ -458,7 +490,11 @@ static void abort_report(int num) {
 }
 int main(int argc,char **argv) {
  setenv("MTL_ERROR_MODE","ignore",0);   /* PLA: Metal descriptor errors return nil instead of aborting; pso_get logs them */
- need(argc==3,"usage: totk-native rewritten-dir probe|boot");
+#if !TARGET_OS_IPHONE
+ /* The iPhone build's MSL fixes (nvn_mtl.m mtl_msl_rewrite_tool; games/pla/ios/tools/build_ipa.py): no game code, no modules. */
+ if(argc==4&&!strcmp(argv[2],"msl-rewrite"))return mtl_msl_rewrite_tool(argv[3]);
+#endif
+ need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive")),"usage: totk-native rewritten-dir probe|boot (pipeline-archive <list>...)");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
@@ -489,6 +525,7 @@ int main(int argc,char **argv) {
  {extern void audio_selftest_install(void);if(getenv("PLA_AUDIO_SELFTEST")||getenv("PLA_AUDIO_SELFTEST2"))audio_selftest_install();}
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
+ if(!strcmp(argv[2],"pipeline-archive"))return mtl_pipeline_archive_tool(argc-3,argv+3);   // packaging: the device's pipelines made on the Mac (games/totk/ios/tools/device_pipelines.py make)
 #endif
  fprintf(stderr,"[trace] before verify_identity\n");
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));

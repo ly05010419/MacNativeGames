@@ -3,7 +3,7 @@
 `tools/builder` is the model library behind MNG Launcher's Settings, Mods, Controls, Storage and Saves pages, for Tears
 of the Kingdom and Breath of the Wild: the game's start options, the player's mods, the controller layout and button
 icons, the caches and the saves. It has no window, no text mode and no command line of its own. The window is
-`tools/builder_app` and the pages call these models through `tools/builder_jobs/tab_<page>.py`, one JSON answer per call;
+MNG Launcher (its own repository since 2026-11-20, not public) and the pages call these models through `tools/builder_jobs/tab_<page>.py`, one JSON answer per call;
 how the window is made is in [builder-app.md](builder-app.md). This page is for the people and the AI assistants who
 change the models: how they are laid out and the rules every change keeps.
 
@@ -66,7 +66,7 @@ own process group and can be cancelled (`cancellable.py`).
 | `~/Library/Application Support/MacNativeGames/Builder/` | `start-options.json` (what only Play passes), `controls-tab.json` (the controller answered with type auto), `icons-venv/` (fontTools for the button icons), `mods-tab.lock`, `history/` (the build job's step times) |
 | `~/Library/Application Support/MacNativeGames/<TOTK or BotW>/mod-library/<version>/` | The player's mods, cloned when added, and `library.json` (order, switches, checks, what was applied, the code mods in each app) |
 | `~/Library/Application Support/MacNativeGames/<TOTK or BotW>/` | `controls.txt`, `controller-type.txt`, `keyboard.txt` and the game's settings, which the game reads |
-| `~/Documents/MacNativeGames-Backups/` | The Saves page's backups (another folder when the player picks one) |
+| `~/Documents/MacNativeGames-Backups/<game>/` | The Saves page's backups, one folder per game named as its app (another folder when the player picks one); backups left directly in `MacNativeGames-Backups/` move into their game's folder when the page opens |
 
 ## Tests
 
@@ -92,6 +92,6 @@ python3.14 -m unittest discover -s tests -p 'test_launcher_*.py'
   match). The Settings and Mods pages name the version they serve (`start_options.py`, `controller_mods.LATEST`,
   `mod_library.TITLE_IDS`); a version they do not know is said in words, never guessed.
 - **A page:** a model module with its contract here, a `tools/builder_jobs/tab_<page>.py` that calls it and says the
-  result in English and Chinese, its view in `tools/builder_app`, and tests for both.
+  result in English and Chinese, its view in MNG Launcher's repository, and tests for both (the engine's here, the view's there).
 - **A mod layout or a mod check:** `mod_find.py` finds the mod's folders, `mod_tools.py` validates it with the
   repository's scripts, and every refusal has a text that says why in words (the Mods page's test checks each one).

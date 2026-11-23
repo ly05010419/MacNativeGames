@@ -29,7 +29,8 @@ checking its exact pinned digest. Shader translations stay in this stable work t
 TMNT App in place and rejects simultaneous builds sharing that work directory.
 To include system fonts, pass `--shared-fonts` with the verified font directory and its manifest.
 The builder verifies and extracts the game and obtains the static Opus and VPX
-libraries, SPIRV-Cross CLI and .NET SDK from the repository's pinned dependencies.
+libraries and SPIRV-Cross CLI from the repository's pinned dependencies; the shader translation service is
+`prebuilt/macos-arm64/totk_xlate` (built from `tools/totk_xlate` with NativeAOT, so no .NET is needed).
 TMNT decodes Vorbis movie packets with its embedded stb_vorbis. The inherited
 movie fallback is built without its optional external Vorbis decoder.
 For existing verified extractions use `scripts/build_private_bundle.py --help`.

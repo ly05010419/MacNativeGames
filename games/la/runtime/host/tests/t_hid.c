@@ -211,7 +211,7 @@ static void t_script(void) {
     unsetenv("DM_CTL"); setenv("DM_KEYS", "0:A,0:A", 1); hid_keys_init();
     two_presses("DM_KEYS presses A", 1, 0);
     CHECK(scripts_ended(1), "DM_KEYS's thread ends after its last step");
-    char path[] = "/tmp/t_hid_ctl_XXXXXX"; int fd = mkstemp(path);
+    const char *tmp = getenv("TMPDIR"); char path[1024]; snprintf(path, sizeof path, "%s/t_hid_ctl_XXXXXX", tmp && *tmp ? tmp : "/tmp"); int fd = mkstemp(path);   // the test's temporary folder: a sandbox may forbid /tmp
     CHECK(fd >= 0 && write(fd, "A\nA\n", 4) == 4, "a DM_CTL file"); close(fd);
     int base = g_gate_calls; unsetenv("DM_KEYS"); setenv("DM_CTL", path, 1); ctl_start();
     two_presses("DM_CTL presses A", base + 1, 1);

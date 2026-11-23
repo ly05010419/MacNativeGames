@@ -5,9 +5,20 @@
 static NSString *fixture(NSString *statements,NSString *index) {
     return [NSString stringWithFormat:@"struct Words { uint _m0[1]; };\nstruct Args { constant Pool* textures; };\n%@\nfloat x = (&spvDescriptorSet0.textures->e[0])[min(uint(%@), spvDescriptorSet0.textures->n)].read(uint2(0)).x;",statements,index];
 }
+/* build/pool_sources.tsv (2026-11-18): every proof below is also written as a row and read back; the row must give the
+   same bindings and the same row again (pool_sources_list.m --verify does this for every seed shader). */
+static int round_trips;
+static void round_trip(const nvn_refl *proved,NSDictionary *result) {
+    NSString *row=nvn_pool_sources_encode(proved,result);nvn_refl back=*proved;
+    NSDictionary *again=nvn_pool_sources_decode(&back,row);
+    assert(again&&[nvn_pool_sources_encode(&back,again) isEqualToString:row]);
+    for(int i=0;i<proved->nb;i++)assert(back.b[i].pool_sources==proved->b[i].pool_sources);
+    round_trips++;
+}
 static uint64_t check(NSString *source) {
     nvn_refl r={.nb=2};r.b[0].kind=NVN_RB_SBUFP;r.b[1].kind=NVN_RB_TEXP;
-    nvn_pool_sources(&r,@[@{@"msl_name":@"data",@"msl_type":@"const device Words*"},@{@"msl_name":@"textures"}],source);
+    NSDictionary *p=nvn_pool_sources(&r,@[@{@"msl_name":@"data",@"msl_type":@"const device Words*"},@{@"msl_name":@"textures"}],source);
+    round_trip(&r,p);
     return r.b[1].pool_sources;
 }
 static int uniform_read(void *context,int binding,uint32_t offset,uint32_t *value) {
@@ -17,7 +28,7 @@ static NSArray *index_program(NSString *index,NSString *statements) {
     nvn_refl r={.nb=3};r.b[0].kind=NVN_RB_SBUFP;r.b[1].kind=NVN_RB_TEXP;r.b[1].aid=7;r.b[2].kind=NVN_RB_CBUF;
     NSString *s=[NSString stringWithFormat:@"struct Uniform { float4 _m0[2]; };\n%@\nuint _90 = %@;\nfloat _1 = as_type<float>((*spvDescriptorSet0.data)._m0[_90]);\nint _2 = as_type<int>(_1) & 1048575;",statements,index];
     NSDictionary *p=nvn_pool_sources(&r,@[@{@"msl_name":@"data",@"msl_type":@"const device Words*"},@{@"msl_name":@"textures"},@{@"msl_name":@"cb",@"msl_type":@"constant Uniform*"}],fixture(s,@"_2"));
-    assert(r.b[1].pool_sources==1);return p[@7][@0];
+    assert(r.b[1].pool_sources==1);round_trip(&r,p);return p[@7][@0];
 }
 static int has_value(const uint32_t *values,int n,uint32_t value) {for(int i=0;i<n;i++)if(values[i]==value)return 1;return 0;}
 int main(int argc,const char **argv) { @autoreleasepool {
@@ -57,7 +68,14 @@ int main(int argc,const char **argv) { @autoreleasepool {
      NSString *other=[fixture(base,@"int(_3)") stringByReplacingOccurrencesOfString:@"spvDescriptorSet0.textures" withString:@"spvDescriptorSet0.texturesX"];
      assert(!nvn_pool_sources(&r,b,other).count&&!r.b[1].pool_sources);checks++;
      assert(nvn_pool_sources(&r,b,fixture(base,@"int(_3)")).count==1&&r.b[1].pool_sources==1);checks++;}
-    printf("pool-sources: PASS %d proof and rejection checks\n",checks);
+    {   // a row that does not read is refused (the runtime proves the shader again)
+        nvn_refl r={.nb=2};r.b[0].kind=NVN_RB_SBUFP;r.b[1].kind=NVN_RB_TEXP;
+        assert(!nvn_pool_sources_decode(&r,@"b9=1"));checks++;                       // no binding 9
+        assert(!nvn_pool_sources_decode(&r,@"a7 (literal t0 b0 v1)"));checks++;      // a program outside a source
+        assert(!nvn_pool_sources_decode(&r,@"a7 s0 (literal t0 b0 v1"));checks++;    // cut short
+    }
+    assert(round_trips>=30);   // every check() and index_program() (2026-11-18: 30 of them)
+    printf("pool-sources: PASS %d proof and rejection checks, %d proofs written as a row and read back\n",checks,round_trips);
     if(argc>1){NSUInteger shaders=0,pools=0,proven=0;NSString *root=@(argv[1]);
         for(NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:NULL]){@autoreleasepool {
             if(![f hasSuffix:@"_b.json"])continue;

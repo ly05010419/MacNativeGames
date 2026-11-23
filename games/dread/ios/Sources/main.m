@@ -12,6 +12,7 @@
 #include "runtime.h"
 #include "dmsh_chain.h"
 #import "touch_controls.h"
+#import "mng_active.h"   // the day's report of active players
 
 int dread_host_main(int argc, char **argv);
 void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *host);
@@ -103,6 +104,7 @@ static unsigned long import_shaders(NSString *from, NSString *to) {
 }
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
     (void)options;
+    mng_active_start(@"dread", mng_active_version());   // the day's report of active players (mng_active.h)
     application.idleTimerDisabled = YES;   // controller input does not reset the idle timer
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;

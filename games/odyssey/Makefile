@@ -8,6 +8,9 @@ WORK ?= Odyssey_build
 OUT := $(WORK)/build
 PY ?= .venv/bin/python
 NATIVE_OPT ?= -O2
+# The host's bundle id (runtime/game_info.plist), as Tears of the Kingdom's: Metal's archive builder then works in a cache
+# folder of its own, which the pipeline archive needs to write (totk_pipeline_archive_folders.h; the pipeline-archive mode).
+GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -29,8 +32,8 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-$(OUT)/odyssey-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+$(OUT)/odyssey-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) runtime/game_info.plist Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) $(GAME_INFO) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a \
 	  -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics \
@@ -64,11 +67,18 @@ $(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos
 	@mkdir -p "$(dir $@)"
 	test "$$(shasum -a 256 "$<" | cut -d' ' -f1)" = "$$(cut -d' ' -f1 prebuilt/macos-arm64/totk_xlate.sha256)"
 	cp "$<" "$@" && chmod +x "$@"
+ifeq ($(PREBUILT_SPIRV_CROSS),1)
+# scripts/build_odyssey.py put the release's prebuilt spirv-cross there (tools/prebuilt.py: the same commit, sources
+# and flags as the rules below): nothing to compile
+$(OUT)/spirv-cross/spirv-cross:
+	test -x "$@"
+else
 $(OUT)/spirv-cross/obj/%.cpp.o: $(WORK)/src/SPIRV-Cross/%.cpp Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang++ -O3 -DNDEBUG -std=c++11 -arch arm64 -Wno-deprecated-declarations -c "$<" -o "$@"
 $(OUT)/spirv-cross/spirv-cross: $(SPIRV_CROSS_OBJECTS)
 	xcrun clang++ -arch arm64 $(SPIRV_CROSS_OBJECTS) -o "$@"
+endif
 
 clean:
 	rm -rf "$(OUT)/obj" "$(OUT)/odyssey-native"

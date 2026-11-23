@@ -1,0 +1,471 @@
+{
+ "schema": 1,
+ "translators": {
+  "games/acnh/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+   "history": [
+    {
+     "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+     "date": "2026-10-27",
+     "commit": "05e256ee",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 05e256ee（feat(acnh): Animal Crossing: New Horizons 1.2.1 runs natively (from PR #820)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/acnh/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/alc/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-29",
+     "commit": "17eafc1a",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 17eafc1a（feat(alc): stage 2: a runtime fork that boots Astral Chain to nnMain — the loader maps the two-file patch layout (signed patch_off, arena below the base, both digests verified), the module table carries 87192 relocations and both DT_INIT constructor words, boot passes the 4-callback nn::init::Start of the older SDK and runs the original nnMain to its focus setup (main+0x9c284c, phase 4); probe passes 4000 cross-module PLT calls on 4 threads）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/alc/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/aoc/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate": {
+   "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+   "history": [
+    {
+     "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+     "date": "2026-10-27",
+     "commit": "c2ecba19",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 c2ecba19（feat(aoc): add experimental Age of Calamity 1.3.0 native target）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/aoc/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate"
+    }
+   ]
+  },
+  "games/aoc/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll": {
+   "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+   "history": [
+    {
+     "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+     "date": "2026-10-27",
+     "commit": "c2ecba19",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 c2ecba19（feat(aoc): add experimental Age of Calamity 1.3.0 native target）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/aoc/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll"
+    }
+   ]
+  },
+  "games/by3/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-20",
+     "commit": "947d4c09",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 947d4c09（refactor: Bayonetta 3 carries its own rewriter, graphics layer, translator and scripts; games/totk stays as it was (after PR #62)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/by3/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/dread/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-26",
+     "commit": "ce8a4cfe",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 ce8a4cfe（feat(dread): Metroid Dread 1.0.0 runs natively, playable through the first area (from PR #970)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/dread/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/eow/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-27",
+     "commit": "d139cb41",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 d139cb41（feat: add The Legend of Zelda: Echoes of Wisdom 1.1.0 community port）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/eow/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/jamboree/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate": {
+   "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+   "history": [
+    {
+     "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+     "date": "2026-10-25",
+     "commit": "2be215ae",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 2be215ae（feat: Super Mario Party Jamboree 2.3.0 native Mac port, games/jamboree (PR #684, squashed)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/jamboree/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate"
+    }
+   ]
+  },
+  "games/jamboree/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll": {
+   "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+   "history": [
+    {
+     "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+     "date": "2026-10-25",
+     "commit": "2be215ae",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 2be215ae（feat: Super Mario Party Jamboree 2.3.0 native Mac port, games/jamboree (PR #684, squashed)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/jamboree/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll"
+    }
+   ]
+  },
+  "games/kirby/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "2593c6ded341a9f1a414c03b9297071f05695ece85740cbc5d4dde1e519dda88",
+   "history": [
+    {
+     "code_sha256": "2593c6ded341a9f1a414c03b9297071f05695ece85740cbc5d4dde1e519dda88",
+     "date": "2026-11-01",
+     "commit": "c05ed3b4",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 c05ed3b4（feat(kirby): add Kirby and the Forgotten Land port and shared shader list）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/kirby/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/la/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate": {
+   "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+   "history": [
+    {
+     "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+     "date": "2026-11-08",
+     "commit": "c7273b84",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 c7273b84（feat(la): The Legend of Zelda: Link's Awakening 1.1.0 as its own Mac target）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/la/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate"
+    }
+   ]
+  },
+  "games/la/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll": {
+   "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+   "history": [
+    {
+     "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+     "date": "2026-11-08",
+     "commit": "c7273b84",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 c7273b84（feat(la): The Legend of Zelda: Link's Awakening 1.1.0 as its own Mac target）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/la/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll"
+    }
+   ]
+  },
+  "games/lm3/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "e5b7ed48541087517e8f31a71e3ef64d0ee89e218074944525579fd1375889fa",
+   "history": [
+    {
+     "code_sha256": "e5b7ed48541087517e8f31a71e3ef64d0ee89e218074944525579fd1375889fa",
+     "date": "2026-11-03",
+     "commit": "f8570df6",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 f8570df6（fix(lm3): our rebuild of its translator, the root README rows, and no copied Tears of the Kingdom patch code (after PR #218)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/lm3/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/mk8d/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate": {
+   "code_sha256": "000ac0baf0e4aa352a19365bd2196bc58e1330114278bb2badeb2de6fa2019bd",
+   "history": [
+    {
+     "code_sha256": "000ac0baf0e4aa352a19365bd2196bc58e1330114278bb2badeb2de6fa2019bd",
+     "date": "2026-10-28",
+     "commit": "721c96f2",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 721c96f2（feat(mk8d): Mario Kart 8 Deluxe 4.0.1 target from nxnative 062cd06 (work in progress)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/mk8d/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate"
+    }
+   ]
+  },
+  "games/mk8d/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll": {
+   "code_sha256": "dbc483247a4cb22d424603a95aa0e62ec82d11ab461bbb31d75eab05aeae91fa",
+   "history": [
+    {
+     "code_sha256": "dbc483247a4cb22d424603a95aa0e62ec82d11ab461bbb31d75eab05aeae91fa",
+     "date": "2026-10-28",
+     "commit": "721c96f2",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 721c96f2（feat(mk8d): Mario Kart 8 Deluxe 4.0.1 target from nxnative 062cd06 (work in progress)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/mk8d/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll"
+    }
+   ]
+  },
+  "games/mvdk/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+   "history": [
+    {
+     "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+     "date": "2026-10-25",
+     "commit": "68e5ae29",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 68e5ae29（feat: Mario vs. Donkey Kong 1.0.1 native Mac port, games/mvdk (early)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/mvdk/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/odyssey/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "2593c6ded341a9f1a414c03b9297071f05695ece85740cbc5d4dde1e519dda88",
+   "history": [
+    {
+     "code_sha256": "2593c6ded341a9f1a414c03b9297071f05695ece85740cbc5d4dde1e519dda88",
+     "date": "2026-10-23",
+     "commit": "96f411ba",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 96f411ba（refactor: Super Mario Odyssey builds from its own copies, not games/totk or games/by3 (after PR #256)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/odyssey/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/oot/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
+   "history": [
+    {
+     "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
+     "date": "2026-11-15",
+     "commit": "b6c6c48b",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 b6c6c48b（fix(oot): HMMA helpers are called, not inlined, so the title's 26k-line compute shader compiles）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/oot/prebuilt/macos-arm64/totk_xlate"
+    },
+    {
+     "code_sha256": "0628c3980e2ad164880c525ffa94647d082df8ce19b8fb796909a4801a854672",
+     "date": "2026-11-19",
+     "commit": "claude/oot-nx-port: 99f00a2e (MeshStage.cs object function), 1bf3b8f8 (Service.cs MulExtended), this rebuild",
+     "why": "两处翻译输出的改动，都从 nxnative 移植（MIT）：① 没有 task 着色器的 mesh 着色器多生成一个 object 函数 main0_o，按每块 1024 个发射工作组（nxnative 09dcb627）。Metal 的 mesh 网格上限是 1024 个线程组，时之笛树叶 mesh d98076e4 / fed302d7 在我们的录制里一次间接绘制最多 1,238 个（oot-fps90 n90d，608 次里 40 次超过 1024），超出 Metal 定义的范围；nxnative 在 M2 Max 上见到 1,771 个越界读、GPU page fault。② 标量 uint / int 的 spvMulExtended 走内联重载，不再经过 SPIRV-Cross 的 optnone 模板，常数除法能被编译器折叠（nxnative 37f076a5：Kokiri 54.0 → 59.1 fps，M4 Pro；我们的运行时诊断 OOT_UMUL_INLINE 约 +4.2%）。",
+     "necessary": "两处都要改翻译出的 MSL：① object 函数和 mesh 的 payload 参数是着色器入口本身，宿主无法在不重翻的情况下加上（宿主另一种做法是拆成最多 8 次绘制、上限 8,192，nxnative 最终没有采用）；② optnone 写在 SPIRV-Cross 生成的模板里，只有改 MSL 才能去掉，运行时改写（OOT_UMUL_INLINE）只覆盖运行时编译、不覆盖预编的着色器库。两处合在一次翻译器改变里，玩家只重翻一次。",
+     "evidence": "tests/test_oot_mesh_blocks.py（翻译器自己的 object 函数在 GPU 上：1、1023、1024、1025、1238、1771、3,000 个工作组直接 / 间接绘制，每个正好跑一次）；tests/test_oot_mul_extended.py（GPU 上 65,536 组 uint 和 int 操作数，重载与 optnone 模板逐位相同）；tests/test_oot_mesh_output_layout.py 通过；构建：dotnet SDK 10.0.401 NativeAOT，scratch/runs/2026-11/oot-nx-port/publish3.log。"
+    },
+    {
+     "code_sha256": "fc53f9da008eb9ea116a6350a6c9467e148c3dc288bbc698a1903c4ed0260fa0",
+     "date": "2026-11-19",
+     "commit": "revert of 02989095 (v29)",
+     "why": "撤回 v29（02989095 的翻译器：mesh object 函数 main0_o 和内联 spvMulExtended），换回 2026-11-15 的那份代码，翻译链回到 oot-native-v28-mesh-primitive-blocks。用户 2026-11-19 决定撤回：改翻译器前没有问过用户必要性（“我说了 更新 翻译器 要 询问我必要性 加了测试 为什么 没有问我？”）。",
+     "necessary": "v29 让每个玩家下次更新都重翻全部 42,911 个着色器（这台 M4 上 83 分钟），换来的是少数无 task mesh 着色器超过 1024 个工作组的修复（有不改翻译器的宿主拆分做法）和一项没测出可见帧率差别的性能改动。换回原来的代码、原来的链名，翻译上下文回到原来那一份（prepare_ns2_seed.translation_context：链、深度模式、翻译器代码），没拿到 v29 的玩家不重翻。",
+     "evidence": "代码哈希与 2026-11-15 基线相同（tests/test_translator_changes.py）；v29 的 App、翻译缓存、种子和库存在 MacNativeGames-artifacts/keep/oot-chains/v29，v28 的在 keep/oot-chains/v28。上面 v29 条目里的 tests/test_oot_mesh_blocks.py、tests/t_mesh_blocks.m、tests/test_oot_mul_extended.py 随撤回删掉（它们测的是 v29 翻译器），原样在提交 d47c358b / f361b840 里，将来重新做翻译器改动时一起拿回来。"
+    }
+   ]
+  },
+  "games/ori/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "09a4a4f1eade31360d392229722c28b8a2c75eab79ee0951959d21a8c6fd671f",
+   "history": [
+    {
+     "code_sha256": "09a4a4f1eade31360d392229722c28b8a2c75eab79ee0951959d21a8c6fd671f",
+     "date": "2026-10-28",
+     "commit": "163a58bc",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 163a58bc（build: ori, ssbu and ot0 translators rebuilt by the maintainers from the repository sources）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/ori/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/ot0/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "cc6c1bd27b3acee085251189e0e1a01d43cf67bbc67a6095368d7dcfad57a495",
+   "history": [
+    {
+     "code_sha256": "cc6c1bd27b3acee085251189e0e1a01d43cf67bbc67a6095368d7dcfad57a495",
+     "date": "2026-10-28",
+     "commit": "163a58bc",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 163a58bc（build: ori, ssbu and ot0 translators rebuilt by the maintainers from the repository sources）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/ot0/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/pla/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-11-04",
+     "commit": "2809068d",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 2809068d（feat: Pokémon Legends: Arceus 1.1.1 native Mac port (community port, early)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/pla/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/pokesv/prebuilt/macos-arm64/psv_xlate": {
+   "code_sha256": "703f8a1e36665b1401bbdea56b8580675126100ee154810ea3a0eca484146208",
+   "history": [
+    {
+     "code_sha256": "703f8a1e36665b1401bbdea56b8580675126100ee154810ea3a0eca484146208",
+     "date": "2026-11-03",
+     "commit": "195d628d",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 195d628d（feat: add the Pokémon Violet 4.0.0 community port）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/pokesv/prebuilt/macos-arm64/psv_xlate"
+    }
+   ]
+  },
+  "games/ssbu/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "046fdc268f19a67f3208c936507fdf87ba39bcfeb722dd219cad5cf4e775f532",
+   "history": [
+    {
+     "code_sha256": "046fdc268f19a67f3208c936507fdf87ba39bcfeb722dd219cad5cf4e775f532",
+     "date": "2026-10-28",
+     "commit": "163a58bc",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 163a58bc（build: ori, ssbu and ot0 translators rebuilt by the maintainers from the repository sources）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/ssbu/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/tmnt/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "dabf9601f77071390862fb6e40cbe91f8f9b772d4c3fcbe33f6592314237db2e",
+   "history": [
+    {
+     "code_sha256": "dabf9601f77071390862fb6e40cbe91f8f9b772d4c3fcbe33f6592314237db2e",
+     "date": "2026-11-22",
+     "commit": "",
+     "why": "新增：忍者龟的翻译服务原来在每次打包时用 .NET SDK 现编（games/tmnt/tools/totk_xlate/publish_native.sh），现在和王国之泪、时之笛、动物森友会等一样放进仓库当预编译文件。源码没有改：同一份 games/tmnt/third_party/ryujinx、补丁和 Service.cs，用固定的 .NET SDK 10.0.401 编。用户 2026-11-22：“对 做吧”（问的是“要把忍者龟的翻译器改成仓库里的预编译文件吗？”）。",
+     "necessary": "玩家的 Launcher 不再带 .NET SDK（用户 2026-11-21：“去掉 .net sdk”，SDK 占离线包 477 MB 里的 231 MB），玩家 Mac 上不能现编；只改运行时或打包脚本做不到，必须有一份编好的程序。翻译输出不变。",
+     "evidence": "两份不同目录编出的程序（文件哈希 bb1d3cae… 与 9d153c50…，NativeAOT 换目录哈希就变）回放旷野之息缓存 rt-totk-native-v4-unverified 的 179 个着色器：都 179 个成功，716 个输出文件（MSL / SPIR-V / 反射）逐字节相同（keep/tools/xlate-rebuild/replay.py --compare，scratch/runs/2026-11/offline-pack/tmnt-prebuilt/）"
+    }
+   ]
+  },
+  "games/tomodachi/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "1ab968179b5f843710ea19fa9c0cdad3a851fd33410cb4919926cd811139b7b1",
+   "history": [
+    {
+     "code_sha256": "1ab968179b5f843710ea19fa9c0cdad3a851fd33410cb4919926cd811139b7b1",
+     "date": "2026-11-04",
+     "commit": "541f83da",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 541f83da（fix: require Metal 4 and isolate unresolved Tomodachi experiments (after PR #1505)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/tomodachi/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/totk/prebuilt/ios-arm64/libtotk_xlate.a": {
+   "code_sha256": "856193d5ccd291bfc0a651307ecabf160bfce699480f582d76c39495823dfb8f",
+   "history": [
+    {
+     "code_sha256": "856193d5ccd291bfc0a651307ecabf160bfce699480f582d76c39495823dfb8f",
+     "date": "2026-11-09",
+     "commit": "dd48c2de",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 dd48c2de（fix(ns2): Ampere translator fixes from the Ocarina of Time port）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/totk/prebuilt/ios-arm64/libtotk_xlate.a"
+    }
+   ]
+  },
+  "games/totk/prebuilt/ios-arm64/libtotk_xlate_bootstrap.o": {
+   "code_sha256": "14bd9d44df29303ecc51d5e27c3a396ba147c82f1ef10a77707292af5d67499a",
+   "history": [
+    {
+     "code_sha256": "14bd9d44df29303ecc51d5e27c3a396ba147c82f1ef10a77707292af5d67499a",
+     "date": "2026-11-03",
+     "commit": "f04e9472",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 f04e9472（fix(ios): link the .NET runtime's start-up object as a file, so the device translator's first call finds a runtime）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/totk/prebuilt/ios-arm64/libtotk_xlate_bootstrap.o"
+    }
+   ]
+  },
+  "games/totk/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "838a10ab534d41613f18c30cfd7f4f1f0646bfef20684e37b71625ba0f1bf169",
+   "history": [
+    {
+     "code_sha256": "e146d8d3bd6efe5d0f0b9bcd6060eb27c15a9f3d455d80633561277673b0b368",
+     "date": "2026-11-09",
+     "commit": "dd48c2de",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 dd48c2de（fix(ns2): Ampere translator fixes from the Ocarina of Time port）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/totk/prebuilt/macos-arm64/totk_xlate"
+    },
+    {
+     "code_sha256": "838a10ab534d41613f18c30cfd7f4f1f0646bfef20684e37b71625ba0f1bf169",
+     "date": "2026-11-23",
+     "commit": "(this commit)",
+     "why": "Service.cs DrvReads / Unfillable：驱动常量段（c0 / c2）里能否由回放层填写，改为按着色器实际读的分量逐字判断（新增 word_offsets），不再按整个 vec4 判断。巫师3 的片元着色器 624aa677 读 c2[22].z（0x168，第 0 号贴图句柄，回放层会填），它所在的 vec4 从 0x160 起、前半是不填的图像句柄区，旧规则把整个着色器判为“填不了”，运行时拒绝它，游戏在进入剧情前中止。",
+     "necessary": "必要：不改则巫师3 进不了游戏内剧情（2026-11-23 的运行 wm 在此中止）。翻译出的 MSL 不变，只是 drv_unfillable 不再误报；没有读未填字的着色器结果相同，读了的仍被报出。",
+     "evidence": "games/w3/CHANGELOG.md；运行 wm 的 “c2+0x160” 拒绝与运行 wn 进入剧情；games/totk/tools/totk_xlate/Service.cs DrvReads 注释。"
+    }
+   ]
+  },
+  "games/unicorn/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-23",
+     "commit": "35e3b9dd",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 35e3b9dd（feat: 添加圣兽之王1.05适配及DLC支持）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/unicorn/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/wonder/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+   "history": [
+    {
+     "code_sha256": "4dcb6e4b4389f7352814464ec28be058acbf63bd88c7970bb58138fd0c248295",
+     "date": "2026-10-25",
+     "commit": "9e4c7b7b",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 9e4c7b7b（feat: Super Mario Bros. Wonder 1.0.0 and 1.2.1 (early port, games/wonder, self-contained)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/wonder/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/worldend/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate": {
+   "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+   "history": [
+    {
+     "code_sha256": "98a988d6ff7923e6ee2ff57b4a275d5d1c7537a3e9a7a1ced56cd377e60b7ed5",
+     "date": "2026-11-14",
+     "commit": "d7301fb9",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 d7301fb9（feat: WORLDEND SYNDROME 1.0.0 native Mac port (games/worldend)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/worldend/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate"
+    }
+   ]
+  },
+  "games/worldend/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll": {
+   "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+   "history": [
+    {
+     "code_sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3",
+     "date": "2026-11-14",
+     "commit": "d7301fb9",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 d7301fb9（feat: WORLDEND SYNDROME 1.0.0 native Mac port (games/worldend)）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/worldend/prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll"
+    }
+   ]
+  },
+  "games/xc3/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "47a22a6cfd1e18298a6ae71f95fa1e4a7524a5f4aa9fea5db70aac0d05633d40",
+   "history": [
+    {
+     "code_sha256": "47a22a6cfd1e18298a6ae71f95fa1e4a7524a5f4aa9fea5db70aac0d05633d40",
+     "date": "2026-11-08",
+     "commit": "28b73453",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 28b73453（fix(xc3): every shader translates）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/xc3/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  },
+  "games/xcx/prebuilt/macos-arm64/totk_xlate": {
+   "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+   "history": [
+    {
+     "code_sha256": "50d4721c5ce309bc0cf02310743dcd324eea7911321abda069f18f3a428fffc0",
+     "date": "2026-10-29",
+     "commit": "44dd4d6c",
+     "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 44dd4d6c（feat: add experimental Xenoblade X Mac host）。之前的变化没有逐条记录理由。",
+     "necessary": "基线，不是一次改动（建账前已在使用）。",
+     "evidence": "git log -- games/xcx/prebuilt/macos-arm64/totk_xlate"
+    }
+   ]
+  }
+ }
+}

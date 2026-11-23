@@ -9,26 +9,29 @@ which shows a build started here and can stop it.
   python3 tools/mng.py --help
 
 Any python3 starts it (macOS's own is fine): it runs the jobs with MNG Launcher's own Python 3.14 when the Launcher is
-made (tools/builder_app/make_app.py), else with a Python 3.14 from python.org or Homebrew."""
+installed (the released one in Applications, or a development one in ~/Applications), else with a Python 3.14 from
+python.org or Homebrew."""
 import os
 from pathlib import Path
 import shutil
 import sys
 
 REPO = Path(__file__).resolve().parents[1]
-LAUNCHER_PYTHON = Path.home() / 'Applications/MNG Launcher.app/Contents/Resources/python/bin/python3.14'
+LAUNCHER_PYTHONS = [Path(base) / 'MNG Launcher.app/Contents/Resources/python/bin/python3.14'
+                    for base in ('/Applications', Path.home() / 'Applications')]
 
 
 def python():
-    if os.access(str(LAUNCHER_PYTHON), os.X_OK):
-        return str(LAUNCHER_PYTHON)
+    found = next((p for p in LAUNCHER_PYTHONS if os.access(str(p), os.X_OK)), None)
+    if found:
+        return str(found)
     if sys.version_info >= (3, 14):
         return sys.executable
     look = os.pathsep.join(['/usr/local/bin', '/opt/homebrew/bin', os.environ.get('PATH', '')])
     found = next((p for p in (shutil.which(n, path=look) for n in ('python3.14', 'python3.15')) if p), None)
     if not found:
-        sys.exit('mng needs MNG Launcher (python3 tools/builder_app/make_app.py, which carries its own Python) or Python 3.14 '
-                 'from https://www.python.org/downloads/macos/')
+        sys.exit('mng needs MNG Launcher (download it: https://github.com/ly05010419/MacNativeGames/releases?q=launcher-v; '
+                 'it carries its own Python) or Python 3.14 from https://www.python.org/downloads/macos/')
     return found
 
 

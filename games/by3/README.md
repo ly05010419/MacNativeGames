@@ -13,8 +13,10 @@ this repository; `BY3_build/` (the work folder) and `mods/` are ignored by git.
 
 ## Inputs
 
-- Base `01004A4010FEA000` (v65536) and update 1.2.0 `01004A4010FEA800` (v131072), both NSP.
-- The base Program NCA is **sparse**: its ExeFS is empty and the RomFS parts the update replaces are not stored.
+- Base `01004A4010FEA000` (v65536) and update 1.2.0 `01004A4010FEA800` (v131072), both NSP. The base can also be a
+  card image (XCI).
+- The base Program NCA of an eShop NSP is **sparse**: its ExeFS is empty and the RomFS parts the update replaces are not
+  stored. A card image's base RomFS is complete (not sparse); `merge_romfs.py` tells the two apart and reads either.
   The code always comes from the update, and the pinned hactool cannot read the base RomFS.
 
 ## Build and play

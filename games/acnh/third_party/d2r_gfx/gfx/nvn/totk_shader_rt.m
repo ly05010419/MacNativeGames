@@ -5,6 +5,7 @@
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
 #import <Foundation/Foundation.h>
+#include "compute_shared.h"
 #include "totk_ui_lang.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
@@ -23,6 +24,9 @@
 #include <stdatomic.h>
 #include "totk_shader_seed.h"
 #include "totk_shader_contrib.h"
+/* Distinct variants missed this run (the iPhone's shader box, hud_panel.inc), as Tears of the Kingdom's totk_shader_rt.m. */
+_Atomic uint64_t g_missed;
+uint64_t totk_rt_missed(void) { return atomic_load(&g_missed); }
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
 extern void runtime_boot_count(const char *,uint64_t,uint64_t) __attribute__((weak_import));
 static void seed_progress(int pass, NSUInteger done, NSUInteger total) {   // the bar under "Checking the shader cache"
@@ -311,7 +315,8 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         NSString *msl = checked ? nil :
             [NSString stringWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", found]
                                              encoding:NSUTF8StringEncoding error:nil];
-        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
+        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"] ||
+                          (stage == 5 && !totk_rt_msl_shared_ok(msl.UTF8String, totk_rt_compute_shared_request(control))))) {   // compute_shared.h: a threadgroup array too small for the kernel
             [vs removeObjectAtIndex:i];  /* regenerate missing or previously un-compilable Metal variant */
             break;
         }
@@ -324,6 +329,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     NSString *stage_name = stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil;
     if (!stage_name) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSMutableDictionary *key = [answers mutableCopy];
+    if (stage == 5 && totk_rt_compute_shared_request(control)) key[@"shared"] = @(totk_rt_compute_shared_request(control));   // its own variant name
     if (stage == 0) key[@"depth_minus_w"] = @(depth_minus_w);
     NSData *ad = [json_string(key) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
@@ -344,6 +350,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name, @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (stage == 5 && totk_rt_compute_shared_request(control)) rq[@"shared"] = @(totk_rt_compute_shared_request(control));   // compute_shared.h
     rq[@"depth_minus_w"] = depth_minus_w ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     if (no_translator()) {
     // No translator on the phone (Python + .NET + SPIRV-Cross): the variant cache is translated on the Mac and copied over.
@@ -353,9 +360,10 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     /* A miss no longer stops the game: the caller skips the draws / dispatches that need this variant (draw-skip reason
        "shader-missing"). The request is written once per variant; after fill_shaders.py pushed the translation, the next
        start compiles it in the background (totk_rt_warm_filled) and moves the request to shader-requests/done/. */
+    extern _Atomic uint64_t g_missed;
     static NSMutableSet<NSString *> *missed; if (!missed) missed = [NSMutableSet set];
     if (![missed containsObject:variant]) {
-        [missed addObject:variant];
+        [missed addObject:variant]; atomic_fetch_add(&g_missed, 1);
         [[json_string(rq) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[NSString stringWithFormat:@"shader-requests/%@.json", variant] atomically:YES];
         totk_contrib_add(shader, answers);   // not in the prepared seed, so not in the shared shader list yet
         LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",

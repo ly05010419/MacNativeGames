@@ -49,6 +49,37 @@ YAZ0, ZSTD, BNSH = b"Yaz0", b"\x28\xb5\x2f\xfd", b"BNSH\0\0\0\0"
 SEED_FILE = re.compile(r"^(?:[0-9a-f]{64}\.variants|[0-9a-f]{64}-[0-9a-f]{12}_b\.(?:metal|json|metallib)|pso_manifest\.tsv)$")
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -214,11 +245,15 @@ def request(variant, stage, control, code, code_path, answers=ANSWERS):
               depth_minus_w=stage == "vs", **answers)
     if stage == "cs":
         rq["local"] = list(struct.unpack_from("<III", control, 0x748))
+        shared = (struct.unpack_from("<I", control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+        if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+            rq["shared"] = shared
     return rq
 
 
 def identity(romfs_sha256, translator):
-    return dict(chain=CHAIN, source_romfs_sha256=romfs_sha256, translator_sha256=sha256(translator.read_bytes()),
+    # the translator by its code, any signature (2026-11-18: MNG Launcher re-signs it with a time stamp for every release)
+    return dict(chain=CHAIN, source_romfs_sha256=romfs_sha256, translator_code_sha256=code_digest(translator),
                 tool_sha256=sha256(HERE.read_bytes()))
 
 
@@ -321,7 +356,7 @@ def prepare(prepared, translator, output, jobs, version):
     if stray:
         raise SystemExit(f"unexpected files in the seed: {stray[:5]}")
     files = {p.name: sha256(p.read_bytes()) for p in sorted(staging.iterdir())}
-    manifest = dict(schema=1, **ident, game="acnh", version=version, shaders=len(made), discovered=len(shaders), depth_variants=extra,
+    manifest = dict(schema=1, **ident, translator_sha256=sha256(translator.read_bytes()), game="acnh", version=version, shaders=len(made), discovered=len(shaders), depth_variants=extra,
                     sources=by_source, skipped=failed, files=files, prepared=time.strftime("%Y-%m-%d %H:%M"))
     (staging / "seed-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     shutil.rmtree(output, ignore_errors=True)

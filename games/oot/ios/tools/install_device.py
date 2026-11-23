@@ -6,6 +6,9 @@ with the same team and bundle identifier keeps the saves and the shader cache (t
 
   python3 games/totk/ios/tools/install_device.py "Tears of the Kingdom.ipa" --device "Jack iPhone"
 
+Animal Crossing's app (games/acnh/ios/tools/build_ipa.py) is built from the same sources as TOTK.app and installs the same
+way, its game data with --game-data <work>/prepared/update/romfs/romfs.bin.
+
 An IPA built with --ios-game-data documents carries no 17 GB game image: pass --game-data <work>/totk/extracted/v143/
 romfs/romfs.bin and it is copied once into the app's Documents/GameData in 1 GiB parts (devicectl drops the connection on
 one file that size); a later install skips it while the device holds the same image (romfs.sha256 there).
@@ -58,15 +61,24 @@ def pick_device(name):
         sys.exit(f"choose the device with --device <name>:\n{listed}" if devs else 'no paired iPhone / iPad / Vision Pro found: pair it with this Mac and enable Developer Mode')
     return match[0]
 
-def profile(team, bundle_id, udid, platform='ios'):
+# What xcodebuild says when the team has no device to make a development profile for (a free Apple ID before its first
+# device is registered, #2268)
+NO_DEVICE = ('has no devices from which to generate a provisioning profile', 'Your team has no devices',
+             'No profiles for')
+
+def same_or_write(path, data):
+    if not path.is_file() or path.read_bytes() != data: path.write_bytes(data)
+
+def profile(team, bundle_id, udid, platform='ios', extra=()):
     """Build an empty app with the game's bundle identifier and entitlements; Xcode makes the profile for it."""
     vision = platform == 'visionos'
     project_platform = 'visionOS' if vision else 'iOS'
     sdk = 'xros' if vision else 'iphoneos'
     proj = CACHE/(bundle_id + ('.visionos' if vision else '')); proj.mkdir(parents=True, exist_ok=True)
-    (proj/'main.m').write_text('int main(void) { return 0; }\n')
-    (proj/'TOTK.entitlements').write_bytes(plistlib.dumps({ENTITLEMENT: True}))
-    (proj/'project.yml').write_text(f'''name: TOTKSigning
+    # written only when they change: Xcode refuses an entitlements file newer than its last build of it (2026-11-20)
+    same_or_write(proj/'main.m', b'int main(void) { return 0; }\n')
+    same_or_write(proj/'TOTK.entitlements', plistlib.dumps({ENTITLEMENT: True, **{k: True for k in extra}}))
+    same_or_write(proj/'project.yml', f'''name: TOTKSigning
 options: {{deploymentTarget: {{{project_platform}: "26.0"}}}}
 targets:
   TOTK:
@@ -79,15 +91,35 @@ targets:
       DEVELOPMENT_TEAM: {team}
       CODE_SIGN_STYLE: Automatic
       CODE_SIGN_ENTITLEMENTS: TOTK.entitlements
-''')
+      CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES   # only this empty app; a rebuild saw the file as modified (2026-11-20)
+'''.encode())
     run([xcodegen(),'generate','--quiet'], cwd=proj)
     derived = proj/'derived'
     log = proj/'xcodebuild.log'
-    with log.open('w') as f:
-        r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
-                            '-destination',f'generic/platform={project_platform}','-derivedDataPath',str(derived),
-                            '-allowProvisioningUpdates','build'],
-                           cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+
+    def build(destination, *extra):
+        with log.open('w') as f:
+            return subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
+                                   '-destination',destination,'-derivedDataPath',str(derived),
+                                   '-allowProvisioningUpdates',*extra,'build'],
+                                  cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+    # A generic destination first (3b1aef95): naming the device makes Xcode copy its system symbols into
+    # ~/Library/Developer/Xcode/iOS DeviceSupport, several GB a device on the system disk. Only a team without this
+    # device (a free Apple ID's first install, #2268: "Your team has no devices from which to generate a provisioning
+    # profile") needs the device named, with -allowProvisioningDeviceRegistration so Xcode registers it.
+    r = build(f'generic/platform={project_platform}')
+    if r.returncode and 'is not installed' in log.read_text(errors='replace'):
+        # A destination asks for Xcode's platform component (Xcode › Settings › Components: "iOS 26.2 is not installed",
+        # 2026-11-20); the SDK alone builds the empty app, and automatic signing makes the profile for the team's devices
+        with log.open('w') as f:
+            r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-target','TOTK','-configuration','Debug',
+                                '-sdk',sdk,f'SYMROOT={derived/"Build/Products"}',f'OBJROOT={derived/"obj"}',
+                                '-allowProvisioningUpdates','-allowProvisioningDeviceRegistration','build'],
+                               cwd=proj, stdout=f, stderr=subprocess.STDOUT)
+    if r.returncode and any(m in log.read_text(errors='replace') for m in NO_DEVICE):
+        print(f'Your team has no {project_platform} device yet: registering this one ({udid}). Xcode copies its system '
+              'symbols to ~/Library/Developer/Xcode/iOS DeviceSupport (several GB); they can be deleted afterwards.', flush=True)
+        r = build(f'platform={project_platform},id={udid}', '-allowProvisioningDeviceRegistration')
     if r.returncode:
         errors = [l for l in log.read_text(errors='replace').splitlines() if 'error:' in l]
         sys.exit('Xcode could not make a provisioning profile:\n' + '\n'.join(errors[-8:]) + f'\nfull log: {log}')
@@ -169,9 +201,12 @@ def push_game_data(dev, bundle_id, image):
     size = image.stat().st_size; parts = (size + PART - 1) // PART
     have = device_files(dev, bundle_id, 'Documents/GameData')
     expected_sizes = {f'romfs.bin.{i:03d}': min(PART, size - i * PART) for i in range(parts)}
-    copying = f'copying {sha}'
+    # the size too, so the game's boot screen shows how far the copy is and starts when it is done (ios/Sources/main.m
+    # game_data_ready; user 2026-11-19: "传输的时候 有进度"); a marker of an older install names the image alone
+    copying = f'copying {sha} {size}'
+    older = f'copying {sha}'
     marker = None
-    if have.get('romfs.sha256') in (64 + 1, len(copying) + 1):
+    if have.get('romfs.sha256') in (64 + 1, len(copying) + 1, len(older) + 1):
         with tempfile.TemporaryDirectory() as d:
             got = Path(d)/'romfs.sha256'
             r = subprocess.run(['xcrun','devicectl','device','copy','from','--device',dev,'--domain-type','appDataContainer',
@@ -183,7 +218,7 @@ def push_game_data(dev, bundle_id, image):
         print('game data: the device already has this image'); return
     # Equal lengths alone cannot identify an image. Reuse complete parts only after reading a marker of this SHA.
     # A committed image with a truncated part can be repaired too, after marking the transfer in progress again.
-    resume = marker in (sha, copying)
+    resume = marker in (sha, copying, older)
     print(f'game data: copying {size / 2**30:.1f} GiB in {parts} parts (once; later installs keep it)' +
           (', going on from the parts already there' if resume else ''), flush=True)
     with tempfile.TemporaryDirectory() as d, open(image, 'rb') as src:
@@ -196,7 +231,7 @@ def push_game_data(dev, bundle_id, image):
                 print(f'  {name}: copy failed (attempt {attempt + 1} of 3): {(r.stderr or r.stdout).strip().splitlines()[-1:]}', flush=True)
                 time.sleep(10)
             sys.exit(f'game data: {name} could not be copied (keep the device unlocked and connected); run this again to go on from there')
-        if marker != copying: (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
+        if marker not in (copying, older): (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
         prog = Progress('game data', size)
         for i in range(parts):
             part = Path(d)/f'romfs.bin.{i:03d}'; length = min(PART, size - i * PART)
@@ -279,7 +314,8 @@ def push_seed(dev, bundle_id, seed):
         def copy(local, name):
             run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
                  bundle_id,'--source',local,'--destination',f'Documents/GameData/{name}'], capture_output=True)
-        got.write_text('stale\n'); copy(got, 'shader-seed.txt')   # until every part is there
+        # until every part is there; with the parts' size, for the game's boot screen (main.m game_data_ready)
+        got.write_text(f'stale {pack + image}\n'); copy(got, 'shader-seed.txt')
         def push(local):   # each part as it is complete (making a part reads ~1 GiB of shader files first)
             made[0] += 1; n = local.stat().st_size
             prog.part(f'part {made[0]}/{parts}', n, lambda: copy(local, local.name)); local.unlink()
@@ -287,6 +323,18 @@ def push_seed(dev, bundle_id, seed):
         write_parts(seed, imaged, Path(d)/folder, PART, push)
         write_pack(seed, loose, Path(d), folder, PART, push)
         got.write_text(f'{folder}\n{fp}\n'); copy(got, 'shader-seed.txt')
+
+def wanted_entitlements(ipa):
+    """The entitlements an app asks for beyond the increased memory limit (Info.plist MNGEntitlements, build_port_ipa.py
+    Port.entitlements): Pokemon Legends: Arceus needs extended virtual addressing for its 32 GiB address region (2026-11-21)."""
+    try:
+        if ipa.is_dir(): raw = (ipa/'Info.plist').read_bytes()
+        else:
+            with zipfile.ZipFile(ipa) as z: raw = z.read('Payload/TOTK.app/Info.plist')
+        want = plistlib.loads(raw).get('MNGEntitlements', [])
+    except (OSError, KeyError, zipfile.BadZipFile, plistlib.InvalidFileException): want = []
+    return tuple(k for k in want if isinstance(k, str) and k.startswith('com.apple.developer.kernel.'))
+
 
 def built_bundle_id(ipa, team):
     """The identifier build_app.py gave the app (org.macnativegames.totk, or .botw for Breath of the Wild); a .app folder
@@ -333,13 +381,16 @@ def main():
     platform = built_platform(a.ipa)
     if platform == 'visionos' and dev['hardwareProperties'].get('platform') != 'visionOS':
         sys.exit('this is a native Vision Pro app: choose a paired Vision Pro with --device')
-    prov, signed = profile(team, bundle_id, udid, platform)
+    extra = wanted_entitlements(a.ipa)
+    prov, signed = profile(team, bundle_id, udid, platform, extra)
     info = plistlib.loads(profile_plist(prov))
     if udid not in info.get('ProvisionedDevices', []) and not info.get('ProvisionsAllDevices'):
         sys.exit('this device is not registered in the provisioning profile; register it with your Apple developer team first')
     ents = info['Entitlements']
     if not ents.get(ENTITLEMENT):
         print(f'warning: your team cannot grant {ENTITLEMENT}; iOS may close the game when it runs out of memory')
+    for k in extra:
+        if not ents.get(k): print(f'warning: your team cannot grant {k}, which this game asks for')
     expires = info['ExpirationDate'].replace(tzinfo=timezone.utc).astimezone()  # plistlib returns naive UTC
     print(f"provisioning profile valid until {expires:%Y-%m-%d %H:%M} local time (run this again before then)")
 
@@ -359,7 +410,7 @@ def main():
     shutil.copy2(prov, app/'embedded.mobileprovision')
     entfile = work/'entitlements.plist'
     entfile.write_bytes(plistlib.dumps({k: ents[k] for k in ('application-identifier','com.apple.developer.team-identifier',
-                                                                'get-task-allow', ENTITLEMENT) if k in ents}))
+                                                                'get-task-allow', ENTITLEMENT, *extra) if k in ents}))
     # Before the slow part: the shaders this install pushes carry this device's pipelines (device_pipelines.seed_check)
     check_pipelines(dev, seed_beside(a.ipa, app) or app/'GameData/shader-seed', a.allow_device_fill)
     print('signing (a few minutes: every game file is hashed)')

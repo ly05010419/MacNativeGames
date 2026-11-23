@@ -5,4 +5,5 @@
 #define GAME_PLA 1
 #define TOTK_GAME_VERSION "1.1.1"
 #define TOTK_GAME_DIR "v1101"
+#define GAME_FOLDER "PLA"   /* its data folder (~/Library/Application Support/MacNativeGames/PLA); the shared iPhone app names its shader rows with it */
 #define GAME_TITLE_ID 0x01001f5010dfa000ULL

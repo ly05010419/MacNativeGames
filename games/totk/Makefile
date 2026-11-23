@@ -448,7 +448,7 @@ probe-gpu-writeback: runtime-botw160
 	MTL_DEBUG_LAYER=1 build/totk-native-botw160 rewritten/botw160 probe-gpu-writeback
 
 # Decals reading the attachment they write (nvn_fbread.h): overlapping draws see each other only through the tile read.
-$(RENDER_PROBE_DIR)/fbread-probe: tests/fbread/probe.m third_party/d2r_gfx/gfx/nvn/nvn_fbread.h
+$(RENDER_PROBE_DIR)/fbread-probe: tests/fbread/probe.m third_party/d2r_gfx/gfx/nvn/nvn_fbread.h third_party/d2r_gfx/gfx/nvn/nvn_fbdep.h
 	@mkdir -p "$(RENDER_PROBE_DIR)"
 	xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn tests/fbread/probe.m -framework Metal -framework Foundation -o "$@"
 probe-fbread: $(RENDER_PROBE_DIR)/fbread-probe

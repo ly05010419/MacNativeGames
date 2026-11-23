@@ -163,10 +163,10 @@ static LAUNCHER_UNUSED void launcher_stamp(char *out, size_t size, int with_pid)
 
 static LAUNCHER_UNUSED int launcher_newest_first(const void *a, const void *b) { return strcmp(*(char *const *)b, *(char *const *)a); }
 /* Saves are rewritten in place (runtime/fs_host.c), so a crash during a write could leave the only copy damaged: keep the
-   saves as they were before each of the last five starts in <data>/backups/<stamp>. */
-static LAUNCHER_UNUSED void launcher_back_up_saves(const char *profile, const char *data, const char *stamp) {
-    char saves[PATH_MAX], backups[PATH_MAX], target[PATH_MAX]; struct stat st;
-    launcher_join(saves, profile, "save"); launcher_join(backups, data, "backups");
+   saves folder as it was before each of the last five starts in <data>/backups/<stamp>. */
+static LAUNCHER_UNUSED void launcher_back_up_folder(const char *saves, const char *data, const char *stamp) {
+    char backups[PATH_MAX], target[PATH_MAX]; struct stat st;
+    launcher_join(backups, data, "backups");
     if (stat(saves, &st) || !S_ISDIR(st.st_mode)) return;
     mkdir(backups, 0700); launcher_join(target, backups, stamp);
     if (launcher_run((const char *const[]){"/bin/cp", "-Rp", saves, target, NULL})) return;
@@ -182,6 +182,10 @@ static LAUNCHER_UNUSED void launcher_back_up_saves(const char *profile, const ch
         }
         free(names[i]);
     }
+}
+/* The Nintendo SDK games' saves: <profile>/save. */
+static LAUNCHER_UNUSED void launcher_back_up_saves(const char *profile, const char *data, const char *stamp) {
+    char saves[PATH_MAX]; launcher_join(saves, profile, "save"); launcher_back_up_folder(saves, data, stamp);
 }
 
 /* The game's exit code once it ends (a signal: 1). */
@@ -204,6 +208,7 @@ struct launcher_play {
     int stamp_with_pid;
     int (*wait)(pid_t child, const char *stamp, void *context);
     void *context;
+    const char *saves;              /* the folder backed up before each start; NULL: <profile>/save */
 };
 static LAUNCHER_UNUSED int launcher_play(const struct launcher_play *p) {
     const struct launcher_data *d = p->data;
@@ -211,7 +216,8 @@ static LAUNCHER_UNUSED int launcher_play(const struct launcher_play *p) {
     if (chdir(d->data)) return 1;
     for (;;) {
         char stamp[64]; launcher_stamp(stamp, sizeof stamp, p->stamp_with_pid);
-        launcher_back_up_saves(d->profile, d->data, stamp);
+        if (p->saves) launcher_back_up_folder(p->saves, d->data, stamp);
+        else launcher_back_up_saves(d->profile, d->data, stamp);
         pid_t child = fork();
         if (child < 0) return 1;
         if (child == 0) {

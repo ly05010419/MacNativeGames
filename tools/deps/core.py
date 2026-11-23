@@ -85,6 +85,18 @@ def fetch(url, want, name):
         return archive
     archive.parent.mkdir(parents=True, exist_ok=True)
     partial = archive.with_name(archive.name + '.partial')
+    from .offline import store, stored_file
+    carried = stored_file(want)
+    if carried is not None:   # the Launcher carries it (offline.py): no download
+        shutil.copyfile(carried, partial)
+        if digest(partial, algorithm) != want:
+            partial.unlink()
+            raise DepsError(f'{carried}: the Launcher\'s copy of {name} does not match its pinned {algorithm.upper()}')
+        partial.replace(archive)
+        return archive
+    if store() is not None:
+        raise DepsError(f'{name} is not in the Launcher\'s offline store ({store()}); this Launcher cannot build it '
+                        f'without the network ({url})')
     # downloads.xiph.org sometimes drops the TLS handshake (curl exit 35), which --retry alone does not retry
     run(['/usr/bin/curl', '-fL', '--retry', '5', '--retry-delay', '2', '--retry-all-errors', '-o', partial, url],
         f'download-{name}.log')

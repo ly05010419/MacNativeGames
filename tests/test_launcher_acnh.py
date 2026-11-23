@@ -50,8 +50,7 @@ class Wiring(unittest.TestCase):
         packager = (ROOT / 'games/acnh/scripts/package_native_app.py').read_text()
         self.assertIn(f'BUNDLE_ID = "{games.ACNH.bundle_id}"', packager)
         self.assertEqual(games.PAGES['acnh'], ('controls', 'storage', 'saves'))
-        swift = (ROOT / 'tools/builder_app/Sources/MNGBuilder/HomePage.swift').read_text()
-        self.assertIn('"acnh"', re.search(r'static let games = \[[^\]]*\]', swift).group(0))
+        # a case on both Launchers (GameCatalog): checked in MNG-Launcher (tests/test_porting_contract.py)
 
 
 class UpdateBlocker(unittest.TestCase):
@@ -98,3 +97,59 @@ class UpdateBlocker(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def fake_card(path, metas):
+    """A game card image of HFS0 tables only (no NCA bytes): the root's secure partition lists metas .cnmt.nca files."""
+    import struct
+
+    def hfs0(names, sizes):
+        strings = b''.join(n.encode() + b'\0' for n in names)
+        table, offset = b'', 0
+        for i, size in enumerate(sizes):
+            table += struct.pack('<QQII8x32s', offset, size, strings.index(names[i].encode() + b'\0'), 0, bytes(32))
+            offset += size
+        return b'HFS0' + struct.pack('<II4x', len(names), len(strings)) + table + strings
+
+    secure = hfs0([f'{i:032x}.cnmt.nca' for i in range(metas)] + ['f' * 32 + '.nca'], [16] * (metas + 1))
+    root = hfs0(['secure'], [len(secure) + 16 * (metas + 1)])
+    head = bytearray(0x200)
+    head[0x100:0x104] = b'HEAD'
+    head[0x130:0x138] = (0x200).to_bytes(8, 'little')
+    Path(path).write_bytes(bytes(head) + root + secure + bytes(16 * (metas + 1)))
+
+
+class CombinedCard(unittest.TestCase):
+    """A player's report (2026-11-20): a merged card "[1G+1U+3D]" and the same game as base, four updates and three
+    add-ons were both refused (the add-ons "need the 3.0.1 or 3.0.3 update" next to a 3.0.3 update)."""
+
+    def test_update_names_give_their_version(self):
+        self.assertEqual(classify._version('[UPD][01006F8002326800][3.0.3][US][22.1.0].nsp', 'acnh'), 2228224)
+        self.assertEqual(classify._version('[UPD][01006F8002326800][3.0.1][US][21.2.0].nsp', 'acnh'), 2097152)
+        self.assertIsNone(classify._version('[UPD][01006F8002326800][3.0.2][US][22.0.0].nsp', 'acnh'))
+
+    def test_the_newest_supported_update_carries_the_add_ons(self):
+        items = [classify.Item('/b.nsp', 'base', 'acnh', BASE, 0),
+                 classify.Item('/u300.nsp', 'update', 'acnh', UPDATE, None),
+                 classify.Item('/u301.nsp', 'update', 'acnh', UPDATE, 2097152),
+                 classify.Item('/u303.nsp', 'update', 'acnh', UPDATE, 2228224),
+                 classify.Item('/d.nsp', 'dlc', 'acnh', DLC)]
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in items:
+                Path(tmp + i.path).write_bytes(b'x')
+            p = classify._plan([classify.Item(tmp + i.path, *list(classify.asdict(i).values())[1:]) for i in items],
+                               open_fonts=True)
+        self.assertTrue(p.update.endswith('/u303.nsp'))
+        self.assertEqual(p.update_version, 2228224)
+        self.assertFalse([b for b in p.blocks if 'add-on' in b or '追加' in b], p.blocks)
+
+    def test_a_combined_card_is_its_own_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            card, plain = Path(tmp) / 'combined.xci', Path(tmp) / 'plain.xci'
+            fake_card(card, 5)
+            fake_card(plain, 1)
+            self.assertEqual((classify.card_titles(card), classify.card_titles(plain)), (5, 1))
+            p = classify._plan([classify.Item(str(card), 'base', 'acnh', BASE, 2228224)], open_fonts=True)
+            self.assertEqual((p.update, p.update_version), (str(card), 2228224))
+            p = classify._plan([classify.Item(str(plain), 'base', 'acnh', BASE, 0)], open_fonts=True)
+            self.assertIsNone(p.update)

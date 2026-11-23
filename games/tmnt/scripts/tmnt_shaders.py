@@ -16,6 +16,37 @@ from rewrite_modules import GAME, sha256
 from tmnt_bundle import Digests
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def chain():
     return re.search(r'#define DMSH_CHAIN "([^"]+)"', (GAME / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text())[1]
 
@@ -90,7 +121,7 @@ def prepare(romfs, rewritten, output, translator, spirv_cross):
         bindings.append((key,answers))
     requests = [(key, {'tex': {}, 'img': {}, 'attr': {}, 'fout': {}}) for key in sorted(inventory)]
     requests += [(key, answers) for key, answers in bindings]
-    identity = {'schema': 1, 'version': 'v0', 'chain': chain(), 'translator': digests.sha256(translator),
+    identity = {'schema': 1, 'version': 'v0', 'chain': chain(), 'translator_code': code_digest(translator),
                 'spirv_cross': digests.sha256(spirv_cross), 'source_romfs_sha256': index['romfs_sha256'],
                 'prepare': sha256(Path(__file__)), 'translation_sources': translation_sources(), 'bindings': sha256(GAME / 'assets/shader_list.tsv')}
     try:
@@ -110,7 +141,11 @@ def prepare(romfs, rewritten, output, translator, spirv_cross):
         constants = struct.unpack_from('<I', control, 0x700)[0]
         request = dict(variant=variant, stage={0:'vs', 1:'ps', 5:'cs'}[stage], code=str(code_path),
                        c1=code[constants:].hex(), depth_minus_w=True, **answers)
-        if stage == 5: request['local'] = list(struct.unpack_from('<III', control, 0x748))
+        if stage == 5:
+            request['local'] = list(struct.unpack_from('<III', control, 0x748))
+            shared = (struct.unpack_from('<I', control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+            if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+                request['shared'] = shared
         result = subprocess.run([str(translator), '--service', '--spirv-cross', str(spirv_cross), '--out', str(output), '--chain', chain()],
                                 input=json.dumps(request)+'\n', capture_output=True, text=True, check=True)
         response = json.loads(result.stdout.splitlines()[-1])

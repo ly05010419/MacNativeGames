@@ -60,11 +60,17 @@ static void apply_compat(Module *m) {
     }
 }
 void runtime_game_patches(Module *main_module) {
-    apply_compat(main_module);
-    int mode = pla_realtime_mode();
-    if (!mode) fprintf(stderr, "[pla] real-time frame step: off (PLA_REALTIME=0)\n");
+    /* The phone's code (TOTK_EXPORT_IOS, the iOS export, and the device itself): instructions only, as Tears of the Kingdom's
+       game_patches_botw.c and Super Mario Odyssey's game_patches.c. The exchange lowering is made on the Mac and carried in
+       the exported text (the device's text is read-only: it is not scanned again there). The Mac's settings do not reach
+       the phone: no 60 fps track (key 5 rewrites the text at run time; it also runs the game too fast) and none of the
+       player's exefs patches (patches/, the Mac launcher's PLA_PATCHES). */
+    int phone_code = TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") != NULL;
+    if (!TARGET_OS_IPHONE) apply_compat(main_module);
+    int mode = phone_code ? 0 : pla_realtime_mode();
+    if (!mode) fprintf(stderr, "[pla] real-time frame step: off (%s)\n", phone_code ? "the phone's code" : "PLA_REALTIME=0");
     else if (!apply_realtime(main_module, mode == 2)) { /* soft: the game keeps its own step and the port keeps its pacing */ }
-    const char *list = getenv("PLA_PATCHES");
+    const char *list = phone_code ? NULL : getenv("PLA_PATCHES");
     if (!list || !*list) { fprintf(stderr, "[pla] game patches: none (PLA_PATCHES)\n"); return; }
     char buf[1024]; snprintf(buf, sizeof buf, "%s", list);
     for (char *save = NULL, *s = strtok_r(buf, ",", &save); s; s = strtok_r(NULL, ",", &save)) {

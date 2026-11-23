@@ -45,6 +45,9 @@ Only the files listed in `manifest.tsv` are served. Each line has four tab-separ
 At startup the loader checks each listed file's size and SHA-256, and checks the original's SHA-256
 against the game image. `-` in the last field adds a file the game's RomFS does not have (used by mods
 that add assets). Paths are case-sensitive and keep the RomFS spelling.
+Tears of the Kingdom and Breath of the Wild on the Mac keep a record of the mods folder after a full check (in the game's data folder, never in
+the mods folder): while the manifest's text and every listed file's size, dates and file identity stay the same, the next start reuses
+the check instead of hashing again. Another mods folder or a changed file hashes again; `TOTK_ROMFS_VERIFY=full` always does.
 
 A folder without `manifest.tsv` means "no mod". Files copied into the folder but not listed are not
 used. In detail:
@@ -390,6 +393,34 @@ game's own icons, which already name its buttons. The mod replaces the seven `Fo
 `Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
 needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
 
+### Super Mario Odyssey
+
+The Odyssey app reads its mods from the folder for the update it was built from, `v130` for 1.3.0 or `v141` for 1.4.1:
+
+```text
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v130
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v141
+```
+
+The RomFS half above applies: copy the mod's RomFS contents into that folder and generate the manifest with Odyssey's
+own script and the app (1.4.1 shown):
+
+```bash
+MODDIR="$HOME/Library/Application Support/MacNativeGames/Odyssey/mods/v141"
+python3 games/odyssey/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Odyssey.app"
+```
+
+Check `grep "mods/v141 checked" "$HOME/Library/Application Support/MacNativeGames/Odyssey/last-run.log"` after the
+start (`mods/v130 checked` on 1.3.0). Without a manifest the log says `RomFS overlay: none` and names the folder it
+looked in.
+
+- 1.3.0 and 1.4.1 merge to the same game data, so a manifest written for one fits the other. When you build the app
+  again from the other update, rename the folder.
+- An app built with a bigger render size (the default, for key 3) replaces `SystemData/ProjectGraphicsQuality.szs`
+  itself. The script leaves that file out of the mod's manifest: two overlays that replace one file stop the start.
+- The game's language follows the Mac's first preferred language. A translation replaces the files of one language
+  (for English, `LocalizedData/USen/...` and `LocalizedData/EUen/...`) and shows when the game runs in that language.
+
 ### Sharp UI texture pack (Breath of the Wild 1.9.0 and 1.6.0, Tears of the Kingdom 1.4.3)
 
 The games draw their UI from small textures (48x48 and 72x72 button and icon masks, colour icons) that the 3456x1944 picture
@@ -495,6 +526,10 @@ your Mac and never go into the repository or a pull request.
   combined: merge them in the manager first, then build with `--mod <the manager's output folder>
   --install-mod-romfs`; the build refuses
   two patch files that change the same bytes and names both of them.
+- [Graft](https://github.com/nickpetrovic/graft) (by nickpetrovic, MIT, built from source) is a community mod manager
+  for these Mac apps: it merges Tears of the Kingdom mods with TkSharp (the library TKMM uses), checks their code
+  patches and installs the result into the version folder above. It is a separate project that this repository has not
+  tested; it needs a MacNativeGames checkout and the .NET 10 SDK.
 - A mod with a code patch also needs its `exefs/` patch to match the game version the app is built from.
   The build checks what the file itself says: a `.pchtxt` is refused when its `@nsobid-` names another
   main, and an `.ips` / `.ips32` named after a build id is left out when that id is not this main's.
@@ -585,6 +620,9 @@ python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNa
 
 启动时加载器会逐个核对 mod 文件的大小和 SHA-256，并核对原版文件的 SHA-256。最后一个字段是 `-`
 表示这是游戏 RomFS 里没有的新文件（用于新增资源）。路径区分大小写，必须和 RomFS 里的写法一致。
+Mac 版王国之泪和旷野之息在一次完整核对之后为 mod 目录留一份记录（放在游戏数据目录里，不放进 mod 目录）：清单的内容，以及清单里每个文件的
+大小、日期和文件身份都没变时，下次启动沿用这次核对，不再重新计算哈希。换一个 mod 目录或改了文件就重新核对；
+`TOTK_ROMFS_VERIFY=full` 每次都完整核对。
 
 没有 `manifest.tsv` 就等于没有 mod。只把文件复制进目录但不写进清单，游戏不会使用：
 
@@ -871,6 +909,28 @@ Xbox 手柄时它不画任何东西：图标字体里已经有每个按钮，所
 就对应手柄上的按钮。mod 替换七个（1.6.0 为六个）`Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
 布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
 
+### 超级马力欧 奥德赛
+
+奥德赛 App 按构建它所用的更新从对应目录读取 mod，1.3.0 是 `v130`，1.4.1 是 `v141`：
+
+```text
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v130
+~/Library/Application Support/MacNativeGames/Odyssey/mods/v141
+```
+
+上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用奥德赛自己的脚本和 App 生成清单（下面以 1.4.1 为例）：
+
+```bash
+MODDIR="$HOME/Library/Application Support/MacNativeGames/Odyssey/mods/v141"
+python3 games/odyssey/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Odyssey.app"
+```
+
+启动后用 `grep "mods/v141 checked" "$HOME/Library/Application Support/MacNativeGames/Odyssey/last-run.log"` 检查（1.3.0 是 `mods/v130 checked`）。没有清单时，日志写 `RomFS overlay: none`，并给出它查找的目录。
+
+- 1.3.0 和 1.4.1 合并后的游戏数据完全相同，所以为其中一个生成的清单也适用于另一个。用另一个更新重新构建 App 时，把目录改名即可。
+- 按更大渲染尺寸构建的 App（默认如此，供按键 3 使用）自己会替换 `SystemData/ProjectGraphicsQuality.szs`。脚本会把这个文件从 mod 的清单里去掉：两个覆盖层替换同一个文件时，启动会停止。
+- 游戏语言跟随 Mac 的首选语言。翻译 mod 替换某一种语言的文件（英语是 `LocalizedData/USen/...` 和 `LocalizedData/EUen/...`），游戏以该语言运行时显示。
+
 ### 高清界面贴图包（旷野之息 1.9.0 和 1.6.0，王国之泪 1.4.3）
 
 游戏的界面用小贴图（48x48 和 72x72 的按键、图标遮罩，以及彩色图标），3456x1944 的画面把它们放大约 2 倍，边缘因此发虚。
@@ -956,6 +1016,9 @@ ContourPy（BSD-3-Clause）追踪拟合场的轮廓，像素边界由本项目�
   `--exclude`：管理器的堆表和 App 的 2K 覆盖文件会自动协调）。每次在管理器里重新合并后都要重新构建，因为游戏启动时会逐个校验文件哈希。多个带代码
   补丁的 mod 也是这样合的：先在管理器里合并，再用 `--mod <管理器的输出文件夹> --install-mod-romfs` 构建；两个补丁文件改到同一批字节
   时构建会拒绝，并同时报出这两个文件。
+- [Graft](https://github.com/nickpetrovic/graft)（nickpetrovic 做的社区模组管理器，MIT，要从源码编译）是给这些 Mac App
+  用的：用 TkSharp（TKMM 用的库）合并王国之泪的模组，检查它们的代码补丁，再装进上面的版本目录。它是独立项目，本仓库
+  没有测试过；需要一份 MacNativeGames 源码和 .NET 10 SDK。
 - 带代码补丁的 mod，其 `exefs/` 补丁也要和构建所用的游戏版本一致。构建按文件自己写的东西核对：`.pchtxt` 的
   `@nsobid-` 不是这个 main 就拒绝；按 build id 命名的 `.ips` / `.ips32`，id 不是这个 main 就留出并提示。
 - 本文面向 Mac App；iPhone/iPad 的 App 容器内安装未在此说明。

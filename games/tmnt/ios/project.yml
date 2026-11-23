@@ -12,6 +12,7 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - Settings.bundle   # the Settings app pane: the active players switch (mng_active.h, NSUserDefaults TOTK_USAGE_STATS)
       - path: ../runtime
         excludes:
           - frontend.m
@@ -31,6 +32,10 @@ targets:
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         UILaunchScreen: {}
+        CFBundleURLTypes:   # the iPhone / iPad MNG Launcher sees the game installed and starts it (tools/ios_launcher)
+          - CFBundleURLName: org.macnativegames.launch
+            CFBundleURLSchemes:
+              - mng-tmnt
         UIRequiresFullScreen: true
         UIStatusBarHidden: true
         UISupportedInterfaceOrientations:

@@ -52,3 +52,7 @@ Changes from the sources, reviewed as source changes:
 - Tests: the copied ones rewritten where they encoded Link's Awakening's facts (its physics cut, cartridge
   exception, excepted shaders, warm-up seed, scripted-press wait); nxnative's own tests adjusted only for the folder
   layout (its `dm/` is `runtime/`) and the one profile here.
+- `runtime/host/switch_left_fallback.h`: an unchanged copy of `games/totk/runtime/switch_left_fallback.h` (MacNativeGames
+  `c2c65ea8`). `motion_pro_mac.h` feeds it both 12-bit sticks of the passive 0x30 report it already reads, and
+  `front_mac.m` (`pad_read`, `pro_sticks_refresh`) uses the raw value only while GameController reports the stick at
+  zero: some third-party Pro Controllers send a live left stick that macOS reports as zero.

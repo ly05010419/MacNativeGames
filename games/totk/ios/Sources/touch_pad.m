@@ -1,4 +1,5 @@
 #import "touch_pad.h"
+#include "port_features.h"
 #import "device_motion.h"
 #import <GameController/GameController.h>
 #include <math.h>
@@ -14,20 +15,22 @@
    A touch that misses every button is a stick, centred where the finger went down: the left stick on the left half,
    the camera (right stick) on the right half. Bits are the Npad buttons. While a game controller is connected the layer
    is hidden; a touch shows it and works as usual, and it hides again 3 seconds after the last finger lifts.
-   Between − and + a smaller button shows the frame rate the game is held to; a tap switches it at once. With the
-   custom layer off it saves the choice in the pane's preset row (TOTK_PHONE_FPS) for the next start; with it on the
-   pane owns the cap, so the button only holds 30 until the next launch. */
+   Between − and + a smaller button shows the frame rate the game is held to; a tap switches it at once. In Tears of
+   the Kingdom and Breath of the Wild it holds for this session only: the picture profile is the choice that stays
+   (user 2026-11-17). Bananza and Pokopia save it in their frame-rate row (TOTK_PHONE_FPS) for the next start. */
 typedef struct { CGPoint at; uint64_t bit; NSString *label; CGFloat size; } TouchButton;
 enum { kButtonCount = 16 };
 static const CGFloat kButtonSize = 46;
 static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger lifts, with a controller connected
-static const CGFloat kFpsButtonSize = 34;
+static const CGFloat kFpsButtonSize __unused = 34;   // no frame-rate button in a port (SHELL_PORT)
+static const CGFloat kPressedAlpha = .7, kPressedScale = .9;   // a held button: its fill, and its size against the resting one
 
 @implementation TOTKTouchPad {
     NSMapTable<UITouch *, NSValue *> *points;
     NSMapTable<UITouch *, NSValue *> *leftOrigins;    // where each left-stick touch went down
     NSMapTable<UITouch *, NSValue *> *rightOrigins;   // the same for the camera stick
     BOOL gamepad, concealed;                          // a controller is connected; the layer is hidden for it
+    uint64_t held;                                    // the buttons a finger holds now: drawn pressed (user 2026-11-21: "点击 屏幕 按钮 没有 按下效果")
     NSTimer *hideTimer;
 }
 
@@ -156,15 +159,19 @@ static const CGFloat kFpsButtonSize = 34;
 }
 
 - (CGPoint)fpsButton { return CGPointMake(CGRectGetMidX(self.area), self.topRow); }   // in the top row
-- (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
+- (BOOL)fpsButtonAt:(CGPoint)p {
+#if SHELL_PORT   // a port's frame rate is chosen before it starts (Animal Crossing) or is the game's own (Super Mario Odyssey); Animal Crossing's frame rate is chosen before it starts (its 60 FPS text is mapped then; loader.c): no button
+    (void)p; return NO;
+#else
+    CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75;
+#endif
+}
 - (void)switchFrameRate {
-    /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
-       cap in the pane, so this only holds 30 until the next launch and saves nothing. */
-    BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
     int fps = totk_frame_button_target(runtime_phone_fps() == 30);
     runtime_phone_fps_set(fps);
-    const char *key = totk_frame_button_key(custom);
-    if (key) [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@(key)];
+#ifdef GAME_NS2
+    [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
+#endif
     [self setNeedsDisplay];
 }
 
@@ -188,7 +195,7 @@ static void stick_axes(CGPoint from, CGPoint to, CGFloat radius, int32_t *x, int
         else if (right) stick_axes(right.CGPointValue, p, radius, &s.rx, &s.ry);
         else s.buttons |= [self buttonAt:p];
     }
-    runtime_touch_pad_set(&s); [self setNeedsDisplay];
+    held = s.buttons; runtime_touch_pad_set(&s); [self setNeedsDisplay];
 }
 
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
@@ -236,11 +243,21 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
     for (UITouch *t in rightOrigins.keyEnumerator) draw_stick(c, [rightOrigins objectForKey:t].CGPointValue, [points objectForKey:t].CGPointValue, r);
     NSDictionary *attrs = @{NSFontAttributeName: [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold], NSForegroundColorAttributeName: ink};
     TouchButton b[kButtonCount]; [self buttons:b];
+    // A held button is drawn pressed: lit (a brighter fill, its label dark on it) and a little smaller, as if pushed in.
+    UIColor *lit = [UIColor colorWithWhite:1 alpha:kPressedAlpha];
+    NSDictionary *litAttrs = @{NSFontAttributeName: attrs[NSFontAttributeName], NSForegroundColorAttributeName: [UIColor colorWithWhite:0 alpha:.75]};
     for (int i = 0; i < kButtonCount; i++) {
-        CGFloat size = b[i].size; CGRect box = CGRectMake(b[i].at.x - size / 2, b[i].at.y - size / 2, size, size);
-        CGContextSetFillColorWithColor(c, fill); CGContextFillEllipseInRect(c, box); CGContextStrokeEllipseInRect(c, box);
-        CGSize z = [b[i].label sizeWithAttributes:attrs]; [b[i].label drawAtPoint:CGPointMake(b[i].at.x - z.width / 2, b[i].at.y - z.height / 2) withAttributes:attrs];
+        BOOL down = (held & b[i].bit) != 0;
+        CGFloat size = b[i].size * (down ? kPressedScale : 1); CGRect box = CGRectMake(b[i].at.x - size / 2, b[i].at.y - size / 2, size, size);
+        // Fill and stroke set for each button: a label's drawing leaves both at its colour (a pressed button's dark one
+        // ringed every button drawn after it, 2026-11-21).
+        CGContextSetFillColorWithColor(c, down ? lit.CGColor : fill); CGContextSetStrokeColorWithColor(c, ink.CGColor);
+        CGContextFillEllipseInRect(c, box); CGContextStrokeEllipseInRect(c, box);
+        NSDictionary *a = down ? litAttrs : attrs;
+        CGSize z = [b[i].label sizeWithAttributes:a]; [b[i].label drawAtPoint:CGPointMake(b[i].at.x - z.width / 2, b[i].at.y - z.height / 2) withAttributes:a];
     }
+    CGContextSetStrokeColorWithColor(c, ink.CGColor); CGContextSetFillColorWithColor(c, fill);   // after the labels
+#if !SHELL_PORT
     // The frame rate button: a smaller rounded square, its label the rate the game is held to now.
     CGPoint f = self.fpsButton; CGRect box = CGRectMake(f.x - kFpsButtonSize / 2, f.y - kFpsButtonSize / 2, kFpsButtonSize, kFpsButtonSize);
     UIBezierPath *key = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:8];
@@ -250,5 +267,6 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
     NSString *rate = runtime_phone_fps() == 30 ? @"30" : @"60";
     NSDictionary *small = @{NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold], NSForegroundColorAttributeName: ink};
     CGSize z = [rate sizeWithAttributes:small]; [rate drawAtPoint:CGPointMake(f.x - z.width / 2, f.y - z.height / 2) withAttributes:small];
+#endif
 }
 @end

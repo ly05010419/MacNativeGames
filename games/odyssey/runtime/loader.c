@@ -387,6 +387,8 @@ static void probe(void) {
  for(unsigned i=0;i<NM;i++){Module *m=&modules[i];printf("%s{\"name\":\"%s\",\"relative\":%u,\"symbolic\":%u,\"cross\":%u,\"weak_zero\":%u}",i?",":"",m->name,m->relative,m->symbolic,m->cross,m->weak);}
  puts("],\"scope\":\"cross-module calls; constructors and game entry not run\"}");
 }
+/* A pc in a guest module's text (threads.c, Tears of the Kingdom's scheduler: asynchronous preemption only there). */
+int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
 int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
  for(unsigned i=0;i<NM;i++)if(pc>=(uintptr_t)modules[i].base&&pc<(uintptr_t)modules[i].base+modules[i].size){*name=modules[i].name;*off=pc-(uintptr_t)modules[i].base;return 1;}
  return 0;
@@ -422,7 +424,7 @@ static void abort_report(int num) {
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
 int main(int argc,char **argv) {
- need(argc==3,"usage: totk-native rewritten-dir probe|boot");
+ need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive")),"usage: totk-native rewritten-dir probe|boot (pipeline-archive <list>...)");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
@@ -438,6 +440,7 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
+ if(!strcmp(argv[2],"pipeline-archive"))return mtl_pipeline_archive_tool(argc-3,argv+3);   // packaging: the device's pipelines made on the Mac (games/totk/ios/tools/device_pipelines.py make)
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}

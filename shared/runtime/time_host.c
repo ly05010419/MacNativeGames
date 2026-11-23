@@ -47,6 +47,8 @@ static unsigned user_time(int64_t *out) { if (!out) return R_INVALID; *out = pos
 /* StandardSteadyClock::now() returns the chrono-style time_point: the int64 seconds value only, 0 without a source
    (sdk+0x3d1d88 returns it in x0; returning the 0x18-byte struct made the host write through the caller's stale x8). */
 static int64_t steady_clock_now(void) { return steady_now().value; }
+/* StandardUserSystemClock::now() (The Witcher 3): the time point in seconds since 1970, as GetCurrentTime gives it. */
+static int64_t user_clock_now(void) { return posix_now(); }
 #ifdef GAME_BOTW
 /* SDK 7 (Breath of the Wild 1.6.0, botw.md): the steady clock is read into a time point, and a span is only defined between
    points of the same clock source. */
@@ -134,6 +136,7 @@ void *runtime_time_override(const char *name) {
         {"_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time19StandardSteadyClock3nowEv", steady_clock_now},
+        {"_ZN2nn4time23StandardUserSystemClock3nowEv", user_clock_now},
 #ifdef GAME_BOTW
         {"_ZN2nn4time19StandardSteadyClock19GetCurrentTimePointEPNS0_20SteadyClockTimePointE", steady_time_point},
         {"_ZN2nn4time14GetSpanBetweenEPlRKNS0_20SteadyClockTimePointES4_", span_between_points},

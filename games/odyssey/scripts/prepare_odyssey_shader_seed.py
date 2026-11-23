@@ -111,6 +111,9 @@ def salvage(seed, output: Path):
                        depth_minus_w=True, **seed.ANSWERS)
         if stage == "cs":
             request["local"] = list(struct.unpack_from("<III", control, 0x748))
+            shared = (struct.unpack_from("<I", control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+            if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+                request["shared"] = shared
         service.stdin.write(json.dumps(request) + "\n"); service.stdin.flush()
         reply = json.loads(service.stdout.readline())
         errors.append(dict(key=key, stage=stage, source=source, ok=bool(reply.get("ok")), error=reply.get("error")))
@@ -187,6 +190,9 @@ def extend_with_rules(seed, output: Path):
                                    depth_minus_w=True, **answers)
                     if stage == "cs":
                         request["local"] = list(struct.unpack_from("<III", control, 0x748))
+                        shared = (struct.unpack_from("<I", control, 0x754)[0] + 15) // 16 * 16   # compute_shared.h: the kernel's shared memory,
+                        if 4096 < shared <= 32768:   # given only above the translator's 4 KiB default
+                            request["shared"] = shared
                     service.stdin.write(json.dumps(request) + "\n"); service.stdin.flush()
                     reply = json.loads(service.stdout.readline())
                     code_path.unlink(missing_ok=True)

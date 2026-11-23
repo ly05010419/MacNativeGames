@@ -15,18 +15,28 @@
 #include <VideoToolbox/VideoToolbox.h>
 #include "dav1d/dav1d.h"
 #include "hle_movie_av1.h"
-
 struct mav1 {
     uint8_t seq[512]; size_t nseq;
     CMVideoFormatDescriptionRef fd; VTDecompressionSessionRef vs;
     CVPixelBufferRef got, locked;
     int soft;                     // dav1d decodes: no hardware decoder, DM_AV1_DAV1D=1, or a stream VideoToolbox refused (until mav1_reset)
     Dav1dContext *dav1d; Dav1dPicture pic; int has_pic;
+    int pipe;                     // dav1d works ahead (mav1_pipelined): set with soft when the stream starts
+    Dav1dPicture pq[8]; int npq;  // pictures dav1d gave back while taking a temporal unit or draining, oldest first
     uint8_t *y8, *uv; size_t ny8, nuv;   // dav1d's picture as NV12: the chroma interleaved, and the luma of a 10- or 12-bit stream shifted to 8 bits
     int red;
 };
 static int hw_av1(void) { const char *e = getenv("DM_AV1_DAV1D"); return !(e && *e && *e != '0') && VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1); }
-mav1 *mav1_new(void) { mav1 *a = calloc(1, sizeof *a); if (!a) die("movie: AV1 decoder allocation failed"); a->soft = !hw_av1(); return a; }
+/* Frames dav1d works on at once where it is the only decoder (no hardware AV1: before Apple M3). One frame at a time it
+   decoded the title movie's 40 Mbit/s stretch (16 s on) at 80 fps on an idle M1 Pro, under the 60 the movie needs once the
+   game shares the CPU: the game waited on it, froze and went silent at the same moment every run. Three frames at once with
+   four threads: 183 fps. Pictures then come out up to two temporal units after their own, each with its own timestamp, and
+   end of stream drains the rest (mav1_send / mav1_drain / mav1_receive). DM_AV1_FRAME_DELAY=1 keeps one frame at a time. */
+static int frame_delay(void) { const char *e = getenv("DM_AV1_FRAME_DELAY"); int n = e && *e ? atoi(e) : 3; return n < 1 ? 1 : n > 8 ? 8 : n; }
+static int pipe_on(const mav1 *a) { return a->soft && frame_delay() > 1; }
+mav1 *mav1_new(void) { mav1 *a = calloc(1, sizeof *a); if (!a) die("movie: AV1 decoder allocation failed"); a->soft = !hw_av1(); a->pipe = pipe_on(a); return a; }
+int mav1_pipelined(const mav1 *a) { return a->pipe; }
+int mav1_pipeline_depth(void) { return frame_delay(); }
 const char *mav1_backend(const mav1 *a) { return a->soft ? "dav1d" : "VideoToolbox"; }
 static void unlock_picture(mav1 *a) {
     if (a->locked) { CVPixelBufferUnlockBaseAddress(a->locked, kCVPixelBufferLock_ReadOnly); CVPixelBufferRelease(a->locked); a->locked = NULL; }
@@ -37,7 +47,7 @@ static void av1_close(mav1 *a) {
     if (a->fd) { CFRelease(a->fd); a->fd = NULL; }
     if (a->got) { CVPixelBufferRelease(a->got); a->got = NULL; }
 }
-void mav1_reset(mav1 *a) { unlock_picture(a); av1_close(a); a->nseq = 0; if (a->dav1d) dav1d_flush(a->dav1d); a->soft = !hw_av1(); }
+void mav1_reset(mav1 *a) { unlock_picture(a); av1_close(a); a->nseq = 0; for (int i = 0; i < a->npq; i++) dav1d_picture_unref(&a->pq[i]); a->npq = 0; if (a->dav1d) dav1d_flush(a->dav1d); a->soft = !hw_av1(); a->pipe = pipe_on(a); }
 void mav1_free(mav1 *a) { if (a) { mav1_reset(a); if (a->dav1d) dav1d_close(&a->dav1d); free(a->y8); free(a->uv); free(a); } }
 
 // ---- The sequence header (AV1 5.5), read as far as the colour config ----
@@ -183,14 +193,59 @@ static int dav1d_nv12(mav1 *a, const Dav1dPicture *p, mav1_picture *out) {
     *out = (mav1_picture){y, a->uv, ys, (size_t)cw * 2, w, h, mc == DAV1D_MC_BT709 ? 2 : mc == DAV1D_MC_BT2020_NCL || mc == DAV1D_MC_BT2020_CL ? 5 : 1, p->seq_hdr->color_range};
     return 1;
 }
-static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
-    if (!a->dav1d) {
-        Dav1dSettings st; dav1d_default_settings(&st);
-        st.n_threads = 2; st.max_frame_delay = 1;   // a temporal unit's picture before its send returns: one frame at a time, two task threads decoding it while the submitting thread waits
-        st.logger.cookie = a; st.logger.callback = d_log;
-        if (dav1d_open(&a->dav1d, &st)) { a->dav1d = NULL; if (!a->red++) LOG("[RED] movie: dav1d could not be opened"); return -1; }
-        static int once; if (!once++) LOG("[movie] AV1: dav1d %s decoding (%s)", dav1d_version(), hw_av1() ? "a stream VideoToolbox refused" : getenv("DM_AV1_DAV1D") ? "DM_AV1_DAV1D" : "no hardware AV1 decoder");
+static int dav1d_ensure(mav1 *a) {
+    if (a->dav1d) return 1;
+    Dav1dSettings st; dav1d_default_settings(&st);
+    if (a->pipe) { st.max_frame_delay = frame_delay(); st.n_threads = st.max_frame_delay + 1; }   // frame threads, and one more for the tasks within a frame
+    else { st.n_threads = 2; st.max_frame_delay = 1; }   // a temporal unit's picture before its send returns: one frame at a time, two task threads decoding it while the submitting thread waits
+    st.logger.cookie = a; st.logger.callback = d_log;
+    if (dav1d_open(&a->dav1d, &st)) { a->dav1d = NULL; if (!a->red++) LOG("[RED] movie: dav1d could not be opened"); return 0; }
+    static int once; if (!once++) LOG("[movie] AV1: dav1d %s decoding (%s), %d frame(s) at once, %d threads", dav1d_version(), hw_av1() ? "a stream VideoToolbox refused" : getenv("DM_AV1_DAV1D") ? "DM_AV1_DAV1D" : "no hardware AV1 decoder", st.max_frame_delay, st.n_threads);
+    return 1;
+}
+/* Takes what dav1d has ready into pq. Without drain, one call only: every dav1d_get_picture that finds no new data since the
+   last one drains (waits for the oldest frame in flight), so a second call in a row would undo the working ahead. With
+   drain, calls until dav1d has nothing left (it answers EAGAIN to a call that had new data before it, then drains).
+   0, or -1 when pq is full (the rest stays in dav1d for the next call). */
+static int pq_take(mav1 *a, int drain) {
+    if (a->npq >= 8) return -1;
+    Dav1dPicture p = {0};
+    if (!drain) { if (!dav1d_get_picture(a->dav1d, &p)) a->pq[a->npq++] = p; return 0; }
+    for (int again = 0; a->npq < 8;) {
+        int r = dav1d_get_picture(a->dav1d, &p);
+        if (!r) { a->pq[a->npq++] = p; p = (Dav1dPicture){0}; again = 0; continue; }
+        if (r == DAV1D_ERR(EAGAIN) && !again++) continue;
+        return 0;
     }
+    return -1;
+}
+int mav1_send(mav1 *a, const uint8_t *data, size_t n, int64_t ts) {
+    unlock_picture(a);
+    if (!dav1d_ensure(a)) return -1;
+    Dav1dData d = {0}; uint8_t *buf = dav1d_data_create(&d, n);
+    if (!buf) return -1;
+    memcpy(buf, data, n); d.m.timestamp = ts;
+    for (int tries = 0; d.sz && tries < 64; tries++) {
+        int r = dav1d_send_data(a->dav1d, &d);
+        if (r && r != DAV1D_ERR(EAGAIN)) { dav1d_data_unref(&d); if (!a->red++) LOG("[RED] movie: dav1d refused a temporal unit (%d, first case)", r); return -1; }
+        if (d.sz && pq_take(a, 0) < 0) break;   // dav1d holds pictures it wants taken before more data; pq full: give up below
+    }
+    if (d.sz) { dav1d_data_unref(&d); if (!a->red++) LOG("[RED] movie: dav1d took no more data, a temporal unit dropped (first case)"); return -1; }
+    pq_take(a, 0);
+    return 0;
+}
+void mav1_drain(mav1 *a) { if (a->dav1d) pq_take(a, 1); }
+int mav1_drained(const mav1 *a) { return a->npq == 0; }
+int mav1_receive(mav1 *a, mav1_picture *out, int64_t *ts) {
+    unlock_picture(a);
+    if (!a->npq) return 0;
+    a->pic = a->pq[0]; a->has_pic = 1; a->npq--; memmove(a->pq, a->pq + 1, sizeof a->pq[0] * (size_t)a->npq);
+    *ts = a->pic.m.timestamp;
+    if (!dav1d_nv12(a, &a->pic, out)) { if (!a->red++) LOG("[RED] movie: no memory for a %dx%d AV1 picture", a->pic.p.w, a->pic.p.h); return -1; }
+    return 1;
+}
+static int decode_dav1d(mav1 *a, const uint8_t *data, size_t n, mav1_picture *out) {
+    if (!dav1d_ensure(a)) return -1;
     Dav1dData d = {0}; uint8_t *buf = dav1d_data_create(&d, n);
     if (!buf) return -1;
     memcpy(buf, data, n);

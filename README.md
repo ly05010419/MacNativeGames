@@ -123,7 +123,7 @@ repository.
 > [!TIP]
 > **Every shader in the shared list is ready before you play.** On a Mac the game does not stop to compile it, and on an iPhone or iPad nothing is missing from the picture. The more places players cover, the smoother the game gets for everyone.
 
-The [shared shader list](docs/shader-list.md) now holds **18,290 shader variants** (14,727 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
+The [shared shader list](docs/shader-list.md) now holds **18,365 shader variants** (14,760 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
 
 1. **Play.** Every build carries each shader of the game for its default bind state. When your game meets a shader in a state that variant does not serve, or builds a render pipeline the app's list lacks, it notes it in `shader-list-contribution.txt`; default variants are never noted.
 2. **Once the file holds 100 new rows (shaders and pipelines together), the game asks you one question before it starts**, the same on a Mac, iPhone and iPad. With "Contribute shaders" the game sends the rows over HTTPS to the shader inbox ([mac-native-games.com](https://mac-native-games.com)) on its own, shortly after it starts and then every half hour, and never interrupts your play. "Don't contribute" sends nothing. The switch in Settings changes your answer at any time.
@@ -132,6 +132,12 @@ The [shared shader list](docs/shader-list.md) now holds **18,290 shader variants
 Only shader and pipeline identifiers, the game and app versions, the device model and system version and a random id are sent (on a Mac also the random id and nickname of the contributors board): no game data, saves or personal information. Nothing is sent before you answer "Contribute shaders". There is nothing to file by hand: contributions are no longer taken as GitHub issues (since 12 November 2026).
 
 **Stuttering when you first start playing or enter a new scene is expected while new shaders compile—don't be surprised.** Performance typically improves as the cache warms up, and every shader the [shared list](#lets-maintain-the-shader-list-together-no-more-stutter) gains is one nobody stutters on again.
+
+## Counting active players
+
+The MNG Launcher and every game report **at most once a day** to [mac-native-games.com](https://mac-native-games.com), so we can count daily, weekly and monthly players and how many stop playing. A report holds four things only: a random install id of the device (on a Mac one file, `~/Library/Application Support/MacNativeGames/install-id.txt`, shared by the Launcher and every game; on an iPhone or iPad a hash of the app's vendor id), the program (Launcher or the game), the platform and the version. No name, account, game file, save or IP address is kept; the site stores the id only as a salted hash and deletes the rows after 120 days.
+
+It is **on by default**. To turn it off: on a Mac, **MNG Launcher › Settings…** (⌘,) and untick *Count me as an active player* — this stops it for the Launcher and every game of the Mac (it writes the file `usage-stats-off` beside `install-id.txt`); on an iPhone or iPad, the game's page in the **Settings** app.
 
 ## What's new
 
@@ -316,7 +322,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 > [!TIP]
 > **公共清单里的每个着色器，开玩之前就已经准备好。** Mac 上不用停下来现场编译，iPhone 和 iPad 上画面也不会缺东西。大家玩过的地方越多，所有人玩得越流畅。
 
-[公共着色器清单](docs/shader-list.md)现在有 **18,290 个着色器变体**（14,727 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
+[公共着色器清单](docs/shader-list.md)现在有 **18,365 个着色器变体**（14,760 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
 
 1. **照常玩。** 每次打包都会把游戏里每个着色器按默认绑定状态各备一份。游戏遇到默认那份用不了的状态，或者建了 App 清单里没有的渲染管线，才会记进 `shader-list-contribution.txt`；默认变体不记。
 2. **着色器和管线合计攒够 100 条后，游戏在启动前问你一个问题**，Mac、iPhone、iPad 都一样。选“贡献着色器”，游戏会自己通过 HTTPS 把这些条目发到着色器收件箱（[mac-native-games.com](https://mac-native-games.com)）：启动后不久发一次，之后每半小时一次，不打扰游玩。选“不贡献”就什么都不发。随时可以在“设置”里的开关改。
@@ -325,6 +331,12 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 只发送着色器和管线的标识、游戏和 App 版本、设备型号和系统版本号，以及一个随机编号（Mac 上还有贡献榜用的随机编号和昵称），不含游戏内容、存档或个人信息。你选“贡献着色器”之前什么都不发。不需要手动提交任何东西：从 2026 年 11 月 12 日起不再通过 GitHub issue 收集贡献。
 
 **第一次进入游戏或新场景时，新着色器的编译可能造成卡顿，这是预期现象，不必惊讶。** 随着着色器缓存逐步预热，表现通常会改善；[公共清单](#让我们一起维护着色器清单游戏不再卡顿)每多一个着色器，就少一处卡顿。
+
+## 活跃玩家统计
+
+MNG Launcher 和每个游戏**每天最多上报一次**到 [mac-native-games.com](https://mac-native-games.com)，用来统计日活、周活、月活和流失率。上报只有四项：设备的随机安装号（Mac 上是一个文件 `~/Library/Application Support/MacNativeGames/install-id.txt`，Launcher 和所有游戏共用；iPhone / iPad 上是 App 开发者范围内标识的哈希）、程序（Launcher 或哪个游戏）、平台、版本。不保存名字、账号、游戏文件、存档或 IP 地址；网站只存安装号的加盐哈希，120 天后删除。
+
+**默认开启。** 关闭方法：Mac 上打开 **MNG Launcher › 设置…**（⌘,），取消勾选“匿名统计活跃度”，Launcher 和这台 Mac 上的所有游戏都不再上报（它会在 `install-id.txt` 旁边写一个 `usage-stats-off` 文件）；iPhone / iPad 上在系统“设置”App 里这个游戏的页面关闭。
 
 ## 更新说明
 

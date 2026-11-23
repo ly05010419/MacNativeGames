@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Build the audio and VP9 static libraries for a physical iOS device, or a Vision Pro (second argument xros)."""
+"""Build the audio and VP9 static libraries for a physical iOS device, or a Vision Pro (second argument xros).
+--vorbis also builds libogg and libvorbis (Animal Crossing's movie_host.c; games/acnh/ios/tools/build_ipa.py), with CMake
+from the archives tools/deps pins for the Mac builds."""
 import os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
@@ -7,6 +9,8 @@ from pathlib import Path
 missing = [tool for tool in ('cmake', 'ninja') if not shutil.which(tool)]
 if missing: sys.exit(f'build_deps.py: {", ".join(missing)} not on PATH; run it through build_app.py, which provides them')
 
+vorbis = '--vorbis' in sys.argv
+if vorbis: sys.argv.remove('--vorbis')
 out = Path(sys.argv[1]).resolve(); out.mkdir(parents=True, exist_ok=True)
 # libvpx's configure splits its compiler path and flags on spaces: when the work folder has one
 # (e.g. "Tears of the Kingdom/TOTK_build"), sources and build trees go under a space-free root instead.
@@ -20,6 +24,14 @@ sdk = subprocess.check_output(['xcrun','--sdk',platform,'--show-sdk-path'], text
 ios_sdk = subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-path'], text=True).strip()
 target = 'arm64-apple-xros26.0' if platform == 'xros' else 'arm64-apple-ios26.0'
 src = root/'src'; build = root/'build'; src.mkdir(parents=True, exist_ok=True); build.mkdir(exist_ok=True)
+# A work folder moved to another path (2026-11-09, mac-APFS -> /Volumes/开发) keeps build trees whose CMake caches and
+# Makefiles name the old path: CMake refuses them ("CMakeCache.txt directory ... is different than the directory ...",
+# 2026-11-19, Breath of the Wild's iPhone build). They are remade when this folder was built elsewhere, or by an
+# older script that kept no record of where (one rebuild of the libraries, a minute or two).
+_where = build/'.built-at'
+if (_where.read_text() if _where.is_file() else None) != str(build.resolve()) and any(p != _where for p in build.iterdir()):
+    __import__('shutil').rmtree(build); build.mkdir()
+_where.write_text(str(build.resolve()))
 # CMake chooses the platform's flags from this path: iPhoneOS.platform gives -miphoneos-version-min even for visionOS
 sdklink=root/'sdkroot/Platforms'/('XROS.platform' if platform=='xros' else 'iPhoneOS.platform')/'Developer/SDKs'/Path(sdk).name
 if sdklink.is_symlink(): sdklink.unlink()
@@ -62,6 +74,22 @@ run([str(vpx/'configure'),'--target=arm64-darwin-gcc','--disable-examples','--di
 run(['make','-j',str(os.cpu_count() or 4),'libvpx.a'],cwd=vpxout,env={k:v for k,v in vpx_env.items() if k!='DEVELOPER_DIR'})
 lib=out/'lib'; include=out/'include'; lib.mkdir(exist_ok=True); include.mkdir(exist_ok=True)
 import shutil
+if vorbis:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from tools.deps import _source   # the pinned, hash-checked release archives of the Mac builds' ogg and vorbis
+    prefix = build/'audio-prefix'
+    def cmake_lib(name, source, extra=()):
+        tree = build/f'{name}-ninja'
+        run(['cmake','-G','Ninja','-S',str(source),'-B',str(tree),'-DCMAKE_SYSTEM_NAME='+('visionOS' if platform=='xros' else 'iOS'),
+             f'-DCMAKE_OSX_SYSROOT={sdklink}','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=26.0',
+             '-DBUILD_SHARED_LIBS=OFF','-DBUILD_TESTING=OFF','-DINSTALL_DOCS=OFF','-DCMAKE_BUILD_TYPE=Release',
+             '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',f'-DCMAKE_INSTALL_PREFIX={prefix}',*extra])
+        run(['cmake','--build',str(tree),'--config','Release','-j','--target','install'])
+    cmake_lib('ogg', _source('ogg'))
+    # the paths given: iOS CMake searches only the SDK
+    cmake_lib('vorbis', _source('vorbis'), [f'-DOGG_INCLUDE_DIR={prefix/"include"}', f'-DOGG_LIBRARY={prefix/"lib/libogg.a"}'])
+    for name in ('libogg.a', 'libvorbis.a'): shutil.copy2(prefix/'lib'/name, lib/name)
+    shutil.copytree(prefix/'include', include, dirs_exist_ok=True)
 shutil.copy2(opus_build/'libopus.a',lib/'libopus.a')
 shutil.copy2(vpxout/'libvpx.a',lib/'libvpx.a')
 shutil.copytree(opus/'include',include,dirs_exist_ok=True)

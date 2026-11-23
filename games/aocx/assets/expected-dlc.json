@@ -1,0 +1,13 @@
+{
+  "note": "Age of Calamity add-on content (01002B00111A3000 + index), measured from the player's own NSPs by scripts/extract_dlc.py --measure: the data NCA and the RomFS it holds",
+  "addons": {
+    "1": {"title": "01002B00111A3001", "data_nca": {"name": "efecf0a572418232faed34e31a0059d0.nca", "size": 114688},
+          "romfs": {"size": 612, "sha256": "aa96b99285780094fa9eb1a87a5f7cba554f85cd04244e10a5996d7d1c49e6e5", "files": 1}},
+    "2": {"title": "01002B00111A3002", "data_nca": {"name": "5eb2f0dbaff78b419cb3dc351cadef0f.nca", "size": 91947008},
+          "romfs": {"size": 91671068, "sha256": "2c610745d13cb14f86a8ea25b57164ae0ea2c1216d406766725a59131676cd53", "files": 4}},
+    "3": {"title": "01002B00111A3003", "data_nca": {"name": "784de68ff9eb22268c6978604f4a5ed5.nca", "size": 228753408},
+          "romfs": {"size": 228197372, "sha256": "ec0fab134e27c18d35ba7e5cd36fad4650aafd2b7472011c132b5bf2df9ae736", "files": 15}},
+    "4": {"title": "01002B00111A3004", "data_nca": {"name": "1f0886279cc75f96981f68c730ce95bf.nca", "size": 1192001536},
+          "romfs": {"size": 1189591900, "sha256": "c13b6e9d05df6c75b77efe98dca524941c57adea24192ed3aa36ba674cbccdaa", "files": 186}}
+  }
+}

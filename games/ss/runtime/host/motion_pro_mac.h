@@ -6,7 +6,14 @@
 #import <GameController/GCSyntheticDeviceKeys.h>
 #include "motion_pro.h"
 #include "dm_input.h"
+#include "switch_left_fallback.h"
 #include <stdlib.h>
+
+// Local (2026-11-11): a third-party Pro Controller whose left stick GameController reports as zero; the 0x30 report carries both
+// sticks (12-bit, bytes 6-8 left, 9-11 right), fed here and used by front_mac.m pad_read only while GameController's stick stays at zero
+// (games/totk/runtime/switch_left_fallback.h, as TOTK and MKW use it).
+static SwitchLeftFallback g_pro_raw_left, g_pro_raw_right;
+static void (*g_pro_sticks_changed)(void);   // front_mac.m: re-reads the bound controller, as GameController sends no change for a stick it reads as zero
 
 typedef struct pro_device { IOHIDDeviceRef hid; uint8_t report[512]; pro_motion motion; struct pro_device *next; } pro_device;
 static IOHIDManagerRef g_pro_manager;
@@ -36,6 +43,14 @@ static void dm_motion_pro_active(int active) {
 static void pro_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t report_id, uint8_t *r, CFIndex len) {
     (void)sender;
     pro_device *d = ctx;
+    if (result == kIOReturnSuccess && type == kIOHIDReportTypeInput && report_id == 0x30 && len >= 12 && r[0] == 0x30 && d == g_pro_bound) {
+        uint64_t t = now_ns();
+        int lx0 = g_pro_raw_left.x, ly0 = g_pro_raw_left.y, rx0 = g_pro_raw_right.x, ry0 = g_pro_raw_right.y;
+        switch_left_feed(&g_pro_raw_left, r[6] | (r[7] & 15) << 8, (r[7] >> 4) | r[8] << 4, t);
+        switch_left_feed(&g_pro_raw_right, r[9] | (r[10] & 15) << 8, (r[10] >> 4) | r[11] << 4, t);
+        if (g_pro_sticks_changed && (abs(g_pro_raw_left.x - lx0) > 8 || abs(g_pro_raw_left.y - ly0) > 8 || abs(g_pro_raw_right.x - rx0) > 8 || abs(g_pro_raw_right.y - ry0) > 8))
+            g_pro_sticks_changed();
+    }
     if (result != kIOReturnSuccess || type != kIOHIDReportTypeInput || report_id != 0x30 || len < 0 || !g_pro_active || d != g_pro_bound) return;
     pro_motion_sample samples[3];
     int n = pro_motion_decode(&d->motion, r, (size_t)len, now_ns(), samples);

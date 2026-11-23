@@ -8,6 +8,7 @@
 //   headset's own field of view and IPD), waits for the GPU and sends FRAME_READY with that pose's tracking timestamp,
 //   so the Quest can match it to the pose and reproject. The game's frame rate does not limit the headset's.
 #import "totk_vr.h"
+#import "vr_depth_stereo.h"
 #include <sys/time.h>   // futimes: the VR activity file
 #include <TargetConditionals.h>
 #include <math.h>
@@ -95,6 +96,9 @@ int vr_afr(void) { return 0; }
 void vr_set_afr(int on) { (void)on; }
 int vr_ipd_pct(void) { return 100; }
 void vr_set_ipd_pct(int pct) { (void)pct; }
+int vr_dstereo(void) { return 0; }
+void vr_set_dstereo(int on) { (void)on; }
+void vr_residency_swap(id<MTLAllocation> old, id<MTLAllocation> replacement) { (void)old; (void)replacement; }
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -142,6 +146,7 @@ static struct {
     _Atomic uint64_t native_pairs, native_menu_pairs, native_reprojected, native_uncompensated, native_no_rotation, native_no_owner, native_bad_rotation;
     _Atomic uint64_t native_fov_calibrated,native_fov_uncalibrated;
     _Atomic int frame_native, ticket_native[64];
+    _Atomic uint32_t ticket_depth[64]; uint32_t src_dref[SRC_SLOTS];   // depth stereo: the frame's depth copy (vr_depth_stereo.h), by ticket / picture
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 void vr_packet_trace(int packets){atomic_store(&g.packet_trace,packets>0?packets:0);}
 void vr_head_only_set(int on){atomic_store(&g.head_only_off,!on);VLOG("reprojection for the head's turn only: %s",on?"on":"off (the game camera's newest base, as before)");}
@@ -286,6 +291,23 @@ int vr_afr(void) {
    30-200吗？": above 100 the world looks smaller and deeper. Option ipd_pct, 30..200, 100 by default. */
 int vr_ipd_pct(void) { int v = vr_option("ipd_pct", 100); return v < 30 ? 30 : v > 200 ? 200 : v; }
 void vr_set_ipd_pct(int pct) { pct = pct < 30 ? 30 : pct > 200 ? 200 : pct; vr_option_set("ipd_pct", pct); VLOG("stereo: the eyes %d%% of the headset's distance apart", pct); }
+/* Depth-reprojected stereo (vr_depth_stereo.m; Ocarina of Time, user 2026-11-22: "转头时才显得拉伸，那就是缺立体"):
+   each eye's picture made from the game's one picture and its scene depth. Option dstereo, off by default (the user
+   on the Quest after quest05: "还是不行"; an unfinished candidate stays off until it is right); flag vr_dstereo 0/1.
+   Only where a game hands its scene depth over (OOT, TotK 1.4.3); alternating eyes (afr) takes precedence.
+   TOTK_VR_DSTEREO=1 starts with it on; key U and the flag switch it for this session only (user 2026-11-22: "键盘i建
+   可以切换 对比"), so a comparison never changes the saved option. */
+static _Atomic int g_dstereo = -1;
+int vr_dstereo(void) {
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
+    int v = atomic_load_explicit(&g_dstereo, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("TOTK_VR_DSTEREO"); v = e ? atoi(e) != 0 : vr_option("dstereo", 0) != 0; atomic_store(&g_dstereo, v); }
+    return v;
+#else
+    return 0;
+#endif
+}
+void vr_set_dstereo(int on) { atomic_store(&g_dstereo, on != 0); VLOG("stereo from the scene depth: %s", on ? "on" : "off (one picture for both eyes)"); }
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_afr(int on) { vr_option_set("afr", on != 0); VLOG("stereo by alternating eyes: %s", on ? "on (the game renders each eye in turn)" : "off (one camera for both eyes)"); }
 #elif defined(TOTK_GAME_V143)
@@ -420,6 +442,13 @@ static void gestures(uint64_t now, const vr_controls *c, gesture_state *gs) {
     if (shield) { if (!shield_since) shield_since = now; gs->shield = now - shield_since > 100000000ull; } else shield_since = 0;
     const float speed = sqrtf(h[1].v[0] * h[1].v[0] + h[1].v[1] * h[1].v[1] + h[1].v[2] * h[1].v[2]);
     if (!gs->bow && speed > 2.2f && now - swing_at > 300000000ull && !(c->rgrip > 0.5f)) { swing_at = now; }
+    {   /* each fast movement of the right hand and what it gave (2026-11-19, Breath of the Wild: "挥剑没反应") */
+        static float peak; static uint64_t peak_at;
+        if (speed > 1.0f) { if (speed > peak) peak = speed; peak_at = now; }
+        else if (peak > 0 && now - peak_at > 150000000ull) {
+            VLOG("swing: right hand %.1f m/s (needs %.1f)%s%s", peak, 2.2f, gs->bow ? ", bow pose" : "", c->rgrip > 0.5f ? ", right grip held" : "");
+            peak = 0; }
+    }
     gs->swing = now - swing_at < 120000000ull;
     gs->slot_r = lf[1] < 0.0f && lu[1] > -0.30f && lr[1] > 0.0f;
     gs->slot_l = lf[0] < 0.0f && lu[0] > -0.30f && lr[0] < 0.0f;
@@ -498,7 +527,10 @@ int vr_gamepad(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *
         }
         if (now < pmenu.pulse_until) b |= pmenu.pulse_bits;
     } else {   // menus, the map, cut scenes: by name
-        pa.down_at = px.down_at = pls.down_at = prs.down_at = pmenu.down_at = 0; settings_sent = 0;
+        /* Only the world's own call (plain 0) forgets the world's presses: runtime/gamepad.m asks for the panel's pad
+           (plain 1) in every refresh too, and that call cleared them, so a tap of A, X, a stick click or the menu
+           button never gave its button in the world (2026-11-19, Breath of the Wild: "a 不能捡"). */
+        if (!plain) { pa.down_at = px.down_at = pls.down_at = prs.down_at = pmenu.down_at = 0; settings_sent = 0; }
         if (c.buttons & VR_PAD_A) b |= B << SW_A;
         if (c.buttons & VR_PAD_B) b |= B << SW_B;
         if (c.buttons & VR_PAD_X) b |= B << SW_X;
@@ -511,6 +543,11 @@ int vr_gamepad(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *
         if (c.lgrip > 0.5f) b |= B << SW_L;
         if (c.rgrip > 0.5f) b |= B << SW_R;
     }
+    if (!plain) {   /* what the game gets, when it changes (2026-11-19: BotW's A did nothing) */
+        static uint64_t last_b; static int last_world = -1; const int world = world_camera_running(now);
+        if (b != last_b || world != last_world) {
+            VLOG("pad: Quest %02x -> Switch %04llx (%s)", c.buttons, (unsigned long long)b, world ? "world" : "menu");
+            last_b = b; last_world = world; } }
     pthread_mutex_unlock(&mu);
     *buttons = b; *lx = (int32_t)(ax[0] * 32767); *ly = (int32_t)(ax[1] * 32767); *rx = (int32_t)(ax[2] * 32767); *ry = (int32_t)(ax[3] * 32767);
     return 1;
@@ -568,7 +605,12 @@ static void first_person_update(void) {   // VR thread, each frame (the lookup o
       b_at = t; }
     if (!target && b <= 0) { __atomic_store_n(&s->fp_pos, 0, __ATOMIC_RELEASE); __atomic_store_n(&s->fp_lag, 0, __ATOMIC_RELEASE); atomic_store(&g_vr_hidehead_fp, 0); atomic_store(&g_vr_eye_track, 0); return; }
     s->fp_blend = b * b * (3 - 2 * b);
+#ifdef GAME_BOTW
+    /* 150: Breath of the Wild's Link, the user on the Quest 2026-11-19 (TotK's 170 put the camera over his head) */
+    if (atomic_load(&g_eye_cm) < 0) { const char *e = getenv("TOTK_VR_EYE"); atomic_store(&g_eye_cm, e ? (int)(atof(e) * 100 + 0.5f) : 150); }
+#else
     if (atomic_load(&g_eye_cm) < 0) { const char *e = getenv("TOTK_VR_EYE"); atomic_store(&g_eye_cm, e ? (int)(atof(e) * 100 + 0.5f) : 170); }   // 170: the user on the Quest, 2026-10-29 (155 before)
+#endif
     static float fwd = -1; if (fwd < 0) { const char *e = getenv("TOTK_VR_EYE_FWD"); fwd = e ? (float)atof(e) : 0.15f; if (fwd < 0 || fwd > 1) fwd = 0.15f; }
 #ifdef GAME_BOTW
     /* BotW has its own player-position owner. TotK's palette identities, body
@@ -752,12 +794,19 @@ static void headlook_fov(const vr_views *v) {
     if (!runtime_aspect_vr(a, k)) { VLOG("the game's field of view stays its own (no Vert+ stubs)"); g.fov_on = -1; return; }
     g.fov_tanh = h; g.fov_aspect = a; g.fov_on = 1;
     VLOG("the game renders the headset's view: %.0f x %.0f degrees", 2 * atanf(w) * 180 / M_PI, 2 * atanf(h) * 180 / M_PI);
+#ifdef GAME_OOT
+    { extern void vr_resolution(int *, int *); extern void runtime_oot_vr_canvas(unsigned, unsigned);   // the canvas takes the VR page's size
+      int rw = 0, rh = 0; vr_resolution(&rw, &rh); if (rw > 0 && rh > 0) runtime_oot_vr_canvas((unsigned)rw, (unsigned)rh); }
+#endif
 }
 
 /* The picture of a frame the game rendered with head pose p: a plane far ahead along p's view (TOTK_VR_GAME_FOV, the
    game's vertical field of view in degrees, 50 by default; the width from the picture's shape). The headset then
    reprojects it to the current pose, so the world stays put while the head turns. */
 static void headlook_place(const vr_pose *p, double aspect) {
+    /* The plane has the view's own ratio, whatever the picture's: Ocarina of Time squeezes that view across its whole 16:9
+       canvas (run pj01: every 3D pass 1920x1080 at aspect 1.1137; the bars are only the window's, present_viewport). A plane
+       of the canvas's shape showed the world 1.6 times too wide on the stand-in headset, 1.84 on the Quest ("世界是拉伸的"). */
     const float D = 10, hh = 2 * D * (g.fov_on > 0 ? g.fov_tanh : tanf(game_vfov() * (float)M_PI / 360)),
                 ww = hh * (g.fov_on > 0 ? g.fov_aspect : (float)aspect);
     const float nz[3] = { 0, 0, -D }, ex[3] = { ww, 0, 0 }, ey[3] = { 0, hh, 0 };
@@ -873,6 +922,9 @@ void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's 
     g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
 #endif
     atomic_store(&g.ticket_native[ticket % 64], atomic_exchange(&g.frame_native, 0));
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
+    atomic_store(&g.ticket_depth[ticket % 64], vr_ds_take_captured());   // depth stereo: this frame's depth copy goes with its picture
+#endif
     if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
 }
 void vr_source_native_frame(void) { atomic_store(&g.frame_native, 1); }
@@ -921,6 +973,8 @@ static void vr_residency_replace(id<MTLAllocation> old,id<MTLAllocation> replace
     [g.rs addAllocation:replacement];[g.rs commit];
     pthread_mutex_unlock(&mutex);
 }
+/* vr_depth_stereo.m: its depth copies are written on the game's queue too */
+void vr_residency_swap(id<MTLAllocation> old, id<MTLAllocation> replacement) { if (g.rs && replacement) vr_residency_replace(old, replacement); }
 
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect);
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2, NULL, NULL, 0); }
@@ -989,6 +1043,7 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
                       if (kind == VR_NATIVE_WORLD) memcpy(g.src_fov[s], fov, sizeof g.src_fov[s]);
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
+                         g.src_dref[s] = atomic_exchange(&g.ticket_depth[ticket % 64], 0);   // depth stereo: 0 none
                          g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }
                   g.src_order[s]=stereo?++g.capture_order:g.ticket_order[ticket%64];   /* a native pair is encoded at its place in the replay order, before its frame's present */
     }   // B1: the eye it was rendered for, -1 not known
@@ -1140,6 +1195,12 @@ static id<MTLTexture> hud_update(void) {   // VR thread, between frames (the GPU
     if (!hud_snapshot(HUD_FPS, l0, sizeof l0, &hl) || !fps_overlay_line_pixel_font(l0)) {
         int f = fps_overlay_value(); if (f >= 0) snprintf(l0, sizeof l0, "FPS %d", f); else snprintf(l0, sizeof l0, "FPS --");
     }
+#ifdef TOTK_GAME_V143
+    /* Which way the stereo is made now, in front of the frame rate (user 2026-11-22: "fps 面板显示 u变化的 方式名称 让我知道
+       按u之后 现在是什么方式"; key U, runtime/input.c). Added after the pixel-font test above: the line goes to the system font. */
+    { extern int mtl_stereo_project(void); char t[sizeof l0];
+      snprintf(t, sizeof t, "%s  %s", vr_dstereo() ? "深度重投影" : mtl_stereo_project() ? "每眼重画" : "单画面", l0); memcpy(l0, t, sizeof l0); }
+#endif
     /* What the Quest reports it showed (user 2026-10-30: "quest里 vr 还是显示72帧 为什么？": this line was the frames the
        Mac handed to the streamer, not what the headset showed); the frames sent after it. */
     const int sent = dt > 0 ? (int)((frames - g.hud_frames) / dt + 0.5) : 0; float qs, ql;
@@ -1270,6 +1331,19 @@ static void zoom_fov(const float fov[4], float z, float out[4]) {
    to the eye it was rendered for (the hook moved the camera there by half the IPD, vr_camera.h eye_half), so the
    picture sits exactly where that eye saw it from. Sets g.center / right / up, which the HUD and the panel follow. */
 static void place_picture(id<MTLTexture> pic, uint32_t used, int pic_eye, float half) {
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
+    /* Head look without a native eye path (Ocarina of Time, the older TotK versions): a world picture goes where the
+       head looked when it was rendered (its matched pose), so it stays put in the world while the head turns. 9fe3fdc1
+       (2026-11-06) left only the room's big screen here, made for TotK 1.4.3's native path: with OOT's head look the
+       picture stayed fixed in the room and turned out of view (vr01, 2026-11-22: the stand-in headset turning 20 degrees
+       a second saw a sliver at 40 s and black at 60 s). Pictures with no matched pose (title, loading) keep the screen. */
+    if (pic && used && g_vr_headlook) {
+        vr_pose p = g.hl_pose[used % 64];
+        if (pic_eye >= 0 && half > 0) { const float ex[3] = { pic_eye ? half : -half, 0, 0 }; float o[3]; qrot(p.q, ex, o); for (int k = 0; k < 3; k++) p.p[k] += o[k]; }
+        headlook_place(&p, (double)pic.width / pic.height);
+        return;
+    }
+#endif
     (void)used;(void)pic_eye;(void)half;
     memcpy(g.center,g.menu_center,sizeof g.center);memcpy(g.right,g.menu_right,sizeof g.right);memcpy(g.up,g.menu_up,sizeof g.up);
     if(pic && pic.width && pic.height){
@@ -1292,7 +1366,12 @@ static void place_native_picture(const vr_pose *eye, const float fov[4], const f
 static void draw_picture(id<MTLRenderCommandEncoder> e, const quad_u *u, id<MTLTexture> pic) {
     /* Labo's canvas is linear R11G11B10F. Its original window attachment is
        sRGB, whereas the streamer's BGRA IOSurface stores already encoded bytes. */
+#ifdef GAME_BOTW190
+    /* 1.9.0's canvas is RGB10A2 (keys02: format 90) and also linear: its lens pass writes it to an sRGB window image. */
+    const int linear = pic.pixelFormat == MTLPixelFormatRG11B10Float || pic.pixelFormat == MTLPixelFormatRGB10A2Unorm;
+#else
     const int linear = pic.pixelFormat == MTLPixelFormatRG11B10Float;
+#endif
     [e setRenderPipelineState:linear ? g.ps_linear : g.ps]; [e setVertexBytes:u length:sizeof *u atIndex:0];
     [e setFragmentTexture:pic atIndex:0]; [e setFragmentSamplerState:g.smp atIndex:0];
     [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -1355,7 +1434,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
 #else
     const int ipd_ok = v->ipd > 0.03f && v->ipd < 0.09f;
     const int afr = g_vr_headlook && vr_afr() && ipd_ok;
-    const float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%)
+    float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%); depth stereo sets it below
     if (g_vr_headlook) { uint32_t hb; memcpy(&hb, &half, 4); __atomic_store_n((uint32_t *)(void *)&g_vr_headlook->eye_half, hb, __ATOMIC_RELAXED); }   // read by the hook on the game's thread
     int own = afr;
 #endif
@@ -1383,6 +1462,13 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         pics[k] = t >= 0 ? (stereo ? g.src_views[t][k] : g.src[t]) : nil;
         useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = stereo ? k : t >= 0 ? g.src_eye[t] : -1;
     }
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
+    /* depth stereo: the picture's depth copy and its sequence (its eye pictures are made once per sequence) */
+    const uint32_t ds_ref = s >= 0 && !stereo && !own ? g.src_dref[s] : 0; const uint64_t ds_seq = s >= 0 ? g.seq[s] : 0;
+#endif
+#ifdef TOTK_GAME_V143
+    const int ds_world = s >= 0 && !stereo && g.src_both[s];   // one world picture whose rays cover both eyes
+#endif
 #ifdef TOTK_GAME_V143
     if(!stereo&&s>=0&&g.src_both[s]){   /* one world picture for both eyes: each eye looks it up by its own rays */
         world=1;oriented=1;
@@ -1443,6 +1529,31 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     int pw = 0, ph = 0; id<MTLTexture> panel = panel_update(&pw, &ph);
     vr_view_submit vs[2];
     id<MTLCommandBuffer> cb = [g.q commandBuffer];
+#ifdef GAME_OOT
+    /* Depth stereo (vr_depth_stereo.h): a world picture rendered with a head pose (useds) becomes a left and a right
+       eye's picture, made from the scene depth of its frame; each is placed straight ahead of its eye as it was when
+       the frame was rendered (place_picture with the eye and half the eye distance). Without its depth (title, menus,
+       a copy overwritten) the one picture stays for both eyes; vr_ds_stats counts why. */
+    if (!own && s >= 0 && pics[0] && useds[0] && g.fov_on > 0 && ipd_ok) {
+        id<MTLTexture> eyes[2] = { nil, nil }; const float h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
+        /* The view fills the whole picture, squeezed across: the shift is in its pixels across (run pj01: 658.6 px of focal
+           length, not the 412.6 of its height), over the picture's full width. */
+        const float W = (float)pics[0].width, H = (float)pics[0].height;
+        if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, vr_squeezed_tan_y(W, H, g.fov_tanh, g.fov_aspect), W / H, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
+    }
+#elif defined(TOTK_GAME_V143)
+    /* Depth stereo on TotK 1.4.3's one world picture: its 3D fills the whole picture over rays that are not centred, so
+       the focal length is the width over the span of tangents, passed as vr_ds_eyes' height-based tangent and ratio.
+       place_native_picture puts the plane relative to each eye: what has no disparity is at infinity, as the warp means. */
+    if (ds_world && pics[0] && v->ipd > 0.03f && v->ipd < 0.09f) {
+        const float span = tanf(native_fov[0][1]) - tanf(native_fov[0][0]);
+        if (span > 0.1f) {
+            const float W = (float)pics[0].width, H = (float)pics[0].height, fx = W / span, h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
+            id<MTLTexture> eyes[2] = { nil, nil };
+            if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, H / (2 * fx), W / H, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; }
+        }
+    }
+#endif
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = g.img[im]; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0.02, 0.02, 0.025, 1); rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -1589,6 +1700,9 @@ static void streamer_start_locked(void) {
 #endif
 #else
     snprintf(res, sizeof res, "%dx%d", g_res_w, g_res_h);
+#ifdef GAME_OOT
+    setenv("BASALT_CODEC","hevc",0);   /* Ocarina of Time: the video is the VR page's size (user 2026-11-23: "不要固定 和 输出分辨率一样"), in HEVC */
+#endif
 #endif
     snprintf(mbps, sizeof mbps, "%d", mb && atoi(mb) > 0 && atoi(mb) <= 500 ? atoi(mb) : 150);
     snprintf(log, sizeof log, "%s.streamer.log", ctl);
@@ -1647,6 +1761,9 @@ int vr_set_resolution(int w, int h) {   // the settings panel (main thread)
         VLOG("VR render resolution %dx%d requested immediately; stream fixed at %dx%d",w,h,VR_STREAM_EYE_WIDTH,VR_STREAM_EYE_HEIGHT);
 #else
         VLOG("VR resolution %dx%d per eye: restarting the streamer", w, h);
+#ifdef GAME_OOT
+        { extern void runtime_oot_vr_canvas(unsigned, unsigned); if (g.fov_on > 0) runtime_oot_vr_canvas((unsigned)w, (unsigned)h); }   // the game renders at it too
+#endif
         streamer_stop_locked(); streamer_start_locked();   // the VR thread sees the teardown and reconnects
 #endif
     }
@@ -1822,7 +1939,7 @@ static void start_thread(id<MTLDevice> dev) {   // present thread, once
 
 void vr_stats(char *out, size_t n) {
     char l[160]; vr_link_stats(l, sizeof l);
-    float qs, ql; char q[1200];   // what the Quest reports it showed (vr_link_headset), and the game camera's view
+    float qs, ql; char q[1600];   // what the Quest reports it showed (vr_link_headset), and the game camera's view
     if (!vr_link_headset(&qs, &ql)) snprintf(q, sizeof q, "the Quest reports nothing (older streamer, or not connected)");
     else if (qs > 0) snprintf(q, sizeof q, "the Quest shows %.0f fps, %.0f ms", qs, ql);
     else snprintf(q, sizeof q, "【红】the Quest shows no picture");
@@ -1866,6 +1983,9 @@ void vr_stats(char *out, size_t n) {
           snprintf(q + k, sizeof q - k, "; alternating eyes %s: %llu headset frames with each eye's own picture, %llu with one", vr_afr() ? "on" : "off", ap, am);
 #endif
       } }
+#if defined(GAME_OOT) || defined(TOTK_GAME_V143)
+    { char ds[320]; vr_ds_stats(ds, sizeof ds); size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; %s", ds); }
+#endif
 #ifndef GAME_BOTW
     { const int sd = atomic_exchange(&g_spring_dev_mm, 0);
       if (sd) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the head's spring (%d ms) kept the camera at most %.1f cm off the head bone's eyes", vr_eye_spring_ms(), sd / 10.0); } }

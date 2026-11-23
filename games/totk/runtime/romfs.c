@@ -199,11 +199,65 @@ static int path_ok(const char *p);
    (the build's romfs-patches) replaces that overlay: scripts/make_mod_manifest.py wrote it by applying the build's edit to the
    mod's own file (issue #73: translations replace the UI archive the build patches for the quick-menu capture). Its
    original is then the build's checked file, so the RomFS original is not read again. Any other collision stops the start. */
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
+/* Tears of the Kingdom and Breath of the Wild on the Mac (PR #2341; Tears of the Kingdom too since 2026-11-22, user's call):
+   a verification record for the player's mods (TOTK_ROMFS_MODS), as the RomFS image has one. Breath of the Wild's HD
+   texture pack is 3,657 files: its full check hashes 24.5 GB (the pack and the RomFS originals it replaces) and took 61 s
+   at every start on the M2 Air (2026-11-20). iOS and the Switch 2 games keep the full check. The record is a SHA-256 over the manifest's bytes, the RomFS image's
+   identity (the originals are slices of it) and each listed file's identity (device, inode, size, mtime, birth time; ctime
+   left out as in chunk_proofs). It lives in TOTK_ROMFS_PROOF_DIR (the player's data folder), never in the mods folder, and
+   holds one set: another pack or a changed file hashes again. Like the RomFS record it is a startup shortcut for unchanged
+   files, not a fresh integrity proof; TOTK_ROMFS_VERIFY=full hashes again. The key also covers the overlays loaded before
+   the mods (pre: their RomFS index and SHA-256): a mod line whose original is a build overlay's edit is trusted only while
+   that overlay is the same. */
+static void mods_pre(size_t first,uint8_t out[32]) {
+ CC_SHA256_CTX c;CC_SHA256_Init(&c);
+ for(size_t k=0;k<first;k++){CC_SHA256_Update(&c,&overlays[k].index,sizeof overlays[k].index);CC_SHA256_Update(&c,overlays[k].sha,64);}
+ CC_SHA256_Final(out,&c);
+}
+static int mods_key(const char *dir,const uint8_t pre[32],uint8_t out[32]) {
+ char p[4096];if(snprintf(p,sizeof p,"%s/manifest.tsv",dir)>=(int)sizeof p)return 0;FILE *m=fopen(p,"r");if(!m)return 0;
+ CC_SHA256_CTX c;CC_SHA256_Init(&c);CC_SHA256_Update(&c,"TOTK-MODS-PROOF-2",17);CC_SHA256_Update(&c,pre,32);
+ struct stat is;if(fstat(image_fd,&is)){fclose(m);return 0;}RomfsProof ip=proof_for(&is);ip.ctime_sec=ip.ctime_nsec=0;CC_SHA256_Update(&c,&ip,sizeof ip);
+ if(nchunks){RomfsProof cp[MAX_CHUNKS];chunk_proofs(cp);CC_SHA256_Update(&c,cp,(CC_LONG)(nchunks*sizeof *cp));}
+ char line[8192];
+ while(fgets(line,sizeof line,m)){
+  CC_SHA256_Update(&c,line,(CC_LONG)strlen(line));if(line[0]=='#'||line[0]=='\n')continue;
+  char *t=strchr(line,'\t');if(!t)continue;*t=0;char f[8200];struct stat st;
+  if(snprintf(f,sizeof f,"%s/%s",dir,line)>=(int)sizeof f||stat(f,&st)||!S_ISREG(st.st_mode)){fclose(m);return 0;}
+  RomfsProof fp=proof_for(&st);fp.ctime_sec=fp.ctime_nsec=0;CC_SHA256_Update(&c,&fp,sizeof fp);
+ }
+ fclose(m);CC_SHA256_Final(out,&c);return 1;
+}
+static int mods_proof_path(char *out,size_t n) {
+ const char *d=getenv("TOTK_ROMFS_PROOF_DIR");return d&&*d&&snprintf(out,n,"%s/.mods-verified-v1",d)<(int)n;
+}
+static int mods_proof_matches(const uint8_t key[32]) {
+ char p[4096];uint8_t saved[32];if(!mods_proof_path(p,sizeof p))return 0;
+ const char *v=getenv("TOTK_ROMFS_VERIFY");if(v&&!strcmp(v,"full"))return 0;
+ int fd=open(p,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);if(fd<0)return 0;struct stat st;
+ int ok=fstat(fd,&st)==0&&S_ISREG(st.st_mode)&&st.st_size==32&&read(fd,saved,32)==32;close(fd);
+ return ok&&!memcmp(saved,key,32);
+}
+static void mods_proof_write(const uint8_t key[32]) {
+ char p[4096],tmp[4200];if(!mods_proof_path(p,sizeof p)||snprintf(tmp,sizeof tmp,"%s.%ld.tmp",p,(long)getpid())>=(int)sizeof tmp)return;
+ int out=open(tmp,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);if(out<0)return;
+ int ok=write(out,key,32)==32&&fsync(out)==0;close(out);if(!ok||rename(tmp,p)!=0)unlink(tmp);
+}
+#endif
 static void overlay_load(const char *dir,int required,int mods) {
  char path[4096];need(snprintf(path,sizeof(path),"%s/manifest.tsv",dir)<(int)sizeof(path),"RomFS overlay path");FILE *m=fopen(path,"r");
  if(!m&&required){fprintf(stderr,"[totk] RomFS overlay: %s missing; build it with scripts/make_output_res_overlay.py <w>x<h>\n",path);runtime_fail("true-2K HeapDef overlay missing (make romfs-patches-out OUTPUT_RES=<w>x<h>)");}
  if(!m){fprintf(stderr,"[totk] RomFS overlay: none (%s)\n",path);return;}
  char line[8192];size_t first=noverlay,replaced=0;uint64_t hashed=0,t0=runtime_now_ns();
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
+ /* only the player's mods folder: the button icons (TOTK_ROMFS_BUTTON_ICONS) are also loaded as a mod, and a second record
+    for them would overwrite this one at every start; they are small and hash in milliseconds */
+ const char *mv=getenv("TOTK_ROMFS_MODS");
+ uint8_t pre[32],mkey[32];mods_pre(first,pre);int mkeyok=mods&&mv&&!strcmp(dir,mv)&&mods_key(dir,pre,mkey),trusted=mkeyok&&mods_proof_matches(mkey);
+#else
+ const int trusted=0;
+#endif
  while(fgets(line,sizeof(line),m)){
   if(line[0]=='#'||line[0]=='\n')continue;char name[4096],sha[65],orig[65];unsigned long long size=0;
   need(sscanf(line,"%4095[^\t]\t%llu\t%64[0-9a-f]\t%64[0-9a-f-]",name,&size,sha,orig)==4&&strlen(sha)==64&&(strlen(orig)==64||!strcmp(orig,"-")),"RomFS overlay manifest line");
@@ -211,10 +265,10 @@ static void overlay_load(const char *dir,int required,int mods) {
   if(!known&&!add){fprintf(stderr,"[totk] RomFS overlay: %s/manifest.tsv names %s, which the RomFS lacks; a new file has \"-\" as its original's SHA-256\n",dir,name);runtime_fail("RomFS overlay names a file the RomFS lacks");}
   if(known&&add){fprintf(stderr,"[totk] RomFS overlay: %s/manifest.tsv adds %s, which the RomFS already has; give its original's SHA-256\n",dir,name);runtime_fail("RomFS overlay adds a file the RomFS already has");}
   size_t over=SIZE_MAX;if(mods&&known)for(size_t k=0;k<first;k++)if(overlays[k].index==i&&!strcmp(overlays[k].sha,orig)){over=k;break;}
-  Entry e={0};if(known){e=entry(i);if(over==SIZE_MAX)sha_range(image_fd,e.offset,e.size,orig,"original");}else i=ADDED;
+  Entry e={0};if(known){e=entry(i);if(over==SIZE_MAX&&!trusted)sha_range(image_fd,e.offset,e.size,orig,"original");}else i=ADDED;
   char file[8200];need(snprintf(file,sizeof(file),"%s/%s",dir,name)<(int)sizeof(file),"RomFS overlay file path");int fd=open(file,O_RDONLY|O_CLOEXEC);struct stat st;
-  need(fd>=0&&fstat(fd,&st)==0&&(uint64_t)st.st_size==size,"RomFS overlay file missing or wrong size");sha_range(fd,0,size,sha,name);close(fd);
-  hashed+=(over==SIZE_MAX?e.size:0)+size;
+  need(fd>=0&&fstat(fd,&st)==0&&(uint64_t)st.st_size==size,"RomFS overlay file missing or wrong size");if(!trusted)sha_range(fd,0,size,sha,name);close(fd);
+  if(!trusted)hashed+=(over==SIZE_MAX?e.size:0)+size;
   if(noverlay==overlay_cap){overlay_cap=overlay_cap?overlay_cap*2:16;overlays=realloc(overlays,overlay_cap*sizeof(*overlays));need(overlays!=NULL,"RomFS overlay table");}
   char *copy=strdup(file),*rel=strdup(name);need(copy&&rel,"RomFS overlay path copy");Overlay o={i,size,copy,st.st_dev,st.st_ino,st.st_mtimespec,rel,{0}};memcpy(o.sha,sha,65);
   if(over!=SIZE_MAX){fprintf(stderr,"[totk] RomFS overlay: %s (%llu bytes) replaces the build's overlay %s (the mod holds its edit)\n",name,size,overlays[over].path);
@@ -224,6 +278,10 @@ static void overlay_load(const char *dir,int required,int mods) {
  }
  fclose(m);
  if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first+replaced,dir,noverlay-first-16);
+#if !TARGET_OS_IPHONE && !defined(GAME_NS2)
+ if(trusted&&(noverlay>first||replaced)){fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, unchanged since their full SHA-256 check: record reused in %.2f s (TOTK_ROMFS_VERIFY=full hashes again)\n",dir,noverlay-first+replaced,(runtime_now_ns()-t0)/1e9);return;}
+ if(mkeyok&&(noverlay>first||replaced)){uint8_t again[32];if(mods_key(dir,pre,again)&&!memcmp(again,mkey,32))mods_proof_write(mkey);}   /* only when nothing moved during the hash */
+#endif
  if(noverlay>first||replaced)fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, %.1f MB hashed in %.2f s\n",dir,noverlay-first+replaced,hashed/1048576.0,(runtime_now_ns()-t0)/1e9);
 }
 static int overlay_order(const void *a,const void *b) {uint64_t x=((const Overlay *)a)->index,y=((const Overlay *)b)->index;return (x>y)-(x<y);}

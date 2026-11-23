@@ -38,6 +38,37 @@ ANSWERS = dict(attr={}, fout={}, img={}, tex={str(r): 'buffer' for r in range(32
 STAGE_NUM = {'vs': 0, 'ps': 1, 'cs': 5}
 
 
+def code_digest(path):
+    """SHA-256 of a program's code, the same whatever signed it: a thin 64-bit Mach-O up to its code signature, with the
+    three sizes the signature sets zeroed (__LINKEDIT's vmsize and filesize, LC_CODE_SIGNATURE's datasize); anything
+    else hashed whole. MNG Launcher ships the translator signed with a Developer ID whose signature carries a time stamp,
+    so every release is another file of the same code; named by the whole file, a Launcher build and a command-line
+    build of one work folder emptied each other's translation cache, and every code update did it for players
+    (2026-11-18). The same as games/oot/scripts/prepare_ns2_seed.py code_sha256 and totk_rt_translator.h totk_code_sha256."""
+    data = bytearray(Path(path).read_bytes())
+    whole = hashlib.sha256(bytes(data)).hexdigest()
+    if len(data) < 32 or struct.unpack_from('<I', data, 0)[0] != 0xfeedfacf:
+        return whole
+    ncmds, sizeofcmds = struct.unpack_from('<II', data, 16)
+    at, end, sig = 32, 32 + sizeofcmds, None
+    for _ in range(ncmds):
+        if at + 8 > end:
+            return whole
+        cmd, size = struct.unpack_from('<II', data, at)
+        if size < 8 or at + size > end:
+            return whole
+        if cmd == 0x19 and data[at + 8:at + 24].rstrip(b'\0') == b'__LINKEDIT':   # LC_SEGMENT_64
+            struct.pack_into('<Q', data, at + 32, 0)   # vmsize
+            struct.pack_into('<Q', data, at + 48, 0)   # filesize
+        elif cmd == 0x1d:   # LC_CODE_SIGNATURE
+            sig = struct.unpack_from('<I', data, at + 8)[0]
+            struct.pack_into('<I', data, at + 12, 0)   # datasize
+        at += size
+    if sig is None or sig > len(data):
+        return whole
+    return hashlib.sha256(bytes(data[:sig])).hexdigest()
+
+
 def chain():
     m = re.search(r'#define DMSH_CHAIN "([^"]+)"', CHAIN_H.read_text())
     if not m:
@@ -113,7 +144,7 @@ def prepare_output(out, translator, spirv_cross, name_chain):
                 h.update(block)
         return h.hexdigest()
     identity = dict(schema=1, chain=name_chain,
-                    translator=digest(translator), spirv_cross=digest(spirv_cross),
+                    translator_code=code_digest(translator), spirv_cross=digest(spirv_cross),
                     requests=digest(__file__), containers=digest(Path(__file__).with_name('monolith_shaders.py')))
     marker = out / 'translation-build.json'
     try:

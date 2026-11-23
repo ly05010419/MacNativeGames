@@ -40,18 +40,26 @@ static const Glyph FONT[] = {
 /* The settings panel's overlay choice (key 1 opens it, runtime/frontend.m): all, FPS full information, minimal (FPS only)
    or off. */
 static _Atomic int g_hud_mode = HUD_MODE_ALL;
-int fps_overlay_hud_mode(void) { return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
+/* TOTK_HUD_MODE=<HUD_MODE_*> starts on that mode: the iPhone / iPad's choice (the Settings pane's and Advanced's
+   "性能信息" row, games/totk/ios; user 2026-11-20: "进阶 可以选 fps格式 比如 关闭"), as the Mac's graphics-overlay.txt. */
+static pthread_once_t g_hud_once = PTHREAD_ONCE_INIT;
+static void hud_mode_from_env(void) {
+    const char *e = getenv("TOTK_HUD_MODE"); char *end;
+    if (e && *e) { long v = strtol(e, &end, 10); if (!*end && v >= HUD_MODE_OFF && v <= HUD_MODE_BARE) atomic_store(&g_hud_mode, (int)v); }
+}
+int fps_overlay_hud_mode(void) { pthread_once(&g_hud_once, hud_mode_from_env); return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
 int fps_overlay_hints_enabled(void) { return fps_overlay_hud_mode() != HUD_MODE_OFF; }
 int fps_overlay_full_hud(void) { int m = fps_overlay_hud_mode(); return m == HUD_MODE_ALL || m == HUD_MODE_FULL; }
 void fps_overlay_set_hud_mode(int mode) {
-    if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL || mode == HUD_MODE_FULL)
+    pthread_once(&g_hud_once, hud_mode_from_env);   // a choice made now is not overwritten by the start's
+    if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL || mode == HUD_MODE_FULL || mode == HUD_MODE_BARE)
         atomic_store_explicit(&g_hud_mode, mode, memory_order_relaxed);
 }
 int hud_line_shown(int line) {
     switch (fps_overlay_hud_mode()) {
     case HUD_MODE_FULL: return line >= 0 && line < HUD_LINES;
     case HUD_MODE_ALL: return line == HUD_FPS || line == HUD_SHADER || line == HUD_PSO || line == HUD_LOAD;
-    case HUD_MODE_MINIMAL: return line == HUD_FPS;
+    case HUD_MODE_MINIMAL: case HUD_MODE_BARE: return line == HUD_FPS;
     default: return 0;
     }
 }
@@ -64,7 +72,9 @@ int fps_overlay_enabled(void) {
 
 int fps_overlay_scale(double view_h) {
     int s = (int)lround(view_h * 0.03 / BOX_ROWS);
-    return s < 1 ? 1 : s > FPS_OVERLAY_MAX_SCALE ? FPS_OVERLAY_MAX_SCALE : s;
+    if (s < 1) s = 1;
+    if (fps_overlay_hud_mode() == HUD_MODE_BARE) s *= HUD_BARE_SCALE;   // its one line; the raster lowers it to what the texture holds
+    return s > FPS_OVERLAY_MAX_SCALE ? FPS_OVERLAY_MAX_SCALE : s;
 }
 
 static const Glyph *glyph(char c) {
@@ -164,10 +174,14 @@ void fps_overlay_text(const fps_overlay_info *info, char *text, size_t n) {
     if (info->fps < 0) snprintf(fps, sizeof fps, "--");
     else snprintf(fps, sizeof fps, "%d", info->fps > 999 ? 999 : info->fps);
     size_text(ss, sizeof ss, info->screen_w, info->screen_h);
-    char sc[16] = "";
-    if (info->scene_w > 0 && info->scene_h > 0) snprintf(sc, sizeof sc, " (%dx%d)", info->scene_w > 9999 ? 9999 : info->scene_w, info->scene_h > 9999 ? 9999 : info->scene_h);
     char gen[8] = "";
     if (info->gen > 0 && info->fps >= 0) snprintf(gen, sizeof gen, "+%d", info->gen > 999 ? 999 : info->gen);   // interpolated frames a second (key 2)
+    if (fps_overlay_hud_mode() == HUD_MODE_BARE) {   // "极简 FPS": the frame rate and the output resolution, nothing else
+        snprintf(text, n, "FPS %s%s  %s", fps, gen, ss);
+        return;
+    }
+    char sc[16] = "";
+    if (info->scene_w > 0 && info->scene_h > 0) snprintf(sc, sizeof sc, " (%dx%d)", info->scene_w > 9999 ? 9999 : info->scene_w, info->scene_h > 9999 ? 9999 : info->scene_h);
     // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); 2K: true 2K output.
     // The whole line in the system font, so switching MetalFX does not switch the font.
     snprintf(text, n, "FPS %s%s  %s%s%s%s", fps, gen, ss, sc, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big == 3 ? "  5K" : info->big == 2 ? "  4K" : info->big ? "  2K" : "");

@@ -78,7 +78,7 @@ class EchoesPanelSources(unittest.TestCase):
         self.assertFalse((GAME / "runtime/users.h").exists())
         self.assertFalse((GAME / "runtime/contrib_tab.h").exists())
         self.assertIn('{KEYMAP_SCREENSHOT,"截图","Screenshot",NULL}', game)
-        self.assertIn("v<=HUD_MODE_FULL)fps_overlay_set_hud_mode(v)", game)
+        self.assertIn("v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v)", game)   # every overlay choice, Bare FPS too (2026-11-18)
         self.assertIn('#define GAME_INBOX_ID "eow"', (GFX / "totk_contrib_upload.h").read_text())
 
     def test_launcher_names_the_board_folder(self):

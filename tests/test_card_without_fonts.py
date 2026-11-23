@@ -57,18 +57,46 @@ class CardUpdatePartition(unittest.TestCase):
         items = [classify.Item(self.write(data), 'base', game), *extra]
         return classify.plan(items).blocks
 
-    def test_the_launcher_says_it_before_the_build(self):
+    def test_no_fonts_builds_with_the_open_ones_silently(self):
+        # User 2026-11-20: "如果遇到 没有字体的情况下 自动使用 开源字体 … 不要报错 不要提示 直接顺利安装": a merged card
+        # ("1G+1U") or an NSP without fonts plans the open-source fonts at once, with no block and no note
         game = [('aa.nca', b'x' * 32)]
         merged = card([('secure', game)])
-        said = [b for b in self.blocks(merged) if '1G+1U' in b]
-        self.assertEqual(len(said), 1)
-        self.assertIn('shared-fonts', said[0])
-        full = card([('update', [('b.nca', b'f' * 8)]), ('secure', game)])
-        self.assertFalse([b for b in self.blocks(full) if '1G+1U' in b])
+        for game_id, data, name in (('totk', merged, 'game.xci'), ('odyssey', b'nsp', 'game.nsp'), ('acnh', b'nsp', 'game.nsp'),
+                                    ('eow', b'nsp', 'game.nsp'), ('botw', merged, 'game.xci')):
+            p = classify.plan([classify.Item(self.write(data, name), 'base', game_id)])
+            self.assertTrue(p.open_fonts, game_id)
+            self.assertIsNone(p.font_block, game_id)
+            self.assertFalse([b for b in p.blocks if 'font' in b.lower() or '字体' in b], game_id)
+            self.assertFalse([n for n in p.notes if 'Noto' in n or '字体' in n], game_id)
+
+    def test_fonts_that_are_there_win(self):
+        merged = card([('secure', [('aa.nca', b'x' * 32)])])
         fonts = classify.Item(str(Path(self.tmp.name) / 'shared-fonts'), 'fonts')
-        self.assertFalse([b for b in self.blocks(merged, extra=[fonts]) if '1G+1U' in b])   # fonts given: fine
-        self.assertFalse([b for b in self.blocks(merged, game='dread') if '1G+1U' in b])     # a game without system fonts
-        self.assertFalse([b for b in self.blocks(merged, game='tmnt') if '1G+1U' in b])      # nor TMNT (PR #2125)
+        given = classify.plan([classify.Item(self.write(merged), 'base', 'totk'), fonts])
+        self.assertFalse(given.open_fonts)   # the player's fonts
+        full = card([('update', [('b.nca', b'f' * 8)]), ('secure', [('aa.nca', b'x' * 32)])])
+        self.assertFalse(classify.plan([classify.Item(self.write(full), 'base', 'totk')]).open_fonts)   # the card's own
+        for game_id in ('dread', 'tmnt'):   # games that take no system fonts
+            self.assertFalse(classify.plan([classify.Item(self.write(merged), 'base', game_id)]).open_fonts, game_id)
+
+
+class OpenFontsInTheBuild(unittest.TestCase):
+    def test_the_build_takes_the_open_fonts_folder(self):
+        from tools.builder_jobs import build_job
+        said = []
+        emit = lambda kind, **f: said.append((kind, f))
+        argv = ['/game.nsp', '-k', '/prod.keys', '--work', '/w', '-o', '/o.app']
+        made = build_job.with_open_fonts(argv, emit, make=lambda: '/cache/open-fonts-x')
+        self.assertEqual(made, ['/game.nsp', '-k', '/prod.keys', '--shared-fonts', '/cache/open-fonts-x', '--work', '/w', '-o', '/o.app'])
+        self.assertEqual(said[0][0], 'log')
+        given = argv[:3] + ['--firmware', '/fw'] + argv[3:]
+        self.assertEqual(build_job.with_open_fonts(given, emit, make=lambda: self.fail('made')), given)
+
+        def broken():
+            raise OSError('no network')
+        with self.assertRaises(build_job.Refused):
+            build_job.with_open_fonts(argv, emit, make=broken)
 
 
 if __name__ == '__main__':

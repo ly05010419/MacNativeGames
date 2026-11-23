@@ -7,6 +7,7 @@
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
 #import <AppKit/AppKit.h>
+#import <AVFAudio/AVFAudio.h>
 #import <GameController/GameController.h>
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
@@ -28,6 +29,32 @@
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"
+
+/* The microphone (runtime/audio_input.h; Ocarina of Time's "Ocarina Mic Input", user 2026-11-20 "只做 mac"): on when the
+   settings panel's switch wrote "1" to microphone.txt (or OOT_MIC=1). macOS asks for permission here, the first time it is
+   on, before the game starts and never during play; refused, the game starts without it (nothing is listed). */
+static void microphone_setting(NSString *data) {
+    if (!getenv("OOT_MIC")) {
+        NSString *word = [[NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"microphone.txt"] encoding:NSUTF8StringEncoding error:nil]
+                          stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if ([word isEqualToString:@"1"]) setenv("OOT_MIC", "1", 1);
+    }
+    const char *on = getenv("OOT_MIC");
+    if (!on || strcmp(on, "1") || getenv("OOT_MIC_FILE")) return;   // the test feed needs no permission
+    AVAudioApplication *audio = AVAudioApplication.sharedInstance;
+    if (audio.recordPermission != AVAudioApplicationRecordPermissionUndetermined) {
+        if (audio.recordPermission != AVAudioApplicationRecordPermissionGranted) fprintf(stderr, "[ns2-audio] audio input: the microphone is on, but macOS access is refused (System Settings > Privacy & Security > Microphone)\n");
+        return;
+    }
+    __block int answered = 0;
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    [AVAudioApplication requestRecordPermissionWithCompletionHandler:^(BOOL granted) {
+        fprintf(stderr, "[ns2-audio] audio input: macOS access %s\n", granted ? "granted" : "refused");
+        answered = 1;
+    }];
+    for (NSDate *until = [NSDate dateWithTimeIntervalSinceNow:120]; !answered && until.timeIntervalSinceNow > 0;)
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+}
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -337,6 +364,7 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
             if (line) { show_error([NSString stringWithFormat:@"%@, line %d: %s", controls, line, problem]); return 1; }
         }
         setenv("TOTK_CONTROLS", controls.fileSystemRepresentation, 1);
+        microphone_setting(data);
         /* key 3's picture mode, kept between runs (runtime/game_patches_v143.c picture_mode_save / _restore) */
         setenv("TOTK_PICTURE_MODE", env_or("TOTK_PICTURE_MODE", [data stringByAppendingPathComponent:@"picture-mode.txt"]).fileSystemRepresentation, 1);
         setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
@@ -400,6 +428,10 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
+        /* The MNG Launcher that built or last updated the app (build_app.py MNGLauncherVersion): before the commit in the
+           HUD box's build line (shared/runtime/hud_box.h hud_build_text). */
+        NSString *builder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGLauncherVersion"];
+        if ([builder isKindOfClass:NSString.class] && builder.length) setenv("TOTK_LAUNCHER_VERSION", builder.UTF8String, 1);
         /* A quick App (games/oot/build.py shader_mode 'title', MNGShaders) contributes nothing: its warm-up lists hold only
            the title's rows, so every pipeline it met would look new and go to the inbox (2026-11-13: one session of the
            quick copy wrote 165 of the list's own pipelines and 120 of its variants), as a run without the seed would

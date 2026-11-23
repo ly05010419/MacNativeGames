@@ -27,7 +27,7 @@ def sources():
         files = [base] if base.is_file() else sorted(p for p in base.rglob('*') if p.is_file())
         for path in files:
             parts = set(path.relative_to(ROOT).parts)
-            if parts & {'ios', 'tests', 'third_party', '__pycache__', 'build'}:
+            if parts & {'ios', 'ios_launcher', 'tests', 'third_party', '__pycache__', 'build'}:   # ios_launcher: an iPhone app
                 continue
             if path.suffix in KINDS or path.name == 'Makefile':
                 yield path
@@ -72,9 +72,8 @@ class SignedByBundleId(unittest.TestCase):
         source = (ROOT / 'games/oot/build.py').read_text()
         self.assertIn("build_app.sign_app(temporary,work/'logs')", source)
 
-    def test_the_launcher_names_its_bundle_id(self):
-        source = (ROOT / 'tools/builder_app/make_app.py').read_text()
-        self.assertIn('designated => identifier "{BUNDLE_ID}"', source)
+    # the Launcher's make_app.py names its bundle ID too: checked in MNG-Launcher, its own repository since 2026-11-20
+    # (tests/test_porting_contract.py)
 
     def test_the_check_catches_a_plain_ad_hoc_signature(self):
         line = "    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)"

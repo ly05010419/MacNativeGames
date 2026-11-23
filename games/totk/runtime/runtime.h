@@ -1,5 +1,5 @@
-#define RUNTIME_STICK_CALIBRATION 1
 #pragma once
+#define RUNTIME_STICK_CALIBRATION 1
 #include <stdint.h>
 #include <stddef.h>
 #include <pthread.h>
@@ -182,14 +182,14 @@ typedef struct { RuntimeStickCalibration left, right; int stableHID; } RuntimeGa
 /* Main-thread calibration samples: generation changes even when an interruption occurs between UI ticks. */
 typedef struct { float lx,ly,rx,ry,lt,rt; uint64_t generation; int valid; } RuntimeGamepadCalibrationSample;
 void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out);
-void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the calibration in force */
-void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* set and save (controller-calibration.txt) */
-void runtime_gamepad_calibration_reset(void);   /* back to the default and remove the file */
+void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the current connection's calibration */
+void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* bind to the sampled connection; do not persist */
+void runtime_gamepad_calibration_reset(void);   /* clear the connection calibration */
 float runtime_gamepad_stick_deadzone_get(int right); /* 0: left, nonzero: right */
-void runtime_gamepad_stick_deadzone_set(int right, float value); /* independent radial deadzone, 0..0.5, saved */
+void runtime_gamepad_stick_deadzone_set(int right, float value); /* independent deadzone preference, 0..0.5, saved */
 float runtime_gamepad_deadzone_get(void); /* compatibility: left value */
 void runtime_gamepad_deadzone_set(float value); /* compatibility: set both sticks, 0..0.5, saved */
-void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY); /* actual calibrated radial response */
+void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY); /* sampled source response: axial or calibrated radial */
 void runtime_gamepad_stick_raw(float *lx, float *ly, float *rx, float *ry, int *connected);   /* the raw sticks (before calibration), game coordinates; the calibration tool's live picture */
 void runtime_gamepad_trigger_raw(float *lt, float *rt);   /* the analog triggers (0..1), the calibration tool's live bars */
 void runtime_gamepad_start(void);

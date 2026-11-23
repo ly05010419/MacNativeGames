@@ -67,7 +67,8 @@ class SavesPage(unittest.TestCase):
     def test_backup_then_list_with_details(self):
         made = self.ok('backup')['backup']
         self.assertTrue(made['name'].startswith('totk-'))
-        self.assertTrue(Path(made['path']).is_relative_to(self.home / 'Documents/MacNativeGames-Backups'))
+        # each game's own folder (user 2026-11-18: "必须分开 放在 自己游戏的 固定位置")
+        self.assertEqual(Path(made['path']).parent, self.home / 'Documents/MacNativeGames-Backups/Tears of the Kingdom')
         self.assertEqual((made['files'], made['hashed']), (2, 2))
         listed = self.ok('state')['backups']
         self.assertEqual([b['path'] for b in listed], [made['path']])
@@ -145,10 +146,31 @@ class SavesPage(unittest.TestCase):
         self.assertFalse(refused['ok'])
         self.assertEqual((self.profile / 'save/0/progress.sav').read_bytes(), b'current')
 
+    def test_backups_in_the_shared_folder_move_into_their_games_folders(self):
+        # before 2026-11-18 every game's backups went straight into ~/Documents/MacNativeGames-Backups
+        shared = self.home / 'Documents/MacNativeGames-Backups'
+        for name, game in (('totk-20261117-113136', 'totk'), ('oot-20261115-223702', 'oot'),
+                           ('oot-pre-restore-20261115-224030', 'oot'), ('mine-20261101-000000', 'other')):
+            self.write(shared / name / 'save/a.sav', name.encode())
+            (shared / name / 'backup.json').write_text(json.dumps({
+                'format': 1, 'game': game, 'source': 'profile', 'created': '2026-11-17T11:31:36', 'title_id': '',
+                'files': [{'path': 'save/a.sav', 'size': len(name), 'sha256': None}]}))
+        self.write(shared / 'notes.txt', b'the player\'s own file')
+        if tab_saves.saves.read_backup(shared / 'totk-20261117-113136') is None:
+            self.fail('the fake backup.json is not one read_backup takes: match saves.backup\'s manifest')
+        listed = self.ok('state')['backups']
+        self.assertEqual([b['name'] for b in listed], ['totk-20261117-113136'])        # only this game's
+        self.assertTrue((shared / 'Tears of the Kingdom/totk-20261117-113136/save/a.sav').is_file())
+        self.assertEqual(sorted(p.name for p in (shared / 'Ocarina of Time').iterdir()),
+                         ['oot-20261115-223702', 'oot-pre-restore-20261115-224030'])       # moved too, by its backup.json
+        self.assertTrue((shared / 'mine-20261101-000000').is_dir())                         # a game no page serves: stays
+        self.assertTrue((shared / 'notes.txt').is_file())
+        self.assertEqual(self.ok('state')['backups'], listed)                               # nothing left to move
+
     def test_reveal_opens_the_backup_folder(self):
         with mock.patch.object(tab_saves.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
             result = self.ok('reveal')
-        root = self.home / 'Documents/MacNativeGames-Backups'
+        root = self.home / 'Documents/MacNativeGames-Backups/Tears of the Kingdom'
         self.assertTrue(root.is_dir())
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], ['/usr/bin/open', str(root)])

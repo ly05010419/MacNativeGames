@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MacNativeGames: put a new build of the runtime into an app that build_app.py made, without its game files.
 
-    python3 update_runtime.py "<the app>" [--work <folder>] [--seed]
+    python3 update_runtime.py "<the app>" [--work <folder>] [--seed | --shader-libs]
 
 An app has two parts. The runtime is made from this repository alone: the game binary (games/totk/runtime and the graphics
 layer), the launcher, the shader tools (SPIRV-Cross, the shader translator) and the warm-up lists exported from the shared
@@ -19,6 +19,14 @@ overlays keep the installed canvas during an automatic update, with a rebuild me
 The startup shaders are game files too, but they must be of the runtime's shader translation chain: when a new runtime
 changes the chain, the app is refused unless --seed is given, which makes them again from the work folder's RomFS and
 modules (checked to be the app's) as build_app.py does, still without the game file or keys.
+
+Each startup shader is compiled ahead into a library the game loads instead of compiling it from source at a cold start
+(build_app.step_shader_libs; Xcode's Metal toolchain: without it a new seed's shaders get none, a warning that --plan
+gives first). An express update on a Mac with the toolchain completes the libraries of the seed the app already has
+when some are missing (missing_shader_libs), and --shader-libs does only that (an error without the toolchain): the
+seed and its libraries are taken into the work folder (APFS clones), only the shaders without a library are compiled,
+and the shader data bundle and the Mac's pipeline archive are made again. It needs no RomFS or modules in the work
+folder; the seed must be of the runtime's chain (else --seed).
 
 The code modules are game files as well, rewritten by the build's patch_nso.py, and a runtime can rely on what the
 rewriter puts into them (gates, fixes moved from the runtime into the code). Modules that are the rewrites this
@@ -196,11 +204,14 @@ def seed_after_runtime(game):
     return build_app.ns2_game(game) is not None
 
 
-def make_seed(tree, work, game, version, logs, env, shader_list=None):
+def make_seed(tree, work, game, version, logs, env, shader_list=None, *, app=None):
     """A new startup shader seed from the work folder's RomFS and modules, as build_app.py makes it (steps 3/4), the
     libraries compiled ahead for it, and the tool step_warm_metal compiles them into Metal's cache with when it cannot.
     shader_list: the shared list whose variants it carries (newest_shader_list), else the work folder's copy. The
-    translations made before are reused (build_app.step_shaders), so a few new variants cost only their own."""
+    translations made before are reused (build_app.step_shaders), so a few new variants cost only their own.
+    app: its compiled libraries go into a work folder that has none first (adopt_app_libs), so only new shaders compile.
+    Without a Metal compiler the seed is made as a full build makes it, its new shaders without a library (a warning that
+    plan() gives first); the next update on a Mac with a compiler completes them (missing_shader_libs)."""
     say('making the startup shaders from the work folder\'s game files (no game file or keys)')
     ns2 = build_app.ns2_game(version)
     if ns2:   # every shader the game ships, translated by its new binary (prepare_ns2_seed.py)
@@ -209,8 +220,72 @@ def make_seed(tree, work, game, version, logs, env, shader_list=None):
         build_app.step_shaders_botw(tree, work / 'botw', logs, version=version, shader_list=shader_list)
     else:
         build_app.step_shaders(tree, logs, version=version, shader_list=shader_list)
+    if app is not None:
+        adopt_app_libs(tree, app)
     build_app.step_shader_libs(tree, logs, version=version)
     build_app.build_warm_tool(tree, logs, env)
+
+
+def app_shader_folder(app, name):
+    """The app's build/<name> (shader-seed, shader-libs): the folder of its ShaderData bundle the link names, or None."""
+    folder = (app / 'Contents/Resources/totk/build' / name).resolve()
+    return folder if folder.is_dir() else None
+
+
+def adopt_app_libs(tree, app):
+    """The app's compiled shader libraries into a work folder that has none: they are the ones the app runs now, each
+    named by its source's SHA-256, so step_shader_libs compiles only the shaders that have none yet."""
+    libs, found = tree / 'build/shader-libs', app_shader_folder(app, 'shader-libs')
+    if found and not libs.exists():
+        build_app.copy_tree(found, libs)
+        say(f'   the app\'s {sum(1 for _ in libs.glob("*.metallib")):,} compiled shader libraries taken into the work folder ({libs})')
+
+
+def adopt_app_seed(tree, app, version):
+    """The app's own startup shader seed into the work folder (an APFS clone), in place of any seed there, with its
+    compiled libraries (adopt_app_libs): --shader-libs completes the libraries of the seed the app runs without
+    translating it again, so the work folder needs no RomFS or modules. The seed is checked as a build checks it
+    (build_app.check_seed: its manifest, chain and every file's SHA-256) before the shader data bundle is made from it."""
+    found = app_shader_folder(app, 'shader-seed')
+    if not found or not (found / 'seed-manifest.json').is_file():
+        raise BuildError(f'{app}: no startup shader seed to complete the libraries of (pass --seed to make one from the '
+                         'work folder)')
+    seed = tree / f'build/shader-seed/{version}'
+    if seed.exists() or seed.is_symlink():
+        seed.unlink() if seed.is_symlink() else build_app.remove_tree(seed)
+    seed.with_name(seed.name + '.verified.json').unlink(missing_ok=True)   # the identities of the seed it replaces
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    build_app.copy_tree(found, seed)
+    say(f'   the app\'s startup shader seed taken into the work folder ({seed})')
+    adopt_app_libs(tree, app)
+
+
+def missing_shader_libs(app, refused=frozenset()):
+    """How many startup shaders of the app's seed have no compiled library in the app (a library is named by the SHA-256
+    its .metal has in seed-manifest.json, build_app.shader_libs_of), or None without a readable seed manifest. Read from
+    the app alone, nothing hashed, so plan() asks it before every update. A seed made without a Metal compiler
+    (build_app.step_shader_libs) has such gaps, and the game compiles those shaders from source at a cold start: an app
+    updated that way had libraries for 1,890 of the 17,884 shaders its warm-up loads (PR #2297, 2026-11-18); the
+    Tears of the Kingdom, Breath of the Wild 1.9, Bananza and Pokopia apps here had none missing (2026-11-19).
+    refused: the digests this Mac's compiler did not compile (build_app.refused_shader_libs), not counted: trying them
+    again would send every express update through the completion for nothing."""
+    seed = app_shader_folder(app, 'shader-seed')
+    if seed is None:
+        return None
+    try:
+        files = json.loads((seed / 'seed-manifest.json').read_text())['files']
+        named = [digest for name, digest in files.items() if name.endswith('.metal')]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    libs = app_shader_folder(app, 'shader-libs')
+    have = {p.stem for p in libs.glob('*.metallib')} if libs else set()
+    return sum(1 for digest in set(named) if digest not in have and digest not in refused)
+
+
+def no_compiler_warning(gaps):
+    """What an update says when startup shaders are left without a compiled library for want of a Metal compiler."""
+    return (f'WARNING: {gaps:,} startup shaders have no compiled library, and the game compiles them from source at its first '
+            f'cold start: {build_app.NO_METAL_COMPILER}. The next update made with it compiles them')
 
 
 def shared_list_games():
@@ -223,18 +298,15 @@ def shared_list_games():
 def newest_shader_list(game, work, given=None):
     """The shared shader list an update brings the app up to (user 2026-11-17: "极速更新也要补新着色器（包含 检查着色器的
     功能）"): the game's newest on GitHub, the one the Launcher's Check shaders reads (shader_update.download), so an
-    express update leaves nothing for that check to find. Offline, or when the download fails, the list of this
-    repository's code, with the reason in the log; given (--list) a file instead. Returns (file, where it came from)."""
+    express update leaves nothing for that check to find. In a released Launcher (no network needed), offline, or when
+    the download fails, the list of this code, with the reason in the log (shader_update.newest); given (--list) a file
+    instead. Returns (file, where it came from)."""
     import shader_update
     if given:
         return Path(given).expanduser().resolve(), 'given with --list'
-    own = build_app.REPO / shader_update.LISTS[game]
     folder = work / 'shader-list'
     folder.mkdir(parents=True, exist_ok=True)
-    try:
-        return shader_update.download(game, folder), 'the newest on GitHub'
-    except RuntimeError as e:
-        return own, f'this repository\'s copy ({e})'
+    return shader_update.newest(game, folder)
 
 
 def work_files_from_app(tree, app, version, logs):
@@ -261,10 +333,7 @@ def work_files_from_app(tree, app, version, logs):
         folder = tree / f'extracted/{version}/romfs'
         if build_app.romfs_mismatch(folder, VERSIONS[version], need_pass=True):
             build_app.adopt_game_data(tree, app, version, folder, logs)
-        libs, app_libs = tree / 'build/shader-libs', (res / 'build/shader-libs').resolve()
-        if not libs.exists() and app_libs.is_dir():
-            build_app.copy_tree(app_libs, libs)
-            say(f'   the app\'s compiled shader libraries taken into the work folder ({libs})')
+        adopt_app_libs(tree, app)
     except (OSError, BuildError) as e:
         say(f'   the work folder\'s game files were not taken from the app: {e}')
 
@@ -441,6 +510,7 @@ def record_commit(tmp, work, *, native_5k=None):
         info['MNGSourceCommit'] = commit
     else:
         info.pop('MNGSourceCommit', None)
+    build_app.record_launcher_version(info)   # the Launcher of this update, beside the commit in the HUD's build line
     build_app.record_update_source(info, work)
     if native_5k is None:
         info.pop('MNGNative5K', None)
@@ -680,8 +750,17 @@ def plan(app, work=None):
             check_work_files(folder / 'totk', data, version)
         except BuildError as e:
             return result('full', f'the startup shaders must be made again and the work folder cannot: {e}', **shown)
-        return result('fast', 'the startup shaders are of another translation chain or shader key rule: they are made again from the work folder', **shown)
-    return result('express', 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt', **shown)
+        reason = 'the startup shaders are of another translation chain or shader key rule: they are made again from the work folder'
+        if build_app.metal_compiler() is None:   # said before the update starts (the update itself only warns)
+            reason += f'; without a Metal compiler their compiled libraries are left out ({build_app.NO_METAL_COMPILER})'
+        return result('fast', reason, **shown)
+    reason = 'the code modules, game data and startup shaders fit this repository: only the runtime is rebuilt'
+    compiler = build_app.metal_compiler()
+    gaps = missing_shader_libs(app, build_app.refused_shader_libs(folder / 'totk', compiler[1]) if compiler else frozenset())
+    if gaps:   # main(): an express update completes them with a compiler at hand (after PR #2297)
+        reason += (f'; {gaps:,} startup shaders have no compiled library, which it compiles' if compiler
+                   else f'; {gaps:,} startup shaders have no compiled library and stay so: {build_app.NO_METAL_COMPILER}')
+    return result('express', reason, **shown, shader_lib_gaps=gaps or 0)
 
 
 def check_installed(app, game, logs, replaced):
@@ -715,6 +794,11 @@ def main(argv):
     ap.add_argument('--vr', action='store_true', help='prepare TotK 1.4.3 exact VR render targets from its verified build inputs')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
+    ap.add_argument('--shader-libs', action='store_true',
+                    help='complete the compiled shader libraries of the app\'s own startup seed: the seed and its libraries '
+                         'are taken into the work folder, only the shaders without one are compiled (Xcode\'s Metal '
+                         'toolchain; an error without it), and the shader data and the pipeline archive are made again. '
+                         'Needs no RomFS or modules in the work folder; the seed must be of the runtime\'s chain (else --seed)')
     ap.add_argument('--list', type=Path, help='the shared shader list to bring the app up to (default: the game\'s newest on '
                                               'GitHub, else this repository\'s copy)')
     ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
@@ -727,7 +811,7 @@ def main(argv):
     app = args.app.expanduser().resolve()
     game = standalone_game(app)
     if game:
-        if args.seed or args.vr or args.native_5k is not None:
+        if args.seed or args.shader_libs or args.vr or args.native_5k is not None:
             raise BuildError(f'{game}: these options require a full build')
         work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.default_work(app, game)
         say(f'work folder {work} ({why})')
@@ -739,7 +823,7 @@ def main(argv):
                 raise BuildError(str(error)) from error
             raise
     if skyward_app(app):
-        if args.seed or args.vr or args.native_5k is not None:
+        if args.seed or args.shader_libs or args.vr or args.native_5k is not None:
             raise BuildError('Skyward Sword HD: these options are not supported; use a full build for new shaders')
         work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.default_work(app, 'ss')
         say(f'work folder {work} ({why})')
@@ -748,8 +832,9 @@ def main(argv):
         except ValueError as e:
             raise BuildError(str(e)) from e
     if ocarina_app(app):
-        if args.native_5k:
-            raise BuildError('Ocarina of Time: --native-5k is not supported')
+        if args.native_5k or args.shader_libs:
+            raise BuildError('Ocarina of Time: --native-5k and --shader-libs are not supported (its update compiles its shader '
+                             'libraries itself)')
         work, why = (args.work.expanduser().resolve(), 'given with --work') if args.work else build_app.recorded_work_folder(app, 'OcarinaOfTime_build')
         say(f'work folder {work} ({why})')
         listfile, where = newest_shader_list('oot', work, args.list)
@@ -764,7 +849,12 @@ def main(argv):
     preference = args.native_5k if args.native_5k is not None else info.get('MNGNative5K')
     if preference is not None and type(preference) is not bool:
         raise BuildError('MNGNative5K must be a boolean (or absent for automatic selection)')
+    if args.seed and args.shader_libs:
+        raise BuildError('--seed already compiles the libraries of the seed it makes; pass one of --seed / --shader-libs')
     stale = check_seed_chain(app / 'Contents/Resources/totk', runtime_chain(), remake=args.seed)
+    compiler = build_app.metal_compiler()
+    if args.shader_libs and not compiler:   # before anything is built: the libraries are what it is for
+        raise BuildError(f'{build_app.NO_METAL_COMPILER}; the app was not changed')
     work, why = ((args.work.expanduser().resolve(), 'given with --work') if args.work
                  else build_app.recorded_work_folder(app, old_work_name(game)))
     py = build_app.prerequisites(args)
@@ -800,13 +890,28 @@ def main(argv):
     listfile, where = newest_shader_list(game, work, args.list) if game in shared_list_games() else (None, '')
     if listfile:
         say(f'   shader list: {listfile} ({where})')
-    translate = args.seed or bool(listfile and list_adds_shaders(app, version, tree, listfile, logs))
-    if translate and not seed_after_runtime(game):
-        make_seed(tree, work, game, version, logs, env, shader_list=listfile)
+    # --shader-libs, or the gaps above with a compiler: the app's own seed with its libraries completed (a new shader data
+    # bundle, as a new seed makes). A list with new shaders makes a new seed instead, which takes the app's libraries and
+    # compiles every shader still without one (make_seed), gaps included.
+    translate = args.seed or args.shader_libs or bool(listfile and list_adds_shaders(app, version, tree, listfile, logs))
+    # startup shaders of the app's seed without a compiled library (a seed made without a compiler), less those this
+    # compiler refused before: an express update with a compiler completes them as --shader-libs does, so no player
+    # needs to know that option (after PR #2297)
+    refused = build_app.refused_shader_libs(tree, compiler[1]) if compiler else frozenset()
+    gaps = None if (translate or stale) else missing_shader_libs(app, refused)
+    complete = args.shader_libs or bool(gaps and compiler)
+    if complete:
+        say('completing the compiled shader libraries of the app\'s startup seed (only the shaders without one are compiled'
+            + (f'; {gaps:,} have none)' if gaps else ')'))
+        adopt_app_seed(tree, app, version)
+        build_app.step_shader_libs(tree, logs, version=version, required=True)
+        translate = True
+    elif translate and not seed_after_runtime(game):
+        make_seed(tree, work, game, version, logs, env, shader_list=listfile, app=app)
     say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')
     build_app.make_runtime(tree, version, logs, env, data=False)   # make binary-<version>, or the release's prebuilt binary
-    if translate and seed_after_runtime(game):
-        make_seed(tree, work, game, version, logs, env, shader_list=listfile)
+    if translate and not complete and seed_after_runtime(game):
+        make_seed(tree, work, game, version, logs, env, shader_list=listfile, app=app)
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         build_app.build_spirv_cross(tree, logs)
     build_app.check_translator(tree)
@@ -864,8 +969,15 @@ def main(argv):
         build_app.step_warm_metal(tree, app, logs)
     say(f'done in {time.time() - t0:.0f} s: {app} has the runtime of this repository; '
         + ('its 4K/5K canvas resources were updated; ' if canvas_action != 'keep' else '')
-        + ('its startup shaders were made again' if args.seed else 'the list\'s new shaders were added' if translate else '')
+        + ('its startup shaders were made again' if args.seed else
+           'its startup shaders\' compiled libraries were completed' if complete else
+           'the list\'s new shaders were added' if translate else '')
         + ('; ' if translate else '') + 'its other game files are unchanged')
+    left = missing_shader_libs(app)
+    if left:   # the last line, where the Launcher and a terminal show it: a seed made without a compiler, or shaders it refused
+        say(no_compiler_warning(left) if not compiler else
+            f'WARNING: {left:,} startup shaders did not compile ahead of time ({logs / "shader-libs.log"}); the game compiles '
+            'them from source at its first cold start')
 
 
 if __name__ == '__main__':
