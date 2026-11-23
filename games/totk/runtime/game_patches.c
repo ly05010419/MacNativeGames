@@ -506,7 +506,11 @@ int runtime_output_native(int mode, unsigned *w, unsigned *h) {
 int runtime_output_modes(void) {
     if (!output_page) return 0;
     return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_720P_METALFX | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX |
-           (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_NATIVE_4K | 1 << OUTPUT_MODE_4K_TO_5K_METALFX : 0);
+           (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_NATIVE_4K : 0) |
+#if TARGET_OS_OSX   /* 4K + MetalFX to 5K: Mac only, as 1.4.3's picture_4k_to_5k_available */
+           (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_4K_TO_5K_METALFX : 0) |
+#endif
+           0;
 }
 int runtime_output_mode(void) {
     extern int mfxup_output_enabled(void);
