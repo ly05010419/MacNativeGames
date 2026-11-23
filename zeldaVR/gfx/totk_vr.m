@@ -1586,18 +1586,19 @@ static void oot_hud_draw(id<MTLRenderCommandEncoder> e, const float m[16], const
     [e setRenderPipelineState:g.ps];
 }
 static id<MTLTexture> g_oot_hud_tex;   /* this headset frame's HUD layer, nil without one */
-/* A picture with no head pose of its own (title, loading, menus, the big screen): the game's middle 16:9 on a screen curved
-   around the viewer, 3 m away and 110 degrees wide, where place_screen put it. */
+/* A picture with no head pose of its own (title, loading, menus, the big screen): the whole canvas on a screen curved around the
+   viewer, 3 m away (oot_arc_size), where place_screen put it. */
 static int oot_arc_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTLTexture> pic) {
     if (!g.ps_arc || !pic || pic.pixelFormat == MTLPixelFormatRG11B10Float) return 0;
     const float rl = sqrtf(vr_dot3(g.menu_right, g.menu_right)); if (rl < 1e-3f) return 0;
-    const float R = 3.0f, half = 55 * (float)M_PI / 180, height = 2 * half * R * 9 / 16;
+    const float R = OOT_ARC_RADIUS_M;
+    float half, height; oot_arc_size((float)pic.width, (float)pic.height, &half, &height);
     const float x[3] = { g.menu_right[0] / rl, g.menu_right[1] / rl, g.menu_right[2] / rl }, fw[3] = { x[2], 0, -x[0] };
     const float dist = 2.0f;   /* place_screen's distance: back to the viewer */
     quad_u u; memcpy(u.m, m, sizeof u.m);
     for (int i = 0; i < 3; i++) { u.c[i] = g.menu_center[i] - fw[i] * dist; u.r[i] = x[i]; u.u[i] = i == 1 ? height : 0; }
     u.c[3] = R; u.r[3] = half; u.u[3] = 0;
-    oot_hud_band((float)pic.width, (float)pic.height, u.uvs);
+    u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
     [e setRenderPipelineState:g.ps_arc]; [e setVertexBytes:&u length:sizeof u atIndex:0];
     [e setFragmentTexture:pic atIndex:0]; [e setFragmentSamplerState:g.smp atIndex:0];
     [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:98];

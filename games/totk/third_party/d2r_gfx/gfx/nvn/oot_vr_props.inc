@@ -5,7 +5,7 @@
    the eyes and is not drawn. Pass dump arms04: the slingshot, palette block 3, 164 matrices. Included by oot_vr_arms.inc. */
 typedef struct { float grip_game[12], grip_new[12], wrist[3], chest[3]; uint64_t frame; int ok; } oot_hand_track;
 static oot_hand_track g_oot_track[2];
-static int g_oot_prop_reg = -1, g_oot_prop_side;
+static int g_oot_prop_reg = -1, g_oot_prop_side, g_oot_prop_weapon;
 static float g_oot_arm_length;      /* game units, shoulder to wrist */
 static float g_oot_prop_root[3];   /* the held thing's root, world space */
 static uint64_t g_oot_props_moved, g_oot_props_hidden;
@@ -25,17 +25,10 @@ static _Atomic uint64_t g_oot_weapon_frame;
 int vr_oot_weapon_in_hand(void) { const uint64_t at = atomic_load(&g_oot_weapon_frame); return at && atomic_load(&g_cur_frame) - at < 12; }
 /* What each model keeps its distance to, by its palette size and vertex buffer. */
 static oot_hold_watch *oot_prop_watch(uint64_t size, uint64_t vb) {
-    enum { WATCHED = 48 };
-    static oot_hold_watch watched[WATCHED];
-    oot_hold_watch *oldest = &watched[0];
-    for (int i = 0; i < WATCHED; i++) {
-        if (watched[i].size == size && watched[i].vb == vb) return &watched[i];
-        if (watched[i].frame < oldest->frame) oldest = &watched[i];
-    }
-    memset(oldest, 0, sizeof *oldest);
-    oldest->size = size; oldest->vb = vb; oldest->frame = ~0ull;
-    return oldest;
+    static oot_hold_watch watched[OOT_HOLD_WATCHED];
+    return oot_hold_watch_for(watched, size, vb);
 }
+#include "oot_vr_weapon.inc"
 /* 0: as the game draws it; 2: its palette moves with a hand; -1: not drawn. */
 static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
     g_oot_prop_reg = -1;
@@ -64,15 +57,24 @@ static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
     }
     oot_hold_watch *watch = oot_prop_watch(S.ubo[0][reg].size, S.vbuf[0].address);   /* once a frame: its depth and colour draws decide alike */
     if (watch->frame != now) { watch->frame = now; oot_hold_watch_step(watch, dist); }
-    const int side = watch->side;
+    float weapon_game[12];
+    const int weapon_out = oot_weapon_state(weapon_game), weapon = weapon_out && oot_weapon_is(S.ubo[0][reg].size, S.vbuf[0].address);
+    const int side = weapon ? 0 : watch->side;
+    if (!weapon && weapon_out && side == 0 && live[0]) {
+        const float root[12] = { first[0], first[1], first[2], at[0], first[4], first[5], first[6], at[1], first[8], first[9], first[10], at[2] };
+        oot_weapon_learn(S.ubo[0][reg].size, S.vbuf[0].address, root, g_oot_track[0].grip_game, weapon_game);
+    }
+    g_oot_prop_weapon = weapon;
     if (side == 0) atomic_store(&g_oot_weapon_frame, now);
     if (oot_body_trace_on()) {
         const float *wl = g_oot_track[0].wrist, *wr = g_oot_track[1].wrist, *ch = g_oot_track[live[1] ? 1 : 0].chest;
-        MLOG("[vr-prop] F%llu palette %llu bytes, root %.3f %.3f %.3f: left wrist %.3f, right wrist %.3f, chest %.3f, held by %d", (unsigned long long)now,
+        MLOG("[vr-prop] F%llu palette %llu bytes, root %.3f %.3f %.3f: left wrist %.3f, right wrist %.3f, chest %.3f, held by %d (watch frames %u, jitter %.5f %.5f, vb %#llx) rot %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f", (unsigned long long)now,
              (unsigned long long)S.ubo[0][reg].size, (double)at[0], (double)at[1], (double)at[2],
              (double)sqrtf((at[0] - wl[0]) * (at[0] - wl[0]) + (at[1] - wl[1]) * (at[1] - wl[1]) + (at[2] - wl[2]) * (at[2] - wl[2])),
              (double)sqrtf((at[0] - wr[0]) * (at[0] - wr[0]) + (at[1] - wr[1]) * (at[1] - wr[1]) + (at[2] - wr[2]) * (at[2] - wr[2])),
-             (double)sqrtf((at[0] - ch[0]) * (at[0] - ch[0]) + (at[1] - ch[1]) * (at[1] - ch[1]) + (at[2] - ch[2]) * (at[2] - ch[2])), side);
+             (double)sqrtf((at[0] - ch[0]) * (at[0] - ch[0]) + (at[1] - ch[1]) * (at[1] - ch[1]) + (at[2] - ch[2]) * (at[2] - ch[2])), side,
+             watch->frames, (double)watch->jitter[0], (double)watch->jitter[1], (unsigned long long)S.vbuf[0].address,
+             (double)first[0], (double)first[1], (double)first[2], (double)first[4], (double)first[5], (double)first[6], (double)first[8], (double)first[9], (double)first[10]);
     }
     if (side >= 0) {
         g_oot_prop_reg = reg; g_oot_prop_side = side; memcpy(g_oot_prop_root, at, sizeof at);
@@ -157,13 +159,17 @@ static uint64_t oot_prop_palette(uint64_t addr, const uint8_t *src, uint64_t siz
     float model[19]; pend_materialize(S.ubo[0][1].addr, (uint8_t *)model, sizeof model, 0);
     const float to_world[12] = { 1, 0, 0, model[16], 0, 1, 0, model[17], 0, 0, 1, model[18] }, to_palette[12] = { 1, 0, 0, -model[16], 0, 1, 0, -model[17], 0, 0, 1, -model[18] };
     const oot_item_rig *item = oot_item_for(size);   /* the slingshot or the bow: one handle, mirrored like the sword */
-    float move[12];
-    oot_hold_move(g_oot_track[from].grip_game, g_oot_track[to].grip_new, g_oot_prop_root, oot_hold_mirrors(from, to, item != NULL || vr_oot_aiming()), move);
+    const int how = oot_hold_mirrors(from, to, item != NULL || vr_oot_aiming()), weapon = g_oot_prop_weapon && from == 0;
+    float move[12], undo[12];   /* the weapon: its palette already follows the hand a frame late; undo takes it back to the game's pose */
+    if (weapon) oot_weapon_frame(src, to_world, g_oot_track[from].grip_game, g_oot_track[to].grip_new, how, to == wanted, undo, move);
+    else oot_hold_move(g_oot_track[from].grip_game, g_oot_track[to].grip_new, g_oot_prop_root, how, move);
     oot_prop_strung strung; const int two = oot_prop_string(item, to, src, frame, to_world, move, &strung);
     uint64_t gpu = 0; uint8_t *out = oot_palette_ring(size, &gpu);
     for (uint64_t k = 0; k + 48 <= size; k += 48) {
         float m[12], world[12], placed[12]; memcpy(m, src + k, 48);
-        oot_m_mul(to_world, m, world); oot_m_mul(move, world, placed);
+        oot_m_mul(to_world, m, world);
+        if (weapon) { float game_pose[12]; oot_m_mul(undo, world, game_pose); memcpy(world, game_pose, sizeof world); }
+        oot_m_mul(move, world, placed);
         if (two) {
             const float share = strung.item->share[k / 48] * strung.drawn;
             placed[3] += strung.pull[0] * share; placed[7] += strung.pull[1] * share; placed[11] += strung.pull[2] * share;

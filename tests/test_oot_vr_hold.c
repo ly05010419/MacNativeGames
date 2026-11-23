@@ -107,6 +107,25 @@ int main(void) {
     oot_hold_blend(holder, puller, 0, placed); assert(NEAR(placed[3], 0) && NEAR(placed[7], 0));          /* the wood: the holding hand */
     oot_hold_blend(holder, puller, 1, placed); assert(NEAR(placed[3], 0.1f) && NEAR(placed[7], -0.05f));  /* the pouch: the pulling hand */
     oot_hold_blend(holder, puller, 0.5f, placed); assert(NEAR(placed[3], 0.05f) && NEAR(placed[7], -0.025f) && NEAR(placed[0], 1));  /* straight between */
+    /* The town draws about 150 palette and vertex pairs a frame (2026-11-23): each keeps its record from frame to frame. */
+    static oot_hold_watch table[OOT_HOLD_WATCHED];
+    for (uint64_t frame = 1; frame <= 5; frame++)
+        for (uint64_t k = 0; k < 200; k++) {
+            oot_hold_watch *w = oot_hold_watch_for(table, 48 * (1 + k % 7), 0x716d000000ull + k * 0x400);
+            if (w->frame != frame) { w->frame = frame; w->frames++; }
+        }
+    for (uint64_t k = 0; k < 200; k++) assert(oot_hold_watch_for(table, 48 * (1 + k % 7), 0x716d000000ull + k * 0x400)->frames == 5);
+    /* The weapon: its actor goes where the player's hand takes it, the palette root keeps its place against the actor. */
+    const float sword_grip[12] = { 1, 0, 0, 1, 0, 1, 0, 2, 0, 0, 1, 3 }, sword_actor[12] = { 1, 0, 0, 1, 0, 1, 0, 2.1f, 0, 0, 1, 3.2f };
+    const float sword_root[12] = { 1, 0, 0, 1, 0, 1, 0, 2.1f, 0, 0, 1, 3.404f };
+    const float player_grip[12] = { 0, 0, 1, 1.5f, 0, 1, 0, 2, -1, 0, 0, 3 };   /* a quarter turn about y, half a metre along x */
+    oot_weapon_fit fit; float root_game[12], weapon_move[12], actor_at[12];
+    oot_weapon_fit_learn(sword_grip, sword_root, sword_actor, &fit);
+    oot_weapon_place(&fit, sword_grip, sword_grip, OOT_HOLD_SAME, root_game, weapon_move, actor_at);
+    for (int i = 0; i < 12; i++) { assert(NEAR(actor_at[i], sword_actor[i])); assert(NEAR(root_game[i], sword_root[i])); }
+    oot_weapon_place(&fit, sword_grip, player_grip, OOT_HOLD_SAME, root_game, weapon_move, actor_at);
+    assert(NEAR(actor_at[3], 1.7f) && NEAR(actor_at[7], 2.1f) && NEAR(actor_at[11], 3));      /* 0.2 along the hand's z, 0.1 up */
+    assert(NEAR(actor_at[2], 1) && NEAR(actor_at[8], -1) && NEAR(det3(actor_at), 1));         /* turned with the hand, not mirrored */
     puts("OOT held things: which hand, the palm's side mirrored, the shield as it is, never turned inside out");
     return 0;
 }

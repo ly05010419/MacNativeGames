@@ -38,6 +38,15 @@ static inline oot_hud_quad oot_hud_place(const float head[3], float yaw) {
                        { 0, height, 0 } };
     return q;
 }
+/* The big screen (title, menus, loading, cutscenes), a part of a circle of 3 m around the viewer showing the whole canvas: the game
+   fills a headset-shaped canvas with its menus (2026-11-23: the middle 16:9 cut the title's menu off). As tall as a 110-degree 16:9
+   screen (3.24 m, in view without looking up or down), as wide as the canvas's shape makes it, at most 110 degrees. */
+enum { OOT_ARC_RADIUS_M = 3 };
+static inline void oot_arc_size(float w, float h, float *half_angle, float *height) {
+    const float widest = 55 * (float)M_PI / 180, tall = 2 * widest * OOT_ARC_RADIUS_M * 9 / 16, aspect = w > 0 && h > 0 ? w / h : 16.0f / 9;
+    *half_angle = fminf(tall * aspect / (2 * OOT_ARC_RADIUS_M), widest);
+    *height = 2 * *half_angle * OOT_ARC_RADIUS_M / aspect;
+}
 /* The game lays its HUD out in the middle 16:9 of the canvas. uv: scale x, y and offset x, y of that band. */
 static inline void oot_hud_band(float w, float h, float uv[4]) {
     uv[0] = uv[1] = 1; uv[2] = uv[3] = 0;

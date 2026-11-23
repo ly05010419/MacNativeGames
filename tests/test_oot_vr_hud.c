@@ -39,6 +39,12 @@ int main(void) {
     assert(NEAR(uv[0], 1) && NEAR(uv[1], 1) && NEAR(uv[2], 0) && NEAR(uv[3], 0));
     oot_hud_band(2520, 1080, uv);
     assert(NEAR(uv[1], 1) && NEAR(uv[0], (16.f / 9) / (2520.f / 1080)) && NEAR(uv[2] * 2 + uv[0], 1));
+    /* The big screen shows the whole canvas at its own shape: the title and menus fill the headset-shaped one (2026-11-23). */
+    float half, tall;
+    oot_arc_size(1344, 1408, &half, &tall);
+    assert(NEAR(tall, 2 * 55 * DEG * 3 * 9 / 16) && NEAR(2 * half * 3 / tall, 1344.f / 1408));
+    oot_arc_size(1920, 1080, &half, &tall);
+    assert(NEAR(half, 55 * DEG) && NEAR(tall, 2 * half * 3 * 9 / 16));   /* a 16:9 canvas keeps its 110-degree screen */
     puts("OOT HUD panel: stays, follows past 20 degrees, stops within 2, the short way round, placed 2 m ahead, the 16:9 band");
     return 0;
 }

@@ -31,10 +31,12 @@ enum {
     OOT_VR_FN_CELL = 80,          /* data page: the camera call's host function (8 bytes) */
     OOT_VR_PLAYER_FN_CELL = 88,   /* data page: the player update's host function */
     OOT_VR_FILL_FN_CELL = 96,     /* data page: the view fill's host function */
+    OOT_VR_PLACE_FN_CELL = 104,   /* data page: an actor's new place, the host function */
     OOT_VR_CALL_STUB = 512,       /* text padding after the time-step and resolution veneers (they end at +372) */
     OOT_VR_FOV_STUB = 512 + 256,
     OOT_VR_PLAYER_STUB = 512 + 256 + 32,
     OOT_VR_FILL_STUB = 512 + 256 + 32 + 256,
+    OOT_VR_PLACE_STUB = 512 + 256 + 32 + 256 + 256,
 };
 static const uint64_t OOT_VR_CAMERA_SITE = 0x4c5068, OOT_VR_FOV_SITE = 0x4c52f8;
 static const uint32_t OOT_VR_CAMERA_WORD = 0xf9401268u;   /* ldr x8, [x19, #0x20] */
@@ -44,6 +46,9 @@ static const uint32_t OOT_VR_FOV_WORD = 0xbd413e60u;      /* ldr s0, [x19, #0x13
 static const uint64_t OOT_VR_PLAYER_SITE = 0x2c21728, OOT_VR_FILL_SITE = 0x6bc5b4;
 static const uint32_t OOT_VR_PLAYER_WORD = 0xf9000beau;   /* str x10, [sp, #0x10] */
 static const uint32_t OOT_VR_FILL_WORD = 0x3951ab89u;     /* ldrb w9, [x28, #0x46a] */
+/* An actor takes its new place (oot_vr_sword.h): x22 the actor, x21 the matrix. */
+static const uint64_t OOT_VR_PLACE_SITE = 0x137478;
+static const uint32_t OOT_VR_PLACE_WORD = 0x2d4106a0u;    /* ldp s0, s1, [x21, #8] */
 static const uint64_t OOT_VR_VIEW_VTABLE = 0x4bf8a88, OOT_VR_CAMERA_MANAGER = 0x4c86bc0;
 static const uint64_t OOT_VR_ACTOR_VTABLE = 0x4b25e18, OOT_VR_PLAYER_VTABLE = 0x4b4c460, OOT_VR_EVENT_SLOT = 0x4c7e090;
 
@@ -111,6 +116,8 @@ int runtime_oot_vr_feet(float out[3], uint64_t *age_ns) {
     return 1;
 }
 
+#include "oot_vr_sword.h"
+
 /* Link's movement update. Other actors run this code too: his own update is told by the class of its actor and of the
    player object reached through its movement component, whose resource is named "Player". */
 static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
@@ -127,6 +134,7 @@ static void oot_vr_player(uint8_t *actor, uint8_t *unused) {
     if (!resource || memcmp((const void *)(resource + 88), "Player", 7)) return;
     float feet[3]; memcpy(feet, actor + 796, sizeof feet);
     if (!isfinite(feet[0]) || !isfinite(feet[1]) || !isfinite(feet[2])) return;
+    oot_vr_weapon_note(components);
     const uintptr_t holder = oot_vr_load64(base + OOT_VR_EVENT_SLOT), events = holder ? oot_vr_load64(holder) : 0;
     {   /* the log: the event manager's word as it changes (a few lines a scene) */
         static uint64_t last_event = ~0ull; static int said;
@@ -287,48 +295,59 @@ static int oot_vr_wanted(void) {
 
 static void oot_vr_install(Module *m) {
     if (!oot_vr_wanted()) return;
-    uint32_t have, fov_have, player_have, fill_have;
+    uint32_t have, fov_have, player_have, fill_have, place_have;
     memcpy(&have, m->base + OOT_VR_CAMERA_SITE, 4);
     memcpy(&fov_have, m->base + OOT_VR_FOV_SITE, 4);
     memcpy(&player_have, m->base + OOT_VR_PLAYER_SITE, 4);
     memcpy(&fill_have, m->base + OOT_VR_FILL_SITE, 4);
+    memcpy(&place_have, m->base + OOT_VR_PLACE_SITE, 4);
     if (have != OOT_VR_CAMERA_WORD) runtime_fail("OOT VR: the gameplay view site differs from verified update 131072");
     if (fov_have != OOT_VR_FOV_WORD) runtime_fail("OOT VR: the field-of-view load differs from verified update 131072");
     if (player_have != OOT_VR_PLAYER_WORD) runtime_fail("OOT VR: the player update site differs from verified update 131072");
     if (fill_have != OOT_VR_FILL_WORD) runtime_fail("OOT VR: the view fill site differs from verified update 131072");
+    if (place_have != OOT_VR_PLACE_WORD) runtime_fail("OOT VR: the actor place site differs from verified update 131072");
     const uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
     const uint64_t pad = (m->text_end + 15) & ~15ULL, call_stub = pad + OOT_VR_CALL_STUB, fov_stub = pad + OOT_VR_FOV_STUB;
-    const uint64_t player_stub = pad + OOT_VR_PLAYER_STUB, fill_stub = pad + OOT_VR_FILL_STUB;
+    const uint64_t player_stub = pad + OOT_VR_PLAYER_STUB, fill_stub = pad + OOT_VR_FILL_STUB, place_stub = pad + OOT_VR_PLACE_STUB;
     const uintptr_t b = (uintptr_t)m->base;
-    uint32_t call[OOT_VR_CALL_WORDS], fov[OOT_VR_FOV_WORDS], player[OOT_VR_CALL_WORDS], fill[OOT_VR_CALL_WORDS];
+    uint32_t call[OOT_VR_CALL_WORDS], fov[OOT_VR_FOV_WORDS], player[OOT_VR_CALL_WORDS], fill[OOT_VR_CALL_WORDS], place[OOT_VR_CALL_WORDS];
     const char *e = oot_vr_call_veneer(have, b + call_stub, b + OOT_VR_CAMERA_SITE, b + page, OOT_VR_FN_CELL, call);
     if (!e) e = oot_vr_fov_veneer(fov_have, b + fov_stub, b + OOT_VR_FOV_SITE, b + page, OOT_VR_FOV_CELL, fov);
     if (!e) e = oot_vr_host_veneer(player_have, b + player_stub, b + OOT_VR_PLAYER_SITE, b + page, OOT_VR_PLAYER_FN_CELL, 19, 19, player);
     if (!e) e = oot_vr_host_veneer(fill_have, b + fill_stub, b + OOT_VR_FILL_SITE, b + page, OOT_VR_FILL_FN_CELL, 28, 28, fill);
+    if (!e) e = oot_vr_host_veneer(place_have, b + place_stub, b + OOT_VR_PLACE_SITE, b + page, OOT_VR_PLACE_FN_CELL, 22, 21, place);
     if (e) runtime_fail(e);
     if (call_stub + sizeof call > fov_stub || fov_stub + sizeof fov > player_stub || player_stub + sizeof player > fill_stub ||
-        fill_stub + sizeof fill > rx_end || page + OOT_VR_FILL_FN_CELL + 8 > m->size)
+        fill_stub + sizeof fill > place_stub || place_stub + sizeof place > rx_end || page + OOT_VR_PLACE_FN_CELL + 8 > m->size)
         runtime_fail("OOT VR: no room left for the veneers");
-    for (uint64_t k = call_stub; k < fill_stub + sizeof fill; k++) if (m->base[k]) runtime_fail("OOT VR: text padding already in use");
-    for (uint64_t k = page + OOT_VR_FOV_CELL; k < page + OOT_VR_FILL_FN_CELL + 8; k++) if (m->base[k]) runtime_fail("OOT VR: data page already in use");
+    for (uint64_t k = call_stub; k < place_stub + sizeof place; k++) if (m->base[k]) runtime_fail("OOT VR: text padding already in use");
+    for (uint64_t k = page + OOT_VR_FOV_CELL; k < page + OOT_VR_PLACE_FN_CELL + 8; k++) if (m->base[k]) runtime_fail("OOT VR: data page already in use");
     void *host = runtime_hle_wrap_named((void *)oot_vr_camera, "our OOT VR camera");
     void *host_player = runtime_hle_wrap_named((void *)oot_vr_player, "our OOT VR player update");
     void *host_fill = runtime_hle_wrap_named((void *)oot_vr_fill, "our OOT VR view fill");
+    void *host_place = runtime_hle_wrap_named((void *)oot_vr_place, "our OOT VR weapon place");
     memcpy(m->base + page + OOT_VR_FN_CELL, &host, 8);
     memcpy(m->base + page + OOT_VR_PLAYER_FN_CELL, &host_player, 8);
     memcpy(m->base + page + OOT_VR_FILL_FN_CELL, &host_fill, 8);
+    memcpy(m->base + page + OOT_VR_PLACE_FN_CELL, &host_place, 8);
     oot_vr_fov_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_VR_FOV_CELL);
     memcpy(m->base + call_stub, call, sizeof call);
     memcpy(m->base + fov_stub, fov, sizeof fov);
     memcpy(m->base + player_stub, player, sizeof player);
     memcpy(m->base + fill_stub, fill, sizeof fill);
+    memcpy(m->base + place_stub, place, sizeof place);
     const uint32_t to_call = oot_vr_b(OOT_VR_CAMERA_SITE, call_stub), to_fov = oot_vr_b(OOT_VR_FOV_SITE, fov_stub),
-                   to_player = oot_vr_b(OOT_VR_PLAYER_SITE, player_stub), to_fill = oot_vr_b(OOT_VR_FILL_SITE, fill_stub);
-    if (!to_call || !to_fov || !to_player || !to_fill) runtime_fail("OOT VR: veneer out of branch range");
+                   to_player = oot_vr_b(OOT_VR_PLAYER_SITE, player_stub), to_fill = oot_vr_b(OOT_VR_FILL_SITE, fill_stub),
+                   to_place = oot_vr_b(OOT_VR_PLACE_SITE, place_stub);
+    if (!to_call || !to_fov || !to_player || !to_fill || !to_place) runtime_fail("OOT VR: veneer out of branch range");
     memcpy(m->base + OOT_VR_CAMERA_SITE, &to_call, 4);
     memcpy(m->base + OOT_VR_FOV_SITE, &to_fov, 4);
     memcpy(m->base + OOT_VR_PLAYER_SITE, &to_player, 4);
     memcpy(m->base + OOT_VR_FILL_SITE, &to_fill, 4);
+    {   /* The sword's attack following the hand is unfinished (vr开发.md, 二十八): off, and the game's code there stays as it is. */
+        const char *follow = getenv("TOTK_VR_SWORD_FOLLOW");
+        if (follow && *follow == '1') memcpy(m->base + OOT_VR_PLACE_SITE, &to_place, 4);
+    }
     oot_vr_base = m->base;
     g_vr_headlook = &oot_vr_cam;
     fprintf(stderr, "[vr] OOT: the head turns the gameplay view (main+0x%llx), the headset's field of view at main+0x%llx\n",

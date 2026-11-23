@@ -4162,6 +4162,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"vr_packet_log")){vr_packet_trace(v);return;}
     if (!strcmp(name,"vr_head_only")){extern void vr_head_only_set(int on);vr_head_only_set(v!=0);return;}
 #if defined(GAME_OOT) && TARGET_OS_OSX
+    if (!strcmp(name, "vr_sword_follow")) { extern void oot_sword_follow_set(int on); oot_sword_follow_set(v); return; }   // 0: the sword's actor stays where the game puts it
     if (!strcmp(name, "vr_keep_whole")) { extern void oot_keep_whole_set(int on); oot_keep_whole_set(v); return; }         // 0: the game may fade Link in first person
     if (!strcmp(name, "vr_arm_per_draw")) { extern void oot_arm_set_per_draw(int on); oot_arm_set_per_draw(v); return; }   // diagnostic: the arms read the controllers at every draw
     if (!strcmp(name, "vr_arm_jitter")) { extern void oot_arm_set_jitter(int on); oot_arm_set_jitter(v); return; }         // diagnostic: each reading moves the hands 1 mm

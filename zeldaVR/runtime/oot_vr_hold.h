@@ -77,3 +77,39 @@ static inline void oot_hold_move(const float from[12], const float to[12], const
     if (how == OOT_HOLD_TURN) for (int i = 0; i < 3; i++) { grip[4 * i] = -to[4 * i]; grip[4 * i + 1] = -to[4 * i + 1]; }
     oot_m_mul(grip, inverse, out);
 }
+/* The record of one palette size and vertex buffer. A town draws about 150 such pairs a frame, so the table is far larger and
+   a pair seen last frame is never what makes room for a new one. */
+enum { OOT_HOLD_WATCHED = 1024, OOT_HOLD_PROBES = 32 };
+static inline oot_hold_watch *oot_hold_watch_for(oot_hold_watch *table, uint64_t size, uint64_t vb) {
+    const unsigned at = (unsigned)((((vb >> 4) ^ size) * 2654435761ull) >> 16) % OOT_HOLD_WATCHED;
+    oot_hold_watch *oldest = &table[at];
+    for (unsigned i = 0; i < OOT_HOLD_PROBES; i++) {
+        oot_hold_watch *e = &table[(at + i) % OOT_HOLD_WATCHED];
+        if (e->size == size && e->vb == vb) return e;
+        if (e->frame < oldest->frame) oldest = e;
+    }
+    memset(oldest, 0, sizeof *oldest);
+    oldest->size = size; oldest->vb = vb; oldest->frame = ~0ull;
+    return oldest;
+}
+/* The weapon in his hand is an actor of its own, and the game's attack shape follows that actor. Its model's palette root keeps a
+   fixed place against his grip and against the actor, learned once while the game alone poses it. */
+typedef struct { float in_grip[12], from_actor[12]; } oot_weapon_fit;
+static inline void oot_weapon_fit_learn(const float grip[12], const float root[12], const float actor[12], oot_weapon_fit *out) {
+    float inverse[12];
+    oot_hold_inverse(grip, inverse); oot_m_mul(inverse, root, out->in_grip);
+    oot_hold_inverse(actor, inverse); oot_m_mul(inverse, root, out->from_actor);
+}
+/* From the game's grip and the player's: the root as the game has it, how it moves, and where the actor goes. */
+static inline void oot_weapon_place(const oot_weapon_fit *fit, const float grip_game[12], const float grip_new[12], int how,
+                                    float root_game[12], float move[12], float actor[12]) {
+    float placed[12], inverse[12];
+    const float at[3] = { 0, 0, 0 };
+    float root_at[3];
+    oot_m_mul(grip_game, fit->in_grip, root_game);
+    oot_m_apply(root_game, at, root_at);
+    oot_hold_move(grip_game, grip_new, root_at, how, move);
+    oot_m_mul(move, root_game, placed);
+    oot_hold_inverse(fit->from_actor, inverse);
+    oot_m_mul(placed, inverse, actor);
+}
