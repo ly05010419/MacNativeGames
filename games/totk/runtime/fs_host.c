@@ -334,6 +334,7 @@ static unsigned create_directory(const char *path) { char p[1100]; unsigned r = 
 static unsigned delete_recursive(const char *path) { char p[1100]; unsigned r = save_change_path(path, p, sizeof p); if (r) return r; struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; return remove_tree(p) ? R_INVALID_ARGUMENT : 0; }
 static unsigned open_directory(uint64_t *out, const char *path, int mode) {
     if (runtime_romfs_owns(path)) { fprintf(stderr, "[totk] OpenDirectory on RomFS %s\n", path); runtime_fail("RomFS directory listing not implemented"); }
+    BOTW_AOC_DIRECTORY(path)
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
     DIR *d = opendir(p); if (!d) return errno_result();
     pthread_mutex_lock(&lock);

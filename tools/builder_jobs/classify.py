@@ -185,6 +185,29 @@ def _folder(path):
     return None
 
 
+def _nup(path, inside):
+    """A .nup by its package table (#2333), never by its extension: Ocarina of Time 2.0.0 and Bananza 3.2.0 are built from one."""
+    from tools import nup_title
+    try:
+        title, versions = nup_title.read(path)
+    except nup_title.READ_ERRORS as e:
+        return Item(str(path), 'ignored', note=t(f'this .nup cannot be read: {e}', f'这个 .nup 读不了：{e}'), inside=inside)
+    if nup_title.builds(title, versions):
+        return Item(str(path), 'nup', game=repo.game_of_title(title), title=title, inside=inside)
+    if title == repo.OOT_TITLE:
+        have, need = ', '.join(map(nup_title.version_name, versions)), nup_title.version_name(nup_title.OOT_VERSION)
+        note = t(f'this Ocarina of Time .nup is version {have}; the build needs {need}',
+                 f'这个时之笛 .nup 的版本是 {have}，打包需要 {need}')
+    elif game := repo.game_of_title(title):
+        name = repo.GAMES.get(game, game)
+        note = t(f'{name} is not built from a .nup: drop its dump folder (base/, updates/)',
+                 f'{name} 不能用 .nup 打包：请放入它的游戏文件夹（base/、updates/）')
+    else:
+        note = t(f'this .nup is of a game this repository does not build (title ID {title})',
+                 f'这个 .nup 的游戏本项目不能打包（游戏编号 {title}）')
+    return Item(str(path), 'ignored', title=title, note=note, inside=inside)
+
+
 def _one(path, depth, out):
     if _hidden(path):
         return
@@ -209,7 +232,7 @@ def _one(path, depth, out):
     elif suffix in GAME_SUFFIXES:
         out.append(('package', path, depth > 0))   # read once the keys among the paths are known (classify)
     elif suffix == '.nup':
-        out.append(Item(str(path), 'nup', game='oot', title=repo.OOT_TITLE))
+        out.append(_nup(path, depth > 0))
     elif depth == 0:
         out.append(Item(str(path), 'ignored', note=t('not a game file, keys file or game folder', '不是游戏文件、keys 或游戏文件夹')))
 
@@ -401,8 +424,8 @@ def _plan(items, work=None, open_fonts=False):
     known = [i for i in bases if i.game]
     base = (known or bases or [None])[0]
     if base is None:
-        other = [i for i in items if i.role == 'ignored' and i.title and not i.inside]
-        if other:   # a game file of a game this repository does not build: said as what it is
+        other = [i for i in items if i.role == 'ignored' and not i.inside and (i.title or Path(i.path).suffix.lower() == '.nup')]
+        if other:   # a game file of a game this repository does not build, or a damaged .nup: said as what it is
             p.blocks.append(other[0].note)
             return p
         updates = by_role('update')

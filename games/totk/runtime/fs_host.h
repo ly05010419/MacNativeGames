@@ -16,7 +16,7 @@ unsigned runtime_romfs_entry_type(int *out, const char *path);
 /* account.c: the local user identity */
 void runtime_account_uid(uint64_t out[2]);
 
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(GAME_DKB)
 /* aoc_romfs.c (Breath of the Wild only): the add-on content volumes. fs_host.c and services.c call them through these
    macros, appended to their existing lines, so the Tears of the Kingdom builds preprocess to the same text. */
 void runtime_aoc_announce(void);
@@ -39,6 +39,7 @@ unsigned runtime_aoc_entry_type(int *out, const char *path);
 #define BOTW_AOC_CLOSE(h) if (runtime_aoc_handle(h)) { runtime_aoc_close(h); return; }
 #define BOTW_AOC_TYPE(out, path) if (runtime_aoc_owns(path)) return runtime_aoc_entry_type((out), (path));
 #define BOTW_AOC_UNMOUNT(name) if (runtime_aoc_owns_name(name)) { runtime_aoc_unmount(name); return; }
+#define BOTW_AOC_DIRECTORY(path) if (runtime_aoc_owns(path)) fprintf(stderr, "[aoc] OpenDirectory %s: add-on packs list no folders\n", (path));
 #define BOTW_AOC_TABLE {"_ZN2nn2fs17MountAddOnContentEPKciPvm", runtime_aoc_mount}, {"_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", runtime_aoc_cache_size},
 #else
 #define BOTW_AOC_OPEN(out, path, mode)
@@ -47,5 +48,6 @@ unsigned runtime_aoc_entry_type(int *out, const char *path);
 #define BOTW_AOC_CLOSE(h)
 #define BOTW_AOC_TYPE(out, path)
 #define BOTW_AOC_UNMOUNT(name)
+#define BOTW_AOC_DIRECTORY(path)
 #define BOTW_AOC_TABLE
 #endif

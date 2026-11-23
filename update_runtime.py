@@ -425,7 +425,7 @@ def check_game_data(data, res, version):
         if not font.is_file() or sha256(font) != fonts[f'FONT{i}_SHA256']:
             raise BuildError(f'{data}: made for other shared fonts than the app\'s ({font.name}); a full rebuild with '
                              f'build_app.py is required')
-    if version.startswith('botw'):
+    if version.startswith('botw') or (data / 'aoc-config.txt').is_file():   # Bananza's: only an app with add-ons has it
         aoc = config(data / 'aoc-config.txt')
         for index in (1, 2):
             if int(aoc['AOC_PRESENT_MASK']) >> (index - 1) & 1 and \
@@ -931,7 +931,7 @@ def main(argv):
         new_res = tmp / 'Contents/Resources/totk'
         new_data = new_res / f'build/game-data/{version}'
         if data != res / f'build/game-data/{version}':
-            for name in build_app.game_data_files(version):
+            for name in build_app.game_data_files(version) + tuple(n for n in build_app.game_data_optional(version) if (data / n).is_file()):
                 clone(data / name, new_data / name)
         if translate:
             replace_seed(tree, tmp, version, game, logs, bundle_id)

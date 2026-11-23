@@ -317,7 +317,7 @@ def main():
                     (tree/f'extracted/{a.version}/romfs-patches-out',res/'romfs-patches-out'),
                     (tree/'extracted/firmware/shared-fonts',res/'shared-fonts')]:
         if src.is_dir(): copy_tree(src,dst)   # only the overlays and fonts this game actually has
-    if botw:   # the add-on content packs the build extracted (games/botw/scripts/extract_aoc_romfs.py), read through TOTK_AOC (main.m)
+    if botw or a.version=='dkb':   # the add-on content packs the build extracted (extract_aoc_romfs.py; Bananza: import_dump.py), read through TOTK_AOC (main.m)
         aoc=tree/f'extracted/{a.version}/aoc'
         for pack in sorted(aoc.iterdir()) if aoc.is_dir() else []:
             if (pack/'romfs.bin').is_file() and (pack/'runtime-index.bin').is_file():

@@ -329,6 +329,12 @@ def scan_nintendo(root, path):
     return path, 1, nintendo_shaders(Source(root).open(path)[:], path)
 
 
+def nintendo_files(src):
+    """The files of a RomFS that hold Nintendo's shader resources."""
+    return sorted(f for f in src.files if f.startswith(('Shader/', 'Lib/', 'Effect/', 'Layout/'))
+                  and f.endswith(('.zs', '.bnsh', '_nvn2_shader.bin')))
+
+
 def write_corpus(path, shaders):
     tmp = Path(str(path) + '.partial')
     with open(tmp, 'wb') as f:
@@ -343,6 +349,8 @@ def write_corpus(path, shaders):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--romfs', type=Path, required=True)
+    p.add_argument('--extra-romfs', type=Path, action='append', default=[],
+                   help="an add-on pack's packed RomFS: its Nintendo shaders too (Bananza's add-on: 648 shaders the game has not)")
     p.add_argument('--modules', type=Path, nargs='+', required=True, help='the game modules as ELF files (extracted/<v>/elf/*.elf)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
@@ -357,14 +365,14 @@ def main():
     src = Source(a.romfs)
     rdbs = sorted(f for f in src.files if f.endswith(('.fdata', '.file')))
     link = ('LI_C0_R.IDX', 'LD_C0_R.BIN') if {'LI_C0_R.IDX', 'LD_C0_R.BIN'} <= src.files.keys() else None
-    nintendo = sorted(f for f in src.files if f.startswith(('Shader/', 'Lib/', 'Effect/', 'Layout/'))
-                      and f.endswith(('.zs', '.bnsh', '_nvn2_shader.bin')))
+    nintendo = nintendo_files(src)
     if not rdbs and not link and not nintendo:
         sys.exit(f'[RED] {a.romfs}: no RDB data files and no LINKDATA: not a Koei Tecmo RomFS this script reads')
     shaders, per_source, failed, startup = {}, {}, [], set()
     with concurrent.futures.ProcessPoolExecutor(a.jobs) as ex:
         jobs = [ex.submit(scan_module, m) for m in a.modules] + [ex.submit(scan_rdb, a.romfs, f) for f in rdbs]
         jobs += [ex.submit(scan_nintendo, a.romfs, f) for f in nintendo]
+        jobs += [ex.submit(scan_nintendo, extra, f) for extra in a.extra_romfs for f in nintendo_files(Source(extra))]
         if link:
             jobs.append(ex.submit(scan_linkdata, a.romfs, *link))
         for j in concurrent.futures.as_completed(jobs):

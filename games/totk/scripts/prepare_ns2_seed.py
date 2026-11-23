@@ -269,10 +269,15 @@ def main():
     all_keys = corpus.with_suffix('.keys.json')   # every shader the game ships (IDENTITY)
     want = {'romfs_sha256': romfs_sha, 'modules': {e.name: sha256(e) for e in sorted(elf.glob('*.elf'))},
             'tool': sha256(Path(__file__).resolve().parent / 'ns2_shader_corpus.py'), 'list': sha256(a.list)}
+    # The add-on packs of this build (build_app.py step_aoc_ns2): their shaders are seeded too. Named in the stamp only when
+    # there are some, so a build without add-ons keeps the corpus it has.
+    addons = sorted(p.parent for p in Path(f'extracted/{v}/aoc').glob('*/index.json'))
+    if addons:
+        want['addons'] = {p.name: json.loads((p / 'index.json').read_text())['romfs_sha256'] for p in addons}
     if not corpus.is_file() or not all_keys.is_file() or not stamp.is_file() or json.loads(stamp.read_text()) != want:
         corpus.parent.mkdir(parents=True, exist_ok=True)
         run([sys.executable, Path(__file__).resolve().parent / 'ns2_shader_corpus.py', '--romfs', romfs,
-             '--modules', *sorted(elf.glob('*.elf')), '--out', corpus, '--listed', a.list, '--all-keys', all_keys],
+             *[x for p in addons for x in ('--extra-romfs', p)], '--modules', *sorted(elf.glob('*.elf')), '--out', corpus, '--listed', a.list, '--all-keys', all_keys],
             a.logs / f'ns2-corpus-{v}.log')
         stamp.write_text(json.dumps(want))
 

@@ -108,10 +108,12 @@ static Result ec_size(void *self, size_t *n) { (void)self; if (n) *n = 0; return
 static Result ec_get(void *self, void *buf, size_t n) { (void)self; (void)buf; (void)n; return RES_FAIL; }
 static Result ec_show_product(uint64_t ns_uid, const void *user) { (void)ns_uid; (void)user; fprintf(stderr, "[ns2] eShop product page: not available offline\n"); return RES_FAIL; }
 static void aoc_lost(const int *idx, int n) { (void)idx; fprintf(stderr, "[ns2] aoc::ShowAddOnContentLostError (%d entries): the error applet is not shown\n", n); }
-/* Add-on content is not packed for a Switch 2 dump yet (docs/ns2-port.md, open): no volume to mount. */
+#ifndef GAME_DKB   /* Bananza's add-on content is mounted by aoc_romfs.c */
+/* Add-on content is not packed for this Switch 2 game (docs/ns2-port.md, open): no volume to mount. */
 static Result aoc_query(uint64_t *size, int index) { (void)index; if (size) *size = 0; return RES_OK; }
 static Result aoc_mount(const char *name, int index, void *cache, size_t size) {
     (void)cache; (void)size; fprintf(stderr, "[ns2] [RED] fs::MountAddOnContent(%s, %d): add-on content is not packed yet\n", name ? name : "?", index); return 0x7d402u; }
+#endif
 static void album_orientation(int o) { (void)o; }   /* screenshots are not the system's here */
 static Result nfp_no_device(const void *h) { (void)h; return 0x1073u; }   /* nfp::ResultNfcDeviceNotFound */
 /* nn::time::ToPosixTime through the time zone service: the host's mktime (its local zone), as nxnative hle_time.c. */
@@ -227,7 +229,9 @@ void *runtime_ns2_override(const char *name) {
         {"_ZN2nn2ec19ShopServiceAccessor13AsyncResponse3GetEPvm", ec_get},
         {"_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidERKNS_7account10UserHandleE", ec_show_product},
         {"_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", aoc_lost},
+#ifndef GAME_DKB
         {"_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", aoc_query}, {"_ZN2nn2fs17MountAddOnContentEPKciPvm", aoc_mount},
+#endif
         {"_ZN2nn2oe24SetAlbumImageOrientationENS_5album16ImageOrientationE", album_orientation},
         {"_ZN2nn3nfp7UnmountERKNS0_12DeviceHandleE", nfp_no_device},
         {"_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeE", to_posix},
