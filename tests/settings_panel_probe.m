@@ -1160,13 +1160,11 @@ static void mfx_target_probe(void) {
         assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0 && target_file() == 0);
         assert([row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"3840×2160", @"5120×2880"])]); stopped(@"Upscale to", @"Window");
         slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == 0);   /* it stays dropped */
-#ifndef GAME_BOTW
-        /* A 5K app (1.4.3): 4K + MetalFX is today's 4K to 5K, 5K has nothing larger, and the switch comes back at 2K.
-           1.2.1: 4K has no MetalFX mode, the switch greyed there. */
+#ifdef TOTK_GAME_V143
+        /* A 5K app (1.4.3): 4K + MetalFX is today's 4K to 5K, 5K has nothing larger, and the switch comes back at 2K. */
         settings_test_output_cap(5120, 2880); settings_rebuild(); tick();
         slide(@"Resolution", @"2K (2560×1440)"); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);
         slide(@"Resolution", @"4K (3840×2160)");
-#ifdef TOTK_GAME_V143
         assert([row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)", @"4K (3840×2160)", @"5K (5120×2880)"])]);
         assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
         assert(!mfxup_output_enabled() && !mfxup_enabled() && switched(@"MetalFX") && [row(@"Upscale to").choices isEqualToArray:@[@"5120×2880"]]);
@@ -1175,15 +1173,33 @@ static void mfx_target_probe(void) {
         assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_5K && fakeMfxTarget == 0 && greyed(@"MetalFX") && !switched(@"MetalFX") && greyed(@"Upscale to"));
         slide(@"Resolution", @"2K (2560×1440)");
         assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0);
-#else
-        assert([row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)", @"4K (3840×2160)"])]);
-        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && fakeMfxTarget == 0 && greyed(@"MetalFX") && !switched(@"MetalFX"));
-        slide(@"Resolution", @"2K (2560×1440)"); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);   /* the switch as it was left */
-#endif
         settings_test_output_cap(2560, 1440); settings_rebuild(); tick();
 #endif
         slide(@"Resolution", @"1080p"); metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
     }
+#ifndef TOTK_GAME_V143
+    /* A 4K app on 1.2.1 and Breath of the Wild (slice 2): 4K + MetalFX is 1.4.3's 4K to 5K, a 3840x2160 canvas with both
+       MetalFX stages off and the fixed 5K target, so the switch is no longer greyed at 4K. Breath of the Wild 1.9.0 is an
+       automatic start here (its canvas is otherwise fixed at 1080p in this probe). */
+    if (!native) metalfx(NO);   /* 1.9.0 comes here from 1080p + MetalFX */
+    assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    settings_test_output_cap(3840, 2160); settings_rebuild(); tick();
+    assert([row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)", @"4K (3840×2160)"])]);
+    slide(@"Resolution", @"4K (3840×2160)");
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && runtime_output_size_current() == SIZE(3840, 2160) && fakeMfxTarget == 0);
+    assert(!greyed(@"MetalFX") && !switched(@"MetalFX") && greyed(@"Upscale to"));
+    metalfx(YES);
+    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && runtime_output_size_current() == SIZE(3840, 2160));
+    assert(fakeMfxTarget == mfx_target_pack(5120, 2880) && !mfxup_output_enabled() && !mfxup_enabled());
+    assert(!greyed(@"Upscale to") && [row(@"Upscale to").choices isEqualToArray:@[@"5120×2880"]]); stopped(@"Upscale to", @"5120×2880");
+    window_is(2880);
+    slide(@"Resolution", @"2K (2560×1440)");   /* the switch as it was left; 2K's window, the 5K target gone */
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0);
+    slide(@"Resolution", @"4K (3840×2160)"); assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
+    metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && fakeMfxTarget == 0);   /* no 5K texture left behind */
+    slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    settings_test_output_cap(2560, 1440); settings_rebuild(); tick();
+#endif
     settings_show(0);
 
     /* A start: an old save (no target file) comes back as the same picture; a saved target comes back. */
@@ -1193,12 +1209,26 @@ static void mfx_target_probe(void) {
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == mfx_target_pack(3840, 2160));
     restore_output(OUTPUT_MODE_OFF, "3840x2160");   /* kept for when MetalFX is on, nothing upscaled now */
     assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0 && target_file() == mfx_target_pack(3840, 2160));
-#ifdef TOTK_GAME_V143
-    settings_test_output_4k(1);
+    /* A save of 4K + MetalFX to 5K (from 1.4.3's pop-up, or slice 2's 1.2.1 and Breath of the Wild) in a 4K app. */
+    settings_test_output_cap(3840, 2160);
     restore_output(OUTPUT_MODE_4K_TO_5K_METALFX, NULL);
-    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
-    settings_test_output_4k(0);
+    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && runtime_output_size_current() == SIZE(3840, 2160));
+    assert(fakeMfxTarget == mfx_target_pack(5120, 2880) && !mfxup_output_enabled() && !mfxup_enabled());
+#ifdef GAME_BOTW190
+    /* Then the game's first present: 1.9.0 turns MetalFX off on a canvas above 1080p that is not native 2K's (#1806).
+       This mode uses only the fixed target, which that rule leaves alone. The window stage, left on here as a start
+       with TOTK_MFX_OUTPUT would have it, shows the rule ran. */
+    void settings_test_output_first_present(void);
+    mfxup_output_set(1);
+    settings_test_output_first_present();
+    assert(!mfxup_output_enabled() && fakeMfxTarget == mfx_target_pack(5120, 2880) && runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX);
 #endif
+    /* The runtime itself sends the fixed 5K target with the mode and takes it back with any other (as 1.4.3 always did),
+       not only the settings layer after it. */
+    fakeMfxTarget = 0xffffffffu;
+    assert(runtime_output_mode_set(OUTPUT_MODE_4K_TO_5K_METALFX) && fakeMfxTarget == mfx_target_pack(5120, 2880));
+    assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K) && fakeMfxTarget == 0 && runtime_output_mode() == OUTPUT_MODE_NATIVE_4K);
+    settings_test_output_cap(2560, 1440);
     /* A target file that is not one of the stops, or not one for 1080p, means the window. */
     const char *bad[] = {"abc", "9999x9999", "1280x720"};
     for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
@@ -1212,7 +1242,7 @@ static void mfx_target_probe(void) {
     for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Upscale to"]) assert(r.get() == 0);   /* nor kept for the panel */
     unsetenv("TOTK_MFX_OUTPUT");
     /* The VR page keeps today's resolution pop-up (1.4.3's labels checked); a plain mode picked there leaves no fixed
-       target behind (1.2.1 and Breath of the Wild never clear the flag themselves). */
+       target behind. */
     restore_output(OUTPUT_MODE_METALFX, "3840x2160"); assert(fakeMfxTarget == mfx_target_pack(3840, 2160));
     fakeVrEnabled = 1;
     TOTKSettingRow *vr = nil; for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Game render resolution"]) vr = r;

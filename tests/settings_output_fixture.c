@@ -7,10 +7,10 @@
 #include "../games/totk/runtime/game_patches.c"
 #endif
 #include <assert.h>
+#include <limits.h>
+#include <sys/stat.h>
 
-#ifndef GAME_BOTW190
 static _Atomic uint64_t page[8];
-#endif
 #ifdef GAME_BOTW
 static uint8_t *testMain;
 static uint8_t testCamera[0x100];
@@ -55,15 +55,45 @@ void settings_test_output_4k(int on) {
 }
 /* This run's app as if built for a larger canvas (w x h: 2560x1440, 3840x2160 or 5120x2880): the render sizes the
    settings panel offers follow. Tears of the Kingdom: the swapchain's size (1.4.3's 4K + MetalFX to 5K follows it too,
-   picture_4k_to_5k_available). Breath of the Wild: nothing yet; its native 4K / 5K come from marker files in the app
-   (native_4k_app, read once and kept), so a test cannot switch them here. */
+   picture_4k_to_5k_available). Breath of the Wild: an automatic start (output_parse) with that largest canvas, the
+   synthetic canvas page of settings_test_output_init (1.9.0's too, which is otherwise fixed at 1080p here). Its native
+   4K / 5K also need the app's marker files (native_4k_app / native_5k_app), which production reads once and keeps: the
+   first cap at 4K or 5K shows them in a synthetic app folder for that read, and from then on the largest canvas alone
+   decides. Markers already read as a 2K app's fail here instead of leaving the test on a 2K app. */
+#ifdef GAME_BOTW
+static void test_app_markers(unsigned w) {
+    char app[PATH_MAX], dir[PATH_MAX], file[PATH_MAX], cwd[PATH_MAX];
+    snprintf(app, sizeof app, "%s/botw-app-XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    assert(mkdtemp(app) && getcwd(cwd, sizeof cwd));
+    snprintf(dir, sizeof dir, "%s/extracted", app); assert(!mkdir(dir, 0700));
+    snprintf(dir, sizeof dir, "%s/extracted/" TOTK_GAME_DIR, app); assert(!mkdir(dir, 0700));
+    const char *names[2] = {"native-4k", "native-5k"};
+    for (int i = 0; i < 1 + (w >= 5120); i++) {
+        snprintf(file, sizeof file, "%s/%s", dir, names[i]);
+        FILE *f = fopen(file, "w"); assert(f); fclose(f);
+    }
+    assert(!chdir(app));   /* production reads extracted/<game>/native-4k relative to the app's folder */
+    assert(native_4k_app() && native_5k_app() == (w >= 5120));
+    assert(!chdir(cwd));
+    for (int i = 0; i < 1 + (w >= 5120); i++) { snprintf(file, sizeof file, "%s/%s", dir, names[i]); unlink(file); }
+    rmdir(dir); snprintf(dir, sizeof dir, "%s/extracted", app); rmdir(dir); rmdir(app);
+}
+#endif
 void settings_test_output_cap(unsigned w, unsigned h) {
 #ifndef GAME_BOTW
     output_w = w; output_h = h;
 #else
-    (void)w; (void)h;
+    static int markers;
+    if (w >= 3840 && !markers) { test_app_markers(w); markers = 1; }
+    g_out_mode = OUT_AUTO; g_out_w = w; g_out_h = h;
+    g_out_main = testMain; g_out_page = page;
+    if (!atomic_load(&g_out_cur)) output_page(1920, 1080);   /* an automatic start's first canvas (patch_output_res) */
 #endif
 }
+#ifdef GAME_BOTW
+/* The game's first present (runtime_frame_step_update): botw_output_tick, once, with 1.9.0's start rule for MetalFX. */
+void settings_test_output_first_present(void) { botw_output_tick(); }
+#endif
 /* The aspect ratio as runtime/aspect_patch.h sets it (production code), with a synthetic data-page slot and a window of
    ratio view instead of the stubs aspect_install writes into the game. */
 void settings_test_aspect_init(double view) {
