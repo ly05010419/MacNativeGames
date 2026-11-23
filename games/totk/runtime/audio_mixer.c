@@ -13,10 +13,17 @@
 #include "audio_mixer.h"
 #include "audio_reverb.h"
 #include "audio_effects.h"
+#include "audio_route.h"
+#include "audio_spatial.h"
 #ifdef GAME_BOTW
 #include "audio_ramp.h"
 #endif
 #include <AudioToolbox/AudioToolbox.h>
+#if !TARGET_OS_IPHONE
+#include <CoreAudio/CoreAudio.h>
+#include <dispatch/dispatch.h>
+#include <mach/mach.h>
+#endif
 #include <math.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -25,6 +32,7 @@
 
 #define MAX_FRAME 1024
 #define RING_FRAMES 16384            /* audio frames, ~340 ms at 48 kHz */
+#define MAX_SLICE 4096               /* the most frames one output callback asks for (AUSpatialMixer's input scratch) */
 #define SPLITTER_UNUSED 0xffffffffu
 
 typedef struct { float vol[24]; int32_t dest; uint8_t used; AudrenBiquadFloat biquads[2]; float state[2][2]; } SplitDest;
@@ -39,7 +47,19 @@ typedef struct Mixer {
     float *buf; int nbuf, frame;
     int *offset;                                   /* first mix buffer of each mix id */
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
-    AudioComponentInstance unit; int unit_ok, rate, channels;
+    AudioComponentInstance unit; int unit_ok, rate, channels;   /* channels: the mix and ring width (6 whenever spatial is on) */
+    /* Spatial audio (audio_route.h): the route of the current output, the width it sends (out_ch; = channels when legacy),
+       whether anything consumes the ring (an AudioUnit or the AVSampleBufferAudioRenderer feeder), the AUSpatialMixer of
+       the speaker route, the system renderer of the headphone route, the game's downmix for the stereo fold. */
+    AudioRoute route; int out_ch; _Atomic int consumer; uint32_t device;
+    AudioComponentInstance spatial_unit; int spatial_ok; void *system_spatial;
+    _Atomic float fold[3];
+    float slice_scratch[MAX_SLICE * 6];
+    /* Device-paced mixing: the consumer posts pace_sem after each read; the renderer thread waits on it (audio_mixer_pace). */
+    int paced; _Atomic uint32_t period; AudioPace pace;
+#if !TARGET_OS_IPHONE
+    semaphore_t pace_sem; int pace_sem_ok;
+#endif
     float ring[RING_FRAMES * 6]; _Atomic uint64_t wr, rd, underruns, overruns;
     _Atomic int playing; int ready; _Atomic uint64_t missing_frames, trims, trimmed_frames;
     _Atomic uint64_t flush_until; _Atomic unsigned stop_epoch; unsigned callback_epoch;
@@ -60,38 +80,73 @@ typedef struct Mixer {
 static _Atomic float device_volume = 1.0f;
 static _Atomic int g_active_channels = 0;
 
+/* Spatial audio (audio_route.h): TOTK_SPATIAL_AUDIO, else the settings panel's audio-spatial.txt (written only when the
+   row is changed, never here), else on (auto) for Tears of the Kingdom on the Mac; off for the other games built from this
+   mixer (Breath of the Wild, the Switch 2 titles) and on iOS. TOTK_AUDIO_OFF (no device) keeps the output as before.
+   Read once, before the first renderer opens: the channel count the game is told cannot change while it runs. */
+#if !TARGET_OS_IPHONE && !defined(GAME_BOTW) && !defined(GAME_NS2)
+#define AUDIO_SPATIAL_DEFAULT AUDIO_SPATIAL_AUTO
+#else
+#define AUDIO_SPATIAL_DEFAULT AUDIO_SPATIAL_OFF
+#endif
+static int spatial_on(void) {
+    static int mode = -1;
+    if (mode >= 0) return mode;
+#if TARGET_OS_IPHONE
+    mode = AUDIO_SPATIAL_OFF;
+#else
+    const char *env = getenv("TOTK_SPATIAL_AUDIO");
+    char word[32] = {0}, *w = word;
+    if (runtime_setting_word("audio-spatial.txt", word, sizeof word)) {
+        while (*w == ' ' || *w == '\t') w++;
+        size_t n = strlen(w); while (n && (w[n - 1] == '\n' || w[n - 1] == '\r' || w[n - 1] == ' ' || w[n - 1] == '\t')) w[--n] = 0;
+    }
+    if (audio_spatial_parse(env) == AUDIO_SPATIAL_UNKNOWN) fprintf(stderr, "[totk-audio] 【红】TOTK_SPATIAL_AUDIO=%s is not auto or 0: ignored\n", env);
+    if (audio_spatial_parse(w) == AUDIO_SPATIAL_UNKNOWN) fprintf(stderr, "[totk-audio] 【红】audio-spatial.txt says \"%s\", not auto or off: ignored\n", w);
+    mode = audio_spatial_mode(env, w, AUDIO_SPATIAL_DEFAULT);
+    if (getenv("TOTK_AUDIO_OFF")) mode = AUDIO_SPATIAL_OFF;
+    fprintf(stderr, "[audio] spatial audio %s (%s)\n", mode == AUDIO_SPATIAL_AUTO ? "auto" : "off",
+            audio_spatial_parse(env) >= 0 ? "TOTK_SPATIAL_AUDIO" : audio_spatial_parse(w) >= 0 ? "audio-spatial.txt" :
+            getenv("TOTK_AUDIO_OFF") ? "TOTK_AUDIO_OFF" : "default");
+#endif
+    return mode;
+}
+
 #if !TARGET_OS_IPHONE
 /* Whether the output device's own channel layout has a centre and an LFE channel (after PR #1224): a channel count of 6
    or more alone also matches a recording interface or an 8-channel HDMI output wired to two speakers, where 5.1 would
    send the dialogue (centre) and the surrounds to channels nobody hears. A layout that cannot be read counts as stereo;
    TOTK_AUDIO_CHANNELS=6 forces 5.1. */
-static int layout_has_centre_and_lfe(AudioComponentInstance unit) {
-    UInt32 size = 0; Boolean writable = false;
-    if (AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output, 0, &size, &writable) != noErr ||
-        size < sizeof(AudioChannelLayout)) return 0;
-    AudioChannelLayout *layout = malloc(size), *expanded = NULL;
-    if (!layout || AudioUnitGetProperty(unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output, 0, layout, &size) != noErr) {
-        free(layout); return 0;
-    }
-    const AudioChannelLayout *use = layout;
-    if (layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap) {
-        int found = (layout->mChannelBitmap & kAudioChannelBit_Center) && (layout->mChannelBitmap & kAudioChannelBit_LFEScreen);
-        free(layout); return found;
-    }
+static int channel_layout_has_centre_and_lfe(const AudioChannelLayout *layout) {   /* the unit's or the device's */
+    const AudioChannelLayout *use = layout; AudioChannelLayout *expanded = NULL;
+    if (layout->mChannelLayoutTag == kAudioChannelLayoutTag_UseChannelBitmap)
+        return (layout->mChannelBitmap & kAudioChannelBit_Center) && (layout->mChannelBitmap & kAudioChannelBit_LFEScreen);
     if (layout->mChannelLayoutTag != kAudioChannelLayoutTag_UseChannelDescriptions) {   /* a named layout: its channels */
         AudioChannelLayoutTag tag = layout->mChannelLayoutTag; UInt32 esize = 0;
         if (AudioFormatGetPropertyInfo(kAudioFormatProperty_ChannelLayoutForTag, sizeof tag, &tag, &esize) == noErr &&
             esize >= sizeof(AudioChannelLayout) && (expanded = malloc(esize)) &&
             AudioFormatGetProperty(kAudioFormatProperty_ChannelLayoutForTag, sizeof tag, &tag, &esize, expanded) == noErr) use = expanded;
-        else { free(expanded); free(layout); return 0; }
+        else { free(expanded); return 0; }
     }
     int centre = 0, lfe = 0;
     for (UInt32 i = 0; i < use->mNumberChannelDescriptions; i++) {
         centre |= use->mChannelDescriptions[i].mChannelLabel == kAudioChannelLabel_Center;
         lfe |= use->mChannelDescriptions[i].mChannelLabel == kAudioChannelLabel_LFEScreen;
     }
-    free(expanded); free(layout);
+    free(expanded);
     return centre && lfe;
+}
+static int layout_has_centre_and_lfe(AudioComponentInstance unit) {
+    UInt32 size = 0; Boolean writable = false;
+    if (AudioUnitGetPropertyInfo(unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output, 0, &size, &writable) != noErr ||
+        size < sizeof(AudioChannelLayout)) return 0;
+    AudioChannelLayout *layout = malloc(size);
+    if (!layout || AudioUnitGetProperty(unit, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output, 0, layout, &size) != noErr) {
+        free(layout); return 0;
+    }
+    int found = channel_layout_has_centre_and_lfe(layout);
+    free(layout);
+    return found;
 }
 #endif
 
@@ -140,6 +195,13 @@ static int detect_system_channels(void) {
 static int get_active_channel_count(void) {
     int cur = atomic_load(&g_active_channels);
     if (cur == 2 || cur == 6) return cur;
+    if (spatial_on()) {   /* the game renders 5.1 whatever the device; the output routes it (audio_route.h) */
+        int n = audio_spatial_game_channels(getenv("TOTK_AUDIO_CHANNELS"));
+        atomic_store(&g_active_channels, n);
+        fprintf(stderr, "[totk-audio] Number of audio channel detected: %d (spatial audio: the game renders %s; fixed for this run)\n",
+                n, n == 6 ? "5.1" : "stereo, TOTK_AUDIO_CHANNELS=2");
+        return n;
+    }
     int det = detect_system_channels();
     atomic_store(&g_active_channels, det);
     fprintf(stderr, "[totk-audio] Number of audio channel detected: %d\n", det);
@@ -211,52 +273,83 @@ void (*runtime_audio_tap)(float *out, unsigned frames, int rate);
    2026-10-29: water / wind in a loop under "shader cache ready" and "warming"). What it writes meanwhile is dropped. */
 static _Atomic int g_audio_hold = 1;
 void runtime_audio_hold(int on) { atomic_store_explicit(&g_audio_hold, on != 0, memory_order_release); }
-static OSStatus pull(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
-    (void)flags; (void)ts; (void)bus;
-    Mixer *m = ctx; float *out = io->mBuffers[0].mData;
+/* One read of the ring for whichever consumer the output has (the AudioUnit's callback, AUSpatialMixer's input, the
+   AVSampleBufferAudioRenderer feeder): `frames` frames out_ch wide into out. The ring is m->channels wide: the same width
+   is copied; 5.1 to stereo is folded with the game's downmix (audio_fold_51, the spatial stereo route). The start and
+   re-start prefill, the backlog trim after a stall and the zero fill on an underrun are as before. Real-time safe
+   (atomics only); it wakes the device-paced renderer thread. */
+static void ring_read(Mixer *m, float *out, UInt32 frames, int out_ch) {
     int ch = m->channels ? m->channels : 2;
     atomic_fetch_add(&m->callback_frames,frames);
     unsigned epoch=atomic_load_explicit(&m->stop_epoch,memory_order_acquire);
     uint64_t rd = atomic_load(&m->rd), wr = atomic_load_explicit(&m->wr, memory_order_acquire), have = wr - rd;
     if(epoch!=m->callback_epoch){uint64_t until=atomic_load_explicit(&m->flush_until,memory_order_acquire);if(until>rd){rd=until<wr?until:wr;atomic_store_explicit(&m->rd,rd,memory_order_release);}have=wr-rd;m->callback_epoch=epoch;m->ready=0;}
     if(!atomic_load_explicit(&m->playing,memory_order_acquire)||atomic_load_explicit(&g_audio_hold,memory_order_acquire)){
-        memset(out,0,(size_t)frames*(size_t)ch*sizeof(float));m->ready=0;atomic_store_explicit(&m->rd,wr,memory_order_release);return noErr;
+        memset(out,0,(size_t)frames*(size_t)out_ch*sizeof(float));m->ready=0;atomic_store_explicit(&m->rd,wr,memory_order_release);goto done;
     }
     uint64_t prefill=(uint64_t)m->frame*(uint64_t)prefill_blocks();if(prefill<frames)prefill=frames;if(prefill>RING_FRAMES)prefill=RING_FRAMES;
     if(!m->ready){
         /* prefill_blocks() 5-ms blocks (default four, 20 ms) of scheduling headroom for the producer.
            A real underrun still counts and requires a fresh prefill. */
-        if(have<prefill){memset(out,0,(size_t)frames*(size_t)ch*sizeof(float));return noErr;}
+        if(have<prefill){memset(out,0,(size_t)frames*(size_t)out_ch*sizeof(float));goto done;}
         m->ready=1;
     }
     /* After a device stall (Bluetooth, CoreAudio) the producer, paced by the wall clock, keeps the backlog it built up:
-       drop all but the prefill once it passes prefill + 30 ms, so the delay does not stay (counted in the output level line). */
+       drop all but the prefill once it passes prefill + 30 ms, so the delay does not stay (counted in the output level line).
+       Device-paced, the backlog stays at the prefill plus one device period; the trim is then only for a stall the pacing
+       did not absorb. */
     uint64_t max_backlog = prefill + (uint64_t)m->frame * 6u;
-    if (m->unit_ok && have > max_backlog) {
+    if (atomic_load_explicit(&m->consumer, memory_order_relaxed) && have > max_backlog) {
         atomic_fetch_add(&m->trims, 1); atomic_fetch_add(&m->trimmed_frames, have - prefill);
         rd = wr - prefill;
         have = prefill;
     }
     UInt32 n = frames < have ? frames : (UInt32)have;
     uint64_t nonzero=0;
-    for (UInt32 i = 0; i < n; i++) {
-        uint64_t k = (rd + i) % RING_FRAMES;
-        int frame_nz = 0;
-        for (int c = 0; c < ch; c++) {
-            float s = m->ring[ch * k + c];
-            out[ch * i + c] = s;
-            if (s != 0) frame_nz = 1;
+    if (out_ch == ch) {
+        for (UInt32 i = 0; i < n; i++) {
+            uint64_t k = (rd + i) % RING_FRAMES;
+            int frame_nz = 0;
+            for (int c = 0; c < ch; c++) {
+                float s = m->ring[ch * k + c];
+                out[ch * i + c] = s;
+                if (s != 0) frame_nz = 1;
+            }
+            if (frame_nz) nonzero++;
         }
-        if (frame_nz) nonzero++;
+    } else if (ch == 6 && out_ch == 2) {
+        float coef[3] = {atomic_load_explicit(&m->fold[0], memory_order_relaxed), atomic_load_explicit(&m->fold[1], memory_order_relaxed),
+                         atomic_load_explicit(&m->fold[2], memory_order_relaxed)};
+        for (UInt32 i = 0; i < n; i++) {
+            const float *f = &m->ring[6 * ((rd + i) % RING_FRAMES)];
+            audio_fold_51(f, coef, &out[2 * i], &out[2 * i + 1]);
+            if (out[2 * i] != 0 || out[2 * i + 1] != 0) nonzero++;
+        }
+    } else {   /* any other pair of widths (not used by a route): the common channels, the rest silent */
+        for (UInt32 i = 0; i < n; i++) {
+            uint64_t k = (rd + i) % RING_FRAMES;
+            for (int c = 0; c < out_ch; c++) out[out_ch * i + c] = c < ch ? m->ring[ch * k + c] : 0.0f;
+        }
     }
     atomic_fetch_add(&m->callback_nonzero,nonzero);
-    if (n < frames) { memset(out + (size_t)ch * n, 0, (size_t)(frames - n) * (size_t)ch * sizeof(float));atomic_fetch_add(&m->underruns,1);atomic_fetch_add(&m->missing_frames,frames-n);m->ready=0; }
+    if (n < frames) { memset(out + (size_t)out_ch * n, 0, (size_t)(frames - n) * (size_t)out_ch * sizeof(float));atomic_fetch_add(&m->underruns,1);atomic_fetch_add(&m->missing_frames,frames-n);m->ready=0; }
     atomic_store_explicit(&m->rd, rd + n, memory_order_release);
+done:
+#if !TARGET_OS_IPHONE
+    if (m->pace_sem_ok) semaphore_signal(m->pace_sem);
+#endif
+    return;
+}
+static OSStatus pull(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
+    (void)flags; (void)ts; (void)bus;
+    Mixer *m = ctx; float *out = io->mBuffers[0].mData;
+    int out_ch = m->out_ch ? m->out_ch : m->channels ? m->channels : 2;
+    ring_read(m, out, frames, out_ch);
     void (*tap)(float *, unsigned, int) = runtime_audio_tap;
-    if (tap) tap(out, frames, m->rate);
+    if (tap && out_ch == 2) tap(out, frames, m->rate);   /* zeldaVR's headset tap takes stereo */
     return noErr;
 }
-static void output_open(Mixer *m, int rate) {
+static void output_open_legacy(Mixer *m, int rate) {
     if (getenv("TOTK_AUDIO_OFF")) {
         const char *env = getenv("TOTK_AUDIO_CHANNELS");
         m->channels = (env && !strcmp(env, "6")) ? 6 : 2;
@@ -323,22 +416,290 @@ static void output_open(Mixer *m, int rate) {
         m->channels = 2;
         return;
     }
-    m->unit_ok = 1;
+    m->unit_ok = 1; m->out_ch = m->channels; atomic_store(&m->consumer, 1);
     atomic_store(&g_active_channels, m->channels);
     fprintf(stderr, "[totk-audio] CoreAudio output %d Hz %s (%d channels)\n", rate, m->channels == 6 ? "5.1 surround" : "stereo", m->channels);
+}
+static pthread_mutex_t g_out_mu = PTHREAD_MUTEX_INITIALIZER;
+static Mixer *g_out[4];
+/* ---------- Spatial audio routes (macOS; audio_route.h) ---------- */
+#if !TARGET_OS_IPHONE
+static int hal_get(AudioObjectID o, AudioObjectPropertySelector sel, AudioObjectPropertyScope scope, void *data, UInt32 size) {
+    AudioObjectPropertyAddress a = {sel, scope, kAudioObjectPropertyElementMain}; UInt32 n = size;
+    return AudioObjectGetPropertyData(o, &a, 0, NULL, &n, data) == noErr && n == size;
+}
+static void *hal_get_all(AudioObjectID o, AudioObjectPropertySelector sel, AudioObjectPropertyScope scope, UInt32 *size) {
+    AudioObjectPropertyAddress a = {sel, scope, kAudioObjectPropertyElementMain}; *size = 0;
+    if (AudioObjectGetPropertyDataSize(o, &a, 0, NULL, size) != noErr || !*size) return NULL;
+    void *d = malloc(*size);
+    if (d && AudioObjectGetPropertyData(o, &a, 0, NULL, size, d) != noErr) { free(d); d = NULL; }
+    return d;
+}
+/* The default output device and what the route decision needs (read-only HAL queries; no unit, no I/O). */
+static AudioDeviceInfo query_default_output(AudioObjectID *id, char *name, size_t name_size) {
+    AudioDeviceInfo info = {0}; *id = 0; snprintf(name, name_size, "?");
+    if (!hal_get(kAudioObjectSystemObject, kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, id, sizeof *id) || !*id) return info;
+    info.present = 1;
+    CFStringRef cf = NULL;
+    if (hal_get(*id, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, &cf, sizeof cf) && cf) {
+        CFStringGetCString(cf, name, (CFIndex)name_size, kCFStringEncodingUTF8); CFRelease(cf);
+    }
+    UInt32 v = 0;
+    if (hal_get(*id, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal, &v, sizeof v)) info.transport = v;
+    v = 0;
+    if (hal_get(*id, kAudioDevicePropertyDataSource, kAudioObjectPropertyScopeOutput, &v, sizeof v)) info.data_source = v;
+    UInt32 size = 0;
+    AudioBufferList *config = hal_get_all(*id, kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput, &size);
+    if (config && size >= offsetof(AudioBufferList, mBuffers))
+        for (UInt32 i = 0; i < config->mNumberBuffers && offsetof(AudioBufferList, mBuffers) + (i + 1) * sizeof(AudioBuffer) <= size; i++)
+            info.channels += (int)config->mBuffers[i].mNumberChannels;
+    free(config);
+    AudioChannelLayout *layout = hal_get_all(*id, kAudioDevicePropertyPreferredChannelLayout, kAudioObjectPropertyScopeOutput, &size);
+    if (layout && size >= sizeof(AudioChannelLayout) &&
+        size >= offsetof(AudioChannelLayout, mChannelDescriptions) + layout->mNumberChannelDescriptions * sizeof(AudioChannelDescription))
+        info.centre_lfe = channel_layout_has_centre_and_lfe(layout);
+    free(layout);
+    return info;
+}
+static void fourcc_text(uint32_t v, char out[5]) {
+    for (int i = 0; i < 4; i++) { char c = (char)(v >> (24 - 8 * i)); out[i] = c >= 32 && c < 127 ? c : '.'; }
+    out[4] = 0;
+}
+static AudioRoute route_for(Mixer *m, const AudioDeviceInfo *dev) {
+    AudioRouteInputs in = {.spatial = AUDIO_SPATIAL_AUTO, .tap = runtime_audio_tap != NULL,
+                           .system_spatial_ok = audio_system_spatial_available(), .speaker_spatial_ok = 1};
+    AudioRoute r = audio_route_decide(&in, dev);
+    if (m->channels != 6 && r != AUDIO_ROUTE_NONE) r = AUDIO_ROUTE_STEREO;   /* TOTK_AUDIO_CHANNELS=2: a stereo mix */
+    return r;
+}
+/* The device period: the renderer's frame (240 frames, 5 ms at 48 kHz) asked for, within the device's range; what the
+   device took is what the pacing counts with (512, the usual default, if it cannot be read). */
+static void set_buffer_frames(Mixer *m, AudioComponentInstance u) {
+    AudioObjectID dev = 0; UInt32 sz = sizeof dev; AudioValueRange range = {0, 0};
+    if (AudioUnitGetProperty(u, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &dev, &sz) == noErr && dev)
+        (void)hal_get(dev, kAudioDevicePropertyBufferFrameSizeRange, kAudioObjectPropertyScopeGlobal, &range, sizeof range);
+    UInt32 want = audio_buffer_frames((uint32_t)m->frame, range.mMinimum, range.mMaximum), got = 0;
+    OSStatus err = AudioUnitSetProperty(u, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &want, sizeof want);
+    sz = sizeof got;
+    if (AudioUnitGetProperty(u, kAudioDevicePropertyBufferFrameSize, kAudioUnitScope_Global, 0, &got, &sz) != noErr || !got) got = 512;
+    if (err) fprintf(stderr, "[totk-audio] device buffer of %u frames not accepted (%d): %u\n", (unsigned)want, (int)err, (unsigned)got);
+    atomic_store(&m->period, got);
+}
+static int new_unit(AudioComponentInstance *u, OSType type, OSType subtype) {
+    AudioComponentDescription d = {type, subtype, kAudioUnitManufacturer_Apple, 0, 0};
+    AudioComponent c = AudioComponentFindNext(NULL, &d);
+    *u = NULL;
+    return c && AudioComponentInstanceNew(c, u) == noErr && *u;
+}
+static void free_unit(AudioComponentInstance u, int initialized) {
+    if (!u) return;
+    if (initialized) { AudioOutputUnitStop(u); AudioUnitUninitialize(u); }
+    AudioComponentInstanceDispose(u);
+}
+static int env_int(const char *name, int fallback, int lo, int hi) {
+    const char *e = getenv(name); char *end;
+    if (!e || !*e) return fallback;
+    long v = strtol(e, &end, 10);
+    if (*end || v < lo || v > hi) { fprintf(stderr, "[totk-audio] 【红】%s=%s is not %d..%d: using %d\n", name, e, lo, hi, fallback); return fallback; }
+    return (int)v;
+}
+/* Stereo or 5.1 float, interleaved, straight to the default output (the stereo and surround routes). */
+static int open_direct(Mixer *m, int out_ch) {
+    AudioComponentInstance u;
+    if (!new_unit(&u, kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput)) return 0;
+    AudioStreamBasicDescription f = {(Float64)m->rate, kAudioFormatLinearPCM, kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                                     (UInt32)(4 * out_ch), 1, (UInt32)(4 * out_ch), (UInt32)out_ch, 32, 0};
+    AURenderCallbackStruct cb = {pull, m};
+    OSStatus err = AudioUnitSetProperty(u, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f);
+    if (!err && out_ch == 6) {
+        AudioChannelLayout layout = {.mChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A};   /* L R C LFE Ls Rs */
+        (void)AudioUnitSetProperty(u, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Input, 0, &layout, sizeof layout);
+    }
+    if (!err) err = AudioUnitSetProperty(u, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb);
+    if (!err) err = AudioUnitInitialize(u);
+    if (err) { fprintf(stderr, "[totk-audio] %s output setup failed (%d)\n", out_ch == 6 ? "5.1" : "stereo", (int)err); free_unit(u, 0); return 0; }
+    set_buffer_frames(m, u);
+    m->out_ch = out_ch; m->unit = u; m->unit_ok = 1;
+    if ((err = AudioOutputUnitStart(u))) {
+        fprintf(stderr, "[totk-audio] %s output start failed (%d)\n", out_ch == 6 ? "5.1" : "stereo", (int)err);
+        m->unit_ok = 0; m->unit = NULL; free_unit(u, 1); return 0;
+    }
+    return 1;
+}
+/* AUSpatialMixer's input: the ring's 5.1 frames, de-interleaved into its six buffers. */
+static OSStatus spatial_in_pull(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
+    (void)flags; (void)ts; (void)bus;
+    Mixer *m = ctx;
+    if (frames > MAX_SLICE || io->mNumberBuffers != 6) {
+        for (UInt32 b = 0; b < io->mNumberBuffers; b++) memset(io->mBuffers[b].mData, 0, io->mBuffers[b].mDataByteSize);
+        return noErr;
+    }
+    ring_read(m, m->slice_scratch, frames, 6);
+    for (UInt32 c = 0; c < 6; c++) {
+        float *dst = io->mBuffers[c].mData;
+        for (UInt32 k = 0; k < frames; k++) dst[k] = m->slice_scratch[6 * k + c];
+    }
+    return noErr;
+}
+/* The output unit's input: AUSpatialMixer's stereo rendering of the 5.1 bed. */
+static OSStatus spatial_out_render(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
+    (void)bus;
+    Mixer *m = ctx;
+    if (AudioUnitRender(m->spatial_unit, flags, ts, 0, frames, io) != noErr)
+        for (UInt32 b = 0; b < io->mNumberBuffers; b++) memset(io->mBuffers[b].mData, 0, io->mBuffers[b].mDataByteSize);
+    return noErr;
+}
+/* The built-in speakers: AUSpatialMixer with one 5.1 input bus as an ambience bed (the layout gives the directions),
+   rendered for the built-in speakers (Apple's speaker virtualization), then the default output in stereo. */
+static int open_speaker_spatial(Mixer *m) {
+    AudioComponentInstance sm, u;
+    if (!new_unit(&sm, kAudioUnitType_Mixer, kAudioUnitSubType_SpatialMixer)) return 0;
+    AudioStreamBasicDescription in = {(Float64)m->rate, kAudioFormatLinearPCM,
+        kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved, 4, 1, 4, 6, 32, 0};
+    AudioStreamBasicDescription out = in; out.mChannelsPerFrame = 2;
+    AudioChannelLayout bed = {.mChannelLayoutTag = kAudioChannelLayoutTag_MPEG_5_1_A}, stereo = {.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo};
+    UInt32 one = 1, algorithm = kSpatializationAlgorithm_UseOutputType, mode = kSpatialMixerSourceMode_AmbienceBed,
+           type = kSpatialMixerOutputType_BuiltInSpeakers, slice = MAX_SLICE;
+    AURenderCallbackStruct cb = {spatial_in_pull, m};
+    const char *step = "bus count";
+    OSStatus err = AudioUnitSetProperty(sm, kAudioUnitProperty_ElementCount, kAudioUnitScope_Input, 0, &one, sizeof one);
+    if (!err) { step = "input format"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &in, sizeof in); }
+    if (!err) { step = "input layout"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Input, 0, &bed, sizeof bed); }
+    if (!err) { step = "output format"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0, &out, sizeof out); }
+    if (!err) (void)AudioUnitSetProperty(sm, kAudioUnitProperty_AudioChannelLayout, kAudioUnitScope_Output, 0, &stereo, sizeof stereo);
+    if (!err) { step = "algorithm"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_SpatializationAlgorithm, kAudioUnitScope_Input, 0, &algorithm, sizeof algorithm); }
+    if (!err) { step = "source mode"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_SpatialMixerSourceMode, kAudioUnitScope_Input, 0, &mode, sizeof mode); }
+    if (!err) { step = "output type"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_SpatialMixerOutputType, kAudioUnitScope_Global, 0, &type, sizeof type); }
+    if (!err) { step = "slice"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_MaximumFramesPerSlice, kAudioUnitScope_Global, 0, &slice, sizeof slice); }
+    if (!err) { step = "input callback"; err = AudioUnitSetProperty(sm, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb); }
+    if (!err) { step = "mixer initialize"; err = AudioUnitInitialize(sm); }
+    if (err) { fprintf(stderr, "[totk-audio] AUSpatialMixer setup failed at %s (%d)\n", step, (int)err); AudioComponentInstanceDispose(sm); return 0; }
+    int gain_db = env_int("TOTK_SPATIAL_GAIN_DB", 0, -12, 12);   /* the input bus gain in dB (0 by default; tune by ear) */
+    if (gain_db) (void)AudioUnitSetParameter(sm, kSpatialMixerParam_Gain, kAudioUnitScope_Input, 0, (AudioUnitParameterValue)gain_db, 0);
+    if (!new_unit(&u, kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput)) { AudioUnitUninitialize(sm); AudioComponentInstanceDispose(sm); return 0; }
+    AURenderCallbackStruct ocb = {spatial_out_render, m};
+    step = "device format";
+    err = AudioUnitSetProperty(u, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &out, sizeof out);
+    if (!err) { step = "device callback"; err = AudioUnitSetProperty(u, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &ocb, sizeof ocb); }
+    if (!err) { step = "device initialize"; err = AudioUnitInitialize(u); }
+    if (err) {
+        fprintf(stderr, "[totk-audio] AUSpatialMixer output setup failed at %s (%d)\n", step, (int)err);
+        free_unit(u, 0); AudioUnitUninitialize(sm); AudioComponentInstanceDispose(sm); return 0;
+    }
+    set_buffer_frames(m, u);
+    m->spatial_unit = sm; m->spatial_ok = 1; m->out_ch = 6; m->unit = u; m->unit_ok = 1;
+    if ((err = AudioOutputUnitStart(u))) {
+        fprintf(stderr, "[totk-audio] AUSpatialMixer output start failed (%d)\n", (int)err);
+        m->unit_ok = 0; m->unit = NULL; free_unit(u, 1);
+        m->spatial_ok = 0; m->spatial_unit = NULL; AudioUnitUninitialize(sm); AudioComponentInstanceDispose(sm); return 0;
+    }
+    return 1;
+}
+static unsigned system_spatial_read(void *ctx, float *dst, unsigned frames) { ring_read(ctx, dst, frames, 6); return frames; }
+/* Headphones: the system renderer (audio_spatial.m). Its feeder takes one renderer frame per CMSampleBuffer. */
+static int open_system_spatial(Mixer *m) {
+    int lead = env_int("TOTK_SPATIAL_LEAD_MS", 150, 60, 500), gain_db = env_int("TOTK_SPATIAL_GAIN_DB", 0, -12, 12);
+    m->out_ch = 6;
+    m->system_spatial = audio_system_spatial_open(m->rate, 6, (unsigned)m->frame, lead, powf(10.0f, (float)gain_db / 20.0f), system_spatial_read, m);
+    if (!m->system_spatial) return 0;
+    atomic_store(&m->period, (uint32_t)m->frame);
+    return 1;
+}
+static void output_close_route(Mixer *m) {
+    atomic_store(&m->consumer, 0);
+    if (m->system_spatial) { audio_system_spatial_close(m->system_spatial); m->system_spatial = NULL; }
+    if (m->unit_ok) { m->unit_ok = 0; free_unit(m->unit, 1); m->unit = NULL; }
+    if (m->spatial_ok) { m->spatial_ok = 0; AudioUnitUninitialize(m->spatial_unit); AudioComponentInstanceDispose(m->spatial_unit); m->spatial_unit = NULL; }
+    m->ready = 0;
+}
+/* Decides and opens the route for the current default output; falls back to stereo, then to no sound. Called with
+   g_out_mu held (audio_mixer_open, the default-device listener). One [audio] line per decision. */
+static void output_open_route(Mixer *m, const char *why) {
+    AudioObjectID id; char name[128];
+    AudioDeviceInfo dev = query_default_output(&id, name, sizeof name);
+    AudioRoute want = route_for(m, &dev), got = want;
+    int ok = 0;
+    switch (want) {
+    case AUDIO_ROUTE_SYSTEM_SPATIAL: ok = open_system_spatial(m); break;
+    case AUDIO_ROUTE_SPEAKER_SPATIAL: ok = open_speaker_spatial(m); break;
+    case AUDIO_ROUTE_SURROUND: ok = open_direct(m, 6); break;
+    case AUDIO_ROUTE_STEREO: ok = open_direct(m, 2); break;
+    default: break;
+    }
+    if (!ok && want != AUDIO_ROUTE_STEREO && want != AUDIO_ROUTE_NONE) { got = AUDIO_ROUTE_STEREO; ok = open_direct(m, 2); }
+    if (!ok) { got = AUDIO_ROUTE_NONE; m->out_ch = m->channels; }
+    m->route = got; m->device = id;
+    if (ok) atomic_store(&m->consumer, 1);
+    char transport[5], source[5]; fourcc_text(dev.transport, transport); fourcc_text(dev.data_source, source);
+    fprintf(stderr, "[audio] route %s%s%s for \"%s\" (%s; transport '%s', source '%s', %d ch%s): game %d ch, sent %d ch float %d Hz, "
+            "device period %u frames, %s\n", audio_route_name(got), got != want ? " instead of " : "", got != want ? audio_route_name(want) : "",
+            dev.present ? name : "no default output", why, transport, source, dev.channels, dev.centre_lfe ? " with C+LFE" : "",
+            atomic_load(&g_active_channels), got == AUDIO_ROUTE_NONE ? 0 : m->out_ch, m->rate, (unsigned)atomic_load(&m->period),
+            m->paced ? "mixing paced by the device" : "mixing paced by the wall clock");
+}
+/* The Mac's default output changed (AirPods connected, the Studio Display plugged in, chosen in the Sound menu): decide
+   again and rebuild the outputs whose route or device changed. The system renderer follows the default device by itself,
+   so it stays when the route stays (no new lead, no re-anchoring). Runs on its own serial queue, never on the HAL's
+   notification thread nor the real-time thread. */
+static void output_route_changed(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&g_out_mu);
+    for (int i = 0; i < 4; i++) {
+        Mixer *m = g_out[i];
+        if (!m || m->route == AUDIO_ROUTE_LEGACY) continue;
+        AudioObjectID id; char name[128];
+        AudioDeviceInfo dev = query_default_output(&id, name, sizeof name);
+        AudioRoute want = route_for(m, &dev);
+        if (want == m->route && id == m->device) continue;
+        if (want == m->route && want == AUDIO_ROUTE_SYSTEM_SPATIAL) {
+            m->device = id;
+            fprintf(stderr, "[audio] route system-spatial kept for \"%s\" (default output changed; the renderer follows it)\n", name);
+            continue;
+        }
+        output_close_route(m);
+        output_open_route(m, "default output changed");
+    }
+    pthread_mutex_unlock(&g_out_mu);
+}
+static dispatch_queue_t g_route_queue;
+static OSStatus default_output_listener(AudioObjectID o, UInt32 n, const AudioObjectPropertyAddress *a, void *ctx) {
+    (void)o; (void)n; (void)a; (void)ctx;
+    if (g_route_queue) dispatch_async_f(g_route_queue, NULL, output_route_changed);
+    return noErr;
+}
+static void route_listener_install(void) {   /* once, for the process */
+    if (g_route_queue) return;
+    g_route_queue = dispatch_queue_create("org.macnativegames.totk.audio-route", DISPATCH_QUEUE_SERIAL);
+    AudioObjectPropertyAddress a = {kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    OSStatus err = AudioObjectAddPropertyListener(kAudioObjectSystemObject, &a, default_output_listener, NULL);
+    if (err) fprintf(stderr, "[totk-audio] 【红】default output listener not installed (%d): the route stays as opened\n", (int)err);
+}
+#endif
+/* The output for a mixer: the spatial routes when spatial audio is on (macOS), else as before. */
+static void output_open(Mixer *m, int rate) {
+#if !TARGET_OS_IPHONE
+    if (spatial_on()) { m->rate = rate; route_listener_install(); output_open_route(m, "renderer opened"); return; }
+#endif
+    m->route = AUDIO_ROUTE_LEGACY;
+    output_open_legacy(m, rate);
+}
+static void output_close(Mixer *m) {
+#if !TARGET_OS_IPHONE
+    if (m->route != AUDIO_ROUTE_LEGACY) { output_close_route(m); return; }
+#endif
+    if (m->unit_ok) { m->unit_ok = 0; AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
+    atomic_store(&m->consumer, 0);
 }
 /* iOS (from nxnative b301431): the system stops the RemoteIO unit when another app takes the audio session (a call,
    Siri, an alarm) and invalidates it when media services are reset. Nothing started it again, so the game stayed
    silent for the rest of the session. The app's session observers (ios/Sources/main.m) call this: start the open
    outputs again, or (recreate, and whenever a start fails) build them anew. */
-static pthread_mutex_t g_out_mu = PTHREAD_MUTEX_INITIALIZER;
-static Mixer *g_out[4];
 void runtime_audio_output_restart(int recreate) {
     pthread_mutex_lock(&g_out_mu);
     for (int i = 0; i < 4; i++) {
         Mixer *m = g_out[i]; if (!m) continue;
         if (m->unit_ok && !recreate && !AudioOutputUnitStart(m->unit)) { fprintf(stderr, "[totk-audio] output started again\n"); continue; }
-        if (m->unit_ok) { m->unit_ok = 0; AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
+        output_close(m);
         m->ready = 0; output_open(m, m->rate);
         fprintf(stderr, "[totk-audio] output rebuilt (%s): %s\n", recreate ? "media services reset" : "start failed", m->unit_ok ? "playing" : "no sound");
     }
@@ -347,13 +708,14 @@ void runtime_audio_output_restart(int recreate) {
 static void output_push(Mixer *m, const float *src, int frames) {
     int ch = m->channels ? m->channels : 2;
     uint64_t wr = atomic_load(&m->wr), rd = atomic_load_explicit(&m->rd, memory_order_acquire);
-    if (m->unit_ok && wr + (uint64_t)frames - rd > RING_FRAMES) { atomic_fetch_add(&m->overruns, 1); return; }   /* device stalled: drop this frame */
+    int consumer = atomic_load_explicit(&m->consumer, memory_order_relaxed);
+    if (consumer && wr + (uint64_t)frames - rd > RING_FRAMES) { atomic_fetch_add(&m->overruns, 1); return; }   /* device stalled: drop this frame */
     for (int i = 0; i < frames; i++) {
         uint64_t k = (wr + (uint64_t)i) % RING_FRAMES;
         for (int c = 0; c < ch; c++) m->ring[ch * k + c] = src[ch * i + c];
     }
     atomic_store_explicit(&m->wr, wr + (uint64_t)frames, memory_order_release);
-    if (!m->unit_ok) atomic_store(&m->rd, wr + (uint64_t)frames);   /* no device: the ring only keeps the latest frames */
+    if (!consumer) atomic_store(&m->rd, wr + (uint64_t)frames);   /* no device: the ring only keeps the latest frames */
 }
 
 void audio_mixer_open(AudioRenderer *r) {
@@ -395,6 +757,14 @@ void audio_mixer_open(AudioRenderer *r) {
       if(!m->ramp)fprintf(stderr,"[totk-audio] TOTK_AUDIO_RAMP=0: volume changes and voice stops are not smoothed (the old behaviour, for comparison)\n"); }
 #endif
     prefill_blocks();   // decided before the device's callback can run
+    atomic_store(&m->fold[0], 1.0f); atomic_store(&m->fold[1], 0.7071f); atomic_store(&m->fold[2], 0.7071f);
+    atomic_store(&m->period, 512u);
+#if !TARGET_OS_IPHONE
+    /* Device-paced mixing with spatial audio on; TOTK_AUDIO_PACING=clock keeps the wall clock (for an A/B). */
+    { const char *pacing = getenv("TOTK_AUDIO_PACING");
+      if (spatial_on() && !(pacing && !strcmp(pacing, "clock")) &&
+          semaphore_create(mach_task_self(), &m->pace_sem, SYNC_POLICY_FIFO, 0) == KERN_SUCCESS) m->pace_sem_ok = m->paced = 1; }
+#endif
     pthread_mutex_lock(&g_out_mu);
     m->rate = r->param.sample_rate; output_open(m, m->rate);
     for (int i = 0; i < 4; i++) if (!g_out[i]) { g_out[i] = m; break; }
@@ -409,8 +779,11 @@ void audio_mixer_close(AudioRenderer *r) {
     Mixer *m = r->mixer; if (!m) return;
     pthread_mutex_lock(&g_out_mu);
     for (int i = 0; i < 4; i++) if (g_out[i] == m) g_out[i] = NULL;
-    if (m->unit_ok) { m->unit_ok = 0; AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
+    output_close(m);
     pthread_mutex_unlock(&g_out_mu);
+#if !TARGET_OS_IPHONE
+    if (m->pace_sem_ok) { m->pace_sem_ok = 0; semaphore_destroy(mach_task_self(), m->pace_sem); }
+#endif
     if(m->capture_worker){
         pthread_mutex_lock(&m->capture_lock);m->capture_closing=1;pthread_cond_signal(&m->capture_cond);pthread_mutex_unlock(&m->capture_lock);
         pthread_join(m->capture_thread,NULL);pthread_cond_destroy(&m->capture_cond);pthread_mutex_destroy(&m->capture_lock);free(m->capture_buf);
@@ -976,6 +1349,12 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
         const float gain = atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
         const float *ch[6] = {0};
         for (uint32_t c = 0; c < sink->input_count; c++) if (sink->inputs[c] >= 0 && sink->inputs[c] < m->nbuf) ch[c] = mixbuf(m, sink->inputs[c]);
+        {   /* the game's downmix, for the output's stereo fold of the 5.1 mix (spatial audio's stereo route) */
+            int game = sink->input_count >= 6 && sink->downmix_enabled;
+            atomic_store_explicit(&m->fold[0], game ? sink->downmix[0] : 1.0f, memory_order_relaxed);
+            atomic_store_explicit(&m->fold[1], game ? sink->downmix[1] : 0.7071f, memory_order_relaxed);
+            atomic_store_explicit(&m->fold[2], game ? sink->downmix[2] : 0.7071f, memory_order_relaxed);
+        }
         if (out_ch == 6) {
             for (int k = 0; k < frames; k++) {
                 for (int c = 0; c < 6; c++) {
@@ -1014,6 +1393,36 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     output_push(m, out, frames);
 }
 
+/* Device-paced mixing (audio_route.h): called by the renderer thread before each frame. Waits until the ring has room
+   for one more frame below the target (prefill + one device period), woken by the consumer's reads; 1: render now on
+   the device's clock. 0: use the wall clock for this frame (spatial off, TOTK_AUDIO_PACING=clock, no output, paused,
+   held during the shader warm-up, or a consumer that stopped moving: a stalled or rebuilding device). */
+int audio_mixer_pace(AudioRenderer *r) {
+#if TARGET_OS_IPHONE
+    (void)r; return 0;
+#else
+    Mixer *m = r ? r->mixer : NULL;
+    if (!m || !m->paced) return 0;
+#define PACE_OFF() (!atomic_load(&m->consumer) || !atomic_load_explicit(&m->playing, memory_order_acquire) || \
+                    atomic_load_explicit(&g_audio_hold, memory_order_acquire))
+    if (PACE_OFF()) { m->pace.timeouts = 0; m->pace.stalled = 0; return 0; }
+    uint64_t period = atomic_load(&m->period), frame = (uint64_t)m->frame;
+    uint64_t target = audio_pace_target(frame * (uint64_t)prefill_blocks(), period, RING_FRAMES);
+    uint64_t timeout = audio_pace_timeout_ns(period, frame, m->rate);
+    mach_timespec_t wait = {(unsigned)(timeout / 1000000000ull), (clock_res_t)(timeout % 1000000000ull)};
+    int timed_out = 0;
+    for (int i = 0; i < 1024; i++) {
+        AudioPaceStep step = audio_pace_step(&m->pace, atomic_load_explicit(&m->rd, memory_order_acquire), atomic_load(&m->wr), frame, target, timed_out);
+        if (step == AUDIO_PACE_RENDER) return 1;
+        if (step == AUDIO_PACE_CLOCK) return 0;
+        timed_out = semaphore_timedwait(m->pace_sem, wait) == KERN_OPERATION_TIMED_OUT;
+        if (PACE_OFF()) return 0;
+    }
+#undef PACE_OFF
+    return 0;
+#endif
+}
+
 /* Probe hook: the latest mixed frames. */
 int audio_mixer_read(AudioRenderer *r, float *out, int frames) {
     Mixer *m = r->mixer; uint64_t wr = atomic_load(&m->wr); if ((uint64_t)frames > wr || frames > RING_FRAMES) return 0;
@@ -1049,7 +1458,11 @@ void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) 
     case 1: case 7: device_volume = IPC_ARG(rq, float, 0); return;                                    /* SetAudioDeviceOutputVolume(Auto) */
     case 2: case 8: {float volume=atomic_load(&device_volume);IPC_OUT(rs,volume);return;}             /* GetAudioDeviceOutputVolume(Auto) */
     case 3: case 10: { IpcBuffer b = out_buffer(rq, &pointer); put_name(&b, rs, pointer); return; }  /* GetActiveAudioDeviceName(Auto) */
-    case 5: { int32_t n = get_active_channel_count(); IPC_OUT(rs, n); return; }                       /* GetActiveChannelCount */
+    case 5: { int32_t n = get_active_channel_count(); IPC_OUT(rs, n);                                 /* GetActiveChannelCount */
+              /* Whether the game asks again later (a device change it would follow): logged 1st, 2nd, 4th, 8th ... time. */
+              static _Atomic unsigned asked; unsigned k = atomic_fetch_add(&asked, 1) + 1;
+              if (!(k & (k - 1))) fprintf(stderr, "[totk-audio] the game asked the channel count (%u. time): %d\n", k, (int)n);
+              return; }
     case 13: { IpcBuffer b = out_buffer(rq, &pointer); put_name(&b, rs, pointer); return; }          /* GetActiveAudioOutputDeviceName [13.0.0+] */
     case 14: { IpcBuffer b = out_buffer(rq, &pointer); int32_t n = b.size >= 0x100 ? 1 : 0; if (n) put_name(&b, rs, pointer); IPC_OUT(rs, n); return; }   /* ListAudioOutputDeviceName [13.0.0+] */
     case 4: case 11: case 12: { static uint32_t ev; if (!ev) ev = runtime_event_new(); rs->copy[rs->ncopy++] = runtime_event_readable(ev); return; }   /* device change events: never signalled, the device does not change */

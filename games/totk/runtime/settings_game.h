@@ -21,6 +21,9 @@
                                                              the window takes that shape at once, its height kept
                                                              (runtime_front_resize_aspect; user 2026-10-25: no fitting the
                                                              window any more); TOTK_ASPECT's ratio is offered too
+     spatial audio        auto / off, from the next launch   Tears of the Kingdom only: audio-spatial.txt, written only when
+                                                             the row is changed (runtime/audio_route.h, audio_mixer.c);
+                                                             TOTK_SPATIAL_AUDIO decides first (greyed out)
    Input
      controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
      background controller switch, default off              runtime_gamepad_background_set, controller-background.txt
@@ -665,6 +668,21 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 }
 #endif
 
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)
+/* Spatial audio (runtime/audio_route.h): Auto (the game renders 5.1; headphones get the system's Spatial Audio, the
+   built-in speakers AUSpatialMixer, a 5.1 device the 5.1 mix) or Off (stereo as before). Saved in audio-spatial.txt only
+   when the row is changed; the game is told its channel count when its renderer opens, so it applies from the next launch.
+   TOTK_SPATIAL_AUDIO decides when set. */
+static int settingsSpatialAudio=-1;   /* the saved choice, read once: 1 auto, 0 off */
+static TOTKSettingRow *settings_spatial_audio_row(void) {
+ NSString *t=settings_text("空间音频（下次启动生效）","Spatial audio (from the next launch)");
+ const char *e=getenv("TOTK_SPATIAL_AUDIO");
+ if(e&&*e)return settings_fixed(t,settings_text("由 TOTK_SPATIAL_AUDIO 设置","Set by TOTK_SPATIAL_AUDIO"));
+ if(settingsSpatialAudio<0){char w[32]={0};settingsSpatialAudio=!(runtime_setting_word("audio-spatial.txt",w,sizeof w)&&(!strncmp(w,"off",3)||w[0]=='0'));}
+ return settings_row(t,@[settings_text("自动（5.1 / 空间音频）","Auto (5.1 / Spatial Audio)"),settings_text("关（立体声，原样）","Off (stereo, as before)")],@[@1,@0],
+  ^int{return settingsSpatialAudio;},^(int v){settingsSpatialAudio=!!v;runtime_setting_save("audio-spatial.txt",v?"auto":"off","spatial audio");});
+}
+#endif
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
@@ -750,6 +768,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 #endif
    }})];}
  }
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)
+ [rows addObject:settings_spatial_audio_row()];
+#endif
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],
