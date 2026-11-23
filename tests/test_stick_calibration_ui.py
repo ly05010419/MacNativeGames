@@ -19,6 +19,7 @@ static NSString *settings_text(const char*c,const char*e){(void)e;return @(c);}
 static RuntimeGamepadCalibration saved={.left={.scaleX=1, .scaleY=1},.right={.scaleX=1, .scaleY=1}};
 static int saves, connection=1;
 static float triggerLeft,triggerRight,renderedTriggers[2];
+static NSPoint renderedStickDots[2];
 static uint64_t now=1000000000;
 static RuntimeGamepadCalibrationSample sampleFixture={.valid=1,.generation=1};
 void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out){*out=sampleFixture;out->lt=triggerLeft;out->rt=triggerRight;}
@@ -59,6 +60,32 @@ assert(NSMaxY(v.calibrateButton.frame)<=NSMinY(v.deadzone.frame));
 assert(NSMaxY(v.deadzone.frame)<=h&&NSMaxY(v.deadzoneLabel.frame)<=h);
 }
 [v setFrameSize:NSMakeSize(800,360)];
+
+/* Full per-axis diagonals must fit the circular preview, without changing the samples. */
+const float directions[][2]={{1,0},{-1,0},{0,1},{0,-1},{1,1},{-1,1},{-1,-1},{1,-1},{.25f,.5f},{0,0}};
+calRun[0].phase=calRun[1].phase=CAL_RECORD;
+for(unsigned i=0;i<sizeof(directions)/sizeof(directions[0]);i++){
+    float x=directions[i][0],y=directions[i][1];
+    [v setValue:@(x) forKey:@"rawLX"];[v setValue:@(y) forKey:@"rawLY"];
+    [v setValue:@(-x) forKey:@"rawRX"];[v setValue:@(-y) forKey:@"rawRY"];
+    render(v);
+    for(int stick=CAL_LEFT;stick<=CAL_RIGHT;stick++){
+        NSPoint c=[v wellCenter:stick],p=renderedStickDots[stick];
+        CGFloat dx=p.x-c.x,dy=c.y-p.y,r=[v wellRadius],len=hypot(dx,dy);
+        CGFloat sign=stick==CAL_LEFT?1:-1;
+        assert(len+6.5<=r&&len>=fmin(1,hypot(x,y))*(r-8)-1e-6);
+        assert(fabs(dx*y-dy*x)<1e-5&&sign*(dx*x+dy*y)>=0);
+        if(x==0&&y==0)assert(len==0);
+    }
+}
+[v setValue:@1 forKey:@"rawLX"];[v setValue:@1 forKey:@"rawLY"];
+[v setValue:@(-1) forKey:@"rawRX"];[v setValue:@(-1) forKey:@"rawRY"];
+render(v);
+assert([[v valueForKey:@"rawLX"] floatValue]==1&&[[v valueForKey:@"rawRX"] floatValue]==-1);
+calRun[0].phase=calRun[1].phase=CAL_IDLE;render(v);
+for(int stick=CAL_LEFT;stick<=CAL_RIGHT;stick++)assert(NSEqualPoints(renderedStickDots[stick],[v wellCenter:stick]));
+[v setValue:@0 forKey:@"rawLX"];[v setValue:@0 forKey:@"rawLY"];
+[v setValue:@0 forKey:@"rawRX"];[v setValue:@0 forKey:@"rawRY"];
 
 /* Product contract: triggers display only during calibration, not merely when settings is open. */
 triggerLeft=.25f;triggerRight=.75f;[v tick];render(v);
@@ -159,6 +186,9 @@ class StickCalibrationUITests(unittest.TestCase):
         trigger_expression = 'float v=calRun[stick].phase!=CAL_IDLE?(right?rawRT:rawLT):0;'
         self.assertEqual(view.count(trigger_expression), 1)
         view = view.replace(trigger_expression, trigger_expression + 'renderedTriggers[stick]=v;')
+        vector_comment = '/* the vector line from centre to the dot */'
+        self.assertEqual(view.count(vector_comment), 1)
+        view = view.replace(vector_comment, 'renderedStickDots[stick]=p;\n' + vector_comment)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / 'probe.m').write_text(PRELUDE + view + MAIN)

@@ -25,7 +25,9 @@ Manual macOS checks (not replaced by the probe):
    session without applying it. After cancellation/completion the dots are centred
    and LT/RT display zero again, as they do before calibration starts.
 5. While calibrating, the circles preview the current response used by the game
-   (per-axis until calibrated, radial for the calibrated source). Centre, travel and coverage are measured from unmodified raw input.
+   (per-axis until calibrated, radial for the calibrated source). Full diagonals
+   are limited to the well only for display: the whole dot and its glow stay
+   inside the circle. Centre, travel and coverage are measured from unmodified raw input.
    Calibration cannot infer a device's physical stop: sweep to its actual edge.
 6. Left/right deadzones are independent (0–50%, default 12%). Restart with the
    same controls directory and verify `controller-deadzone-left.txt` and

@@ -291,11 +291,18 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
     [cross moveToPoint:NSMakePoint(ctr.x-5,ctr.y)];[cross lineToPoint:NSMakePoint(ctr.x+5,ctr.y)];
     [cross moveToPoint:NSMakePoint(ctr.x,ctr.y-5)];[cross lineToPoint:NSMakePoint(ctr.x,ctr.y+5)];
     [[NSColor colorWithCalibratedWhite:1 alpha:0.7] setStroke];cross.lineWidth=1;[cross stroke];
-    /* Preview the same radial response sent to the game, never alter raw samples. */
+    /* Use the game's response, but project its per-axis diagonals into this circular view. */
     float x=0,y=0;
     if(calRun[stick].phase!=CAL_IDLE)
         runtime_gamepad_stick_preview(stick==CAL_RIGHT,stick==CAL_LEFT?rawLX:rawRX,stick==CAL_LEFT?rawLY:rawRY,&x,&y);
-    NSPoint p=NSMakePoint(c.x+x*R,c.y-y*R);
+    CGFloat magnitude=hypot(x,y);
+    if(!isfinite(magnitude)){x=y=0;magnitude=0;}
+    const CGFloat dotRadius=6, dotStroke=1;
+    CGFloat scale=(R-dotRadius-dotStroke/2-1)/fmax(1,magnitude);
+    NSPoint p=NSMakePoint(c.x+x*scale,c.y-y*scale);
+    NSRect dot=NSMakeRect(p.x-dotRadius,p.y-dotRadius,2*dotRadius,2*dotRadius);
+    [NSGraphicsContext saveGraphicsState];
+    [ring addClip]; /* Also keep the glow inside the well. */
     /* the vector line from centre to the dot */
     NSBezierPath *vec=[NSBezierPath bezierPath];
     [vec moveToPoint:ctr];[vec lineToPoint:p];
@@ -304,10 +311,12 @@ static NSColor *calMuted(void){ return [NSColor colorWithCalibratedRed:0.392 gre
     [NSGraphicsContext saveGraphicsState];
     NSShadow *glow=[NSShadow new];glow.shadowColor=[accent colorWithAlphaComponent:0.7];glow.shadowBlurRadius=7;glow.shadowOffset=NSZeroSize;[glow set];
     [accent setFill];
-    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x-6,p.y-6,12,12)] fill];
+    NSBezierPath *marker=[NSBezierPath bezierPathWithOvalInRect:dot];
+    [marker fill];
     [NSGraphicsContext restoreGraphicsState];
     [[NSColor colorWithCalibratedRed:0.914 green:1.0 blue:0.894 alpha:1] setStroke];
-    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x-6,p.y-6,12,12)] stroke];
+    marker.lineWidth=dotStroke;[marker stroke];
+    [NSGraphicsContext restoreGraphicsState];
     /* the axis labels */
     NSDictionary *axis=@{NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:calMuted()};
     [@"+Y" drawInRect:NSMakeRect(c.x-12,c.y-R-14,24,12) withAttributes:axis];
