@@ -63,6 +63,17 @@ None of these shows on screen:
 
 ## Build and run
 
+**In one command** (also what NX2Apple's MacNativeGames engine runs, through `game.json`), from the top of the repository:
+
+```sh
+python3.14 games/xc3/build.py "<base>.nsp" -k prod.keys [--update "<2.2.1 update>.nsp"] [--dlc "<add-on>.nsp" ...] \
+    [--shared-fonts <folder>] [-o "Xenoblade Chronicles 3.app"] [--work <folder>]
+```
+
+Without `--update` it builds 1.0.0; the add-ons need 2.2.1. It runs the steps below, each checked against `assets/expected-*.json`, reuses what the work folder already holds, translates every shader ahead of play and compiles them into Metal libraries (`make shader-libs`, about 10 minutes the first time), then packs the app. Without `--work` the work folder is the one the app at `-o` records (`MNGWorkFolder`), else `MacNativeGames-work/xc3` beside the folder of the app, as for every port. The app carries everything the game reads, so the work folder (about 18 GB) can live on another drive and is needed again only to build, update or rebuild.
+
+**By hand**, step by step:
+
 You need Xcode's Command Line Tools and Python 3.14 ([python.org](https://www.python.org/downloads/macos/)); opus and libvpx come with the build (pinned sources, made once per Mac by `tools/deps`; no Homebrew), and `structck.py` uses Xcode's `llvm-objdump`. Xcode itself and the .NET SDK are not needed: the shader translator is prebuilt in `prebuilt/` and checked by its SHA-256.
 
 From `games/xc3`, with a Python 3.14 environment made from `requirements.txt` (`PY=<that python>`):
