@@ -22,7 +22,7 @@
 enum {
     RS_PSO, RS_DSS, RS_VIEWPORT, RS_SCISSOR, RS_CULL, RS_WINDING, RS_FILL,
     RS_BIAS, RS_CLIP, RS_STENCIL, RS_BLEND, RS_VISIBILITY, RS_ADDRESS,
-    RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE,
+    RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE, RS_INDIRECT,   /* RS_INDIRECT: u[0] primitive, u[1] the arguments' GPU address (tessellation, nvn_tess_rt.inc) */
     RS_BEGIN,   /* u[0] = retained MTL4RenderPassDescriptor, u[1] = vertex table, u[2] = fragment table, u[3] = command buffer, u[4] = barrier at start, u[5] = visibility options */
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
 };
@@ -93,6 +93,7 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_DRAW: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2]]; break;
         case RS_INSTANCED: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2] instanceCount:(NSUInteger)u[3] baseInstance:(NSUInteger)u[4]]; break;
         case RS_INDEXED: [e drawIndexedPrimitives:(MTLPrimitiveType)u[0] indexCount:(NSUInteger)u[1] indexType:(MTLIndexType)u[2] indexBuffer:u[3] indexBufferLength:(NSUInteger)u[4] instanceCount:(NSUInteger)u[5] baseVertex:(NSInteger)u[6] baseInstance:(NSUInteger)u[7]]; break;
+        case RS_INDIRECT: [e drawPrimitives:(MTLPrimitiveType)u[0] indirectBuffer:u[1]]; break;
         case RS_STORE:
             if (u[0] == 1) [e setDepthStoreAction:(MTLStoreAction)u[1]];
             else if (u[0] == 2) [e setStencilStoreAction:(MTLStoreAction)u[1]];

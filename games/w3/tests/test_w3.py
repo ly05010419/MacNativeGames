@@ -59,7 +59,51 @@ class Textures(unittest.TestCase):
     def test_render_targets_are_writable(self):
         # the game writes render targets as images without the IMAGE flag; without ShaderWrite the scene stayed black
         mtl = (NVN / 'nvn_mtl.m').read_text()
-        self.assertIn('| (t->d.target == 1 && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);', mtl)
+        self.assertIn('| ((t->d.target == 1 || t->d.target == 2 || t->d.target == 4) && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);', mtl)
+
+
+class Stages(unittest.TestCase):
+    def test_tessellation_runs_as_compute(self):
+        # Metal 4 render encoders have no tessellator: capture, control kernel, tessellator, evaluation as a vertex function
+        mtl = (NVN / 'nvn_mtl.m').read_text()
+        self.assertIn('if(st==3||st==4){o->tess=1;', mtl)
+        self.assertIn('if (pr && pr->tess && !g_tess_ras.active) { tess_draw(pr, dw, di); return; }', mtl)
+        self.assertIn('if (g_tess_ras.active) enc_r_draw_indirect(en, mp, g_tess_ras.args);', mtl)
+        self.assertIn('NVN(nvnCommandBufferSetPatchSize, void, NVNcommandBuffer *c, int n) { REC(c, OP_PATCH_SIZE, p_flag)->value = n; }', (NVN / 'hle_nvn.c').read_text())
+        self.assertNotIn('"nvnCommandBufferSetPatchSize",', (NVN / 'hle_nvn.c').read_text())
+        self.assertIn('case RS_INDIRECT: [e drawPrimitives:(MTLPrimitiveType)u[0] indirectBuffer:u[1]]; break;', (NVN / 'nvn_render_stream.h').read_text())
+        self.assertIn('static int g_red_once[256];', mtl)
+        # a tessellation evaluation function feeds the rasterizer: its varyings are main0_out, its resources NVN stage 4
+        self.assertIn('NSString *st = sh->stage == 0 || sh->stage == 4 ? @"main0_out" : @"main0_in";', mtl)
+        self.assertIn('if (pr->sh[0]) encode_args(en, pr->sh[0], g_tess_ras.active ? 4 : 0, 1);', mtl)
+        rt = (NVN / 'totk_shader_rt.m').read_text()
+        self.assertIn('stage == 3 ? @"tcs" : stage == 4 ? @"tes"', rt)
+
+    def test_capture_block_layout(self):
+        # Metal aligns dm_geometry_capture's uint4 to 16 bytes; at 8 the capture wrote one record (2026-11-23 probe)
+        inc = (NVN / 'nvn_tess_rt.inc').read_text()
+        self.assertIn('typedef struct { uint64_t dst, pad; uint32_t info[4]; uint32_t stride; int16_t slot[TESS_REC_WORDS]; } tess_capture;', inc)
+        self.assertIn('__builtin_offsetof(tess_capture, info) == 16', inc)
+
+    def test_tessellator_partitioning(self):
+        # the levels each spacing rounds to, and the triangles of a quad patch (the kernel's own formula, re-derived here)
+        import math
+        def level(f, spacing, outer):
+            if outer and not f > 0: return 0
+            if not f > 0: f = 1.0
+            if spacing == 1: n = math.ceil(min(max(f, 2), 64)); return min(n + (n & 1), 64)
+            if spacing == 2: return math.ceil(min(max(f, 1), 63)) | 1
+            return math.ceil(min(max(f, 1), 64))
+        self.assertEqual([level(x, 1, True) for x in (0, 0.5, 2, 2.1, 15.2, 16, 70)], [0, 2, 2, 4, 16, 16, 64])
+        self.assertEqual([level(x, 2, True) for x in (1, 1.5, 4, 63.5)], [1, 3, 5, 63])
+        def tris(o, nu, nv):
+            if nu == 1 and nv == 1: return 2
+            return 2 * (nu - 2) * (nv - 2) + sum(o[e] + (nu if e & 1 else nv) - 2 for e in range(4))
+        # a uniform level n tiles the square into 2 n^2 triangles: interior plus the four zipped rings
+        for n in (2, 4, 16, 64): self.assertEqual(tris([n] * 4, n, n), 2 * n * n)
+        self.assertEqual(tris([1] * 4, 1, 1), 2)
+        inc = (NVN / 'nvn_tess_rt.inc').read_text()
+        self.assertIn('"    uint t = 2 * (nu - 2) * (nv - 2);\\n"', inc)
 
 
 class Shaders(unittest.TestCase):

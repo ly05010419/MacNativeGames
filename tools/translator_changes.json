@@ -369,7 +369,7 @@
    ]
   },
   "games/totk/prebuilt/macos-arm64/totk_xlate": {
-   "code_sha256": "838a10ab534d41613f18c30cfd7f4f1f0646bfef20684e37b71625ba0f1bf169",
+   "code_sha256": "7658efb0d7f2d5fec224ea0ee2b0e540935968b728833c60b69f34b6898d8bf5",
    "history": [
     {
      "code_sha256": "e146d8d3bd6efe5d0f0b9bcd6060eb27c15a9f3d455d80633561277673b0b368",
@@ -386,6 +386,14 @@
      "why": "Service.cs DrvReads / Unfillable：驱动常量段（c0 / c2）里能否由回放层填写，改为按着色器实际读的分量逐字判断（新增 word_offsets），不再按整个 vec4 判断。巫师3 的片元着色器 624aa677 读 c2[22].z（0x168，第 0 号贴图句柄，回放层会填），它所在的 vec4 从 0x160 起、前半是不填的图像句柄区，旧规则把整个着色器判为“填不了”，运行时拒绝它，游戏在进入剧情前中止。",
      "necessary": "必要：不改则巫师3 进不了游戏内剧情（2026-11-23 的运行 wm 在此中止）。翻译出的 MSL 不变，只是 drv_unfillable 不再误报；没有读未填字的着色器结果相同，读了的仍被报出。",
      "evidence": "games/w3/CHANGELOG.md；运行 wm 的 “c2+0x160” 拒绝与运行 wn 进入剧情；games/totk/tools/totk_xlate/Service.cs DrvReads 注释。"
+    },
+    {
+     "code_sha256": "7658efb0d7f2d5fec224ea0ee2b0e540935968b728833c60b69f34b6898d8bf5",
+     "date": "2026-11-23",
+     "commit": "(this commit)",
+     "why": "新增曲面细分两个阶段的翻译（TessService.cs）：控制着色器（tcs）译成 SPIRV-Cross 的多面片计算核，输入改为从顶点抓取记录读；求值着色器（tes）译成普通顶点函数，按 vertex_id 读宿主细分器给出的域点；两个阶段之间的结构（控制点、面片数据）按 SPIR-V 的 Location 排成同一布局（位置 L 在第 L 格，再接 gl_Position），因为两边各自只声明自己写 / 读的成员。Program.cs 的曲面细分模式（面片类型、等距方式、绕序）改为取自作业（求值着色器 NVN 控制段 +0x738 / +0x73c / +0x744），作业不带这些字段时与原来相同；spirv_cross_inproc.cpp 增加带曲面细分选项的入口。巫师3 的地形（远山、地面）用四边形曲面细分画，Metal 4 渲染编码器没有硬件细分（没有 drawPatches），原先这些绘制被跳过，环境只剩底色。",
+     "necessary": "必要：不改则巫师3 的地形画不出来（2026-11-23 用户两次指出“环境还是错的”）。只新增 tcs / tes 两种请求；顶点、像素、计算、几何请求的输出不变：改动前后翻译器对同一组顶点 / 像素着色器的 MSL 与反射逐字节相同。与同日 838a10ab（按分量判断驱动数据，同为巫师3）在同一版本发布，玩家只重翻一次。",
+     "evidence": "games/w3/CHANGELOG.md；W3_TESS_DUMP 存下的 3 个曲面细分程序（6 个着色器）经服务翻译、Metal 运行时编译全部通过；改动前后输出对比相同。"
     }
    ]
   },

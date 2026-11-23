@@ -1384,6 +1384,7 @@ static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s,
 static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_DRAW,.u={p,v,n}},1); else [e drawPrimitives:p vertexStart:v vertexCount:n]; }
 static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INSTANCED,.u={p,v,n,i,b}},1); else [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b]; }
 static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDEXED,.u={p,n,t,gpu,len,i,(uint64_t)bv,bi}},1); else [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
+static inline void enc_r_draw_indirect(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, uint64_t args) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDIRECT,.u={p,args}},1); else [e drawPrimitives:p indirectBuffer:args]; }   // tessellation (nvn_tess_rt.inc)
 static inline void enc_r_store(id<MTL4RenderCommandEncoder> e, int depth, MTLStoreAction action, NSUInteger index) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_STORE,.u={(uint64_t)depth,action,index}},0); else if (depth == 1) [e setDepthStoreAction:action]; else if (depth == 2) [e setStencilStoreAction:action]; else [e setColorStoreAction:action atIndex:index]; }
 static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor *d) { (void)d; blit_close(); rs_sync(); pt_mark(g_cb, 'C', nil); id<MTL4ComputeCommandEncoder> e = [g_cb computeCommandEncoder]; if (bar_start_on()) [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; [e setArgumentTable:g_ct]; return e; }
 static inline id<MTLComputeCommandEncoder> enc_c_begin_concurrent(id<MTLCommandBuffer> cb) { return [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]; }
@@ -2252,7 +2253,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); mtl_init
 // ================= 渲染回放 =================
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[128];
+static int g_red_once[256];   // ids up to 255 (nvn_tess_rt.inc uses 190-199)
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("【红】" __VA_ARGS__); } while (0)
 
 // ---------- 贴图 → MTLTexture ----------
@@ -3095,10 +3096,11 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
             | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0)
             /* The Witcher 3: compute kernel f71bce7e writes four 1x1 R32F textures (its exposure values) as images although
                they were made without NVN_TEXTURE_FLAGS_IMAGE (flags 0x8, compressible), and other kernels write 640x360
-               render targets (R32F, RGBA16F, RGBA8) the same way; the console does not check, Metal drops the writes of a
-               texture without ShaderWrite and the scene stayed black. Every uncompressed 2D colour texture of this game is
-               made writable (Apple GPUs keep lossless compression on shader-writable textures). */
-            | (t->d.target == 1 && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);
+               render targets (R32F, RGBA16F, RGBA8) the same way, and a 64x64x5 2D array texture later; the console does not
+               check, Metal drops the writes of a texture without ShaderWrite and the scene stayed black. Every uncompressed
+               2D, 3D and 2D array colour texture of this game is made writable (Apple GPUs keep lossless compression on
+               shader-writable textures). */
+            | ((t->d.target == 1 || t->d.target == 2 || t->d.target == 4) && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);
     // TOTK: Metal rejects descriptor swizzle on render targets and on shader-writable textures (image use, and BC textures
     // decoded by the bcd kernel on GPUs without BC support); those get the swizzle on their sampling view (tex_by_id).
     MTLTextureSwizzleChannels sw;
@@ -5168,7 +5170,9 @@ static void shmap_load(void) {
     tex_slot_cache tex_slots;
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass：编这块参数的渲染通道序号——只在同一通道内复用（跨通道 / 跨提交的块所在 arena 可能已回收重写） | ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; id<MTLFunction> no_depth_fn;
-    NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
+    NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen;
+    id<MTLFunction> geo_fn; id<MTLComputePipelineState> geo_pso;   // tessellation (nvn_tess_rt.inc): a vertex shader's capture entry main0_gs; a control kernel's pipeline
+    int tess_out_vertices, tess_out_stride, tess_patch_stride, tes_in_stride, tes_patch_stride, tes_quad, tess_cw, tess_spacing; } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader
 - (void)dealloc { free(rf.c1); }   /* nvn_refl_from_json's malloc (games/totk's) */
 @end
@@ -5186,7 +5190,8 @@ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
     // TOTK: translation inputs and the variant per bound-state signature (prog_fit)
     const uint8_t *ctl[6], *code[6]; NSString *key[6]; uint64_t sig[6]; NSMutableDictionary<NSNumber *, NvShader *> *alt[6];
     void *udc_sh[6]; uint8_t udc_ok, udc_img, udc_imgw; uint32_t udc_cmask;   // udc_*: udc_note_draw's summary of sh[] (valid while sh[] is the same)
-    int missing, miss_has[2]; uint64_t miss_sig[2], miss_seen, fit_seen; int exp_skip; int keeps; } @end   // keeps (async shaders): a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped. TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
+    int tess; NSMutableDictionary *tess_cache; id<MTLBuffer> tess_stat; NvProg *tess_ras; void *tess_ras_fs;   // tessellation stages run as compute (nvn_tess_rt.inc)
+    int missing, unsupported, miss_has[2]; uint64_t miss_sig[2], miss_seen, fit_seen; int exp_skip; int keeps; } @end   // keeps (async shaders): a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped. TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
 @implementation NvProg @end
 /* TOTK_EXP_SKIP_FS=<fragment key prefix>[,<prefix>...] (measurement only, 2026-10-16): drop every draw whose fragment shader key
    starts with one of the prefixes. A render pass whose draws are all dropped is never opened, so the GPU time saved is the
@@ -5440,6 +5445,8 @@ static int drv_fillable(int stage, int bank, unsigned off) {
     switch (stage) {
     case 0: return (off >= 0x110 && off < 0x210) || (off >= 0x610 && off < 0x620);   // the point-size limit vec4 (Service.cs DrvFillC0)
     case 1: return off >= 0x510 && off < 0x610;
+    case 3: return off >= 0x210 && off < 0x310;   // tessellation control: its storage buffer table (0x110 + 0x100 * Maxwell stage 1)
+    case 4: return off >= 0x310 && off < 0x410;   // tessellation evaluation (Maxwell stage 2)
     case 5: return off >= 0x200 && off < 0x410;
     default: return 0;
     }
@@ -5567,6 +5574,10 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
+    if ([j[@"entry_geometry_capture"] isKindOfClass:[NSString class]]) o->geo_fn = [lib newFunctionWithName:j[@"entry_geometry_capture"]];   // tessellation capture (nvn_tess_rt.inc)
+    { NSDictionary *tc = j[@"tess_control"], *te = j[@"tess_eval"];
+      if ([tc isKindOfClass:[NSDictionary class]]) { o->tess_out_vertices = [tc[@"out_vertices"] intValue]; o->tess_out_stride = [tc[@"out_stride"] intValue]; o->tess_patch_stride = [tc[@"patch_stride"] intValue]; }
+      if ([te isKindOfClass:[NSDictionary class]]) { o->tes_in_stride = [te[@"in_stride"] intValue]; o->tes_patch_stride = [te[@"patch_stride"] intValue]; o->tes_quad = [te[@"domain"] isEqual:@"quad"]; } }
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
     if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
@@ -5680,7 +5691,30 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         CC_SHA256_Update(&ctx,(const void *)(uintptr_t)p->sd[i].data,length);CC_SHA256_Final(md,&ctx);
         char key[65];for(unsigned j=0;j<32;j++)snprintf(key+2*j,3,"%02x",md[j]);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
-        int st=(int)nvn_stage;if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
+        int st=(int)nvn_stage;
+        /* The Witcher 3 (a window session, after the first scene): a program with a tessellation stage (NVN stage 3); the game
+           ended here (MDIE). As games/acnh: a geometry or tessellation stage has no translation chain, so the program is
+           marked missing for good (unsupported), its draws are skipped as an untranslated program's are, and the game goes on
+           without them. */
+        if(st!=0&&st!=1&&st!=5){
+            if(nvn_stage>5)MDIE("TOTK shader %s: invalid NVN stage %u",key,nvn_stage);
+            static NSMutableSet<NSString *> *told; if(!told)told=[NSMutableSet set];
+            if(![told containsObject:@(key)]){[told addObject:@(key)];
+                if(st==2)MLOG("【红】shader %s: NVN stage 2 (geometry) has no Metal equivalent: draws of its program are skipped",key);
+                else MLOG("[tess] shader %s: NVN stage %u (tessellation) runs as compute (nvn_tess_rt.inc)",key,nvn_stage);
+                /* W3_TESS_DUMP=<folder>: every stage of such a program, its control section (0x880 bytes) and code as <key>.ctl /
+                   <key>.code, and <stage key>.stages listing them ("<stage>\t<key>"), as test input for the tessellation translation */
+                const char *gd=getenv("W3_TESS_DUMP"); if(gd){ for(unsigned j=0;j<p->nstage;j++){ const uint8_t *cj=p->sd[j].control,*dj=(const uint8_t *)(uintptr_t)p->sd[j].data; if(!cj||!dj) continue;
+                    uint32_t lj=0,sj=0; memcpy(&lj,cj+0x704,4); memcpy(&sj,cj+0x714,4); if(!lj||lj>16*1024*1024) continue;
+                    uint8_t mj[32]; CC_SHA256_CTX cx; CC_SHA256_Init(&cx); CC_SHA256_Update(&cx,cj,ctl_key_len(cj)); CC_SHA256_Update(&cx,dj,lj); CC_SHA256_Final(mj,&cx);
+                    char kj[65]; for(unsigned q=0;q<32;q++) snprintf(kj+2*q,3,"%02x",mj[q]);
+                    [[NSData dataWithBytes:cj length:0x880] writeToFile:[NSString stringWithFormat:@"%s/%s.ctl",gd,kj] atomically:YES];
+                    [[NSData dataWithBytes:dj length:lj] writeToFile:[NSString stringWithFormat:@"%s/%s.code",gd,kj] atomically:YES];
+                    NSString *lp=[NSString stringWithFormat:@"%s/%s.stages",gd,key]; NSString *old_=[NSString stringWithContentsOfFile:lp encoding:NSUTF8StringEncoding error:nil]?:@"";
+                    [[old_ stringByAppendingFormat:@"%u\t%s\n",sj,kj] writeToFile:lp atomically:YES encoding:NSUTF8StringEncoding error:nil]; } } }
+            if(st==3||st==4){o->tess=1;o->ctl[st]=control;o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data;o->key[st]=@(key);continue;}   // run as compute at the draw (nvn_tess_rt.inc)
+            o->missing|=1<<st;o->unsupported|=1<<st;o->ctl[st]=control;o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data;o->key[st]=@(key);continue;
+        }
         if (getenv("TOTK_CTL_DUMP")) {   // diagnostic: the control section the game hands NVN, per shader (offline shader discovery is checked against it)
             static FILE *df; if (!df) df = fopen(getenv("TOTK_CTL_DUMP"), "a");
             if (df) { uint8_t cm[32]; char ch[65]; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data; size_t skip = st == 5 ? 0 : 0x30;
@@ -5709,7 +5743,7 @@ static int prog_resolve(NvProg *o, int may_skip) {
     o->miss_seen = done;
     int filled = 0;
     for (int st = 0; st < 6; st++) {
-        if (!(o->missing & 1 << st)) continue;
+        if (!(o->missing & 1 << st) || (o->unsupported & 1 << st)) continue;   // a geometry / tessellation stage stays missing
         NSString *variant = totk_rt_variant(o->key[st], st, o->ctl[st], o->code[st], rt_answers(st), rt_local(o->ctl[st], st), may_skip);
         if (!variant) continue;
         NvShader *sh = shader_get([variant stringByAppendingString:@"_b"], st);
@@ -6200,7 +6234,7 @@ static struct {
     uint64_t tex[6][128], samp[6][128], img[6][32];
     uint64_t tex_gen[6];   // TOTK: a fresh value of g_tex_gen_seq whenever tex[stage] changes (TEX_CHANGED); saved / restored with S
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
-    p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard;
+    p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard; int patch_size;
     float blend_color[4]; int64_t copy_stride, copy_image_stride;   // SetCopyRowStride / SetCopyImageStride (0 = packed)
 } S;
 /* TOTK: stage_sig compared 128 texture handles of the stage with its last copy on every draw (a 1 KiB memcmp, 0.13 ms a
@@ -6509,7 +6543,7 @@ static nvn_hmap g_pso = {.klen = sizeof(pso_key)}, g_dss;
 // (left zero) in a patched copy of its MSL, cached per missing set.
 static NSDictionary<NSNumber *, NSString *> *msl_varyings(NvShader *sh) {
     if (sh->io || !sh_has_src(sh)) return sh->io;
-    NSString *st = sh->stage == 0 ? @"main0_out" : @"main0_in";
+    NSString *st = sh->stage == 0 || sh->stage == 4 ? @"main0_out" : @"main0_in";   // 4: a tessellation evaluation function feeds the rasterizer (nvn_tess_rt.inc)
     NSString *src0 = sh_src(sh);
     NSRange r = [src0 rangeOfString:[NSString stringWithFormat:@"struct %@\n{", st]];
     NSMutableDictionary *d = [NSMutableDictionary dictionary];
@@ -7440,7 +7474,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             NSData *jd = [NSData dataWithContentsOfFile:jp];
             NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
             NSString *stage = j[@"stage"];
-            int st = [stage isEqual:@"vs"] ? 0 : [stage isEqual:@"ps"] ? 1 : [stage isEqual:@"cs"] ? 5 : -1;
+            int st = [stage isEqual:@"vs"] ? 0 : [stage isEqual:@"ps"] ? 1 : [stage isEqual:@"cs"] ? 5 : [stage isEqual:@"tcs"] ? 3 : [stage isEqual:@"tes"] ? 4 : -1;
             if (st < 0 || ![j[@"chain"] isEqual:@DMSH_CHAIN]) { failed++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
             [lkeys addObject:key]; [lstages addObject:@(st)];
         }
@@ -7504,7 +7538,7 @@ static void warm_filled(void) {
             NSData *jd = [NSData dataWithContentsOfFile:[@"shader-requests" stringByAppendingPathComponent:n]];
             NSDictionary *rq = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
             NSString *sn = [rq isKindOfClass:[NSDictionary class]] ? rq[@"stage"] : nil;
-            int st = [sn isEqual:@"vs"] ? 0 : [sn isEqual:@"ps"] ? 1 : [sn isEqual:@"cs"] ? 5 : -1;
+            int st = [sn isEqual:@"vs"] ? 0 : [sn isEqual:@"ps"] ? 1 : [sn isEqual:@"cs"] ? 5 : [sn isEqual:@"tcs"] ? 3 : [sn isEqual:@"tes"] ? 4 : -1;
             if (st < 0 || !shader_load([variant stringByAppendingString:@"_b"], st)) { failed++; continue; }
             NSString *done = [@"shader-requests/done" stringByAppendingPathComponent:n];
             [fm removeItemAtPath:done error:nil];
@@ -7839,8 +7873,9 @@ static inline void args_sync_dirty(void) {
         g_args_reg_seen = reg; g_args_dirty_seen = dirty; args_dirty_all();
     }
 }
+static int g_args_compute;   // encode_args for a graphics stage run as a kernel (the tessellation control stage, nvn_tess_rt.inc)
 static void bind_args(id<MTLCommandEncoder> en, int nvn_stage, int metal_vertex, id<MTLBuffer> ab, uint64_t gpu, size_t off, NSUInteger ai) {
-    if (nvn_stage == 5) enc_c_args((id<MTLComputeCommandEncoder>)en, gpu, ai);
+    if (nvn_stage == 5 || g_args_compute) enc_c_args((id<MTLComputeCommandEncoder>)en, gpu, ai);
     else enc_r_args((id<MTLRenderCommandEncoder>)en, metal_vertex ? MTLRenderStageVertex : MTLRenderStageFragment, gpu, ai);
 }
 // B 路线的静态常量缓冲：Ryujinx support_buffer（布局见 Ryujinx.Graphics.Shader/SupportBuffer.cs：alpha_test u32、is_bgra u32[8]、
@@ -7905,7 +7940,7 @@ static int driver_cache_on(void) {
 static void driver_bank_fill(uint8_t *d, int bank, int stage) {
     memset(d, 0, 0xA00);
     if (bank == 0) {
-        int base = stage == 0 ? 0x110 : stage == 5 ? 0x310 : stage == 1 ? 0x510 : -1;
+        int base = stage == 0 ? 0x110 : stage == 5 ? 0x310 : stage == 1 ? 0x510 : stage == 3 ? 0x210 : stage == 4 ? 0x310 : -1;   // 3 / 4: tessellation (TessService.cs DrvFillC0)
         if (base < 0) RED_ONCE(45, "阶段 %d 的着色器读驱动段 c0，存储缓冲表基址未实测", stage);
         else for (int r = 0; r < 16; r++) { uint64_t a = S.ssbo[stage][r].addr; uint32_t n = (uint32_t)S.ssbo[stage][r].size; memcpy(d + base + 16 * r, &a, 8); memcpy(d + base + 16 * r + 8, &n, 4); }
         if (stage == 5) {   // TOTK: compute thread-group counts {x, y, z} (gl_NumWorkGroups) and the uniform-buffer table {address, size}
@@ -7995,7 +8030,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     uint64_t slots[NVN_REFL_MAXB] = {0};
     args_sync_dirty();
     static int ab_noreuse = -1; if (ab_noreuse < 0) ab_noreuse = getenv("DM_NVN_AB_NOREUSE") != NULL;   // TOTK diagnostic: never reuse a shader's argument buffer within a pass
-    int epoch_mode = arg_epoch_on() && nvn_stage != 5 && arg_epoch_safe(sh);
+    int epoch_mode = arg_epoch_on() && nvn_stage != 5 && !g_args_compute && arg_epoch_safe(sh);
     arg_epoch_key epoch = {0}; int epoch_hit = 0;
     if (epoch_mode) {
         // Serialize with descriptor publication, as the full builder does. The
@@ -8006,7 +8041,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         registry_unlock();
     }
     // Uniform contents may change without a texture-slot rebind: neither cache key describes these handles.
-    int reuse = !uniform_textures(sh) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    int reuse = !uniform_textures(sh) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !g_args_compute &&
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
     if (reuse) {
@@ -8023,7 +8058,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     static uint64_t bl_pass[6]; static int bl_all = -1; if (bl_all < 0) bl_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL || getenv("TOTK_INPUT_FILE") != NULL;   // 每次新编都记（否则只记每通道每阶段第一次） | Record on every new encode (otherwise only the first time per pass per stage)
     int bl = passdump() && (bl_all || bl_pass[nvn_stage] != g_stat_pass);
     if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d prog=%p", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb, (const void *)S.prog); }
-    int slot_mode = tex_slots_on() && !verify_epoch && nvn_stage != 5 && arg_epoch_safe(sh) && !ab_noreuse &&
+    int slot_mode = tex_slots_on() && !verify_epoch && nvn_stage != 5 && !g_args_compute && arg_epoch_safe(sh) && !ab_noreuse &&
         !passdump() && !g_res_check_on && g_use != USE_REC && !tex_slots_diagnostics() && !nan_trace_match(sh);
     int slot_check = slot_mode && atomic_load_explicit(&g_tex_slots_check, memory_order_relaxed);
     tex_slot_key slot_key = {0}; uint64_t slot_mask = 0, slot_hits = 0, slot_misses = 0;
@@ -8427,7 +8462,7 @@ static int lay_scan(const uint8_t *start, const p_set_rt *rt, int first, int nla
             case OP_UPDATE_UB: case OP_REPORT_COUNTER: case OP_RESET_COUNTER: case OP_RENDER_COND: case OP_RENDER_ENABLE: case OP_CLEAR_COLOR:
             case OP_DRAW: case OP_DRAW_IDX: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM: case OP_BIND_STATE:
             case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP:
-            case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD:
+            case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_PATCH_SIZE: case OP_RASTER_DISCARD:
             case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: continue;
             default: return hi;   // copies, dispatches, texture / depth-stencil clears, events
         }
@@ -8601,6 +8636,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_RENDER_ENABLE: S.render_disabled = !((const p_flag *)a)->value; break;
         case OP_RENDER_COND: S.render_disabled = !cond_eval(a, (const uint8_t *)a - 8); PD("E cond addr=%#llx mode=%d -> %s", (unsigned long long)((const p_render_cond *)a)->addr, ((const p_render_cond *)a)->mode, S.render_disabled ? "disabled" : "enabled"); break;
         case OP_RASTER_DISCARD: S.raster_discard = ((const p_flag *)a)->value; break;
+        case OP_PATCH_SIZE: S.patch_size = ((const p_flag *)a)->value; break;   // nvnCommandBufferSetPatchSize: input vertices per tessellation patch
         default: return 0;
     }
     return 1;
@@ -10069,7 +10105,8 @@ static void prepare_draw_textures(NvProg *pr) {
     for (;;) {
         g_tex_prepare_split = 0; g_tex_preparing = 1;
         registry_lock();
-        for (int st = 0; st < 2; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int si = 0; si < 2; si++) { __unsafe_unretained NvShader *sh = pr->sh[si]; if (!sh) continue;
+            int st = sh->stage >= 0 && sh->stage < 6 ? sh->stage : si;   // the bound state of the shader's own stage (a tessellation evaluation function sits in sh[0])
             int count = planned ? sh->texture_count : sh->rf.nb;
             for (int i = 0; i < count; i++) { int tid = 0;
                 if (planned) { unsigned slot = sh->texture_slots[i]; tid = (int)((slot < 128 ? S.tex[st][slot] : S.img[st][slot - 128]) & 0xfffff); }
@@ -10740,15 +10777,17 @@ static int mfxup_draw(NvProg *pr) {
     return 0;
 }
 #include "nvn_cube_group.h"
+#include "nvn_tess_rt.inc"   // tessellation stages as compute (The Witcher 3)
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
-    if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
-    g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = prog_get(S.prog); g_prog_for_draw = 0;
+    if (!S.prog && !g_tess_ras.active) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
+    g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = g_tess_ras.active ? g_tess_ras.pr : prog_get(S.prog); g_prog_for_draw = 0;
     if (pr) gpu_ring_note(pr->sh[0] ? pr->sh[0]->key : NULL, pr->sh[1] ? pr->sh[1]->key : NULL, (uint32_t)(dw ? dw->count : di ? di->count : 0),
                           (uint32_t)(dw ? dw->instances : di ? di->instances : 0), 0, 0);
-    if (pr && pr->missing && async_shaders() && prog_resolve(pr, draw_may_skip(pr))) g_pso_dirty = 1;
+    if (pr && pr->missing && !pr->unsupported && async_shaders() && prog_resolve(pr, draw_may_skip(pr))) g_pso_dirty = 1;
     if (pr && pr->missing) { async_skip_targets(); g_draw_skip[15]++; return; }   // TOTK (iOS): not translated yet; Mac (async shaders): still in the background
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { async_skip_targets(); g_draw_skip[15]++; return; } if (fit) g_pso_dirty = 1; }
+    if (pr && pr->tess && !g_tess_ras.active) { tess_draw(pr, dw, di); return; }   // capture, control kernel, tessellator, then this function again (nvn_tess_rt.inc)
     if (skv_on()) { g_skv_draws++; if (skv_check((__bridge const void *)pr, dw, di)) return; }   // measurement experiment: skip draws invisible in the last frames
     geometry_dump(pr, dw, di);
     if (di && di->itype == 0 && di->count && pend_hits(di->ibuf, (uint64_t)di->count)) widen_indices_gpu(di);
@@ -11063,9 +11102,10 @@ frz_plain:;
     { static int noclamp = -1; if (noclamp < 0) noclamp = getenv("TOTK_GPU_NOCLAMP") != NULL;   // TOTK diagnostic: TOTK_GPU_NOCLAMP=1 ignores SetDepthClamp (always clip)
       enc_r_clip(en, S.depth_clamp && !noclamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip); }   // TOTK: SetDepthClamp
     enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
-    bind_vertex_streams((id<MTL4RenderCommandEncoder>)en,pr->sh[0]);
+    if (!g_tess_ras.active) bind_vertex_streams((id<MTL4RenderCommandEncoder>)en,pr->sh[0]);   // a tessellation evaluation function fetches no vertices
     if (g_lay.active) enc_r_vbuf(en, LAY_BUF_INDEX, lay_gpu(g_lay_probe_neg == 1 ? 0 : g_lay.cur - g_lay.base));   // TOTK: this draw's layer within the layered pass
-    if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
+    if (pr->sh[0]) encode_args(en, pr->sh[0], g_tess_ras.active ? 4 : 0, 1);
+    if (g_tess_ras.active) { enc_r_vbuf(en, 20, g_tess_ras.patch); enc_r_vbuf(en, 21, g_tess_ras.dom); enc_r_vbuf(en, 22, g_tess_ras.cp); }   // TessService.cs: spvPatchIn, dm_dom, spvIn
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
@@ -11156,7 +11196,8 @@ frz_plain:;
     /* Triangle fans (NVN 6; Metal has none; Red Dead Redemption draws some): a list of triangles 0,k+1,k+2. Unindexed: one
        shared index buffer with the fan's first vertex as base vertex, as quads below. Indexed: the fan's indices expanded
        into this submission's arena (8, 16 or 32 bits in, 32 out; a restart index is not expected in a fan). */
-    if (prim == 6) {
+    if (g_tess_ras.active) enc_r_draw_indirect(en, mp, g_tess_ras.args);   // the tessellator's vertex count (nvn_tess_rt.inc)
+    else if (prim == 6) {
         enum { FAN_MAX = 65536 };
         if (dw) {
             if (!g_fan_ib) {
@@ -12049,7 +12090,7 @@ void mtl_exec(const uint8_t *p) {
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_RENDER_ENABLE: case OP_RASTER_DISCARD: case OP_RENDER_COND:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_PATCH_SIZE: case OP_RENDER_ENABLE: case OP_RASTER_DISCARD: case OP_RENDER_COND:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

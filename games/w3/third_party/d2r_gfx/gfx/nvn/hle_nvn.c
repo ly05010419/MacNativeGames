@@ -1761,6 +1761,7 @@ NVN(nvnCommandBufferSetRenderEnableConditional, void, NVNcommandBuffer *c, NVNco
     p_render_cond *r = REC(c, OP_RENDER_COND, p_render_cond); r->mode = (int32_t)m; r->pad = 0; r->addr = a;
 }
 // Rasterizer discard runs vertex work without rasterising; with no transform feedback that is the same as not drawing.
+NVN(nvnCommandBufferSetPatchSize, void, NVNcommandBuffer *c, int n) { REC(c, OP_PATCH_SIZE, p_flag)->value = n; }   // tessellation: input vertices per patch (OP_PATCH_SIZE)
 NVN(nvnCommandBufferSetRasterizerDiscard, void, NVNcommandBuffer *c, uint32_t e) { REC(c, OP_RASTER_DISCARD, p_flag)->value = B(e) != 0; }
 /* TOTK diagnostic: TOTK_BINDPROG_LOG=<frame_lo>-<frame_hi> prints every BindProgram of those frames with the program object, its
    vertex-stage shader data address and the guest call chain (module+offset), so a program choice can be traced to game code. */
@@ -2346,7 +2347,6 @@ static void nvn_nop(void) {}
 // TOTK: entries that would silently drop GPU work (indirect draws/dispatch, downsample, depth bounds test) were removed
 // so a real call stops at the unimplemented stub. WaitSync/WaitEvent rely on in-order replay on the single Metal queue.
 static const char *const g_nops[] = {
-    "nvnCommandBufferSetPatchSize",
     "nvnCommandBufferWaitSync",
     "nvnCommandBufferSetShaderScratchMemory",
     "nvnCommandBufferWaitEvent",
