@@ -31,4 +31,34 @@ American release 0100E67012924000: main build ID b151a224…, sdk d5a1029a…; `
   per vec4: `c2[22].z` is texture handle slot 0 (0x168), next to the image handles; the old rule refused the shader.
 - **Checked**: the Saber Interactive logo, the title, the main menu (both expansions), a new game's comic intro, its CGI
   movie and the first in-engine scene with Chinese subtitles; no GPU hang, the GPU idle after every run.
-- **Open**: that scene draws its characters but not the room (black background).
+- **The black room**: the game writes render targets as images (compute kernels: its four 1x1 R32F exposure values,
+  640x360 R32F / RGBA16F / RGBA8 targets) although they were made without NVN_TEXTURE_FLAGS_IMAGE; the console does not
+  check, Metal dropped the writes of textures without ShaderWrite, so exposure and the lit scene stayed black. Every
+  uncompressed 2D colour texture of this game is made shader-writable. An image binding to an unwritable texture logs the
+  texture's description ([img-unwritable]). Checked: the room, its walls, bed and lights drawn; 30 fps in the scene (frame
+  p50 33.33 ms, GPU p50 16 ms).
+
+## 2026-11-23 — gameplay at Kaer Morhen; tessellated terrain as compute (Mac)
+
+- **Gameplay**: the first save (Kaer Morhen, "使用猎魔感官能力寻找卧室钥匙") loads and plays at 30 fps.
+- **A tessellated program ended the game** (NVN stage 3, `unsupported NVN stage`): the terrain (mountains, valleys,
+  the ground) is drawn with quad tessellation. Metal 4's render encoders have no tessellator (no drawPatches), so a
+  tessellated draw now runs as compute (`third_party/d2r_gfx/gfx/nvn/nvn_tess_rt.inc`):
+  1. the vertex shader's capture entry (games/totk's geometry capture) writes one 144-word record per vertex;
+  2. the control stage runs as a kernel over every patch (Tears of the Kingdom's translator, new `TessService.cs`:
+     SPIRV-Cross's multi-patch control kernel, its inputs read from the records);
+  3. a tessellator kernel partitions each quad patch from its levels (integer partitioning: the spacing's levels rounded
+     up, each edge split by its own level, so neighbouring patches share their edge points exactly);
+  4. the evaluation stage runs as an ordinary vertex function over the domain points with the program's fragment shader,
+     drawn indirectly (vertex count from the GPU; render stream packet `RS_INDIRECT`).
+  The mode comes from the evaluation stage's NVN control section (+0x738 GL_QUADS, +0x73c GL_FRACTIONAL_EVEN, +0x744
+  GL_CW); `nvnCommandBufferSetPatchSize` is recorded (OP_PATCH_SIZE). The two stages' interface structs are laid out by
+  SPIR-V location on both sides (each declares only what it writes or reads). Found on the way: the capture info block's
+  `uint4` is 16-byte aligned in Metal (`tess_capture.pad`; a probe, `W3_TESS_PROBE=<frame>`, showed one record written);
+  a tessellation evaluation function's varyings are its `main0_out`; `g_red_once` was 128 entries.
+- **Shader-writable textures**: 2D array and 3D colour textures too (a 64x64x5 2D array texture written as an image).
+- **Checked** (headless, the Kaer Morhen save): the mountains, valleys, clouds and the tower drawn, no cracks between
+  patches; 30 fps (frame p50 33.33 ms, p95 33.5 ms), GPU p50 17 ms (16 ms before tessellation was drawn); about 3,500
+  patches a frame through the tessellator; no GPU hang, the GPU idle after the run.
+- **Not yet**: triangle and isoline domains, fractional spacing's level blending, indirect tessellated draws; Geralt's
+  shirt showed coloured noise once in a window session (not reproduced in four runs since).
