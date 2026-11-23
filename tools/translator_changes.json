@@ -369,7 +369,7 @@
    ]
   },
   "games/totk/prebuilt/macos-arm64/totk_xlate": {
-   "code_sha256": "e146d8d3bd6efe5d0f0b9bcd6060eb27c15a9f3d455d80633561277673b0b368",
+   "code_sha256": "838a10ab534d41613f18c30cfd7f4f1f0646bfef20684e37b71625ba0f1bf169",
    "history": [
     {
      "code_sha256": "e146d8d3bd6efe5d0f0b9bcd6060eb27c15a9f3d455d80633561277673b0b368",
@@ -378,6 +378,14 @@
      "why": "基线：2026-11-18 建账时仓库里的版本，来自提交 dd48c2de（fix(ns2): Ampere translator fixes from the Ocarina of Time port）。之前的变化没有逐条记录理由。",
      "necessary": "基线，不是一次改动（建账前已在使用）。",
      "evidence": "git log -- games/totk/prebuilt/macos-arm64/totk_xlate"
+    },
+    {
+     "code_sha256": "838a10ab534d41613f18c30cfd7f4f1f0646bfef20684e37b71625ba0f1bf169",
+     "date": "2026-11-23",
+     "commit": "(this commit)",
+     "why": "Service.cs DrvReads / Unfillable：驱动常量段（c0 / c2）里能否由回放层填写，改为按着色器实际读的分量逐字判断（新增 word_offsets），不再按整个 vec4 判断。巫师3 的片元着色器 624aa677 读 c2[22].z（0x168，第 0 号贴图句柄，回放层会填），它所在的 vec4 从 0x160 起、前半是不填的图像句柄区，旧规则把整个着色器判为“填不了”，运行时拒绝它，游戏在进入剧情前中止。",
+     "necessary": "必要：不改则巫师3 进不了游戏内剧情（2026-11-23 的运行 wm 在此中止）。翻译出的 MSL 不变，只是 drv_unfillable 不再误报；没有读未填字的着色器结果相同，读了的仍被报出。",
+     "evidence": "games/w3/CHANGELOG.md；运行 wm 的 “c2+0x160” 拒绝与运行 wn 进入剧情；games/totk/tools/totk_xlate/Service.cs DrvReads 注释。"
     }
    ]
   },

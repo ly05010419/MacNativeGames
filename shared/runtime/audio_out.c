@@ -126,7 +126,10 @@ static void append(AudioOut *o, const IpcRequest *rq) {
     const IpcBuffer *b = in_buffer(rq); need(b && b->size >= sizeof(AudioOutBuffer), "AppendAudioOutBuffer descriptor");
     AudioOutBuffer d; memcpy(&d, ipc_guest(b->addr, sizeof d), sizeof d);
     uint64_t tag = IPC_ARG(rq, uint64_t, 0);
-    need(d.data_offset + d.data_size <= d.capacity || !d.capacity, "AudioOut buffer bounds");
+    /* The audio service plays data_size bytes from the start of the sample buffer and never reads data_offset (libnx:
+       "unused"); The Witcher 3 leaves it uninitialised (0x5101400050f06 next to a 0x1000-byte buffer, 2026-11-23), so it
+       is not used here either. */
+    need(d.data_size <= d.capacity || !d.capacity, "AudioOut buffer bounds");
     pthread_mutex_lock(&o->lock);
     need(o->nqueue < QUEUE_MAX, "AudioOut queue full");
     o->queue[o->nqueue++] = (Queued){tag, d.data_size};
@@ -135,7 +138,7 @@ static void append(AudioOut *o, const IpcRequest *rq) {
     uint64_t frames = d.data_size / (2ull * o->channels);
     AudioQueueBufferRef qb;
     need(AudioQueueAllocateBuffer(o->aq, (UInt32)(frames * 4 ? frames * 4 : 4), &qb) == 0, "AudioOut queue buffer");
-    to_stereo(ipc_guest(d.sample_buffer + d.data_offset, d.data_size), qb->mAudioData, frames, o->channels);
+    to_stereo(ipc_guest(d.sample_buffer, d.data_size), qb->mAudioData, frames, o->channels);
     qb->mAudioDataByteSize = (UInt32)(frames * 4);
     if (!frames) { memset(qb->mAudioData, 0, 4); qb->mAudioDataByteSize = 4; }   /* an empty buffer still has to come back */
     need(AudioQueueEnqueueBuffer(o->aq, qb, 0, NULL) == 0, "AudioOut enqueue");

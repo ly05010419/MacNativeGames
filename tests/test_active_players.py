@@ -27,7 +27,7 @@ STARTS = {
     # the other games: their id is the folder name (the same as GAME_INBOX_ID where the game has one)
     **{f'games/{g}/runtime/frontend.m': f'mng_active_start(@"{g}", mng_active_version());' for g in (
         'acnh', 'alc', 'aocx', 'by3', 'dread', 'eow', 'kirby', 'lm3', 'mj2013', 'mk8dx', 'mkw', 'mvdk', 'odyssey', 'ori', 'ot0', 'p5r', 'pla', 'pokesv',
-        'rdr', 'ssbu', 'tmnt', 'tomodachi', 'unicorn', 'wonder', 'xc3', 'xcx')},
+        'rdr', 'ssbu', 'tmnt', 'tomodachi', 'unicorn', 'w3', 'wonder', 'xc3', 'xcx')},
     # the games on the host runtime: front_mac.m is built in runtime/host, so their copy of the header is there
     **{f'games/{g}/runtime/host/front_mac.m': f'mng_active_start(@"{g}", mng_active_version());' for g in (
         'aoc', 'jamboree', 'la', 'mk8d', 'ss', 'worldend')},
