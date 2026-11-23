@@ -1951,6 +1951,19 @@ uint64_t mtl_sub_commit(void) {
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
+        uint64_t ts_clock = gpu_ticks();
+#ifdef GAME_LM3
+        /* Luigi's Mansion 3 sizes its dynamic resolution from two TIMESTAMP reports, at the start and the end of a frame's
+           GPU work. Stamped with the host clock when each submission completes, their difference also counted the time
+           between the frame's submissions (CPU replay), so the game always saw a GPU near its budget and lowered the
+           resolution (it swept between 1920x1080 and 1600x900). The clock here advances by the GPU's working time only:
+           the difference is the GPU time of the frame. LM3_GPU_CLOCK=host restores the host clock. */
+        { static int host = -1; if (host < 0) { const char *gc = getenv("LM3_GPU_CLOCK"); host = gc && !strcmp(gc, "host"); if (host) MLOG("LM3_GPU_CLOCK=host: timestamps from the host clock"); }
+          static _Atomic uint64_t vclock; uint64_t z = 0; atomic_compare_exchange_strong(&vclock, &z, ts_clock);
+          double busy = cb.GPUEndTime - cb.GPUStartTime; uint64_t add = busy > 0 && busy < 1 ? (uint64_t)(busy * 19200000.0) : 0;
+          uint64_t v = atomic_fetch_add(&vclock, add) + add;
+          if (!host) ts_clock = v; }
+#endif
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
@@ -1967,7 +1980,7 @@ uint64_t mtl_sub_commit(void) {
             }
             // TOTK: NVNcounterData = {counter, timestamp}; TIMESTAMP / TIMESTAMP_TOP reports write counter 0 (the timestamp is the second word).
             // The game's conditional clears depend on that 0 (see cond_eval); other unimplemented counter types also report 0.
-            else { uint64_t t = gpu_ticks(), rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
+            else { uint64_t t = ts_clock, rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
         }
         free(ops);
         /* TOTK_OCCL_AUTODUMP=<dir>: when every occlusion query of a frame reported 0 (the game then culls all queried
