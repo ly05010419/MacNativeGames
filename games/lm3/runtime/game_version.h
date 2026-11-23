@@ -3,10 +3,14 @@
    A new version's block: scripts/map_version_sites.py --from v112 --to <version> --header. */
 #pragma once
 #if defined(GAME_LM3)
-/* Luigi's Mansion 3 1.2.0. TOTK's sites are never applied here (runtime_game_patches skips them); GAME_ADDR only keeps
+/* Luigi's Mansion 3 1.2.0 or 1.4.0. TOTK's sites are never applied here (runtime_game_patches skips them); GAME_ADDR only keeps
    their guarded tables compiling. */
-#define TOTK_GAME_VERSION "1.2.0"
-#define TOTK_GAME_DIR "v120"
+#ifndef LM3_GAME_VERSION   /* the Makefile passes LM3_VERSION: 1.2.0 or 1.4.0 */
+#define LM3_GAME_VERSION "1.2.0"
+#define LM3_GAME_DIR "v120"
+#endif
+#define TOTK_GAME_VERSION LM3_GAME_VERSION
+#define TOTK_GAME_DIR LM3_GAME_DIR
 #define GAME_ADDR(x) (x)
 #define GAME_ACTOR_NAME 0
 #define GAME_ACTOR_POS 0

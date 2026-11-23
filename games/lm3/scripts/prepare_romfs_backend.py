@@ -3,7 +3,7 @@
 import argparse,hashlib,json,struct
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description=__doc__);parser.parse_args();version='v120'
+parser=argparse.ArgumentParser(description=__doc__);parser.parse_args();version='v'+__import__('os').environ.get('LM3_VERSION','1.2.0').replace('.','')
 out=root/'build';out.mkdir(parents=True,exist_ok=True)
 folder=root/f'extracted/{version}/romfs';manifest=json.loads((folder/'index.json').read_text())
 assert manifest['status']=='pass' and (folder/'romfs.bin').stat().st_size==manifest['romfs_size']

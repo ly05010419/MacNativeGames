@@ -724,6 +724,7 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
 // ---------- Submission ----------
 static void defer_reset(void); static void defer_fallback(void);
 typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; void *vis; int qlog; float sph[4]; } post_op;   // vis：kind 3 的可见性槽表 | vis: the visibility slot table for kind 3; qlog / sph: "querylog" diagnostic
+static _Atomic int g_sync_log;   // "flag sync_log <n>": log the next n render-target notes of stor_wr_note and their copies
 static _Atomic int g_occl_vis; static _Atomic long g_ql_until = -1;   // TOTK occlusion diagnostics (see dm_gfx_querylog_next)
 void dm_gfx_querylog_next(long n); void dm_gfx_passdump_next(long n); void dm_gfx_texdump_next(const char *path);
 // ---------- 遮挡查询（NVN_COUNTER_TYPE_SAMPLES_PASSED）----------
@@ -2106,9 +2107,17 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
    when its memory pool is finalised. TOTK_TEX_SHARE=0 restores one texture per serial. */
 int nvn_fmt_bpb(int format, int *bw, int *bh);
 typedef struct { uint64_t mem, size; uint32_t w, h, d, levels, target, samples, bpb, depth_fmt; } stor_key;   // 48 bytes, no padding
-typedef struct { stor_key k; void *tex; uint64_t idle_fence; uint64_t *ser; int nser, cser; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
+typedef struct { stor_key k; void *tex; uint64_t idle_fence; uint64_t *ser; int nser, cser; uint64_t wr; } stor_ent;      // tex: CFBridgingRetain'ed base texture; ser: serials holding it or a view on it
 static nvn_hmap g_by_storage = {.klen = sizeof(stor_key)};   // stor_key -> stor_ent *
 static nvn_hmap g_stor_of_obj = {.klen = 8};                  // base texture / view pointer -> stor_ent *
+/* Entries of one storage address (g_smu). Different sizes at one address are separate Metal textures whose contents do
+   not follow each other, while on hardware they are the same bytes: a render pass that writes one copies its overlap
+   into the others when it ends (stor_wr_sync; Luigi's Mansion 3's dynamic resolution renders a 1920x1080 target and
+   samples the same memory as 1843x1037: the door transition was black). */
+typedef struct { int n; stor_ent *e[8]; } stor_sib;
+static nvn_hmap g_stor_mem = {.klen = 8};                      // storage address -> stor_sib *
+static uint64_t g_stor_synced, g_stor_inited, g_stor_wr_epoch;   // wr: g_stor_wr_epoch when a render pass last wrote the entry
+static stor_key g_init_pend[8]; static int g_ninit_pend;          // entries published beside a written sibling: filled from it (stor_init_flush)
 static uint64_t g_stor_entries, g_stor_shared, g_stor_viewed, g_stor_recreated, g_stor_swept, g_stor_dropped;
 /* Texture preparation runs before a draw captures its encoder. An upgrade discovered under the
    registry lock requests a pass split; the caller ends the pass outside that lock and retries. */
@@ -2357,6 +2366,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "deferred")) { extern void nvn_set_deferred_binds(int on); nvn_set_deferred_binds(v); return; }
     if (!strcmp(name, "framewait")) { extern void nvn_set_framewait(int on); nvn_set_framewait(v); return; }
     if (!strcmp(name, "uncapped_interval")) { extern void nvn_set_uncapped_interval(int on); nvn_set_uncapped_interval(v); return; }
+    if (!strcmp(name, "sync_log")) { atomic_store(&g_sync_log, v); MLOG("[flag] sync_log = %d", v); return; }
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
     if (!strcmp(name, "ubo_snapshot")) { (void)usnap_on(); atomic_store(&g_usnap_on, v != 0); MLOG("[flag] ubo_snapshot = %d", v != 0); return; }
@@ -2624,6 +2634,9 @@ static void stor_release_holders_locked(stor_ent *e) {
 }
 static void stor_drop_locked(stor_ent *e) {
     stor_release_holders_locked(e);
+    { stor_sib *sb = nvn_hm_get(&g_stor_mem, &e->k.mem);
+      if (sb) { for (int i = 0; i < sb->n; i++) if (sb->e[i] == e) { sb->e[i] = sb->e[--sb->n]; break; }
+                if (!sb->n) { nvn_hm_del(&g_stor_mem, &e->k.mem); free(sb); } } }
     uint64_t bk = (uint64_t)(uintptr_t)e->tex; nvn_hm_del(&g_stor_of_obj, &bk); nvn_hm_del(&g_by_storage, &e->k);
     defer_obj_release((__bridge id)e->tex); CFRelease(e->tex);
     free(e->ser); free(e);
@@ -2759,8 +2772,85 @@ static void stor_publish(const tex_t *t, id<MTLTexture> mt) {
         stor_ent *e = calloc(1, sizeof *e); if (!e) MDIE("storage entry");
         e->k = k; e->tex = (void *)CFBridgingRetain(mt); e->idle_fence = g_fence;
         nvn_hm_put(&g_by_storage, &e->k, e); uint64_t ok = obj_key(mt); nvn_hm_put(&g_stor_of_obj, &ok, e); g_stor_entries++;
+        { stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); if (!sb) { sb = calloc(1, sizeof *sb); if (!sb) MDIE("storage siblings"); nvn_hm_put(&g_stor_mem, &k.mem, sb); }
+          if (sb->n < 8) sb->e[sb->n++] = e;
+          int written = 0; for (int i = 0; i < sb->n; i++) written |= sb->e[i] != e && sb->e[i]->wr;
+          if (written && g_ninit_pend < 8) g_init_pend[g_ninit_pend++] = k; }
+#ifdef GAME_LM3
+        /* Luigi's Mansion 3's dynamic resolution moves its render targets through a new size almost every frame at the
+           same storage (1.4.0: about ten targets, sizes 1920x1080 down to 1700x956 and their quarter sizes). An entry of
+           another size at this storage that no serial holds any more is a step the game left: it goes now (released after
+           the GPU's current work, like every drop) instead of after STOR_IDLE_SUBMITS, which kept 8 GB of old steps. */
+        static int sweep = -1; if (sweep < 0) { const char *se = getenv("LM3_STOR_SWEEP"); sweep = !se || atoi(se); if (!sweep) MLOG("LM3_STOR_SWEEP=0: storage entries of an older size are kept until idle (diagnostic)"); }
+        stor_ent *left[32]; int nleft = 0;
+        for (uint32_t i = 0; sweep && i < g_by_storage.cap && nleft < 32; i++) { stor_ent *o = g_by_storage.vals[i];
+            if (o && o != e && !o->nser && o->k.mem == k.mem && o->k.target == k.target && o->k.d == k.d && o->k.levels == k.levels &&
+                o->k.bpb == k.bpb && o->k.depth_fmt == k.depth_fmt && o->k.samples == k.samples && (o->k.w != k.w || o->k.h != k.h)) left[nleft++] = o; }
+        for (int i = 0; i < nleft; i++) stor_drop_locked(left[i]);
+        g_stor_swept += (uint64_t)nleft;
+#endif
     }
     pthread_mutex_unlock(&g_smu);
+}
+/* A render pass writes t (a colour target): when it ends, stor_wr_sync copies the written texture's overlap into the other
+   entries of its storage address (see g_stor_mem). Keys, not entries: an entry may be dropped before the pass ends. */
+static stor_key g_wr_pend[8]; static int g_nwr_pend;
+static void stor_wr_note(const tex_t *t) {
+    stor_key k; if (!stor_on() || !stor_key_of(t, &k) || k.samples > 1) return;
+    pthread_mutex_lock(&g_smu); stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); int nsib = sb ? sb->n : 0, many = nsib > 1;
+    stor_ent *we = nvn_hm_get(&g_by_storage, &k); if (we) we->wr = ++g_stor_wr_epoch; pthread_mutex_unlock(&g_smu);
+    { if (k.w >= 900 && atomic_load(&g_sync_log) > 0 && atomic_fetch_sub(&g_sync_log, 1) > 0) MLOG("[sync] F%llu target ser=%llu %ux%u at %p: %d entries at this storage", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial, k.w, k.h, (void *)(uintptr_t)k.mem, nsib); }
+    if (!many) return;
+    for (int i = 0; i < g_nwr_pend; i++) if (!memcmp(&g_wr_pend[i], &k, sizeof k)) return;
+    if (g_nwr_pend < 8) g_wr_pend[g_nwr_pend++] = k;
+}
+static void stor_wr_sync(void) {   // after the render pass ended (rp_end)
+    int n = g_nwr_pend; if (!n) return;
+    stor_key ks[8]; memcpy(ks, g_wr_pend, sizeof ks); g_nwr_pend = 0;
+    for (int i = 0; i < n; i++) {
+        id<MTLTexture> src = nil, dst[8]; int nd = 0;
+        pthread_mutex_lock(&g_smu);
+        stor_ent *e = nvn_hm_get(&g_by_storage, &ks[i]); stor_sib *sb = e ? nvn_hm_get(&g_stor_mem, &ks[i].mem) : NULL;
+        if (sb) { src = (__bridge id<MTLTexture>)e->tex;
+            for (int j = 0; j < sb->n; j++) { stor_ent *o = sb->e[j]; id<MTLTexture> ot = (__bridge id<MTLTexture>)o->tex;
+                if (o != e && o->k.samples == 1 && o->k.target == e->k.target && o->k.d == 1 && e->k.d == 1 && ot.pixelFormat == src.pixelFormat
+                    && ot.textureType == MTLTextureType2D && src.textureType == MTLTextureType2D && (o->k.w != e->k.w || o->k.h != e->k.h)) dst[nd++] = ot; } }
+        pthread_mutex_unlock(&g_smu);
+        for (int j = 0; j < nd; j++) {
+            NSUInteger w = MIN(src.width, dst[j].width), h = MIN(src.height, dst[j].height);
+            enc_b_copy_texture(blit(), src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), dst[j], 0, 0, MTLOriginMake(0, 0, 0));
+            if (g_stor_synced++ < 4 || atomic_load(&g_sync_log) > 0) MLOG("storage %p: a render pass wrote the %lux%lu texture; its %lux%lu overlap copied into the %lux%lu texture of the same memory (%llu so far)",
+                (void *)(uintptr_t)ks[i].mem, (unsigned long)src.width, (unsigned long)src.height, (unsigned long)w, (unsigned long)h, (unsigned long)dst[j].width, (unsigned long)dst[j].height, (unsigned long long)g_stor_synced);
+        }
+    }
+}
+/* A texture created at a storage address where another size was already rendered starts with that content (on hardware it
+   is the same memory): without it Luigi's Mansion 3 showed black frames each time its dynamic resolution changed size. */
+static int stor_sibling_written(const tex_t *t) {
+    stor_key k; if (!stor_on() || !stor_key_of(t, &k)) return 0;
+    pthread_mutex_lock(&g_smu); stor_sib *sb = nvn_hm_get(&g_stor_mem, &k.mem); int w = 0;
+    if (sb) for (int i = 0; i < sb->n; i++) w |= sb->e[i]->wr != 0;
+    pthread_mutex_unlock(&g_smu); return w;
+}
+static void stor_init_flush(void) {   // no render pass open
+    int n = g_ninit_pend; if (!n || rp_active() || !on_sub_thread()) return;
+    stor_key ks[8]; memcpy(ks, g_init_pend, sizeof ks); g_ninit_pend = 0;
+    for (int i = 0; i < n; i++) {
+        id<MTLTexture> src = nil, dst = nil;
+        pthread_mutex_lock(&g_smu);
+        stor_ent *e = nvn_hm_get(&g_by_storage, &ks[i]); stor_sib *sb = e ? nvn_hm_get(&g_stor_mem, &ks[i].mem) : NULL;
+        if (sb && !e->wr) { dst = (__bridge id<MTLTexture>)e->tex; stor_ent *best = NULL;
+            for (int j = 0; j < sb->n; j++) { stor_ent *o = sb->e[j]; id<MTLTexture> ot = (__bridge id<MTLTexture>)o->tex;
+                if (o != e && o->wr && (!best || o->wr > best->wr) && o->k.samples == 1 && e->k.samples == 1 && ot.pixelFormat == dst.pixelFormat
+                    && ot.textureType == MTLTextureType2D && dst.textureType == MTLTextureType2D) best = o; }
+            if (best) { src = (__bridge id<MTLTexture>)best->tex; e->wr = best->wr; } }
+        pthread_mutex_unlock(&g_smu);
+        if (!src) continue;
+        NSUInteger w = MIN(src.width, dst.width), h = MIN(src.height, dst.height);
+        enc_b_copy_texture(blit(), src, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), dst, 0, 0, MTLOriginMake(0, 0, 0));
+        if (g_stor_inited++ < 4 || atomic_load(&g_sync_log) > 0) MLOG("storage %p: new %lux%lu texture starts with the %lux%lu overlap of the %lux%lu one rendered there (%llu so far)",
+            (void *)(uintptr_t)ks[i].mem, (unsigned long)dst.width, (unsigned long)dst.height, (unsigned long)w, (unsigned long)h, (unsigned long)src.width, (unsigned long)src.height, (unsigned long long)g_stor_inited);
+    }
 }
 /* Submission end: entries nobody has held for STOR_IDLE_SUBMITS submissions are dropped. */
 static void stor_collect_drop(int (^pick)(const stor_ent *), uint64_t *counter) {
@@ -3481,6 +3571,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
     id<MTLTexture> mt = stor_acquire(t, d);   // TOTK: another serial already has a texture at this storage with the same layout
     if (!mt) {
         if (g_tex_prepare_split) return nil; /* retry preserves the shared GPU content */
+        if (g_tex_preparing && rp_active() && stor_sibling_written(t)) { g_tex_prepare_split = 1; return nil; }   // created outside the pass, then filled (stor_init_flush)
         mt = [g_dev newTextureWithDescriptor:d];
         if (getenv("LM3_TEX_LOG")) { size_t zero = 0, n = t->mem ? (size_t)t->L.size : 0; for (size_t i = 0; i < n; i++) zero += !t->mem[i];
             int bw = 1, bh = 1, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); size_t zb = 0, nb = 0;
@@ -3505,7 +3596,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
             MLOG("[texnew] pool flags %#x host %d mirrored %d", t->pool ? t->pool->flags : 0u, t->pool ? (t->pool->host != NULL) : -1, tex_mirrored(t)); MLOG("[texnew] serial %llu %ux%ux%u lv%u fmt %#x target %d mem %p zero %zu/%zu zeroblocks %zu/%zu", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, (void *)t->mem, zero, n, zb, nb); }
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
         res_add(mt);
-        stor_publish(t, mt);
+        stor_publish(t, mt); stor_init_flush();
     }
     serial_put(t->serial, mt);
     if (serial_is_dead(t->serial)) dead_put_note(t->serial);
@@ -4127,6 +4218,7 @@ static void rp_end(void) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+    stor_wr_sync(); stor_init_flush();
     if (g_dc_nback) dc_write_back();
     if (g_astc_rb) { id<MTLTexture> src = g_astc_rb; g_astc_rb = nil; NSUInteger cols = (src.width + 7) / 8, rows = (src.height + 4) / 5;
         id<MTLBuffer> rb = [g_dev newBufferWithLength:cols * rows * 16 options:MTLResourceStorageModeShared]; res_add(rb);
@@ -4397,13 +4489,14 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     }
     for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && !(clear_only == 1 && !R.clear_c[i])) (void)attachment_texture(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);   // TOTK: a storage-shared attachment may be recreated here (a blit), before the blit encoder is ended
     if (R.rt.depth) (void)attachment_texture(R.rt.depth, &R.rt.dview, R.rt.has_dview);
+    stor_init_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *pd = [MTL4RenderPassDescriptor new];
     int any = 0;
     for (int i = 0; i < R.rt.n; i++) {
         if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue;
         attach(pd.colorAttachments[i], R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
-        { const tex_t *ot = R.rt.color[i]; int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial);
+        { const tex_t *ot = R.rt.color[i]; int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial); stor_wr_note(ot);
           if (ot->mem && tex_mirrored(ot)) wb_note(ot);
           static int ownlog = -1; if (ownlog < 0) ownlog = getenv("DM_NVN_OWNLOG") != NULL;
           if (ownlog && !was && tex_mirrored(ot)) MLOG("[ownlog] ser=%llu %ux%ux%u lv%u nvnfmt=%#x flags=%#x pool=%p pflags=%#x mem=%p off=%lld: GPU-rendered texture in a CPU-visible pool", (unsigned long long)ot->serial,
@@ -10431,6 +10524,48 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
     return 1;
 }
+/* Texture -> texture copy that a blit cannot do (another size, filtered or not, or another format): one render pass drawing
+   the source region into the destination region (Luigi's Mansion 3 shrinks a 1920x1080 frame to 160x90, LINEAR_FILTER). */
+static int copy_t2t_scaled(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const p_copy_t2t *c) {
+    static int failed; static id<MTL4ArgumentTable> at; static id<MTLSamplerState> samp[2]; static id<MTLLibrary> lib;
+    static id<MTLRenderPipelineState> ps[8]; static MTLPixelFormat pf[8]; static int nps;
+    if (failed || !(d.usage & MTLTextureUsageRenderTarget) || !(s.usage & MTLTextureUsageShaderRead)) return 0;
+    if (!lib) { NSError *e = nil;
+        static const char src[] = "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint id [[vertex_id]]) { float2 q=float2((id<<1)&2,id&2); V o; o.p=float4(q*float2(2,-2)+float2(-1,1),0,1); o.uv=q; return o; }\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler sm [[sampler(0)]], constant float4 &r [[buffer(0)]]) { return t.sample(sm, r.xy + in.uv * r.zw); }\n";
+        lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e];
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxSamplerStateBindCount = 1; ad.maxBufferBindCount = 1;
+        at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        for (int i = 0; i < 2; i++) { MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = i ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+            sd.sAddressMode = sd.tAddressMode = MTLSamplerAddressModeClampToEdge; sd.supportArgumentBuffers = YES; samp[i] = [g_dev newSamplerStateWithDescriptor:sd]; }
+        if (!lib || !at || !samp[0] || !samp[1]) { failed = 1; MLOG("【红】缩放贴图拷贝的着色器 / 参数表建不出：%s", e.localizedDescription.UTF8String); return 0; } }
+    id<MTLTexture> dv = [d newTextureViewWithPixelFormat:d.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(dl, 1) slices:NSMakeRange(ds, 1)];
+    if (!dv) return 0;
+    id<MTLRenderPipelineState> p = nil;
+    for (int i = 0; i < nps; i++) if (pf[i] == dv.pixelFormat) p = ps[i];
+    if (!p) { NSError *e = nil; MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new]; pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = dv.pixelFormat; p = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        if (!p) { RED_ONCE(48, "缩放贴图拷贝的管线建不出（格式 %lu）：%s", (unsigned long)dv.pixelFormat, e.localizedDescription.UTF8String); return 0; }
+        if (nps < 8) { pf[nps] = dv.pixelFormat; ps[nps++] = p; } }
+    id<MTLTexture> sv = [s newTextureViewWithPixelFormat:s.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(sl, 1) slices:NSMakeRange(ss, 1)];
+    id<MTLBuffer> pb = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    if (!sv || !pb) return 0;
+    float *r = pb.contents; r[0] = (float)c->sr.xoffset / sv.width; r[1] = (float)c->sr.yoffset / sv.height; r[2] = (float)c->sr.width / sv.width; r[3] = (float)c->sr.height / sv.height;
+    res_add(pb);   // views are not made resident separately (their base textures are)
+    rp_end(); blit_close();
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = dv; rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rs_sync(); pt_mark(g_cb, 'R', rp); id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset(); if (!en) return 0;
+    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [en setArgumentTable:at atStages:MTLRenderStageFragment];
+    [at setTexture:sv.gpuResourceID atIndex:0]; [at setSamplerState:samp[(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT) ? 1 : 0].gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress atIndex:0];
+    [en setViewport:(MTLViewport){c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, 0, 1}]; [en setRenderPipelineState:p];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);
+    static int nlog; if (nlog++ < 3) MLOG("贴图→贴图缩放拷贝（渲染通道）：%dx%d→%dx%d 标志 %#x 格式 %lu→%lu，目标序号 %llu CPU 可见池 %d", c->sr.width, c->sr.height, c->dr.width, c->dr.height, c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, (unsigned long long)c->dst->serial, c->dst->mem && tex_mirrored(c->dst));
+    return 1;
+}
 // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
 static void copy_t2t(const p_copy_t2t *c) {
@@ -10446,6 +10581,11 @@ static void copy_t2t(const p_copy_t2t *c) {
     id<MTLTexture> s = tex_mtl(c->src), d = tex_mtl(c->dst);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
+    /* The GPU writes the destination, as a render pass writes its targets (see the render-pass setup): a texture in a
+       CPU-visible pool then has its content in the Metal texture, which ReadTexels and the pool write-back must take
+       (Luigi's Mansion 3 shrinks the frame to 160x90 for its save thumbnails and reads them on the CPU: they were black). */
+    gpu_owned_mark(c->dst->serial);
+    if (c->dst->mem && tex_mirrored(c->dst)) wb_note(c->dst);
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
     PD("t src=%llu lv%u sl%u xyz=%d,%d,%d dst=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d", c->src->serial, sl, sz0, c->sr.xoffset, c->sr.yoffset, c->sr.zoffset,
@@ -10459,6 +10599,8 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
+        if (!s3 && !d3 && nz == 1 && (c->dr.depth ? c->dr.depth : 1) == 1 && !(c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
+            && copy_t2t_scaled(s, d, sl, sz0 + c->sr.zoffset, dl, dz0 + c->dr.zoffset, c)) return;
         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
                  c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, s3, d3);
         return;

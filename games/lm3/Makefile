@@ -1,4 +1,4 @@
-# Luigi's Mansion 3 1.2.0 (0100DCA0064A6000). Self-contained, like games/by3: the Horizon host (runtime/), the rewriter
+# Luigi's Mansion 3 1.2.0 or 1.4.0 (0100DCA0064A6000). Self-contained, like games/by3: the Horizon host (runtime/), the rewriter
 # (third_party/d2r), the NVN-on-Metal layer (third_party/d2r_gfx), the shader translator (prebuilt/, source in tools/) and
 # the scripts are this folder's own copies, forked from games/totk; nothing here reads games/totk.
 # opus and libvpx come from the repository's tools/deps: made once per Mac from pinned sources (no Homebrew).
@@ -18,6 +18,10 @@ PY := .venv/bin/python
 ROM ?=
 UPDATE ?=
 KEYS ?=
+# The game version: 1.2.0 or 1.4.0 (UPDATE is that version's update NSP). Its files go to extracted/<VER>, rewritten/<VER>.
+LM3_VERSION ?= 1.2.0
+VER := v$(subst .,,$(LM3_VERSION))
+export LM3_VERSION
 WORK ?= $(abspath work)
 HACTOOL := tooling/hactool/hactool
 REWRITE := DM_RULESET=native DM_PRIVATE_GATES=0 "$(PY)" third_party/d2r/patch_nso.py
@@ -25,24 +29,24 @@ MODULES := main subsdk0 subsdk1 sdk
 
 .PHONY: extract rewrite verify-rewrites runtime boot
 extract: $(HACTOOL)
-	@test -n "$(ROM)" -a -n "$(UPDATE)" -a -n "$(KEYS)" || { echo "set ROM=<base XCI> UPDATE=<1.2.0 NSP> KEYS=<prod.keys> (or put them in local.mk)"; false; }
-	"$(PY)" scripts/extract_exefs.py "$(UPDATE)" --update --keys "$(KEYS)" --output extracted/v120/exefs
-	"$(PY)" scripts/prepare_modules.py extracted/v120/exefs --output extracted/v120/elf
-	"$(PY)" scripts/extract_update_romfs.py "$(ROM)" "$(UPDATE)" --keys "$(KEYS)" --hactool "$(HACTOOL)" --output extracted/v120/romfs
+	@test -n "$(ROM)" -a -n "$(UPDATE)" -a -n "$(KEYS)" || { echo "set ROM=<base XCI> UPDATE=<$(LM3_VERSION) NSP> KEYS=<prod.keys> (or put them in local.mk)"; false; }
+	"$(PY)" scripts/extract_exefs.py "$(UPDATE)" --update --keys "$(KEYS)" --output extracted/$(VER)/exefs
+	"$(PY)" scripts/prepare_modules.py extracted/$(VER)/exefs --output extracted/$(VER)/elf
+	"$(PY)" scripts/extract_update_romfs.py "$(ROM)" "$(UPDATE)" --keys "$(KEYS)" --hactool "$(HACTOOL)" --output extracted/$(VER)/romfs
 	"$(PY)" scripts/extract_shared_fonts.py --keys "$(KEYS)" --xci "$(ROM)" --output extracted/firmware/shared-fonts --inventory analysis/firmware-inventory.json
 
 rewrite:
-	@mkdir -p rewritten/v120
-	for m in $(MODULES); do $(REWRITE) extracted/v120/exefs/$$m rewritten/v120 $$m || exit 1; done
+	@mkdir -p rewritten/$(VER)
+	for m in $(MODULES); do $(REWRITE) extracted/$(VER)/exefs/$$m rewritten/$(VER) $$m || exit 1; done
 
 verify-rewrites:
 	@mkdir -p analysis
-	for m in $(MODULES); do "$(PY)" third_party/d2r/equiv.py rewritten/v120 $$m extracted/v120/exefs/$$m --min-eff 2 --max-extra 16 --mutate 150 --tsv analysis/$$m-equiv.tsv > analysis/$$m-equiv.log || exit 1; tail -1 analysis/$$m-equiv.log; done
+	for m in $(MODULES); do "$(PY)" third_party/d2r/equiv.py rewritten/$(VER) $$m extracted/$(VER)/exefs/$$m --min-eff 2 --max-extra 16 --mutate 150 --tsv analysis/$$m-equiv.tsv > analysis/$$m-equiv.log || exit 1; tail -1 analysis/$$m-equiv.log; done
 
 build/runtime_tables.h: scripts/prepare_runtime.py
 	"$(PY)" scripts/prepare_runtime.py
 
-build/romfs_config.h: extracted/v120/romfs/index.json
+build/romfs_config.h: extracted/$(VER)/romfs/index.json scripts/prepare_romfs_backend.py
 	"$(PY)" scripts/prepare_romfs_backend.py
 
 build/shared_fonts_config.h: extracted/firmware/shared-fonts/manifest.json
@@ -50,7 +54,7 @@ build/shared_fonts_config.h: extracted/firmware/shared-fonts/manifest.json
 
 RUNTIME_SRC := $(filter-out runtime/frontend_ios.m,$(wildcard runtime/*.c runtime/*.m runtime/*.S))
 build/lm3-native: Makefile $(RUNTIME_SRC) $(wildcard runtime/*.h) build/runtime_tables.h build/romfs_config.h build/shared_fonts_config.h $(GFX_OBJECTS)
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -DGAME_LM3=1 -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -DGAME_LM3=1 -DLM3_GAME_VERSION='"$(LM3_VERSION)"' -DLM3_GAME_DIR='"$(VER)"' -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 
 runtime: build/lm3-native build/shader-service/totk_xlate build/spirv-cross/spirv-cross
 
@@ -72,7 +76,7 @@ build/spirv-cross/spirv-cross:
 	xcrun clang++ -arch arm64 $(addprefix $(dir $@)obj/,$(addsuffix .o,$(SPIRV_CROSS_SOURCES))) -o "$@"
 
 boot: runtime
-	build/lm3-native rewritten/v120 boot
+	build/lm3-native rewritten/$(VER) boot
 
 build/gfx/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
@@ -91,7 +95,7 @@ test-app: runtime
 	@printf '%s\n' '#!/bin/zsh' 'cd "$(abspath .)" || exit 1' \
 	  'export LM3_CORE_LOG=1 TOTK_SLOT_OWNER=user TOTK_PROFILE_DIR="$(WORK)/profile" TOTK_SHADER_CACHE="$(WORK)/shader-cache" TOTK_ROMFS_PATCHES=0' \
 	  'export TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_WIDEN=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_BUDGET_MB=8000' \
-	  'exec build/lm3-native rewritten/v120 boot > "$(WORK)/logs/test-app-$$(date +%Y%m%d-%H%M%S).log" 2>&1' > "$(TEST_APP)/Contents/MacOS/lm3"
+	  'exec build/lm3-native rewritten/$(VER) boot > "$(WORK)/logs/test-app-$$(date +%Y%m%d-%H%M%S).log" 2>&1' > "$(TEST_APP)/Contents/MacOS/lm3"
 	@chmod +x "$(TEST_APP)/Contents/MacOS/lm3"
 	@echo "test app: $(TEST_APP)"
 
@@ -119,7 +123,7 @@ app: runtime build/AppIcon.icns
 	  "<key>CFBundleName</key><string>Luigi's Mansion 3</string>" \
 	  "<key>CFBundleDisplayName</key><string>Luigi's Mansion 3</string>" \
 	  '<key>CFBundlePackageType</key><string>APPL</string>' \
-	  '<key>CFBundleShortVersionString</key><string>1.2.0</string>' \
+	  '<key>CFBundleShortVersionString</key><string>$(LM3_VERSION)</string>' \
 	  '<key>CFBundleVersion</key><string>1</string>' \
 	  '<key>CFBundleIconFile</key><string>AppIcon</string>' \
 	  '<key>LSMinimumSystemVersion</key><string>26.0</string>' \
@@ -132,7 +136,7 @@ app: runtime build/AppIcon.icns
 	  '[ -f build/cheats.txt ] && export TOTK_CHEATS_FILE="$$PWD/build/cheats.txt"' \
 	  'export TOTK_SLOT_OWNER=user TOTK_PROFILE_DIR="$$D/profile" TOTK_SHADER_CACHE="$$D/shader-cache" TOTK_ROMFS_PATCHES=0' \
 	  'export TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_WIDEN=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_BUDGET_MB=8000' \
-	  'exec build/lm3-native rewritten/v120 boot > "$$L/lm3.log" 2>&1' > "$(APP)/Contents/MacOS/LM3"
+	  'exec build/lm3-native rewritten/$(VER) boot > "$$L/lm3.log" 2>&1' > "$(APP)/Contents/MacOS/LM3"
 	chmod +x "$(APP)/Contents/MacOS/LM3"
 	codesign --force --sign - "$(APP)"
 	@echo "built $(APP) (it runs the game from $(abspath .))"
