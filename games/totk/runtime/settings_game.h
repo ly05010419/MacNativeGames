@@ -76,9 +76,9 @@
                                                              switch "shadow" (totk_ssao.h); graphics-shadow.txt (x100)
      anti-aliasing       Off / FXAA / SMAA; quality         1.4.3: totk_aa_config.h; graphics-aa-method.txt, graphics-fxaa-quality.txt,
                                                              graphics-smaa-quality.txt. FXAA Original / Quality; SMAA Low / Medium / High / Ultra
+                                                             (Breath of the Wild 1.9.0: the same rows and files, gfx/nvn/botw_finish.h;
+                                                             greyed while MetalFX replaces its FXAA / upscale draw)
      FXAA anti-aliasing   switch                             other versions: dm_gfx_fxaa_set; graphics-fxaa.txt
-                                                             (Breath of the Wild 1.9.0: gfx/nvn/botw_finish.h; greyed while
-                                                             MetalFX replaces its FXAA / upscale draw)
      depth of field       switch                             runtime_dof_set (game_patches_v143.c: no DOF request stored
                                                              while off; events still complete); graphics-dof.txt
      sharpening           off / 25% / 50% / 75% / 100%       dm_gfx_sharpen_set: FSR 1 RCAS on the 3D picture;
@@ -103,7 +103,7 @@
 #define SETTINGS_HAS_BOARD 1
 #define SETTINGS_HAS_SHOTS 1
 #define SETTINGS_HAS_VR 1
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)
 #define SETTINGS_HAS_AA_ROWS 1   /* the effects page's quality row follows the method (settings_aa_rebuild, part 2) */
 #endif
 #include "totk_fps_limit.h"   /* totk_fps_limits: the frame lock choices */
@@ -124,6 +124,9 @@ void dm_gfx_keepalive_start(int on); int dm_gfx_keepalive_locked(void); int dm_g
 int runtime_shadow_res_available(void); int runtime_shadow_res_locked(void); int runtime_shadow_res_saved(void);
 void runtime_shadow_res_save(int size);   /* game_patches_botw.c */
 double runtime_fov_scale(void); void runtime_fov_scale_set(double k); int runtime_fov_scale_locked(void); int runtime_fov_available(void);
+int dm_gfx_smaa_quality(void); void dm_gfx_smaa_quality_set(int q);   /* gfx/nvn/totk_aa_config.h: 1.4.3's rows (botw_effects.h) */
+int dm_gfx_aa_method(void); void dm_gfx_aa_method_set(int method);
+int dm_gfx_fxaa_quality(void); void dm_gfx_fxaa_quality_set(int q);
 #endif
 void nvn_fps_lock_set(int fps);   /* gfx/nvn/hle_nvn.c: the shared totk_fps_limits choices */
 #ifdef TOTK_GAME_V143   /* the effects page: its shader keys and patch sites are 1.4.3's */
@@ -854,7 +857,7 @@ static const SettingsAction *settings_actions(int *count) {
  return list;
 }
 #elif SETTINGS_GAME_PART == 2
-#ifdef TOTK_GAME_V143
+#if SETTINGS_HAS_AA_ROWS   /* 1.4.3; Breath of the Wild 1.9.0 */
 /* Changing method adds, removes or replaces the quality row. Preserve the selected row, held-controller state and
    scroll distance from the top; rebuilding must not jump the player back to FOV or repeat a held button. */
 static void settings_aa_rebuild(void) {

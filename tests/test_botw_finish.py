@@ -139,15 +139,20 @@ class Passes(unittest.TestCase):
 class Page(unittest.TestCase):
     def test_restore_and_reset(self):
         restore = branch(PAGE, 'static void settings_effects_restore(void) {', '\n}\n')
-        self.assertIn('!strncmp(word,"off",3))dm_gfx_fxaa_set(0);', restore)
+        # An older graphics-fxaa.txt "off" still reads as Off; the method's file, when there, decides after it (as 1.4.3).
+        self.assertLess(restore.index('!strncmp(word,"off",3))dm_gfx_fxaa_set(0);'), restore.index('dm_gfx_aa_method_set(method);'))
+        self.assertIn('settings_read_int("graphics-aa-method.txt",&method)&&method>=0&&method<=2', restore)
         self.assertIn('settings_read_number("graphics-sharpen.txt",0,100,&pct))dm_gfx_sharpen_set((int)pct);', restore)
         reset = branch(PAGE, 'static void settings_botw_effects_reset(void) {', '\n}\n')
-        self.assertIn('dm_gfx_fxaa_set(1);dm_gfx_sharpen_set(0);', reset)
+        # dm_gfx_fxaa_set(1) alone would leave SMAA on: the reset sets the method back to the game's FXAA.
+        self.assertIn('dm_gfx_fxaa_quality_set(0);dm_gfx_aa_method_set(1);dm_gfx_smaa_quality_set(2);dm_gfx_sharpen_set(0);', reset)
 
     def test_rows(self):
         rows = branch(PAGE, 'settings_effect_rows(void) {', '\n}\n')
-        self.assertIn('dm_gfx_botw_fxaa_replaced()?settings_fixed(fxaa,', rows)
-        self.assertIn('runtime_setting_save("graphics-fxaa.txt",v?"on":"off","FXAA")', rows)
+        replaced = branch(rows, 'if(dm_gfx_botw_fxaa_replaced()){', '}else{')   # both rows fixed while MetalFX replaces the draw
+        self.assertIn('[rows addObject:settings_fixed(method,mfx)];', replaced)
+        self.assertIn('if(dm_gfx_aa_method())[rows addObject:settings_fixed(quality,mfx)];', replaced)
+        self.assertEqual(rows.count('settings_aa_save();'), 3)
         self.assertIn('settings_save_int("graphics-sharpen.txt",v,"sharpening")', rows)
         self.assertRegex(rows, re.escape('@[@0,@25,@50,@75,@100]'))
 
