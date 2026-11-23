@@ -201,7 +201,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_gamepad_calibration_sample(&ownerSample);
     runtime_gamepad_calibration_set(&restored);
     CHECK(setting_read("controller-calibration.txt",oldProfile,sizeof oldProfile,calPath,sizeof calPath));
-    CHECK(!strcmp(oldProfile,"0.1235 0 2 1 0 0 1 1"));
+    CHECK(!strcmp(oldProfile,"0.1235 0 2 1 0 0 1 1\n"));
     /* At 0% deadzone quantization/ADC residuals must not trap UI capture; buttons still block release. */
     hidX=.123456f;hidY=hidZ=hidRz=0;runtime_gamepad_deadzone_set(0);
     runtime_gamepad_text_capture(1); runtime_gamepad_text_capture(0);

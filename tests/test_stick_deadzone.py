@@ -67,6 +67,7 @@ int main(int argc,char**argv){
  /* Both sticks and both signs, including full diagonals and a mixed near-centre input. */
  for (int i=-128;i<=128;i++) for (int j=-128;j<=128;j++) {
   float x=i/128.f,y=j/128.f;
+  assert(stick_axis(x)==main_axis(x));
   assert(native_stick_component(STICK_LX,x,y,0)==main_axis(x));
   assert(native_stick_component(STICK_LY,x,y,0)==main_axis(y));
   assert(native_stick_component(STICK_RX,x,y,0)==main_axis(x));
