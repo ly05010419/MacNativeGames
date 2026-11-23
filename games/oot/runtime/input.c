@@ -389,6 +389,7 @@ static int input_game_flag(const char *name, int v) {
     else if (!strcmp(name,"oot_internal_res")) { extern void runtime_oot_internal_res_set(int); runtime_oot_internal_res_set(v); }   /* what the settings panel's resolution row does */
     else if (!strcmp(name,"oot_scale")) { extern void runtime_oot_scale_set(float); runtime_oot_scale_set((float)v / 10000.0f); }   /* render scale * 10000, at once */
     else if (!strcmp(name,"oot_canvas")) { extern void runtime_oot_canvas_set(int,int); runtime_oot_canvas_set(v,1); }   /* what the settings panel's resolution row does */
+    else if (!strcmp(name,"vr_canvas")) { extern void runtime_oot_vr_canvas(unsigned,unsigned); runtime_oot_vr_canvas((unsigned)v/10000,(unsigned)v%10000); }   /* diagnostic: VR's canvas, width*10000+height */
     else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
     else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
     else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }

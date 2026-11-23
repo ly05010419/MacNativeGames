@@ -56,6 +56,15 @@ int main(void) {
     assert(vr_native_ui_vertex("60e2041ed375cae126356c554e91a2349e3f82f89986e52ecc9c8d646fb7a396"));
     assert(!vr_native_ui_text_vertex("51deaed0b27374b944d36f6520039557b445d249cf8c19c2a11c220e54b8757e"));
     assert(!vr_native_ui_vertex("17dccd27ad609e8b7948c3ef48f0b108e404b9df6bfee34662d0fc6a0e4b744d")); /* CB0 65536 bytes: not the widget contract. */
+    /* Ocarina of Time's view squeezed across its whole canvas (run pj01: every 3D pass 1920x1080, projection tan 1.3087,
+       aspect 1.1137): 658.6 pixels of focal length across, 412.6 down; the tangent that says so for the picture's width. */
+    {
+        const float tan_y = vr_squeezed_tan_y(1920, 1080, 1.3087f, 1.1137f);
+        assert(fabsf(1080 * 0.5f / tan_y - 1920 / (2 * 1.3087f * 1.1137f)) < 0.01f);
+        assert(fabsf(1080 * 0.5f / tan_y - 658.6f) < 0.1f);
+        assert(fabsf(vr_squeezed_tan_y(1920, 1080, 1.3087f, 16.0f / 9) - 1.3087f) < 1e-4f);   /* not squeezed: the same tangent */
+        assert(!vr_squeezed_tan_y(0, 1080, 1.3087f, 1.1137f));
+    }
     vr_labo_frame menu={0};float menu_p[16]={1.5f,0,0,0,0,2,0,0,0,0,-1,-2,0,0,-1,0};
     vr_labo_frame_menu_camera(&menu,0,menu_p);assert(!vr_labo_frame_menu_aspect(&menu));
     vr_labo_frame_menu_camera(&menu,1,menu_p);assert(fabsf(vr_labo_frame_menu_aspect(&menu)-4.f/3)<1e-6f);

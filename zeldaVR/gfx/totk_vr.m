@@ -794,21 +794,21 @@ static void headlook_fov(const vr_views *v) {
     if (!runtime_aspect_vr(a, k)) { VLOG("the game's field of view stays its own (no Vert+ stubs)"); g.fov_on = -1; return; }
     g.fov_tanh = h; g.fov_aspect = a; g.fov_on = 1;
     VLOG("the game renders the headset's view: %.0f x %.0f degrees", 2 * atanf(w) * 180 / M_PI, 2 * atanf(h) * 180 / M_PI);
+#ifdef GAME_OOT
+    { extern void vr_resolution(int *, int *); extern void runtime_oot_vr_canvas(unsigned, unsigned);   // the canvas takes the VR page's size
+      int rw = 0, rh = 0; vr_resolution(&rw, &rh); if (rw > 0 && rh > 0) runtime_oot_vr_canvas((unsigned)rw, (unsigned)rh); }
+#endif
 }
 
 /* The picture of a frame the game rendered with head pose p: a plane far ahead along p's view (TOTK_VR_GAME_FOV, the
    game's vertical field of view in degrees, 50 by default; the width from the picture's shape). The headset then
    reprojects it to the current pose, so the world stays put while the head turns. */
 static void headlook_place(const vr_pose *p, double aspect) {
-#ifdef GAME_OOT
-    /* Ocarina of Time draws the headset's view at the canvas's full height, centred, with bars at the sides (vr01: the
-       3D 1202x1080 in a 1920x1080 canvas, 1.113 = the headset's ratio): the plane spans the whole canvas, the bars
-       outside the view and the game's HUD around it. */
-    const float D = 10, hh = 2 * D * (g.fov_on > 0 ? g.fov_tanh : tanf(game_vfov() * (float)M_PI / 360)), ww = hh * (float)aspect;
-#else
+    /* The plane has the view's own ratio, whatever the picture's: Ocarina of Time squeezes that view across its whole 16:9
+       canvas (run pj01: every 3D pass 1920x1080 at aspect 1.1137; the bars are only the window's, present_viewport). A plane
+       of the canvas's shape showed the world 1.6 times too wide on the stand-in headset, 1.84 on the Quest ("世界是拉伸的"). */
     const float D = 10, hh = 2 * D * (g.fov_on > 0 ? g.fov_tanh : tanf(game_vfov() * (float)M_PI / 360)),
                 ww = hh * (g.fov_on > 0 ? g.fov_aspect : (float)aspect);
-#endif
     const float nz[3] = { 0, 0, -D }, ex[3] = { ww, 0, 0 }, ey[3] = { 0, hh, 0 };
     float f[3]; qrot(p->q, nz, f); qrot(p->q, ex, g.right); qrot(p->q, ey, g.up);
     for (int i = 0; i < 3; i++) g.center[i] = p->p[i] + f[i];
@@ -1536,7 +1536,10 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
        a copy overwritten) the one picture stays for both eyes; vr_ds_stats counts why. */
     if (!own && s >= 0 && pics[0] && useds[0] && g.fov_on > 0 && ipd_ok) {
         id<MTLTexture> eyes[2] = { nil, nil }; const float h = v->ipd / 2 * vr_ipd_pct() / 100.0f;
-        if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, g.fov_tanh, g.fov_aspect, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
+        /* The view fills the whole picture, squeezed across: the shift is in its pixels across (run pj01: 658.6 px of focal
+           length, not the 412.6 of its height), over the picture's full width. */
+        const float W = (float)pics[0].width, H = (float)pics[0].height;
+        if (vr_ds_eyes(cb, pics[0], ds_seq, ds_ref, vr_squeezed_tan_y(W, H, g.fov_tanh, g.fov_aspect), W / H, h, eyes)) { pics[0] = eyes[0]; pics[1] = eyes[1]; peye[0] = 0; peye[1] = 1; half = h; }
     }
 #elif defined(TOTK_GAME_V143)
     /* Depth stereo on TotK 1.4.3's one world picture: its 3D fills the whole picture over rays that are not centred, so
@@ -1664,6 +1667,10 @@ static void stream_eye_size(int *w,int *h){
 #ifdef TOTK_GAME_V143
         else if(g_res_loaded&&g_res_w>=640&&g_res_h>=640){sw=g_res_w<VR_STREAM_EYE_WIDTH?g_res_w:VR_STREAM_EYE_WIDTH;sh=g_res_h<VR_STREAM_EYE_HEIGHT?g_res_h:VR_STREAM_EYE_HEIGHT;sw&=~1;sh&=~1;}
         else{*w=VR_STREAM_EYE_WIDTH;*h=VR_STREAM_EYE_HEIGHT;return;}   /* the render size is not loaded yet: not fixed yet */
+#elif defined(GAME_OOT)
+        /* Ocarina of Time: the video keeps this size whatever the VR page renders at (user 2026-11-23: at 1344x1408 for both
+           "全是马赛克" while the game's own picture was clean, run mosaic01). 1680x1760 is the largest that holds 72 Hz. */
+        else{sw=VR_OOT_STREAM_WIDTH;sh=VR_OOT_STREAM_HEIGHT;}
 #else
         else{sw=VR_STREAM_EYE_WIDTH;sh=VR_STREAM_EYE_HEIGHT;}
 #endif
@@ -1671,7 +1678,7 @@ static void stream_eye_size(int *w,int *h){
     *w=sw;*h=sh;
 }
 void vr_stream_resolution(int *w,int *h) {
-#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143) || defined(GAME_OOT)
     if(vr_streamer_managed()){stream_eye_size(w,h);return;}
     vr_link_view_size(w,h);
 #else
@@ -1690,9 +1697,9 @@ static void streamer_start_locked(void) {
     extern char **environ;
     const char *bin = getenv("TOTK_VR_STREAMER"), *ctl = getenv("TOTK_VR_CONTROL"), *mb = getenv("TOTK_VR_MBPS");
     char res[32], mbps[16], log[1100]; res_load();
-#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143) || defined(GAME_OOT)
     {int sw,sh;stream_eye_size(&sw,&sh);snprintf(res, sizeof res, "%dx%d", sw, sh);}
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_OOT)
     setenv("BASALT_CODEC","hevc",0);   /* the Quest decodes HEVC in about 20 ms, H.264 in 31 to 39 (q-matrix.txt); BASALT_CODEC=h264 keeps H.264 */
 #endif
 #else
@@ -1753,6 +1760,9 @@ int vr_set_resolution(int w, int h) {   // the settings panel (main thread)
         if (f) { fprintf(f, "%dx%d\n", w, h); fclose(f); }
 #if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         VLOG("VR render resolution %dx%d requested immediately; stream fixed at %dx%d",w,h,VR_STREAM_EYE_WIDTH,VR_STREAM_EYE_HEIGHT);
+#elif defined(GAME_OOT)
+        { extern void runtime_oot_vr_canvas(unsigned, unsigned); if (g.fov_on > 0) runtime_oot_vr_canvas((unsigned)w, (unsigned)h); }   // the render size; the stream stays
+        VLOG("VR render resolution %dx%d; stream fixed", w, h);
 #else
         VLOG("VR resolution %dx%d per eye: restarting the streamer", w, h);
         streamer_stop_locked(); streamer_start_locked();   // the VR thread sees the teardown and reconnects

@@ -439,18 +439,37 @@ static void *oot_canvas_flip(void *arg) {
    1280x720 in 1920x1080 (user 2026-11-09: the Mac default, with MetalFX). 9 keeps the canvas the
    game computes (docked 2048x1152) with patch_oot_fixed_res's scale (1536x864): not the game's own picture, which is dynamic
    resolution; not listed (user 2026-11-09), "flag oot_canvas 9" only. */
+static _Atomic uint64_t oot_vr_canvas;   /* the VR page's size while the game renders the headset's view: it owns the canvas */
+static void oot_canvas_relayout(void) {
+    if (!oot_output_cell) return;
+    if (atomic_exchange(&oot_flip_busy, 1)) { atomic_store(&oot_flip_again, 1); return; }
+    pthread_t t; if (pthread_create(&t, NULL, oot_canvas_flip, NULL)) atomic_store(&oot_flip_busy, 0); else pthread_detach(t);
+}
 void runtime_oot_canvas_set(int index, int live) {
     static const struct { unsigned w, h; float scale; } list[] = {{1280,720,0.6667f},{1280,720,1},{1920,1080,0.6667f},{1920,1080,1},{2560,1440,0.75f},{2560,1440,1},{3840,2160,0.6667f},{3840,2160,1},{1280,720,0.6667f},{0,0,0}};
     if (index < 0 || index >= (int)(sizeof list / sizeof *list)) return;
+    if (atomic_load(&oot_vr_canvas)) { fprintf(stderr, "[oot] resolution %d kept for flat play: VR's size holds the canvas\n", index); return; }
     extern void dm_gfx_set_flag(const char *name, int value);
     uint64_t size = (uint64_t)list[index].h << 32 | list[index].w;
     if (oot_output_cell) atomic_store(oot_output_cell, size); else oot_output_pending = size;
     if (list[index].scale > 0) runtime_oot_scale_set(list[index].scale); else runtime_oot_internal_res_set(0);   /* 9: patch_oot_fixed_res's scale */
     dm_gfx_set_flag("mfx_upscale", 0); dm_gfx_set_flag("mfx_output", 0);   /* no second upscale after the canvas */
     fprintf(stderr, "[oot] resolution %d: canvas %ux%u, 3D scale %g\n", index, list[index].w, list[index].h, (double)list[index].scale);
-    if (!live || !oot_output_cell) return;
-    if (atomic_exchange(&oot_flip_busy, 1)) { atomic_store(&oot_flip_again, 1); return; }
-    pthread_t t; if (pthread_create(&t, NULL, oot_canvas_flip, NULL)) atomic_store(&oot_flip_busy, 0); else pthread_detach(t);
+    if (live) oot_canvas_relayout();
+}
+/* VR: the canvas is the size picked in the VR page, the headset's shape (about 1.1:1, as TotK's eye pictures; user 2026-11-23:
+   "不能换分辨率 bug", "16:9依然不对"). The row only restarted the stream, and the view stayed squeezed across a 16:9 canvas.
+   Run res01: the game lays out 1344x1408 and 1680x1760 canvases and renders its main passes at those sizes. */
+void runtime_oot_vr_canvas(unsigned w, unsigned h) {
+    extern void dm_gfx_set_flag(const char *name, int value);
+    if (w < 640 || h < 640 || w > 3840 || h > 2208 || ((w | h) & 1)) { fprintf(stderr, "[oot] VR canvas %ux%u refused\n", w, h); return; }
+    const uint64_t size = (uint64_t)h << 32 | w;
+    if (atomic_exchange(&oot_vr_canvas, size) == size) return;
+    if (oot_output_cell) atomic_store(oot_output_cell, size); else oot_output_pending = size;
+    runtime_oot_scale_set(1);
+    dm_gfx_set_flag("mfx_upscale", 0); dm_gfx_set_flag("mfx_output", 0);   /* no second upscale after the canvas */
+    fprintf(stderr, "[oot] VR canvas %ux%u, 3D scale 1\n", w, h);
+    oot_canvas_relayout();
 }
 enum { OOT_OUTPUT_CELL = 64 };
 static void patch_oot_output_size(Module *m, uint64_t page) {
@@ -624,6 +643,7 @@ static void patch_oot_window_textures(Module *m) {
     if (getenv("TOTK_EXPORT_IOS")) return;
     if (e && *e && (sscanf(e, "%ux%u", &w, &h) != 2 || w < 1920 || h < 1080 || w > 3840 || h > 2160))
         runtime_fail("OOT_FB_SIZE must be <width>x<height>, from 1920x1080 to 3840x2160");
+    if (!(e && *e) && getenv("TOTK_VR_CONTROL")) h = 2208;   /* VR's largest canvas, 2048x2208 (runtime_oot_vr_canvas) */
     const uint64_t site = 0x1202ee0; uint32_t have[2]; memcpy(have, m->base + site, 8);
     if (have[0] != 0xd2814008 || have[1] != 0xf2c0b408) runtime_fail("OOT window texture size site differs from verified update 131072");
     uint32_t code[2] = {0xd2800008 | w << 5, 0xf2c00008 | h << 5};   /* mov x8, #w; movk x8, #h, lsl #32 */
