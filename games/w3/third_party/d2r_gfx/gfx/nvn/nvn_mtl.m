@@ -3092,7 +3092,13 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // 图像用途：着色器可写（计算核生成 3D 调色表等） | Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.)
             | (t->d.target == 8 && t->d.width <= 64 && !fmt_compressed(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0)   // TOTK: small cube render targets: the cube-merge copy-out kernel writes them (nvn_cube_group.h)
-            | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0);
+            | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0)
+            /* The Witcher 3: compute kernel f71bce7e writes four 1x1 R32F textures (its exposure values) as images although
+               they were made without NVN_TEXTURE_FLAGS_IMAGE (flags 0x8, compressible), and other kernels write 640x360
+               render targets (R32F, RGBA16F, RGBA8) the same way; the console does not check, Metal drops the writes of a
+               texture without ShaderWrite and the scene stayed black. Every uncompressed 2D colour texture of this game is
+               made writable (Apple GPUs keep lossless compression on shader-writable textures). */
+            | (t->d.target == 1 && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);
     // TOTK: Metal rejects descriptor swizzle on render targets and on shader-writable textures (image use, and BC textures
     // decoded by the bcd kernel on GPUs without BC support); those get the swizzle on their sampling view (tex_by_id).
     MTLTextureSwizzleChannels sw;
@@ -8134,7 +8140,11 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
-            if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
+            if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid);
+                { static int n; if (n++ < 6 && tid < g_ntreg) MLOG("[img-unwritable] tid=%d ser=%llu %ux%ux%u fmt=%#x target=%d flags=%#x levels=%u view=%d mtl fmt=%lu usage=%#lx type=%lu parent=%p shader=%.16s",
+                    tid, (unsigned long long)g_treg[tid].t.serial, g_treg[tid].t.d.width, g_treg[tid].t.d.height, g_treg[tid].t.d.depth, g_treg[tid].t.d.format, g_treg[tid].t.d.target,
+                    g_treg[tid].t.d.flags, g_treg[tid].t.d.levels, g_treg[tid].has_v, (unsigned long)t.pixelFormat, (unsigned long)t.usage, (unsigned long)t.textureType, (__bridge void *)t.parentTexture, sh ? sh->key : "-"); }
+                t = nil; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);

@@ -14,7 +14,7 @@ no profile for this game.
 | Both modules load, the 21.4 GB RomFS verifies, the 1,758 constructors of main run | `dev/runs/` |
 | The Saber Interactive logo, the title ("按下任何键继续"), the main menu with both expansions | screenshots |
 | A new game: the comic intro, the opening CGI movie, the first in-engine scene with Chinese subtitles | screenshots |
-| Open: the first in-engine scene draws its characters but not the room (black background) | screenshots |
+| The first in-engine scene complete (room, walls, lights) at 30 fps: frame p50 33.33 ms, GPU p50 16 ms | screenshots, `dev/runs/wq.log` |
 
 Not yet: gameplay, the Mac app, the iPhone / iPad app.
 

@@ -31,4 +31,9 @@ American release 0100E67012924000: main build ID b151a224…, sdk d5a1029a…; `
   per vec4: `c2[22].z` is texture handle slot 0 (0x168), next to the image handles; the old rule refused the shader.
 - **Checked**: the Saber Interactive logo, the title, the main menu (both expansions), a new game's comic intro, its CGI
   movie and the first in-engine scene with Chinese subtitles; no GPU hang, the GPU idle after every run.
-- **Open**: that scene draws its characters but not the room (black background).
+- **The black room**: the game writes render targets as images (compute kernels: its four 1x1 R32F exposure values,
+  640x360 R32F / RGBA16F / RGBA8 targets) although they were made without NVN_TEXTURE_FLAGS_IMAGE; the console does not
+  check, Metal dropped the writes of textures without ShaderWrite, so exposure and the lit scene stayed black. Every
+  uncompressed 2D colour texture of this game is made shader-writable. An image binding to an unwritable texture logs the
+  texture's description ([img-unwritable]). Checked: the room, its walls, bed and lights drawn; 30 fps in the scene (frame
+  p50 33.33 ms, GPU p50 16 ms).

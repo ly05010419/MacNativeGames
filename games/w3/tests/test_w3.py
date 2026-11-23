@@ -55,6 +55,13 @@ class Runtime(unittest.TestCase):
         self.assertLess(crash.index('mtl_quiesce(10000000000ull)'), crash.index('_exit(128+num);'))
 
 
+class Textures(unittest.TestCase):
+    def test_render_targets_are_writable(self):
+        # the game writes render targets as images without the IMAGE flag; without ShaderWrite the scene stayed black
+        mtl = (NVN / 'nvn_mtl.m').read_text()
+        self.assertIn('| (t->d.target == 1 && !fmt_compressed(t->d.format) && !fmt_depth(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0);', mtl)
+
+
 class Shaders(unittest.TestCase):
     def test_totk_translator_and_chain(self):
         link = HERE / 'prebuilt/macos-arm64/totk_xlate'
