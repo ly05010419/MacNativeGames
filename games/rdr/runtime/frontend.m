@@ -409,7 +409,7 @@ static int awakeHeld;
 static void front_update_awake(void){
  int want=!window_closing&&atomic_load(&windowVisible)==1&&atomic_load(&focused)&&!window.miniaturized;
  if(want==awakeHeld)return;
- if(want){if(IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep,kIOPMAssertionLevelOn,CFSTR("Super Mario Odyssey is being played"),&awakeAssertion)!=kIOReturnSuccess){fprintf(stderr,"[totk] 【红】display-sleep assertion could not be created\n");return;}}
+ if(want){if(IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep,kIOPMAssertionLevelOn,CFSTR(GAME_NAME " is being played"),&awakeAssertion)!=kIOReturnSuccess){fprintf(stderr,"[totk] 【红】display-sleep assertion could not be created\n");return;}}
  else IOPMAssertionRelease(awakeAssertion);
  awakeHeld=want;fprintf(stderr,"[totk] display sleep %s (frame %llu)\n",want?"held off while the game is visible":"allowed again",(unsigned long long)dm_nvn_frame_count());
 }
@@ -439,9 +439,9 @@ static void front_install_menu(void){
  menu_item(appMenu,TOTK_UI("显示日志","Show Log"),@selector(showLog:),@"",0,menuTarget);
  menu_item(appMenu,TOTK_UI("打开数据文件夹","Open Data Folder"),@selector(openDataFolder:),@"",0,menuTarget);
  [appMenu addItem:NSMenuItem.separatorItem];
- menu_item(appMenu,TOTK_UI("隐藏 Super Mario Odyssey","Hide Super Mario Odyssey"),@selector(hide:),@"h",NSEventModifierFlagCommand,NSApp);
+ menu_item(appMenu,TOTK_UI("隐藏 " GAME_NAME,"Hide " GAME_NAME),@selector(hide:),@"h",NSEventModifierFlagCommand,NSApp);
  [appMenu addItem:NSMenuItem.separatorItem];
- menu_item(appMenu,TOTK_UI("退出 Super Mario Odyssey","Quit Super Mario Odyssey"),@selector(performClose:),@"q",NSEventModifierFlagCommand,window);
+ menu_item(appMenu,TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME),@selector(performClose:),@"q",NSEventModifierFlagCommand,window);
  NSMenuItem *windowItem=[NSMenuItem new];windowItem.submenu=windowMenu;[menu addItem:windowItem];
  menu_item(windowMenu,TOTK_UI("最小化","Minimize"),@selector(performMiniaturize:),@"m",NSEventModifierFlagCommand,window);
  menu_item(windowMenu,TOTK_UI("进入 / 退出全屏","Toggle Full Screen"),@selector(toggleFullScreen:),@"f",NSEventModifierFlagCommand|NSEventModifierFlagControl,window);
@@ -469,7 +469,7 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   /* the update the app was built from (the app launcher sets it; 1.3.0 and 1.4.1 share their executables) */
   const char *version=getenv("ODYSSEY_GAME_VERSION");if(!version||!*version)version=TOTK_GAME_VERSION;
-  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,version,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Super Mario Odyssey Mac — Ver. %s",version];
+  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,version,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME " Mac — Ver. %s",version];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
   [NSNotificationCenter.defaultCenter addObserver:windowDelegate selector:@selector(screenParametersChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
   front_install_menu();
@@ -479,7 +479,7 @@ void runtime_front_run(void(*callback)(void)){
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
-  bootStage=[NSTextField labelWithString:@(TOTK_UI("正在启动 Super Mario Odyssey","Starting Super Mario Odyssey"))];
+  bootStage=[NSTextField labelWithString:@(TOTK_UI("正在启动 " GAME_NAME,"Starting " GAME_NAME))];
   bootStage.font=[NSFont systemFontOfSize:25 weight:NSFontWeightSemibold];bootStage.textColor=NSColor.whiteColor;
   bootStage.alignment=NSTextAlignmentCenter;bootStage.frame=NSMakeRect(0,wh/2+20,ww,40);bootStage.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin|NSViewMaxYMargin;
   bootDetail=[NSTextField labelWithString:@(TOTK_UI("正在准备游戏环境","Preparing the game environment"))];

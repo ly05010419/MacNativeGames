@@ -9,9 +9,9 @@
 /* NVN_DIRTY_SPLIT: a pool that shares host pages with live tracking ranges gets ranges for its other pages (see the
    BOTW notes below) instead of none. Without it such a pool is untracked and every texture in it is uploaded again at
    every submission: Breath of the Wild (a 256x32 texture, then 130 MB a frame after the Hero's Path playback) and Age of
-   Calamity, whose 1.5 GB material pool starts on the last page of its first pool (2026-11-22: 440 re-uploads, 220 MB a
+   Calamity and Persona 5 Royal (a 32 MB pool on the same last page), whose 1.5 GB material pool starts on the last page of its first pool (2026-11-22: 440 re-uploads, 220 MB a
    frame in the battle after the first one's ending movie; the stale copies piled up past 4.5 GB of GPU memory). */
-#if defined(GAME_BOTW) || defined(GAME_AOCX)
+#if defined(GAME_BOTW) || defined(GAME_AOCX) || defined(GAME_P5R)
 #define NVN_DIRTY_SPLIT 1
 #else
 #define NVN_DIRTY_SPLIT 0

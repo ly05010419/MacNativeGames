@@ -20,8 +20,8 @@ import msl_loop_cap  # noqa: E402
 
 # The ports whose Mac host caps the MSL it compiles (nvn_mtl.m totk_msl_library_ with the shared header), and those that
 # still have to take it (each needs its own build check; their device seeds are capped by the shared build already).
-CAPPED = {'aocx'}
-PENDING = {'acnh', 'kirby', 'mk8dx', 'odyssey', 'p5r', 'rdr'}
+CAPPED = {'aocx', 'p5r'}
+PENDING = {'acnh', 'kirby', 'mk8dx', 'odyssey', 'rdr'}
 
 SAMPLE = '''kernel void main0(device uint* b [[buffer(0)]], uint3 id [[thread_position_in_grid]])
 {
