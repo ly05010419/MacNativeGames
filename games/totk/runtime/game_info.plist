@@ -8,5 +8,7 @@
 	<string>org.macnativegames.totk-native</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Connect a Nintendo Switch 2 Pro Controller to play.</string>
 </dict>
 </plist>

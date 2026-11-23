@@ -35,8 +35,39 @@ static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeR
 static RuntimeGamepadState touchState;
 enum { CONTROLLER_OWN_BUTTONS = 0x1ffff };   /* physical buttons 0-16: the controller's, not the mouse's */
 
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+#include "pad_switch2_apple.h"
+#endif
+
 #include "gamepad_game.h"   /* this game's hooks and switches */
 #include "gamepad_core.h"   /* the shared plumbing (shared/runtime) */
+
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+static void switch2_changed(s2_pad *pad) {
+    (void)pad;
+    refresh_gamepads();
+}
+
+static int switch2_input_active(void) {
+    return atomic_load(&gamepadFocused) || runtime_gamepad_background_enabled();
+}
+
+static int switch2_player(s2_pad *pad) {
+    (void)pad;
+    return 0;
+}
+
+int runtime_gamepad_switch2_start(void) {
+    static const dm_switch2_front front = {
+        .attach = switch2_changed,
+        .detach = switch2_changed,
+        .read = switch2_changed,
+        .input_active = switch2_input_active,
+        .player = switch2_player,
+    };
+    return dm_switch2_start(&front);
+}
+#endif
 
 static int settings_chord_held(void) { return (textPad.buttons & settings_trigger()) == settings_trigger(); }   /* gamepadLock */
 
@@ -113,6 +144,28 @@ static void refresh_gamepads(void) {
         next.lx = stronger_axis(next.lx, stick_axis(axes[0])); next.ly = stronger_axis(next.ly, stick_axis(axes[1]));
         next.rx = stronger_axis(next.rx, stick_axis(axes[2])); next.ry = stronger_axis(next.ry, stick_axis(axes[3]));
         gamepad_game_dsu_input(dsuInput.buttons || stick_axis(axes[0]) || stick_axis(axes[1]) || stick_axis(axes[2]) || stick_axis(axes[3]));
+    }
+#endif
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+    for (s2_pad *pad = dm_switch2_pads(); pad; pad = pad->next) {
+        uint64_t buttons;
+        int32_t axes[4];
+        next.connected = 1;
+        if (!pad->received_report || !s2_pad_input(&pad->st, &buttons, axes)) continue;
+        uint64_t face = gamepad_face_positions(buttons & DM_BTN_A, buttons & DM_BTN_B,
+                                               buttons & DM_BTN_X, buttons & DM_BTN_Y, 0);
+        uint64_t sw2Physical = (buttons & ~UINT64_C(15)) | face;
+        float promptAxes[] = {axes[0] / 32767.f, axes[1] / 32767.f, axes[2] / 32767.f, axes[3] / 32767.f};
+        if (prompt_activity_changed(pad->previous_buttons, sw2Physical, pad->previous_axes, promptAxes))
+            runtime_prompt_note_input(PROMPT_SWITCH);
+        pad->previous_buttons = sw2Physical;
+        memcpy(pad->previous_axes, promptAxes, sizeof promptAxes);
+        physical |= sw2Physical;
+        capture |= !!(pad->st.pro.r.buttons & S2_CAPTURE);
+        next.lx = stronger_axis(next.lx, axes[0]);
+        next.ly = stronger_axis(next.ly, axes[1]);
+        next.rx = stronger_axis(next.rx, axes[2]);
+        next.ry = stronger_axis(next.ry, axes[3]);
     }
 #endif
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button

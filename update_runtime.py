@@ -498,7 +498,7 @@ def probe_runtime(tree, tmp, version, logs):
         raise BuildError(f'the new runtime does not load the app\'s game files ({last}; {log}); the app was not changed')
 
 
-def record_commit(tmp, work, *, native_5k=None):
+def record_commit(tmp, work, *, game=None, native_5k=None):
     """The commit this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
     the HUD, which would otherwise keep showing the commit of the app's first build; and where the Update page's update
     finds the checkout, the work folder and the Python (build_app.record_update_source), so an app made before those were
@@ -512,6 +512,8 @@ def record_commit(tmp, work, *, native_5k=None):
         info.pop('MNGSourceCommit', None)
     build_app.record_launcher_version(info)   # the Launcher of this update, beside the commit in the HUD's build line
     build_app.record_update_source(info, work)
+    if game in ('totk', 'botw', 'dkb', 'pkp'):
+        info['NSBluetoothAlwaysUsageDescription'] = build_app.SWITCH2_BLUETOOTH_USAGE
     if native_5k is None:
         info.pop('MNGNative5K', None)
     else:
@@ -947,7 +949,7 @@ def main(argv):
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists, prompt_app=app, shared=listfile)
-        record_commit(tmp, work, native_5k=preference)
+        record_commit(tmp, work, game=game, native_5k=preference)
         probe_runtime(tree, tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs, installed=app)   # the new binary's pipeline keys, as a build makes them
         if shaders:

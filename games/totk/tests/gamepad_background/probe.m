@@ -1,5 +1,11 @@
 /* Real controller routing and saved policy, with the HID state supplied locally; no game files or physical pad needed. */
+#define MNG_SWITCH2_CONTROLLER 1
 #include "../../runtime/gamepad.m"
+
+static s2_pad *testSwitch2;
+static const dm_switch2_front *testSwitch2Front;
+s2_pad *dm_switch2_pads(void) { return testSwitch2; }
+int dm_switch2_start(const dm_switch2_front *front) { testSwitch2Front = front; return 1; }
 #include "../dsu/motion_stubs.h"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
@@ -54,6 +60,33 @@ int main(int argc, char **argv) { @autoreleasepool {
     CHECK(runtime_setting_word("controller-background.txt", word, sizeof word) && !strcmp(word, "off\n"));
     refresh_gamepads(); runtime_gamepad_read(&out); CHECK(!out.buttons && !out.lx);
     runtime_gamepad_focus(1); runtime_gamepad_read(&out); CHECK(out.buttons && out.lx == 20000);
+
+    hidPad = (HIDPadState){0};
+    s2_pad switch2 = {.st.pro.have = 1};
+    s2_cal_default(&switch2.st.pro.cal[0]);
+    s2_cal_default(&switch2.st.pro.cal[1]);
+    CHECK(runtime_gamepad_switch2_start() && testSwitch2Front);
+    testSwitch2 = &switch2;
+    testSwitch2Front->attach(&switch2);
+    runtime_gamepad_read(&out);
+    CHECK(out.connected && !out.buttons && !out.lx && !out.ry);
+    switch2.received_report = 1;
+    switch2.st.pro.r = (s2_report){.buttons = S2_A | S2_X | S2_ZL,
+                                  .lx = 4095, .ly = 2048, .rx = 2048, .ry = 0};
+    testSwitch2Front->read(&switch2);
+    runtime_gamepad_read(&out);
+    CHECK(out.buttons == (DM_BTN_A | DM_BTN_X | DM_BTN_ZL) && out.lx > 0 && out.ry < 0);
+    runtime_gamepad_focus(0);
+    testSwitch2Front->read(&switch2);
+    runtime_gamepad_read(&out);
+    CHECK(!out.buttons && !out.lx && !out.ry);
+    runtime_gamepad_focus(1);
+    runtime_gamepad_read(&out);
+    CHECK(out.buttons == (DM_BTN_A | DM_BTN_X | DM_BTN_ZL));
+    testSwitch2 = NULL;
+    testSwitch2Front->detach(&switch2);
+    runtime_gamepad_read(&out);
+    CHECK(!out.connected && !out.buttons && !out.lx && !out.ry);
 
     /* Restart-equivalent preference loading; only a valid opt-in enables background events. */
     write_word(saved, "on\n"); load_gamepad_background();

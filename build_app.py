@@ -2488,6 +2488,9 @@ def write_main_build_id(nso, target):
     target.write_text(build_id.hex().upper() + '\n')
 
 
+SWITCH2_BLUETOOTH_USAGE = "Connect a Nintendo Switch 2 Pro Controller to play."
+
+
 def app_modules(version):
     """The rewritten modules an app of this version carries: the ones its verified values name (rewritten_sha256), which the
     rewrite made and checked. Not a fixed main / sdk / subsdk0: Bananza has no subsdk0 (2026-11-12: its first app build
@@ -2539,6 +2542,8 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     if icon.exists():
         clone(icon, tmp / 'Contents/Resources/AppIcon.icns')
         info['CFBundleIconFile'] = 'AppIcon'
+    if game in ('totk', 'botw', 'dkb', 'pkp'):
+        info['NSBluetoothAlwaysUsageDescription'] = SWITCH2_BLUETOOTH_USAGE
     info['MNGContributionFolder'] = str(contrib_folder())   # app/launcher.m contrib_file: where players find it
     if game_data == 'library' and game_data_folder:
         info['MNGGameDataFolder'] = str(game_data_folder)   # app/launcher.m: where the image is, before the data folder's GameData
