@@ -53,6 +53,17 @@ void settings_test_output_4k(int on) {
     (void)on;
 #endif
 }
+/* This run's app as if built for a larger canvas (w x h: 2560x1440, 3840x2160 or 5120x2880): the render sizes the
+   settings panel offers follow. Tears of the Kingdom: the swapchain's size (1.4.3's 4K + MetalFX to 5K follows it too,
+   picture_4k_to_5k_available). Breath of the Wild: nothing yet; its native 4K / 5K come from marker files in the app
+   (native_4k_app, read once and kept), so a test cannot switch them here. */
+void settings_test_output_cap(unsigned w, unsigned h) {
+#ifndef GAME_BOTW
+    output_w = w; output_h = h;
+#else
+    (void)w; (void)h;
+#endif
+}
 /* The aspect ratio as runtime/aspect_patch.h sets it (production code), with a synthetic data-page slot and a window of
    ratio view instead of the stubs aspect_install writes into the game. */
 void settings_test_aspect_init(double view) {

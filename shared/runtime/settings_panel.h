@@ -102,7 +102,9 @@ static void settings_pointer_used(void);
  if(self.stops){stop=MAX(0,MIN((NSInteger)self.choices.count-1,((NSSlider *)sender).integerValue));}
  int v=self.stops?self.values[(NSUInteger)stop].intValue:[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
   self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
- if(self.set)self.set(v);
+ /* a stops row released on the stop it has (or stepped against its end) applies nothing again */
+ BOOL same=self.stops&&self.get&&[self.values indexOfObject:@(self.get())]==(NSUInteger)stop;
+ if(self.set&&!same)self.set(v);
  if(self.valueLabel)self.valueLabel.stringValue=self.stops?self.choices[(NSUInteger)stop]:[NSString stringWithFormat:@"%d",v];
  [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
@@ -114,7 +116,7 @@ static void settings_pointer_used(void);
    CGFloat size=fmax(9,fmin(11,11*self.textLabel.bounds.size.width/fmax(1,width)));
    if(fabs(self.textLabel.font.pointSize-size)>.01)self.textLabel.font=[NSFont monospacedSystemFontOfSize:size weight:NSFontWeightRegular];}
   return;}
- if(self.enabled){BOOL on=self.enabled();if(self.control.enabled!=on)self.control.enabled=on;}
+ if(self.enabled){BOOL on=self.enabled();if(self.control.enabled!=on)self.control.enabled=on;if(self.valueLabel)self.valueLabel.alphaValue=on?1:0.45;}
  int v=self.get?self.get():0;
  if(self.stops){NSUInteger i=[self.values indexOfObject:@(v)];if(i==NSNotFound)i=0;NSSlider *s=(NSSlider *)self.control;
   if(s.integerValue!=(NSInteger)i)s.integerValue=(NSInteger)i;self.valueLabel.stringValue=self.choices[i];return;}
@@ -133,7 +135,7 @@ static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choice
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
 }
 /* A slider with a label at each of its choices (values[i] is what choice i sets); it applies when released. */
-static TOTKSettingRow *settings_stops(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
+__attribute__((unused)) static TOTKSettingRow *settings_stops(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                       int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=settings_row(title,choices,values,get,set);r.stops=choices.count>1;r.sliderMin=0;r.sliderMax=(int)choices.count-1;return r;
 }
