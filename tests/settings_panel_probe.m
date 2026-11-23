@@ -134,6 +134,9 @@ int vr_snap_ms(void) { return 0; }
 void vr_set_snap_ms(int ms) { (void)ms; }
 void vr_set_mirror_mode(int on) { (void)on; }
 void vr_set_offset_cm(int axis, int cm) { (void)axis; (void)cm; }
+#if !defined(TOTK_GAME_V143) && !defined(GAME_BOTW)   /* 1.2.1 has no camera hook (1.4.3's and Breath of the Wild's are their own) */
+int runtime_camera_distance_available(void) { return 0; }
+#endif
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
@@ -1208,14 +1211,18 @@ static void mfx_target_probe(void) {
     assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0xffffffffu);   /* nothing sent: it stays 0 */
     for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Upscale to"]) assert(r.get() == 0);   /* nor kept for the panel */
     unsetenv("TOTK_MFX_OUTPUT");
-#ifdef TOTK_GAME_V143
-    /* The VR page keeps today's resolution pop-up. */
+    /* The VR page keeps today's resolution pop-up (1.4.3's labels checked); a plain mode picked there leaves no fixed
+       target behind (1.2.1 and Breath of the Wild never clear the flag themselves). */
+    restore_output(OUTPUT_MODE_METALFX, "3840x2160"); assert(fakeMfxTarget == mfx_target_pack(3840, 2160));
     fakeVrEnabled = 1;
     TOTKSettingRow *vr = nil; for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Game render resolution"]) vr = r;
-    assert(vr && !vr.stops && [vr.choices isEqualToArray:(@[@"720p", @"720p + MetalFX upscaling", @"1080p", @"1080p + MetalFX upscaling",
-                                                            @"2K (2560×1440)", @"2K + MetalFX upscaling (4K screens)"])]);
-    fakeVrEnabled = 0;
+    assert(vr && !vr.stops && vr.set);
+#ifdef TOTK_GAME_V143
+    assert(([vr.choices isEqualToArray:(@[@"720p", @"720p + MetalFX upscaling", @"1080p", @"1080p + MetalFX upscaling",
+                                          @"2K (2560×1440)", @"2K + MetalFX upscaling (4K screens)"])]));
 #endif
+    vr.set(OUTPUT_MODE_OFF); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    fakeVrEnabled = 0;
     puts("pass: mfx target rows");
 }
 int main(int argc, const char **argv) { @autoreleasepool {
