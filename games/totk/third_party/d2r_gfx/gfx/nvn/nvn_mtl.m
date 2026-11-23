@@ -22074,6 +22074,25 @@ static void present_pipeline(MTLPixelFormat format, BOOL hdrSource) {
         g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
     }
 }
+/* The present shows the bytes stored in the swapchain, as the console's scan-out does. An sRGB swapchain (Pokopia's NVN RGBA8_SRGB,
+   0x38) is read through a non-sRGB view of the same storage: sampled as sRGB it decodes to linear, the BGRA8Unorm layer does not
+   encode again, and the whole picture comes out dark (2026-11-23: stored mean 144, shown 88, the decode of the stored bytes 86).
+   Other formats are returned as they are (TotK, BotW, Ocarina of Time and Bananza use RGBA8, 0x25). As seedds/nxnative's
+   present_raw_src (MIT): a cache of 4 views, swapchain textures being few and long-lived; a view holds its parent, so an equal
+   parent means the same texture; a replaced view is released after the submissions that used it (Metal 4 retains nothing). */
+static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
+    MTLPixelFormat pf = src.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ? MTLPixelFormatRGBA8Unorm :
+                        src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatInvalid;
+    if (pf == MTLPixelFormatInvalid) return src;
+    static __strong id<MTLTexture> views[4]; static int next; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    id<MTLTexture> v = nil;
+    for (int i = 0; i < 4 && !v; i++) if (views[i] && views[i].parentTexture == src) v = views[i];
+    if (!v && (v = [src newTextureViewWithPixelFormat:pf])) { if (views[next]) defer_obj_unref(views[next]); views[next] = v; next = (next + 1) & 3; }
+    pthread_mutex_unlock(&mu);
+    if (!v) { RED_ONCE(211, "present: no non-sRGB view of the sRGB swapchain texture (format %lu); showing the decoded values", (unsigned long)src.pixelFormat); return src; }
+    return v;
+}
 // 出图仅采NVN声明的有效源矩形；与原始交换链读回截图分开。边缘钳到有效区纹素中心，双线性不读外侧黑纹素。
 // Present samples only the valid source rectangle declared by NVN; kept separate from the raw swapchain readback screenshot. Edges are clamped to the texel centers of the valid area, so bilinear does not read the black texels outside.
 /* The corner panel's numbers for the shared panel (hud_panel.inc): exactly what this file computed in place before. */
@@ -22241,7 +22260,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
     [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy
-    [en setFragmentTexture:src atIndex:0];
+    [en setFragmentTexture:present_raw_src(src) atIndex:0];
     [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
@@ -22283,8 +22302,9 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     double dw = dst.width, dh = dst.height;
     MTLViewport vp = present_viewport(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
-    id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // MetalFX output: the viewport size or the 5K preset
-    id<MTLTexture> pic = up ? up : src;
+    id<MTLTexture> raw = present_raw_src(src);   // before MetalFX too: its perceptual mode takes display values
+    id<MTLTexture> up = output_upscale(cb, raw, cx, cy, cw, ch, vp, uv_i);   // MetalFX output: the viewport size or the 5K preset
+    id<MTLTexture> pic = up ? up : raw;
     if (up) { cx = 0; cy = 0; cw = up.width; ch = up.height; }
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;
