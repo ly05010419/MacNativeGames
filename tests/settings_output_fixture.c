@@ -93,6 +93,10 @@ void settings_test_output_cap(unsigned w, unsigned h) {
 #ifdef GAME_BOTW
 /* The game's first present (runtime_frame_step_update): botw_output_tick, once, with 1.9.0's start rule for MetalFX. */
 void settings_test_output_first_present(void) { botw_output_tick(); }
+#ifndef GAME_BOTW160
+/* The tick's keep-or-drop test for MetalFX, which botw_output_tick applies once (the 4K check there has used it up). */
+int settings_test_output_mfx_canvas(void) { return output_mfx_canvas(); }
+#endif
 #endif
 /* The aspect ratio as runtime/aspect_patch.h sets it (production code), with a synthetic data-page slot and a window of
    ratio view instead of the stubs aspect_install writes into the game. */

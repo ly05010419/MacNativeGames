@@ -1198,6 +1198,23 @@ static void mfx_target_probe(void) {
     slide(@"Resolution", @"4K (3840×2160)"); assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
     metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && fakeMfxTarget == 0);   /* no 5K texture left behind */
     slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    /* 720p + MetalFX (slice 2: Breath of the Wild too, as 1.2.1 had it): the 1280x720 canvas, both stages on, a fixed
+       target above it; on 1.9.0 the first present's start rule keeps MetalFX on a canvas up to 1920 wide. */
+    slide(@"Resolution", @"720p"); metalfx(YES);
+    assert(!greyed(@"MetalFX") && runtime_output_mode() == OUTPUT_MODE_720P_METALFX && runtime_output_size_current() == SIZE(1280, 720));
+    assert(mfxup_output_enabled() && mfxup_enabled() && fakeMfxTarget == 0);
+    assert([row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"1920×1080", @"2560×1440", @"3840×2160", @"5120×2880"])]);
+    slide(@"Upscale to", @"1920×1080"); assert(fakeMfxTarget == mfx_target_pack(1920, 1080) && runtime_output_mode() == OUTPUT_MODE_720P_METALFX);
+#ifdef GAME_BOTW190
+    /* The first present runs botw_output_tick once, and the 4K check below needs that run; here its test for keeping
+       MetalFX (output_mfx_canvas), which that tick applies, on this canvas. */
+    int settings_test_output_mfx_canvas(void);
+    assert(settings_test_output_mfx_canvas() && mfxup_output_enabled() && runtime_output_mode() == OUTPUT_MODE_720P_METALFX);
+#endif
+    fakeMfxTarget = 0xffffffffu;
+    assert(runtime_output_mode_set(OUTPUT_MODE_720P_METALFX) && fakeMfxTarget == 0 && mfxup_output_enabled() && mfxup_enabled());
+    metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_720P && fakeMfxTarget == 0 && !mfxup_output_enabled());
+    slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
     settings_test_output_cap(2560, 1440); settings_rebuild(); tick();
 #endif
     settings_show(0);
@@ -1447,7 +1464,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(!switched(@"MetalFX") && greyed(@"Upscale to"));
     BOOL nativeResolution = !!(runtime_output_modes() & (1 << OUTPUT_MODE_NATIVE));
     if (nativeResolution) {
-    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* Tears of the Kingdom; not Breath of the Wild */
+    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* every game once its picture is switchable */
     assert(row(@"Resolution").stops && [row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)"])]);
     slide(@"Resolution", @"720p");
     if (mfx720) {

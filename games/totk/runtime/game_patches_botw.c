@@ -2127,7 +2127,7 @@ int runtime_game_fps_limit(void) {
    on 1.9.0 also 1440p and screen) the panel also offers native: the canvas and the scene at the largest size of the
    session (output_switch; 2560x1440, or the screen size under TOTK_OUTPUT_RES=screen), and native + MetalFX: the
    2560x1440 canvas that MetalFX scales to the window (1.9.0 on a screen bigger than 2K: bog 2026-10-24, clean edges at 51
-   FPS, native 2K 50, the screen size 42-44). Both versions also offer 720p (the canvas and the scene at 1280x720).
+   FPS, native 2K 50, the screen size 42-44). Both versions also offer 720p (the canvas and the scene at 1280x720) and 720p + MetalFX (that canvas scaled to the window).
    Otherwise off and MetalFX 2K. */
 static int output_switchable(void) { return g_out_mode == OUT_AUTO && g_out_page; }
 static unsigned output_width_now(void) { return (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu); }
@@ -2156,9 +2156,12 @@ int runtime_output_native(int mode, unsigned *w, unsigned *h) {
 int runtime_output_modes(void) {
     if(g_out_vr)return 1<<OUTPUT_MODE_NATIVE;
     unsigned w, h;
-    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | (output_switchable() ? 1 << OUTPUT_MODE_720P : 0) |
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | (output_switchable() ? 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_720P_METALFX : 0) |
            (runtime_output_native(OUTPUT_MODE_NATIVE, &w, &h) ? 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX : 0) |
-           (runtime_output_native(OUTPUT_MODE_NATIVE_4K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_4K | 1 << OUTPUT_MODE_4K_TO_5K_METALFX : 0) |
+           (runtime_output_native(OUTPUT_MODE_NATIVE_4K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_4K : 0) |
+#if TARGET_OS_OSX   /* 4K + MetalFX to 5K: Mac only, as 1.4.3's picture_4k_to_5k_available */
+           (runtime_output_native(OUTPUT_MODE_4K_TO_5K_METALFX, &w, &h) ? 1 << OUTPUT_MODE_4K_TO_5K_METALFX : 0) |
+#endif
            (runtime_output_native(OUTPUT_MODE_NATIVE_5K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_5K : 0);
 }
 int runtime_output_mode(void) {
@@ -2166,7 +2169,7 @@ int runtime_output_mode(void) {
     extern int mfxup_enabled(void);
     if (output_switchable()) {
         unsigned w = output_width_now();
-        if (w == 1280) return OUTPUT_MODE_720P;
+        if (w == 1280) return mfxup_enabled() ? OUTPUT_MODE_720P_METALFX : OUTPUT_MODE_720P;
         if (w == 5120 && native_5k_app() && !mfxup_enabled()) return OUTPUT_MODE_NATIVE_5K;
         if (w == 3840 && out_4k_mfx) return OUTPUT_MODE_4K_TO_5K_METALFX;
         if (w >= 3840 && native_4k_app() && !mfxup_enabled()) return OUTPUT_MODE_NATIVE_4K;
@@ -2178,17 +2181,17 @@ int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
     if(g_out_vr)return 0; /* Desktop saved modes/key 3 cannot change a VR eye allocation. */
     if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_LAST || !(runtime_output_modes() & 1 << mode)) return 0;
-    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;   /* native + MetalFX: the output stage scales the 2K canvas to the window */
+    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_720P_METALFX;   /* native + MetalFX: the output stage scales the 2K canvas to the window */
     dm_gfx_set_flag("mfx_output", mfx);
     dm_gfx_set_flag("mfx_upscale", mfx);
     out_4k_mfx = mode == OUTPUT_MODE_4K_TO_5K_METALFX;
     dm_gfx_set_flag("mfx_target", out_4k_mfx ? (int)mfx_target_pack(5120, 2880) : 0);
     if (output_switchable()) {
         unsigned w = 1920, h = 1080;
-        if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K || mode == OUTPUT_MODE_4K_TO_5K_METALFX || mode == OUTPUT_MODE_NATIVE_5K) runtime_output_native(mode, &w, &h);
+        if (mode == OUTPUT_MODE_720P || mode == OUTPUT_MODE_720P_METALFX) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K || mode == OUTPUT_MODE_4K_TO_5K_METALFX || mode == OUTPUT_MODE_NATIVE_5K) runtime_output_native(mode, &w, &h);
         if (output_width_now() != w) output_switch(w, h);
     }
-    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE_5K ? "native 5K" : mode == OUTPUT_MODE_4K_TO_5K_METALFX ? "4K, MetalFX to 5K" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" : mode == OUTPUT_MODE_NATIVE ? "native" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
+    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE_5K ? "native 5K" : mode == OUTPUT_MODE_4K_TO_5K_METALFX ? "4K, MetalFX to 5K" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" : mode == OUTPUT_MODE_NATIVE ? "native" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P_METALFX ? "720p, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
 }
