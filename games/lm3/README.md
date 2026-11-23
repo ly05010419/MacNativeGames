@@ -44,6 +44,15 @@ stutter the first time.
 **Cheats:** put an Atmosphère cheat file for this build ID (`98B7F5E7E13B1A4D`) at `build/cheats.txt` before
 `make app` and the app gets a Cheats menu; nothing is downloaded.
 
+## Settings
+
+Key 1 (or Command-, or L3 + R3 on a controller) opens the settings panel the Zelda games have (`shared/runtime/settings_panel.h`,
+this game's rows in `runtime/settings_game.h`): overlay, FPS graph, resolution, aspect ratio (16:9, 16:10, 21:9; 1.4.0
+only: the camera frames that shape, `runtime/aspect_patch.h`), window mode, vertical sync, frame limit and MetalFX frame
+generation; controller type, rumble and DSU; MetalFX upscaling; key bindings for the keyboard, mouse and controller; the
+frame-rate board and screenshot sharing (both off by default). The screenshot key is P. Key 5 opens the cheat panel when
+there are cheats.
+
 ## What differs from Tears of the Kingdom
 
 - **SDK 7.3.2**: an older `nn::init` start sequence, rtld global symbol binding, and its own services (audout, the
@@ -63,5 +72,5 @@ stutter the first time.
 ## Known gaps
 
 - Triangle fans (primitive type 6) are not drawn yet, and primitive restart uses Metal's all-ones index only.
-- The app has no settings window yet (window size, full screen, frame rate).
+- The interface (hearts, money, menus) is stretched with the picture at 16:10 and 21:9.
 - Versions 1.2.0 (default) and 1.4.0 (`make app LM3_VERSION=1.4.0`); the DLC are not loaded.

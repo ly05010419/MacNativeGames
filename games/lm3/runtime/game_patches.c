@@ -284,4 +284,13 @@ void runtime_game_patches(Module *m) {
     /* Luigi's Mansion 3 runs unmodified: only the player's own patches, if any. (The copied Tears of the Kingdom body after
        this, 60 FPS and real-time step at that game's addresses, was never reached and is gone, after PR #218.) */
     patch_pchtxt(m);
+    /* Other picture shapes (aspect_patch.h): in 1.4.0 every engine camera that builds a perspective matrix (main+0x6aab4,
+       0x6f14c, 0x787c4 ... : fovy at +0x40, the matrix from +0x44) asks for its aspect ratio with a virtual call (vtable
+       +0x60; near and far at +0x50 / +0x58). Eleven camera classes share one getter, main+0x67be0, which divides the
+       screen's width by its height (fdiv s0, s0, s1 at main+0x67c24); that division is the site. No ratio is stored
+       anywhere in memory, so it cannot be found by its value: the getter came from the cameras' vtables. */
+    if (!strcmp(TOTK_GAME_VERSION, "1.4.0")) {
+        static const uint64_t sites[] = {0x67c24};
+        aspect_install(m, "1.4.0", sites, 1, (m->text_end + 15) & ~15ULL, (m->file_size + 0x3fff) & ~0x3fffULL);
+    } else if (aspect_requested()) runtime_fail("TOTK_ASPECT: Luigi's Mansion 3 1.4.0 only so far");
 }

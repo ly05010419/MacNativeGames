@@ -1,5 +1,6 @@
-/* Ultrawide pictures on the Mac: key 4 switches between the game's 16:9 and a wider aspect ratio (TOTK_ASPECT, default
-   21:9; also 32:9, 3440x1440 or 2.39). TOTK_ASPECT set also starts the game with it on. Not on iPhone / iPad.
+/* Other picture shapes on the Mac: the settings panel picks 16:9 (the game's own), 16:10 or 21:9 and the picture takes
+   that shape in the window; key 4 switches between 16:9 and the pick (TOTK_ASPECT, default 21:9; also 32:9, 3440x1440
+   or 2.39). TOTK_ASPECT set starts the game with it on and overrides the panel's saved pick. Not on iPhone / iPad.
    The game keeps drawing into its 16:9 canvas, but with the camera's aspect ratio set to the wider one, so the picture
    holds the wider view squeezed horizontally; the present pass then stretches it over the window (nvn_mtl.m
    present_stretch asks runtime_aspect_now), which restores the proportions on a screen of that shape.
@@ -41,6 +42,16 @@ float runtime_aspect_now(void) {
     uint32_t bits = atomic_load(g_aspect_slot); float v; memcpy(&v, &bits, 4); return v;
 }
 
+/* The settings panel (display_settings.h): 0 = the game's own 16:9, else that ratio (16:10, 21:9), which key 4 then
+   switches with 16:9. Returns 0 where it is not available (iPhone / iPad, other game versions). */
+int runtime_aspect_set_ratio(float r) {
+    if (!g_aspect_slot) return 0;
+    if (r > 0) g_aspect_wide = r;
+    uint32_t bits = 0; if (r > 0) memcpy(&bits, &r, 4);
+    if (atomic_exchange(g_aspect_slot, bits) != bits) fprintf(stderr, "[totk] aspect ratio %s%.4f\n", r > 0 ? "" : "16:9, the game's own: ", r > 0 ? r : 16.0 / 9.0);
+    return 1;
+}
+
 /* Key 4 (runtime/input.c). Returns 0 where it is not available (iPhone / iPad, other game versions). */
 int runtime_aspect_toggle(void) {
     if (!g_aspect_slot) return 0;
@@ -57,38 +68,44 @@ static inline uint32_t aspect_branch(uint64_t from, uint64_t to) {
     return 0x14000000u | ((uint32_t)(d >> 2) & 0x3ffffff);
 }
 
-#define ASPECT_STUB 32   /* bytes per patched instruction */
+#define ASPECT_STUB 48   /* bytes per patched instruction (12 words) */
 
-/* sites: instructions that leave the ratio in an s register (fdiv s<d>, ... or ldr s<d>, [x<n>, #imm]). Stubs go to
-   main's text padding from stub_off, checked to be zero and inside the last text page; data_off is the page the loader
-   reserves after main. Mac only. */
+/* sites: instructions that leave the ratio in an s register (fdiv s<d>, ..., ldr s<d>, [x<n>, #imm] or
+   ldp s<d>, s<e>, [x<n>, #imm]; the first register). Stubs go to main's text padding from stub_off, checked to be zero and inside the last text page;
+   data_off is the page the loader reserves after main. Only a ratio near 16:9 (1.5 to 2) is replaced, so cameras
+   that draw other shapes (square shadow and reflection views) keep theirs. Mac only. */
 static inline void aspect_install(Module *m, const char *version, const uint64_t *sites, unsigned nsite, uint64_t stub_off, uint64_t data_off) {
 #if TARGET_OS_IPHONE
     (void)m; (void)version; (void)sites; (void)nsite; (void)stub_off; (void)data_off;
 #else
     float start = aspect_requested();
     g_aspect_wide = start ? start : 21.0f / 9.0f;
-    uint64_t page_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    uint64_t page_end = (m->text_end + 0xfff) & ~0xfffULL;   /* the game's read-only data starts at the next 4 KiB */
     if (stub_off < m->text_end || stub_off + ASPECT_STUB * nsite > page_end) runtime_fail("aspect patch: no room in main's text padding");
     if (data_off + ASPECT_DATA_SLOT + 4 > m->size) runtime_fail("aspect patch: no data page after main");
     for (unsigned i = 0; i < ASPECT_STUB * nsite; i++) if (m->base[stub_off + i]) runtime_fail("aspect patch: text padding in use");
     for (unsigned i = 0; i < nsite; i++) {
         uint32_t ins; memcpy(&ins, m->base + sites[i], 4);
-        if ((ins & 0xffe0fc00) != 0x1e201800 && (ins & 0xffc00000) != 0xbd400000)
-            runtime_fail("aspect patch: the camera code does not match this game version");
+        unsigned rn = (ins >> 5) & 31, rt2 = (ins >> 10) & 31, d = ins & 31;
+        int ldr = (ins & 0xffc00000) == 0xbd400000, ldp = (ins & 0xffc00000) == 0x2d400000, fdiv = (ins & 0xffe0fc00) == 0x1e201800;
+        if ((!ldr && !ldp && !fdiv) || (!fdiv && (rn == 10 || rn == 11)) || (ldp && rt2 == d)) runtime_fail("aspect patch: the camera code does not match this game version");
         uint64_t s = stub_off + ASPECT_STUB * i;
         int64_t pages = (int64_t)(data_off >> 12) - (int64_t)((s + 8) >> 12);   /* the module base is page aligned */
         if (pages < -(1 << 20) || pages >= (1 << 20)) runtime_fail("aspect patch: data page out of ADRP range");
         uint32_t imm = (uint32_t)pages & 0x1fffff;
-        uint32_t stub[8] = {
-            ins,                                                              /* the game's own ratio into s<d> */
-            0xf81f0fea,                                                       /* str x10, [sp, #-16]! */
+        uint32_t stub[12] = {
+            ins,                                                              /* the game's own load: its ratio in s<d> */
+            0xa9bf2fea,                                                       /* stp x10, x11, [sp, #-16]! */
             0x90000000u | ((imm & 3) << 29) | ((imm >> 2) << 5) | 10,         /* adrp x10, <data page> */
-            0xb9400000u | ((uint32_t)(ASPECT_DATA_SLOT / 4) << 10) | (10 << 5) | 10, /* ldr w10, [x10, #slot] */
-            0x3400004au,                                                      /* cbz w10, +8: off, keep it */
-            0x1e270000u | (10 << 5) | (ins & 31),                             /* fmov s<d>, w10: the wide ratio */
-            0xf84107ea,                                                       /* ldr x10, [sp], #16 */
-            aspect_branch(s + 28, sites[i] + 4)};                             /* b <after the instruction> */
+            0xb9400000u | ((uint32_t)(ASPECT_DATA_SLOT / 4) << 10) | (10 << 5) | 11, /* ldr w11, [x10, #slot] */
+            0x34000000u | (6 << 5) | 11,                                      /* cbz w11, out (+6 words): off */
+            0x1e260000u | (d << 5) | 10,                                      /* fmov w10, s<d> */
+            0x53167d4au,                                                      /* lsr w10, w10, #22 */
+            0x7103fd5fu,                                                      /* cmp w10, #0xff: the ratio is in [1.5, 2) */
+            0x54000041u,                                                      /* b.ne out (+2 words) */
+            0x1e270000u | (11 << 5) | d,                                      /* fmov s<d>, w11: the chosen ratio */
+            0xa8c12fea,                                                       /* out: ldp x10, x11, [sp], #16 */
+            aspect_branch(s + 44, sites[i] + 4)};                             /* b <after the instruction> */
         memcpy(m->base + s, stub, sizeof stub);
         uint32_t jump = aspect_branch(sites[i], s);
         memcpy(m->base + sites[i], &jump, 4);

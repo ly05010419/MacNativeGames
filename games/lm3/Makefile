@@ -135,6 +135,7 @@ app: runtime build/AppIcon.icns
 	  'mkdir -p "$$D/profile" "$$D/shader-cache" "$$L"; [ -f "$$L/lm3.log" ] && mv -f "$$L/lm3.log" "$$L/lm3.previous.log"' \
 	  '[ -f build/cheats.txt ] && export TOTK_CHEATS_FILE="$$PWD/build/cheats.txt"' \
 	  'export TOTK_SLOT_OWNER=user TOTK_PROFILE_DIR="$$D/profile" TOTK_SHADER_CACHE="$$D/shader-cache" TOTK_ROMFS_PATCHES=0' \
+	  'export TOTK_CONTROLS="$$D/controls.txt"   # the settings panel: key bindings and its settings files beside it' \
 	  'export TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_WIDEN=1 TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1 TOTK_GPU_BUDGET_MB=8000' \
 	  'exec build/lm3-native rewritten/$(VER) boot > "$$L/lm3.log" 2>&1' > "$(APP)/Contents/MacOS/LM3"
 	chmod +x "$(APP)/Contents/MacOS/LM3"

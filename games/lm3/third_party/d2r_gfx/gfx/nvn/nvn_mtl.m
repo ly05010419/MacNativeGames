@@ -39,6 +39,7 @@ static uint64_t g_gen_shown;            // interpolated frames handed to the scr
 #include "nvn_refl.h"
 #include "nvn_texture_plan.h"
 #include "fps_overlay.h"
+#include "fps_board.h"   /* the leaderboard's frame-rate record (shared, as games/odyssey and games/acnh): game frames after the world started */
 #include "nvn_cover.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN：本源码树期望的 B 着色器库翻译链版本 | DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree
 #include "nvn_hmap.h"
@@ -102,6 +103,8 @@ static id<MTLTexture> g_fps_tex[4];
 static id<MTLBuffer> g_fps_uv[3];
 static struct { fps_overlay_info info; int scale; } g_fps_key[4] = {{{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}};
 static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: true 2K (" 2K" in the FPS box) */
+static _Atomic uint64_t g_pic_src;   /* the last game frame's size presented (crop): height << 32 | width, for the HUD */
+static _Atomic uint32_t g_board_out_w, g_board_out_h;   /* the last game frame's size on screen (the present viewport), for the leaderboard (mtl_board_view) */
 static int g_fps_box[4][2];
 // TOTK load line (bottom-right, load_overlay_prepare; totk_sysload.c): same slots as the FPS box, a wider texture.
 static id<MTLTexture> g_load_tex[4];
@@ -6734,7 +6737,7 @@ static void warm_filled(void) {
    while playing (14 -> 28 ms per frame, 30 -> 20 fps). The next start goes over the list again; rows already in the
    cache take a few ms each. TOTK_WARM_LIGHT=0 turns it off. */
 static _Atomic int g_world_on;   // set at the first world frame (hle_nvn.c, nvnQueuePresentTexture)
-void mtl_note_world(void) { atomic_store(&g_world_on, 1); }
+void mtl_note_world(void) { atomic_store(&g_world_on, 1); fps_board_start(); }   // the leaderboard counts from the first world frame (fps_board.c)
 static void warm_light(void) {
 #if TARGET_OS_IPHONE
     const char *e = getenv("TOTK_WARM_LIGHT"); if (e && !atoi(e)) return;
@@ -11071,6 +11074,13 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
 // with the same encoding as the present (present_encode) into an offscreen texture of the same size as the swapchain, and after the GPU finishes hands out a CGImage in the completion callback (the callback does not block the present). Guarded by g_shotq_mu
 static void (^g_grab_cb)(CGImageRef img);
 void mtl_grab_next_present(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
+// The game frame the player's capture button wants (screenshot.h, the frontend's screenshot_picture; as games/odyssey and games/acnh): at
+// the next present the source texture's crop (before the output upscale, no letterbox bars) is copied into a shared buffer, and the
+// feedback handler hands out a CGImage once the GPU is done (rows turned over for the lower-left origin, as dm_gfx_shot_at does); an
+// unexpected source format falls back to the whole-window (drawable) copy.
+#include "nvn_capture_region.h"
+static void (^g_grab_game_cb)(CGImageRef img);
+void mtl_grab_next_game_frame(void (^cb)(CGImageRef img)) { pthread_mutex_lock(&g_shotq_mu); g_grab_game_cb = [cb copy]; pthread_mutex_unlock(&g_shotq_mu); }
 /* The window picture re-rendered offscreen by the legacy encoder: only for presents that draw no drawable
    (TOTK_PRESENT_SKIP measurement runs); a real present copies its drawable (present_now). */
 static void grab_present(void (^cb)(CGImageRef), id<MTLTexture> src, const int crop[4], CGSize sz) {
@@ -11471,6 +11481,15 @@ int mtl_display_hz(void) {
     return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
 #endif
 }
+/* The leaderboard's picture settings (runtime/board_upload.h, as games/odyssey and games/acnh): the output size (the game
+   frame's viewport on the drawable), the size the game renders at (the presented crop), and whether MetalFX upscaled one
+   of the last 30 game frames (the settings panel's Picture row). */
+void mtl_board_view(int *out_w, int *out_h, int *scene_w, int *scene_h, int *metalfx) {
+    uint64_t cur = atomic_load(&g_cur_frame), mfx_at = atomic_load(&g_mfxup_last), pic = atomic_load(&g_pic_src);
+    *out_w = (int)atomic_load(&g_board_out_w); *out_h = (int)atomic_load(&g_board_out_h);
+    *scene_w = (int)(pic & 0xffffffff); *scene_h = (int)(pic >> 32);
+    *metalfx = mfx_at && cur - mfx_at < 30;
+}
 static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次出图前额外停顿（模拟 drawable 迟迟不可用） | For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 static CAMetalLayer *g_present_layer_resident;
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
@@ -11526,7 +11545,7 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
    "SHADER +<variants new to the translation cache this run>/<variants in the cache> PSO +<pipelines added to the warm
    lists this run>", yellow for 3 s after something new was collected. Same texture size, font and scale as the FPS box. */
 static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_hints_enabled() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
+    if (!fps_overlay_full_hud() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     static uint8_t px[FPS_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
     uint64_t fresh = 0, last = 0; int64_t total = -1; totk_rt_counts(&fresh, &total, &last);
@@ -11534,7 +11553,13 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), newest = last > plast ? last : plast;
     char text[48]; shader_overlay_text(text, sizeof text, fresh, total, pso);
     int hl = newest && now - newest < 3000000000ull, scale = fps_overlay_scale(vp.height);
-    if (hud_compact()) { hud_publish(HUD_SHADER, text, hl); return 0; }
+    if (hud_compact()) {
+        char line[64]; pso_overlay_text(line, sizeof line, atomic_load(&g_collect_new[1]), (int64_t)g_pso.n);
+        hud_publish(HUD_SHADER, text, hl);
+        hud_publish(HUD_PSO, line, newest == plast && hl);   // yellow while a new render or compute pipeline was just collected
+        hitch_overlay_publish(now);   // "FPS 全信息": every long frame (hle_nvn.c notes them), the last ones split into their parts
+        return 0;
+    }
     pthread_mutex_lock(&mu);
     if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, text)) {
         fps_overlay_raster_line(text, hl, scale, px, &g_shd_box[slot][0], &g_shd_box[slot][1]);
@@ -11553,7 +11578,7 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
    "P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%  GPU 99% (70%)" -- performance / efficiency cores, the busiest thread, the GPU as macOS reports it (our
    keep-alive keeps it near 100 %) and in brackets the GPU time of the game's own work. Values from totk_sysload.c (0.5 s). */
 static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
-    if (!fps_overlay_hints_enabled() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
+    if (!fps_overlay_full_hud() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
     sysload_start();
     sysload_info li; if (!sysload_get(&li)) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -11708,6 +11733,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src_in, id
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 || present_stretch()) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    if (crop) { atomic_store(&g_board_out_w, (uint32_t)lround(vp.width)); atomic_store(&g_board_out_h, (uint32_t)lround(vp.height)); }   // the output size the leaderboard records
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // TOTK 2K output: MetalFX to the viewport, drawn 1:1 below
     id<MTLTexture> pic = up ? up : src;
@@ -11946,8 +11972,10 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     /* TOTK: the FPS box counts game presents per second and, while MetalFX interpolates, the generated frames shown as
        well ("FPS 50+50"): the user found the plain displayed count misleading on the phone ("the number looks good, it
        feels slow"), so both are shown. */
-    if (interp >= 0) { fps_overlay_note_gen(++g_gen_shown, CACurrentMediaTime()); atomic_store(&g_mfxi_last, frame ? frame : 1); }
-    else fps_overlay_note(ticket, CACurrentMediaTime());
+    if (interp >= 0) { double now = CACurrentMediaTime(); fps_overlay_note_gen(++g_gen_shown, now); fps_board_note_gen(now); atomic_store(&g_mfxi_last, frame ? frame : 1); }
+    else { double now = CACurrentMediaTime(); fps_overlay_note(ticket, now);
+        /* the board counts what the FPS box counts, the game's presents: a picture shown again is no frame, and its time goes to the next new one */
+        static uint64_t board_ticket; if (ticket != board_ticket) { board_ticket = ticket; fps_board_note(ticket, now); } }
     if (g_use != USE_OFF && g_use != USE_DONE) use_tick();
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;
@@ -12127,18 +12155,19 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     window_shot_tick(g_present_n);
     /* TOTK: whole-window shots (wshot, TOTK_WINDOW_SHOT) copy the drawable itself after the present has drawn into it: what
        the screen shows, MetalFX output upscale and boxes included (grab_present re-renders only for TOTK_PRESENT_SKIP). */
-    void (^grab)(CGImageRef) = nil; NSString *grab_src = nil;
-    if (g_grab_cb && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil;
-        if (g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
+    void (^grab)(CGImageRef) = nil; void (^grab_game)(CGImageRef) = nil; NSString *grab_src = nil;
+    if ((g_grab_cb || g_grab_game_cb) && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil; grab_game = g_grab_game_cb; g_grab_game_cb = nil;
+        if (grab && g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
     /* TOTK_PRESENT_SKIP=1 (measurement only): never take a drawable, so the render pipeline's own frame rate shows (the window
        does not update). */
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
     if (nogpu() || present_skip) { if (grab && present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize);
+        if (grab_game) grab_game(NULL);
         pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
-    if (!dr) return 0;
+    if (!dr) { if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }
     int alloc_i = (int)((ticket * 2 + (interp >= 0 ? 0 : 1)) % 3);   // the interpolated frame of a ticket and the ticket's own frame use different allocators
     pthread_mutex_lock(&g_pq_mu);
     while (g_present_alloc_busy[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
@@ -12147,9 +12176,29 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     [g_q4 waitForDrawable:dr];
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
-    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
+    if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); if (grab_game) grab_game(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
     id<MTLBuffer> grab_buf = nil; size_t grab_w = dr.texture.width, grab_h = dr.texture.height;
-    if (grab) {
+    /* 玩家游戏帧（grab_game）：8 位源贴图拷出图裁切区域——游戏画面本身；裁切无效、意外格式或缓冲建不出时回退到下面的上屏拷贝。
+       The player's game frame (grab_game): an 8-bit source texture is copied as the present's crop region -- the game's picture
+       itself; an invalid crop, an unexpected format or a buffer that cannot be made falls back to the drawable copy below. */
+    BOOL game_sdr = grab_game && (src.pixelFormat == MTLPixelFormatRGBA8Unorm || src.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
+        src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
+    id<MTLBuffer> game_buf = nil; size_t game_w = src.width, game_h = src.height; NSUInteger game_x = 0, game_y = 0;
+    nvn_capture_region region;
+    if (game_sdr) game_sdr = nvn_capture_source_region(src.width, src.height, crop, &region);
+    if (game_sdr) { game_x = region.x; game_y = region.y; game_w = region.w; game_h = region.h; }
+    if (game_sdr) {
+        game_buf = game_w && game_h ? [g_dev newBufferWithLength:game_w * game_h * 4 options:MTLResourceStorageModeShared] : nil;
+        if (game_buf) {
+            res_add(game_buf); res_commit();   // resident before this command buffer runs (lesson 55)
+            id<MTL4ComputeCommandEncoder> ge = [cb computeCommandEncoder];
+            [ge barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+            [ge copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(game_x, game_y, 0) sourceSize:MTLSizeMake(game_w, game_h, 1)
+                       toBuffer:game_buf destinationOffset:0 destinationBytesPerRow:game_w * 4 destinationBytesPerImage:game_w * game_h * 4];
+            m4_end(ge);
+        } else { MLOG("【红】游戏帧截图：%zux%zu 读回缓冲建不出，回退到整窗画面", game_w, game_h); game_sdr = NO; }
+    }
+    if (grab || (grab_game && !game_sdr)) {   // 整窗拷贝：整窗截图诊断 + 游戏帧的回退 | the drawable copy: the window-shot diagnostic and the game frame's fallback
         grab_buf = grab_w && grab_h ? [g_dev newBufferWithLength:grab_w * grab_h * 4 options:MTLResourceStorageModeShared] : nil;
         if (grab_buf) {
             res_add(grab_buf); res_commit();   // resident before this command buffer runs (lesson 55)
@@ -12158,7 +12207,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             [ge copyFromTexture:dr.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(grab_w, grab_h, 1)
                        toBuffer:grab_buf destinationOffset:0 destinationBytesPerRow:grab_w * 4 destinationBytesPerImage:grab_w * grab_h * 4];
             m4_end(ge);
-        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); grab(NULL); grab = nil; }
+        } else { MLOG("【红】整窗截图：%zux%zu 读回缓冲建不出", grab_w, grab_h); if (grab) grab(NULL); if (grab_game && !game_sdr) { grab_game(NULL); grab_game = nil; } grab = nil; }
     }
     id<MTLBuffer> src_buf = nil; size_t src_w = src.width, src_h = src.height;   // TOTK_WSHOT_SRC: the source picture of this present too
     if (grab && grab_src && src.pixelFormat == MTLPixelFormatRGBA8Unorm) {
@@ -12198,13 +12247,31 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                 CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; window_shot_save(img, path);
                 if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); CGColorSpaceRelease(cs); }
             res_remove(buf); }]; }
-    if (grab) { void (^g)(CGImageRef) = grab; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
+    if (game_buf) { void (^g)(CGImageRef) = grab_game; id<MTLBuffer> buf = game_buf; size_t w = game_w, h = game_h; int flip = 0;   /* this game draws with the upper-left origin */
+        int bgra = src.pixelFormat == MTLPixelFormatBGRA8Unorm || src.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;   // 字节序同 shot_body | the byte order as shot_body
+        [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
+            CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
+            if (!f.error) {
+                if (flip) {   // lower-left origin: the picture's top is the source's last row (origin_ll; the screen shows it turned over)
+                    uint8_t *p = buf.contents, *t = malloc(w * 4);
+                    for (size_t y = 0; t && y < h / 2; y++) { memcpy(t, p + y * w * 4, w * 4); memcpy(p + y * w * 4, p + (h - 1 - y) * w * 4, w * 4); memcpy(p + (h - 1 - y) * w * 4, t, w * 4); }
+                    free(t);
+                }
+                cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                CGBitmapInfo bi = bgra ? (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : (CGBitmapInfo)kCGImageAlphaNoneSkipLast;
+                ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, bi);
+                img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
+            g(img);
+            if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
+            res_remove(buf); }]; }
+    if (grab_buf) { void (^g)(CGImageRef) = grab; void (^gg)(CGImageRef) = grab_game && !game_sdr ? grab_game : nil; id<MTLBuffer> buf = grab_buf; size_t w = grab_w, h = grab_h;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             CGImageRef img = NULL; CGContextRef ctx = NULL; CGColorSpaceRef cs = NULL;
             if (!f.error) { cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
                 ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
                 img = ctx ? CGBitmapContextCreateImage(ctx) : NULL; }
-            g(img);
+            if (g) g(img);
+            if (gg) gg(img);
             if (img) CGImageRelease(img); if (ctx) CGContextRelease(ctx); if (cs) CGColorSpaceRelease(cs);
             res_remove(buf); }]; }
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {

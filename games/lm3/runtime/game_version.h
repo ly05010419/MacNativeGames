@@ -11,6 +11,8 @@
 #endif
 #define TOTK_GAME_VERSION LM3_GAME_VERSION
 #define TOTK_GAME_DIR LM3_GAME_DIR
+#define GAME_TITLE_ID 0x0100dca0064a6000ULL
+#define GAME_NAME "Luigi's Mansion 3"   /* the screenshots' file names and note (runtime/screenshot.h) */
 #define GAME_ADDR(x) (x)
 #define GAME_ACTOR_NAME 0
 #define GAME_ACTOR_POS 0
