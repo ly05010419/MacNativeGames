@@ -226,7 +226,7 @@ def resolve_lists(tree, folder, logs, shared=None, mode='full'):
     for path in (title,manifest):path.unlink(missing_ok=True)   # never an older package's file
     log=Path(logs)/'shader-list-resolve.log';log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
-        subprocess.run([sys.executable,'-I',GAME/'scripts/shader_list.py','resolve',seed,shared,manifest,title],cwd=GAME,stdout=f,stderr=subprocess.STDOUT,check=True)
+        subprocess.run([sys.executable,'-I','-B',GAME/'scripts/shader_list.py','resolve',seed,shared,manifest,title],cwd=GAME,stdout=f,stderr=subprocess.STDOUT,check=True)
     for path in (title,manifest):
         if not path.is_file():raise ValueError(f'the shader list resolve wrote no {path}; see {log}')
     print(log.read_text().strip(),flush=True)

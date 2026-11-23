@@ -109,7 +109,7 @@ def detach_delete(paths):
     """Delete these renamed folders in a process of their own (the page answers at once)."""
     if not paths:
         return
-    subprocess.Popen([sys.executable, '-I', __file__, '--delete', *map(str, paths)], start_new_session=True,
+    subprocess.Popen([sys.executable, '-I', '-B', __file__, '--delete', *map(str, paths)], start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
 
 

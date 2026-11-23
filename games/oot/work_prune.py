@@ -91,9 +91,9 @@ def prune(tree, log=print, delete=True):
     detached = dict(start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
     if left and delete:
         # Detached, so the build returns now; it deletes every trash folder there is, the ones left last time too.
-        subprocess.Popen([sys.executable, '-I', __file__, '--delete', *map(str, left)], **detached)
+        subprocess.Popen([sys.executable, '-I', '-B', __file__, '--delete', *map(str, left)], **detached)
     if delete and old_spv(tree, limit=1):
-        subprocess.Popen([sys.executable, '-I', __file__, '--delete-spv', str(tree)], **detached)
+        subprocess.Popen([sys.executable, '-I', '-B', __file__, '--delete-spv', str(tree)], **detached)
     return moved
 
 

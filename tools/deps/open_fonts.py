@@ -137,7 +137,7 @@ def open_fonts():
         plan.parent.mkdir(parents=True, exist_ok=True)
         plan.write_text(json.dumps(dict(slots=[[kind, name, str(fetched[path])] for kind, name, path, _ in OPEN_FONTS],
                                         license=str(license_file))))
-        install(folder, lambda stage: run([python, '-I', Path(__file__).resolve(), plan, stage], 'open-fonts.log'))
+        install(folder, lambda stage: run([python, '-I', '-B', Path(__file__).resolve(), plan, stage], 'open-fonts.log'))
     return folder
 
 

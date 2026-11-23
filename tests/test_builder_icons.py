@@ -122,7 +122,7 @@ class Env(unittest.TestCase):
         with patch.dict('os.environ', PIP_INDEX_URL='https://elsewhere', PIP_EXTRA_INDEX_URL='x'), self.fake():
             icons_env.install(self.builder)
         argv, env = next(c for c in self.calls if 'pip' in c[0])
-        self.assertEqual(argv[1:], ['-I', '-m', 'pip', 'install', '--isolated', '--disable-pip-version-check',
+        self.assertEqual(argv[1:], ['-I', '-B', '-m', 'pip', 'install', '--isolated', '--disable-pip-version-check',
                                     '--no-input', '--index-url', 'https://pypi.org/simple', '--no-deps',
                                     '--only-binary=:all:', '--require-hashes', '-r', argv[-1]])
         self.assertTrue(argv[0].endswith('icons-venv.partial/bin/python'))     # never bin/pip
@@ -135,7 +135,7 @@ class Env(unittest.TestCase):
             self.assertEqual(icons_env.install(self.builder), icons_env.venv(self.builder))
             self.assertEqual(icons_env.status(self.builder), 'ready')
         check = self.calls[-1][0]
-        self.assertEqual(check[1:3], ['-I', '-c'])
+        self.assertEqual(check[1:4], ['-I', '-B', '-c'])
         self.assertFalse((self.builder / 'icons-venv.partial').exists())
 
     def test_a_venv_that_fails_its_check_after_the_move_is_removed(self):  # B3
@@ -216,7 +216,7 @@ class Mod(LibraryBase):
         seen = {}
 
         def run(argv, cancel, timeout_s, env=None):
-            romfs = Path(argv[3])
+            romfs = Path(argv[4])
             seen['seed'] = (romfs / 'System/Resource/T.rsizetable.zs').read_bytes()
             (romfs / 'Font').mkdir()
             (romfs / 'Font/Font.Nin_NX_NVN.bfarc.zs').write_bytes(b'drawn')
@@ -238,7 +238,7 @@ class Mod(LibraryBase):
 
         def run(argv, cancel, timeout_s, env=None):
             argv = [str(a) for a in argv]
-            romfs = Path(argv[3])
+            romfs = Path(argv[4])
             plan = json.loads(Path(argv[argv.index('--plan') + 1]).read_text())
             seen['argv'], seen['glyphs'], seen['diamond'] = argv, plan['glyphs'], plan['diamond']
             seen['seeded'] = (romfs / 'System').exists()
@@ -249,9 +249,9 @@ class Mod(LibraryBase):
         mod_library.set_enabled(self.library, self.font_mod('A', b'table a'), True)
         with patch.object(icons_mod.cancellable, 'run', side_effect=run):
             work, table = icons_mod.build(REPO, self.app, 'botw190', self.library, inputs(), self.tmp / 'Builder')
-            self.assertEqual((seen['argv'][:3], seen['argv'][4:8], seen['argv'][-1]),
-                             ([sys.executable, '-I', str(icons_mod.BOTW_SCRIPT)], ['--app', str(self.app), '--version',
-                                                                                  'botw190'], '--write-all'))
+            self.assertEqual((seen['argv'][:4], seen['argv'][5:9], seen['argv'][-1]),
+                             ([sys.executable, '-I', '-B', str(icons_mod.BOTW_SCRIPT)],
+                              ['--app', str(self.app), '--version', 'botw190'], '--write-all'))
             self.assertEqual(seen['argv'][-3:-1], ['--style', 'xbox'])
             controller_icons_style = __import__('tools.builder.controller_icons', fromlist=['icon_style']).icon_style
             for word, style in (('playstation', 'playstation'), ('auto', 'xbox'), ('xbox', 'xbox')):

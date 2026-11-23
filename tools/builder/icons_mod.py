@@ -111,11 +111,11 @@ def build(repo, app, version, library, inputs, builder_dir, cancel=None, style='
         if botw(version):
             plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs, version).items()),
                                              'diamond': icons_plan.botw_diamond(inputs)}))
-            argv = [sys.executable, '-I', BOTW_SCRIPT, romfs, '--app', app, '--version', version, '--plan', plan_file,
+            argv = [sys.executable, '-I', '-B', BOTW_SCRIPT, romfs, '--app', app, '--version', version, '--plan', plan_file,
                     '--style', style, '--write-all']
         else:
             plan_file.write_text(json.dumps(icons_plan.plan(inputs)))
-            argv = [icons_env.python(icons_env.venv(builder_dir)), '-I', SCRIPT, romfs, app, version, plan_file]
+            argv = [icons_env.python(icons_env.venv(builder_dir)), '-I', '-B', SCRIPT, romfs, app, version, plan_file]
         try:
             code, _, err = cancellable.run(argv, cancel, GENERATE_S)
         except cancellable.Stopped as stop:
