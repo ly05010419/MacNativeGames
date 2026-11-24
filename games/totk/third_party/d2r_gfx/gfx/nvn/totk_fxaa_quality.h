@@ -1,5 +1,5 @@
 /* Optional full FXAA Quality, before the game's upscale and UI, without temporal inputs. */
-#if TARGET_OS_OSX && !defined(GAME_BOTW)
+#if TARGET_OS_OSX && (!defined(GAME_BOTW) || defined(GAME_BOTW190))   /* BotW 1.9.0: botw_finish.h */
 #include "totk_spatial_aa_options.h"
 #include "totk_fxaa_shader.h"
 static struct {

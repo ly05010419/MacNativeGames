@@ -250,7 +250,7 @@ class SettingsPanel(unittest.TestCase):
                 settings.mkdir()
                 env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
                 env.update(TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings))
-                if version == 'TOTK_GAME_V143':
+                if version in ('TOTK_GAME_V143', 'GAME_BOTW190'):   # 1.4.3's anti-aliasing rows and files on both
                     aa_cases = [
                         ('defaults', {}, 1, 0, 2),
                         ('stock-off', {'graphics-fxaa.txt': 'off'}, 0, 0, 2),
@@ -267,7 +267,7 @@ class SettingsPanel(unittest.TestCase):
                     ]
                     for name, files, method, fxaa, smaa in aa_cases:
                         with self.subTest(aa_preferences=name):
-                            prefs = Path(directory) / name
+                            prefs = Path(directory) / f'{version}-{name}'
                             prefs.mkdir()
                             for filename, value in files.items():
                                 (prefs / filename).write_text(value + '\n')
