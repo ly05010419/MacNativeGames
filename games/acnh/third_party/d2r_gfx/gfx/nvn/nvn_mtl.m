@@ -4711,7 +4711,9 @@ static int uw_ui_vs(const char *vs) {
 static double uw_ui_squeeze(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th) {
     if (!g_uw_ui || !vs || !uw_ui_vs(vs) || (dw ? dw->count : di ? di->count : 0) != 6 || !uw_on_canvas() || !tw || !th) return 1;
     double f = uw_ratio() * th / tw;
-    return f > 1.001 || f < 0.999 ? f : 1;
+    /* f = 0 is the game's own 16:9 (no aspect override, the Mac's default), not a squeeze: treating it as one set the
+       UI viewport's height to 0 and hid every 2D UI draw (dialogue box, speaker tag, text). */
+    return f > 1.001 || (f > 0.0 && f < 0.999) ? f : 1;
 }
 /* TOTK_MFX: the scene is complete: end the pass (the draw that follows opens it again, loading the canvas, with the UI
    attachment) and copy the canvas into this frame's scene texture. */
