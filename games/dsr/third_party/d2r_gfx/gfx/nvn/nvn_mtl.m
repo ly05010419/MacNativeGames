@@ -6644,8 +6644,11 @@ static NSString *alpha_test_src(NSString *src, uint8_t afunc) {
         if (brace.location == NSNotFound) return nil;
         NSRange rparen = [out_src rangeOfString:@")" options:NSBackwardsSearch range:NSMakeRange(frag.location, brace.location - frag.location)];
         if (rparen.location == NSNotFound) return nil;
+        NSInteger prev = (NSInteger)rparen.location - 1;
+        while (prev >= (NSInteger)frag.location && ([out_src characterAtIndex:(NSUInteger)prev] == ' ' || [out_src characterAtIndex:(NSUInteger)prev] == '\t' || [out_src characterAtIndex:(NSUInteger)prev] == '\n')) prev--;
+        BOOL empty_params = (prev >= (NSInteger)frag.location && [out_src characterAtIndex:(NSUInteger)prev] == '(');
         out_src = [out_src stringByReplacingCharactersInRange:NSMakeRange(rparen.location, 0)
-                                                   withString:@", constant float& totk_alpha_ref [[buffer(30)]]"];
+                                                   withString:empty_params ? @"constant float& totk_alpha_ref [[buffer(30)]]" : @", constant float& totk_alpha_ref [[buffer(30)]]"];
     }
     return [out_src stringByReplacingOccurrencesOfString:@"return out;" withString:[stmt stringByAppendingString:@"    return out;"]];
 }
