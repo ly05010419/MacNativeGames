@@ -594,6 +594,52 @@ static void patch_kf_angle(Module *m, uint64_t stub) {
     fprintf(stderr, "[botw] moving platforms: the turn angle is 2 atan2(|xyz|, |w|), small turns kept (veneer +%#llx; TOTK_KF_ANGLE=0: as shipped)\n",
             (unsigned long long)stub);
 }
+/* Arrows above 30 fps (TOTK_ARROW_GRAVITY=0: as shipped; Mac only). Once an arrow falls, its update (main+0x5ee668,
+   x20 = the arrow) makes its velocity the last one's direction x its speed (+0xb4) plus a gravity vector whose Y part
+   is +0x108, in metres per console frame (x 30 for its body, main+0x5ee764), with no time step: each update turns the
+   arrow down by the same angle, so at 120 fps it turned four times as fast a second and landed short. Cause and cure as
+   found by Savage Wind Recomp (#144, its tools/patches.py _arrow_gravity): the gravity is scaled by the frame's length
+   in 30 fps frames, the ratio of the frame-step page (1.0 at 30 fps, the shipped value; slow motion left out, as on the
+   console). x8 and s3 are free there: x8 is set again before it is read (main+0x5ee74c, after a call) and s3 is not read
+   again before the call at main+0x5ee744:
+     main+0x5ee734  ldr s1, [x20, #0x108]  -> b <veneer>
+     veneer         ldr s1, [x20, #0x108] / adrp x8, <page> / ldr s3, [x8] / fmul s1, s1, s3 / b main+0x5ee738 */
+static void patch_arrow_gravity(Module *m, uint64_t page, uint64_t stub) {
+    const char *e = getenv("TOTK_ARROW_GRAVITY");
+    if (ios_code()) { fprintf(stderr, "[botw] arrows' gravity once per update, as shipped (the Mac fix is not in the iPhone and iPad export)\n"); return; }
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] arrows' gravity once per update, as shipped (TOTK_ARROW_GRAVITY=0)\n"); return; }
+    enum { SITE = 0x5ee734, BACK = 0x5ee738 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0x5ee71cu, 0xbd40b680u},   /* ldr s0, [x20, #0xb4]   (speed) */
+        {0x5ee724u, 0xbd410683u},   /* ldr s3, [x20, #0x104] */
+        {0x5ee730u, 0x1e232828u},   /* fadd s8, s1, s3        (s3's last read) */
+        {SITE, 0xbd410a81u},        /* ldr s1, [x20, #0x108]  (gravity, Y) */
+        {BACK, 0x1e212849u},        /* fadd s9, s2, s1 */
+        {0x5ee744u, 0x94150f9fu},   /* bl main+0xb325c0 */
+        {0x5ee74cu, 0xf9404288u},   /* ldr x8, [x20, #0x80] */
+        {0x5ee764u, 0x1e27d000u},   /* fmov s0, #30.0         (per console frame x 30) */
+    };
+    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] arrow gravity main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("arrows' gravity by real time requires the 1.9.0 arrow fall update");
+        }
+    }
+    const uint32_t veneer[] = {
+        0xbd410a81u,   /* ldr s1, [x20, #0x108] */
+        adrp_reg(8, (uintptr_t)m->base + stub + 4, page),
+        0xbd400103u,   /* ldr s3, [x8]          (the measured ratio) */
+        0x1e230821u,   /* fmul s1, s1, s3 */
+        branch_to(stub + 16, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("arrow gravity veneer layout");
+    for (size_t i = 0; i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("arrow gravity veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "arrow gravity veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "arrow gravity");
+    fprintf(stderr, "[botw] arrows: the gravity added per update follows the measured frame ratio (veneer +%#llx; TOTK_ARROW_GRAVITY=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
@@ -632,6 +678,7 @@ static void patch_realtime(Module *m) {
     patch_pad_repeat(m, page);
     patch_blend_first_step(m, ((m->text_end + 15) & ~15ULL) + 80);   /* after the FOV stub (+32, 11 words) */
     patch_kf_angle(m, ((m->text_end + 15) & ~15ULL) + 0x300);        /* past the VR and heap veneers (+0x80..+0x158) */
+    patch_arrow_gravity(m, page, ((m->text_end + 15) & ~15ULL) + 0x340);   /* after the moving platforms' veneer (14 words) */
 }
 #endif
 /* Diagnostics (TOTK_JQ_CHECK=1): random crashes look like one job run twice (two threads in the same skinning job, a list
@@ -1369,6 +1416,8 @@ void runtime_game_patches(Module *m) {
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
 #ifdef GAME_BOTW160
     { void cdpoint_arm(Module *m); cdpoint_arm(m); }   /* TOTK_CDPOINT_TRACE (below, with the other brk diagnostics) */
+#else
+    { void arrow_log_arm(Module *m); arrow_log_arm(m); }   /* TOTK_ARROW_LOG (below, with the other brk diagnostics) */
 #endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
@@ -1671,7 +1720,40 @@ static int botw_cdp_hook(ucontext_t *u) {
     return 1;
 }
 #endif
+#ifdef GAME_BOTW190
+/* TOTK_ARROW_LOG=1 (diagnostics, an arrow's fall above 30 fps): the fall update of an arrow (main+0x5ee668, x20 = the
+   arrow) makes its velocity the last one's direction x its speed plus a gravity vector: the stored velocity at +0x110 is
+   in metres per console frame (x 30 for its body), the gravity's Y part comes from +0x108. A brk takes `fadd s9, s2, s1`
+   (main+0x5ee738), after the gravity's load: s1 is the gravity this update adds, s2 the vertical part of direction x
+   speed. One line per update: time, the arrow, the frame step's ratio, s1, s2 and the last velocity. */
+enum { ARROW_LOG_SITE = 0x5ee738 };
+static const uint32_t ARROW_LOG_WORD = 0x1e212849u;   /* fadd s9, s2, s1 */
+static uint8_t *g_arrow_main; static int g_arrow_on; static _Atomic uint64_t g_arrow_lines;
+void arrow_log_arm(Module *m) {
+    const char *e = getenv("TOTK_ARROW_LOG");
+    if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
+    uint32_t w; memcpy(&w, m->base + ARROW_LOG_SITE, 4);
+    if (w != ARROW_LOG_WORD) { fprintf(stderr, "[botw] TOTK_ARROW_LOG: main+%#x is %08x, not %08x: not armed\n", ARROW_LOG_SITE, w, ARROW_LOG_WORD); return; }
+    uint32_t b = 0xd4200000u | (0x7c0u << 5); memcpy(m->base + ARROW_LOG_SITE, &b, 4);
+    g_arrow_main = m->base; g_arrow_on = 1;
+    fprintf(stderr, "[botw] TOTK_ARROW_LOG: each falling arrow's update is logged (main+%#x)\n", ARROW_LOG_SITE);
+}
+static int botw_arrow_hook(ucontext_t *u) {
+    float g, s2; memcpy(&g, &u->uc_mcontext->__ns.__v[1], 4); memcpy(&s2, &u->uc_mcontext->__ns.__v[2], 4);
+    const float s9 = s2 + g; __uint128_t v = 0; memcpy(&v, &s9, 4);
+    u->uc_mcontext->__ns.__v[9] = v; u->uc_mcontext->__ss.__pc += 4;   /* the instruction the brk took */
+    if (atomic_fetch_add(&g_arrow_lines, 1) >= 20000) return 1;
+    const uint64_t a = u->uc_mcontext->__ss.__x[20]; const float *vel = (const float *)(uintptr_t)(a + 0x110);
+    float ratio = 1; if (frame_step_data) { uint64_t bits = atomic_load(frame_step_data); memcpy(&ratio, &bits, 4); }
+    fprintf(stderr, "[arrow] %.4f arrow %#llx ratio %.4f gravity %.5f dir_y %.5f velocity %.5f %.5f %.5f\n",
+            clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9, (unsigned long long)a, ratio, g, s2, vel[0], vel[1], vel[2]);
+    return 1;
+}
+#endif
 int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was one of ours, handled */
+#ifdef GAME_BOTW190
+    if (g_arrow_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_arrow_main + ARROW_LOG_SITE) return botw_arrow_hook(context);
+#endif
 #ifdef GAME_BOTW160
     if (g_pad_log_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_pad_main + PAD_LOOP) return botw_pad_hook(context);
     if (g_cdp_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_SITE) return botw_cdp_hook(context);
