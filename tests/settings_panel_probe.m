@@ -1129,6 +1129,35 @@ int main(int argc, const char **argv) { @autoreleasepool {
         fakeDSU.locked=1;settings_rebuild();assert(!row(@"DSU 输入（环境变量指定）").control.enabled && !row(@"DSU 服务器").buttonAction);
         [settingsPanel.timer invalidate];puts("pass: DSU settings, live status, localization and environment lock");return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "look")) {
+        /* Pictures of every page for a look, no checks: <prefix>-<tab>.png and <prefix>-<tab>-pad.png (a row picked with the
+           controller), the panel over a bright stand-in for the game's picture. The blur behind the glass is the window
+           server's and is not in these: they show the tint over the picture as it is. */
+        settings_test_output_init();
+        playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+        window = probe_window();
+        window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+        window.contentView.wantsLayer = YES;
+        CAGradientLayer *scene = [CAGradientLayer layer]; scene.frame = window.contentView.bounds;
+        scene.colors = @[(id)[NSColor colorWithCalibratedRed:0.35 green:0.62 blue:0.90 alpha:1].CGColor, (id)[NSColor colorWithCalibratedRed:0.86 green:0.90 blue:0.78 alpha:1].CGColor,
+                         (id)[NSColor colorWithCalibratedRed:0.30 green:0.55 blue:0.25 alpha:1].CGColor, (id)[NSColor colorWithCalibratedRed:0.16 green:0.30 blue:0.14 alpha:1].CGColor];
+        scene.locations = @[@0, @0.45, @0.55, @1]; scene.startPoint = CGPointMake(0.3, 1); scene.endPoint = CGPointMake(0.7, 0);
+        [window.contentView.layer addSublayer:scene];
+        press(18); assert(settingsOpen && settingsPanel);
+        for (int tab = 0; tab < settings_pages(); tab++) for (int pad = 0; pad < 2; pad++) {
+            [settingsPanel selectPage:settings_tab_page(tab)]; tick();
+            if (pad) { pad_press(PAD_DOWN); pad_press(PAD_DOWN); } else settings_pointer_used();
+            NSView *v = window.contentView; [v layoutSubtreeIfNeeded]; [v displayIfNeeded]; [CATransaction flush];
+            NSSize z = v.bounds.size; const CGFloat k = 2;
+            NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)(z.width * k) pixelsHigh:(NSInteger)(z.height * k)
+                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+            NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+            CGContextScaleCTM(context.CGContext, k, k); [v.layer renderInContext:context.CGContext]; [context flushGraphics];
+            NSString *path = [NSString stringWithFormat:@"%s-%d%s.png", argv[2], tab, pad ? "-pad" : ""];
+            assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]);
+        }
+        [settingsPanel.timer invalidate]; return 0;
+    }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
