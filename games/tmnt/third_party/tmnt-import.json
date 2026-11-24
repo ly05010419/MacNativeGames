@@ -839,7 +839,7 @@
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/nvn_render_stream.h",
       "commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
       "source_blob": "a1b87eb817387834de8a4fbd339f8eaa16932c80",
-      "sha256": "2f879e390947a954f99dbc4cf8a815b0e5fa7237e8ad31eb20a7f7697ed335fa"
+      "sha256": "7847b70995d3b2f99dcb5ffc85ba91fe69205714204a753f218eca8d448c7445"
     },
     "third_party/d2r_gfx/gfx/nvn/nvn_rtex.inc": {
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/nvn_rtex.inc",
@@ -977,7 +977,7 @@
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/totk_shader_rt.m",
       "commit": "9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca",
       "source_blob": "0771f207ef8bc37653f513fd37e00fff8f8ec5e3",
-      "sha256": "6484e9434c575a8e938d03ad4117c4df3203313de1194278ad0c0065c47c0c5d"
+      "sha256": "0fdf9ba97e05cf109aebebeb0758b9a91230c658325b9a2a6f2d0743489d3e8c"
     },
     "third_party/d2r_gfx/gfx/nvn/totk_shader_scope.h": {
       "origin": "games/ssbu/third_party/d2r_gfx/gfx/nvn/totk_shader_scope.h",
@@ -3564,6 +3564,7 @@
     "tests/tmnt_window_serial_set_test.c",
     "third_party/COPIES.md",
     "third_party/d2r/tmnt_graphics_rules.py",
+    "third_party/d2r_gfx/gfx/nvn/compute_shared.h",
     "third_party/d2r_gfx/gfx/nvn/nvn_async_skip_policy.h",
     "third_party/d2r_gfx/gfx/nvn/nvn_startup_present_policy.h",
     "third_party/d2r_gfx/gfx/nvn/nvn_window_serial_set.h",

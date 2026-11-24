@@ -28,6 +28,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 ROOT = HERE.parents[1]
+if str(ROOT) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(ROOT))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 EXPECTED = json.loads((HERE / 'assets/expected-4.0.1.json').read_text())
 MODULES = ('main', 'sdk', 'subsdk0')
 
@@ -118,7 +121,7 @@ def main():
     if not (src / '.git').is_dir():
         run(['git', 'clone', '--quiet', 'https://github.com/KhronosGroup/SPIRV-Cross.git', src])
     run(['git', '-C', src, 'checkout', '--quiet', 'aa217aeb6c9f0ace7a0ab233b28807edf45eb165'])
-    run(['make', f'-j{args.jobs}', 'runtime', f'WORK={work}', f'PY={py}'], env={'DEVELOPER_DIR': args.developer_dir})
+    run(['make', f'-j{args.jobs}', 'runtime', f'WORK={make_path(work, "mk8dx")}', f'PY={py}'], env={'DEVELOPER_DIR': args.developer_dir})
     print(f'\nBuilt {work}/build/mk8dx-native. It runs with game data from your own dump: do not share the work folder.')
 
 

@@ -25,7 +25,12 @@ int main(void) {
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev) return fail("no Metal device");
-        g_rs = [dev newResidencySetWithDescriptor:[MTLResidencySetDescriptor new] error:nil];
+        NSError *rs_error = nil;
+        g_rs = [dev newResidencySetWithDescriptor:[MTLResidencySetDescriptor new] error:&rs_error];
+        /* The ring lives in the VR residency set; a device without one (the hosted CI Mac's virtual GPU) cannot run this:
+           exit 77, which tests/test_vr_depth_stereo.py reports as skipped. */
+        if (!g_rs) { fprintf(stderr, "depth stereo: %s has no residency set (%s)\n", dev.name.UTF8String,
+                             rs_error ? rs_error.localizedDescription.UTF8String : "no error given"); return 77; }
         id<MTLCommandQueue> q = [dev newCommandQueue];
         // the picture: red = column, green = 255 on the object; the depth: the object nearer in the lower half
         MTLTextureDescriptor *pd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO];

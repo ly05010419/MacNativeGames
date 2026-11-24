@@ -24,6 +24,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
 ROOT = HERE.parents[1]
+if str(ROOT) not in sys.path:   # the repository root, after this folder's own modules
+    sys.path.append(str(ROOT))
+from tools.port_app.make_path import make_path  # noqa: E402  every port's make WORK= (issue #2284)
 EXPECTED = json.loads((HERE / 'assets/expected-1.0.2.json').read_text())
 MODULES = ('main', 'subsdk0', 'sdk')
 PLA_SCRIPTS = ROOT / 'games/pla/scripts'
@@ -98,7 +101,7 @@ def main():
     if not (src / '.git').is_dir():
         run(['git', 'clone', '--quiet', 'https://github.com/KhronosGroup/SPIRV-Cross.git', src])
     run(['git', '-C', src, 'checkout', '--quiet', SPIRV_CROSS_COMMIT])
-    run(['make', f'-j{args.jobs}', 'runtime', f'WORK={work}', f'PY={py}'], env={'DEVELOPER_DIR': args.developer_dir})
+    run(['make', f'-j{args.jobs}', 'runtime', f'WORK={make_path(work, "p5r")}', f'PY={py}'], env={'DEVELOPER_DIR': args.developer_dir})
 
     print('== 5. the icon and the shader seed (iPhone / iPad)', flush=True)
     icon = work / 'build/AppIcon.icns'

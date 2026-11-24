@@ -31,6 +31,7 @@ WEAK void *runtime_symbol(const char *name) { (void)name; return NULL; }
 WEAK void dm_nvn_write_texels(const void *t, const void *r, const void *src) { (void)t; (void)r; (void)src; }   /* eow */
 WEAK int dm_nvn_texture_write_rgba(const void *obj, int w, int h, const void *rgba) { (void)obj; (void)w; (void)h; (void)rgba; return 0; }   /* lm3, mvdk */
 WEAK void *nvn_slot_fn(const char *name) { (void)name; return NULL; }   /* dread */
+WEAK void dm_guest_write_prepare(void *addr, size_t n) { (void)addr; (void)n; }   /* p5r, w3: write tracking before the copy out */
 
 static int checks;
 static void need(int c, const char *fmt, ...) {
