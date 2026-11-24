@@ -6669,6 +6669,24 @@ static id<MTLFunction> fs_fn_alpha(NvShader *fs, int nodepth, uint8_t afunc, int
     }
     id<MTLFunction> fn = (id<MTLFunction>)entry;
     if (!fn) {
+        /* Fast path: check for precompiled <fs->key>_alpha<afunc>.metallib in totk_rt_dir() (~0.1 ms vs ~400 ms MSL compile). */
+        if (!bkey && !(nodepth && fs->writes_depth)) {
+            NSString *alib = [NSString stringWithFormat:@"%@/%s_alpha%u.metallib", totk_rt_dir(), fs->key, (unsigned)afunc];
+            if ([NSFileManager.defaultManager fileExistsAtPath:alib]) {
+                os_unfair_lock_unlock(&lock);
+                NSError *aerr = nil;
+                id<MTLLibrary> lib = lib_from_file(alib, &aerr);
+                fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
+                if (fn) {
+                    os_unfair_lock_lock(&lock);
+                    if (!fs->bpatch) fs->bpatch = [NSMutableDictionary dictionary];
+                    fs->bpatch[key] = fn;
+                    os_unfair_lock_unlock(&lock);
+                    return fn;
+                }
+                os_unfair_lock_lock(&lock);
+            }
+        }
         NSString *base = (nodepth && fs->writes_depth) ? fs_src_without_depth(fs) : sh_src(fs);
         if (bkey) { NSString *b = border_src(fs, base, colours, aids, n); if (b) base = b; }
         NSString *src = alpha_test_src(base, afunc);
