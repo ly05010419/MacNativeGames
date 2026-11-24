@@ -587,6 +587,14 @@ static void res_site_report(int top) {
     for (int i = 0; i < RES_SITES; i++) if (g_res_site[i].adds) order[n++] = i;
     for (int i = 1; i < n; i++) { int k = order[i], j = i; while (j > 0 && atomic_load(&g_res_site[order[j - 1]].alive_bytes) < atomic_load(&g_res_site[k].alive_bytes)) { order[j] = order[j - 1]; j--; } order[j] = k; }
     MLOG("驻留集明细：%lu 个对象，按登记时大小合计 %llu MB，显卡已分配 %llu MB（按 nvn_mtl.m 登记行，存活字节降序）", nobj, (unsigned long long)(total >> 20), (unsigned long long)(g_dev.currentAllocatedSize >> 20));
+    {   /* command memory: Metal 4 allocators keep what their largest command buffer needed until they are released; none of
+           it is in the residency set, so the breakdown above does not show it (2026-11-24) */
+        uint64_t am = 0, au = 0, ap = 0; int nm = g_alloc_n, nu = g_up_alloc_n;
+        for (int i = 0; i < nm && i < ALLOC_MAX; i++) am += (uint64_t)[g_alloc4[i] allocatedSize];
+        for (int i = 0; i < nu && i < UP_ALLOC_MAX; i++) au += (uint64_t)[g_up_alloc4[i] allocatedSize];
+        for (int i = 0; i < 3; i++) ap += (uint64_t)[g_present_alloc4[i] allocatedSize];
+        MLOG("  命令分配器：主提交 %d 个 %llu MB，上传 %d 个 %llu MB，出图 3 个 %llu MB（不在驻留集里）", nm, (unsigned long long)(am >> 20), nu, (unsigned long long)(au >> 20), (unsigned long long)(ap >> 20));
+    }
     for (int i = 0; i < n && i < top; i++) {
         int k = order[i];
         MLOG("  行 %d：驻留 %llu 个 %llu MB（登记 %llu 次，撤销 %llu 次）；对象未释放 %llu 个 %llu MB", k, (unsigned long long)(g_res_site[k].adds - g_res_site[k].removes), (unsigned long long)(g_res_site[k].live_bytes >> 20),
@@ -1750,6 +1758,15 @@ static NSMutableArray<NSNumber *> *g_vr_native_slots;
 static int race_on(void); static void race_note(uint64_t addr, uint64_t size, const char *key, char kind); static void race_commit_mark(void);   // OOT_RACE_CHECK (below)
 static int rdf_on(void); static void gpu_read_input(uint64_t addr, uint64_t size, const char *key, char kind); static void rdf_drain_log(void); static void noread_drain_log(void);   // OOT_GPU_READ_FENCE / OOT_NOREAD_PROBE (below)
 static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc_grown;
+/* An allocator keeps the command memory of its largest submission until it is released, and the pool only grew: one burst
+   with many submissions in flight (a load, the first seconds of VR) left its allocators for the whole session
+   (2026-11-24, Ocarina of Time in VR at 2048x2208: 19 allocators, 285 MB, none of it in the residency set). The search
+   below takes the lowest finished one, so the highest are the ones a calmer game no longer reaches: the last allocator
+   is released once the GPU has finished with it and it has not been taken for ALLOC_IDLE_SUBS submissions. Three stay.
+   TOTK_ALLOC_TRIM=0 keeps every allocator as before. */
+#define ALLOC_IDLE_SUBS 4000
+static uint64_t g_alloc_used[ALLOC_MAX], g_alloc_subs, g_alloc_trimmed;
+static int alloc_trim_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_ALLOC_TRIM"); v = !(e && !atoi(e)); } return v; }
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);
 static void up_flush(void);
 // 上传批只属于提交线程（发起 mtl_sub_begin 的线程）：批的编码器不能跨线程用。每个入口断言当前线程 == 提交线程，
@@ -1828,12 +1845,17 @@ void mtl_sub_begin(void) {
     // Do not wait for the GPU mid-frame (hot real device: with a fixed rotation of 3, when the GPU cannot keep up every frame blocks here, and the submit thread runs at low frequency after waking, instruction count −18% but CPU time +49%):
     // pick an allocator the GPU has finished with; if all are in use create a new one; only at the cap wait for the oldest one. How far ahead it runs is bounded by the wait where the game acquires the swapchain texture, same as the old interface.
     int alloc_i = -1; uint64_t done = g_done;
+    g_alloc_subs++;
+    while (g_alloc_n > 3 && alloc_trim_on() && g_alloc_fence[g_alloc_n - 1] <= done && g_alloc_subs - g_alloc_used[g_alloc_n - 1] > ALLOC_IDLE_SUBS) {
+        g_alloc4[--g_alloc_n] = nil; g_alloc_fence[g_alloc_n] = 0; g_alloc_trimmed++;
+        if (g_alloc_trimmed <= 3 || !(g_alloc_trimmed & (g_alloc_trimmed - 1))) MLOG("[alloc] released an idle command allocator (%llu so far); %d kept", (unsigned long long)g_alloc_trimmed, g_alloc_n);
+    }
     for (int i = 0; i < g_alloc_n; i++) if (g_alloc_fence[i] <= done) { alloc_i = i; break; }
     if (alloc_i < 0 && g_alloc_n < ALLOC_MAX) { NSError *ae = nil; MTL4CommandAllocatorDescriptor *ad = [MTL4CommandAllocatorDescriptor new];
         g_alloc4[g_alloc_n] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae]; if (!g_alloc4[g_alloc_n]) MDIE("新建 MTL4CommandAllocator 失败：%s", ae.localizedDescription.UTF8String);
         alloc_i = g_alloc_n++; g_alloc_grown++; }
     if (alloc_i < 0) { alloc_i = 0; for (int i = 1; i < g_alloc_n; i++) if (g_alloc_fence[i] < g_alloc_fence[alloc_i]) alloc_i = i; g_alloc_waits++; mtl_wait(g_alloc_fence[alloc_i], UINT64_MAX); }
-    g_alloc_cur = alloc_i;
+    g_alloc_cur = alloc_i; g_alloc_used[alloc_i] = g_alloc_subs;
     [g_alloc4[alloc_i] reset];
     [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
     g_commit_blocks = [NSMutableArray array];
