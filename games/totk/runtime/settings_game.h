@@ -152,7 +152,8 @@ int dm_gfx_fxaa_quality(void); void dm_gfx_fxaa_quality_set(int q);
 #endif
 int nvn_fps_lock(void);
 
-/* Resolution, MetalFX and Upscale to (user 2026-11-23: three rows in place of one pop-up). The engine's picture modes
+/* Resolution, MetalFX and Upscale to: three rows in place of one pop-up, so the render size, the upscaler and its output
+   size are chosen apart (MetalFX on any render size, to the window or to a fixed size). The engine's picture modes
    (OUTPUT_MODE_*, graphics-output.txt) stay: a render size alone ("plain") or the same size with MetalFX. */
 static int settings_mode_plain(int mode) {
  return mode==OUTPUT_MODE_720P_METALFX?OUTPUT_MODE_720P:mode==OUTPUT_MODE_METALFX?OUTPUT_MODE_OFF:mode==OUTPUT_MODE_NATIVE_METALFX?OUTPUT_MODE_NATIVE:
