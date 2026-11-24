@@ -20,6 +20,17 @@ static mesh_batch_entry g_mb[MESH_BATCH_CAP];static unsigned g_mb_n;
 static uint64_t g_mb_arena,g_mb_pool,g_mb_runs,g_mb_jobs,g_mb_hits,g_mb_splits,g_mb_invalid,g_mb_fallback;
 static uint64_t g_mb_cpu,g_mb_promoted,g_mb_kept_upd,g_mb_partial,g_mb_second,g_mb_updfull;   // pre-applied updates: jobs filled on the CPU, entries switched / kept at the update's replay, sources left to their draw
 static uint64_t g_mb_inv_upd,g_mb_inv_op,g_mb_inv_post,g_mb_inv_written,g_mb_inv_dirty,g_mb_last_report;      // why entries went away: inline update, copy / clear / dispatch op, event or counter write, shader or target write, CPU dirtiness or write-back
+static uint64_t g_mb_resets,g_mb_memo_skips;   // the whole table dropped (context change, table full); prefetches answered by the memo below
+/* The prefetch's memo (2026-11-24). mesh_batch_prefetch runs before every render pass and walks the stream ahead to the
+   next dispatch / copy / clear; when every mesh draw there already has its grid it collects nothing, and the next pass
+   walks the same ops again from a little further on. In Ocarina of Time's field that walk was 0.85 ms of a 10.9 ms frame
+   on the replay thread (92 fps, sample 2026-11-24). A walk that ended at such an op or at the end of the stream, and met
+   no mesh draw it left without a grid, is remembered: the stretch it passed in one piece (lo..hi), the return stack, the
+   sources it met, and the table's state (entries dropped so far, the dirty clock, host writes). A later prefetch from
+   inside that stretch with all of that unchanged would collect nothing and is skipped; when only the dirty clock moved,
+   the remembered sources are looked up again instead of the ops. A draw whose grid is missing all the same still gets
+   it at the draw (mesh_batch_grid), so a wrong skip costs a pass split, not a wrong picture. OOT_MESH_BATCH_MEMO=0: off. */
+static struct {int ok,ret_n,nrest;const uint8_t *lo,*hi,*ret[8];uint64_t sub,sig,now,hostwrite;unsigned nsrc;uint64_t src[256];} g_mb_memo;
 static int g_mb_negative; // GPU probe only: 1 drops write invalidation, 2 binds the live firstTask.
 static _Atomic uint64_t g_mb_verified;
 static int mesh_batch_on(void) {
@@ -74,16 +85,16 @@ static void mesh_batch_shader_writes(NvShader *sh,int st,uint64_t *why) {
 static void mesh_batch_context(void) {
     uint64_t pool=atomic_load_explicit(&g_pool_gen,memory_order_acquire);
     if(!mesh_batch_on()||g_mb_arena!=g_arena_epoch||g_mb_pool!=pool||totk_vpool_aliases_used()){
-        g_mb_n=0;g_mb_arena=g_arena_epoch;g_mb_pool=pool;
+        g_mb_n=0;g_mb_arena=g_arena_epoch;g_mb_pool=pool;g_mb_resets++;
     }
     if(atomic_exchange(&g_mesh_batch_dump,0))MLOG("[mesh-batch] F%llu enabled=%d native=%d runs=%llu jobs=%llu hits=%llu splits=%llu invalid=%llu (update %llu op %llu gpu-write %llu written %llu dirty %llu) fallback=%llu active=%u verified=%llu; pre-applied: cpu-jobs=%llu promoted=%llu kept=%llu partial=%llu second=%llu window-full=%llu",
         (unsigned long long)atomic_load(&g_cur_frame),mesh_batch_on(),g_oot_bar_mode,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_jobs,(unsigned long long)g_mb_hits,(unsigned long long)g_mb_splits,(unsigned long long)g_mb_invalid,
         (unsigned long long)g_mb_inv_upd,(unsigned long long)g_mb_inv_op,(unsigned long long)g_mb_inv_post,(unsigned long long)g_mb_inv_written,(unsigned long long)g_mb_inv_dirty,(unsigned long long)g_mb_fallback,g_mb_n,(unsigned long long)atomic_load(&g_mb_verified),
         (unsigned long long)g_mb_cpu,(unsigned long long)g_mb_promoted,(unsigned long long)g_mb_kept_upd,(unsigned long long)g_mb_partial,(unsigned long long)g_mb_second,(unsigned long long)g_mb_updfull);
     if(atomic_load(&g_mesh_batch_dump)==0&&g_mb_runs&&g_mb_runs%2000==0&&g_mb_runs!=g_mb_last_report){g_mb_last_report=g_mb_runs;
-        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu); windows ended: stream-end %llu depth %llu corrupt %llu op %llu overlap %llu updates-full %llu cap %llu none %llu wait %llu",
+        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu, prefetch walks skipped %llu); windows ended: stream-end %llu depth %llu corrupt %llu op %llu overlap %llu updates-full %llu cap %llu none %llu wait %llu",
         (unsigned long long)g_mb_wr_rt,(unsigned long long)g_mb_wr_sbuf,(unsigned long long)g_mb_wr_img,(unsigned long long)g_mb_wr_whole,(unsigned long long)g_mb_op_dispatch,(unsigned long long)g_mb_op_tex,(unsigned long long)g_mb_op_buf,(unsigned long long)g_mb_op_fence,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_splits,
-        (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch,
+        (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch,(unsigned long long)g_mb_memo_skips,
         (unsigned long long)g_mb_end[0],(unsigned long long)g_mb_end[1],(unsigned long long)g_mb_end[2],(unsigned long long)g_mb_end[3],(unsigned long long)g_mb_end[4],(unsigned long long)g_mb_end[5],(unsigned long long)g_mb_end[6],(unsigned long long)g_mb_end[7],(unsigned long long)g_mb_end[8]);}
 }
 static mesh_batch_entry *mesh_batch_find(uint64_t source) {
@@ -155,7 +166,23 @@ static int mesh_batch_collect(uint64_t source,uint64_t *sources,mb_fill *fill,un
     uint32_t w[2];memcpy(w,(const uint8_t *)u->a+16+(size_t)(source-u->lo),8);
     sources[*n]=source;fill[*n]=(mb_fill){u->a,w[0],w[1],1,e!=NULL};(*n)++;return 1;
 }
+static int mesh_batch_memo_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_MESH_BATCH_MEMO");on=!(e&&!atoi(e));}return on;}
+static uint64_t mesh_batch_sig(void){return g_mb_invalid+g_mb_inv_dirty+g_mb_resets;}
+static int mesh_batch_memo_hit(void) {
+    if(!g_mb_memo.ok||!mesh_batch_memo_on())return 0;
+    if(g_mb_memo.sub!=g_sub_serial||g_exec_next<g_mb_memo.lo||g_exec_next>=g_mb_memo.hi||g_ret_n!=g_mb_memo.ret_n||g_nrest!=g_mb_memo.nrest||mesh_batch_sig()!=g_mb_memo.sig
+       ||memcmp(g_ret,g_mb_memo.ret,(size_t)g_ret_n*sizeof *g_ret)){g_mb_memo.ok=0;return 0;}
+    uint64_t now=nvn_dirty_now(),hostwrite=atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire);
+    if(now!=g_mb_memo.now||hostwrite!=g_mb_memo.hostwrite){   // a page was written somewhere: the sources, not the ops
+        for(unsigned i=0;i<g_mb_memo.nsrc;i++)if(!mesh_batch_find(g_mb_memo.src[i])){g_mb_memo.ok=0;return 0;}
+        g_mb_memo.now=now;g_mb_memo.hostwrite=hostwrite;
+    }
+    return 1;
+}
 static void mesh_batch_prepare(uint64_t current) {
+    if(!current&&mesh_batch_memo_hit()){g_mb_memo_skips++;return;}
+    g_mb_memo.ok=0;
+    int memo=!current&&g_exec_next&&g_ret_n<=8&&mesh_batch_memo_on(),seg=1;const uint8_t *memo_lo=g_exec_next,*memo_hi=g_exec_next;unsigned nms=0;
     int prev_why=g_mb_last_why;uint64_t prev_pass=g_mb_last_pass;   // the window before this one (passdump: why a split's source was never collected)
     uint64_t sources[MESH_BATCH_CAP];mb_fill fill[MESH_BATCH_CAP];unsigned n=0;
     mb_upd upd[MESH_BATCH_UPD_CAP];unsigned nu=0;
@@ -167,12 +194,19 @@ static void mesh_batch_prepare(uint64_t current) {
             if(h.op==OP_DISPATCH||h.op==OP_COPY_B2B||h.op==OP_CLEAR_BUF||h.op==OP_COPY_T2B||h.op==OP_COPY_B2T||h.op==OP_COPY_T2T||h.op==OP_CLEAR_TEX||h.op==OP_FENCE_SYNC){why=3;break;}
             if(h.op==OP_UPDATE_UB){uint64_t lo,size;memcpy(&lo,a,8);memcpy(&size,(const uint8_t *)a+8,8);int overlap=!size||size>UINT64_MAX-lo;for(unsigned k=0;k<n&&!overlap;k++)overlap=sources[k]<lo+size&&lo<sources[k]+8;if(overlap){why=4;break;}
                 if(h.size<16+size||nu==MESH_BATCH_UPD_CAP){g_mb_updfull++;why=5;break;}upd[nu++]=(mb_upd){lo,size,a};}
-            if(h.op==OP_DRAW&&h.size>=8+sizeof(p_draw)){const p_draw *draw=a;if(draw->prim==0x40&&draw->ind&&!mesh_batch_collect(draw->ind,sources,fill,&n,upd,nu)){why=4;break;}}
+            if(h.op==OP_DRAW&&h.size>=8+sizeof(p_draw)){const p_draw *draw=a;if(draw->prim==0x40&&draw->ind){unsigned n0=n;
+                if(!mesh_batch_collect(draw->ind,sources,fill,&n,upd,nu)){why=4;break;}
+                if(memo){int have=n>n0;for(unsigned k=0;k<n&&!have;k++)have=sources[k]==draw->ind;   // left without a grid (not eligible, a partial update): its draw makes it, no memo
+                    if((!have&&!mesh_batch_find(draw->ind))||nms==sizeof g_mb_memo.src/sizeof *g_mb_memo.src)memo=0;else g_mb_memo.src[nms++]=draw->ind;}}}
+            if(seg&&c.ret_n==g_ret_n&&!c.rest_i&&p>=memo_hi)memo_hi=p+h.size;else seg=0;   // the stretch passed in one piece: no call, return or next list
         }
+        if(why!=0&&why!=3)memo=0;   // a window cut short would reach further when walked again
         g_mb_end[why]++;g_mb_last_why=why;g_mb_last_pass=g_stat_pass;
     } else {g_mb_end[7]++;g_mb_last_why=7;g_mb_last_pass=g_stat_pass;}
-    if(!n)return;mesh_batch_pipeline();
-    if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;if(!current)return;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
+    #define MB_MEMO_KEEP() do{if(memo&&memo_hi>memo_lo){g_mb_memo.ok=1;g_mb_memo.lo=memo_lo;g_mb_memo.hi=memo_hi;g_mb_memo.ret_n=g_ret_n;g_mb_memo.nrest=g_nrest;memcpy(g_mb_memo.ret,g_ret,(size_t)g_ret_n*sizeof *g_ret); \
+        g_mb_memo.sub=g_sub_serial;g_mb_memo.sig=mesh_batch_sig();g_mb_memo.now=nvn_dirty_now();g_mb_memo.hostwrite=atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire);g_mb_memo.nsrc=nms;}}while(0)
+    if(!n){MB_MEMO_KEEP();return;}mesh_batch_pipeline();
+    if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;g_mb_resets++;memo=0;if(!current)return;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
     if(g_enc){int had=0;for(unsigned j=0;j<g_mb_n&&!had;j++)had=g_mb[j].source==current;if(had)g_mb_split_inval++;else g_mb_split_miss++;g_mb_splits++;
         PD("Z %llu mesh-batch split src=%#llx %s table=%u prev-window: pass=%llu end=%d (0 stream 3 op 7 none) this-window: end=%d new=%u",g_stat_pass,(unsigned long long)current,had?"invalidated":"never-collected",g_mb_n,(unsigned long long)prev_pass,prev_why,g_mb_last_why,n);
         rp_end();}blit_close();
@@ -192,7 +226,7 @@ static void mesh_batch_prepare(uint64_t current) {
             if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=out+(uint64_t)k*16,.stamp=stamp,.hostwrite=hostwrite,.applied=fill[k].a,.cnt=fill[k].cnt,.first=fill[k].first,.cpu=1};continue;
         }
         upd_guard(address,address+8);
-        void *source;uint64_t offset,gpu;if(!mtl_gpu_addr(address,8,&source,&offset,&gpu))continue;
+        void *source;uint64_t offset,gpu;if(!mtl_gpu_addr(address,8,&source,&offset,&gpu)){memo=0;continue;}
         gpu_read_input(address,8,"mesh-batch-src",'m');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the batch kernel reads the source on the GPU
         jobs[k]=(job){gpu,out+(uint64_t)k*16};
         if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=jobs[k].output,.stamp=stamp,.hostwrite=hostwrite};issued++;gpu_jobs++;
@@ -203,6 +237,8 @@ static void mesh_batch_prepare(uint64_t current) {
         [encoder dispatchThreadgroups:MTLSizeMake(padded/64,1,1)threadsPerThreadgroup:MTLSizeMake(64,1,1)];enc_c_end(encoder);args_dirty_all();
     }
     g_mb_runs++;g_mb_jobs+=issued;
+    MB_MEMO_KEEP();
+    #undef MB_MEMO_KEEP
 }
 static void mesh_batch_verify(const mesh_batch_entry *e,uint64_t first) {
     if(!atomic_load(&g_mesh_batch_check))return;

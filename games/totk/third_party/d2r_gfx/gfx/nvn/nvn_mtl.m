@@ -2495,11 +2495,19 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap);
    are reused / freed (end of the submission; long after they are done in practice). */
 #define USH_MAX 2
 static dispatch_semaphore_t g_ush_sem; static _Atomic int g_ush_next, g_ush_busy, g_ush_n; static int g_ush_count = -1;
+/* One ticket a helper signalled for a submission; a helper copies only while it holds one, and usnap_finish takes back the
+   tickets no helper has picked up yet (2026-11-24). Before, the end of a submission waited for every signalled helper to
+   wake and report, also when it had not woken yet and nothing was left that a draw needed: 0.3 ms a frame of the replay
+   thread spent in sched_yield in Ocarina of Time's field (163 of its 937 samples at 92 fps). */
+static _Atomic int g_ush_tickets;
 static const usnap_cap *g_usnap_cap;   // the translation-thread mode's capture, the source of the copies until the helpers are done
 static void *ush_main(void *arg) {
     (void)arg; pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     for (;;) {
         dispatch_semaphore_wait(g_ush_sem, DISPATCH_TIME_FOREVER);
+        int t = atomic_load(&g_ush_tickets), got = 0;
+        while (t > 0 && !(got = atomic_compare_exchange_weak(&g_ush_tickets, &t, t - 1))) {}
+        if (!got) continue;   // its ticket was taken back (usnap_finish): that submission is over, nothing of it is touched
         int n = atomic_load_explicit(&g_ush_n, memory_order_acquire);
         uint64_t did = usnap_copy_run(&g_ush_next, n);
         atomic_fetch_add(&g_usnap_helped, did);
@@ -2516,6 +2524,12 @@ static int ush_count(void) {
     return g_ush_count;
 }
 static void usnap_finish(void) {   // this submission's copies are about to be reused: the helpers must be done with them
+    /* Nothing reads this submission's entries after this (a draw that needed a pending one copied it itself,
+       usnap_find_slow): no further entry is claimed, the helpers not yet awake lose their tickets, and only a helper in the
+       middle of an entry is waited for. */
+    atomic_store(&g_ush_next, atomic_load_explicit(&g_ush_n, memory_order_acquire));
+    int unused = atomic_exchange(&g_ush_tickets, 0);
+    if (unused) atomic_fetch_sub_explicit(&g_ush_busy, unused, memory_order_release);
     while (atomic_load_explicit(&g_ush_busy, memory_order_acquire)) sched_yield();
     if (g_usnap_cap) { ucap_free((usnap_cap *)g_usnap_cap); g_usnap_cap = NULL; }
 }
@@ -2714,7 +2728,7 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     g_usnap_cap = cap;
     g_usnap_pend_n = g_npend;   // the copies (helpers or the replay itself) overlay only the pending writes known now
     int helpers = ush_count();
-    if (helpers && g_nusnap) { atomic_store(&g_ush_next, 0); atomic_store_explicit(&g_ush_n, g_nusnap, memory_order_release); atomic_store_explicit(&g_ush_busy, helpers, memory_order_release); for (int k = 0; k < helpers; k++) dispatch_semaphore_signal(g_ush_sem); }
+    if (helpers && g_nusnap) { atomic_store(&g_ush_next, 0); atomic_store_explicit(&g_ush_n, g_nusnap, memory_order_release); atomic_store_explicit(&g_ush_busy, helpers, memory_order_release); atomic_store(&g_ush_tickets, helpers); for (int k = 0; k < helpers; k++) dispatch_semaphore_signal(g_ush_sem); }
     else { _Atomic int next = 0; usnap_copy_run(&next, g_nusnap); }
     g_usnap_t[2] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tq2;
 }
@@ -8911,7 +8925,7 @@ static void treg_drop_serial(uint64_t serial) {
    views; defer dropping old references until commands that could have sampled them finish. */
 static void treg_sweep_replaced(void) {
     static uint64_t seen_reuploads;
-    if ((g_sub_serial & 63) || seen_reuploads == g_pkg_reuploads) return;
+    if ((g_sub_serial & 255) || seen_reuploads == g_pkg_reuploads) return;   // every 256 submissions (64 until 2026-11-24: with copies re-uploaded all the time, the walk over every slot ran 11 times a second, 1.5 ms each)
     seen_reuploads = g_pkg_reuploads;
     registry_lock();
     pthread_mutex_lock(&g_smu);
