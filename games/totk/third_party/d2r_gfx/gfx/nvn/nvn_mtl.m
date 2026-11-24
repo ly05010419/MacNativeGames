@@ -2005,6 +2005,112 @@ typedef struct { char kind; uint32_t w, h, fmt, nc, nload, nstore, depth, dispat
 #define PT_MAX 2048
 static _Atomic uint64_t g_cur_frame; static uint64_t g_stat_draw, g_stat_pass;   // tentative declarations, defined further down
 static _Atomic uint64_t g_stat_views;   // texture views made for texture ids (mtl_view_stats; the long-frame log's detail)
+/* A one-off GPU result read before the GPU wrote it (TOTK_SYNC_LAG). The game reads what the GPU wrote into a pool after
+   nvnMemoryPoolInvalidateMappedRange. With the sync lag its wait for the newest submission settles for the one before,
+   so a range that a shader write, buffer copy or texture-to-buffer copy of the newest submission covers still holds the
+   bytes from before that write. A range the game reads every frame gets its result one frame late: that is what the sync
+   lag trades for speed. A range read once gets stale bytes: Tears of the Kingdom builds each Ultrahand glue from two
+   128064-byte buffers that GPU shaders write (compute 32c256cd71e35a22, draw e3fb0bb58a691e10), and with stale bytes the
+   glue showed as a flat green blob away from the joint (2026-11-24); its one-pixel readbacks (a ring of 64-byte slots, about one read in 12 frames)
+   read zeros or the slot's previous round. So a range the game did not read in an earlier frame of the last 64 waits for
+   the newest committed GPU write that covers it.
+   Waiting for the whole submission held the game up to one GPU frame per read (idle p95 24 -> 35 ms). So the 16 KiB pages
+   of such reads are remembered, and a GPU write into one of them ends its command buffer (after the dispatch, or for a
+   draw at the next pass boundary) and signals a writer ticket (writer_boundary_seal): the read waits for that ticket only
+   (idle: 432 waits, 0.3 ms each, against 17 ms for the submission). A range the game then reads every frame is forgotten
+   again, so steady readers cause no extra commits.
+   On while the sync lag is on, except in Breath of the Wild; TOTK_READBACK_WAIT=0|1 and the runtime "flag readback_wait
+   0|1" override it. TOTK_READBACK_LOG=1 (diagnostic) logs each such read and a summary. */
+typedef struct { uint64_t lo, hi, fence, frame, ticket; const char *key; char kind, seal; } rb_ent;   // key: the writing shader (storage writes); seal: a ticket follows the dispatch
+typedef struct { uint64_t lo, n, first, last; } rb_read;
+#define RB_N 4096
+#define RB_READS 512
+#define RB_PAGES 256
+static rb_ent g_rb[RB_N]; static rb_read g_rb_reads[RB_READS]; static uint64_t g_rb_page[RB_PAGES], g_rb_page_t[RB_PAGES]; static pthread_mutex_t g_rb_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_rb_calls, g_rb_steady, g_rb_oneoff, g_rb_waits, g_rb_wait_ns, g_rb_twaits, g_rb_twait_ns, g_rb_timeouts, g_rb_evicted, g_rb_seals; static unsigned g_rb_logged;
+static _Atomic int g_rb_wait = -2;   // -1 automatic (with the sync lag), 0 off, 1 on
+static int g_rb_draw_seal;   // a draw wrote a range read once before: chunk_maybe_split seals at the next pass boundary
+extern int nvn_sync_lag_active(void);   // hle_nvn.c
+static int rb_log_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_READBACK_LOG"); on = e && atoi(e) > 0; } return on; }
+static int rb_wait_on(void) {
+    int v = atomic_load(&g_rb_wait);
+    if (v == -2) { const char *e = getenv("TOTK_READBACK_WAIT"); v = e ? atoi(e) > 0 : -1; atomic_store(&g_rb_wait, v); }
+#ifdef GAME_BOTW
+    return v == 1;
+#else
+    return v == 1 || (v == -1 && nvn_sync_lag_active());
+#endif
+}
+static int rb_on(void) { return rb_wait_on() || rb_log_on(); }
+static int rb_page_hit(uint64_t a, uint64_t n) {   // g_rb_mu held
+    for (uint64_t pg = a >> 14; pg <= (a + n - 1) >> 14; pg++) for (int i = 0; i < RB_PAGES; i++) if (g_rb_page[i] == pg + 1) return 1;
+    return 0;
+}
+static void rb_page_set(uint64_t a, uint64_t n, int learn, uint64_t now) {   // g_rb_mu held
+    for (uint64_t pg = a >> 14, k = 0; pg <= (a + n - 1) >> 14 && k < 16; pg++, k++) {
+        int at = -1, old = 0;
+        for (int i = 0; i < RB_PAGES; i++) { if (g_rb_page[i] == pg + 1) { at = i; break; } if (g_rb_page_t[i] < g_rb_page_t[old]) old = i; }
+        if (learn) { if (at < 0) at = old; g_rb_page[at] = pg + 1; g_rb_page_t[at] = now; }
+        else if (at >= 0) g_rb_page[at] = g_rb_page_t[at] = 0;
+    }
+}
+static void rb_note(uint64_t a, uint64_t n, char kind, const char *key) {   // the submission being encoded writes [a, a+n) on the GPU ('W': a compute dispatch)
+    if (!rb_on() || !a || !n || n > (1u << 20)) return;
+    uint64_t f = __atomic_load_n(&g_fence, __ATOMIC_RELAXED) + 1, fr = atomic_load(&g_cur_frame), done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
+    unsigned h = (unsigned)((((a >> 4) ^ (n << 7)) * 0x9E3779B97F4A7C15ull) >> 52) % RB_N;
+    pthread_mutex_lock(&g_rb_mu);
+    rb_ent *slot = NULL;
+    for (unsigned k = 0; k < 8; k++) { rb_ent *e = &g_rb[(h + k) % RB_N]; if (e->lo == a && e->hi == a + n) { slot = e; break; } if (!slot && e->fence <= done) slot = e; }
+    if (!slot) { slot = &g_rb[h]; g_rb_evicted++; }   // 8 live ranges in a row: the first is dropped
+    char seal = (kind == 'W' || kind == 'w') && rb_page_hit(a, n);
+    *slot = (rb_ent){a, a + n, f, fr, 0, key, kind, seal};
+    pthread_mutex_unlock(&g_rb_mu);
+    if (seal && kind == 'W') g_raw_writer_needs_seal = 1;   // the encode thread: writer_boundary_seal ends the command buffer after this dispatch
+    else if (seal) g_rb_draw_seal = 1;   // a draw: chunk_maybe_split seals at the next pass boundary
+}
+static void rb_sealed(uint64_t ticket) {   // writer_boundary_seal: this submission's sealed writes so far complete with the ticket
+    uint64_t f = g_fence + 1;
+    pthread_mutex_lock(&g_rb_mu);
+    for (int i = 0; i < RB_N; i++) if (g_rb[i].seal && !g_rb[i].ticket && g_rb[i].fence == f) { g_rb[i].ticket = ticket; g_rb_seals++; }
+    pthread_mutex_unlock(&g_rb_mu);
+}
+/* Game thread, at nvnMemoryPoolInvalidateMappedRange: the fence to wait for before the game reads [p, p+n) (0: none), and
+   in *ticket the writer ticket that suffices when every pending write of the range has one. */
+uint64_t mtl_pool_read_check(const uint8_t *p, uint64_t n, uint64_t *ticket) {
+    *ticket = 0;
+    if (!rb_on() || !p || !n) return 0;
+    uint64_t a = (uint64_t)(uintptr_t)p, done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE), last = __atomic_load_n(&g_fence, __ATOMIC_RELAXED), fr = atomic_load(&g_cur_frame);
+    pthread_mutex_lock(&g_rb_mu);
+    rb_read *r = &g_rb_reads[0]; int found = 0;
+    for (int i = 0; i < RB_READS; i++) { rb_read *x = &g_rb_reads[i]; if (x->lo == a && x->n == n) { r = x; found = 1; break; } if (x->last < r->last) r = x; }
+    if (!found || fr > r->last + 64) *r = (rb_read){a, n, fr, fr};
+    int steady = r->first < fr; r->last = fr;
+    rb_ent h = {0}; int nh = 0, untick = 0; uint64_t tk = 0;
+    for (int i = 0; i < RB_N; i++) { const rb_ent *e = &g_rb[i]; if (e->fence > done && e->lo < a + n && e->hi > a) { if (!nh++ || e->fence > h.fence) h = *e; if (e->ticket) tk = MAX(tk, e->ticket); else untick = 1; } }
+    uint64_t c = ++g_rb_calls, wait = 0; int log = 0;
+    if (steady) { if (nh) g_rb_steady++; rb_page_set(a, n, 0, fr); }   // a steady reader: its pages need no seal
+    else if (nh) {
+        g_rb_oneoff++; rb_page_set(a, n, 1, fr);
+        log = rb_log_on() && g_rb_logged < 2000; g_rb_logged += log;
+        if (rb_wait_on() && h.fence <= last) { wait = h.fence; if (!untick) *ticket = tk; }
+    }
+    pthread_mutex_unlock(&g_rb_mu);
+    if (log) MLOG("[readback] F%llu one-off read of %#llx+%llu before the GPU wrote it: %d pending writes, newest %c %#llx+%llu by %.16s encoded in F%llu, fence %llu, done %llu, last committed %llu%s",
+                  (unsigned long long)fr, (unsigned long long)a, (unsigned long long)n, nh, h.kind, (unsigned long long)h.lo, (unsigned long long)(h.hi - h.lo), h.key && *h.key ? h.key : "-",
+                  (unsigned long long)h.frame, (unsigned long long)h.fence, (unsigned long long)done, (unsigned long long)last, !wait ? "" : *ticket ? ", waits for its writer ticket" : ", waits for the submission");
+    if (rb_log_on() && !(c & (c - 1)) && c >= 1024)
+        MLOG("[readback] F%llu %llu invalidates; read before the GPU wrote them: %llu steady, %llu one-off; waits for a submission %llu (%.1f ms), for a writer ticket %llu (%.1f ms), %llu timed out; sealed writes %llu; write ranges dropped %llu",
+             (unsigned long long)fr, (unsigned long long)c, (unsigned long long)g_rb_steady, (unsigned long long)g_rb_oneoff, (unsigned long long)g_rb_waits, g_rb_wait_ns / 1e6,
+             (unsigned long long)g_rb_twaits, g_rb_twait_ns / 1e6, (unsigned long long)g_rb_timeouts, (unsigned long long)g_rb_seals, (unsigned long long)g_rb_evicted);
+    return wait;
+}
+void mtl_pool_read_wait(uint64_t fence, uint64_t ticket) {   // game thread, after mtl_pool_read_check (the caller has given up its guest core)
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    int ok = ticket && g_writer_event ? [g_writer_event waitUntilSignaledValue:ticket timeoutMS:1000] : mtl_wait(fence, 1000000000ull);
+    uint64_t ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0;
+    pthread_mutex_lock(&g_rb_mu); if (ticket) { g_rb_twaits++; g_rb_twait_ns += ns; } else { g_rb_waits++; g_rb_wait_ns += ns; } g_rb_timeouts += !ok; pthread_mutex_unlock(&g_rb_mu);
+    if (!ok) MLOG("【红】[readback] a wait for a GPU write timed out after %.0f ms", ns / 1e6);
+}
 static id<MTL4CounterHeap> g_pt_heap; static pt_ent *g_pt; static int g_pt_n, g_pt_key_pending;
 static long g_pt_f0 = -2, g_pt_f1, g_pt_stride = 1;
 static _Atomic int g_pt_request = -1;
@@ -2830,6 +2936,7 @@ void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     pend_note(dst, n, (const void *)(uintptr_t)src, 1); pd_xfer("copy", src, dst, n);
     gpu_read_input(src, n, "copy-src", 'c');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the GPU reads the source at execution
     usnap_drop(dst, n);   // TOTK: later readers see the copied bytes (memory, on the GPU timeline)
+    rb_note(dst, n, 'c', NULL);   // TOTK_READBACK_LOG
     anom_note_xfer('Y', src, dst, n, NULL);   // TOTK_ANOMALY
     void *sb, *db; uint64_t so, dof;
     if (!mtl_addr(src, n, &sb, &so) || !mtl_addr(dst, n, &db, &dof))
@@ -3579,8 +3686,10 @@ static void mtl_sub_split_done(dispatch_semaphore_t completed) {
         g_fc_t[1] += fc0 - g_fc_snap_end; g_fc_t[2] += wait; g_fc_t[3] += fc2 - (early ? fc0 : fc1); g_fc_t[4] += fc3 - fc2; g_fc_t[5] += fc4 - fc3 - (early ? wait : 0); g_fc_n++; }
 }
 static void mtl_sub_split(void) { mtl_sub_split_done(nil); }
+static void writer_boundary_seal(void);
 // Called where a new encoder is about to be opened and none is open.
 static void chunk_maybe_split(void) {
+    if (g_rb_draw_seal && g_cb && !g_enc && !g_frz_on && !tbdr_on() && !pt_active()) { g_rb_draw_seal = 0; g_raw_writer_needs_seal = 1; writer_boundary_seal(); }
     if (!g_chunk_size || !g_cb || g_enc || g_frz_on || tbdr_on() || pt_active()) return;
     if (g_stat_draw - g_chunk_mark < (uint64_t)(g_sub_chunks ? g_chunk_size : g_chunk_first)) return;
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -4403,6 +4512,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "taa_fast")) { taa_set_fast(v < 0 ? !taa_fast_enabled() : v); MLOG("[flag] taa_fast = %d", taa_fast_enabled()); return; }   // edge smoothing's resolve, for in-session A/B
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
+    if (!strcmp(name, "readback_wait")) { atomic_store(&g_rb_wait, v != 0); MLOG("[flag] readback_wait = %d", v != 0); return; }
     if (!strcmp(name, "ubo_snapshot")) { (void)usnap_on(); atomic_store(&g_usnap_on, v != 0); MLOG("[flag] ubo_snapshot = %d", v != 0); return; }
     if (ssao_flag(name, v)) return;
     MLOG("【红】unknown runtime flag %s", name);
@@ -13377,6 +13487,7 @@ static void writer_boundary_seal(void) {
     uint64_t ticket=++g_writer_ticket;
     if(nogpu())g_writer_event.signaledValue=ticket;else [g_q4 signalEvent:g_writer_event value:ticket];
     for(int i=0;i<g_ngw;i++)if(g_gw[i].fence==g_fence+1&&!g_gw[i].ready_ticket)g_gw[i].ready_ticket=ticket;
+    rb_sealed(ticket);   // one-off readback ranges written by this chunk
     g_writer_seals++;
 }
 // useResource 在同一编码器内对同一（资源, 用法, 阶段）是幂等的：记下本渲染编码器已声明过的，重复的跳过（计算编码器每次派发新建，不去重）
@@ -14958,6 +15069,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 if (b->kind == NVN_RB_UBOP) ren = upd_shadow(u->addr, ubo_window(u->size, b->rd));
                 else if (upd_overlap_seq(u->addr, u->addr + (u->size ? u->size : 1))) { g_ren_late++; RED_ONCE(59, "存储缓冲 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)u->addr); }
             }
+            if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) rb_note(u->addr, u->size, nvn_stage == 5 ? 'W' : 'w', sh ? sh->key : NULL);   // TOTK_READBACK_LOG
             if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) usnap_drop(u->addr, u->size ? u->size : 1);   // TOTK: the shader may write it: no stale uniform copy from here on
             uint64_t sgpu = !ren && b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && u->size && sbuf_snap_on() ? sbuf_snap_get(u) : 0;   // OOT: a small read-only storage buffer as of the encode: the GPU reads no live memory, so no read-fence mark either
             if (b->kind == NVN_RB_SBUFP && u && u->addr && !sgpu) gpu_read_input(u->addr, u->size, sh ? sh->key : NULL, b->rw ? 'w' : 's');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE (GPU writes do not fault and are not counted)
@@ -20703,6 +20815,7 @@ static void copy_t2b(const p_copy_b2t *c) {
     upd_guard(c->src, c->src + img * nz);   // TOTK: renamed uniform updates before a GPU write to the range
     if (!mtl_addr(c->src, img * nz, &mb, &mo)) { RED_ONCE(31, "贴图→缓冲拷贝的目标不在内存池里"); return; }
     usnap_drop(c->src, img * nz);   // TOTK: a GPU write: no uniform copy of these bytes from here on
+    rb_note(c->src, img * nz, 't', NULL);   // TOTK_READBACK_LOG
     id<MTL4ComputeCommandEncoder> b = blit(); BOTW_T2B_NOTE(c, t, mb, mo, img * nz) BOTW_GPU_COPY_SUPERSEDES(mb, mo, img * nz)
     if (is3d)
         enc_b_copy_texture_buffer(b, t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset), MTLSizeMake(c->r.width, c->r.height, nz), (__bridge id<MTLBuffer>)mb, mo, row, img);

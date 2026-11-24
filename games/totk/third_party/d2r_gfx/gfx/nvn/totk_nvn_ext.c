@@ -46,7 +46,15 @@ NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNc
 NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { return (size_t)((const pool_t *)p)->size; }
 // The CPU is about to read what the GPU wrote: GPU renderings into this pool's textures are written back (nvn_mtl.m).
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n);
-NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { if (off >= 0) mtl_pool_invalidate((const pool_t *)p, (uint64_t)off, n); }
+uint64_t mtl_pool_read_check(const uint8_t *p, uint64_t n, uint64_t *ticket);   // nvn_mtl.m: a one-off read of a pending GPU write (TOTK_SYNC_LAG)
+void mtl_pool_read_wait(uint64_t fence, uint64_t ticket);
+NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    if (off < 0) return;
+    const pool_t *o = (const pool_t *)p;
+    uint64_t ticket = 0, f = o->mem ? mtl_pool_read_check(o->mem + off, n, &ticket) : 0;
+    if (f) { NVN_BLOCKING(); mtl_pool_read_wait(f, ticket); }
+    mtl_pool_invalidate(o, (uint64_t)off, n);
+}
 NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { (void)b; (void)off; (void)n; }
 
 // ---------- Texture builder and texture queries ----------
