@@ -310,7 +310,8 @@
     {
       "source": "dm/gfx/nvn/nvn_mtl.m",
       "destination": "runtime/gfx/nvn/nvn_mtl.m",
-      "sha256": "00365e6deb92afa261b337561e65e547260608b9f97a14716e98f04e2bff75f5"
+      "sha256": "00365e6deb92afa261b337561e65e547260608b9f97a14716e98f04e2bff75f5",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/gfx/nvn/nvn_obj.h",

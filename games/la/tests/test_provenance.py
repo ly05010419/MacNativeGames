@@ -11,7 +11,9 @@ RECORD = GAME/'third_party/la-import.json'
 LARGE_CHANGED = {'third_party/nxnative/build_ipa_from_nsp.py': 5, 'runtime/tools/patch_nso.py': 5, 'runtime/host/hle_movie.c': 55,
                  'runtime/host/front_mac.m': 0,   # front_mac.m: the saved FPS target no longer loaded or saved (Albert, 2026-11-08: three lines, no growth)
                  'runtime/host/hle_hid.c': 13,    # DM_HID_LOG=2 (the Marin investigation) and scripted presses that wait for a released sample (Albert, 2026-11-08: 13 lines accepted, the shared press kept readable)
-                 'runtime/gfx/nvn/nvn_mtl.m': 0,  # pso_user_path no longer static, for the shader list export (Albert, 2026-11-08: that change only, no growth)
+                 # pso_user_path no longer static, for the shader list export (Albert, 2026-11-08: that change only, no growth); then the display
+                 # link's rescue and the tick wait on a silent link, as games/totk's (repository owner, 2026-11-24: "全部游戏都移植 统一": 19 lines)
+                 'runtime/gfx/nvn/nvn_mtl.m': 19,
                  # uepak.py removed with its callers' Unreal branches; the files only shrink (repository owner, 2026-11-20: "我们不需要 就去掉 删")
                  'runtime/gfx/tools/shader_split.py': 0, 'runtime/games/profile_guess.py': 0, 'third_party/nxnative/import-manifest.json': 0}
 NEW_LARGE = {'runtime/games/01006BB00C6F0000/pso_manifest.tsv': 1500}   # the bundled warm-up seed, generated data (Albert, 2026-11-08: up to 1,500 lines)
