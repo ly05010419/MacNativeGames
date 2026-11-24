@@ -4097,7 +4097,7 @@ static int pkg_final_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_PKG_FINAL_CACHE"); v = !(e && !atoi(e)); atomic_store(&g_pkg_final_cache, v); }
     return v;
 }
-@interface NvPkg : NSObject { @public id<MTLTexture> tex; NSMutableDictionary *views; __unsafe_unretained id<MTLTexture> view_base; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost, keep_full; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; BOTW_PKG_FIELDS UI_PACK_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
+@interface NvPkg : NSObject { @public id<MTLTexture> tex; NSMutableDictionary *views; __unsafe_unretained id<MTLTexture> view_base; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost, keep_full; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; uint8_t restores; uint64_t last_use; BOTW_PKG_FIELDS UI_PACK_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
 static void pkg_views_drop(NvPkg *pkg) {
     if (pkg->views) defer_obj_unref(pkg->views);
     pkg->views = nil; pkg->view_base = nil;
@@ -5682,6 +5682,7 @@ static int pkg_edge_clean(const tex_t *t, NvPkg *pk) {   // 1: only the shared p
 }
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk);
 static uint64_t g_pkg_upload_faults, g_pkg_upload_unreadable;
+static uint64_t g_pkg_gap[8], g_pkg_gap_r[8], g_pkg_gap_bytes;   // copies uploaded again after a drop: by submissions since their last use (<6,000, <12,000, ... doubling), by how often before, guest bytes
 /* 1 when every page of [mem, mem+size) can be read now: one byte per host page (and the last byte) is read under the
    fault guard. A walk with mach_vm_region was one system call per VM entry, and the dirty tracker splits a texture's
    range into an entry per page it unprotected: ~1 ms for a 16 MiB texture in alternating protections, ~16 us this way.
@@ -6160,7 +6161,8 @@ static void *tex_mtl_p(const tex_t *ct) {
             uint64_t now = nvn_dirty_now(), h = 0; int clean;
             const int lv_reduced = pk->tex && pk->tex.mipmapLevelCount < (t->d.levels ? t->d.levels : 1u);
             if (!pk->tex || (pk->owned && reduced) || (pk->keep_full && lv_reduced)) {   // keep_full: read by integer texel coordinates (tex_keep_full)   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
-                clean = 0; g_pkg_restored++;
+                clean = 0; g_pkg_restored++; if (!pk->tex && pk->last_use) { uint64_t gap = g_sub_serial - pk->last_use; int b = 0; while (b < 7 && gap >= (UINT64_C(6000) << b)) b++; g_pkg_gap[b]++; g_pkg_gap_r[MIN(pk->restores, 7)]++; g_pkg_gap_bytes += t->L.size; }
+                if (!pk->tex && pk->restores < 255) pk->restores++;   // dropped and wanted again (pkg_evict_sweep keeps it longer)
                 if (pk->hashed) { pk->csub = g_sub_serial; if (!pkg_hash_guarded(t, &h)) h = 0; }   // a fault: the upload below refuses too
             } else
             if (pk->hashed) {   // TOTK: small texture, content hash once per submission (see pkg_hashed)
@@ -9159,6 +9161,7 @@ static void pkg_purge_idle(void) {
         MLOG("贴图副本可清除：累计标记 %llu 张 / %llu MB，用到时改回 %llu 张，其中被系统回收、重传 %llu 张",
              (unsigned long long)g_purge_marked, (unsigned long long)g_purge_marked_mb, (unsigned long long)(g_purge_kept + g_purge_taken), (unsigned long long)g_purge_taken); }
 }
+static int evict_backoff_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TEX_EVICT_BACKOFF"); v = e && atoi(e) != 0; } return v; }
 static void pkg_evict_sweep(void) {
     pkg_purge_idle();
     static int mode = -1; static uint64_t budget, low, high, crit, idle_age;
@@ -9204,13 +9207,34 @@ static void pkg_evict_sweep(void) {
     size_t n = 0, cap = 0; evict_cand *c = NULL; uint64_t total = 0, total_n = 0;
     NSUInteger fmt_pf[16]; uint64_t fmt_b[16], fmt_n[16]; int nfmt = 0;   // copies by Metal pixel format (log)
     uint64_t idle = mode == 3 ? idle_age : mode == 1 && avail < crit ? EVICT_IDLE_CRIT : EVICT_IDLE;
+    /* Two measured alternatives to the plain count, both off by default (2026-11-24, Ocarina of Time on the Mac, flat, the
+       town at the save, standing still, about 2,700 submissions a second, figures at frame ~28,000):
+         count 6,000 (2.2 s)                     copies 681-721 MB, 15,737-16,346 dropped, 10,893-11,367 uploaded again
+         TOTK_TEX_EVICT_SECONDS=10 (27,000)      copies 838 MB,     12,402 dropped,         7,953 uploaded again
+         count + TOTK_TEX_EVICT_BACKOFF=1        copies 882 MB,     11,842 dropped,         7,527 uploaded again
+         both                                    copies 1,196 MB,    9,813 dropped,         6,338 uploaded again
+       The [copy-restore] line says why neither ends it: of 11,371 copies uploaded again, half had been away for more
+       than 96,000 submissions (35 s) and a quarter for more than 192,000 (70 s). The game comes back to them on long
+       cycles, so an age that keeps them is an age that keeps nearly everything (2,461 MB without eviction, above).
+       About 0.36 uploads and 0.1 MB a frame is what the 1.6 GB costs; the frame rate was the same in all four.
+       TOTK_TEX_EVICT_SECONDS=<s>: the age is at least s seconds of submissions at the rate of the last two seconds. */
+    if (mode == 3) {
+        static double secs = -1; static uint64_t t0, s0, by_time;
+        if (secs < 0) { const char *e = getenv("TOTK_TEX_EVICT_SECONDS"); secs = e && *e ? atof(e) : 0; if (secs < 0) secs = 0; }
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        if (!t0) { t0 = now; s0 = g_sub_serial; }
+        else if (now - t0 >= 2000000000ull) { by_time = (uint64_t)((double)(g_sub_serial - s0) * 1e9 / (double)(now - t0) * secs); t0 = now; s0 = g_sub_serial; }
+        if (secs > 0 && by_time > idle) idle = by_time;
+    }
     for (uint32_t i = 0; i < g_by_serial.cap; i++) {
         __unsafe_unretained id o = (__bridge id)g_by_serial.vals[i];
         if (!o || ![o isKindOfClass:[NvPkg class]]) continue;
         NvPkg *pk = (NvPkg *)o; if (!pk->tex || pk->owned || pk->hashed) continue;
         uint64_t bytes = pk->tex.allocatedSize; total += bytes; total_n++;
         { NSUInteger pf = pk->tex.pixelFormat; int j = 0; for (; j < nfmt && fmt_pf[j] != pf; j++) {} if (j == nfmt && nfmt < 16) { fmt_pf[nfmt] = pf; fmt_b[nfmt] = 0; fmt_n[nfmt++] = 0; } if (j < 16) { fmt_b[j] += bytes; fmt_n[j]++; } }
-        if (pk->used + idle > g_sub_serial) continue;
+        /* TOTK_TEX_EVICT_BACKOFF=1 (off by default, measured above): each time a copy was dropped and uploaded again
+           doubles how long it may stay idle, up to 16 times the age. */
+        if (pk->used + (mode == 3 && evict_backoff_on() ? idle << MIN(pk->restores, 4) : idle) > g_sub_serial) continue;
         if (n == cap) { cap = cap ? cap * 2 : 1024; c = realloc(c, cap * sizeof *c); if (!c) MDIE("evict candidates"); }
         uint64_t ser; memcpy(&ser, g_by_serial.keys + (size_t)i * g_by_serial.klen, 8);
         c[n++] = (evict_cand){(__bridge void *)pk, pk->used, bytes, ser};
@@ -9222,7 +9246,7 @@ static void pkg_evict_sweep(void) {
         qsort(c, n, sizeof *c, evict_cmp);
         for (; k < n && freed < want; k++) {
             NvPkg *pk = (__bridge NvPkg *)c[k].pk;
-            id<MTLTexture> t = pk->tex; pkg_views_drop(pk); pk->tex = nil;
+            id<MTLTexture> t = pk->tex; pkg_views_drop(pk); pk->tex = nil; pk->last_use = pk->used;
             defer_obj_release(t);   // leaves the residency set once the submissions that may sample it completed
             ser_bump_locked(c[k].serial);
             freed += c[k].bytes;
@@ -9242,7 +9266,10 @@ static void pkg_evict_sweep(void) {
     }
     { static uint64_t last_fmt; if (nfmt && g_sub_serial - last_fmt >= 600) { last_fmt = g_sub_serial; char b[512]; size_t o = 0;
         for (int j = 0; j < nfmt; j++) if (fmt_b[j] >> 20) o += (size_t)snprintf(b + o, sizeof b - o, " 格式%lu:%llu张/%lluMB", (unsigned long)fmt_pf[j], (unsigned long long)fmt_n[j], (unsigned long long)(fmt_b[j] >> 20));
-        MLOG("贴图副本按格式：%s", b); } }
+        MLOG("贴图副本按格式：%s", b);
+        MLOG("[copy-restore] uploaded again after a drop, by submissions since the last use: <6k %llu, <12k %llu, <24k %llu, <48k %llu, <96k %llu, <192k %llu, <384k %llu, more %llu; by earlier restores of the same copy: 0 %llu, 1 %llu, 2 %llu, 3 %llu, 4 %llu, 5 %llu, 6 %llu, 7+ %llu; %llu MB of guest bytes",
+             (unsigned long long)g_pkg_gap[0], (unsigned long long)g_pkg_gap[1], (unsigned long long)g_pkg_gap[2], (unsigned long long)g_pkg_gap[3], (unsigned long long)g_pkg_gap[4], (unsigned long long)g_pkg_gap[5], (unsigned long long)g_pkg_gap[6], (unsigned long long)g_pkg_gap[7],
+             (unsigned long long)g_pkg_gap_r[0], (unsigned long long)g_pkg_gap_r[1], (unsigned long long)g_pkg_gap_r[2], (unsigned long long)g_pkg_gap_r[3], (unsigned long long)g_pkg_gap_r[4], (unsigned long long)g_pkg_gap_r[5], (unsigned long long)g_pkg_gap_r[6], (unsigned long long)g_pkg_gap_r[7], (unsigned long long)(g_pkg_gap_bytes >> 20)); } }
     if (k) {} else if (want && mode != 3) {   // mode 3 wants every idle copy: none idle is the normal case, not a shortfall
         static uint64_t last; if (g_sub_serial - last >= 300) { last = g_sub_serial;
             MLOG("贴图副本淘汰：可用 %llu MB，想释放 %llu MB，但没有闲置的副本（副本 %llu 张 / %llu MB）", (unsigned long long)(avail >> 20), (unsigned long long)(want >> 20), (unsigned long long)total_n, (unsigned long long)(total >> 20)); }
