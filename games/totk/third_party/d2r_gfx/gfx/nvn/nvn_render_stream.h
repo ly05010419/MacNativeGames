@@ -54,7 +54,7 @@ static uint64_t rs_spin_ns(void) {
     enum { RS_SPIN_DEFAULT_US = 20 };
 #endif
 #else
-    enum { RS_SPIN_DEFAULT_US = 200 };
+    enum { RS_SPIN_DEFAULT_US = 20 };   /* Bananza, Pokopia: 20 us as the others since 2026-11-24 (user's decision); not measured on them */
 #endif
     if (!v) { const char *e = getenv("TOTK_RS_SPIN_US"); long us = e ? atol(e) : RS_SPIN_DEFAULT_US; v = (uint64_t)(us < 1 ? 1 : us) * 1000ull; if (e) MLOG("TOTK_RS_SPIN_US=%ld: the encode stage waits %ld us on an empty queue before sleeping", us, us); }
     return v;
