@@ -333,6 +333,9 @@ static void settings_restore_begin(void) {
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
  }
 }
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+static void settings_picture_rebuild(void);   /* part 2: the rows made again, the controller kept on its row */
+#endif
 static void settings_restore_ready(void) {
  if(settingsPendingAspect>0&&runtime_aspect_ratio()>0){
   float r=settingsPendingAspect;settingsPendingAspect=0;
@@ -346,7 +349,12 @@ static void settings_restore_ready(void) {
 #endif
  if(settingsPendingOutput>=0&&outputModes){
   int mode=settingsPendingOutput;settingsPendingOutput=-1;
-  if((outputModes&(1<<mode))&&runtime_output_mode_set(mode)){settings_mfx_wanted_sync();settings_mfx_target_apply();settings_window_for(mode);}
+  if((outputModes&(1<<mode))&&runtime_output_mode_set(mode)){settings_mfx_wanted_sync();settings_mfx_target_apply();settings_window_for(mode);
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+   /* a panel open while the saved mode comes in: Upscale to's stops follow the new render size */
+   dispatch_async(dispatch_get_main_queue(),^{settings_picture_rebuild();});
+#endif
+  }
  }
  if(settingsPendingOutput<0&&settingsPendingAspect<=0){[settingsRestoreTimer invalidate];settingsRestoreTimer=nil;}
 }
@@ -727,7 +735,6 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 #endif
 
 #if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
-static void settings_picture_rebuild(void);   /* part 2: the rows made again, the controller kept on its row */
 static void settings_picture_set(int mode) {   /* the mode, then the target it allows, then the window */
  settingsPendingOutput=-1;
  if(runtime_output_mode_set(mode)){settings_mfx_target_apply();settings_save_int("graphics-output.txt",mode,"resolution");settings_window_for(mode);}

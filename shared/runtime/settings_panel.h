@@ -102,8 +102,9 @@ static void settings_pointer_used(void);
  if(self.stops){stop=MAX(0,MIN((NSInteger)self.choices.count-1,((NSSlider *)sender).integerValue));}
  int v=self.stops?self.values[(NSUInteger)stop].intValue:[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
   self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
- /* a stops row released on the stop it has (or stepped against its end) applies nothing again */
+ /* a stops row released on the stop it has (or stepped against its end), a switch put to its state, applies nothing again */
  BOOL same=self.stops&&self.get&&[self.values indexOfObject:@(self.get())]==(NSUInteger)stop;
+ if([sender isKindOfClass:NSSwitch.class]&&self.get&&(self.get()!=0)==v)same=YES;   /* a switch stepped to the state it has (right on an on switch) */
  if(self.set&&!same)self.set(v);
  if(self.valueLabel)self.valueLabel.stringValue=self.stops?self.choices[(NSUInteger)stop]:[NSString stringWithFormat:@"%d",v];
  [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */

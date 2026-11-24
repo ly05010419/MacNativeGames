@@ -1077,7 +1077,8 @@ static void stops_probe(void) {
     [NSApplication sharedApplication];
     __block int current = 20, last = -1; __block BOOL on = YES;
     TOTKSettingRow *stops = settings_stops(@"Stops", @[@"a", @"b", @"c"], @[@10, @20, @30], ^int{ return current; }, ^(int v) { current = last = v; });
-    TOTKSettingRow *sw = settings_row(@"Switch", nil, nil, ^int{ return 1; }, ^(int v) { (void)v; });
+    __block int switchSets = 0;   /* the switch reads on; a set is counted */
+    TOTKSettingRow *sw = settings_row(@"Switch", nil, nil, ^int{ return 1; }, ^(int v) { (void)v; switchSets++; });
     sw.enabled = ^BOOL{ return on; };
     __block BOOL slideOn = YES;   /* a third row: stops that grey out ("Upscale to" while MetalFX is off) */
     TOTKSettingRow *dim = settings_stops(@"Dim", @[@"x", @"y"], @[@0, @1], ^int{ return 0; }, ^(int v) { (void)v; });
@@ -1103,6 +1104,10 @@ static void stops_probe(void) {
     [settingsPanel controllerChange:-1 select:NO];
     assert(s.integerValue == 1 && last == 20 && [stops.valueLabel.stringValue isEqualToString:@"b"]);
     assert(sw.control.enabled);
+    /* a switch stepped to the state it has applies nothing again (right on an on switch), one that changes does */
+    settingsPanel.controllerIndex = 1; [settingsPanel controllerChange:1 select:NO];
+    assert(switchSets == 0 && ((NSSwitch *)sw.control).state == NSControlStateValueOn);
+    [settingsPanel controllerChange:-1 select:NO]; assert(switchSets == 1);
     on = NO; settings_refresh_all();
     assert(!sw.control.enabled && ![settingsPanel controllerEnabled:1] && [settingsPanel controllerEnabled:0]);
     on = YES; settings_refresh_all(); assert(sw.control.enabled);
@@ -1224,6 +1229,14 @@ static void mfx_target_probe(void) {
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && fakeMfxTarget == 0);
     restore_output(OUTPUT_MODE_METALFX, "3840x2160");
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == mfx_target_pack(3840, 2160));
+    window_is(2160);   /* the window follows the target, as the panel's pick does */
+    if (native) {   /* the panel open while the saved mode comes in: Upscale to's stops follow the new render size */
+        settings_show(1); assert(settingsOpen);
+        restore_output(OUTPUT_MODE_OFF, NULL); tick(); assert([row(@"Upscale to").choices isEqualToArray:at1080]);
+        restore_output(OUTPUT_MODE_NATIVE_METALFX, NULL); tick();
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && [row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"3840×2160", @"5120×2880"])]);
+        settings_show(0);
+    }
     restore_output(OUTPUT_MODE_OFF, "3840x2160");   /* kept for when MetalFX is on, nothing upscaled now */
     assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0 && target_file() == mfx_target_pack(3840, 2160));
     /* A save of 4K + MetalFX to 5K (from 1.4.3's pop-up, or slice 2's 1.2.1 and Breath of the Wild) in a 4K app. */
@@ -1247,13 +1260,14 @@ static void mfx_target_probe(void) {
     assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K) && fakeMfxTarget == 0 && runtime_output_mode() == OUTPUT_MODE_NATIVE_4K);
     settings_test_output_cap(2560, 1440);
     /* A target file that is not one of the stops, or not one for 1080p, means the window. */
-    const char *bad[] = {"abc", "9999x9999", "1280x720"};
+    const char *bad[] = {"abc", "9999x9999", "1280x720", "1920x1080"};   /* the last: in the list, not larger than the 1080p render */
     for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
         restore_output(OUTPUT_MODE_METALFX, bad[i]);
         assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == 0);
     }
     /* TOTK_MFX_OUTPUT decides the picture: the saved target is not read either. */
     setenv("TOTK_MFX_OUTPUT", "1", 1);
+    assert(settingsMfxTarget == 0);   /* the precondition: a target read from the file shows below, leftover state cannot hide one */
     restore_output(OUTPUT_MODE_METALFX, "3840x2160");
     assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0xffffffffu);   /* nothing sent: it stays 0 */
     for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Upscale to"]) assert(r.get() == 0);   /* nor kept for the panel */
