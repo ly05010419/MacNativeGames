@@ -218,6 +218,31 @@ class OcarinaLibraryChoice(unittest.TestCase):
                 self.assertIsNone(oot.library_image(types.SimpleNamespace(mac_game_data_folder=None), tmp / 'none.app'))
 
 
+class FreshBaseRomFS(Base):
+    def test_step_data_checks_the_fresh_romfs_index(self):
+        romfs = self.tree / 'extracted/v0/romfs'
+        patches = romfs.parent / 'romfs-patches'
+        patches.mkdir(parents=True)
+        (patches / 'manifest.tsv').touch()
+        digest = EXPECTED['romfs']['sha256']
+
+        def extract(cmd, log, *, cwd):
+            self.assertEqual(cmd[1], 'scripts/extract_romfs.py')
+            self.assertEqual(cwd, self.tree)
+            romfs.mkdir()
+            (romfs / 'romfs.bin').write_bytes(IMAGE)
+            (romfs / 'index.json').write_text(json.dumps(dict(status='pass', romfs_sha256=digest)))
+
+        with mock.patch.object(build_app, 'EXPECTED', EXPECTED), \
+             mock.patch.object(build_app, 'fonts_valid', return_value=True), \
+             mock.patch.object(build_app, 'overlay_stale', return_value=None), \
+             mock.patch.object(build_app, 'run', side_effect=extract) as run, \
+             mock.patch.object(build_app, 'check', wraps=build_app.check) as check:
+            build_app.step_data(self.tree, self.root / 'game.xci', self.root / 'prod.keys', self.logs)
+        run.assert_called_once()
+        check.assert_called_once_with('RomFS', digest, digest)
+
+
 class UpdateBuildNeedsNoBaseImage(Base):
     def test_step_data_of_an_update_build_extracts_no_base_romfs(self):
         fonts = self.tree / 'extracted/firmware/shared-fonts'
