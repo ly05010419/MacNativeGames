@@ -2189,6 +2189,9 @@ void vr_stats(char *out, size_t n) {
     if (!vr_link_headset(&qs, &ql)) snprintf(q, sizeof q, "the Quest reports nothing (older streamer, or not connected)");
     else if (qs > 0) snprintf(q, sizeof q, "the Quest shows %.0f fps, %.0f ms", qs, ql);
     else snprintf(q, sizeof q, "【红】the Quest shows no picture");
+    /* VR's own GPU memory (its residency set: the eye images, the HUD, the depth and stereo copies) is not in the
+       game's residency breakdown; reported here so that the two add up (2026-11-24). */
+    if (g.rs) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; VR's own GPU memory %llu MB in %lu allocations", (unsigned long long)(g.rs.allocatedSize >> 20), (unsigned long)g.rs.allAllocations.count); }
     extern _Atomic uint64_t g_vr_native_masks_removed,g_vr_native_output_draws,g_vr_native_output_repeats;
     extern _Atomic uint64_t g_vr_ui_layout_draws,g_vr_ui_text_draws,g_vr_ui_text_missing,g_vr_ui_ray_bindings,g_vr_ui_ray_missing;
 #ifdef TOTK_GAME_V143
