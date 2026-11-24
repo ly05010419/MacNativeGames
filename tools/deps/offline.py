@@ -97,7 +97,9 @@ def environment(folder, base=None):
     env = dict(base)
     env[STORE_ENV] = str(folder)
     env['PIP_NO_INDEX'] = '1'
-    env['PIP_FIND_LINKS'] = str(folder / 'wheels')
+    # A file: URL, not the path: pip splits PIP_FIND_LINKS at spaces, and the store is under "Application Support" or
+    # inside "MNG Launcher.app" (2026-11-24: 'Location /Users/…/Library/Application is ignored', no wheel found).
+    env['PIP_FIND_LINKS'] = Path(folder, 'wheels').resolve().as_uri()
     env['PIP_DISABLE_PIP_VERSION_CHECK'] = '1'
     repos = data.get('git', {})
     count = int(base.get('GIT_CONFIG_COUNT', '0') or 0)

@@ -240,6 +240,40 @@ class Installed(unittest.TestCase):
             self.assertNotIn(oot, kept)
 
 
+class StepCounter(unittest.TestCase):
+    def setUp(self):
+        self.logs = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.logs)
+        self.steps = build_job.Steps(self.logs, 0)
+        self.log = self.logs / 'compute-pipelines.log'
+
+    def test_the_counter_stays_while_other_lines_fill_the_end_of_the_log(self):
+        self.assertIsNone(self.steps.count('compute-pipelines'))   # no log yet
+        self.log.write_text('[pipeline-archive] 6144 / 29300 pipelines checked or built\n')
+        self.assertEqual(self.steps.count('compute-pipelines'), (6144, 29300))
+        with self.log.open('a') as f:   # the tool's other lines: more than the 4 KB the Launcher reads each second
+            f.write('[par] pipeline written to its archive\n' * 400)
+        self.assertEqual(self.steps.count('compute-pipelines'), (6144, 29300))
+        with self.log.open('a') as f:
+            f.write('[pipeline-archive] 6656 / 29300 pipelines checked or built\n')
+        self.assertEqual(self.steps.count('compute-pipelines'), (6656, 29300))
+
+    def test_a_counter_is_its_own_steps(self):
+        self.log.write_text('prepared 5/9\n')
+        self.steps.count('compute-pipelines')
+        (self.logs / 'next.log').write_text('no counter here\n')
+        self.assertIsNone(self.steps.count('next'))
+
+
+class StayAwake(unittest.TestCase):
+    def test_caffeinate_waits_for_the_build_and_its_absence_is_no_error(self):
+        with mock.patch.object(build_job.subprocess, 'Popen') as popen:
+            build_job.stay_awake(4242)
+        self.assertEqual(popen.call_args.args[0], ['/usr/bin/caffeinate', '-i', '-w', '4242'])
+        with mock.patch.object(build_job.subprocess, 'Popen', side_effect=FileNotFoundError):
+            build_job.stay_awake(4242)
+
+
 class History(unittest.TestCase):
     def test_measured_fraction_and_skipped_steps(self):
         e = history.Estimator([('a', 10.0), ('b', 30.0), ('c', 60.0)])
