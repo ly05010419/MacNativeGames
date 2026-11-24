@@ -468,6 +468,7 @@ static NSHashTable *g_res_objects;
    so unbounded growth can be located, and gpu_budget_check refuses to go on past a budget instead of handing it to the driver. */
 /* unused: tests/test_residency_registration.py builds the lines around here alone, without their readers */
 __attribute__((unused)) static _Atomic uint64_t g_texels_gpu_reads,g_texels_gpu_writes,g_texels_gpu_bytes,g_texels_gpu_failures;   // texels_gpu_region, far below
+static _Atomic int g_cam_poke_count = 1; static _Atomic int g_cam_poke_off, g_cam_poke_pct = 100, g_cam_poke_match, g_cam_poke_off2 = -1, g_cam_poke_stage = -1, g_cam_poke_size; static _Atomic uint64_t g_cam_poke_n;   // encode_args, far below (diagnostic)
 #define RES_SITES 32768   /* nvn_mtl.m has more than 26,000 lines: at 8192 most registrations were counted under site 0 (2026-11-24) */
 static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, alive_bytes; } g_res_site[RES_SITES];   // alive*: objects not yet deallocated (whether or not still resident)
 /* Deallocation probe: an associated object whose dealloc runs when the Metal object itself is freed, so "removed from the
@@ -4311,6 +4312,13 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_capture")) { atomic_store(&g_raw_write_capture,MAX(0,MIN(v,16))); MLOG("[flag] raw_write_capture = %d",atomic_load(&g_raw_write_capture)); return; }
     if (!strcmp(name,"writer_boundary")) { atomic_store(&g_writer_boundary,v!=0&&!TARGET_OS_IPHONE); MLOG("[flag] writer_boundary = %d seals=%llu waits=%llu wait-ms=%.3f",writer_boundary_on(),(unsigned long long)g_writer_seals,(unsigned long long)g_writer_waits,(double)g_writer_wait_ns/1e6);return; }
+    if (!strcmp(name,"cam_poke_match")) { atomic_store(&g_cam_poke_match, v); atomic_store(&g_cam_poke_n, 0); MLOG("[flag] cam_poke_match = %d thousandths", v); return; }
+    if (!strcmp(name,"cam_poke_count")) { atomic_store(&g_cam_poke_count, v > 0 ? v : 1); return; }
+    if (!strcmp(name,"cam_poke_off2")) { atomic_store(&g_cam_poke_off2, v); return; }
+    if (!strcmp(name,"cam_poke_stage")) { atomic_store(&g_cam_poke_stage, v); return; }
+    if (!strcmp(name,"cam_poke_size")) { atomic_store(&g_cam_poke_size, v); return; }
+    if (!strcmp(name,"cam_poke_off")) { atomic_store(&g_cam_poke_off, v); MLOG("[flag] cam_poke_off = %#x", v); return; }
+    if (!strcmp(name,"cam_poke_pct")) { atomic_store(&g_cam_poke_pct, v > 0 ? v : 100); MLOG("[flag] cam_poke_pct = %d (view block copies made so far %llu)", v, (unsigned long long)atomic_load(&g_cam_poke_n)); return; }
     if (!strcmp(name,"rs_spin_us")) { atomic_store(&g_rs_spin_flag,(uint64_t)MAX(0,v)*1000ull); MLOG("[flag] rs_spin_us = %d (0 = default): the encode stage's wait on an empty queue before it sleeps",v); return; }
     if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
     if (!strcmp(name,"raw_range_cache")) { atomic_store(&g_raw_range_cache,v!=0); MLOG("[flag] raw_range_cache = %d",v!=0); return; }
@@ -14690,6 +14698,16 @@ static void bz_bind(id<MTLCommandEncoder> en) {
     }
     enc_r_args((id<MTL4RenderCommandEncoder>)en, MTLRenderStageFragment, gpu, BLEND_ZERO_BUFFER);
 }
+/* Diagnostic (2026-11-24, Ocarina of Time in VR: the stairs to the temple are drawn with a coarse model). "flag
+   cam_poke_pct <percent>" gives every draw and dispatch a copy of each matching uniform block with floats scaled:
+   cam_poke_off <byte offset> (and cam_poke_count floats from there, or one more at cam_poke_off2), in blocks of
+   cam_poke_size bytes (0: any), of stage cam_poke_stage (-1: any, 5 compute), whose float at the offset is
+   cam_poke_match thousandths (0: any). 100 %: nothing is done, and nothing costs.
+   What it found, with the game's own camera (flag vr_noturn 1) and its field of view widened (flag vr_fovdeg 145) so
+   that the stairs are coarse from the save point: no float of the 960-, 1,792- or 384-byte view blocks changes the
+   level of detail, nor the 960-byte block's matrices scaled whole for compute alone (0x300 changes what is culled and
+   lit, not the level), nor the 6,144- and 16,960-byte blocks 64 floats at a time (lighting only). The level is
+   therefore not chosen on the GPU from these blocks. */
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
     bind_trace(sh, nvn_stage);
     if (nvn_stage == 1 && !metal_vertex && sh->has_bz) bz_bind(en);
@@ -14717,7 +14735,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         epoch_hit = shader_ab_current(sh) && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
         registry_unlock();
     }
-    int reuse = (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && shader_ab_current(sh) && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    const int cam_poke = atomic_load_explicit(&g_cam_poke_pct, memory_order_relaxed) != 100;
+    int reuse = !cam_poke && (!shader_uses_pool(sh) || epoch_mode) && !ab_noreuse && !passdump() && shader_ab_current(sh) && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
         !((g_vr_collapse_draw && VR_MATERIAL_STAGE(nvn_stage)) || (g_vr_ui_ray_draw && nvn_stage == 0)) &&   // Per-draw palette/HUD projection copies must be bound anew.
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
@@ -14735,7 +14754,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     static uint64_t bl_pass[6]; static int bl_all = -1; if (bl_all < 0) bl_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL || getenv("TOTK_INPUT_FILE") != NULL;   // 每次新编都记（否则只记每通道每阶段第一次） | Record on every new encode (otherwise only the first time per pass per stage)
     int bl = passdump() && (bl_all || bl_pass[nvn_stage] != g_stat_pass);
     if (bl) { bl_pass[nvn_stage] = g_stat_pass; PD("K %llu st%d key=%s nb=%d prog=%p", g_stat_pass, nvn_stage, sh->key[0] ? sh->key : sh->builtin ? sh->builtin : "?", sh->rf.nb, (const void *)S.prog); }
-    int cbc = !bl && !g_res_check_on && g_use != USE_REC ? cbc_mode() : 0;   // TOTK_CBUF_CACHE (see cbc_ctx)
+    int cbc = !bl && !cam_poke && !g_res_check_on && g_use != USE_REC ? cbc_mode() : 0;   // TOTK_CBUF_CACHE (see cbc_ctx)
     int slot_mode = tex_slots_on() && !verify_epoch && nvn_stage != 5 && arg_epoch_safe(sh) && !ab_noreuse &&
         !passdump() && !g_res_check_on && g_use != USE_REC && !tex_slots_diagnostics() && !nan_trace_match(sh);
     int slot_check = slot_mode && atomic_load_explicit(&g_tex_slots_check, memory_order_relaxed);
@@ -14808,6 +14827,21 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
                 uint64_t pg = vr_palette_patch(pal, u->size); if (pg) gpu = pg; }
+            if (cam_poke) {   /* any uniform block whose float at the offset is the value asked for (cam_poke_match, thousandths; 0: any) */
+                const int off = atomic_load(&g_cam_poke_off); const float want = (float)atomic_load(&g_cam_poke_match) / 1000.0f;
+                const uint8_t *actual = off >= 0 && (uint64_t)off + 4 <= u->size && u->size <= 65536 ? bound_uniform_bytes(gpu, (size_t)u->size, (__bridge id<MTLBuffer>)mb) : NULL;
+                float f = 0; if (actual) memcpy(&f, actual + off, 4);
+                const int only = atomic_load(&g_cam_poke_stage), size_only = atomic_load(&g_cam_poke_size);   /* cam_poke_stage: -1 any, 5 compute; cam_poke_size: 0 any */
+                if (actual && isfinite(f) && (only < 0 || only == nvn_stage) && (!size_only || (uint64_t)size_only == u->size) && (want == 0 || fabsf(f - want) <= 0.003f * fabsf(want))) {
+                    __unsafe_unretained id<MTLBuffer> copy = nil; uint8_t *bytes = NULL; uint64_t address = 0;
+                    arena_alloc_u((size_t)u->size, &copy, &bytes, &address); memcpy(bytes, actual, (size_t)u->size);
+                    f *= (float)atomic_load(&g_cam_poke_pct) / 100.0f; memcpy(bytes + off, &f, 4);
+                    for (int k = 1, nk = atomic_load(&g_cam_poke_count); k < nk && (uint64_t)off + 4 * (uint64_t)k + 4 <= u->size; k++) { float g; memcpy(&g, bytes + off + 4 * k, 4); g *= (float)atomic_load(&g_cam_poke_pct) / 100.0f; memcpy(bytes + off + 4 * k, &g, 4); }   /* cam_poke_count: that many floats in a row */
+                    { const int off2 = atomic_load(&g_cam_poke_off2); if (off2 >= 0 && (uint64_t)off2 + 4 <= u->size) { float g; memcpy(&g, bytes + off2, 4); g *= (float)atomic_load(&g_cam_poke_pct) / 100.0f; memcpy(bytes + off2, &g, 4); } }   /* cam_poke_off2: a second float, scaled the same */
+                    gpu = address;
+                    if (atomic_fetch_add(&g_cam_poke_n, 1) < 12) MLOG("[cam-poke] stage %d reg %d size %llu shader %.16s: float at %#x -> %g", nvn_stage, reg, (unsigned long long)u->size, sh->key, off, (double)f);
+                }
+            }
             if(g_vr_ui_ray_draw&&nvn_stage==0&&reg==0&&(u->size==560||u->size==128)){
                 const uint8_t *actual=bound_uniform_bytes(gpu,(size_t)u->size,(__bridge id<MTLBuffer>)mb);
                 if(!actual)MDIE("HUD projection lost its actual uniform snapshot");

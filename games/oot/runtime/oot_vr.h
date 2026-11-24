@@ -70,6 +70,19 @@ static _Atomic int oot_vr_in_event, oot_vr_is_child = 1;
 static _Atomic uint32_t oot_vr_yaw_bits;          /* the heading, float bits */
 static _Atomic int oot_vr_fp_on;                  /* the view is at his eyes */
 static _Atomic uint32_t oot_vr_move_turn_bits;    /* third person: the head's turn the left stick must not follow */
+/* Diagnostics for a picture that is wrong at some head poses (2026-11-24, the stairs to the temple): "flag vr_noturn 1"
+   leaves the head out of the gameplay view; "flag vr_fovdeg <degrees>" replaces the headset's vertical field of view in
+   the game's projection (0: the headset's again). Both from TOTK_INPUT_FILE, off unless asked for. */
+static _Atomic int oot_vr_dbg_noturn;
+static _Atomic uint32_t oot_vr_dbg_fov_saved;
+void runtime_oot_vr_debug(const char *name, int v) {
+    if (!strcmp(name, "vr_noturn")) { atomic_store(&oot_vr_dbg_noturn, v != 0); fprintf(stderr, "[vr] [flag] vr_noturn = %d\n", v != 0); return; }
+    if (!oot_vr_fov_cell) return;
+    if (v > 0) { if (!atomic_load(&oot_vr_dbg_fov_saved)) atomic_store(&oot_vr_dbg_fov_saved, atomic_load(oot_vr_fov_cell));
+                 float f = (float)v / 57.2957795f; uint32_t bits; memcpy(&bits, &f, 4); atomic_store(oot_vr_fov_cell, bits); }
+    else if (atomic_load(&oot_vr_dbg_fov_saved)) { atomic_store(oot_vr_fov_cell, atomic_exchange(&oot_vr_dbg_fov_saved, 0)); }
+    fprintf(stderr, "[vr] [flag] vr_fovdeg = %d (0: the headset's)\n", v);
+}
 static pthread_mutex_t oot_vr_cull_mu = PTHREAD_MUTEX_INITIALIZER;
 static oot_cull_ring oot_vr_cull;
 static _Atomic int oot_vr_cull_live, oot_vr_fill_seen;
@@ -244,7 +257,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
         for (int i = 0; i < 3; i++) m[4 * i + 3] -= vr_dot3(m + 4 * i, control.off);
         m[11] -= control.cam_back;
     }
-    vr_view_turn(m, control.h, m);
+    if (!atomic_load(&oot_vr_dbg_noturn)) vr_view_turn(m, control.h, m);   /* "flag vr_noturn 1" (diagnostic): the game's own view, the head not applied */
     /* Third person the left stick goes by the game's camera, not by where the head looks; first person by the head. */
     { const float turned = atan2f(-m[8], m[10]), game = atan2f(-game_level[8], game_level[10]);
       atomic_store(&oot_vr_move_turn_bits, oot_vr_float_bits(fp ? 0 : oot_wrap_pi(game - turned))); }
