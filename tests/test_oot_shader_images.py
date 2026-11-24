@@ -3,7 +3,7 @@
 From the USB drive the App is on, a library first used in play cost an open() of 100 ms or more inside the replay
 (mtl4-2: 111 ms in lib_from_file), and the first camera turn into a new area stalled on batches of them: 64,699 library
 files and 128,674 seed files. games/oot/build.py write_shader_images writes them as image parts beside the bundle's
-folders (ios/tools/seed_image.py, the iPad's format) and keeps only the other files; the runtime finds the parts beside
+folders (scripts/seed_image.py, the iPad's format) and keeps only the other files; the runtime finds the parts beside
 the folder its build/ link points to (totk_seed_image.h seed_image_open) and takes a library from them by name
 (nvn_mtl.m lib_image_data).
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GAME = ROOT / 'games/oot'
 NVN = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
-sys.path.insert(0, str(GAME / 'ios/tools'))
+sys.path.insert(0, str(GAME / 'scripts'))
 from seed_image import read_part  # noqa: E402
 
 
