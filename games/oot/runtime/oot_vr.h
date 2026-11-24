@@ -65,7 +65,11 @@ static const uint64_t OOT_VR_ACTOR_VTABLE = 0x4b25e18, OOT_VR_PLAYER_VTABLE = 0x
    level from 10 m, and with the fine one again when the head turned them off the view's axis (the depth shrinks).
    The stub multiplies the stored scale by the factor on the data page, tan(half the headset's angle) / tan(half the
    game's own), so the levels are the ones the game picks without VR at that depth. OOT_VR_LOD=0 leaves the game's
-   scale; "flag vr_lodk <thousandths>" sets the factor by hand (0: computed again). */
+   scale; "flag vr_lodk <thousandths>" sets the factor by hand (0: computed again).
+   Correction to the commit that added this (803c5e68): its message says the VR session reports handheld mode to the
+   game, whose LodStartDistCoef default is 0.8. It does not. The log has "handheld" once, when the VR canvas is set, and
+   "docked" right after it: the mode is flipped and flipped back so that the game rebuilds its picture at the new size.
+   The game runs docked, with the console's coefficient 1.0, and nothing is left to do there. */
 static const uint64_t OOT_VR_LOD_SITES[1] = { 0x33af7c };
 static const uint32_t OOT_VR_LOD_WORD = 0xbd01e262u;      /* str s2, [x19, #0x1e0] */
 static const uint32_t OOT_VR_LOD_NEXT = 0xbd41d662u;      /* ldr s2, [x19, #0x1d4]: s2 is loaded again */
