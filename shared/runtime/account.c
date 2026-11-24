@@ -175,12 +175,12 @@ int runtime_users_choose(int index){
  return 0;
 }
 
-#if defined(GAME_MK8DX) || defined(GAME_W3)
+#if defined(GAME_MK8DX) || defined(GAME_W3) || defined(GAME_DSR)
 /* Mario Kart 8 Deluxe (SDK 4.4) and The Witcher 3 open a user by its id (OpenUser): only the user the game plays as
    can be opened. */
 static uint32_t open_user(UserHandle *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();lock_acquire();int mine=uid->lo==local.lo&&uid->hi==local.hi;lock_release();return mine&&preselected(out)?0:0x7c67;}
 #endif
-#if defined(GAME_BOTW) || defined(GAME_MK8DX)
+#if defined(GAME_BOTW) || defined(GAME_MK8DX) || defined(GAME_DSR)
 /* SDK 7 (Breath of the Wild 1.6.0, botw.md) opens the preselected user with the aborting variant and lists the users.
    A launched game plays as the one preselected user, so the list answers with that one, however many users the Mac has.
    SDK 4.4 (Mario Kart 8 Deluxe, games/mk8dx) does the same, and opens a listed user by its id (OpenUser): only the user
@@ -233,11 +233,11 @@ void *runtime_account_override(const char *name){
  {"_ZN2nn7account37AsyncNetworkServiceLicenseInfoContext28GetNetworkServiceLicenseKindEv",license_kind},
  {"_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm",no_nintendo_account},
  {"_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE",no_nintendo_account},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
-#if defined(GAME_BOTW) || defined(GAME_MK8DX)
+#if defined(GAME_BOTW) || defined(GAME_MK8DX) || defined(GAME_DSR)
  ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_users}
  ,{"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users}
 #endif
-#if defined(GAME_MK8DX) || defined(GAME_W3)   /* The Witcher 3 opens the user it was given (main+0x1619ac) */
+#if defined(GAME_MK8DX) || defined(GAME_W3) || defined(GAME_DSR)   /* The Witcher 3 opens the user it was given (main+0x1619ac) */
  ,{"_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE",open_user}
 #endif
  };

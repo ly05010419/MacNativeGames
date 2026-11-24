@@ -9,7 +9,7 @@
 /* Only the Switch 2 games and Mario Kart 8 Deluxe build this: services.c calls runtime_offline_override under GAME_NS2
    (games/mk8dx: always), and the iOS project compiles every file in runtime/, where TOTK and BotW have no GAME_TITLE_ID. */
 #include "game_version.h"
-#if defined(GAME_NS2) || defined(GAME_MK8DX) || defined(GAME_PLA) || defined(GAME_RDR) || defined(GAME_AOCX) || defined(GAME_P5R) || defined(GAME_W3)
+#if defined(GAME_NS2) || defined(GAME_MK8DX) || defined(GAME_PLA) || defined(GAME_RDR) || defined(GAME_AOCX) || defined(GAME_P5R) || defined(GAME_W3) || defined(GAME_DSR)
 #include "runtime.h"
 void hle_signal_system_event(void *event);
 #include "game_version.h"
@@ -224,4 +224,4 @@ void *runtime_offline_override(const char *name) {
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;
 }
-#endif   /* GAME_NS2 || GAME_MK8DX || GAME_PLA || GAME_RDR || GAME_AOCX || GAME_P5R || GAME_W3 */
+#endif   /* GAME_NS2 || GAME_MK8DX || GAME_PLA || GAME_RDR || GAME_AOCX || GAME_P5R || GAME_W3 || GAME_DSR */

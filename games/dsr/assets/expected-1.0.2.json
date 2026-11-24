@@ -1,0 +1,22 @@
+{
+  "title_id": "01004AB00A260000",
+  "update_title_id": "01004AB00A260800",
+  "version": "1.0.2",
+  "version_raw": null,
+  "sdk": "4.5.0",
+  "main_build_id": "9985b82cc518ffafaa53b3f6a2f7e42a",
+  "subsdk0_build_id": "73f98f5f7a34d4c520bda7c1a19cd9bd",
+  "sdk_build_id": "d95547528dcd684e2813ec83d338a472",
+  "exefs_sha256": {
+    "main": "7ee94a7634c7f84a95db46f652fff88e2c5fe7137d292229b0b7ed389e35662e",
+    "subsdk0": "dc41d14e42401cce46773f5cbca5b276efd8121809581ce1323ac2795ba7836b",
+    "sdk": "c88f6c116562dd1db191435b34175c934a77b1ab8009fef68533aa0405628dba",
+    "main.npdm": "4c9fde2f0bf84ae0d6f34fbf2cc01bf1c5d5fb470caef26392ba91f21390ef0a"
+  },
+  "romfs_probe": "dvdbnd0.bhd5",
+  "rewritten_sha256": {
+    "main.patched.bin": "2ee4e7e051eb649d95ac0cb0e80b09b86d5e624140a877e5e8d84a003aaab3a3",
+    "subsdk0.patched.bin": "eca8b0d66745d4b0b0160d58b78d849b3ebb39bbe522c2f64f4fe631d7b9353a",
+    "sdk.patched.bin": "32c8288c827534a4cb411e60de48f803c6c44a81d5a1c8cdf3dcac2c4844dab3"
+  }
+}
