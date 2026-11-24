@@ -17324,7 +17324,13 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
     enc_r_cull(en, MTLCullModeNone); enc_r_fill(en, MTLTriangleFillModeFill); enc_r_depth_bias(en, 0, 0, 0);
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
+/* OOT_MESH_PASS_SPLIT=2 (nvn_mesh_tasks.inc): an ordinary draw into the open pass -- draw_inner's, or a mid-pass clear's
+   triangle (clear_quad / clear_ds_quad, which draw through rp_begin, not draw_inner) -- ends a pass that holds mesh draws,
+   and marks the pass as holding an ordinary draw, so no clear stays in a pass with mesh draws (review of PR #2324). */
+static int mtk_split_on(void);
+static void mtk_pass_plain_draw(void) { if (mtk_split_on() == 2) { if (g_enc && g_mtk_pass_mesh) rp_end(); g_mtk_pass_plain = 1; } }
 static void clear_quad(const p_clear_color *c) {
+    mtk_pass_plain_draw();
 #if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
     csnap_clear();   // the clear changes the target: a later reader copies again
 #endif
@@ -17378,6 +17384,7 @@ static void clear_ds_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt[8
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
 static void clear_ds_quad(const p_clear_ds *c) {
+    mtk_pass_plain_draw();
     gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / masked / scissored depth-stencil clear");
     if (g_enc && ((c->depth_mask && !g_pass.hd) || (c->stencil_mask && !g_pass.hs))) rp_end();
     id<MTL4RenderCommandEncoder> en = rp_begin(); if (!en) return;
@@ -19276,7 +19283,7 @@ static void oot_bar_note_draw(NvProg *pr) {
     if (g_oot_bar_mode) g_oot_bar_writes |= oot_bar_shader_writes(pr);
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
-    if (!g_mtk.on && mtk_split_on() == 2) { if (g_enc && g_mtk_pass_mesh) rp_end(); g_mtk_pass_plain = 1; }   // OOT_MESH_PASS_SPLIT=2: an ordinary draw after mesh draws starts a pass
+    if (!g_mtk.on) mtk_pass_plain_draw();   // OOT_MESH_PASS_SPLIT=2: an ordinary draw after mesh draws starts a pass
     NSUInteger native_output_width=0,native_output_height=0;
     uint64_t native_output_source=0;
     if(g_host_rect_draw){g_host_rect_draw=0;g_pso_dirty=1;}
