@@ -535,6 +535,40 @@ keeps its 1280x720 canvas (main+0x1e43dd0, unchanged). Key 4 (21:9) does not wid
 1920x1080 on this build: the game writes 16:9 back into the camera's aspect field every frame. That is a separate open
 item.
 
+## The sound's clock above 60 fps (2026-11-24)
+
+Once a frame `main+0x1550fcc` hands the sound system the VFR's delta frame (`main+0x59c788`), at least 0.5, in console
+frames. It steps the audio frame (`main+0xf07808`) and is stored at `+0x84` of `[main+0x1e37038]`, the field that 1.6.0's
+`patch_slink_rate` stores (floor 1.0 there). The floor is a 60 fps frame, so above 60 fps it sets every frame and the
+sound's clock runs fast: every sound timer and fade, and the field battle music, which then starts each segment while
+the last one still plays. Cause and cure as found by
+[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) (MIT, its #145); no code is copied.
+
+`patch_sound_frame` makes the floor 0.5 x the frame-step page's ratio (the frame's length in 30 fps frames), through a
+veneer at text padding `+0x360`: 0.5 at 30 fps as shipped, so slow motion and a stopped game keep the console's half a
+second of sound clock a second, and the frame's own length above. `TOTK_SOUND_FRAME=0` keeps it as shipped. Mac only: it
+returns early under `ios_code()`, so the iOS export does not change. `TOTK_SOUND_FRAME_LOG=1` puts a `brk` on the select
+(`fcsel s8, s1, s0, mi`, `main+0x155100c`) and logs once a second the game's and the sound's seconds against the real
+time, the delta's range, the floor and how many frames it set.
+
+Run on 2026-11-24, M5 Pro, the newest save (slot 2), copies of the profile and cache, standing still for about 50 s after
+the load. Seconds of clock per real second, averaged over the run after its first 3 s:
+
+| Build | Frame lock | Delta per frame | Floor | Frames the floor set | Game | Sound |
+|---|---|---|---|---|---|---|
+| main + log | 30 | 0.96-1.03 | 0.5 | none | x0.988 | x0.988 |
+| main + log | 120 | 0.22-0.35 | 0.5 | all | x0.999 | x1.833 |
+| fix | 120 | 0.22-0.30 | 0.11-0.15 | none | x1.000 | x1.000 |
+| fix, `TOTK_SOUND_FRAME=0` | 120 | 0.22-0.31 | 0.5 | all | x1.000 | x1.900 |
+| fix | 30 | 0.97-1.02 | 0.48-0.51 | none | x1.000 | x1.000 |
+
+The cause was measured, the symptom was not heard: the save has no enemies near, so the battle music did not play. To
+compare by ear, `TOTK_SOUND_FRAME=0` brings the shipped floor back. `games/botw/scripts/verify_sound_frame_patch.py`
+runs the game's select with Unicorn at 30, 60, 120, 144 and 240 fps: patched, the sound's clock runs at x1.0 at every
+rate (shipped: x1.0, x1.0, x2.0, x2.4, x4.0); with the delta at 30%, 10% and 0% of the frame (slow motion, a stopped
+game) it runs at x0.5 at every rate, as shipped at 30 fps; at a ratio of exactly 1.0 its result is the shipped one, bit
+for bit.
+
 ## Audio: volume ramps and depop (2026-10-22)
 
 The mixer applied a new voice volume or channel mix volume as a step at the 5 ms frame edge, and a stopped or paused
