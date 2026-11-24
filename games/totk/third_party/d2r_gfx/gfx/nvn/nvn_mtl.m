@@ -7614,6 +7614,11 @@ typedef struct {
 } pool_memo_ent;
 @interface NvPoolMemo : NSObject { @public
     pool_memo_ent ent[POOL_MEMO_WAYS]; uint16_t slot[POOL_MEMO_SLOTS]; int mru; uint64_t clock;   // slot: open-addressing index by uhash, way + 1 (0 = empty); mru: the way last filled or hit
+    /* Each way's use and uhash again, side by side (0 = the way is not valid; a use starts at 1 and a uhash is odd): choosing
+       the victim and rebuilding the index read these 4 KB instead of walking the 512-byte entries (128 KB a memo). In Ocarina
+       of Time's field a shader drawn with more objects than ways fills a way on most draws, and the two walks were
+       about 0.6 ms a frame of the replay thread (Time Profiler 2026-11-24: 250 of prepare_shader_pools' 381 own samples). */
+    uint64_t lru[POOL_MEMO_WAYS], uh[POOL_MEMO_WAYS];
     NSDictionary *reads[POOL_MEMO_WAYS]; NSData *uniforms[POOL_MEMO_WAYS], *need[POOL_MEMO_WAYS];
 } @end
 @implementation NvPoolMemo
@@ -7622,7 +7627,7 @@ typedef struct {
 static uint64_t pool_memo_hash(const void *p, size_t n) { uint64_t h = 0xcbf29ce484222325ull; const uint8_t *b = p; for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; } return h | 1; }
 static void pool_memo_index(NvPoolMemo *m) {   // rebuild the uhash -> way index (after an eviction)
     memset(m->slot, 0, sizeof m->slot);
-    for (int w = 0; w < POOL_MEMO_WAYS; w++) if (m->ent[w].valid) { unsigned s = (unsigned)(m->ent[w].uhash % POOL_MEMO_SLOTS); while (m->slot[s]) s = (s + 1) % POOL_MEMO_SLOTS; m->slot[s] = (uint16_t)(w + 1); }
+    for (int w = 0; w < POOL_MEMO_WAYS; w++) if (m->uh[w]) { unsigned s = (unsigned)(m->uh[w] % POOL_MEMO_SLOTS); while (m->slot[s]) s = (s + 1) % POOL_MEMO_SLOTS; m->slot[s] = (uint16_t)(w + 1); }
 }
 static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo_wdiff, g_pmemo_whole_diff, g_pmemo_split, g_pmemo_evict, g_pmemo_fill;   // [descriptor-demand-memo]
 @interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn, ofn;   /* ofn: a mesh shader's own object function (mesh_stage.object, MeshStage.cs ObjectEntry): its workgroups in blocks of 1024 */   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
@@ -9115,7 +9120,14 @@ static void pkg_evict_sweep(void) {
         if (mode == 2) MLOG("贴图副本淘汰：开（副本总量上限 %llu MB）", (unsigned long long)(budget >> 20));
         if (mode == 3) MLOG("贴图副本淘汰：开（闲置 ≥%llu 次提交的副本都淘汰，不设上限）", (unsigned long long)idle_age);
     }
-    if (!mode || (g_sub_serial & 3)) return;
+    /* Mode 3 drops copies idle for idle_age submissions (6,000 on the Mac), so looking every 4 submissions only repeats
+       the scan: both loops below walk every texture-pool slot and every serial, and in Ocarina of Time's field that
+       was about 2 ms a frame on the replay thread (Time Profiler 2026-11-24, 68 fps at 1080p with the GPU at 59 %:
+       mtl_sub_commit 209 ms a second, 140 of them here). It looks every idle_age / 32 submissions instead, rounded
+       down to a power of two between 4 and 256 (128 for 6,000): a copy goes at most 3 % later. */
+    static uint64_t every;
+    if (!every) { every = 4; if (mode == 3) while (every < 256 && every * 2 <= idle_age / 32) every *= 2; }
+    if (!mode || (g_sub_serial & (every - 1))) return;
     uint64_t avail = 0, want = 0;
     if (mode == 1) {
         avail = evict_available();
@@ -14382,7 +14394,7 @@ static void pool_demand_prepare(NvShader *sh) {
         if(hitw>=0&&g_sub_serial!=submission){hitw=-1;g_pmemo_split++;}   // a uniform read split the submission: captures may have moved, prove again
         int check=hitw>=0&&pool_memo_check_on();
         if(hitw>=0){
-            memo->ent[hitw].use=++memo->clock;memo->mru=hitw;
+            memo->ent[hitw].use=memo->lru[hitw]=++memo->clock;memo->mru=hitw;
             if(!check){sh->pool_demand[@(b->aid)]=memo->need[hitw];sh->pool_hint[b->aid]=&memo->ent[hitw].hint;g_pool_demand_proved++;g_pool_demand_memo++;continue;}
         }
         NSMutableData *uniforms=memo_ok?[NSMutableData data]:nil;pool_memo_reader reader={sh,uniforms,1};
@@ -14412,10 +14424,11 @@ static void pool_demand_prepare(NvShader *sh) {
         // A whole proof is not kept: its answer depends on the input copy's identity, which changes every frame, so it could
         // only evict useful entries (mm2: 3.4 M identity mismatches, evictions = fills).
         if(!(memo_ok&&reader.valid&&submission==g_sub_serial&&nid==nsrc&&!whole))continue;
-        int w=0;for(int c=0;c<POOL_MEMO_WAYS;c++){if(!memo->ent[c].valid){w=c;break;}if(memo->ent[c].use<memo->ent[w].use)w=c;}
+        int w=0;for(int c=1;c<POOL_MEMO_WAYS;c++)if(memo->lru[c]<memo->lru[w])w=c;   // the first way that is not valid (lru 0), else the least recently used
         pool_memo_ent *e=&memo->ent[w];int evict=e->valid;free(e->words);
         *e=(pool_memo_ent){.valid=1,.nid=nid,.nwords=nw,.n=(uint64_t)n,.use=++memo->clock,.whole=whole,.uhash=pool_memo_hash(uniforms.bytes,uniforms.length),.words=nw?malloc((size_t)nw*sizeof *wbuf):NULL};
-        if(nw&&!e->words){e->valid=0;pool_memo_index(memo);continue;}
+        memo->lru[w]=e->use;memo->uh[w]=e->uhash;
+        if(nw&&!e->words){e->valid=0;memo->lru[w]=memo->uh[w]=0;pool_memo_index(memo);continue;}
         if(nw)memcpy(e->words,wbuf,(size_t)nw*sizeof *wbuf);memcpy(e->src,ident,(size_t)nid*sizeof ident[0]);
         memo->reads[w]=sh->pool_reads;memo->uniforms[w]=uniforms;memo->need[w]=data;memo->mru=w;g_pmemo_fill++;e->hint=hint;sh->pool_hint[b->aid]=&e->hint;
         if(evict){g_pmemo_evict++;pool_memo_index(memo);}
