@@ -39,7 +39,7 @@ static _Atomic uint64_t g_rs_spin_flag;   // "flag rs_spin_us <µs>": set while 
 static uint64_t rs_spin_ns(void) {
     uint64_t f = atomic_load_explicit(&g_rs_spin_flag, memory_order_relaxed); if (f) return f;
     static uint64_t v;
-#if defined(GAME_OOT) || defined(GAME_BOTW)
+#if defined(GAME_OOT) || defined(GAME_BOTW) || !defined(GAME_NS2)   /* !GAME_NS2 and not Breath of the Wild: Tears of the Kingdom */
     /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6).
        Breath of the Wild 1.9.0 (2026-11-14, M4 Max, Kakariko standing still, about 105 fps, no frame interpolation): B in
        this wait 62% -> 51% of its samples, package CPU power about 10.7 -> 10.3 W (powermetrics), frame p50 9.5 -> 9.25 ms. */
@@ -48,6 +48,9 @@ static uint64_t rs_spin_ns(void) {
        of the process, 5 us 308 % at the same fps (99.2 against 98.6-100.1), 1 us 293 % but 97.4 fps. */
     enum { RS_SPIN_DEFAULT_US = 5 };
 #else
+    /* Tears of the Kingdom 1.4.3 (2026-11-24, M6, field at the save, about 1,910 draws a frame, 15 s each at one place,
+       "flag rs_spin_us"): 200 us 153-155 % CPU of the process at 82.5-83.0 fps; 50 us 146 %; 20 us 143-145 % at
+       82.3-83.6 fps; 5 and 1 us 143 % at 82.0-82.7 fps. */
     enum { RS_SPIN_DEFAULT_US = 20 };
 #endif
 #else
