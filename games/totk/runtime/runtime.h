@@ -59,6 +59,9 @@ void runtime_core_back(int *away);
 void runtime_spin_wait(unsigned module, uint64_t head);   // threads.c: a pass of a gated spin wait (loader.c runtime_dispatch)
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
+/* This game's fs_host.c mounts an external launcher's DM_SAVE folder as the save (and DM_SAVE_device as the device
+   save); the shared account.c then opens with that launcher's fixed player 1. A port without this line ignores DM_SAVE. */
+#define RUNTIME_EXTERNAL_SAVE 1
 uint8_t *runtime_module_base(const char *name);   /* runtime/loader.c: "main", "subsdk0", "sdk" (probes) */
 uint64_t runtime_module_permission(uint64_t address,uint64_t size,unsigned permission);
 uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned mask,unsigned attribute);

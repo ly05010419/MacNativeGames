@@ -48,7 +48,8 @@ static Mount mounts[16];
 static File files[NFILES];
 static Dir dirs[NDIRS];
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static char profile[1024], save_root[1024];
+static char profile[1024], save_root[1024], device_save_root[1024];
+static int use_dm_save;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 
 static void need(int c, const char *m) { if (!c) runtime_fail(m); }
@@ -63,6 +64,22 @@ int runtime_fs_save_busy(void) {
     return atomic_load(&save_dirty) && runtime_now_ns() - atomic_load(&save_changed_ns) < 3000000000ull;
 }
 static void make_dir(const char *p) { if (mkdir(p, 0700) && errno != EEXIST) runtime_fail("create profile storage directory"); }
+static void make_one_dir(const char *path) {
+    struct stat st;
+    if (!stat(path, &st)) {
+        if (!S_ISDIR(st.st_mode)) runtime_fail("create save directory");
+        return;
+    }
+    if (mkdir(path, 0700) && errno != EEXIST) runtime_fail("create save directory");
+}
+static void make_dir_tree(const char *path) {
+    char tmp[1024];
+    need(snprintf(tmp, sizeof tmp, "%s", path) < (int)sizeof tmp, "save directory path");
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') { *p = 0; make_one_dir(tmp); *p = '/'; }
+    }
+    make_one_dir(tmp);
+}
 static int remove_tree(const char *path) {
     DIR *d = opendir(path); if (!d) return errno == ENOENT ? 0 : -1;
     struct dirent *e; int ok = 0; char child[2048];
@@ -81,15 +98,28 @@ __attribute__((weak)) void runtime_cloud_save_quit(void) {}
 static void init(void) {
     const char *dir = getenv("TOTK_PROFILE_DIR"); if (!dir) dir = "user-data";
     need(snprintf(profile, sizeof profile, "%s", dir) < (int)sizeof profile, "profile path");
-    uint64_t uid[2]; runtime_account_uid(uid);
     char p[1100]; make_dir(profile);
-    snprintf(p, sizeof p, "%s/save", profile); make_dir(p);
-    need(snprintf(save_root, sizeof save_root, "%s/save/%016llx%016llx", profile, (unsigned long long)uid[1], (unsigned long long)uid[0]) < (int)sizeof save_root, "save path");
-    make_dir(save_root);                                   /* launcher-style EnsureSaveData */
     snprintf(p, sizeof p, "%s/temp", profile); remove_tree(p); make_dir(p);
     snprintf(p, sizeof p, "%s/cache", profile); make_dir(p);
-    fprintf(stderr, "[totk] host save storage: %s\n", save_root);
-    runtime_cloud_save_start(save_root, profile);   /* the sync folder's copy, when it is newer, before the game reads a save */
+    const char *dm_save = getenv("DM_SAVE");
+    if (dm_save && *dm_save) {
+        use_dm_save = 1;
+        need(snprintf(save_root, sizeof save_root, "%s", dm_save) < (int)sizeof save_root, "save path");
+        size_t len = strlen(save_root);
+        while (len > 1 && save_root[len - 1] == '/') save_root[--len] = 0;
+        need(snprintf(device_save_root, sizeof device_save_root, "%s_device", save_root) < (int)sizeof device_save_root, "device save path");
+        make_dir_tree(save_root);
+        fprintf(stderr, "[totk] host save storage (DM_SAVE): %s\n", save_root);
+    } else {
+        use_dm_save = 0;
+        device_save_root[0] = 0;
+        uint64_t uid[2]; runtime_account_uid(uid);
+        snprintf(p, sizeof p, "%s/save", profile); make_dir(p);
+        need(snprintf(save_root, sizeof save_root, "%s/save/%016llx%016llx", profile, (unsigned long long)uid[1], (unsigned long long)uid[0]) < (int)sizeof save_root, "save path");
+        make_dir(save_root);                                   /* launcher-style EnsureSaveData */
+        fprintf(stderr, "[totk] host save storage: %s\n", save_root);
+        runtime_cloud_save_start(save_root, profile);   /* the sync folder's copy, when it is newer, before the game reads a save */
+    }
 }
 static void ready(void) { pthread_once(&once, init); }
 
@@ -141,6 +171,12 @@ static unsigned mount_save(const char *name, const uint64_t *uid) {
     if (!uid || uid[0] != me[0] || uid[1] != me[1]) return R_TARGET_NOT_FOUND;
     return mount_add(name, M_SAVE, save_root);
 }
+static unsigned mount_device_save(const char *name) {   /* reached only with DM_SAVE (runtime_fs_host_override) */
+    ready();
+    if (!use_dm_save) return R_TARGET_NOT_FOUND;
+    make_dir_tree(device_save_root);
+    return mount_add(name, M_SAVE, device_save_root);
+}
 static unsigned char save_exists(uint64_t application, const uint64_t *uid) {
     ready(); uint64_t me[2]; runtime_account_uid(me);
     return application == TOTK_APPLICATION_ID && uid && uid[0] == me[0] && uid[1] == me[1];
@@ -181,8 +217,10 @@ static unsigned directory_entry_count(int64_t *count, uint64_t h) {
 #define HOST_SAVE_ROOM (1ULL << 30)
 static unsigned free_space(int64_t *out, const char *path) { (void)path; if (!out) return R_INVALID_ARGUMENT; *out = (int64_t)(16ULL << 30); return 0; }
 static unsigned save_data_size(int64_t *size, int64_t *journal, const uint64_t *uid) { (void)uid; if (size) *size = (int64_t)HOST_SAVE_ROOM; if (journal) *journal = (int64_t)HOST_SAVE_ROOM; return 0; }
+static unsigned device_save_data_size(int64_t *size, int64_t *journal) { return save_data_size(size, journal, NULL); }
 static unsigned save_data_size_max(int64_t *size, int64_t *journal) { if (size) *size = (int64_t)(4 * HOST_SAVE_ROOM); if (journal) *journal = (int64_t)(4 * HOST_SAVE_ROOM); return 0; }
 static unsigned extend_save_data(const uint64_t *uid, int64_t size, int64_t journal) { (void)uid; (void)size; (void)journal; return 0; }
+static unsigned extend_device_save_data(int64_t size, int64_t journal) { return extend_save_data(NULL, size, journal); }
 /* The fs library's allocator (SDK 20): the host's file system allocates nothing from it. */
 static void fs_allocator(void *alloc, void *dealloc) { (void)alloc; (void)dealloc; }
 /* A thread's file system context (from games/wonder's copy of this file): kept per thread, never consulted by the host. */
@@ -245,7 +283,7 @@ static unsigned commit(const char *name) {
     if (!found) return R_PATH_NOT_FOUND;
     for (int i = 0; i < NFILES; i++) { pthread_mutex_lock(&lock); int fd = files[i].fd; pthread_mutex_unlock(&lock); if (fd > 0) fcntl(fd, F_FULLFSYNC); }
     if (save && !(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 23)) atomic_store(&save_dirty, 0);   /* 23: probe-save's negative control */
-    if (save) runtime_cloud_save_changed();   /* a complete save: copied to the sync folder shortly */
+    if (save && !use_dm_save) runtime_cloud_save_changed();   /* a complete save: copied to the sync folder shortly */
     return 0;
 }
 
@@ -420,6 +458,9 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", read_directory},
         {"_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", close_directory},
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
+        {"_ZN2nn2fs19MountDeviceSaveDataEPKc", mount_device_save},
+        {"_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_", device_save_data_size},
+        {"_ZN2nn2fs20ExtendDeviceSaveDataEll", extend_device_save_data},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
         {"_ZN2nn2fs9IsMountedEPKc", is_mounted},
@@ -441,6 +482,10 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs21CloseCacheStorageListENS0_22CacheStorageListHandleE", close_cache_list},
         {"_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE", set_priority},
     };
+    /* Device save data is the host's only with an external DM_SAVE (its _device folder); without one the game's own
+       library answers these three, as it did before DM_SAVE was read here. */
+    const char *dm_save = getenv("DM_SAVE");
+    if (strstr(name, "DeviceSaveData") && !(dm_save && *dm_save)) return NULL;
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;
 }
