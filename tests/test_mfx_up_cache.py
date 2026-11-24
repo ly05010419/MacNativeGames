@@ -26,6 +26,8 @@ class MetalFXScalerCache(unittest.TestCase):
                 capture_output=True, text=True, timeout=120)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=60)
+            if run.returncode == 77:
+                self.skipTest('no Metal 4 MetalFX scaler on this Mac (virtual GPU)')
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('pass: two configurations in turn are kept', run.stdout)
 

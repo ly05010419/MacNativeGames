@@ -4,8 +4,9 @@
    two textures of different sizes, every other present. A full cache whose newest entry was always the next one to be
    replaced built a scaler at every present and used none (Breath of the Wild, 2026-11-23: 1080p + MetalFX to 2560x1440
    with 60+60 after several picks; "built in the background" about once a frame, no "switched to").
-   usage: mfx_up_cache_probe */
+   usage: mfx_up_cache_probe; exit 77 (skip) on a Mac without a Metal 4 MetalFX scaler, such as a CI runner's virtual GPU */
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #include <assert.h>
 #include <stdio.h>
 #include <time.h>
@@ -26,7 +27,10 @@ static void make_current(id<MTLTexture> src) {
 
 int main(void) {
     @autoreleasepool {
-        dev = MTLCreateSystemDefaultDevice(); assert(dev);
+        dev = MTLCreateSystemDefaultDevice();
+        /* The same requirements as the scaler cache itself (shared_objects): without them it never builds a scaler. */
+        if (!dev || ![dev newResidencySetWithDescriptor:[MTLResidencySetDescriptor new] error:nil] ||
+            ![MTLFXSpatialScalerDescriptor supportsMetal4FX:dev]) { printf("skip: no Metal 4 MetalFX scaler on this Mac\n"); return 77; }
         /* Three older configurations fill the cache; the last one stays current and is not asked for again. */
         id<MTLTexture> old[3] = {texture(64, 64), texture(80, 80), texture(96, 96)};
         for (int i = 0; i < 3; i++) make_current(old[i]);
