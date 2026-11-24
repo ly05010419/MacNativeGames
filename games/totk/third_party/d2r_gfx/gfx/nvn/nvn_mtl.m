@@ -3807,6 +3807,7 @@ static inline int ser_unaffected_since(uint64_t from, uint64_t serial) {
 static void ser_bump(uint64_t serial);
 /* 1 when none of the generation steps (from, to] was for this serial (or for "everything"). */
 static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
+    if (ser_unaffected_since(from, serial)) return 1;   // no step at all for it since `from`: the same answer without walking the steps (1.2 % of the replay, 2026-11-24)
     if (!serial || to - from >= SER_CHG_N) return 0;
     for (uint64_t g = from + 1; g <= to; g++) { uint64_t s = atomic_load_explicit(&g_ser_chg[g % SER_CHG_N], memory_order_relaxed); if (!s || s == serial) return 0; }
     return atomic_load_explicit(&g_ser_gen, memory_order_acquire) - from < SER_CHG_N;   // no slot was overwritten while scanning
@@ -4267,6 +4268,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_capture")) { atomic_store(&g_raw_write_capture,MAX(0,MIN(v,16))); MLOG("[flag] raw_write_capture = %d",atomic_load(&g_raw_write_capture)); return; }
     if (!strcmp(name,"writer_boundary")) { atomic_store(&g_writer_boundary,v!=0&&!TARGET_OS_IPHONE); MLOG("[flag] writer_boundary = %d seals=%llu waits=%llu wait-ms=%.3f",writer_boundary_on(),(unsigned long long)g_writer_seals,(unsigned long long)g_writer_waits,(double)g_writer_wait_ns/1e6);return; }
+    if (!strcmp(name,"rs_spin_us")) { atomic_store(&g_rs_spin_flag,(uint64_t)MAX(0,v)*1000ull); MLOG("[flag] rs_spin_us = %d (0 = default): the encode stage's wait on an empty queue before it sleeps",v); return; }
     if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
     if (!strcmp(name,"raw_range_cache")) { atomic_store(&g_raw_range_cache,v!=0); MLOG("[flag] raw_range_cache = %d",v!=0); return; }
     if (!strcmp(name,"descriptor_profile")) { descriptor_profile_set(v!=0); return; }
@@ -7651,7 +7653,9 @@ static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
     id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
-    NSMutableDictionary<NSNumber *, NSData *> *pool_demand;   /* read only (pool_demand_for): a memo's NSData or a fresh bitmap */
+    /* read only (pool_demand_for): a memo's NSData or a fresh bitmap, per binding aid; its bytes beside it, and the aids set
+       (a dictionary keyed by boxed aids until 2026-11-24: cleared, set and looked up for every draw of a pool shader). */
+    NSData *pool_demand[NVN_REFL_MAXB]; const uint64_t *pool_demand_bytes[NVN_REFL_MAXB]; uint64_t pool_demand_set;
     uint64_t pool_capture_mask, pool_capture_gpu[NVN_REFL_MAXB];
     const uint8_t *pool_capture_cpu[NVN_REFL_MAXB];
     /* pool_demand_prepare's answer per pool binding (indexed like rf.b), kept with the identity of the inputs it was computed
@@ -14371,8 +14375,8 @@ static int pool_memo_lookup(NvShader *sh,NvPoolMemo *m,uint64_t n,const int *src
 }
 static void pool_demand_prepare(NvShader *sh) {
     if(atomic_exchange(&g_pool_wait_dump,0))MLOG("[pool-wait-stats] precise=%d prior=%llu current=%llu wait-ms=%.3f capture-new=%llu",pool_wait_precise_on(),(unsigned long long)g_pool_wait_prior,(unsigned long long)g_pool_wait_current,(double)g_pool_wait_ns/1e6,(unsigned long long)g_pool_input_misses);
-    if(!sh->pool_demand)sh->pool_demand=[NSMutableDictionary dictionary];
-    [sh->pool_demand removeAllObjects];sh->pool_capture_mask=0;memset(sh->pool_hint,0,sizeof sh->pool_hint);
+    for(uint64_t bits=sh->pool_demand_set;bits;bits&=bits-1){int a=__builtin_ctzll(bits);sh->pool_demand[a]=nil;sh->pool_demand_bytes[a]=NULL;}
+    sh->pool_demand_set=0;sh->pool_capture_mask=0;memset(sh->pool_hint,0,sizeof sh->pool_hint);
     int gate=!pool_demand_on()?1:!usnap_on()?2:totk_vpool_aliases_used()?3:pool_draw_writes(sh)?4:0;
     if(gate){static unsigned reports[5];g_pool_demand_excluded++;if(reports[gate]++<2)MLOG("[descriptor-demand-excluded] shader=%s stage=%d reason=%d",sh->key,sh->stage,gate);return;}
     int n=S.tex_pool_n-S.tex_base;if(n<=0||n>1048576)return;
@@ -14409,7 +14413,7 @@ static void pool_demand_prepare(NvShader *sh) {
         int check=hitw>=0&&pool_memo_check_on();
         if(hitw>=0){
             memo->ent[hitw].use=memo->lru[hitw]=++memo->clock;memo->mru=hitw;
-            if(!check){sh->pool_demand[@(b->aid)]=memo->need[hitw];sh->pool_hint[b->aid]=&memo->ent[hitw].hint;g_pool_demand_proved++;g_pool_demand_memo++;continue;}
+            if(!check){sh->pool_demand[b->aid]=memo->need[hitw];sh->pool_demand_bytes[b->aid]=memo->need[hitw].bytes;sh->pool_demand_set|=UINT64_C(1)<<b->aid;sh->pool_hint[b->aid]=&memo->ent[hitw].hint;g_pool_demand_proved++;g_pool_demand_memo++;continue;}
         }
         NSMutableData *uniforms=memo_ok?[NSMutableData data]:nil;pool_memo_reader reader={sh,uniforms,1};
         NSMutableData *data=[NSMutableData dataWithLength:words*8];uint64_t *need=data.mutableBytes;need[0]|=1; // proved constant-zero branch
@@ -14430,7 +14434,7 @@ static void pool_demand_prepare(NvShader *sh) {
             if([data isEqualToData:memo->need[hitw]])g_pool_memo_check_ok++;
             else{g_pool_memo_check_bad++;if(g_pool_memo_check_bad<=8)MLOG("【红】[descriptor-demand-check] shader=%s binding=%d: the memo's bitmap (way %d) differs from a fresh proof, n=%d",sh->key,b->aid,hitw,n);}
         }
-        sh->pool_demand[@(b->aid)]=data;g_pool_demand_proved++;
+        sh->pool_demand[b->aid]=data;sh->pool_demand_bytes[b->aid]=need;sh->pool_demand_set|=UINT64_C(1)<<b->aid;g_pool_demand_proved++;
         if(!sh->pool_hint_scratch&&!(sh->pool_hint_scratch=calloc(NVN_REFL_MAXB,sizeof *sh->pool_hint_scratch)))MDIE("pool demand hint allocation failed");
         sh->pool_hint_scratch[b->aid]=hint;sh->pool_hint[b->aid]=&sh->pool_hint_scratch[b->aid];   // until a memo entry keeps it (below)
         if(check)continue;
@@ -14449,7 +14453,7 @@ static void pool_demand_prepare(NvShader *sh) {
         else{unsigned s=(unsigned)(e->uhash%POOL_MEMO_SLOTS);while(memo->slot[s])s=(s+1)%POOL_MEMO_SLOTS;memo->slot[s]=(uint16_t)(w+1);}
     }
 }
-static const uint64_t *pool_demand_for(NvShader *sh,const nvn_rbind *b) { return [sh->pool_demand objectForKey:@(b->aid)].bytes; }
+static const uint64_t *pool_demand_for(NvShader *sh,const nvn_rbind *b) { return sh->pool_demand_bytes[b->aid]; }
 static uint64_t descriptor_pool_for_shader(NvShader *sh,const nvn_rbind *b,int bound){
  (void)bound; return descriptor_pool_gpu_need_c(b,pool_demand_for(sh,b),sh->pool_hint[b->aid]);
 }

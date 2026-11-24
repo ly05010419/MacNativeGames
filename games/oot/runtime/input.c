@@ -394,6 +394,9 @@ static int input_game_flag(const char *name, int v) {
     else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
     else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
 #endif
+    else if (!strcmp(name,"yield_backoff")) { extern void runtime_yield_backoff_set(int,int); runtime_yield_backoff_set(v,-1); }   /* µs a polling thread sleeps at most (0 = off; threads.c yield_backoff_ns) */
+    else if (!strcmp(name,"yield_fast")) { extern void runtime_yield_fast_set(int); runtime_yield_fast_set(v); }
+    else if (!strcmp(name,"yield_start")) { extern void runtime_yield_backoff_set(int,int); runtime_yield_backoff_set(-1,v); }   /* µs of yields before the first sleep */
     else if (!strcmp(name,"fps_lock")) { extern void nvn_fps_lock_set(int); nvn_fps_lock_set(v); }   /* the frame lock (0 = off), as the settings panel's row: one run can try every lock */
     else return 0;
     return 1;

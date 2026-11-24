@@ -40,9 +40,15 @@ static int mesh_batch_on(void) {
 }
 /* A write of [lo, lo+size) reaches the GPU timeline: entries overlapping it go, except the ones whose value is this very
    update (a == the update's payload; pre-applied in mesh_batch_prepare): those stay, or switch to their next value. */
+/* The table's sources lie in [g_mb_lo, g_mb_hi) (only widened while the table has entries): a write outside it meets none
+   of them. Every draw reports its render targets and its shaders' writable ranges here, 159 million writes in 50,000
+   frames, each walking the whole table: 1.5 % of the replay thread (Time Profiler 2026-11-24). */
+static uint64_t g_mb_lo,g_mb_hi;
+static void mesh_batch_span(uint64_t source){if(!g_mb_n){g_mb_lo=source;g_mb_hi=source+8;}else{if(source<g_mb_lo)g_mb_lo=source;if(source+8>g_mb_hi)g_mb_hi=source+8;}}
 static void mesh_batch_write_why(uint64_t lo,uint64_t size,const void *a,uint64_t *why) {
     if(g_mb_negative==1||!g_mb_n)return;
     if(!size||size>UINT64_MAX-lo){g_mb_invalid+=g_mb_n;*why+=g_mb_n;g_mb_n=0;return;}
+    if(lo>=g_mb_hi||lo+size<=g_mb_lo)return;
     unsigned kept=0;for(unsigned i=0;i<g_mb_n;i++){
         mesh_batch_entry e=g_mb[i];
         if(e.source<lo+size&&lo<e.source+8){
@@ -223,13 +229,13 @@ static void mesh_batch_prepare(uint64_t current) {
         if(fill[k].cpu){   // the value is the update's bytes: written here, the kernel skips the job (source 0)
             outs[k*4]=fill[k].cnt;outs[k*4+1]=1;outs[k*4+2]=1;outs[k*4+3]=fill[k].first;jobs[k]=(job){0,out+(uint64_t)k*16};g_mb_cpu++;issued++;
             if(fill[k].next&&slot<g_mb_n){mesh_batch_entry *e=&g_mb[slot];e->next_grid=out+(uint64_t)k*16;e->next_cnt=fill[k].cnt;e->next_first=fill[k].first;e->next_applied=fill[k].a;continue;}
-            if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=out+(uint64_t)k*16,.stamp=stamp,.hostwrite=hostwrite,.applied=fill[k].a,.cnt=fill[k].cnt,.first=fill[k].first,.cpu=1};continue;
+            mesh_batch_span(address);if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=out+(uint64_t)k*16,.stamp=stamp,.hostwrite=hostwrite,.applied=fill[k].a,.cnt=fill[k].cnt,.first=fill[k].first,.cpu=1};continue;
         }
         upd_guard(address,address+8);
         void *source;uint64_t offset,gpu;if(!mtl_gpu_addr(address,8,&source,&offset,&gpu)){memo=0;continue;}
         gpu_read_input(address,8,"mesh-batch-src",'m');   // OOT_RACE_CHECK / OOT_GPU_READ_FENCE: the batch kernel reads the source on the GPU
         jobs[k]=(job){gpu,out+(uint64_t)k*16};
-        if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=jobs[k].output,.stamp=stamp,.hostwrite=hostwrite};issued++;gpu_jobs++;
+        mesh_batch_span(address);if(slot==g_mb_n)g_mb_n++;g_mb[slot]=(mesh_batch_entry){.source=address,.grid=jobs[k].output,.stamp=stamp,.hostwrite=hostwrite};issued++;gpu_jobs++;
     }
     if(gpu_jobs){
         blit_close();id<MTL4ComputeCommandEncoder> encoder=enc_c_begin(NULL);[encoder setLabel:@"OOT mesh_grid_batch"];
