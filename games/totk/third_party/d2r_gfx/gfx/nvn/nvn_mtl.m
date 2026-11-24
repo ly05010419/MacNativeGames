@@ -466,7 +466,7 @@ static NSHashTable *g_res_objects;
    all show ~15 GB of wired memory on the 16 GB machine with totk-native on the Metal submission queue: the driver ran out
    of memory wiring what this residency set made resident. Live resident bytes are attributed to the res_add source line
    so unbounded growth can be located, and gpu_budget_check refuses to go on past a budget instead of handing it to the driver. */
-#define RES_SITES 8192
+#define RES_SITES 32768   /* nvn_mtl.m has more than 26,000 lines: at 8192 most registrations were counted under site 0 (2026-11-24) */
 static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, alive_bytes; } g_res_site[RES_SITES];   // alive*: objects not yet deallocated (whether or not still resident)
 /* Deallocation probe: an associated object whose dealloc runs when the Metal object itself is freed, so "removed from the
    residency set but still alive" (retained elsewhere) can be told apart from "freed". */
@@ -1306,6 +1306,11 @@ static const char *memory_inventory_path(void) {
 static void pool_res(pidx_ent *p, int origin) {   // caller holds g_mu; first cause: 1 binding, 2 CPU range query, 3 raw table
     if (p->res) return;
     if (memory_inventory_path()) objc_setAssociatedObject((__bridge id)p->buf, &g_pool_origin_key, @(origin), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (memory_inventory_path() && p->hi - p->lo >= (64u << 20)) {   // TOTK_MEMORY_INVENTORY: who first makes a large pool resident
+        void *bt[24]; int n = backtrace(bt, 24); char **sy = backtrace_symbols(bt, n); char line[2400]; int o = 0;
+        for (int i = 1; i < n && o < 2200; i++) { const char *q = sy ? sy[i] : "?"; const char *nm = strstr(q, "0x"); nm = nm ? strchr(nm, ' ') : NULL; o += snprintf(line + o, sizeof line - o, " <-%s", nm ? nm : q); }
+        MLOG("[pool-resident] %llu MB pool %#llx made resident (origin %d) by:%s", (unsigned long long)((p->hi - p->lo) >> 20), (unsigned long long)p->lo, origin, line); free(sy);
+    }
     res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
     p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
 }
@@ -1437,6 +1442,18 @@ int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     if (!pool_lookup(addr, len, buf, &base, &gpu)) return 0;
     *off = addr - base;
     return 1;
+}
+/* Which pool allocation holds [addr, addr+len) and where in it, for a caller that only names the storage (a key, a log
+   line) and reads nothing through the GPU. Unlike mtl_addr it does not make the pool resident: the VR projection graph
+   keyed its images this way and so pinned every pool a render target or sampled texture lay in (2026-11-24, Ocarina of
+   Time, Quest 3 on a 16 GB Mac: 41 pools, 3,889 MB resident from the first frames in the world, one of them 2,432 MB,
+   against 15 pools / 36 MB without VR; a GPU out-of-memory error followed at a larger eye size). */
+static int mtl_addr_identity(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
+    pthread_mutex_lock(&g_mu);
+    pidx_ent *p = pool_query((uintptr_t)addr, len);
+    if (p) { *buf = p->buf; *off = addr - p->base; }
+    pthread_mutex_unlock(&g_mu);
+    return p != NULL;
 }
 int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_t *gpu) {
     uint64_t base, pgpu;
@@ -7065,7 +7082,7 @@ static vr_projection_image vr_native_image(const tex_t *t,const view_t *v,int ha
     uint64_t delta=nvn_tex_level_offset(&t->d,level)+slice*t->L.layer_size;
     if(delta>=t->L.size)return (vr_projection_image){0};
     void *allocation=NULL;uint64_t offset=0;
-    if(!mtl_addr((uint64_t)(uintptr_t)t->mem+delta,1,&allocation,&offset))return (vr_projection_image){0};
+    if(!mtl_addr_identity((uint64_t)(uintptr_t)t->mem+delta,1,&allocation,&offset))return (vr_projection_image){0};   // a key only: not made resident
     return (vr_projection_image){(__bridge id)allocation,offset,MAX(t->d.width>>level,1u),MAX(t->d.height>>level,1u)};
 }
 static int vr_projection_tracking(void){return vr_labo_active()||vr_wants_camera();}
