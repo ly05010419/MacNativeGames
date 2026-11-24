@@ -356,9 +356,10 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(BOOL)isFlipped{return YES;}
 @end
 
-/* The glass look (2026-11-24, the look of PR #1297 on this panel: its pages, rows and controls are the ones of before).
-   The picked thing is a white block with dark text: the tab's block slides to the next tab, a row picked with the
-   controller turns white and its controls take the light appearance. */
+/* The glass look (2026-11-24, from PR #1297's on this panel: its pages, rows and controls are the ones of before). The
+   panel is the system's frosted glass (-init), each row a clear tile on it. The picked thing is a white block with dark
+   text: the tab's block slides to the next tab, a row picked with the controller turns white and its controls take
+   the light appearance. */
 static NSColor *settings_ink(void){return [NSColor colorWithCalibratedRed:0.067 green:0.094 blue:0.125 alpha:1];}
 /* The tabs: a dark capsule, the white block under the picked one. It answers what the panel and its probe ask of the
    NSSegmentedControl it stands in for (selectedSegment, segmentCount, labelForSegment:, target and action). */
@@ -436,7 +437,7 @@ enum { SETTINGS_TABS_MAX = 16 };
 -(void)setPicked:(BOOL)picked{
  if(picked==_picked)return;
  _picked=picked;
- self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:picked?1:0 alpha:picked?0.92:0.24].CGColor;self.layer.shadowOpacity=picked?0.2:0;
+ self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:1 alpha:picked?0.92:0.09].CGColor;self.layer.shadowOpacity=picked?0.2:0;   /* a clear tile on the glass */
  /* the row's own controls (menu, switch, slider, button) are the system's: light on the white block, dark otherwise */
  self.appearance=picked?[NSAppearance appearanceNamed:NSAppearanceNameAqua]:nil;
  for(NSView *v in self.subviews)if([v isKindOfClass:NSTextField.class])((NSTextField *)v).textColor=picked?settings_ink():[NSColor colorWithCalibratedWhite:0.92 alpha:1];
@@ -573,8 +574,7 @@ static NSString *settings_version_text(void) {
    the English tabs with VR need about 700 pt and stay inside the bar's 14 pt margins from a 728 pt panel; narrower, the bar
    spills over its margins, and under about 708 pt labels are cut to "…"). A window too narrow for it gets a narrower panel,
    down to SETTINGS_NARROW_W (the width before the 截图分享 tab). */
-enum { SETTINGS_RADIUS = 20 };
-#define SETTINGS_GLASS_TINT 0.62   /* the blue-grey over the blurred game */
+enum { SETTINGS_RADIUS = RUNTIME_GLASS_RADIUS };   /* hud_box.h: the glass's one corner */
 enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 90, SETTINGS_BOTTOM = 34, SETTINGS_POP_W = 260, SETTINGS_POP_MAX_W = 304, SETTINGS_LABEL_W = 350,
        SETTINGS_CELL_W = 118, SETTINGS_CELL_MAX_W = 140, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
@@ -598,19 +598,25 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 #endif
  self.drawings=drawings;self.panelW=W;self.bindingButtons=[NSMutableArray array];self.bindingTargets=[NSMutableArray array];
  self.allRows=rows;self.controllerTargets=[NSMutableArray array];self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
- /* The glass: the game behind blurred (the window's own blending), the panel's blue-grey over it, a rim of white 16 %, a
-    lighter line inside the top and a soft shadow below. SETTINGS_PANEL_ALPHA 1 (a game that wants nothing shining
-    through) keeps the colour solid. */
- self.wantsLayer=YES;self.layer.cornerRadius=SETTINGS_RADIUS;self.layer.shadowColor=NSColor.blackColor.CGColor;self.layer.shadowOpacity=0.4;self.layer.shadowRadius=28;
- self.layer.shadowOffset=NSMakeSize(0,-14);CGPathRef outline=CGPathCreateWithRoundedRect(CGRectMake(0,0,W,h),SETTINGS_RADIUS,SETTINGS_RADIUS,NULL);self.layer.shadowPath=outline;CGPathRelease(outline);
- NSVisualEffectView *glass=[[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0,0,W,h)];glass.blendingMode=NSVisualEffectBlendingModeWithinWindow;
- glass.state=NSVisualEffectStateActive;glass.material=NSVisualEffectMaterialHUDWindow;
- glass.wantsLayer=YES;glass.layer.cornerRadius=SETTINGS_RADIUS;glass.layer.masksToBounds=YES;
- glass.layer.borderWidth=1;glass.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.16].CGColor;
- NSView *tint=[[NSView alloc] initWithFrame:glass.bounds];tint.wantsLayer=YES;
- tint.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:SETTINGS_PANEL_ALPHA>=1?1:SETTINGS_GLASS_TINT].CGColor;[glass addSubview:tint];self.tint=tint;
- CALayer *shine=[CALayer layer];shine.frame=CGRectMake(SETTINGS_RADIUS,h-2,W-2*SETTINGS_RADIUS,1);shine.backgroundColor=[NSColor colorWithCalibratedWhite:1 alpha:0.18].CGColor;[tint.layer addSublayer:shine];
- [self addSubview:glass];
+ /* The glass (user 2026-11-24, a picture of the system's Control Centre: "这种"): the system's own glass (its regular, frosted style), the game
+    showing through it frosted with the glass's bright rim, black at RUNTIME_GLASS_TINT over it so the white type
+    stays readable on a bright scene. Before macOS 26 (no NSGlassEffectView): the window's blur under the panel's
+    blue-grey. SETTINGS_PANEL_ALPHA 1 (a game that wants nothing shining through) keeps that blue-grey solid. */
+ self.wantsLayer=YES;self.layer.cornerRadius=SETTINGS_RADIUS;
+ NSView *tint=[[NSView alloc] initWithFrame:NSMakeRect(0,0,W,h)];tint.wantsLayer=YES;tint.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;self.tint=tint;
+ BOOL solid=SETTINGS_PANEL_ALPHA>=1,system=NO;
+ NSView *systemGlass=solid?nil:runtime_glass_view(NSMakeRect(0,0,W,h),&tint);   /* hud_box.h */
+ if(systemGlass){system=YES;self.tint=tint;[self addSubview:systemGlass];}
+ if(!system){
+  self.layer.shadowColor=NSColor.blackColor.CGColor;self.layer.shadowOpacity=0.4;self.layer.shadowRadius=28;self.layer.shadowOffset=NSMakeSize(0,-14);
+  CGPathRef outline=CGPathCreateWithRoundedRect(CGRectMake(0,0,W,h),SETTINGS_RADIUS,SETTINGS_RADIUS,NULL);self.layer.shadowPath=outline;CGPathRelease(outline);
+  NSVisualEffectView *glass=[[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0,0,W,h)];glass.blendingMode=NSVisualEffectBlendingModeWithinWindow;
+  glass.state=NSVisualEffectStateActive;glass.material=NSVisualEffectMaterialHUDWindow;
+  glass.wantsLayer=YES;glass.layer.cornerRadius=SETTINGS_RADIUS;glass.layer.masksToBounds=YES;
+  glass.layer.borderWidth=1;glass.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.16].CGColor;
+  tint.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:solid?1:0.62].CGColor;[glass addSubview:tint];
+  [self addSubview:glass];
+ }
  self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
  NSTextField *title=[NSTextField labelWithString:settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];

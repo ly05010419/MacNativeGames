@@ -3,6 +3,23 @@
    fpsGraphBox, fpsGraphEnabled and playtime; it needs settings_pad_family and settings_panel_pad_text from
    settings_panel.h and runtime_gamepad_battery_percent / _left_percent from gamepad.m. */
 enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
+/* The system's frosted glass (macOS 26's NSGlassEffectView, its regular style) in the dark appearance with black at RUNTIME_GLASS_TINT over it for the type
+   on it: the ground of this box and of the settings panel (user 2026-11-24, of the panel "很好", then "fps pannel 也是
+   一样效果"). The clear style was too see-through over the game while its window was the active one. The class by
+   name and its properties by key, so an SDK older than macOS 26 still builds this file; nil where the system has
+   none (the caller keeps its plain dark ground). *tintView: the black layer's view, the glass's content. */
+#define RUNTIME_GLASS_TINT 0.22   /* black over the glass, for the type on it */
+enum { RUNTIME_GLASS_RADIUS = 20 };   /* one corner for every glass surface: the panel's and the box's are the same glass */
+static NSView *runtime_glass_view(NSRect frame,NSView *__strong *tintView) {
+ const CGFloat radius=RUNTIME_GLASS_RADIUS;
+ Class glassClass=NSClassFromString(@"NSGlassEffectView");if(!glassClass)return nil;
+ NSView *glass=[[glassClass alloc] initWithFrame:frame];[glass setValue:@0 forKey:@"style"];
+ glass.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];   /* the glass follows its appearance: without this the box was the light glass, the panel the dark */[glass setValue:@(radius) forKey:@"cornerRadius"];
+ NSView *dark=[[NSView alloc] initWithFrame:NSMakeRect(0,0,frame.size.width,frame.size.height)];dark.wantsLayer=YES;dark.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+ dark.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:RUNTIME_GLASS_TINT].CGColor;dark.layer.cornerRadius=radius;
+ [glass setValue:dark forKey:@"contentView"];if(tintView)*tintView=dark;
+ return glass;
+}
 @interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
@@ -35,6 +52,9 @@ static NSString *hud_build_text(const char *launcher,const char *commit) {
 }
 @implementation TOTKHudBox
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.72].CGColor;self.layer.cornerRadius=7;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor;
+ /* the same glass as the settings panel, where the system has it: the plain dark ground and its border go */
+ NSView *glass=runtime_glass_view(self.bounds,NULL);
+ if(glass){glass.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;self.layer.backgroundColor=NSColor.clearColor.CGColor;self.layer.borderWidth=0;self.layer.cornerRadius=RUNTIME_GLASS_RADIUS;[self addSubview:glass];}
  self.label=[NSTextField labelWithString:@""];self.label.alignment=NSTextAlignmentLeft;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByClipping;[self addSubview:self.label];
  [self refresh];if(hud_compact()){__weak TOTKHudBox *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}}return self;}
 -(void)refresh{
@@ -79,11 +99,12 @@ static NSString *hud_build_text(const char *launcher,const char *commit) {
 -(void)position{if(!self.superview)return;
  CGFloat graphH=fpsGraphEnabled?FPS_GRAPH_HEIGHT:0,graphW=fpsGraphEnabled?FPS_GRAPH_WIDTH:0;
  CGFloat contentW=fmax(self.textSize.width,graphW);
- CGFloat w=contentW+16,h=self.textSize.height+graphH+10,m=10;
+ /* the text and graph 12 x 8 in from the edge (were 8 x 5): clear of the glass's round corners */
+ CGFloat w=contentW+24,h=self.textSize.height+graphH+16,m=10;
  NSRect f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);
  if(!NSEqualRects(self.frame,f))self.frame=f;
- self.label.frame=NSMakeRect(8,graphH+5,self.textSize.width,self.textSize.height);
- if(fpsGraphEnabled)fpsGraphBox.frame=NSMakeRect(8,5,contentW,FPS_GRAPH_HEIGHT);}
+ self.label.frame=NSMakeRect(12,graphH+8,self.textSize.width,self.textSize.height);
+ if(fpsGraphEnabled)fpsGraphBox.frame=NSMakeRect(12,8,contentW,FPS_GRAPH_HEIGHT);}
 @end
 @interface TOTKFpsGraph:NSView {
  int _samples[FPS_GRAPH_SAMPLES];

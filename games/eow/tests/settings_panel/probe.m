@@ -151,7 +151,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
     /* The Zelda games' glass (the game shows through, blurred): this game sets no SETTINGS_PANEL_ALPHA of its own. */
-    assert(fabs(CGColorGetAlpha(settingsPanel.tint.layer.backgroundColor) - SETTINGS_GLASS_TINT) < 1e-6);
+    assert(CGColorGetAlpha(settingsPanel.tint.layer.backgroundColor) < 1.0);   /* the system's glass, or the blur before macOS 26 */
 
     /* The tabs (2026-11-17, as the Zelda games, without a User page, the shader contribution or VR). */
     assert(settings_pages() == 6 && settingsPanel.tabs.segmentCount == 6);
