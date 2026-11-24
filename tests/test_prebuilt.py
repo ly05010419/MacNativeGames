@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -258,6 +259,54 @@ class GamesTheProgramsDoNotCover(unittest.TestCase):
                 clang.parent.mkdir(parents=True)
                 clang.write_text('')
                 self.assertFalse(classify.no_developer_tools())
+
+
+class RuntimeSignature(unittest.TestCase):
+    """A runtime maps guest code at start (mprotect to PROT_EXEC); signed with the hardened runtime without the
+    entitlements that permit it, macOS kills it (SIGKILL, exit 137) and every update's runtime probe fails."""
+
+    def _macho(self, root, *, runtime=False, entitlements=False):
+        """A real Mach-O (the system's true) signed as asked; its bytes."""
+        src = shutil.which('true')
+        if not src or not shutil.which('codesign'):
+            self.skipTest('codesign and a Mach-O are needed to test the signature')
+        p = root / 'true'
+        p.write_bytes(Path(src).read_bytes())
+        args = ['codesign', '--force', '--sign', '-']
+        if runtime:
+            args += ['--options', 'runtime']
+        if entitlements:
+            ent = root / 'ent.plist'
+            ent.write_text(prebuilt.RUNTIME_ENTITLEMENTS)
+            args += ['--entitlements', str(ent)]
+        args.append(str(p))
+        subprocess.run(args, check=True, capture_output=True)
+        return p
+
+    def test_runtime_signature_ok_for_the_three_forms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertTrue(prebuilt.runtime_signature_ok(self._macho(root)))
+            self.assertFalse(prebuilt.runtime_signature_ok(self._macho(root, runtime=True)))
+            self.assertTrue(prebuilt.runtime_signature_ok(self._macho(root, runtime=True, entitlements=True)))
+
+    def test_program_takes_a_runtime_only_when_its_signature_permits_guest_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad = self._macho(root, runtime=True)   # hardened runtime, no entitlements
+            src = root / 'src'; src.mkdir()
+            source_with(src, {'totk-native': bad.read_bytes()})
+            self.assertIsNone(prebuilt.program(src, 'totk-native'))
+            good = self._macho(root, runtime=True, entitlements=True)
+            src2 = root / 'src2'; src2.mkdir()
+            source_with(src2, {'totk-native': good.read_bytes()})
+            self.assertEqual(prebuilt.program(src2, 'totk-native'), src2 / '.prebuilt/totk-native')
+
+    def test_a_non_macho_stand_in_is_left_alone(self):
+        """The tests' stand-in programs are a few bytes, not Mach-O: codesign cannot read them, so they are taken."""
+        with tempfile.TemporaryDirectory() as tmp:
+            src = source_with(Path(tmp), {'totk-native': b'runtime'})
+            self.assertEqual(prebuilt.program(src, 'totk-native'), src / '.prebuilt/totk-native')
 
 
 if __name__ == '__main__':

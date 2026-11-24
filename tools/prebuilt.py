@@ -39,6 +39,19 @@ def runtime_name(version):
 OOT_PROGRAMS = {'oot-native': 'oot-native', 'oot-pool-sources-list': 'pool-sources-list'}   # name here: name in build/
 NAMES = (*(runtime_name(v) for v in TOTK_VERSIONS), 'spirv-cross', 'warm-metal-cache', 'hactool', *OOT_PROGRAMS)
 
+# The runtimes map the game's code into executable memory at start (games/totk/runtime/loader.c seal: mprotect to
+# PROT_EXEC). A process signed with the hardened runtime that does this without the entitlements that permit it is killed
+# by macOS (SIGKILL, exit 137), so a runtime signed hardened but without them fails every build's runtime probe: the
+# update dies with "the new runtime does not load the app's game files". These are the runtimes (not spirv-cross, the
+# warm-up tool, hactool or the pool-sources list, which map no guest code) and the entitlements they need.
+RUNTIME_NAMES = (*[runtime_name(v) for v in TOTK_VERSIONS], 'oot-native')
+RUNTIME_ENTITLEMENTS = '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+</dict></plist>'''
+
 
 class Missing(Exception):
     """A compile MNG_PREBUILT_ONLY=1 forbids."""
@@ -76,12 +89,39 @@ def _sha256(path):
     return h.hexdigest()
 
 
+_MACHO_MAGICS = (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca',
+                 b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce')
+
+
+def runtime_signature_ok(path):
+    """True when a runtime binary may map guest code: it is not signed with the hardened runtime without the
+    entitlements that permit it (com.apple.security.cs.allow-jit and allow-unsigned-executable-memory). The release signs
+    these (build); the Launcher's own Developer ID re-signing of the source it ships must keep the entitlements, else
+    every update is killed at its runtime probe (SIGKILL, exit 137). A file that is not a Mach-O (a test's stand-in) is
+    left alone."""
+    with open(path, 'rb') as f:
+        if f.read(4) not in _MACHO_MAGICS:
+            return True   # not a Mach-O: nothing to check
+    r = subprocess.run(['codesign', '-d', '--verbose=2', str(path)], capture_output=True, text=True)
+    if r.returncode != 0:
+        return True
+    flags = next((ln for ln in (r.stdout + r.stderr).splitlines() if 'flags=' in ln), '')
+    if 'runtime' not in flags:
+        return True   # not the hardened runtime: mapped guest code needs no entitlement
+    r = subprocess.run(['codesign', '-d', '--entitlements', '-', str(path)], capture_output=True, text=True)
+    ents = r.stdout + r.stderr
+    return 'allow-jit' in ents and 'allow-unsigned-executable-memory' in ents
+
+
 def program(source, name):
-    """The prebuilt program `name` of this source, its digest checked, or None."""
+    """The prebuilt program `name` of this source, its digest checked (and a runtime's signature: it must not be the
+    hardened runtime without the entitlements its mapped guest code needs), or None."""
     data = manifest(source)
     entry = (data or {}).get('files', {}).get(name)
     path = Path(source) / FOLDER / name
     if not entry or not path.is_file() or _sha256(path) != entry.get('sha256'):
+        return None
+    if name in RUNTIME_NAMES and not runtime_signature_ok(path):
         return None
     return path
 
@@ -149,20 +189,31 @@ def build(source):
     # checked in, made from the runtime sources: a fresh checkout's file times must not ask make to make it again (that
     # needs the build's Python environment)
     (totk / 'runtime/botw_pchtxt_sites.h').touch()
-    for version in TOTK_VERSIONS:
-        name = runtime_name(version)
-        build_app.run(['make', '-C', totk, f'-j{jobs}', f'build/{name}'], logs / f'{name}.log', env=env)
-        shutil.copy2(totk / 'build' / name, out / name)
-    build_app.build_spirv_cross(totk, logs)   # fetches the pinned sources into totk/tooling (git)
-    shutil.copy2(totk / 'build/spirv-cross/spirv-cross', out / 'spirv-cross')
-    build_app.build_warm_tool(totk, logs, env)
-    shutil.copy2(totk / 'build/warm-metal-cache', out / 'warm-metal-cache')
-    shutil.copy2(build_app.build_hactool(totk, logs), out / 'hactool')
-    oot_work = Path(tempfile.mkdtemp(prefix='mng-prebuilt-oot-'))   # make's WORK: outside the source, with no space
-    build_app.run(['make', '-C', source / 'games/oot', f'-j{jobs}', f'WORK={oot_work}', 'runtime'], logs / 'oot.log', env=env)
-    for name, made in OOT_PROGRAMS.items():
-        shutil.copy2(oot_work / 'build' / made, out / name)
-    shutil.rmtree(oot_work, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix='mng-runtime-ent-') as entdir:
+        ent = Path(entdir) / 'runtime.entitlements'
+        ent.write_text(RUNTIME_ENTITLEMENTS)
+
+        def sign_runtime(name):
+            build_app.run(['codesign', '--force', '--sign', '-', '--options', 'runtime',
+                           '--entitlements', str(ent), str(out / name)], logs / f'{name}-sign.log', env=env)
+
+        for version in TOTK_VERSIONS:
+            name = runtime_name(version)
+            build_app.run(['make', '-C', totk, f'-j{jobs}', f'build/{name}'], logs / f'{name}.log', env=env)
+            shutil.copy2(totk / 'build' / name, out / name)
+            sign_runtime(name)
+        build_app.build_spirv_cross(totk, logs)   # fetches the pinned sources into totk/tooling (git)
+        shutil.copy2(totk / 'build/spirv-cross/spirv-cross', out / 'spirv-cross')
+        build_app.build_warm_tool(totk, logs, env)
+        shutil.copy2(totk / 'build/warm-metal-cache', out / 'warm-metal-cache')
+        shutil.copy2(build_app.build_hactool(totk, logs), out / 'hactool')
+        oot_work = Path(tempfile.mkdtemp(prefix='mng-prebuilt-oot-'))   # make's WORK: outside the source, with no space
+        build_app.run(['make', '-C', source / 'games/oot', f'-j{jobs}', f'WORK={oot_work}', 'runtime'], logs / 'oot.log', env=env)
+        for name, made in OOT_PROGRAMS.items():
+            shutil.copy2(oot_work / 'build' / made, out / name)
+            if name in RUNTIME_NAMES:
+                sign_runtime(name)
+        shutil.rmtree(oot_work, ignore_errors=True)
     files ={n: {'sha256': _sha256(out / n), 'bytes': (out / n).stat().st_size} for n in NAMES}
     (out / 'manifest.json').write_text(json.dumps({'schema': SCHEMA, 'commit': commit, 'files': files}, indent=1) + '\n')
     print(f'{len(files)} prebuilt programs for {commit[:12]} in {out}', flush=True)
