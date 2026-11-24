@@ -32,11 +32,14 @@ enum {
     OOT_VR_PLAYER_FN_CELL = 88,   /* data page: the player update's host function */
     OOT_VR_FILL_FN_CELL = 96,     /* data page: the view fill's host function */
     OOT_VR_PLACE_FN_CELL = 104,   /* data page: an actor's new place, the host function */
+    OOT_VR_LOD_CELL = 112,        /* data page: the factor on the views' projected-size scale (float; 1 = the game's) */
     OOT_VR_CALL_STUB = 512,       /* text padding after the time-step and resolution veneers (they end at +372) */
     OOT_VR_FOV_STUB = 512 + 256,
     OOT_VR_PLAYER_STUB = 512 + 256 + 32,
     OOT_VR_FILL_STUB = 512 + 256 + 32 + 256,
     OOT_VR_PLACE_STUB = 512 + 256 + 32 + 256 + 256,
+    OOT_VR_LOD_STUB = 512 + 256 + 32 + 256 + 256 + 256,
+    OOT_VR_LOD_WORDS = 7,
 };
 static const uint64_t OOT_VR_CAMERA_SITE = 0x4c5068, OOT_VR_FOV_SITE = 0x4c52f8;
 static const uint32_t OOT_VR_CAMERA_WORD = 0xf9401268u;   /* ldr x8, [x19, #0x20] */
@@ -52,6 +55,34 @@ static const uint32_t OOT_VR_PLACE_WORD = 0x2d4106a0u;    /* ldp s0, s1, [x21, #
 static const uint64_t OOT_VR_VIEW_VTABLE = 0x4bf8a88, OOT_VR_CAMERA_MANAGER = 0x4c86bc0;
 static const uint64_t OOT_VR_ACTOR_VTABLE = 0x4b25e18, OOT_VR_PLAYER_VTABLE = 0x4b4c460, OOT_VR_EVENT_SLOT = 0x4c7e090;
 
+/* Level of detail (2026-11-25). The game picks a model's level, and drops small ones, by its projected size: bounding
+   radius x (1 / tan(half the vertical angle)) / view depth (main+0x863e0..0x86434 and its copies at 0x7defc, 0x84150,
+   0x1214d8c and hundreds in the sorters from main+0x3608e98), the scale read from the render view at +0x1e0. The render
+   view is built on the stack at main+0x33ab..: tan at +0x1dc, then `fdiv s2, s1, s0` and at main+0x33af7c
+   `str s2, [x19, #0x1e0]`, s2 loaded again by the next instruction. (main+0x33edf0 and 0x340e70 write the same field of
+   other views; scaling those changed nothing here.) At the headset's 113 degrees the scale is 0.66 where the game's own
+   50 degrees give 2.14, so everything counted as three times smaller: the stairs to the temple were drawn with a coarse
+   level from 10 m, and with the fine one again when the head turned them off the view's axis (the depth shrinks).
+   The stub multiplies the stored scale by the factor on the data page, tan(half the headset's angle) / tan(half the
+   game's own), so the levels are the ones the game picks without VR at that depth. OOT_VR_LOD=0 leaves the game's
+   scale; "flag vr_lodk <thousandths>" sets the factor by hand (0: computed again). */
+static const uint64_t OOT_VR_LOD_SITES[1] = { 0x33af7c };
+static const uint32_t OOT_VR_LOD_WORD = 0xbd01e262u;      /* str s2, [x19, #0x1e0] */
+static const uint32_t OOT_VR_LOD_NEXT = 0xbd41d662u;      /* ldr s2, [x19, #0x1d4]: s2 is loaded again */
+static _Atomic uint32_t *oot_vr_lod_cell, *oot_vr_fov_cell;   /* the second is defined below, with the other cells */
+static _Atomic int oot_vr_lod_forced;                     /* thousandths, from the flag; 0 = computed */
+static float oot_vr_lod_ref;                              /* the game's own vertical angle while it is not aiming, radians */
+static void oot_vr_lod_update(float game_fov) {
+    if (!oot_vr_lod_cell) return;
+    if (game_fov * 57.2957795f >= 46.5f && game_fov < 3.0f) oot_vr_lod_ref = game_fov;   /* it narrows the angle to aim: not the reference */
+    float k = 1, vr = 0; uint32_t bits = oot_vr_fov_cell ? atomic_load(oot_vr_fov_cell) : 0; memcpy(&vr, &bits, 4);
+    const int forced = atomic_load(&oot_vr_lod_forced);
+    if (forced > 0) k = (float)forced / 1000.0f;
+    else if (bits && vr > 0.1f && vr < 3.0f && oot_vr_lod_ref > 0.1f) k = tanf(vr / 2) / tanf(oot_vr_lod_ref / 2);
+    if (!(k >= 0.25f && k <= 16.0f)) k = 1;
+    memcpy(&bits, &k, 4);
+    if (atomic_exchange(oot_vr_lod_cell, bits) != bits) fprintf(stderr, "[vr] OOT level of detail: projected sizes x%.3f (the headset's angle against the game's own)\n", (double)k);
+}
 static vr_cam_state oot_vr_cam;
 static uint8_t *oot_vr_base;
 static _Atomic uint32_t *oot_vr_fov_cell;
@@ -76,6 +107,7 @@ static _Atomic uint32_t oot_vr_move_turn_bits;    /* third person: the head's tu
 static _Atomic int oot_vr_dbg_noturn;
 static _Atomic uint32_t oot_vr_dbg_fov_saved;
 void runtime_oot_vr_debug(const char *name, int v) {
+    if (!strcmp(name, "vr_lodk")) { atomic_store(&oot_vr_lod_forced, v > 0 ? v : 0); fprintf(stderr, "[vr] [flag] vr_lodk = %d thousandths (0: computed)\n", v); return; }
     if (!strcmp(name, "vr_noturn")) { atomic_store(&oot_vr_dbg_noturn, v != 0); fprintf(stderr, "[vr] [flag] vr_noturn = %d\n", v != 0); return; }
     if (!oot_vr_fov_cell) return;
     if (v > 0) { if (!atomic_load(&oot_vr_dbg_fov_saved)) atomic_store(&oot_vr_dbg_fov_saved, atomic_load(oot_vr_fov_cell));
@@ -222,6 +254,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
     if ((uintptr_t)view != oot_vr_gameplay_view()) { oot_vr_hook_end(OOT_HOOK_OTHER_VIEW, view); return; }                                       /* not the gameplay camera */
     float game_fov = 0;
     if (camera) { memcpy(&game_fov, camera + 0x13c, 4); if (isfinite(game_fov)) atomic_store(&oot_vr_game_fov_bits, oot_vr_float_bits(game_fov)); }
+    oot_vr_lod_update(game_fov);
     { static _Atomic int said; if (!atomic_exchange(&said, 1)) fprintf(stderr, "[vr] OOT: the game's own vertical angle %.2f degrees\n", (double)(game_fov * 57.2957795f)); }
     vr_cam_state control;
     vr_camera_control_read(&control);
@@ -360,6 +393,35 @@ static void oot_vr_install(Module *m) {
     {   /* The sword's attack following the hand is unfinished (vr开发.md, 二十八): off, and the game's code there stays as it is. */
         const char *follow = getenv("TOTK_VR_SWORD_FOLLOW");
         if (follow && *follow == '1') memcpy(m->base + OOT_VR_PLACE_SITE, &to_place, 4);
+    }
+    {   /* the projected-size scale (level of detail), see OOT_VR_LOD_SITES */
+        const char *off = getenv("OOT_VR_LOD");
+        const uint64_t lod_stub = pad + OOT_VR_LOD_STUB;
+        if (!(off && *off == '0')) {
+            if (lod_stub + OOT_VR_LOD_WORDS * 4 > rx_end || page + OOT_VR_LOD_CELL + 4 > m->size) runtime_fail("OOT VR: no room left for the level-of-detail veneers");
+            for (uint64_t k = lod_stub; k < lod_stub + OOT_VR_LOD_WORDS * 4; k++) if (m->base[k]) runtime_fail("OOT VR: text padding already in use (level of detail)");
+            for (uint64_t k = page + OOT_VR_LOD_CELL; k < page + OOT_VR_LOD_CELL + 4; k++) if (m->base[k]) runtime_fail("OOT VR: data page already in use (level of detail)");
+            const float one = 1; memcpy(m->base + page + OOT_VR_LOD_CELL, &one, 4);
+            for (int i = 0; i < 1; i++) {
+                uint32_t at, next; memcpy(&at, m->base + OOT_VR_LOD_SITES[i], 4); memcpy(&next, m->base + OOT_VR_LOD_SITES[i] + 4, 4);
+                if (at != OOT_VR_LOD_WORD || next != OOT_VR_LOD_NEXT) runtime_fail("OOT VR: the projected-size scale store differs from verified update 131072");
+                const uint64_t stub = lod_stub + (uint64_t)i * OOT_VR_LOD_WORDS * 4;
+                const uint32_t adrp = oot_vr_adrp(16, b + stub + 4, b + page), back = oot_vr_b(stub + 24, OOT_VR_LOD_SITES[i] + 4), to = oot_vr_b(OOT_VR_LOD_SITES[i], stub);
+                if (!adrp || !back || !to) runtime_fail("OOT VR: level-of-detail veneer out of range");
+                const uint32_t w[OOT_VR_LOD_WORDS] = {
+                    0xfc1f0fffu,                                             /* str d31, [sp, #-16]! */
+                    adrp,                                                    /* adrp x16, <data page> */
+                    0xbd400000u | ((OOT_VR_LOD_CELL / 4) << 10) | (16u << 5) | 31u,   /* ldr s31, [x16, #factor] */
+                    0x1e3f0842u,                                             /* fmul s2, s2, s31 */
+                    OOT_VR_LOD_WORD,                                         /* str s2, [x19, #0x1e0] */
+                    0xfc4107ffu,                                             /* ldr d31, [sp], #16 */
+                    back };
+                memcpy(m->base + stub, w, sizeof w);
+                memcpy(m->base + OOT_VR_LOD_SITES[i], &to, 4);
+            }
+            oot_vr_lod_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_VR_LOD_CELL);
+            fprintf(stderr, "[vr] OOT: the render view's projected-size scale is taken at main+0x33af7c (level of detail as without VR)\n");
+        }
     }
     oot_vr_base = m->base;
     g_vr_headlook = &oot_vr_cam;
