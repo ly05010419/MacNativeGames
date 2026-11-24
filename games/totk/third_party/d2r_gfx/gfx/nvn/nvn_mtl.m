@@ -466,6 +466,7 @@ static NSHashTable *g_res_objects;
    all show ~15 GB of wired memory on the 16 GB machine with totk-native on the Metal submission queue: the driver ran out
    of memory wiring what this residency set made resident. Live resident bytes are attributed to the res_add source line
    so unbounded growth can be located, and gpu_budget_check refuses to go on past a budget instead of handing it to the driver. */
+static _Atomic uint64_t g_texels_gpu_reads,g_texels_gpu_writes,g_texels_gpu_bytes,g_texels_gpu_failures;   // texels_gpu_region, far below
 #define RES_SITES 32768   /* nvn_mtl.m has more than 26,000 lines: at 8192 most registrations were counted under site 0 (2026-11-24) */
 static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, alive_bytes; } g_res_site[RES_SITES];   // alive*: objects not yet deallocated (whether or not still resident)
 /* Deallocation probe: an associated object whose dealloc runs when the Metal object itself is freed, so "removed from the
@@ -593,6 +594,8 @@ static void res_site_report(int top) {
         for (int i = 0; i < nm && i < ALLOC_MAX; i++) am += (uint64_t)[g_alloc4[i] allocatedSize];
         for (int i = 0; i < nu && i < UP_ALLOC_MAX; i++) au += (uint64_t)[g_up_alloc4[i] allocatedSize];
         for (int i = 0; i < 3; i++) ap += (uint64_t)[g_present_alloc4[i] allocatedSize];
+        MLOG("  texel regions converted on the GPU so far (ReadTexels / WriteTexels of a level of 1 MiB or more): %llu reads, %llu writes, %llu bytes, %llu failures",
+             (unsigned long long)atomic_load(&g_texels_gpu_reads), (unsigned long long)atomic_load(&g_texels_gpu_writes), (unsigned long long)atomic_load(&g_texels_gpu_bytes), (unsigned long long)atomic_load(&g_texels_gpu_failures));
         MLOG("  命令分配器：主提交 %d 个 %llu MB，上传 %d 个 %llu MB，出图 3 个 %llu MB（不在驻留集里）", nm, (unsigned long long)(am >> 20), nu, (unsigned long long)(au >> 20), (unsigned long long)(ap >> 20));
     }
     for (int i = 0; i < n && i < top; i++) {
@@ -20715,7 +20718,7 @@ static void copy_t2b(const p_copy_b2t *c) {
 /* GPU region conversion avoids a full-level CPU decode/encode for small texel access.
    Completion is synchronous: CPU results and guest pool mirrors are visible before returning.
    Caller-owned pool/texture lifetimes and NVN synchronization requirements are unchanged. */
-static _Atomic uint64_t g_texels_gpu_reads,g_texels_gpu_writes,g_texels_gpu_bytes,g_texels_gpu_failures;
+
 void mtl_texels_gpu_report(void) {
     MLOG("[texels-gpu] reads=%llu writes=%llu bytes=%llu failures=%llu",
          (unsigned long long)atomic_load(&g_texels_gpu_reads),(unsigned long long)atomic_load(&g_texels_gpu_writes),
