@@ -1048,7 +1048,7 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=N
         if romfs.exists():
             shutil.rmtree(romfs)
         run([py, 'scripts/extract_romfs.py', '--keys', keys], logs / 'extract_romfs.log', cwd=tree)
-        r = json.loads(index.read_text())
+        r = json.loads((romfs / 'index.json').read_text())
         check('RomFS', r['romfs_sha256'], EXPECTED['romfs']['sha256'])
     fonts = tree / 'extracted/firmware/shared-fonts'
     if not fonts_valid(fonts):
