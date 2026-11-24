@@ -566,6 +566,33 @@ stopped voice's last samples (Ryujinx.Audio `CommandGenerator.GenerateVoice`: `V
 - A run that ends in Game Over has no world sound (digital zero): the first runs of this check, started from the legs
   save on a build without the legs cure, were silent for that reason.
 
+## Arrows above 30 fps (2026-11-24)
+
+Once an arrow falls, each update makes its velocity the last one's direction times its speed (`+0xb4`) plus the gravity
+vector (`+0x104..+0x10c`), in metres per console frame, with no time step. Every update turns it down by the same angle,
+so at 120 fps it turned four times as fast a second and landed short. Cause and cure as found by
+[Savage Wind Recomp](https://github.com/Revivedx/SavageWindRecomp) (MIT, its #144); no code is copied.
+
+`patch_arrow_gravity` multiplies the gravity by the frame-step page's ratio (the frame's length in 30 fps frames, 1.0 at
+30 fps), through a veneer at text padding `+0x340`. `TOTK_ARROW_GRAVITY=0` keeps it as shipped. Mac only: it returns
+early under `ios_code()`, so the iOS export does not change. `TOTK_ARROW_LOG=1` puts a `brk` on `main+0x5ee738` and logs
+each update (ratio, gravity, velocity).
+
+Run on 2026-11-24, M5 Pro, the newest save (slot 2), copies of the profile and cache, three shots held with ZR from the
+same spot. The turn is the pitch's least-squares slope over the first 0.6 s of each arrow:
+
+| Build | Frame lock | Updates a second | Speed (m / console frame) | Gravity per update | Turn (degrees a second, 3 arrows) |
+|---|---|---|---|---|---|
+| main + log | 30 | 31 | 0.999 | -0.01089 | -18.6, -18.8, -18.6 |
+| main + log | 120 | 118-120 | 0.997 | -0.01089 | -72.9, -72.8, -70.8 |
+| fix | 120 | 117-119 | 0.999 | -0.0027 to -0.0033 | -18.5, -18.5, -18.5 |
+| fix, `TOTK_ARROW_GRAVITY=0` | 120 | 113-120 | 0.996 | -0.01089 | -70.6, -72.2, -73.5 |
+
+With the fix, an arrow stayed in the air about 3 s before it hit something; as shipped at 120 fps, about 1.2 s.
+`games/botw/scripts/verify_arrow_gravity_patch.py` runs the game's own update for one second at 30, 60, 120, 144 and
+240 fps: patched, the pitch after a second is -4.29 degrees at every rate; shipped, -4.29, -8.56, -16.9, -20.2 and
+-32.5.
+
 ## Not tested and known issues
 
 - Sinking legs after a save loads, and the clear Bottomless Bog: the clear water is cured by #239 (merged), the legs are not (pull request #511, open; see "Long run and the sinking legs").
