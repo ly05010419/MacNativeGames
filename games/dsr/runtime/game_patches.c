@@ -11,8 +11,9 @@
 typedef struct { uint64_t offset; uint32_t original, replacement; const char *what; } GamePatch;
 
 static const GamePatch dsr_fps60_sites[] = {
-    {0x00712510, 0x321f0fe1, 0x321e0fe1, "mov w1, #2 -> mov w1, #1 (60 Hz frame pacing)"},
+    {0x00712510, 0x321f0fe1, 0x321e0fe1, "orr w1, wzr, #30 -> #60 (60 Hz target rate)"},
     {0x006729d4, 0xbd45ed08, 0xbd475908, "ldr s8, [x8, #0x5ec] (1/30) -> [x8, #0x758] (1/60)"},
+    {0x007126a4, 0x94013a7d, 0xd503201f, "nop redundant CPU sleep so host 60 Hz vsync paces cleanly without 33ms double-vsync drops"},
 };
 
 void runtime_game_patches(Module *main_module) {
