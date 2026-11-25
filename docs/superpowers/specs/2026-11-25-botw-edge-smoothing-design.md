@@ -250,3 +250,11 @@ Slice 3 was dropped by the findings. All measured on the M4 Pro, same scene.
     history). Before committing to per-object motion vectors, spike how much of the foliage blur is wrong history
     rather than the anti-aliasing itself: for example, with wind frozen if the game allows it, or by marking the foliage
     shaders' draws in the mask as an experiment.
+
+### Slice 1 taken back (2026-11-25, the player's decision)
+
+After testing, the player asked for the anti-aliasing choice and edge smoothing to stay unlinked. Forcing the AA
+method off took the choice away from whoever wants FXAA or SMAA with edge smoothing. Slice 1 is reverted: the AA row
+always acts on its own, and the game's FXAA stays the default. The finding still holds: FXAA on top of edge smoothing
+softens the picture. The sharpest combination is edge smoothing with the AA method set to Off, chosen by the player.
+`tests/test_botw_finish.py` (AAIndependentOfEdgeSmoothing) keeps the two unlinked.
