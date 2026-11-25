@@ -48,6 +48,24 @@ plus attachment traffic. That is the Switch 2 mesh-shader pipeline's shape, and 
 | The game's own dynamic resolution | **+14 %** (34.1 → 39.0–40.1 fps), the single biggest lever measured; exposed as the 动态分辨率 settings row (default off) |
 | 720p-from-480p canvas | +14 % (34.1 → 39.0 fps), the game's own handheld mode |
 
+## Update after rebasing on 786ddc00 (PR #2324, 2026-11-25): pass splits on M1/M2
+
+`origin/main` then landed "on M1 / M2 an Ocarina of Time render pass ends only where mesh and ordinary draws meet"
+(PR #2324): render passes per frame in this scene went **159.7 -> 114.2** (-28 %) and the frame rate on the M2
+at 720p native went **34.1 -> 41 fps** (p50 29.2 -> 24.2 ms). New numbers on the rebased tree, same scene/method:
+
+| Config | game fps (p50) |
+|---|---|
+| 720p native | 40.9-41.2 (24.2 ms) |
+| 720p native + dynamic resolution | **51.0 (19.5 ms)** |
+| 480p canvas | 41.7-49.7 (20-24 ms) |
+| 480p canvas + dynamic resolution | **50.8 (19.6 ms, p99 22.3 ms — the most stable)** |
+
+So on the M2 the game now runs at ~41 fps at 720p native and ~51 fps with the dynamic-resolution row on —
+"aux alentours de 60" on the game rate in the heavy village scene, with the display filled to a steady 60 Hz
+by MetalFX interpolation 30+30 whenever the game rate is >= 30 (measured displayed 54-60 FPS with FI on;
+note FI itself costs ~2-4 ms of GPU per generated frame, so it trades a little game rate for the steady 60 Hz).
+
 ## Reaching a steady 60 Hz on screen on the M2 (display rate, with frame interpolation)
 
 The game runs its logic at ~30-40 fps in this scene on the M2 (GPU wall above); MetalFX frame interpolation
