@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""Red Dead Redemption on the iPhone / iPad: the shared port build (games/totk/ios/tools/build_port_ipa.py, the Zelda app
-and tools) with this game's profile, as Mario Kart 8 Deluxe's (whose runtime this one is). From the Mac build's work
-folder (games/rdr/README.md: rewritten/local the patched modules and their fixups, main's leading patch area included,
-extracted/local/romfs the merged game data with its index, build/ the Mac host with its tables and the icon of the game's
-control data, scripts/prepare_rdr_shader_seed.py the shader seed from shaders.rpf and main):
+"""Persona 5 Royal on the iPhone / iPad: the shared port build (games/totk/ios/tools/build_port_ipa.py, the Zelda app
+and tools) with this game's profile, from the Mac build's work folder (games/p5r/README.md).
 
-  python3 games/rdr/ios/tools/build_ipa.py --work <work> --out "<folder>/Red Dead Redemption.ipa" --image-outside
-  python3 games/totk/ios/tools/install_device.py "<folder>/Red Dead Redemption.ipa" --device "<name>" \\
-      --game-data <work>/extracted/local/romfs/romfs.bin
+Not made yet (README.md, "Not yet"): the shader seed tool scripts/prepare_p5r_shader_seed.py is still to be written, so
+check() below stops before anything is packed. This script and Sources/ios_front.m came with the folder this game's was
+made from (3d36dbbe) and until 2026-11-25 still declared that game's identity; the identity is this game's now (game,
+GAME_P5R, bundle id, build/p5r-native; tests/test_game_identity.py), the layout and the checks are still to be gone over
+for this game when its iPhone app is made.
 
-What is this game's own:
-- main's 1.2 GiB .bss and its 16 MiB leading patch area: the shared gen_embed.py embeds the file's parts (the patch area,
-  the text, the data up to the end of the file); .bss and the key page are the loader's zero-filled reservation
-  (runtime/loader.c map_module), not in the app;
-- no system font: the game draws with its own fonts (fonts.rpf) and never asks for a shared one, on the Mac as here, so
-  the app carries none (GameData/shared-fonts stays empty: no macOS font, no firmware font);
-- no movie library: main decodes its Bink movies itself (no libvpx);
-- its icon is the one of its control data (build/AppIcon.icns, scripts/build_rdr.py);
-- the Mac's translations are the work folder's (no Mac app yet): build/shader-cache, or --mac-shader-cache."""
+  python3 games/p5r/ios/tools/build_ipa.py --work <work> --out "<folder>/Persona 5 Royal.ipa" --image-outside
+  python3 games/totk/ios/tools/install_device.py "<folder>/Persona 5 Royal.ipa" --device "<name>" \\
+      --game-data <work>/extracted/local/romfs/romfs.bin"""
 import sys
 from pathlib import Path
 
@@ -30,7 +23,7 @@ NO_FONTS = 'ios-fonts'   # an empty GameData/shared-fonts: the game asks for no 
 
 def layout(work):
     return port_ipa.Layout(
-        host=work / 'build/rdr-native', build=work / 'build', rewritten=work / 'rewritten/local',
+        host=work / 'build/p5r-native', build=work / 'build', rewritten=work / 'rewritten/local',
         fixups=lambda n: work / f'rewritten/local/{n}.fixups.tsv', romfs=work / 'extracted/local/romfs',
         fonts=work / NO_FONTS, seed=work / 'build/shader-seed', version='1.0.4')   # icon: build/AppIcon.icns
 
@@ -52,7 +45,7 @@ def check(L):
     for need in (L.host, L.build / 'runtime_tables.h', L.romfs / 'romfs.bin', L.romfs / 'runtime-index.bin',
                  L.seed / 'seed-manifest.json', L.build / 'AppIcon.icns'):
         if not need.exists():
-            raise RuntimeError(f'missing {need}: build the Mac host and the shader seed first (games/rdr/README.md)')
+            raise RuntimeError(f'missing {need}: build the Mac host and the shader seed first (games/p5r/README.md)')
 
 
 def pane(specs):
@@ -70,7 +63,7 @@ def pane(specs):
 
 
 PORT = port_ipa.Port(
-    game='rdr', define='GAME_RDR', name='Red Dead Redemption', bundle_id='org.macnativegames.rdr', layout=layout,
+    game='p5r', define='GAME_P5R', name='Persona 5 Royal', bundle_id='org.macnativegames.p5r', layout=layout,
     mac_cache=mac_cache, libs=('libopus.a',), prepare=prepare, check=check, pane=pane)
 
 if __name__ == '__main__':

@@ -30,7 +30,7 @@ static void display_save(void){
  NSMutableArray *keys=[NSMutableArray new];for(int i=0;i<5;i++)[keys addObject:@(atomic_load(&controlKeys[i]))];[displayDefaults setObject:keys forKey:@"shortcuts"];
 }
 static void display_load(void){
- const char *owner=getenv("TOTK_SLOT_OWNER");NSString *suite=owner&&*owner&&strcmp(owner,"user")?@"org.macnativegames.totk.display.tests":@"org.macnativegames.totk.display";
+ const char *owner=getenv("TOTK_SLOT_OWNER");NSString *suite=owner&&*owner&&strcmp(owner,"user")?@"org.macnativegames.lm3.display.tests":@"org.macnativegames.lm3.display";
  displayDefaults=[[NSUserDefaults alloc] initWithSuiteName:suite];
  NSNumber *r=[displayDefaults objectForKey:@"resolution"],*m=[displayDefaults objectForKey:@"mode"],*q=[displayDefaults objectForKey:@"upscalePreset"];
  displayResolution=r&&r.integerValue>=0&&r.integerValue<4?r.intValue:2;displayMode=m&&m.integerValue>=0&&m.integerValue<=2?m.intValue:0;
