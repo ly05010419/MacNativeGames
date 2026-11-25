@@ -25,6 +25,11 @@ do not name every shader it plays, from what its list already names. The game th
 Kingdom's list), and the merge, trusting the app's game, put them in Ocarina of Time's list. A COMPLETE game's list is
 checked whole as well: rows outside its seeds leave it with --apply (to the game that holds them, when one does).
 
+A Switch 2 game's keys follow a named rule (nvn_ctl.h NVN2_KEY_RULE); an app made before the rule sends keys of the older
+one, which name a shader of the lists only where both rules give it one key. What a row names comes first there too
+(merge_switch_2): a row whose shaders a Switch 2 game of the lists' rule holds is taken whatever app sent it; only for a
+row none of them holds does the app's build decide (current rule, older rule, or a build that says neither).
+
 Rows the built-in variants of a seed of the same game serve are dropped (the list keeps only non-default variants; user
 2026-10-22). Every game keeps its own list (user 2026-10-28: "每个游戏支持自己的着色器清单 收到自己游戏里 不要混了");
 games with their own shader_list.py (OWN_SCRIPT) merge through its "merge", which keeps rows this one does not know (mesh
@@ -127,14 +132,11 @@ def key_source(spec):
     game, _, path = spec.partition('=') if '=' in spec else ('', '', spec)
     if game and game not in SEED_GAMES:
         raise ValueError(f'{spec}: the game is one of {", ".join(SEED_GAMES)}')
-    p, identity = Path(path), None
+    p, identity, folder = Path(path), None, None
     if p.is_dir():
+        folder = p
         if (p / IDENTITY).is_file():
             identity = json.loads((p / IDENTITY).read_text())
-            rule = json.loads((p / 'seed-manifest.json').read_text()).get('shader_key_rule')
-            if rule != KEY_RULE:   # its keys and the lists' would name no shader in common
-                raise ValueError(f'{path}: a seed of shader key rule {rule or "(none recorded)"}, the lists use {KEY_RULE}: '
-                                 'make the seed again (update_runtime.py --seed)')
         p = p / 'shader-keys.json'
         if not p.is_file():
             raise ValueError(f'{path}: no shader-keys.json (a seed made before 2026-10-22); prepare the seed again')
@@ -151,6 +153,14 @@ def key_source(spec):
                 or ('totk' if version.startswith('v') else ''))
         if not game:
             raise ValueError(f'{path}: the version does not say which game; give it as <game>=<file>')
+    if folder is not None and game in NS2_VERSIONS.values():
+        # with or without its game-shader-keys.json: these keys place inbox rows whatever app sent them
+        # (held_under_the_rule), and with keys of another rule they and the lists would name no shader in common
+        manifest = folder / 'seed-manifest.json'
+        rule = json.loads(manifest.read_text()).get('shader_key_rule') if manifest.is_file() else None
+        if rule != KEY_RULE:
+            raise ValueError(f'{path}: a seed of shader key rule {rule or "(none recorded)"}, the lists use {KEY_RULE}: '
+                             'make the seed again (update_runtime.py --seed)')
     if not all(isinstance(k, str) and KEY.match(k) for k in keys):
         raise ValueError(f'{path}: not a list of shader keys')
     return game, set(keys), identity is not None or game not in NS2_VERSIONS.values()
@@ -246,7 +256,13 @@ def merge_items(game, items, lists, seeds):
 
 
 def merge_text(label, text, named, lists, keys, seeds):
-    """Merge one contribution text the app of game `named` sent: (report line, set of its lines left where they are)."""
+    """merge_rows under a label: (report line, set of the text's lines left where they are)."""
+    report, left = merge_rows(text, named, lists, keys, seeds)
+    return label + '; ' + report, left
+
+
+def merge_rows(text, named, lists, keys, seeds):
+    """Merge one contribution text the app of game `named` sent: (its report, set of its lines left where they are)."""
     items, dropped = contribution_items(text)
     to, left, counts = {}, set(), {'other': 0, 'shared': 0, 'outside': 0}
     for line, item in items:
@@ -262,7 +278,7 @@ def merge_text(label, text, named, lists, keys, seeds):
     for game in to:
         if game not in COMPLETE:   # what a game without a full seed merged names its shaders for later rows
             keys[game] |= list_keys(game, lists[game])
-    line = (label + '; ' + ('; '.join(parts) or 'nothing')
+    line = (('; '.join(parts) or 'nothing')
             + (f'; {counts["other"]} rows of another game\'s shaders went to it' if counts['other'] else '')
             + (f'; {counts["shared"]} rows several games share (left out)' if counts['shared'] else '')
             + (f'; {counts["outside"]} rows of shaders no game here has and outside {named}\'s full seed (left in the inbox)'
@@ -369,15 +385,57 @@ def build_rule(build, since):
     return _BUILD_RULE[build, since]
 
 
-def split_by_key_rule(pending, since):
-    """A Switch 2 game's inbox rows as (taken, old, unknown): sent by an app of the current key rule, only by apps of an
-    older one (their keys name no shader of the lists and seeds: marked done unmerged, never merged), or by apps this
-    repository cannot place (left in the inbox). An export without builds (an inbox before 2026-11-12) places none."""
-    taken, old, unknown = [], [], []
-    for row in pending:
-        rules = {build_rule(b, since) for b in row.get('builds') or []}
-        (taken if 'yes' in rules else old if rules == {'no'} else unknown).append(row)
-    return taken, old, unknown
+def held_under_the_rule(body, keys):
+    """Whether an inbox row names shaders and, for each thing it names, one Switch 2 game of the lists' key rule holds
+    every shader of it. Those games' keys are of KEY_RULE (key_source refuses a seed of another rule, main a list of
+    another). Each rule hashes the same bytes of a shader, some fixed control fields as zero, so two rules give a shader
+    one key only where the fields they differ in are zero: a key these games hold names that shader whatever rule the
+    sending app follows. Another game's keys say nothing here: Ocarina of Time's follow the rule Bananza and Pokopia left
+    (nvn_ctl.h), and its seed records none."""
+    items, dropped = contribution_items(body)
+    if not items or dropped:
+        return False
+    ruled = [keys[game] for game in NS2_VERSIONS.values()]
+    named = [item_shaders(item) for _, item in items]
+    return all(shaders and any(all(s in k for s in shaders) for k in ruled) for shaders in named)
+
+
+def merge_switch_2(game, pending, lists, keys, seeds):
+    """Merge a Switch 2 game's inbox rows, whose keys follow a named rule (nvn_ctl.h NVN2_KEY_RULE): (report line, ids of
+    the rows done). What a row names comes before its app's build (2026-11-25: 1,812 Bananza and 157 Pokopia rows had
+    stayed in the inbox for a build that is no commit here: the CFBundleVersion an app without MNGSourceCommit reports,
+    an iPhone's "1", a fork's commit; 1,571 and 157 of them named only shaders their game holds):
+      1. the rows an app of the current rule sent are merged first: what they bring names the game's shaders for the rest;
+      2. a row the rule's games hold (held_under_the_rule) is merged whatever app sent it;
+      3. a row only apps of an older rule sent, of shaders none of them holds, names nothing: done, never merged;
+      4. a row of apps this repository cannot place (a fork, a build outside git, an export without builds), of shaders
+         none of them holds, stays in the inbox: a new shader of the game or a key of another rule, nothing says which."""
+    since = key_rule_commit()
+    rules = [{build_rule(b, since) for b in row.get('builds') or []} for row in pending]
+    text = lambda rows: ''.join(row['body'] + '\n' for row in rows)
+    current = [row for row, sent in zip(pending, rules) if 'yes' in sent]
+    reports, left = [], set()
+    if current:
+        report, left = merge_rows(text(current), game, lists, keys, seeds)
+        reports.append(report)
+    held, old, unknown = [], [], []
+    for row, sent in zip(pending, rules):
+        if 'yes' not in sent:
+            (held if held_under_the_rule(row['body'] + '\n', keys) else old if sent == {'no'} else unknown).append(row)
+    if held:
+        report, more = merge_rows(text(held), game, lists, keys, seeds)
+        reports.append(report)
+        left |= more
+    taken = {id(row) for row in current + held}
+    players = max((row['players'] for row in current + held), default=0)
+    label = (f"inbox {game}: {len(taken)} rows (most-sent row from {players} installs)"
+             + (f', {len(held)} placed by the shaders they name (their app builds are of an older key rule or not in '
+                'this repository)' if held else '')
+             + (f', {len(old)} only from apps of an older shader key rule (marked done, not merged)' if old else '')
+             + (f', {len(unknown)} from app builds not in this repository, of shaders no game here holds '
+                '(left in the inbox)' if unknown else ''))
+    ids = [row['id'] for row in pending if id(row) in taken and row['body'] not in left] + [row['id'] for row in old]
+    return label + '; ' + ('; '.join(reports) or 'nothing'), ids
 
 
 def merge_inbox(base, token, lists, keys, seeds):
@@ -391,17 +449,16 @@ def merge_inbox(base, token, lists, keys, seeds):
         except (OSError, ValueError) as error:
             done.append((f'inbox {game}: {error}', game, []))
             continue
-        old, unknown = [], []
-        if game in NS2_VERSIONS.values():   # rows of apps with other shader keys (nvn_ctl.h NVN2_KEY_RULE) never merge
-            pending, old, unknown = split_by_key_rule(pending, key_rule_commit())
-        if not pending and not old and not unknown:
+        if not pending:
             continue
-        players = max((r['players'] for r in pending), default=0)
-        label = (f"inbox {game}: {len(pending)} rows (most-sent row from {players} installs)"
-                 + (f', {len(old)} only from apps of an older shader key rule (marked done, not merged)' if old else '')
-                 + (f', {len(unknown)} from app builds not in this repository (left in the inbox)' if unknown else ''))
-        line, left = merge_text(label, ''.join(r['body'] + '\n' for r in pending), game, lists, keys, seeds)
-        done.append((line, game, [r['id'] for r in pending if r['body'] not in left] + [r['id'] for r in old]))
+        if game in NS2_VERSIONS.values():   # their keys follow a named rule: by what a row names, then by its app's build
+            line, ids = merge_switch_2(game, pending, lists, keys, seeds)
+        else:
+            players = max(r['players'] for r in pending)
+            line, left = merge_text(f"inbox {game}: {len(pending)} rows (most-sent row from {players} installs)",
+                                    ''.join(r['body'] + '\n' for r in pending), game, lists, keys, seeds)
+            ids = [r['id'] for r in pending if r['body'] not in left]
+        done.append((line, game, ids))
     return done
 
 

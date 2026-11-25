@@ -148,6 +148,11 @@ class SwitchTwoSeedTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaisesRegex(ValueError, 'shader key rule'):
                     key_source(str(self.seed(tmp, 'dkb', rule=rule)))
+            # a seed made before it named every shader as well: its keys place inbox rows whatever app sent them
+            # (held_under_the_rule), so keys of another rule would let that rule's rows into the list
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, 'shader key rule'):
+                    key_source(str(self.seed(tmp, 'pkp', identity=False, rule=rule)))
 
     def test_it_must_be_of_the_same_game_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,7 +271,73 @@ class ShaderInboxTests(unittest.TestCase):
         self.assertEqual(lists['pokopia'].variants, {('1' * 64, '{}')})
         self.assertEqual(done['pokopia'][1], ['1', '2'])
         self.assertIn('1 only from apps of an older shader key rule (marked done, not merged)', done['pokopia'][0])
-        self.assertIn('2 from app builds not in this repository (left in the inbox)', done['pokopia'][0])
+        self.assertIn('2 from app builds not in this repository, of shaders no game here holds (left in the inbox)',
+                      done['pokopia'][0])
+
+    def test_switch_2_rows_go_by_the_shaders_they_name_before_their_apps_build(self):
+        # 2026-11-25: 1,812 Bananza and 157 Pokopia rows stayed in the inbox because their apps' build was no commit of this
+        # repository: "458753" / "655361" (the CFBundleVersion an app without MNGSourceCommit reports), an iPhone's "1", two
+        # forks' commits. 1,571 and 157 of them named only shaders the game's keys hold. A key is the shader's bytes under
+        # the lists' key rule, so a row whose shaders a Switch 2 game of that rule holds is of the rule, whatever app sent
+        # it; the build decides only for a row none of them holds.
+        mine, mine2, theirs, new, new2 = '5' * 64, '6' * 64, '7' * 64, '8' * 64, '9' * 64
+        keys = self.keys(); keys['dkb'] = {mine, mine2}; keys['pokopia'] = {theirs}
+        dkb = self.pending([f'V\t{mine}\t{{}}', '\t'.join(pipeline(mine, mine)), f'V\t{new}\t{{}}',
+                            '\t'.join(pipeline(mine, new)), f'V\t{mine2}\t{{}}', f'V\t{new2}\t{{}}'])
+        for row, builds in zip(dkb, (['458753'], ['458753', '1'], ['1'], ['1'], ['old1'], ['old1'])):
+            row['builds'] = builds
+        pkp = self.pending([f'V\t{theirs}\t{{}}', f'V\t{new}\t{{}}', f'V\t{self.TOTK}\t{{}}'])
+        for row in pkp:
+            row['builds'] = ['655361']
+        rule = {'458753': 'unknown', '655361': 'unknown', '1': 'unknown', 'old1': 'no'}
+        with mock.patch.object(collect_shaders, 'key_rule_commit', lambda: 'k' * 40), \
+                mock.patch.object(collect_shaders, 'build_rule', lambda build, since: rule[build]):
+            lists, _, done = self.merge({'dkb': dkb, 'pokopia': pkp}, keys)
+        self.assertEqual(lists['dkb'].variants, {(mine, '{}'), (mine2, '{}')})
+        self.assertIn(pipeline(mine, mine), lists['dkb'].warm)
+        self.assertNotIn(pipeline(mine, new), lists['dkb'].warm, 'one shader no game holds: not placed by what it names')
+        self.assertEqual(done['dkb'][1], ['1', '2', '5', '6'], 'the rows no game holds from builds no one can place stay')
+        self.assertIn('3 placed by the shaders they name (their app builds are of an older key rule or not in this '
+                      'repository)', done['dkb'][0])
+        self.assertIn('1 only from apps of an older shader key rule (marked done, not merged)', done['dkb'][0])
+        self.assertIn('2 from app builds not in this repository, of shaders no game here holds (left in the inbox)',
+                      done['dkb'][0])
+        self.assertEqual(lists['pokopia'].variants, {(theirs, '{}')},
+                         'a shader no game holds is not a new shader of the game on the word of a build no one can place')
+        self.assertEqual(lists['totk'].variants, set(), 'keys of another rule (a Switch 1 game\'s) do not say the row\'s rule')
+        self.assertEqual(done['pokopia'][1], ['1'])
+
+    def test_only_a_switch_2_game_of_the_lists_rule_places_a_row_by_its_shaders(self):
+        # Ocarina of Time's keys follow another rule (nvn_ctl.h "nvn2-ctl48-zero-30", the one Bananza and Pokopia left),
+        # and its seed records none: a key it holds does not say the row is of the lists' rule
+        mine, theirs = '5' * 64, '7' * 64
+        keys = self.keys(); keys['dkb'] = {mine}; keys['pokopia'] = {theirs}
+        held = lambda *lines: collect_shaders.held_under_the_rule('\n'.join(lines) + '\n', keys)
+        self.assertTrue(held(f'V\t{mine}\t{{}}'))
+        self.assertTrue(held('\t'.join(pipeline(theirs, theirs))), 'the other Switch 2 game holds it: owner() sends it there')
+        self.assertFalse(held(f'V\t{self.OOT}\t{{}}'))
+        self.assertFalse(held(f'V\t{self.TOTK}\t{{}}'))
+        self.assertFalse(held('\t'.join(pipeline(mine, theirs))), 'one game must hold every shader of a pipeline')
+        self.assertFalse(held('\t'.join(pipeline('', ''))), 'a pipeline naming no shader says nothing')
+        self.assertFalse(held(f'V\t{mine}\tnot a bind state'), 'a line the merge cannot read')
+        self.assertFalse(held(f'V\t{mine}\t{{}}', f'V\t{"8" * 64}\t{{}}'), 'every line of the row')
+        self.assertFalse(held(''))
+
+    def test_what_the_current_rules_apps_bring_names_the_shaders_for_the_rest_of_the_round(self):
+        # Pokopia makes shaders at run time, so its keys grow with what current apps send. An older app's pipeline of
+        # such a shader arrived first: it is taken in the same round, not marked done unmerged for good.
+        made, other = '5' * 64, '6' * 64
+        rows = self.pending(['\t'.join(pipeline(made, made)), f'V\t{made}\t{{}}', f'V\t{other}\t{{}}'])
+        for row, builds in zip(rows, (['old1'], ['new1'], ['old1'])):
+            row['builds'] = builds
+        rule = {'new1': 'yes', 'old1': 'no'}
+        with mock.patch.object(collect_shaders, 'key_rule_commit', lambda: 'k' * 40), \
+                mock.patch.object(collect_shaders, 'build_rule', lambda build, since: rule[build]):
+            lists, _, done = self.merge({'pokopia': rows})
+        self.assertEqual(lists['pokopia'].variants, {(made, '{}')})
+        self.assertIn(pipeline(made, made), lists['pokopia'].warm)
+        self.assertEqual(done['pokopia'][1], ['1', '2', '3'], 'the inbox\'s order; the third names nothing: marked done')
+        self.assertIn('1 only from apps of an older shader key rule (marked done, not merged)', done['pokopia'][0])
 
     def test_without_the_rules_commit_no_switch_2_row_is_placed(self):
         rows = self.pending([f'V\t{"1" * 64}\t{{}}'])
