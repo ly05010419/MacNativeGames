@@ -180,3 +180,44 @@ the final A/B captures.
 - Exact thresholds, the tone-mapped space for the Slice 2 difference, and the dump's file format.
 - How the Slice 2 copy point is detected (by pass, by shader key, by render-target serial), once Slice 0 has found it.
 - Unit-test shape for the kernels, within the existing test conventions.
+
+## Findings (2026-11-25)
+
+Captured on the M4 Pro (macOS 27.2.1) with BotW 1.9.0 from the worktree. The scene is the newest save (Great Plateau,
+grass near the Temple of Time): Link runs front-right, then stands while the camera pans. Session averages: Edge
+smoothing off 108.0 FPS, Fast 101.8, MetalFX 94.4. Dumps are frames 2950–2952 (`TOTK_TAA_DUMP`). The pass structure
+is from `passdump 1` (frame 2979).
+
+- **H1 (FXAA on top softens): confirmed.** On static areas of the still shot (camera and Link still), the mean |Laplacian|
+  of luma (higher is sharper) is:
+
+  | Area | MetalFX + FXAA | MetalFX, FXAA off | Off + FXAA | Off, raw |
+  |---|---|---|---|---|
+  | Mountains | 2.86 | 4.47 | 3.44 | 5.10 |
+  | Temple | 5.28 | 5.60 | 5.20 | 7.63 |
+
+  MetalFX + FXAA is softer than no anti-aliasing with FXAA. Without FXAA it is sharper than that, with smooth edges
+  (visual A/B of the tower). Task 4 goes ahead.
+- **H2 (particles trail): confirmed.** The floating light motes in the sky have depth 1.0 (nothing opaque) and a reactive
+  mask of 0.00. In MetalFX's output each one becomes a fading trail of 4–5 copies at its earlier positions, and the
+  current spot keeps only 30–50 % of its brightness (scene +22 over its surroundings, output +6). This is the
+  "slow motion" of small moving things.
+- **H3 (hair and thin geometry): not observed as stated.** On Link, running with the camera following, output minus
+  input differs only along edges (the anti-aliasing itself). There are no delayed copies of the hair, ponytail or limbs,
+  and the mask already covers most of his outline. **A related finding:** grass and bushes swaying in the wind are
+  blurred well beyond static geometry. With the camera still, temporal AA keeps about 49 % of the raw grass detail
+  (10.67 → 5.18) against 73 % on the temple (7.63 → 5.60). The difference is spread across the foliage, and the mask is
+  mostly 0 there. The sway is sideways with nearly the same depth, so no depth test can see it, including the two-way
+  test planned in Task 7. Task 7 is dropped. Foliage is recorded as the main input to the approach B decision (it needs
+  real motion, or a per-draw signal).
+- **Copy point for Slice 2: found.** The HDR scene (RG11B10Float, the texture `f7ee6fe1` samples) is the G-buffer pass's
+  colour attachment 5. After the G-buffer passes, single-attachment passes into it come in this order:
+  - two without blending on c0: lighting and sky;
+  - then four with blending on c0: two single full-screen draws (fog and the half-resolution effects buffer
+    composite), then 14 draws with 7 shaders, then 11 draws with 3 shaders (effects and particles);
+  - then the compose `f7ee6fe1` and the FXAA / upscale `bd7ffdd4`.
+
+  Lighting and particles never share a pass, and fog comes before particles. A pass's blending is only known at its
+  draws, not when it opens. So the copy point is learned: count the scene-only passes after the G-buffer pass; the
+  index of the first one with a draw blending into c0 is kept, and from the next frame on the copy is taken when that
+  pass opens. One copy per frame.
