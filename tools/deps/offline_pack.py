@@ -3,7 +3,7 @@ would download, so a player needs no network (user 2026-11-20; most players are 
 
     python3 -m tools.deps.offline_pack build <store>   at a release, online: fills <store> (files/, wheels/, git/,
                                                        sources/, manifest.json); what this Mac already has is reused
-    python3 -m tools.deps.offline_pack check <store>   with the network off (storage_guard.py run --offline): from an
+    python3 -m tools.deps.offline_pack check <store>   with the network off (denied by check itself, NO_NETWORK): from an
                                                        empty deps cache, takes every item from the store and makes it;
                                                        records the manifest it passed for in <store>/.checked.json
 A release (MNG-Launcher make_app.py) carries a store only when `check` passed for its very manifest (checked()), so
@@ -18,10 +18,12 @@ The manifest has no date, so building again with nothing new leaves it (and the 
 Python 3.10 or later (run it with the build's Python 3.14)."""
 import argparse
 import ast
+import errno
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -44,6 +46,30 @@ PLATFORM = 'macosx_14_0_arm64'
 # GPL code the store carries as a program: its source goes beside it (sources/)
 GPL_SOURCES = ('zbic==1.0.1.post1',)
 CHECKED = '.checked.json'   # check's record: the manifest it passed for, with the network off
+# The check denies the network itself (user 2026-11-25 chose this when the storage guard was retired; until then a
+# person had to run it under that guard's --offline, it wrote its record with the network on just the same, and a Mac
+# where the guard refuses every command could not make a release). The rule is the guard's: every outbound connection
+# but this Mac's loopback. macOS's sandbox-exec applies it to check and everything check starts.
+SANDBOX = '/usr/bin/sandbox-exec'
+NO_NETWORK = ('(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n'
+              '(allow network-outbound (remote ip "localhost:*"))')
+INSIDE = 'MNG_OFFLINE_CHECK_NO_NETWORK'   # set for the run under NO_NETWORK; the proof is network_denied(), not this
+PROBE = ('192.0.2.1', 443)   # TEST-NET-1, an address no host has: nothing is contacted when the network is on
+
+
+def network_denied(connect=None):
+    """True when an outbound connection is refused by the system (EPERM, what NO_NETWORK does). An address that cannot be
+    reached, a timeout or a connection that succeeds is not that: no Wi-Fi proves nothing about a build."""
+    connect = connect or (lambda: socket.create_connection(PROBE, timeout=2).close())
+    try:
+        connect()
+    except OSError as error:
+        return isinstance(error, PermissionError) or error.errno == errno.EPERM
+    return False
+
+
+def without_network(argv):
+    return [SANDBOX, '-p', NO_NETWORK, *map(str, argv)]
 
 
 def constant(path, name):
@@ -306,6 +332,9 @@ def build(store, python):
 def check(store, python):
     """Every item from the store alone, in an empty deps cache: raises on the first one that is missing."""
     store = store.resolve()
+    if not network_denied():
+        raise RuntimeError('the check proves nothing with the network on: run `python3 -m tools.deps.offline_pack check '
+                           '<store>`, which denies the network itself')
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         env = offline.environment(store, dict(os.environ, MNG_DEPS_CACHE=str(tmp / 'cache')))
@@ -388,8 +417,12 @@ def main(argv):
     ap.add_argument('store', type=Path)
     ap.add_argument('--python', default=sys.executable, help='a Python 3.14 with pip (default: this one)')
     a = ap.parse_args(argv)
+    store = a.store.expanduser().resolve()
+    if a.action == 'check' and os.environ.get(INSIDE) != '1':   # again, with the network denied
+        return subprocess.call(without_network([sys.executable, '-B', '-m', 'tools.deps.offline_pack', 'check', store,
+                                                '--python', a.python]), env=dict(os.environ, **{INSIDE: '1'}), cwd=REPO)
     try:
-        (build if a.action == 'build' else check)(a.store.expanduser().resolve(), a.python)
+        (build if a.action == 'build' else check)(store, a.python)
     except (RuntimeError, OSError, KeyError, ValueError, subprocess.TimeoutExpired) as e:
         print(f'[offline] FAILED: {e}', file=sys.stderr)
         return 1

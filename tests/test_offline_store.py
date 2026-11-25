@@ -4,7 +4,8 @@
 
 Every download a build script can make must be in the store (offline_pack's lists, read from the code that downloads),
 or be listed below with why a player's build never makes it. The proof that nothing is downloaded is offline_pack.py
-check under storage_guard.py run --offline (the release runs it); these tests keep the lists honest without a network."""
+check, which denies the network itself (tests/test_offline_check_network.py; the release runs it; until 2026-11-25 it ran
+under the retired storage guard's --offline); these tests keep the lists honest without a network."""
 import ast
 import json
 import os
