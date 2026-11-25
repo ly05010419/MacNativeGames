@@ -116,6 +116,7 @@ static struct {
        first with a blended draw this frame (lit_first, -1: none yet) and the one learned from earlier frames (lit_learn,
        index + 1, 0: none); the layer of this and last frame and whether last frame's belongs to this history. */
     id<MTLTexture> lit, layer[2]; uint64_t lit_frame, layer_done; int lit_n, lit_cur, lit_first, lit_learn, layer_i, layer_ok;
+    void *scene_root;   // the texture the compose draw's view of the scene belongs to, as of the last taa_encode: compared, never messaged
     id<MTLComputePipelineState> layer_ps; id<MTL4ArgumentTable> largs[TAA_SLOTS];
     /* Each size change retires the scaler and seven textures. Keep every one alive for the in-flight frames. */
     struct { id obj; uint64_t frame; } old[TAA_OLD * 8]; int nold;
@@ -182,15 +183,28 @@ static float fast_alpha(void) { static float v = -1; if (v < 0) v = env_float("T
 static float fast_gamma(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_FAST_GAMMA", 1.25f, 0.5f, 4.0f); return v; }
 int taa_active(void) { return g.active; }
 int taa_ready(void) { return g.active && !g.up && !g.failed && g.frame >= g.retry_at && g.depth && g.cam_ok; }
-static int layer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TAA_LAYER"); v = !(e && !strcmp(e, "0")); } return v; }
+static int layer_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        /* Breath of the Wild 1.9.0 on the Mac only (2026-11-25): its pass layout is the one examined; TotK, iOS and zeldaVR
+           keep their picture unless TOTK_TAA_LAYER=1 asks for it. TOTK_TAA_LAYER=0 turns it off for A/B. */
+#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE
+        int def = 1;
+#else
+        int def = 0;
+#endif
+        const char *e = getenv("TOTK_TAA_LAYER"); v = e && *e ? strcmp(e, "0") != 0 : def;
+    }
+    return v;
+}
 static float layer_threshold(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_LAYER_THRESHOLD", 0.02f, 0.005f, 0.2f); return v; }
 static id<MTLTexture> mk(MTLPixelFormat f, NSUInteger w, NSUInteger h, MTLTextureUsage u);
 id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {
     g.lit_cur = -1;
-    if (!layer_on() || !g.active || g.up || !g.depth || !g.last_src) return nil;   // g.depth: the G-buffer pass came this frame
-    id<MTLTexture> c0 = pd.colorAttachments[0].texture, scene = g.last_src.parentTexture ?: g.last_src;
+    if (!layer_on() || !g.active || g.up || !g.depth || !g.scene_root) return nil;   // g.depth: the G-buffer pass came this frame
+    id<MTLTexture> c0 = pd.colorAttachments[0].texture;
     /* the scene alone: the compose draw samples a view of the texture the passes render into (BotW 1.9.0, 2026-11-25) */
-    if (!c0 || (c0.parentTexture ?: c0) != scene || pd.colorAttachments[1].texture) return nil;
+    if (!c0 || (__bridge void *)(c0.parentTexture ?: c0) != g.scene_root || pd.colorAttachments[1].texture) return nil;
     g.lit_cur = g.lit_n++;
     if (g.lit_cur + 1 != g.lit_learn || g.lit_frame == g.frame + 1 || !taa_ready() || !g.layer_ps) return nil;
     if (!g.lit || g.lit.width != c0.width || g.lit.height != c0.height || g.lit.pixelFormat != c0.pixelFormat) {
@@ -497,6 +511,7 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     memcpy(g.prev, g.cam, sizeof g.cam); g.prev_ok = 1;
     g.resets += reset; g.done++;
     g.last_src = src; g.last_out = out; g.encoded_frame = g.frame + 1;
+    g.scene_root = (__bridge void *)(src.parentTexture ?: src);   // src is alive here (this frame's compose input)
     return out;
 }
 /* ---- Temporal upscaling (TOTK_MFX_TEMPORAL; see the header) ---- */

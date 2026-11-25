@@ -66,7 +66,21 @@ class Hooks(unittest.TestCase):
         # both sides are compared by their root texture, or no scene pass is ever found
         lit = body(real(TAA), 'id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {')
         self.assertIn('c0.parentTexture ?: c0', lit)
-        self.assertIn('g.last_src.parentTexture ?: g.last_src', lit)
+        enc = body(real(TAA), 'id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {')
+        self.assertIn('g.scene_root = (__bridge void *)(src.parentTexture ?: src);', enc)
+
+    def test_last_src_never_messaged_at_pass_open(self):
+        # g.last_src is unretained: the descriptor's view can be freed during frames without anti-aliasing (loading, a
+        # resolution change); messaging it at the next pass open would crash. Only an opaque pointer is compared.
+        lit = body(real(TAA), 'id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {')
+        self.assertNotIn('g.last_src', lit)
+        self.assertIn('(__bridge void *)(c0.parentTexture ?: c0) != g.scene_root', lit)
+        self.assertRegex(TAA, r'void \*scene_root;')
+
+    def test_layer_on_only_in_botw_190_on_the_mac(self):
+        # TotK, iOS and zeldaVR (1.6.0) keep their picture (spec constraint): the layer defaults off outside BotW 1.9.0 Mac
+        on = body(real(TAA), 'static int layer_on(void) {')
+        self.assertIn('#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE', on)
 
     def test_lit_copy_only_when_taa_will_run(self):
         self.assertIn('taa_ready()', body(real(TAA), 'id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {'))
