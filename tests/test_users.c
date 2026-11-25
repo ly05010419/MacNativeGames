@@ -98,7 +98,7 @@ static void mutations(void) {
     uint32_t (*nick)(char *, const uint64_t *) = runtime_account_override("_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE");
     uint32_t (*exists)(unsigned char *, const uint64_t *) = runtime_account_override("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE");
     assert(nick && exists);
-    char name[32];
+    char name[33];   /* nn::account::Nickname: 32 bytes in most SDKs, 33 in Animal Crossing's */
     for (int i = 0; i < 8; i++) {
         uint64_t id[2] = {u[i].lo, u[i].hi}; unsigned char here = 0;
         assert(exists(&here, id) == 0 && here == 1);
@@ -106,6 +106,34 @@ static void mutations(void) {
     }
     uint64_t nobody[2] = {0xdeadbeefdeadbeefull, 0}; unsigned char here = 1;
     assert(exists(&here, nobody) == 0 && here == 0 && nick(name, nobody) == 0x7c67);
+#ifdef GAME_ACNH
+    /* The entries Animal Crossing's SDK asks for beyond the shared ones (its account.c's, now GAME_ACNH branches of
+       shared/runtime/account.c): the user count and list, opening a user, the online licence and play statistics. */
+    uint32_t (*countfn)(int *) = runtime_account_override("_ZN2nn7account12GetUserCountEPi");
+    int count = -1;
+    assert(countfn && countfn(&count) == 0 && count == 8);
+    typedef struct { uint64_t lo, hi; } TestUid;
+    typedef struct { uint64_t lo, hi, token; } TestHandle;
+    uint32_t (*listfn)(int *, TestUid *, int) = runtime_account_override("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi");
+    TestUid listed[RUNTIME_USERS_MAX]; int listedCount = -1;
+    assert(listfn && listfn(&listedCount, listed, RUNTIME_USERS_MAX) == 0 && listedCount == 8 &&
+           listed[0].lo == u[0].lo && listed[0].hi == u[0].hi);
+    uint32_t (*licensefn)(const void *) = runtime_account_override("_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE");
+    assert(licensefn && licensefn(NULL) == 0);   /* offline: as if the player closed the dialog */
+    uint32_t (*promotefn)(const TestUid *) = runtime_account_override("_ZN2nn7account20PromoteQualificationERKNS0_3UidE");
+    TestUid mine = {u[0].lo, u[0].hi}, other = {0xdead, 0xbeef};
+    assert(promotefn && promotefn(&mine) == 0 && promotefn(&other) == 0x7c67);
+    uint32_t (*openprefn)(TestHandle *) = runtime_account_override("_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE");
+    TestHandle handle; assert(openprefn && openprefn(&handle) == 0 && handle.lo == mine.lo && handle.hi == mine.hi);
+    uint32_t (*openfn)(TestHandle *, const TestUid *) = runtime_account_override("_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE");
+    assert(openfn && openfn(&handle, &mine) == 0 && openfn(&handle, &other) == 0x7c67);
+    char nick33[33]; memset(nick33, 0xaa, sizeof nick33); uint64_t me[2]; runtime_account_uid(me);
+    assert(nick(nick33, me) == 0 && !strcmp(nick33, u[0].name) && nick33[32] == 0);   /* 33 bytes, terminator included */
+    int (*statsfn)(void *, const uint64_t *, int) = runtime_account_override("_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsEPKNS_13ApplicationIdEi");
+    unsigned char stats[32]; memset(stats, 0xaa, sizeof stats);
+    assert(statsfn && statsfn(stats, NULL, 2) == 2);
+    for (unsigned i = 0; i < sizeof stats; i++) assert(stats[i] == 0);
+#endif
 }
 static void restart(void) {
     RuntimeUser u[RUNTIME_USERS_MAX];
@@ -134,7 +162,7 @@ static void from_saves(void) {
     uint64_t me[2]; runtime_account_uid(me);
     assert(me[0] == u[0].lo && me[1] == u[0].hi);
 }
-#ifndef TEST_ODYSSEY
+#ifdef TEST_EXTERNAL_SAVE   /* the TotK build: its runtime.h defines RUNTIME_EXTERNAL_SAVE; the test needs the macro here */
 static void external_dm_save(void) {
     RuntimeUser u[RUNTIME_USERS_MAX];
     assert(runtime_users_get(u, RUNTIME_USERS_MAX) == 1 && !strcmp(u[0].name, "Local"));
@@ -253,7 +281,7 @@ int main(int argc, char **argv) {
     }
     scenario(from_saves);
 
-    new_dir();
+    new_dir();   /* DM_SAVE: the fixed external UID where the game mounts it; elsewhere the store stays the profile's */
     {
         pid_t pid = fork();
         assert(pid >= 0);
@@ -261,12 +289,12 @@ int main(int argc, char **argv) {
             char ext[512]; snprintf(ext, sizeof ext, "%s/external-save", dir);
             setenv("TOTK_PROFILE_DIR", dir, 1);
             setenv("DM_SAVE", ext, 1);
-#ifdef TEST_ODYSSEY   /* its fs_host.c does not read DM_SAVE: the store is the profile's own, as without it */
+#ifdef TEST_EXTERNAL_SAVE
+            external_dm_save();
+#else   /* this game's fs_host.c does not read DM_SAVE: the store is the profile's own, as without it */
             RuntimeUser u[RUNTIME_USERS_MAX];
             assert(runtime_users_get(u, RUNTIME_USERS_MAX) == 1 && u[0].lo != 0x78626c0000000001ull);
             char path[512]; struct stat sb; snprintf(path, sizeof path, "%s/users.txt", dir); assert(stat(path, &sb) == 0);
-#else
-            external_dm_save();
 #endif
             _exit(0);
         }

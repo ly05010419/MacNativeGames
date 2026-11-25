@@ -23,12 +23,9 @@ static void olsc_handler(IpcSession *session, const IpcRequest *request, IpcResp
     case 13: /* GetSaveDataBackupSetting(Uid) -> bool; never enabled offline. */
     case 14: { /* SetSaveDataBackupSetting(bool, Uid); the client disables backup when loading a local island. */
         if (!state->initialized) runtime_fail("olsc query before initialization");
-        uint64_t uid[2]; runtime_account_uid(uid);
-        unsigned uid_offset = request->cmd == 14 ? 8 : 0;
-        if (memcmp(ipc_arg(request, uid_offset, sizeof uid), uid, sizeof uid)) {
-            response->result = 0x7c67; /* The host has no such local account. */
-            return;
-        }
+        /* The query may name any local user, not only the one this run opened with: a new user's first start asks
+           for the other users' settings, and answering 0x7c67 for them stopped the new island (2026-11-25). The
+           host's backup is off for every user, so any Uid gets the same offline answer. */
         if (request->cmd == 14) {
             /* main+0x5ba130 writes the bool before the aligned Uid at +8.
              * Disabling needs no remote operation; enabling is unavailable offline. */
