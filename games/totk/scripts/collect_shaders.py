@@ -50,7 +50,7 @@ TOTK = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOTK / 'scripts'))
 from shader_list import KEY, NAME, ShaderList, answers_suffix, canonical, listed_answers, warm_row  # noqa: E402
 from prepare_shader_seed import builtin_serves  # noqa: E402
-from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, list_key_rule  # noqa: E402
+from ns2_shader_corpus import KEY_RULE, KEY_RULE_HEADER, OLDER_KEY_RULES, list_key_rule  # noqa: E402
 
 TITLES = {'tmnt': "Teenage Mutant Ninja Turtles: Shredder's Revenge", 'totk': 'Tears of the Kingdom', 'botw': 'Breath of the Wild', 'odyssey': 'Super Mario Odyssey',
           'ssbu': 'Super Smash Bros. Ultimate', 'wonder': 'Super Mario Bros. Wonder', 'mvdk': 'Mario vs. Donkey Kong',
@@ -385,6 +385,20 @@ def build_rule(build, since):
     return _BUILD_RULE[build, since]
 
 
+def sent_under(row, since):
+    """What the apps that sent a Switch 2 row say of the rule of its keys, over its senders: 'yes' (KEY_RULE), 'no'
+    (an older rule) or 'unknown'. A sender names the rule its contribution file was written with (apps since 2026-11-25:
+    the file's "# Shader key rule:" line, totk_shader_contrib.h; the inbox's export pairs it with the build in sources,
+    [build, rule]): that is the row's rule, whatever build sent it. A name that is neither KEY_RULE nor one of
+    OLDER_KEY_RULES (a fork's rule, or the next one before the lists move to it) says nothing here: 'unknown', so the row
+    waits instead of being marked done for good. A sender that named no rule is placed by its build (build_rule), a
+    guess: a row an older app wrote goes out under the newer app's build once the player updates. An export without
+    sources (an inbox before 2026-11-25) has only builds."""
+    sources = row.get('sources') or [[build, None] for build in row.get('builds') or []]
+    named = lambda rule: 'yes' if rule == KEY_RULE else 'no' if rule in OLDER_KEY_RULES else 'unknown'
+    return {named(rule) if rule else build_rule(build, since) for build, rule in sources}
+
+
 def held_under_the_rule(body, keys):
     """Whether an inbox row names shaders and, for each thing it names, one Switch 2 game of the lists' key rule holds
     every shader of it. Those games' keys are of KEY_RULE (key_source refuses a seed of another rule, main a list of
@@ -404,14 +418,15 @@ def merge_switch_2(game, pending, lists, keys, seeds):
     """Merge a Switch 2 game's inbox rows, whose keys follow a named rule (nvn_ctl.h NVN2_KEY_RULE): (report line, ids of
     the rows done). What a row names comes before its app's build (2026-11-25: 1,812 Bananza and 157 Pokopia rows had
     stayed in the inbox for a build that is no commit here: the CFBundleVersion an app without MNGSourceCommit reports,
-    an iPhone's "1", a fork's commit; 1,571 and 157 of them named only shaders their game holds):
+    an iPhone's "1", a fork's commit; 1,571 and 157 of them named only shaders their game holds), and the rule an app
+    names comes before its build (sent_under):
       1. the rows an app of the current rule sent are merged first: what they bring names the game's shaders for the rest;
       2. a row the rule's games hold (held_under_the_rule) is merged whatever app sent it;
       3. a row only apps of an older rule sent, of shaders none of them holds, names nothing: done, never merged;
       4. a row of apps this repository cannot place (a fork, a build outside git, an export without builds), of shaders
          none of them holds, stays in the inbox: a new shader of the game or a key of another rule, nothing says which."""
     since = key_rule_commit()
-    rules = [{build_rule(b, since) for b in row.get('builds') or []} for row in pending]
+    rules = [sent_under(row, since) for row in pending]
     text = lambda rows: ''.join(row['body'] + '\n' for row in rows)
     current = [row for row, sent in zip(pending, rules) if 'yes' in sent]
     reports, left = [], set()

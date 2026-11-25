@@ -113,26 +113,52 @@ static inline void totk_contrib_json(NSMutableString *out, id value) {
    of them (2026-11-11: an Ocarina of Time install sent 418 Tears of the Kingdom pipelines; 2026-11-12: 464 Pokopia rows came
    as Breath of the Wild's, the two games sharing one file). */
 #define TOTK_CONTRIB_OWNER "# Inbox game: "
-static inline NSString *totk_contrib_owner(NSString *path) {
+/* What the file's first line that starts with prefix says after it, or nil. */
+static inline NSString *totk_contrib_named(NSString *path, const char *prefix) {
     NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     for (NSString *line in [text componentsSeparatedByString:@"\n"])
-        if ([line hasPrefix:@TOTK_CONTRIB_OWNER]) return [line substringFromIndex:strlen(TOTK_CONTRIB_OWNER)];
+        if ([line hasPrefix:@(prefix)]) return [line substringFromIndex:strlen(prefix)];
     return nil;
 }
+static inline NSString *totk_contrib_owner(NSString *path) { return totk_contrib_named(path, TOTK_CONTRIB_OWNER); }
 /* This game's id as the launcher's claim gave it (TOTK_CONTRIB_GAME_ID), or nil (a development run: no check). */
 static inline NSString *totk_contrib_writer_id(void) {
     const char *id = getenv("TOTK_CONTRIB_GAME_ID");
     return id && *id && !strchr(id, '\n') ? @(id) : nil;
 }
-/* Whether this game may write to the file: it is this game's, or not there yet (the first row names the game). */
+/* The rule a contribution file's shader keys were made with: its line "# Shader key rule: <name>" (as a shader list's,
+   ns2_shader_corpus.py KEY_RULE_HEADER), or nil. Only a game whose rule has a name has the line (a Switch 2 game: nvn_ctl.h
+   NVN2_KEY_RULE). A row's key is made under the rule of the app that wrote it and may be sent by a later app of another
+   rule, so the file is where the rule is known: the launcher's claim gives the game the rule's name as it gives the id
+   (TOTK_CONTRIB_KEY_RULE), a new file starts with the line, the game writes nothing to a file of another rule, and the
+   upload sends the file's rule with its rows (totk_contrib_upload.h), which the merge places them by
+   (collect_shaders.py sent_under). Before 2026-11-25 the merge had the sending app's build to guess from: 1,812 Bananza
+   rows waited in the inbox because that build was no commit. A file without the line (written before it) may hold rows of
+   any rule: they go without a rule, and the claim names the rule once the file holds none. */
+#define TOTK_CONTRIB_RULE "# Shader key rule: "
+static inline NSString *totk_contrib_rule(NSString *path) { return totk_contrib_named(path, TOTK_CONTRIB_RULE); }
+/* The rule this game's keys are made with as the launcher's claim named it, or nil (no named rule; a development run). */
+static inline NSString *totk_contrib_writer_rule(void) {
+    const char *rule = getenv("TOTK_CONTRIB_KEY_RULE");
+    return rule && *rule && !strchr(rule, '\n') ? @(rule) : nil;
+}
+/* Whether this game may write to the file: it is this game's and of its key rule, or not there yet (the first row names
+   both). */
 static inline BOOL totk_contrib_writable(NSString *path) {
-    NSString *id = totk_contrib_writer_id();
-    if (!id || !path) return YES;
-    NSString *found = [NSFileManager.defaultManager fileExistsAtPath:path] ? totk_contrib_owner(path) : id;
-    if ([found isEqualToString:id]) return YES;
-    fprintf(stderr, "[shader-contrib] %s is %s, not %s's: nothing is written to it\n", path.UTF8String,
-            found.length ? [NSString stringWithFormat:@"%@'s", found].UTF8String : "no game's", id.UTF8String);
-    return NO;
+    if (!path || ![NSFileManager.defaultManager fileExistsAtPath:path]) return YES;
+    NSString *id = totk_contrib_writer_id(), *found = id ? totk_contrib_owner(path) : nil;
+    if (id && ![found isEqualToString:id]) {
+        fprintf(stderr, "[shader-contrib] %s is %s, not %s's: nothing is written to it\n", path.UTF8String,
+                found.length ? [NSString stringWithFormat:@"%@'s", found].UTF8String : "no game's", id.UTF8String);
+        return NO;
+    }
+    NSString *rule = totk_contrib_writer_rule(), *written = rule ? totk_contrib_rule(path) : nil;
+    if (written && ![written isEqualToString:rule]) {
+        fprintf(stderr, "[shader-contrib] %s names its shaders by key rule %s, this game by %s: nothing is written to it\n",
+                path.UTF8String, written.UTF8String, rule.UTF8String);
+        return NO;
+    }
+    return YES;
 }
 
 /* The file opened with these flags and locked (flock, exclusive), or -1. totk_contrib_retire replaces the file by a rename,
@@ -147,6 +173,16 @@ static inline int totk_contrib_lock(NSString *path, int flags) {
         close(fd);
     }
     return -1;
+}
+/* Names the key rule of a file that holds no rows and no rule yet (totk_inbox_claim): every row it takes from now on is
+   written under this rule. */
+static inline void totk_contrib_name_rule(NSString *path, NSString *rule) {
+    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    int fd = totk_contrib_lock(path, O_WRONLY | O_APPEND);
+    FILE *f = fd < 0 ? NULL : fdopen(fd, "a");
+    if (!f) { if (fd >= 0) close(fd); return; }
+    fprintf(f, "%s" TOTK_CONTRIB_RULE "%s\n", text.length && ![text hasSuffix:@"\n"] ? "\n" : "", rule.UTF8String);
+    fclose(f);   // the lock goes with the descriptor
 }
 /* Appends one row (a whole line without its newline), once: not when the file or its done file has it. Not thread-safe:
    the runtime calls it under its translation lock; the file's lock (flock) keeps it apart from totk_contrib_retire in
@@ -178,6 +214,7 @@ static inline void totk_contrib_add_line(NSString *line) {
               "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
               "# This game sends it to the shader inbox when contributing is on in Settings (docs/shader-list.md).\n", f);
     if (fresh && totk_contrib_writer_id()) fprintf(f, TOTK_CONTRIB_OWNER "%s\n", totk_contrib_writer_id().UTF8String);
+    if (fresh && totk_contrib_writer_rule()) fprintf(f, TOTK_CONTRIB_RULE "%s\n", totk_contrib_writer_rule().UTF8String);
     if (!tagged) { fprintf(f, "%s\n", gameLine.UTF8String); tagged = 1; }   /* an older file, or another version since */
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);   // the lock goes with the descriptor
@@ -287,6 +324,16 @@ static inline NSUInteger totk_contrib_retire(NSString *path, NSSet<NSString *> *
         if (!totk_contrib_is_row(line) || ![rows containsObject:line]) { [kept appendFormat:@"%@\n", line]; continue; }
         if (![seen containsObject:line]) { [seen addObject:line]; [moved appendFormat:@"%@\n", line]; }
     }
+    /* A file from before files named their key rule that holds no row any more: every row from now on is written by this
+       app, under its rule (totk_contrib_writer_rule), so the file names it. At the claim alone this came late: an install
+       that uploads on its own seldom starts with an empty file. */
+    NSString *rule = totk_contrib_writer_rule();
+    BOOL named = NO, empty = YES;
+    for (NSString *line in [kept componentsSeparatedByString:@"\n"]) {
+        if ([line hasPrefix:@TOTK_CONTRIB_RULE]) named = YES;
+        if (totk_contrib_is_row(line)) empty = NO;
+    }
+    if (rule && seen.count && empty && !named) [kept appendFormat:@TOTK_CONTRIB_RULE "%@\n", rule];
     NSUInteger count = seen.count;
     if (count) {
         NSString *done = totk_contrib_side(path, @"done"), *tmp = totk_contrib_side(path, @"tmp");

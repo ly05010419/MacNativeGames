@@ -53,6 +53,10 @@ def stage_of(ctl, code):
 # the shader hash +0x20..+0x27 (2026-11-12): Pokopia writes them again before it sets the shader.
 KEY_ZERO = ((0x08, 0x0c), (0x20, 0x28), (0x30, 0x34))
 KEY_RULE = 'nvn2-ctl48-zero-08-20-30'   # nvn_ctl.h NVN2_KEY_RULE; a seed records it (prepare_ns2_seed.py)
+# The rules these games' keys followed before KEY_RULE (until 2026-11-12: only +0x30 as zero). A key rule that takes a new
+# name leaves its old one here: collect_shaders.py marks an inbox row done unmerged only when its app named one of these;
+# a name that is neither KEY_RULE nor here (a fork's, or the next rule's before the lists move to it) decides nothing.
+OLDER_KEY_RULES = ('nvn2-ctl48-zero-30',)
 # A Switch 2 game's shader list names its shaders by one rule, said in its header (ns2_rekey.py writes it): a list and a
 # seed of other rules name no shader in common, so collect_shaders.py and prepare_ns2_seed.py refuse to mix them.
 KEY_RULE_HEADER = '# Shader key rule: '

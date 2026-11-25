@@ -96,7 +96,8 @@ HTTPS to the project's shader inbox (https://mac-native-games.com), about 20 sec
 hour, and never asks again; "Don't contribute" sends nothing and never asks again. "Contribute shaders automatically" in
 Settings (the Mac's settings panel, display page; the iPhone / iPad Settings app) turns it on or off at any time. Only
 shader and pipeline identifiers, the game and app versions, the device model and system version, and a random id are
-sent. On the Mac the file is `shader-list-contribution/shader-list-contribution.txt` in your clone (Breath of the
+sent; for a Switch 2 game also the name of the rule its shader identifiers are made with (the file's line
+`# Shader key rule:`, the same for every player of that app), which the merge places the rows by. On the Mac the file is `shader-list-contribution/shader-list-contribution.txt` in your clone (Breath of the
 Wild's `shader-list-contribution-botw.txt`, Bananza's `-dkb`, Pokopia's `-pkp`). The upload is the only way in: since
 2026-11-12 no file is taken from a GitHub issue.
 
