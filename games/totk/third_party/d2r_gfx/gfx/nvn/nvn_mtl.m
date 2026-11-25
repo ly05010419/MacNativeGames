@@ -1883,6 +1883,7 @@ void mtl_sub_begin(void) {
 }
 
 static void rp_end_from(const char *file, int line);
+static int g_mtk_pass_mesh, g_mtk_pass_plain;   // OOT_MESH_PASS_SPLIT=2 (nvn_mesh_tasks.inc): the open pass holds a mesh / an ordinary draw
 #define rp_end() rp_end_from(__FILE__, __LINE__)   // passdump records which call site ended a render pass
 static void mesh_batch_prefetch(void);   // nvn_mesh_batch.inc: mesh indirect-argument batches for the pass about to open
 extern int g_frz_on; static int g_frz_state;   // 世界冻结：本帧锁存的状态（0 正常 / 1 完整帧 / 2 冻结帧），见 frz_op 上方的说明 | World freeze: the state latched for this frame (0 normal / 1 full frame / 2 frozen frame), see the note above frz_op
@@ -7118,7 +7119,7 @@ static void rp_end_from(const char *rp_file, int rp_line) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     if (totk_tl_on()) totk_tl(TL_PASS_END, g_stat_pass, g_stat_draw - g_pass_draw0);
-    sd_finish(); enc_r_end(g_enc); g_oot_bar_pass = g_oot_bar_writes = g_oot_bar_order = 0; zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+    sd_finish(); enc_r_end(g_enc); g_mtk_pass_mesh = g_mtk_pass_plain = 0; g_oot_bar_pass = g_oot_bar_writes = g_oot_bar_order = 0; zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
 #if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
     csnap_clear();   // nothing between two passes reads the copy
 #endif
@@ -17779,7 +17780,13 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
     enc_r_cull(en, MTLCullModeNone); enc_r_fill(en, MTLTriangleFillModeFill); enc_r_depth_bias(en, 0, 0, 0);
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
+/* OOT_MESH_PASS_SPLIT=2 (nvn_mesh_tasks.inc): an ordinary draw into the open pass -- draw_inner's, or a mid-pass clear's
+   triangle (clear_quad / clear_ds_quad, which draw through rp_begin, not draw_inner) -- ends a pass that holds mesh draws,
+   and marks the pass as holding an ordinary draw, so no clear stays in a pass with mesh draws (review of PR #2324). */
+static int mtk_split_on(void);
+static void mtk_pass_plain_draw(void) { if (mtk_split_on() == 2) { if (g_enc && g_mtk_pass_mesh) rp_end(); g_mtk_pass_plain = 1; } }
 static void clear_quad(const p_clear_color *c) {
+    mtk_pass_plain_draw();
 #if !defined(GAME_BOTW) && !defined(GAME_NS2)   /* TOTK: the colour snapshot (csnap) */
     csnap_clear();   // the clear changes the target: a later reader copies again
 #endif
@@ -17833,6 +17840,7 @@ static void clear_ds_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt[8
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
 static void clear_ds_quad(const p_clear_ds *c) {
+    mtk_pass_plain_draw();
     gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / masked / scissored depth-stencil clear");
     if (g_enc && ((c->depth_mask && !g_pass.hd) || (c->stencil_mask && !g_pass.hs))) rp_end();
     id<MTL4RenderCommandEncoder> en = rp_begin(); if (!en) return;
@@ -19738,6 +19746,7 @@ static void oot_bar_note_draw(NvProg *pr) {
     if (g_oot_bar_mode) g_oot_bar_writes |= oot_bar_shader_writes(pr);
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
+    if (!g_mtk.on) mtk_pass_plain_draw();   // OOT_MESH_PASS_SPLIT=2: an ordinary draw after mesh draws starts a pass
     NSUInteger native_output_width=0,native_output_height=0;
     uint64_t native_output_source=0;
     if(g_host_rect_draw){g_host_rect_draw=0;g_pso_dirty=1;}

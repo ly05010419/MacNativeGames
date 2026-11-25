@@ -374,11 +374,19 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
 typedef struct { uint64_t frame; int chunk; uint32_t count, first; int indirect; char ts[17], ms[17], fs[17]; } mtk_ring_ent;
 #define MTK_RING 256
 static mtk_ring_ent g_mtk_ring[MTK_RING]; static uint64_t g_mtk_ring_n; static id<MTLBuffer> g_mtk_ring_args;
+/* OOT_MESH_PASS_SPLIT=2 (2026-11-20, off by default): the pass ends only where mesh draws and ordinary draws meet, so a
+   run of mesh draws shares one pass and the ordinary draws theirs (g_mtk_pass_mesh / g_mtk_pass_plain, cleared at every
+   pass end). Mode 1 cost the M1 Pro 5-15 fps in villages and by flowing water, where the submit / present thread waited
+   up to 250 ms a frame for the translation; mode 2 keeps the hang's condition (task + mesh draws beside ordinary draws in
+   one pass) away with far fewer passes. Measured in play on the M1 Pro (Kakariko, looking up): village frames from a 9
+   fps median to about 30 (the 30 lock), no GPU error, so 2 is the M1 / M2 default; OOT_MESH_PASS_SPLIT=1 is the
+   older one pass a mesh draw, 0 none. */
 static int mtk_split_on(void) {
     static int v=-1;
     if(v<0){const char *e=getenv("OOT_MESH_PASS_SPLIT");
-        v=e&&*e?atoi(e)!=0:![g_dev supportsFamily:MTLGPUFamilyApple9];
-        MLOG("[mesh] mesh draws %s (OOT_MESH_PASS_SPLIT%s)",v?"in render passes of their own":"share render passes",e&&*e?"":", by GPU family");}
+        v=e&&*e?atoi(e):[g_dev supportsFamily:MTLGPUFamilyApple9]?0:2;
+        if(v<0||v>2)v=1;
+        MLOG("[mesh] mesh draws %s (OOT_MESH_PASS_SPLIT=%d%s)",v==1?"in render passes of their own":v==2?"apart from ordinary draws, mesh runs sharing a pass":"share render passes",v,e&&*e?"":", by GPU family");}
     return v;
 }
 static int mtk_ring_on(void) { static int v=-1; if(v<0){const char *e=getenv("OOT_MESH_RING");v=e&&atoi(e)!=0;} return v; }
@@ -402,7 +410,7 @@ static void mtk_scratch_hang_report(void) {
     const uint32_t *h=g_mtk_scratch.contents;unsigned held=0;for(unsigned i=0;i<g_mtk_scratch_slots;i++)held+=h[MTK_SCRATCH_FLAGS+i]!=0;
     MLOG("【红】[mesh] at the GPU hang (frame %llu): device stage memory slots held %u of %u, counter %u, forced takes %u; mesh draws %s",
          (unsigned long long)atomic_load(&g_cur_frame),held,g_mtk_scratch_slots,h[0],h[MTK_SCRATCH_FORCED],
-         mtk_split_on()?"in render passes of their own":"share render passes");
+         mtk_split_on()==1?"in render passes of their own":mtk_split_on()==2?"apart from ordinary draws (OOT_MESH_PASS_SPLIT=2)":"share render passes");
 }
 static void mtk_ring_note(const p_draw *dw,NvShader *ts,NvShader *ms,NvShader *fs) {
     if(!mtk_ring_on())return;
@@ -467,7 +475,7 @@ static void mesh_tasks_draw(const p_draw *dw) {
             [g_commit_blocks addObject:^{[[NSData dataWithBytes:(uint8_t *)capture.contents+ca length:8]writeToFile:path atomically:YES];}];
         }
     }
-    if(mtk_split_on()&&g_enc)rp_end();
+    if(g_enc&&(mtk_split_on()==1||(mtk_split_on()==2&&g_mtk_pass_plain)))rp_end();
     if(mtk_ring_on()){mtk_ring_note(dw,ts,ms,pr->sh[1]);if(g_blit){enc_b_end(g_blit);g_blit=nil;}}
     mtk_geo_prepare(ms,pr->sh[1]);mtk_capture_storage(pr);
     g_geo_ras.pr=raster;g_pso_dirty=1;
@@ -475,6 +483,7 @@ static void mesh_tasks_draw(const p_draw *dw) {
     g_geo_ras.pr=nil;g_mtk.on=0;args_dirty_all();g_pso_dirty=1;
     mesh_indirect_written(pr);mesh_indirect_stats();
     mesh_batch_written(pr);
-    if(mtk_split_on()&&g_enc)rp_end();
+    if(mtk_split_on()==1&&g_enc)rp_end();
+    else if(mtk_split_on()==2&&g_enc)g_mtk_pass_mesh=1;
     static int once;if(!once++)MLOG("[mesh] first native draw: %u workgroups from %u",g_mtk.count,g_mtk.first);
 }

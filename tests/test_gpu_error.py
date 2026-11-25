@@ -71,7 +71,19 @@ class GpuError(unittest.TestCase):
         for words in ('slots held', 'forced takes', 'MTK_SCRATCH_FORCED', 'mtk_split_on()'):
             self.assertIn(words, report)
         # PR #2258: mesh draws in passes of their own by default only before Apple9 (M1 / M2); OOT_MESH_PASS_SPLIT forces it
-        self.assertIn('v=e&&*e?atoi(e)!=0:![g_dev supportsFamily:MTLGPUFamilyApple9];', tasks)
+        self.assertIn('v=e&&*e?atoi(e):[g_dev supportsFamily:MTLGPUFamilyApple9]?0:2;', tasks)
+        # mode 2 (only where mesh and ordinary draws meet) is the M1 / M2 default; an unknown value falls back to mode 1
+        self.assertIn('if(v<0||v>2)v=1;', tasks)
+
+    def test_mode_2_counts_every_ordinary_draw(self):
+        # PR #2324 review: mid-pass clears draw a triangle through rp_begin, outside draw_inner; mode 2 must see them as
+        # ordinary draws too, or a clear after mesh draws would stay in their pass
+        source = (NVN / 'nvn_mtl.m').read_text()
+        for name in ('static void clear_quad(', 'static void clear_ds_quad(', 'static void draw_inner(const p_draw *dw, const p_draw_idx *di) {'):
+            with self.subTest(function=name):
+                body = source[source.index(name):]
+                body = body[:body.index('rp_begin()') if 'clear' in name else body.index('\n}\n')]
+                self.assertIn('mtk_pass_plain_draw();', body)
 
 
 if __name__ == '__main__':
