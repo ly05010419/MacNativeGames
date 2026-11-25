@@ -48,6 +48,23 @@ plus attachment traffic. That is the Switch 2 mesh-shader pipeline's shape, and 
 | The game's own dynamic resolution | **+14 %** (34.1 → 39.0–40.1 fps), the single biggest lever measured; exposed as the 动态分辨率 settings row (default off) |
 | 720p-from-480p canvas | +14 % (34.1 → 39.0 fps), the game's own handheld mode |
 
+## Why frames drop during play (measured while playing, 2026-11-25)
+
+The long-frame log (整帧 > 80 ms) shows the drops are **first-visit texture streaming**, not steady-state cost:
+one frame uploaded 383 textures / 280 MB (146 ms of upload, 582 ms frame with a 343 ms GPU burst), others
+84-145 textures / 25-135 MB (100-400 ms frames) right after the save loads and when new areas enter view.
+Rarer: one arena heap migration (~90 ms) and a one-off pipeline compile (~17 ms). Steady state is p50 ~24 ms
+at 720p on the M2 — the drops are area loads, which the shader cache / pipeline archive already cover for
+shaders; textures stream on demand by design.
+
+## 60 FPS displayed on the M2: the applied recipe (2026-11-25)
+
+With the settings files alone (`graphics-canvas.txt=1` 720p native, `graphics-drs.txt=1`, `graphics-frame.txt=interp-1`
+i.e. MetalFX interpolation 30+30), measured on the rebased tree: present interval **p50 / p95 / max all 16.67 ms,
+0 % over one refresh, 300 of 600 presents interpolated — a steady 60.0 FPS on the 60 Hz display** (game logic
+held at 30 fps by 30+30, internal resolution adapting via DRS). Without interpolation the same scene runs at
+41 fps game rate (720p native) / 51 fps with DRS. 480p canvas + DRS + 30+30 measures the same steady 60.
+
 ## Update after rebasing on 786ddc00 (PR #2324, 2026-11-25): pass splits on M1/M2
 
 `origin/main` then landed "on M1 / M2 an Ocarina of Time render pass ends only where mesh and ordinary draws meet"
