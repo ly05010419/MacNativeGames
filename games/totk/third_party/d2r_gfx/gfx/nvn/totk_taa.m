@@ -78,6 +78,9 @@ void tup_stats(char *out, size_t n) { snprintf(out, n, "not available on visionO
 void tup_log_frames(long n) { (void)n; }
 void tup_note_site(void) {}
 int tup_active(void) { return 0; }
+void taa_dump_arm(int frames) { (void)frames; }
+int taa_dump_due(void) { return 0; }
+void taa_dump(long frame) { (void)frame; }
 #else
 
 #define TLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [taa] " __VA_ARGS__); fputc('\n', stderr); } while (0)
@@ -901,6 +904,44 @@ void taa_stats(char *out, size_t n) {
     snprintf(out, n, "frame %llu: anti-aliased %llu (fast resolve %llu, now %s), history resets %llu, without depth or camera %llu",
              (unsigned long long)g.frame, (unsigned long long)g.done, (unsigned long long)g.fast_done, g.fast && !g.fast_failed ? "fast" : "MetalFX",
              (unsigned long long)g.resets, (unsigned long long)g.missing);
+}
+/* TOTK_TAA_DUMP (see the header). Added 2026-11-25 to look at what edge smoothing is given where moving things lag
+   (docs/superpowers/specs/2026-11-25-botw-edge-smoothing-design.md). Waits for the GPU: diagnostic runs only. */
+static _Atomic int g_dump_left;
+void taa_dump_arm(int frames) { atomic_store(&g_dump_left, frames == 1 ? 3 : frames > 0 ? frames : 0); TLOG("dump armed: %d frames", atomic_load(&g_dump_left)); }
+int taa_dump_due(void) {
+    static const char *dir; static int read;
+    if (!read) { read = 1; dir = getenv("TOTK_TAA_DUMP"); }
+    return dir && *dir && atomic_load(&g_dump_left) > 0 && g.encoded_frame == g.frame && g.last_out;   // the frame just ended was anti-aliased
+}
+static NSUInteger dump_bpp(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRG11B10Float: case MTLPixelFormatR32Float: case MTLPixelFormatRG16Float: case MTLPixelFormatRGBA8Unorm: return 4;
+    case MTLPixelFormatRGBA16Float: return 8;
+    case MTLPixelFormatR16Float: return 2;
+    default: return 0;
+    }
+}
+static void dump_one(id<MTLCommandQueue> q, id<MTLTexture> t, const char *dir, const char *name, long frame) {
+    NSUInteger bpp = t ? dump_bpp(t.pixelFormat) : 0, w = t.width, h = t.height;
+    if (!bpp) { TLOG("dump: %s skipped (format %lu)", name, t ? (unsigned long)t.pixelFormat : 0UL); return; }
+    id<MTLBuffer> b = [g.dev newBufferWithLength:w * h * bpp options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:b
+     destinationOffset:0 destinationBytesPerRow:w * bpp destinationBytesPerImage:w * h * bpp];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    char p[1024]; snprintf(p, sizeof p, "%s/taa-%llu-%s-%lux%lu.bin", dir, (unsigned long long)frame, name, (unsigned long)w, (unsigned long)h);
+    FILE *f = fopen(p, "wb"); if (f) { fwrite(b.contents, 1, w * h * bpp, f); fclose(f); } else TLOG("dump: cannot write %s", p);
+}
+void taa_dump(long frame) {
+    const char *dir = getenv("TOTK_TAA_DUMP"); if (!dir || !g.dev) return;
+    static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue];
+    // after taa_encode flipped dh_i, this frame's depth is dh[dh_i ^ 1]; the fast resolve's output is last_out too
+    id<MTLTexture> t[5] = {g.last_src, g.dh[g.dh_i ^ 1], g.mv, g.react, g.last_out};
+    static const char *const names[5] = {"scene", "depth", "motion", "mask", "out"};
+    for (int i = 0; i < 5; i++) dump_one(q, t[i], dir, names[i], frame);
+    atomic_fetch_sub(&g_dump_left, 1);
+    TLOG("dump: frame %ld into %s (scene format %lu, %s)", frame, dir, (unsigned long)g.last_src.pixelFormat, g.fast && !g.fast_failed ? "fast" : "MetalFX");
 }
 
 #endif   // TARGET_OS_VISION

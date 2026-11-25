@@ -24,6 +24,12 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> scene);
 id<MTLResidencySet> taa_residency(void);       // our textures and buffers; the queue adds it once
 void taa_frame_end(void);                      // at the game's present
 void taa_stats(char *out, size_t n);
+/* TOTK_TAA_DUMP=<dir> (diagnostic): "flag taa_dump <n>" arms the next n anti-aliased frames (1: three); at each present
+   after taa_frame_end, taa_dump_due says whether the frame just ended is one, and taa_dump (the caller has waited for the
+   GPU) writes its compose input, depth, motion, mask and output as raw files, as TOTK_MFX_DUMP does. */
+void taa_dump_arm(int frames);
+int taa_dump_due(void);
+void taa_dump(long frame);
 /* MetalFX temporal upscaling (TOTK_MFX_TEMPORAL=1 / flag mfx_temporal; experimental, off by default): the scene size to the
    canvas at the game's own upscale draw, with key 5's jitter, depth, camera motion and mask; while the game draws an
    upscale it can take, it is the frame's one temporal pass (key 5's is not run). */

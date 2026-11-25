@@ -4524,6 +4524,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "wb_staged_nowait")) { extern void botw_wb_set_staged_skip(int on); botw_wb_set_staged_skip(v); return; }
 #endif
     if (!strcmp(name, "uncapped_interval")) { extern void nvn_set_uncapped_interval(int on); nvn_set_uncapped_interval(v); return; }
+    if (!strcmp(name, "taa_dump")) { taa_dump_arm(v); return; }   // TOTK_TAA_DUMP: the next v anti-aliased frames (1: three)
     if (!strcmp(name, "taa_fast")) { taa_set_fast(v < 0 ? !taa_fast_enabled() : v); MLOG("[flag] taa_fast = %d", taa_fast_enabled()); return; }   // edge smoothing's resolve, for in-session A/B
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
@@ -23609,6 +23610,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         }
     }
 #endif
+    if (taa_dump_due()) { mtl_finish_gpu(); taa_dump((long)atomic_load(&g_cur_frame)); }   // TOTK_TAA_DUMP (diagnostic): after the frame's passes, with or without interpolation
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 队满才等；正常由 AcquireTexture 先挡住 | Wait only when the queue is full; normally AcquireTexture blocks first
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
