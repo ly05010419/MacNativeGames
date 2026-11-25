@@ -31,11 +31,13 @@ static inline uint32_t oot_vr_adrp(unsigned reg, uint64_t pc, uint64_t target) {
     return 0x90000000u | (p & 3u) << 29 | ((p >> 2) & 0x7ffffu) << 5 | (reg & 31u);
 }
 
-/* The camera call veneer at stub for the instruction `original` at site. page: the data page (4 KiB aligned);
-   fn_cell: its offset of the host function's address (8-byte aligned, under 32 KiB). Word 30 is the ADRP. */
-static inline const char *oot_vr_call_veneer(uint32_t original, uint64_t stub, uint64_t site, uint64_t page,
-                                             uint32_t fn_cell, uint32_t out[OOT_VR_CALL_WORDS]) {
+/* A host call veneer at stub for the instruction `original` at site, which must not depend on the pc. page: the data page
+   (4 KiB aligned); fn_cell: its offset of the host function's address (8-byte aligned, under 32 KiB); the host gets
+   x0 = x<arg0>, x1 = x<arg1> (each 19..28, which the veneer does not change). Word 30 is the ADRP. */
+static inline const char *oot_vr_host_veneer(uint32_t original, uint64_t stub, uint64_t site, uint64_t page, uint32_t fn_cell,
+                                             unsigned arg0, unsigned arg1, uint32_t out[OOT_VR_CALL_WORDS]) {
     if ((page & 4095) || (fn_cell & 7) || fn_cell >= 32768) return "OOT VR camera veneer: data page cell";
+    if (arg0 < 19 || arg0 > 28 || arg1 < 19 || arg1 > 28) return "OOT VR camera veneer: argument register";
     const uint32_t adrp = oot_vr_adrp(16, stub + 30 * 4, page), back = oot_vr_b(stub + 62 * 4, site + 4);
     if (!adrp) return "OOT VR camera veneer: data page out of ADRP range";
     if (!back) return "OOT VR camera veneer: branch back out of range";
@@ -47,8 +49,8 @@ static inline const char *oot_vr_call_veneer(uint32_t original, uint64_t stub, u
     w[n++] = 0xa9000000u | (18u << 15) | (16u << 10) | (31u << 5) | 30u;          /* 11 stp x30, x16, [sp, #144] */
     for (uint32_t i = 0; i < 32; i += 2)                                          /* 12 stp q<i>, q<i+1>, [sp, #160+16i] */
         w[n++] = 0xad000000u | (((160 + 16 * i) / 16) << 15) | ((i + 1) << 10) | (31u << 5) | i;
-    w[n++] = 0xaa1403e0u;                                                         /* 28 mov x0, x20: the view */
-    w[n++] = 0xaa1303e1u;                                                         /* 29 mov x1, x19: its camera */
+    w[n++] = 0xaa0003e0u | (arg0 << 16);                                          /* 28 mov x0, x<arg0> */
+    w[n++] = 0xaa0003e1u | (arg1 << 16);                                          /* 29 mov x1, x<arg1> */
     w[n++] = adrp;                                                                /* 30 adrp x16, <data page> */
     w[n++] = 0xf9400000u | ((fn_cell / 8) << 10) | (16u << 5) | 16u;              /* 31 ldr x16, [x16, #fn] */
     w[n++] = 0xd63f0200u;                                                         /* 32 blr x16 */
@@ -64,6 +66,11 @@ static inline const char *oot_vr_call_veneer(uint32_t original, uint64_t stub, u
     if (n != OOT_VR_CALL_WORDS) return "OOT VR camera veneer: size";
     memcpy(out, w, sizeof w);
     return NULL;
+}
+/* The camera site: x0 = x20 the view, x1 = x19 its camera. */
+static inline const char *oot_vr_call_veneer(uint32_t original, uint64_t stub, uint64_t site, uint64_t page,
+                                             uint32_t fn_cell, uint32_t out[OOT_VR_CALL_WORDS]) {
+    return oot_vr_host_veneer(original, stub, site, page, fn_cell, 20, 19, out);
 }
 
 /* The field-of-view veneer at stub for the load `original` (ldr s0, ...) at site; fov_cell: the data page's float

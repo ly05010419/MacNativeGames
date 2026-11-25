@@ -1,1 +1,0 @@
-../../../../../../../shared/third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h

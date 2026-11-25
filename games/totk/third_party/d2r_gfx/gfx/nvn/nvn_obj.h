@@ -353,7 +353,11 @@ void botw_ashot_poll(const void *t, long cur);   /* OOT (2026-11-09): "ashot" / 
 #else
 #define BOTW_ASHOT_POLL(t, cur)
 #endif
+#ifdef GAME_OOT   /* its tracker splits ranges too (NVN_DIRTY_SPLIT, nvn_dirty.c): the same reason as Breath of the Wild's */
+#define BOTW_REUP_TRACKED(pk, t) (pk)->tracked = nvn_dirty_tracked((t)->mem, (t)->L.size);
+#else
 #define BOTW_REUP_TRACKED(pk, t)
+#endif
 #define BOTW_PKG_FIELDS
 #define BOTW_WB_LANDED(t)
 #define BOTW_PKG_WB_SEEN(pk)

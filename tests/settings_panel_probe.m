@@ -412,14 +412,14 @@ static void persistence_probe(const char *action) {
         settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settings_show(1);
         pick(@"Overlay", @"FPS + playtime"); pick(@"Frame interpolation", @"40+40");
         pick(@"Resolution", outputChoice); pick(@"Aspect ratio", @"21:9"); pick(@"Edge smoothing", @"MetalFX");
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
         pick(@"Anti-aliasing method",@"FXAA");pick(@"Anti-aliasing quality",@"Quality");
         pick(@"Anti-aliasing method",@"SMAA");tick();pick(@"Anti-aliasing quality",@"Ultra");
 #endif
         assert(fakeLock == 0 && mfx_requested() == MFX_40); return;
     }
     settings_restore_begin();
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
     if(!strcmp(action,"restore")||!strcmp(action,"override")){
         assert(fakeSmaa&&fakeSmaaQuality==3&&fakeFxaaQuality==1);
         dm_gfx_aa_method_set(1);assert(atomic_load(&g_fin_fxaa_quality));
@@ -444,7 +444,7 @@ static void persistence_probe(const char *action) {
 }
 
 /* Original FXAA and split AA preferences through production selection state; no NSApplication, window or GPU. */
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
 static void aa_preferences_probe(void) {
     settings_effects_restore();
     int method=atoi(getenv("SETTINGS_TEST_AA_METHOD"));
@@ -1128,7 +1128,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
 #endif
         puts("pass: supported VR settings rows");return 0;
     }
-#ifdef TOTK_GAME_V143
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
@@ -1173,6 +1173,35 @@ int main(int argc, const char **argv) { @autoreleasepool {
         fakeDSU.locked=1;settings_rebuild();assert(!row(@"DSU 输入（环境变量指定）").control.enabled && !row(@"DSU 服务器").buttonAction);
         [settingsPanel.timer invalidate];puts("pass: DSU settings, live status, localization and environment lock");return 0;
     }
+    if (argc == 3 && !strcmp(argv[1], "look")) {
+        /* Pictures of every page for a look, no checks: <prefix>-<tab>.png and <prefix>-<tab>-pad.png (a row picked with the
+           controller), the panel over a bright stand-in for the game's picture. The blur behind the glass is the window
+           server's and is not in these: they show the tint over the picture as it is. */
+        settings_test_output_init();
+        playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
+        window = probe_window();
+        window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+        window.contentView.wantsLayer = YES;
+        CAGradientLayer *scene = [CAGradientLayer layer]; scene.frame = window.contentView.bounds;
+        scene.colors = @[(id)[NSColor colorWithCalibratedRed:0.35 green:0.62 blue:0.90 alpha:1].CGColor, (id)[NSColor colorWithCalibratedRed:0.86 green:0.90 blue:0.78 alpha:1].CGColor,
+                         (id)[NSColor colorWithCalibratedRed:0.30 green:0.55 blue:0.25 alpha:1].CGColor, (id)[NSColor colorWithCalibratedRed:0.16 green:0.30 blue:0.14 alpha:1].CGColor];
+        scene.locations = @[@0, @0.45, @0.55, @1]; scene.startPoint = CGPointMake(0.3, 1); scene.endPoint = CGPointMake(0.7, 0);
+        [window.contentView.layer addSublayer:scene];
+        press(18); assert(settingsOpen && settingsPanel);
+        for (int tab = 0; tab < settings_pages(); tab++) for (int pad = 0; pad < 2; pad++) {
+            [settingsPanel selectPage:settings_tab_page(tab)]; tick();
+            if (pad) { pad_press(PAD_DOWN); pad_press(PAD_DOWN); } else settings_pointer_used();
+            NSView *v = window.contentView; [v layoutSubtreeIfNeeded]; [v displayIfNeeded]; [CATransaction flush];
+            NSSize z = v.bounds.size; const CGFloat k = 2;
+            NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:(NSInteger)(z.width * k) pixelsHigh:(NSInteger)(z.height * k)
+                bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bytesPerRow:0 bitsPerPixel:0];
+            NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+            CGContextScaleCTM(context.CGContext, k, k); [v.layer renderInContext:context.CGContext]; [context flushGraphics];
+            NSString *path = [NSString stringWithFormat:@"%s-%d%s.png", argv[2], tab, pad ? "-pad" : ""];
+            assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES]);
+        }
+        [settingsPanel.timer invalidate]; return 0;
+    }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -1187,12 +1216,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 33 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* includes the calibration custom row + HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 33 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* Includes the calibration custom row and HDR rows (PR #1129). */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
                                                                  (1.4.3, and Breath of the Wild 1.9.0 with its shadow
-                                                                 resolution and AO live), or eight greyed rows */
+                                                                 resolution and AO live; both with the anti-aliasing method
+                                                                 and, for FXAA, its quality), or eight greyed rows */
 
     /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
        the rows below read the mode. */
@@ -1426,20 +1456,31 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(switched(@"Ambient occlusion")); flip(@"Ambient occlusion", NO);
     assert(!fakeFxOn[0] && !strcmp(savedName, "graphics-effects.txt") && !strcmp(savedWord, "ao"));
     shows(@"Depth of field", @"Not in this version"); shows(@"Model detail distance (LOD)", @"Not in this version");
-    /* FXAA and sharpening (gfx/nvn/botw_finish.h): 1.4.3's rows and files; while MetalFX replaces the FXAA / upscale draw
-       the FXAA row says so (rows are made at each opening). */
-    assert(switched(@"FXAA anti-aliasing")); flip(@"FXAA anti-aliasing", NO);
-    assert(!fakeFxaa && !strcmp(savedName, "graphics-fxaa.txt") && !strcmp(savedWord, "off"));
+    /* Anti-aliasing and sharpening (gfx/nvn/botw_finish.h): 1.4.3's rows and files, the quality row following the method
+       (settings_aa_rebuild); while MetalFX replaces the FXAA / upscale draw both rows say so (rows are made at each opening). */
+    for (TOTKSettingRow *r in settingsPanel.allRows) assert(![r.title isEqualToString:@"FXAA anti-aliasing"]);
+    shows(@"Anti-aliasing method", @"FXAA"); shows(@"Anti-aliasing quality", @"Original");
+    pick(@"Anti-aliasing method", @"Off"); tick(); assert(!fakeFxaa && !fakeSmaa && !atomic_load(&g_fin_fxaa_quality));
+    assert(!strcmp(savedName, "graphics-aa-method.txt") && !strcmp(savedWord, "0"));
+    for (TOTKSettingRow *r in settingsPanel.allRows) assert(![r.title isEqualToString:@"Anti-aliasing quality"]);
+    pick(@"Anti-aliasing method", @"SMAA"); tick(); shows(@"Anti-aliasing quality", @"High"); assert(fakeSmaa && menu(@"Anti-aliasing quality").numberOfItems == 4);
+    pick(@"Anti-aliasing quality", @"Low"); assert(fakeSmaaQuality == 0 && !strcmp(savedWord, "2"));   /* the method, saved last */
+    pick(@"Anti-aliasing quality", @"Ultra"); assert(fakeSmaaQuality == 3);
+    pick(@"Anti-aliasing method", @"FXAA"); tick(); pick(@"Anti-aliasing quality", @"Quality"); assert(fakeFxaaQuality == 1 && atomic_load(&g_fin_fxaa_quality));
+    pick(@"Anti-aliasing method", @"SMAA"); tick(); assert(!atomic_load(&g_fin_fxaa_quality));   /* never alongside SMAA */
     pick(@"Sharpening", @"75%"); assert(fakeSharpen == 75 && !strcmp(savedName, "graphics-sharpen.txt") && !strcmp(savedWord, "75"));
-    press(18); fakeFxaaReplaced = 1; press(18); assert(settingsOpen && !menu(@"FXAA anti-aliasing").enabled);
-    shows(@"FXAA anti-aliasing", @"MetalFX replaces it"); assert(menu(@"Sharpening").enabled);
-    press(18); fakeFxaaReplaced = 0; press(18); assert(settingsOpen && switched(@"FXAA anti-aliasing") == NO);
-    /* "Reset to defaults" sets them back to the game's own and removes shadows.txt, graphics-effects.txt,
-       graphics-fxaa.txt and graphics-sharpen.txt. */
+    press(18); fakeFxaaReplaced = 1; press(18);
+    assert(settingsOpen && !menu(@"Anti-aliasing method").enabled && !menu(@"Anti-aliasing quality").enabled);
+    shows(@"Anti-aliasing method", @"MetalFX replaces it"); shows(@"Anti-aliasing quality", @"MetalFX replaces it"); assert(menu(@"Sharpening").enabled);
+    press(18); fakeFxaaReplaced = 0; press(18); assert(settingsOpen && menu(@"Anti-aliasing method").enabled); shows(@"Anti-aliasing quality", @"Ultra");
+    /* "Reset to defaults" sets them back to the game's own (FXAA Original; SMAA High remembered) and removes shadows.txt,
+       graphics-effects.txt, the anti-aliasing files (the older graphics-fxaa.txt too) and graphics-sharpen.txt. */
     pick(@"Shadow resolution", @"2048 per cascade"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
     assert(!runtime_shadow_res_saved() && fakeFxOn[0] && strstr(removedAll, "shadows.txt ") && strstr(removedAll, "graphics-effects.txt "));
-    assert(fakeFxaa && !fakeSharpen && strstr(removedAll, "graphics-fxaa.txt ") && strstr(removedAll, "graphics-sharpen.txt "));
+    assert(fakeFxaa && !fakeSmaa && !fakeFxaaQuality && fakeSmaaQuality == 2 && !atomic_load(&g_fin_fxaa_quality) && !fakeSharpen);
+    for (const char *const *f = (const char *const[]){"graphics-fxaa.txt ", "graphics-aa-method.txt ", "graphics-fxaa-quality.txt ",
+                                                     "graphics-smaa-quality.txt ", "graphics-sharpen.txt ", NULL}; *f; f++) assert(strstr(removedAll, *f));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
     /* The field of view (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c; the stub itself:
        tests/test_botw_fov.c): 1x, as the game has it; each choice acts at once and is saved in graphics-fov.txt (x100). */

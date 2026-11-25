@@ -6,13 +6,20 @@
    that act here: ambient occlusion, the AO patch's own switch (totk_ssao.h, c1[3].w bit 0 in the shader 0eeb23f2), while the AO
    shaders are the patched ones, the grass blades (their own fragment / vertex shader pair in totk_fx.h), and the sun's
    shadows, which are an Off choice in their row (settings_botw_shadow_row), as on 1.4.3.
-   FXAA and sharpening are 1.4.3's rows and files (graphics-fxaa.txt, graphics-sharpen.txt) acting around this game's
-   FXAA / upscale draw (gfx/nvn/botw_finish.h); while MetalFX replaces that draw the FXAA row says so instead. */
+   Anti-aliasing and sharpening are 1.4.3's rows and files (graphics-aa-method.txt, graphics-fxaa-quality.txt,
+   graphics-smaa-quality.txt; an older graphics-fxaa.txt "off" still reads as Off; graphics-sharpen.txt) acting around
+   this game's FXAA / upscale draw (gfx/nvn/botw_finish.h); while MetalFX replaces that draw the anti-aliasing rows say
+   so instead. */
 int dm_gfx_fx_count(void); const char *dm_gfx_fx_id(int i); const char *dm_gfx_fx_name(int i, int english);   /* totk_fx.h */
 int dm_gfx_fx_available(int i); int dm_gfx_fx_on(int i); void dm_gfx_fx_set(int i, int on);
 void dm_gfx_fxaa_set(int on); int dm_gfx_fxaa_on(void); void dm_gfx_sharpen_set(int pct); int dm_gfx_sharpen(void);   /* gfx/nvn/totk_finish.h */
 int dm_gfx_botw_fxaa_replaced(void);   /* gfx/nvn/botw_finish.h */
 
+static void settings_aa_save(void) {   /* as 1.4.3's (settings_game.h) */
+ settings_save_int("graphics-fxaa-quality.txt",dm_gfx_fxaa_quality(),"FXAA quality");
+ settings_save_int("graphics-smaa-quality.txt",dm_gfx_smaa_quality(),"SMAA quality");
+ settings_save_int("graphics-aa-method.txt",dm_gfx_aa_method(),"anti-aliasing method");
+}
 static void settings_effects_save(void) {
  char line[512]="";size_t n=0;
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))n+=(size_t)snprintf(line+n,sizeof line-n,"%s%s",n?" ":"",dm_gfx_fx_id(i));
@@ -26,14 +33,23 @@ static void settings_effects_restore(void) {
   for(char *w=strtok(line," \t\r\n");w;w=strtok(NULL," \t\r\n"))
    for(int i=0;i<dm_gfx_fx_count();i++)if(!strcmp(w,dm_gfx_fx_id(i)))dm_gfx_fx_set(i,0);
  char word[16];double pct;
+ /* As 1.4.3 reads them: the older FXAA switch first, then the method, which decides when its file is there. */
  if(runtime_setting_word("graphics-fxaa.txt",word,sizeof word)&&!strncmp(word,"off",3))dm_gfx_fxaa_set(0);
+ int method,sq;
+ if(settings_read_int("graphics-aa-method.txt",&method)&&method>=0&&method<=2){
+  if(settings_read_int("graphics-fxaa-quality.txt",&sq)&&sq>=0&&sq<=1)dm_gfx_fxaa_quality_set(sq);
+  if(settings_read_int("graphics-smaa-quality.txt",&sq)&&sq>=0&&sq<=3)dm_gfx_smaa_quality_set(sq);
+  dm_gfx_aa_method_set(method);
+ }
  if(settings_read_number("graphics-sharpen.txt",0,100,&pct))dm_gfx_sharpen_set((int)pct);   /* as 1.4.3 reads it */
 }
-/* The page's "Reset to defaults": every switch on, FXAA on, no sharpening, and their files removed. */
+/* The page's "Reset to defaults": every switch on, the game's FXAA (1.4.3's defaults: FXAA Original, SMAA High), no
+   sharpening, and their files removed. */
 static void settings_botw_effects_reset(void) {
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))dm_gfx_fx_set(i,1);
- dm_gfx_fxaa_set(1);dm_gfx_sharpen_set(0);
- for(const char *const *f=(const char *const[]){"graphics-effects.txt","graphics-fxaa.txt","graphics-sharpen.txt",NULL};*f;f++)runtime_setting_remove(*f);
+ dm_gfx_fxaa_quality_set(0);dm_gfx_aa_method_set(1);dm_gfx_smaa_quality_set(2);dm_gfx_sharpen_set(0);
+ for(const char *const *f=(const char *const[]){"graphics-effects.txt","graphics-fxaa.txt","graphics-aa-method.txt","graphics-fxaa-quality.txt",
+  "graphics-smaa-quality.txt","graphics-sharpen.txt",NULL};*f;f++)runtime_setting_remove(*f);
 }
 /* The sun shadows' row (settings_botw_shadow_row in settings_panel.h names it): off, the game's sizes or 2048 per cascade.
    The sizes are the next launch's (botw_shadow_res.h); off is the effect switch "shadow" and acts at once (P9, 2026-11-05:
@@ -57,9 +73,22 @@ static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray arrayWithObjects:settings_botw_fov_row(),
   settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
   settings_botw_shadow_row(),nil];
- NSString *fxaa=settings_text("FXAA 抗锯齿","FXAA anti-aliasing");
- [rows addObject:dm_gfx_botw_fxaa_replaced()?settings_fixed(fxaa,settings_text("MetalFX 取代了它","MetalFX replaces it")):
-  settings_row(fxaa,nil,nil,^int{return dm_gfx_fxaa_on();},^(int v){dm_gfx_fxaa_set(v);runtime_setting_save("graphics-fxaa.txt",v?"on":"off","FXAA");})];
+ /* 1.4.3's anti-aliasing rows: the quality row follows the method (settings_aa_rebuild). */
+ NSString *method=settings_text("抗锯齿方式","Anti-aliasing method"),*quality=settings_text("抗锯齿质量","Anti-aliasing quality");
+ if(dm_gfx_botw_fxaa_replaced()){
+  NSString *mfx=settings_text("MetalFX 取代了它","MetalFX replaces it");
+  [rows addObject:settings_fixed(method,mfx)];
+  if(dm_gfx_aa_method())[rows addObject:settings_fixed(quality,mfx)];
+ }else{
+  [rows addObject:settings_row(method,@[settings_text("关","Off"),@"FXAA",@"SMAA"],@[@0,@1,@2],
+   ^int{return dm_gfx_aa_method();},^(int v){dm_gfx_aa_method_set(v);settings_aa_save();})];
+  if(dm_gfx_aa_method()==1)
+   [rows addObject:settings_row(quality,@[settings_text("原版","Original"),@"Quality"],@[@0,@1],
+    ^int{return dm_gfx_fxaa_quality();},^(int v){dm_gfx_fxaa_quality_set(v);settings_aa_save();})];
+  else if(dm_gfx_aa_method()==2)
+   [rows addObject:settings_row(quality,@[@"Low",@"Medium",@"High",@"Ultra"],@[@0,@1,@2,@3],
+    ^int{return dm_gfx_smaa_quality();},^(int v){dm_gfx_smaa_quality_set(v);settings_aa_save();})];
+ }
  [rows addObject:settings_fixed(settings_text("景深","Depth of field"),none)];
  [rows addObject:settings_row(settings_text("锐化","Sharpening"),@[settings_text("关（游戏原样）","Off (as the game has it)"),@"25%",@"50%",@"75%",@"100%"],@[@0,@25,@50,@75,@100],
   ^int{return dm_gfx_sharpen();},^(int v){dm_gfx_sharpen_set(v);settings_save_int("graphics-sharpen.txt",v,"sharpening");})];

@@ -10,8 +10,11 @@
    BOTW notes below) instead of none. Without it such a pool is untracked and every texture in it is uploaded again at
    every submission: Breath of the Wild (a 256x32 texture, then 130 MB a frame after the Hero's Path playback) and Age of
    Calamity and Persona 5 Royal (a 32 MB pool on the same last page), whose 1.5 GB material pool starts on the last page of its first pool (2026-11-22: 440 re-uploads, 220 MB a
-   frame in the battle after the first one's ending movie; the stale copies piled up past 4.5 GB of GPU memory). */
-#if defined(GAME_BOTW) || defined(GAME_AOCX) || defined(GAME_P5R)
+   frame in the battle after the first one's ending movie; the stale copies piled up past 4.5 GB of GPU memory).
+   Ocarina of Time (2026-11-24): the two colour-grading tables in the field (256x32x16 RGBA16F, a 0x101000 pool each that
+   starts on a neighbour's last 16 KB page) were untracked: 2 MB uploaded, two new textures, a residency commit and a
+   serial step every frame, with not one byte different in 3,400 uploads. */
+#if defined(GAME_BOTW) || defined(GAME_AOCX) || defined(GAME_P5R) || defined(GAME_OOT)
 #define NVN_DIRTY_SPLIT 1
 #else
 #define NVN_DIRTY_SPLIT 0
@@ -633,5 +636,37 @@ void nvn_dirty_mp_stats(uint64_t *calls, uint64_t *pages, uint64_t *ns) {
     *calls = atomic_load(&g_mp_calls); *pages = atomic_load(&g_mp_pages); *ns = atomic_load(&g_mp_ticks) * tb.numer / tb.denom;
 }
 #if NVN_DIRTY_SPLIT
-int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) { (void)addr; (void)len; (void)stamp; (void)fn; (void)ctx; return 0; }   // pools span ranges there: rescan all
+/* As the unsplit one above, range by range: a span can lie in several ranges (a pool that starts on a neighbour's last
+   page). The ranges are looked up before fn is called, so a span that is not (or no longer) tracked throughout answers 0
+   with nothing reported; a run of written pages across a range border is reported as two that touch. Ocarina of Time's
+   handle-table captures and ID sets copy and rescan only these runs (pool_input_get, pool_input_ids): with the stub
+   that answered 0 here every capture copied the whole table again (2026-11-24: 104 -> 87 fps in the field). */
+int nvn_dirty_runs_since(const void *addr, size_t len, uint64_t stamp, void (*fn)(void *ctx, uintptr_t lo, uintptr_t hi), void *ctx) {
+    if (!len) return 0;
+    enum { MAX_SEG = 8 }; range_t *seg[MAX_SEG]; uintptr_t sa[MAX_SEG], se[MAX_SEG]; int ns = 0;
+    uintptr_t a = (uintptr_t)addr, e = a + len;
+    while (a < e) {
+        range_t *r = find(a); if (!r || ns == MAX_SEG) return 0;
+        uintptr_t stop = e < r->end ? e : r->end;
+        seg[ns] = r; sa[ns] = a; se[ns] = stop; ns++; a = stop;
+    }
+    for (int k = 0; k < ns; k++) {
+        range_t *r = seg[k]; a = sa[k]; e = se[k];
+        if (atomic_load(&r->latest) <= stamp) continue;
+        uintptr_t p = (a - r->base) >> g_shift, q = (e - 1 - r->base) >> g_shift, run = 0; int open = 0;
+        for (uintptr_t i = p; i <= q + 1; i++) {
+            int dirty = 0;
+            if (i <= q) {
+                if (g_dirty_fast && !(i & (BLK_PAGES - 1)) && i + BLK_PAGES - 1 <= q && atomic_load(&r->blk[i >> BLK_SHIFT]) <= stamp) {
+                    if (open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+                    i += BLK_PAGES - 1; continue;
+                }
+                dirty = atomic_load(&r->gen[i]) > stamp;
+            }
+            if (dirty && !open) { run = i; open = 1; }
+            if (!dirty && open) { uintptr_t lo = r->base + (run << g_shift), hi = r->base + (i << g_shift); fn(ctx, lo < a ? a : lo, hi > e ? e : hi); open = 0; }
+        }
+    }
+    return 1;
+}
 #endif

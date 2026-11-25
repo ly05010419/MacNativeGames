@@ -2346,6 +2346,7 @@ static int diag_shader_prefix_matches(const char *key, uint64_t value) {
     return key && !strncmp(key, prefix, 16);
 }
 void dm_gfx_set_flag(const char *name, int v) {
+    if (!strcmp(name, "link_pause")) { void mtl_link_pause(int on); mtl_link_pause(v); MLOG("[flag] link_pause = %d (the display link stops calling back, as when the system stalls it)", v != 0); return; }   // tests the display-link rescue
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
@@ -12285,6 +12286,14 @@ static int present_now(const tex_t *, double, uint64_t, uint64_t, const int[4], 
 #define STALL_NS 100000000ull
 #define STALL_RED_NS 2000000000ull
 static uint64_t g_stall_t0, g_stall_drop, g_stall_n; static int g_stall_red, g_stall_logged;
+/* The display link's rescue, as games/totk's (cf1e6298, from D2R Mobile afad65c): when the display link stays silent for
+   LINK_RESCUE_NS while the app is active, stop waiting for it: switch to mode 0 (the present thread takes drawables
+   itself), so the picture keeps moving. After g_rescue_back_ns the display link is tried again (link_sync); a new stall
+   doubles the interval, up to 60 s. Upstream saw an iPhone's display link stop while active and never come back: the
+   drop fallback alone froze the picture for 80 s. Changed under g_pq_mu; the mode switch itself is link_sync's, on the
+   present thread. */
+#define LINK_RESCUE_NS 500000000ull
+static int g_rescue_mode; static uint64_t g_rescue_back_at, g_rescue_back_ns = 3000000000ull, g_rescue_n;
 // 显示节拍看门狗只认「激活」状态：App 失去活跃（下拉控制中心 / 通知、来电、系统弹窗）和后台里系统本来就不回调，画面也被盖住——丢帧兜底照旧，
 // 但不算卡住、不报红；停顿从「最近一次回调 / 最近一次激活」较晚的那个算起（A16 日志：失活 8–17 秒、后台 17 秒都被报成「前台卡住」）
 // The display link watchdog only recognizes the "active" state: when the App loses active status (pulling down Control Center / notifications, incoming call, system popup) and in the background the system does not call back anyway, and the picture is covered too -- the frame-drop fallback stays as before,
@@ -12372,6 +12381,9 @@ static void *link_main(void *arg) {   // 显示节拍线程：切到节拍模式
 static _Atomic int g_link_fallback; static _Atomic uint64_t g_link_fallback_at;
 static int link_fallback_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_PRESENT_LINK_FALLBACK"); on = e && !strcmp(e, "1"); } return on; }
 static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象的状态对齐到 g_dm_present_link 与省电模式（运行中可改） | Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
+    if (g_rescue_mode && now_ns() >= g_rescue_back_at) {   // rescue period over: back to the display link (stall timing starts afresh)
+        pthread_mutex_lock(&g_pq_mu); g_dm_present_link = g_rescue_mode; g_rescue_mode = 0; g_stall_t0 = 0; g_link_tick_ns = now_ns(); pthread_mutex_unlock(&g_pq_mu);
+        MLOG("显示节拍：抢救期满，换回节拍模式 %d 再试（帧 %llu）", g_dm_present_link, (unsigned long long)atomic_load(&g_cur_frame)); }
     static int applied; int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
     if (want && atomic_load(&g_link_fallback)) {
@@ -12576,6 +12588,11 @@ void mtl_present_wait(uint64_t tk) {
             MLOG("[present] display link silent while active: presenting in classic mode (DM_PRESENT_LINK_FALLBACK)"); }
         if (active && !g_stall_logged && now - from >= STALL_NS) { g_stall_logged = 1;
             MLOG("显示节拍 %.0f ms 没回调（激活中，%s）：丢掉排队未上屏的 %llu 帧，游戏继续（第 %llu 段；节拍回来自动照常）", (now - from) / 1e6, window_seen(), (unsigned long long)n, (unsigned long long)g_stall_n); }
+        if (active && !g_rescue_mode && g_dm_present_link && now - from >= LINK_RESCUE_NS) {
+            g_rescue_mode = g_dm_present_link; g_dm_present_link = 0; g_rescue_n++; g_rescue_back_at = now + g_rescue_back_ns;
+            MLOG("显示节拍激活中停了 %.0f ms（%s）：改为自己取 drawable 出图（第 %llu 次），%.0f 秒后再换回节拍试", (now - from) / 1e6, window_seen(), (unsigned long long)g_rescue_n, g_rescue_back_ns / 1e9);
+            if (g_rescue_back_ns < 60000000000ull) g_rescue_back_ns *= 2;
+        }
         if (active && !g_stall_red && now - from >= STALL_RED_NS) { g_stall_red = 1; MLOG("【红】显示节拍激活中连续 %.1f 秒没回调，出图全靠兜底丢帧，画面不动（%s）", (now - from) / 1e9, window_seen()); }
     }
     pthread_mutex_unlock(&g_pq_mu);

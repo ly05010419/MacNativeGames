@@ -414,12 +414,14 @@ class ZeldaLine(unittest.TestCase):
         for f in (HERE / 'scripts').glob('*.py'):
             self.assertNotIn('games/aoc/', f.read_text(), f)
 
-    def test_runtime_links_the_shared_files_rdr_links(self):
-        rdr = ROOT / 'games/rdr/runtime'
-        for f in rdr.iterdir():
-            if f.is_symlink() and 'shared/runtime' in str(f.readlink()):
-                mine = HERE / 'runtime' / f.name
-                self.assertTrue(mine.is_symlink() and mine.resolve() == f.resolve(), f.name)
+    def test_runtime_links_the_shared_files(self):
+        # Until 2026-11-25 this compared the links with those of the port this runtime was copied from, which has left
+        # the repository; the count is that port's (48 links into shared/runtime) and may only grow.
+        links = [f for f in (HERE / 'runtime').iterdir() if f.is_symlink() and 'shared/runtime' in str(f.readlink())]
+        self.assertGreaterEqual(len(links), 48)
+        for f in links:
+            self.assertEqual(f.resolve(), ROOT / 'shared/runtime' / f.name, f.name)
+            self.assertTrue(f.resolve().is_file(), f.name)
         for name in ('movie_host.c', 'movie_pace.h', 'audio_out.c'):
             self.assertEqual((HERE / 'runtime' / name).resolve(), (ROOT / 'shared/runtime' / name).resolve())
         self.assertIn('defined(GAME_AOCX)', (ROOT / 'shared/runtime/offline_host.c').read_text())

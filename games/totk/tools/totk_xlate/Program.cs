@@ -127,7 +127,13 @@ static class SwshXlate
             // depth prepass's: the G-buffer draws' EQUAL test failed along lines (dotted Great Sky Island lattice).
             bool earlyZ = _job["early_fragment_tests"] is JsonValue ez && (ez.TryGetValue<bool>(out bool eb) ? eb : ez.TryGetValue<int>(out int ei) && ei != 0);
             InputTopology topology = _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles;   // the draw's primitive (geometry only)
-            return new GpuGraphicsState(earlyZ, topology, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            // Tessellation (TessService.cs): the evaluation stage's mode from its NVN control section (+0x738 primitive, +0x73c
+            // spacing, +0x744 vertex order, GL enums), as the job's "tess_patch" / "tess_spacing" / "tess_cw"; other stages keep
+            // the defaults they always had.
+            TessPatchType tessPatch = _job["tess_patch"] is JsonNode tpn ? (TessPatchType)(int)tpn : TessPatchType.Triangles;
+            TessSpacing tessSpacing = _job["tess_spacing"] is JsonNode tsn ? (TessSpacing)(int)tsn : TessSpacing.EqualSpacing;
+            bool tessCw = _job["tess_cw"] is JsonValue tcv && tcv.TryGetValue<bool>(out bool tcb) && tcb;
+            return new GpuGraphicsState(earlyZ, topology, tessCw, tessPatch, tessSpacing,
                 false, false, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }

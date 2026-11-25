@@ -23,8 +23,10 @@ typedef struct{uint64_t lo,hi;} Uid;
 typedef struct{Uid uid;uint64_t token;} UserHandle;
 static Uid local;   /* the user this run opened with; runtime_users_choose never touches it */
 static RuntimeUser users[RUNTIME_USERS_MAX];
-static int usersCount,usersActive;   /* usersActive: the user the next launch opens with */
+static int usersCount,usersActive,externalSaveMode;   /* usersActive: the user the next launch opens with */
 static char usersDir[4096];
+#define EXTERNAL_SAVE_UID_LO 0x78626c0000000001ULL   /* matches nxnative player 1 UID: 53574e415449564578626c0000000001 */
+#define EXTERNAL_SAVE_UID_HI 0x53574e4154495645ULL
 /* Canaries around the lock: an intermittent hang showed this mutex's internal words changed while nobody held it. */
 #define GUARD 0x6163636f756e7447ULL
 static struct{uint64_t pre[8];pthread_mutex_t m;uint64_t post[8];} guarded={{GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD},PTHREAD_MUTEX_INITIALIZER,{GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD}};
@@ -100,6 +102,19 @@ static int users_file_load(void){
 }
 static void initialize(void){
  lock_acquire();if(local.lo||local.hi){lock_release();return;}
+#ifdef RUNTIME_EXTERNAL_SAVE   /* runtime.h: only where fs_host.c mounts DM_SAVE; elsewhere the saves stay under their own user */
+ const char *dmSave=getenv("DM_SAVE");
+ if(dmSave&&*dmSave){
+  externalSaveMode=1;
+  users[0].lo=EXTERNAL_SAVE_UID_LO;users[0].hi=EXTERNAL_SAVE_UID_HI;strcpy(users[0].name,"Local");
+  usersCount=1;usersActive=0;
+  local.lo=users[0].lo;local.hi=users[0].hi;
+  lock_release();
+  fprintf(stderr,"[totk] external DM_SAVE mode: fixed UID 53574e415449564578626c0000000001\n");
+  return;
+ }
+#endif
+ externalSaveMode=0;
  const char *dir=getenv("TOTK_PROFILE_DIR");if(!dir)dir="user-data";
  if(mkdir(dir,0700)&&errno!=EEXIST)runtime_fail("create local account directory");
  if(snprintf(usersDir,sizeof usersDir,"%s",dir)>=(int)sizeof usersDir)runtime_fail("local account path length");
@@ -157,6 +172,7 @@ int runtime_users_next(RuntimeUser *out){
 int runtime_users_add(const char *name){
  initialize();if(!name)return -1;
  lock_acquire();
+ if(externalSaveMode){lock_release();return -1;}
  RuntimeUser *u=&users[usersCount];
  if(usersCount>=RUNTIME_USERS_MAX||!clean_name(u->name,name)){lock_release();return -1;}
  Uid uid;do{arc4random_buf(&uid,sizeof uid);}while((!uid.lo&&!uid.hi)||user_of(&uid));
@@ -169,7 +185,7 @@ int runtime_users_add(const char *name){
 int runtime_users_choose(int index){
  initialize();
  lock_acquire();
- if(index<0||index>=usersCount){lock_release();return -1;}
+ if(externalSaveMode||index<0||index>=usersCount){lock_release();return -1;}
  if(index!=usersActive){usersActive=index;users_file_save();}
  lock_release();
  return 0;

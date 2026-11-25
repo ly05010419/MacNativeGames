@@ -28,7 +28,10 @@ int mtl_probe_texels_region(void) {
         }
         uint64_t reads=atomic_load(&g_texels_gpu_reads),writes=atomic_load(&g_texels_gpu_writes);
         mtl_read_texels(&t,lv,0,&r,got,row,img);
-        if(memcmp(got,want,n)||memcmp(mem,expected,size)||atomic_load(&g_texels_gpu_reads)!=reads+(c!=13))MDIE("texels-region production read/guards/coverage case%d",c);
+        if(memcmp(got,want,n)){size_t nd=0,first=n;for(size_t i=0;i<n;i++)if(got[i]!=want[i]){nd++;if(first==n)first=i;}
+            MLOG("[texels-region] case%d read: %zu of %zu bytes differ, the first at %zu (row %zu, column %zu of rows of %zu); got %02x %02x %02x %02x %02x %02x %02x %02x, want %02x %02x %02x %02x %02x %02x %02x %02x; tileH=%u tileD=%u layout size %llu",c,nd,n,first,first%img/row,first%img%row,row,
+                 got[first],got[first+1],got[first+2],got[first+3],got[first+4],got[first+5],got[first+6],got[first+7],want[first],want[first+1],want[first+2],want[first+3],want[first+4],want[first+5],want[first+6],want[first+7],t.L.tileH,t.L.tileD,(unsigned long long)t.L.size);}
+        if(memcmp(got,want,n)||memcmp(mem,expected,size)||atomic_load(&g_texels_gpu_reads)!=reads+(c!=13))MDIE("texels-region production read/guards/coverage case%d: data differs %d, pool changed %d, GPU reads +%llu (expected +%d), failures %llu",c,memcmp(got,want,n)!=0,memcmp(mem,expected,size)!=0,(unsigned long long)(atomic_load(&g_texels_gpu_reads)-reads),c!=13,(unsigned long long)atomic_load(&g_texels_gpu_failures));
         for(size_t i=0;i<n;i++)src[i]=(uint8_t)(i*19+(i>>3)+31);
         for(int k=0;k<r.depth;k++){
             unsigned layer=is3d?0:r.zoffset+k;uint32_t rb,rs,zs,bpb_;uint64_t base;unsigned th,td;

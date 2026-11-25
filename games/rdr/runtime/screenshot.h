@@ -1,1 +1,0 @@
-../../../shared/runtime/screenshot.h

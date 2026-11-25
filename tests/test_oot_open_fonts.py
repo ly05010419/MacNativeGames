@@ -183,8 +183,9 @@ class LauncherPlan(unittest.TestCase):
 
     def test_a_nup_without_fonts_is_not_blocked_and_says_what_it_uses(self):
         with tempfile.TemporaryDirectory() as tmp:
-            nup = Path(tmp) / 'Ocarina of Time.nup'
-            nup.write_bytes(b'\0' * 64)
+            sys.path.insert(0, str(ROOT / 'tests'))
+            from nup_packages import OOT, fmt, make_nup   # a .nup is told by its package table (#2333)
+            nup = make_nup(Path(tmp) / 'Ocarina of Time.nup', (OOT + 0x800, fmt.KIND_UPDATE, 131072))
             p = classify.plan(classify.classify([nup]))
             self.assertEqual(p.game, 'oot')
             self.assertEqual(p.blocks, [])

@@ -4,10 +4,16 @@ static id<MTLComputePipelineState> g_nvn_deswz_pipeline, g_nvn_region_pipeline;
 
 /* Which (x segment, row) of its GOB a thread's 16-byte piece is: the Tegra X1 orders a GOB's pieces x5 y2 y1 x4 y0, the
    Switch 2 x5 y2 x4 y1 y0 (nvn_deswizzle.c gob_off). */
+/* GOB_OFFSET is gob_off itself, for the texel-region kernel (ReadTexels / WriteTexels). It had the Tegra X1's order
+   written into it for every game, so on a Switch 2 game a region of a level of 1 MiB or more was read from and written
+   to the wrong pieces of each GOB (2026-11-24, Ocarina of Time: probe-gpu-texels-region, case 0, 148 of 308 bytes of an
+   11x7 RGBA8 region differed from the CPU's layout; the upload kernel above had the right order). */
 #ifdef GAME_NS2
 #define GOB_PIECE "uint xseg = ((tid >> 4) << 1) | ((tid >> 2) & 1u), y = (gob_y << 3) | (((tid >> 3) & 1u) << 2) | (((tid >> 1) & 1u) << 1) | (tid & 1u),"
+#define GOB_OFFSET "(x%64u/32u)*256ul+(y%8u/4u)*128ul+(x%32u/16u)*64ul+(y%4u/2u)*32ul+(y%2u)*16ul+x%16u"
 #else
 #define GOB_PIECE "uint xseg = ((tid >> 4) << 1) | ((tid >> 1) & 1u), y = (gob_y << 3) | (((tid >> 2) & 3u) << 1) | (tid & 1u),"
+#define GOB_OFFSET "(x%64u/32u)*256ul+(y%8u/2u)*64ul+(x%32u/16u)*32ul+(y%2u)*16ul+x%16u"
 #endif
 static const char *const k_nvn_deswz_msl =
     "#include <metal_stdlib>\n"
@@ -26,7 +32,7 @@ static const char *const k_nvn_deswz_msl =
     " ulong bh=1ul<<p.th, bd=1ul<<p.td, gx=((ulong)p.row_bytes+63ul)/64ul, by=((ulong)p.rows+8ul*bh-1ul)/(8ul*bh);\n"
     " return ((ulong)(z>>p.td)*gx*by+(ulong)(y>>(3u+p.th))*gx+(x>>6))*512ul*bh*bd\n"
     "      +(((ulong)z&(bd-1ul))*bh+(((ulong)y>>3)&(bh-1ul)))*512ul\n"
-    "      +(x%64u/32u)*256ul+(y%8u/2u)*64ul+(x%32u/16u)*32ul+(y%2u)*16ul+x%16u;\n"
+    "      +" GOB_OFFSET ";\n"
     "}\n"
     "kernel void texels_region(device uchar *pool [[buffer(0)]], device uchar *linear [[buffer(1)]], constant R& p [[buffer(2)]], uint3 id [[thread_position_in_grid]]) {\n"
     " uint seg=id.x*16u; if(seg>=p.w||id.y>=p.h||id.z>=p.d)return;\n"

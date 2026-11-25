@@ -169,6 +169,61 @@ static BOOL make_dir(NSString *path) {
     return [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 }
 
+static BOOL path_is_inside_bundle(const char *path, const char *bundle) {
+    size_t len = strlen(bundle);
+    return !strncmp(path, bundle, len) && (!path[len] || path[len] == '/');
+}
+
+static BOOL prepare_external_save(BOOL *active, NSString **errorOut) {
+    *active = NO;
+    const char *raw = getenv("DM_SAVE");
+    if (!raw || !*raw) return YES;
+    if (raw[0] != '/') {
+        if (errorOut) *errorOut = @"DM_SAVE must be an absolute directory path.";
+        return NO;
+    }
+    char normalized[1024];
+    if (snprintf(normalized, sizeof normalized, "%s", raw) >= 1016) {
+        if (errorOut) *errorOut = @"DM_SAVE path is too long.";
+        return NO;
+    }
+    size_t len = strlen(normalized);
+    while (len > 1 && normalized[len - 1] == '/') normalized[--len] = 0;
+    for (const char *p = normalized + 1; *p;) {
+        const char *slash = strchr(p, '/');
+        size_t seg = slash ? (size_t)(slash - p) : strlen(p);
+        if (seg == 2 && p[0] == '.' && p[1] == '.') {
+            if (errorOut) *errorOut = @"DM_SAVE must not contain '..' path segments.";
+            return NO;
+        }
+        p = slash ? slash + 1 : p + seg;
+    }
+    char bundleResolved[PATH_MAX];
+    const char *bundlePath = NSBundle.mainBundle.bundlePath.fileSystemRepresentation;
+    const char *bundle = (bundlePath && realpath(bundlePath, bundleResolved)) ? bundleResolved : bundlePath;
+    if (bundle && path_is_inside_bundle(normalized, bundle)) {
+        if (errorOut) *errorOut = @"DM_SAVE must be outside the app bundle.";
+        return NO;
+    }
+    char probe[1024], resolved[PATH_MAX];
+    memcpy(probe, normalized, len + 1);
+    for (;;) {
+        if (realpath(probe, resolved)) {
+            if (bundle && path_is_inside_bundle(resolved, bundle)) {
+                if (errorOut) *errorOut = @"DM_SAVE must be outside the app bundle.";
+                return NO;
+            }
+            break;
+        }
+        char *slash = strrchr(probe, '/');
+        if (!slash || slash == probe) break;
+        *slash = 0;
+    }
+    setenv("DM_SAVE", normalized, 1);
+    *active = YES;
+    return YES;
+}
+
 /* build_app.py --mac-game-data library: the app carries no RomFS image. A folder holds it when its romfs.bin (in it, or in
    <folder>/<version>) has the size the build pinned (romfs-config.txt) and a romfs.sha256 beside it, if any, names the
    pinned image: the build copies to romfs.bin.partial first, so a romfs.bin of the full size is a complete copy. Its hash
@@ -276,6 +331,12 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
             }
         }
 #endif
+        BOOL hasExternalSave = NO;
+        NSString *saveError = nil;
+        if (!prepare_external_save(&hasExternalSave, &saveError)) {
+            show_error(saveError);
+            return 1;
+        }
         if (chdir(root.fileSystemRepresentation) != 0) {   // the game reads its data relative to this folder
             show_error(@"Cannot open the game folder inside the app.");
             return 1;
@@ -329,10 +390,12 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
         setenv("TOTK_NATIVE_DIR", [root stringByAppendingPathComponent:@"build"].fileSystemRepresentation, 1);
         /* Save sync (runtime/cloud_save.m): the folder the player chose in the app menu (runtime/frontend.m) or in
            cloud_folder_offer, which asks at a start that has none. TOTK_CLOUD_SAVE_DIR wins over it; 0 = off. */
-        NSUserDefaults *sync = [[NSUserDefaults alloc] initWithSuiteName:@RUNTIME_SAVE_SYNC_DEFAULTS];
-        NSString *chosen = [sync stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
-        if (!getenv("TOTK_CLOUD_SAVE_DIR") && !getenv("TOTK_CLOUD_SAVE_FOLDER") && !chosen.length) chosen = cloud_folder_offer(sync);
-        if (!getenv("TOTK_CLOUD_SAVE_DIR") && chosen.length) setenv("TOTK_CLOUD_SAVE_FOLDER", chosen.fileSystemRepresentation, 0);
+        if (!hasExternalSave) {
+            NSUserDefaults *sync = [[NSUserDefaults alloc] initWithSuiteName:@RUNTIME_SAVE_SYNC_DEFAULTS];
+            NSString *chosen = [sync stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+            if (!getenv("TOTK_CLOUD_SAVE_DIR") && !getenv("TOTK_CLOUD_SAVE_FOLDER") && !chosen.length) chosen = cloud_folder_offer(sync);
+            if (!getenv("TOTK_CLOUD_SAVE_DIR") && chosen.length) setenv("TOTK_CLOUD_SAVE_FOLDER", chosen.fileSystemRepresentation, 0);
+        }
         /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
            start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
            scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */

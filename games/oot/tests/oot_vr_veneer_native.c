@@ -21,6 +21,11 @@ int main(void) {
     printf("\nfov");
     for (int i = 0; i < OOT_VR_FOV_WORDS; i++) printf(" %08x", fov[i]);
     printf("\n");
+    /* Another site's arguments: the view fill hands over x28, the player's update x19. */
+    uint32_t other[OOT_VR_CALL_WORDS];
+    if (oot_vr_host_veneer(0x3951ab89u, STUB, STUB + 62 * 4, PAGE, 96, 28, 19, other)) return 7;
+    if (other[28] != 0xaa1c03e0u || other[29] != 0xaa1303e1u || other[61] != 0x3951ab89u) return 8;
+    if (!oot_vr_host_veneer(0x3951ab89u, STUB, STUB + 62 * 4, PAGE, 96, 16, 19, other)) return 9;   /* a register it saves and changes */
     /* Refusals: a site that is not the expected load, an unaligned cell. */
     if (!oot_vr_fov_veneer(0xf9401268u, STUB, STUB + 20, PAGE, FOV_CELL, fov)) return 2;
     if (!oot_vr_call_veneer(0xf9401268u, STUB, STUB + 62 * 4, PAGE, 81, call)) return 3;

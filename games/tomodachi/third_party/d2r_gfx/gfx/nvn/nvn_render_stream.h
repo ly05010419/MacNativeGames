@@ -29,7 +29,7 @@ enum {
     RS_USE_RESOURCE, /* retained resource, usage, stages; Metal 3 indirect hazard tracking */
 #endif
 };
-enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
+enum { RS_SPIN_NS = 20000 };    /* 20 us (was 200 us until 2026-11-24): measured on Tears of the Kingdom, Breath of the Wild and Ocarina of Time, where the frame rate was the same and the stage spun less; not measured on this game */   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
                                    for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
                                    not a hot spin: with a hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*,
                                    rs4v-* with 200 us): CPU power taken from the GPU's budget. */

@@ -129,7 +129,7 @@ class Steps:
     """The logs build_app.py starts in <work>/logs after `since`, in the order they start."""
 
     def __init__(self, logs, since):
-        self.logs, self.since, self.seen = Path(logs), since, {}
+        self.logs, self.since, self.seen, self.counted = Path(logs), since, {}, {}
 
     def poll(self, now):
         try:
@@ -150,18 +150,34 @@ class Steps:
 
     def count(self, name):
         """(done, total) of the last 'N/M' counter in the end of a step's log, or None: the tools that run long
-        (translation, shader libraries, pipelines) print one as they go."""
+        (translation, shader libraries, pipelines) print one as they go. A counter the step has shown stays until its
+        next one: the pipeline tool prints one every 512 pipelines and its other lines in between pushed it out of the
+        4 KB read here, so the Launcher's counter went away while the build went on (player report 2026-11-24:
+        "The pipeline counter disappears during an active build", 6,144 to 6,656 of 29,300)."""
         try:
             with open(self.logs / f'{name}.log', 'rb') as f:
                 f.seek(0, os.SEEK_END)
                 f.seek(max(0, f.tell() - 4096))
                 tail = f.read().decode(errors='replace')
         except OSError:
-            return None
+            return self.counted.get(name)
         for m in reversed(list(_COUNT.finditer(tail))):
             done, total = int(m.group(1)), int(m.group(2))
             if 2 <= total and done <= total:
-                return done, total
+                self.counted[name] = done, total
+                break
+        return self.counted.get(name)
+
+
+def stay_awake(pid):
+    """Keep the Mac from idle sleep until the build's process ends (caffeinate -i -w: it leaves with it, also when this
+    job is killed; the display may still sleep). A build is 40-60 min of nobody touching the Mac, and a Mac that slept
+    through part of it made the build that much longer (player report 2026-11-24: "macOS entered idle sleep several
+    times"). Without caffeinate the build runs as before."""
+    try:
+        return subprocess.Popen(['/usr/bin/caffeinate', '-i', '-w', str(pid)], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
         return None
 
 
@@ -229,6 +245,7 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
          command=[str(script), *argv], kind=kind, steps_last=len(estimator.last) if estimator.last else None)
     proc = subprocess.Popen([python, '-u', str(script), *argv], cwd=repo.REPO, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True, env=env)
+    awake = stay_awake(proc.pid)
     cancelled = threading.Event()
 
     def cancel(*_):
@@ -296,6 +313,9 @@ def run(request, emit, history_dir, python=sys.executable, script=None, record=N
         code = proc.wait()
     finally:
         state['done'] = True
+        if awake:   # it has left with the build, or leaves now
+            awake.terminate()
+            awake.wait()
         ticker.join(timeout=3)
         new_steps(time.time())   # a step that started after the ticker's last look
         for s, h in previous.items():

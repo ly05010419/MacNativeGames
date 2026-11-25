@@ -7,13 +7,15 @@ import re
 import unittest
 from pathlib import Path
 
+from local_only import in_repository
+
 ROOT = Path(__file__).resolve().parents[1]
 PANEL = ROOT / 'shared/third_party/d2r_gfx/gfx/nvn/hud_panel.inc'
 # The panel's own functions: defined in hud_panel.inc only
 OWN = ('fps_overlay_prepare', 'shader_overlay_prepare', 'load_overlay_prepare', 'mtl_hud_safe_area', 'hud_line_publish',
        'hud_inset_right', 'dm_gfx_fps_now')
 HOOKS = ('hud_fps_sizes', 'hud_pso_counts', 'hud_pso_total', 'hud_more_lines')
-UNIFIED = {'totk', 'acnh', 'odyssey', 'eow', 'mk8dx', 'rdr', 'aocx', 'p5r', 'w3'}   # oot shares totk's graphics folder (a link)
+UNIFIED = {'totk', 'acnh', 'odyssey', 'eow', 'mk8dx', 'aocx', 'p5r', 'w3'}   # oot shares totk's graphics folder (a link)
 # Graphics layers that still carry their own (older) panel: to be moved onto hud_panel.inc. Only ever remove names.
 PENDING = {'alc', 'by3', 'dread', 'kirby', 'lm3', 'mkw', 'mvdk', 'ori', 'ot0', 'pla', 'pokesv', 'ssbu', 'tmnt',
            'tomodachi', 'unicorn', 'wonder', 'xc3', 'xcx'}
@@ -25,7 +27,7 @@ def graphics_layers():
     out = {}
     for f in sorted((ROOT / 'games').glob('*/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m')):
         game = f.relative_to(ROOT / 'games').parts[0]
-        if (ROOT / 'games' / game / 'third_party/d2r_gfx').is_symlink():
+        if (ROOT / 'games' / game / 'third_party/d2r_gfx').is_symlink() or not in_repository(f):
             continue
         out[game] = f
     return out

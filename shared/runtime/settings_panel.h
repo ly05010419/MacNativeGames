@@ -19,7 +19,7 @@
      SETTINGS_HAS_CONTRIB   the 着色器贡献 page (contrib_tab.h); unset is 1, every game had it before this switch. A game
                             whose shaders have no list to contribute to sets 0 (Animal Crossing): no tab, no contrib_tab.h
      SETTINGS_GAME_VERSION  the version the bottom-left corner shows (TOTK_GAME_VERSION unless the game sets it)
-     SETTINGS_PANEL_ALPHA   the panel's background opacity (0.9 unless the game sets it)
+     SETTINGS_PANEL_ALPHA   1: the panel's colour solid; else (0.9 unless the game sets it) glass, the game behind blurred
    A page the game does not have has no tab, and L1 / R1 skip it; every page keeps its SETTINGS_PAGE_* number all the same
    (the input file's "settings <page>", self.pages[SETTINGS_PAGE_*]): settings_page_present, settings_page_tab and
    settings_tab_page go between the two.
@@ -44,6 +44,7 @@
    keyboard, mouse or controller input (TOTKInputView, front_mouse_update and gamepad capture). The controls read their
    values again twice a second, so they always show what is in force. */
 #pragma once
+#import <QuartzCore/QuartzCore.h>   /* the tabs' sliding block (CAMediaTimingFunction) and the glass's layers */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"   /* the shader inbox: the 着色器贡献 page (contrib_tab.h) */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
@@ -711,6 +712,94 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(BOOL)isFlipped{return YES;}
 @end
 
+/* The glass look (2026-11-24, from PR #1297's on this panel: its pages, rows and controls are the ones of before). The
+   panel is the system's frosted glass (-init), each row a clear tile on it. The picked thing is a white block with dark
+   text: the tab's block slides to the next tab, a row picked with the controller turns white and its controls take
+   the light appearance. */
+static NSColor *settings_ink(void){return [NSColor colorWithCalibratedRed:0.067 green:0.094 blue:0.125 alpha:1];}
+/* The tabs: a dark capsule, the white block under the picked one. It answers what the panel and its probe ask of the
+   NSSegmentedControl it stands in for (selectedSegment, segmentCount, labelForSegment:, target and action). */
+@interface TOTKTabs:NSControl
+@property(nonatomic) NSInteger selectedSegment;
+@property(readonly) NSInteger segmentCount;
+-(instancetype)initWithLabels:(NSArray<NSString *> *)labels target:(id)target action:(SEL)action;
+-(NSString *)labelForSegment:(NSInteger)segment;
+@end
+enum { SETTINGS_TABS_MAX = 16 };
+@implementation TOTKTabs{NSArray<NSString *> *labels;NSMutableArray<NSTextField *> *texts;NSView *block;BOOL placed;CGFloat fontSize,widths[SETTINGS_TABS_MAX],edges[SETTINGS_TABS_MAX+1];}
+-(instancetype)initWithLabels:(NSArray<NSString *> *)names target:(id)target action:(SEL)action{
+ if(!(self=[super initWithFrame:NSZeroRect]))return nil;
+ labels=[(names.count>SETTINGS_TABS_MAX?[names subarrayWithRange:NSMakeRange(0,SETTINGS_TABS_MAX)]:names) copy];fontSize=13;texts=[NSMutableArray array];self.target=target;self.action=action;
+ self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;
+ block=[[NSView alloc] initWithFrame:NSZeroRect];block.wantsLayer=YES;block.layer.backgroundColor=[NSColor colorWithCalibratedWhite:1 alpha:0.92].CGColor;
+ block.layer.shadowColor=NSColor.blackColor.CGColor;block.layer.shadowOpacity=0.18;block.layer.shadowRadius=5;block.layer.shadowOffset=NSMakeSize(0,-2);[self addSubview:block];
+ for(NSString *name in labels){NSTextField *text=[NSTextField labelWithString:name];text.alignment=NSTextAlignmentCenter;text.lineBreakMode=NSLineBreakByTruncatingTail;
+  [self addSubview:text];[texts addObject:text];}
+ return self;
+}
+-(NSInteger)segmentCount{return (NSInteger)labels.count;}
+-(NSString *)labelForSegment:(NSInteger)segment{return segment>=0&&segment<(NSInteger)labels.count?labels[(NSUInteger)segment]:nil;}
+/* Every name at one size, each tab as wide as its name plus an equal share of the room left; names too long for the bar
+   together (ten tabs in English in the narrow panel) get smaller letters, all of them, before any is cut to "…". */
+-(void)measure{
+ NSUInteger n=labels.count;CGFloat W=self.bounds.size.width,sum=0;if(!n||W<=0)return;
+ for(fontSize=13;;fontSize-=0.5){sum=0;
+  for(NSUInteger i=0;i<n;i++){widths[i]=ceil([labels[i] sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:fontSize weight:NSFontWeightSemibold]}].width);sum+=widths[i];}
+  if(sum+n*14<=W||fontSize<=9.5)break;}
+ CGFloat pad=fmax(0,(W-sum)/n),x=0;
+ for(NSUInteger i=0;i<n;i++){CGFloat w=sum+n*pad>W?W/n:widths[i]+pad;edges[i]=x;x+=w;}
+ edges[n]=W;
+}
+-(NSRect)segmentRect:(NSInteger)i{CGFloat x0=floor(edges[i]),x1=floor(edges[i+1]);return NSMakeRect(x0+2,2,x1-x0-4,self.bounds.size.height-4);}
+-(void)place:(BOOL)animated{
+ if(!labels.count||self.bounds.size.width<=0)return;
+ [self measure];
+ self.layer.cornerRadius=self.bounds.size.height/2;
+ NSRect r=[self segmentRect:self.selectedSegment];block.layer.cornerRadius=r.size.height/2;
+ if(animated&&placed&&self.window){NSView *b=block;
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext *c){c.duration=0.28;c.timingFunction=[CAMediaTimingFunction functionWithControlPoints:0.25:0.9:0.3:1];b.animator.frame=r;}];}
+ else block.frame=r;
+ for(NSUInteger i=0;i<texts.count;i++){
+  BOOL on=(NSInteger)i==self.selectedSegment;NSRect s=[self segmentRect:(NSInteger)i];NSTextField *text=texts[i];
+  NSFont *font=[NSFont systemFontOfSize:fontSize weight:on?NSFontWeightSemibold:NSFontWeightMedium];
+  text.font=font;text.textColor=on?settings_ink():[NSColor colorWithCalibratedWhite:1 alpha:self.enabled?0.82:0.4];
+  CGFloat th=ceil(font.ascender-font.descender)+2;text.frame=NSMakeRect(s.origin.x,floor(NSMidY(s)-th/2),s.size.width,th);
+ }
+ placed=YES;
+}
+-(void)setFrameSize:(NSSize)size{[super setFrameSize:size];[self place:NO];}
+-(void)setSelectedSegment:(NSInteger)segment{
+ if(segment<0||segment>=(NSInteger)labels.count)return;
+ BOOL moved=segment!=_selectedSegment;_selectedSegment=segment;[self place:moved];
+}
+-(NSView *)hitTest:(NSPoint)point{return NSPointInRect(point,self.frame)?self:nil;}   /* the names are not click targets of their own */
+-(void)mouseDown:(NSEvent *)e{
+ if(!self.enabled||!labels.count)return;
+ CGFloat x=[self convertPoint:e.locationInWindow fromView:nil].x;
+ NSInteger i=0;while(i<(NSInteger)labels.count-1&&x>=edges[i+1])i++;
+ if(i!=self.selectedSegment){self.selectedSegment=i;[self sendAction:self.action to:self.target];}
+}
+@end
+/* One row's band on a page of rows; picked (the controller's place), the white block. */
+@interface TOTKRowBand:NSView
+@property(nonatomic) BOOL picked;
+@end
+@implementation TOTKRowBand
+-(instancetype)initWithFrame:(NSRect)frame{
+ if(!(self=[super initWithFrame:frame]))return nil;
+ self.wantsLayer=YES;self.layer.cornerRadius=10;self.layer.shadowColor=NSColor.blackColor.CGColor;self.layer.shadowRadius=8;self.layer.shadowOffset=NSMakeSize(0,-4);
+ _picked=YES;self.picked=NO;return self;
+}
+-(void)setPicked:(BOOL)picked{
+ if(picked==_picked)return;
+ _picked=picked;
+ self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:1 alpha:picked?0.92:0.09].CGColor;self.layer.shadowOpacity=picked?0.2:0;   /* a clear tile on the glass */
+ /* the row's own controls (menu, switch, slider, button) are the system's: light on the white block, dark otherwise */
+ self.appearance=picked?[NSAppearance appearanceNamed:NSAppearanceNameAqua]:nil;
+ for(NSView *v in self.subviews)if([v isKindOfClass:NSTextField.class])((NSTextField *)v).textColor=picked?settings_ink():[NSColor colorWithCalibratedWhite:0.92 alpha:1];
+}
+@end
+
 @interface TOTKSettingsPanel:NSView
 @property(strong) NSArray<TOTKSettingRow *> *allRows;   /* every page's rows */
 @property(strong) NSArray<TOTKSettingRow *> *rows;      /* the page shown (none on the key bindings page) */
@@ -727,7 +816,8 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) NSTimer *timer;
 @property NSPoint grab;   /* where in the panel the drag started */
 @property BOOL dragging;   /* the press being dragged was the panel's own */
-@property(strong) NSSegmentedControl *tabs;
+@property(strong) TOTKTabs *tabs;
+@property(strong) NSView *tint;   /* the panel's colour over the glass (SETTINGS_PANEL_ALPHA 1: solid) */
 @property(strong) NSArray<NSView *> *pages;
 @property(strong) NSTextField *versionLabel;   /* the bottom-left corner */
 @property(strong) NSArray<NSButton *> *displayButtons;   /* the display page's own (none since 访问主页 is on every page) */
@@ -746,7 +836,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property CGFloat panelW;
 @property(strong) TOTKKeyboardDiagram *keyboardDiagram;
 @property(strong) TOTKControllerDiagram *padDiagram;
-@property(strong) NSSegmentedControl *deviceTabs;   /* keyboard and mouse, or controller */
+@property(strong) TOTKTabs *deviceTabs;   /* keyboard and mouse, or controller */
 @property(strong) NSTextField *drawingsHelp;
 @property(strong) NSButton *listToggle;   /* "Show as list" / "Show drawings" */
 @property(strong) NSArray<NSNumber *> *padOrder;   /* the controller buttons a controller moves through on the drawing */
@@ -840,6 +930,7 @@ static NSString *settings_version_text(void) {
    the English tabs with VR need about 700 pt and stay inside the bar's 14 pt margins from a 728 pt panel; narrower, the bar
    spills over its margins, and under about 708 pt labels are cut to "…"). A window too narrow for it gets a narrower panel,
    down to SETTINGS_NARROW_W (the width before the 截图分享 tab). */
+enum { SETTINGS_RADIUS = RUNTIME_GLASS_RADIUS };   /* hud_box.h: the glass's one corner */
 enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 90, SETTINGS_BOTTOM = 34, SETTINGS_POP_W = 260, SETTINGS_POP_MAX_W = 304, SETTINGS_LABEL_W = 350,
        SETTINGS_CELL_W = 118, SETTINGS_CELL_MAX_W = 140, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
@@ -868,8 +959,25 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
 #endif
  self.drawings=drawings;self.panelW=W;self.bindingButtons=[NSMutableArray array];self.bindingTargets=[NSMutableArray array];
  self.allRows=rows;self.controllerTargets=[NSMutableArray array];self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
- self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:SETTINGS_PANEL_ALPHA].CGColor;
- self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.12].CGColor;
+ /* The glass (user 2026-11-24, a picture of the system's Control Centre: "这种"): the system's own glass (its regular, frosted style), the game
+    showing through it frosted with the glass's bright rim, black at RUNTIME_GLASS_TINT over it so the white type
+    stays readable on a bright scene. Before macOS 26 (no NSGlassEffectView): the window's blur under the panel's
+    blue-grey. SETTINGS_PANEL_ALPHA 1 (a game that wants nothing shining through) keeps that blue-grey solid. */
+ self.wantsLayer=YES;self.layer.cornerRadius=SETTINGS_RADIUS;
+ NSView *tint=[[NSView alloc] initWithFrame:NSMakeRect(0,0,W,h)];tint.wantsLayer=YES;tint.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;self.tint=tint;
+ BOOL solid=SETTINGS_PANEL_ALPHA>=1,system=NO;
+ NSView *systemGlass=solid?nil:runtime_glass_view(NSMakeRect(0,0,W,h),&tint);   /* hud_box.h */
+ if(systemGlass){system=YES;self.tint=tint;[self addSubview:systemGlass];}
+ if(!system){
+  self.layer.shadowColor=NSColor.blackColor.CGColor;self.layer.shadowOpacity=0.4;self.layer.shadowRadius=28;self.layer.shadowOffset=NSMakeSize(0,-14);
+  CGPathRef outline=CGPathCreateWithRoundedRect(CGRectMake(0,0,W,h),SETTINGS_RADIUS,SETTINGS_RADIUS,NULL);self.layer.shadowPath=outline;CGPathRelease(outline);
+  NSVisualEffectView *glass=[[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0,0,W,h)];glass.blendingMode=NSVisualEffectBlendingModeWithinWindow;
+  glass.state=NSVisualEffectStateActive;glass.material=NSVisualEffectMaterialHUDWindow;
+  glass.wantsLayer=YES;glass.layer.cornerRadius=SETTINGS_RADIUS;glass.layer.masksToBounds=YES;
+  glass.layer.borderWidth=1;glass.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.16].CGColor;
+  tint.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:solid?1:0.62].CGColor;[glass addSubview:tint];
+  [self addSubview:glass];
+ }
  self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
  NSTextField *title=[NSTextField labelWithString:settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
@@ -878,9 +986,8 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  NSArray<NSString *> *pageNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("着色器贡献","Shaders"),settings_text("性能排行榜","Performance"),settings_text("截图分享","Screenshots"),settings_text("陶笛","Ocarina"),@"VR"];   /* SETTINGS_PAGE_* order */
  NSMutableArray<NSString *> *tabNames=[NSMutableArray array];   /* the pages this game has (settings_page_present) */
  for(NSInteger p=0;p<SETTINGS_PAGES;p++)if(settings_page_present(p))[tabNames addObject:pageNames[(NSUInteger)p]];
- NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
-  trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
- tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
+ TOTKTabs *tabs=[[TOTKTabs alloc] initWithLabels:tabNames target:self action:@selector(tabChanged:)];
+ tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-82,W-28,30);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
  /* the menus widen with the panel up to 304 pt ("Handheld (less vegetation, faster, default)" whole) while the titles keep
     350 ("GPU keep-alive (holds the clock up; hotter, more power)" is 348); 260 in a narrower panel */
@@ -909,8 +1016,7 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
    if(r.page!=p)continue;
    CGFloat y=docH-(k+1)*rowH-k*gap,rw=W-28;k++;
 #endif
-   NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
-   band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
+   TOTKRowBand *band=[[TOTKRowBand alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
    label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-popW-24,18);[band addSubview:label];
    if(r.slider){
@@ -1065,15 +1171,18 @@ enum { SETTINGS_W = 740, SETTINGS_NARROW_W = 600, SETTINGS_ROW_H = 34, SETTINGS_
  list.frame=NSMakeRect(0,0,w,y+4);scroll.documentView=list;[page addSubview:scroll];self.bindingsScroll=scroll;
  return page;
 }
--(void)tabChanged:(NSSegmentedControl *)tabs{[self selectPage:settings_tab_page(tabs.selectedSegment)];}
+-(void)tabChanged:(TOTKTabs *)tabs{[self selectPage:settings_tab_page(tabs.selectedSegment)];}
 -(void)selectPage:(NSInteger)page{
  [self endCapture];
  page=page<0?settings_tab_page(0):settings_page_present(page)?page:settings_tab_page(settings_pages()-1);   /* a page without a tab: the last tab's */
  /* the drawings need the panel made at their size: it is made again on the next turn of the run loop (not under this
     method's feet), on that page */
  if(settings_drawings_for(page)!=self.drawings){g_settings_page=page;dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
+ BOOL turned=self.window&&self.pages&&self.page!=page;
  self.page=page;g_settings_page=page;self.tabs.selectedSegment=settings_page_tab(page);
  for(NSInteger i=0;i<(NSInteger)self.pages.count;i++)self.pages[(NSUInteger)i].hidden=i!=page;
+ if(turned&&page<(NSInteger)self.pages.count){NSView *shown=self.pages[(NSUInteger)page];shown.alphaValue=0;   /* the page turned to fades in */
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext *c){c.duration=0.22;shown.animator.alphaValue=1;}];}
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  for(TOTKSettingRow *r in self.allRows)if(r.page==page)[rows addObject:r];
  self.rows=rows;self.controllerIndex=0;
@@ -1186,9 +1295,8 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
 /* The key bindings drawings: the device switch with a line of help, and the keyboard and mouse or the controller. */
 -(NSView *)drawingsPageWithFrame:(NSRect)frame{
  NSView *page=[[NSView alloc] initWithFrame:frame];CGFloat w=frame.size.width,h=frame.size.height;
- NSSegmentedControl *device=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("键盘和鼠标","Keyboard & mouse"),settings_text("手柄","Controller")]
-  trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(deviceChanged:)];
- device.refusesFirstResponder=YES;device.segmentDistribution=NSSegmentDistributionFillEqually;device.frame=NSMakeRect(18,h-28,330,24);
+ TOTKTabs *device=[[TOTKTabs alloc] initWithLabels:@[settings_text("键盘和鼠标","Keyboard & mouse"),settings_text("手柄","Controller")] target:self action:@selector(deviceChanged:)];
+ device.refusesFirstResponder=YES;device.frame=NSMakeRect(18,h-29,330,26);
  device.selectedSegment=g_settings_bindings_device;[page addSubview:device];self.deviceTabs=device;
  NSTextField *help=[NSTextField labelWithString:@""];help.font=[NSFont systemFontOfSize:11];help.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
  help.lineBreakMode=NSLineBreakByTruncatingTail;help.frame=NSMakeRect(362,h-25,w-380,16);[page addSubview:help];self.drawingsHelp=help;
@@ -1208,7 +1316,7 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
    "Click a button on the drawing, then pick what it does. With a controller: up / down picks a button, left / right changes it.")
   :settings_text("点图上的按键或鼠标按键，再选它的功能。有颜色的按键正在使用。","Click a key or mouse button on the drawing, then pick what it does. Coloured keys are in use.");
 }
--(void)deviceChanged:(NSSegmentedControl *)device{
+-(void)deviceChanged:(TOTKTabs *)device{
  g_settings_bindings_device=device.selectedSegment;[self showDevice];[self layoutFooter];[self updateTargets];
  [self.window makeFirstResponder:self.window.contentView];
 }
@@ -1398,8 +1506,9 @@ static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [setting
  for(NSUInteger i=0;i<self.controllerTargets.count;i++){
   NSView *v=self.controllerTargets[i];BOOL here=g_settings_controller_active&&(NSInteger)i==self.controllerIndex;
   if(v==self.padDiagram){if(here)physical=[self padPhysical:i];continue;}
-  v.wantsLayer=YES;v.layer.cornerRadius=6;v.layer.borderWidth=here?2:0;
-  v.layer.borderColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1].CGColor;
+  BOOL band=[v isKindOfClass:TOTKRowBand.class];if(band)((TOTKRowBand *)v).picked=here;   /* a row: the white block (its border the same white) */
+  v.wantsLayer=YES;if(!band&&![v isKindOfClass:TOTKTabs.class])v.layer.cornerRadius=6;
+  v.layer.borderWidth=here?2:0;v.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.95].CGColor;
  }
  if(self.padDiagram&&self.padDiagram.selected!=physical){self.padDiagram.selected=physical;[self.padDiagram setNeedsDisplay:YES];}
 }

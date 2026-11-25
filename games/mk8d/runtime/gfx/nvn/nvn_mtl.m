@@ -11133,6 +11133,9 @@ int mtl_link_rate(void) { return g_link_mode == 3 ? 30 : g_link_mode == 2 ? 120 
 int mtl_link_wait_ticks(int ticks, uint64_t timeout_ns) {
     if (!mtl_link_active()) return 0;
     static uint64_t started_tick;   // Display-link tick number when the previous frame started work (only the game's present thread calls this function)
+    /* As games/totk's: a display link that has stopped calling back is not waited for; the caller paces by its own clock
+       and the presents are dropped or rescued by mtl_present_wait. The wait resumes with the first callback. */
+    if (g_link_tick_ns && now_ns() - __atomic_load_n(&g_link_tick_ns, __ATOMIC_RELAXED) > STALL_NS) return 0;
     const uint64_t step = ticks < 1 ? 1 : (uint64_t)ticks;
     pthread_mutex_lock(&g_link_mu);
     if (g_link_tick_n >= started_tick + step) { started_tick = g_link_tick_n; pthread_mutex_unlock(&g_link_mu); return 1; }

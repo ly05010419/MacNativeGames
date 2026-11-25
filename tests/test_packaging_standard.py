@@ -94,6 +94,21 @@ PATHS = {
         'warm-up lists beside the shader map': 'packaging writes no warm-up list; the runtime reads the seed\'s shader-seed/pso_manifest.tsv',
         "pipeline archive built from the App's lists": 'no pipeline archive is built while packaging',
     }),
+    # games/xc3/build.py since 2026-11-18 (ly05010419/MacNativeGames#2269): make prepare, shader-prepare, shader-seed,
+    # shader-libs and app; its gaps were checked in the sources on 2026-11-18
+    'xc3': (['games/xc3/build.py', 'games/xc3/Makefile', 'games/xc3/scripts/translate_shaders.py',
+             'games/xc3/scripts/prepare_shader_seed.py', 'games/xc3/scripts/build_shader_libs.py', 'games/xc3/app/launcher.m',
+             GFX.format('xc3')], {
+        'shader data in its own signed bundle': 'the shader seed and libraries go to Resources/game/build beside the game (Makefile app)',
+        'pipeline archive built while packaging': 'packaging builds .metallib libraries only (build_shader_libs.py)',
+        'title after the warm-up': 'packaging writes no pso_title.tsv, so the first frame waits for no warm-up list (nvn_mtl.m)',
+        'no program runs inside a new app': 'make app runs no program in the app, but packaging is the Makefile, not tools/port_app this check reads',
+        'seed and library digests are reused': 'the seed is prepared again at each build; a library is kept by compiler identity, not by a recorded digest',
+        'repackaging keeps the .app folder': 'build.py packs <app>.partial and swaps it in for the old folder',
+        'a runtime change can update quickly': 'no update path: a runtime change runs build.py again, which reuses the work folder but packs the app anew',
+        'warm-up lists beside the shader map': 'packaging writes no warm-up list beside the shader map',
+        "pipeline archive built from the App's lists": 'no pipeline archive is built while packaging',
+    }),
     'odyssey': (['games/odyssey/build.py', 'games/odyssey/scripts/build_odyssey.py', 'games/odyssey/scripts/package_native_app.py',
                  'games/odyssey/scripts/prepare_runtime.py', 'games/odyssey/scripts/app_launcher.h', GFX.format('odyssey')], {
         'shader data in its own signed bundle': 'the shader libraries and seed go to Resources/game/build (package_native_app.assemble)',
@@ -106,7 +121,7 @@ PATHS = {
 
 BUILD_SCRIPTS = {'games/tmnt/build.py': 'tmnt', 'games/oot/build.py': 'oot', 'games/dread/build.py': 'dread', 'games/ss/build.py': 'ss',
                  'games/worldend/build.py': 'worldend', 'games/acnh/build.py': 'acnh', 'games/eow/build.py': 'eow',
-                 'games/odyssey/build.py': 'odyssey'}
+                 'games/odyssey/build.py': 'odyssey', 'games/xc3/build.py': 'xc3'}
 
 
 class PackagingStandard(unittest.TestCase):

@@ -54,6 +54,12 @@ static stor_alias_heap **g_alias_retire; static int g_alias_nretire, g_alias_cre
 static uint64_t g_alias_heaps_made, g_alias_heaps_freed, g_alias_heaps_live, g_alias_heap_bytes, g_alias_textures, g_alias_reused, g_alias_grown,
                 g_alias_region_textures, g_alias_region_merges,
                 g_alias_roomed, g_alias_room_bytes;   // regions made with room for growth, and that room in all (nvn_alias_plan.h)
+/* Why a texture took the exact-address path (a heap per address and format), counted so that each one is accounted for:
+   [0] larger in Metal than its guest range even without compression metadata (a region placement would reach into a
+   neighbour's bytes: the only case that has to be exact), [1] misaligned with no room left in its range to start at an
+   aligned address, [2] the region plan could not keep its offset aligned, [3] OOT_STOR_ALIAS=2 or OOT_ALIAS_PAD=0. */
+static uint64_t g_alias_exact_why[4], g_alias_exact_bytes[4];
+static uint64_t g_alias_padded, g_alias_pad_failed, g_alias_rebased;   // region textures started past a misaligned guest address / ones no region took (stor_alias_texture)
 static _Atomic uint64_t g_alias_uncompressed;   // region textures created without lossless compression (it would pass their guest range)
 
 /* On by default only in Ocarina of Time, where it is measured to pay: memory peak 6.7 -> 4.4 GB (f447609e). The region
@@ -175,6 +181,7 @@ static id<MTLTexture> stor_alias_place_locked(stor_alias_heap *h, MTLTextureDesc
    copies each). OOT_ALIAS_ROOM=0: the exact union, as before. */
 static int stor_alias_room(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_ALIAS_ROOM"); on = e ? atoi(e) != 0 : 1; } return on; }
 static alias_span *g_alias_spans, *g_alias_others; static int g_alias_cspans;   // scratch under g_alias_mu
+static uint64_t g_alias_want_base;   // set when the plan's base left the texture's offset misaligned: the base it would have had (under g_alias_mu)
 static id<MTLTexture> stor_alias_region_locked(MTLTextureDescriptor *u, stor_alias_key k, uint64_t lo, uint64_t size, uint64_t align) {
     uint64_t hi = lo + size; int n = 0, m = 0;
     if (g_alias_cspans < g_alias_nregions) {
@@ -192,7 +199,7 @@ static id<MTLTexture> stor_alias_region_locked(MTLTextureDescriptor *u, stor_ali
     }
     alias_plan plan = alias_region_plan(g_alias_spans, n, g_alias_others, m, lo, hi, stor_alias_room());
     uint64_t nlo = plan.lo, nhi = plan.hi, old_lo = UINT64_MAX, old_hi = 0; int merged = 0;
-    if ((lo - nlo) % align) return nil;   // the region's base must keep this texture's guest offset aligned
+    if ((lo - nlo) % align) { g_alias_want_base = nlo; return nil; }   // the region's base must keep this texture's guest offset aligned
     for (int i = 0; i < g_alias_nregions; ) {   // the regions the texture touches; the plan's room stops short of the others
         stor_alias_heap *r = g_alias_regions[i];
         if (r->key.pf == k.pf && r->key.samples == k.samples && r->lo < hi && lo < r->lo + r->size) {
@@ -236,7 +243,7 @@ static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d
     id<MTLTexture> mt = nil; uint64_t before = g_alias_heaps_made;
     MTLSizeAndAlign sa = [g_dev heapTextureSizeAndAlignWithDescriptor:d];
     if (!sa.size) return nil;
-    uint64_t trace_size = 0, trace_align = 0; int trace_region = 0;
+    uint64_t trace_size = 0, trace_align = 0; int trace_region = 0, exact_why = 3;
     if (stor_alias_mode() != 2) {
         /* Keep lossless compression when the compressed texture already fits its guest range; drop it only when its
            metadata would reach past the guest range (e.g. 1536x864: 5570560 bytes compressed, 5505024 guest). */
@@ -244,13 +251,35 @@ static id<MTLTexture> stor_alias_texture(const tex_t *t, MTLTextureDescriptor *d
         static int plain = -1;   // OOT_ALIAS_UNCOMPRESSED=1 (diagnostic): no region texture keeps lossless compression
         if (plain < 0) { const char *e = getenv("OOT_ALIAS_UNCOMPRESSED"); plain = e && atoi(e) != 0; }
         if (su.size > t->L.size || plain) { u = [d copy]; u.allowGPUOptimizedContents = NO; su = [g_dev heapTextureSizeAndAlignWithDescriptor:u]; }
-        if (su.size && su.size <= t->L.size && su.align && k.mem % su.align == 0) {
+        /* A guest address that is not a multiple of Metal's placement alignment (2026-11-24: 2,048 bytes for the larger
+           targets, the game places at 512): the texture starts at the next multiple when it still ends inside its own
+           guest range. It then lies in a part of that range, so textures whose guest ranges are apart stay apart, and
+           ones that overlap may share bytes, as before. Without it such a texture took the exact-address path: a heap
+           of its own per address, and the game moves these targets a few hundred bytes at a time. Ocarina of Time in
+           VR at 2048x2208 per eye: 153 of 188 exact-address textures were of this kind, 2,064 MiB of heaps for guest
+           ranges whose union is about 170 MiB. OOT_ALIAS_PAD=0: the exact-address path for them, as before. */
+        static int pad_on = -1; if (pad_on < 0) { const char *e = getenv("OOT_ALIAS_PAD"); pad_on = !(e && !atoi(e)); }
+        uint64_t rlo = k.mem, pad = su.align && rlo % su.align ? su.align - rlo % su.align : 0;
+        int why = !su.size || su.size > t->L.size ? 0 : pad && !pad_on ? 3 : pad && su.size + pad > t->L.size ? 1 : 2;
+        if (pad && pad_on && su.size && su.size + pad <= t->L.size) rlo += pad; else pad = 0;
+        if (su.size && su.size <= t->L.size && su.align && rlo % su.align == 0) {
             trace_size = su.size; trace_align = su.align;
-            pthread_mutex_lock(&g_alias_mu); mt = stor_alias_region_locked(u, k, k.mem, su.size, su.align); pthread_mutex_unlock(&g_alias_mu);
+            pthread_mutex_lock(&g_alias_mu);
+            g_alias_want_base = UINT64_MAX; mt = stor_alias_region_locked(u, k, rlo, su.size, su.align);
+            if (!mt && g_alias_want_base != UINT64_MAX && pad_on) {
+                /* The regions it touches start at an address this texture's alignment does not divide (their own
+                   textures need less): start where the offset from that base is aligned instead, if that still ends
+                   inside the guest range. The plan sees the same regions, so it answers with the same base. */
+                uint64_t delta = (g_alias_want_base % su.align + su.align - k.mem % su.align) % su.align;
+                if (su.size + delta <= t->L.size) { rlo = k.mem + delta; pad = delta; mt = stor_alias_region_locked(u, k, rlo, su.size, su.align); if (mt) g_alias_rebased++; }
+            }
+            if (mt && pad) g_alias_padded++; else if (pad) g_alias_pad_failed++;
+            pthread_mutex_unlock(&g_alias_mu);
             if (mt) { if (u != d) g_alias_uncompressed++; trace_region = 1; goto placed; }
         }
+        exact_why = why;
     }
-    pthread_mutex_lock(&g_alias_mu); mt = stor_alias_exact_locked(d, k, sa); pthread_mutex_unlock(&g_alias_mu);
+    pthread_mutex_lock(&g_alias_mu); mt = stor_alias_exact_locked(d, k, sa); if (mt) { g_alias_exact_why[exact_why]++; g_alias_exact_bytes[exact_why] += sa.size; } pthread_mutex_unlock(&g_alias_mu);
 placed:
     if (mt && alias_trace_on()) {
         NvAliasTrack *track = objc_getAssociatedObject(mt, &g_alias_track_key);
@@ -270,11 +299,14 @@ placed:
 
 static void stor_alias_report(void) {
     pthread_mutex_lock(&g_alias_mu);
-    MLOG("[storage-alias] heaps live %llu (%llu MiB; %d current regions), made %llu, freed %llu, grown %llu (region merges %llu, with room %llu / %llu MiB of room in all); textures placed %llu (in regions %llu, uncompressed %llu), onto an existing heap %llu",
+    MLOG("[storage-alias] heaps live %llu (%llu MiB; %d current regions), made %llu, freed %llu, grown %llu (region merges %llu, with room %llu / %llu MiB of room in all); textures placed %llu (in regions %llu, uncompressed %llu, past a misaligned address %llu / not placed so %llu, at an offset aligned to the region %llu), onto an existing heap %llu",
          (unsigned long long)g_alias_heaps_live, (unsigned long long)(g_alias_heap_bytes >> 20), g_alias_nregions, (unsigned long long)g_alias_heaps_made,
          (unsigned long long)g_alias_heaps_freed, (unsigned long long)g_alias_grown, (unsigned long long)g_alias_region_merges,
          (unsigned long long)g_alias_roomed, (unsigned long long)(g_alias_room_bytes >> 20), (unsigned long long)g_alias_textures,
-         (unsigned long long)g_alias_region_textures, (unsigned long long)atomic_load(&g_alias_uncompressed), (unsigned long long)g_alias_reused);
+         (unsigned long long)g_alias_region_textures, (unsigned long long)atomic_load(&g_alias_uncompressed), (unsigned long long)g_alias_padded, (unsigned long long)g_alias_pad_failed, (unsigned long long)g_alias_rebased, (unsigned long long)g_alias_reused);
+    MLOG("[storage-alias] exact-address placements so far, by reason: larger than the guest range %llu (%llu MiB placed), misaligned with no room %llu (%llu MiB), region plan refused %llu (%llu MiB), switched off %llu (%llu MiB)",
+         (unsigned long long)g_alias_exact_why[0], (unsigned long long)(g_alias_exact_bytes[0] >> 20), (unsigned long long)g_alias_exact_why[1], (unsigned long long)(g_alias_exact_bytes[1] >> 20),
+         (unsigned long long)g_alias_exact_why[2], (unsigned long long)(g_alias_exact_bytes[2] >> 20), (unsigned long long)g_alias_exact_why[3], (unsigned long long)(g_alias_exact_bytes[3] >> 20));
     /* Which heaps hold the memory (2026-11-15: 1,197 MiB of heaps for render targets whose guest ranges are 73 MB): the
        current ones and the earlier generations a few live textures keep, with their textures. Counting only. */
     uint64_t n[2] = {0}, bytes[2] = {0}, tex[2] = {0}, few[2] = {0}, few_b[2] = {0};

@@ -96,7 +96,10 @@ static void input_tape(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx,
             at += (size_t)started; started = 1;
         }
         const TapeEvent *use = started && g_tape[at].seg == seg ? &g_tape[at] : NULL;   /* in the world, only the world's */
-        if (use) { *buttons = use->buttons; *lx = use->lx; *ly = use->ly; *rx = use->rx; *ry = use->ry; }
+        /* OOT_INPUT_REPLAY_LIVE=1 (tests that drive the controllers themselves): in the world the live state stays, the tape only adds to it */
+        static int live = -1; if (live < 0) { const char *e = getenv("OOT_INPUT_REPLAY_LIVE"); live = e && *e == '1'; }
+        if (live && seg == 'W') { if (use) { *buttons |= use->buttons; if (use->lx) *lx = use->lx; if (use->ly) *ly = use->ly; if (use->rx) *rx = use->rx; if (use->ry) *ry = use->ry; } }
+        else if (use) { *buttons = use->buttons; *lx = use->lx; *ly = use->ly; *rx = use->rx; *ry = use->ry; }
         else { *buttons = 0; *lx = *ly = *rx = *ry = 0; }
         if (!g_tape_closed && seg == g_tape_end_seg && frame > g_tape_end_frame + 120) {
             g_tape_closed = 1;

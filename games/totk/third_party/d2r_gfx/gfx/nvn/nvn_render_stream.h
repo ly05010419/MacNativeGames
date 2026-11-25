@@ -35,15 +35,26 @@ enum {
    hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*, rs4v-* with 200 us): CPU power
    taken from the GPU's budget. TOTK_RS_SPIN_US overrides the 200 us (2026-11-08: Time Profiler showed B on a P-core 85% of
    every OOT frame in this wait while the frame's packets keep arriving under 200 us apart). */
+static _Atomic uint64_t g_rs_spin_flag;   // "flag rs_spin_us <µs>": set while the game runs (0 = the default again)
 static uint64_t rs_spin_ns(void) {
+    uint64_t f = atomic_load_explicit(&g_rs_spin_flag, memory_order_relaxed); if (f) return f;
     static uint64_t v;
-#if defined(GAME_OOT) || defined(GAME_BOTW)
+#if defined(GAME_OOT) || defined(GAME_BOTW) || !defined(GAME_NS2)   /* !GAME_NS2 and not Breath of the Wild: Tears of the Kingdom */
     /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6).
        Breath of the Wild 1.9.0 (2026-11-14, M4 Max, Kakariko standing still, about 105 fps, no frame interpolation): B in
        this wait 62% -> 51% of its samples, package CPU power about 10.7 -> 10.3 W (powermetrics), frame p50 9.5 -> 9.25 ms. */
-    enum { RS_SPIN_DEFAULT_US = 20 };
+#if defined(GAME_OOT)
+    /* Ocarina, 2026-11-24 (M6, field, 1080p, about 99 fps, 20 s each at one place, "flag rs_spin_us"): 20 us 326-327 % CPU
+       of the process, 5 us 308 % at the same fps (99.2 against 98.6-100.1), 1 us 293 % but 97.4 fps. */
+    enum { RS_SPIN_DEFAULT_US = 5 };
 #else
-    enum { RS_SPIN_DEFAULT_US = 200 };
+    /* Tears of the Kingdom 1.4.3 (2026-11-24, M6, field at the save, about 1,910 draws a frame, 15 s each at one place,
+       "flag rs_spin_us"): 200 us 153-155 % CPU of the process at 82.5-83.0 fps; 50 us 146 %; 20 us 143-145 % at
+       82.3-83.6 fps; 5 and 1 us 143 % at 82.0-82.7 fps. */
+    enum { RS_SPIN_DEFAULT_US = 20 };
+#endif
+#else
+    enum { RS_SPIN_DEFAULT_US = 20 };   /* Bananza, Pokopia: 20 us as the others since 2026-11-24 (user's decision); not measured on them */
 #endif
     if (!v) { const char *e = getenv("TOTK_RS_SPIN_US"); long us = e ? atol(e) : RS_SPIN_DEFAULT_US; v = (uint64_t)(us < 1 ? 1 : us) * 1000ull; if (e) MLOG("TOTK_RS_SPIN_US=%ld: the encode stage waits %ld us on an empty queue before sleeping", us, us); }
     return v;

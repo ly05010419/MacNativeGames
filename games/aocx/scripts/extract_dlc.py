@@ -10,7 +10,7 @@ while the image streams to disk, and its files are written to extracted/aoc/<ind
 the report goes beside it (<index>.json), never into the mounted folder. The data NCA (name, size) and the RomFS (size,
 SHA-256, file count) must match assets/expected-dlc.json; anything else stops. Two files of the same add-on (a copy) are
 read once. --measure prints those values and keeps nothing. Keys stay in memory. No executable launch, no network.
-games/pla's NCA readers and IVFC check and games/rdr's RomFS section reader are used as they are.
+games/pla's NCA readers and IVFC check are used as they are; the RomFS section reader is scripts/nca_romfs_section.py.
 """
 import argparse
 import json
@@ -20,11 +20,10 @@ from pathlib import Path
 
 GAMES = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(GAMES / 'pla/scripts'))
-sys.path.insert(0, str(GAMES / 'rdr/scripts'))
 from extract_exefs import require, load_keys, container_entries, common_tickets, nca_ctr_key, nca_inventory  # noqa: E402
 from extract_romfs import index_romfs  # noqa: E402
 from merge_romfs import CHUNK, Ctr, verify_ivfc  # noqa: E402
-from merge_card_romfs import romfs_section  # noqa: E402
+from nca_romfs_section import romfs_section  # noqa: E402
 
 HERE = Path(__file__).resolve().parents[1]
 MANIFEST = HERE / 'assets/expected-dlc.json'

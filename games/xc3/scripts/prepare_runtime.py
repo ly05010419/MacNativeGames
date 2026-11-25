@@ -205,7 +205,7 @@ def control_config(version, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--work', type=Path, default=HERE / 'XC3_build')
+    parser.add_argument('--work', type=Path, required=True, help='the work folder (build.py and make pass it)')
     parser.add_argument('--version', required=True, choices=sorted(versions.VERSIONS))
     args = parser.parse_args()
     work = args.work.resolve()

@@ -177,6 +177,16 @@ void vr_set_6dof(int on);
 int vr_snap_ms(void);
 void vr_set_snap_ms(int ms);
 int vr_motion(void);
+int vr_dstereo(void);
+void vr_set_dstereo(int on);
+int vr_oot_body_mode(void);
+void vr_oot_set_body_mode(int m);
+int vr_oot_arm_cm(void);
+void vr_oot_set_arm_cm(int cm);
+int vr_oot_hand_tilt(void);
+void vr_oot_set_hand_tilt(int deg);
+int vr_oot_left_handed(void);
+void vr_oot_set_left_handed(int on);
 void vr_set_motion(int on);
 /* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
    1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
@@ -219,7 +229,19 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=2;r.sliderMax=10;[rows addObject:r];}
  /* The head's position (6DoF) and snap turning ("按建议 都做", 2026-10-30, after BotW BetterVR and UEVR). */
  [rows addObject:settings_row(settings_text("头部位置（6DoF：探身、下蹲）","Head position (6DoF: lean, crouch)"),nil,nil,^int{return vr_6dof();},^(int v){vr_set_6dof(v);})];
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ /* Ocarina of Time's stereo is made from the scene depth; alternating eyes would turn it off */
+ [rows addObject:settings_row(settings_text("立体（深度重投影）","Stereo (from the depth)"),nil,nil,^int{return vr_dstereo();},^(int v){vr_set_dstereo(v);})];
+ [rows addObject:settings_row(settings_text("第一人称 · 身体","First person · body"),@[settings_text("只显示手臂","Arms only"),settings_text("不显示","None"),settings_text("整个身体","Whole body")],@[@0,@1,@2],
+  ^int{return vr_oot_body_mode();},^(int v){vr_oot_set_body_mode(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 你的臂长（厘米）","First person · your arm (cm)"),nil,nil,^int{return vr_oot_arm_cm();},^(int v){vr_oot_set_arm_cm(v);});
+  r.sliderMin=30;r.sliderMax=80;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 手部倾斜（度）","First person · hand tilt (degrees)"),nil,nil,^int{return vr_oot_hand_tilt();},^(int v){vr_oot_set_hand_tilt(v);});
+  r.sliderMin=-60;r.sliderMax=60;[rows addObject:r];}
+ [rows addObject:settings_row(settings_text("左手模式（持剑手换左手）","Left-handed (the sword in the left hand)"),nil,nil,^int{return vr_oot_left_handed();},^(int v){vr_oot_set_left_handed(v);})];
+#else
  [rows addObject:settings_row(settings_text("立体（左右眼轮流渲染）","Stereo (the eyes rendered in turn)"),nil,nil,^int{return vr_afr();},^(int v){vr_set_afr(v);})];
+#endif
  {TOTKSettingRow *r=settings_row(settings_text("立体 · 两眼间距（%）","Stereo · eye distance (%)"),nil,nil,^int{return vr_ipd_pct();},^(int v){vr_set_ipd_pct(v);});
   r.sliderMin=30;r.sliderMax=200;[rows addObject:r];}
  [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];

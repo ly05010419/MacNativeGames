@@ -20,6 +20,8 @@ class DepthStereo(unittest.TestCase):
                                    capture_output=True, text=True)
             self.assertEqual(built.returncode, 0, built.stderr)
             result = subprocess.run([str(binary)], capture_output=True, text=True)
+            if result.returncode == 77:   # this Mac's GPU makes no residency set (a hosted CI runner)
+                self.skipTest(result.stderr.strip())
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('depth stereo passed', result.stdout)
 

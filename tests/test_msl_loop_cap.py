@@ -17,11 +17,12 @@ HEADER = ROOT / 'shared/third_party/d2r_gfx/gfx/nvn/msl_loop_cap.h'
 TOOLS = ROOT / 'games/totk/ios/tools'
 sys.path.insert(0, str(TOOLS))
 import msl_loop_cap  # noqa: E402
+from local_only import in_repository  # noqa: E402
 
 # The ports whose Mac host caps the MSL it compiles (nvn_mtl.m totk_msl_library_ with the shared header), and those that
 # still have to take it (each needs its own build check; their device seeds are capped by the shared build already).
 CAPPED = {'aocx', 'p5r', 'w3'}
-PENDING = {'acnh', 'kirby', 'mk8dx', 'odyssey', 'rdr'}
+PENDING = {'acnh', 'kirby', 'mk8dx', 'odyssey'}
 
 SAMPLE = '''kernel void main0(device uint* b [[buffer(0)]], uint3 id [[thread_position_in_grid]])
 {
@@ -131,7 +132,7 @@ class Wiring(unittest.TestCase):
 
     def test_every_port_has_decided(self):
         ports = {p.parts[-6] for p in ROOT.glob('games/*/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m')
-                 if 'static id<MTLLibrary> totk_msl_library_(' in p.read_text()}
+                 if in_repository(p) and 'static id<MTLLibrary> totk_msl_library_(' in p.read_text()}
         self.assertEqual(ports - CAPPED - PENDING, set(), 'a new port: cap its host (CAPPED) or list it as PENDING')
         self.assertFalse(CAPPED & PENDING)
 

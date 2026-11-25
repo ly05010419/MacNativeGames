@@ -40,12 +40,15 @@ static partial class ShaderService
     {
         ["vs"] = new[] { (0x110L, 0x210L), (0x610L, 0x620L) }, ["ps"] = new[] { (0x510L, 0x610L) }, ["cs"] = new[] { (0x200L, 0x410L) },
         ["gs"] = new[] { (GsSsboBase, GsSsboBase + 0x100) },   // the geometry stage's storage buffer table
+        // tessellation control / evaluation: their storage buffer tables, 0x110 + 0x100 * the Maxwell stage (vertex 0, control 1,
+        // evaluation 2, geometry 3 at 0x410, fragment 4 at 0x510)
+        ["tcs"] = new[] { (0x210L, 0x310L) }, ["tes"] = new[] { (0x310L, 0x410L) },
     };
     // c0 + 0x410 + 0x10 r: the geometry stage's storage buffer r (seedds/nxnative dmsh_abi.h DMSH_C0_SSBO_GS, NieR:Automata;
     // Donkey Kong Bananza's terrain geometry shader 5d537f7630ec reads its two at 0x410 / 0x420)
     const long GsSsboBase = 0x410;
     static readonly (long lo, long hi)[] DrvFillC2 = { (0x20, 0x120), (0x168, 0x568), (0x568, 0x968) };
-    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp" };
+    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp", ["tcs"] = "tcp", ["tes"] = "tep" };
     // Depth-format textures sampled through plain texture slots: Metal returns nothing for a depth texture read as texture2d,
     // so the declaration becomes depth2d / depth2d_array / depthcube (same for _ms) and every .sample / .read on it is wrapped
     // so the scalar depth becomes (d, 0, 0, 1) like a depth texture fetch on NVN. .gather already returns float4 on depth.
@@ -316,7 +319,7 @@ static partial class ShaderService
             }
             binds.Add(e);
         }
-        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, "gs" => GsSsboBase, _ => null };
+        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, "gs" => GsSsboBase, "tcs" => 0x210, "tes" => 0x310, _ => null };
         List<JsonObject> sbSorted = res["sbufs"].AsArray().Select(b => b.AsObject()).OrderBy(b => Long(b["binding"])).ToList();   // stable, as sorted()
         foreach (JsonObject e in binds)
         {
@@ -386,8 +389,10 @@ static partial class ShaderService
 
     // SPIRV-Cross's own program, compiled into this one (spirv_cross_inproc.cpp, linked by publish_native.sh): the same MSL
     // without a process per shader. TOTK_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
-    [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl")]
-    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, uint mslVersion, out IntPtr msl, out IntPtr err);
+    [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl_ex")]
+    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, uint mslVersion, uint flags, out IntPtr msl, out IntPtr err);
+    // SpirvCross flags (spirv_cross_inproc.cpp totk_spirv_cross_msl_ex): the tessellation options of TessService.cs
+    const uint XcMultiPatch = 1, XcRawTeseInput = 2;
 
     // Image atomics run on the Metal texture itself (MSL 3.1 texture atomics; from seedds/nxnative f8642c48, MIT): below 3.1
     // SPIRV-Cross emulates them through a raw pointer beside the texture, which a deswizzled block-linear copy does not share, a 3D
@@ -410,13 +415,13 @@ static partial class ShaderService
     static extern void SpirvCrossFree(IntPtr p);
     static readonly bool spirvCrossProcess = Environment.GetEnvironmentVariable("TOTK_XLATE_SPIRV_CROSS") == "process";
 
-    static unsafe void SpirvCross(string spv, string msl, string what)
+    static unsafe void SpirvCross(string spv, string msl, string what, uint flags = 0)
     {
         if (!spirvCrossProcess)
         {
             byte[] bytes = File.ReadAllBytes(spv);
             int rc; IntPtr mslText, errText;
-            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), MslVersion(bytes), out mslText, out errText);
+            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), MslVersion(bytes), flags, out mslText, out errText);
             try
             {
                 if (rc != 0) throw new RuntimeError(what + Cut((Marshal.PtrToStringUTF8(errText) ?? "").Trim(), 300));
@@ -430,6 +435,8 @@ static partial class ShaderService
         var psi = new ProcessStartInfo(spirvCross) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
         uint version = MslVersion(File.ReadAllBytes(spv));
         foreach (string a in Xc) psi.ArgumentList.Add(a == "20300" ? version.ToString(CultureInfo.InvariantCulture) : a);
+        if ((flags & XcMultiPatch) != 0) psi.ArgumentList.Add("--msl-multi-patch-workgroup");
+        if ((flags & XcRawTeseInput) != 0) psi.ArgumentList.Add("--msl-raw-buffer-tese-input");
         psi.ArgumentList.Add(spv); psi.ArgumentList.Add("--output"); psi.ArgumentList.Add(msl);
         using Process p = Process.Start(psi) ?? throw new RuntimeError(what + "could not start " + spirvCross);
         var err = p.StandardError.ReadToEndAsync(); var outp = p.StandardOutput.ReadToEndAsync();
@@ -468,6 +475,7 @@ static partial class ShaderService
     {
         string variant = (string)rq["variant"], stage = (string)rq["stage"];
         if (stage == "gs") { HandleGeometry(rq); return; }   // GeometryService.cs
+        if (stage == "tcs" || stage == "tes") { HandleTess(rq); return; }   // TessService.cs
         if (stage != "vs" && stage != "ps" && stage != "cs") throw new RuntimeError($"stage {stage} not supported by the translation chain");
         bool capture = Truthy(Get(rq, "geometry_capture"));   // a vertex shader that feeds a geometry kernel: main0_gs (GeometryService.cs)
         if (capture && stage != "vs") throw new RuntimeError("geometry_capture on a non-vertex stage");

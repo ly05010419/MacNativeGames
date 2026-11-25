@@ -156,7 +156,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
     /* Opaque (PR #1305): the game's bright screens do not show through. */
-    assert(CGColorGetAlpha(settingsPanel.layer.backgroundColor) == 1.0);
+    assert(CGColorGetAlpha(settingsPanel.tint.layer.backgroundColor) == 1.0);   /* the colour over the glass: solid */
 
     /* The tabs (2026-11-17, as the Zelda games, without a User page, the shader contribution or VR). */
     assert(settings_pages() == 6 && settingsPanel.tabs.segmentCount == 6);

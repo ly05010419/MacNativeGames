@@ -1,1 +1,0 @@
-../../../shared/runtime/romfs_path.h

@@ -226,7 +226,7 @@ def resolve_lists(tree, folder, logs, shared=None, mode='full'):
     for path in (title,manifest):path.unlink(missing_ok=True)   # never an older package's file
     log=Path(logs)/'shader-list-resolve.log';log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
-        subprocess.run([sys.executable,'-I',GAME/'scripts/shader_list.py','resolve',seed,shared,manifest,title],cwd=GAME,stdout=f,stderr=subprocess.STDOUT,check=True)
+        subprocess.run([sys.executable,'-I','-B',GAME/'scripts/shader_list.py','resolve',seed,shared,manifest,title],cwd=GAME,stdout=f,stderr=subprocess.STDOUT,check=True)
     for path in (title,manifest):
         if not path.is_file():raise ValueError(f'the shader list resolve wrote no {path}; see {log}')
     print(log.read_text().strip(),flush=True)
@@ -338,7 +338,7 @@ def pool_list(work,tree,mode='full'):
     return out
 
 # The bundle's shaders as image parts (shader-seed.img.NNN, shader-libs.img.NNN beside the two folders, at most
-# IMAGE_PART bytes each; ios/tools/seed_image.py, read in place by totk_seed_image.h), not 128,674 seed files and 64,699
+# IMAGE_PART bytes each; scripts/seed_image.py, read in place by totk_seed_image.h), not 128,674 seed files and 64,699
 # libraries (2026-11-17, user: "继续做吧"): from the USB drive the App is on, a library first used in play cost an
 # open() of 100 ms or more inside the replay (mtl4-2: 111 ms in lib_from_file), and the first camera turn into a new area
 # stalled on batches of them. The folders keep only the other files (the manifests, the lists). IMAGE_LAYOUT is part of
@@ -349,18 +349,16 @@ IMAGE_PART=1<<30
 def write_shader_images(seed,libraries,resources):
     """The seed's and the libraries' shader files into image parts in resources; the rest of the seed copied as files.
     Returns (seed files, libraries) in the images."""
-    tools=str(GAME/'ios/tools')
-    if tools not in sys.path:sys.path.insert(0,tools)
-    from seed_image import image_names,write_parts
+    packer=_script('seed_image')
     (resources/'shader-seed').mkdir(parents=True,exist_ok=True);(resources/'shader-libs').mkdir(parents=True,exist_ok=True)
     every=[p.name for p in seed.iterdir() if p.is_file()]
-    imaged=image_names(every)
+    imaged=packer.image_names(every)
     for name in sorted(set(every)-set(imaged)):clone_file(seed/name,resources/'shader-seed'/name)
-    write_parts(seed,imaged,resources/'shader-seed',IMAGE_PART)
+    packer.write_parts(seed,imaged,resources/'shader-seed',IMAGE_PART)
     manifest=json.loads((libraries/'libraries-manifest.json').read_text())
-    libs=image_names(manifest['files'])
+    libs=packer.image_names(manifest['files'])
     if len(libs)!=len(manifest['files']):raise ValueError('a library name the image does not take: '+str(sorted(set(manifest['files'])-set(libs))[:3]))
-    write_parts(libraries,libs,resources/'shader-libs',IMAGE_PART)
+    packer.write_parts(libraries,libs,resources/'shader-libs',IMAGE_PART)
     clone_file(libraries/'libraries-manifest.json',resources/'shader-libs/libraries-manifest.json')
     return len(imaged),len(libs)
 
@@ -594,6 +592,10 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
                     '--output',opening_overlay],check=True)
     took('opening overlay')
+    vr_rig=tree/'extracted/oot/vr-rig'   # Link's two models for the VR body; a game without them plays on with him drawn whole
+    made=subprocess.run([sys.executable,GAME/'scripts/make_vr_rig.py','--romfs',tree/'extracted/oot/romfs','--output',vr_rig])
+    if made.returncode:print('   VR models could not be made: first person in VR shows his whole body',flush=True)
+    took('VR models')
     temporary=out.with_name('.'+out.name+'.ready')
     if temporary.exists():raise ValueError('unfinished App staging directory exists; left untouched: '+str(temporary))
     mac=temporary/'Contents/MacOS';res=temporary/'Contents/Resources';data=res/'totk'
@@ -621,6 +623,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     shutil.copytree(tree/'extracted/oot/romfs',data/'extracted/oot/romfs',copy_function=clone_file,
                     ignore=shutil.ignore_patterns('romfs.bin','.romfs-verified*'))
     shutil.copytree(opening_overlay,data/'extracted/oot/romfs-patches',copy_function=clone_file)
+    if not made.returncode:shutil.copytree(vr_rig,data/'extracted/oot/vr-rig',copy_function=clone_file)
     # Reuse the repository's existing game-data packaging. Its signed helper
     # avoids hashing an unchanged 26 GB image on every native runtime update.
     build_app=build_helpers()

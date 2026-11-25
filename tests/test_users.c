@@ -134,6 +134,21 @@ static void from_saves(void) {
     uint64_t me[2]; runtime_account_uid(me);
     assert(me[0] == u[0].lo && me[1] == u[0].hi);
 }
+#ifndef TEST_ODYSSEY
+static void external_dm_save(void) {
+    RuntimeUser u[RUNTIME_USERS_MAX];
+    assert(runtime_users_get(u, RUNTIME_USERS_MAX) == 1 && !strcmp(u[0].name, "Local"));
+    assert(u[0].lo == 0x78626c0000000001ull && u[0].hi == 0x53574e4154495645ull);
+    uint64_t me[2]; runtime_account_uid(me);
+    assert(me[0] == u[0].lo && me[1] == u[0].hi);
+    char hex[33]; snprintf(hex, sizeof hex, "%016llx%016llx", (unsigned long long)me[1], (unsigned long long)me[0]);
+    assert(!strcmp(hex, "53574e415449564578626c0000000001"));
+    assert(runtime_users_add("Player 2") == -1 && runtime_users_choose(0) == -1);
+    struct stat st; char path[512];
+    snprintf(path, sizeof path, "%s/users.txt", dir); assert(stat(path, &st) != 0);
+    snprintf(path, sizeof path, "%s/account.uid", dir); assert(stat(path, &st) != 0);
+}
+#endif
 
 #ifdef TEST_ODYSSEY
 /* Super Mario Odyssey (games/odyssey/runtime/account.c, the same shared file built with its game_version.h): the profile it
@@ -237,6 +252,26 @@ int main(int argc, char **argv) {
         snprintf(path, sizeof path, "%s/save/not-a-user", dir); assert(!mkdir(path, 0700));
     }
     scenario(from_saves);
+
+    new_dir();
+    {
+        pid_t pid = fork();
+        assert(pid >= 0);
+        if (pid == 0) {
+            char ext[512]; snprintf(ext, sizeof ext, "%s/external-save", dir);
+            setenv("TOTK_PROFILE_DIR", dir, 1);
+            setenv("DM_SAVE", ext, 1);
+#ifdef TEST_ODYSSEY   /* its fs_host.c does not read DM_SAVE: the store is the profile's own, as without it */
+            RuntimeUser u[RUNTIME_USERS_MAX];
+            assert(runtime_users_get(u, RUNTIME_USERS_MAX) == 1 && u[0].lo != 0x78626c0000000001ull);
+            char path[512]; struct stat sb; snprintf(path, sizeof path, "%s/users.txt", dir); assert(stat(path, &sb) == 0);
+#else
+            external_dm_save();
+#endif
+            _exit(0);
+        }
+        int st; assert(waitpid(pid, &st, 0) == pid && st == 0);
+    }
 
 #ifdef TEST_ODYSSEY
     new_dir();   /* the Odyssey profile of before: its identity and the save area named after it */

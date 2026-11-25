@@ -74,7 +74,8 @@ class TallScreenUI(unittest.TestCase):
         # user 2026-11-21: "动森 在ipad上的全屏 是拉伸 不是 像iphone一样是扩展？": on the iPad (4:3) the camera already takes
         # the screen's shape; the UI must be flattened about the centre (below 1), as it is narrowed on the iPhone (above 1)
         gfx = (Path(__file__).resolve().parents[1] / 'games/acnh/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
-        self.assertIn('return f > 1.001 || f < 0.999 ? f : 1;', gfx)
+        # 0 is the game's own 16:9 (no aspect override), not a squeeze: taken as one it set the UI viewport's height to 0
+        self.assertIn('return f > 1.001 || (f > 0.0 && f < 0.999) ? f : 1;', gfx)
         self.assertIn('if (ux < 1) { uy = ux; ux = 1; }', gfx)
         self.assertIn('S.vp[0][3] * vs * uy', gfx)
 

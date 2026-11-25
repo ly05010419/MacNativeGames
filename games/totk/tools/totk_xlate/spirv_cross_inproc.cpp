@@ -45,13 +45,24 @@ struct CliExit : std::runtime_error
 // (Service.cs Xc) on the SPIR-V words, at MSL msl_version (20300, or 30100 for a shader with image atomics, Service.cs MslVersion).
 // Returns 0 and the MSL in *out, or 1 and the message the program printed in *err;
 // free either with totk_spirv_cross_free.
+// totk_spirv_cross_msl_ex: the same with the tessellation options of the command line (TessService.cs): flags bit 0
+// --msl-multi-patch-workgroup (a control stage as a kernel over many patches), bit 1 --msl-raw-buffer-tese-input (an
+// evaluation stage reading its control points and patch data from buffers).
+extern "C" int totk_spirv_cross_msl_ex(const uint32_t *words, size_t count, uint32_t msl_version, uint32_t flags, char **out, char **err);
 extern "C" int totk_spirv_cross_msl(const uint32_t *words, size_t count, uint32_t msl_version, char **out, char **err)
+{
+	return totk_spirv_cross_msl_ex(words, count, msl_version, 0, out, err);
+}
+
+extern "C" int totk_spirv_cross_msl_ex(const uint32_t *words, size_t count, uint32_t msl_version, uint32_t flags, char **out, char **err)
 {
 	*out = nullptr;
 	*err = nullptr;
 	try
 	{
 		CLIArguments args;
+		args.msl_multi_patch_workgroup = (flags & 1) != 0;
+		args.msl_raw_buffer_tese_input = (flags & 2) != 0;
 		args.msl = true;
 		args.msl_version = msl_version;
 		args.set_msl_version = true;

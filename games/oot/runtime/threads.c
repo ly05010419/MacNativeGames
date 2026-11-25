@@ -1056,14 +1056,29 @@ static void se_unbind(uint32_t wh) {   // 调用方持 G | Caller holds G
    Off by default: on the Mac at about 100 fps (1.2.1 field save, 300 s each) it saved 3% CPU (708 -> 685 s) but frames
    dropped steadily, 10-15 per 300 instead of 0-3. TOTK_YIELD_BACKOFF=on turns it on (250:2000); =<cap µs>[:<start µs>]
    sets the cap and the start. Returns the sleep for a yield whose run started run_ns ago, 0 for a plain yield. */
+/* "flag yield_backoff <cap µs>" (0 = off) and "flag yield_start <µs>" set them while the game runs, so one run at one
+   place can compare settings (2026-11-24: the ten workers' plain yields were about 1.2 cores at 99 fps in the field). */
+static _Atomic int64_t g_yield_cap = -1, g_yield_start = 2000000;
+void runtime_yield_backoff_set(int cap_us, int start_us) {
+    if (start_us >= 0) atomic_store(&g_yield_start, (int64_t)start_us * 1000);
+    if (cap_us >= 0) atomic_store(&g_yield_cap, (int64_t)cap_us * 1000);
+    LOG("[flag] yield back-off: sleeps at most %lld us after %lld us of yields (0 = off)", (long long)(atomic_load(&g_yield_cap) / 1000), (long long)(atomic_load(&g_yield_start) / 1000));
+}
+/* "flag yield_fast <bits>" (test, 2026-11-24): 1 = a yield takes the scheduler lock only when a thread waits for a core
+   (a racy look, as runtime_spin_wait's: a waiter missed now is seen at the next yield); 2 = no host sched_yield when the
+   core is not handed over (the Mac has cores to spare; the game's workers poll in short runs of yields between waits). */
+static _Atomic int g_yield_fast;
+void runtime_yield_fast_set(int bits) { atomic_store(&g_yield_fast, bits); LOG("[flag] yield_fast = %d (1 no lock without a core waiter, 2 no host yield)", bits); }
 static uint64_t yield_backoff_ns(uint64_t run_ns) {
-    static int64_t cap = -1, start = 2000000;
+    int64_t cap = atomic_load_explicit(&g_yield_cap, memory_order_relaxed), start = atomic_load_explicit(&g_yield_start, memory_order_relaxed);
     if (cap < 0) {
         const char *e = getenv("TOTK_YIELD_BACKOFF"); int64_t c = 0;
         if (e && !strcmp(e, "on")) c = 250000;
         else if (e && *e) { c = atoll(e) * 1000; const char *colon = strchr(e, ':'); if (colon) start = atoll(colon + 1) * 1000; }
         if (c) LOG("TOTK_YIELD_BACKOFF: a run of yields backs off after %lld us, sleeping at most %lld us", (long long)(start / 1000), (long long)(c / 1000));
-        cap = c;
+        int64_t unset = -1; if (!atomic_compare_exchange_strong(&g_yield_cap, &unset, c)) c = unset;   // a flag set it meanwhile
+        else atomic_store(&g_yield_start, start);
+        cap = c; start = atomic_load(&g_yield_start);
     }
     if (!cap || run_ns < (uint64_t)start) return 0;
     uint64_t s = run_ns / 8; if (s < 10000) s = 10000;
@@ -1135,17 +1150,20 @@ static int svc_thread_(int num, uint64_t *regs) {
             uint64_t y0 = now_ns();
             if (me && me->nsvc != me->yrun_svc + 1) me->yrun_ns = y0;   // another SVC since the last yield: a new run
             if (me) me->yrun_svc = me->nsvc;
+            const int fast = atomic_load_explicit(&g_yield_fast, memory_order_relaxed);
+            int give = 0; uint64_t sb0 = svc_stats_on() ? runtime_now_ns() : 0;   // TOTK_SVC_STATS: a yield's core hand-over, sleep and sched_yield count as blocked time
+            if (!(fast & 1) || __atomic_load_n(&g_core_wait, __ATOMIC_RELAXED)) {
             pthread_mutex_lock(&G);   // Horizon yield: hand the core to a waiting thread of equal or higher priority
-            int give = 0; for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && w->prio <= me->prio;
-            uint64_t sb0 = svc_stats_on() ? runtime_now_ns() : 0;   // TOTK_SVC_STATS: a yield's core hand-over, sleep and sched_yield count as blocked time
+            for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && w->prio <= me->prio;
             if (give) { core_put(me); core_take(me); }
             pthread_mutex_unlock(&G);
+            }
             uint64_t backoff = !give && me ? yield_backoff_ns(y0 - me->yrun_ns) : 0;
             if (backoff) {   // a long poll: sleep with the core given up, as SleepThread(ns) does
                 pthread_mutex_lock(&G); core_put(me); pthread_mutex_unlock(&G);
                 struct timespec ts = {0, (long)backoff}; nanosleep(&ts, 0);
                 pthread_mutex_lock(&G); core_take(me); pthread_mutex_unlock(&G);
-            } else if (!give) sched_yield();
+            } else if (!give && !(fast & 2)) sched_yield();
             if (sb0) t_svc_blocked += runtime_now_ns() - sb0;
 #ifdef GAME_BOTW
             if (me && me->handle == g_main_handle) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }

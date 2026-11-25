@@ -1,1 +1,0 @@
-../../../shared/runtime/bindings_diagram.h

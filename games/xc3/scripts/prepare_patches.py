@@ -46,7 +46,7 @@ def parse(path, build_id, display_version):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mods', type=Path, nargs='?', help='folder of <name>/exefs/*.pchtxt (default: mods/<display version>)')
-    parser.add_argument('--work', type=Path, default=HERE / 'XC3_build')
+    parser.add_argument('--work', type=Path, required=True, help='the work folder (build.py and make pass it)')
     parser.add_argument('--version', required=True, choices=sorted(versions.VERSIONS))
     args = parser.parse_args()
     pinned = versions.expected(args.version)

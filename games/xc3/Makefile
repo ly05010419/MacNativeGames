@@ -100,13 +100,17 @@ DATA ?= $(HOME)/Library/Application Support/MacNativeGames/XC3
 SEED_CACHE ?= $(WORK)/build/shader-cache/rt-totk-native-v4-unverified
 SEED_APP_CACHE ?= $(DATA)/shader-cache
 SEED_PREPARED ?= $(OUT)/shader-prepared
-.PHONY: shader-prepare shader-seed
+.PHONY: shader-prepare shader-seed shader-libs
 shader-prepare: shader-tools
 	"$(PY)" scripts/translate_shaders.py --out "$(SEED_PREPARED)" --translator "$(OUT)/shader-service/totk_xlate" \
 	  --spirv-cross "$(OUT)/spirv-cross/spirv-cross" --main "$(WORK)/rewritten/$(VERSION)/main.patched.bin" \
 	  "$(WORK)/extracted/$(VERSION)" $(wildcard $(WORK)/extracted/aoc/*)
 shader-seed:
 	"$(PY)" scripts/prepare_shader_seed.py --out "$(OUT)/shader-seed" "$(SEED_PREPARED)" "$(SEED_CACHE)" "$(SEED_APP_CACHE)"
+# The seed's shaders compiled into Metal libraries (scripts/build_shader_libs.py, all or nothing), which the runtime loads
+# instead of compiling them while playing; make app carries them when they serve the seed.
+shader-libs:
+	"$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --seed
 patches:
 	"$(PY)" scripts/prepare_patches.py --work "$(WORK)" --version $(VERSION)
 mods:
@@ -138,6 +142,7 @@ app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	[ ! -d "$(WORK)/extracted/firmware/shared-fonts" ] || cp -cR "$(WORK)/extracted/firmware" "$(IN_APP)/extracted/"
 	[ "$(VERSION)" != v221 ] || [ ! -d "$(WORK)/extracted/aoc" ] || cp -cR "$(WORK)/extracted/aoc" "$(IN_APP)/extracted/"   # add-ons (2.2.1 only)
 	[ ! -f "$(OUT)/shader-seed/seed-manifest.json" ] || cp -cR "$(OUT)/shader-seed" "$(IN_APP)/build/"   # make shader-seed first
+	[ ! -f "$(OUT)/shader-libs/seed.txt" ] || ! "$(PY)" scripts/build_shader_libs.py --work "$(WORK)" --check >/dev/null || cp -cR "$(OUT)/shader-libs" "$(IN_APP)/build/"   # make shader-libs first
 	[ -f "$(OUT)/AppIcon.icns" ] && cp "$(OUT)/AppIcon.icns" "$(APP)/Contents/Resources/" || true
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \

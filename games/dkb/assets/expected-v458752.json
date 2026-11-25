@@ -16,5 +16,12 @@
   "romfs": {
     "size": 9178113376,
     "sha256": "8982312b7d48ea6b6276a798291d9d4bd46531dc119425ed7d1b4af1df373be4"
+  },
+  "aoc": {
+    "1": {
+      "title_id": "040074A01BF13001",
+      "size": 957686906,
+      "sha256": "a5908949dc22f1dcc50c991d4ff03ccbb0de29f0ca4dfb61bcaccabc849569cf"
+    }
   }
 }

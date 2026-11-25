@@ -12,6 +12,8 @@ __pycache__/
 *.xcz
 *.bfttf
 *.sav
+# a port kept on its developer's disk only, not in the repository (tests/local_only.py passes such folders over)
+/games/rdr/
 # build output (the work folder normally lives next to the card image)
 TOTK_build/
 BotW_build/

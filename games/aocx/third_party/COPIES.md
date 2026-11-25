@@ -21,8 +21,8 @@ tree of 2026-11-22 (after 4a194558) and then changed for this game:
 | `third_party/smaa/`, `third_party/licenses/` | `games/rdr/third_party` | nothing |
 | `prebuilt/macos-arm64/` | `games/rdr/prebuilt/macos-arm64` | `totk_xlate` links Tears of the Kingdom's current translator (`games/totk/prebuilt/macos-arm64`, with its SHA-256) instead of Odyssey's: combined texture handles get their slot's type (a73d65e2); the chain `aocx-native-v5-combined-handles` (`dmsh_chain.h`) |
 | `scripts/prepare_runtime.py` | `games/rdr/scripts/prepare_runtime.py` | `assets/expected-1.4.1.json`; modules main, subsdk0, sdk |
-| `scripts/merge_nsp_romfs.py` | new; imports `games/pla/scripts` (extract_exefs, extract_romfs, merge_romfs) and `games/rdr/scripts/merge_card_romfs.py` (`CardBase`, `romfs_section`) as they are | the base from the base NSP, the patch from the update NSP |
-| `scripts/extract_dlc.py` | new, as `games/xc3/scripts/extract_aoc.py` does it; imports games/pla's and games/rdr's readers | this game's add-on titles, the files straight in `extracted/aoc/<index>` (Mario Kart's layout), its pins |
+| `scripts/merge_nsp_romfs.py` | new; imports `games/pla/scripts` (extract_exefs, extract_romfs, merge_romfs) as they are, and `scripts/nca_romfs_section.py` (`CardBase`, `romfs_section`: this folder's own copy since 2026-11-25) | the base from the base NSP, the patch from the update NSP |
+| `scripts/extract_dlc.py` | new, as `games/xc3/scripts/extract_aoc.py` does it; imports games/pla's readers and `scripts/nca_romfs_section.py` | this game's add-on titles, the files straight in `extracted/aoc/<index>` (Mario Kart's layout), its pins |
 | `scripts/ktgl_shaders.py` | new (KTGL's RDB / IDRK / GLSLC containers; the formats read from games/aoc's notes, no code taken) | — |
 | `scripts/prepare_aocx_shader_seed.py` | `games/rdr/scripts/prepare_rdr_shader_seed.py` (runs Odyssey's copy of the Zelda line's seed tool) | this game's discovery |
 | `scripts/build_aocx.py` | `games/rdr/scripts/build_rdr.py` | this game's steps (two NSPs, the add-ons, three modules) |

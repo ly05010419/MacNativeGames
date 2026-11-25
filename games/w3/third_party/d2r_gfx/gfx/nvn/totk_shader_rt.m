@@ -301,10 +301,10 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     pthread_mutex_lock(&g_rt_lock);
     NSMutableArray *vs = variants_of(shader);
-    BOOL depth_minus_w = stage == 0 && totk_depth_near_minus_w();
+    BOOL depth_minus_w = (stage == 0 || stage == 4) && totk_depth_near_minus_w();   // 4: the tessellation evaluation stage is the last before the rasterizer
     for (NSUInteger i = 0; i < vs.count; i++) {
         NSDictionary *v = vs[i];
-        if (stage == 0 && [v[@"depth_minus_w"] boolValue] != depth_minus_w) continue;
+        if ((stage == 0 || stage == 4) && [v[@"depth_minus_w"] boolValue] != depth_minus_w) continue;
         if (!deps_match(v[@"deps"], answers)) continue;
         NSString *found = v[@"variant"];
         if (!g_msl_checked) g_msl_checked = [NSMutableSet set];
@@ -323,11 +323,11 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     }
     uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
-    NSString *stage_name = stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil;
+    NSString *stage_name = stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : stage == 3 ? @"tcs" : stage == 4 ? @"tes" : nil;   // 3 / 4: TessService.cs
     if (!stage_name) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSMutableDictionary *key = [answers mutableCopy];
     if (stage == 5 && totk_rt_compute_shared_request(control)) key[@"shared"] = @(totk_rt_compute_shared_request(control));   // its own variant name
-    if (stage == 0) key[@"depth_minus_w"] = @(depth_minus_w);
+    if (stage == 0 || stage == 4) key[@"depth_minus_w"] = @(depth_minus_w);
     NSData *ad = [json_string(key) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     if (rt_async() && [g_failed containsObject:variant]) { pthread_mutex_unlock(&g_rt_lock); return nil; }

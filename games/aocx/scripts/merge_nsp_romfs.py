@@ -4,10 +4,10 @@
     python3 scripts/merge_nsp_romfs.py <base.nsp> <update.nsp> --keys prod.keys --output <work>/extracted/local/romfs
 
 Hyrule Warriors: Age of Calamity comes as two files: the base game (1.0.0, an 11.4 GB NSP) and the 1.4.1 update (a
-patch NSP). Red Dead Redemption's merge (games/rdr/scripts/merge_card_romfs.py) reads both Program NCAs from one card
-image; this one takes the base Program NCA from the base NSP and the update's patch NCA from the update NSP, and
-otherwise reuses that merge as it is: games/pla's bucket trees, indirect and AES-CTR-Ex reads and the six-level IVFC
-check of the merged image, and rdr's `CardBase` (the base RomFS section decrypted on demand, here from the base NSP).
+patch NSP). This script takes the base Program NCA from the base NSP and the update's patch NCA from the update NSP,
+and reuses the Zelda line's merge as it is: games/pla's bucket trees, indirect and AES-CTR-Ex reads and the six-level
+IVFC check of the merged image, with `CardBase` (scripts/nca_romfs_section.py: the base RomFS section decrypted on
+demand, here from the base NSP) in place of an extracted base image.
 
 Integrity: every block of the merged image is checked against the update's IVFC hash tree (all six levels), which covers
 the bytes taken from the base too; RSA signatures are not checked (as the other extraction scripts). Keys stay in memory.
@@ -20,13 +20,12 @@ from pathlib import Path
 
 GAMES = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(GAMES / 'pla/scripts'))
-sys.path.insert(0, str(GAMES / 'rdr/scripts'))
 from pla_artifact_paths import outside_source  # noqa: E402
 from extract_exefs import (require, load_keys, container_entries, common_tickets, nca_inventory,  # noqa: E402
                            program_nca, nca_ctr_key)
 from extract_romfs import index_romfs  # noqa: E402
 from merge_romfs import Ctr, Patched, verify_ivfc  # noqa: E402
-from merge_card_romfs import CardBase, romfs_section  # noqa: E402
+from nca_romfs_section import CardBase, romfs_section  # noqa: E402
 
 TITLE = '01002B00111A2000'
 UPDATE_TITLE = '01002B00111A2800'

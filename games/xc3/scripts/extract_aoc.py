@@ -25,6 +25,22 @@ AOC_BASE = int(BASE_TITLE, 16) + 0x1000
 DATA, PUBLIC_DATA = 4, 5
 
 
+def matches_nca(record, fingerprints):
+    return any(
+        (record['name'], record['size']) ==
+        (candidate['data_nca']['name'], candidate['data_nca']['size'])
+        for candidate in fingerprints
+    )
+
+
+def matches_fingerprint(record, measured, fingerprints):
+    return any(
+        matches_nca(record, [candidate])
+        and measured['romfs'] == candidate['romfs']
+        for candidate in fingerprints
+    )
+
+
 def open_addon(path, keys):
     """The NSP's one add-on data NCA: (file, record, header, Ctr, index)."""
     f = path.open('rb')
@@ -62,10 +78,13 @@ def extract(path, keys, work, pinned_all, measure):
     f, record, hdr, ctr, index = open_addon(path, keys)
     with f:
         pinned = pinned_all.get(str(index))
+        fingerprints = [pinned] + pinned.get('alternates', []) if pinned else []
         if not measure:
             require(pinned is not None, f'{path.name}: add-on {index} is not in {MANIFEST.name}')
-            require((record['name'], record['size']) == (pinned['data_nca']['name'], pinned['data_nca']['size']),
-                    f'{path.name}: its data NCA is not the pinned one for add-on {index}')
+            require(
+                matches_nca(record, fingerprints),
+                f'{path.name}: its data NCA is not a pinned version for add-on {index}'
+            )
         aoc = work / 'extracted/aoc'
         target = aoc / str(index)
         require(measure or not target.exists(), f'{target} already exists; remove it to extract again')
@@ -83,7 +102,10 @@ def extract(path, keys, work, pinned_all, measure):
             if measure:
                 print(json.dumps({str(index): measured}, indent=4), flush=True)
                 return
-            require(measured['romfs'] == pinned['romfs'], f'{path.name}: its RomFS does not match the pinned add-on {index}')
+            require(
+                matches_fingerprint(record, measured, fingerprints),
+                f'{path.name}: its complete NCA/RomFS fingerprint does not match any pinned version of add-on {index}'
+            )
             extract_files(image, files, staging / 'romfs')
             image.unlink()
             report = dict(status='pass', index=index, source=str(path.resolve()), source_size=path.stat().st_size,

@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from local_only import in_repository
+
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / 'games/totk/runtime/mng_active.h'
 # the Launcher's half (UsageStats.swift: the same files, address and fields) is checked in MNG-Launcher, its own
@@ -27,7 +29,7 @@ STARTS = {
     # the other games: their id is the folder name (the same as GAME_INBOX_ID where the game has one)
     **{f'games/{g}/runtime/frontend.m': f'mng_active_start(@"{g}", mng_active_version());' for g in (
         'acnh', 'alc', 'aocx', 'by3', 'dread', 'eow', 'kirby', 'lm3', 'mj2013', 'mk8dx', 'mkw', 'mvdk', 'odyssey', 'ori', 'ot0', 'p5r', 'pla', 'pokesv',
-        'rdr', 'ssbu', 'tmnt', 'tomodachi', 'unicorn', 'w3', 'wonder', 'xc3', 'xcx')},
+        'ssbu', 'tmnt', 'tomodachi', 'unicorn', 'w3', 'wonder', 'xc3', 'xcx')},
     # the games on the host runtime: front_mac.m is built in runtime/host, so their copy of the header is there
     **{f'games/{g}/runtime/host/front_mac.m': f'mng_active_start(@"{g}", mng_active_version());' for g in (
         'aoc', 'jamboree', 'la', 'mk8d', 'ss', 'worldend')},
@@ -82,7 +84,7 @@ class Wiring(unittest.TestCase):
 
     def test_no_game_front_end_is_left_out(self):
         # a new game's Mac front end must report too: add it to STARTS
-        fronts = {str(p.relative_to(ROOT)) for p in [*ROOT.glob('games/*/runtime/frontend.m'), *ROOT.glob('games/*/runtime/host/front_mac.m')]}
+        fronts = {str(p.relative_to(ROOT)) for p in [*ROOT.glob('games/*/runtime/frontend.m'), *ROOT.glob('games/*/runtime/host/front_mac.m')] if in_repository(p)}
         self.assertEqual(sorted(fronts - set(STARTS)), [])
 
     def test_the_ios_panes_have_the_switch_on_by_default(self):
