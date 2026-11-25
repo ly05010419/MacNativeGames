@@ -221,3 +221,32 @@ is from `passdump 1` (frame 2979).
   draws, not when it opens. So the copy point is learned: count the scene-only passes after the G-buffer pass; the
   index of the first one with a draw blending into c0 is kept, and from the next frame on the copy is taken when that
   pass opens. One copy per frame.
+
+## Results (2026-11-25)
+
+Shipped slices: Slice 1 (no FXAA on top of edge smoothing) and Slice 2 (changing transparents in the reactive mask).
+Slice 3 was dropped by the findings. All measured on the M4 Pro, same scene.
+
+- **Particles: fixed.** The floating light motes now get a mask of 1.00 (it was 0.00) and keep their brightness in the
+  output (+22 over the sky against +6 before), in MetalFX and fast modes. Three consecutive dumped frames show each mote
+  once, at its current position, instead of a trail of 4–5 fading copies.
+- **Softness: improved on static detail.** Mean |Laplacian| of the mountains in the still shot is 2.86 → 4.94 with
+  MetalFX (4.62 in a second run). On the temple, visual A/B shows crisper edges, but the number moves with run-to-run
+  variance (5.28 → 5.20 in one run, 6.16 in another). Single-run sharpness and FPS numbers vary between runs of the
+  same build: edge smoothing off measured 108.0 and 100.7 FPS in two runs without a code change on that path.
+- **Cost:** +0.05 ms GPU a frame for the scene copy (0.172 → 0.220 ms of copies). Compute time and frame span are
+  unchanged within noise. Mask coverage is 1.0 % → 1.7 % of the frame.
+- **The Slice 1 risk (pixels taken from the current frame crawling without FXAA): not observed.** Still-frame flicker
+  (temporal std of luma over 8 frames) stays well below edge smoothing off with FXAA, and the layer on/off made no
+  difference beyond run-to-run noise (which reaches about 0.1).
+- **What is left:**
+  - Foliage swaying in the wind is still blurred: temporal AA keeps about half the grass detail, against about
+    three-quarters on static geometry. The sway is sideways at nearly the same depth, so neither the depth test nor the
+    transparent layer sees it.
+  - Hair lag was not reproduced in this scene.
+- **Recommendations:**
+  - Sharpening stays the player's choice. Without FXAA on top, the image no longer needs a default.
+  - Approach B: foliage is the one remaining case, and it matters more for the FPS path (upscaling leans harder on
+    history). Before committing to per-object motion vectors, spike how much of the foliage blur is wrong history
+    rather than the anti-aliasing itself: for example, with wind frozen if the game allows it, or by marking the foliage
+    shaders' draws in the mask as an experiment.
