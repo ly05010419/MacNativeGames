@@ -7646,6 +7646,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         if (c0 && dt && nc >= 3) { size_t k = strlen(g_fl_passes); if (k < sizeof g_fl_passes - 24) snprintf(g_fl_passes + k, sizeof g_fl_passes - k, " %d:%lux%lu/%d", g_fl_npass, (unsigned long)c0.width, (unsigned long)c0.height, nc); g_fl_npass++; }
     }
     if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // TOTK_TAA: the G-buffer pass found; its first draw gives the camera
+    { id<MTLTexture> lit = taa_lit_pass(pd), sc = lit ? pd.colorAttachments[0].texture : nil; if (lit && sc) { id<MTL4ComputeCommandEncoder> b = blit(); enc_b_copy_texture(b, sc, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(sc.width, sc.height, 1), lit, 0, 0, MTLOriginMake(0, 0, 0)); blit_close(); } }   // TOTK_TAA: the scene before the passes that blend into it (transparents into the mask)
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
     else if (!g_vr_cam_taken && vr_wants_camera() && g_vr_camtake) {   // VR head look: this frame's camera, from the G-buffer pass's first draw (as MetalFX finds it)
 #ifdef GAME_OOT
@@ -20002,6 +20003,7 @@ frz_plain:;
        defer_replay draws whole replayed draws, which may end the pass: en_keep holds the encoder over it as before. */
     // OOT: the mesh batches for the pass about to open are made in rp_begin_ex (every opening path), not only here.
     __unsafe_unretained id<MTLRenderCommandEncoder> en = g_enc ? g_enc : rp_begin_ex(mode);
+    if (taa_lit_watching() && (S.color.blend_en & 1)) taa_lit_blend();   // TOTK_TAA: the first scene pass whose draws blend into the scene
     NS_VALID_UNTIL_END_OF_SCOPE id en_keep = nil;
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { g_draw_skip[8]++; return; }

@@ -39,8 +39,68 @@ class MaskProbe(unittest.TestCase):
                 self.skipTest('no Metal device')
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             for case in ('static_scene_zero', 'jump_20pct_full', 'jump_7pct_partial', 'prev_invalid_zero',
-                         'thin_strand_1px_shift_not_masked_known_limit'):
+                         'thin_strand_1px_shift_not_masked_known_limit', 'static_layer_pan_zero',
+                         'moving_particle_masks_both_spots', 'no_transparents_zero', 'reset_gives_no_layer_mask', 'jittered_fog_edge_zero'):
                 self.assertIn(case + ' ok', run.stdout)
+
+
+MTL = (GFX / 'nvn_mtl.m').read_text()
+TAA = (GFX / 'totk_taa.m').read_text()
+
+
+def body(text, start):
+    i = text.index(start)
+    return text[i:text.index('\n}\n', i)]
+
+
+def real(text):   # totk_taa.m: the visionOS stubs first, the real code after their #else
+    return text[text.index('#else', text.index('#if TARGET_OS_VISION')):]
+
+
+class Hooks(unittest.TestCase):
+    """Slice 2 (2026-11-25): the HDR scene is copied before the first pass that blends into it (learned per frame), and
+    taa_encode turns the changing part of what those passes added into mask."""
+
+    def test_scene_matched_through_views(self):
+        # the compose draw samples a view of the scene; the passes render into its parent (BotW 1.9.0, 2026-11-25 log):
+        # both sides are compared by their root texture, or no scene pass is ever found
+        lit = body(real(TAA), 'id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {')
+        self.assertIn('c0.parentTexture ?: c0', lit)
+        self.assertIn('g.last_src.parentTexture ?: g.last_src', lit)
+
+    def test_lit_copy_only_when_taa_will_run(self):
+        self.assertIn('taa_ready()', body(real(TAA), 'id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {'))
+
+    def test_copy_at_pass_open_with_the_replays_blit(self):
+        i = MTL.index('taa_lit_pass(pd)')
+        self.assertLess(MTL.index('if (taa_pass(pd) == 2)'), i)
+        call = MTL[i:MTL.index('\n', i)]
+        self.assertIn('blit()', call); self.assertIn('enc_b_copy_texture(', call); self.assertIn('blit_close();', call)
+
+    def test_blend_watched_after_the_pass_opens(self):
+        i = MTL.index('taa_lit_blend()')
+        self.assertLess(MTL.index('g_enc ? g_enc : rp_begin_ex(mode);'), i)
+        self.assertIn('S.color.blend_en & 1', MTL[MTL.rindex('\n', 0, i):MTL.index('\n', i)])
+
+    def test_mismatched_lit_snapshot_is_skipped(self):
+        enc = body(real(TAA), 'id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {')
+        cond = enc[enc.index('int layer = '):enc.index(';', enc.index('int layer = '))]
+        for s in ('g.lit_frame == g.frame', 'g.lit.width == src.width', 'g.lit.height == src.height', 'g.lit.pixelFormat == src.pixelFormat'):
+            self.assertIn(s, cond)
+
+    def test_layer_mask_before_both_resolves(self):
+        enc = body(real(TAA), 'id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {')
+        d = enc.index('g.layer_ps')
+        self.assertLess(d, enc.index('if (fast) {'))
+        self.assertLess(d, enc.index('encodeToCommandBuffer'))
+
+    def test_layer_env_switch(self):
+        self.assertIn('getenv("TOTK_TAA_LAYER")', TAA)
+        self.assertIn('"TOTK_TAA_LAYER_THRESHOLD"', TAA)
+
+    def test_learned_at_frame_end(self):
+        end = body(real(TAA), 'void taa_frame_end(void) {')
+        self.assertIn('g.lit_first >= 0', end)
 
 
 if __name__ == '__main__':

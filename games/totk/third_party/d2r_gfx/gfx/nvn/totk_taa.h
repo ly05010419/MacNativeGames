@@ -16,6 +16,13 @@ void taa_set_fast(int on);
    more colour attachments) and returns 1 for the passes that draw into its depth, which get this frame's jitter. */
 int taa_pass(MTL4RenderPassDescriptor *pd);
 int taa_jittered(void);                        // the current pass draws with the jitter
+/* Transparents in the reactive mask (2026-11-25; TOTK_TAA_LAYER=0 turns it off, TOTK_TAA_LAYER_THRESHOLD tunes it; see
+   taa_kernels.h taa_layer). Per render pass, after taa_pass: the passes into the scene alone (the texture the compose draw
+   samples) after the G-buffer pass are counted; the first with a draw blending into it was learned in an earlier frame,
+   and at its opening this returns the texture to copy the scene into (nil otherwise): the caller copies before the pass. */
+id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd);
+int taa_lit_watching(void);                    // the open pass is a scene pass and no blended draw has been seen this frame
+void taa_lit_blend(void);                      // a draw of the open pass blends into the scene (colour attachment 0)
 void taa_jitter(double *x, double *y);         // this frame's jitter in pixels (viewport origin offset)
 void taa_note_camera(const float *cam, int n); // the G-buffer pass camera block (see mfx_take_camera)
 /* At the game's compose draw (0ac9a549, tone mapping of the linear HDR scene): the anti-aliased scene of the same size,
