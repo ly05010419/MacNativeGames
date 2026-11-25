@@ -48,6 +48,14 @@ plus attachment traffic. That is the Switch 2 mesh-shader pipeline's shape, and 
 | The game's own dynamic resolution | **+14 %** (34.1 → 39.0–40.1 fps), the single biggest lever measured; exposed as the 动态分辨率 settings row (default off) |
 | 720p-from-480p canvas | +14 % (34.1 → 39.0 fps), the game's own handheld mode |
 
+## Update 2026-11-25 (later the same day)
+
+- The pending-write overlay scan now skips out-of-span queries (perf commit in this PR): the copy routine's
+  scans went 15.6 -> 0.0 entries per call (~29k iterations/frame removed), applied entries identical;
+  `probe-gpu-ubo-snapshot` passes (16,409 checks). Frame rate unchanged — the frame is GPU-bound, this removes CPU work.
+- 480p canvas + the game's dynamic resolution together: 39.5-39.9 fps (DRS adds nothing on top of 480p there,
+  the game is already at its lowest scale).
+
 ## Where the remaining work is
 
 1. **Per-draw / per-pass cost** (~1,200 draws, ~160 passes/frame): more pass merging (only 8 layered passes merge
