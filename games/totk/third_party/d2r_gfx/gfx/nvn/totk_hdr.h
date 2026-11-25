@@ -9,8 +9,13 @@
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
+/* The games whose Mac build has the HDR engine: TOTK (1.4.3 checks it at run time, totk_hdr_available) and Breath of
+ * the Wild 1.9.0 (its compose f7ee6fe1, botw_hdr_compose_source). BotW 1.6.0 has none. */
+#if defined(__APPLE__) && TARGET_OS_OSX && (!defined(GAME_BOTW) || defined(GAME_BOTW190))
+#define TOTK_HDR_MAC 1
+#endif
 static inline int totk_hdr_requested(void) {
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW)
+#if defined(TOTK_HDR_MAC)
     static _Atomic int cached = -1;
     int v = atomic_load(&cached);
     if (v < 0) { const char *e = getenv("TOTK_HDR"); v = e && !strcmp(e,"1"); atomic_store(&cached,v); }
@@ -19,16 +24,16 @@ static inline int totk_hdr_requested(void) {
     return 0;
 #endif
 }
-/* Only the Mac frontend built for TOTK 1.4.3 has verified this compose hash and
+/* Only the Mac frontend built for TOTK 1.4.3 or BotW 1.9.0 has verified a compose hash and
  * source layout. Shared graphics objects must ask it: they serve other versions too. */
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW) && !defined(TOTK_HDR_FRONTEND)
+#if defined(TOTK_HDR_MAC) && !defined(TOTK_HDR_FRONTEND)
 extern int front_hdr_supported(void) __attribute__((weak_import));
 extern int front_hdr_enabled(void) __attribute__((weak_import));
 #endif
 static inline int totk_hdr_available(void) {
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW)
+#if defined(TOTK_HDR_MAC)
 #ifdef TOTK_HDR_FRONTEND
-#if defined(TOTK_GAME_V143)
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)
     static _Atomic int cached=-1;int v=atomic_load(&cached);
     if(v<0){const char *e=getenv("TOTK_HDR_CONTROL");v=!(e && !strcmp(e,"0"));atomic_store(&cached,v);}return v;
 #else
@@ -43,7 +48,7 @@ static inline int totk_hdr_available(void) {
 }
 #ifndef TOTK_HDR_FRONTEND
 static inline int totk_hdr_active(void) {
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW)
+#if defined(TOTK_HDR_MAC)
     return totk_hdr_available() && front_hdr_enabled && front_hdr_enabled();
 #else
     return 0;
@@ -68,13 +73,13 @@ static const TotkHDRParameter totk_hdr_parameters[TOTK_HDR_PARAMETER_COUNT]={
     {"hdr-vanilla-saturation.txt",0,1,1}
 };
 typedef struct { float v[16]; } TotkHDRUniform;
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW) && !defined(TOTK_HDR_FRONTEND)
+#if defined(TOTK_HDR_MAC) && !defined(TOTK_HDR_FRONTEND)
 extern void front_hdr_parameters(float *values) __attribute__((weak_import));
 #endif
 static inline float totk_hdr_uniform_snapshot(TotkHDRUniform *out,float headroom,int enabled) {
     float p[TOTK_HDR_PARAMETER_COUNT];
     for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++)p[i]=totk_hdr_parameters[i].initial;
-#if defined(__APPLE__) && TARGET_OS_OSX && !defined(GAME_BOTW) && !defined(TOTK_HDR_FRONTEND)
+#if defined(TOTK_HDR_MAC) && !defined(TOTK_HDR_FRONTEND)
     if(front_hdr_parameters)front_hdr_parameters(p);
 #endif
     float peak=fmaxf(headroom,1);

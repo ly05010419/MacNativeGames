@@ -39,7 +39,7 @@ void front_hdr_parameters(float *values){
  for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++)values[i]=hdrParametersReady?hdrParameters[i]:totk_hdr_parameters[i].initial;
  pthread_mutex_unlock(&hdrParameterLock);
 }
-__attribute__((unused)) static float front_hdr_parameter(int which){   /* the 1.4.3 effects page (settings_panel.h) */
+__attribute__((unused)) static float front_hdr_parameter(int which){   /* the HDR rows of the effects page (TOTK 1.4.3, BotW 1.9.0: settings_game.h) */
  float values[TOTK_HDR_PARAMETER_COUNT];front_hdr_parameters(values);return values[which];
 }
 static NSTimer *hdrSaveTimer;
@@ -770,7 +770,13 @@ void runtime_front_run(void(*callback)(void)){
   if(totk_hdr_available()){
    front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
    [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
-   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s (choice %s), FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()));
+   fprintf(stderr,"[hdr] %s scene HDR: EDR %s (choice %s), FP16 extended linear sRGB, RenoDX-style tone mapping\n",
+#ifdef GAME_BOTW190
+    "BotW 1.9.0",
+#else
+    "TOTK 1.4.3",
+#endif
+    front_hdr_enabled()?"on":"off",hdr_choice_word(front_hdr_choice()));
   }
   metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;

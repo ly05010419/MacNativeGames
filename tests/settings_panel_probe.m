@@ -566,8 +566,8 @@ static void hdr_start(const char *env, const char *file) {
 static void hdr_probe(void) {
     assert(getenv("SETTINGS_TEST_DIR"));
     unsetenv("TOTK_HDR_CONTROL"); unsetenv("TOTK_MFX");
-#ifndef TOTK_GAME_V143
-    /* 1.2.1 and Breath of the Wild have no HDR: no row, and auto changes nothing */
+#if !defined(TOTK_GAME_V143) && !defined(GAME_BOTW190)
+    /* 1.2.1 and Breath of the Wild 1.6.0 have no HDR: no row, and auto changes nothing */
     hdr_start("auto", "auto"); front_hdr_auto(16, "probe XDR");
     assert(!totk_hdr_available() && front_hdr_choice() == HDR_CHOICE_OFF && !front_hdr_enabled());
     for (TOTKSettingRow *r in settings_rows()) assert(![r.title hasPrefix:@"HDR"]);
@@ -1417,7 +1417,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 34 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 34 + 3*TOTK_V143 + 2*BOTW_V190 + ((TOTK_V143 || BOTW_V190) && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129; BotW 1.9.0) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches

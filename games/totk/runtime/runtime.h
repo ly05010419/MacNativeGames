@@ -133,7 +133,7 @@ void runtime_audio_hold(int on);   /* audio_mixer.c: silent output while the fir
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
-void runtime_front_hdr_toggle(void);   /* Mac key 8: checked TOTK 1.4.3 HDR / EDR only */
+void runtime_front_hdr_toggle(void);   /* Mac key 8: HDR / EDR, TOTK 1.4.3 and BotW 1.9.0 only */
 void runtime_settings_page(int page);   /* tests (input file "settings <page>"): the panel opened on a page, -1 closed (frontend.m; nothing on the phone) */
 void runtime_settings_toggle(void);   /* key 1 (runtime/input.c): the settings panel opens or closes (frontend.m; nothing on the phone) */
 void fps_overlay_set_hud_mode(int mode);   /* gfx/nvn/fps_overlay.h HUD_MODE_*: the panel's overlay choice */

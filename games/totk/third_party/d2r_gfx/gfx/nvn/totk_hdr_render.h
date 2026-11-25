@@ -4,7 +4,7 @@ static struct { uint64_t serial, frame; id<MTLTexture> texture; float ui_white,p
 static unsigned g_hdr_nswap;
 static __thread float t_hdr_present_white=1,t_hdr_present_peak=1;
 static int hdr_on(void) {
-#if TARGET_OS_OSX && !defined(GAME_BOTW)
+#ifdef TOTK_HDR_MAC
     return totk_hdr_available();
 #else
     return 0;
@@ -30,11 +30,11 @@ static id<MTLTexture> hdr_swap_texture(uint64_t serial, uint64_t frame,float *wh
  * companion through draws that consume it, then keep using it for UI blending.
  * Resource identity + current frame prevent unrelated R11 textures being upgraded. */
 static void hdr_prepare_draw(NvProg *pr) {
-    g_hdr_draw_native=0;
+    g_hdr_draw_native=0;g_hdr_draw_rgb_only=0;
     if(!hdr_shadow_enabled() || !pr || !pr->sh[1] || R.rt.n!=1 || !R.rt.color[0])return;
     NvShader *fs=pr->sh[1];
     id<MTLTexture> dst=tex_mtl(R.rt.color[0]);
-    if(!dst || dst.pixelFormat!=MTLPixelFormatRG11B10Float || dst.textureType!=MTLTextureType2D ||
+    if(!dst || !hdr_shadow_format(dst.pixelFormat) || dst.textureType!=MTLTextureType2D ||
        dst.mipmapLevelCount!=1 || dst.sampleCount!=1 || dst.width<64 || dst.height<64)return;
     const view_t *v=&R.rt.cview[0];
     if(R.rt.has_cview[0] && ((v->set_levels && v->base_level) || (v->set_layers && v->min_layer)))return;
@@ -48,14 +48,19 @@ static void hdr_prepare_draw(NvProg *pr) {
         if(hdr_shadow_find((__bridge id<MTLTexture>)raw)){linked=YES;break;}
     }
     if(!origin && !linked)return;
-    if(hdr_shadow_make(dst))g_hdr_draw_native=1;
+    if(hdr_shadow_make(dst)){g_hdr_draw_native=1;g_hdr_draw_rgb_only=dst.pixelFormat==MTLPixelFormatRG11B10Float;}
 }
 /* Preserve the float canvas before the exact final copy writes to the 8-bit
  * sRGB swapchain. Never promote arbitrary guest textures or their CPU storage. */
 static void hdr_capture(NvProg *pr) {
     if(!hdr_on() || !atomic_load(&g_hdr_frame_enabled) || !pr || !pr->sh[0] || !pr->sh[1] || R.rt.n!=1 || !R.rt.color[0])return;
+#ifdef GAME_BOTW190   /* the canvas copy into the presented image (vertex e4b5b096, fragment ecb4242e: a plain nearest copy) */
+    if(strncmp(pr->sh[1]->key,"ecb4242efaf4042be5db42db3b06b93d16e1087c47db79882dc534df9e646f73-",65) ||
+       strncmp(pr->sh[0]->key,"e4b5b0967a3cd0b34a651ab97dd905f69265b56fc2adfbe154fcfb65b4287e76-",65))return;
+#else
     if(strncmp(pr->sh[1]->key,"dd3d1e0ebf73242845970b5655fac199a30f5acf747975c5e771caa49af8b12b-",65) ||
        strncmp(pr->sh[0]->key,"1a40e5f5ff257e13293c01b8e293a619d2ae8cdcffd8e4083e04dd7f59fd2273-",65))return;
+#endif
     unsigned slot=8;pthread_mutex_lock(&g_hdr_mu);
     for(unsigned i=0;i<g_hdr_nswap;i++)if(g_hdr_swap[i].serial==R.rt.color[0]->serial)slot=i;
     pthread_mutex_unlock(&g_hdr_mu);if(slot==8)return;
