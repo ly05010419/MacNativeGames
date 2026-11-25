@@ -80,7 +80,9 @@ class StorageTab(unittest.TestCase):
     def test_a_deleted_recorded_folder_and_an_app_recording_none_are_said(self):
         shutil.rmtree(self.work)
         self.assertEqual(self.ok('state')['folders'][0]['kind'], 'recreated')
-        record(self.app, self.tmp / 'gone/disk/totk')
+        record(self.app, self.tmp / 'gone/folder/totk')   # deleted with the folder it was in, its disk connected
+        self.assertEqual(self.ok('state')['folders'][0]['kind'], 'recreated')
+        record(self.app, Path('/Volumes/mng-no-such-disk-for-tests/work/totk'))   # a disk that is not connected
         self.assertEqual(self.ok('state')['folders'][0]['kind'], 'unreachable')
         self.assertIn('cannot be found', self.refused('clean', folder='work'))
         info = plistlib.loads((self.app / 'Contents/Info.plist').read_bytes())

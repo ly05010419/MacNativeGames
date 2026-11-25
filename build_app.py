@@ -2399,13 +2399,14 @@ def default_work(out, game):
     return base / WORK_FOLDERS / game, f'{WORK_FOLDERS}/{game} beside the folder of the app'
 
 
-def recorded_work_folder(app, name):
+def recorded_work_folder(app, name, volumes=Path('/Volumes'), mounted=os.path.ismount):
     """The work folder of an update run without --work, and why: the one the app records (record_update_source), so the
     update reuses the files of the build that made the app. Only an app that records none (built before 31 October 2026)
     falls back to <name> next to the app. A recorded folder that was deleted is made again where it was: an app that
-    carries its game data needs none of its old files, and one that does says so later (game_data). A recorded folder
-    whose parent is gone too (a disk not connected, a volume deleted) is an error naming both ways out, never a new
-    folder next to the app. 2026-11-11: the fallback was the only default, and an update of an app built with --work
+    carries its game data needs none of its old files, and one that does says so later (game_data); so is one deleted
+    together with the folder it was in, while its disk is connected. A recorded folder on a volume that is not mounted
+    (a disk not connected, a volume deleted) is an error naming both ways out, never a new folder next to the app and
+    never a folder made under the volume's name on the system disk. 2026-11-11: the fallback was the only default, and an update of an app built with --work
     made a second 2.2 GB work folder in the folder that holds the apps, which the updated app then recorded."""
     app = Path(app)
     try:
@@ -2418,9 +2419,18 @@ def recorded_work_folder(app, name):
             return Path(recorded).resolve(), 'recorded by the app'
         if Path(recorded).parent.is_dir():
             return Path(recorded), 'recorded by the app; it was deleted, so it is made again there'
-        raise BuildError(f'the work folder {app.name} records, {recorded}, cannot be found, nor the folder it was in (a disk '
-                         f'that is not connected, or a folder moved or deleted): connect that disk and run the same command '
-                         f'again, or pass --work <a folder of your choice> (docs/install.md, Folders); the app then records it')
+        # The folder it was in is gone too. On a disk that is connected that is only a larger deletion, and the folder is
+        # made again where it was (2026-11-25: /Volumes/mac-win/app/build/oot, deleted with build/ while the disk stayed
+        # connected, was taken for a disk that is not connected and the Launcher could not update the game). Only a
+        # path on a volume that is not mounted is the error: making it would put a folder on the system disk under the
+        # volume's name.
+        parts = Path(recorded).parts[:len(Path(volumes).parts) + 1]
+        volume = Path(*parts) if len(parts) > len(Path(volumes).parts) and Path(*parts[:-1]) == Path(volumes) else None
+        if volume is None or mounted(volume):
+            return Path(recorded), 'recorded by the app; it and the folder it was in were deleted, so it is made again there'
+        raise BuildError(f'the work folder {app.name} records, {recorded}, cannot be found, nor the folder it was in: it is on '
+                         f'{volume}, a disk that is not connected: connect that disk and run the same command again, or pass '
+                         f'--work <a folder of your choice> (docs/install.md, Folders); the app then records it')
     return fallback, f'the app records no work folder; using {name} next to the app'
 
 
