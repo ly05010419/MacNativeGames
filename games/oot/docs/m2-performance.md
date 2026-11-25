@@ -81,6 +81,28 @@ With the settings files alone, measured on the rebased tree: present interval **
 - 1080p native (`graphics-canvas.txt=3`) + `graphics-drs.txt=1` + `graphics-frame.txt=interp-4` (uncapped): **60.0 displayed, game ~40 fps real** — the current applied setting.
 Without interpolation the same scene runs at 41 fps (720p native) / 35 fps (1080p native), 51 fps with DRS.
 
+## Real 60 fps in Kokiri Forest on the M2: measured ceiling and what it would take (2026-11-26)
+
+Goal: 60 fps *game* rate (no interpolation) in this scene on the M2. Measured (rebased tree, 720p canvas):
+
+- 720p native fixed scale: 41 fps (frame 24.2 ms). With the game's dynamic resolution (internal ~683x384 at
+  load): **50.6-51.5 fps (frame 19.6 ms)** — the measured ceiling. metalperftrace: on-GPU 19.3-20.8 ms, layer
+  active ~100 %, CPU begin-to-present 18-20.6 ms: the GPU is the wall.
+- The frame cost is **not pixel-bound**: fixed scales 1.0 / 0.75 / 0.6 all measure ~41 fps (24.5 ms) while the
+  game's own DRS at 683x384 reaches 51 — the game's DRS also drops draw/LOD work, a fixed scale does not.
+- Per frame at DRS (pass spans, overlapping): ~31 compute passes 10.2 ms (the biggest bucket, resolution
+  independent), ~63 main render passes 13.0 ms, 1000x1000 shadow passes 3.2 ms, 128x128 passes 2.1 ms
+  (~112 draws), post chain ~3 ms. ~1,210 draws/frame total.
+- Ruled out by A/B at DRS: `skip_invisible` (no draw ever has all-zero queries — nothing skipped), keep-alive
+  **off hurts** (43.9 vs 50.6 — on the fanless M2 the spinner keeps the GPU clock up; leave it on),
+  `yield_fast`, `TOTK_ASYNC_PREEMPT=0` — all neutral.
+- To reach 16.7 ms/frame needs ~15 % less GPU work. The realistic paths, in order: (a) merge adjacent compute
+  encoders when no barrier separates them (~10.2 ms of compute spans, much of it per-pass fixed cost);
+  (b) translator-level mesh/compute work (SIMD split of one thread's reads: up to -42 % on the mesh stage,
+  needs a new chain + seed); (c) an opt-in shadow-resolution row (1000x1000 + 128x128 passes ~5.3 ms/frame;
+  needs a verified size site in OoT's main, like BotW's botw_shadow_res.h); (d) more render-pass merging
+  (114 passes/frame after #2324). None of these is safe to land without the corresponding GPU probes.
+
 ## Update after rebasing on 786ddc00 (PR #2324, 2026-11-25): pass splits on M1/M2
 
 `origin/main` then landed "on M1 / M2 an Ocarina of Time render pass ends only where mesh and ordinary draws meet"
