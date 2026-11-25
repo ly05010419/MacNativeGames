@@ -468,7 +468,8 @@ static NSHashTable *g_res_objects;
    so unbounded growth can be located, and gpu_budget_check refuses to go on past a budget instead of handing it to the driver. */
 /* unused: tests/test_residency_registration.py builds the lines around here alone, without their readers */
 __attribute__((unused)) static _Atomic uint64_t g_texels_gpu_reads,g_texels_gpu_writes,g_texels_gpu_bytes,g_texels_gpu_failures;   // texels_gpu_region, far below
-static _Atomic int g_cam_poke_count = 1; static _Atomic int g_cam_poke_off, g_cam_poke_pct = 100, g_cam_poke_match, g_cam_poke_off2 = -1, g_cam_poke_stage = -1, g_cam_poke_size; static _Atomic uint64_t g_cam_poke_n;   // encode_args, far below (diagnostic)
+/* unused: as the texel counters below, tests/test_residency_registration.py builds these lines without their readers */
+__attribute__((unused)) static _Atomic int g_cam_poke_count = 1; __attribute__((unused)) static _Atomic int g_cam_poke_off, g_cam_poke_pct = 100, g_cam_poke_match, g_cam_poke_off2 = -1, g_cam_poke_stage = -1, g_cam_poke_size; __attribute__((unused)) static _Atomic uint64_t g_cam_poke_n;   // encode_args, far below (diagnostic)
 #define RES_SITES 32768   /* nvn_mtl.m has more than 26,000 lines: at 8192 most registrations were counted under site 0 (2026-11-24) */
 static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, alive_bytes; } g_res_site[RES_SITES];   // alive*: objects not yet deallocated (whether or not still resident)
 /* Deallocation probe: an associated object whose dealloc runs when the Metal object itself is freed, so "removed from the
