@@ -19,6 +19,7 @@ import os
 import plistlib
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,9 +39,12 @@ LAUNCHERS = ('/Applications/MNG Launcher.app', '~/Applications/MNG Launcher.app'
 BUNDLED_PYTHON = 'Contents/Resources/python'
 STORES = '~/Library/Application Support/MacNativeGames/Builder/offline'   # bundled_job.py prepare_offline
 WITH_PYTHON = {'pip'}   # comes with the Launcher's Python (ensurepip), not from the store
-HOW = ('Run the tests in the Launcher\'s environment: a venv made by its Python (MNG Launcher.app/' + BUNDLED_PYTHON +
-       '/bin/python3 -m venv <folder>), holding only wheels of its offline store (<folder>/bin/python -m pip install '
-       '--no-index --find-links "<store>/wheels" -r ' + REQUIREMENTS + '; <store> is the folder in ' + STORES + ').')
+INTERPRETER = 'bin/python3.14'
+HOW = ('Run the tests in the Launcher\'s environment: a venv made by a copy of its Python (cp -R "MNG Launcher.app/' +
+       BUNDLED_PYTHON + '" <copy>; <copy>/bin/python3 -B -m venv <folder>; a copy, because a run without -B writes bytecode '
+       'beside the standard library, and inside the signed app that breaks its signature), holding only wheels of its '
+       'offline store (<folder>/bin/python -m pip install --no-index --find-links "<store>/wheels" -r ' + REQUIREMENTS +
+       '; <store> is the folder in ' + STORES + ').')
 MISSING = {'ImportError', 'ModuleNotFoundError', 'Exception', 'BaseException'}
 TRIES = tuple(t for t in (ast.Try, getattr(ast, 'TryStar', None)) if t)
 SCOPES = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -74,11 +78,22 @@ def normal(name):
 
 
 def made_by_launcher(base_prefix, app):
-    """Whether the Python that runs (or made the venv that runs) the tests is the Launcher's own."""
+    """Whether the Python that runs (or made the venv that runs) the tests is the Launcher's own: the same interpreter
+    file as the one the app carries, wherever it was copied to."""
     try:
-        return Path(base_prefix).resolve() == (Path(app) / BUNDLED_PYTHON).resolve()
+        return (Path(base_prefix) / INTERPRETER).read_bytes() == (Path(app) / BUNDLED_PYTHON / INTERPRETER).read_bytes()
     except OSError:
         return False
+
+
+def inside_app(base_prefix, app):
+    """Whether that Python is the one inside the app itself. It must not be: 2026-11-25, runs of the app's own Python
+    left 256 bytecode files in the installed Launcher and rewrote three it ships; codesign --verify --strict failed."""
+    try:
+        prefix, bundle = Path(base_prefix).resolve(), Path(app).resolve()
+    except OSError:
+        return False
+    return prefix == bundle or bundle in prefix.parents
 
 
 def not_carried(installed, wheel_names):
@@ -283,6 +298,8 @@ class TestsNeedOnlyTheLauncherEnvironment(unittest.TestCase):
             self.skipTest('no MNG Launcher on this machine (CI, a checkout-only Mac): the Python version and the package list stand in')
         self.assertTrue(made_by_launcher(sys.base_prefix, app),
                         f'these tests are running on {sys.executable} (Python of {sys.base_prefix}), not on the Python of {app}. {HOW}')
+        self.assertFalse(inside_app(sys.base_prefix, app),
+                         f'these tests are running on the Python inside the signed app ({sys.base_prefix}). {HOW}')
         store = launcher_store(app)
         self.assertIsNotNone(store, f'the offline store of {app} is not unpacked in {STORES}: open MNG Launcher once')
         installed = [(d.metadata['Name'], d.version) for d in importlib.metadata.distributions()]
@@ -291,12 +308,19 @@ class TestsNeedOnlyTheLauncherEnvironment(unittest.TestCase):
                          f'(after a Launcher update: make the environment again from the new store). {HOW}')
 
     def test_the_environment_check_tells_another_python_and_an_outside_package(self):
-        app = Path('/Applications/MNG Launcher.app')
-        self.assertFalse(made_by_launcher('/Library/Frameworks/Python.framework/Versions/3.14', app))   # python.org
-        self.assertFalse(made_by_launcher('/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14', app))
-        self.assertFalse(made_by_launcher('/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9', app))
-        self.assertFalse(made_by_launcher(Path.home() / 'Downloads/MNG Launcher.app' / BUNDLED_PYTHON, app))   # another copy
-        self.assertTrue(made_by_launcher(app / BUNDLED_PYTHON, app))
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder)
+            app, copy, other = tmp / 'MNG Launcher.app', tmp / 'deps/launcher-python', tmp / 'python.org/3.14'
+            for prefix, interpreter in ((app / BUNDLED_PYTHON, b'the launcher\'s'), (copy, b'the launcher\'s'), (other, b'another build')):
+                (prefix / 'bin').mkdir(parents=True)
+                (prefix / INTERPRETER).write_bytes(interpreter)
+            self.assertTrue(made_by_launcher(copy, app))    # the same interpreter, copied out of the app
+            self.assertFalse(inside_app(copy, app))
+            self.assertTrue(made_by_launcher(app / BUNDLED_PYTHON, app))
+            self.assertTrue(inside_app(app / BUNDLED_PYTHON, app))   # the app's own: it would write into the signed app
+            self.assertFalse(made_by_launcher(other, app))   # python.org's, Homebrew's, Xcode's
+            self.assertFalse(made_by_launcher(tmp / 'nowhere', app))
+            self.assertFalse(inside_app(other, app))
         wheels = ['capstone-5.0.9-py3-none-macosx_11_0_arm64.whl', 'ruamel.yaml-0.18.6-py3-none-any.whl',
                   'zbic-1.0.1.post1-cp314-cp314-macosx_11_0_arm64.whl']
         self.assertEqual(not_carried([('capstone', '5.0.9'), ('ruamel_yaml', '0.18.6'), ('Zbic', '1.0.1.post1'), ('pip', '99')], wheels), [])
