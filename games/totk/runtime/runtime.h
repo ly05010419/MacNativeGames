@@ -1,4 +1,5 @@
 #pragma once
+#define RUNTIME_STICK_CALIBRATION 1
 #include <stdint.h>
 #include <stddef.h>
 #include <pthread.h>
@@ -175,6 +176,25 @@ void *runtime_ns2_opus_ms_override(const char *name);   /* nn::codec Opus multis
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
+/* A stick's calibration (runtime/gamepad.m, the settings panel's stick-calibration tool): center is where the stick
+   actually rests when released, in game coordinates (-1..1, up positive); scale stretches the real travel to full
+   range. Positive and negative travel have independent gains; a zero negative gain uses the
+   positive gain for old callers. The default center 0, scale 1 leaves the stick unchanged. */
+typedef struct { float centerX, centerY, scaleX, scaleY, scaleNegX, scaleNegY; } RuntimeStickCalibration;
+typedef struct { RuntimeStickCalibration left, right; int stableHID; } RuntimeGamepadCalibration;
+/* Main-thread calibration samples: generation changes even when an interruption occurs between UI ticks. */
+typedef struct { float lx,ly,rx,ry,lt,rt; uint64_t generation; int valid; } RuntimeGamepadCalibrationSample;
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out);
+void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out);   /* the current connection's calibration */
+void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in);   /* bind to the sampled connection; do not persist */
+void runtime_gamepad_calibration_reset(void);   /* clear the connection calibration */
+float runtime_gamepad_stick_deadzone_get(int right); /* 0: left, nonzero: right */
+void runtime_gamepad_stick_deadzone_set(int right, float value); /* independent deadzone preference, 0..0.5, saved */
+float runtime_gamepad_deadzone_get(void); /* compatibility: left value */
+void runtime_gamepad_deadzone_set(float value); /* compatibility: set both sticks, 0..0.5, saved */
+void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY); /* sampled source response: axial or calibrated radial */
+void runtime_gamepad_stick_raw(float *lx, float *ly, float *rx, float *ry, int *connected);   /* the raw sticks (before calibration), game coordinates; the calibration tool's live picture */
+void runtime_gamepad_trigger_raw(float *lt, float *rt);   /* the analog triggers (0..1), the calibration tool's live bars */
 void runtime_gamepad_start(void);
 int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in; default off */
 void runtime_gamepad_background_set(int on);    /* main thread: apply and save */

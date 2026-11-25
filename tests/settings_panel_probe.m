@@ -93,6 +93,34 @@ int runtime_gamepad_battery_percent(void) { return -1; }
 static int fakePadBackground;
 int runtime_gamepad_background_enabled(void) { return fakePadBackground; }
 void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
+/* The calibration widget is constructed on every Input page. Keep its runtime
+   dependencies in-process too: this probe has a connected, neutral controller,
+   and must never fall through dynamic_lookup to a missing gamepad symbol. */
+static RuntimeGamepadCalibration fakeCalibration = {.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
+static float fakeDeadzone[2] = {.12f, .12f};
+void runtime_gamepad_calibration_sample(RuntimeGamepadCalibrationSample *out){*out=(RuntimeGamepadCalibrationSample){0};}
+void runtime_gamepad_calibration_get(RuntimeGamepadCalibration *out) { *out = fakeCalibration; }
+void runtime_gamepad_calibration_set(const RuntimeGamepadCalibration *in) { fakeCalibration = *in; }
+void runtime_gamepad_calibration_reset(void) {
+    fakeCalibration = (RuntimeGamepadCalibration){.left={.scaleX=1,.scaleY=1}, .right={.scaleX=1,.scaleY=1}};
+}
+float runtime_gamepad_stick_deadzone_get(int right) { return fakeDeadzone[!!right]; }
+void runtime_gamepad_stick_deadzone_set(int right, float value) {
+    if (isfinite(value)) fakeDeadzone[!!right] = fmaxf(0, fminf(.5f, value));
+}
+float runtime_gamepad_deadzone_get(void) { return fakeDeadzone[0]; }
+void runtime_gamepad_deadzone_set(float value) {
+    runtime_gamepad_stick_deadzone_set(0, value); runtime_gamepad_stick_deadzone_set(1, value);
+}
+void runtime_gamepad_stick_raw(float *lx, float *ly, float *rx, float *ry, int *connected) {
+    if (lx) *lx=0; if (ly) *ly=0; if (rx) *rx=0; if (ry) *ry=0;
+    if (connected) *connected=fakePadDetected>=0;
+}
+void runtime_gamepad_trigger_raw(float *lt, float *rt) { if (lt) *lt=0; if (rt) *rt=0; }
+void runtime_gamepad_stick_preview(int right, float x, float y, float *outX, float *outY) {
+    (void)right; *outX=x; *outY=y; /* neutral fake input; response math has its own runtime probe */
+}
+
 static RuntimeDSUSettings fakeDSU = {.endpoint="127.0.0.1:26760"};
 static RuntimeDSUStatus fakeDSUStatus;
 void runtime_dsu_settings(RuntimeDSUSettings *out) { *out=fakeDSU; }
@@ -279,12 +307,25 @@ static TOTKSettingRow *row(NSString *title) {
 static NSPopUpButton *menu(NSString *title) { return (NSPopUpButton *)row(title).control; }
 static void footer_spacing_probe(void) {
     NSUInteger counts[SETTINGS_PAGES] = {0};
+#ifdef RUNTIME_STICK_CALIBRATION
+    for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page] += r.customRows > 0 ? r.customRows : 1;
+#else
     for (TOTKSettingRow *r in settingsPanel.allRows) counts[r.page]++;
+#endif
     NSInteger previous = settingsPanel.page, longest = SETTINGS_PAGE_DISPLAY;
     for (NSInteger p = 0; p < SETTINGS_PAGES; p++)
         if (counts[p] > counts[longest]) longest = p;
     [settingsPanel selectPage:longest]; tick();
-    NSView *band = settingsPanel.rows.lastObject.control.superview;
+    /* A custom calibration block spans several row heights and can make the
+       page scroll. The footer sits below its viewport, not offscreen content. */
+    NSView *page = settingsPanel.pages[(NSUInteger)longest];
+    TOTKSettingRow *last = settingsPanel.rows.lastObject;
+    NSView *lastRow = last.control.superview;
+#ifdef RUNTIME_STICK_CALIBRATION
+    lastRow = last.customView ?: lastRow;
+#endif
+    NSView *band = [page isKindOfClass:NSScrollView.class] ? page : lastRow;
+    assert(band != nil);
     NSRect lastBand = [band convertRect:band.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
     assert(NSMinX(version) <= 20 && NSMinY(version) >= 6 &&
@@ -333,6 +374,9 @@ static void rows_fit(void) {
         CGFloat previousBottom = NSMaxY(document.bounds);
         for (TOTKSettingRow *r in settingsPanel.allRows) if (r.page == page) {
             NSView *band = r.control.superview;
+#ifdef RUNTIME_STICK_CALIBRATION
+            band = r.customView ?: band;
+#endif
             assert(band && band.superview == document && band.frame.size.height >= 24);
             assert(NSContainsRect(document.bounds, band.frame));
             assert(NSMaxY(band.frame) <= previousBottom);   /* no overlapping rows */
@@ -1172,7 +1216,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 32 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 33 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* Includes the calibration custom row and HDR rows (PR #1129). */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1644,7 +1688,20 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(!starButton.hidden && settingsPanel.controllerTargets.lastObject == starButton);   /* every page */
-    assert(settingsPanel.rows.count == 12 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
+#ifdef RUNTIME_STICK_CALIBRATION
+    assert(settingsPanel.rows.count == 13 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder is on the 截图分享 page */
+    /* The calibration block occupies its row index but is not controller-selectable;
+       the footer after it must not be mistaken for a disabled custom row. */
+    assert(settingsPanel.rows.lastObject.customView != nil);
+    assert(settingsPanel.controllerTargets.count == settingsPanel.rows.count + 1);
+    assert(settingsPanel.controllerTargets[settingsPanel.rows.count-1] == settingsPanel.rows.lastObject.customView);
+    assert(![settingsPanel controllerEnabled:(NSInteger)settingsPanel.rows.count-1]);
+    assert(settingsPanel.controllerTargets.lastObject == settingsPanel.homeButton);
+    assert([settingsPanel controllerEnabled:(NSInteger)settingsPanel.rows.count]);
+#else
+    assert(settingsPanel.rows.count == 12 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
+#endif
+
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
@@ -1816,7 +1873,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel mouseDown:mouse(NSEventTypeLeftMouseDown, background)];
     [settingsPanel mouseDragged:mouse(NSEventTypeLeftMouseDragged, NSMakePoint(background.x + 3, background.y + 2))];
     [settingsPanel mouseUp:mouse(NSEventTypeLeftMouseUp, NSMakePoint(background.x + 3, background.y + 2))];
-    assert(NSEqualPoints(settingsPanel.frame.origin, NSMakePoint(spot.x + 3, spot.y + 2)));
+    /* The custom calibration block can make the panel as tall as this window;
+       dragging still moves it, but may not move it beyond the window edge. */
+    NSSize dragRoom=window.contentView.bounds.size, dragPanel=settingsPanel.frame.size;
+    NSPoint expectedDrag=NSMakePoint(floor(fmin(spot.x+3,fmax(0,dragRoom.width-dragPanel.width))),
+                                    floor(fmin(spot.y+2,fmax(0,dragRoom.height-dragPanel.height))));
+    assert(NSEqualPoints(settingsPanel.frame.origin, expectedDrag));
     spot = settingsPanel.frame.origin;
     NSPoint onDrawing = [kb convertPoint:NSMakePoint(NSMidX(oneKey), NSMidY(oneKey)) toView:nil];   /* no menu there */
     [kb mouseDown:mouse(NSEventTypeLeftMouseDown, onDrawing)];
