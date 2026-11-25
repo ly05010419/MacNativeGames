@@ -194,7 +194,7 @@ def build(source):
         ent.write_text(RUNTIME_ENTITLEMENTS)
 
         def sign_runtime(name):
-            build_app.run(['codesign', '--force', '--sign', '-', '--options', 'runtime',
+            build_app.run(['codesign', '--force', '--sign', '-', '--options', 'runtime',   # nested: not the app (a runtime program; the app it goes into is signed by build_app.sign_app)
                            '--entitlements', str(ent), str(out / name)], logs / f'{name}-sign.log', env=env)
 
         for version in TOTK_VERSIONS:
