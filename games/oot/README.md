@@ -38,9 +38,10 @@ Key **1** opens the settings panel. The first page:
 - **Frame lock**: 30 (the default), off, 40, 60, 72, 90, 120.
 - **Frame interpolation (MetalFX)**: 30+30, 40+40, 50+50, 60+60 or uncapped. On a 100 Hz display, 50+50 adds one frame between every two game frames. Choosing it turns the frame lock off.
 
-On a weaker Mac (an M2, say), a steady 60 Hz on screen comes from the resolution row at 720p native, the dynamic
-resolution row on, and frame interpolation at 30+30: measured on an M2 the display then shows 60.0 images/s steady
-while the game's own rate adapts (see [docs/m2-performance.md](docs/m2-performance.md)).
+On a weaker Mac (an M2, say), a steady 60 Hz on screen comes from the dynamic resolution row on plus frame
+interpolation (uncapped if the game rate is well above 30): measured on an M2 at 720p native and at 1080p native
+the display then shows a steady 60.0 images/s while the game's own rate adapts (about 40 fps real at 1080p native
+with dynamic resolution + uncapped interpolation; see [docs/m2-performance.md](docs/m2-performance.md)).
 
 `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` starts the game in handheld mode with the handheld controller, whatever the quality profile row saved; `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` removes it. The environment variable of the same name wins.
 
