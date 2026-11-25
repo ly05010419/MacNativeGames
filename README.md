@@ -73,7 +73,6 @@ Ocarina of Time, Donkey Kong Bananza and Pokopia package as a Mac app with `buil
 | The Legend of Zelda: Skyward Sword HD | 1.0.1 | Mac | Community port, experimental | [`games/ss`](games/ss/README.md) |
 | Teenage Mutant Ninja Turtles: Shredder's Revenge | 1.0.0 | Mac; iPad target | Community port, experimental; not yet validated as a complete game | [`games/tmnt`](games/tmnt/README.md) |
 | Persona 5 Royal | 1.0.2 | Mac | Early: title, menus and the opening casino at the game's 30 fps, as a Mac app; battles and longer saves not tested | [`games/p5r`](games/p5r/README.md) |
-| Red Dead Redemption | 1.0.4 | Mac; the iPhone / iPad app builds, not run on a device | Bring-up: plays to Armadillo Station at 30 fps; glass and some distant objects draw wrongly; no Mac app yet | [`games/rdr`](games/rdr/README.md) |
 | The Witcher 3: Wild Hunt | 4.04b | Mac | Bring-up: the first in-engine scene, and gameplay at Kaer Morhen from a save, at 30 fps; no Mac app yet | [`games/w3`](games/w3/README.md) |
 | 明星三缺一 2013 | v0 | Mac | Early: title, menus and a game of mahjong against the AI at 30 fps, as a Mac app | [`games/mj2013`](games/mj2013/README.md) |
 
@@ -151,7 +150,7 @@ It is **on by default**. To turn it off: on a Mac, **MNG Launcher › Settings�
 - **2026-11-23: Donkey Kong Bananza builds from a `.nup` or a dump folder, with its add-on content (Mac).** Emerald Rush loads from your own files; it has not been played through.
 - **2026-11-23: Pokémon Pokopia's picture is no longer too dark (Mac).**
 - **2026-11-23: Persona 5 Royal 1.0.2 and The Witcher 3 4.04b on Mac, early.** Persona 5 Royal reaches the opening casino as a Mac app ([games/p5r](games/p5r/README.md)); The Witcher 3 plays at Kaer Morhen from a save, without an app yet ([games/w3](games/w3/README.md)).
-- **2026-11-22: Red Dead Redemption 1.0.4 and 明星三缺一 2013 on Mac, early.** Red Dead Redemption plays to Armadillo Station, without an app yet ([games/rdr](games/rdr/README.md)); 明星三缺一 plays a game of mahjong as a Mac app ([games/mj2013](games/mj2013/README.md)).
+- **2026-11-22: 明星三缺一 2013 on Mac, early.** It plays a game of mahjong as a Mac app ([games/mj2013](games/mj2013/README.md)).
 - **2026-11-22: Age of Calamity and Mario Kart 8 Deluxe have rewrites on the Zelda runtime, without an app yet** ([games/aocx](games/aocx/README.md), [games/mk8dx](games/mk8dx/README.md)).
 - **2026-11-22: Breath of the Wild's Game Over title and cutscene name cards no longer show the wrong characters.**
 - **2026-11-14: WORLDEND SYNDROME 1.0.0 on Mac, experimental.** Built from your own base files; title through ADV, saves and the first loop were played ([games/worldend](games/worldend/README.md)).
@@ -293,7 +292,6 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 塞尔达传说 御天之剑 HD | 1.0.1 | Mac | 社区移植，实验性 | [`games/ss`](games/ss/README.md) |
 | 忍者神龟：施莱德的复仇 | 1.0.0 | Mac；有 iPad 目标 | 社区移植，实验性；还没有作为完整游戏验证过 | [`games/tmnt`](games/tmnt/README.md) |
 | 女神异闻录 5 皇家版 | 1.0.2 | Mac | 早期：标题、菜单和开场赌场，游戏原本的 30 帧，有 Mac App；战斗和长时间存读档没测 | [`games/p5r`](games/p5r/README.md) |
-| 荒野大镖客：救赎 | 1.0.4 | Mac；iPhone / iPad App 能编译，没在设备上跑过 | 开发中：能玩到犰狳镇车站，30 帧；玻璃和部分远景画错；还没有 Mac App | [`games/rdr`](games/rdr/README.md) |
 | 巫师 3：狂猎 | 4.04b | Mac | 开发中：第一个引擎内场景，以及读档后在凯尔莫罕游玩，30 帧；还没有 Mac App | [`games/w3`](games/w3/README.md) |
 | 明星三缺一 2013 | v0 | Mac | 早期：标题、菜单和一局对电脑的麻将，30 帧，有 Mac App | [`games/mj2013`](games/mj2013/README.md) |
 
@@ -364,7 +362,7 @@ MNG Launcher 和每个游戏**每天最多上报一次**到 [mac-native-games.co
 - **2026-11-23：大金刚 Bananza 可以用 `.nup` 或导出目录打包，带追加内容（Mac）。** Emerald Rush 能从你自己的文件加载，还没有玩通。
 - **2026-11-23：修复宝可梦 Pokopia 画面偏暗（Mac）。**
 - **2026-11-23：女神异闻录 5 皇家版 1.0.2 和巫师 3 4.04b 登陆 Mac，早期。** 女神异闻录 5 皇家版有 Mac App，能玩到开场赌场（[games/p5r](games/p5r/README.md)）；巫师 3 能读档在凯尔莫罕游玩，还没有 App（[games/w3](games/w3/README.md)）。
-- **2026-11-22：荒野大镖客：救赎 1.0.4 和明星三缺一 2013 登陆 Mac，早期。** 荒野大镖客能玩到犰狳镇车站，还没有 App（[games/rdr](games/rdr/README.md)）；明星三缺一有 Mac App，能打一局麻将（[games/mj2013](games/mj2013/README.md)）。
+- **2026-11-22：明星三缺一 2013 登陆 Mac，早期。** 有 Mac App，能打一局麻将（[games/mj2013](games/mj2013/README.md)）。
 - **2026-11-22：灾厄启示录和马力欧卡丁车 8 豪华版有了塞尔达运行时上的重写版，还没有 App**（[games/aocx](games/aocx/README.md)、[games/mk8dx](games/mk8dx/README.md)）。
 - **2026-11-22：修复旷野之息“游戏结束”字样和过场人名卡显示成别的字。**
 - **2026-11-14：WORLDEND SYNDROME 1.0.0 登陆 Mac，实验性。** 用你自己的本体文件打包；从标题玩过 ADV、存档和第一周目循环（[games/worldend](games/worldend/README.md)）。
