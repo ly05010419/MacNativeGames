@@ -34,10 +34,10 @@ class PictureMode(unittest.TestCase):
         ld "Undefined symbols" (their link lines have no -undefined dynamic_lookup)."""
         nvn = (ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m').read_text()
         self.assertNotIn('runtime_metalfx_5k_output', nvn)
-        self.assertIn('if (!strcmp(name, "mfx_5k_output"))', nvn)
+        self.assertIn('if (!strcmp(name, "mfx_target"))', nvn)
         v143 = (ROOT / 'games/totk/runtime/game_patches_v143.c').read_text()
         self.assertIn('static int runtime_metalfx_5k_output(void)', v143)
-        self.assertIn('dm_gfx_set_flag("mfx_5k_output",on!=0)', v143)
+        self.assertIn('dm_gfx_set_flag("mfx_target",', v143)
 
 
 if __name__ == '__main__':

@@ -27,7 +27,7 @@ enum { MFXUP_OLD = 8, MFXUP_OLD_AFTER = 8, MFXUP_CACHE = 3, MFXUP_BAD = 4, MFXUP
    while the caller keeps its fallback (the game's own upscale, the bilinear present) for those frames, and the last few
    are kept: switching back (key 3, a window going in and out of full screen) is instant. */
 typedef struct { NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat in_fmt, out_fmt; int mode, own; } cfg_t;   // out_fmt: dst's (own output: invalid)
-typedef struct { cfg_t cfg; id<MTL4FXSpatialScaler> sc; id<MTLTexture> out; uint64_t used; int back_logged; } built_t;
+typedef struct { cfg_t cfg; id<MTL4FXSpatialScaler> sc; id<MTLTexture> out; uint64_t used, adopted; int back_logged; } built_t;   // used: last use (0 never); adopted: when it entered the cache
 typedef struct {
     built_t cache[MFXUP_CACHE]; int ncache, cur;   // cur: the cache entry in use, -1 none yet
     struct { cfg_t cfg; uint64_t at_ms; } bad[MFXUP_BAD]; int nbad;   // builds that failed: the caller's own path stays, retried after MFXUP_RETRY_MS
@@ -155,7 +155,11 @@ static void build(int ci, cfg_t cfg, NSUInteger src_usage, NSUInteger dst_usage,
     atomic_store(&g_c[ci].building, 0);
 }
 /* Owning thread: take a finished background build into the cache (the least recently used entry other than the current
-   one makes room; its objects wait in the old list until the GPU is done with them). */
+   one makes room; its objects wait in the old list until the GPU is done with them). An entry counts as used when it
+   enters: a build is adopted at a present that wants the other configuration, so with two configurations in turn (frame
+   interpolation) and a full cache an unused new entry was always the next one replaced, and a scaler was built at every
+   present and none used (Breath of the Wild, 2026-11-23; tests/mfx_up_cache_probe.m). */
+static uint64_t recent(const built_t *b) { return b->used > b->adopted ? b->used : b->adopted; }
 static void adopt(ctx_t *c) {
     built_t b; int has, ok;
     pthread_mutex_lock(&g_build_mu); has = c->has_ready; ok = c->ready_ok; b = c->ready; c->ready = (built_t){0}; c->has_ready = 0; pthread_mutex_unlock(&g_build_mu);
@@ -164,10 +168,10 @@ static void adopt(ctx_t *c) {
     int slot = c->ncache;
     if (slot == MFXUP_CACHE) {
         slot = -1;
-        for (int i = 0; i < MFXUP_CACHE; i++) if (i != c->cur && (slot < 0 || c->cache[i].used < c->cache[slot].used)) slot = i;
+        for (int i = 0; i < MFXUP_CACHE; i++) if (i != c->cur && (slot < 0 || recent(&c->cache[i]) < recent(&c->cache[slot]))) slot = i;
         old_push(c, c->cache[slot].sc, c->cache[slot].out);
     } else c->ncache++;
-    c->cache[slot] = b; c->cache[slot].used = 0;
+    c->cache[slot] = b; c->cache[slot].used = 0; c->cache[slot].adopted = ++c->tick;
 }
 /* Takes a finished build, then makes the cached scaler for this configuration current if there is one. */
 static int use_cached(int ci, ctx_t *c, const cfg_t *want) {

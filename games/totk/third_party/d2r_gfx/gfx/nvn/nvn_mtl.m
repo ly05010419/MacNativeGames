@@ -64,6 +64,7 @@ static _Atomic int g_mesh_trace_frames;
 #include "totk_shader_contrib.h"   // totk_contrib_list_row (pso_contribute)
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
+#include "mfx_target.h"   // the fixed size MetalFX upscales to (packed w << 16 | h, 0 = the window)
 #include "totk_taa.h"
 #include "../../../../zeldaVR/runtime/vr_camera.h"   // zeldaVR diagnostics read the first-person state
 #include "../../../../zeldaVR/gfx/totk_vr.h"
@@ -4285,11 +4286,11 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
 }
 static void dead_stat_print(unsigned long long frame);
 static void function_cache_set(int on);   // below, with function_cache_on
-/* Tears of the Kingdom 1.4.3's "4K, MetalFX to 5K" picture preset (game_patches_v143.c, PR #2240): set as a flag by
-   that runtime, read by output_upscale; 0 in every other game, which never sets it. */
-static _Atomic int g_mfx_5k_output;
+/* The fixed size MetalFX upscales to (Tears of the Kingdom 1.4.3's "4K, MetalFX to 5K" preset, game_patches_v143.c, PR #2240):
+   set as a flag by that runtime, read by output_upscale; packed w << 16 | h, 0 (the window) in every other game, which never sets it. */
+static _Atomic uint32_t g_mfx_target;
 void dm_gfx_set_flag(const char *name, int v) {
-    if (!strcmp(name, "mfx_5k_output")) { atomic_store(&g_mfx_5k_output, v != 0); return; }
+    if (!strcmp(name, "mfx_target")) { atomic_store(&g_mfx_target, (uint32_t)v); return; }
     if (!strcmp(name,"heap_reuse")) { atomic_store(&g_rt_heap_on,v!=0); retire_idle_kick(); MLOG("[heap-reuse] enabled=%d",v!=0); return; }
     if (!strcmp(name,"record_compact")) { extern void nvn_record_compact_set(int) __attribute__((weak_import)); if(nvn_record_compact_set)nvn_record_compact_set(v); MLOG("[record-compact] enabled=%d",v!=0); return; }
     if (!strcmp(name,"buffer_reuse")) { buffer_reuse_set(v); buffer_reuse_report(); return; }
@@ -7343,7 +7344,7 @@ static int mfx_ui_vs(const char *key) {
    that scene (squeezed, Link turns into a black silhouette). The canvas is learned as for TOTK_MFX (canvas_learn,
    uw_note_present); g_uw_ui: this frame's UI has begun. */
 extern float runtime_aspect_now(void) __attribute__((weak_import));
-static int metalfx_5k_output(void) { return atomic_load_explicit(&g_mfx_5k_output, memory_order_relaxed); }   // dm_gfx_set_flag
+static uint32_t mfx_target(void) { return atomic_load_explicit(&g_mfx_target, memory_order_relaxed); }   // dm_gfx_set_flag
 #include "totk_ui_squeeze.h"
 static int g_uw_ui;
 _Atomic long g_uw_log;   // diagnostic "flag uw_log <frames>": log the canvas draws of that many frames
@@ -22415,16 +22416,15 @@ static NSUInteger g_outup_size[4];            // in and out size of the last ups
 static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
     static NSUInteger sw, sh; static int same;
     if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
-    int fixed_5k = metalfx_5k_output();
-    if (!fixed_5k && (!mfxup_enabled() || !mfxup_output_enabled())) { g_outup_skip[0]++; return nil; }
+    uint32_t target = mfx_target();
+    if (!target && (!mfxup_enabled() || !mfxup_output_enabled())) { g_outup_skip[0]++; return nil; }
     NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
-    if (fixed_5k && ow && oh) {
-        // Fit within 5K even when the viewport is smaller. If fitting would shrink one axis,
-        // upscale to the full 5K texture and let the existing presentation pass fit it.
-        double scale = fmin(5120.0 / ow, 2880.0 / oh);
-        ow = (NSUInteger)llround(ow * scale);
-        oh = (NSUInteger)llround(oh * scale);
-        if (ow < cw + 16 || oh < ch + 9) { ow = 5120; oh = 2880; }
+    if (target && ow && oh) {
+        // Fit within the target even when the viewport is smaller. If fitting would shrink one axis,
+        // upscale to the full target texture and let the existing presentation pass fit it.
+        unsigned tw, th, fw, fh; mfx_target_unpack(target, &tw, &th);
+        mfx_target_fit(tw, th, (unsigned)ow, (unsigned)oh, (unsigned)cw, (unsigned)ch, &fw, &fh);
+        ow = fw; oh = fh;
     }
     if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
     if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
@@ -23632,7 +23632,7 @@ void mtl_sr_picture(totk_sr_gfx *s, uint64_t *upscaled_at, uint64_t *antialiased
     s->out_w = (int)atomic_load(&g_out_w); s->out_h = (int)atomic_load(&g_out_h);
     float a = runtime_aspect_now ? runtime_aspect_now() : 0;
     s->aspect_milli = a > 0 && fabsf(a - 16.0f / 9.0f) > 0.01f ? (int)lroundf(a * 1000) : 0;
-    s->upscale = metalfx_5k_output() ? 2 : mfxup_enabled() ? 1 + mfxup_output_enabled() : 0;
+    s->upscale = mfx_target() ? 2 : mfxup_enabled() ? 1 + mfxup_output_enabled() : 0;
     s->taa = taa_enabled(); s->fi_mode = mfx_enabled(); s->temporal = tup_enabled();
     s->present_path = __atomic_load_n(&g_rescue_mode, __ATOMIC_RELAXED) ? 2 : !__atomic_load_n(&g_dm_present_link, __ATOMIC_RELAXED);
     *upscaled_at = atomic_load(&g_mfxup_last); *antialiased_at = atomic_load(&g_taa_last);

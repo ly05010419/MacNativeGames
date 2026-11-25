@@ -4,6 +4,7 @@
 #include "../games/totk/runtime/frontend.m"
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
+#include "../games/totk/third_party/d2r_gfx/gfx/nvn/mfx_target.h"
 #include <assert.h>
 
 /* The probe's game window: real (AppKit lays it out, draws it and routes the probe's events), never seen (user 2026-11-03:
@@ -19,9 +20,11 @@ int mfx_latch(void);
 void mfxup_set(int on);
 void mfxup_output_set(int on);
 int mfxup_output_enabled(void);
+int mfxup_enabled(void);
 void settings_test_output_init(void);
 void settings_test_output_size(unsigned w, unsigned h);
 void settings_test_output_4k(int on);
+void settings_test_output_cap(unsigned w, unsigned h);
 void settings_test_aspect_init(double view);
 void settings_test_aspect_frame(void);
 #ifdef GAME_BOTW190
@@ -29,12 +32,12 @@ void settings_test_fov_refused(int refused); void settings_test_fov_init(void); 
 static uint32_t float_bits(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
 #endif
 
-static int fakeMfx5k = -1;   /* the 4K-to-5K preset's flag (game_patches_v143.c picture_4k_to_5k_set, after PR #2240) */
+static uint32_t fakeMfxTarget = 0xffffffffu;   /* the fixed MetalFX output size flag (game_patches_v143.c picture_4k_to_5k_set), 0xffffffff: never set */
 void dm_gfx_set_flag(const char *name, int value) {
     if (!strcmp(name, "mfx_interp")) mfx_set(value);
     else if (!strcmp(name, "mfx_output")) mfxup_output_set(value);
     else if (!strcmp(name, "mfx_upscale")) mfxup_set(value);
-    else if (!strcmp(name, "mfx_5k_output")) fakeMfx5k = value;
+    else if (!strcmp(name, "mfx_target")) fakeMfxTarget = (uint32_t)value;
     else abort();
 }
 /* gfx/nvn/totk_ssao.h's row calls (PR #1316): whether this run patched the AO shaders, and the level last set. */
@@ -131,6 +134,9 @@ int vr_snap_ms(void) { return 0; }
 void vr_set_snap_ms(int ms) { (void)ms; }
 void vr_set_mirror_mode(int on) { (void)on; }
 void vr_set_offset_cm(int axis, int cm) { (void)axis; (void)cm; }
+#if !defined(TOTK_GAME_V143) && !defined(GAME_BOTW)   /* 1.2.1 has no camera hook (1.4.3's and Breath of the Wild's are their own) */
+int runtime_camera_distance_available(void) { return 0; }
+#endif
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
@@ -353,21 +359,44 @@ static BOOL titled(NSButton *b, NSString *text) {
     fprintf(stderr, "box shows %s, expected %s\n", b.title.UTF8String, text.UTF8String); return NO;
 }
 static BOOL switched(NSString *title) { [settingsPanel.timer fire]; return ((NSSwitch *)row(title).control).state == NSControlStateValueOn; }
+/* The Display page's Resolution and Upscale to (settings_stops: a slider, or a pop-up when there is one choice): what it
+   shows, and a pick as the mouse makes it (released on that stop). A Resolution or MetalFX pick makes the rows again
+   through the main queue (the target's stops change), so each pick waits for that. */
+static NSString *showing(NSString *title) {
+    [settingsPanel.timer fire]; TOTKSettingRow *r = row(title);
+    return r.stops ? r.valueLabel.stringValue : ((NSPopUpButton *)r.control).titleOfSelectedItem;
+}
+static void stopped(NSString *title, NSString *choice) {
+    NSString *now = showing(title);
+    if (![now isEqualToString:choice]) { fprintf(stderr, "%s shows %s, expected %s\n", title.UTF8String, now.UTF8String, choice.UTF8String); abort(); }
+}
+static void slide(NSString *title, NSString *choice) {
+    TOTKSettingRow *r = row(title); NSUInteger i = [r.choices indexOfObject:choice];
+    if (i == NSNotFound || !r.control.enabled) { fprintf(stderr, "%s: no stop %s (or greyed out)\n", title.UTF8String, choice.UTF8String); abort(); }
+    if (r.stops) ((NSSlider *)r.control).integerValue = (NSInteger)i; else [(NSPopUpButton *)r.control selectItemAtIndex:(NSInteger)i];
+    [r changed:r.control]; tick(); settings_test_aspect_frame();
+}
+static void metalfx(BOOL on) { flip(@"MetalFX", on); tick(); }
+static BOOL greyed(NSString *title) { [settingsPanel.timer fire]; return !row(title).control.enabled; }
+static uint32_t target_file(void) {   /* graphics-mfx-target.txt as the next start reads it: 0 window, else w << 16 | h */
+    char word[32]; if (!runtime_setting_word("graphics-mfx-target.txt", word, sizeof word)) return 0xfffffffeu;
+    unsigned w, h; if (!strcmp(word, "window\n")) return 0;
+    return sscanf(word, "%ux%u", &w, &h) == 2 ? mfx_target_pack(w, h) : 0xfffffffdu;
+}
 
 static void persistence_probe(const char *action) {
 #ifdef GAME_BOTW190
-    const int outputMode = OUTPUT_MODE_METALFX;   /* 1.9.0 has no native 2K canvas mode. */
-    NSString *outputChoice = @"1080p + MetalFX upscaling";
+    const int outputMode = OUTPUT_MODE_METALFX;   /* 1.9.0 has no native 2K canvas mode here: 1080p with MetalFX on. */
 #else
     const int outputMode = OUTPUT_MODE_NATIVE;
-    NSString *outputChoice = @"2K (2560×1440)";
 #endif
     window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (!strcmp(action, "save")) {
         settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settings_show(1);
         pick(@"Overlay", @"FPS + playtime"); pick(@"Frame interpolation", @"40+40");
-        pick(@"Resolution", outputChoice); pick(@"Aspect ratio", @"21:9"); pick(@"Edge smoothing", @"MetalFX");
+        if (outputMode == OUTPUT_MODE_METALFX) metalfx(YES); else slide(@"Resolution", @"2K (2560×1440)");
+        pick(@"Aspect ratio", @"21:9"); pick(@"Edge smoothing", @"MetalFX");
 #if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
         pick(@"Anti-aliasing method",@"FXAA");pick(@"Anti-aliasing quality",@"Quality");
         pick(@"Anti-aliasing method",@"SMAA");tick();pick(@"Anti-aliasing quality",@"Ultra");
@@ -1043,6 +1072,220 @@ static void contrib_probe(void) {
     settings_home_open = settings_home_open_default;
     settings_show(0);
 }
+/* The labelled-stops slider and a row that greys out (settings_stops, TOTKSettingRow.enabled), on a panel of just those two rows. */
+static void stops_probe(void) {
+    [NSApplication sharedApplication];
+    __block int current = 20, last = -1; __block BOOL on = YES;
+    TOTKSettingRow *stops = settings_stops(@"Stops", @[@"a", @"b", @"c"], @[@10, @20, @30], ^int{ return current; }, ^(int v) { current = last = v; });
+    __block int switchSets = 0;   /* the switch reads on; a set is counted */
+    TOTKSettingRow *sw = settings_row(@"Switch", nil, nil, ^int{ return 1; }, ^(int v) { (void)v; switchSets++; });
+    sw.enabled = ^BOOL{ return on; };
+    __block BOOL slideOn = YES;   /* a third row: stops that grey out ("Upscale to" while MetalFX is off) */
+    TOTKSettingRow *dim = settings_stops(@"Dim", @[@"x", @"y"], @[@0, @1], ^int{ return 0; }, ^(int v) { (void)v; });
+    dim.enabled = ^BOOL{ return slideOn; };
+    stops.page = sw.page = dim.page = SETTINGS_PAGE_DISPLAY;
+    settingsPanel = [[TOTKSettingsPanel alloc] initWithRows:@[stops, sw, dim]];
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; settings_refresh_all();
+    NSSlider *s = (NSSlider *)stops.control;
+    assert([s isKindOfClass:NSSlider.class] && s.numberOfTickMarks == 3 && !s.continuous && s.allowsTickMarkValuesOnly);
+    assert(s.minValue == 0 && s.maxValue == 2);
+    assert(s.integerValue == 1 && [stops.valueLabel.stringValue isEqualToString:@"b"]);
+    assert(stops.valueLabel.alignment == NSTextAlignmentRight);
+    NSString *wide = @"2K (2560×1440)";
+    assert([wide sizeWithAttributes:@{NSFontAttributeName: stops.valueLabel.font}].width <= stops.valueLabel.frame.size.width);
+    s.integerValue = 2; [stops changed:s];
+    assert(last == 30 && [stops.valueLabel.stringValue isEqualToString:@"c"]);
+    last = -1; [stops changed:s];   /* released on the stop it already has: nothing applied again (a Resolution pick
+                                       makes the rows again and sizes the window) */
+    assert(last == -1 && [stops.valueLabel.stringValue isEqualToString:@"c"]);
+    settingsPanel.controllerIndex = 0;
+    [settingsPanel controllerChange:1 select:NO];   /* right from the last stop stays there, nothing applied */
+    assert(s.integerValue == 2 && last == -1 && [stops.valueLabel.stringValue isEqualToString:@"c"]);
+    [settingsPanel controllerChange:-1 select:NO];
+    assert(s.integerValue == 1 && last == 20 && [stops.valueLabel.stringValue isEqualToString:@"b"]);
+    assert(sw.control.enabled);
+    /* a switch stepped to the state it has applies nothing again (right on an on switch), one that changes does */
+    settingsPanel.controllerIndex = 1; [settingsPanel controllerChange:1 select:NO];
+    assert(switchSets == 0 && ((NSSwitch *)sw.control).state == NSControlStateValueOn);
+    [settingsPanel controllerChange:-1 select:NO]; assert(switchSets == 1);
+    on = NO; settings_refresh_all();
+    assert(!sw.control.enabled && ![settingsPanel controllerEnabled:1] && [settingsPanel controllerEnabled:0]);
+    on = YES; settings_refresh_all(); assert(sw.control.enabled);
+    /* a greyed stops row dims its label too, not only the slider */
+    assert(dim.control.enabled && dim.valueLabel.alphaValue == 1);
+    slideOn = NO; settings_refresh_all();
+    assert(!dim.control.enabled && dim.valueLabel.alphaValue < 0.6 && ![settingsPanel controllerEnabled:2]);
+    slideOn = YES; settings_refresh_all(); assert(dim.control.enabled && dim.valueLabel.alphaValue == 1);
+    puts("pass: slider stops");
+}
+/* The Display page's Resolution, MetalFX and Upscale to rows on the production panel, what reaches the graphics layer
+   (fakeMfxTarget: the flag "mfx_target", 0 the window) and graphics-mfx-target.txt, which the next start reads. */
+static void restore_output(int mode, const char *target) {   /* a start: the saved files, then the game's patches in */
+    settings_save_int("graphics-output.txt", mode, "test");
+    if (target) runtime_setting_save("graphics-mfx-target.txt", target, "test"); else runtime_setting_remove("graphics-mfx-target.txt");
+    assert(runtime_output_mode_set(OUTPUT_MODE_OFF));
+    fakeMfxTarget = 0xffffffffu; settings_restore_start(); settings_restore_ready();
+}
+static void mfx_target_probe(void) {
+    assert(getenv("SETTINGS_TEST_DIR"));
+    unsetenv("TOTK_MFX"); unsetenv("TOTK_OUTPUT_RES"); unsetenv("TOTK_MFX_OUTPUT"); unsetenv("TOTK_MFX_UPSCALE");
+    mfxup_output_enabled(); mfxup_enabled();   /* their environment read once, here: off */
+    settings_test_output_init(); settings_test_aspect_init(16.0 / 9);
+    window = probe_window();
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+    settings_show(1); assert(settingsOpen);
+    const BOOL native = !!(runtime_output_modes() & 1 << OUTPUT_MODE_NATIVE);   /* not Breath of the Wild 1.9.0 here (its canvas fixed at 1080p) */
+    NSArray<NSString *> *at1080 = @[@"Window", @"2560×1440", @"3840×2160", @"5120×2880"];
+
+    /* A 2K app: the render sizes it has; MetalFX off, Upscale to greyed out. */
+    if (native) assert(row(@"Resolution").stops && [row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)"])]);
+    else assert([row(@"Resolution").choices isEqualToArray:@[@"1080p"]] && greyed(@"Resolution"));
+    stopped(@"Resolution", @"1080p"); assert(!switched(@"MetalFX") && !greyed(@"MetalFX") && greyed(@"Upscale to"));
+
+    /* 1080p + MetalFX: today's mode and both stages; the targets wider than 1080p, the window first. */
+    metalfx(YES);
+    assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && mfxup_enabled() && fakeMfxTarget == 0);
+    assert(!greyed(@"Upscale to") && [row(@"Upscale to").choices isEqualToArray:at1080]); stopped(@"Upscale to", @"Window");
+    slide(@"Upscale to", @"3840×2160");
+    assert(fakeMfxTarget == mfx_target_pack(3840, 2160) && target_file() == mfx_target_pack(3840, 2160));
+    assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled()); window_is(2160);
+    stopped(@"Upscale to", @"3840×2160");
+
+    /* MetalFX off: no fixed target left behind (it costs a 4K texture); on again: the target comes back. */
+    metalfx(NO);
+    assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0 && !mfxup_output_enabled() && !mfxup_enabled());
+    assert(greyed(@"Upscale to") && target_file() == mfx_target_pack(3840, 2160)); window_is(1080);
+    metalfx(YES);
+    assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == mfx_target_pack(3840, 2160)); stopped(@"Upscale to", @"3840×2160");
+
+    if (native) {
+        /* A larger render drops a target no longer larger than it to the window. */
+        slide(@"Upscale to", @"2560×1440"); assert(fakeMfxTarget == mfx_target_pack(2560, 1440));
+        slide(@"Resolution", @"2K (2560×1440)");
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0 && target_file() == 0);
+        assert([row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"3840×2160", @"5120×2880"])]); stopped(@"Upscale to", @"Window");
+        slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == 0);   /* it stays dropped */
+#ifdef TOTK_GAME_V143
+        /* A 5K app (1.4.3): 4K + MetalFX is today's 4K to 5K, 5K has nothing larger, and the switch comes back at 2K. */
+        settings_test_output_cap(5120, 2880); settings_rebuild(); tick();
+        slide(@"Resolution", @"2K (2560×1440)"); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);
+        slide(@"Resolution", @"4K (3840×2160)");
+        assert([row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)", @"4K (3840×2160)", @"5K (5120×2880)"])]);
+        assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
+        assert(!mfxup_output_enabled() && !mfxup_enabled() && switched(@"MetalFX") && [row(@"Upscale to").choices isEqualToArray:@[@"5120×2880"]]);
+        stopped(@"Upscale to", @"5120×2880"); window_is(2880);
+        slide(@"Resolution", @"5K (5120×2880)");
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_5K && fakeMfxTarget == 0 && greyed(@"MetalFX") && !switched(@"MetalFX") && greyed(@"Upscale to"));
+        slide(@"Resolution", @"2K (2560×1440)");
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0);
+        settings_test_output_cap(2560, 1440); settings_rebuild(); tick();
+#endif
+        slide(@"Resolution", @"1080p"); metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    }
+#ifndef TOTK_GAME_V143
+    /* A 4K app on 1.2.1 and Breath of the Wild (slice 2): 4K + MetalFX is 1.4.3's 4K to 5K, a 3840x2160 canvas with both
+       MetalFX stages off and the fixed 5K target, so the switch is no longer greyed at 4K. Breath of the Wild 1.9.0 is an
+       automatic start here (its canvas is otherwise fixed at 1080p in this probe). */
+    if (!native) metalfx(NO);   /* 1.9.0 comes here from 1080p + MetalFX */
+    assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    settings_test_output_cap(3840, 2160); settings_rebuild(); tick();
+    assert([row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)", @"4K (3840×2160)"])]);
+    slide(@"Resolution", @"4K (3840×2160)");
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && runtime_output_size_current() == SIZE(3840, 2160) && fakeMfxTarget == 0);
+    assert(!greyed(@"MetalFX") && !switched(@"MetalFX") && greyed(@"Upscale to"));
+    metalfx(YES);
+    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && runtime_output_size_current() == SIZE(3840, 2160));
+    assert(fakeMfxTarget == mfx_target_pack(5120, 2880) && !mfxup_output_enabled() && !mfxup_enabled());
+    assert(!greyed(@"Upscale to") && [row(@"Upscale to").choices isEqualToArray:@[@"5120×2880"]]); stopped(@"Upscale to", @"5120×2880");
+    window_is(2880);
+    slide(@"Resolution", @"2K (2560×1440)");   /* the switch as it was left; 2K's window, the 5K target gone */
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && switched(@"MetalFX") && fakeMfxTarget == 0);
+    slide(@"Resolution", @"4K (3840×2160)"); assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && fakeMfxTarget == mfx_target_pack(5120, 2880));
+    metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && fakeMfxTarget == 0);   /* no 5K texture left behind */
+    slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    /* 720p + MetalFX (slice 2: Breath of the Wild too, as 1.2.1 had it): the 1280x720 canvas, both stages on, a fixed
+       target above it; on 1.9.0 the first present's start rule keeps MetalFX on a canvas up to 1920 wide. */
+    slide(@"Resolution", @"720p"); metalfx(YES);
+    assert(!greyed(@"MetalFX") && runtime_output_mode() == OUTPUT_MODE_720P_METALFX && runtime_output_size_current() == SIZE(1280, 720));
+    assert(mfxup_output_enabled() && mfxup_enabled() && fakeMfxTarget == 0);
+    assert([row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"1920×1080", @"2560×1440", @"3840×2160", @"5120×2880"])]);
+    slide(@"Upscale to", @"1920×1080"); assert(fakeMfxTarget == mfx_target_pack(1920, 1080) && runtime_output_mode() == OUTPUT_MODE_720P_METALFX);
+#ifdef GAME_BOTW190
+    /* The first present runs botw_output_tick once, and the 4K check below needs that run; here its test for keeping
+       MetalFX (output_mfx_canvas), which that tick applies, on this canvas. */
+    int settings_test_output_mfx_canvas(void);
+    assert(settings_test_output_mfx_canvas() && mfxup_output_enabled() && runtime_output_mode() == OUTPUT_MODE_720P_METALFX);
+#endif
+    fakeMfxTarget = 0xffffffffu;
+    assert(runtime_output_mode_set(OUTPUT_MODE_720P_METALFX) && fakeMfxTarget == 0 && mfxup_output_enabled() && mfxup_enabled());
+    metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_720P && fakeMfxTarget == 0 && !mfxup_output_enabled());
+    slide(@"Resolution", @"1080p"); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    settings_test_output_cap(2560, 1440); settings_rebuild(); tick();
+#endif
+    settings_show(0);
+
+    /* A start: an old save (no target file) comes back as the same picture; a saved target comes back. */
+    restore_output(OUTPUT_MODE_METALFX, NULL);
+    assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && fakeMfxTarget == 0);
+    restore_output(OUTPUT_MODE_METALFX, "3840x2160");
+    assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == mfx_target_pack(3840, 2160));
+    window_is(2160);   /* the window follows the target, as the panel's pick does */
+    if (native) {   /* the panel open while the saved mode comes in: Upscale to's stops follow the new render size */
+        settings_show(1); assert(settingsOpen);
+        restore_output(OUTPUT_MODE_OFF, NULL); tick(); assert([row(@"Upscale to").choices isEqualToArray:at1080]);
+        restore_output(OUTPUT_MODE_NATIVE_METALFX, NULL); tick();
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && [row(@"Upscale to").choices isEqualToArray:(@[@"Window", @"3840×2160", @"5120×2880"])]);
+        settings_show(0);
+    }
+    restore_output(OUTPUT_MODE_OFF, "3840x2160");   /* kept for when MetalFX is on, nothing upscaled now */
+    assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0 && target_file() == mfx_target_pack(3840, 2160));
+    /* A save of 4K + MetalFX to 5K (from 1.4.3's pop-up, or slice 2's 1.2.1 and Breath of the Wild) in a 4K app. */
+    settings_test_output_cap(3840, 2160);
+    restore_output(OUTPUT_MODE_4K_TO_5K_METALFX, NULL);
+    assert(runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX && runtime_output_size_current() == SIZE(3840, 2160));
+    assert(fakeMfxTarget == mfx_target_pack(5120, 2880) && !mfxup_output_enabled() && !mfxup_enabled());
+#ifdef GAME_BOTW190
+    /* Then the game's first present: 1.9.0 turns MetalFX off on a canvas above 1080p that is not native 2K's (#1806).
+       This mode uses only the fixed target, which that rule leaves alone. The window stage, left on here as a start
+       with TOTK_MFX_OUTPUT would have it, shows the rule ran. */
+    void settings_test_output_first_present(void);
+    mfxup_output_set(1);
+    settings_test_output_first_present();
+    assert(!mfxup_output_enabled() && fakeMfxTarget == mfx_target_pack(5120, 2880) && runtime_output_mode() == OUTPUT_MODE_4K_TO_5K_METALFX);
+#endif
+    /* The runtime itself sends the fixed 5K target with the mode and takes it back with any other (as 1.4.3 always did),
+       not only the settings layer after it. */
+    fakeMfxTarget = 0xffffffffu;
+    assert(runtime_output_mode_set(OUTPUT_MODE_4K_TO_5K_METALFX) && fakeMfxTarget == mfx_target_pack(5120, 2880));
+    assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K) && fakeMfxTarget == 0 && runtime_output_mode() == OUTPUT_MODE_NATIVE_4K);
+    settings_test_output_cap(2560, 1440);
+    /* A target file that is not one of the stops, or not one for 1080p, means the window. */
+    const char *bad[] = {"abc", "9999x9999", "1280x720", "1920x1080"};   /* the last: in the list, not larger than the 1080p render */
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+        restore_output(OUTPUT_MODE_METALFX, bad[i]);
+        assert(runtime_output_mode() == OUTPUT_MODE_METALFX && fakeMfxTarget == 0);
+    }
+    /* TOTK_MFX_OUTPUT decides the picture: the saved target is not read either. */
+    setenv("TOTK_MFX_OUTPUT", "1", 1);
+    assert(settingsMfxTarget == 0);   /* the precondition: a target read from the file shows below, leftover state cannot hide one */
+    restore_output(OUTPUT_MODE_METALFX, "3840x2160");
+    assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0xffffffffu);   /* nothing sent: it stays 0 */
+    for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Upscale to"]) assert(r.get() == 0);   /* nor kept for the panel */
+    unsetenv("TOTK_MFX_OUTPUT");
+    /* The VR page keeps today's resolution pop-up (1.4.3's labels checked); a plain mode picked there leaves no fixed
+       target behind. */
+    restore_output(OUTPUT_MODE_METALFX, "3840x2160"); assert(fakeMfxTarget == mfx_target_pack(3840, 2160));
+    fakeVrEnabled = 1;
+    TOTKSettingRow *vr = nil; for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:@"Game render resolution"]) vr = r;
+    assert(vr && !vr.stops && vr.set);
+#ifdef TOTK_GAME_V143
+    assert(([vr.choices isEqualToArray:(@[@"720p", @"720p + MetalFX upscaling", @"1080p", @"1080p + MetalFX upscaling",
+                                          @"2K (2560×1440)", @"2K + MetalFX upscaling (4K screens)"])]));
+#endif
+    vr.set(OUTPUT_MODE_OFF); assert(runtime_output_mode() == OUTPUT_MODE_OFF && fakeMfxTarget == 0);
+    fakeVrEnabled = 0;
+    puts("pass: mfx target rows");
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     setenv("TOTK_BOARD_URL", "http://127.0.0.1:9/v1/board", 1);   /* the 排行榜 page reads no real board in a test */
     setenv("TOTK_SHOT_URL", "http://127.0.0.1:9/v1/shots", 1);    /* nor the 截图分享 page real pictures */
@@ -1087,6 +1330,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
 #if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)   /* 1.4.3's anti-aliasing rows on both */
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif
+    if (argc==2 && !strcmp(argv[1],"stops")) { setenv("TOTK_UI_LANG","en",1); stops_probe(); return 0; }
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     if (argc==2 && !strcmp(argv[1],"hdr")) { setenv("TOTK_UI_LANG","en",1); hdr_probe(); return 0; }
     [NSApplication sharedApplication];
@@ -1095,6 +1339,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     snprintf(fakeUsers[0].name, sizeof fakeUsers[0].name, "Local");
     snprintf(fakeUsers[1].name, sizeof fakeUsers[1].name, "Zelda");
     for (int i = 0; i < 2; i++) { arc4random_buf(&fakeUsers[i].lo, sizeof fakeUsers[i].lo); arc4random_buf(&fakeUsers[i].hi, sizeof fakeUsers[i].hi); }
+    if (argc == 2 && !strcmp(argv[1], "mfx-target")) { mfx_target_probe(); return 0; }
     if (argc == 2 && !strcmp(argv[1], "shots")) { shots_probe(); puts(getenv("SHOTS_TEST_URL") ? "pass: screenshots page with pictures" : "pass: screenshots page"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "nick")) { nick_probe(); puts(getenv("NICK_TEST_URL") ? "pass: nickname with the server" : "pass: nickname"); return 0; }
     if (argc == 2 && !strcmp(argv[1], "contrib")) { contrib_probe(); puts(getenv("CONTRIB_TEST_URL") ? "pass: contribution page with the server" : "pass: contribution page"); return 0; }
@@ -1172,7 +1417,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 32 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 34 + 3*TOTK_V143 + 2*BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -1256,37 +1501,51 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(menu(@"Frame interpolation").numberOfItems == 6 && menu(@"Frame lock").numberOfItems == 7);
     pick(@"Frame interpolation", @"Off"); mfx_latch(); assert(!mfx_enabled());
 
-    /* Resolution: the player picks; 1080p without MetalFX at the start. */
-    mfxup_output_set(0); mfxup_set(0); shows(@"Resolution", @"1080p");
+    /* Resolution, MetalFX, Upscale to: the render size, the switch, the size MetalFX upscales to. 1080p without MetalFX
+       at the start; Upscale to greyed out while MetalFX is off. */
+    mfxup_output_set(0); mfxup_set(0); stopped(@"Resolution", @"1080p");
+    assert(!switched(@"MetalFX") && greyed(@"Upscale to"));
     BOOL nativeResolution = !!(runtime_output_modes() & (1 << OUTPUT_MODE_NATIVE));
     if (nativeResolution) {
-    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* Tears of the Kingdom; not Breath of the Wild */
-    assert(menu(@"Resolution").numberOfItems == 5 + mfx720 && [menu(@"Resolution").itemTitles.firstObject isEqualToString:@"720p"]);
+    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* every game once its picture is switchable */
+    assert(row(@"Resolution").stops && [row(@"Resolution").choices isEqualToArray:(@[@"720p", @"1080p", @"2K (2560×1440)"])]);
+    slide(@"Resolution", @"720p");
     if (mfx720) {
-    pick(@"Resolution", @"720p + MetalFX upscaling");   /* the 720p canvas, MetalFX scaling it to a 1080p window */
+    metalfx(YES);   /* the 720p canvas, MetalFX scaling it to a 1080p window */
     assert(runtime_output_mode() == OUTPUT_MODE_720P_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
     window_is(1080);
-    } else assert(!runtime_output_mode_set(OUTPUT_MODE_720P_METALFX));
-    pick(@"Resolution", @"720p"); assert(runtime_output_mode() == OUTPUT_MODE_720P && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
+    metalfx(NO);
+    } else assert(greyed(@"MetalFX") && !runtime_output_mode_set(OUTPUT_MODE_720P_METALFX));
+    assert(runtime_output_mode() == OUTPUT_MODE_720P && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
     window_is(720);
+    slide(@"Resolution", @"1080p");
     } else {
-        assert(menu(@"Resolution").numberOfItems == 2);
-        assert([menu(@"Resolution") indexOfItemWithTitle:@"720p"] < 0);
+        assert(!row(@"Resolution").stops && [row(@"Resolution").choices isEqualToArray:@[@"1080p"]] && greyed(@"Resolution"));
         assert(!runtime_output_mode_set(OUTPUT_MODE_720P) && !runtime_output_mode_set(OUTPUT_MODE_720P_METALFX) && !runtime_output_mode_set(OUTPUT_MODE_NATIVE));
     }
-    pick(@"Resolution", @"1080p + MetalFX upscaling");
+    metalfx(YES);
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1920, 1080));
+    assert(!greyed(@"Upscale to")); stopped(@"Upscale to", @"Window");
+    window_is(1440);
+    metalfx(NO);
     if (nativeResolution) {
-    pick(@"Resolution", @"2K (2560×1440)");
+    slide(@"Resolution", @"2K (2560×1440)");
     assert(runtime_output_mode() == OUTPUT_MODE_NATIVE && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(2560, 1440));
     window_is(1440);   /* the window takes the picked size at once */
+    slide(@"Resolution", @"1080p");
     }
-    pick(@"Resolution", @"1080p");
     assert(runtime_output_mode() == OUTPUT_MODE_OFF && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(1920, 1080));
     window_is(1080);
     if (nativeResolution) {
-        settings_test_output_size(2560, 1440); shows(@"Resolution", @"2K (2560×1440)");   /* set elsewhere: shown */
+        settings_test_output_size(2560, 1440); stopped(@"Resolution", @"2K (2560×1440)");   /* set elsewhere: shown */
         settings_test_output_size(1920, 1080);
+    }
+    /* The controller steps the slider one stop and keeps its place on the row though the rows are made again. */
+    if (nativeResolution) {
+        NSUInteger at = [settingsPanel.rows indexOfObject:row(@"Resolution")]; assert(at != NSNotFound);
+        settingsPanel.controllerIndex = (NSInteger)at; [settingsPanel controllerChange:1 select:NO]; tick();
+        assert(runtime_output_mode() == OUTPUT_MODE_NATIVE && settingsPanel.controllerIndex == (NSInteger)[settingsPanel.rows indexOfObject:row(@"Resolution")]);
+        [settingsPanel controllerChange:-1 select:NO]; tick(); assert(runtime_output_mode() == OUTPUT_MODE_OFF); window_is(1080);
     }
 
     /* Aspect ratio: fixed at 16:9 while the game cannot change it; offered once its code is in (the next opening). */
@@ -1306,13 +1565,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     tick(); shaped(16.0 / 9);
     /* 2K + MetalFX for a 4K screen: the 2K canvas, the MetalFX output stage on, a 3840x2160 window (as far as the screen holds). */
     if (nativeResolution) {
-    pick(@"Resolution", @"2K + MetalFX upscaling (4K screens)");
+    slide(@"Resolution", @"2K (2560×1440)"); metalfx(YES);
     assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX && runtime_output_size_current() == SIZE(2560, 1440) && mfxup_output_enabled());
     window_is(2160);
-    pick(@"Resolution", @"2K (2560×1440)"); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE && !mfxup_output_enabled());
+    metalfx(NO); assert(runtime_output_mode() == OUTPUT_MODE_NATIVE && !mfxup_output_enabled());
     window_is(1440);
-    } else assert([menu(@"Resolution") indexOfItemWithTitle:@"2K + MetalFX upscaling (4K screens)"] < 0);
-    pick(@"Resolution", @"1080p"); assert(runtime_output_size_current() == SIZE(1920, 1080)); window_is(1080);
+    slide(@"Resolution", @"1080p");
+    } else assert(![row(@"Resolution").choices containsObject:@"2K (2560×1440)"]);
+    assert(runtime_output_size_current() == SIZE(1920, 1080)); window_is(1080);
 
     /* Switches. */
     /* Edge smoothing: off / fast (one compute pass) / MetalFX (after ishaanzee's fork, 94f13c98). */
@@ -1630,7 +1890,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Pages: Display, Input, User and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
-    assert(settingsPanel.rows.count == 7 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
+    assert(settingsPanel.rows.count == 9 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);   /* resolution as three rows (render size, MetalFX, upscale to); edge smoothing, AO and anisotropy are on the effects page; the GPU keep-alive switch is on this one */
     /* Every page's bottom right: 访问主页 (user 2026-11-11, was the display page's star), after the rows for a controller;
        the version stays clear of it; a result shows for a moment where the version is. */
     NSButton *starButton = settingsPanel.homeButton;
@@ -1883,7 +2143,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
 
     /* Chinese. */
     setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
-    shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
+    stopped(@"分辨率", @"1080p"); assert(!switched(@"MetalFX")); stopped(@"放大到", @"窗口"); shows(@"手柄类型", @"自动（未接手柄）");
 #ifdef TOTK_GAME_V143
     shows(@"抗锯齿方式",@"SMAA");shows(@"抗锯齿质量",@"High");
     pick(@"抗锯齿方式",@"FXAA");tick();shows(@"抗锯齿质量",@"原版");

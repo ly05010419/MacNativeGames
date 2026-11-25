@@ -12,11 +12,17 @@
      GPU keep-alive       switch, default on                 dm_gfx_keepalive_set (gfx/nvn/nvn_mtl.m), at once;
                                                              gpu-keepalive.txt above the game's folder (both games);
                                                              TOTK_GPU_KEEPALIVE first (greyed out)
-     resolution           720p / + MetalFX / 1080p /         runtime_output_mode_set (game_patches*.c); the player picks,
-                          + MetalFX / 2K /
-                          2K + MetalFX (a 4K screen)
-                                                             1080p is the start until a choice is saved; the window
-                                                             takes that size at once (settings_window_for)
+     resolution           slider: 720p / 1080p / 2K /        the render size; runtime_output_mode_set (game_patches*.c) with
+                          4K / 5K (what the app offers)      MetalFX's mode (OUTPUT_MODE_*) when the switch is on; 1080p is
+                                                             the start until a choice is saved (graphics-output.txt); the
+                                                             window takes that size at once (settings_window_for)
+     MetalFX              switch                             the render size's MetalFX mode; greyed where it has none (5K)
+     upscale to           slider: window / 1920×1080 /       the flag mfx_target (gfx/nvn/mfx_target.h, nvn_mtl.m
+                          2560×1440 / 3840×2160 / 5120×2880   output_upscale): only sizes larger than the render (4K: 5K
+                                                             only), greyed while MetalFX is off (then no target is sent);
+                                                             graphics-mfx-target.txt (window or WxH; missing: window). A
+                                                             larger render the pick is not larger than drops it to window.
+                                                             The VR page keeps the one pop-up of picture modes
      aspect ratio         16:9 / 16:10 / 21:9 / 32:9         runtime_aspect_set_ratio (aspect_patch.h, game_patches_botw.c);
                                                              the window takes that shape at once, its height kept
                                                              (runtime_front_resize_aspect; user 2026-10-25: no fitting the
@@ -112,6 +118,7 @@
 #include "input_prompts.h"
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
+#include "../third_party/d2r_gfx/gfx/nvn/mfx_target.h"   /* Upscale to's stops and the packed target */
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
 #include "ns2_resolution.h"
 #endif
@@ -145,6 +152,57 @@ int dm_gfx_fxaa_quality(void); void dm_gfx_fxaa_quality_set(int q);
 #endif
 int nvn_fps_lock(void);
 
+/* Resolution, MetalFX and Upscale to: three rows in place of one pop-up, so the render size, the upscaler and its output
+   size are chosen apart (MetalFX on any render size, to the window or to a fixed size). The engine's picture modes
+   (OUTPUT_MODE_*, graphics-output.txt) stay: a render size alone ("plain") or the same size with MetalFX. */
+static int settings_mode_plain(int mode) {
+ return mode==OUTPUT_MODE_720P_METALFX?OUTPUT_MODE_720P:mode==OUTPUT_MODE_METALFX?OUTPUT_MODE_OFF:mode==OUTPUT_MODE_NATIVE_METALFX?OUTPUT_MODE_NATIVE:
+        mode==OUTPUT_MODE_4K_TO_5K_METALFX?OUTPUT_MODE_NATIVE_4K:mode;
+}
+/* The render size with MetalFX: -1 where this run does not offer it (5K: nothing larger to upscale to). */
+static int settings_mode_mfx(int plain) {
+ int m=plain==OUTPUT_MODE_720P?OUTPUT_MODE_720P_METALFX:plain==OUTPUT_MODE_OFF?OUTPUT_MODE_METALFX:plain==OUTPUT_MODE_NATIVE?OUTPUT_MODE_NATIVE_METALFX:
+       plain==OUTPUT_MODE_NATIVE_4K?OUTPUT_MODE_4K_TO_5K_METALFX:-1;
+ return m>=0&&(runtime_output_modes()&1<<m)?m:-1;
+}
+static void settings_mode_render(int mode,unsigned *w,unsigned *h) {   /* the canvas a mode renders (and MetalFX upscales) */
+ *w=1920;*h=1080;
+ if(mode==OUTPUT_MODE_720P||mode==OUTPUT_MODE_720P_METALFX){*w=1280;*h=720;}
+ else if(mode!=OUTPUT_MODE_OFF&&mode!=OUTPUT_MODE_METALFX&&!runtime_output_native(mode,w,h)){*w=1920;*h=1080;}
+}
+/* Upscale to as the player picked it (packed, mfx_target.h; 0 the window), kept while MetalFX is off and in
+   graphics-mfx-target.txt; and the MetalFX switch as the player left it, kept over a render size without MetalFX (5K). */
+static uint32_t settingsMfxTarget;
+static int settingsMfxWanted;
+static uint32_t settings_mfx_target_now(int mode) {   /* what MetalFX upscales to in that mode: 0 the window, or no MetalFX */
+ if(settings_mode_plain(mode)==mode)return 0;
+ unsigned w,h;settings_mode_render(mode,&w,&h);return mfx_target_valid(settingsMfxTarget,w,h);
+}
+static void settings_mfx_wanted_sync(void) {   /* the switch as the mode shows it, where the render size has MetalFX */
+ int mode=runtime_output_mode(),plain=settings_mode_plain(mode);
+ if(plain!=mode)settingsMfxWanted=1;else if(settings_mode_mfx(plain)>=0)settingsMfxWanted=0;
+}
+/* The graphics layer's fixed target (its flag mfx_target) for the mode now: none without MetalFX, so a fixed target costs
+   nothing then. A render size the pick is no longer larger than drops it to the window; 4K has no window stop, so its
+   window is 5120x2880 (mfx_target_valid), as 4K + MetalFX to 5K always was. */
+static void settings_mfx_target_apply(void) {
+ int mode=runtime_output_mode();unsigned w,h;
+ if(settings_mode_plain(mode)!=mode){settings_mode_render(mode,&w,&h);if(mfx_target_valid(settingsMfxTarget,w,h)!=settingsMfxTarget)settingsMfxTarget=0;}
+ dm_gfx_set_flag("mfx_target",(int)settings_mfx_target_now(mode));
+ char word[32]="window";mfx_target_unpack(settingsMfxTarget,&w,&h);
+ if(settingsMfxTarget)snprintf(word,sizeof word,"%ux%u",w,h);
+ runtime_setting_save("graphics-mfx-target.txt",word,"MetalFX upscale target");
+}
+/* graphics-mfx-target.txt: window or one of the fixed sizes; anything else, or no file, the window. */
+static uint32_t settings_mfx_target_read(void) {
+ char word[32];if(!runtime_setting_word("graphics-mfx-target.txt",word,sizeof word))return 0;
+ word[strcspn(word," \t\r\n")]=0;if(!strcmp(word,"window"))return 0;
+ unsigned w,h;char tail;
+ if(sscanf(word,"%ux%u%c",&w,&h,&tail)==2)for(int i=0;i<4;i++)if(mfx_target_sizes[i][0]==w&&mfx_target_sizes[i][1]==h)return mfx_target_pack(w,h);
+ fprintf(stderr,"[totk] graphics-mfx-target.txt: \"%s\" is not window, 1920x1080, 2560x1440, 3840x2160 or 5120x2880; the window\n",word);
+ return 0;
+}
+
 /* Picking a resolution sizes the window to it at once (user 2026-10-25): 720p 1280x720, 1080p and 720p + MetalFX 1920x1080, MetalFX 2560x1440, native its own size (2K), 2K + MetalFX and native 4K 3840x2160, in the window's points as the first window (frontend.m runtime_front_run), the picture's shape kept
    (the aspect ratio picked) and shrunk to fit the screen's visible area. Full screen stays as it is. */
 static void settings_window_size(unsigned w,unsigned h,double ratio) {
@@ -160,8 +218,9 @@ static void settings_window_size(unsigned w,unsigned h,double ratio) {
  fprintf(stderr,"[totk] settings: window %.0fx%.0f for render %ux%u\n",cw,ch,w,h);
 }
 static void settings_window_for(int mode) {
- unsigned w=1920,h=1080;
- if(mode==OUTPUT_MODE_METALFX){w=2560;h=1440;}
+ unsigned w=1920,h=1080;uint32_t target=settings_mfx_target_now(mode);
+ if(target)mfx_target_unpack(target,&w,&h);   /* MetalFX to a fixed size: the window takes that size */
+ else if(mode==OUTPUT_MODE_METALFX){w=2560;h=1440;}
  else if(mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K){w=3840;h=2160;}
  else if(mode==OUTPUT_MODE_NATIVE_5K||mode==OUTPUT_MODE_4K_TO_5K_METALFX){w=5120;h=2880;}
  else if(mode==OUTPUT_MODE_720P){w=1280;h=720;}
@@ -265,7 +324,7 @@ static void settings_restore_begin(void) {
     !vr_enabled()&&
 #endif
     (!output||!*output||!strcmp(output,"auto"))&&!getenv("TOTK_MFX_OUTPUT")&&!getenv("TOTK_MFX_UPSCALE")&&
-    settings_read_int("graphics-output.txt",&v)&&v<=OUTPUT_MODE_LAST)settingsPendingOutput=v;
+    settings_read_int("graphics-output.txt",&v)&&v<=OUTPUT_MODE_LAST){settingsPendingOutput=v;settingsMfxTarget=settings_mfx_target_read();}
  if(
 #if defined(GAME_BOTW160)
     !vr_enabled()&&
@@ -275,6 +334,9 @@ static void settings_restore_begin(void) {
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
  }
 }
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+static void settings_picture_rebuild(void);   /* part 2: the rows made again, the controller kept on its row */
+#endif
 static void settings_restore_ready(void) {
  if(settingsPendingAspect>0&&runtime_aspect_ratio()>0){
   float r=settingsPendingAspect;settingsPendingAspect=0;
@@ -288,7 +350,12 @@ static void settings_restore_ready(void) {
 #endif
  if(settingsPendingOutput>=0&&outputModes){
   int mode=settingsPendingOutput;settingsPendingOutput=-1;
-  if((outputModes&(1<<mode))&&runtime_output_mode_set(mode))settings_window_for(mode);
+  if((outputModes&(1<<mode))&&runtime_output_mode_set(mode)){settings_mfx_wanted_sync();settings_mfx_target_apply();settings_window_for(mode);
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+   /* a panel open while the saved mode comes in: Upscale to's stops follow the new render size */
+   dispatch_async(dispatch_get_main_queue(),^{settings_picture_rebuild();});
+#endif
+  }
  }
  if(settingsPendingOutput<0&&settingsPendingAspect<=0){[settingsRestoreTimer invalidate];settingsRestoreTimer=nil;}
 }
@@ -668,6 +735,49 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 }
 #endif
 
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+static void settings_picture_set(int mode) {   /* the mode, then the target it allows, then the window */
+ settingsPendingOutput=-1;
+ if(runtime_output_mode_set(mode)){settings_mfx_target_apply();settings_save_int("graphics-output.txt",mode,"resolution");settings_window_for(mode);}
+ /* Upscale to's stops follow the render size: the rows are made again once this pick's action has returned */
+ dispatch_async(dispatch_get_main_queue(),^{settings_picture_rebuild();});
+}
+/* The Display page's Resolution (the render sizes this run offers), MetalFX (greyed where the size has no MetalFX mode or
+   nothing larger to upscale to) and Upscale to (the window or a fixed size larger than the render; greyed while MetalFX
+   is off). */
+static void settings_picture_rows(NSMutableArray<TOTKSettingRow *> *rows, int modes, NSString *resolution) {
+ settings_mfx_wanted_sync();
+ static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K};
+ NSMutableArray<NSString *> *sizes=[NSMutableArray array];NSMutableArray<NSNumber *> *plains=[NSMutableArray array];
+ for(unsigned i=0;i<sizeof order/sizeof *order;i++){
+  int m=order[i];if(!(modes&1<<m))continue;unsigned nw=0,nh=0;runtime_output_native(m,&nw,&nh);
+  [sizes addObject:m==OUTPUT_MODE_720P?@"720p":m==OUTPUT_MODE_OFF?@"1080p":
+   m==OUTPUT_MODE_NATIVE_4K?settings_text("4K（3840×2160）","4K (3840×2160)"):m==OUTPUT_MODE_NATIVE_5K?settings_text("5K（5120×2880）","5K (5120×2880)"):
+   nw==2560&&nh==1440?settings_text("2K（2560×1440）","2K (2560×1440)"):[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
+  [plains addObject:@(m)];
+ }
+ if(sizes.count<2)[rows addObject:settings_fixed(resolution,sizes.firstObject?:@"1080p")];
+ else [rows addObject:settings_stops(resolution,sizes,plains,^int{return settings_mode_plain(runtime_output_mode());},^(int plain){
+  settings_mfx_wanted_sync();int mfx=settings_mode_mfx(plain);settings_picture_set(settingsMfxWanted&&mfx>=0?mfx:plain);})];
+ TOTKSettingRow *mfx=settings_row(@"MetalFX",nil,nil,^int{int m=runtime_output_mode();return settings_mode_plain(m)!=m;},^(int on){
+  settingsMfxWanted=on;int plain=settings_mode_plain(runtime_output_mode()),m=settings_mode_mfx(plain);settings_picture_set(on&&m>=0?m:plain);});
+ mfx.enabled=^BOOL{int m=runtime_output_mode();unsigned w,h;uint32_t s[5];settings_mode_render(m,&w,&h);
+  return settings_mode_mfx(settings_mode_plain(m))>=0&&mfx_target_stops(w,h,s)>0;};
+ [rows addObject:mfx];
+ unsigned rw,rh;settings_mode_render(runtime_output_mode(),&rw,&rh);
+ uint32_t stops[5];unsigned n=mfx_target_stops(rw,rh,stops);
+ NSString *upscale=settings_text("放大到","Upscale to");
+ if(!n){[rows addObject:settings_fixed(upscale,@"—")];return;}   /* 5K: nothing larger */
+ NSMutableArray<NSString *> *names=[NSMutableArray array];NSMutableArray<NSNumber *> *values=[NSMutableArray array];
+ for(unsigned i=0;i<n;i++){unsigned w,h;mfx_target_unpack(stops[i],&w,&h);
+  [names addObject:stops[i]?[NSString stringWithFormat:@"%u×%u",w,h]:settings_text("窗口","Window")];[values addObject:@((int)stops[i])];}
+ TOTKSettingRow *to=settings_stops(upscale,names,values,^int{return (int)mfx_target_valid(settingsMfxTarget,rw,rh);},^(int t){
+  settingsMfxTarget=(uint32_t)t;settings_mfx_target_apply();settings_window_for(runtime_output_mode());});
+ to.enabled=^BOOL{int m=runtime_output_mode();return settings_mode_plain(m)!=m;};
+ [rows addObject:to];
+}
+#endif
+
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
@@ -727,8 +837,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_ns2_resolution_row()];
 #else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
- else [rows addObject:settings_row(resolution,res,resModes,
-  ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+ else settings_picture_rows(rows,modes,resolution);
 #endif
  NSString *aspect=settings_text("画面比例","Aspect ratio");
  if(!(runtime_aspect_ratio()>0))[rows addObject:settings_fixed(aspect,@"16:9")];
@@ -812,7 +921,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  if(vr_enabled()){   /* zeldaVR, its own page: the game's render resolution again (the display page's setting), camera, VR settings */
   NSUInteger vr=rows.count;
   if(res.count>=2)[rows addObject:settings_row(settings_text("游戏渲染分辨率","Game render resolution"),res,resModes,
-   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_mfx_target_apply();settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
   settings_camera_rows(rows);
   settings_vr_rows(rows);
   for(NSUInteger i=vr;i<rows.count;i++)rows[i].page=SETTINGS_PAGE_VR;
@@ -857,6 +966,20 @@ static const SettingsAction *settings_actions(int *count) {
  return list;
 }
 #elif SETTINGS_GAME_PART == 2
+#if !defined(GAME_DKB) && !defined(GAME_POKOPIA)
+/* After a Resolution or MetalFX pick (settings_picture_set): the rows made again with the controller on the row it was
+   on, so stepping the resolution with a controller does not jump back to the first row. */
+static void settings_picture_rebuild(void) {
+ if(!window||!settingsOpen)return;
+ TOTKSettingsPanel *old=settingsPanel;NSInteger index=old.controllerIndex;
+ NSString *selected=index>=0&&index<(NSInteger)old.rows.count?old.rows[(NSUInteger)index].title:nil;
+ settings_rebuild();
+ settingsPanel.previousButtons=old.previousButtons;settingsPanel.previousDirection=old.previousDirection;
+ settingsPanel.controllerArmed=old.controllerArmed;settingsPanel.repeatAt=old.repeatAt;
+ for(NSUInteger i=0;selected&&i<settingsPanel.rows.count;i++)if([settingsPanel.rows[i].title isEqualToString:selected]){settingsPanel.controllerIndex=(NSInteger)i;break;}
+ [settingsPanel controllerHighlight];
+}
+#endif
 #if SETTINGS_HAS_AA_ROWS   /* 1.4.3; Breath of the Wild 1.9.0 */
 /* Changing method adds, removes or replaces the quality row. Preserve the selected row, held-controller state and
    scroll distance from the top; rebuilding must not jump the player back to FOV or repeat a held button. */
