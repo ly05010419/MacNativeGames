@@ -29,7 +29,7 @@ static int g_args_dirty[6],g_vr_collapse_draw,g_vr_ui_ray_draw;
 static int shader_uses_pool(const NvShader *sh) {(void)sh;return 0;}
 static int passdump(void) {return 0;}
 static int production_reuse(NvShader *sh,int epoch_mode) {
-    int ab_noreuse=0,nvn_stage=0,epoch_hit=1;
+    int ab_noreuse=0,nvn_stage=0,epoch_hit=1,cam_poke=0;   /* cam_poke: 4a9cc0e1's VR camera diagnostic in the reuse expression, off here */
     return EXPRESSION;
 }
 '''.replace('EXPRESSION',expression)
