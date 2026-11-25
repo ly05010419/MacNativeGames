@@ -11,6 +11,7 @@ import json
 import struct
 from pathlib import Path
 import lz4.block
+from game_versions import VERSIONS, verify_exefs
 
 
 def check(ok, message):
@@ -216,10 +217,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('exefs', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--version', choices=VERSIONS, default='v120')
     args = parser.parse_args()
+    verify_exefs(args.exefs, args.version)
     args.output.mkdir(parents=True, exist_ok=True)
     inventory = []
-    for name in ['rtld', 'main', 'sdk', 'subsdk0']:
+    for name in ['rtld', 'main', 'sdk', 'subsdk0', 'subsdk1']:
         result = prepare(args.exefs / name, args.output / (name + '.elf'))
         (args.output / (name + '-inventory.json')).write_text(json.dumps(result, indent=2) + '\n')
         summary = {k: result[k] for k in ['module', 'build_id', 'needed', 'segment_hashes_verified']}

@@ -2,11 +2,17 @@
 """Build a bounded binary index for the native read-only RomFS backend."""
 import argparse,hashlib,json,struct
 from pathlib import Path
+from game_versions import VERSIONS
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description=__doc__);parser.parse_args();version='v120'
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--version', choices=VERSIONS, default='v120')
+version=parser.parse_args().version
 out=root/'build';out.mkdir(parents=True,exist_ok=True)
 folder=root/f'extracted/{version}/romfs';manifest=json.loads((folder/'index.json').read_text())
 assert manifest['status']=='pass' and (folder/'romfs.bin').stat().st_size==manifest['romfs_size']
+expected=VERSIONS[version].get('romfs_sha256')
+if expected and manifest['romfs_sha256']!=expected:
+    raise ValueError('Merged RomFS SHA-256 differs from the selected LM3 version')
 strings=bytearray();rows=bytearray()
 for item in manifest['files']:
     name=item['path'].encode()+b'\0';rows.extend(struct.pack('<QQII',item['offset'],item['size'],len(strings),len(name)));strings.extend(name)

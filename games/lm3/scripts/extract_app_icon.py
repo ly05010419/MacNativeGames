@@ -6,7 +6,7 @@ import argparse
 import subprocess
 import tempfile
 from pathlib import Path
-from extract_exefs import read_at, require, container_entries, common_tickets, nca_inventory
+from extract_exefs import read_at, require, container_entries, common_tickets, nca_inventory, content_metadata
 from extract_romfs import index_romfs
 from extract_shared_fonts import Slice, load_keys, nca_romfs
 
@@ -14,12 +14,17 @@ LANGUAGES = ['AmericanEnglish', 'BritishEnglish', 'Japanese', 'French', 'German'
              'Italian', 'Dutch', 'CanadianFrench', 'Portuguese', 'Russian', 'Korean', 'TraditionalChinese', 'SimplifiedChinese']
 
 
-def control_nca(game, keys, title):
+def control_nca(game, keys, title, *, combined=False):
     with game.open('rb') as f:
         _, entries = container_entries(f, game.stat().st_size)
         tickets = common_tickets(f, entries)
-        controls = [r for r, _ in nca_inventory(f, entries, keys)
+        records = nca_inventory(f, entries, keys)
+        controls = [r for r, _ in records
                     if r['content_type'] == 2 and r['title_id'].lower() == title.lower()]
+        if combined:
+            metadata = content_metadata(f, records, keys, tickets, update=True)
+            ids = {c['id'] + '.nca' for c in metadata['contents'] if c['type'] == 3}
+            controls = [r for r in controls if r['name'] in ids]
         require(len(controls) == 1, 'Expected one control NCA for this title in the game file')
         return controls[0]['nca_offset'], tickets
 
@@ -30,12 +35,13 @@ def main():
     ap.add_argument('--keys', type=Path, required=True)
     ap.add_argument('--title', default='0100dca0064a6000')
     ap.add_argument('--output', type=Path, default=Path('build/AppIcon.icns'))
+    ap.add_argument('--combined', action='store_true')
     a = ap.parse_args()
     keys = load_keys(a.keys)
     with tempfile.TemporaryDirectory() as t:
         t = Path(t)
         image = t / 'control.romfs'
-        offset, tickets = control_nca(a.game, keys, a.title)
+        offset, tickets = control_nca(a.game, keys, a.title, combined=a.combined)
         nca_romfs(Slice(a.game, offset), keys, image, tickets)
         entries = {e['path']: e for e in index_romfs(image)}
         icon = next((entries[f'icon_{lang}.dat'] for lang in LANGUAGES if f'icon_{lang}.dat' in entries), None)
