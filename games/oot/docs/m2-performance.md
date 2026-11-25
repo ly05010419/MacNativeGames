@@ -48,6 +48,23 @@ plus attachment traffic. That is the Switch 2 mesh-shader pipeline's shape, and 
 | The game's own dynamic resolution | **+14 %** (34.1 → 39.0–40.1 fps), the single biggest lever measured; exposed as the 动态分辨率 settings row (default off) |
 | 720p-from-480p canvas | +14 % (34.1 → 39.0 fps), the game's own handheld mode |
 
+## Reaching a steady 60 Hz on screen on the M2 (display rate, with frame interpolation)
+
+The game runs its logic at ~30-40 fps in this scene on the M2 (GPU wall above); MetalFX frame interpolation
+fills the display to a steady 60 Hz. Measured with metalperftrace (output FPS = drawables shown per second):
+
+| Config (720p canvas unless said) | game fps | **displayed FPS** | on-GPU avg |
+|---|---|---|---|
+| 720p native, no interpolation | 34 | 34 | 27.9 ms |
+| 720p native + interpolation 30+30 | ~30 | **55.5-57** | 17.5 ms |
+| 720p native + dynamic resolution + interpolation 30+30 | ~30 (internal 683x384-1152x648 adapting) | **60.0 steady** (present interval p50 16.67 ms, ~50 % interpolated, 0.3 % over one refresh) | ~16 ms |
+| 480p canvas (720p from 480p) + interpolation 30+30 | 29.9 | **60.0 steady** | 15.9 ms |
+
+So on an M2 the practical "60 FPS" setup is: Resolution 720p native (or 720p from 480p), the new 动态分辨率 row on,
+and 补帧 (MetalFX) 30+30 — the display then shows a steady 60 images/s. The interpolation costs GPU time per
+generated frame (~2-4 ms), which is why the game rate itself drops a little; the DRS row is what keeps the game
+rate (and latency) up while it adapts.
+
 ## Update 2026-11-25 (later the same day)
 
 - The pending-write overlay scan now skips out-of-span queries (perf commit in this PR): the copy routine's
