@@ -303,10 +303,13 @@ static void service_start(rt_svc *svc) {
     posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
     posix_spawn_file_actions_adddup2(&fa, to[0], 0); posix_spawn_file_actions_adddup2(&fa, from[1], 1);
     posix_spawn_file_actions_adddup2(&fa, 2, 2);   // the same descriptor: only clears close-on-exec
-    /* An empty signal mask: a child inherits the spawning thread's, and a GCD worker (bg_translate) blocks SIGCHLD among
-       others. The .NET translator then never learns that its spirv-cross child exited and waits forever (2026-10-21). */
-    posix_spawnattr_t sa; posix_spawnattr_init(&sa); sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&sa, &none);
-    posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
+    /* Empty mask and default dispositions. A GCD worker blocks SIGCHLD, so the translator never saw spirv-cross exit
+       (2026-10-21). macOS also keeps SA_SIGINFO across exec after clearing the handler, and NativeAOT calls that null
+       SIGUSR1 pointer on the first GC (dotnet/runtime 132581). */
+    posix_spawnattr_t sa; posix_spawnattr_init(&sa);
+    sigset_t none, all; sigemptyset(&none); sigfillset(&all);
+    posix_spawnattr_setsigmask(&sa, &none); posix_spawnattr_setsigdefault(&sa, &all);
+    posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
     // The translator is the native program build/shader-service/totk_xlate (the app carries it: build_app.py). TOTK_SHADER_XLATE=
     // <program> runs another build of that program instead (a trial translator, same arguments) without replacing the shared
