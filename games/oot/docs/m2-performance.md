@@ -57,13 +57,29 @@ Rarer: one arena heap migration (~90 ms) and a one-off pipeline compile (~17 ms)
 at 720p on the M2 — the drops are area loads, which the shader cache / pipeline archive already cover for
 shaders; textures stream on demand by design.
 
+## 1080p native on the M2 (2026-11-26): 60 FPS displayed, ~40-52 real
+
+Measured at canvas 1920x1080 (the "1080p (native)" row), same scene/method on the rebased tree:
+
+| Config | game fps | displayed FPS |
+|---|---|---|
+| 1080p native, fixed scale | 34.9 (p50 28.6 ms) | 34.9 |
+| 1080p native + dynamic resolution | **51.5 (p50 19.3 ms)** | 51.5 |
+| 1080p native + DRS + interpolation 30+30 | 30 (held) | **59.5-60.0** |
+| 1080p native + DRS + interpolation **uncapped** (`interp-4`) | **~40 real** | **60.0 steady** (present interval p50/p95 16.67 ms, 373-399 of 600 presents interpolated, 0.2-0.7 % over one refresh) |
+
+So at 1080p native the M2 shows a steady **60 FPS** with the uncapped interpolation while the game logic
+runs at ~40 fps (DRS adapts the internal 3D scale, ~683x384-768x432 here). A real 60 fps *game* rate at
+1080p native is not reachable on the M2 in this scene: the GPU wall needs <= 16.7 ms/frame and DRS already
+sits at ~19.3 ms; 51.5 fps is the measured ceiling without interpolation.
+
 ## 60 FPS displayed on the M2: the applied recipe (2026-11-25)
 
-With the settings files alone (`graphics-canvas.txt=1` 720p native, `graphics-drs.txt=1`, `graphics-frame.txt=interp-1`
-i.e. MetalFX interpolation 30+30), measured on the rebased tree: present interval **p50 / p95 / max all 16.67 ms,
-0 % over one refresh, 300 of 600 presents interpolated — a steady 60.0 FPS on the 60 Hz display** (game logic
-held at 30 fps by 30+30, internal resolution adapting via DRS). Without interpolation the same scene runs at
-41 fps game rate (720p native) / 51 fps with DRS. 480p canvas + DRS + 30+30 measures the same steady 60.
+With the settings files alone, measured on the rebased tree: present interval **p50 / p95 / max 16.67 ms,
+~0 % over one refresh, ~300-400 of 600 presents interpolated — a steady 60.0 FPS on the 60 Hz display**.
+- 720p native (`graphics-canvas.txt=1`) + `graphics-drs.txt=1` + `graphics-frame.txt=interp-1` (30+30): 60.0 displayed, game held at 30.
+- 1080p native (`graphics-canvas.txt=3`) + `graphics-drs.txt=1` + `graphics-frame.txt=interp-4` (uncapped): **60.0 displayed, game ~40 fps real** — the current applied setting.
+Without interpolation the same scene runs at 41 fps (720p native) / 35 fps (1080p native), 51 fps with DRS.
 
 ## Update after rebasing on 786ddc00 (PR #2324, 2026-11-25): pass splits on M1/M2
 
