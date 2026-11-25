@@ -1595,16 +1595,38 @@ static uint64_t g_pool_write_epoch; // all writes, including renamed and dedupli
 static uint64_t g_pend_lo[PEND_MAX], g_pend_hi[PEND_MAX]; static int g_npend;
 static const void *g_pend_src[PEND_MAX]; static uint8_t g_pend_kind[PEND_MAX];   // TOTK: 0 = inline update (host copy of the data), 1 = GPU copy (guest source address)
 static uint64_t g_pend_fence[PEND_MAX], g_pend_over_fence;
+/* Union bounds of g_pend[0..g_npend) (lo min / hi max), maintained on append (pend_note) and recomputed at the
+   submission-start compaction (pend_begin): a query range outside [span_lo, span_hi) overlaps no entry, completed
+   ones included, so pend_overlay_x / pend_hits can skip the whole scan. TOTK_PEND_SPAN=0 disables (A/B). */
+static uint64_t g_pend_span_lo = UINT64_MAX, g_pend_span_hi;
+static _Atomic int g_pend_span = -1;
+static int pend_span_on(void) {
+    int v = atomic_load(&g_pend_span);
+    if (v < 0) { const char *e = getenv("TOTK_PEND_SPAN"); v = !(e && !atoi(e)); atomic_store(&g_pend_span, v); }
+    return v;
+}
 static int g_usnap_pend_n;   // pend entries present when this submission's uniform snapshot was dispatched: all a snapshot copy may look at (the replay appends entries concurrently with the helper threads)
 static _Atomic uint64_t g_usnap_faults;   // snapshot copies that hit an inaccessible address (guarded, the entry is dropped)   // TOTK: a write stays pending until the GPU completed its submission; over_fence: a submission whose writes did not fit the table
 static uint64_t g_pend_reuse_done;
 static _Atomic int g_pend_arena_pin = 1;
 static uint64_t g_pend_arena_hazards;
 static int pend_over(void) { return g_pend_over_fence > g_done; }
-static int pend_hits(uint64_t a, uint64_t n) { if (pend_over()) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
+static int pend_hits(uint64_t a, uint64_t n) {
+    if (pend_over()) return 1;
+    if (pend_span_on() && g_npend && (a + n <= __atomic_load_n(&g_pend_span_lo, __ATOMIC_ACQUIRE) || a >= __atomic_load_n(&g_pend_span_hi, __ATOMIC_ACQUIRE))) return 0;
+    for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1;
+    return 0;
+}
 static void pend_note(uint64_t dst, uint64_t n, const void *src, int kind) {
     g_pool_write_epoch++;pool_input_invalidate(dst,n);
-    if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend] = dst + n; g_pend_src[g_npend] = src; g_pend_kind[g_npend] = (uint8_t)kind; g_pend_fence[g_npend] = g_fence + 1; g_npend++; }
+    if (g_npend < PEND_MAX) {
+        g_pend_lo[g_npend] = dst; g_pend_hi[g_npend] = dst + n; g_pend_src[g_npend] = src; g_pend_kind[g_npend] = (uint8_t)kind; g_pend_fence[g_npend] = g_fence + 1;
+        if (pend_span_on()) {
+            if (dst < __atomic_load_n(&g_pend_span_lo, __ATOMIC_RELAXED)) __atomic_store_n(&g_pend_span_lo, dst, __ATOMIC_RELEASE);
+            if (dst + n > __atomic_load_n(&g_pend_span_hi, __ATOMIC_RELAXED)) __atomic_store_n(&g_pend_span_hi, dst + n, __ATOMIC_RELEASE);
+        }
+        g_npend++;
+    }
     else g_pend_over_fence = g_fence + 1;
 }
 /* Submission start: writes of earlier submissions the GPU has not completed yet stay in the table. The game updates
@@ -1619,6 +1641,11 @@ static void pend_begin(void) {
         n++;
     }
     g_npend = n;
+    if (pend_span_on()) {   // the entries left after the compaction
+        uint64_t lo = UINT64_MAX, hi = 0;
+        for (int i = 0; i < n; i++) { if (g_pend_lo[i] < lo) lo = g_pend_lo[i]; if (g_pend_hi[i] > hi) hi = g_pend_hi[i]; }
+        __atomic_store_n(&g_pend_span_lo, lo, __ATOMIC_RELEASE); __atomic_store_n(&g_pend_span_hi, hi, __ATOMIC_RELEASE);
+    }
 }
 /* TOTK (2026-10-15): uniform contents as of the submit call. A submission is replayed inside nvnQueueSubmitCommands for
    several milliseconds; on the console the call returns at once and the GPU reads the constants soon after. Meanwhile the
@@ -3116,6 +3143,11 @@ static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wa
     int first = pend_skip_on() ? pend_first_live(npend, done) : 0;
     if (pend_skip_check_on()) for (int i = 1; i < npend; i++) if (g_pend_fence[i] < g_pend_fence[i - 1])
         MDIE("pending writes out of fence order at %d: %llu after %llu", i, (unsigned long long)g_pend_fence[i], (unsigned long long)g_pend_fence[i - 1]);
+    if (pend_span_on() && npend && (a + n <= __atomic_load_n(&g_pend_span_lo, __ATOMIC_ACQUIRE) || a >= __atomic_load_n(&g_pend_span_hi, __ATOMIC_ACQUIRE))) {
+        _Atomic uint64_t *c = g_pov + (wait ? 0 : 4);   // outside the table's union bounds: nothing to scan or apply
+        atomic_fetch_add_explicit(&c[0], 1, memory_order_relaxed);
+        return;
+    }
     uint64_t c_hit = 0;
     for (int i = first; i < npend; i++) {
         uint64_t lo = g_pend_lo[i], hi = g_pend_hi[i];
