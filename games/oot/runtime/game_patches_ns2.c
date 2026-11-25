@@ -523,7 +523,11 @@ static void patch_oot_scale_live(Module *m, uint64_t page) {
 static void patch_oot_fixed_res(Module *m) {
     if (getenv("TOTK_EXPORT_IOS")) return;
     const char *e = getenv("OOT_FIXED_RES");
-    if (e && !strcmp(e, "0")) { fprintf(stderr, "[oot] dynamic resolution left to the game (OOT_FIXED_RES=0)\n"); return; }
+    if (!e || !*e) {   /* the settings panel's dynamic-resolution row (graphics-drs.txt, 1 = the game's own DRS); the environment wins */
+        char word[32];
+        if (runtime_setting_word("graphics-drs.txt", word, sizeof word) && !strcmp(strtok(word, " \t\r\n"), "1")) e = "0";
+    }
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[oot] dynamic resolution left to the game (OOT_FIXED_RES=0 / graphics-drs.txt)\n"); return; }
     float s = runtime_handheld_mode() ? 2.0f / 3.0f : 0.75f;
     if (e && *e) { char *end = NULL; s = strtof(e, &end); if (!end || *end || !(s > 0 && s <= 1)) runtime_fail("OOT_FIXED_RES must be 0 or a scale in (0, 1]"); }
     uint32_t bits; memcpy(&bits, &s, sizeof bits);
