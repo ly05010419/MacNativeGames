@@ -41,6 +41,22 @@ _call_{name}:
   elif i==3:asm+=' add x17,x17,_step_state@PAGEOFF\n'
   elif i==ret:asm+=' ret\n'
   else:asm+=f' .long 0x{v:08x}\n'
+wvals=[int(x,16)for x in re.findall(r'0x[0-9a-f]+',re.search(r'uint32_t water\[\] = \{(.*?)\};',h,re.S).group(1))]
+asm+='''.globl _call_water
+_call_water:
+ stp x29,x30,[sp,#-16]!
+ mov w8,w0
+ bl L_water
+ adrp x10,_step_check@PAGE
+ add x10,x10,_step_check@PAGEOFF
+ str s0,[x10]
+ mov w0,w8
+ ldp x29,x30,[sp],#16
+ ret
+L_water:
+'''
+for i,v in enumerate(wvals):
+ asm+=' ret\n' if i==7 else f' .long 0x{v:08x}\n'
 (D/'step-test.S').write_text(asm)
 subprocess.run(['xcrun','clang','-Wall','-Wextra','-Werror',str(source/'oot_timestep_native.c'),str(D/'step-test.S'),'-o',str(D/'step-test')],check=True)
 subprocess.run([str(D/'step-test')],check=True)
