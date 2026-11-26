@@ -1,0 +1,13 @@
+# Generated work, player content and caches
+MCD2_build/
+/mods/
+/extracted/
+/rewritten/
+/analysis/
+/build/
+/user-data/
+__pycache__/
+*.pyc
+romfs.bin
+*.pkz
+*.pchtxt

@@ -1,0 +1,83 @@
+# Diablo III for iPhone / iPad. tools/build_ipa.py writes project.generated.yml next to the generated files in the work
+# folder (<work>/ios) and replaces @SRC@ with this folder's parent (games/d3), so the work folder holds everything generated.
+name: D3IOS
+options:
+  bundleIdPrefix: org.macnativegames
+  deploymentTarget:
+    iOS: "26.0"
+configFiles:
+  Release: Gen/d3.xcconfig
+  Debug: Gen/d3.xcconfig
+targets:
+  D3IOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: "@SRC@/ios/Sources"
+      - path: "@SRC@/ios/Settings.bundle"   # the Settings app pane (game language picker); applied in main.m
+      - path: "@SRC@/runtime"
+        excludes:
+          - frontend.m
+          - loader.c
+      - path: "@SRC@/third_party/d2r_gfx/gfx/nvn"
+        excludes:
+          - "*.md"
+          - "*.py"
+          - "*.metal"
+          - "*.txt"
+      - path: "@SRC@/third_party/d2r_gfx/gfx/tex"
+        excludes:   # nvn_bctc.metal is compiled at run time from nvn_bctc_msl.h; the rest is documentation and generators
+          - "*.md"
+          - "*.py"
+          - "*.metal"
+      - path: Gen/embed.S
+      - path: "@SRC@/runtime/loader.c"
+        compilerFlags: "-Dmain=totk_host_main"
+    info:
+      path: Gen/Info.plist
+      properties:
+        CFBundleDisplayName: ${D3_APP_NAME}
+        CFBundleName: ${D3_APP_NAME}
+        CFBundleIdentifier: ${D3_BUNDLE_ID}
+        CFBundleShortVersionString: "2.7.6"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        CADisableMinimumFrameDurationOnPhone: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: D3SceneDelegate
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: ${D3_BUNDLE_ID}
+      PRODUCT_NAME: D3
+      CODE_SIGN_ENTITLEMENTS: "@SRC@/ios/Sources/D3.entitlements"
+      TARGETED_DEVICE_FAMILY: "1,2"
+      IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGNING_ALLOWED: NO
+      ENABLE_BITCODE: NO
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      CLANG_ENABLE_OBJC_ARC: YES
+      GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+      HEADER_SEARCH_PATHS:
+        - $(inherited)
+        - "@SRC@/runtime"
+        - "@SRC@/third_party/d2r_gfx/gfx/nvn"
+        - "@SRC@/third_party/d2r_gfx/gfx/nvn/include"
+        - Gen
+        - Gen/deps/include
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15

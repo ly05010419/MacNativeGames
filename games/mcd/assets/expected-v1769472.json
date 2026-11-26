@@ -1,0 +1,62 @@
+{
+    "_comment": "Verified Minecraft Dungeons v1769472 (1.17.0.0) code, rewrite bytes and merged RomFS.",
+    "title_id": "01006C100EC08000",
+    "update_title_id": "01006C100EC08800",
+    "version": 1769472,
+    "display_version": "1.17.0.0",
+    "main_build_id": "13F573E3017996E41E3018A128EA694400000000",
+    "exefs_sha256": {
+        "main": "1a1c139194ff2d9f7fd2cafdc50e65c9c4179b0e3ce4296cde0a9c01aba34f0f",
+        "main.npdm": "bfc82affc388389f56b95b86a4845c88c0a756f664e05e44119286fa58993748",
+        "rtld": "1b458aa935c66291749f209dbb672488f46f81ffd21f2e5d6ddb8437097897e8",
+        "sdk": "3f4f2a7986207446e33b47bba1ba39817c73b4aac6c28afa163cb7e877727053",
+        "subsdk0": "e92e5082f763defd89ea179225950f42e329b6f0ba43d27ae34ee3cb3ca60757"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "fa40d34ba2dd0c9466c7f60ac7a8f7ff37b4d129bddeaefb5312bf7872c00003",
+        "sdk.patched.bin": "31948a6e8917deae4f2237a79925f3990f6bdeb37e46e99c1de997ecfb53d57a",
+        "subsdk0.patched.bin": "71bc58094c103191d4917ee5ed6ed22dc47e6af549ee0715ed10a91601d6d172"
+    },
+    "romfs": {
+        "size": 7024658952,
+        "sha256": "bf1d5cb250c900e37795495539971a94adc567cbc32a698f25c3ba08602d7cb4",
+        "files": 113
+    },
+    "aoc": {
+        "1": {
+            "title_id": "01006C100EC09001",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "2": {
+            "title_id": "01006C100EC09002",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "3": {
+            "title_id": "01006C100EC09003",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "4": {
+            "title_id": "01006C100EC09004",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "5": {
+            "title_id": "01006C100EC09005",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "6": {
+            "title_id": "01006C100EC09006",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        },
+        "7": {
+            "title_id": "01006C100EC09007",
+            "sha256": "bf94ffa10e7f003df923735893464182c49161a86a39ed0b63cb77198973c3bf",
+            "size": 612
+        }
+    }
+}

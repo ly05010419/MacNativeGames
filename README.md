@@ -75,6 +75,10 @@ Ocarina of Time, Donkey Kong Bananza and Pokopia package as a Mac app with `buil
 | Persona 5 Royal | 1.0.2 | Mac | Early: title, menus and the opening casino at the game's 30 fps, as a Mac app; battles and longer saves not tested | [`games/p5r`](games/p5r/README.md) |
 | The Witcher 3: Wild Hunt | 4.04b | Mac | Bring-up: the first in-engine scene, and gameplay at Kaer Morhen from a save, at 30 fps; no Mac app yet | [`games/w3`](games/w3/README.md) |
 | 明星三缺一 2013 | v0 | Mac | Early: title, menus and a game of mahjong against the AI at 30 fps, as a Mac app | [`games/mj2013`](games/mj2013/README.md) |
+| Diablo III: Eternal Collection | 2.7.6 (`v1441792`) | Mac; iOS target | Community port, playable (optimized up to 120 FPS on Apple Silicon) | [`games/d3`](games/d3/README.md) |
+| It Takes Two | 1.0.4 (`v262144`) | Mac | Community port, playable (optimized up to 120 FPS on Apple Silicon) | [`games/itt`](games/itt/README.md) |
+| Minecraft Dungeons | 1.17.0.0 (`v1769472`) | Mac | Community port, playable (optimized up to 120 FPS on Apple Silicon) | [`games/mcd`](games/mcd/README.md) |
+| Minecraft Dungeons 2 | 1.1.3.0 (`v131072`) | Mac | Community port, optimized up to ~100 FPS; standalone build | [`games/mcd2`](games/mcd2/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder.
 
@@ -147,6 +151,7 @@ It is **on by default**. To turn it off: on a Mac, **MNG Launcher › Settings�
 
 ## What's new
 
+- **2026-11-27: Standalone community ports for Diablo III: Eternal Collection (`games/d3`), It Takes Two (`games/itt`), Minecraft Dungeons (`games/mcd`), and Minecraft Dungeons 2 (`games/mcd2`).** Built independently from each game folder via `make prepare runtime app` with per-game NVN-on-Metal, async shader/pipeline, and input optimizations.
 - **2026-11-23: Donkey Kong Bananza builds from a `.nup` or a dump folder, with its add-on content (Mac).** Emerald Rush loads from your own files; it has not been played through.
 - **2026-11-23: Pokémon Pokopia's picture is no longer too dark (Mac).**
 - **2026-11-23: Persona 5 Royal 1.0.2 and The Witcher 3 4.04b on Mac, early.** Persona 5 Royal reaches the opening casino as a Mac app ([games/p5r](games/p5r/README.md)); The Witcher 3 plays at Kaer Morhen from a save, without an app yet ([games/w3](games/w3/README.md)).
@@ -294,6 +299,10 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 女神异闻录 5 皇家版 | 1.0.2 | Mac | 早期：标题、菜单和开场赌场，游戏原本的 30 帧，有 Mac App；战斗和长时间存读档没测 | [`games/p5r`](games/p5r/README.md) |
 | 巫师 3：狂猎 | 4.04b | Mac | 开发中：第一个引擎内场景，以及读档后在凯尔莫罕游玩，30 帧；还没有 Mac App | [`games/w3`](games/w3/README.md) |
 | 明星三缺一 2013 | v0 | Mac | 早期：标题、菜单和一局对电脑的麻将，30 帧，有 Mac App | [`games/mj2013`](games/mj2013/README.md) |
+| 暗黑破坏神 3：永恒之战版 | 2.7.6（`v1441792`） | Mac；有 iOS 目标 | 社区移植，可玩（Apple Silicon 优化可达 120 FPS） | [`games/d3`](games/d3/README.md) |
+| 双人成行 | 1.0.4（`v262144`） | Mac | 社区移植，可玩（Apple Silicon 优化可达 120 FPS） | [`games/itt`](games/itt/README.md) |
+| 我的世界：地下城 | 1.17.0.0（`v1769472`） | Mac | 社区移植，可玩（Apple Silicon 优化可达 120 FPS） | [`games/mcd`](games/mcd/README.md) |
+| 我的世界：地下城 2 | 1.1.3.0（`v131072`） | Mac | 社区移植，优化可达 ~100 FPS；独立构建 | [`games/mcd2`](games/mcd2/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本。
 
@@ -359,6 +368,7 @@ MNG Launcher 和每个游戏**每天最多上报一次**到 [mac-native-games.co
 
 ## 更新说明
 
+- **2026-11-27：新增《暗黑破坏神 3：永恒之战版》（`games/d3`）、《双人成行》（`games/itt`）、《我的世界：地下城》（`games/mcd`）与《我的世界：地下城 2》（`games/mcd2`）独立社区移植。** 各目录自带运行时、NVN→Metal 图形层与异步着色器/输入优化，可在各自目录下通过 `make prepare runtime app` 独立构建。
 - **2026-11-23：大金刚 Bananza 可以用 `.nup` 或导出目录打包，带追加内容（Mac）。** Emerald Rush 能从你自己的文件加载，还没有玩通。
 - **2026-11-23：修复宝可梦 Pokopia 画面偏暗（Mac）。**
 - **2026-11-23：女神异闻录 5 皇家版 1.0.2 和巫师 3 4.04b 登陆 Mac，早期。** 女神异闻录 5 皇家版有 Mac App，能玩到开场赌场（[games/p5r](games/p5r/README.md)）；巫师 3 能读档在凯尔莫罕游玩，还没有 App（[games/w3](games/w3/README.md)）。

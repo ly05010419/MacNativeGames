@@ -1,0 +1,32 @@
+{
+    "_comment": "Verified Minecraft Dungeons 2 v131072 (1.1.3.0) code, rewrite bytes and merged RomFS.",
+    "title_id": "0100A7C01B792000",
+    "update_title_id": "0100A7C01B792800",
+    "version": 131072,
+    "display_version": "1.1.3.0",
+    "main_build_id": "C6B32F4D3D4243FF190B082B4F6AEA1800000000",
+    "exefs_sha256": {
+        "main": "07efb25c52474bc724f8d3215992d8830cf9ce50169197ad9970e31c14d72e7e",
+        "main.npdm": "0bd18ccbda1f18bbb935f5c4c7f0cea07caec20fefe6d87aec4b654fe93e3078",
+        "rtld": "d84baef1bbd51f68057001bad5254c24bd8ffe5f9768860c1eebf0d63e953689",
+        "sdk": "7c579d7c948809e0912d75d5d4fda955320059fd5048722c0943891c67d2b277",
+        "subsdk0": "1e9fa5e27a60c54e4d446a969990d02ffc9999ff65068da5e8fb18fba9da1274"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "b4e77076b65dd6a398d5073d7bbb603548aa01fc63ccaab86232b695e44a00f3",
+        "sdk.patched.bin": "8cf263927975e45e06a84a8c683d7b50dd24657182157e149c8d9c1a22500efb",
+        "subsdk0.patched.bin": "987e7b846726b42d868ee8337559c96828eeb82d2896a1b96f4e6b26ea40e55c"
+    },
+    "romfs": {
+        "size": 4162532156,
+        "sha256": "d72b17cfcd706595d44601a7fb3d54d57f701eac24dddae04a3f35aa43ccc213",
+        "files": 63
+    },
+    "aoc": {
+        "1": {
+            "title_id": "0100A7C01B793001",
+            "sha256": "1c00969c83ff448aa306e8306a8d032654b7f6c1b688cb9ffe2253f95db0d9a4",
+            "size": 664
+        }
+    }
+}
