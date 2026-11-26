@@ -358,6 +358,7 @@ static TOTKSettingRow *settings_oot_profile_row(void) {
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+extern int runtime_oot_drs_default(void);   /* game_patches_ns2.c: 1 on a base M1/M2 Mac (their default DRS) */
 /* The game's own dynamic resolution, as on the console: with OOT_FIXED_RES=0 patch_oot_fixed_res is left unpatched and
    the game lowers the 3D scale itself under load (the canvas of the resolution row stays). Off by default: the Mac pins
    the scale, so the picture never changes under load. Takes effect from the next start (the patch is applied when the
@@ -367,7 +368,7 @@ static TOTKSettingRow *settings_oot_profile_row(void) {
 static TOTKSettingRow *settings_oot_drs_row(void) {
  return settings_row(settings_text("动态分辨率（下次启动生效）","Dynamic resolution (from the next start)"),
   @[settings_text("关（固定渲染比例，默认）","Off (fixed render scale, default)"),settings_text("开（主机原样，游戏自己调）","On (as on the console, the game adjusts itself)")],@[@0,@1],
-  ^int{int v;return settings_read_int("graphics-drs.txt",&v)&&v==1;},
+  ^int{int v;extern int runtime_oot_drs_default(void);return settings_read_int("graphics-drs.txt",&v)?v==1:runtime_oot_drs_default();},
   ^(int v){settings_save_int("graphics-drs.txt",v?1:0,"dynamic resolution");});   /* read by patch_oot_fixed_res when the guest starts; OOT_FIXED_RES in the environment wins over the file */
 }
 #endif

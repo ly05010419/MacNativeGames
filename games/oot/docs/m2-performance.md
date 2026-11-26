@@ -73,6 +73,14 @@ runs at ~40 fps (DRS adapts the internal 3D scale, ~683x384-768x432 here). A rea
 1080p native is not reachable on the M2 in this scene: the GPU wall needs <= 16.7 ms/frame and DRS already
 sits at ~19.3 ms; 51.5 fps is the measured ceiling without interpolation.
 
+## Default dynamic resolution on base M1/M2 Macs (2026-11-26, this PR)
+
+With no `graphics-drs.txt` and no `OOT_FIXED_RES`, `patch_oot_fixed_res` now leaves the game's own dynamic
+resolution on when the host chip is a base Apple M1 / M2 (`machdep.cpu.brand_string`), and keeps the fixed
+scale on M3 and up — so the picture never changes under load on the stronger Macs. Measured on the M2,
+Kokiri Forest, 720p canvas, nothing saved: fixed 41 fps vs the new default (game DRS) 49.3-51.5 fps
+(p50 19.6-19.7 ms). The settings panel's row shows the effective value and stays the override.
+
 ## 60 FPS displayed on the M2: the applied recipe (2026-11-25)
 
 With the settings files alone, measured on the rebased tree: present interval **p50 / p95 / max 16.67 ms,
