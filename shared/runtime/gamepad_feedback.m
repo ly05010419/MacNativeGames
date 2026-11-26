@@ -34,9 +34,16 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #if TARGET_OS_OSX
+#import <IOKit/IOKitLib.h>
 #import <IOKit/hid/IOHIDManager.h>
+#import <IOKit/hidsystem/IOHIDServiceClient.h>
+#import <objc/runtime.h>
 #endif
 #include "hid_imu.h"
+#include "switch_left_fallback.h"
+
+extern void runtime_gamepad_switch_left_config(void *controller, const SwitchStickCal *cal, int immediate);
+extern void runtime_gamepad_switch_right_config(void *controller, const SwitchStickCal *cal, int immediate);
 
 /* ---- rumble ----
    Simple pattern players (CHHapticPatternPlayer) only: on macOS 26.5.2 (25F84) the advanced player (looping) never gets
@@ -489,10 +496,13 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
    sensor's nominal ranges, 8 G and 2000 deg/s over 32768. */
 #if TARGET_OS_OSX
 static IOHIDManagerRef hidManager;   /* main queue */
-static IOHIDDeviceRef hidDevice;     /* main queue: open while motion or rumble uses it */
-static BOOL hidMotion, hidRumble;    /* main queue: which of them does (motion: a Switch pad's IMU, or hid_imu_start's pad) */
+static IOHIDDeviceRef hidDevice;     /* main queue: open while motion, rumble or Betop stick fallback uses it */
+static BOOL hidMotion, hidRumble, hidBetop; /* main queue: which of them does (motion: a Switch pad's IMU, or hid_imu_start's pad) */
 static const HidImuProfile *imuProfile;   /* main run loop: the pad hid_imu_start reads (PR #309), else NULL */
 static GCController *hidRumblePad;   /* main queue */
+static __weak GCController *hidBetopPad; /* main queue */
+static SwitchStickCal hidLeftCal, hidRightCal;
+static BOOL hidUserStickCal;
 static dispatch_queue_t hidOut;      /* every output report, in order; the packet counter is its own */
 static IOHIDDeviceRef hidCountDev[2]; /* hidOut: which device each packet counter belongs to (compared, not retained) */
 static uint8_t hidCount[2];           /* hidOut */
@@ -580,23 +590,47 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         int level = p[2] >> 5;
         runtime_gamepad_hid_battery(0, level > 4 ? 100 : level * 25);
     }
-    if (result != kIOReturnSuccess || len < 49 || !hidMotion) return;
-    if (id == 0x21 && (p[13] & 0x80) && p[14] == 0x10) {   /* an SPI read's reply: address at 15, size at 19, data at 20 */
+    if (result != kIOReturnSuccess || (!hidMotion && !hidBetop)) return;
+    if (id == 0x21 && len >= 20 && (p[13] & 0x80) && p[14] == 0x10) {   /* an SPI read's reply: address at 15, size at 19, data at 20 */
         uint32_t at = p[15] | p[16] << 8 | p[17] << 16 | (uint32_t)p[18] << 24;
-        if (at == 0x8026 && p[19] >= 26 && p[20] == 0xB2 && p[21] == 0xA1) { hidUserCalibration = YES; hid_calibration(p + 22, "user"); }
-        else if (at == 0x6020 && p[19] >= 24 && !hidUserCalibration) hid_calibration(p + 20, "factory");
+        if (hidMotion && at == 0x8026 && p[19] >= 26 && len >= 46 && p[20] == 0xB2 && p[21] == 0xA1) { hidUserCalibration = YES; hid_calibration(p + 22, "user"); }
+        else if (hidMotion && at == 0x6020 && p[19] >= 24 && len >= 44 && !hidUserCalibration) hid_calibration(p + 20, "factory");
+        else if (hidBetop && at == 0x8010 && p[19] >= 22 && len >= 42) {
+            BOOL gotUser = NO;
+            if (p[20] == 0xB2 && p[21] == 0xA1 && switch_stick_cal_parse_left(p + 22, &hidLeftCal)) {
+                gotUser = YES;
+                runtime_gamepad_switch_left_config((__bridge void *)hidBetopPad, &hidLeftCal, 1);
+                fprintf(stderr, "[totk-input] Betop Zeus NS user left stick cal: center %d/%d, X +%d/-%d, Y +%d/-%d\n",
+                        hidLeftCal.x_center, hidLeftCal.y_center, hidLeftCal.x_max, hidLeftCal.x_min, hidLeftCal.y_max, hidLeftCal.y_min);
+            }
+            if (p[31] == 0xB2 && p[32] == 0xA1 && switch_stick_cal_parse_right(p + 33, &hidRightCal)) {
+                gotUser = YES;
+                runtime_gamepad_switch_right_config((__bridge void *)hidBetopPad, &hidRightCal, 0);
+            }
+            if (gotUser) hidUserStickCal = YES;
+        } else if (hidBetop && at == 0x603D && p[19] >= 18 && len >= 38 && !hidUserStickCal) {
+            if (switch_stick_cal_parse_left(p + 20, &hidLeftCal)) {
+                runtime_gamepad_switch_left_config((__bridge void *)hidBetopPad, &hidLeftCal, 1);
+                fprintf(stderr, "[totk-input] Betop Zeus NS factory left stick cal: center %d/%d, X +%d/-%d, Y +%d/-%d\n",
+                        hidLeftCal.x_center, hidLeftCal.y_center, hidLeftCal.x_max, hidLeftCal.x_min, hidLeftCal.y_max, hidLeftCal.y_min);
+            }
+            if (switch_stick_cal_parse_right(p + 29, &hidRightCal)) {
+                runtime_gamepad_switch_right_config((__bridge void *)hidBetopPad, &hidRightCal, 0);
+            }
+        }
         return;
     }
-    if (id != 0x30) return;
-    if (!hidJoyConRight) runtime_gamepad_switch_left((__bridge void *)motionPad,
+    if (id != 0x30 || len < 12) return;
+    GCController *stickPad = hidBetop ? hidBetopPad : motionPad;
+    if (hidBetop || !hidJoyConRight) runtime_gamepad_switch_left((__bridge void *)stickPad,
         p[6] | (p[7] & 15) << 8, (p[7] >> 4) | p[8] << 4);
-    runtime_gamepad_switch_right((__bridge void *)motionPad,
+    runtime_gamepad_switch_right((__bridge void *)stickPad,
         p[9] | (p[10] & 15) << 8, (p[10] >> 4) | p[11] << 4);
     /* Button 5 on its own, the square button below the D-pad (a Pro Controller's capture button): the game's picture, as a
        DualSense's Share button does through GameController (runtime/gamepad.m runtime_capture_set_hook). Home (bit 4) is
        left alone: macOS keeps that one for its own screen. */
-    runtime_gamepad_switch_capture((__bridge void *)motionPad, p[4] & 0x20);
-    if (runtime_dsu_motion_active()) return;   /* only six-axis samples yield; buttons and sticks above stay live */
+    runtime_gamepad_switch_capture((__bridge void *)stickPad, p[4] & 0x20);
+    if (!hidMotion || len < 49 || runtime_dsu_motion_active()) return;   /* only six-axis samples yield; buttons and sticks above stay live */
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
     if (!hidImuLive) {
@@ -626,21 +660,111 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         runtime_motion_feed(acc, gyro, now - (uint64_t)(2 - k) * step);
     }
 }
+@protocol MNGSwitchControllerIdentity
+- (id)componentForClass:(Class)componentClass;
+- (NSArray *)hidServices;
+@end
+@protocol MNGSwitchHIDIdentity
+- (NSNumber *)registryID;
+@end
+
+static NSNumber *switch_gc_service_id(GCController *controller) {
+    if (!controller) return nil;
+    id<MNGSwitchControllerIdentity> identity = (id)controller;
+    static Class hidInfoClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ hidInfoClass = NSClassFromString(@"GCHIDInformation"); });
+    if (hidInfoClass && [controller respondsToSelector:@selector(componentForClass:)]) {
+        id<MNGSwitchHIDIdentity> info = [identity componentForClass:hidInfoClass];
+        if ([(id)info isKindOfClass:hidInfoClass] && [(id)info respondsToSelector:@selector(registryID)]) {
+            NSNumber *entry = info.registryID;
+            if ([entry isKindOfClass:NSNumber.class] && entry.unsignedLongLongValue) return entry;
+        }
+    }
+    if (![controller respondsToSelector:@selector(hidServices)]) return nil;
+    NSArray *services = [identity hidServices];
+    if (![services isKindOfClass:NSArray.class] || services.count != 1) return nil;
+    CFTypeRef service = (__bridge CFTypeRef)services.firstObject;
+    if (!service || CFGetTypeID(service) != IOHIDServiceClientGetTypeID()) return nil;
+    id entry = (__bridge id)IOHIDServiceClientGetRegistryID((IOHIDServiceClientRef)service);
+    return [entry isKindOfClass:NSNumber.class] ? entry : nil;
+}
+
+static uint64_t switch_gc_registry_id(GCController *controller) {
+    NSNumber *entry = switch_gc_service_id(controller);
+    uint64_t service = entry.unsignedLongLongValue;
+    if (!service) return 0;
+    static char registryCacheKey;
+    NSArray<NSNumber *> *cached = objc_getAssociatedObject(controller, &registryCacheKey);
+    if ([cached.firstObject isEqualToNumber:entry]) return cached.lastObject.unsignedLongLongValue;
+    io_registry_entry_t node = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(service));
+    uint64_t physical = 0;
+    while (node) {
+        if (IOObjectConformsTo(node, "IOHIDDevice")) {
+            IORegistryEntryGetRegistryEntryID(node, &physical);
+            IOObjectRelease(node);
+            break;
+        }
+        io_registry_entry_t parent = IO_OBJECT_NULL;
+        IORegistryEntryGetParentEntry(node, kIOServicePlane, &parent);
+        IOObjectRelease(node);
+        node = parent;
+    }
+    if (physical) objc_setAssociatedObject(controller, &registryCacheKey, @[entry, @(physical)], OBJC_ASSOCIATION_RETAIN);
+    return physical ?: service;
+}
+
+static uint64_t hid_device_registry_id(IOHIDDeviceRef d) {
+    uint64_t reg = 0;
+    io_service_t svc = d ? IOHIDDeviceGetService(d) : IO_OBJECT_NULL;
+    if (svc) IORegistryEntryGetRegistryEntryID(svc, &reg);
+    return reg;
+}
+
+static BOOL hid_device_is_synthetic(IOHIDDeviceRef d) {
+    return d && IOHIDDeviceGetProperty(d, CFSTR("GCSyntheticDevice")) == kCFBooleanTrue;
+}
+
+static BOOL hid_device_is_betop_ns(IOHIDDeviceRef d) {
+    if (!d || hid_device_is_synthetic(d)) return NO;
+    int vid = 0, pid = 0;
+    CFTypeRef cv = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDVendorIDKey));
+    CFTypeRef cp = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
+    if (cv && CFGetTypeID(cv) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)cv, kCFNumberIntType, &vid);
+    if (cp && CFGetTypeID(cp) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)cp, kCFNumberIntType, &pid);
+    NSString *transport = (__bridge id)IOHIDDeviceGetProperty(d, CFSTR(kIOHIDTransportKey));
+    NSString *address = (__bridge id)IOHIDDeviceGetProperty(d, CFSTR(kIOHIDSerialNumberKey));
+    return [transport isKindOfClass:NSString.class] && [address isKindOfClass:NSString.class] &&
+        betop_ns_match(vid, pid, transport.UTF8String, address.UTF8String);
+}
+
+static IOHIDDeviceRef hid_pick_matching_device(NSSet *devices, GCController *c) {
+    uint64_t wantId = switch_gc_registry_id(c);
+    IOHIDDeviceRef firstPhysical = NULL;
+    for (id obj in devices) {
+        IOHIDDeviceRef cand = (__bridge IOHIDDeviceRef)obj;
+        if (hid_device_is_synthetic(cand)) continue;
+        if (wantId && hid_device_registry_id(cand) == wantId) return cand;
+        if (!firstPhysical) firstPhysical = cand;
+    }
+    return wantId ? NULL : firstPhysical;
+}
+
 static void hid_close_now(void);
-/* product: 0x2009 a Switch Pro Controller (motion or rumble), 0x2007 the right Joy-Con of a paired set (motion, PR #889).
+/* product: 0x2009 a Switch Pro Controller (motion, rumble or Betop stick), 0x2007 the right Joy-Con of a paired set (motion, PR #889).
    Rumble and motion may belong to two controllers (FEEDBACK_KEEP_FIRST, or a pad with haptics beside a Switch one): the
    open device is shared only by the controller that has it (games/odyssey). */
 static IOReturn hid_open(GCController *c, int product) {   /* main queue */
     hid_out_queue();
-    if (hidDevice && !hidRumble && !hidMotion) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
+    if (hidDevice && !hidRumble && !hidMotion && !hidBetop) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
     if (hidDevice) {
-        if ((hidRumble && rumbleOwner != c && hidRumblePad != c) || (hidMotion && motionPad != c)) return kIOReturnExclusiveAccess;
+        if ((hidRumble && rumbleOwner != c && hidRumblePad != c) || (hidMotion && motionPad != c) || (hidBetop && hidBetopPad != c)) return kIOReturnExclusiveAccess;
         return kIOReturnSuccess;
     }
     hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     IOHIDManagerSetDeviceMatching(hidManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @(product)});
     NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidManager);
-    IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
+    IOHIDDeviceRef d = hid_pick_matching_device(devices, c);
     IOReturn r = d ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
     if (r != kIOReturnSuccess) { CFRelease(hidManager); hidManager = NULL; return r; }
     hidDevice = (IOHIDDeviceRef)CFRetain(d);
@@ -649,7 +773,7 @@ static IOReturn hid_open(GCController *c, int product) {   /* main queue */
     return kIOReturnSuccess;
 }
 static void hid_close_now(void) {   /* main queue */
-    if (!hidDevice || hidMotion || hidRumble) return;
+    if (!hidDevice || hidMotion || hidRumble || hidBetop) return;
     IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);
     IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);   /* hid_imu_start's (PR #309) */
     IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
@@ -661,7 +785,7 @@ static void hid_close_now(void) {   /* main queue */
 /* Close the device once nothing uses it, but only after the reports already queued have been written: the neutral rumble
    goes rumbleQueue, then hidOut, and a device closed before it would keep its last rumble. */
 static void hid_close_unused(void) {   /* main queue */
-    if (!hidDevice || hidMotion || hidRumble) return;
+    if (!hidDevice || hidMotion || hidRumble || hidBetop) return;
     dispatch_queue_t out = hid_out_queue();   /* not hidOut: a pad opened by hid_imu_start never made it, and a nil queue crashed here */
     dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_close_now(); }); }); });
 }
@@ -698,10 +822,64 @@ static BOOL hid_motion_start(GCController *c) {   /* main queue */
 }
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidMotion) return;
+    if (!hidBetop) {
+        runtime_gamepad_switch_left(NULL, -1, -1);
+        runtime_gamepad_switch_right(NULL, -1, -1);
+        runtime_gamepad_switch_capture(NULL, 0);
+    }
+    hidMotion = NO; hid_close_unused(); native_motion_deadzone_default(0);
+}
+/* Betop Zeus in NS mode (057e:2009 over Bluetooth, OUI 00:90:E0): GameController drops left-stick events to 0, so open
+   its HID stream for calibrated 0x30 left stick reports regardless of whether gyro or rumble is enabled. */
+static void hid_betop_attach(GCController *c) {   /* main queue */
+    if (!c || ![c.productCategory isEqualToString:@"Switch Pro Controller"]) return;
+    if (hidBetop && hidBetopPad != c) return;
+    IOHIDManagerRef probe = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatching(probe, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @0x2009});
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(probe);
+    uint64_t wantId = switch_gc_registry_id(c);
+    BOOL matched = NO;
+    if (wantId) {
+        for (id obj in devices) {
+            IOHIDDeviceRef cand = (__bridge IOHIDDeviceRef)obj;
+            if (hid_device_registry_id(cand) == wantId && hid_device_is_betop_ns(cand)) { matched = YES; break; }
+        }
+    } else if ([c isKindOfClass:GCController.class]) {
+        int physicalPro = 0, betopPro = 0, gcPro = 0;
+        for (GCController *gc in GCController.controllers)
+            if ([gc.productCategory isEqualToString:@"Switch Pro Controller"]) gcPro++;
+        for (id obj in devices) {
+            IOHIDDeviceRef cand = (__bridge IOHIDDeviceRef)obj;
+            if (hid_device_is_synthetic(cand)) continue;
+            physicalPro++;
+            if (hid_device_is_betop_ns(cand)) betopPro++;
+        }
+        matched = (gcPro == 1 && physicalPro == 1 && betopPro == 1);
+    }
+    CFRelease(probe);
+    if (!matched) return;
+    IOReturn r = hid_open(c, 0x2009);
+    if (r != kIOReturnSuccess) {
+        fprintf(stderr, "[totk-input] Betop Zeus NS detected, but HID open failed (0x%x)\n", r);
+        return;
+    }
+    hidBetop = YES; hidBetopPad = c; hidUserStickCal = NO;
+    switch_stick_cal_default(&hidLeftCal); switch_stick_cal_default(&hidRightCal);
+    runtime_gamepad_switch_left_config((__bridge void *)c, NULL, 1);
+    runtime_gamepad_switch_right_config((__bridge void *)c, NULL, 0);
+    fprintf(stderr, "[totk-input] Betop Zeus NS detected (057e:2009 Bluetooth 00:90:E0): reading calibrated 0x30 left stick via HID\n");
+    static const uint8_t fullMode[1] = {0x30}, factoryStick[5] = {0x3D, 0x60, 0, 0, 18}, userStick[5] = {0x10, 0x80, 0, 0, 22};
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidBetop && hidBetopPad == c) hid_subcommand(0x03, fullMode, sizeof fullMode); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 950 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidBetop && hidBetopPad == c) hid_subcommand(0x10, factoryStick, sizeof factoryStick); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1200 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidBetop && hidBetopPad == c) hid_subcommand(0x10, userStick, sizeof userStick); });
+}
+static void hid_betop_detach(GCController *c) {   /* main queue */
+    if (!hidBetop || hidBetopPad != c) return;
+    hidBetop = NO; hidBetopPad = nil; hidUserStickCal = NO;
     runtime_gamepad_switch_left(NULL, -1, -1);
     runtime_gamepad_switch_right(NULL, -1, -1);
     runtime_gamepad_switch_capture(NULL, 0);
-    hidMotion = NO; hid_close_unused(); native_motion_deadzone_default(0);
+    hid_close_unused();
 }
 /* The left Joy-Con of a paired set (057e:2006): opened for rumble; of its input only the battery is read (GameController
    keeps its buttons and stick). */
@@ -793,6 +971,8 @@ static BOOL hid_motion_start(GCController *c) {
     return NO;
 }
 static void hid_motion_stop(void) {}
+static void hid_betop_attach(GCController *c) { (void)c; }
+static void hid_betop_detach(GCController *c) { (void)c; }
 #endif
 
 /* This game's own controller feedback (runtime/feedback_game.h): FEEDBACK_KEEP_FIRST, feedback_game_attach and
@@ -926,6 +1106,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
     if (runtime_rumble_enabled() && !(FEEDBACK_KEEP_FIRST && rumbleOwner)) rumble_take(c, name);
     feedback_game_attach(c, name);
     if (runtime_gyro_enabled() && !(FEEDBACK_KEEP_FIRST && motionPad)) motion_take(c, name);
+    hid_betop_attach(c);
 }
 /* DSU changes only the fusion source, never the native controller lifecycle. */
 void runtime_feedback_motion_source_changed(void) {
@@ -954,6 +1135,7 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (hidRumblePad == c) hid_rumble_stop();
 #endif
     feedback_game_detach(c);   /* e.g. USB unplugged, Bluetooth still on: the bow triggers go to another DualSense */
+    hid_betop_detach(c);
     if (motionPad == c) {
         GCMotion *m = c.motion;
         m.valueChangedHandler = nil;

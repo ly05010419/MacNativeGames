@@ -30,7 +30,8 @@ C_TESTS = \
 	agent_slot_limit \
 	agent_slot_limit_oot \
 	hdr_auto \
-	dm_save_override
+	dm_save_override \
+	betop_ns
 C_TEST_EXTRA_users = games/totk/runtime/account.c -Igames/totk/runtime
 C_TEST_EXTRA_dm_save_override = games/totk/runtime/fs_host.c games/totk/runtime/account.c -Igames/totk/runtime
 C_TEST_SRC_screenshot_botw = tests/test_screenshot.c

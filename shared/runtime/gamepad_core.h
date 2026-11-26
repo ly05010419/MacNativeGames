@@ -100,7 +100,19 @@ void runtime_gamepad_switch_capture(void *controller, int pressed) {
 static _Atomic int gamepadBackground, gamepadFocused = 1;
 #endif
 
-/* Called on the main run loop by the already-open Switch HID motion stream. */
+/* Called on the main run loop by the already-open Switch HID stream (motion or Betop NS stick fallback). */
+void runtime_gamepad_switch_left_config(void *source, const SwitchStickCal *cal, int immediate) {
+    GCController *controller = (__bridge GCController *)source;
+    if (rawLeftController != controller) rawLeft = (SwitchLeftFallback){0};
+    rawLeftController = controller;
+    switch_left_configure(&rawLeft, cal, immediate);
+}
+void runtime_gamepad_switch_right_config(void *source, const SwitchStickCal *cal, int immediate) {
+    GCController *controller = (__bridge GCController *)source;
+    if (rawRightController != controller) rawRight = (SwitchLeftFallback){0};
+    rawRightController = controller;
+    switch_left_configure(&rawRight, cal, immediate);
+}
 void runtime_gamepad_switch_left(void *source, int x, int y) {
     GCController *controller = (__bridge GCController *)source;
     if (rawLeftController != controller) rawLeft = (SwitchLeftFallback){0};

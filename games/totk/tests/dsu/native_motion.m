@@ -12,6 +12,8 @@ void runtime_motion_live(int on) { live = on; liveChanges++; }
 void runtime_motion_deadzone_default(double value) { deadzone = value; deadzoneChanges++; }
 void runtime_motion_feed(const double a[3], const double g[3], uint64_t t) { (void)a; (void)g; (void)t; feeds++; }
 int runtime_motion_axes(const char *axes) { (void)axes; return 0; }
+void runtime_gamepad_switch_left_config(void *c, const SwitchStickCal *cal, int imm) { (void)c; (void)cal; (void)imm; }
+void runtime_gamepad_switch_right_config(void *c, const SwitchStickCal *cal, int imm) { (void)c; (void)cal; (void)imm; }
 void runtime_gamepad_switch_left(void *c, int x, int y) { if (!c) clears++; else { assert(x == 2048 && y == 2048); left++; } }
 void runtime_gamepad_switch_right(void *c, int x, int y) { if (!c) clears++; else { assert(x == 2048 && y == 2048); right++; } }
 void runtime_gamepad_switch_capture(void *c, int down) { if (!c) clears++; else if (down) capture++; }
