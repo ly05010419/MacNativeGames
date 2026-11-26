@@ -634,6 +634,17 @@ static uint32_t vi_vsync(void *ev,void *display){
 #ifdef GAME_BOTW
 static uint32_t vi_scaling_mode(void *layer,int mode){(void)layer;(void)mode;return 0;}
 #endif
+#ifdef GAME_MKW
+static uint32_t vi_hdr_status(uint8_t *on,uint32_t *fmt,uint16_t *peak,const void *disp){(void)disp;if(on)*on=0;if(fmt)*fmt=0;if(peak)*peak=0;return 0;}
+static uint32_t vi_paper_white(uint16_t *nits,const void *disp){(void)disp;if(nits)*nits=203;return 0;}
+static uint32_t vi_vrr_supported(uint8_t *on,const void *disp){(void)disp;if(on)*on=0;return 0;}
+static uint32_t vi_set_vrr(void *disp,unsigned on){(void)disp;(void)on;return 0;}
+static uint32_t vi_ext_swap(void *layer,int a,int b){(void)layer;(void)a;(void)b;return 0;}
+static uint32_t vi_ext_swap_clear(void *layer){(void)layer;return 0;}
+static uint32_t vi_hdr_meta1(void *layer,int v){(void)layer;(void)v;return 0;}
+static uint32_t vi_hdr_meta2(void *layer,uint32_t lo,uint32_t hi){(void)layer;(void)lo;(void)hi;return 0;}
+static uint32_t vi_hdr_bezier(void *layer,float a,float b,float c){(void)layer;(void)a;(void)b;(void)c;return 0;}
+#endif
 void *runtime_front_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
@@ -641,6 +652,19 @@ void *runtime_front_override(const char *name){
  {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}
 #ifdef GAME_BOTW
  ,{"_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE",vi_scaling_mode}   /* SDK 7: the window scales itself */
+#endif
+#ifdef GAME_MKW
+ ,{"_ZN2nn2vi21QueryDisplayHdrStatusEPbPNS0_15HdrOutputFormatEPtPKNS0_7DisplayE",vi_hdr_status},
+ {"_ZN2nn2vi25QueryDisplayHdrPaperWhiteEPtPKNS0_7DisplayE",vi_paper_white},
+ {"_ZN2nn2vi24QueryDisplayVrrSupportedEPbPKNS0_7DisplayE",vi_vrr_supported},
+ {"_ZN2nn2vi23SetDisplayVrrCapabilityEPNS0_7DisplayEb",vi_set_vrr},
+ {"_ZN2nn2vi28SetLayerExtendedSwapIntervalEPNS0_5LayerEii",vi_ext_swap},
+ {"_ZN2nn2vi30ClearLayerExtendedSwapIntervalEPNS0_5LayerE",vi_ext_swap_clear},
+ {"_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE",vi_hdr_meta1},
+ {"_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE",vi_hdr_meta1},
+ {"_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff",vi_hdr_bezier},
+ {"_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt",vi_hdr_meta2},
+ {"_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt",vi_hdr_meta2}
 #endif
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;

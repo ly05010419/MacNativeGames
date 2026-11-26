@@ -328,9 +328,16 @@ static void cpu_boost(int mode) { if(mode<0||mode>2)runtime_fail("unknown CPU bo
 /* TOTK_OPERATION_MODE=handheld reports the Switch handheld mode (oe OperationMode 0, PerformanceMode Normal 0) instead of
    docked (1, Boost 1): the game then uses its own handheld settings (1280x720 output, lower internal resolution), which
    Nintendo made for half the docked GPU clock. Read once; any other value stops the start. */
-static int handheld_mode(void) {static int v=-1;if(v<0){const char *e=getenv("TOTK_OPERATION_MODE");int h;if(!e||!strcmp(e,"docked"))h=0;else if(!strcmp(e,"handheld"))h=1;else runtime_fail("TOTK_OPERATION_MODE must be docked or handheld");
- fprintf(stderr,"[totk] operation mode reported to the game: %s\n",h?"handheld (performance normal)":"docked (performance boost)");v=h;}return v;}
+static int op_choice = -1;
+static int handheld_mode(void) {static int v=-1;if(v<0){const char *e=getenv("TOTK_OPERATION_MODE");int h=0;if(e){if(!strcmp(e,"docked"))h=0;else if(!strcmp(e,"handheld"))h=1;else runtime_fail("TOTK_OPERATION_MODE must be docked or handheld");}
+#ifdef GAME_MKW
+ else{char word[32]={0};if(runtime_setting_word("operation-mode.txt",word,sizeof word)){word[strcspn(word," \t\r\n")]=0;if(!strcmp(word,"handheld"))h=1;}}
+#endif
+ op_choice=h;fprintf(stderr,"[totk] operation mode reported to the game: %s\n",h?"handheld (performance normal)":"docked (performance boost)");v=h;}return v;}
 int runtime_handheld_mode(void){return handheld_mode();}   /* runtime/input.c: the pad is the handheld controller then */
+int runtime_operation_mode_locked(void){return getenv("TOTK_OPERATION_MODE")!=NULL;}
+int runtime_operation_mode_choice(void){if(op_choice<0)op_choice=handheld_mode();return op_choice;}
+void runtime_operation_mode_choose(int handheld){op_choice=handheld?1:0;runtime_setting_save("operation-mode.txt",op_choice?"handheld":"docked","operation mode");}
 static int operation_mode(void) {return handheld_mode()?0:1;}
 static int performance_mode(void) {return handheld_mode()?0:1;}
 static int focus_policy;

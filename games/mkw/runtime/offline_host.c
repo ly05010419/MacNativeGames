@@ -3,7 +3,9 @@
    follow). Super Mario Bros. Wonder imports them; the TOTK host this folder is forked from has none. */
 #include "runtime.h"
 #include "game_version.h"
+#include "ipc.h"
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +104,140 @@ static unsigned char language_is(const int *language, const char *code) {
     return !strncmp(codes[*language], code, 8);
 }
 
+/* ---------- nn::chat (Switch 2 GameChat offline host) ---------- */
+static pthread_mutex_t chat_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { void *mem; size_t size; uint32_t w, h; int used; } chat_images[128];
+static struct { const void *storage; uint32_t base_handle; int count; int used; } chat_storages[32];
+
+int runtime_chat_native_image_info(uint32_t handle, void **mem, size_t *size, uint32_t *w, uint32_t *h) {
+    if (handle == 0 || handle > 128) return 0;
+    pthread_mutex_lock(&chat_lock);
+    uint32_t idx = handle - 1u;
+    int ok = chat_images[idx].used;
+    if (ok) {
+        if (mem) *mem = chat_images[idx].mem;
+        if (size) *size = chat_images[idx].size;
+        if (w) *w = chat_images[idx].w;
+        if (h) *h = chat_images[idx].h;
+    }
+    pthread_mutex_unlock(&chat_lock);
+    return ok;
+}
+
+static size_t chat_cam_per_image(int w, int h) {
+    size_t wa = ((size_t)(w > 0 ? w : 384) + 63u) & ~63u;
+    size_t ha = ((size_t)(h > 0 ? h : 216) + 127u) & ~127u;
+    return ((wa * ha * 4u) + 0xffffu) & ~0xffffu;
+}
+static size_t chat_cam_buf_size(int w, int h, int count) {
+    return chat_cam_per_image(w, h) * (size_t)(count > 0 ? count : 1);
+}
+static uint32_t chat_cam_init(void *storage, int w, int h, int count, void *buf, size_t size) {
+    int n = count > 0 ? count : 1;
+    size_t per = chat_cam_per_image(w, h);
+    if (size && per > size / (size_t)n) per = (size / (size_t)n) & ~0xfffu;
+    if (buf && size) memset(buf, 0, size);
+    pthread_mutex_lock(&chat_lock);
+    uint32_t base = 0;
+    for (int start = 0; start <= 128 - n; start++) {
+        int free_run = 1;
+        for (int k = 0; k < n; k++) {
+            if (chat_images[start + k].used) { free_run = 0; break; }
+        }
+        if (free_run) {
+            base = (uint32_t)(start + 1);
+            for (int k = 0; k < n; k++) {
+                chat_images[start + k].mem = buf ? (uint8_t *)buf + (size_t)k * per : NULL;
+                chat_images[start + k].size = per;
+                chat_images[start + k].w = (uint32_t)(w > 0 ? w : 384);
+                chat_images[start + k].h = (uint32_t)(h > 0 ? h : 216);
+                chat_images[start + k].used = 1;
+            }
+            break;
+        }
+    }
+    if (base) {
+        int slot = -1;
+        for (int i = 0; i < 32; i++) {
+            if (chat_storages[i].used && chat_storages[i].storage == storage) { slot = i; break; }
+            if (slot < 0 && !chat_storages[i].used) slot = i;
+        }
+        if (slot >= 0) {
+            chat_storages[slot].storage = storage;
+            chat_storages[slot].base_handle = base;
+            chat_storages[slot].count = n;
+            chat_storages[slot].used = 1;
+        }
+    }
+    pthread_mutex_unlock(&chat_lock);
+    return 0;
+}
+static void chat_cam_fini(void *storage) {
+    pthread_mutex_lock(&chat_lock);
+    for (int i = 0; i < 32; i++) {
+        if (chat_storages[i].used && chat_storages[i].storage == storage) {
+            uint32_t base = chat_storages[i].base_handle;
+            int n = chat_storages[i].count;
+            for (int k = 0; k < n; k++) {
+                uint32_t idx = base - 1u + (uint32_t)k;
+                if (idx < 128) memset(&chat_images[idx], 0, sizeof chat_images[idx]);
+            }
+            memset(&chat_storages[i], 0, sizeof chat_storages[i]);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&chat_lock);
+}
+static uint32_t chat_cam_handle(const void *storage, int index) {
+    uint32_t out = 0;
+    pthread_mutex_lock(&chat_lock);
+    for (int i = 0; i < 32; i++) {
+        if (chat_storages[i].used && chat_storages[i].storage == storage) {
+            if (index >= 0 && index < chat_storages[i].count)
+                out = chat_storages[i].base_handle + (uint32_t)index;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&chat_lock);
+    return out;
+}
+static void chat_init(void) {}
+static int chat_is_chatting(void) { return 0; }
+static uint32_t chat_fail(void) { return 1u; }
+static uint32_t chat_ok(void) { return 0u; }
+static uint32_t chat_attach_room_event(void *ev) { if (ev) hle_bind_system_event(ev, 0); return 0u; }
+static void chat_noop(void) {}
+
+static void camera_ctx_ipc(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    switch (rq->cmd) {
+    case 3:
+        rs->result = 0xdc4u;   /* OpenCamera("Default"): no USB camera connected (main+0xcded84 accepts 0xdc4) */
+        return;
+    case 21: {                 /* GetCameraAvailabilityEvent (main+0xcdc5b0): never signaled */
+        static uint32_t ev;
+        if (!ev) ev = runtime_event_new();
+        rs->copy[rs->ncopy++] = runtime_event_readable(ev);
+        rs->result = 0u;
+        return;
+    }
+    default: {
+        static uint64_t seen;
+        if (rq->cmd >= 64 || !(seen >> rq->cmd & 1u)) {
+            if (rq->cmd < 64) seen |= 1ull << rq->cmd;
+            fprintf(stderr, "[totk-ipc] camera:ctx cmd %u -> 0xdc4\n", rq->cmd);
+        }
+        rs->result = 0xdc4u;
+        return;
+    }
+    }
+}
+static uint32_t camera_create_context(uint32_t *out_handle) {
+    if (!out_handle) return 1u;
+    *out_handle = runtime_ipc_new_session("camera:ctx", camera_ctx_ipc, NULL, NULL);
+    return 0u;
+}
+
 void *runtime_offline_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
         {"_ZN2nn2oe31EnterExitRequestHandlingSectionEv", enter_exit_section},
@@ -157,6 +293,33 @@ void *runtime_offline_override(const char *name) {
         {"_ZN2nn3ngc15ProfanityFilter10InitializeEPvmb", ngc_initialize},
         {"_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKcm", ngc_check},
         {"_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKDsm", ngc_check},
+        {"_ZN2nn4chat10InitializeEv", chat_init},
+        {"_ZN2nn4chat10IsChattingEv", chat_is_chatting},
+        {"_ZN2nn4chat11GetRoomInfoEPNS0_8RoomInfoE", chat_fail},
+        {"_ZN2nn4chat13SetSharingKeyERKNS0_10SharingKeyE", chat_ok},
+        {"_ZN2nn4chat13ShowChatStartERKNS_7account3UidE", chat_fail},
+        {"_ZN2nn4chat15ClearSharingKeyEv", chat_ok},
+        {"_ZN2nn4chat20SetScreenSharingModeENS0_17ScreenSharingModeE", chat_ok},
+        {"_ZN2nn4chat22ShowCameraSharingGuideEv", chat_fail},
+        {"_ZN2nn4chat24StopLocalCameraStreamingEv", chat_ok},
+        {"_ZN2nn4chat25GetLocalCameraImageHandleEPKNS0_20LocalCameraVideoTypeEi", chat_cam_handle},
+        {"_ZN2nn4chat25StartLocalCameraStreamingEv", chat_fail},
+        {"_ZN2nn4chat25StopRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", chat_ok},
+        {"_ZN2nn4chat26GetRemoteCameraImageHandleEPKNS0_21RemoteCameraVideoTypeEi", chat_cam_handle},
+        {"_ZN2nn4chat26StartRemoteCameraStreamingERKNS_7account23NetworkServiceAccountIdE", chat_fail},
+        {"_ZN2nn4chat27RequestNextLocalCameraImageEPNS_2gs16NativeSyncHandleEPNS0_20LocalCameraVideoTypeEiS2_", chat_fail},
+        {"_ZN2nn4chat28AttachToRoomInfoChangedEventEPNS_2os11SystemEventE", chat_attach_room_event},
+        {"_ZN2nn4chat28RequestNextRemoteCameraImageEPNS_2gs16NativeSyncHandleEPNS0_21RemoteCameraVideoTypeEiS2_RKNS_7account23NetworkServiceAccountIdE", chat_fail},
+        {"_ZN2nn4chat31FinalizeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeE", chat_cam_fini},
+        {"_ZN2nn4chat32FinalizeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeE", chat_cam_fini},
+        {"_ZN2nn4chat33InitializeLocalCameraVideoStorageEPNS0_20LocalCameraVideoTypeEiiiPvm", chat_cam_init},
+        {"_ZN2nn4chat34InitializeRemoteCameraVideoStorageEPNS0_21RemoteCameraVideoTypeEiiiPvm", chat_cam_init},
+        {"_ZN2nn4chat35CalculateLocalCameraVideoBufferSizeEiii", chat_cam_buf_size},
+        {"_ZN2nn4chat36CalculateRemoteCameraVideoBufferSizeEiii", chat_cam_buf_size},
+        {"_ZN2nn4chat36ShowLocalCameraConfigurationVersion0ENS0_25CameraImageProcessingModeE", chat_fail},
+        {"_ZN2nn4chat44EndFullScreenWithLocalCameraAvailableSectionEv", chat_noop},
+        {"_ZN2nn4chat46BeginFullScreenWithLocalCameraAvailableSectionEb", chat_noop},
+        {"_ZN2nn6camera3sdk19CreateCameraContextEPNS_5gsdrv18UniqueNativeHandleE", camera_create_context},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;

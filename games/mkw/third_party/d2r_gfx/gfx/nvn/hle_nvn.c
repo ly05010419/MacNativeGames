@@ -219,7 +219,7 @@ void mtl_wb_fence_done(void);   // TOTK: small render targets read from the CPU 
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
 #if defined(GAME_MKW)
-    [0x00] = 231, [0x01] = 16,  // Mario Kart World (NVN2) main+0xcf3b20 requires major 231, minor >= 16.
+    [0x00] = 231, [0x01] = 39,  // Mario Kart World (NVN2): 1.0.0 requires major 231, minor >= 16; v917504 main+0xdd089c requires minor >= 39.
 #elif defined(GAME_BOTW) && !defined(GAME_BOTW190)   // 1.9.0 (SDK 20.5) takes the values below, as TOTK
     [0x00] = 53, [0x01] = 311,  // Breath of the Wild 1.6.0 main+0xe55304 requires major 53, minor >= 311 (botw.md).
 #else
@@ -3430,3 +3430,80 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     prev_out = now_ns();
     totk_tl(TL_PRES_OUT, 0, 0);
 }
+
+#ifdef GAME_MKW
+__attribute__((weak)) int runtime_chat_native_image_info(uint32_t handle, void **mem, size_t *size, uint32_t *w, uint32_t *h);
+typedef struct {
+    NVNdevice *device;
+    uint32_t handle;
+    uint32_t permission;
+    NVNformat format;
+} MkwNativeImageBuilder;
+typedef struct {
+    NVNmemoryPool pool;
+    NVNdevice *device;
+    NVNformat format;
+    uint32_t width, height;
+    void *owned_mem;
+} MkwNativeImage;
+_Static_assert(sizeof(MkwNativeImage) <= 0x1a0, "NVNnativeImage layout");
+
+HLE_FORCE("_Z24nvnNativeImageInitializeP14NVNnativeImagePK21NVNnativeImageBuilder",
+          "Switch 2 NativeImage backed by a host-visible NVNmemoryPool",
+          NVNboolean, h_nvnNativeImageInitialize, void *ni_raw, const void *nib_raw) {
+    MkwNativeImage *img = (MkwNativeImage *)ni_raw;
+    const MkwNativeImageBuilder *b = (const MkwNativeImageBuilder *)nib_raw;
+    if (!img || !b || !b->device) return 0;
+    memset(img, 0, sizeof *img);
+    void *mem = NULL; size_t size = 0; uint32_t w = 384, h = 216;
+    if (runtime_chat_native_image_info && runtime_chat_native_image_info(b->handle, &mem, &size, &w, &h) && mem && size) {
+        img->owned_mem = NULL;
+    } else {
+        size = 0x60000u;
+        if (posix_memalign(&mem, 0x1000u, size) != 0 || !mem) return 0;
+        memset(mem, 0, size);
+        img->owned_mem = mem;
+    }
+    NVNmemoryPoolBuilder mpb;
+    h_nvnMemoryPoolBuilderSetDefaults(&mpb);
+    h_nvnMemoryPoolBuilderSetDevice(&mpb, b->device);
+    h_nvnMemoryPoolBuilderSetFlags(&mpb, NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED | NVN_MEMORY_POOL_FLAGS_GPU_CACHED);
+    h_nvnMemoryPoolBuilderSetStorage(&mpb, mem, size);
+    if (!h_nvnMemoryPoolInitialize(&img->pool, &mpb)) {
+        free(img->owned_mem);
+        memset(img, 0, sizeof *img);
+        return 0;
+    }
+    img->device = b->device;
+    img->format = b->format ? b->format : NVN_FORMAT_RGBA8;
+    img->width = w ? w : 384;
+    img->height = h ? h : 216;
+    return 1;
+}
+
+HLE_FORCE("_Z22nvnNativeImageFinalizeP14NVNnativeImage",
+          "Release NVNnativeImage memory pool and optional backing",
+          void, h_nvnNativeImageFinalize, void *ni_raw) {
+    MkwNativeImage *img = (MkwNativeImage *)ni_raw;
+    if (!img) return;
+    if (img->device) h_nvnMemoryPoolFinalize(&img->pool);
+    free(img->owned_mem);
+    memset(img, 0, sizeof *img);
+}
+
+HLE_FORCE("_Z35nvnTextureInitializeFromNativeImageP10NVNtextureP14NVNnativeImage",
+          "Initialize an NVNtexture from a Switch 2 NVNnativeImage",
+          NVNboolean, h_nvnTextureInitializeFromNativeImage, NVNtexture *tex, const void *ni_raw) {
+    const MkwNativeImage *img = (const MkwNativeImage *)ni_raw;
+    if (!tex || !img || !img->device) return 0;
+    NVNtextureBuilder tb;
+    h_nvnTextureBuilderSetDefaults(&tb);
+    h_nvnTextureBuilderSetDevice(&tb, img->device);
+    h_nvnTextureBuilderSetTarget(&tb, NVN_TEXTURE_TARGET_2D);
+    h_nvnTextureBuilderSetFormat(&tb, img->format);
+    h_nvnTextureBuilderSetSize2D(&tb, (int)img->width, (int)img->height);
+    h_nvnTextureBuilderSetLevels(&tb, 1);
+    h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&img->pool, 0);
+    return h_nvnTextureInitialize(tex, &tb);
+}
+#endif

@@ -40,7 +40,14 @@
 #define GAME_NAME "Mario Kart World"
 #define GAME_FOLDER "MKW"   /* ~/Library/Application Support/MacNativeGames/<this>, Logs/MacNativeGames/<lowercase>.log */
 #define GAME_LOG "mkw"
+#if defined(__has_include)
+#if __has_include("mkw_game_version.h")
+#include "mkw_game_version.h"
+#endif
+#endif
+#ifndef TOTK_GAME_VERSION
 #define TOTK_GAME_VERSION "1.0.0"
+#endif
 #define TOTK_GAME_DIR "mkw"
 #define GAME_ADDR_0x15ecb0c 0xffffffffu
 #define GAME_ADDR_0xe995c4 0xffffffffu

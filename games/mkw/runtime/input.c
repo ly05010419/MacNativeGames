@@ -116,6 +116,21 @@ static void zero_drift_mode(const void *handle,const int *mode){(void)handle;(vo
 static void joy_dual(const uint32_t *id){(void)id;}
 static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
 #endif
+#ifdef GAME_MKW
+static void jcms_init(void *work,size_t size){(void)work;(void)size;}
+static void jcms_fini(void){}
+static uint32_t jcms_handle(const uint32_t *id,const uint32_t *type){return (*id&0xffu)|((*type&0xffu)<<8);}
+static void jcms_start_stop(const uint32_t *h){(void)h;}
+static int jcms_states(void *out,int n,const uint32_t *h){(void)out;(void)n;(void)h;return 0;}
+static void nmouse_init(void *work,size_t size,int w,int h){(void)work;(void)size;(void)w;(void)h;}
+static void nmouse_fini(void){}
+static int nmouse_handles(void *out,int n,uint32_t id){(void)out;(void)n;(void)id;return 0;}
+static int nmouse_type_set(uint32_t *out,uint64_t h){(void)h;if(out)*out=0;return 0;}
+static int nmouse_states(int *count,void *out,int n,uint64_t h){(void)out;(void)n;(void)h;if(count)*count=0;return 0;}
+static int nmouse_enable_ptr(uint64_t h,int on){(void)h;(void)on;return 0;}
+static void nmouse_ptr_ranges(int w,int h){(void)w;(void)h;}
+static int nmouse_ptr_pos(uint64_t h,int x,int y){(void)h;(void)x;(void)y;return 0;}
+#endif
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
  static const struct{const char *name;void *fn;} entries[]={
@@ -140,6 +155,18 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
  {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
  {"_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE",show_controller_support_v1}
+#endif
+#ifdef GAME_MKW
+ ,{"_ZN2nn3hid14InitializeJcmsEPvm",jcms_init},{"_ZN2nn3hid12FinalizeJcmsEv",jcms_fini},
+ {"_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE",jcms_handle},{"_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE",jcms_start_stop},
+ {"_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE",jcms_start_stop},{"_ZN2nn3hid13GetJcmsStatesEPNS0_9JcmsStateEiRKNS0_10JcmsHandleE",jcms_states},
+ {"_ZN2nn3hid16InitializeNmouseEPvmii",nmouse_init},{"_ZN2nn3hid14FinalizeNmouseEv",nmouse_fini},
+ {"_ZN2nn3hid16GetNmouseHandlesEPNS0_12NmouseHandleEij",nmouse_handles},
+ {"_ZN2nn3hid16GetNmouseTypeSetEPNS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEENS0_12NmouseHandleE",nmouse_type_set},
+ {"_ZN2nn3hid15GetNmouseStatesEPiPNS0_11NmouseStateEiNS0_12NmouseHandleE",nmouse_states},
+ {"_ZN2nn3hid19EnableNmousePointerENS0_12NmouseHandleEb",nmouse_enable_ptr},
+ {"_ZN2nn3hid22SetNmousePointerRangesEii",nmouse_ptr_ranges},
+ {"_ZN2nn3hid24SetNmousePointerPositionENS0_12NmouseHandleEii",nmouse_ptr_pos}
 #endif
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
