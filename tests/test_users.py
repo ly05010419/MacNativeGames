@@ -16,7 +16,7 @@ class Users(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / 'users'
             build = subprocess.run(
-                [compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                [compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-DTEST_EXTERNAL_SAVE=1',
                  str(ROOT / 'tests/test_users.c'), str(ROOT / 'games/totk/runtime/account.c'),
                  '-I' + str(ROOT / 'games/totk/runtime'), '-o', str(executable)],
                 capture_output=True, text=True)
@@ -45,6 +45,26 @@ class Users(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('pass: users', run.stdout)
             self.assertIn("pass: odyssey's profile of before", run.stdout)
+
+    def test_acnh_links_the_shared_store(self):
+        """Animal Crossing builds the same file (shared/runtime/account.c) with GAME_ACNH from its game_version.h: its
+        SDK's extra account entries (OpenUser, the user count and list, the licence, play statistics) are branches there."""
+        compiler = shutil.which('cc')
+        if not compiler:
+            self.skipTest('A C compiler is required')
+        link = ROOT / 'games/acnh/runtime/account.c'
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), (ROOT / 'shared/runtime/account.c').resolve())
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / 'users'
+            build = subprocess.run(
+                [compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                 str(ROOT / 'tests/test_users.c'), str(link), '-I' + str(ROOT / 'games/acnh/runtime'), '-o', str(executable)],
+                capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(executable)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn('pass: users', run.stdout)
 
 
 if __name__ == '__main__':

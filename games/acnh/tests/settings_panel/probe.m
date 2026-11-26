@@ -9,6 +9,11 @@
 #undef runtime_display_max_hz
 #include <assert.h>
 
+/* The User page's Add User button (the shared panel's private action), called as the button would. */
+@interface TOTKSettingsPanel (UserPageProbe)
+-(void)addUser:(id)sender;
+@end
+
 /* The fastest connected screen (frontend.m in the app, frame_rate.c display_holds): a 60 Hz one until the probe says. */
 static int fakeDisplayHz = 60;
 int runtime_display_max_hz(void) { return fakeDisplayHz; }
@@ -67,6 +72,20 @@ void mtl_board_view(int *ow, int *oh, int *sw, int *sh, int *mfx) { *ow = 1920; 
 int mtl_display_hz(void) { return fakeDisplayHz; }
 /* hid_feedback.c's rumble turned off while the game has its devices: the motors are stopped. */
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
+/* shared/runtime/users.h's store (runtime/account.c): three users here, the first the one this run opened with.
+   Choosing behaves as the store does, so the User page's rows can be checked without a profile. */
+static RuntimeUser fakeUsers[RUNTIME_USERS_MAX] = {{1, 1, "Local"}, {2, 2, "Zelda"}, {3, 3, "Mario"}};
+static int fakeUserCount = 3, fakeUserNext = 0;
+int runtime_users_get(RuntimeUser *out, int max) { int n = 0; for (int i = 0; i < fakeUserCount && n < max; i++) out[n++] = fakeUsers[i]; return n; }
+int runtime_users_active(RuntimeUser *out) { out[0] = fakeUsers[0]; return 0; }
+int runtime_users_next(RuntimeUser *out) { out[0] = fakeUsers[fakeUserNext]; return 0; }
+int runtime_users_add(const char *name) {
+    if (!name || !name[0] || fakeUserCount >= RUNTIME_USERS_MAX) return -1;
+    RuntimeUser *u = &fakeUsers[fakeUserCount];
+    u->lo = u->hi = (uint64_t)fakeUserCount + 10; snprintf(u->name, sizeof u->name, "%s", name);
+    return fakeUserCount++;
+}
+int runtime_users_choose(int index) { if (index < 0 || index >= fakeUserCount) return -1; fakeUserNext = index; return 0; }
 /* A window key is the user's input (input.c user_input): it stops a survey and an auto-load, neither here. */
 void runtime_survey_cancel_user(void) {}
 void runtime_autoload_user_input(void) {}
@@ -158,21 +177,53 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Opaque (PR #1305): the game's bright screens do not show through. */
     assert(CGColorGetAlpha(settingsPanel.tint.layer.backgroundColor) == 1.0);   /* the colour over the glass: solid */
 
-    /* The tabs (2026-11-17, as the Zelda games, without a User page, the shader contribution or VR). */
-    assert(settings_pages() == 6 && settingsPanel.tabs.segmentCount == 6);
-    { NSArray *labels = @[@"Display", @"Input", @"Effects", @"Key bindings", @"Performance", @"Screenshots"];
-      for (NSInteger t = 0; t < 6; t++) assert([[settingsPanel.tabs labelForSegment:t] isEqualToString:labels[(NSUInteger)t]]); }
-    assert(!settings_page_present(SETTINGS_PAGE_USERS) && !settings_page_present(SETTINGS_PAGE_CONTRIB) && !settings_page_present(SETTINGS_PAGE_VR));
-    assert(settings_tab_page(2) == SETTINGS_PAGE_EFFECTS && settings_tab_page(3) == SETTINGS_PAGE_BINDINGS &&
-           settings_tab_page(4) == SETTINGS_PAGE_BOARD && settings_tab_page(5) == SETTINGS_PAGE_SHOTS);
+    /* The tabs (2026-11-25: the User page too, after Input; without the shader contribution or VR). */
+    assert(settings_pages() == 7 && settingsPanel.tabs.segmentCount == 7);
+    { NSArray *labels = @[@"Display", @"Input", @"User", @"Effects", @"Key bindings", @"Performance", @"Screenshots"];
+      for (NSInteger t = 0; t < 7; t++) assert([[settingsPanel.tabs labelForSegment:t] isEqualToString:labels[(NSUInteger)t]]); }
+    assert(settings_page_present(SETTINGS_PAGE_USERS) && !settings_page_present(SETTINGS_PAGE_CONTRIB) && !settings_page_present(SETTINGS_PAGE_VR));
+    assert(settings_tab_page(3) == SETTINGS_PAGE_EFFECTS && settings_tab_page(4) == SETTINGS_PAGE_BINDINGS &&
+           settings_tab_page(5) == SETTINGS_PAGE_BOARD && settings_tab_page(6) == SETTINGS_PAGE_SHOTS);
 
-    /* Animal Crossing's rows: Display 5, Input 6 (controller type, rumble, the 4 DSU rows), Effects 1 (the picture). */
+    /* Animal Crossing's rows: Display 6, Input 6 (controller type, rumble, the 4 DSU rows), User 2, Effects 1. */
     { NSArray *display = @[@"Overlay", @"FPS graph", @"Frame rate", @"Frame rate in use", @"Frame interpolation (MetalFX)", @"Game language (from the next launch)"];
       assert([titles(SETTINGS_PAGE_DISPLAY) isEqualToArray:display]);
       NSArray *input = @[@"Controller type", @"Rumble", @"DSU input", @"DSU server", @"DSU controller slot", @"DSU status"];
       assert([titles(SETTINGS_PAGE_INPUT) isEqualToArray:input]);
+      assert([titles(SETTINGS_PAGE_USERS) isEqualToArray:(@[@"User this run", @"User (from the next launch)"])]);
       assert([titles(SETTINGS_PAGE_EFFECTS) isEqualToArray:@[@"Picture"]]);
-      assert(settingsPanel.allRows.count == 13); }
+      assert(settingsPanel.allRows.count == 15); }
+
+    /* User (as the Zelda games): the user this run opened with, and the popup for the next launch's. The page's picture
+       is kept for the test. */
+    [settingsPanel selectPage:SETTINGS_PAGE_USERS];
+    { NSPopUpButton *me = menu(@"User this run");
+      assert(!me.enabled && [me.titleOfSelectedItem isEqualToString:@"Local"]); }
+    { NSPopUpButton *next = menu(@"User (from the next launch)");
+      assert([next.itemTitles isEqualToArray:(@[@"Local", @"Zelda", @"Mario"])] && next.indexOfSelectedItem == 0);
+      pick(@"User (from the next launch)", @"Zelda"); assert(fakeUserNext == 1);
+      tick(); tick();   /* the row asks for the panel to be made again with the pick in force */
+      assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_USERS);
+      next = menu(@"User (from the next launch)"); assert(next.indexOfSelectedItem == 1); }
+    { NSString *png = [@(getenv("SETTINGS_TEST_DIR")) stringByAppendingPathComponent:@"user-page.png"];
+      NSBitmapImageRep *rep = [settingsPanel bitmapImageRepForCachingDisplayInRect:settingsPanel.bounds];
+      [settingsPanel cacheDisplayInRect:settingsPanel.bounds toBitmapImageRep:rep];
+      assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:png atomically:YES]); }
+
+    /* 添加用户…: the shared text keyboard (as the Zelda games) takes the name; the page comes back with the new user. */
+    { NSString *png = [@(getenv("SETTINGS_TEST_DIR")) stringByAppendingPathComponent:@"add-user-keyboard.png"];
+      [settingsPanel addUser:nil];
+      for (int i = 0; i < 250 && !openBar; i++) tick();
+      assert(openBar && !settingsOpen);   /* the panel closes while the keyboard is up */
+      runtime_front_text_test("shot", png.UTF8String);
+      for (int i = 0; i < 150 && ![NSFileManager.defaultManager fileExistsAtPath:png]; i++) tick();
+      assert([NSFileManager.defaultManager fileExistsAtPath:png]);
+      runtime_front_text_test("type", "NewUser"); tick();
+      runtime_front_text_test("enter", "");
+      for (int i = 0; i < 250 && (openBar || !settingsOpen); i++) tick();
+      assert(!openBar && settingsOpen && settingsPanel.page == SETTINGS_PAGE_USERS && fakeUserCount == 4);
+      NSPopUpButton *next = menu(@"User (from the next launch)");
+      assert([next.itemTitles containsObject:@"NewUser"]); }
 
     /* The overlay: the Zelda games' four choices; FPS + playtime and the corner box. */
     assert([choices(@"Overlay") isEqualToArray:(@[@"Off", @"Bare FPS", @"FPS + playtime", @"All", @"FPS and frame debug info"])]);   /* user 2026-11-18 */
@@ -254,11 +305,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settings_home_open = probe_home_open; [settingsPanel.homeButton performClick:nil]; settings_home_open = settings_home_open_default;
     assert(homeOpens == 1 && [homeOpened.host isEqualToString:@"127.0.0.1"] && [homeOpened.query containsString:@"game=acnh"]);
 
-    /* L1 / R1 go round the six tabs. */
+    /* L1 / R1 go round the seven tabs. */
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:100 active:YES];
-    { const NSInteger order[] = {SETTINGS_PAGE_INPUT, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_DISPLAY};
-      for (int k = 0; k < 6; k++) {
+    { const NSInteger order[] = {SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_BOARD, SETTINGS_PAGE_SHOTS, SETTINGS_PAGE_DISPLAY};
+      for (int k = 0; k < 7; k++) {
         [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:100.2 + k active:YES];
         [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:100.3 + k active:YES];
         if (settingsPanel.page != order[k]) { tick(); }   /* the bindings page may be made again on the next turn */
@@ -277,8 +328,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
 
     /* Chinese labels. */
     setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
-    shows(@"手柄类型", @"自动（PlayStation）"); assert([[settingsPanel.tabs labelForSegment:4] isEqualToString:@"性能排行榜"]);
+    shows(@"手柄类型", @"自动（PlayStation）"); assert([[settingsPanel.tabs labelForSegment:5] isEqualToString:@"性能排行榜"]);
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, opaque, six tabs, overlay and box, 30/60/120 on 60 and 120 Hz screens, rumble, DSU, effects and reset, screenshot key and hold, board, screenshots, homepage, L1 / R1, panelshot, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, opaque, seven tabs, user page, overlay and box, 30/60/120 on 60 and 120 Hz screens, rumble, DSU, effects and reset, screenshot key and hold, board, screenshots, homepage, L1 / R1, panelshot, Chinese)");
     return 0;
 }}

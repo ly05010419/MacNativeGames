@@ -31,21 +31,23 @@
                                                          graphics-output.txt; TOTK_MFX_UPSCALE / TOTK_MFX_OUTPUT decide first.
                                                          Reset to defaults: plain scaling again (the file removed).
    Key bindings, with the screenshot row (P, or the touchpad held 3 s); 性能排行榜 and 截图分享 (both off by default).
-   Left out: the User page (one island per console: see below), the 着色器贡献 page (this game's shaders have no list
-   that contributions could go to), VR, rumble strength, gyro aiming and mouse sensitivity (no such settings here).
-   The User page: on a console Animal Crossing keeps one island for every user, and the game checks the residents' user
-   ids against the console's users. This host gives each user a save folder of its own (runtime/fs_host.c names it after
-   the user's id), so a second user would start a second island, and the game's account calls here know one user only
-   (runtime/account.c). The saves stay with the one account they have always had (<TOTK_PROFILE_DIR>/account.uid). */
+   The User page (SETTINGS_HAS_USERS, shared/runtime/users.h): each local user gets a save folder of its own
+   (runtime/fs_host.c names it after the user's id), so a second user starts a second island; a console shares one
+   island between its users instead. The page is the Zelda games': the user this run opened with, the user the next
+   launch gets (a popup) and 添加用户….
+   Left out: the 着色器贡献 page (this game's shaders have no list that contributions could go to), VR, rumble
+   strength, gyro aiming and mouse sensitivity (no such settings here). */
 #if SETTINGS_GAME_PART == 1
 #define SETTINGS_HAS_EFFECTS 1
 #define SETTINGS_HAS_BOARD 1
 #define SETTINGS_HAS_SHOTS 1
 #define SETTINGS_HAS_CONTRIB 0
+#define SETTINGS_HAS_USERS 1
 /* Opaque (games/totk: 0.9): Animal Crossing's bright screens, and its own letter keyboard in the name entry, showed through
    the key bindings drawing and read as keys out of place (reported in play, PR #1305). */
 #define SETTINGS_PANEL_ALPHA 1.0
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_up.h"   /* mfxup_*: MetalFX upscaling of the picture */
+#include "users.h"   /* the local users (runtime/account.c): the User page's rows */
 
 void dm_gfx_set_flag(const char *name, int value);
 
@@ -165,9 +167,26 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];   /* rumble: hid_feedback.c's switch (runtime_feedback_* with 0) */
  settings_dsu_rows(rows);
  NSUInteger input=rows.count;
+ /* User (runtime/users.h, as the Zelda games): the user this run opened with, and the one the next launch gets — the
+    save folder is named after the user's id, so another user plays on their own island. A running game keeps its user. */
+ RuntimeUser usersAll[RUNTIME_USERS_MAX],usersMe,usersNext;
+ int usersCount=runtime_users_get(usersAll,RUNTIME_USERS_MAX);
+ int usersMeOk=!runtime_users_active(&usersMe);runtime_users_next(&usersNext);
+ NSMutableArray<NSString *> *userNames=[NSMutableArray array];NSMutableArray<NSNumber *> *userIndex=[NSMutableArray array];
+ int userPicked=0;
+ for(int i=0;i<usersCount;i++){
+  [userNames addObject:@(usersAll[i].name)];[userIndex addObject:@(i)];
+  if(usersAll[i].lo==usersNext.lo&&usersAll[i].hi==usersNext.hi)userPicked=i;
+ }
+ [rows addObject:settings_fixed(settings_text("本次运行的用户","User this run"),usersMeOk?@(usersMe.name):settings_text("（无）","(none)"))];
+ [rows addObject:settings_row(settings_text("用户（下次启动生效）","User (from the next launch)"),userNames,userIndex,
+  ^int{return userPicked;},^(int v){runtime_users_choose(v);
+   /* the list's order does not change, but the pick does: the row is made again with the new one in force */
+   dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});})];
+ NSUInteger users=rows.count;
  /* Effects */
  settings_effect_rows(rows);
- for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:SETTINGS_PAGE_EFFECTS;
+ for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:i<users?SETTINGS_PAGE_USERS:SETTINGS_PAGE_EFFECTS;
  return rows;
 }
 /* The game actions the key bindings page lists, in its order; action -1 starts a section (SettingsAction,

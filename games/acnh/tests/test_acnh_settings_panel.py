@@ -68,6 +68,7 @@ class AnimalCrossingSettingsPanel(unittest.TestCase):
             self.assertEqual((settings / "graphics-output.txt").read_text(), "1\n")    # MetalFX upscaling
             self.assertEqual((settings / "frame-rate.txt").read_text(), "60\n")
             self.assertTrue((settings / "panel.png").stat().st_size > 0)
+            self.assertTrue((settings / "user-page.png").stat().st_size > 0)   # the User page as drawn
             run = subprocess.run([str(exe), "restore"], env=env, capture_output=True, text=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("pass: settings restore", run.stdout)
@@ -90,11 +91,12 @@ class AnimalCrossingPanelSources(unittest.TestCase):
     def test_pages_and_saves(self):
         game = (GAME / "runtime/settings_game.h").read_text()
         self.assertEqual(sorted(re.findall(r"#define (SETTINGS_HAS_\w+) 1", game)),
-                         ["SETTINGS_HAS_BOARD", "SETTINGS_HAS_EFFECTS", "SETTINGS_HAS_SHOTS"])
+                         ["SETTINGS_HAS_BOARD", "SETTINGS_HAS_EFFECTS", "SETTINGS_HAS_SHOTS", "SETTINGS_HAS_USERS"])
         self.assertIn("#define SETTINGS_HAS_CONTRIB 0", game)
-        self.assertNotIn("SETTINGS_HAS_USERS", game.split("*/", 1)[1])   # no User page: the saves keep their one account
-        self.assertFalse((GAME / "runtime/account.c").is_symlink())    # the game's own single-user account.c
-        self.assertFalse((GAME / "runtime/users.h").exists())
+        self.assertTrue((GAME / "runtime/users.h").is_symlink())   # the user store's header, shared/runtime/users.h
+        self.assertEqual((GAME / "runtime/users.h").resolve(), (ROOT / "shared/runtime/users.h").resolve())
+        self.assertTrue((GAME / "runtime/account.c").is_symlink())   # the shared store, with its GAME_ACNH entries
+        self.assertEqual((GAME / "runtime/account.c").resolve(), (ROOT / "shared/runtime/account.c").resolve())
         self.assertIn('{KEYMAP_SCREENSHOT,"截图","Screenshot",NULL}', game)
         self.assertIn("v<=HUD_MODE_BARE)fps_overlay_set_hud_mode(v)", game)   # every overlay choice, Bare FPS too (2026-11-18)
         self.assertIn('#define GAME_INBOX_ID "acnh"', (GFX / "totk_contrib_upload.h").read_text())

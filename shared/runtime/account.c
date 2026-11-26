@@ -2,11 +2,11 @@
    validated; the users survive restarts in <TOTK_PROFILE_DIR>/users.txt. The user in force is the preselected
    one, as on a console: chosen before the game starts (settings_panel.h's User page, from the next launch), and a
    running game keeps the user it opened with even when another one is chosen afterwards.
-   shared/runtime/account.c: Tears of the Kingdom (and Breath of the Wild, Bananza, Pokopia), Ocarina of Time and Super
-   Mario Odyssey link it (runtime/account.c in each); a profile from before the users keeps its account.uid identity as
-   the user "Local", so its save area stays the one in use. */
+   shared/runtime/account.c: Tears of the Kingdom (and Breath of the Wild, Bananza, Pokopia), Ocarina of Time, Super
+   Mario Odyssey and Animal Crossing link it (runtime/account.c in each); a profile from before the users keeps its
+   account.uid identity as the user "Local", so its save area stays the one in use. */
 #include "runtime.h"
-#include "game_version.h"   /* GAME_ODYSSEY: the game this link builds (game_version.h is per game) */
+#include "game_version.h"   /* GAME_ODYSSEY / GAME_ACNH: the game this link builds (game_version.h is per game) */
 void hle_signal_system_event(void *event);
 #include "users.h"
 #include <fcntl.h>
@@ -27,6 +27,12 @@ static int usersCount,usersActive,externalSaveMode;   /* usersActive: the user t
 static char usersDir[4096];
 #define EXTERNAL_SAVE_UID_LO 0x78626c0000000001ULL   /* matches nxnative player 1 UID: 53574e415449564578626c0000000001 */
 #define EXTERNAL_SAVE_UID_HI 0x53574e4154495645ULL
+/* nn::account::Nickname is 33 bytes in Animal Crossing's SDK (its account.c zeroed 33), 32 in the other games'. */
+#if defined(GAME_ACNH)
+#define ACCOUNT_NICKNAME_BYTES 33
+#else
+#define ACCOUNT_NICKNAME_BYTES 32
+#endif
 /* Canaries around the lock: an intermittent hang showed this mutex's internal words changed while nobody held it. */
 #define GUARD 0x6163636f756e7447ULL
 static struct{uint64_t pre[8];pthread_mutex_t m;uint64_t post[8];} guarded={{GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD},PTHREAD_MUTEX_INITIALIZER,{GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD,GUARD}};
@@ -153,7 +159,7 @@ static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null 
 static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();lock_acquire();*out=user_of(uid)!=NULL;lock_release();return 0;}
-static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!uid)return 0x7c67;lock_acquire();const RuntimeUser *u=user_of(uid);if(u){memset(out,0,32);memcpy(out,u->name,strlen(u->name));}lock_release();return u?0:0x7c67;}
+static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!uid)return 0x7c67;lock_acquire();const RuntimeUser *u=user_of(uid);if(u){memset(out,0,ACCOUNT_NICKNAME_BYTES);memcpy(out,u->name,strlen(u->name));}lock_release();return u?0:0x7c67;}
 void runtime_account_uid(uint64_t out[2]){initialize();out[0]=local.lo;out[1]=local.hi;}
 
 /* ---------- the settings panel's User page (runtime/users.h) ---------- */
@@ -191,9 +197,9 @@ int runtime_users_choose(int index){
  return 0;
 }
 
-#if defined(GAME_MK8DX) || defined(GAME_W3)
-/* Mario Kart 8 Deluxe (SDK 4.4) and The Witcher 3 open a user by its id (OpenUser): only the user the game plays as
-   can be opened. */
+#if defined(GAME_MK8DX) || defined(GAME_W3) || defined(GAME_ACNH)
+/* Mario Kart 8 Deluxe (SDK 4.4), The Witcher 3 and Animal Crossing open a user by its id (OpenUser): only the user the
+   game plays as can be opened. */
 static uint32_t open_user(UserHandle *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();lock_acquire();int mine=uid->lo==local.lo&&uid->hi==local.hi;lock_release();return mine&&preselected(out)?0:0x7c67;}
 #endif
 #if defined(GAME_BOTW) || defined(GAME_MK8DX)
@@ -217,15 +223,36 @@ static uint32_t list_open_users(int *count,Uid *out,int n){if(!count)return 0x7c
 static void async_noop(void *self){(void)self;}
 static uint32_t async_event(void *self,void *event){(void)self;if(!event)return 0x7c67;hle_bind_system_event(event,0);hle_signal_system_event(event);return 0;}
 static uint32_t license_kind(void *self){(void)self;return 0;}
-#ifdef GAME_ODYSSEY
-/* Super Mario Odyssey (games/odyssey, linked here since 2026-11-17) keeps the entries its single-user account.c had: its SDK
-   is statically linked, so every entry below replaces game code, and the network-service and AsyncContext ones the other
-   games need were never tried in it. It opens the preselected user with the Result-returning variant after Initialize;
-   the SDK's own variant expects Switch account state this host does not keep. */
+#if defined(GAME_ACNH)
+/* Animal Crossing 3.0.1 also opens the user by its Uid, lists the users who may play online, asks about play
+   statistics and the online licence (reported in play, PR #1305: unhandled calls went to the account service, which
+   this host does not run). The user this run opened with is the one it opens; the User page chooses the next
+   launch's. Its profile picture: runtime/system_applets.c. */
+static uint32_t user_count(int *out){if(!out)return 0x7c67;initialize();lock_acquire();*out=usersCount;lock_release();return 0;}
+static uint32_t list_all_users(int *count,Uid *out,int capacity){
+ if(!count||capacity<0||(capacity>0&&!out))return 0x7c67;
+ initialize();lock_acquire();int n=0;while(n<capacity&&n<usersCount){out[n].lo=users[n].lo;out[n].hi=users[n].hi;n++;}*count=n;lock_release();return 0;
+}
+static uint32_t promote_qualification(const Uid *uid){initialize();return same(uid)?0:0x7c67;}
+/* The "Nintendo Switch Online is required" dialog: there is no online service here; as if the player closed it. */
+static uint32_t show_license_requirements(const UserHandle *handle){(void)handle;fprintf(stderr,"[totk] account: online licence dialog requested; there is no online service here\n");return 0;}
+static int query_play_stats_uid(void *out,const void *uid,const uint64_t *app_id,int count){
+ (void)uid;(void)app_id;if(out&&count>0)memset(out,0,(size_t)count*16);return count>0?count:0;
+}
+static int query_play_stats(void *out,const uint64_t *app_id,int count){
+ (void)app_id;if(out&&count>0)memset(out,0,(size_t)count*16);return count>0?count:0;
+}
+#endif
+#if defined(GAME_ODYSSEY) || defined(GAME_ACNH)
+/* Super Mario Odyssey and Animal Crossing open the preselected user with the Result-returning variant after
+   Initialize; the SDK's own variant expects Switch account state this host does not keep. */
 static uint32_t open_preselected_result(UserHandle *out){return preselected(out)?0:0x7c67;}
 #endif
 void *runtime_account_override(const char *name){
 #ifdef GAME_ODYSSEY
+/* Super Mario Odyssey (games/odyssey, linked here since 2026-11-17) keeps the entries its single-user account.c had: its SDK
+   is statically linked, so every entry below replaces game code, and the network-service and AsyncContext ones the other
+   games need were never tried in it. */
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected_result},
@@ -240,7 +267,11 @@ void *runtime_account_override(const char *name){
  {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE",last_opened},{"_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi",list_open_users},
  {"_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE",no_nintendo_account},
  {"_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE",no_nintendo_account},
+#if defined(GAME_ACNH)
+ {"_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE",show_license_requirements},
+#else
  {"_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE",no_nintendo_account},
+#endif
  {"_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE",no_nintendo_account},
  {"_ZN2nn7account34LoadNetworkServiceLicenseInfoAsyncEPNS0_37AsyncNetworkServiceLicenseInfoContextERKNS0_10UserHandleE",no_nintendo_account},
  {"_ZN2nn7account12AsyncContextC1Ev",async_noop},{"_ZN2nn7account12AsyncContextD1Ev",async_noop},{"_ZN2nn7account12AsyncContextD2Ev",async_noop},
@@ -253,8 +284,16 @@ void *runtime_account_override(const char *name){
  ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_users}
  ,{"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users}
 #endif
-#if defined(GAME_MK8DX) || defined(GAME_W3)   /* The Witcher 3 opens the user it was given (main+0x1619ac) */
+#if defined(GAME_MK8DX) || defined(GAME_W3) || defined(GAME_ACNH)   /* The Witcher 3 opens the user it was given (main+0x1619ac) */
  ,{"_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE",open_user}
+#endif
+#if defined(GAME_ACNH)
+ ,{"_ZN2nn7account12GetUserCountEPi",user_count},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_all_users}
+ ,{"_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi",list_all_users}
+ ,{"_ZN2nn7account20PromoteQualificationERKNS0_3UidE",promote_qualification}
+ ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected_result}
+ ,{"_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsERKNS_7account3UidEPKNS_13ApplicationIdEi",query_play_stats_uid}
+ ,{"_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsEPKNS_13ApplicationIdEi",query_play_stats}
 #endif
  };
 #endif

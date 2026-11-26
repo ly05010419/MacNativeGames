@@ -314,12 +314,15 @@ pages this game supports:
 - **性能排行榜** (Performance) and **截图分享** (Screenshots): the frame-rate board and the shared screenshots of this game
   (`acnh` at mac-native-games.com), with the player's nickname. Their switches 我要上榜 and 分享我的截图 are off by default;
   nothing is sent unless the player turns them on.
+- **User:** the local users (shared/runtime/users.h), as in the Zelda games: the page shows the user this run opened
+  with, a popup chooses the user the next start plays as, and **添加用户…** adds one (the same full-window text keyboard
+  as the Zelda games). Each user gets a save folder of its own (`profile/save/<user id>`), so a second user starts a
+  second island — a console shares one island between its users instead. An existing save keeps the account it had (the
+  user "Local" when the profile predates the users; this profile's first user is "duanxinyi").
 
-Left out: the User page (on a console Animal Crossing keeps one island for every user; this host would give a second
-user a save folder, and so an island, of its own, so the saves stay with the one account they always had), the shader
-contribution page (this game's shaders have no shared list to contribute to), VR, rumble strength, gyro aiming and
-mouse sensitivity. The corner box is the Zelda games' too: FPS, the other lines the overlay choice shows, the session's
-and the total playtime (`profile/playtime.json`), the controller's battery and how to open the panel.
+Left out: the shader contribution page (this game's shaders have no shared list to contribute to), VR, rumble strength,
+gyro aiming and mouse sensitivity. The corner box is the Zelda games' too: FPS, the other lines the overlay choice shows,
+the session's and the total playtime (`profile/playtime.json`), the controller's battery and how to open the panel.
 
 The choices are saved in the app's data folder (`controls.txt`, `keyboard.txt` and one small file per setting,
 including `frame-rate.txt`). Scripted input (`commands.txt`, `TOTK_INPUT_SCRIPT`) keeps the fixed test layout, so scripts mean the same keys
