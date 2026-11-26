@@ -6,6 +6,7 @@
 #include "world_survey.h"
 #include "keyboard_map.h"
 #include "input_prompts.h"
+#include "input_tape.h"   /* the user's route recorded and replayed (TOTK_INPUT_RECORD / TOTK_INPUT_REPLAY, shared with Ocarina of Time) */
 /* Input-only probes do not link the platform renderer. */
 extern void runtime_prompt_keyboard(const KeyMap *) __attribute__((weak_import));
 extern void runtime_prompt_note_input(PromptDevice) __attribute__((weak_import));
@@ -174,7 +175,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
  if(runtime_vr_stick_pitch_locked())state.ry=0;   /* zeldaVR: up / down is the headset's (game_patches_v143.c) */
- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ }input_tape(&state.buttons,&state.lx,&state.ly,&state.rx,&state.ry);   /* TOTK_INPUT_RECORD / TOTK_INPUT_REPLAY (input_tape.h) */
+ *out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
 #ifdef GAME_NS2
