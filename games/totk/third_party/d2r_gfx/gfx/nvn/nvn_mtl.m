@@ -1827,6 +1827,26 @@ static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交
 static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
+/* W5 texture pre-warm (2026-11-26, Ocarina of Time; off unless OOT_TEX_PREWARM=1): textures registered into a
+   pool during an area load are first uploaded at their first bind, which put up to 383 textures / 280 MB into one
+   frame (100-580 ms spikes at area entry, measured). Registration now queues the slot; the submit thread drains
+   the queue at the start of every submission, up to OOT_TEX_PREWARM_MB (default 48) per submission, so the area's
+   textures are uploaded during the load / fade frames instead. Same thread as the first-bind upload, so no new
+   locking; a texture not yet drained is uploaded at first bind as before (no regression). */
+static pthread_mutex_t g_pw_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_pw_q[8192]; static int g_pw_n;
+static _Atomic uint64_t g_pw_done_n, g_pw_done_bytes, g_pw_skip_n;
+static int pw_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM"); v = e && atoi(e) > 0; } return v; }
+static long pw_mb(void) { static long v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM_MB"); v = e ? atol(e) : 48; if (v < 1) v = 1; if (v > 512) v = 512; } return v; }
+static long pw_min_kb(void) { static long v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM_MIN_KB"); v = e ? atol(e) : 256; if (v < 16) v = 16; } return v; }
+static int pw_depth_fmt(NVNformat f) { return f==NVN_FORMAT_DEPTH16||f==NVN_FORMAT_DEPTH24||f==NVN_FORMAT_DEPTH32F||f==NVN_FORMAT_DEPTH24_STENCIL8||f==NVN_FORMAT_DEPTH32F_STENCIL8; }
+static uint64_t pw_drain(void);
+static void pw_enqueue(int id) {   // called with registry_lock held by the caller? no: own lock, id is a slot
+    if (!pw_on() || id < 0) return;
+    pthread_mutex_lock(&g_pw_mu);
+    if (g_pw_n < (int)(sizeof g_pw_q / sizeof *g_pw_q)) g_pw_q[g_pw_n++] = id;
+    pthread_mutex_unlock(&g_pw_mu);
+}
 void mtl_sub_begin(void) {
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
@@ -1865,6 +1885,7 @@ void mtl_sub_begin(void) {
     g_alloc_cur = alloc_i; g_alloc_used[alloc_i] = g_alloc_subs;
     [g_alloc4[alloc_i] reset];
     [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
+    pw_drain();   // W5: upload queued textures during load/fade frames, budgeted per submission
     g_commit_blocks = [NSMutableArray array];
     if (rdf_on()) nvn_dirty_read_wait_exempt(1);   // OOT_GPU_READ_FENCE: this thread commits the fence the marks refer to
     chunk_cfg(); g_sub_chunks = 0; g_chunk_mark = g_stat_draw;
@@ -9029,6 +9050,41 @@ static void samp_depth_read_drop(int sid) {
     if (sid < g_nsdr && g_sview_dr[sid]) { defer_obj_release(CFBridgingRelease(g_sview_dr[sid])); g_sview_dr[sid] = NULL; g_srid_dr[sid] = 0; }
 }
 #endif
+/* Drain at the start of a submission (submit thread): upload queued textures until the per-submission byte
+   budget is spent. Returns the bytes uploaded. */
+static uint64_t pw_drain(void) {
+    if (!pw_on()) return 0;
+    int qn;
+    pthread_mutex_lock(&g_pw_mu); qn = g_pw_n; pthread_mutex_unlock(&g_pw_mu);
+    /* A registration burst (area load) gets the full budget, spread over the load/fade frames; in steady
+       play the queue is short and almost nothing is drained per frame (the first bind uploads as before). */
+    uint64_t budget = (uint64_t)(qn > 256 ? pw_mb() : 4) << 20, spent = 0;
+    int iter = 0;
+    for (;;) {
+        int id;
+        pthread_mutex_lock(&g_pw_mu);
+        if (!g_pw_n) { pthread_mutex_unlock(&g_pw_mu); break; }
+        id = g_pw_q[--g_pw_n];
+        pthread_mutex_unlock(&g_pw_mu);
+        if (++iter > 2048) break;
+        registry_lock();
+        int ok = id >= 0 && id < g_ntreg && g_treg[id].ok;
+        tex_t t = ok ? g_treg[id].t : (tex_t){0};
+        uint64_t ser = ok ? t.serial : 0;
+        void *have = ser ? serial_ptr(ser) : NULL;
+        registry_unlock();
+        if (!ok || !ser || have) { atomic_fetch_add(&g_pw_skip_n, 1); continue; }   // already uploaded or gone
+        if (t.L.size < ((uint64_t)pw_min_kb() << 10)) { atomic_fetch_add(&g_pw_skip_n, 1); continue; }
+        if (spent + t.L.size > budget && spent) break;   // budget spent: the rest next submissions
+        void *mt = tex_mtl_p(&t);   // the same first-upload path as at first bind
+        if (mt) { spent += t.L.size; atomic_fetch_add(&g_pw_done_n, 1); atomic_fetch_add(&g_pw_done_bytes, t.L.size); }
+        else atomic_fetch_add(&g_pw_skip_n, 1);
+    }
+    if (spent && (g_pw_done_n % 300) < 2)
+        MLOG("[prewarm] %llu textures / %llu MB uploaded ahead of first use (skipped %llu)", (unsigned long long)g_pw_done_n, (unsigned long long)(g_pw_done_bytes >> 20), (unsigned long long)g_pw_skip_n);
+    return spent;
+}
+
 void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     int id_ = tid; if (id_ < 0) return;
     registry_lock();
@@ -9047,6 +9103,8 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     if (v) g_treg[id_].v = *v; else memset(&g_treg[id_].v, 0, sizeof g_treg[id_].v);   // TOTK: a registration without a view must not keep the slot's previous view (depth texture once got a stale BC3 9-level view)
     if (id_ < (1 << 20)) atomic_store_explicit(&g_tser[id_], t ? t->serial : 0, memory_order_release);
     descriptor_slot_changed(id_);
+    if (t && t->serial && t->d.target == NVN_TEXTURE_TARGET_2D && !pw_depth_fmt(t->d.format) && t->L.size >= ((uint64_t)pw_min_kb() << 10))
+        pw_enqueue(id_);   // W5 pre-warm queue; drained on the submit thread (pw_drain)
     registry_unlock();
 }
 /* TOTK: Metal has three border colours (transparent black, opaque black, opaque white). A sampler that clamps to any

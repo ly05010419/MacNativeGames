@@ -69,10 +69,16 @@ is needed between them. `TOTK_BARRIER_START=0` measured neutral while the GPU is
 win is encoder fixed cost, not serialization. Acceptance: `probe-gpu-dispatch-chain`, `probe-gpu-*`
 barrier probes, screenshot equality. Expected: ~1-3 ms/frame when it lands.
 
-### W5. Frame-drop spikes: pre-warm streamed textures on area entry
-First visit to an area uploads up to 383 textures / 280 MB in one frame (100-580 ms spikes). Pre-load
-the next area's texture set during the load screen / fade. Acceptance: long-frame log spikes gone
-on a scripted route; no fps cost elsewhere. Expected: removes the 100-580 ms spikes entirely.
+### W5. Frame-drop spikes: pre-warm streamed textures on area entry — implemented, opt-in (2026-11-26)
+First visit to an area uploads up to 383 textures / 280 MB in one frame (100-680 ms spikes). Implemented on
+this branch: `nvnTexturePoolRegisterTexture` queues the slot (`OOT_TEX_PREWARM=1`, off by default), and the
+submit thread drains the queue at the start of every submission (`pw_drain` in `nvn_mtl.m`) with a
+per-submission byte budget (`OOT_TEX_PREWARM_MB`, default 48, full budget during registration bursts).
+Measured on the M2: 27k+ textures / 29 GB pre-uploaded ahead of first use, fps unchanged (50.0 vs 50.6);
+the area-entry spike drops a little (681 -> 586 ms) but is not gone — the textures bound on the entry
+frame are registered in the same frames, and part of the remaining spike is CPU-side (0 textures, GPU
+31 ms, frame 237 ms). Next step for W5: hook the game's area-load state (or drain unlimited during fades)
+so the entry frame uploads nothing. Acceptance: long-frame spikes gone on a scripted route; no fps cost.
 
 ### W6. CPU headroom for high-refresh Macs (M3/M4 at 120 Hz)
 Replay 8.25 ms/frame CPU, arg-block reuse 4 %. More reuse (finer invalidation keys), fewer per-draw
