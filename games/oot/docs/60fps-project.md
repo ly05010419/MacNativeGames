@@ -94,10 +94,17 @@ frame are registered in the same frames, and part of the remaining spike is CPU-
 31 ms, frame 237 ms). Next step for W5: hook the game's area-load state (or drain unlimited during fades)
 so the entry frame uploads nothing. Acceptance: long-frame spikes gone on a scripted route; no fps cost.
 
-### W6. CPU headroom for high-refresh Macs (M3/M4 at 120 Hz)
-Replay 8.25 ms/frame CPU, arg-block reuse 4 %. More reuse (finer invalidation keys), fewer per-draw
-lookups. Acceptance: replay CPU/frame measured down, no new PSO/UBO probe failures. Helps 120 Hz
-Macs hold 60-120 more easily; not the M2 wall.
+### W6. CPU headroom — measured, no safe win left on the host side (2026-11-26)
+`sample` over 15 s on the M2 (Kokiri, DRS): **90 % of all CPU samples are in guest JIT code**, the host
+runtime is ~10 % and mostly *waiting* (`__semwait_signal`, gate) — the busy host work per frame is
+JIT translation 0.6 ms + NVN submit/present p50 0.66 ms (~1.3 ms of a 16.8 ms frame). The pipeline at
+DRS is **guest-CPU-bound** (2.04 M guest instructions/frame, ~63 k per draw, 32 draws/frame; GPU busy
+p50 only 4.4 ms). Argument blocks: 60-70 encodes + 3-4 rebinds per frame; `TOTK_AB_SAME` A/B measured
+neutral (43.98 vs 43.5 fps) — the memcmp is not a cost and same-bytes hits are rare (per-draw uniforms
+always differ). Conclusion: the M2 wall at DRS is guest execution + GPU, not host code; finer arg
+invalidation or fewer per-draw lookups would save < 5 % host, inside noise. The lever that actually
+reduces guest CPU per frame is fewer draws (W2 far plane) and less guest-side work; 120 Hz Macs are
+limited by the same guest CPU, so W6 is closed as measured-no-op rather than shipped blind.
 
 ## Order of work
 
