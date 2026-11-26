@@ -67,11 +67,16 @@ naive HLE scaling at SetFormat measured *worse* (44.5 vs 50.6 fps — re-upload 
 any fix must change the size where the game computes it, once, so viewport/sampling/atlas layout all
 follow. Acceptance when unblocked: screenshot diff shows only softer shadows; opt-in row; ~2-3 ms/frame.
 
-### W4. Compute-encoder merging — ~10.2 ms of spans vs ~4.5 ms kernels
-Merge adjacent compute encoders when the dependency analysis (nvn_dispatch_order) says no barrier
-is needed between them. `TOTK_BARRIER_START=0` measured neutral while the GPU is saturated, so the
-win is encoder fixed cost, not serialization. Acceptance: `probe-gpu-dispatch-chain`, `probe-gpu-*`
-barrier probes, screenshot equality. Expected: ~1-3 ms/frame when it lands.
+### W4. Compute-encoder sharing — mostly shipped; remainder is the conservative analysis (2026-11-26)
+`TOTK_DISPATCH_REUSE` (on by default) already shares one compute encoder between dispatches the
+dependency analysis (nvn_dispatch_order) clears: measured on the M2 at DRS, reuse off = 48.1 fps vs
+on = 50.6 (**+5 %**). Dispatch stats at frame 3900: ~7.8 dispatches/frame, of which ~63 % still open
+their own encoder because a binding has no known guest range (textures, images, descriptor pools,
+pointers from uniforms). `TOTK_BARRIER_START=0` and the experimental `TOTK_BARRIER_NARROW=2` both
+measured neutral while the GPU is saturated, so the remaining win is encoder fixed cost, not
+serialization. Extending the range analysis to texture/descriptor-pool writes is the remaining work —
+correctness-critical, gated by `probe-gpu-dispatch-chain` (its negative control) + screenshot
+equality. Expected: ~1-2 ms/frame more if it lands safely.
 
 ### W5. Frame-drop spikes: pre-warm streamed textures on area entry — implemented, opt-in (2026-11-26)
 First visit to an area uploads up to 383 textures / 280 MB in one frame (100-680 ms spikes). Implemented on
