@@ -489,6 +489,7 @@ if params:
 # ⑨ 临时寄存器静态检查：每个补丁块的非原指令目的寄存器必须有同偏移红区存取配对。
 # ⑨ Static check of temporary registers: every non-original-instruction destination register in a patch block must have a matching red-zone save/restore pair at the same offset.
 import capstone
+from stack_switch_check import saved_stack_switch_registers
 def _writes(ins):
     _, ww = ins.regs_access()
     return {'x29' if ins.reg_name(r) == 'fp' else 'x30' if ins.reg_name(r) == 'lr' else re.sub(r'^[wx]', 'x', ins.reg_name(r))
@@ -538,6 +539,11 @@ for a, allowed in static_entries:
             for reg in regs:
                 name = ins.reg_name(reg); name = 'x29' if name == 'fp' else 'x30' if name == 'lr' else re.sub(r'^[wx]', 'x', name)
                 restored.setdefault(name, []).append((d, i))
+    # This exact trampoline restores through the old SP register, rather than
+    # through the changed SP. All slot, save/reload and exit bytes must match.
+    stack_saved = saved_stack_switch_registers(W(orig, a), b''.join(bytes(ins.bytes) for ins in block),
+                                              s, a + 4, h['KEY_PAGE_OFF'], KEY['K18'])
+    allowed |= stack_saved
     writes = set().union(*(_writes(ins) for ins in block)) if block else set()
     for reg in sorted(writes - allowed):
         wi = [i for i, ins in enumerate(block) if reg in _writes(ins) and not (i > 0 and _mem_sp(ins, True) is not None)]

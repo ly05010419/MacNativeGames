@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the native loader to the verified Luigi's Mansion 3 1.2.0 images; generated tables stay local.
+"""Bind the native loader to verified Luigi's Mansion 3 images; generated tables stay local.
 Fork of games/totk/scripts/prepare_runtime.py: four modules in Horizon load order, no TOTK version gates."""
 import argparse
 import hashlib
@@ -11,20 +11,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
+from game_versions import VERSIONS, verify_exefs
 parser = argparse.ArgumentParser(description=__doc__)
-parser.parse_args()
+parser.add_argument('--version', choices=VERSIONS, default='v120')
+args = parser.parse_args()
+version = args.version
 GAME = Path(__file__).resolve().parents[1]
 OUT = GAME / 'build'
 OUT.mkdir(parents=True, exist_ok=True)
-MAIN_120 = '9fbb9dfcac34faee3f058ae5d1abdc433198bbac3b838a1810c032470ae8f2eb'
-assert hashlib.sha256((GAME / 'extracted/v120/exefs/main').read_bytes()).hexdigest() == MAIN_120, 'Unsupported LM3 main (expected 1.2.0)'
-assert (GAME / 'rewritten/v120/build_src.sha256').read_text().split()[0] == hashlib.sha256((ROOT / 'third_party/d2r/patch_nso.py').read_bytes()).hexdigest(), 'Rewriter changed since the rewrite; rerun it'
+verify_exefs(GAME / f'extracted/{version}/exefs', version)
+assert (GAME / f'rewritten/{version}/build_src.sha256').read_text().split()[0] == hashlib.sha256((ROOT / 'third_party/d2r/patch_nso.py').read_bytes()).hexdigest(), 'Rewriter changed since the rewrite; rerun it'
 modules = []
 for name in ['main', 'subsdk0', 'subsdk1', 'sdk']:
-    image = (GAME / f'rewritten/v120/{name}.patched.bin').read_bytes()
+    image = (GAME / f'rewritten/{version}/{name}.patched.bin').read_bytes()
     digest = hashlib.sha256(image).hexdigest()
     layout = {}
-    for line in (GAME / f'rewritten/v120/{name}.fixups.tsv').read_text().splitlines():
+    for line in (GAME / f'rewritten/{version}/{name}.fixups.tsv').read_text().splitlines():
         _, key, value = line.split()
         layout[key] = int(value, 0)
     mod0 = struct.unpack_from('<I', image, 4)[0]
@@ -41,7 +43,7 @@ for name in ['main', 'subsdk0', 'subsdk1', 'sdk']:
     else:
         # Newer SDK modules carry GNU hash only. NSO's verified dynsym extent
         # supplies the exact count, as in prepare_modules.py's inventory gate.
-        raw_header = (GAME / f'extracted/v120/exefs/{name}').read_bytes()[:256]
+        raw_header = (GAME / f'extracted/{version}/exefs/{name}').read_bytes()[:256]
         _, _, symbol_offset, symbol_size = struct.unpack_from('<IIII', raw_header, 0x90)
         assert layout['RO_OFF'] + symbol_offset == tags[6] and symbol_size % 24 == 0
         assert 0 < symbol_size <= layout['DATA_OFF'] - tags[6]
@@ -68,7 +70,7 @@ for name in ['main', 'subsdk0', 'subsdk1', 'sdk']:
             relocated.add(where)
             relocs.append(dict(where=where, kind=kind, symbol=si, addend=addend))
     gates = []
-    for line in (GAME / f'rewritten/v120/{name}.gates.tsv').read_text().splitlines():
+    for line in (GAME / f'rewritten/{version}/{name}.gates.tsv').read_text().splitlines():
         ret, kind, arg, original = line.split()
         assert kind in ['cntpct', 'cntvct', 'svc']
         gates.append(dict(ret=int(ret, 0), timer=kind != 'svc', arg=int(arg), original=int(original, 0)))
@@ -87,7 +89,7 @@ for name in ['main', 'subsdk0', 'subsdk1', 'sdk']:
 main = modules[0]
 target = '_ZN2nn2os13GetSystemTickEv'
 slot = next(r['where'] for r in main['relocs'] if main['symbols'][r['symbol']]['name'] == target and r['kind'] == 1026)
-image = (GAME / f'rewritten/v120/main.patched.bin').read_bytes()
+image = (GAME / f'rewritten/{version}/main.patched.bin').read_bytes()
 plt = []
 for address in range(main['layout']['TEXT_END'] - 0x10000, main['layout']['TEXT_END'] - 12, 4):
     a, b, c, d = struct.unpack_from('<IIII', image, address)

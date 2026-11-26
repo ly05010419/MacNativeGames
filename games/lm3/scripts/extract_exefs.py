@@ -160,7 +160,22 @@ def nca_inventory(f, entries, keys):
     return records
 
 
-def program_nca(records, update=False):
+def is_bktr(header):
+    return any(header[0x400 + i * 512 + 4] == 4 for i in range(4))
+
+
+def program_nca(records, update=False, *, combined=False):
+    if combined:
+        # An update Program NCA has the base title ID too. Its BKTR section,
+        # rather than entry order or filename, distinguishes it from the base.
+        dlc_family = int(BASE_TITLE, 16) + 0x1000
+        require(all(r['title_id'] in (BASE_TITLE, UPDATE_TITLE) or
+                    int(r['title_id'], 16) & ~0xfff == dlc_family for r, _ in records),
+                'Combined package contains another game')
+        programs = [(r, h) for r, h in records if r['content_type'] == 0 and
+                    r['title_id'] == BASE_TITLE and is_bktr(h) == update]
+        require(len(programs) == 1, 'Expected exactly one matching base/update Program NCA')
+        return programs[0]
     if update:
         programs = [(r, h) for r, h in records if r["content_type"] == 0]
         require(len(programs) == 1, "Expected one update Program NCA; combined packages are unsupported")
@@ -186,11 +201,70 @@ def record_offset(record):
     return record['nca_offset'] if 'nca_offset' in record else record['xci_offset']
 
 
+def verified_pfs(f, record, hdr, keys, tickets):
+    """Read a bounded PFS0 section, checking its FS header and every hash block."""
+    ctr_key = nca_ctr_key(hdr, keys, tickets)
+    for i in range(4):
+        start, end = struct.unpack_from('<II', hdr, 0x240 + 16 * i)
+        if not start:
+            continue
+        fs = hdr[0x400 + 512 * i:0x600 + 512 * i]
+        require(hashlib.sha256(fs).digest() == hdr[0x280 + 32 * i:0x2A0 + 32 * i], 'FS header hash mismatch')
+        if fs[2:4] != b'\x01\x02':
+            continue
+        require(fs[4] == 3, 'Only AES-CTR PFS0 is supported')
+        blocksize, levels = struct.unpack_from('<II', fs, 0x28)
+        hashoff, hashsize, pfsoff, pfssize = struct.unpack_from('<QQQQ', fs, 0x30)
+        secstart, secsize = start * 512, (end - start) * 512
+        require(levels == 2 and blocksize > 0 and pfssize <= 512 * 1024 * 1024, 'Unsupported PFS0 hash layout')
+
+        def section_read(relative, size):
+            require(relative >= 0 and relative + size <= secsize, 'Section read out of bounds')
+            absolute = secstart + relative
+            aligned = absolute & ~15
+            iv = fs[0x140:0x148][::-1] + (aligned // 16).to_bytes(8, 'big')
+            data = read_at(f, record_offset(record) + aligned, size + absolute - aligned)
+            return decrypt(ctr_key, modes.CTR(iv), data)[absolute - aligned:]
+
+        hashes = section_read(hashoff, hashsize)
+        require(hashlib.sha256(hashes).digest() == fs[8:40], 'PFS0 hash-table mismatch')
+        require(len(hashes) >= ((pfssize + blocksize - 1) // blocksize) * 32, 'PFS0 hash table too short')
+        pfs = section_read(pfsoff, pfssize)
+        for index, pos in enumerate(range(0, pfssize, blocksize)):
+            require(hashlib.sha256(pfs[pos:pos + blocksize]).digest() == hashes[index * 32:(index + 1) * 32],
+                    f'PFS0 block hash mismatch: {index}')
+        return i, [(name, pfs[off:off + size]) for name, off, size in
+                   partition_entries(io.BytesIO(pfs), 0, len(pfs))]
+    raise ValueError('No supported PFS0 section found')
+
+
+def content_metadata(f, records, keys, tickets, *, update=False):
+    title = UPDATE_TITLE if update else BASE_TITLE
+    metadata = [(r, h) for r, h in records if r['content_type'] == 1 and r['title_id'] == title]
+    require(len(metadata) == 1, 'Expected one metadata NCA for selected game/update')
+    _, files = verified_pfs(f, *metadata[0], keys, tickets)
+    cnmt = [data for name, data in files if name.endswith('.cnmt')]
+    require(len(cnmt) == 1 and len(cnmt[0]) >= 0x20, 'Expected one complete CNMT')
+    raw = cnmt[0]
+    tid, version, kind = struct.unpack_from('<QIB', raw)
+    extra, count = struct.unpack_from('<HH', raw, 0xe)
+    require(f'{tid:016X}' == title and kind == (0x81 if update else 0x80), 'CNMT identity mismatch')
+    offset = 0x20 + extra
+    require(offset + count * 56 <= len(raw), 'CNMT content table out of bounds')
+    contents = []
+    for i in range(count):
+        row = raw[offset + i * 56:offset + (i + 1) * 56]
+        contents.append(dict(sha256=row[:32].hex(), id=row[32:48].hex(),
+                             size=int.from_bytes(row[48:54], 'little'), type=row[54]))
+    return dict(title_id=title, version=version, contents=contents)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('game', type=Path, help='base game 1.0.0 (.xci or .nsp)')
     parser.add_argument('--keys', required=True, type=Path)
     parser.add_argument('--update', action='store_true', help='extract update code; caller must verify supported version hashes')
+    parser.add_argument('--combined', action='store_true', help='select the base/update inside one same-game combined container')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     require(not args.output.exists(), 'Output already exists; choose a new directory')
@@ -199,54 +273,28 @@ def main():
         kind, entries = container_entries(f, args.game.stat().st_size)
         tickets = common_tickets(f, entries)
         records = nca_inventory(f, entries, keys)
-        record, hdr = program_nca(records, update=args.update)
-        ctr_key = nca_ctr_key(hdr, keys, tickets)
-        for i in range(4):
-            start, end = struct.unpack_from('<II', hdr, 0x240 + 16 * i)
-            if not start:
-                continue
-            fs = hdr[0x400 + 512 * i:0x600 + 512 * i]
-            require(hashlib.sha256(fs).digest() == hdr[0x280 + 32 * i:0x2A0 + 32 * i], 'FS header hash mismatch')
-            if fs[2:4] != b'\x01\x02':
-                continue
-            require(fs[4] == 3, 'Only AES-CTR ExeFS is supported')
-            blocksize, levels = struct.unpack_from('<II', fs, 0x28)
-            hashoff, hashsize, pfsoff, pfssize = struct.unpack_from('<QQQQ', fs, 0x30)
-            secstart, secsize = start * 512, (end - start) * 512
-            require(levels == 2 and blocksize > 0 and pfssize <= 512 * 1024 * 1024, 'Unsupported ExeFS hash layout')
+        record, hdr = program_nca(records, update=args.update, combined=args.combined)
+        metadata = content_metadata(f, records, keys, tickets, update=args.update) if args.combined else None
+        if metadata:
+            require(any(c['type'] == 1 and c['id'] + '.nca' == record['name'] and c['size'] == record['size']
+                        for c in metadata['contents']), 'Program NCA does not match selected CNMT')
+        i, files = verified_pfs(f, record, hdr, keys, tickets)
+        require(any(name == 'main.npdm' for name, _ in files), 'PFS0 is not ExeFS')
+        args.output.mkdir(parents=True)
+        extracted = []
+        for name, data in files:
+            (args.output / name).write_bytes(data)
+            extracted.append({'name': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+        manifest = {'source': str(args.game.resolve()), 'source_size': args.game.stat().st_size,
+                    'source_mtime_ns': args.game.stat().st_mtime_ns, 'container': kind,
+                    'nca_inventory': [r for r, _ in records], 'program': record, 'section_index': i,
+                    'content_meta': metadata,
+                    'integrity': 'FS header, PFS0 hash table, and every PFS0 data block verified; RSA signatures not checked',
+                    'files': extracted}
+        (args.output.parent / 'extraction-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        print(json.dumps({'integrity': manifest['integrity'], 'content_meta': metadata, 'files': extracted}, indent=2))
+        return
 
-            def section_read(relative, size):
-                require(relative >= 0 and relative + size <= secsize, 'Section read out of bounds')
-                absolute = secstart + relative
-                aligned = absolute & ~15
-                iv = fs[0x140:0x148][::-1] + (aligned // 16).to_bytes(8, 'big')
-                data = read_at(f, record_offset(record) + aligned, size + absolute - aligned)
-                return decrypt(ctr_key, modes.CTR(iv), data)[absolute - aligned:]
-
-            hashes = section_read(hashoff, hashsize)
-            require(hashlib.sha256(hashes).digest() == fs[8:40], 'ExeFS hash-table mismatch')
-            pfs = section_read(pfsoff, pfssize)
-            for index, pos in enumerate(range(0, pfssize, blocksize)):
-                expected = hashes[index * 32:(index + 1) * 32]
-                require(hashlib.sha256(pfs[pos:pos + blocksize]).digest() == expected,
-                        f'ExeFS block hash mismatch: {index}')
-            files = [(name, pfs[off:off + size]) for name, off, size in
-                     partition_entries(io.BytesIO(pfs), 0, len(pfs))]
-            require(any(name == 'main.npdm' for name, _ in files), 'PFS0 is not ExeFS')
-            args.output.mkdir(parents=True)
-            extracted = []
-            for name, data in files:
-                (args.output / name).write_bytes(data)
-                extracted.append({'name': name, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
-            manifest = {'source': str(args.game.resolve()), 'source_size': args.game.stat().st_size,
-                        'source_mtime_ns': args.game.stat().st_mtime_ns, 'container': kind,
-                        'nca_inventory': [r for r, _ in records], 'program': record, 'section_index': i,
-                        'integrity': 'FS header, ExeFS hash table, and every ExeFS data block verified; RSA signatures not checked',
-                        'files': extracted}
-            (args.output.parent / 'extraction-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-            print(json.dumps({'integrity': manifest['integrity'], 'files': extracted}, indent=2))
-            return
-        raise ValueError('No ExeFS section found')
 
 
 if __name__ == '__main__':
