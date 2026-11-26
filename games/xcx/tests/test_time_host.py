@@ -11,6 +11,9 @@ HARNESS = r'''
 #include <stdint.h>
 #include <time.h>
 _Noreturn void runtime_fail(const char *s){(void)s;exit(3);}
+/* the network-clock task's finish event (time_host.c, PR #2383): threads.c in the runtime */
+void hle_bind_system_event(void *event, int autoclear){(void)event;(void)autoclear;}
+void hle_signal_system_event(void *event){(void)event;}
 extern void *runtime_time_override(const char *);
 static int64_t realtime_us(void){struct timespec t; if(clock_gettime(CLOCK_REALTIME,&t))exit(9);return (int64_t)t.tv_sec*1000000+t.tv_nsec/1000;}
 int main(void){
