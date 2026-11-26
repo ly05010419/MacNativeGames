@@ -91,6 +91,22 @@ static unsigned snapshot_create(ClockSnapshot *s) {
     s->steady = steady; location_name(s->location); s->automatic_correction = 1; s->type = 0;
     return 0;
 }
+/* Periodic benefit claim (the daily bonus the game claims when Continue loads a save): without the
+   Switch time service the SDK aborts (its service state never exists on the host), so answer
+   "nothing claimed". The game's wrapper (main+0x13d9dc0) maps every non-success result to one
+   failure kind and main+0x57bc80 skips the bonus on it — the same state as a save whose bonus was
+   already claimed on a real console. The out context stays untouched, as on the SDK failure paths. */
+static unsigned claim_benefit(void *context, const ClockSnapshot *snapshot, const int64_t *period, const int64_t *window, const void *callback) {
+    (void)context; (void)snapshot; (void)period; (void)window; (void)callback;
+    return 1;
+}
+/* Async network-clock task (the game also imports its methods): the host answers it directly,
+   the pattern shared/runtime/time_host.c uses for the other ports (from Pokopia, e349d140).
+   The finish event is pre-signalled so a wait on it never blocks. */
+static uint8_t clock_task_event[0x80] __attribute__((aligned(16)));
+static void clock_task_noop(void *self) { (void)self; }
+static unsigned clock_task_ok(void *self) { (void)self; return 0; }
+static void *clock_task_event_get(void *self) { (void)self; static int bound; if (!bound) { bound = 1; hle_bind_system_event(clock_task_event, 0); hle_signal_system_event(clock_task_event); } return clock_task_event; }
 static unsigned span_between(int64_t *out_ns, const ClockSnapshot *a, const ClockSnapshot *b) {
     if (!out_ns || !a || !b) return R_INVALID;
     if (memcmp(a->steady.source, b->steady.source, 16)) return R_SOURCE_MISMATCH;
@@ -116,6 +132,12 @@ void *runtime_time_override(const char *name) {
         {"_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", snapshot_create},
         {"_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", span_between},
         {"_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_", user_difference},
+        {"_ZN2nn4time39ClaimPeriodicBenefitWithUserSystemClockEPNS0_27PeriodicBenefitClaimContextERKNS0_13ClockSnapshotERKNS_8TimeSpanES8_PKNS0_25CheckCalendarTimeCallbackE", claim_benefit},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskC1Ev", clock_task_noop}, {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskD1Ev", clock_task_noop},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask10InitializeENS_2os14EventClearModeE", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9StartTaskEv", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9GetResultEv", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask14GetFinishEventEv", clock_task_event_get},
     };
     for (size_t i = 0; i < sizeof map / sizeof *map; i++) if (!strcmp(name, map[i].name)) return map[i].fn;
     return NULL;
