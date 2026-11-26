@@ -51,16 +51,19 @@ candidate renders fed302d7's foliage **pixel-identical** to the 32-thread build,
 new chain (v29+) + full seed + archive rebuild, A/B measured. Expected: several ms/frame on every
 Mac, most on the weak ones. This is the long pole: per-shader IR patch + full GPU validation.
 
-### W2. Render distance for OoT — implemented (2026-11-26), LOD still needs its sites
-The camera far plane (parameter struct +0x138, loaded every frame at `main+0x4c52ec` into the
-projection) now has a veneer multiplying it by a data-page factor, exactly like the aspect veneer:
-the effects page's **渲染距离** row (25/50/75/100 %), `flag oot_far <percent>`, `OOT_FAR_SCALE`,
-`graphics-far.txt`. At 100 % the far plane is the game's own, bit for bit (fmul by 1.0f is exact).
-Verified: veneer installs at the checked site (`main+0x4c52ec`), factors apply live; in a static
-forest view the fps/draw delta is within noise (the far plane matters when looking across the map);
-screenshot equality at 100 % required. LOD distance for OoT still needs its own verified sites
-(BotW's are TOTK offsets). Expected: fewer distant draws, scene-dependent, big when looking across
-open areas.
+### W2. Render distance for OoT — blocked and reverted (2026-11-26)
+The camera far plane (parameter struct +0x138, loaded every frame at `main+0x4c52ec` and stored to
+the projection at `main+0x4c52f4`) was going to get a veneer like the aspect one. Measured deadlock:
+**any** `b` replacing the instruction at `main+0x4c52ec` (or at the store `main+0x4c52f4`) hangs the
+guest at world entry (~frame 680), even with a semantically identical no-op stub (original load +
+branch back), at stub offsets +372, +400 and +2000 — while builds without the patch (main, W5-only)
+and the aspect veneer at `main+0x4c5334` in the same loop run fine. So the game depends on that exact
+code (it likely rewrites or hashes the region at world entry). The W2 code is reverted on this branch.
+Next step: find the site that *writes* the camera struct's +0x138 (scale there, once, instead of the
+hot load), or RE what touches `main+0x4c52ec` at world entry. Note the earlier A/B at 25/50/100 % was
+run with the broken-math build (fadd not fmul — caught in review) and showed no gain in a static forest
+view anyway (draws 32 -> 29 only at 25 %); the real win would be looking across open areas. LOD distance
+for OoT still needs its own verified sites (BotW's are TOTK offsets).
 
 ### W3. Shadow resolution row (opt-in) — blocked on locating the size source (2026-11-26)
 ~5.3 ms/frame of depth-pass spans (1000x1000 atlas + 128x128 cascades, resolution-independent). Leads found:

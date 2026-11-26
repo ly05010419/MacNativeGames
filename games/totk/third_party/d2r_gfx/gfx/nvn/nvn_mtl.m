@@ -1841,7 +1841,7 @@ static long pw_mb(void) { static long v = -1; if (v < 0) { const char *e = geten
 static long pw_min_kb(void) { static long v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM_MIN_KB"); v = e ? atol(e) : 256; if (v < 16) v = 16; } return v; }
 static int pw_depth_fmt(NVNformat f) { return f==NVN_FORMAT_DEPTH16||f==NVN_FORMAT_DEPTH24||f==NVN_FORMAT_DEPTH32F||f==NVN_FORMAT_DEPTH24_STENCIL8||f==NVN_FORMAT_DEPTH32F_STENCIL8; }
 static uint64_t pw_drain(void);
-static void pw_enqueue(int id) {   // called with registry_lock held by the caller? no: own lock, id is a slot
+static void pw_enqueue(int id) {   // called with registry_lock held (mtl_reg_tex); lock order registry -> g_pw_mu (pw_drain never holds both)
     if (!pw_on() || id < 0) return;
     pthread_mutex_lock(&g_pw_mu);
     if (g_pw_n < (int)(sizeof g_pw_q / sizeof *g_pw_q)) g_pw_q[g_pw_n++] = id;
