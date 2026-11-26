@@ -34,8 +34,16 @@ class InputTapeInTotk(unittest.TestCase):
         pad = source[source.index('static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){'):]
         pad = pad[:pad.index('return 1;}')]
         tape = pad.index('input_tape(&state.buttons,&state.lx,&state.ly,&state.rx,&state.ry);')
-        self.assertLess(pad.index('runtime_gamepad_read(&pad)'), tape, 'the controller is merged before the tape')
-        self.assertLess(tape, pad.index('*out=state;'), 'the tape decides what the game reads')
+        # after every merge (keyboard, controller buttons and sticks, the VR pitch lock): a recording holds what the
+        # game reads, and a replay is not overridden by a later merge
+        for merge in ('state.buttons|=pad.buttons', 'if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;',
+                      'if(runtime_vr_stick_pitch_locked())state.ry=0;'):
+            self.assertLess(pad.index(merge), tape, merge)
+        # inside the pad-in-use block: a read of another controller id in the same frame would otherwise record a line
+        # of zeros after the pad's state, and a replay (the frame's last line wins) would hand the pad zeros
+        block = pad.index('if(enabled&&allowed&&*id==pad_id()')
+        self.assertLess(block, tape)
+        self.assertLess(tape, pad.index('}*out=state;'), 'the tape runs before the pad-in-use block closes')
 
     def test_one_file_for_every_game(self):
         for game in ('totk', 'oot'):

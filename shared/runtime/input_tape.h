@@ -10,7 +10,8 @@
      <B|W> <frame> <buttons hex> <lx> <ly> <rx> <ry>      a state, from this frame on
      H <B|W> <frame>                                       the recording reached this frame
    OOT_INPUT_REPLAY=<file>: the game reads the recorded state instead (the real keyboard and controller are ignored),
-   and 120 frames after the recording's last line the game closes normally (the input file's "close").
+   and 120 frames after the recording's last line the game closes normally (the input file's "close"; on the Mac only:
+   the iOS frontend's close only logs, so there the last state stays until the user closes the game).
 
    The game itself is not deterministic (its own timing, loading), so a replay follows the route closely, not exactly.
 
@@ -105,8 +106,8 @@ static void input_tape(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx,
             at += (size_t)started; started = 1;
         }
         const TapeEvent *use = started && g_tape[at].seg == seg ? &g_tape[at] : NULL;   /* in the world, only the world's */
-        /* OOT_INPUT_REPLAY_LIVE=1 (tests that drive the controllers themselves): in the world the live state stays, the tape only adds to it */
-        static int live = -1; if (live < 0) { const char *e = getenv("OOT_INPUT_REPLAY_LIVE"); live = e && *e == '1'; }
+        /* TOTK_INPUT_REPLAY_LIVE=1 (or OOT_INPUT_REPLAY_LIVE=1) (tests that drive the controllers themselves): in the world the live state stays, the tape only adds to it */
+        static int live = -1; if (live < 0) { const char *e = getenv("TOTK_INPUT_REPLAY_LIVE"); if (!e || !*e) e = getenv("OOT_INPUT_REPLAY_LIVE"); live = e && *e == '1'; }
         if (live && seg == 'W') { if (use) { *buttons |= use->buttons; if (use->lx) *lx = use->lx; if (use->ly) *ly = use->ly; if (use->rx) *rx = use->rx; if (use->ry) *ry = use->ry; } }
         else if (use) { *buttons = use->buttons; *lx = use->lx; *ly = use->ly; *rx = use->rx; *ry = use->ry; }
         else { *buttons = 0; *lx = *ly = *rx = *ry = 0; }

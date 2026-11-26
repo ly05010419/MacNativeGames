@@ -21,14 +21,16 @@ class InputTape(unittest.TestCase):
             exe, tape = Path(d) / 'probe', Path(d) / 'route.tape'
             subprocess.run(['xcrun', 'clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', str(RUNTIME),
                             str(ROOT / 'tests/oot_input_tape_probe.c'), '-o', str(exe)], check=True)
-            env = dict(os.environ, OOT_INPUT_RECORD=str(tape))
+            # the shared header reads the TOTK_ names first: one exported in the shell must not take the probe's route
+            clean = {k: v for k, v in os.environ.items() if not k.startswith(('OOT_INPUT_', 'TOTK_INPUT_'))}
+            env = dict(clean, OOT_INPUT_RECORD=str(tape))
             subprocess.run([str(exe), 'record'], env=env, check=True, capture_output=True)
             lines = [l for l in tape.read_text().splitlines() if l and not l.startswith('#')]
             self.assertIn('B 10 1 0 0 0 0', lines)          # the title's button, by frames since the start
             self.assertIn('W 0 0 0 0 0 0', lines)           # the state again where the world begins
             self.assertIn('W 5 0 20000 0 0 0', lines)       # walking, by frames since the world began
             self.assertIn('H W 600', lines)                 # a heartbeat every 600 frames
-            env = dict(os.environ, OOT_INPUT_REPLAY=str(tape))
+            env = dict(clean, OOT_INPUT_REPLAY=str(tape))
             run = subprocess.run([str(exe), 'replay'], env=env, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('closed at frame', run.stdout)
