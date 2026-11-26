@@ -44,7 +44,9 @@ Metal limits on the M2 (bench-verified): max **256 vertices** and **32 KB mesh s
 so with 10 float4/vertex only one 128-vertex instance per threadgroup fits — multi-instance per
 group is out. The only route is flattening the lane id inside the instance: in the translator's IR,
 patch the lane-stride constant (`<<5` -> `<<6`/`<<7`) and keep subgroup masks per-32-lane, behind
-`TOTK_MESH_THREADS_SCALE`, per shader. Acceptance per shader: `probe-gpu-mesh` passes, the mode-3
+`TOTK_MESH_THREADS_SCALE`, per shader. The bench's `g*` variants (sgid-only body = the real shape)
+prove the point on the M2: g32/g64/g128 = 53.5/45.3/45.6 ms (no gain) vs t128 13.6 ms (-73 %) for a
+lid-strided body — so the win is real but only reachable through the IR patch. Acceptance per shader: `probe-gpu-mesh` passes, the mode-3
 candidate renders fed302d7's foliage **pixel-identical** to the 32-thread build, no crash; then a
 new chain (v29+) + full seed + archive rebuild, A/B measured. Expected: several ms/frame on every
 Mac, most on the weak ones. This is the long pole: per-shader IR patch + full GPU validation.
