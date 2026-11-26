@@ -44,6 +44,10 @@ $(GAME_DATA)/shared-fonts.txt: scripts/prepare_shared_fonts.py extracted/firmwar
 	"$(PY)" scripts/prepare_shared_fonts.py --version $(VERSION)
 game-data: $(GAME_DATA)/runtime-tables.bin $(GAME_DATA)/rewriter.txt $(GAME_DATA)/romfs-config.txt $(GAME_DATA)/shared-fonts.txt
 
+# The game binary runs on macOS 26 whatever SDK builds it: with no minimum, clang and ld take the SDK's version (Launcher
+# 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on this target (make passes it
+# to what it is made of): the translator and spirv-cross targets keep their own flags.
+$(BINARY): export MACOSX_DEPLOYMENT_TARGET := 26.0
 $(BINARY): $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GFX_OBJECTS) Makefile
 	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_WONDER=1 $(VERSION_FLAGS) -Iruntime -Ibuild -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 binary: $(BINARY)

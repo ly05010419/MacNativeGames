@@ -62,6 +62,10 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	$(CLANG) $(NATIVE_OPT) -g -Wall -Wextra -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include -c "$<" -o "$@"
 
+# The game binary and its launcher run on macOS 26 whatever SDK builds them: with no minimum, clang and ld take the
+# SDK's version (Launcher 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on
+# these targets (make passes it to what they are made of): the translator and spirv-cross targets keep their own flags.
+$(OUT)/tmnt-native: export MACOSX_DEPLOYMENT_TARGET := 26.0
 $(OUT)/tmnt-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
 	@for archive in $(CODEC_ARCHIVES); do test -f "$$archive" || { echo "missing static codec archive: $$archive" >&2; exit 1; }; done
 	$(CLANG) -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \

@@ -261,20 +261,62 @@ def digest_of_files(paths):
     return h.hexdigest()
 
 
+CARRIED = REPO / 'tools/deps/carried_built.json'   # the built files every release carries (Launcher 1.1.4's)
+REMAKE_ENV = 'MNG_REMAKE_BUILT'   # =1: make built/ again, to record new files in CARRIED (a pin changed)
+
+
+def carried_built():
+    return json.loads(CARRIED.read_text())['built']
+
+
+def built_problems(folder):
+    """What keeps built/ (folder) from a release: files other than CARRIED's, or a program or library that needs a
+    macOS newer than tools/deps MACOS_MIN (tools/macho_minos.py), or a libvpx without its arm64 code."""
+    from tools.deps import MACOS_MIN
+    sys.path.insert(0, str(REPO / 'tools'))
+    try:
+        import macho_minos
+    finally:
+        sys.path.remove(str(REPO / 'tools'))
+    problems = [f'{m}  {what}' for what, m in macho_minos.too_new([folder], MACOS_MIN)] if folder.is_dir() else []
+    for vpx in folder.glob('libvpx-*/lib/libvpx.a'):
+        members = '\n'.join(what for what, _ in macho_minos.scan(vpx))
+        if 'aarch64_cpudetect' not in members or '_neon' not in members:
+            problems.append(f'{vpx}: no NEON code (configure fell back to generic-gnu)')
+    carried = carried_built()
+    have = {f: offline.tree_files(folder / f) for f in carried if (folder / f).is_dir()}
+    for f, files in carried.items():
+        if have.get(f) != files:
+            problems.append(f'built/{f}: not the files tools/deps/carried_built.json records')
+    problems += [f'built/{p.name}: not in tools/deps/carried_built.json' for p in folder.iterdir()
+                 if p.is_dir() and p.name not in carried] if folder.is_dir() else []
+    return problems
+
+
 def build_built(store, old):
-    """({folder: {file: SHA-256}}, recipe digest): each of built_names() as tools/deps makes it on any Mac (prefix()),
-    copied into built/<its cache folder> with its licences (licences/). Made in an empty deps cache, so this Mac's
-    older builds are never taken; kept from the last store when the recipes (RECIPES) are the same and its files are
-    intact, so building the store again changes nothing (a compile is not byte for byte the same twice)."""
+    """({folder: {file: SHA-256}}, recipe digest): built/ holds exactly the files tools/deps/carried_built.json records
+    (Launcher 1.1.4's), whatever this Mac is; anything else stops the release (user 2026-11-26: "除了 代码 一切不能和
+    1.1.4 保持不变", "哪怕我用这个新机器打包 26依然支持"). Put them back from keep/launcher-release/offline-store or from the
+    launcher-v1.1.4 release's offline.tar. Only MNG_REMAKE_BUILT=1 makes them again (a pin changed): each of
+    built_names() as tools/deps makes it (prefix(), libraries for MACOS_MIN) in an empty deps cache, copied into
+    built/<its cache folder> with its licences, and the build then stops, naming the files to record in CARRIED with why
+    and whether it was necessary."""
     from tools.deps import _folder
     folder = store / 'built'
     folder.mkdir(exist_ok=True)
     recipes = recipe_digest()
     wanted = {_folder(name): name for name in built_names()}
-    kept = old.get('built') or {}
-    if old.get('built_recipes') == recipes and set(kept) == set(wanted) and all(
-            (folder / f).is_dir() and offline.tree_files(folder / f) == files for f, files in kept.items()):
-        say(f'built {", ".join(sorted(kept))}: kept (same recipes {recipes[:12]})')
+    if set(wanted) != set(carried_built()):
+        raise RuntimeError(f'tools/deps/carried_built.json records {sorted(carried_built())}, the store carries built '
+                           f'{sorted(wanted)}: record what changed (why, necessary) first')
+    if os.environ.get(REMAKE_ENV) != '1':
+        problems = built_problems(folder)
+        if problems:
+            raise RuntimeError('the store\'s built/ is not what every release carries:\n  ' + '\n  '.join(problems[:20])
+                               + '\nput Launcher 1.1.4\'s back (keep/launcher-release/offline-store/built, or built/ of '
+                               'the launcher-v1.1.4 release\'s Resources/offline.tar)')
+        kept = carried_built()
+        say(f'built {", ".join(sorted(kept))}: the recorded copies (tools/deps/carried_built.json)')
         return kept, recipes
     out = {}
     with tempfile.TemporaryDirectory() as t:
@@ -303,7 +345,11 @@ def build_built(store, old):
     for stale in folder.iterdir():
         if stale.name not in out:
             shutil.rmtree(stale)
-    return out, recipes
+    problems = [p for p in built_problems(folder) if 'carried_built.json' not in p]
+    raise RuntimeError(f'built/ made again ({REMAKE_ENV}=1)' + (':\n  ' + '\n  '.join(problems) if problems else '')
+                       + '\nto carry these, record them in tools/deps/carried_built.json (built = the store manifest\'s '
+                       '"built" below, a history entry with why / necessary / evidence) and ask the user:\n'
+                       + json.dumps(out, indent=1, sort_keys=True)[:4000])
 
 
 def build(store, python):

@@ -46,6 +46,10 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
+# The game binary and its launcher run on macOS 26 whatever SDK builds them: with no minimum, clang and ld take the
+# SDK's version (Launcher 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on
+# these targets (make passes it to what they are made of): the translator and spirv-cross targets keep their own flags.
+$(OUT)/xc3-native-$(VERSION): export MACOSX_DEPLOYMENT_TARGET := 26.0
 $(OUT)/xc3-native-$(VERSION): $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
 	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations $(VERSION_DEFINE) \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(VOUT) -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
@@ -125,6 +129,7 @@ APP ?= Xenoblade Chronicles 3.app
 IN_APP = $(APP)/Contents/Resources/game
 GAME ?=
 KEYS ?=
+$(OUT)/launcher: export MACOSX_DEPLOYMENT_TARGET := 26.0
 $(OUT)/launcher: app/launcher.m Makefile
 	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror -fobjc-arc app/launcher.m -framework Cocoa -o "$@"
 $(OUT)/AppIcon.icns:

@@ -57,7 +57,8 @@ class PipelineArchiveFolders(unittest.TestCase):
         """Without it a bare game binary's build folders land in the shared cache folder, which is never cleaned."""
         make = (GAME / 'Makefile').read_text().split('\n')
         self.assertIn('GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist', make)
-        rules = [i for i, line in enumerate(make) if re.match(r'build/totk-native(-\w+)?:', line)]
+        # the rules, not their `build/totk-native…: export MACOSX_DEPLOYMENT_TARGET := 26.0` lines (test_macos_minimum.py)
+        rules = [i for i, line in enumerate(make) if re.match(r'build/totk-native(-\w+)?:(?! export )', line)]
         self.assertEqual(len(rules), 7)
         for i in rules:
             self.assertIn('runtime/game_info.plist', make[i].split(':', 1)[1].split(), make[i][:40])

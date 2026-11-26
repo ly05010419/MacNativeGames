@@ -16,6 +16,10 @@ prepare:
 $(OUT)/runtime_tables.h:
 	@echo "missing $@: run make prepare" && false
 
+# The game binary and its launcher run on macOS 26 whatever SDK builds them: with no minimum, clang and ld take the
+# SDK's version (Launcher 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on
+# these targets (make passes it to what they are made of): the translator and spirv-cross targets keep their own flags.
+$(OUT)/mj2013-native: export MACOSX_DEPLOYMENT_TARGET := 26.0
 $(OUT)/mj2013-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(OUT)/runtime_tables.h runtime/game_info.plist Makefile
 	xcrun clang -std=gnu11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Wno-unused-parameter \
 	  -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist -I$(OUT) -Iruntime $(RUNTIME_SRC) -fobjc-arc \

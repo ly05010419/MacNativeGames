@@ -42,7 +42,11 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) $(OUT)/version-config.h
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-$(OUT)/acnh-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) runtime/game_info.plist
+# The game binary and its launcher run on macOS 26 whatever SDK builds them: with no minimum, clang and ld take the
+# SDK's version (Launcher 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on
+# these targets (make passes it to what they are made of): the translator and spirv-cross targets keep their own flags.
+$(OUT)/acnh-native: export MACOSX_DEPLOYMENT_TARGET := 26.0
+$(OUT)/acnh-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) runtime/game_info.plist Makefile
 	xcrun clang -std=c11 $(NATIVE_OPT) $(GAME_INFO) -g -Wall -Wextra -Wno-error -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -include $(OUT)/version-config.h -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include \
 	  -I$(VORBIS_PREFIX)/include -I$(OGG_PREFIX)/include \

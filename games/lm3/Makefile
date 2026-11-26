@@ -49,6 +49,10 @@ build/shared_fonts_config.h: extracted/firmware/shared-fonts/manifest.json
 	"$(PY)" scripts/prepare_shared_fonts.py
 
 RUNTIME_SRC := $(filter-out runtime/frontend_ios.m,$(wildcard runtime/*.c runtime/*.m runtime/*.S))
+# The game binary and its launcher run on macOS 26 whatever SDK builds them: with no minimum, clang and ld take the
+# SDK's version (Launcher 1.1.5, made on macOS 27, carried runtimes of minos 27.2 that macOS 26 refused, #2395). Set only on
+# these targets (make passes it to what they are made of): the translator and spirv-cross targets keep their own flags.
+build/lm3-native: export MACOSX_DEPLOYMENT_TARGET := 26.0
 build/lm3-native: Makefile $(RUNTIME_SRC) $(wildcard runtime/*.h) build/runtime_tables.h build/romfs_config.h build/shared_fonts_config.h $(GFX_OBJECTS)
 	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -DGAME_LM3=1 -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I$(OPUS_PREFIX)/include/opus -I$(VPX_PREFIX)/include $(RUNTIME_SRC) $(GFX_OBJECTS) $(OPUS_PREFIX)/lib/libopus.a $(VPX_PREFIX)/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 

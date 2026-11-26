@@ -87,28 +87,65 @@ def python_environment(name):
     return python
 
 
+# The macOS every library a game links is made for, whatever this Mac's SDK (clang, ld, meson and configure read
+# MACOSX_DEPLOYMENT_TARGET; tools/macho_minos.py LIMIT): with none, clang takes the SDK's version, and Launcher 1.1.5, made
+# on a macOS 27 Mac, carried libraries of minos 27.2 (#2395). The programs (zstd, spirv-cross, …) run only on the Mac that
+# makes them and keep their own flags: spirv-cross is part of the shader translation (user 2026-11-26: "绝对不可以动翻译器").
+MACOS_MIN = '26.0'
+LINKED = ('opus', 'libvpx', 'dav1d', 'ogg', 'vorbis')
+
+
+def _carried():
+    """The Launcher's copy of each built dependency (offline.built), or None for one it does not carry."""
+    from .offline import built
+    def find(name):
+        try:   # a released Launcher's copy, made at the release (user 2026-11-22: "做")
+            return built(_folder(name))
+        except ValueError as e:
+            raise DepsError(str(e)) from None
+    return find
+
+
+def _same_tree(folder, carried):
+    """folder holds exactly the files of the Launcher's copy carried (names and SHA-256)."""
+    from .offline import tree_files
+    return folder.is_dir() and tree_files(folder) == tree_files(carried)
+
+
 def prefix(name):
-    """The installed folder of a pinned dependency (SOURCES), made from its source the first time."""
+    """The installed folder of a pinned dependency (SOURCES), made from its source the first time. With a Launcher's
+    store, the folder is always the copy it carries: one this Mac took from an earlier Launcher (1.1.5's were made on
+    macOS 27) is replaced by the copy of the Launcher in use."""
     if name not in SOURCES:
         raise DepsError(f'unknown dependency {name!r}: one of {", ".join(sorted(SOURCES))}')
     folder = cache() / _folder(name)
-    if (folder / MARKER[name]).exists():
+    carried = _carried()(name)
+    if (folder / MARKER[name]).exists() and (carried is None or _same_tree(folder, carried)):
         return folder
     with locked():
-        if not (folder / MARKER[name]).exists():
-            from .offline import built
-            try:   # a released Launcher's copy, made at the release (user 2026-11-22: "做")
-                carried = built(_folder(name))
-            except ValueError as e:
-                raise DepsError(str(e)) from None
-            if carried is not None:
-                say(f'{name} {SOURCES[name][0]}: the copy the Launcher carries, made at its release')
-                install(folder, lambda stage: shutil.copytree(carried, stage, symlinks=True))
-            else:
-                version = SOURCES[name][0]
-                say(f'making {name} {version} from its pinned source, once for this Mac (log: {cache() / "logs"})')
-                install(folder, lambda stage: RECIPES[name](stage))
+        if carried is not None and not _same_tree(folder, carried):
+            say(f'{name} {SOURCES[name][0]}: the copy the Launcher carries, made at its release')
+            install(folder, lambda stage: shutil.copytree(carried, stage, symlinks=True))
+        elif not (folder / MARKER[name]).exists():
+            version = SOURCES[name][0]
+            say(f'making {name} {version} from its pinned source, once for this Mac (log: {cache() / "logs"})')
+            install(folder, lambda stage: _make(name, stage))
     return folder
+
+
+def _make(name, stage):
+    """RECIPES[name](stage), a library made for MACOS_MIN."""
+    if name not in LINKED:
+        return RECIPES[name](stage)
+    before = os.environ.get('MACOSX_DEPLOYMENT_TARGET')
+    os.environ['MACOSX_DEPLOYMENT_TARGET'] = MACOS_MIN
+    try:
+        return RECIPES[name](stage)
+    finally:
+        if before is None:
+            os.environ.pop('MACOSX_DEPLOYMENT_TARGET', None)
+        else:
+            os.environ['MACOSX_DEPLOYMENT_TARGET'] = before
 
 
 def program(name):
@@ -223,9 +260,13 @@ def _libvpx(stage):
     if build.exists():
         shutil.rmtree(build)
     build.mkdir(parents=True)
-    run([src / 'configure', '--disable-dependency-tracking', '--disable-examples', '--disable-tools', '--disable-docs',
-         '--disable-unit-tests', '--enable-pic', '--disable-shared', '--enable-static', '--enable-vp9-highbitdepth',
-         f'--prefix={stage}'], 'libvpx-configure.log', cwd=build)
+    # The target named, never guessed from this Mac: libvpx 1.16's configure lists arm64-darwin20 … darwin25 (macOS 26)
+    # only, and on macOS 27 (darwin27) it fell back to generic-gnu, plain C without its NEON / SVE code and CPU
+    # detection (Launcher 1.1.5's libvpx: 159 objects, 1.1.4's: 261). darwin25 is the build of this target for
+    # MACOS_MIN; MACOSX_DEPLOYMENT_TARGET (prefix) sets the minimum.
+    run([src / 'configure', '--target=arm64-darwin25-gcc', '--disable-dependency-tracking', '--disable-examples',
+         '--disable-tools', '--disable-docs', '--disable-unit-tests', '--enable-pic', '--disable-shared', '--enable-static',
+         '--enable-vp9-highbitdepth', f'--prefix={stage}'], 'libvpx-configure.log', cwd=build)
     run(['make', f'-j{jobs()}', 'install'], 'libvpx-make.log', cwd=build)
 
 
