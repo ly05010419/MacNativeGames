@@ -15,7 +15,11 @@
    The game itself is not deterministic (its own timing, loading), so a replay follows the route closely, not exactly.
 
    Shared (2026-11-26): Tears of the Kingdom and Breath of the Wild record and replay the same way, for A/B runs on a route
-   the user played. TOTK_INPUT_RECORD / TOTK_INPUT_REPLAY are the names in every game; the OOT_ names still work. */
+   the user played. TOTK_INPUT_RECORD / TOTK_INPUT_REPLAY are the names in every game; the OOT_ names still work.
+   Breath of the Wild 1.9.0 above 30 fps steps its game time by each frame's measured length, so the same frames hold a
+   key for a different time in every run and the route drifts (2026-11-26: replays left the recorded path). Pin the step
+   while recording and while replaying: the input file's "framestep 8.333" (1/120 s a frame), sent again once the world
+   is entered. With it six replays of one route each reached its end on the same frames. */
 #pragma once
 #include <inttypes.h>
 #include <pthread.h>
