@@ -77,6 +77,19 @@ $(OUT)/timeline-trigger: tests/timeline_trigger.c third_party/d2r_gfx/gfx/nvn/to
 probe-timeline-trigger: $(OUT)/timeline-trigger
 	"$(OUT)/timeline-trigger" "$(OUT)/timeline-trigger.tsv"
 
+# PoC microbenchmark: Ocarina of Time mesh-stage structure at fed302d7 scale (1117 threadgroups,
+# 128 vertices x 10 float4 per group, ~13 KB device scratch slot with atomics, 80 raw reads per
+# logical lane through an 8-word range cache). Variants t32/t64/t128 (threads per threadgroup)
+# and s64/s128 (reads staged per SIMD group through threadgroup memory). Measured on an Apple M2
+# (2026-11-26): t32 49.9 ms, t64 26.8, t128 14.6 (-71 %), s64 26.1, s128 16.7 - the win is the
+# thread count per threadgroup, not the read split.
+$(OUT)/mesh-simd-split-bench: tests/mesh_simd_split_bench.m tests/mesh_simd_split_bench.metal
+	@mkdir -p "$(dir $@)"
+	xcrun clang -O2 -framework Metal -framework Foundation tests/mesh_simd_split_bench.m -o "$@"
+.PHONY: mesh-simd-split-bench
+mesh-simd-split-bench: $(OUT)/mesh-simd-split-bench
+	"$(OUT)/mesh-simd-split-bench" "$(CURDIR)/tests/mesh_simd_split_bench.metal"
+
 $(OUT)/pool-sources: tests/pool_sources.m third_party/d2r_gfx/gfx/nvn/nvn_pool_sources.m third_party/d2r_gfx/gfx/nvn/nvn_pool_sources.h third_party/d2r_gfx/gfx/nvn/nvn_refl.h
 	@mkdir -p "$(OUT)"
 	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror -fobjc-arc tests/pool_sources.m third_party/d2r_gfx/gfx/nvn/nvn_pool_sources.m -framework Foundation -o "$@"

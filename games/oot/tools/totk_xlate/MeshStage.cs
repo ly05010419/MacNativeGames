@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 sealed class MeshStage
 {
     readonly string kind;
-    readonly int threads, payload, maxV, maxP;
+    int threads; readonly int payload, maxV, maxP;   // threads is scaled by TOTK_MESH_THREADS_SCALE (PoC, 2026-11-26)
     readonly bool task, deviceAllowed;   // deviceAllowed: the request may say stage_device=false (tests reading the stage memory from a compute wrapper)
     readonly List<(int n,int c)> vertex = new(), primitive = new();
     readonly int[] layout;
@@ -54,6 +54,13 @@ sealed class MeshStage
         kind=(string)rq["stage"]; threads=BitConverter.ToUInt16(ctl,0x58);payload=BitConverter.ToUInt16(ctl,0x5a);
         deviceAllowed=!(rq["stage_device"] is JsonValue sd && sd.TryGetValue<bool>(out bool allowed) && !allowed);
         if(threads<1||threads>1024||code.Length<0x80)throw new Exception("invalid task/mesh control");
+        {   // PoC (2026-11-26, off unless set): run the mesh stage with more threads per threadgroup. The meshbench
+            // (games/oot/tests/mesh_simd_split_bench) measured on an M2 at fed302d7 scale: 32 -> 128 threads per
+            // threadgroup is 49.9 -> 14.4 ms (-71 %) for the same output. job["local"] and every wrapper stride
+            // follow, so the generated body stays consistent; the reflection reports the scaled count.
+            var e = Environment.GetEnvironmentVariable("TOTK_MESH_THREADS_SCALE");
+            if (!string.IsNullOrEmpty(e)) { int k = int.Parse(e.Trim()); if (k > 1) { threads = Math.Min(threads * k, 1024); rq["local"] = new JsonArray(threads, 1, 1); } }
+        }
         int output=16+Align(payload,16), prim;
         if(kind=="ts") {prim=output+payload;shared=output+Align(payload,4);}
         else {

@@ -1,7 +1,7 @@
 /* NVN2 task/mesh: original control metadata -> native Metal object/mesh stages.
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
-static struct { int on,profile_grid; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
+static struct { int on,profile_grid,tr_selected; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
 /* A mesh shader with no task shader launches its workgroups through its own object function, MTK_OBJECT_BLOCK at a time
    (MeshStage.cs ObjectEntry / ObjectBlock / ObjectCountBuffer, the same constants; after nxnative 09dcb627, MIT): Metal holds
    a mesh grid to 1024 threadgroups, and Ocarina of Time's foliage drew up to 1,238 in one indirect draw here (1,771 at
@@ -161,7 +161,11 @@ static NSString *mtk_archive_key(NvShader *ts,NvShader *ms,NvShader *fs,const mt
 /* The mesh pipeline for a filled key, on any thread (the first draw, the warm-up, or the packaging fill); nil and *error when
    Metal refuses it. Taken from the pipeline archive when its file holds it (*from_archive = 1); otherwise compiled, and a
    warm-up or fill thread writes it to the archive (par_add), as pso_new does for render pipelines. */
-static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error,int *from_archive) {
+static int mtk_eff_mesh_threads(NvShader *ms,int selected){   // PoC mode 3: the selected variant's thread count
+    int t=(selected?g_mtk.tr_selected:selected)==3?mtk_translation_threads():0;
+    return t>0?t:ms->mesh_threads;
+}
+static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *fs,const mtk_pso_key *key,id<MTLFunction> base,int pack,NSError **error,int *from_archive,int selected) {
     if(from_archive)*from_archive=0;
     id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
     if(pack)mesh=mtk_pack_varyings(ms,fs,mesh,key->p.dfmt==0,&packedFs);   // nvn_mesh_pack.inc: fewer declared vec4 slots, same values
@@ -169,7 +173,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
     MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
     m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
     if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
-    m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
+    m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=mtk_eff_mesh_threads(ms,selected);
     if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
     else if(mtk_blocks_on(ms)){m.objectFunction=ms->ofn;m.payloadMemoryLength=16;m.maxTotalThreadsPerObjectThreadgroup=1;}   // its workgroups in blocks of MTK_OBJECT_BLOCK (mtk_encode)
@@ -210,7 +214,7 @@ static id<MTLRenderPipelineState> mtk_build(NvShader *ts,NvShader *ms,NvShader *
 }
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms,*fs=raster->sh[1];
-    int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);g_mesh_translation_hits[selected]++;
+    int selected=0;id<MTLFunction> base=mtk_translation_function(ms,&selected);g_mesh_translation_hits[selected]++;g_mtk.tr_selected=selected;
     static int stats=-1;if(stats<0){const char*s=getenv("OOT_MESH_TRANSLATION_STATS");stats=s&&atoi(s);}
     if(stats&&g_mesh_translation_hits[selected]%600==1)MLOG("[mesh-translation] selected mode=%d draws=%llu loaded=%llu",selected,g_mesh_translation_hits[selected],g_mesh_translation_loaded[selected]);
     mtk_pso_key key; memset(&key,0,sizeof key);
@@ -221,7 +225,7 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     if(nvn_hm_get(&g_mtk_failed,&key))return nil;   // refused earlier this run: skipped again without compiling (the patch above)
-    uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived);
+    uint64_t build_t0=bp_now();NSError *error=nil;int archived=0;ps=mtk_build(ts,ms,fs,&key,base,pack,&error,&archived,selected);
     /* Counted with the render pipelines made at a draw, as pso_get counts them (archive hits included): until 2026-11-15 a
        mesh pipeline built here was missing from the long-frame line's and the per-frame record's pipeline count and time
        (an OOT world entry: 32 mesh pipelines, 75 s, none of it counted). */
@@ -265,7 +269,7 @@ static id<MTLRenderPipelineState> mtk_row_build(mtk_row *r,NSError **error,int *
     int selected=0;id<MTLFunction> base=mtk_translation_function(r->ms,&selected);
     int pack=mtk_pack_on()&&!((r->key.p.a2c&PSO_HDR)&&r->fs&&r->fs->hdr_fn);
     r->key.variant=(pack?4u:0u)|((uint64_t)selected<<3);
-    return mtk_build(r->ts,r->ms,r->fs,&r->key,base,pack,error,from_archive);
+    return mtk_build(r->ts,r->ms,r->fs,&r->key,base,pack,error,from_archive,selected);
 }
 static void mtk_warm_row(NSArray<NSString *> *c,NSMutableDictionary<NSString *,NvShader *> *dict) {
     if(!mtk_device_compiles()){   // the phone's fallback: its M rows are not compiled there
@@ -339,7 +343,7 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     g_args_dirty[4]=1;encode_args((id<MTLCommandEncoder>)en,ms,4,1);enc_r_vbuf(en,29,first);
     enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());mtk_scratch_report();   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
-    int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
+    int mt=mtk_eff_mesh_threads(ms,g_mtk.tr_selected);int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,mt,g_mtk.profile_grid);
     if(blocks){
         /* The object stage reads the workgroup count from word 0 of the grid record (an indirect draw's converted record, a
            direct draw's copy) and each object threadgroup launches its block. An indirect draw's count is known only on the
@@ -349,16 +353,16 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={MTK_OBJECT_COUNT_BUFFER,count}},0);else[g_ot setAddress:count atIndex:MTK_OBJECT_COUNT_BUFFER];
         atomic_fetch_add(&g_mtk_block_draws,1);
         if(groups){
-            if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={groups,1,ms->mesh_threads}},1);
-            else [en drawMeshThreadgroups:MTLSizeMake(groups,1,1) threadsPerObjectThreadgroup:MTLSizeMake(1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+            if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={groups,1,mt}},1);
+            else [en drawMeshThreadgroups:MTLSizeMake(groups,1,1) threadsPerObjectThreadgroup:MTLSizeMake(1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(mt,1,1)];
         }
     }
     else if(g_mtk.indirect_gpu){
-        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH_INDIRECT,.u={g_mtk.indirect_gpu,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
-        else [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.indirect_gpu threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+        if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH_INDIRECT,.u={g_mtk.indirect_gpu,ts?ts->mesh_threads:1,mt}},1);
+        else [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.indirect_gpu threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(mt,1,1)];
     }
-    else if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={g_mtk.count,ts?ts->mesh_threads:1,ms->mesh_threads}},1);
-    else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count,1,1) threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads,1,1)];
+    else if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_DRAW_MESH,.u={g_mtk.count,ts?ts->mesh_threads:1,mt}},1);
+    else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count,1,1) threadsPerObjectThreadgroup:MTLSizeMake(ts?ts->mesh_threads:1,1,1) threadsPerMeshThreadgroup:MTLSizeMake(mt,1,1)];
     ms_time_stamp(en,timing,1);
 }
 /* Mesh draws in render passes of their own on Apple GPUs before the Apple9 family (M1 / M2), 2026-11-16. On an M1 Pro the

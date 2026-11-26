@@ -4,11 +4,13 @@
  * External generated game shaders remain outside the source checkout. */
 static NSMutableDictionary *g_mesh_translation_info;
 static uint64_t g_mesh_translation_hits[3],g_mesh_translation_loaded[3];
+static _Atomic int g_mesh_translation_threads;   // PoC mode 3 (2026-11-26): candidate threadgroup_size[0] when a mesh_threads variant is selected
 static int mtk_translation_mode(void) {
     int v=atomic_load(&g_mesh_translation);
     if(v<0){const char*s=getenv("OOT_MESH_TRANSLATION");v=s?atoi(s):0;atomic_store(&g_mesh_translation,v);}
-    return !TARGET_OS_IPHONE&&v>=1&&v<=2?v:0;
+    return !TARGET_OS_IPHONE&&v>=1&&v<=3?v:0;
 }
+int mtk_translation_threads(void) { return atomic_load(&g_mesh_translation_threads); }   // 0 = not a threads variant
 static NSString *mtk_translation_sha(NSData*d) {
     if(!d)return nil;unsigned char h[32];char hex[65]={0};CC_SHA256(d.bytes,(CC_LONG)d.length,h);
     for(int i=0;i<32;i++)snprintf(hex+2*i,3,"%02x",h[i]);return @(hex);
@@ -26,7 +28,7 @@ static id<MTLFunction> mtk_translation_function(NvShader*ms,int *selected) {
     NSData*proof=[NSData dataWithContentsOfFile:[stem stringByAppendingString:@".variant.json"]];
     NSDictionary*j=proof&&proof.length<32768?[NSJSONSerialization JSONObjectWithData:proof options:0 error:nil]:nil;
     if(![j isKindOfClass:NSDictionary.class]||[j[@"abi"]intValue]!=1||![j[@"key"]isEqual:@(ms->key)]||
-       ![j[@"kind"]isEqual:mode==1?@"mesh_bounds":@"raw_span"])return ms->fn;
+       ![j[@"kind"]isEqual:mode==1?@"mesh_bounds":mode==2?@"raw_span":@"mesh_threads"])return ms->fn;
     NSData*src=[NSData dataWithContentsOfFile:[stem stringByAppendingString:@".metal"]];
     NSData*ref=[NSData dataWithContentsOfFile:[stem stringByAppendingString:@".json"]];
     NSData*original=[sh_src(ms)dataUsingEncoding:NSUTF8StringEncoding];
@@ -41,6 +43,13 @@ static id<MTLFunction> mtk_translation_function(NvShader*ms,int *selected) {
     NSDictionary*o=oref?[NSJSONSerialization JSONObjectWithData:oref options:0 error:nil]:nil;
     if(![r isKindOfClass:NSMutableDictionary.class]||![o isKindOfClass:NSDictionary.class])return ms->fn;
     if(mode==2){if([r[@"raw_read_span_abi"]intValue]!=1)return ms->fn;[r removeObjectForKey:@"raw_read_span_abi"];}
+    if(mode==3){   // PoC: the candidate runs the mesh stage at another thread count; threadgroup_size may differ
+        if(![r[@"threadgroup_size"]isKindOfClass:NSArray.class]||[r[@"threadgroup_size"]count]<1)return ms->fn;
+        atomic_store(&g_mesh_translation_threads,[r[@"threadgroup_size"][0]intValue]);
+        [r removeObjectForKey:@"threadgroup_size"];
+        NSMutableDictionary *o2=[o mutableCopy];[o2 removeObjectForKey:@"threadgroup_size"];o=(NSDictionary *)o2;
+        if([r[@"mesh_stage"]isKindOfClass:NSDictionary.class]){[(NSMutableDictionary *)r[@"mesh_stage"] removeObjectForKey:@"threads"];id mo=o[@"mesh_stage"];if([mo isKindOfClass:NSDictionary.class]){NSMutableDictionary *mo2=[mo mutableCopy];[mo2 removeObjectForKey:@"threads"];[o2 setObject:mo2 forKey:@"mesh_stage"];}}
+    }
     if(![r isEqual:o]){MLOG("[mesh-translation] binding fallback mode=%d %.16s",mode,ms->key);return ms->fn;}
     NSString*source=[[NSString alloc]initWithData:src encoding:NSUTF8StringEncoding];NSError*error=nil;
     id<MTLLibrary>lib=source?variant_library(source,&error):nil;id<MTLFunction>fn=lib?[lib newFunctionWithName:ms->fn.name]:nil;
