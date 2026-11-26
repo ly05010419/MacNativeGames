@@ -3,8 +3,10 @@
      A B X Y as they are, left trigger ZL, right trigger ZR, right stick click R3
      Menu: a tap is +, held 0.6 s recentres
      left stick click alone is L3; held, it is a shift:
-       right stick the d-pad, right stick click -, grips L and R, Menu head view / big screen, Y first / third person
-   In first person the right stick turns the view (snap or smooth) and never reaches the game. Times in nanoseconds. */
+       right stick the d-pad, right stick click -, grips L and R, Menu head view / big screen, Y first / third person,
+       A the item wheel (oot_vr_wheel.h) open / closed
+   In first person the right stick turns the view (snap or smooth) and never reaches the game. While the item wheel is open
+   the right stick is the wheel's alone and B closes it; that B is not the game's until it is let go. Times in nanoseconds. */
 #pragma once
 #include <math.h>
 #include <stdint.h>
@@ -22,6 +24,7 @@ typedef struct {
     int grips_are_buttons;/* no gestures: the grips are L and R */
     float snap_deg;       /* 0: smooth */
     float move_turn;      /* radians the left stick is turned by, clockwise (the view against the direction he should go) */
+    int wheel_open;       /* the item wheel is shown: the right stick and B are its own */
 } oot_pad_in;
 
 typedef struct {
@@ -29,13 +32,15 @@ typedef struct {
     float stick[4];
     float yaw;            /* radians to add to the first-person heading, + is to the right */
     int recenter, toggle_person, toggle_screen, toggle_mono;
+    int toggle_wheel, wheel_close;
+    float wheel_stick[2]; /* the right stick while the wheel is open (0 0 otherwise) */
 } oot_pad_out;
 
 typedef struct {
     uint32_t last;
     uint64_t menu_at, l3_at, pulse_until, at;
     uint64_t pulse_bits;
-    int menu_long, chord_used, snap_armed, started;
+    int menu_long, chord_used, snap_armed, started, b_is_wheels, stick_is_wheels;
 } oot_pad_state;
 
 enum { OOT_PAD_PULSE_NS = 120000000, OOT_PAD_RECENTER_NS = 600000000 };
@@ -53,8 +58,10 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
     const int shift = (b & OOT_PAD_LSTICK) != 0;
 
     if (pressed & OOT_PAD_LSTICK) { s->l3_at = now; s->chord_used = 0; }
-    if (b & OOT_PAD_A) out->bits |= B << OOT_SW_A;
-    if (b & OOT_PAD_B) out->bits |= B << OOT_SW_B;
+    if ((b & OOT_PAD_A) && !shift) out->bits |= B << OOT_SW_A;
+    if (in->wheel_open && (pressed & OOT_PAD_B)) { s->b_is_wheels = 1; out->wheel_close = 1; }
+    if (!(b & OOT_PAD_B)) s->b_is_wheels = 0;
+    if ((b & OOT_PAD_B) && !s->b_is_wheels) out->bits |= B << OOT_SW_B;
     if ((b & OOT_PAD_X) && !shift) out->bits |= B << OOT_SW_X;
     if (in->ltrig > 0.5f) out->bits |= B << OOT_SW_ZL;
     if (in->rtrig > 0.5f) out->bits |= B << OOT_SW_ZR;
@@ -71,6 +78,8 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
         if (pressed & OOT_PAD_MENU) { s->chord_used = 1; out->toggle_screen = 1; }
         if (pressed & OOT_PAD_Y) { s->chord_used = 1; out->toggle_person = 1; }
         if (pressed & OOT_PAD_X) { s->chord_used = 1; out->toggle_mono = 1; }
+        if (b & OOT_PAD_A) s->chord_used = 1;
+        if (pressed & OOT_PAD_A) out->toggle_wheel = 1;
         s->menu_at = 0; s->menu_long = 0;
         rx = ry = 0;
     } else {
@@ -87,6 +96,12 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
     if ((released & OOT_PAD_LSTICK) && !s->chord_used) oot_pad_pulse(s, now, B << OOT_SW_L3);
     if (now < s->pulse_until) out->bits |= s->pulse_bits;
 
+    /* a push made while the wheel is open stays the wheel's until the stick is back in the middle, also once the wheel has closed */
+    const int pushed = fabsf(rx) > 0.25f || fabsf(ry) > 0.25f;
+    if (in->wheel_open && pushed) s->stick_is_wheels = 1;
+    if (!pushed) s->stick_is_wheels = 0;
+    if (in->wheel_open && !shift) { out->wheel_stick[0] = rx; out->wheel_stick[1] = ry; rx = ry = 0; }
+    else if (s->stick_is_wheels) rx = ry = 0;
     if (in->first_person && !shift) {
         if (in->snap_deg > 0) {
             if (s->snap_armed && fabsf(rx) > 0.6f) { s->snap_armed = 0; out->yaw = copysignf(in->snap_deg * (float)M_PI / 180, rx); }

@@ -124,7 +124,7 @@ static struct {
     struct { int valid; float fov[4],rotation[9]; } frame_projection,ticket_projection[64];
     id<MTLTexture> src_views[SRC_SLOTS][2]; int src_stereo[SRC_SLOTS]; float src_fov[SRC_SLOTS][2][4], src_rotation[SRC_SLOTS][2][9]; int src_oriented[SRC_SLOTS]; float src_menu_aspect[SRC_SLOTS];
     // VR thread
-    id<MTLCommandQueue> q; id<MTLRenderPipelineState> ps, ps_linear, ps_hud, ps_arc; id<MTLSamplerState> smp;
+    id<MTLCommandQueue> q; id<MTLRenderPipelineState> ps, ps_linear, ps_hud, ps_arc, ps_pre, ps_ring; id<MTLSamplerState> smp;
     IOSurfaceRef surf[IMAGES]; id<MTLTexture> img[IMAGES]; uint64_t img_frame[IMAGES]; int eye_w, eye_h;
     _Atomic int recenter; float center[3], right[3], up[3];
     float menu_center[3], menu_right[3], menu_up[3], menu_picture_aspect;
@@ -479,6 +479,13 @@ static void gestures(uint64_t now, const vr_controls *c, gesture_state *gs) {
 #include "../runtime/oot_vr_pad.h"
 #include "../runtime/oot_vr_gesture.h"
 #include "../runtime/oot_vr_bow.h"
+#include "../runtime/oot_vr_comfort.h"
+static void oot_comfort_note(float push, float turned);   /* oot_vr_wrist_draw.h */
+static int oot_wheel_is_open(void);                        /* oot_vr_wheel_draw.h: the item wheel */
+static void oot_wheel_toggle(int world);
+static void oot_wheel_close(const char *why);
+static void oot_wheel_stick(float x, float y);
+extern float runtime_oot_vr_crawl(void) __attribute__((weak_import));   /* the game's view height while Link crawls, 0 when he does not */
 extern float runtime_oot_vr_game_fov_deg(void) __attribute__((weak_import));
 /* Link's body in first person (option body): 0 his arms, 1 nothing, 2 the whole body (his shadow always stays). */
 int vr_oot_body_mode(void) { const int v = vr_option("body", 0); return v < 0 || v > 2 ? 0 : v; }
@@ -489,6 +496,17 @@ int vr_oot_arm_cm(void) { const int v = vr_option("arm_cm", 55); return v < 30 ?
 void vr_oot_set_arm_cm(int cm) { vr_option_set("arm_cm", cm < 30 ? 30 : cm > 80 ? 80 : cm); VLOG("the player's arm: %d cm", cm); }
 int vr_oot_hand_tilt(void) { const int v = vr_option("hand_tilt", 0); return v < -60 ? -60 : v > 60 ? 60 : v; }
 void vr_oot_set_hand_tilt(int deg) { vr_option_set("hand_tilt", deg < -60 ? -60 : deg > 60 ? 60 : deg); VLOG("the hand's tilt: %d degrees", deg); }
+/* The sword's hits (option blade, on by default; the user, 2026-11-23: "只要 模型剑 碰到怪物 就算击中"): 1 the blade the player
+   swings hits what it passes through, with no button and none of Link's attack animations (games/oot/runtime/oot_vr_sword.h);
+   0 a swing presses the attack button as before. How fast (tenths of m/s) and how far one way (cm) the blade must go to
+   count as a swing: options swing_speed and swing_arc. */
+int vr_oot_blade(void) { const char *e = getenv("TOTK_VR_BLADE"); return e ? !strcmp(e, "1") : vr_option("blade", 1) != 0; }
+void vr_oot_set_blade(int on) { vr_option_set("blade", on != 0); VLOG("the sword's hits: %s", on ? "where the blade goes" : "the attack button on a swing"); }
+int vr_oot_swing_speed(void) { const int v = vr_option("swing_speed", 26); return v < 10 ? 10 : v > 60 ? 60 : v; }
+void vr_oot_set_swing_speed(int v) { vr_option_set("swing_speed", v < 10 ? 10 : v > 60 ? 60 : v); VLOG("a swing: the blade at %.1f m/s or more", (double)vr_oot_swing_speed() / 10); }
+int vr_oot_swing_arc(void) { const int v = vr_option("swing_arc", 25); return v < 10 ? 10 : v > 60 ? 60 : v; }
+void vr_oot_set_swing_arc(int v) { vr_option_set("swing_arc", v < 10 ? 10 : v > 60 ? 60 : v); VLOG("a swing: the blade goes %d cm one way or more", vr_oot_swing_arc()); }
+extern int runtime_oot_vr_blade_fresh(void) __attribute__((weak_import));   /* the blade's place reached the game these last frames */
 static _Atomic int g_oot_holding;   /* the sword is out, or something is carried: the fingers stop around it */
 int vr_oot_holding(void) { return atomic_load(&g_oot_holding); }
 static _Atomic int g_oot_aiming;    /* the game is aiming the slingshot or the bow (its own narrower view) */
@@ -525,6 +543,8 @@ extern float runtime_oot_vr_move_turn(void) __attribute__((weak_import));
 extern void runtime_oot_vr_yaw_add(float radians) __attribute__((weak_import));
 extern int runtime_oot_vr_child(void) __attribute__((weak_import));
 extern int runtime_oot_vr_in_event(void) __attribute__((weak_import));
+extern int runtime_oot_vr_aiming(void) __attribute__((weak_import));      /* Link's state says he aims the slingshot or the bow */
+extern int runtime_oot_vr_two_hands_held(void) __attribute__((weak_import));   /* a bow or slingshot is in the player's two hands */
 static _Atomic int g_oot_big_screen;   /* the left-stick shift + Menu: the big screen instead of the head view */
 int vr_oot_big_screen(void) { return atomic_load(&g_oot_big_screen); }
 static float oot_snap_degrees(void) { const int ms = vr_snap_ms(); return ms <= 0 ? 0 : ms <= 120 ? 20 : ms <= 200 ? 30 : 45; }
@@ -533,21 +553,27 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static oot_pad_state st; static uint64_t last_bits; static int said;
     const int world = world_camera_running(now), lefty = vr_oot_left_handed(), motion = world && vr_motion();
     const float game_fov = world && runtime_oot_vr_game_fov_deg ? runtime_oot_vr_game_fov_deg() : 0;
-    const int aiming = oot_bow_is_aiming(game_fov);
+    /* aiming: by Link's own state (the game's view narrows only for a moment as the bow comes up: run new4). by_hands: the bow is in
+       the player's two hands, and its shot goes along them (games/oot/runtime/oot_vr_sword.h): the game's own aim is then left
+       alone and the view keeps the player's heading; without the two hands the game's aim is steered as before. */
+    const int aiming = world && (oot_bow_is_aiming(game_fov) || (runtime_oot_vr_aiming && runtime_oot_vr_aiming()));
+    const int by_hands = aiming && runtime_oot_vr_two_hands_held && runtime_oot_vr_two_hands_held();
     atomic_store(&g_oot_aiming, aiming);
     oot_pad_in in = { c->buttons, lefty ? c->rtrig : c->ltrig, lefty ? c->ltrig : c->rtrig, lefty ? c->rgrip : c->lgrip, lefty ? c->lgrip : c->rgrip,
                       { ax[0], ax[1], ax[2], ax[3] },
-                      world && !aiming && runtime_oot_vr_fp_active && runtime_oot_vr_fp_active(), !motion, oot_snap_degrees(),
-                      world && runtime_oot_vr_move_turn ? runtime_oot_vr_move_turn() : 0 };
+                      world && !(aiming && !by_hands) && runtime_oot_vr_fp_active && runtime_oot_vr_fp_active(), !motion, oot_snap_degrees(),
+                      world && runtime_oot_vr_move_turn ? runtime_oot_vr_move_turn() : 0, 0 };
     oot_pad_out o;
     oot_hand hands[2]; float aim[2][3]; const int have_hands = motion && oot_hands(c, lefty, hands, aim);
     in.grips_are_buttons = !have_hands;   /* no tracked hands: the grips stay L and R */
+    in.wheel_open = oot_wheel_is_open();  /* the item wheel has the right stick and B */
     { static int was = -1; const int event = runtime_oot_vr_in_event && runtime_oot_vr_in_event(), now_state = world | motion << 1 | have_hands << 2 | event << 3;
       if (now_state != was) { was = now_state; VLOG("controllers: world %d, motion %d, hands %d, game event %d", world, motion, have_hands, event); } }
     pthread_mutex_lock(&mu);
     oot_pad_step(&st, now, &in, &o);
     if (have_hands && !(c->buttons & VR_PAD_LSTICK)) {   /* the left-stick shift has the grips */
         static oot_gesture_state gs; oot_gesture_out go;
+        gs.blade = vr_oot_blade() && runtime_oot_vr_blade_fresh && runtime_oot_vr_blade_fresh();   /* without the blade's place the button still attacks */
         oot_gesture_step(&gs, now, hands, &go);
         atomic_store(&g_oot_holding, gs.sword || gs.carrying);
         if (go.bits & OOT_GEST_A) o.bits |= 1ull << OOT_SW_A;
@@ -559,16 +585,20 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
             o.stick[0] = go.stick[0] * tc + go.stick[1] * ts; o.stick[1] = -go.stick[0] * ts + go.stick[1] * tc;
         }
         for (int i = 0; i < 2; i++) if (go.buzz[i]) vr_link_send_haptic(lefty ? 1 - i : i, 30000000ull, 200, 0.4f);
-        if (aiming) {   /* the line from the drawing hand to the bow hand aims the shot */
-            oot_bow_out b; oot_bow_step(game_fov, aim[0], aim[1], &b);
+        if (aiming && !by_hands) {   /* the bow's model not known as one for two hands: the hands' line steers the game's own aim */
+            oot_bow_out b; oot_bow_step(oot_bow_is_aiming(game_fov) ? game_fov : 40.0f, aim[0], aim[1], &b);
             if (b.holding && !ax[2] && !ax[3]) { o.stick[2] = b.stick[0]; o.stick[3] = b.stick[1]; }
         }
     }
-    if (!said) { said = 1; VLOG("Quest controllers: Ocarina of Time's layout (A B X Y, triggers ZL / ZR, Menu + / hold recentres, left stick click is a shift)"); }
+    if (!said) { said = 1; VLOG("Quest controllers: Ocarina of Time's layout (A B X Y, triggers ZL / ZR, Menu + / hold recentres, left stick click is a shift; with it, A is the item wheel)"); }
     if (o.bits != last_bits) { VLOG("pad: Quest %02x -> Switch %04llx (%s)", c->buttons, (unsigned long long)o.bits, world ? "world" : "menu"); last_bits = o.bits; }
     pthread_mutex_unlock(&mu);
     if (o.yaw != 0 && runtime_oot_vr_yaw_add) runtime_oot_vr_yaw_add(o.yaw);
+    oot_comfort_note(world ? sqrtf(ax[0] * ax[0] + ax[1] * ax[1]) : 0, world ? o.yaw : 0);
     if (o.recenter) { vr_recenter(); VLOG("Menu held: recentred"); }
+    if (o.toggle_wheel) oot_wheel_toggle(world);
+    if (o.wheel_close) oot_wheel_close("B");
+    if (in.wheel_open) oot_wheel_stick(o.wheel_stick[0], o.wheel_stick[1]);
     if (o.toggle_person) vr_set_first_person(!vr_first_person());
     if (o.toggle_mono) vr_set_dstereo(!vr_dstereo());
     if (o.toggle_screen) { const int big = !atomic_load(&g_oot_big_screen); atomic_store(&g_oot_big_screen, big); VLOG("view: %s", big ? "big screen" : "head view"); }
@@ -741,7 +771,14 @@ static void oot_first_person_update(vr_cam_state *s) {
     float d[3]; offset_update(s, d);
     if (!target && b <= 0) { s->fp_blend = 0; return; }
     const int set = atomic_load(&g_eye_cm);
-    const float eye = set > 0 ? set / 100.0f : runtime_oot_vr_child && !runtime_oot_vr_child() ? 1.55f : 1.0f;
+    float eye = set > 0 ? set / 100.0f : runtime_oot_vr_child && !runtime_oot_vr_child() ? 1.55f : 1.0f;
+    {   /* a crawl space: the eyes come down to where the game's own crawl camera sits (oot_vr_comfort.h) */
+        static oot_crawl crawl; static uint64_t at; static int was;
+        const float height = runtime_oot_vr_crawl ? runtime_oot_vr_crawl() : 0, dt = at ? (float)((t - at) / 1e9) : 0; at = t;
+        const float drop = oot_crawl_drop(&crawl, height > 0, eye, height, dt);
+        if ((height > 0) != was) { was = height > 0; VLOG("crawl: %s (the game's view height %.2f m, the eyes %.2f m)", was ? "the eyes come down" : "the eyes go back up", (double)height, (double)(eye - (was ? eye - oot_crawl_eye(height) : 0))); }
+        eye -= drop;
+    }
     const float up[4] = { 0, eye, 0, 0 };
     memcpy(s->fp_up, up, sizeof up);
     s->fp_fwd = 0.14f;
@@ -1287,7 +1324,13 @@ static int setup_gpu(void) {
         "  float3 w = u.c.xyz + u.c.w * (sin(a) * u.r.xyz + cos(a) * fw) + (0.5 - t.y) * u.u.xyz;\n"
         "  O o; o.pos = u.m * float4(w, 1.0); o.uv = t * u.uvs.xy + u.uvs.zw; return o; }\n"
         "fragment float4 vr_fs_hud(O i [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-        "  float4 c = t.sample(s, i.uv); return float4(c.rgb * c.a, c.a); }\n";
+        "  float4 c = t.sample(s, i.uv); return float4(c.rgb * c.a, c.a); }\n"
+        /* a picture whose colours are already multiplied by its alpha, faded by k.x (the wrist panel) */
+        "fragment float4 vr_fs_pre(O i [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant float4 &k [[buffer(0)]]) {\n"
+        "  return t.sample(s, i.uv) * k.x; }\n"
+        /* the comfort ring: uv is the tangent from straight ahead; dark from k.x out to twice that, as strong as k.y */
+        "fragment float4 vr_fs_ring(O i [[stage_in]], constant float4 &k [[buffer(0)]]) {\n"
+        "  return float4(0.0, 0.0, 0.0, smoothstep(k.x, 2.0 * k.x, length(i.uv)) * k.y); }\n";
     id<MTLLibrary> lib = [g.dev newLibraryWithSource:@(msl) options:[MTLCompileOptions new] error:&e];
     MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
     pd.vertexFunction = [lib newFunctionWithName:@"vr_vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"vr_fs"];
@@ -1300,6 +1343,10 @@ static int setup_gpu(void) {
     pd.colorAttachments[0].sourceRGBBlendFactor = pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     pd.colorAttachments[0].destinationRGBBlendFactor = pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     g.ps_hud = lib ? [g.dev newRenderPipelineStateWithDescriptor:pd error:&e] : nil;
+    pd.fragmentFunction = [lib newFunctionWithName:@"vr_fs_pre"];
+    g.ps_pre = lib ? [g.dev newRenderPipelineStateWithDescriptor:pd error:&e] : nil;
+    pd.fragmentFunction = [lib newFunctionWithName:@"vr_fs_ring"];
+    g.ps_ring = lib ? [g.dev newRenderPipelineStateWithDescriptor:pd error:&e] : nil;
     pd.colorAttachments[0].blendingEnabled = NO;
     pd.vertexFunction = [lib newFunctionWithName:@"vr_vs_arc"]; pd.fragmentFunction = [lib newFunctionWithName:@"vr_fs"];
     g.ps_arc = lib ? [g.dev newRenderPipelineStateWithDescriptor:pd error:&e] : nil;
@@ -1605,6 +1652,8 @@ static int oot_arc_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTL
     [e setRenderPipelineState:g.ps];
     return 1;
 }
+#include "oot_vr_wrist_draw.h"
+#include "oot_vr_wheel_draw.h"
 #endif
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> __strong *pics, const uint32_t useds[2], const int peye[2], float half, id<MTLTexture> hud, const float native_fov[2][4], const float delta[2][9]) {
@@ -1764,6 +1813,8 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
 #ifdef GAME_OOT
     /* The HUD leaves the picture before the stereo warp, so it is not bent over the world's depth. */
     g_oot_hud_tex = nil; oot_hud_update(head);
+    oot_wrist_update(head, world_camera_running(now_ns()));
+    oot_wheel_update(head, world_camera_running(now_ns()));
     if (!own && s >= 0 && pics[0] && g.src_scene[s]) {
         id<MTLTexture> sc = nil, ui = nil;
         if (vr_ui_split(cb, pics[0], ds_seq, g.src_scene[s], &sc, &ui)) { pics[0] = pics[1] = sc; g_oot_hud_tex = ui; }
@@ -1819,6 +1870,8 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         draw_picture(e, &u, pics[eye]);
 #ifdef GAME_OOT
         oot_hud_draw(e, u.m, x->pose.p, g_oot_hud_tex);
+        oot_wrist_draw(e, u.m, &x->pose, x->fov);
+        oot_wheel_draw(e, u.m);
 #endif
         if (hud && hud_quad(&u)) {
             [e setVertexBytes:&u length:sizeof u atIndex:0];

@@ -26,6 +26,8 @@ uint32_t vr_ds_take_captured(void);
    1 with out[0] / out[1] set, 0 when the picture stays one for both eyes (the reason is counted). */
 int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect,
                float half, __strong id<MTLTexture> out[2]);
+/* The cap on a near thing's shift, in pixels of a 1080-row picture: 8..64, 64 by default (the VR page's "near depth"). */
+void vr_ds_set_max_shift(int px);
 /* The HUD on a plane of its own (Ocarina of Time): the replay thread copies the canvas just before the frame's first UI draw
    (vr_ui_scene_target, vr_ui_scene_captured), the present's ticket carries the copy (vr_ui_take_scene). The VR thread then
    parts the finished picture into the scene without the HUD and the HUD with a coverage in alpha: what differs from the

@@ -77,6 +77,32 @@ int main(void) {
     in.buttons = OOT_PAD_LSTICK | OOT_PAD_X; o = step(in, 10); assert(o.toggle_mono && !(o.bits & (1ull << OOT_SW_X)));
     in = n; step(in, 10);
     in.buttons = OOT_PAD_X; o = step(in, 10); assert(!o.toggle_mono && (o.bits & (1ull << OOT_SW_X)));
-    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning, the move direction");
+    /* the item wheel: the left stick pressed + A opens and closes it, and that A is not the game's */
+    reset();
+    in = n; in.buttons = OOT_PAD_LSTICK; step(in, 10);
+    in.buttons = OOT_PAD_LSTICK | OOT_PAD_A; o = step(in, 10); assert(o.toggle_wheel && !(o.bits & BIT(A)));
+    o = step(in, 10); assert(!o.toggle_wheel && !(o.bits & BIT(A)));
+    o = step(n, 10); assert(!(o.bits & BIT(L3)));
+    in = n; in.buttons = OOT_PAD_A; o = step(in, 200); assert(o.bits == BIT(A) && !o.toggle_wheel);   /* A alone is the game's A */
+    /* open, the right stick is the wheel's: it does not turn the view and does not reach the game */
+    reset();
+    in = n; in.wheel_open = 1; in.first_person = 1; in.snap_deg = 30; in.stick[2] = 0.9f; in.stick[3] = 0.2f;
+    o = step(in, 10); assert(o.yaw == 0 && o.stick[2] == 0 && o.stick[3] == 0 && o.wheel_stick[0] == 0.9f && o.wheel_stick[1] == 0.2f);
+    in.first_person = 0; o = step(in, 10); assert(o.stick[2] == 0 && o.stick[3] == 0 && o.wheel_stick[0] == 0.9f);
+    /* B closes it, and that press is not the game's B, however long it is held after the wheel has gone */
+    in = n; in.wheel_open = 1; in.buttons = OOT_PAD_B; o = step(in, 10); assert(o.wheel_close && !(o.bits & BIT(B)));
+    in.wheel_open = 0; o = step(in, 10); assert(!o.wheel_close && !(o.bits & BIT(B)));
+    o = step(n, 10); in = n; in.buttons = OOT_PAD_B; o = step(in, 10); assert(o.bits == BIT(B) && !o.wheel_close);
+    /* closed with the stick still pushed: that push stays the wheel's, it does not turn the view; back in the middle, it is the view's */
+    reset();
+    in = n; in.wheel_open = 1; in.first_person = 1; in.snap_deg = 30; in.stick[2] = 0.9f; o = step(in, 10); assert(o.yaw == 0);
+    in.wheel_open = 0; o = step(in, 10); assert(o.yaw == 0 && o.stick[2] == 0 && o.wheel_stick[0] == 0);
+    o = step(in, 10); assert(o.yaw == 0);
+    in.stick[2] = 0.1f; o = step(in, 10); assert(o.yaw == 0);
+    in.stick[2] = 0.9f; o = step(in, 10); assert(fabsf(o.yaw - (float)M_PI / 6) < 1e-5f);
+    /* closed, nothing of it: the stick is the game's and the view's again */
+    reset();
+    in = n; in.stick[2] = 0.9f; o = step(in, 10); assert(o.stick[2] == 0.9f && o.wheel_stick[0] == 0 && o.wheel_stick[1] == 0);
+    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning, the move direction, the item wheel");
     return 0;
 }

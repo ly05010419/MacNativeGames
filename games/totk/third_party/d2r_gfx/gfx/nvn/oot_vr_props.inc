@@ -29,6 +29,7 @@ static oot_hold_watch *oot_prop_watch(uint64_t size, uint64_t vb) {
     return oot_hold_watch_for(watched, size, vb);
 }
 #include "oot_vr_weapon.inc"
+extern void runtime_oot_vr_two_hands(const float handle[3], const float pull[3]) __attribute__((weak_import));   /* oot_vr_sword.h: the shot's hooks */
 /* 0: as the game draws it; 2: its palette moves with a hand; -1: not drawn. */
 static int oot_prop_draw(__unsafe_unretained NvShader *vs) {
     g_oot_prop_reg = -1;
@@ -161,9 +162,18 @@ static uint64_t oot_prop_palette(uint64_t addr, const uint8_t *src, uint64_t siz
     const oot_item_rig *item = oot_item_for(size);   /* the slingshot or the bow: one handle, mirrored like the sword */
     const int how = oot_hold_mirrors(from, to, item != NULL || vr_oot_aiming()), weapon = g_oot_prop_weapon && from == 0;
     float move[12], undo[12];   /* the weapon: its palette already follows the hand a frame late; undo takes it back to the game's pose */
-    if (weapon) oot_weapon_frame(src, to_world, g_oot_track[from].grip_game, g_oot_track[to].grip_new, how, to == wanted, undo, move);
+    if (weapon) {
+        float actor[12];
+        oot_weapon_frame(src, to_world, g_oot_track[from].grip_game, g_oot_track[to].grip_new, how, to == wanted, undo, move, actor);
+        if (to == wanted) oot_blade_publish(actor, to);
+    }
     else oot_hold_move(g_oot_track[from].grip_game, g_oot_track[to].grip_new, g_oot_prop_root, how, move);
     oot_prop_strung strung; const int two = oot_prop_string(item, to, src, frame, to_world, move, &strung);
+    if (item && runtime_oot_vr_two_hands && g_oot_track[1 - to].ok && frame - g_oot_track[1 - to].frame < 4) {   /* the shot leaves along the two hands (oot_vr_bow.h) */
+        const float handle[3] = { g_oot_track[to].grip_new[3], g_oot_track[to].grip_new[7], g_oot_track[to].grip_new[11] };
+        const float pull[3] = { g_oot_track[1 - to].grip_new[3], g_oot_track[1 - to].grip_new[7], g_oot_track[1 - to].grip_new[11] };
+        runtime_oot_vr_two_hands(handle, pull);
+    }
     uint64_t gpu = 0; uint8_t *out = oot_palette_ring(size, &gpu);
     for (uint64_t k = 0; k + 48 <= size; k += 48) {
         float m[12], world[12], placed[12]; memcpy(m, src + k, 48);

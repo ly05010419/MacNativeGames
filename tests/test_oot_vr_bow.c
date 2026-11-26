@@ -39,6 +39,21 @@ int main(void) {
     oot_bow_step(40, near_hands, draw, &o); assert(o.aiming && !o.holding && o.stick[0] == 0);
     oot_bow_step(40, far_hands, draw, &o); assert(o.aiming && !o.holding);
     assert(!oot_bow_is_aiming(0) && !oot_bow_is_aiming(46.5f) && oot_bow_is_aiming(46.4f));
-    puts("OOT two-handed aim: when the game aims, the hands' line, the stick's floor, dead zone and limit");
+    {   /* the shot leaves the hand that holds the bow, along the two hands, with the game's speed and reach */
+        float start[3] = { 10, 1.2f, 5 }, vel[3] = { 0, 0, -1.875f }, target[3] = { 10, 1.2f, -25 };
+        const float handle[3] = { 10.3f, 1.5f, 4.8f }, pull[3] = { 10.3f, 1.2f, 5.2f };
+        assert(oot_shot_steer(handle, pull, start, vel, target));
+        assert(NEAR(start[0], 10.3f) && NEAR(start[1], 1.5f) && NEAR(start[2], 4.8f));
+        assert(NEAR(sqrtf(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]), 1.875f) && NEAR(vel[0], 0) && NEAR(vel[1], 1.875f * 0.6f) && NEAR(vel[2], -1.875f * 0.8f));
+        assert(NEAR(target[0], 10.3f) && NEAR(target[1], 1.5f + 30 * 0.6f) && NEAR(target[2], 4.8f - 30 * 0.8f));
+        /* untouched: hands together, the bow far from the game's own shot, numbers that are not sane */
+        float s2[3] = { 10, 1.2f, 5 }, v2[3] = { 0, 0, -1.875f }, t2[3] = { 10, 1.2f, -25 };
+        const float close_pull[3] = { 10.3f, 1.5f, 4.85f }, far_handle[3] = { 13, 1.5f, 5 }, far_pull[3] = { 13, 1.5f, 5.4f };
+        assert(!oot_shot_steer(handle, close_pull, s2, v2, t2) && !oot_shot_steer(far_handle, far_pull, s2, v2, t2));
+        assert(s2[0] == 10 && v2[2] == -1.875f && t2[2] == -25);
+        float v0[3] = { 0, 0, 0 }, vnan[3] = { NAN, 0, 0 };
+        assert(!oot_shot_steer(handle, pull, s2, v0, t2) && !oot_shot_steer(handle, pull, s2, vnan, t2) && !oot_shot_steer(handle, pull, s2, v2, s2));
+    }
+    puts("OOT two-handed aim: when the game aims, the hands' line, the stick's floor, dead zone and limit; the shot along the hands");
     return 0;
 }

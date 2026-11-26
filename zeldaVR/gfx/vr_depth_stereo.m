@@ -16,6 +16,7 @@ void vr_ds_note_scene(id<MTLTexture> depth, float near_plane, float cam_w, float
 id<MTLTexture> vr_ds_capture_target(id<MTLTexture> *from) { if (from) *from = nil; return nil; }
 void vr_ds_captured(void) {}
 uint32_t vr_ds_take_captured(void) { return 0; }
+void vr_ds_set_max_shift(int px) { (void)px; }
 int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect, float half, __strong id<MTLTexture> out[2]) {
     (void)cb; (void)pic; (void)seq; (void)dref; (void)tan_y; (void)aspect; (void)half; (void)out; return 0; }
 void vr_ds_stats(char *out, size_t n) { if (n) out[0] = 0; }
@@ -182,6 +183,10 @@ static void pass(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPip
     [e endEncoding];
 }
 
+/* The most a near thing is shifted, in pixels of a 1080-row picture (64 by default). A smaller cap leaves narrower gaps beside
+   what is close to the eyes (the player's own hands and sword in first person) and less depth on them. */
+static _Atomic int g_ds_max_shift = 64;
+void vr_ds_set_max_shift(int px) { atomic_store(&g_ds_max_shift, px < 8 ? 8 : px > 64 ? 64 : px); }
 int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32_t dref, float tan_y, float aspect,
 
                float half, __strong id<MTLTexture> out[2]) {
@@ -211,7 +216,7 @@ int vr_ds_eyes(id<MTLCommandBuffer> cb, id<MTLTexture> pic, uint64_t seq, uint32
     if (!d.disp || !d.tile || !d.out[0] || !d.out[1]) return 0;
     /* f: the picture's focal length in pixels (its 3D fills the height: half the height over the half-angle tangent) */
     const float W = (float)pic.width, H = (float)pic.height, f = H * 0.5f / tan_y, w3 = H * aspect;
-    const float maxpx = 64.0f * H / 1080.0f;
+    const float maxpx = (float)atomic_load(&g_ds_max_shift) * H / 1080.0f;
     struct { float pic[2], dsz[2], k, x0, x1, maxpx; } du = { { W, H }, { (float)dt.width, (float)dt.height }, f * half / near_plane, (W - w3) * 0.5f, (W + w3) * 0.5f, maxpx };
     id<MTLTexture> disp = d.disp, tile = d.tile;
     pass(cb, disp, d.ps_disp, ^(id<MTLRenderCommandEncoder> e) { [e setFragmentTexture:dt atIndex:0]; [e setFragmentBytes:&du length:sizeof du atIndex:0]; });

@@ -196,6 +196,7 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
     const float qi[4] = { -head.q[0], -head.q[1], -head.q[2], head.q[3] };
     const float scale = fmaxf(0.30f, fminf(1.50f, arms->arm_length / ((float)vr_oot_arm_cm() / 100.0f)));
     vr_oot_set_world_scale(scale);
+    g_oot_room_scale = scale;
     const float world_up[3] = { 0, 1, 0 }, ahead[3] = { 0, 0, -1 };
     float up_c[3], fw_c[3], rt_c[3];
     oot_q_rotate(qi, world_up, up_c);

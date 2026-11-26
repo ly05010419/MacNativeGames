@@ -19,6 +19,7 @@ enum { OOT_GEST_A = 1, OOT_GEST_AWAY = 2, OOT_GEST_Y = 4, OOT_GEST_ZL = 8 };
 
 typedef struct {
     int started, closed[2], sword, shield, carrying, carry_hand, swing_armed;
+    int blade;   /* set by the caller: the blade makes its own hits (oot_vr_blade.h), so a swing presses no button */
     uint64_t y_until, a_from, a_until, b_until, last_swing, open_since, peak_at, stick_until;
     float carry_peak, peak_f, peak_r, throw_r, throw_f;
 } oot_gesture_state;
@@ -50,7 +51,8 @@ static inline void oot_gesture_step(oot_gesture_state *s, uint64_t now, const oo
         }
         if (s->sword) {
             if (s->swing_armed && h->tip_speed > 2.4f && now - s->last_swing >= GAP) {
-                s->swing_armed = 0; s->last_swing = now; s->y_until = now + PULSE; out->buzz[R] = 1;
+                s->swing_armed = 0; s->last_swing = now;
+                if (!s->blade) { s->y_until = now + PULSE; out->buzz[R] = 1; }
             } else if (h->tip_speed < 0.96f) s->swing_armed = 1;
             if (opening[R] && oot_gesture_behind(h, 1)) { s->sword = 0; s->open_since = 0; s->b_until = now + PULSE; }
             else if (h->grip <= 0.3f) {

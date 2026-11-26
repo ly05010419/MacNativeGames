@@ -6,7 +6,8 @@
 //                                               it was rendered with, saves frame 30 and every 1440th (20 s) as <prefix>-<n>.png
 //                                               FAKE_INPUT=<file>: the controllers, from lines appended to that file (never
 //                                               edited in place): button a|b|x|y|menu|l3|r3 0|1, axis lx|ly|rx|ry|lt|rt|lg|rg <v>,
-//                                               hand 0|1 <x y z> [<qx qy qz qw> [<vx vy vz>]] (held and sent at 72 Hz);
+//                                               hand 0|1 <x y z> [<qx qy qz qw> [<vx vy vz>]] (held and sent at 72 Hz),
+//                                               eye <file.png> (the next frame the game sends is saved there);
 //                                               each vibration the game sends is printed as "haptic <hand> <ms> <Hz> <amp>"
 // It speaks the BasaltVR v9 control protocol (runtime/pe/basalt_control_protocol.h) from the daemon side.
 #include "../gfx/totk_vr_link.h"
@@ -18,6 +19,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,8 +88,10 @@ static int send_input(int fd, const char *name, float v) {
     return 0;
 }
 typedef struct { int have; float q[4], p[3], v[3]; } fake_hand;
+static char g_eye_path[1024]; static _Atomic int g_eye_wanted;   /* "eye <file>": save the next frame */
 static void input_line(int fd, const char *line, fake_hand hands[2]) {
     char name[16]; float v; int hand; float a[10];
+    if (!strncmp(line, "eye ", 4)) { if (sscanf(line, "eye %1023s", g_eye_path) == 1) atomic_store(&g_eye_wanted, 1); return; }
     if (sscanf(line, "button %15s %f", name, &v) == 2 || sscanf(line, "axis %15s %f", name, &v) == 2) { send_input(fd, name, v); return; }
     if (sscanf(line, "hand %d", &hand) != 1 || hand < 0 || hand > 1) { if (*line && *line != '\n') printf("input: cannot read \"%s\"\n", line); return; }
     const int n = sscanf(line, "hand %*d %f %f %f %f %f %f %f %f %f %f", a, a+1, a+2, a+3, a+4, a+5, a+6, a+7, a+8, a+9);
@@ -181,6 +185,7 @@ static int serve(daemon_t *d) {
             if (!first_ns) first_ns = now_ns();
             frames++;
             if (d->png && (frames == 30 || frames % capture_every == 0)) { char path[1024]; snprintf(path, sizeof path, "%s-%d.png", d->png, frames); save_png(surf[img], rect, path); }
+            if (atomic_exchange(&g_eye_wanted, 0)) { save_png(surf[img], rect, g_eye_path); printf("eye saved: %s (frame %d)\n", g_eye_path, frames); }
             /* Like basalt-streamer (RuntimeLink.markFrameConsumed): frames are acknowledged strictly in order, so a
                missing frame number stops every later acknowledgement. */
             if (fr != last_fr + 1) { if (!gaps++) printf("frame number %llu after %llu: the streamer would acknowledge nothing after %llu\n",

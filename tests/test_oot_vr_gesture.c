@@ -81,6 +81,15 @@ int main(void) {
     /* a hand that is not tracked changes nothing */
     reset();
     h[1].have = 0; h[1].f = -0.1f; h[1].grip = 0.9f; o = step(10); assert(!s.sword && !o.bits);
+    /* the blade makes its own hits (oot_vr_blade.h): drawing still presses the button, a swing presses nothing */
+    reset(); s.blade = 1;
+    h[1].f = -0.1f; h[1].r = 0.2f; h[1].u = 0.1f; h[1].grip = 0.9f;
+    o = step(10); assert((o.bits & OOT_GEST_Y) && s.sword);
+    step(200);
+    h[1].f = 0.3f; h[1].tip_speed = 0.5f; step(300);
+    h[1].tip_speed = 3.0f; o = step(10); assert(!(o.bits & OOT_GEST_Y) && !o.buzz[1]);
+    s.blade = 0; h[1].tip_speed = 0.5f; step(300);
+    h[1].tip_speed = 3.0f; o = step(10); assert(o.bits & OOT_GEST_Y);            /* without it the swing is the button again */
     puts("OOT motion controls: draw, swing, put away, shield, pick up and put down");
     return 0;
 }

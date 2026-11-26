@@ -187,6 +187,24 @@ int vr_oot_hand_tilt(void);
 void vr_oot_set_hand_tilt(int deg);
 int vr_oot_left_handed(void);
 void vr_oot_set_left_handed(int on);
+int vr_oot_wrist(void);
+void vr_oot_set_wrist(int on);
+int vr_oot_wheel(void);
+void vr_oot_set_wheel(int on);
+int vr_oot_vignette(int cause);
+void vr_oot_set_vignette(int cause, int level);
+int vr_oot_near_depth(void);
+void vr_oot_set_near_depth(int v);
+int vr_oot_reticle(void);
+void vr_oot_set_reticle(int on);
+int vr_oot_events_eyes(void);
+void vr_oot_set_events_eyes(int on);
+int vr_oot_blade(void);
+void vr_oot_set_blade(int on);
+int vr_oot_swing_speed(void);
+void vr_oot_set_swing_speed(int v);
+int vr_oot_swing_arc(void);
+void vr_oot_set_swing_arc(int v);
 void vr_set_motion(int on);
 /* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
    1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
@@ -232,6 +250,8 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
  /* Ocarina of Time's stereo is made from the scene depth; alternating eyes would turn it off */
  [rows addObject:settings_row(settings_text("立体（深度重投影）","Stereo (from the depth)"),nil,nil,^int{return vr_dstereo();},^(int v){vr_set_dstereo(v);})];
+ [rows addObject:settings_row(settings_text("立体 · 近处（手和剑）","Stereo · close to the eyes (hands, sword)"),@[settings_text("弱（边缘缝隙小）","Low (small gaps at edges)"),settings_text("中","Medium"),settings_text("全","Full")],@[@0,@1,@2],
+  ^int{return vr_oot_near_depth();},^(int v){vr_oot_set_near_depth(v);})];
  [rows addObject:settings_row(settings_text("第一人称 · 身体","First person · body"),@[settings_text("只显示手臂","Arms only"),settings_text("不显示","None"),settings_text("整个身体","Whole body")],@[@0,@1,@2],
   ^int{return vr_oot_body_mode();},^(int v){vr_oot_set_body_mode(v);})];
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 你的臂长（厘米）","First person · your arm (cm)"),nil,nil,^int{return vr_oot_arm_cm();},^(int v){vr_oot_set_arm_cm(v);});
@@ -239,6 +259,25 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 手部倾斜（度）","First person · hand tilt (degrees)"),nil,nil,^int{return vr_oot_hand_tilt();},^(int v){vr_oot_set_hand_tilt(v);});
   r.sliderMin=-60;r.sliderMax=60;[rows addObject:r];}
  [rows addObject:settings_row(settings_text("左手模式（持剑手换左手）","Left-handed (the sword in the left hand)"),nil,nil,^int{return vr_oot_left_handed();},^(int v){vr_oot_set_left_handed(v);})];
+ /* the sword's hits (user 2026-11-23: "只要 模型剑 碰到怪物 就算击中"; totk_vr.m vr_oot_blade) */
+ [rows addObject:settings_row(settings_text("剑的命中","The sword's hits"),@[settings_text("剑刃挥到哪里就打中哪里","Where the blade goes"),settings_text("挥剑 = 按攻击键","A swing presses the attack button")],@[@1,@0],
+  ^int{return vr_oot_blade();},^(int v){vr_oot_set_blade(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("挥剑 · 剑刃速度（0.1 米/秒）","A swing · blade speed (0.1 m/s)"),nil,nil,^int{return vr_oot_swing_speed();},^(int v){vr_oot_set_swing_speed(v);});
+  r.sliderMin=10;r.sliderMax=60;[rows addObject:r];}
+ {TOTKSettingRow *r=settings_row(settings_text("挥剑 · 挥动距离（厘米）","A swing · how far (cm)"),nil,nil,^int{return vr_oot_swing_arc();},^(int v){vr_oot_set_swing_arc(v);});
+  r.sliderMin=10;r.sliderMax=60;[rows addObject:r];}
+ /* hearts, magic and rupees on the back of the wrist, looked at as a watch (zeldaVR/gfx/oot_vr_wrist_draw.h) */
+ [rows addObject:settings_row(settings_text("手腕面板（抬起手腕看心、魔力、卢比）","Wrist panel (hearts, magic, rupees on the wrist)"),nil,nil,^int{return vr_oot_wrist();},^(int v){vr_oot_set_wrist(v);})];
+ /* the item wheel: what Link owns in a ring before the player, chosen with the right stick (zeldaVR/gfx/oot_vr_wheel_draw.h) */
+ [rows addObject:settings_row(settings_text("道具轮盘（按住左摇杆 + A 打开，右摇杆选）","Item wheel (left stick pressed + A, right stick chooses)"),nil,nil,^int{return vr_oot_wheel();},^(int v){vr_oot_set_wheel(v);})];
+ [rows addObject:settings_row(settings_text("对话、开门时的视角","Talks and doors"),@[settings_text("保持自己的眼睛","Keep my own eyes"),settings_text("用游戏的镜头","The game's camera")],@[@1,@0],
+  ^int{return vr_oot_events_eyes();},^(int v){vr_oot_set_events_eyes(v);})];
+ [rows addObject:settings_row(settings_text("瞄准准星（弹弓、弓）","Aim mark (slingshot, bow)"),nil,nil,^int{return vr_oot_reticle();},^(int v){vr_oot_set_reticle(v);})];
+ /* the comfort ring: a dark ring that narrows the view while it moves in a way the head did not (first person) */
+ {NSArray<NSString *> *causes=@[settings_text("舒适暗角 · 走动时","Comfort ring · while walking"),settings_text("舒适暗角 · 转身时","Comfort ring · while turning"),
+   settings_text("舒适暗角 · 跳下、下落时","Comfort ring · in the air"),settings_text("舒适暗角 · 被游戏带着移动时","Comfort ring · when the game moves you")];
+  for(int cause=0;cause<4;cause++)[rows addObject:settings_row(causes[(NSUInteger)cause],@[settings_text("关","Off"),settings_text("弱","Low"),settings_text("中","Medium"),settings_text("强","High")],@[@0,@1,@2,@3],
+   ^int{return vr_oot_vignette(cause);},^(int v){vr_oot_set_vignette(cause,v);})];}
 #else
  [rows addObject:settings_row(settings_text("立体（左右眼轮流渲染）","Stereo (the eyes rendered in turn)"),nil,nil,^int{return vr_afr();},^(int v){vr_set_afr(v);})];
 #endif
