@@ -46,10 +46,24 @@ esr=0x92000006`, faulting PC in libsystem called from guest `main+0x1c4280` — 
 pointer deref, i.e. the 64-lane run computes a wrong index (the code assumes a 32-lane workgroup).
 The local size cannot simply be raised — the benchmark's model does not transfer as-is.
 
-## What a real fix needs
+## Root cause of the crash (found 2026-11-26) and the real W1 design
 
-Restructure the mesh stage so one threadgroup runs several instances at 64/128 threads with a
-correct per-lane mapping (the translator's `MeshStage.Wrap` plus the body's lane assumptions), then
-re-validate with `probe-gpu-mesh`, the mesh translation modes, and in-game screenshots against the
-32-thread output. The crash repro above (variant at 64/128, SIGSEGV at frame 660) is the acceptance
-test: any candidate must render fed302d7's foliage identically to the 32-thread build *and* not crash.
+The guest mesh body uses **only** `gl_SubgroupInvocationID` (0..31 per SIMD group) as its lane id and
+computes its per-lane raw address as `_77 = (instance << 5) + sgid` (the `<<5` is the hardcoded
+32-lane stride). At 64/128 physical threads there are 2/4 SIMD groups with the *same* sgid values, so
+they run the identical body concurrently and race on the stage memory — that is the SIGSEGV. The
+body has no `thread_position_in_threadgroup`-strided loops to widen (the bench body did, which is why
+its t64/t128 variants won there).
+
+Metal limits on the M2 (measured with the bench): a mesh threadgroup may export at most **256
+vertices** and **32 KB of total mesh size** — with 10 float4/vertex that is one 128-vertex instance
+per threadgroup. So multi-instance-per-threadgroup (the other way to use extra threads) is impossible
+here; the only route to 64/128 threads is **flattening the lane id inside one instance**, which means
+patching the body's lane-stride constant (`<<5` -> `<<6`/`<<7`) and keeping subgroup masks per-32-lane
+in the translator's IR — a per-shader change that needs `probe-gpu-mesh` + screenshot equality against
+the 32-thread build as acceptance. The crash repro above (variant at 64/128, SIGSEGV at frame 660) is
+the acceptance test: any candidate must render fed302d7's foliage identically to the 32-thread build
+*and* not crash.
+
+Bench limits are now printed by failing compiles on any Mac: 512 verts/group is refused (max 256),
+and 256 verts x 10 float4 exceeds the 32 KB mesh-size cap on the M2.
