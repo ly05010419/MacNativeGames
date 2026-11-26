@@ -602,6 +602,48 @@ static void patch_oot_aspect(Module *m) {
     fprintf(stderr, "[oot] aspect veneer at main+0x%llx; ratio %g (0 = the game's 16:9)\n", (unsigned long long)site, r);
 }
 #include "oot_vr.h"   /* zeldaVR (TOTK_VR_CONTROL only): the head turns the gameplay view; uses oot_aspect_cell */
+/* OOT render distance (2026-11-26): the camera's far plane (parameter struct +0x138) is loaded every frame at
+   main+0x4c52ec and stored into the projection at +0x9c. That load branches to a veneer that multiplies it by a
+   factor in the data-page cell (+60), so the settings panel's 渲染距离 row, "flag oot_far <percent>" and
+   OOT_FAR_SCALE can shorten the far plane live (fewer distant draws). At factor 1 the far plane is the game's
+   own, bit for bit (fmul by 1.0f is exact). */
+enum { OOT_FAR_CELL = 60 };
+static _Atomic uint32_t *oot_far_cell;
+static float oot_far_k = 1;
+float runtime_oot_far_scale(void) { return oot_far_k; }
+int runtime_oot_far_locked(void) { return getenv("OOT_FAR_SCALE") != NULL; }
+void runtime_oot_far_set(float k) {
+    if (!(k > 0 && k <= 10)) return;
+    oot_far_k = k; uint32_t bits; float f = k; memcpy(&bits, &f, 4);
+    if (oot_far_cell) atomic_store(oot_far_cell, bits);
+}
+static void patch_oot_far(Module *m) {
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    const uint64_t site = 0x4c52ec; uint32_t have; memcpy(&have, m->base + site, 4);
+    if (have != 0xbd413a60) runtime_fail("OOT far site differs from verified update 131072");
+    uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8 + 16 + 24 + 48 + 28;
+    int64_t pages = ((int64_t)page - (int64_t)((stub + 4) & ~4095ULL)) / 4096;
+    uint32_t code[5] = {
+        0xbd413a60,                                                                                   /* ldr s0, [x19, #0x138] */
+        0x90000010 | (((uint32_t)pages & 3) << 29) | ((((uint32_t)pages >> 2) & 0x7ffff) << 5),    /* adrp x16, page */
+        0xbd400202 | (((OOT_FAR_CELL + (uint32_t)(page & 4095)) / 4) << 10),                       /* ldr s2, [x16, #cell] */
+        0x1e222800,                                                                                   /* fmul s0, s0, s2 */
+        oot_step_branch(stub + 20, site + 4) };
+    if (stub + sizeof code > rx_end || page + OOT_FAR_CELL + 4 > m->size) runtime_fail("OOT far: no room left");
+    for (uint64_t k = stub; k < stub + sizeof code; k++) if (m->base[k]) runtime_fail("OOT far: text padding already in use");
+    for (uint64_t k = page + OOT_FAR_CELL; k < page + OOT_FAR_CELL + 4; k++) if (m->base[k]) runtime_fail("OOT far: data page already in use");
+    oot_far_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_FAR_CELL);
+    const char *e = getenv("OOT_FAR_SCALE"); double k = e && *e ? strtod(e, NULL) : 1;
+    if (e && *e && (!(k >= 0.1 && k <= 10))) runtime_fail("OOT_FAR_SCALE must be 0.1 to 10");
+    char word[32];
+    if (runtime_setting_word("graphics-far.txt", word, sizeof word)) { double p = strtod(word, NULL); if (p >= 10 && p <= 1000) k = p / 100.0; }
+    if (k <= 0 || k > 10) k = 1;
+    runtime_oot_far_set((float)k);
+    uint32_t jump = oot_step_branch(site, stub);
+    memcpy(m->base + stub, code, sizeof code); memcpy(m->base + site, &jump, 4);
+    fprintf(stderr, "[oot] far veneer at main+%#llx; render distance x%g\n", (unsigned long long)site, k);
+}
 #endif
 #if defined(GAME_OOT) && TARGET_OS_IPHONE
 /* iOS (user 2026-11-09): the phone's resolution pick. The export wrote export_oot_fixed_res_ios's code in; the data page cell it
@@ -688,6 +730,7 @@ void runtime_game_patches(Module *m) {
     patch_oot_timestep(m);
     patch_oot_fixed_res(m);
     patch_oot_aspect(m);
+    patch_oot_far(m);
     oot_vr_install(m);
     patch_oot_window_textures(m);
     patch_oot_render_target_pool(m);

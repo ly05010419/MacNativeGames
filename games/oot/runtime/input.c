@@ -393,6 +393,7 @@ static int input_game_flag(const char *name, int v) {
     else if (!strcmp(name,"oot_output")) { extern void runtime_oot_output_size_set(unsigned,unsigned); runtime_oot_output_size_set((unsigned)v/10000,(unsigned)v%10000); }   /* width*10000+height; 0 = the game's */
     else if (!strcmp(name,"oot_profile")) { extern void runtime_operation_mode_choose(int,int); runtime_operation_mode_choose(!v,1); }   /* what the settings panel's quality profile row does: 0 docked, 1 handheld */
     else if (!strcmp(name,"oot_opmode")) { extern void runtime_operation_mode_report(int); runtime_operation_mode_report(v); }
+    else if (!strcmp(name,"oot_far")) { extern void runtime_oot_far_set(float); runtime_oot_far_set((float)v/100.0f); }   /* render distance, percent (100 = the game's) */
 #endif
     else if (!strcmp(name,"yield_backoff")) { extern void runtime_yield_backoff_set(int,int); runtime_yield_backoff_set(v,-1); }   /* µs a polling thread sleeps at most (0 = off; threads.c yield_backoff_ns) */
     else if (!strcmp(name,"vr_noturn") || !strcmp(name,"vr_fovdeg") || !strcmp(name,"vr_lodk")) { extern void runtime_oot_vr_debug(const char *, int) __attribute__((weak)); if (runtime_oot_vr_debug) runtime_oot_vr_debug(name, v); }   /* oot_vr.h diagnostics */

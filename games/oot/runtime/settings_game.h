@@ -358,6 +358,23 @@ static TOTKSettingRow *settings_oot_profile_row(void) {
 }
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
+extern float runtime_oot_far_scale(void); extern void runtime_oot_far_set(float); extern int runtime_oot_far_locked(void);   /* game_patches_ns2.c: render distance (camera far plane) x factor */
+/* The render-distance row (2026-11-26): the camera far plane x the factor, live ("flag oot_far <percent>",
+   OOT_FAR_SCALE, or graphics-far.txt as percent, 100 = the game's own). Values x1000 = percent x10. */
+static TOTKSettingRow *settings_oot_far_row(void) {
+ NSString *t=settings_text("渲染距离","Render distance");
+ int (^current)(void)=^int{return (int)lround(runtime_oot_far_scale()*1000);};
+ NSString *(^text)(int)=^NSString *(int v){ return v==1000?settings_text("1×（游戏原样）","1x (as the game has it)"):[NSString stringWithFormat:@"%g%%",v/10.0]; };
+ int now=current();
+ if(runtime_oot_far_locked())return settings_fixed(t,text(now));
+ NSMutableArray<NSNumber *> *values=[@[@250,@500,@750,@1000] mutableCopy];
+ if(![values containsObject:@(now)])[values addObject:@(now)];
+ NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
+ return settings_row(t,choices,values,current,^(int v){
+  runtime_oot_far_set((float)v/1000.0f);char word[16];snprintf(word,sizeof word,"%g",v/10.0);runtime_setting_save("graphics-far.txt",word,"render distance");});
+}
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
 /* The resolution row: the canvas and the 3D picture together, in force at once. */
 static TOTKSettingRow *settings_oot_output_row(void) {
  return settings_row(settings_text("分辨率","Resolution"),
@@ -369,7 +386,12 @@ static TOTKSettingRow *settings_oot_output_row(void) {
 #endif
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versions: the page says so */
  NSString *none=settings_text("这个版本没有","Not in this version");
- NSArray<TOTKSettingRow *> *rows=@[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
+ NSArray<TOTKSettingRow *> *rows=@[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+          settings_oot_far_row(),
+#else
+          settings_fixed(settings_text("渲染距离","Render distance"),none),
+#endif
           settings_fixed(settings_text("效果开关","Effect switches"),none)];
  return rows;
 }

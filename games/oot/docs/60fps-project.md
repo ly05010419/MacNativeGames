@@ -51,11 +51,16 @@ candidate renders fed302d7's foliage **pixel-identical** to the 32-thread build,
 new chain (v29+) + full seed + archive rebuild, A/B measured. Expected: several ms/frame on every
 Mac, most on the weak ones. This is the long pole: per-shader IR patch + full GPU validation.
 
-### W2. Fewer draws: render distance / LOD rows for OoT (BotW already has them)
-BotW's `graphics-lod.txt` / `graphics-far.txt` rows cut draws in heavy scenes. For OoT the knobs
-live in the game's config (data fields, not immediates — the 1000x1000 shadow size is read as
-`ldrh` from a struct, so sites need real RE, or HLE-level scaling). Acceptance: screenshot equality
-at 100 %, A/B per biome. Expected: scene-dependent, big in foliage-heavy areas.
+### W2. Render distance for OoT — implemented (2026-11-26), LOD still needs its sites
+The camera far plane (parameter struct +0x138, loaded every frame at `main+0x4c52ec` into the
+projection) now has a veneer multiplying it by a data-page factor, exactly like the aspect veneer:
+the effects page's **渲染距离** row (25/50/75/100 %), `flag oot_far <percent>`, `OOT_FAR_SCALE`,
+`graphics-far.txt`. At 100 % the far plane is the game's own, bit for bit (fmul by 1.0f is exact).
+Verified: veneer installs at the checked site (`main+0x4c52ec`), factors apply live; in a static
+forest view the fps/draw delta is within noise (the far plane matters when looking across the map);
+screenshot equality at 100 % required. LOD distance for OoT still needs its own verified sites
+(BotW's are TOTK offsets). Expected: fewer distant draws, scene-dependent, big when looking across
+open areas.
 
 ### W3. Shadow resolution row (opt-in) — blocked on locating the size source (2026-11-26)
 ~5.3 ms/frame of depth-pass spans (1000x1000 atlas + 128x128 cascades, resolution-independent). Leads found:
