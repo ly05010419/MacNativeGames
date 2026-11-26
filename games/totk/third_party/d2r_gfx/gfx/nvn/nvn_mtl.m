@@ -1827,7 +1827,8 @@ static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交
 static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
-/* W5 texture pre-warm (2026-11-26, Ocarina of Time; off unless OOT_TEX_PREWARM=1): textures registered into a
+/* W5 texture pre-warm (2026-11-26, Ocarina of Time; OoT: on by default on a base M1/M2 Mac, see nvn_prewarm_default;
+   OOT_TEX_PREWARM=1/0 wins over the default, graphics-prewarm.txt too): textures registered into a
    pool during an area load are first uploaded at their first bind, which put up to 383 textures / 280 MB into one
    frame (100-580 ms spikes at area entry, measured). Registration now queues the slot; the submit thread drains
    the queue at the start of every submission, up to OOT_TEX_PREWARM_MB (default 48) per submission, so the area's
@@ -1836,7 +1837,8 @@ static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t 
 static pthread_mutex_t g_pw_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_pw_q[8192]; static int g_pw_n;
 static _Atomic uint64_t g_pw_done_n, g_pw_done_bytes, g_pw_skip_n;
-static int pw_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM"); v = e && atoi(e) > 0; } return v; }
+extern int nvn_prewarm_default(void) __attribute__((weak));   /* OoT's runtime (game_patches_ns2.c) decides the default; other games: 0 */
+static int pw_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM"); v = e && *e ? atoi(e) > 0 : (nvn_prewarm_default ? nvn_prewarm_default() : 0); } return v; }
 static long pw_mb(void) { static long v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM_MB"); v = e ? atol(e) : 48; if (v < 1) v = 1; if (v > 512) v = 512; } return v; }
 static long pw_min_kb(void) { static long v = -1; if (v < 0) { const char *e = getenv("OOT_TEX_PREWARM_MIN_KB"); v = e ? atol(e) : 256; if (v < 16) v = 16; } return v; }
 static int pw_depth_fmt(NVNformat f) { return f==NVN_FORMAT_DEPTH16||f==NVN_FORMAT_DEPTH24||f==NVN_FORMAT_DEPTH32F||f==NVN_FORMAT_DEPTH24_STENCIL8||f==NVN_FORMAT_DEPTH32F_STENCIL8; }

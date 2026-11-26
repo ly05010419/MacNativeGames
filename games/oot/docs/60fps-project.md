@@ -86,7 +86,7 @@ serialization. Extending the range analysis to texture/descriptor-pool writes is
 correctness-critical, gated by `probe-gpu-dispatch-chain` (its negative control) + screenshot
 equality. Expected: ~1-2 ms/frame more if it lands safely.
 
-### W5. Frame-drop spikes: pre-warm streamed textures on area entry — implemented, opt-in (2026-11-26)
+### W5. Frame-drop spikes: pre-warm streamed textures on area entry — implemented, ON by default on base M1/M2 (2026-11-26)
 First visit to an area uploads up to 383 textures / 280 MB in one frame (100-680 ms spikes). Implemented on
 this branch: `nvnTexturePoolRegisterTexture` queues the slot (`OOT_TEX_PREWARM=1`, off by default), and the
 submit thread drains the queue at the start of every submission (`pw_drain` in `nvn_mtl.m`) with a
@@ -96,6 +96,11 @@ the area-entry spike drops a little (681 -> 586 ms) but is not gone — the text
 frame are registered in the same frames, and part of the remaining spike is CPU-side (0 textures, GPU
 31 ms, frame 237 ms). Next step for W5: hook the game's area-load state (or drain unlimited during fades)
 so the entry frame uploads nothing. Acceptance: long-frame spikes gone on a scripted route; no fps cost.
+Default (2026-11-26, measured fps-neutral and picture-identical): **on by default on a base Apple M1/M2
+Mac** (`nvn_prewarm_default` in game_patches_ns2.c, same sysctl check as the DRS default), off elsewhere;
+`OOT_TEX_PREWARM=1/0` wins, then `graphics-prewarm.txt`. Verified on the M2: default run 50.6 fps with
+900 textures / 1516 MB pre-uploaded during load and `[prewarm]` lines present; `OOT_TEX_PREWARM=0` run:
+no prewarm, fps unchanged.
 
 ### W6. CPU headroom — measured, no safe win left on the host side (2026-11-26)
 `sample` over 15 s on the M2 (Kokiri, DRS): **90 % of all CPU samples are in guest JIT code**, the host
@@ -108,6 +113,14 @@ always differ). Conclusion: the M2 wall at DRS is guest execution + GPU, not hos
 invalidation or fewer per-draw lookups would save < 5 % host, inside noise. The lever that actually
 reduces guest CPU per frame is fewer draws (W2 far plane) and less guest-side work; 120 Hz Macs are
 limited by the same guest CPU, so W6 is closed as measured-no-op rather than shipped blind.
+
+## Frame-budget finding (2026-11-26, M2, Kokiri Forest): resolution-independent ceiling ~50 fps real
+Fixed 720p = 41 fps; fixed 0.35x (~448p) = 40 fps; DRS (internal ~683x384) = 50-51 fps at canvas 0/1/3 alike;
+the user's 1080p canvas (internal 689x394) = ~40. So in this scene the wall is **per-frame CPU, not pixels**:
+at DRS, NVN submit+present p50 = 14.3-16.6 ms/frame (encode of 1 220 draws / 113 passes / 2 138 arg-block
+encodes, only 4 % reused) plus 46 M guest instructions/frame (translate CPU 6.5 ms); GPU busy is small.
+Real 60 fps (<= 16.7 ms/frame) therefore needs ~20-25 % less per-frame CPU: W1 (mesh IR patch), the W4
+range-analysis extension (arg-block reuse), and W2 (fewer draws) are the levers — the long pole is W1.
 
 ## Order of work
 
