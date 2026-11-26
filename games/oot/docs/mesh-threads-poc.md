@@ -70,3 +70,20 @@ Bench limits are now printed by failing compiles on any Mac: 512 verts/group is 
 and 256 verts x 10 float4 exceeds the 32 KB mesh-size cap on the M2. The `g*` variants (body lane id
 = `thread_index_in_simdgroup` only, like the real guest body) show the real shape gains nothing from
 more threads without the IR lane flattening: g32 41.7 / g64 36.4 / g128 42.3 ms vs t128 16.6 ms.
+
+## Update (2026-11-26, later): lane-flattening pass implemented in the translator, variant loads but still faults at 64 threads
+
+`MeshStage.cs` gained a flattening pass (behind the existing `TOTK_MESH_THREADS_SCALE`): when the scaled
+thread count is a power of two > 32, the body's subgroup lane id used for addressing is replaced by the
+global thread id (`dm_lid`, passed in as a new `dm_flat` parameter; subgroup *mask* lines keep the
+per-32-lane subgroup id), and the wrapper's stage header `mem[0]` is scaled by `threads/32` so one
+threadgroup covers that many 32-vertex blocks (the guest grid stays sized for 32, out-of-range groups
+no-op via the body's bounds check). All 32-lane strides/decompositions in the body stay at 32, so the
+stage layout and export loops are unchanged.
+
+Validated on fed302d7: the variant generates, compiles standalone (`xcrun metal`), its reflection
+equals the seed's except `threadgroup_size`/`mesh_stage.threads`, and mode 3 **loads** it
+("loaded mode=3"). But running at 64 threads still SIGSEGVs the guest at `main+0x1c4280` (fault=0x1)
+at world entry — the raw-pool address path in the body (not just the `_77` vertex id) still assumes 32
+lanes. Next step: trace that faulting access (watch/`mscan` on the pool table read) and flatten it too;
+the acceptance stays probe-gpu-mesh + pixel-identical foliage vs the 32-thread build.

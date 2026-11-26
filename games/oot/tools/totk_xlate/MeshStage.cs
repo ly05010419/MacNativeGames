@@ -10,6 +10,7 @@ sealed class MeshStage
 {
     readonly string kind;
     int threads; readonly int payload, maxV, maxP;   // threads is scaled by TOTK_MESH_THREADS_SCALE (PoC, 2026-11-26)
+    int flatShift;   // W1 flattening (PoC): when threads>32, the body's 32-lane stride becomes 2^(5+flatShift) and the lane id becomes the global thread id (dm_lid); subgroup masks stay per-32-lane
     readonly bool task, deviceAllowed;   // deviceAllowed: the request may say stage_device=false (tests reading the stage memory from a compute wrapper)
     readonly List<(int n,int c)> vertex = new(), primitive = new();
     readonly int[] layout;
@@ -60,6 +61,9 @@ sealed class MeshStage
             // follow, so the generated body stays consistent; the reflection reports the scaled count.
             var e = Environment.GetEnvironmentVariable("TOTK_MESH_THREADS_SCALE");
             if (!string.IsNullOrEmpty(e)) { int k = int.Parse(e.Trim()); if (k > 1) { threads = Math.Min(threads * k, 1024); rq["local"] = new JsonArray(threads, 1, 1); } }
+            if (threads > 32 && (threads & (threads - 1)) == 0 && threads % 32 == 0 && threads <= 512) {
+                flatShift = 0; while ((32 << flatShift) < threads) flatShift++;   // stride shift 5 -> 5+flatShift
+            }
         }
         int output=16+Align(payload,16), prim;
         if(kind=="ts") {prim=output+payload;shared=output+Align(payload,4);}
@@ -95,7 +99,7 @@ sealed class MeshStage
         string path=Path.Combine(outDir,(string)rq["variant"]+".mesh.code");File.WriteAllBytes(path,code[0x80..]);job["code"]=path;
         job["local"]=new JsonArray(threads,1,1);job["shared"]=shared;job["stage_memory"]=new JsonArray(layout.Select(x=>(JsonNode)JsonValue.Create(x)).ToArray());
     }
-    public JsonObject Reflection()=>new(){["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device,["byte_stores"]=ByteStores};
+    public JsonObject Reflection()=>new(){["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device,["byte_stores"]=ByteStores};   // flat_shift stays internal: the mode-3 loader requires the candidate reflection to equal the original except threadgroup_size / mesh_stage.threads
     static List<string> Params(string t) {
         var r=new List<string>();int depth=0,at=0;
         for(int i=0;i<t.Length;i++){char c=t[i];if(c==','&&depth==0){r.Add(t[at..i].Trim());at=i+1;}if("([<".Contains(c))depth++;if(")]>".Contains(c))depth--;}
@@ -125,6 +129,25 @@ sealed class MeshStage
         }
         Device=device;
         src=ByteStores_(src);
+        int flatLane=0, flatStride=0;
+        if (flatShift > 0) {
+            // W1 lane flattening (PoC): the guest body addresses the stage with (instance << 5) + subgroup-lane.
+            // With threads = 2^(5+flatShift) per group, use the global thread id (dm_lid) as the lane and scale the
+            // instance stride << 5 -> << (5+flatShift), so every thread owns a distinct vertex and no two threads race.
+            // Subgroup masks (lines containing "Mask") keep the per-32-lane subgroup id: their semantics are per SIMD group.
+            string sgid = pars.Select(p => Regex.Match(p, @"(uint3?)\s+(\w+)\s*\[\[thread_index_in_simdgroup\]\]$"))
+                             .Where(x => x.Success).Select(x => x.Groups[2].Value).FirstOrDefault();
+            if (sgid != null) {
+                src = Regex.Replace(src, @"dm_stage_body\(([^)]*)\)", m => $"dm_stage_body({m.Groups[1].Value}, uint dm_flat)");   // the flat lane comes in as a parameter
+                var lines = src.Split('\n').ToList();
+                for (int i = 0; i < lines.Count; i++) {
+                    if (lines[i].Contains("Mask") || lines[i].Contains("dm_stage_body(")) continue;
+                    if (lines[i].Contains(sgid)) { lines[i] = lines[i].Replace(sgid, "dm_flat"); flatLane++; }
+                }
+                src = string.Join("\n", lines);
+                flatStride = 0;   // strides stay x32: each thread owns vertex (mem[0]<<5)+lid, and the wrapper lets one group cover threads/32 blocks
+            }
+        }
         string lid="dm_lid",tg="dm_tg";var extras=new List<string>();
         foreach(string attr in new[]{"thread_position_in_threadgroup","threadgroup_position_in_grid"}){
             var t=pars.Select(p=>Regex.Match(p,@"(uint3?)\s+(\w+)\s*\[\[("+attr+@")\]\]$")).FirstOrDefault(x=>x.Success);
@@ -132,7 +155,7 @@ sealed class MeshStage
             if(t==null)extras.Add($"uint {name} [[{attr}]]");if(attr=="thread_position_in_threadgroup")lid=name;else tg=name;
         }
         int pay=(payload+3)/4,output=layout[2]/4,prim=layout[3],input=4;
-        string call=$"dm_stage_body({string.Join(", ",names.Append(mem))});";
+        string call=$"dm_stage_body({string.Join(", ",names.Append(mem))}{(flatShift>0?", "+lid:"")});";
         string bar=device?"threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);":"threadgroup_barrier(mem_flags::mem_threadgroup);";
         string start=device
             ?$"    threadgroup uint dm_slot_tg;\n    if({lid}==0u){{ uint s, tries=0u; for(;;){{ s=atomic_fetch_add_explicit((device atomic_uint*)dm_scratch,1u,memory_order_relaxed)&dm_scratch[1]; if(atomic_exchange_explicit((device atomic_uint*)(dm_scratch+{ScratchFlagsWord}u+s),1u,memory_order_relaxed)==0u)break; if(++tries=={ScratchSpinLimit}u){{atomic_fetch_add_explicit((device atomic_uint*)(dm_scratch+{ScratchForcedWord}u),1u,memory_order_relaxed);break;}} }} dm_slot_tg=s; }}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n    device spvUnsafeArray<uint, {words}>& {mem}=*reinterpret_cast<device spvUnsafeArray<uint, {words}>*>(dm_scratch+{ScratchSlotsWord}u+dm_slot_tg*dm_scratch[2]);\n    for(uint i={lid}; i<{words}u;i+={threads}u) {mem}[i]=0u;\n    {bar}\n"
@@ -161,7 +184,8 @@ sealed class MeshStage
         string sets=string.Concat(vn.Select(n=>$"v.{(n<0?"position":"a"+n)}={Vec(vertex,n)};\n"));
         string psets=string.Concat(pn.Select(n=>$"p.p{n}={Vec(primitive,n)};\n"));
         string Entry(string name,bool gl){
-            string fill=task?$"for(uint i={lid};i<{pay}u;i+={threads}u){mem}[{input}u+i]=dm_payload.w[i];\n{bar}\nif({lid}==0u){{{mem}[0]={tg};{mem}[{input}]={tg};}}\n":$"if({lid}==0u){mem}[0]=dm_first[0]+{tg};\n";
+            string blockscale=flatShift>0?"*"+(threads/32).ToString():"";
+            string fill=task?$"for(uint i={lid};i<{pay}u;i+={threads}u){mem}[{input}u+i]=dm_payload.w[i];\n{bar}\nif({lid}==0u){{{mem}[0]={tg};{mem}[{input}]={tg};}}\n":$"if({lid}==0u){mem}[0]=dm_first[0]+{tg}{blockscale};\n";
             return $"[[mesh]] void {name}({sig}, dm_mesh_t dm_out, "+(task?"const object_data dm_payload_t& dm_payload [[payload]]":first)+scratch+$")\n{{\n{start}{fill}{bar}\n{call}\n{bar}\nuint np=min({mem}[{prim/4}]>>24,{maxP}u);\nif({lid}==0u)dm_out.set_primitive_count(np);\nfor(uint n={lid};n<{maxV}u;n+={threads}u){{uint b={output}u+(n/32u)*{vstride}u+n%32u; dm_vertex_t v;\n{sets}"+(gl?"v.position.z=fma(v.position.z,0.5,v.position.w*0.5);\n":"")+"dm_out.set_vertex(n,v);}\n"+(pn.Count>0?$"for(uint n={lid};n<np;n+={threads}u){{uint b={pbase}u+(n/32u)*{pstride}u+n%32u;dm_prim_t p;{psets}dm_out.set_primitive(n,p);}}\n":"")+$"for(uint n={lid};n<np*3u;n+={threads}u){{uint at={prim+4}u+n;dm_out.set_index(n,({mem}[at>>2]>>((at&3u)*8u))&255u);}}\n{release}}}\n";
         }
         return src+"\n"+head+Entry("main0",true)+"\n"+Entry("main0_z",false);
