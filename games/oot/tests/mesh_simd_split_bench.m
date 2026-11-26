@@ -43,8 +43,8 @@ int main(int argc,const char**argv){@autoreleasepool{
  /* instantiate templates: Metal needs explicit symbols; compile source with -DTHREADS? No: templates
     instantiated below via C++-style names are not addressable from ObjC. Instead the .metal defines
     fixed entry points. We expect: t32,t64,t128,s64,s128. */
- const char*names[]={"t32","t64","t128","s64","s128"};
- int threads[]={32,64,128,64,128};
+ const char*names[]={"t32","t64","t128","s64","s128","g32","g64","g128"};
+ int threads[]={32,64,128,64,128,32,64,128};
  printf("device: %s\nGROUPS=%u runs=%u\n",dev.name.UTF8String,GROUPS,RUNS);
  printf("%-6s %8s %8s\n","variant","threads","median ms");
  for(unsigned v=0;v<sizeof names/sizeof*names;v++){

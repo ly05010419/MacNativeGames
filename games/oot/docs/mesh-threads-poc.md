@@ -17,7 +17,8 @@ SIMD group through threadgroup memory). Median of 16 submits, Apple M2:
 |---|---|---|---|
 | t32 (as shipped) | 32 | 49.9-51.9 | — |
 | t64 | 64 | 26.8-27.3 | −46 % |
-| t128 | 128 | 14.4-14.6 | **−71 %** |
+| t128 | 128 | 14.4-16.6 | **−69..−71 %** |
+| g32 / g64 / g128 (sgid-only body, the real guest shape) | 32/64/128 | 41.7 / 36.4 / 42.3 | ~none (g128 worse) |
 | s64 / s128 (read split) | 64 / 128 | 26.1-27.6 / 16.7-16.9 | no better than t64/t128 |
 
 So on the M2 the win is the **thread count per threadgroup**, not splitting one thread's read chain
@@ -66,4 +67,6 @@ the acceptance test: any candidate must render fed302d7's foliage identically to
 *and* not crash.
 
 Bench limits are now printed by failing compiles on any Mac: 512 verts/group is refused (max 256),
-and 256 verts x 10 float4 exceeds the 32 KB mesh-size cap on the M2.
+and 256 verts x 10 float4 exceeds the 32 KB mesh-size cap on the M2. The `g*` variants (body lane id
+= `thread_index_in_simdgroup` only, like the real guest body) show the real shape gains nothing from
+more threads without the IR lane flattening: g32 41.7 / g64 36.4 / g128 42.3 ms vs t128 16.6 ms.

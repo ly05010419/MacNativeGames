@@ -20,6 +20,7 @@ struct RangeCache {                       // the port's raw read range cache (on
     }
 };
 
+#define VMAX 128
 #define MESH_BODY(THREADS) \
     threadgroup uint my_slot; \
     if (lid == 0) { uint s; for (;;) { s = atomic_fetch_add_explicit((device atomic_uint*)hdr, 1u, memory_order_relaxed) & hdr[1]; \
@@ -33,7 +34,7 @@ struct RangeCache {                       // the port's raw read range cache (on
 
 #define EXPORT_ALL(THREADS) \
     threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device); \
-    for (uint n = lid; n < 128u; n += (THREADS)) { \
+    for (uint n = lid; n < VMAX; n += (THREADS)) { \
         uint b = 36u + (n / 32u) * 800u + n % 32u; \
         V v; \
         v.pos = float4(as_type<float>(st[b+0u]), as_type<float>(st[b+32u]), as_type<float>(st[b+64u]), as_type<float>(st[b+96u])); \
@@ -46,7 +47,7 @@ struct RangeCache {                       // the port's raw read range cache (on
 [[mesh]] void NAME(device const uint* addr_table [[buffer(0)]], device const uint* src [[buffer(1)]], \
                    device uint* slot [[buffer(2)]], device uint* hdr [[buffer(3)]], \
                    uint tg [[threadgroup_position_in_grid]], uint lid [[thread_position_in_threadgroup]], \
-                   mesh<V, void, 128, 64, metal::topology::triangle> out [[stage_out]]) { \
+                   mesh<V, void, VMAX, 64, metal::topology::triangle> out [[stage_out]]) { \
     MESH_BODY(THREADS) \
     constexpr int READS = 80 * 32 / (THREADS); \
     RangeCache rc; rc.hit = false; \
@@ -64,7 +65,7 @@ struct RangeCache {                       // the port's raw read range cache (on
 [[mesh]] void NAME(device const uint* addr_table [[buffer(0)]], device const uint* src [[buffer(1)]], \
                    device uint* slot [[buffer(2)]], device uint* hdr [[buffer(3)]], \
                    uint tg [[threadgroup_position_in_grid]], uint lid [[thread_position_in_threadgroup]], \
-                   mesh<V, void, 128, 64, metal::topology::triangle> out [[stage_out]]) { \
+                   mesh<V, void, VMAX, 64, metal::topology::triangle> out [[stage_out]]) { \
     constexpr int SIMD = (THREADS) / 32; \
     constexpr int READS = 80 * 32 / (THREADS); \
     constexpr int LANES_PER_GROUP = 32 / SIMD; \
@@ -94,3 +95,26 @@ KERNEL_S(s128, 128)
 
 struct FOut { float4 c [[color(0)]]; };
 [[fragment]] FOut frag_main(V v [[stage_in]]) { return FOut{ float4(1.0) }; }
+
+// sgid-only variant: the body's lane id is thread_index_in_simdgroup only (as in the real guest
+// mesh body, which also hardcodes a 32-lane stride), so extra threads per threadgroup duplicate
+// the work instead of splitting it. Measured on the M2: g32 41.7, g64 36.4, g128 42.3 ms —
+// the real shader shape gains almost nothing from more threads without an IR-level lane flattening,
+// while the lid-strided bench body wins big (t128 16.6 ms, -69 %).
+#define KERNEL_G(NAME, THREADS) \
+[[mesh]] void NAME(device const uint* addr_table [[buffer(0)]], device const uint* src [[buffer(1)]], \
+                   device uint* slot [[buffer(2)]], device uint* hdr [[buffer(3)]], \
+                   uint tg [[threadgroup_position_in_grid]], uint lid [[thread_position_in_threadgroup]], \
+                   uint sgid [[thread_index_in_simdgroup]], \
+                   mesh<V, void, VMAX, 64, metal::topology::triangle> out [[stage_out]]) { \
+    MESH_BODY(THREADS) \
+    RangeCache rc; rc.hit = false; \
+    float acc = 0; \
+    for (int k = 0; k < 80; k++) \
+        acc += as_type<float>(rc.read(src, addr_table[(tg * 32 + sgid) * 80 + k])); \
+    st[100 + sgid] = as_type<uint>(acc); \
+    EXPORT_ALL(THREADS) \
+}
+KERNEL_G(g32, 32)
+KERNEL_G(g64, 64)
+KERNEL_G(g128, 128)
