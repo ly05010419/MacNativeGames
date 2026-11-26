@@ -87,3 +87,15 @@ equals the seed's except `threadgroup_size`/`mesh_stage.threads`, and mode 3 **l
 at world entry — the raw-pool address path in the body (not just the `_77` vertex id) still assumes 32
 lanes. Next step: trace that faulting access (watch/`mscan` on the pool table read) and flatten it too;
 the acceptance stays probe-gpu-mesh + pixel-identical foliage vs the 32-thread build.
+
+## Isolation (2026-11-26, later still): the world-entry SIGSEGV is NOT the lane duplication
+Ran the loaded 64-thread variant three ways on the PoC build (Kokiri, DRS): mode 3 with no variant dir
+(32-thread fallback) = fine, 3 900 frames, no signal; mode 3 with the dir but the variant REJECTED
+(hash mismatch fallback) = fine, 3 900 frames; mode 3 with the variant LOADED (both the original
+unflattened `_b` and the new flattened one) = SIGSEGV (fault=0x1) right at the first fed302d7 mesh
+draw at world entry, guest frame chain innermost main+0x5703c0 (a vtable callee, blr at main+0x5703b8).
+So running this mesh stage at 64 threads per threadgroup crashes regardless of the body transform —
+the blocker is in the 64-thread dispatch path itself (object-block launch / grid sizing / stage slot
+bookkeeping at 64 threads), not in the lane flattening. Next step: map the faulting JIT pc to the exact
+guest instruction (runtime translation log) or watch the slot header words during the first 64-thread
+draw, and fix the dispatch; then re-run the flattened variant and check pixel-identical output.
