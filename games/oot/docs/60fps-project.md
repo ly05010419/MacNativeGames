@@ -57,11 +57,15 @@ live in the game's config (data fields, not immediates — the 1000x1000 shadow 
 `ldrh` from a struct, so sites need real RE, or HLE-level scaling). Acceptance: screenshot equality
 at 100 %, A/B per biome. Expected: scene-dependent, big in foliage-heavy areas.
 
-### W3. Shadow resolution row (opt-in) — ~5.3 ms/frame of depth passes at 720p
-1000x1000 atlas + 128x128 cascades, resolution-independent cost. A proper game-side patch (verified
-site) or a smarter HLE scaling (the naive HLE scale measured *worse* — texture re-uploads — so the
-patch must avoid reallocating per frame). Acceptance: screenshot diff shows only softer shadows;
-opt-in row, default off on M3+, on M1/M2 only if the user wants. Expected: ~2-3 ms/frame on M2.
+### W3. Shadow resolution row (opt-in) — blocked on locating the size source (2026-11-26)
+~5.3 ms/frame of depth-pass spans (1000x1000 atlas + 128x128 cascades, resolution-independent). Leads found:
+the atlas size is read from a config struct's u16 fields at +0x48/+0x4a/+0x4c by the function at
+`main+0x244bb8` (thunk calls at +0x870/0x878/0x880 = SetWidth/SetHeight/SetDepth); the struct arrives as
+the function's `x0`, reached via indirect dispatch (no direct `bl`/`adrp` refs found in the scan). The
+atlas texture is **re-created ~1.3x per frame** (5,285 registrations in ~3,900 frames), which is why
+naive HLE scaling at SetFormat measured *worse* (44.5 vs 50.6 fps — re-upload churn, GPU p50 43 vs 21 ms):
+any fix must change the size where the game computes it, once, so viewport/sampling/atlas layout all
+follow. Acceptance when unblocked: screenshot diff shows only softer shadows; opt-in row; ~2-3 ms/frame.
 
 ### W4. Compute-encoder merging — ~10.2 ms of spans vs ~4.5 ms kernels
 Merge adjacent compute encoders when the dependency analysis (nvn_dispatch_order) says no barrier
