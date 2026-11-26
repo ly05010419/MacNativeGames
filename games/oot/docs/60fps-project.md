@@ -34,18 +34,20 @@ an opt-in row, off by default on M3+; on M1/M2 it may default on, like the DRS r
 
 ## Workstreams, ranked by measured expected gain
 
-### W1. Mesh stage at 64/128 threads per threadgroup — biggest lever, needs restructuring
-Microbenchmark with fed302d7's real structure (committed in #2391): on the M2, 32 -> 64 -> 128
-threads per threadgroup is 49.9 -> 26.8 -> **14.4 ms (-71 %)** for the same output. The naive local
-size raise crashes the real guest shader (SIGSEGV, `main+0x1c4280`, fault=0x1, at the first scaled
-draw): the guest body assumes a 32-lane workgroup. The real work, in `tools/totk_xlate/MeshStage.cs`:
-keep the body at 32 virtual lanes and use the extra physical lanes either to run K instances per
-threadgroup (per-sub-instance scratch slots + virtual `dm_lid`/`dm_tg`, exports capped per group)
-or to prefetch the raw-read chain into threadgroup memory (the SH variant measured -23 %/-40 % on
-the M4 bench). Acceptance: `probe-gpu-mesh` passes, mode-3 candidate renders fed302d7's foliage
-**pixel-identical** to the 32-thread build (screenshot diff), no crash, then a new chain (v29+) +
-full seed re-translation + pipeline archive rebuild, A/B measured. Expected: several ms/frame on
-every Mac, most on the weaker ones.
+### W1. Mesh stage: use the idle threads — root cause found, design set (2026-11-26)
+The microbenchmark (#2391) shows 32 -> 64 -> 128 threads per threadgroup is 49.9 -> 26.8 ->
+**14.4 ms (-71 %)** on the M2 *for a body with threadgroup-strided loops*. The real guest body does
+not have them: it uses only `gl_SubgroupInvocationID` (0..31 per SIMD group) and a hardcoded
+`<<5` 32-lane stride for its per-lane raw address — so at 64/128 threads the SIMD groups duplicate
+the same lane ids and race on the stage memory (the measured SIGSEGV, guest `main+0x1c4280`).
+Metal limits on the M2 (bench-verified): max **256 vertices** and **32 KB mesh size** per threadgroup,
+so with 10 float4/vertex only one 128-vertex instance per threadgroup fits — multi-instance per
+group is out. The only route is flattening the lane id inside the instance: in the translator's IR,
+patch the lane-stride constant (`<<5` -> `<<6`/`<<7`) and keep subgroup masks per-32-lane, behind
+`TOTK_MESH_THREADS_SCALE`, per shader. Acceptance per shader: `probe-gpu-mesh` passes, the mode-3
+candidate renders fed302d7's foliage **pixel-identical** to the 32-thread build, no crash; then a
+new chain (v29+) + full seed + archive rebuild, A/B measured. Expected: several ms/frame on every
+Mac, most on the weak ones. This is the long pole: per-shader IR patch + full GPU validation.
 
 ### W2. Fewer draws: render distance / LOD rows for OoT (BotW already has them)
 BotW's `graphics-lod.txt` / `graphics-far.txt` rows cut draws in heavy scenes. For OoT the knobs
