@@ -5,6 +5,7 @@
 #include <string.h>
 extern unsigned char step_state[4096],step_check[64];
 extern float call_input(void *,float,float),call_logic(void *,float,float);
+extern int32_t call_water(int32_t,float);
 /* The veneers cap a frame's duration at 1/30 s (oot_timestep.h): seconds = min(ticks * 3.2e-8, 1/30). */
 static float capped(uint64_t ticks){float sec=(float)ticks*3.2e-8f,cap=1.0f/30.0f;return sec<cap?sec:cap;}
 static void near(float a,float b){
@@ -30,5 +31,17 @@ int main(void){
  pin=0;memcpy(step_state,&pin,4);memcpy(&before,step_state+24,8);memcpy(&count,step_state+16,8);
  for(int k=0;k<20;k++)near(call_logic(fw,60,60),2);   /* 50 ms frames, capped at 1/30 s */
  double after;uint64_t n;memcpy(&after,step_state+24,8);memcpy(&n,step_state+16,8);assert(fabs(after-before-20.0/30.0)<1e-5);assert(n-count==20);
- puts("native ARM64 time-step tests: 16.7/33.3/50/100 ms and a 2.3 s hitch (capped at 1/30 s), 30/60 selectors, startup fallback, live pin, accumulated time and register/flag preservation passed");return 0;
+ const struct { int32_t base; float ratio; int32_t want; } water_cases[] = {
+  {6, 0.0f, 0}, {6, -1.0f, 0}, {6, NAN, 0}, {0, 1.0f, 0},
+  {6, 0.01f, 1}, {6, 0.25f, 2}, {6, 0.5f, 3}, {6, 2.0f/3.0f, 4},
+  {6, 0.76f, 5}, {6, 0.99f, 6}, {6, 1.0f, 6}, {6, 1.5f, 9}, {6, 2.0f, 12}
+ };
+ for(unsigned k=0;k<sizeof water_cases/sizeof *water_cases;k++){
+  int32_t got=call_water(water_cases[k].base,water_cases[k].ratio);
+  assert(got==water_cases[k].want);
+  float s0_after; memcpy(&s0_after,step_check,4);
+  if(isnan(water_cases[k].ratio)) assert(isnan(s0_after));
+  else assert(s0_after==water_cases[k].ratio);
+ }
+ puts("native ARM64 time-step tests: 16.7/33.3/50/100 ms and a 2.3 s hitch (capped at 1/30 s), 30/60 selectors, startup fallback, live pin, accumulated time, water substeps and register/flag preservation passed");return 0;
 }

@@ -42,6 +42,22 @@ static void patch_oot_timestep(Module *m) {
         0x7200011f,0x52a84e08,0x1e270101,0x9134e268,0xb82a1108,
         0x1e220c21,0x1e201828
     };
+    static const uint32_t water_context[] = {
+        0xb9404e68,0x1e380009,0xf00261db,0xd0026238,0xf946b37b,
+        0xf9455718,0x1b097d08,0xb90037e8,0x7100051f,0x5400f94b
+    };
+    /* Water-surface simulation (main+0x472e0): main+0x475f8 truncates the VFR
+       ratio with fcvtzs w9, s0 before mul w8, w8, w9 at main+0x4760c (w8 = base
+       substeps per 60 Hz frame, 6). Above 60 FPS, s0 < 1 truncates to 0 and the
+       loop at main+0x47618 skips the compute simulation (leaving frozen ripples
+       in the ping-pong heightfields). Scale in float with round-to-nearest-even
+       and clamp positive products to >= 1 so >60 FPS keeps ~360 substeps/s while
+       pause (s0 == 0) stays 0. s16 and w9 are dead here; s0 is preserved;
+       main+0x47614 immediately overwrites NZCV. */
+    uint32_t water[] = {
+        0x1e220110,0x1e200a10,0x1e200208,0x1e202208,
+        0x1a9fd7e9,0x6b09011f,0x1a89c108,0x14000000
+    };
     /* stp x16,x17; stp q16,q17; adrp/add page; optional pin; otherwise
        scvtf elapsed; multiply by 1/31250000; multiply original numerator;
        record; restore; branch back. Literal pools stay in the RX text page. */
@@ -76,14 +92,19 @@ static void patch_oot_timestep(Module *m) {
     }
     uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL;
     uint64_t stub = (m->text_end + 15) & ~15ULL;
+    uint64_t water_stub = stub + 384;   /* after resolution veneers (+372) and before OOT_VR_CALL_STUB (+512) */
     uint64_t rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
     if (m->text_end != 0x3c461d0 || m->file_size < 0x4e94b28 ||
         page + 0x4000 > m->size || stub + sizeof input + sizeof logic > rx_end ||
+        water_stub + sizeof water > rx_end ||
         memcmp(m->base + 0x3b4eadc, input_context, sizeof input_context) ||
-        memcmp(m->base + 0x6e6c98, logic_context, sizeof logic_context))
+        memcmp(m->base + 0x6e6c98, logic_context, sizeof logic_context) ||
+        memcmp(m->base + 0x475f4, water_context, sizeof water_context))
         runtime_fail("OOT time-step sites differ from verified update 131072");
     for (uint64_t k = stub; k < stub + sizeof input + sizeof logic; k++)
         if (m->base[k]) runtime_fail("OOT time-step text padding already in use");
+    for (uint64_t k = water_stub; k < water_stub + sizeof water; k++)
+        if (m->base[k]) runtime_fail("OOT water time-step text padding already in use");
     for (uint64_t k = page; k < page + 40; k++)
         if (m->base[k]) runtime_fail("OOT time-step data page already in use");
     uint32_t *code[] = { input, logic };
@@ -100,6 +121,10 @@ static void patch_oot_timestep(Module *m) {
         memcpy(m->base + sites[k], &jump, sizeof jump);
         stub += lengths[k];
     }
+    water[7] = oot_step_branch(water_stub + 28, 0x47610);
+    uint32_t water_jump = oot_step_branch(0x4760c, water_stub);
+    memcpy(m->base + water_stub, water, sizeof water);
+    memcpy(m->base + 0x4760c, &water_jump, sizeof water_jump);
     oot_step_pin = (_Atomic uint32_t *)(void *)(m->base + page);
-    fprintf(stderr, "[oot] native VFR uses framework elapsed ticks (31250000 Hz); input and logic; state main+0x%llx\n", (unsigned long long)page);
+    fprintf(stderr, "[oot] native VFR uses framework elapsed ticks (31250000 Hz); input, logic and water substeps; state main+0x%llx\n", (unsigned long long)page);
 }
