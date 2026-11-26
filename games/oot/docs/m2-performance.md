@@ -96,6 +96,10 @@ Goal: 60 fps *game* rate (no interpolation) in this scene on the M2. Measured (r
 - Ruled out by A/B at DRS: `skip_invisible` (no draw ever has all-zero queries — nothing skipped), keep-alive
   **off hurts** (43.9 vs 50.6 — on the fanless M2 the spinner keeps the GPU clock up; leave it on),
   `yield_fast`, `TOTK_ASYNC_PREEMPT=0` — all neutral.
+- Kernel-level split (OOT_DISPATCH_GPU_FILE Precise timestamps, 30 frames): compute kernels ~4.5 ms/frame,
+  render kernels ~15 ms/frame — the wall is the render (geometry/mesh/fragment) side, not the per-encoder
+  overhead: `TOTK_BARRIER_START=0` (racy, measurement only) changes nothing (50.7 vs 50.6 fps), the
+  queue-wide barrier at each compute encoder start is not the cost while the GPU is saturated.
 - To reach 16.7 ms/frame needs ~15 % less GPU work. The realistic paths, in order: (a) merge adjacent compute
   encoders when no barrier separates them (~10.2 ms of compute spans, much of it per-pass fixed cost);
   (b) translator-level mesh/compute work (SIMD split of one thread's reads: up to -42 % on the mesh stage,
