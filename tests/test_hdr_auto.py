@@ -20,8 +20,8 @@ class HdrChoice(unittest.TestCase):
         return result.stdout
 
     def test_hdr_choice(self):
-        # Tears of the Kingdom 1.4.3 has the HDR rows; 1.2.1 (base) and Breath of the Wild have none and stay off
-        versions = {'base': [], 'v143': ['-DTOTK_GAME_V143=1'], 'botw190': ['-DGAME_BOTW190=1', '-DGAME_BOTW=1']}
+        # Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 have the HDR rows; TOTK 1.2.1 (base) and BotW 1.6.0 have none
+        versions = {'base': [], 'v143': ['-DTOTK_GAME_V143=1'], 'botw160': ['-DGAME_BOTW160=1', '-DGAME_BOTW=1'], 'botw190': ['-DGAME_BOTW190=1', '-DGAME_BOTW=1']}
         with tempfile.TemporaryDirectory() as directory:
             for version, flags in versions.items():
                 with self.subTest(version=version):

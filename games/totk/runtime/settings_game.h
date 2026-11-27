@@ -365,7 +365,7 @@ static void settings_restore_start(void) {
  settingsRestoreTimer=[NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;settings_restore_ready();}];
  [NSRunLoop.mainRunLoop addTimer:settingsRestoreTimer forMode:NSRunLoopCommonModes];
 }
-#define SETTINGS_HDR_ROWS 2   /* the effects page's HDR rows on 1.4.3 when HDR is available (settings_hdr_rows; PR #1129) */
+#define SETTINGS_HDR_ROWS 2   /* the effects page's HDR rows on 1.4.3 and BotW 1.9.0 when HDR is available (settings_hdr_rows; PR #1129) */
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
 /* The game consumes this request in its native display calculation. */
 static void settings_ns2_save_size(void) {
@@ -558,6 +558,30 @@ static TOTKSettingRow *settings_ssao_row(void) {
 }
 /* The effects page: the two distances (1.4.3), then a switch per effect (a greyed "not in this version" when the game's
    shaders are not the ones the switches know). */
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)
+/* HDR / EDR (PR #1129, the RenoDX approach; Mac, TOTK 1.4.3 and Breath of the Wild 1.9.0): the switch and the game's brightness (its white in SDR-white
+   units). hdr.txt holds on / off / auto (hdr_auto.h); each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
+   others, peak (0: the display's headroom), UI white, exposure, ..., are set in their files; the page has no room). Off leaves every shader, pipeline and texture as without HDR (nvn_mtl.m keeps both compose shaders).
+   Frame interpolation shows SDR MetalFX frames, so turning HDR on turns it off (and picking it turns HDR off). */
+static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *milli,int n,NSString *(^text)(int)){
+ int (^current)(void)=^int{return (int)lroundf(front_hdr_parameter(which)*1000);};
+ NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(int i=0;i<n;i++)[values addObject:@(milli[i])];
+ if(![values containsObject:@(current())])[values addObject:@(current())];   /* a hand-written value is kept */
+ NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
+ return settings_row(title,choices,values,current,^(int v){front_hdr_parameter_save(which,v/1000.0f);});
+}
+static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
+ /* Off / Auto / On in this order: a controller stepping from Off reaches Auto without passing On, which turns frame
+    interpolation off. Auto keeps the interpolation choice: it runs wherever Auto leaves HDR off (hdr_auto.h). Picking
+    interpolation while HDR is on (On, or Auto on an HDR screen) turns HDR off, as before. */
+ [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),@[settings_on_off(0),settings_text("自动（HDR 屏幕上开）","Auto (on an HDR screen)"),settings_on_off(1)],@[@(HDR_CHOICE_OFF),@(HDR_CHOICE_AUTO),@(HDR_CHOICE_ON)],^int{return front_hdr_choice();},^(int v){
+  if(v==HDR_CHOICE_ON&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
+  runtime_front_hdr_set(v);})];
+ static const int white[]={500,750,1000,1500,2000};
+ [rows addObject:settings_hdr_choice(TOTK_HDR_GAME_WHITE,settings_text("HDR 游戏亮度","HDR game brightness"),white,5,^NSString *(int v){
+  return [NSString stringWithFormat:@"%g×",v/1000.0];})];
+}
+#endif
 #ifdef TOTK_GAME_V143
 static TOTKSettingRow *settings_distance_row(int lod) {
  NSString *t=lod?settings_text("模型细节距离（LOD）","Model detail distance (LOD)"):settings_text("渲染距离","Render distance");
@@ -609,28 +633,6 @@ static TOTKSettingRow *settings_shadow_row(void) {
   if(fx>=0&&dm_gfx_fx_available(fx))dm_gfx_fx_set(fx,v!=0);
   if(v){runtime_shadow_scale_set(v/100.0);settings_save_int("graphics-shadow.txt",v,"shadow resolution");}
   settings_effects_save();});
-}
-/* HDR / EDR (PR #1129, the RenoDX approach; Mac, 1.4.3): the switch and the game's brightness (its white in SDR-white
-   units). hdr.txt holds on / off / auto (hdr_auto.h); each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
-   others, peak (0: the display's headroom), UI white, exposure, ..., are set in their files; the page has no room). Off leaves every shader, pipeline and texture as without HDR (nvn_mtl.m keeps both compose shaders).
-   Frame interpolation shows SDR MetalFX frames, so turning HDR on turns it off (and picking it turns HDR off). */
-static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *milli,int n,NSString *(^text)(int)){
- int (^current)(void)=^int{return (int)lroundf(front_hdr_parameter(which)*1000);};
- NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(int i=0;i<n;i++)[values addObject:@(milli[i])];
- if(![values containsObject:@(current())])[values addObject:@(current())];   /* a hand-written value is kept */
- NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
- return settings_row(title,choices,values,current,^(int v){front_hdr_parameter_save(which,v/1000.0f);});
-}
-static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
- /* Off / Auto / On in this order: a controller stepping from Off reaches Auto without passing On, which turns frame
-    interpolation off. Auto keeps the interpolation choice: it runs wherever Auto leaves HDR off (hdr_auto.h). Picking
-    interpolation while HDR is on (On, or Auto on an HDR screen) turns HDR off, as before. */
- [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),@[settings_on_off(0),settings_text("自动（HDR 屏幕上开）","Auto (on an HDR screen)"),settings_on_off(1)],@[@(HDR_CHOICE_OFF),@(HDR_CHOICE_AUTO),@(HDR_CHOICE_ON)],^int{return front_hdr_choice();},^(int v){
-  if(v==HDR_CHOICE_ON&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
-  runtime_front_hdr_set(v);})];
- static const int white[]={500,750,1000,1500,2000};
- [rows addObject:settings_hdr_choice(TOTK_HDR_GAME_WHITE,settings_text("HDR 游戏亮度","HDR game brightness"),white,5,^NSString *(int v){
-  return [NSString stringWithFormat:@"%g×",v/1000.0];})];
 }
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray arrayWithObjects:settings_fov_row(),settings_distance_row(1),settings_distance_row(0),settings_shadow_row(),nil];

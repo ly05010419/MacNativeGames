@@ -22,8 +22,16 @@ static int g_hdr_companion_store = 1;
 #else
 static int g_hdr_companion_store;
 #endif
+/* The guest formats a companion stands in for: TOTK's R11G11B10F scene targets; Breath of the Wild 1.9.0's compose
+ * and canvas are RGB10A2 unorm (Savage Wind docs/hdr.md, RenoDX botw: the same two targets become RGBA16F). */
+static int hdr_shadow_format(MTLPixelFormat f) {
+#ifdef GAME_BOTW190
+    if(f==MTLPixelFormatRGB10A2Unorm)return 1;
+#endif
+    return f==MTLPixelFormatRG11B10Float;
+}
 static id<MTLTexture> hdr_shadow_find(id<MTLTexture> source) {
-    if(!source || !hdr_shadow_enabled() || source.pixelFormat!=MTLPixelFormatRG11B10Float)return nil;
+    if(!source || !hdr_shadow_enabled() || !hdr_shadow_format(source.pixelFormat))return nil;
     id<MTLTexture> base=source.parentTexture?:source;
     if(source.width!=base.width || source.height!=base.height || source.mipmapLevelCount!=1)return nil;
     uint64_t frame=atomic_load(&g_cur_frame);
@@ -38,10 +46,12 @@ static id<MTLTexture> hdr_shadow_find(id<MTLTexture> source) {
 static id<MTLTexture> hdr_shadow_sample(id<MTLTexture> source) {
     id<MTLTexture> hdr=hdr_shadow_find(source);if(!hdr)return nil;
     MTLTextureSwizzleChannels sw=source.swizzle;
+    if(source.pixelFormat==MTLPixelFormatRG11B10Float) {   /* RGB10A2 stores its alpha: the companion's alpha is it */
     if(sw.red==MTLTextureSwizzleAlpha)sw.red=MTLTextureSwizzleOne;
     if(sw.green==MTLTextureSwizzleAlpha)sw.green=MTLTextureSwizzleOne;
     if(sw.blue==MTLTextureSwizzleAlpha)sw.blue=MTLTextureSwizzleOne;
     if(sw.alpha==MTLTextureSwizzleAlpha)sw.alpha=MTLTextureSwizzleOne;
+    }
     uint64_t bits=(uint64_t)sw.red|((uint64_t)sw.green<<8)|((uint64_t)sw.blue<<16)|((uint64_t)sw.alpha<<24)|((uint64_t)source.textureType<<32);
     for(unsigned i=0;i<HDR_SHADOW_MAX;i++)if(g_hdr_shadow[i].texture==hdr){
         if(!g_hdr_shadow[i].reads)g_hdr_shadow[i].reads=[NSMutableDictionary dictionary];
@@ -69,8 +79,8 @@ static int hdr_shadow_rgb_factor(int factor) {
 /* A render copy converts formats, unlike a blit. The original is mirrored at
  * pass end for guest copies/readbacks; subsequent rendering samples FP16. */
 static void hdr_shadow_copy(id<MTLTexture> src,id<MTLTexture> dst) {
-    static id<MTLRenderPipelineState> to16,to11;
-    id<MTLRenderPipelineState> pso=dst.pixelFormat==MTLPixelFormatRGBA16Float?to16:to11;
+    static id<MTLRenderPipelineState> to16,to11,to10;
+    id<MTLRenderPipelineState> pso=dst.pixelFormat==MTLPixelFormatRGBA16Float?to16:dst.pixelFormat==MTLPixelFormatRGB10A2Unorm?to10:to11;
     if(!pso) {
         NSString *msl=totk_hdr_copy_source();
         NSError *e=nil;id<MTLLibrary> l=mtl_counted_library(g_dev, msl, nil, &e);
@@ -79,7 +89,7 @@ static void hdr_shadow_copy(id<MTLTexture> src,id<MTLTexture> dst) {
         p.colorAttachments[0].pixelFormat=dst.pixelFormat;
         pso=mtl_counted_render(g_dev, p, &e);
         if(!pso)MDIE("HDR format conversion compile: %s",e.localizedDescription.UTF8String);
-        if(dst.pixelFormat==MTLPixelFormatRGBA16Float)to16=pso;else to11=pso;
+        if(dst.pixelFormat==MTLPixelFormatRGBA16Float)to16=pso;else if(dst.pixelFormat==MTLPixelFormatRGB10A2Unorm)to10=pso;else to11=pso;
     }
     blit_close();rs_sync();
     MTL4RenderPassDescriptor *p=[MTL4RenderPassDescriptor new];
@@ -94,14 +104,16 @@ static id<MTLTexture> hdr_shadow_make(id<MTLTexture> source) {
     id<MTLTexture> parent=source.parentTexture;
     id<MTLTexture> base=parent && source.width==parent.width && source.height==parent.height?parent:source;
     if(!base || base.textureType!=MTLTextureType2D || base.mipmapLevelCount!=1 || base.sampleCount!=1 ||
-       base.pixelFormat!=MTLPixelFormatRG11B10Float)return nil;
+       !hdr_shadow_format(base.pixelFormat))return nil;
     id<MTLTexture> found=hdr_shadow_find(base);if(found)return found;
     unsigned slot=HDR_SHADOW_MAX;uint64_t oldest=UINT64_MAX,frame=atomic_load(&g_cur_frame);
     for(unsigned i=0;i<HDR_SHADOW_MAX;i++) {
         if(g_hdr_shadow[i].base==base){slot=i;break;}
         if((!g_hdr_shadow[i].base || g_hdr_shadow[i].frame!=frame) && g_hdr_shadow[i].used<oldest){oldest=g_hdr_shadow[i].used;slot=i;}
     }
-    if(slot==HDR_SHADOW_MAX)MDIE("HDR postprocess resource limit exceeded");
+    /* More targets than slots in one frame (BotW 1.9.0's menu blur makes a new size each frame): this target keeps its
+     * own format for the frame (the caller draws the game's way) rather than ending the game. */
+    if(slot==HDR_SHADOW_MAX){static int said;if(!said++)MLOG("[hdr] more than %d companions in one frame: this target stays in its own format",HDR_SHADOW_MAX);return nil;}
     rp_end();
     if(g_hdr_shadow[slot].base!=base) {
         for(id<MTLTexture> view in g_hdr_shadow[slot].reads.allValues)defer_obj_release(view);

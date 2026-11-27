@@ -1,4 +1,4 @@
-/* The HDR / EDR choice (Tears of the Kingdom 1.4.3 on the Mac; PR #1129's engine, frontend.m front_hdr_*): off, on or
+/* The HDR / EDR choice (Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 on the Mac; PR #1129's engine, frontend.m front_hdr_*): off, on or
    auto. Auto is the switch on while the window's screen can show more than SDR white (its NSScreen
    maximumPotentialExtendedDynamicRangeColorComponentValue above 1: a MacBook's XDR screen gives 16, an SDR monitor 1)
    and off everywhere else, so a window moved to an SDR monitor shows the SDR picture as without HDR, costs nothing

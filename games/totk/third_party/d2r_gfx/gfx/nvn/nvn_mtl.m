@@ -82,6 +82,7 @@ static _Atomic int g_mesh_trace_frames;
 #include "totk_hdr_present.h"
 extern int front_hdr_enabled(void) __attribute__((weak_import));
 extern void front_hdr_present_mode(int enabled) __attribute__((weak_import));
+extern void front_hdr_present_headroom(float peak) __attribute__((weak_import));
 extern float front_hdr_headroom(void) __attribute__((weak_import));
 #include "totk_sysload.h"
 #include "totk_state_report.h"   // TOTK_STATE_REPORTING: the game's states for Apple's performance tools (macOS 27)
@@ -3475,6 +3476,7 @@ static int ub_skip(const char *key) {   // 本相要不要丢掉这个片元着�
 static _Atomic int g_hdr_frame_enabled;
 static _Atomic int g_hdr_shader_failed;
 static int g_hdr_draw_native;
+static int g_hdr_draw_rgb_only;   /* the companion stands in for a format without alpha (R11G11B10F): Ad reads as one */
 static TotkHDRUniform g_hdr_frame_uniform;
 static float g_hdr_frame_peak=1;
 void mtl_set_frame(uint64_t f) {
@@ -8671,13 +8673,13 @@ static NvShader *shader_load_mode(NSString *pc, int stage, int archive_compute) 
         if (rt) totk_rt_variant_broken(pc);
         return nil;
     }
-    /* HDR / EDR (PR #1129, Mac 1.4.3): the scene compose and the post shader get an HDR twin (hdr_fn) next to the shipped
+    /* HDR / EDR (PR #1129, Mac 1.4.3; Breath of the Wild 1.9.0: its compose only): the scene compose and the post shader get an HDR twin (hdr_fn) next to the shipped
        function. fn stays the game's, so with HDR off every pipeline, key and binding is the one without HDR; a pipeline
        takes the twin only when HDR is on for its frame (PSO_HDR in its key). */
     if (totk_hdr_available() && stage == 1 && full) {
-        int kind = [pc hasPrefix:@TOTK_HDR_COMPOSE_KEY] ? 1 : [pc hasPrefix:@TOTK_HDR_POST_KEY] ? 2 : 0;
+        int kind = hdr_twin_kind(pc);   // TOTK 1.4.3: compose 0ac9a549 and post ac58fc18; BotW 1.9.0: compose f7ee6fe1
         if (kind) {
-            NSString *modified = kind == 1 ? totk_hdr_compose_source(full) : totk_hdr_post_source(full);
+            NSString *modified = hdr_twin_source(kind, full);
             NSError *err = nil; id<MTLLibrary> hl = modified ? totk_msl_library(modified, &err) : nil;
             id<MTLFunction> hf = lib_fn(hl, j[@"entry"]);
             if (hf) { o->hdr_fn = hf; fn_note_src(hf, modified); o->hdr_compose = kind;
@@ -11819,7 +11821,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     /* Preserve the guest RGB-only destination alpha while rendering into its
      * host FP16 companion. Normalized factors also form the persistent PSO key,
      * so a cached RGBA blend pipeline cannot reintroduce the old UI tint. */
-    if(g_hdr_draw_native && !g_pso_lmap && k.cfmt[0]==MTLPixelFormatRGBA16Float && (k.blend_en&1)){
+    if(g_hdr_draw_native && g_hdr_draw_rgb_only && !g_pso_lmap && k.cfmt[0]==MTLPixelFormatRGBA16Float && (k.blend_en&1)){
         k.blend[0].src_rgb=hdr_shadow_rgb_factor(k.blend[0].src_rgb);
         k.blend[0].dst_rgb=hdr_shadow_rgb_factor(k.blend[0].dst_rgb);
     }
@@ -23019,6 +23021,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if(totk_hdr_available() && front_hdr_present_mode){
         MTLPixelFormat want=hdrFrame?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
         if(layer.pixelFormat!=want){mtl_finish_gpu();front_hdr_present_mode(hdrFrame);}
+        /* the peak the HDR copy clamps to (present_encode's uv[8]) tags the canvas: macOS 26 maps that range to the display */
+        if(hdrFrame && front_hdr_present_headroom)front_hdr_present_headroom(fminf(front_hdr_headroom?front_hdr_headroom():1,t_hdr_present_peak));
         /* The display link may hand a drawable of the format before the switch. It is drawn into as it is (present_pipeline
            and present_encode go by the drawable's format), never dropped: dropping every such tick stopped the picture for
            7 s at the switch on and 30 s at the switch off (2,800 ticks; 2026-11-03, after PR #1129), since a drawable not

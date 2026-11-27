@@ -98,5 +98,6 @@ static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
   if(!dm_gfx_fx_available(i)){[rows addObject:settings_fixed(t,none)];continue;}
   [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_fx_on(i);},^(int v){dm_gfx_fx_set(i,v);settings_effects_save();})];
  }
+ if(totk_hdr_available())settings_hdr_rows(rows);   /* HDR / EDR: the compose f7ee6fe1's HDR twin (totk_hdr_compose.h) */
  return rows;
 }
