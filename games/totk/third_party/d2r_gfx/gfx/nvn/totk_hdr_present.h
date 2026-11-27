@@ -80,6 +80,6 @@ static NSString *totk_hdr_present_source(MTLPixelFormat format, BOOL hdrAvailabl
         "}\n";
     source=[source stringByReplacingOccurrencesOfString:@"struct Crop" withString:[helpers stringByAppendingString:@"struct Crop"]];
     if(edr)source=[source stringByReplacingOccurrencesOfString:@"present_fetch(t, s, in.uv * c.rect.zw + c.rect.xy, c.edge, 1)" withString:@"present_fetch(t, s, in.uv * c.rect.zw + c.rect.xy, c.edge, 2)"];
-    source=[source stringByAppendingFormat:@"\nstruct HDRCrop{float4 rect;float4 edge;float headroom;float uiWhite;};\nfragment float4 fshdr(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant HDRCrop& c [[buffer(0)]]) {float3 v=t.sample(s,clamp(in.uv*c.rect.zw+c.rect.xy,c.edge.xy,c.edge.zw)).rgb; float3 rgb=hdr_display_bound(v*c.uiWhite,c.headroom);return float4(%@,1);}",edr?@"rgb":@"hdr_encode(rgb)"];
+    source=[source stringByAppendingFormat:@"\nstruct HDRCrop{float4 rect;float4 edge;float headroom;float uiWhite;};\nfragment float4 fshdr(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant HDRCrop& c [[buffer(0)]]) {float3 v=present_fetch(t,s,in.uv*c.rect.zw+c.rect.xy,c.edge,0).rgb; float3 rgb=hdr_display_bound(v*c.uiWhite,c.headroom);return float4(%@,1);}",edr?@"rgb":@"hdr_encode(rgb)"];
     return source;
 }

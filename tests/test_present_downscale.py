@@ -132,6 +132,16 @@ int main(void) { @autoreleasepool {
         for (size_t i = 0; i < n; i++) { double v = h[i * 4]; sum += v; if (v < lo) lo = v; if (v > hi) hi = v; }
         printf("edr_mean=%.5f\nedr_spread=%.5f\n", sum / n, hi - lo); free(h);
     }
+    {   // HDR on: the game's linear FP16 picture through fshdr into an SDR drawable
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:3840 height:2160 mipmapped:NO];
+        td.usage = MTLTextureUsageShaderRead; td.storageMode = MTLStorageModeShared;
+        id<MTLTexture> src = [D newTextureWithDescriptor:td]; __fp16 *h = malloc((size_t)3840 * 2160 * 8);
+        for (int y = 0; y < 2160; y++) for (int x = 0; x < 3840; x++) { __fp16 *q = h + ((size_t)y * 3840 + x) * 4; q[0] = q[1] = q[2] = (__fp16)(x % 3 == 0 ? 1.0f : 0.0f); q[3] = 1; }
+        [src replaceRegion:MTLRegionMake2D(0, 0, 3840, 2160) mipmapLevel:0 withBytes:h bytesPerRow:3840 * 8]; free(h);
+        id<MTLRenderPipelineState> p = pipeline(MTLPixelFormatBGRA8Unorm, YES, YES, @"fshdr");
+        id<MTLTexture> dst = target(2560, 1440, MTLPixelFormatBGRA8Unorm); float uv[10]; crop_consts(src, 0, 0, 3840, 2160, uv);
+        draw(p, src, dst, uv); uint8_t *r = red8(dst); lin_mean("hdr_lin_mean_150", r, 2560 * 1440); free(r);
+    }
     for (int box = 0; box < 2; box++) {
         id<MTLRenderPipelineState> p = pipeline(MTLPixelFormatBGRA8Unorm, NO, box, @"fs");
         id<MTLTexture> dst = target(2560, 1440, MTLPixelFormatBGRA8Unorm); float uv[10]; crop_consts(c4k, 0, 0, 3840, 2160, uv);
@@ -203,6 +213,11 @@ class PresentDownscale(unittest.TestCase):
         0.5 everywhere, as on an SDR screen, not the decode of the gamma average (about 0.21)."""
         self.assertAlmostEqual(self.fvalue('edr_mean'), 0.5, delta=0.01, msg=self.out)
         self.assertLess(self.fvalue('edr_spread'), 0.01)
+
+    def test_hdr_present_averages_linear_values(self):
+        """With HDR on, the game's own FP16 picture is already linear (so at exactly 2x the single tap was right), but at
+        1.5x stripes 1.0, 0, 0 must still keep a third of the light, as the SDR present does; the single tap gave 0.26."""
+        self.assertAlmostEqual(self.fvalue('hdr_lin_mean_150'), 1 / 3, delta=0.0034, msg=self.out)
 
 if __name__ == '__main__':
     unittest.main()
