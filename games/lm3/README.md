@@ -44,6 +44,38 @@ stutter the first time.
 **Cheats:** put an Atmosphère cheat file for this build ID (`98B7F5E7E13B1A4D`) at `build/cheats.txt` before
 `make app` and the app gets a Cheats menu; nothing is downloaded.
 
+## Shared shader identifiers
+
+`assets/shader_list.tsv` records LM3 shader keys, non-default binding states and portable pipeline descriptors only.
+It contains no translated shader sources, compiled libraries, game files or personal data. The initial observations
+come from LM3 1.4.0 on a Mac using this game's `totk-native-v4-unverified` translation chain; they do not establish
+whole-game coverage or compatibility with another game's newer translation chain. The rendering changes for 1.4.0
+are separate from this identifier-only list.
+
+One recorded render pipeline uses advanced blend mode 22 (SCREEN) from the accompanying LM3 rendering fix.
+Collecting or exporting that recipe does not make it executable by the base runtime without that fix.
+
+The local `scripts/shader_list.py` keeps the old LM3 binding rules, including integer vertex attributes and fragment
+outputs. It drops states served by default 2D/float bindings, canonicalizes names from the recorded dependencies,
+rejects pipeline process pointers and checks the 544-byte pipeline ABI against this game's runtime in its tests.
+It also checks reserved blend bits, stream/attachment bounds and specialization fields; it is not a complete
+runtime semantic validator and does not establish that every format or blend mode is supported by a given GPU.
+From `games/lm3`:
+
+```sh
+python3 scripts/shader_list.py merge assets/shader_list.tsv --cache "<LM3 translation cache>" --pso-list "<LM3 profile>/pso_user.tsv"
+python3 scripts/shader_list.py stats assets/shader_list.tsv
+python3 -m unittest discover -s tests -p test_shader_list.py
+# Resolve recipes against translations already made from this player's selected game files.
+python3 scripts/shader_list.py export assets/shader_list.tsv build/pso_manifest.tsv --cache "<LM3 translation cache>"
+```
+
+Use LM3's own cache, not another game's. `merge` reads `.variants` and reflection metadata, plus an explicitly selected
+PSO list and the cache's `pso_collected.tsv`; it never reads MSL, SPIR-V, native shader code or saved game progress.
+`export` skips recipes unavailable in the selected cache and reports their count. It does not translate shader code or
+download anything. The build does not yet consume this list automatically, and LM3 is not yet registered with the
+website shader inbox. This is a per-game collection and validation tool, not an automatic-upload integration.
+
 ## What differs from Tears of the Kingdom
 
 - **SDK 7.3.2**: an older `nn::init` start sequence, rtld global symbol binding, and its own services (audout, the
