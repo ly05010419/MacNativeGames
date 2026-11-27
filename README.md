@@ -359,6 +359,7 @@ MNG Launcher 和每个游戏**每天最多上报一次**到 [mac-native-games.co
 
 ## 更新说明
 
+- **2026-11-25：时之笛设置面板新增“动态分辨率”行（默认关，下次启动生效），并附一份 M2 上的实测性能分析**（[games/oot/docs/m2-performance.md](games/oot/docs/m2-performance.md)）。
 - **2026-11-23：大金刚 Bananza 可以用 `.nup` 或导出目录打包，带追加内容（Mac）。** Emerald Rush 能从你自己的文件加载，还没有玩通。
 - **2026-11-23：修复宝可梦 Pokopia 画面偏暗（Mac）。**
 - **2026-11-23：女神异闻录 5 皇家版 1.0.2 和巫师 3 4.04b 登陆 Mac，早期。** 女神异闻录 5 皇家版有 Mac App，能玩到开场赌场（[games/p5r](games/p5r/README.md)）；巫师 3 能读档在凯尔莫罕游玩，还没有 App（[games/w3](games/w3/README.md)）。
