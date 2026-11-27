@@ -134,7 +134,7 @@ void front_hdr_present_mode(int enabled){
  CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB):NULL;
  metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;
  /* macOS 26's layer HDR (the Mac builds need macOS 26): a tagged canvas that macOS maps to the display, in place of
-    wantsExtendedDynamicRangeContent (deprecated in macOS 26), which showed the values as they are. */
+    wantsExtendedDynamicRangeContent, which showed the values as they are. */
  if(@available(macOS 26.0,*)){
   metalLayer.preferredDynamicRange=on?CADynamicRangeHigh:CADynamicRangeStandard;
   metalLayer.toneMapMode=on?CAToneMapModeIfSupported:CAToneMapModeAutomatic;

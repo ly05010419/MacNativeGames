@@ -138,6 +138,8 @@ static inline NSString *botw_hdr_compose_source(NSString *source) {
        ![source containsString:@"float _67 = _63 + _57;"] ||
        ![source containsString:@"float _69 = _65 + _59;"] ||
        ![source containsString:@"float _75 = _71 + _61;"] ||
+       ![source containsString:@"float _73 = _67 * 0.29890000820159912109375;"] ||   /* the luma's red weight and */
+       ![source containsString:@"float _145 = _133 * 0.666666686534881591796875;"] ||   /* the saturation term's 2/3, which the twin repeats */
        ![source containsString:@"(*spvDescriptorSet0.fp_c3)._m0[0].y"])return nil;
     NSString *s=totk_hdr_uniform(source);if(!s)return nil;
     s=[s stringByReplacingOccurrencesOfString:@"using namespace metal;" withString:[@"using namespace metal;\n" stringByAppendingString:totk_hdr_scene_msl()]];

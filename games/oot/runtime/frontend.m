@@ -105,6 +105,8 @@ void front_hdr_present_mode(int enabled){
  if(cs)CGColorSpaceRelease(cs);
  fprintf(stderr,"[hdr] surface %s: format %lu, color space %s\n",on?"on":"off",(unsigned long)format,metalLayer.colorspace?[(NSString *)CFBridgingRelease(CGColorSpaceCopyName(metalLayer.colorspace)) UTF8String]:"default");
 }
+/* The shared presenter (nvn_mtl.m) tags each HDR frame with its peak for TOTK's frontend; this layer is not tagged. */
+void front_hdr_present_headroom(float peak){(void)peak;}
 static void front_hdr_apply(int enabled){
  if(!totk_hdr_available())return;
  atomic_store(&hdrEnabled,!!enabled);
