@@ -102,6 +102,52 @@ static int oot_bow_parts_at(const oot_item_rig *item, const uint8_t *src, const 
     }
     return oot_string_finite(p->rest, 3) && oot_string_finite(p->mid, 3) && oot_string_finite(p->handle, 3) && oot_string_finite(p->tip[0], 3) && oot_string_finite(p->tip[1], 3);
 }
+/* A game point in the room (metres, the headset's space): the arms' way back (oot_arm_target_for: camera = view x world + its
+   translation, the room = the head's turn of camera / scale, from the head). 0 when this frame's camera block is not known. */
+static int oot_world_to_room(const float w[3], const vr_pose *head, uint64_t frame, float room[3]) {
+    const float *v = g_oot_view_now, k = g_oot_room_scale;
+    if (g_oot_view_frame == UINT64_MAX || frame - g_oot_view_frame > 1 || !(k > 0.05f)) return 0;
+    const float c[3] = { (v[0] * w[0] + v[1] * w[1] + v[2] * w[2] + v[3]) / k, (v[4] * w[0] + v[5] * w[1] + v[6] * w[2] + v[7]) / k,
+                         (v[8] * w[0] + v[9] * w[1] + v[10] * w[2] + v[11]) / k };
+    oot_q_rotate(head->q, c, room);
+    for (int i = 0; i < 3; i++) room[i] += head->p[i];
+    return oot_string_finite(room, 3);
+}
+/* Diagnostic (TOTK_VR_BLADELOG=1, and the first 6 presses always): each press of the drawing hand, how far it was from the string's
+   rest (it grabs within 15 cm), and both in the room: the hand as the game has it (it must match the controller's place) and the
+   rest, the place to reach for. */
+static void oot_string_press_log(const oot_item_rig *item, const oot_string_in *in, const oot_arm_input *input, int pull, uint64_t frame) {
+    static int said;
+    if (said++ >= 6 && !oot_blade_log()) return;
+    float rest_room[3] = { 0, 0, 0 }, hand_room[3] = { 0, 0, 0 };
+    const int known = input && oot_world_to_room(in->rest, &input->head, frame, rest_room) && oot_world_to_room(in->hand, &input->head, frame, hand_room);
+    const vr_hand *h = input ? &input->hands[pull] : NULL;
+    MLOG("[vr-string] F%llu the %s hand pressed (input %.2f) %.3f m from the %s's string rest (grabs within %.2f); tracked %d, menu %d; in the room: "
+         "rest %.3f %.3f %.3f, the hand as the game has it %.3f %.3f %.3f, the controller %.3f %.3f %.3f%s", (unsigned long long)frame, pull ? "right" : "left",
+         (double)in->input, (double)(oot_string_dist(in->hand, in->rest) / in->scale), item->bow ? "bow" : "slingshot", (double)OOT_STRING_REACH, in->tracked, in->menu,
+         (double)rest_room[0], (double)rest_room[1], (double)rest_room[2], (double)hand_room[0], (double)hand_room[1], (double)hand_room[2],
+         (double)(h ? h->p[0] : 0), (double)(h ? h->p[1] : 0), (double)(h ? h->p[2] : 0), known ? "" : " (the room's places not known this frame)");
+}
+/* Where the string rests: where the game itself poses the middle of its string (the slingshot's pouch) while it is not drawn, kept
+   against the item's root and so going with the player's bow hand. The model's bind pose is not it: batch7 (2026-11-27) found the
+   slingshot's pouch there 0.53 m from the player's other hand at rest, 1.91 m up in the room with the fork held at 1.40 m, its bands
+   straight up out of the picture. Kept while the string is held, committed or just shot (the game's own draw moves its pouch then);
+   until the first such pose is seen, the bind pose's place as before. */
+static struct { const oot_item_rig *item; float local[3]; int have, said; } g_oot_string_rest;
+static const float *oot_string_rest_at(const oot_item_rig *item, const oot_bow_parts *p) {
+    static float at[3];
+    if (g_oot_string_rest.item != item) { g_oot_string_rest.item = item; g_oot_string_rest.have = 0; g_oot_string_rest.said = 0; }
+    float local[3];
+    if (!g_oot_string.held && !g_oot_string.committed && g_oot_string.freeze == 0 && oot_string_local(p->root_vr, p->mid, local)) {
+        memcpy(g_oot_string_rest.local, local, sizeof local); g_oot_string_rest.have = 1;
+        if (!g_oot_string_rest.said++)
+            MLOG("[vr-string] the %s's string rests where the game poses it: %.3f game units from the bind pose's place (scale %.3f a metre)",
+                 item->bow ? "bow" : "slingshot", (double)oot_string_dist(p->mid, p->rest), (double)g_oot_room_scale);
+    }
+    if (!g_oot_string_rest.have) return p->rest;
+    oot_m_apply(p->root_vr, g_oot_string_rest.local, at);
+    return at;
+}
 /* Once a frame: the string's solution for the held item. to: the player's bow hand. */
 static const oot_string_out *oot_bow_solve(const oot_item_rig *item, const oot_bow_parts *p, int to, uint64_t frame) {
     if (g_oot_string_frame == frame) return g_oot_string_out.valid ? &g_oot_string_out : NULL;
@@ -113,10 +159,11 @@ static const oot_string_out *oot_bow_solve(const oot_item_rig *item, const oot_b
     in.bow_present = 1; in.menu = vr_oot_bow_menu(); in.scale = g_oot_room_scale;
     in.tracked = input && input->hands[pull].have && g_oot_track[pull].ok && frame - g_oot_track[pull].frame < 4;
     if (input) in.input = oot_string_input(vr_oot_string_input(), pull ? input->pad.rtrig : input->pad.ltrig, pull ? input->pad.rgrip : input->pad.lgrip);
-    memcpy(in.handle, p->handle, 12); memcpy(in.rest, p->rest, 12);
+    memcpy(in.handle, p->handle, 12); memcpy(in.rest, oot_string_rest_at(item, p), 12);
     in.hand[0] = g_oot_track[pull].grip_new[3]; in.hand[1] = g_oot_track[pull].grip_new[7]; in.hand[2] = g_oot_track[pull].grip_new[11];
-    const int was = g_oot_string_out.flags;
+    const int was = g_oot_string_out.flags, was_down = g_oot_string.down;
     oot_string_step(&g_oot_string, &in, &g_oot_string_out);
+    if (g_oot_string.down && !was_down) oot_string_press_log(item, &in, input, pull, frame);
     const oot_string_out *o = &g_oot_string_out;
     vr_oot_bow_publish(o->valid ? o->flags : 0, o->draw, o->fired, to);
     memcpy(g_oot_bow_seen.game_root, p->root_game, 48); memcpy(g_oot_bow_seen.vr_root, p->root_vr, 48); g_oot_bow_seen.frame = frame;

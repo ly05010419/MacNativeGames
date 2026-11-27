@@ -13,7 +13,7 @@ typedef struct {
     int slot[OOT_GAIT_BONES];          /* each posed bone's smooth palette entry, -1 none */
     float inv[OOT_GAIT_BONES][12];     /* its inverse rest */
     float root[12], waist_rest[3];     /* Root's rest (the first bone's parent), the Waist's rest joint */
-    float phase, yaw, vel[2], last_off[3], mats[OOT_GAIT_BONES][12];
+    float phase, yaw, vel[2], last_off[3] /* his Waist in the world, the frame before */, mats[OOT_GAIT_BONES][12];
     uint64_t last_ns, made_frame; int have_yaw, have_off, made, clips_said[2];
     oot_gait_local pose[OOT_GAIT_BONES], scratch[2 * OOT_GAIT_BONES];
     float world[OOT_GAIT_BONES][12], frame[OOT_GAIT_BONES][12];
@@ -83,11 +83,23 @@ static void oot_legs_pose(int ri, const uint8_t *src, uint8_t *to, uint64_t size
         const uint64_t ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         float dt = l->last_ns ? (float)((double)(ns - l->last_ns) / 1e9) : 0; l->last_ns = ns;
         if (!(dt >= 0) || dt > 0.25f) dt = 0;   /* a pause, a load: start over without a jump */
+        /* Where he is: the game's own Waist, in the world. The model block's translation alone is not his place: it is an origin
+           the game moves in whole steps (batch7, 2026-11-27: it stayed 0 100 10 while he walked, then jumped to 0 100 20, while
+           his Waist in the palette went 5.93 -> 9.47 and 1.47 -> 3.38 along z). */
+        const int ws = l->slot[l->waist];
+        if ((uint64_t)(ws + 1) * 48 > size) return;
+        float game_waist[12], gw[3], at[3];
+        memcpy(game_waist, src + (size_t)ws * 48, 48); oot_m_apply(game_waist, l->waist_rest, gw);
+        for (int i = 0; i < 3; i++) at[i] = gw[i] + off[i];
         float d[2] = { 0, 0 };
-        if (l->have_off) { d[0] = off[0] - l->last_off[0]; d[1] = off[2] - l->last_off[2]; }
+        if (l->have_off) { d[0] = at[0] - l->last_off[0]; d[1] = at[2] - l->last_off[2]; }
         if (!(fabsf(d[0]) < 2 && fabsf(d[1]) < 2)) d[0] = d[1] = 0;   /* a warp */
-        memcpy(l->last_off, off, sizeof l->last_off); l->have_off = 1;
+        memcpy(l->last_off, at, sizeof l->last_off); l->have_off = 1;
         if (dt > 0) { const float k = fminf(1, dt * 10); l->vel[0] += (d[0] / dt - l->vel[0]) * k; l->vel[1] += (d[1] / dt - l->vel[1]) * k; }
+        const int say_now = oot_legs_logging() && frame % 36 == 0;   /* the diagnostic below: twice a second */
+        if (say_now) MLOG("[vr-legs] F%llu his Waist at %.3f %.3f %.3f (the game's model block %.1f %.1f %.1f), moved %.4f %.4f in %.3f s, travel %.2f %.2f a second; "
+                          "the game's hips face %.0f degrees", (unsigned long long)frame, (double)at[0], (double)at[1], (double)at[2], (double)off[0], (double)off[1], (double)off[2],
+                          (double)d[0], (double)d[1], (double)dt, (double)l->vel[0], (double)l->vel[1], (double)(atan2f(game_waist[2], game_waist[10]) * 57.2958f));
         const float h = hypotf(fw[0], fw[2]);
         if (h > 0.2f) {
             const float want = atan2f(fw[0], fw[2]);
@@ -102,10 +114,6 @@ static void oot_legs_pose(int ri, const uint8_t *src, uint8_t *to, uint64_t size
         oot_gait_pose(&l->g, &pick, l->phase, l->pose, l->scratch);
         oot_gait_world(&l->g, l->pose, l->root, &l->world[0][0], &l->frame[0][0]);
         /* placed: turned to the hips' yaw about the up axis, its Waist where the game's Waist is */
-        float game_waist[12], gw[3];
-        const int ws = l->slot[l->waist];
-        if ((uint64_t)(ws + 1) * 48 > size) return;
-        memcpy(game_waist, src + (size_t)ws * 48, 48); oot_m_apply(game_waist, l->waist_rest, gw);
         const float *ow = l->world[l->waist];
         float place[12] = { c, 0, s, 0, 0, 1, 0, 0, -s, 0, c, 0 };
         place[3] = gw[0] - (c * ow[3] + s * ow[11]); place[7] = gw[1] - ow[7]; place[11] = gw[2] - (-s * ow[3] + c * ow[11]);
@@ -117,6 +125,12 @@ static void oot_legs_pose(int ri, const uint8_t *src, uint8_t *to, uint64_t size
         }
         if (!finite) { static int said; if (!said++) MLOG("[vr-legs] a leg matrix is not finite: the legs keep the game's pose"); return; }
         l->made = 1;
+        if (say_now) {   /* where the legs went: the Waist and the last posed bone (a toe), relative to the game's Waist */
+            float foot[3]; const float *t = l->world[l->g.bones - 1]; oot_m_apply(place, (float[3]){ t[3], t[7], t[11] }, foot);
+            MLOG("[vr-legs] F%llu the legs are made: hips %.0f degrees, moving %.2f, %s; the game's Waist %.2f %.2f %.2f, %s at %.2f %.2f %.2f (palette space)",
+                 (unsigned long long)frame, (double)(l->yaw * 57.2958f), (double)pick.moving, pick.clip[0] >= 0 ? l->g.clip[pick.clip[0]].name : "standing",
+                 (double)gw[0], (double)gw[1], (double)gw[2], l->g.names[l->g.bones - 1], (double)foot[0], (double)foot[1], (double)foot[2]);
+        }
         static int said;
         if (!said++) MLOG("[vr-legs] first person: %s Link's legs step with the hips facing %.0f degrees, the Waist at %.2f %.2f %.2f", ri ? "adult" : "child",
                           (double)(l->yaw * 57.2958f), (double)gw[0], (double)gw[1], (double)gw[2]);

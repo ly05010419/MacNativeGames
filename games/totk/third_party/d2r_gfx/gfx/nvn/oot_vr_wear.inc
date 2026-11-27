@@ -43,7 +43,27 @@ static const char *const g_oot_worn_names[] = { "Item_BombBag_Small", "Item_Bomb
 static const char *const g_oot_own_names[] = { "Weapon_Sword_Kokiri", "Weapon_Sword_Master", "Weapon_Sword_Biggoron", "Weapon_Shield_Deku",
     "Weapon_Shield_Hylian", "Weapon_Shield_Mirror", "Weapon_Sheath_Kokiri", "Weapon_Sheath_Master", "Weapon_Sheath_Biggoron", "Armor_Adult_Normal",
     "Weapon_Range_SlingShot", "Weapon_Range_Bow", "Weapon_Range_BowAndArrow_Normal", "Weapon_Range_BowAndArrow_Fire",
-    "Weapon_Range_BowAndArrow_Ice", "Weapon_Range_BowAndArrow_Light" };
+    "Weapon_Range_BowAndArrow_Ice", "Weapon_Range_BowAndArrow_Light", "Item_OcarinaHolder_Fairy", "Item_OcarinaHolder_Time", "Item_Ocarina_Fairy",
+    "Item_Ocarina_Time" };
+extern int runtime_oot_vr_ocarina(int *owned, int *waiting, int *kind) __attribute__((weak_import));   /* games/oot/runtime/oot_vr_ocarina.h */
+/* What Link carries on his back and the back of his belt, which first person leaves out with option worn while it hides his body
+   (vr.md row 37). Data, batch7 2026-11-27: with his torso hidden the game still draws these where its own pose of him puts them,
+   and he faces where the game turned him, not where the player looks: looking down, his Kokiri sheath (17,296 vertices, the
+   palette of 288 bytes in block 3), the Deku Shield on his back (9,529 vertices, 96 bytes) and his ocarina in its holder came in
+   front of the eyes. HookshotVR's notes: sheaths never leave the back (held-items.md 3); the ocarina's holder sits at the back of
+   his belt (held-items.md 7). 0: not one; 1 always left out (a sheath, the ocarina's holder); 2 a shield, left out unless the game
+   has it out (slot 4 drawn or going to the hand, oot_vr_guard.h); 3 the ocarina, left out unless the game waits for its notes. */
+static int oot_back_thing(int own) {
+    if (own < 0 || (size_t)own >= sizeof g_oot_own_names / sizeof *g_oot_own_names) return 0;
+    const char *n = g_oot_own_names[own];
+    return !strncmp(n, "Weapon_Sheath_", 14) || !strncmp(n, "Item_OcarinaHolder_", 19) ? 1 : !strncmp(n, "Weapon_Shield_", 14) ? 2 : !strncmp(n, "Item_Ocarina_", 13) ? 3 : 0;
+}
+static int oot_back_hidden(int kind) {
+    if (kind == 1) return 1;
+    if (kind == 2) return !(runtime_oot_vr_shield_out && runtime_oot_vr_shield_out());
+    if (kind == 3) { int owned = 0, waiting = 0, k = 0; if (runtime_oot_vr_ocarina) runtime_oot_vr_ocarina(&owned, &waiting, &k); return !waiting; }
+    return 0;
+}
 enum { OOT_WORN_NAMES = sizeof g_oot_worn_names / sizeof *g_oot_worn_names, OOT_WEAR_BRACELET = 100 };
 static oot_wear_table g_oot_wear_table;
 static uint8_t g_oot_worn_said[OOT_WORN_NAMES];
@@ -161,6 +181,53 @@ static const oot_arm_frame *oot_arm_frame_now(int rig) {
     const oot_arm_frame *a = &g_oot_arm_frame;
     return a->frame != UINT64_MAX && a->rig == rig && now - a->frame <= 1 && (a->have[0] || a->have[1]) ? a : NULL;
 }
+/* Diagnostic, off by default: "flag vr_worn_trace <frames>" logs, once each, every kind of draw within 1.5 m of Link's chest that has
+   no palette of his body: its vertex count, the vertex shader's uniform blocks and sizes, and what the table makes of it (the names of
+   the player's models with that palette size and their vertex counts). It tells what a thing on him that first person did not leave
+   out really is. */
+static _Atomic long g_oot_worn_trace_until = -1;
+void oot_worn_trace_next(long n) {
+    const long until = n > 0 ? (long)atomic_load(&g_cur_frame) + n : -1;
+    atomic_store(&g_oot_worn_trace_until, until);
+    MLOG("[vr-worn] tracing the draws near Link until frame %ld", until);
+}
+static const char *oot_wear_model_name(const oot_wear_model *m) {
+    if (m->kind == OOT_WEAR_WORN) return m->index >= 0 && m->index < OOT_WORN_NAMES ? g_oot_worn_names[m->index] : "worn ?";
+    if (m->kind == OOT_WEAR_OWN) return m->index >= 0 && (size_t)m->index < sizeof g_oot_own_names / sizeof *g_oot_own_names ? g_oot_own_names[m->index] : "own ?";
+    return m->index == OOT_WEAR_BRACELET ? "Item_Gauntlet_Goron" : "carried ?";
+}
+static void oot_worn_trace(__unsafe_unretained NvShader *vs, unsigned verts, uint32_t stride) {
+    const long until = atomic_load_explicit(&g_oot_worn_trace_until, memory_order_relaxed);
+    if (until < 0 || (long)atomic_load_explicit(&g_cur_frame, memory_order_relaxed) > until || S.ubo[0][1].size < 76) return;
+    float model[19]; pend_materialize(S.ubo[0][1].addr, (uint8_t *)model, sizeof model, 0);
+    const oot_hand_track *t = &g_oot_track[g_oot_track[1].ok ? 1 : 0];
+    if (!t->ok) return;
+    const float dx = model[16] - t->chest[0], dy = model[17] - t->chest[1], dz = model[18] - t->chest[2], dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (!(dist < 1.5f)) return;
+    char blocks[192] = ""; size_t at = 0; uint64_t key = verts;
+    for (int i = 0; i < vs->rf.nb && at + 24 < sizeof blocks; i++) {
+        if (vs->rf.b[i].kind != NVN_RB_CBUF || vs->rf.b[i].reg < 0 || vs->rf.b[i].reg >= 16) continue;
+        const uint64_t size = S.ubo[0][vs->rf.b[i].reg].size;
+        at += (size_t)snprintf(blocks + at, sizeof blocks - at, " %d:%llu", vs->rf.b[i].reg, (unsigned long long)size);
+        key = key * 1000003u + (uint64_t)vs->rf.b[i].reg * 65537u + size;
+    }
+    static uint64_t seen[256]; static int n;
+    for (int i = 0; i < n; i++) if (seen[i] == key) return;
+    if (n < 256) seen[n++] = key; else return;
+    char known[256] = ""; at = 0;
+    for (int r = 3; r <= 4; r++) {
+        const uint64_t size = S.ubo[0][r].size;
+        for (unsigned i = 0; i < g_oot_wear_table.n && at + 48 < sizeof known; i++) {
+            const oot_wear_model *m = &g_oot_wear_table.m[i];
+            if (m->palette != size) continue;
+            at += (size_t)snprintf(known + at, sizeof known - at, " %s(%u", oot_wear_model_name(m), m->verts[0]);
+            for (unsigned k = 1; k < m->shapes && at + 8 < sizeof known; k++) at += (size_t)snprintf(known + at, sizeof known - at, "/%u", m->verts[k]);
+            at += (size_t)snprintf(known + at, sizeof known - at, ")");
+        }
+    }
+    MLOG("[vr-worn] F%llu near Link (%.2f from his chest): %u vertices (stride %u), uniform blocks%s; models of a palette in block 3 or 4 that size:%s",
+         (unsigned long long)atomic_load(&g_cur_frame), (double)dist, verts, stride, blocks, at ? known : " none");
+}
 /* -1: not drawn; 0: as the game draws it; 1: its arm triangles with its palette on the VR arms; 2: carried on an arm (the bracelet). */
 static int oot_wear_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs) {
     g_oot_prop_bracelet = 0;
@@ -170,6 +237,7 @@ static int oot_wear_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
     const uint32_t stride = S.stream[0].stride;
     if (!stride || !S.vbuf[0].size) return 0;
     const unsigned verts = (unsigned)(S.vbuf[0].size / stride);
+    oot_worn_trace(vs, verts, stride);
     for (int i = 0; i < vs->rf.nb; i++) {
         if (vs->rf.b[i].kind != NVN_RB_CBUF || (vs->rf.b[i].reg != 3 && vs->rf.b[i].reg != 4)) continue;
         const int reg = vs->rf.b[i].reg; const uint64_t size = S.ubo[0][reg].size;
@@ -189,7 +257,8 @@ static int oot_wear_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
             return 1;
         }
         const oot_wear_model *m = oot_wear_find(&g_oot_wear_table, size, verts);
-        if (!m || m->kind == OOT_WEAR_OWN) continue;
+        const int back = m && m->kind == OOT_WEAR_OWN ? oot_back_thing(m->index) : 0;
+        if (!m || (m->kind == OOT_WEAR_OWN && !(back && vr_oot_worn()))) continue;
         float first[12], model[19];
         if (S.ubo[0][1].size < 76) return 0;
         pend_materialize(S.ubo[0][reg].addr, (uint8_t *)first, sizeof first, 0);
@@ -201,9 +270,15 @@ static int oot_wear_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
         if (!t->ok || now - t->frame >= 4) return 0;
         const float dx = at[0] - t->chest[0], dy = at[1] - t->chest[1], dz = at[2] - t->chest[2];
         if (dx * dx + dy * dy + dz * dz > 1.5f * 1.5f) return 0;   /* not on Link (one in a shop, on someone else): as the game draws it */
+        if (back) {   /* on his back or the back of his belt (oot_back_thing) */
+            if (!oot_back_hidden(back)) continue;
+            static uint8_t said[sizeof g_oot_own_names / sizeof *g_oot_own_names];
+            if (!said[m->index]) { said[m->index] = 1; MLOG("[vr-worn] first person leaves out %s on his back (palette %llu bytes, %u vertices)", g_oot_own_names[m->index], (unsigned long long)size, verts); }
+            return -1;
+        }
         if (m->kind == OOT_WEAR_WORN) {
             if (!vr_oot_worn()) return 0;
-            if (m->index >= 0 && m->index < OOT_WORN_NAMES && !g_oot_worn_said[m->index]++)
+            if (m->index >= 0 && m->index < OOT_WORN_NAMES && !g_oot_worn_said[m->index] && (g_oot_worn_said[m->index] = 1))   /* once (a count would wrap at 256) */
                 MLOG("[vr-worn] first person leaves out %s (palette %llu bytes, %u vertices)", g_oot_worn_names[m->index], (unsigned long long)size, verts);
             return -1;
         }

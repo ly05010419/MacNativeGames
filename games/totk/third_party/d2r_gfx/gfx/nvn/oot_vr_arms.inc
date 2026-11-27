@@ -98,6 +98,9 @@ static void oot_cam_to_palette(const float view[12], const float off[3], const f
     out[1] = view[1] * x + view[5] * y + view[9] * z - off[1];
     out[2] = view[2] * x + view[6] * y + view[10] * z - off[2];
 }
+/* This frame's camera block (world to camera), kept for the diagnostics that turn a game point back into the room (oot_vr_bow.inc). */
+static float g_oot_view_now[12];
+static uint64_t g_oot_view_frame = UINT64_MAX;
 static void oot_cam_dir_to_palette(const float view[12], const float c[3], float out[3]) {
     const float r[3] = { view[0] * c[0] + view[4] * c[1] + view[8] * c[2], view[1] * c[0] + view[5] * c[1] + view[9] * c[2],
                          view[2] * c[0] + view[6] * c[1] + view[10] * c[2] };
@@ -227,6 +230,7 @@ static uint64_t oot_body_palette(const uint8_t *src, uint64_t size) {
     pend_materialize(S.ubo[0][0].addr, (uint8_t *)view, sizeof view, 0);
     pend_materialize(S.ubo[0][1].addr, (uint8_t *)model, sizeof model, 0);
     for (int i = 0; i < 12; i++) if (!isfinite(view[i])) return 0;
+    memcpy(g_oot_view_now, view, sizeof view); g_oot_view_frame = input->frame;
     const float off[3] = { model[16], model[17], model[18] };
     if (!isfinite(off[0]) || !isfinite(off[1]) || !isfinite(off[2])) return 0;
     const float qi[4] = { -head.q[0], -head.q[1], -head.q[2], head.q[3] };

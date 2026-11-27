@@ -41,7 +41,8 @@ WORN = ('Item_BombBag_Small', 'Item_BombBag_Medium', 'Item_BombBag_Large', 'Item
         'Armor_Child_Mask_Truth', 'Armor_Child_Mask_Zora', 'Armor_Child_Mask_Amiibo0', 'Armor_Child_Mask_Amiibo1')
 CARRIED = ('Armor_Adult_Goron', 'Armor_Adult_Zora', 'Armor_Adult_Gauntlet_Silver', 'Armor_Adult_Gauntlet_Gold', 'Item_Gauntlet_Goron')
 OWN = ('Weapon_Sword_Kokiri', 'Weapon_Sword_Master', 'Weapon_Sword_Biggoron', 'Weapon_Shield_Deku', 'Weapon_Shield_Hylian',
-       'Weapon_Shield_Mirror', 'Weapon_Sheath_Kokiri', 'Weapon_Sheath_Master', 'Weapon_Sheath_Biggoron', 'Armor_Adult_Normal')
+       'Weapon_Shield_Mirror', 'Weapon_Sheath_Kokiri', 'Weapon_Sheath_Master', 'Weapon_Sheath_Biggoron', 'Armor_Adult_Normal',
+       'Item_OcarinaHolder_Fairy', 'Item_OcarinaHolder_Time', 'Item_Ocarina_Fairy', 'Item_Ocarina_Time')
 
 
 def model_path(name):

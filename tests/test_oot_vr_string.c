@@ -147,7 +147,22 @@ static void fx_tests(void) {
     memcpy(c, before, sizeof c); c[OOT_FX_PROJECTION + 11] = 0; assert(!oot_fx_camera(c, move, at, 1));
 }
 
+/* the string's rest kept against the bow's root: a point taken to the root's own frame and back */
+static void rest_tests(void) {
+    const float m[12] = { 0, -2, 0, 1,  2, 0, 0, 2,  0, 0, 2, 3 };   /* turned 90 degrees about z, scaled 2, moved 1 2 3 */
+    const float p[3] = { 3, 4, 5 };
+    float local[3], back[3];
+    assert(oot_string_local(m, p, local));
+    oot_m_apply(m, local, back);
+    for (int i = 0; i < 3; i++) assert(fabsf(back[i] - p[i]) < 1e-5f);
+    assert(fabsf(local[0] - 1) < 1e-5f && fabsf(local[1] + 1) < 1e-5f && fabsf(local[2] - 1) < 1e-5f);
+    const float flat[12] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 0, 0 };   /* no z: not a frame */
+    assert(!oot_string_local(flat, p, local));
+    const float nan_p[3] = { NAN, 0, 0 };
+    assert(!oot_string_local(m, nan_p, local));
+}
 int main(void) {
+    rest_tests();
     string_tests(); rumble_tests(); strap_tests(); arrow_tests(); fx_tests();
     puts("oot_vr_string: all passed");
     return 0;

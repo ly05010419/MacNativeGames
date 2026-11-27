@@ -44,6 +44,20 @@ static inline float oot_string_dist(const float a[3], const float b[3]) {
 }
 static inline int oot_string_finite(const float *v, int n) { for (int i = 0; i < n; i++) if (!isfinite(v[i])) return 0; return 1; }
 
+/* A point in the frame of m (3x4, row-major, an affine frame: turn, scale, move): m x out = p. 0 when m has no inverse or p is not
+   finite. Keeps where the string rests against the bow's root: the game's own pose of the pouch (or string) while it is not drawn,
+   which then goes with the player's bow hand. */
+static inline int oot_string_local(const float m[12], const float p[3], float out[3]) {
+    if (!oot_string_finite(m, 12) || !oot_string_finite(p, 3)) return 0;
+    const float a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const float A = e * i - f * h, B = f * g - d * i, C = d * h - e * g, det = a * A + b * B + c * C;
+    if (!(fabsf(det) > 1e-9f)) return 0;
+    const float r[3] = { p[0] - m[3], p[1] - m[7], p[2] - m[11] };
+    const float inv[9] = { A, c * h - b * i, b * f - c * e,  B, a * i - c * g, c * d - a * f,  C, b * g - a * h, a * e - b * d };
+    for (int k = 0; k < 3; k++) out[k] = (inv[3 * k] * r[0] + inv[3 * k + 1] * r[1] + inv[3 * k + 2] * r[2]) / det;
+    return oot_string_finite(out, 3);
+}
+
 typedef struct {
     int bow_present;          /* the bow's or slingshot's model is in the player's hand this frame */
     int tracked;              /* the drawing hand is tracked */

@@ -198,6 +198,11 @@ static int oot_body_draw(const p_draw_idx *di, __unsafe_unretained NvShader *vs)
     if (!bt) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no triangle list (table full or failed)"); }
     if (!bt->n) { g_oot_body_hidden++; OOT_BODY_RET(-1, "no arm triangles in this draw"); }
     g_body_tris_cur = bt; g_oot_body_drawn++;
+    if (oot_body_tracing()) {   /* the trace: how much of this draw first person keeps, and whether the legs were asked for */
+        static char why[128];
+        snprintf(why, sizeof why, "arm%s triangles: %d of %d indices (shape of %u vertices, its marks %#x)", (mask & OOT_MARK_LEGS) ? " and leg" : "", bt->n, (int)di->count, shape->verts, (unsigned)shape->any);
+        OOT_BODY_RET(1, why);
+    }
     if (g_oot_body_drawn == 1) MLOG("[vr] Link's body: first person shows his arms (%d of %d indices of this draw)", bt->n, di->count);
     OOT_BODY_RET(1, "arm triangles");
 }

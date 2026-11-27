@@ -4341,6 +4341,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "vr_arm_per_draw")) { extern void oot_arm_set_per_draw(int on); oot_arm_set_per_draw(v); return; }   // diagnostic: the arms read the controllers at every draw
     if (!strcmp(name, "vr_arm_jitter")) { extern void oot_arm_set_jitter(int on); oot_arm_set_jitter(v); return; }         // diagnostic: each reading moves the hands 1 mm
     if (!strcmp(name, "vr_body_trace")) { extern void oot_body_trace_next(long n); oot_body_trace_next(v); return; }   // diagnostic: Link's draws and what first person decided, for <v> frames
+    if (!strcmp(name, "vr_worn_trace")) { extern void oot_worn_trace_next(long n); oot_worn_trace_next(v); return; }   // diagnostic: draws near Link that are not his body, once each, for <v> frames
 #endif
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
