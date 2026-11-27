@@ -598,15 +598,47 @@ static void hdr_probe(void) {
     front_hdr_auto(1, "probe SDR monitor"); mfx_latch(); assert(!front_hdr_enabled() && mfx_enabled() == MFX_30);
     mfx_set(MFX_OFF); mfx_latch();
 
-    /* The canvas is drawn for the screen's potential headroom, never its current one: an external HDR display can report
-       current 1.0 while it shows HDR, and a canvas drawn for that showed none; a canvas tagged with the built-in XDR
-       screen's current 1.2 stayed at 1.2. Off, or a screen without HDR, draws for SDR white. */
+    /* The canvas is drawn for the headroom the screen has now, and macOS shows it untouched: drawn for the potential 16,
+       the built-in XDR screen's highlights were mapped down a second time to the 4 or so it had, dimmer than before. An
+       external HDR display can report current 1.0 while it shows HDR, and a canvas drawn for that showed none: there
+       the canvas is drawn for the potential. Off, or a screen without HDR, draws for SDR white. */
     hdr_start(NULL, "on");
     front_hdr_draw_for(4.18, 1.0, "probe external HDR display"); assert(front_hdr_headroom() == 4.18f);
-    front_hdr_draw_for(16, 1.2, "probe XDR"); assert(front_hdr_headroom() == 16);
+    front_hdr_draw_for(16, 4, "probe XDR"); assert(front_hdr_headroom() == 4);
+    front_hdr_draw_for(16, 1.2, "probe XDR"); assert(front_hdr_headroom() == 1.2f);
+    front_hdr_draw_for(16, NAN, "probe XDR"); assert(front_hdr_headroom() == 16);
     front_hdr_draw_for(1, 1, "probe SDR monitor"); assert(front_hdr_headroom() == 1);
     front_hdr_draw_for(NAN, 1, "probe"); assert(front_hdr_headroom() == 1);
-    hdr_start(NULL, "off"); front_hdr_draw_for(16, 8, "probe XDR"); assert(front_hdr_headroom() == 1);
+    /* The tag asks macOS for the potential, whatever the canvas is drawn for: macOS grants a tagged layer no more than
+       its tag (tagged with the current 1.2, the built-in XDR screen stayed at 1.2). The HDR peak row caps it, and it is
+       never below the peak a frame was drawn for. */
+    front_hdr_draw_for(16, 4, "probe XDR"); assert(front_hdr_tag_for(4) == 16);
+    front_hdr_draw_for(4.18, 1.0, "probe external HDR display"); assert(front_hdr_tag_for(4.18f) == 4.18f);
+    runtime_setting_save("hdr-peak.txt", "4", "test"); hdr_start(NULL, "on");
+    front_hdr_draw_for(16, 8, "probe XDR"); assert(front_hdr_headroom() == 8 && front_hdr_tag_for(4) == 4);
+    assert(front_hdr_tag_for(8) == 8);   /* a frame drawn for 8 before the row went down to 4 keeps a tag of 8 */
+    runtime_setting_remove("hdr-peak.txt"); hdr_start(NULL, "on");
+    front_hdr_draw_for(4, 8, "probe XDR"); assert(front_hdr_tag_for(8) == 8);
+    hdr_start(NULL, "off"); front_hdr_draw_for(16, 8, "probe XDR"); assert(front_hdr_headroom() == 1 && front_hdr_tag_for(1) == 1);
+    /* The layer itself: a canvas drawn for the current headroom is shown as it is (toneMapMode never), else the highlights
+       are mapped twice; one drawn for the potential (current 1) is mapped down by macOS (ifSupported), else what the
+       display lacks clips. The tag stays the potential each frame: tagged with the frame's peak, the screen stayed there. */
+    if (@available(macOS 26.0, *)) {
+        metalLayer = [CAMetalLayer layer];
+        hdr_start(NULL, "on");
+        front_hdr_draw_for(16, 4, "probe XDR"); front_hdr_present_mode(1);
+        assert(metalLayer.pixelFormat == MTLPixelFormatRGBA16Float && metalLayer.contentsHeadroom == 16);
+        assert([metalLayer.toneMapMode isEqualToString:CAToneMapModeNever]);
+        front_hdr_present_headroom(4); assert(metalLayer.contentsHeadroom == 16);
+        front_hdr_draw_for(4.18, 1.0, "probe external HDR display"); front_hdr_present_headroom(4.18f);
+        assert([metalLayer.toneMapMode isEqualToString:CAToneMapModeIfSupported] && fabs(metalLayer.contentsHeadroom - 4.18) < 0.01);
+        front_hdr_draw_for(4.18, 2.8, "probe external HDR display"); front_hdr_present_headroom(2.8f);
+        assert([metalLayer.toneMapMode isEqualToString:CAToneMapModeNever] && fabs(metalLayer.contentsHeadroom - 4.18) < 0.01);
+        front_hdr_present_mode(0);
+        assert(metalLayer.pixelFormat == MTLPixelFormatBGRA8Unorm && metalLayer.contentsHeadroom == 0);
+        assert([metalLayer.toneMapMode isEqualToString:CAToneMapModeAutomatic]);
+        metalLayer = nil;
+    }
 
     /* hdr.txt takes each choice's word and the start reads it back. */
     unsetenv("TOTK_HDR");

@@ -23,6 +23,8 @@ static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
 static _Atomic float hdrHeadroom=1;
+static _Atomic float hdrPotential=1;   /* what the tag asks macOS for (front_hdr_tag_for) */
+static _Atomic int hdrMapped;   /* drawn for the potential: macOS maps the canvas down (front_hdr_tag) */
 static _Atomic int hdrEnabled;
 static _Atomic int hdrChoice;   /* HDR_CHOICE_OFF / ON / AUTO (hdr_auto.h); hdrEnabled is what it means on the window's screen */
 static CGColorSpaceRef hdrSDRColorSpace;
@@ -86,13 +88,19 @@ static void front_hdr_auto(double potential,const char *screen){
  if(choice!=HDR_CHOICE_AUTO){shown=-1;return;}
  if(on!=shown){shown=on;fprintf(stderr,"[hdr] auto: %s, potential EDR %.2f: HDR %s\n",screen?:"no screen",potential,on?"on":"off");}
 }
-/* The canvas is drawn for the display's potential headroom and tagged with it (front_hdr_tag): macOS grants a tagged
-   layer only the headroom of its tag (tagged with the current 1.2, the built-in XDR screen stayed at 1.2 for a whole
-   run), and maps the canvas down to what the display has now. The current headroom only goes to the log: an external
-   HDR display can report 1.0 while it shows HDR (potential above 1, an HDR video on it; Apple developer forum thread
-   810008), and the canvas drawn for it had no HDR there. Main thread, from front_hdr_update; tests pass the values. */
+/* The canvas is drawn for the headroom the display has now, and macOS shows it untouched (toneMapMode never): drawn
+   for the potential and mapped down by macOS to what the built-in XDR screen had, the highlights were dimmer than the
+   game's own map to it. The tag still asks for the potential (front_hdr_tag_for): macOS grants a tagged layer only the
+   headroom of its tag (tagged with the current 1.2, the built-in XDR screen stayed at 1.2 for a whole run). An external
+   HDR display can report current 1.0 while it shows HDR (potential above 1, an HDR video on it; Apple developer forum
+   thread 810008), and the canvas drawn for that had no HDR there: at current 1 the canvas is drawn for the potential,
+   and macOS maps it down to what the display has (toneMapMode ifSupported), as before. Main thread, from
+   front_hdr_update; tests pass the values. */
 static void front_hdr_draw_for(double potential,double current,const char *screen){
- float h=front_hdr_enabled()&&isfinite(potential)&&potential>1?(float)potential:1;
+ int on=front_hdr_enabled()&&isfinite(potential)&&potential>1;
+ int now=on&&isfinite(current)&&current>1;
+ float h=!on?1:now?(float)current:(float)potential;
+ atomic_store(&hdrPotential,on?(float)potential:1);atomic_store(&hdrMapped,on&&!now);
  float old=atomic_exchange(&hdrHeadroom,h);
  if(fabsf(old-h)>0.05f)fprintf(stderr,"[hdr] display %s: drawn for headroom %.3f (current %.3f, potential %.3f; SDR white = 1)\n",screen?:"no screen",h,current,potential);
 }
@@ -117,18 +125,27 @@ static void front_hdr_init(void){
  atomic_store(&hdrChoice,hdr_choice_parse(e,!(e && *e) && runtime_setting_word("hdr.txt",word,sizeof word)?strtok(word," \t\r\n"):NULL));
  front_hdr_update();   /* hdrEnabled from the choice on the window's screen, before the layer takes its format */
 }
-/* The HDR canvas's tag (CALayer contentsHeadroom, macOS 26): the peak it was drawn for. Main thread or the presenter;
-   the explicit transaction commits the change at once on the presenter thread too, which has no run loop to commit an
-   implicit one. */
+/* The HDR canvas's tag (CALayer contentsHeadroom, macOS 26), what it asks macOS for (front_hdr_tag_for), and whether
+   macOS maps it (front_hdr_draw_for). Main thread or the presenter; the explicit transaction commits the change at once
+   on the presenter thread too, which has no run loop to commit an implicit one. */
 static void front_hdr_tag(float peak){
  if(@available(macOS 26.0,*)){
   CGFloat h=fmaxf(peak,1);
-  if(fabs(metalLayer.contentsHeadroom-h)<=0.01)return;
+  int mapped=atomic_load(&hdrMapped);CAToneMapMode mode=mapped?CAToneMapModeIfSupported:CAToneMapModeNever;
+  BOOL sameMode=[metalLayer.toneMapMode isEqualToString:mode];
+  if(fabs(metalLayer.contentsHeadroom-h)<=0.01&&sameMode)return;
   [CATransaction begin];[CATransaction setDisableActions:YES];
-  metalLayer.contentsHeadroom=h;
+  metalLayer.contentsHeadroom=h;if(!sameMode)metalLayer.toneMapMode=mode;
   [CATransaction commit];
-  static float logged;if(fabsf(logged-(float)h)>0.25f){logged=(float)h;fprintf(stderr,"[hdr] canvas tagged with headroom %.3f\n",(double)h);}
+  static float logged;static int loggedMapped=-1;
+  if(fabsf(logged-(float)h)>0.25f||loggedMapped!=mapped){logged=(float)h;loggedMapped=mapped;fprintf(stderr,"[hdr] canvas tagged with headroom %.3f (%s)\n",(double)h,mapped?"drawn for it, macOS maps it to the display":"drawn for the current headroom, shown as it is");}
  }
+}
+/* The tag: the display's potential, capped by the HDR peak row, and never below the peak a frame was drawn for. */
+static float front_hdr_tag_for(float drawn){
+ float tag=atomic_load(&hdrPotential),row=front_hdr_parameter(TOTK_HDR_PEAK);
+ if(row>0)tag=fminf(tag,fmaxf(row,1));
+ return fmaxf(tag,drawn);
 }
 void front_hdr_present_mode(int enabled){
  if(!metalLayer || !totk_hdr_available())return;
@@ -138,21 +155,19 @@ void front_hdr_present_mode(int enabled){
  CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB):NULL;
  [CATransaction begin];[CATransaction setDisableActions:YES];   /* the presenter calls this too: committed at once, as front_hdr_tag */
  metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;
- /* macOS 26's layer HDR (the Mac builds need macOS 26): a tagged canvas that macOS maps to the display, in place of
-    wantsExtendedDynamicRangeContent, which showed the values as they are. */
+ /* macOS 26's layer HDR (the Mac builds need macOS 26): a tagged canvas, in place of wantsExtendedDynamicRangeContent;
+    front_hdr_tag sets its tone map mode. */
  if(@available(macOS 26.0,*)){
   metalLayer.preferredDynamicRange=on?CADynamicRangeHigh:CADynamicRangeStandard;
-  metalLayer.toneMapMode=on?CAToneMapModeIfSupported:CAToneMapModeAutomatic;
-  if(on)front_hdr_tag(front_hdr_headroom());else metalLayer.contentsHeadroom=0;   /* front_hdr_present_headroom follows each frame's peak */
+  if(on)front_hdr_tag(front_hdr_tag_for(1));else{metalLayer.toneMapMode=CAToneMapModeAutomatic;metalLayer.contentsHeadroom=0;}   /* front_hdr_present_headroom keeps the tag each frame */
  }
  [CATransaction commit];
  if(cs)CGColorSpaceRelease(cs);
  fprintf(stderr,"[hdr] surface %s: format %lu, color space %s\n",on?"on":"off",(unsigned long)format,metalLayer.colorspace?[(NSString *)CFBridgingRelease(CGColorSpaceCopyName(metalLayer.colorspace)) UTF8String]:"default");
 }
-/* The presenter, for each HDR frame: the peak the canvas was drawn for (the headroom, capped by the HDR peak row) is the
-   layer's tag, so macOS maps exactly that range to the display. */
+/* The presenter, for each HDR frame: the peak the canvas was drawn for (the headroom, capped by the HDR peak row). */
 void front_hdr_present_headroom(float peak){
- if(metalLayer && isfinite(peak))front_hdr_tag(peak);
+ if(metalLayer && isfinite(peak))front_hdr_tag(front_hdr_tag_for(peak));
 }
 static void front_hdr_apply(int enabled){
  if(!totk_hdr_available())return;
