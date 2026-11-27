@@ -2,6 +2,8 @@
 #include "runtime.h"
 #include "autoload.h"
 #include "world_survey.h"
+#include "lm3_controller_support.h"
+#include <TargetConditionals.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,8 +13,10 @@ typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t at
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
-static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
-static int64_t sample;static uint64_t padSeen;
+static _Atomic unsigned suspendReasons,suspendClears;
+static uint32_t styles=1,supportedIds=0x103,disconnectedIds;static bool enabled;static int holdType;
+static uint64_t disconnectGeneration[RUNTIME_GAMEPAD_PLAYERS];
+static int64_t sample,padSamples[RUNTIME_GAMEPAD_PLAYERS];static uint64_t padSeen[RUNTIME_GAMEPAD_PLAYERS];
 /* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
 static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
@@ -33,18 +37,35 @@ enum { KEY_INTERP_TOGGLE=19, KEY_OUTPUT_MODE_CYCLE=20, KEY_ASPECT_TOGGLE=21 };
 extern int runtime_controls_handle_key(unsigned,unsigned) __attribute__((weak_import));
 extern int runtime_controls_active(void) __attribute__((weak_import));
 extern void runtime_front_control_test(const char *) __attribute__((weak_import));
-static unsigned char pressedKeys[128],shortcutHeld[128];
+static unsigned char pressedKeys[128],shortcutHeld[128],blockedKeys[128];
+static void clear_keyboard_locked(void){
+ for(unsigned i=0;i<128;i++)blockedKeys[i]|=pressedKeys[i];
+ memset(keys,0,sizeof keys);memset(pressedKeys,0,sizeof pressedKeys);memset(shortcutHeld,0,sizeof shortcutHeld);pending=0;
+}
+int runtime_input_suspended(void){return atomic_load(&suspendReasons)!=0||atomic_load(&suspendClears)!=0;}
+void runtime_input_suspend(unsigned reason,int on){
+ const unsigned valid=RUNTIME_INPUT_SUSPEND_SETTINGS|RUNTIME_INPUT_SUSPEND_PAIRING|RUNTIME_INPUT_SUSPEND_CHEATS;
+ if(!reason||(reason&~valid))runtime_fail("invalid input suspension reason");
+ pthread_mutex_lock(&inputLock);unsigned old=atomic_load(&suspendReasons),next=on?old|reason:old&~reason;
+ if(next!=old){atomic_fetch_add(&suspendClears,1);atomic_store(&suspendReasons,next);}
+ pthread_mutex_unlock(&inputLock);
+ /* Keep the SDK read gate closed until all concurrent transition clears have
+    finished. Never acquire the gamepad lock while holding inputLock here. */
+ if(next!=old){runtime_input_clear();atomic_fetch_sub(&suspendClears,1);}
+}
 static void input_key_modifiers(unsigned code,int down,unsigned modifiers){
  if(code>=128)return;
  pthread_mutex_lock(&inputLock);
- int press=down&&!pressedKeys[code],held=shortcutHeld[code];pressedKeys[code]=(unsigned char)!!down;
- if(!down)shortcutHeld[code]=0;
+ int press=down&&!pressedKeys[code],held=shortcutHeld[code],blocked=blockedKeys[code];pressedKeys[code]=(unsigned char)!!down;
+ if(!down){shortcutHeld[code]=0;blockedKeys[code]=0;}
  pthread_mutex_unlock(&inputLock);
- if(held)return;
+ if(held||blocked)return;
  if(press&&runtime_controls_handle_key&&runtime_controls_handle_key(code,modifiers)){
   pthread_mutex_lock(&inputLock);shortcutHeld[code]=1;pthread_mutex_unlock(&inputLock);return;
  }
- pthread_mutex_lock(&inputLock);if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
+ pthread_mutex_lock(&inputLock);
+ if(runtime_input_suspended()){if(down)blockedKeys[code]=1;keys[code]=0;pthread_mutex_unlock(&inputLock);return;}
+ if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(!runtime_controls_active||!runtime_controls_active()){
   if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
   if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *,int);dm_gfx_set_flag("mfx_interp",-1);}
@@ -55,38 +76,56 @@ static void input_key_modifiers(unsigned code,int down,unsigned modifiers){
 void runtime_input_key_synthetic(unsigned code,int down){input_key_modifiers(code,down,0);}
 void runtime_input_key_modifiers(unsigned code,int down,unsigned modifiers){if(down&&code<128)user_input("keyboard");input_key_modifiers(code,down,modifiers);}
 void runtime_input_key(unsigned code,int down){runtime_input_key_modifiers(code,down,0);}
-void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(pressedKeys,0,sizeof(pressedKeys));memset(shortcutHeld,0,sizeof(shortcutHeld));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+void runtime_input_clear(void){pthread_mutex_lock(&inputLock);clear_keyboard_locked();memset(padSeen,0,sizeof padSeen);pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 /* Cheats (cheats.c): the buttons held now (keyboard and controller), in the npad bit order. */
 uint64_t runtime_input_buttons(void){uint64_t b=0;pthread_mutex_lock(&inputLock);for(unsigned i=0;i<128;i++)if(keys[i])b|=button(i);pthread_mutex_unlock(&inputLock);
- return b|runtime_gamepad_held();}
+ return runtime_input_suspended()?0:b|runtime_gamepad_held();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
-/* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
-   the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
-   the game reads only the handheld controller in that mode. */
+/* Docked: keyboard/first physical pad are player 1, the second physical pad is
+   player 2. Handheld keeps the original single controller at ID 0x20. */
 /* TOTK_INPUT_LOG=1: one line per new (state kind, controller id, style set) the game reads (which pad the game uses). */
 static void input_log(const char *what,uint32_t id){static int on=-1;static uint64_t seen[64];static unsigned n;if(on<0)on=getenv("TOTK_INPUT_LOG")!=NULL;if(!on)return;
  uint64_t k=(uint64_t)(uintptr_t)what<<32^id^(uint64_t)styles<<48;for(unsigned i=0;i<n;i++)if(seen[i]==k)return;if(n<64)seen[n++]=k;
- fprintf(stderr,"[totk-input] game reads %s for controller %#x (supported styles %#x, ids allowed %d)\n",what,id,styles,allowed);}
+ fprintf(stderr,"[totk-input] game reads %s for controller %#x (supported styles %#x, ids allowed %#x)\n",what,id,styles,supportedIds&~disconnectedIds);}
 static uint32_t pad_id(void){return runtime_handheld_mode()?0x20u:0u;}
 static uint32_t pad_style(void){return runtime_handheld_mode()?2u:1u;}
+static uint32_t id_bit(uint32_t id){return id<8?1u<<id:id==0x20?1u<<8:id==0x10?1u<<9:0;}
+static int pad_player(uint32_t id){if(id==pad_id())return 0;return !runtime_handheld_mode()&&id==1?1:-1;}
+/* inputLock held. This query must not consume either player's press edges. */
+static int pad_connected(uint32_t id,int player){return player>=0&&enabled&&
+ ((supportedIds&~disconnectedIds)&id_bit(id))&&(styles&pad_style())&&
+ (player==0||(runtime_gamepad_connected_mask()&(1u<<(unsigned)player)));}
 static void supported_ids(const uint32_t *ids,uint64_t n){if(n>10||(!ids&&n))runtime_fail("invalid controller ids");
- if(getenv("TOTK_INPUT_LOG")){char b[128];size_t o=0;for(uint64_t i=0;i<n&&o<100;i++)o+=(size_t)snprintf(b+o,sizeof b-o," %#x",ids[i]);b[o]=0;fprintf(stderr,"[totk-input] game supports controller ids:%s\n",b);}pthread_mutex_lock(&inputLock);allowed=false;for(uint64_t i=0;i<n;i++)if(ids[i]==pad_id())allowed=true;pthread_mutex_unlock(&inputLock);}
+ if(getenv("TOTK_INPUT_LOG")){char b[128];size_t o=0;for(uint64_t i=0;i<n&&o<100;i++)o+=(size_t)snprintf(b+o,sizeof b-o," %#x",ids[i]);b[o]=0;fprintf(stderr,"[totk-input] game supports controller ids:%s\n",b);}uint32_t mask=0;for(uint64_t i=0;i<n;i++)mask|=id_bit(ids[i]);pthread_mutex_lock(&inputLock);supportedIds=mask;disconnectedIds=0;pthread_mutex_unlock(&inputLock);}
 static void supported_styles(uint32_t value){pthread_mutex_lock(&inputLock);styles=value;pthread_mutex_unlock(&inputLock);}
-static uint32_t style(const uint32_t *id){if(!id)runtime_fail("controller id pointer");input_log("style set",*id);pthread_mutex_lock(&inputLock);uint32_t v=enabled&&allowed&&*id==pad_id()?(styles&pad_style()):0;pthread_mutex_unlock(&inputLock);return v;}
+static uint32_t style(const uint32_t *id){if(!id)runtime_fail("controller id pointer");input_log("style set",*id);pthread_mutex_lock(&inputLock);uint32_t v=pad_connected(*id,pad_player(*id))?pad_style():0;pthread_mutex_unlock(&inputLock);return v;}
+/* SDK-visible states, bounded to four changed snapshots per second/player.
+   Only an explicitly opted-in isolated validation process may emit this trace. inputLock held. */
+static void pad_diagnostic(uint32_t id,int player,const NpadState *state){
+ static int on=-1;static uint64_t at[RUNTIME_GAMEPAD_PLAYERS];static NpadState last[RUNTIME_GAMEPAD_PLAYERS];
+ if(on<0){const char *diag=getenv("LM3_INPUT_DIAG"),*owner=getenv("TOTK_SLOT_OWNER");on=diag&&!strcmp(diag,"1")&&owner&&!strcmp(owner,"codex");}
+ if(!on||player<0)return;
+ if(at[player]&&!memcmp((const uint8_t *)state+8,(const uint8_t *)&last[player]+8,sizeof *state-8))return;
+ uint64_t now=runtime_now_ns();if(at[player]&&now-at[player]<250000000ull)return;
+ last[player]=*state;at[player]=now;
+ fprintf(stderr,"[lm3-pad] player=%d id=%#x connected=%u buttons=%#llx left=%d,%d right=%d,%d physical=%#x suspended=%d\n",
+  player+1,id,state->attributes&1,(unsigned long long)state->buttons,state->lx,state->ly,state->rx,state->ry,runtime_gamepad_connected_mask(),runtime_input_suspended());
+}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style);
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
-static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
- RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
- if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
+static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);int player=pad_player(*id);NpadState state={.sampling=player>=0?++padSamples[player]:++sample};if(pad_connected(*id,player)&&want_style==pad_style()){
+ state.attributes=1;if(!runtime_input_suspended()){
+ if(player==0){for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+ state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);}
+ RuntimeGamepadState pad;runtime_gamepad_read_player((unsigned)player,&pad);state.buttons|=pad.buttons;
+ if(pad.buttons&~padSeen[player]||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input(player==0?"controller P1":"controller P2");padSeen[player]=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ }}*out=state;pad_diagnostic(*id,player,&state);pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
-static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
+static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);int player=pad_player(*id);if(player>=0){pthread_mutex_lock(&inputLock);disconnectedIds|=id_bit(*id);disconnectGeneration[player]++;padSeen[player]=0;if(player==0)clear_keyboard_locked();pthread_mutex_unlock(&inputLock);runtime_gamepad_clear_player((unsigned)player);}}
 /* Mouse and keyboard devices: the Mac keyboard drives the full-key controller, so the game sees no mouse
    (not connected) and a keyboard with no keys, avoiding duplicated input. Layouts follow the SDK (0x28 / 0x30 bytes). */
 typedef struct{int64_t sampling;int32_t x,y,dx,dy,wx,wy;uint32_t buttons,attributes;} MouseState;
@@ -97,14 +136,50 @@ static void initialize_mouse(void){pthread_mutex_lock(&inputLock);mouseReady=tru
 static void initialize_keyboard(void){pthread_mutex_lock(&inputLock);keyboardReady=true;pthread_mutex_unlock(&inputLock);}
 static int mouse_states(MouseState *out,int max){if(max<=0)return 0;if(!out)runtime_fail("mouse output pointer");pthread_mutex_lock(&inputLock);if(!mouseReady)runtime_fail("mouse used before InitializeMouse");*out=(MouseState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void keyboard_state(KeyboardState *out){if(!out)runtime_fail("keyboard output pointer");pthread_mutex_lock(&inputLock);if(!keyboardReady)runtime_fail("keyboard used before InitializeKeyboard");*out=(KeyboardState){.sampling=++sample};pthread_mutex_unlock(&inputLock);}
-/* Controller support applet (the Switch's "connect controllers" screen). TOTK opens it in handheld mode; there is
-   exactly one controller here, so it returns at once: one player, on the controller in use (ControllerSupportResultInfo:
-   int8 player count, 3 bytes padding, uint32 selected id). */
-typedef struct{int8_t players;uint8_t pad[3];uint32_t selected;} ControllerSupportResult;
-_Static_assert(sizeof(ControllerSupportResult)==8,"controller support result ABI");
-static uint32_t show_controller_support(ControllerSupportResult *out,const void *arg){
- (void)arg;if(out)*out=(ControllerSupportResult){.players=1,.selected=pad_id()};
- static int once;if(!once++)fprintf(stderr,"[totk] controller support applet: one player on controller %#x\n",pad_id());
+_Static_assert(sizeof(RuntimeControllerSupportResult)==8,"controller support result ABI");
+static uint32_t show_controller_support(RuntimeControllerSupportResult *out,const void *arg){
+ RuntimeControllerSupportResult result={0};Lm3ControllerRequest request;
+ if(out)*out=result;
+ if(!lm3_controller_request(arg,&request))return LM3_CONTROLLER_SUPPORT_CANCELED;
+ uint64_t beforeDisconnect[RUNTIME_GAMEPAD_PLAYERS];
+ pthread_mutex_lock(&inputLock);unsigned allowed=enabled&&(styles&pad_style())?supportedIds:0;
+ memcpy(beforeDisconnect,disconnectGeneration,sizeof beforeDisconnect);pthread_mutex_unlock(&inputLock);
+ if(runtime_handheld_mode()){
+  if(!(allowed&id_bit(0x20))||request.minimum>1)return LM3_CONTROLLER_SUPPORT_CANCELED;
+  result=(RuntimeControllerSupportResult){.players=1,.selected=0x20};
+ }else{
+  allowed&=3;
+#if defined(GAME_LM3) && TARGET_OS_OSX
+  uint32_t rc=runtime_controller_support_run(request.minimum,request.maximum,allowed,request.single_mode,&result);
+  if(rc)return rc;
+#else
+  if(!(allowed&1)||request.minimum>1)return LM3_CONTROLLER_SUPPORT_CANCELED;
+  result=(RuntimeControllerSupportResult){.players=1,.selected=0};
+#endif
+ }
+ pthread_mutex_lock(&inputLock);
+ /* The pairing UI may wait while another guest thread changes its HID
+    contract. Commit only against the current styles/IDs and physical slots.
+    A pre-existing DisconnectNpad is resolved by pairing; a new disconnect
+    during the wait cancels that selection instead of resurrecting it. */
+ unsigned current=enabled&&(styles&pad_style())?supportedIds:0;
+ int valid;
+ if(runtime_handheld_mode())valid=(current&id_bit(0x20))&&result.players==1&&result.selected==0x20;
+ else{
+#if defined(GAME_LM3) && TARGET_OS_OSX
+  valid=lm3_controller_result_valid(&request,current&3,runtime_gamepad_connected_mask(),&result);
+#else
+  valid=(current&1)&&result.players==1&&result.selected==0;
+#endif
+ }
+ unsigned selected=result.players==2?3u:result.selected==0x20?1u:result.selected<2?1u<<result.selected:0;
+ for(unsigned p=0;p<RUNTIME_GAMEPAD_PLAYERS;p++)
+  if((selected&(1u<<p))&&beforeDisconnect[p]!=disconnectGeneration[p])valid=0;
+ if(valid)disconnectedIds&=~(result.selected==0x20?id_bit(0x20):selected);
+ pthread_mutex_unlock(&inputLock);
+ if(!valid)return LM3_CONTROLLER_SUPPORT_CANCELED;
+ runtime_input_clear();if(out)*out=result;
+ fprintf(stderr,"[lm3-input] controller support: %d..%d requested, %d players selected (first ID %#x)\n",request.minimum,request.maximum,result.players,result.selected);
  return 0;
 }
 /* SDK 7.3.2 (Luigi's Mansion 3): single-sample npad reads, the touch screen, controller colours and the public

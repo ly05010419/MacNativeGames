@@ -127,13 +127,29 @@ enum { CHEAT_ON = 1, CHEAT_AT_LAUNCH = 2, CHEAT_APPLIED = 4, CHEAT_REFUSED = 8 }
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
+#define RUNTIME_GAMEPAD_PLAYERS 2
 void runtime_gamepad_start(void);
 void runtime_gamepad_read(RuntimeGamepadState *out);
+void runtime_gamepad_read_player(unsigned player, RuntimeGamepadState *out);
+uint64_t runtime_gamepad_held_player(unsigned player);
+unsigned runtime_gamepad_connected_mask(void);   /* Physical full-size controllers; does not consume press edges. */
+void runtime_gamepad_player_name(unsigned player, char *out, size_t size);
+/* Standalone probe hooks are restricted to the isolated codex probe process. */
+int runtime_gamepad_probe(void);
+void runtime_gamepad_probe_publish(unsigned player, const RuntimeGamepadState *state);
+void runtime_lm3_input_probe(void);
+typedef struct { int8_t players; uint8_t reserved[3]; uint32_t selected; } RuntimeControllerSupportResult;
+uint32_t runtime_controller_support_run(int minimum, int maximum, unsigned allowed_mask, int single_mode,
+                                        RuntimeControllerSupportResult *out);
 void runtime_gamepad_set_overlay(int (*hook)(uint64_t held, uint64_t pressed));   /* main queue; 1: keep the controllers from the game */
 uint64_t runtime_gamepad_held(void);   /* held buttons, leaving the press edges for runtime_gamepad_read */
 /* Forget held buttons and sticks: macOS stops delivering controller events (including releases) while the app is in
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
+void runtime_gamepad_clear_player(unsigned player);
+enum { RUNTIME_INPUT_SUSPEND_SETTINGS=1, RUNTIME_INPUT_SUSPEND_PAIRING=2, RUNTIME_INPUT_SUSPEND_CHEATS=4 };
+void runtime_input_suspend(unsigned reason, int on);
+int runtime_input_suspended(void);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
@@ -145,6 +161,10 @@ void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);
 void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);   /* side 0 left, 1 right */
+void runtime_rumble_set_player(unsigned player, unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);
+void runtime_feedback_rumble_snapshot(unsigned player, unsigned side, float out[4]);   /* Desired value, used by the isolated HID probe. */
+int runtime_hid_feedback_probe(void);
+void runtime_hid_feedback_clear_player(unsigned player);
 int runtime_motion_read(RuntimeMotionState *out, int max);   /* newest first; 0 = no motion now */
 void runtime_motion_start(void);   /* the game (re)started its sensor: angle and direction start over */
 void runtime_motion_feed(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* runtime/motion_fusion.c */
@@ -156,6 +176,8 @@ void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 @class GCController;
 void runtime_feedback_attach(GCController *controller);
 void runtime_feedback_detach(GCController *controller);
+void runtime_feedback_attach_player(GCController *controller, unsigned player);
+void runtime_feedback_detach_player(GCController *controller, unsigned player);
 #endif
 
 /* Unified macOS controls; preference loading precedes guest-code patching. */
