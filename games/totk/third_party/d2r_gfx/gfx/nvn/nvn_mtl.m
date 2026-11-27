@@ -82,6 +82,7 @@ static _Atomic int g_mesh_trace_frames;
 #include "totk_hdr_present.h"
 extern int front_hdr_enabled(void) __attribute__((weak_import));
 extern void front_hdr_present_mode(int enabled) __attribute__((weak_import));
+extern void front_hdr_present_headroom(float peak) __attribute__((weak_import));
 extern float front_hdr_headroom(void) __attribute__((weak_import));
 #include "totk_sysload.h"
 #include "totk_state_report.h"   // TOTK_STATE_REPORTING: the game's states for Apple's performance tools (macOS 27)
@@ -23020,6 +23021,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if(totk_hdr_available() && front_hdr_present_mode){
         MTLPixelFormat want=hdrFrame?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
         if(layer.pixelFormat!=want){mtl_finish_gpu();front_hdr_present_mode(hdrFrame);}
+        /* the peak the HDR copy clamps to (present_encode's uv[8]) tags the canvas: macOS 26 maps that range to the display */
+        if(hdrFrame && front_hdr_present_headroom)front_hdr_present_headroom(fminf(front_hdr_headroom?front_hdr_headroom():1,t_hdr_present_peak));
         /* The display link may hand a drawable of the format before the switch. It is drawn into as it is (present_pipeline
            and present_encode go by the drawable's format), never dropped: dropping every such tick stopped the picture for
            7 s at the switch on and 30 s at the switch off (2,800 ticks; 2026-11-03, after PR #1129), since a drawable not
