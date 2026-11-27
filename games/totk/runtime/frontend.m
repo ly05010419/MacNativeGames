@@ -86,33 +86,18 @@ static void front_hdr_auto(double potential,const char *screen){
  if(choice!=HDR_CHOICE_AUTO){shown=-1;return;}
  if(on!=shown){shown=on;fprintf(stderr,"[hdr] auto: %s, potential EDR %.2f: HDR %s\n",screen?:"no screen",potential,on?"on":"off");}
 }
-/* macOS 26's layer HDR: the canvas is tagged with the headroom it was drawn for (CALayer contentsHeadroom,
-   preferredDynamicRange high, toneMapMode ifSupported), and macOS maps it to what the display has now. The macOS 14
-   switch (wantsExtendedDynamicRangeContent) shows the values as they are. TOTK_HDR_LAYER=legacy (the environment, else
-   `defaults write <the app's id> TOTK_HDR_LAYER legacy`) keeps the macOS 14 switch, to compare. */
-static int front_hdr_tagged(void){
- static int tagged=-1;
- if(tagged<0){
-  const char *e=getenv("TOTK_HDR_LAYER");
-  int legacy=e&&*e?!strcmp(e,"legacy"):[[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_HDR_LAYER"] isEqualToString:@"legacy"];
-  tagged=0;if(@available(macOS 26.0,*))tagged=!legacy;
-  fprintf(stderr,"[hdr] layer: %s\n",tagged?"macOS 26 headroom tag (contentsHeadroom, tone mapped by macOS)":"wantsExtendedDynamicRangeContent");
- }
- return tagged;
-}
 static void front_hdr_update(void){
  if(!totk_hdr_available())return;
  NSScreen *screen=window.screen?:NSScreen.mainScreen;
  /* auto keeps what it had while the window is on no screen (minimized, between screens) */
  if(!window||window.screen||atomic_load(&hdrChoice)!=HDR_CHOICE_AUTO)front_hdr_auto(screen?screen.maximumPotentialExtendedDynamicRangeColorComponentValue:1,screen.localizedName.UTF8String);
- float h=front_hdr_enabled() && screen?(float)screen.maximumExtendedDynamicRangeColorComponentValue:1;
- if(!isfinite(h)||h<1)h=1;
- /* With the tag, the canvas is drawn for the display's potential and tagged with it: macOS grants a tagged layer only
-    the headroom of its tag (tagged with the current 1.2, the built-in XDR screen stayed at 1.2 for a whole run, where
-    the macOS 14 switch rose to 10.3), and maps the canvas down to what the display has now. It also covers an
-    external HDR display that reports no current headroom while it shows HDR (current 1.0, potential above 1, with an
-    HDR video on it; Apple developer forum thread 810008). */
- if(front_hdr_enabled() && screen && front_hdr_tagged()){
+ /* The canvas is drawn for the display's potential headroom and tagged with it (front_hdr_tag): macOS grants a tagged
+    layer only the headroom of its tag (tagged with the current 1.2, the built-in XDR screen stayed at 1.2 for a whole
+    run), and maps the canvas down to what the display has now. The current headroom is not used: an external HDR
+    display can report 1.0 while it shows HDR (potential above 1, an HDR video on it; Apple developer forum thread
+    810008), and the canvas drawn for it had no HDR there. */
+ float h=1;
+ if(front_hdr_enabled() && screen){
   float potential=(float)screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
   if(isfinite(potential)&&potential>1)h=potential;
  }
@@ -132,19 +117,28 @@ static void front_hdr_init(void){
  atomic_store(&hdrChoice,hdr_choice_parse(e,!(e && *e) && runtime_setting_word("hdr.txt",word,sizeof word)?strtok(word," \t\r\n"):NULL));
  front_hdr_update();   /* hdrEnabled from the choice on the window's screen, before the layer takes its format */
 }
+/* The HDR canvas's tag (CALayer contentsHeadroom, macOS 26): the peak it was drawn for. Main thread or the presenter. */
+static void front_hdr_tag(float peak){
+ if(@available(macOS 26.0,*)){
+  CGFloat h=fmaxf(peak,1);
+  if(fabs(metalLayer.contentsHeadroom-h)<=0.01)return;
+  metalLayer.contentsHeadroom=h;
+  static float logged;if(fabsf(logged-(float)h)>0.25f){logged=(float)h;fprintf(stderr,"[hdr] canvas tagged with headroom %.3f\n",(double)h);}
+ }
+}
 void front_hdr_present_mode(int enabled){
  if(!metalLayer || !totk_hdr_available())return;
  if(!hdrSDRRemembered){hdrSDRColorSpace=metalLayer.colorspace;if(hdrSDRColorSpace)CFRetain(hdrSDRColorSpace);hdrSDRRemembered=1;}
  BOOL on=!!enabled;MTLPixelFormat format=on?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
- if(metalLayer.pixelFormat==format && metalLayer.wantsExtendedDynamicRangeContent==(on&&!front_hdr_tagged()))return;
+ if(metalLayer.pixelFormat==format)return;
  CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB):NULL;
- metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;metalLayer.wantsExtendedDynamicRangeContent=on&&!front_hdr_tagged();
+ metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;
+ /* macOS 26's layer HDR (the Mac builds need macOS 26): a tagged canvas that macOS maps to the display, in place of
+    wantsExtendedDynamicRangeContent (deprecated in macOS 26), which showed the values as they are. */
  if(@available(macOS 26.0,*)){
-  if(front_hdr_tagged()){
-   metalLayer.preferredDynamicRange=on?CADynamicRangeHigh:CADynamicRangeStandard;
-   metalLayer.toneMapMode=on?CAToneMapModeIfSupported:CAToneMapModeAutomatic;
-   metalLayer.contentsHeadroom=on?fmaxf(front_hdr_headroom(),1):0;   /* front_hdr_present_headroom follows each frame's peak */
-  }
+  metalLayer.preferredDynamicRange=on?CADynamicRangeHigh:CADynamicRangeStandard;
+  metalLayer.toneMapMode=on?CAToneMapModeIfSupported:CAToneMapModeAutomatic;
+  if(on)front_hdr_tag(front_hdr_headroom());else metalLayer.contentsHeadroom=0;   /* front_hdr_present_headroom follows each frame's peak */
  }
  if(cs)CGColorSpaceRelease(cs);
  fprintf(stderr,"[hdr] surface %s: format %lu, color space %s\n",on?"on":"off",(unsigned long)format,metalLayer.colorspace?[(NSString *)CFBridgingRelease(CGColorSpaceCopyName(metalLayer.colorspace)) UTF8String]:"default");
@@ -152,12 +146,7 @@ void front_hdr_present_mode(int enabled){
 /* The presenter, for each HDR frame: the peak the canvas was drawn for (the headroom, capped by the HDR peak row) is the
    layer's tag, so macOS maps exactly that range to the display. */
 void front_hdr_present_headroom(float peak){
- if(!metalLayer||!front_hdr_tagged()||!isfinite(peak))return;
- if(@available(macOS 26.0,*)){
-  CGFloat h=fmaxf(peak,1);
-  if(fabs(metalLayer.contentsHeadroom-h)>0.01){metalLayer.contentsHeadroom=h;
-   static float logged;if(fabsf(logged-(float)h)>0.25f){logged=(float)h;fprintf(stderr,"[hdr] canvas tagged with headroom %.3f\n",(double)h);}}
- }
+ if(metalLayer && isfinite(peak))front_hdr_tag(peak);
 }
 static void front_hdr_apply(int enabled){
  if(!totk_hdr_available())return;
