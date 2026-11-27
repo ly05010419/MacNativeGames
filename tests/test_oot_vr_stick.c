@@ -15,15 +15,16 @@ static void take_and_let_go(void) {
     oot_stick_state s; oot_stick_init(&s); oot_stick_out o;
     hand(0, 0); hand(1, 0);
     oot_ih_in in = at(0); oot_stick_step(&s, &in, 1, 0, 0, &o);
-    assert((o.b.mask & OOT_IH_ZR) && !(o.b.add & OOT_IH_ZR) && !o.holding);   /* the real ZR is the stick's while it is selected */
-    /* a grip takes it: the game's ZR held for it until it reads out */
+    assert((o.b.mask & OOT_IH_ZR) && !o.b.add && !o.draw && !o.keep && !o.holding);   /* the real ZR is the stick's while it is selected */
+    /* a grip takes it: the game's per-slot draw, again every 300 ms until it reads out; Link's own stow of slot 1 refused while held */
     hand(1, 1); in = at(10); oot_stick_step(&s, &in, 1, 0, 0, &o);
-    assert(o.event == OOT_STICK_EV_TOOK && (o.b.add & OOT_IH_ZR) && o.holding == 2 && o.b.triggers == 2);
-    in = at(200); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.b.add & OOT_IH_ZR);
-    in = at(400); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(o.event == OOT_STICK_EV_OUT && !(o.b.add & OOT_IH_ZR) && o.holding == 2);
-    in = at(800); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(!o.event && !(o.b.add & OOT_IH_ZR) && o.holding == 2);
+    assert(o.event == OOT_STICK_EV_TOOK && o.draw && o.keep && !o.b.add && o.holding == 2 && o.b.triggers == 2);
+    in = at(200); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(!o.draw && o.keep);
+    in = at(320); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.draw && o.keep);
+    in = at(400); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(o.event == OOT_STICK_EV_OUT && !o.draw && o.keep && o.holding == 2);
+    in = at(800); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(!o.event && !o.draw && o.keep && o.holding == 2);
     /* let go: the game's put-away, again every 300 ms while it reads out, at most four times */
-    hand(1, 0); in = at(900); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(o.event == OOT_STICK_EV_LET_GO && o.put_away && !o.holding);
+    hand(1, 0); in = at(900); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(o.event == OOT_STICK_EV_LET_GO && o.put_away && !o.keep && !o.holding);
     in = at(1000); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(!o.put_away);
     in = at(1210); oot_stick_step(&s, &in, 1, 1, 0, &o); assert(o.put_away);
     in = at(1300); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(!o.put_away && s.phase == OOT_STICK_IDLE);
@@ -31,18 +32,19 @@ static void take_and_let_go(void) {
 static void none_left(void) {
     oot_stick_state s; oot_stick_init(&s); oot_stick_out o;
     hand(0, 0); hand(1, 0);
-    hand(0, 1); oot_ih_in in = at(0); oot_stick_step(&s, &in, 1, 0, 0, &o); assert((o.b.add & OOT_IH_ZR) && o.holding == 1);
-    in = at(650); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.b.add & OOT_IH_ZR);
-    in = at(720); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.event == OOT_STICK_EV_NONE_LEFT && !(o.b.add & OOT_IH_ZR));   /* 700 ms: none left */
-    in = at(1100); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(!o.event && !(o.b.add & OOT_IH_ZR));   /* not held again until a new grip */
+    hand(0, 1); oot_ih_in in = at(0); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.draw && o.holding == 1);
+    in = at(310); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.draw);
+    in = at(620); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.draw);
+    in = at(720); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.event == OOT_STICK_EV_NONE_LEFT && !o.draw && !o.keep);   /* 700 ms: none left */
+    in = at(1100); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(!o.event && !o.draw && !o.keep);   /* not asked again until a new grip */
     hand(0, 0); in = at(1200); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(!o.put_away && s.phase == OOT_STICK_IDLE);
-    hand(0, 1); in = at(1300); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.event == OOT_STICK_EV_TOOK && (o.b.add & OOT_IH_ZR));
+    hand(0, 1); in = at(1300); oot_stick_step(&s, &in, 1, 0, 0, &o); assert(o.event == OOT_STICK_EV_TOOK && o.draw);
 }
 static void not_taken(void) {
     oot_stick_state s; oot_stick_init(&s); oot_stick_out o;
     hand(0, 0); hand(1, 0);
     /* the sword out: no grip takes the stick */
-    hand(1, 1); oot_ih_in in = at(0); oot_stick_step(&s, &in, 1, 0, 1, &o); assert(!o.event && !o.b.add && !o.holding);
+    hand(1, 1); oot_ih_in in = at(0); oot_stick_step(&s, &in, 1, 0, 1, &o); assert(!o.event && !o.b.add && !o.draw && !o.keep && !o.holding);
     hand(1, 0); in = at(50); oot_stick_step(&s, &in, 1, 0, 1, &o);
     /* a hand behind the shoulder (the sword's and shield's gestures) takes nothing */
     hand(1, 1); frame.hand[1].f = -0.1f; frame.hand[1].u = 0;

@@ -2,8 +2,8 @@
    HookshotVR's simple bottle (held-items.md 6.2-6.3; GPL-3, ideas and the game's values only):
      - a fresh grip (in no gesture's zone) takes out the bottle on the item button: the game's own per-slot draw of equipment slot 1
        (main+0x6b6820), again every 300 ms until the bottle's Equipment says drawn, never while a scene of the game plays;
-     - while held and drawn, the game's own stow of slot 1 is refused (the game side's hook at main+0xe34cb0): Link's own AI asks it
-       every frame;
+     - while held (being drawn or drawn), the game's own stow of slot 1 is refused (the game side's hook at main+0xe34cb0): Link's
+       own AI asks it every frame, and before it was refused while drawing too, it overwrote the draw's request (batch16);
      - the trigger uses it, the game's own way: the hold is lifted and the bottle stowed (main+0xe34c70); once it no longer reads
        drawn the game's ZR is tapped for 130 ms (8 frames; held longer it put Link in a stance with the shield out) and the game takes
        the bottle out itself and plays its drink, swing or scene. Over 400 ms after that scene ends, or 1.5 s after the press with no
@@ -78,8 +78,9 @@ static inline void oot_bottle_step(oot_bottle_state *s, const oot_ih_in *in, int
             if (drawn) o->stow = oot_bottle_stow_due(s, now); else s->phase = OOT_BOTTLE_IDLE;
             return;
         }
+        o->keep_drawn = 1;   /* while it is being drawn too: Link's AI asks a stow of slot 1 every frame, which turned the draw's request
+                                (2) into a stow (4) before the game took it (batch15/16, 2026-11-27: refused, it came out in 28 ms) */
         if (drawn) {
-            o->keep_drawn = 1;
             if (pressed) {   /* used: the hold lifted, stowed; the game takes it out again itself */
                 s->phase = OOT_BOTTLE_USING; s->use_at = now; s->ready = 0; s->scene_seen = 0; s->scene_end = 0; s->stows = 0; s->stow_at = 0;
                 o->keep_drawn = 0; o->stow = oot_bottle_stow_due(s, now); o->event = OOT_BOTTLE_EV_USE;

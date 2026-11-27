@@ -585,6 +585,7 @@ extern int runtime_oot_vr_in_event(void) __attribute__((weak_import));
 extern int runtime_oot_vr_aiming(void) __attribute__((weak_import));      /* Link's state says he aims the slingshot or the bow */
 extern int runtime_oot_vr_two_hands_held(void) __attribute__((weak_import));   /* a bow or slingshot is in the player's two hands */
 static _Atomic int g_oot_big_screen;   /* the left-stick shift + Menu: the big screen instead of the head view */
+static int g_oot_win_par_on;           /* the VR thread: the window's parallax has the camera control (oot_vr_winpar_draw.h) */
 static _Atomic int g_oot_locked_on;    /* the pad's thread: ZL (lock-on, the shield) goes to the game: no wrist panel then */
 #include "oot_vr_gear_options.h"   /* the sword and the shield in the hands (vr.md rows 42-53) */
 int vr_oot_big_screen(void) { return atomic_load(&g_oot_big_screen); }
@@ -882,6 +883,9 @@ static float vr_oot_world_scale(void) { const uint32_t b = atomic_load(&g_oot_wo
 static float g_oot_head_share;   /* first person: how much of the head's own movement the camera takes (eased with the switch) */
 #endif
 static void offset_update(vr_cam_state *s, float d[3]) {   // world axes from the game camera's right axis (the hook's game_right)
+#ifdef GAME_OOT
+    if (g_oot_win_par_on) { d[0] = d[1] = d[2] = 0; return; }   /* the window's parallax wrote s->off (oot_vr_winpar_draw.h) */
+#endif
     offset_load();
     float r[4]; memcpy(r, s->game_right, sizeof r);
     const float h = sqrtf(r[0] * r[0] + r[2] * r[2]), up = atomic_load(&g_off_cm[0]) / 100.0f, fw = atomic_load(&g_off_cm[1]) / 100.0f, rt = atomic_load(&g_off_cm[2]) / 100.0f;
@@ -1079,6 +1083,7 @@ void vr_set_deadband(int tenths) { (void)tenths; } /* Shared TotK flag API only.
 #endif
 #ifdef GAME_OOT
 int vr_oot_big_screen(void);
+static int oot_win_par_head(vr_cam_state *s, const vr_pose *head); static void oot_win_par_release(void);   /* oot_vr_winpar_draw.h */
 #endif
 static void headlook_update(const vr_pose *head, int recenter) {
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
@@ -1095,7 +1100,10 @@ static void headlook_update(const vr_pose *head, int recenter) {
 #ifdef GAME_OOT
     /* the game's own camera, on the big screen: asked for, or a scene the VR page shows on a screen (games/oot/runtime/oot_vr_scene.h)
        in first person; third person keeps the VR view on the game's camera through scenes, as before (merge 2026-11-27) */
-    if (vr_oot_big_screen() || (vr_first_person() && runtime_oot_vr_scene_flat && runtime_oot_vr_scene_flat())) { __atomic_store_n(&s->on, 0, __ATOMIC_RELEASE); return; }
+    if (vr_oot_big_screen() || (vr_first_person() && runtime_oot_vr_scene_flat && runtime_oot_vr_scene_flat())) {
+        if (oot_win_par_head(s, head)) return;   /* the window's parallax (vr.md row 3): the camera moves with the head, no turn */
+        __atomic_store_n(&s->on, 0, __ATOMIC_RELEASE); return; }
+    oot_win_par_release();
 #endif
     if (atomic_load(&g_pitch_lock) < 0) { const char *e = getenv("TOTK_VR_PITCH"); atomic_store(&g_pitch_lock, !(e && !strcmp(e, "0"))); }
     __atomic_store_n(&s->level, (uint32_t)atomic_load(&g_pitch_lock), __ATOMIC_RELAXED);
@@ -1813,6 +1821,8 @@ static int oot_arc_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTL
 #include "oot_vr_wrist_draw.h"
 #include "oot_vr_wheel_draw.h"
 #include "oot_vr_window_draw.h"   /* the window view (vr.md row 3) */
+#include "oot_vr_winpar_draw.h"   /* and its parallax */
+#include "oot_vr_passthrough_draw.h"   /* the room around the screens (vr.md row 4) */
 #endif
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> __strong *pics, const uint32_t useds[2], const int peye[2], float half, id<MTLTexture> hud, const float native_fov[2][4], const float delta[2][9]) {
@@ -2005,9 +2015,13 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         }
     }
 #endif
+    id<MTLTexture> eye_target = g.img[im]; MTLClearColor eye_clear = MTLClearColorMake(0.02, 0.02, 0.025, 1);
+#ifdef GAME_OOT
+    int pt_mode = 0; eye_target = oot_pt_begin(g.img[im], pics, useds, &eye_clear, &pt_mode);   /* the room around the screens (vr.md row 4) */
+#endif
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-    rp.colorAttachments[0].texture = g.img[im]; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
-    rp.colorAttachments[0].clearColor = MTLClearColorMake(0.02, 0.02, 0.025, 1); rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.colorAttachments[0].texture = eye_target; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].clearColor = eye_clear; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
     for (int eye = 0; eye < 2; eye++) {
         const float off[3] = { (eye ? 0.5f : -0.5f) * v->ipd, 0, 0 }; float o[3]; qrot(head->q, off, o);
@@ -2018,14 +2032,18 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         memcpy(x->fov, v->fov[eye], sizeof x->fov);
         if (!pics[eye] || now_ns() < atomic_load(&g_blank_until)) continue;   // a snap turn: the headset dark while the camera turns
         if (world) place_native_picture(&x->pose, native_fov[eye], reproject ? delta[eye] : NULL);
+#ifdef GAME_OOT
+        else place_picture(pics[eye], oot_wpar_get(&g_wpar, useds[eye], (float[3]){ 0 }) ? 0 : useds[eye], peye[eye], half);   // the window's parallax: placed as the big screen
+#else
         else place_picture(pics[eye], useds[eye], peye[eye], half);   // stage 2 (B1: at the eye it was rendered for)
+#endif
         quad_u u;
         eye_matrix(x->pose.q, x->pose.p, x->fov, u.m);
         memcpy(u.c, g.center, 12); memcpy(u.r, g.right, 12); memcpy(u.u, g.up, 12); u.c[3] = u.r[3] = u.u[3] = 0;
         u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
         [e setViewport:(MTLViewport){ eye * g.eye_w, 0, g.eye_w, g.eye_h, 0, 1 }];
 #ifdef GAME_OOT
-        if (useds[eye] || !(oot_window_draw(e, u.m, pics[eye], x->pose.p, g_oot_hud_tex != nil) || oot_arc_draw(e, u.m, pics[eye])))
+        if (!oot_window_posed(e, u.m, pics[eye], x->pose.p, g_oot_hud_tex != nil, useds[eye], peye[eye], half) && (useds[eye] || !oot_arc_draw(e, u.m, pics[eye])))
 #endif
         draw_picture(e, &u, pics[eye]);
 #ifdef GAME_OOT
@@ -2052,6 +2070,9 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         }
     }
     [e endEncoding];
+#ifdef GAME_OOT
+    oot_pt_finish(cb, eye_target, g.img[im], pt_mode);
+#endif
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     const int mi = pic && now_ns() >= atomic_load(&g_blank_until) && mac_view_wanted() ? mac_image() : -1;
     if (mi >= 0) mac_view_encode(cb, g_mac_img[mi], used && g_vr_headlook ? &g.hl_pose[used % 64] : head, v, pics, useds, peye, half, hud, world ? native_fov : NULL, reproject ? delta : NULL);

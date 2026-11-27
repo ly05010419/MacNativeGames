@@ -54,6 +54,10 @@ int vr_oot_win_dist(void) { return oot_window_opts().dist_cm; }
 void vr_oot_set_win_dist(int cm) { vr_option_set("win_dist", oot_win_clampi(cm, 40, 300)); oot_window_said("distance, cm", vr_oot_win_dist()); }
 int vr_oot_win_back(void) { return oot_window_opts().back; }
 void vr_oot_set_win_back(int on) { vr_option_set("win_back", on != 0); oot_window_said("back panel", on != 0); }
+/* The window's parallax (vr.md row 3, oot_vr_winpar_draw.h): the game's camera moves with the head against the frame. Off by default
+   (HookshotVR's window always moves it; ours keeps the window as committed in a21e531c unless this is chosen). */
+int vr_oot_win_parallax(void) { return vr_option("win_parallax", 0) != 0; }
+void vr_oot_set_win_parallax(int on) { vr_option_set("win_parallax", on != 0); oot_window_said("parallax (the game's camera moves with the head)", on != 0); }
 
 /* Where the frame was placed: the head then, and its heading. */
 static float g_win_at[3], g_win_yaw; static int g_win_have;
@@ -117,8 +121,10 @@ static int oot_window_pipeline(void) {
     return 1;
 }
 /* One eye's picture in the window. 0: not the window's (the curved screen draws it); 1: done (drawn, or nothing to see from there).
-   world: a world picture whose field of view is the headset's (seen through the frame). eye: this eye in the room. */
-static int oot_window_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTLTexture> pic, const float eye[3], int world) {
+   world: a world picture whose field of view is the headset's (seen through the frame). eye: this eye in the room. from: NULL, or
+   where the picture was drawn from in the frame's axes (the window's parallax, oot_vr_winpar_draw.h): seen through the frame from
+   there; whether it shows and how much it fades still go by the eye now. */
+static int oot_window_draw_from(id<MTLRenderCommandEncoder> e, const float m[16], id<MTLTexture> pic, const float eye[3], int world, const float *from) {
     if (vr_oot_screen_shape() != OOT_WIN_FRAME || !pic || !g_win_have || !oot_window_pipeline()) return 0;
     const oot_win_opts o = oot_window_opts();
     const oot_win_shape s = oot_win_shape_of(&o);
@@ -133,7 +139,8 @@ static int oot_window_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<
         VLOG("[vr-window] the frame (%.0f x %.0f cm, %.0f cm ahead) shows %s", (double)(s.w * 100), (double)(s.h * 100), (double)(s.dist * 100), names[side]); } }
     if (side == OOT_WIN_NONE) return 1;
     oot_win_u u; memcpy(u.m, m, sizeof u.m);
-    memcpy(u.c, f.c, 12); memcpy(u.x, f.x, 12); memcpy(u.y, f.y, 12); memcpy(u.e, el, 12); memcpy(u.box, box, sizeof box);
+    memcpy(u.c, f.c, 12); memcpy(u.x, f.x, 12); memcpy(u.y, f.y, 12); memcpy(u.box, box, sizeof box);
+    memcpy(u.e, from && from[2] > OOT_WIN_NEAR_M ? from : el, 12);
     u.c[3] = 0; u.x[3] = f.hw; u.y[3] = f.hh; u.e[3] = fade;
     oot_win_fit(pic.height ? (float)pic.width / (float)pic.height : 0, s.w / s.h, u.fit);
     u.k[0] = (float)(side == OOT_WIN_BACK ? 2 : side == OOT_WIN_THROUGH ? 1 : 0); u.k[1] = s.round; u.k[2] = s.feather;
@@ -143,4 +150,7 @@ static int oot_window_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<
     [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
     [e setRenderPipelineState:g.ps];
     return 1;
+}
+static int oot_window_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTLTexture> pic, const float eye[3], int world) {
+    return oot_window_draw_from(e, m, pic, eye, world, NULL);
 }

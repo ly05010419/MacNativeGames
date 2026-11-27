@@ -21,7 +21,9 @@ enum {
     MSG_BUTTON_STATE = 11, MSG_HAPTIC = 12, MSG_INTERACTION_PROFILE = 13, MSG_INPUT_RESET = 14, MSG_VIEW_CONFIG = 15,
     MSG_CONTROLLER_MASK = 16, MSG_FRAME_CONSUMED = 17,
     MSG_HEADSET_STATUS = 18,   // local streamer change (zeldaVR): what the Quest reports it showed, once a second
+    MSG_PASSTHROUGH_OFFER = 19,   // local streamer change (zeldaVR, vr.md row 4): after the hello, "this streamer takes message 101"
     MSG_GAME_AUDIO = 100,   // local streamer change (zeldaVR third_party_patches): the game's own mix
+    MSG_PASSTHROUGH = 101,   // local streamer change (zeldaVR, vr.md row 4): the Quest's chroma key passthrough, 8 bytes
 };
 enum { TOKEN_LEN = 32, MAX_MSG = 4096, CONSUMED_RING = 32 };
 
@@ -34,6 +36,7 @@ static struct {
     uint64_t consumed[CONSUMED_RING]; int consumed_n;
     uint64_t poses_n, frames_n, consumed_total;
     float hs_shown, hs_latency; struct timespec hs_at; int have_hs;   // MSG_HEADSET_STATUS
+    int pt_offered;   // MSG_PASSTHROUGH_OFFER came on this link
     vr_controls pad; int have_pad; uint64_t buttons_n;
     vr_hand hands[2]; uint64_t motion_n;
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .send_mu = PTHREAD_MUTEX_INITIALIZER, .fd = -1 };
@@ -100,6 +103,7 @@ static void handle(uint16_t type, const uint8_t *p, uint32_t n) {
     case MSG_HEADSET_STATUS:   // f32 frames shown in the last second, f32 their average latency in ms
         if (n == 8) { memcpy(&g.hs_shown, p, 4); memcpy(&g.hs_latency, p + 4, 4); clock_gettime(CLOCK_MONOTONIC, &g.hs_at); g.have_hs = 1; }
         break;
+    case MSG_PASSTHROUGH_OFFER: g.pt_offered = 1; break;
     case MSG_FRAME_CONSUMED:
         if (n == 8) {
             if (g.consumed_n == CONSUMED_RING) { memmove(g.consumed, g.consumed + 1, sizeof g.consumed - 8); g.consumed_n--; }
@@ -198,7 +202,7 @@ int vr_link_open(const char *path, const char *renderer, char *err, size_t en) {
         fail(err, en, "the streamer refused the hello (wrong token or protocol version %u)", VR_LINK_PROTOCOL); close(fd); g.fd = -1; return -1; }
 
     pthread_mutex_lock(&g.mu);
-    g.alive = 1; g.view_w = w; g.view_h = h; g.have_pose = g.have_views = g.swapchain_acked = 0; g.consumed_n = 0; g.have_hs = 0;
+    g.alive = 1; g.view_w = w; g.view_h = h; g.have_pose = g.have_views = g.swapchain_acked = 0; g.consumed_n = 0; g.have_hs = 0; g.pt_offered = 0;
     pthread_mutex_unlock(&g.mu);
     pthread_t th;
     if (pthread_create(&th, NULL, reader, (void *)(intptr_t)fd)) { fail(err, en, "reader thread"); close(fd); g.fd = -1; g.alive = 0; return -1; }
@@ -292,6 +296,12 @@ int vr_link_take_consumed(uint64_t *out, int max) {
 int vr_link_send_audio(const int16_t *pcm, int frames) {
     if (frames <= 0 || frames > 1000 || !vr_link_alive()) return -1;
     return send_msg(MSG_GAME_AUDIO, pcm, (uint32_t)frames * 4);
+}
+
+int vr_link_passthrough_offered(void) { pthread_mutex_lock(&g.mu); int o = g.alive && g.pt_offered; pthread_mutex_unlock(&g.mu); return o; }
+int vr_link_send_passthrough(const uint8_t payload[8]) {   // only to a streamer that offered it: an older one drops the link
+    if (!payload || !vr_link_passthrough_offered()) return -1;
+    return send_msg(MSG_PASSTHROUGH, payload, 8);
 }
 
 int vr_link_send_haptic(int hand, uint64_t duration_ns, float frequency, float amplitude) {   // HAPTIC (12): u32 hand, u64 ns, f32 Hz, f32 0..1

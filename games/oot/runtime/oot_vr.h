@@ -287,6 +287,7 @@ static void oot_vr_state_read(uintptr_t player, uintptr_t events) {
 #include "oot_vr_scene.h"
 #include "oot_vr_ocarina.h"
 #include "oot_vr_lod_true.h"   /* vr.md row 18: detail by the distance to the eyes (option lod_true) */
+#include "oot_vr_winpar_cam.h"  /* vr.md row 3: the window's parallax, the camera moved with the head (option win_parallax) */
 /* Calls one after another: b after the last of a. */
 static oot_guest_call *oot_calls_then(oot_guest_call *a, oot_guest_call *b) {
     if (!a) return b;
@@ -429,6 +430,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
         oot_vr_hook_end(OOT_HOOK_OFF, view);
         return;
     }
+    if (oot_win_par_camera(view, &control)) return;   /* the window's parallax: only the head's offset (oot_vr_winpar_cam.h) */
     float m[12];
     memcpy(m, view + 8, sizeof m);
     for (int i = 0; i < 12; i++) if (!isfinite(m[i]) || !isfinite(control.h[i])) { oot_vr_hook_end(OOT_HOOK_NAN, view); return; }

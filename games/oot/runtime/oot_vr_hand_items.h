@@ -63,7 +63,7 @@ int runtime_oot_vr_boomerang_aim(int *hand) {
 }
 
 /* Link's update only: */
-static oot_guest_call oot_ih_calls[2];
+static oot_guest_call oot_ih_calls[3];
 static int oot_ih_item = -1;
 static uint64_t oot_ih_item_at;
 static oot_hook_state oot_ih_hook; static oot_boom_state oot_ih_boom; static oot_bottle_state oot_ih_bottle; static oot_stick_state oot_ih_stick;
@@ -225,6 +225,7 @@ static oot_guest_call *oot_hand_items_calc(void) {
       oot_ih_log("bottle", to.event, what, 8, to.event == OOT_BOTTLE_EV_TOOK ? oot_ih_bottle.hand : bottle_hand, in.action); }
     /* the Deku Stick (vr.md row 68): slot 1 again, as the game takes it out for the stick on the item button */
     const int is_stick = bottle && (oot_actor_named(bottle, "Weapon_DekuStick") || oot_actor_named(bottle, "Item_DekuStick"));
+    if (is_stick && !user) (void)oot_vr_safe_read(components + OOT_EQUIP_OF_COMPONENTS, &user, 8);   /* the EquipmentUser for the stick's draw */
     uint8_t sword_state = 0; const uintptr_t sword = components ? oot_vr_equip_actor(components, 0, &sword_state) : 0;
     if (item == OOT_STICK_ITEM && oot_blade_log_on()) {   /* the diagnostic: what the stick's step is given, once a second */
         static uint64_t said_at;
@@ -240,11 +241,13 @@ static oot_guest_call *oot_hand_items_calc(void) {
     oot_stick_out so; const int stick_hand = oot_ih_stick.hand;
     oot_stick_step(&oot_ih_stick, &in, ready && item == OOT_STICK_ITEM && vr_oot_stick_hands(), is_stick && oot_equip_drawn(bottle), sword && oot_equip_drawn(sword), &so);
     oot_ih_merge(&b, &so.b);
-    { static const char *const what[] = { "", "taken: the game's ZR held for it", "out in the hand", "let go: the game's put-away", "did not come out within 700 ms (none left?)" };
+    { static const char *const what[] = { "", "taken: the game's draw of slot 1 asked (its stow refused while held)", "out in the hand", "let go: the game's put-away", "did not come out within 700 ms (none left?)" };
       oot_ih_log("stick", so.event, what, 5, so.event == OOT_STICK_EV_TOOK ? oot_ih_stick.hand : stick_hand, in.action); }
     oot_stick_lit_note(is_stick && oot_equip_drawn(bottle) ? bottle : 0);
+    if (so.keep && is_stick && user) atomic_store(&oot_ih_bottle_user, (uintptr_t)user);   /* Link's own stow of slot 1 refused while held (oot_vr_stick.h) */
     int n = 0;
     const uintptr_t link_actor = atomic_load_explicit(&oot_link_actor, memory_order_relaxed);
+    if (so.draw && user) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + OOT_EQUIP_DRAW), user, 1, 0, 0, 0, NULL, 0 };
     if ((ho.put_away || bo.put_away || so.put_away) && link_actor) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + OOT_SHEATHE_ALL), (uint64_t)link_actor, 0, 0, 0, 0, NULL, 0 };
     if ((to.draw || to.stow) && is_bottle) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + (to.draw ? OOT_EQUIP_DRAW : OOT_EQUIP_STOW)), user, 1, 0, 0, 0, NULL, 0 };
     for (int i = 0; i < n; i++) { *link = &oot_ih_calls[i]; link = &oot_ih_calls[i].next; }

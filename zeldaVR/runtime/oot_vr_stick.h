@@ -1,12 +1,12 @@
 /* Ocarina of Time in VR: the Deku Stick taken by a grip (vr.md row 68), without the runtime (tests/test_oot_vr_stick.c runs it).
    HookshotVR's way (held-items.md 4.1-4.2; GPL-3, ideas and the game's values only):
      - with the stick on the item button (the game's item 0), a fresh grip (0.55 on, 0.35 off) in a hand outside the gestures'
-       zones, and not while the sword is out, takes it: the game's own ZR is held for it until the stick reads out (the game's
-       own take: ZR -> action 0 -> 0x8 -> 0x408; batch4, 2026-11-27, took it out with the trigger); not out after 700 ms: none
-       left, not held again until a new grip. HookshotVR asks the game's per-slot draw of slot 1 (main+0x6b6820) in its blade
-       mode and holds ZR otherwise; on our image that call did not bring the stick out (batch11, 2026-11-27: asked twice, slot 1
-       stayed "the stick (drawn 0)" for 700 ms each time), why is not known yet (the call's early returns: main+0x6b6974 for an
-       actor in states 7-11, main+0x6b6988 when main+0xce7ab0 answers 1), so the game's own button is used;
+       zones, and not while the sword is out, takes it: the game's own per-slot draw of equipment slot 1 (main+0x6b6820, the
+       bottle's call; HookshotVR's way), again every 300 ms until the stick reads out; not out after 700 ms: none left, not asked
+       again until a new grip. While held, Link's own stow of slot 1 is refused (the hook at main+0xe34cb0): his AI asks a stow
+       every frame, and that turned the draw's request (the byte at EquipmentUser +0x13bc + slot: 2 into the hand) into a stow
+       (4) before the game took it (batch16, 2026-11-27: four calls, every check of the call passed, never out; refused, out in
+       28 ms);
      - the stick in the hand swings by the blade logic as a weapon (games/oot/runtime/oot_vr_sword.h, its kind 101);
      - let go: the game's put-away (main+0x4a8690), again every 300 ms while it reads out, at most four times;
      - the real ZR does not reach the game while the stick is selected, and the holding hand's trigger is the stick's.
@@ -19,16 +19,18 @@
 enum { OOT_STICK_ITEM = 0 };
 enum { OOT_STICK_IDLE, OOT_STICK_HELD };
 enum { OOT_STICK_EV_TOOK = 1, OOT_STICK_EV_OUT, OOT_STICK_EV_LET_GO, OOT_STICK_EV_NONE_LEFT };
-static const uint64_t OOT_STICK_DRAW_FOR = 700000000ull;
+static const uint64_t OOT_STICK_DRAW_GAP = 300000000ull, OOT_STICK_DRAW_FOR = 700000000ull;
 typedef struct {
     int phase, hand, came_out, gave_up;
-    uint64_t took_at;
+    uint64_t took_at, draw_at;
     oot_ih_press grip[2];
     oot_ih_away away;
 } oot_stick_state;
 typedef struct {
     oot_ih_buttons b;
     int holding;     /* hand + 1 */
+    int draw;        /* the game's per-slot draw of slot 1 now */
+    int keep;        /* Link's own stow of slot 1 is refused (held, and not given up) */
     int put_away;    /* the game's put-away now */
     int event;
 } oot_stick_out;
@@ -52,7 +54,7 @@ static inline void oot_stick_step(oot_stick_state *s, const oot_ih_in *in, int a
     if (s->phase == OOT_STICK_IDLE && !sword_out) {
         for (int i = 1; i >= 0; i--) {
             if (!closing[i] || !oot_ih_free_zone(&in->hands->hand[i], i == 1)) continue;
-            s->phase = OOT_STICK_HELD; s->hand = i; s->took_at = now; s->came_out = out; s->gave_up = 0;
+            s->phase = OOT_STICK_HELD; s->hand = i; s->took_at = now; s->draw_at = 0; s->came_out = out; s->gave_up = 0;
             oot_ih_away_cancel(&s->away); o->put_away = 0;
             o->event = OOT_STICK_EV_TOOK;
             break;
@@ -65,11 +67,12 @@ static inline void oot_stick_step(oot_stick_state *s, const oot_ih_in *in, int a
         return;
     }
     o->holding = s->hand + 1; o->b.triggers |= 1 << s->hand;
+    o->keep = s->came_out || out || !s->gave_up;
     if (out) {
         if (!s->came_out) { s->came_out = 1; if (!o->event) o->event = OOT_STICK_EV_OUT; }
     } else if (!s->came_out && !s->gave_up) {
-        if (now - s->took_at > OOT_STICK_DRAW_FOR) { s->gave_up = 1; o->event = OOT_STICK_EV_NONE_LEFT; }
-        else o->b.add |= OOT_IH_ZR;   /* the game's own take, until it reads out */
+        if (now - s->took_at > OOT_STICK_DRAW_FOR) { s->gave_up = 1; o->keep = 0; o->event = OOT_STICK_EV_NONE_LEFT; }
+        else if (!s->draw_at || now - s->draw_at >= OOT_STICK_DRAW_GAP) { s->draw_at = now; o->draw = 1; }
     }
 }
 

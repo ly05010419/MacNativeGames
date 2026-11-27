@@ -16,8 +16,10 @@ int main(void) {
     hand(0, 0, 0); hand(1, 0, 0);
     oot_ih_in in = at(0); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert((o.b.mask & OOT_IH_ZR) && !o.draw);
     /* a grip takes it out: drawn by the game's call, again every 300 ms until it reads drawn */
-    hand(0, 1, 0); in = at(10); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert(s.phase == OOT_BOTTLE_HELD && o.draw && o.holding == 1 && o.b.triggers == 1 && o.event == OOT_BOTTLE_EV_TOOK);
-    in = at(100); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert(!o.draw);
+    /* the game's stow of slot 1 is refused while it is being drawn too: Link's own AI asks a stow every frame, and it turned the
+       draw's request (2) into a stow (4) before the game took it (batch15, 2026-11-27) */
+    hand(0, 1, 0); in = at(10); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert(s.phase == OOT_BOTTLE_HELD && o.draw && o.keep_drawn && o.holding == 1 && o.b.triggers == 1 && o.event == OOT_BOTTLE_EV_TOOK);
+    in = at(100); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert(!o.draw && o.keep_drawn);
     in = at(320); oot_bottle_step(&s, &in, 1, 0, 0, &o); assert(o.draw);
     in = at(400); oot_bottle_step(&s, &in, 1, 0, 1, &o); assert(!o.draw);   /* not during a scene */
     in = at(700); oot_bottle_step(&s, &in, 1, 1, 0, &o); assert(o.keep_drawn && !o.draw);

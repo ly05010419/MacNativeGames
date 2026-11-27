@@ -1,8 +1,8 @@
 diff --git a/streamer/Sources/BasaltCore/AlvrControl.swift b/streamer/Sources/BasaltCore/AlvrControl.swift
-index fa18ab1..ff903a3 100644
+index fa18ab1..cd63818 100644
 --- a/streamer/Sources/BasaltCore/AlvrControl.swift
 +++ b/streamer/Sources/BasaltCore/AlvrControl.swift
-@@ -256,10 +256,10 @@ public final class AlvrSessionHandshakeResult: @unchecked Sendable {
+@@ -256,10 +256,18 @@ public final class AlvrSessionHandshakeResult: @unchecked Sendable {
          return retained
      }
  
@@ -12,10 +12,18 @@ index fa18ab1..ff903a3 100644
          controlQueue.sync { [socket] in
 -            try? AlvrControlProbe.sendH264DecoderConfig(parameterSets, to: socket)
 +            try? AlvrControlProbe.sendDecoderConfig(parameterSets, codec: codec, to: socket)
++        }
++    }
++
++    /// Local change (zeldaVR, vr.md row 4): ALVR's RealTimeConfig with this passthrough; the client applies it at once.
++    public func sendRealTimeConfig(_ passthrough: AlvrPassthrough) {
++        guard streamReady else { return }
++        controlQueue.sync { [socket] in
++            try? AlvrControlProbe.sendControlPayload(passthrough.realTimeConfigPayload, to: socket)
          }
      }
  
-@@ -548,11 +548,11 @@ public enum AlvrControlProbe {
+@@ -548,17 +556,21 @@ public enum AlvrControlProbe {
                           deadline: Date().addingTimeInterval(0.4))
      }
  
@@ -30,8 +38,136 @@ index fa18ab1..ff903a3 100644
          appendLittleEndian(UInt64(parameterSets.count), to: &payload)
          payload.append(parameterSets)
          try writeExactly(framedPayload(payload), to: fd,
+                          deadline: Date().addingTimeInterval(0.4))
+     }
+ 
++    fileprivate static func sendControlPayload(_ payload: Data, to fd: Int32) throws {   // local change (zeldaVR)
++        try writeExactly(framedPayload(payload), to: fd, deadline: Date().addingTimeInterval(0.4))
++    }
++
+     private static func appendLittleEndian<T: FixedWidthInteger>(_ value: T,
+                                                                   to data: inout Data) {
+         var value = value.littleEndian
+diff --git a/streamer/Sources/BasaltCore/AlvrPassthrough.swift b/streamer/Sources/BasaltCore/AlvrPassthrough.swift
+new file mode 100644
+index 0000000..c19c2fb
+--- /dev/null
++++ b/streamer/Sources/BasaltCore/AlvrPassthrough.swift
+@@ -0,0 +1,112 @@
++import Foundation
++
++// Local change for MacNativeGames VR (zeldaVR, 2026-11-27, vr.md row 4): the room around the game's screens through the ALVR
++// client's chroma key passthrough (our video has no alpha). The game asks over the runtime link (message 101, once this streamer
++// offered it with message 19 after the hello). The Quest gets it in the session settings of its next connection and, while it
++// streams, at once as ALVR's RealTimeConfig. ALVR 20.14.0: alvr/session/src/settings.rs VideoConfig.passthrough
++// (Switch<PassthroughMode>, flag real-time; PassthroughMode::RgbChromaKey(RgbChromaKeyConfig)), alvr/session/src/lib.rs
++// merge_from_json (the session form: a Switch is {enabled, content}, a Choice {variant, <variant>: content}), alvr/packets/src/lib.rs
++// RealTimeConfig (bincode 1, sent as ServerControlPacket::ReservedBuffer, as alvr/server_core/src/connection.rs does each second),
++// applied by the client in client_core/src/connection.rs and client_openxr/src/lib.rs ClientCoreEvent::RealTimeConfig.
++public struct AlvrPassthrough: Equatable, Sendable {
++    public var chromaKey: Bool
++    public var red: UInt8
++    public var green: UInt8
++    public var blue: UInt8
++    /// ALVR's distance_threshold, 1...255 (applied per channel, after the client's sRGB decode)
++    public var threshold: UInt8
++    /// ALVR's feathering, in %, 1...100
++    public var featherPercent: UInt8
++
++    /// ALVR's own default (session_settings_default): off; its chroma key values kept for when it is turned on there.
++    public static let off = AlvrPassthrough(chromaKey: false, red: 0, green: 255, blue: 0, threshold: 85, featherPercent: 5)
++
++    public init(chromaKey: Bool, red: UInt8, green: UInt8, blue: UInt8, threshold: UInt8, featherPercent: UInt8) {
++        self.chromaKey = chromaKey
++        self.red = red
++        self.green = green
++        self.blue = blue
++        self.threshold = threshold
++        self.featherPercent = featherPercent
++    }
++
++    /// Runtime link message 101: u8 mode (0 off, 1 RGB chroma key), u8 red, green, blue, u8 threshold (1...255),
++    /// u8 feathering in % (1...100), u16 0. nil: malformed.
++    public init?(linkPayload payload: Data) {
++        let b = [UInt8](payload)
++        guard b.count == 8, b[0] <= 1, b[6] == 0, b[7] == 0 else { return nil }
++        if b[0] == 0 {
++            self = .off
++            return
++        }
++        guard (1...255).contains(b[4]), (1...100).contains(b[5]) else { return nil }
++        self.init(chromaKey: true, red: b[1], green: b[2], blue: b[3], threshold: b[4], featherPercent: b[5])
++    }
++
++    /// session_settings.video.passthrough, in the session form ALVR's merge_from_json reads.
++    public var sessionValue: [String: Any] {
++        guard chromaKey else { return ["enabled": false] }
++        return [
++            "enabled": true,
++            "content": [
++                "variant": "RgbChromaKey",
++                "RgbChromaKey": [
++                    "red": Int(red), "green": Int(green), "blue": Int(blue),
++                    "distance_threshold": Int(threshold),
++                    "feathering": Double(featherPercent) / 100,
++                ],
++            ],
++        ]
++    }
++
++    /// The control packet (before the u32 big-endian length framing): bincode 1 of
++    /// ServerControlPacket::ReservedBuffer(bincode 1 of RealTimeConfig { passthrough, clientside_post_processing: None }).
++    /// clientside_post_processing stays None: this streamer never turns it on (ALVR's default is off).
++    public var realTimeConfigPayload: Data {
++        var config = Data()
++        if chromaKey {
++            config.append(1)                                    // Option::Some
++            Self.append(UInt32(1), to: &config)                 // PassthroughMode::RgbChromaKey (Blend 0, RgbChromaKey 1, HsvChromaKey 2)
++            config.append(contentsOf: [red, green, blue, threshold])
++            Self.append(Float(Double(featherPercent) / 100).bitPattern, to: &config)
++        } else {
++            config.append(0)                                    // Option::None: no passthrough
++        }
++        config.append(0)                                        // clientside_post_processing: None
++        var packet = Data()
++        Self.append(UInt32(6), to: &packet)                     // ServerControlPacket::ReservedBuffer
++        Self.append(UInt64(config.count), to: &packet)          // Vec<u8> length
++        packet.append(config)
++        return packet
++    }
++
++    private static func append<T: FixedWidthInteger>(_ value: T, to data: inout Data) {
++        var value = value.littleEndian
++        withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
++    }
++}
++
++/// What the game last asked for; the next ALVR connection's session settings carry it.
++public final class AlvrPassthroughState: @unchecked Sendable {
++    public static let shared = AlvrPassthroughState()
++    private let lock = NSLock()
++    private var value = AlvrPassthrough.off
++
++    public init() {}
++
++    public var current: AlvrPassthrough {
++        lock.lock()
++        defer { lock.unlock() }
++        return value
++    }
++
++    /// true when it changed.
++    @discardableResult
++    public func set(_ passthrough: AlvrPassthrough) -> Bool {
++        lock.lock()
++        defer { lock.unlock() }
++        guard passthrough != value else { return false }
++        value = passthrough
++        return true
++    }
++}
 diff --git a/streamer/Sources/BasaltCore/AlvrSession.swift b/streamer/Sources/BasaltCore/AlvrSession.swift
-index 030b518..d842b80 100644
+index 030b518..5e422b1 100644
 --- a/streamer/Sources/BasaltCore/AlvrSession.swift
 +++ b/streamer/Sources/BasaltCore/AlvrSession.swift
 @@ -58,7 +58,9 @@ public struct AlvrNegotiatedSettings: Equatable, Sendable {
@@ -45,11 +181,51 @@ index 030b518..d842b80 100644
              throw BasaltError("Requested per-eye resolution \(requestedWidth)x\(requestedHeight) exceeds "
                                + "the headset maximum \(capabilities.width)x\(capabilities.height)")
          }
+@@ -105,18 +107,19 @@ public struct AlvrNegotiatedSettings: Equatable, Sendable {
+ /// Encodes ALVR v20's bincode `StreamConfigPacket`: two UTF-8 strings,
+ /// each represented by a little-endian u64 byte length followed by bytes.
+ public enum AlvrStreamConfigEncoder {
+-    public static func payload(settings: AlvrNegotiatedSettings, wired: Bool = false) throws -> Data {
++    public static func payload(settings: AlvrNegotiatedSettings, wired: Bool = false,
++                               passthrough: AlvrPassthrough = AlvrPassthroughState.shared.current) throws -> Data {
+         // ALVR v20's fuzzy merge requires the session_settings key. These
+         // values come from the selected, explicit latency preset; balanced is
+         // the validated baseline and low trims only 0.2 buffered frame.
+-        let sessionObject: [String: Any] = [
+-            "session_settings": [
+-                "video": [
+-                    "max_buffering_frames": settings.maximumBufferingFrames,
+-                    "buffering_history_weight": settings.bufferingHistoryWeight,
+-                ],
+-            ],
++        var video: [String: Any] = [
++            "max_buffering_frames": settings.maximumBufferingFrames,
++            "buffering_history_weight": settings.bufferingHistoryWeight,
+         ]
++        // Local change (zeldaVR, vr.md row 4): the game's chroma key passthrough (AlvrPassthrough.swift); left out when off, as
++        // before (ALVR's default is off).
++        if passthrough.chromaKey { video["passthrough"] = passthrough.sessionValue }
++        let sessionObject: [String: Any] = ["session_settings": ["video": video]]
+         let session = try JSONSerialization.data(withJSONObject: sessionObject,
+                                                   options: [.sortedKeys])
+         let negotiatedObject: [String: Any] = [
+@@ -139,8 +142,9 @@ public enum AlvrStreamConfigEncoder {
+     }
+ 
+     public static func framedPacket(settings: AlvrNegotiatedSettings,
+-                                    wired: Bool = false) throws -> Data {
+-        let payload = try payload(settings: settings, wired: wired)
++                                    wired: Bool = false,
++                                    passthrough: AlvrPassthrough = AlvrPassthroughState.shared.current) throws -> Data {
++        let payload = try payload(settings: settings, wired: wired, passthrough: passthrough)
+         guard payload.count <= AlvrControlProbe.maximumPacketBytes else {
+             throw BasaltError("ALVR stream configuration is too large")
+         }
 diff --git a/streamer/Sources/BasaltCore/AlvrVideoStream.swift b/streamer/Sources/BasaltCore/AlvrVideoStream.swift
-index e21eec7..d2d8c49 100644
+index e21eec7..a1d76a2 100644
 --- a/streamer/Sources/BasaltCore/AlvrVideoStream.swift
 +++ b/streamer/Sources/BasaltCore/AlvrVideoStream.swift
-@@ -734,14 +734,14 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
+@@ -734,20 +734,29 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
      /// Runtime frames supply the exact Quest tracking timestamp used to
      /// locate that frame. Desktop frames omit it and retain the original
      /// behavior of sampling the newest tracking timestamp at send time.
@@ -67,7 +243,22 @@ index e21eec7..d2d8c49 100644
          }
          guard let sender,
                let timestamp = suppliedTimestamp ?? sender.timestampForVideoFrame() else { return }
-@@ -758,9 +758,10 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
+         sender.send(annexB: annexB, timestampNanoseconds: timestamp, isIDR: isIDR)
+     }
+ 
++    /// Local change (zeldaVR, vr.md row 4): the passthrough to the connected Quest at once (before a connection nothing is sent;
++    /// the connection's session settings carry AlvrPassthroughState.shared).
++    public func sendPassthrough(_ passthrough: AlvrPassthrough) {
++        lock.lock()
++        let controlSession = self.controlSession
++        lock.unlock()
++        controlSession?.sendRealTimeConfig(passthrough)
++    }
++
+     @discardableResult
+     public func sendAudioPCM16(_ pcm16Stereo: Data) -> Bool {
+         lock.lock()
+@@ -758,9 +767,10 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
  }
  
  public enum H264ParameterSets {
@@ -81,7 +272,7 @@ index e21eec7..d2d8c49 100644
          let bytes = [UInt8](annexB)
          var starts = [(offset: Int, codeLength: Int)]()
          var index = 0
-@@ -782,8 +783,7 @@ public enum H264ParameterSets {
+@@ -782,8 +792,7 @@ public enum H264ParameterSets {
              let naluStart = start.offset + start.codeLength
              let naluEnd = position + 1 < starts.count ? starts[position + 1].offset : bytes.count
              guard naluStart < naluEnd else { continue }
@@ -250,19 +441,25 @@ index a089f4c..65366a3 100644
                  options.perEyeResolution = try PerEyeResolution.parse(nextValue(for: flag))
              case "--latency":
 diff --git a/streamer/Sources/BasaltCore/RuntimeLink.swift b/streamer/Sources/BasaltCore/RuntimeLink.swift
-index f8daa1c..0e49bc4 100644
+index f8daa1c..b273694 100644
 --- a/streamer/Sources/BasaltCore/RuntimeLink.swift
 +++ b/streamer/Sources/BasaltCore/RuntimeLink.swift
-@@ -57,14 +57,23 @@ public final class RuntimeLink: @unchecked Sendable {
+@@ -57,14 +57,29 @@ public final class RuntimeLink: @unchecked Sendable {
          case viewConfig = 15
          case controllerMask = 16
          case frameConsumed = 17
 +        // Local change for MacNativeGames VR (zeldaVR, 2026-10-30, user: "想一个办法 检查 不是截屏"): what the headset
 +        // itself reports it showed (daemon -> runtime, once a second): f32 frames shown per second, f32 latency in ms.
 +        case headsetStatus = 18
++        // Local change (zeldaVR, 2026-11-27, vr.md row 4): daemon -> runtime once after the hello, empty: "message 101 is taken"
++        // (a runtime that does not know it ignores it, as it does message 18).
++        case passthroughOffer = 19
 +        // Local change for MacNativeGames VR (zeldaVR, 2026-10-26): a native game hands its own mix over the link
 +        // (runtime -> daemon; 48 kHz stereo PCM16, interleaved), no loopback device or output rerouting needed.
 +        case gameAudio = 100
++        // Local change (zeldaVR, 2026-11-27, vr.md row 4): runtime -> daemon, the Quest's chroma key passthrough, 8 bytes
++        // (AlvrPassthrough(linkPayload:)).
++        case passthrough = 101
      }
  
      public static let protocolVersion: UInt16 = 9
@@ -279,16 +476,18 @@ index f8daa1c..0e49bc4 100644
      static let maximumRetainedButtonPaths = 64
  
      public struct FrameView {
-@@ -108,6 +117,8 @@ public final class RuntimeLink: @unchecked Sendable {
+@@ -108,6 +123,10 @@ public final class RuntimeLink: @unchecked Sendable {
      /// frame's source IOSurfaces. The callback is one-shot and connection
      /// scoped, so late completions after teardown are harmless.
      public var onFrame: ((_ frame: Frame, _ consumption: FrameConsumption) -> Void)?
 +    /// Local change (zeldaVR): one block of the game's own audio, 48 kHz stereo PCM16 interleaved.
 +    public var onGameAudio: ((Data) -> Void)?
++    /// Local change (zeldaVR, vr.md row 4): the passthrough the game asks for.
++    public var onPassthrough: ((AlvrPassthrough) -> Void)?
      public var onTeardown: (() -> Void)?
      /// A runtime connection was refused (wrong protocol version or token,
      /// malformed Hello). Called on the link's queue with a readable reason.
-@@ -289,6 +300,18 @@ public final class RuntimeLink: @unchecked Sendable {
+@@ -289,6 +308,18 @@ public final class RuntimeLink: @unchecked Sendable {
          }
      }
  
@@ -307,7 +506,7 @@ index f8daa1c..0e49bc4 100644
      public func publishButtons(_ entries: [AlvrButtonEntry]) {
          let payloads = entries.compactMap { entry in
              Self.buttonStatePayload(entry).map { (entry.pathID, $0) }
-@@ -640,6 +663,10 @@ public final class RuntimeLink: @unchecked Sendable {
+@@ -640,6 +671,14 @@ public final class RuntimeLink: @unchecked Sendable {
          case .destroySwapchain: return handleDestroySwapchain(payload)
          case .frameReady: return handleFrameReady(payload)
          case .haptic: return handleHaptic(payload)
@@ -315,11 +514,23 @@ index f8daa1c..0e49bc4 100644
 +            guard !payload.isEmpty, payload.count % 4 == 0 else { return false }
 +            onGameAudio?(payload)
 +            return true
++        case .passthrough:
++            guard let passthrough = AlvrPassthrough(linkPayload: payload) else { return false }
++            onPassthrough?(passthrough)
++            return true
          case .teardown:
              dropConnection()
              return true
+@@ -658,6 +697,7 @@ public final class RuntimeLink: @unchecked Sendable {
+         var ack = Data()
+         ack.appendU16(Self.protocolVersion)
+         send(type: .helloAck, payload: ack)
++        send(type: .passthroughOffer, payload: Data())   // local change (zeldaVR, vr.md row 4)
+         onHello?(sessionId, renderer)
+         pumpHeadPose()
+         pumpControllerMotion()
 diff --git a/streamer/Sources/BasaltStreamer/App.swift b/streamer/Sources/BasaltStreamer/App.swift
-index 36bcc62..72710fb 100644
+index 36bcc62..c2403ec 100644
 --- a/streamer/Sources/BasaltStreamer/App.swift
 +++ b/streamer/Sources/BasaltStreamer/App.swift
 @@ -147,12 +147,13 @@ struct BasaltStreamerApp {
@@ -350,17 +561,32 @@ index 36bcc62..72710fb 100644
                  }
              }
          encoder.onError = { error in
-@@ -220,6 +221,9 @@ struct BasaltStreamerApp {
+@@ -220,8 +221,24 @@ struct BasaltStreamerApp {
                  print("OpenXR runtime connected (session \(sessionId), \(renderer))")
                  encoder.forceKeyframe()
              }
 +            link.onGameAudio = { pcm in   // local change (zeldaVR): the game's own mix
 +                alvrVideo.sendAudioPCM16(pcm)
 +            }
++            link.onPassthrough = { passthrough in   // local change (zeldaVR, vr.md row 4): the room around the game's screens
++                if AlvrPassthroughState.shared.set(passthrough) {
++                    print(passthrough.chromaKey
++                          ? "Quest passthrough: chroma key \(passthrough.red) \(passthrough.green) \(passthrough.blue), "
++                            + "threshold \(passthrough.threshold), feathering \(passthrough.featherPercent)%"
++                          : "Quest passthrough: off")
++                }
++                alvrVideo.sendPassthrough(passthrough)
++            }
              link.onTeardown = {
                  print("OpenXR runtime disconnected")
++                if AlvrPassthroughState.shared.set(.off) {   // local change (zeldaVR): the game's key goes with it
++                    print("Quest passthrough: off")
++                    alvrVideo.sendPassthrough(.off)
++                }
              }
-@@ -275,18 +279,19 @@ struct BasaltStreamerApp {
+             link.onProtocolError = { reason in
+                 fputs(RuntimeLink.connectionRefusedLogPrefix + reason + "\n", stderr)
+@@ -275,18 +292,19 @@ struct BasaltStreamerApp {
                  }
                  let leftRect = rectVector(firstView.rect)
                  let rightRect = rectVector(lastView.rect)
@@ -386,7 +612,7 @@ index 36bcc62..72710fb 100644
                          droppedFrames.recordDroppedFrame(stage: "encoder busy (runtime)")
                          return
                      }
-@@ -324,7 +329,8 @@ struct BasaltStreamerApp {
+@@ -324,7 +342,8 @@ struct BasaltStreamerApp {
                              headsetLatencyReporter: headsetLatencyReporter,
                              calibrationLogGate: calibrationLogGate,
                              encoder: encoder,
@@ -396,7 +622,7 @@ index 36bcc62..72710fb 100644
                          probeGate.retain(connected.handshake, clientKey: clientKey)
                          succeeded = true
                      } catch {
-@@ -353,7 +359,8 @@ struct BasaltStreamerApp {
+@@ -353,7 +372,8 @@ struct BasaltStreamerApp {
                          headsetLatencyReporter: headsetLatencyReporter,
                          calibrationLogGate: calibrationLogGate,
                          encoder: encoder,
@@ -406,7 +632,7 @@ index 36bcc62..72710fb 100644
                      lastError = nil
                      break
                  } catch {
-@@ -368,6 +375,20 @@ struct BasaltStreamerApp {
+@@ -368,6 +388,20 @@ struct BasaltStreamerApp {
                  throw BasaltError("Could not start wired ALVR session: \(lastError.localizedDescription)")
              }
          }
@@ -427,7 +653,7 @@ index 36bcc62..72710fb 100644
          if let runtimeLink {
              try await runtimeLink.start()
          } else {
-@@ -381,7 +402,7 @@ struct BasaltStreamerApp {
+@@ -381,7 +415,7 @@ struct BasaltStreamerApp {
          BasaltVR streamer — \(runtimeMode ? "M4 tracked OpenXR source" : "M1 capture") + M2/M6 ALVR media
            \(sourceLine)
            encoding \(encodedWidth)x\(encodedHeight)\(runtimeMode || stereoComposer != nil ? " side-by-side stereo" : "")
@@ -436,7 +662,7 @@ index 36bcc62..72710fb 100644
            listening on tcp://\(options.bindHost):\(server.port ?? options.port)
          """)
          if options.bindIsLoopback {
-@@ -446,7 +467,8 @@ struct BasaltStreamerApp {
+@@ -446,7 +480,8 @@ struct BasaltStreamerApp {
          headsetLatencyReporter: HeadsetLatencyReporter,
          calibrationLogGate: CalibrationLogGate,
          encoder: H264Encoder,
@@ -446,7 +672,7 @@ index 36bcc62..72710fb 100644
      ) async throws -> (handshake: AlvrSessionHandshakeResult, displayName: String) {
          let handshake = try await AlvrControlProbe.negotiateSession(
              host: host,
-@@ -511,9 +533,11 @@ struct BasaltStreamerApp {
+@@ -511,9 +546,11 @@ struct BasaltStreamerApp {
          }
          videoSender.onError = { error in
              fputs("ALVR stream send error: \(error.localizedDescription)\n", stderr)
@@ -458,7 +684,7 @@ index 36bcc62..72710fb 100644
          }
          videoSender.onAudioSent = { report in
              audioReporter.record(report)
-@@ -536,6 +560,7 @@ struct BasaltStreamerApp {
+@@ -536,6 +573,7 @@ struct BasaltStreamerApp {
          }
          videoSender.onStatistics = { statistics in
              headsetLatencyReporter.record(statistics)
@@ -466,7 +692,7 @@ index 36bcc62..72710fb 100644
              if let bitrate = adaptiveBitrate?.recordClientStatistics(statistics) {
                  applyAdaptiveBitrate(bitrate)
              }
-@@ -643,6 +668,40 @@ private final class PipelineLatencyReporter: @unchecked Sendable {
+@@ -643,6 +681,40 @@ private final class PipelineLatencyReporter: @unchecked Sendable {
  /// Aggregates ALVR statistics measured on the Quest. Unlike the local metric,
  /// total pipeline latency starts when headset tracking is sampled and ends at
  /// the target display vsync, spanning server, network, decode, and compositor.

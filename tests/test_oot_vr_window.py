@@ -23,7 +23,7 @@ class WindowView(unittest.TestCase):
     def test_the_rows_are_on_the_vr_page(self):
         game = (ROOT / 'games/oot/runtime/settings_game.h').read_text()
         rows = (ROOT / 'games/oot/runtime/settings_vr_window.h').read_text()
-        draw = (ROOT / 'zeldaVR/gfx/oot_vr_window_draw.h').read_text()
+        draw = (ROOT / 'zeldaVR/gfx/oot_vr_window_draw.h').read_text() + (ROOT / 'zeldaVR/gfx/oot_vr_passthrough_draw.h').read_text()
         self.assertIn('settings_vr_window_rows(rows);', game)
         self.assertIn('#include "settings_vr_window.h"', game)
         for name in re.findall(r'vr_oot_set_(\w+)\(v\)', rows):
@@ -36,7 +36,10 @@ class WindowView(unittest.TestCase):
         self.assertIn('vr_option("screen_shape", OOT_WIN_CURVED)', draw)
         vr = (ROOT / 'zeldaVR/gfx/totk_vr.m').read_text()
         self.assertIn('#include "oot_vr_window_draw.h"', vr)
-        self.assertIn('oot_window_draw(e, u.m, pics[eye], x->pose.p, g_oot_hud_tex != nil) || oot_arc_draw(e, u.m, pics[eye])', vr)
+        # a picture with no head pose: the window, else the curved screen (the window's parallax passes its pictures' sequences too)
+        self.assertIn('!oot_window_posed(e, u.m, pics[eye], x->pose.p, g_oot_hud_tex != nil, useds[eye], peye[eye], half) && (useds[eye] || !oot_arc_draw(e, u.m, pics[eye]))', vr)
+        posed = (ROOT / 'zeldaVR/gfx/oot_vr_winpar_draw.h').read_text()
+        self.assertIn('if (!used) return oot_window_draw(e, m, pic, eye, world);', posed)
         self.assertIn('oot_window_tick(&head, place_now);', vr)
 
 

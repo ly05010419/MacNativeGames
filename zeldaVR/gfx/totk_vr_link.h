@@ -62,3 +62,8 @@ int vr_link_pose(vr_pose *out);                  // the newest head pose, 1 once
 int vr_link_send_haptic(int hand, uint64_t duration_ns, float frequency, float amplitude);   // a controller's vibration (0 left, 1 right); 0 on success           // 1 once a controller input arrived (at_ns: the last one, CLOCK_MONOTONIC)
 // The game's own audio (local streamer change, message 100): 48 kHz stereo PCM16 interleaved, frames <= 1000. 0 on success.
 int vr_link_send_audio(const int16_t *pcm, int frames);
+// The Quest's passthrough (local streamer change, vr.md row 4): offered once the streamer said it takes message 101 (an older streamer
+// drops the link on a message it does not know, so nothing is sent to it); payload as zeldaVR/runtime/oot_vr_passthrough.h
+// oot_pt_payload. 0 on success.
+int vr_link_passthrough_offered(void);
+int vr_link_send_passthrough(const uint8_t payload[8]);
