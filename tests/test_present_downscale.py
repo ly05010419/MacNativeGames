@@ -184,8 +184,8 @@ class PresentDownscale(unittest.TestCase):
         self.assertTrue(126 <= self.fvalue('old_2x_mean') <= 130, self.out)
 
     def test_every_texel_counts_at_fractional_ratios(self):
-        """Vertical stripes 255, 0, 0 (a third of the light) at 1.5x (4K into 1440p) and 1.27x (4K into a Retina
-        panel's 3024 wide): the output keeps a third of the light within 1 %. The old tap skips texels (about 0.26 at
+        """Vertical stripes 255, 0, 0 (a third of the light) at 1.5x (4K into 1440p) and 1.27x (4K into a screen
+        3024 wide): the output keeps a third of the light within 1 %. The old tap skips texels (about 0.26 at
         1.5x), so part of the render the player paid for never reached the screen."""
         for r in ('150', '127'):
             self.assertAlmostEqual(self.fvalue(f'new_lin_mean_{r}'), 1 / 3, delta=0.0034, msg=r)
@@ -216,7 +216,7 @@ class PresentDownscale(unittest.TestCase):
 
     def test_hdr_present_averages_linear_values(self):
         """With HDR on, the game's own FP16 picture is already linear (so at exactly 2x the single tap was right), but at
-        1.5x stripes 1.0, 0, 0 must still keep a third of the light, as the SDR present does; the single tap gave 0.26."""
+        1.5x stripes 1.0, 0, 0 must still keep a third of the light, as the SDR present does; the single tap gave about 0.38."""
         self.assertAlmostEqual(self.fvalue('hdr_lin_mean_150'), 1 / 3, delta=0.0034, msg=self.out)
 
 if __name__ == '__main__':
