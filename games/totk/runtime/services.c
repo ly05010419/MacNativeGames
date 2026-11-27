@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <limits.h>
 #include "output_memory.h"   /* HEAP_CAP / LOW_SIZE from the application pool */
+#include "ios_botw_memory.h"
 
 #include <time.h>
 #include <unistd.h>
@@ -32,7 +33,8 @@
 /* TOTK_ALIAS_GIB: alias region size reported to the game (default 64, the real 39-bit Horizon size). An iOS app signed
    without extended virtual addressing (unavailable to personal teams) gets a much smaller map: the old 6 + 16 GiB
    reservation failed on an iPhone, while 4.75 + 16 GiB fit on an iPad (A16, iPadOS 26.7). So the largest size from 16
-   down to 4 GiB that fits is chosen at startup; the game maps about 3.3 GiB of it. */
+   down to 4 GiB that fits is chosen at startup; TOTK maps about 3.3 GiB of it.
+   BOTW 1.9 uses a 1 GiB default on the measured six-GiB iOS map; keep room for host allocations too. */
 #if TARGET_OS_IPHONE
 #define ALIAS_DEFAULT_GIB 16
 #define ALIAS_MIN_GIB 4ULL
@@ -40,7 +42,13 @@
 #define ALIAS_DEFAULT_GIB 64
 #endif
 static uint64_t alias_len;
-static uint64_t alias_requested(void){const char *e=getenv("TOTK_ALIAS_GIB");uint64_t g=e?strtoull(e,NULL,0):ALIAS_DEFAULT_GIB;if(g<1||g>64)runtime_fail("TOTK_ALIAS_GIB must be 1..64");return g<<30;}
+static uint64_t alias_requested(void){const char *e=getenv("TOTK_ALIAS_GIB");uint64_t g=e?strtoull(e,NULL,0):ALIAS_DEFAULT_GIB;
+#if TARGET_OS_IPHONE && defined(GAME_BOTW190)
+ if(!e){task_vm_info_data_t info={0};mach_msg_type_number_t n=TASK_VM_INFO_COUNT;
+  if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&n)==KERN_SUCCESS)
+   g=ios_botw190_alias_default_gib(info.max_address);}
+#endif
+ if(g<1||g>64)runtime_fail("TOTK_ALIAS_GIB must be 1..64");return g<<30;}
 static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();return alias_len;}
 #define ALIAS_SIZE alias_size()
 #define LOW_SEARCH_FROM 0x300000000ULL
@@ -92,7 +100,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
    the 8 GB mode with the scene at a 4K canvas broke nninitStartup at the fixed 7 GiB (PR #1470, after PR #1515). The
    region is address space only (PROT_NONE until the game maps it), so no host memory size decides it; LOW_SIZE grows
    with it. iOS grows no pool: its cap stays the retail one. */
+#if TARGET_OS_IPHONE && defined(GAME_BOTW)
+#define HEAP_CAP ios_botw_heap_capacity(APP_POOL)
+#else
 #define HEAP_CAP output_heap_capacity(dram_8gb()?7ULL<<30:4ULL<<30, APP_POOL)
+#endif
 #define APP_POOL app_pool()
 #ifdef GAME_NS2
 #define APP_CORE_MASK 0x3f   /* GetInfo 0: the Switch 2's six application cores (threads.c NCORE) */
@@ -178,7 +190,8 @@ static void memory_init(void) {
  /* iOS: stack+heap and the alias region go side by side in one reservation (ASLR_SIZE spans both), placed in the lowest
     free gap that holds them. The free space depends on the device, so the alias region shrinks from the requested size
     to ALIAS_MIN_GIB before giving up (logging the free gaps); TOTK_ALIAS_GIB pins one size. */
- uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(ALIAS_MIN_GIB<<30);
+ uint64_t want=alias_requested(),floor=ALIAS_MIN_GIB<<30;
+ uint64_t least=getenv("TOTK_ALIAS_GIB")?want:(want<floor?want:floor);
  for(uint64_t a=want;a>=least&&!low_space;a-=1ULL<<30)if((low_space=reserve_in_gap(LOW_SIZE+a,0)))alias_len=a;
  if(!low_space){reserve_in_gap(UINT64_MAX,1);runtime_fail("reserve guest stack, heap and alias regions");}
  alias_space=low_space+LOW_SIZE;
