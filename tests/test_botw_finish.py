@@ -138,6 +138,20 @@ class Passes(unittest.TestCase):
         self.assertLessEqual(len(Path(__file__).read_text().splitlines()), 300)
 
 
+class AAIndependentOfEdgeSmoothing(unittest.TestCase):
+    """User 2026-11-25: the anti-aliasing choice and edge smoothing stay unlinked. An override that turned the AA method
+    off while edge smoothing ran (it sharpened the picture) was taken back: whoever wants FXAA or SMAA with edge
+    smoothing keeps it, whoever wants the sharper picture sets the method to Off."""
+
+    def test_the_fxaa_draw_does_not_ask_about_edge_smoothing(self):
+        self.assertNotIn('taa_', branch(FIN, 'static int botw_fin_upscale(', '\n}\n'))
+
+    def test_the_rows_do_not_change_with_edge_smoothing(self):
+        rows = branch(PAGE, 'settings_effect_rows(void) {', '\n}\n')
+        self.assertNotIn('taa_', rows)
+        self.assertNotIn('Edge smoothing', rows)
+
+
 class Page(unittest.TestCase):
     def test_restore_and_reset(self):
         restore = branch(PAGE, 'static void settings_effects_restore(void) {', '\n}\n')

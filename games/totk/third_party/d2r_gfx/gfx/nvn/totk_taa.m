@@ -49,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_taa.h"
+#include "taa_kernels.h"
 #include <TargetConditionals.h>
 
 #if TARGET_OS_VISION
@@ -78,6 +79,12 @@ void tup_stats(char *out, size_t n) { snprintf(out, n, "not available on visionO
 void tup_log_frames(long n) { (void)n; }
 void tup_note_site(void) {}
 int tup_active(void) { return 0; }
+id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) { (void)pd; return nil; }
+int taa_lit_watching(void) { return 0; }
+void taa_lit_blend(void) {}
+void taa_dump_arm(int frames) { (void)frames; }
+int taa_dump_due(void) { return 0; }
+void taa_dump(long frame) { (void)frame; }
 #else
 
 #define TLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [taa] " __VA_ARGS__); fputc('\n', stderr); } while (0)
@@ -104,6 +111,13 @@ static struct {
        its history), the size they have, and the output of the frame encoded last (the compose shader may come twice). */
     int fast, fast_failed; id<MTLComputePipelineState> rs_ps; id<MTL4ArgumentTable> rargs[TAA_SLOTS];
     id<MTLTexture> fo[2], last_out; int fo_i; NSUInteger fw, fh; uint64_t fast_done;
+    /* Transparents (taa_lit_pass, taa_kernels.h taa_layer): the scene copied before the first pass blending into it, the
+       frame of that copy, the scene passes counted this frame (lit_n), the open one (lit_cur, -1: not a scene pass), the
+       first with a blended draw this frame (lit_first, -1: none yet) and the one learned from earlier frames (lit_learn,
+       index + 1, 0: none); the layer of this and last frame and whether last frame's belongs to this history. */
+    id<MTLTexture> lit, layer[2]; uint64_t lit_frame, layer_done; int lit_n, lit_cur, lit_first, lit_learn, layer_i, layer_ok;
+    void *scene_root;   // the texture the compose draw's view of the scene belongs to, as of the last taa_encode: compared, never messaged
+    id<MTLComputePipelineState> layer_ps; id<MTL4ArgumentTable> largs[TAA_SLOTS];
     /* Each size change retires the scaler and seven textures. Keep every one alive for the in-flight frames. */
     struct { id obj; uint64_t frame; } old[TAA_OLD * 8]; int nold;
 } g;
@@ -169,6 +183,39 @@ static float fast_alpha(void) { static float v = -1; if (v < 0) v = env_float("T
 static float fast_gamma(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_FAST_GAMMA", 1.25f, 0.5f, 4.0f); return v; }
 int taa_active(void) { return g.active; }
 int taa_ready(void) { return g.active && !g.up && !g.failed && g.frame >= g.retry_at && g.depth && g.cam_ok; }
+static int layer_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        /* Breath of the Wild 1.9.0 on the Mac only (2026-11-25): its pass layout is the one examined; TotK, iOS and zeldaVR
+           keep their picture unless TOTK_TAA_LAYER=1 asks for it. TOTK_TAA_LAYER=0 turns it off for A/B. */
+#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE
+        int def = 1;
+#else
+        int def = 0;
+#endif
+        const char *e = getenv("TOTK_TAA_LAYER"); v = e && *e ? strcmp(e, "0") != 0 : def;
+    }
+    return v;
+}
+static float layer_threshold(void) { static float v = -1; if (v < 0) v = env_float("TOTK_TAA_LAYER_THRESHOLD", 0.02f, 0.005f, 0.2f); return v; }
+static id<MTLTexture> mk(MTLPixelFormat f, NSUInteger w, NSUInteger h, MTLTextureUsage u);
+id<MTLTexture> taa_lit_pass(MTL4RenderPassDescriptor *pd) {
+    g.lit_cur = -1;
+    if (!layer_on() || !g.active || g.up || !g.depth || !g.scene_root) return nil;   // g.depth: the G-buffer pass came this frame
+    id<MTLTexture> c0 = pd.colorAttachments[0].texture;
+    /* the scene alone: the compose draw samples a view of the texture the passes render into (BotW 1.9.0, 2026-11-25) */
+    if (!c0 || (__bridge void *)(c0.parentTexture ?: c0) != g.scene_root || pd.colorAttachments[1].texture) return nil;
+    g.lit_cur = g.lit_n++;
+    if (g.lit_cur + 1 != g.lit_learn || g.lit_frame == g.frame + 1 || !taa_ready() || !g.layer_ps) return nil;
+    if (!g.lit || g.lit.width != c0.width || g.lit.height != c0.height || g.lit.pixelFormat != c0.pixelFormat) {
+        keep_old(g.lit); g.lit = mk(c0.pixelFormat, c0.width, c0.height, MTLTextureUsageShaderRead); [g.rs commit];
+        if (!g.lit) return nil;
+    }
+    g.lit_frame = g.frame + 1;   // as encoded_frame: this frame, before taa_frame_end moves g.frame on
+    return g.lit;
+}
+int taa_lit_watching(void) { return g.lit_cur >= 0 && g.lit_first < 0; }
+void taa_lit_blend(void) { g.lit_first = g.lit_cur; }
 static double halton(unsigned i, unsigned b) { double f = 1, r = 0; while (i) { f /= b; r += f * (i % b); i /= b; } return r; }
 
 static int up_known(NSUInteger w, NSUInteger h);
@@ -202,40 +249,14 @@ static int setup(id<MTLDevice> dev) {
     g.comp = [dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
     MTLResidencySetDescriptor *rd = [MTLResidencySetDescriptor new]; rd.label = @"TOTK TAA";
     g.rs = [dev newResidencySetWithDescriptor:rd error:&e];
-    static const char *src =
-        "#include <metal_stdlib>\nusing namespace metal;\n"
-        "struct P { float4x4 reproj; float2 size; float2 inv_size; float prev_valid; };\n"
-        // view distance up to the near plane's factor: the depth has an infinite far plane (distance = near / (1 - depth))
-        "static float lin(float z) { return 1.0 / max(1.0 - z, 1e-7); }\n"
-        // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture; this frame's
-        // depth for the next one; and the reactive mask (see the header)
-        "kernel void taa_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],\n"
-        "                   texture2d<float, access::read> pd [[texture(2)]], texture2d<float, access::write> cd [[texture(3)]],\n"
-        "                   texture2d<float, access::write> rm [[texture(4)]],\n"
-        "                   constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
-        "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
-        "  float z = d.read(g);\n"
-        "  float2 uv = (float2(g) + 0.5) * p.inv_size;\n"
-        "  float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z * 2.0 - 1.0, 1.0);\n"
-        "  float2 m = 0.0; float r = 0.0;\n"
-        "  if (c.w > 1e-7) {\n"
-        "    float3 n = c.xyz / c.w; float2 puv = float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * n.y);\n"
-        "    m = (puv - uv) * p.size;\n"
-        "    if (p.prev_valid > 0.5 && z < 1.0 && all(puv >= 0.0) && all(puv < 1.0)) {\n"
-        "      float le = lin(n.z * 0.5 + 0.5), best = 1e9; int2 q = int2(puv * p.size), hi = int2(p.size) - 1;\n"
-        "      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++)\n"
-        "        best = min(best, abs(lin(pd.read(uint2(clamp(q + int2(x, y), int2(0), hi))).x) - le) / le);\n"
-        "      r = saturate((best - 0.04) / 0.06);\n"   // 4 % apart starts it, 10 % is the current frame only
-        "    }\n"
-        "  }\n"
-        "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
-        "  if (isnan(r)) r = 0.0;\n"
-        "  mv.write(float4(m, 0.0, 0.0), g); cd.write(float4(z, 0.0, 0.0, 0.0), g); rm.write(float4(r, 0.0, 0.0, 0.0), g);\n"
-        "}\n";
     MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
-    id<MTLLibrary> lib = mtl_counted_library(dev, @(src), o, &e);
+    id<MTLLibrary> lib = mtl_counted_library(dev, @(taa_kernels_msl), o, &e);
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"taa_mv"] : nil;
     g.mv_ps = fn ? mtl_counted_compute(dev, fn, &e) : nil;
+    id<MTLFunction> lf = lib ? [lib newFunctionWithName:@"taa_layer"] : nil;
+    g.layer_ps = lf ? mtl_counted_compute(dev, lf, &e) : nil;   // nil: transparents stay out of the mask, the rest runs
+    MTL4ArgumentTableDescriptor *ld = [MTL4ArgumentTableDescriptor new]; ld.maxBufferBindCount = 1; ld.maxTextureBindCount = 6;
+    for (int i = 0; i < TAA_SLOTS && g.layer_ps; i++) g.largs[i] = [dev newArgumentTableWithDescriptor:ld error:&e];
     MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
     for (int i = 0; i < TAA_SLOTS && g.rs; i++) {
         g.args[i] = [dev newArgumentTableWithDescriptor:ad error:&e];
@@ -412,6 +433,13 @@ static int camera_cut(void) {
     return sqrt(dx * dx + dy * dy + dz * dz) > 8.0 || f < cos(25.0 * M_PI / 180.0);
 }
 
+static int ensure_layer(id<MTLTexture> src) {   // the two layers (this and last frame) at the scene's size
+    if (g.layer[0] && g.layer[0].width == src.width && g.layer[0].height == src.height) return 1;
+    keep_old(g.layer[0]); keep_old(g.layer[1]); g.layer_ok = 0;
+    for (int i = 0; i < 2; i++) g.layer[i] = mk(MTLPixelFormatR16Float, src.width, src.height, MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    [g.rs commit];
+    return g.layer[0] && g.layer[1];
+}
 id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     if (!g.active || g.up || g.frame < g.retry_at || !cb || !src || src.textureType != MTLTextureType2D) return nil;
     if (g.encoded_frame == g.frame + 1 && src == g.last_src) return g.last_out;   // the compose shader again in the same frame
@@ -437,6 +465,25 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // the scene and depth are done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.args[s]];
     [e dispatchThreads:MTLSizeMake(src.width, src.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    /* Transparents into the mask (taa_kernels.h taa_layer), before either resolve reads it: only with this frame's lit
+       copy of this scene (a size or format change since, or a frame without the copy, goes without). */
+    int layer = g.layer_ps && g.largs[s] && g.lit && g.lit_frame == g.frame + 1 && g.lit.width == src.width && g.lit.height == src.height &&
+                g.lit.pixelFormat == src.pixelFormat && ensure_layer(src);
+    if (layer) {
+        id<MTLTexture> lin = g.layer[g.layer_i ^ 1], lout = g.layer[g.layer_i]; g.layer_i ^= 1;
+        float *lp = (float *)((char *)g.par[s].contents + 192);   // after the fast resolve's parameters (128..159)
+        lp[0] = (float)src.width; lp[1] = (float)src.height; lp[2] = 1.0f / src.width; lp[3] = 1.0f / src.height;
+        lp[4] = !reset && g.layer_ok ? 1.0f : 0.0f; lp[5] = layer_threshold();
+        id<MTL4ArgumentTable> la = g.largs[s];
+        [la setTexture:src.gpuResourceID atIndex:0]; [la setTexture:g.lit.gpuResourceID atIndex:1]; [la setTexture:g.mv.gpuResourceID atIndex:2];
+        [la setTexture:lin.gpuResourceID atIndex:3]; [la setTexture:g.react.gpuResourceID atIndex:4]; [la setTexture:lout.gpuResourceID atIndex:5];
+        [la setAddress:g.par[s].gpuAddress + 192 atIndex:0];
+        [e barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // taa_mv's motion and mask
+        [e setComputePipelineState:g.layer_ps]; [e setArgumentTable:la];
+        [e dispatchThreads:MTLSizeMake(src.width, src.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        g.layer_done++;
+    }
+    g.layer_ok = layer;
     id<MTLTexture> out = g.out;
     if (fast) {   // the resolve reads the motion and mask just written, and last frame's output as its history
         id<MTLTexture> hist = g.fo[g.fo_i]; out = g.fo[g.fo_i ^ 1]; g.fo_i ^= 1;
@@ -464,6 +511,7 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     memcpy(g.prev, g.cam, sizeof g.cam); g.prev_ok = 1;
     g.resets += reset; g.done++;
     g.last_src = src; g.last_out = out; g.encoded_frame = g.frame + 1;
+    g.scene_root = (__bridge void *)(src.parentTexture ?: src);   // src is alive here (this frame's compose input)
     return out;
 }
 /* ---- Temporal upscaling (TOTK_MFX_TEMPORAL; see the header) ---- */
@@ -890,6 +938,11 @@ void taa_frame_end(void) {
     int fast = taa_fast_enabled();
     if (fast != g.fast) { g.fast = fast; g.prev_ok = 0; }   // the other resolve starts its history afresh
     g.frame++; g.depth = nil; g.cam_ok = 0; g.jit_pass = 0; g.jit_used = 0;
+    if (g.lit_first >= 0 && g.lit_n && g.lit_first + 1 != g.lit_learn) {   // the scene pass where blending into the scene starts
+        g.lit_learn = g.lit_first + 1;
+        TLOG("transparents: the scene is copied before scene pass %d of %d (the first with a blended draw)", g.lit_first, g.lit_n);
+    }
+    g.lit_n = 0; g.lit_cur = -1; g.lit_first = -1;
     /* The geometry is jittered only after a frame MetalFX took: when it cannot run (no Metal 4 temporal scaler, a scaler
        not built yet, no camera), a moved picture with nothing to smooth it would shake. */
     g.jit_ok = !sw && g.active && !g.failed && g.frame >= g.retry_at && g.encoded_frame == g.frame;   // nor right after a switch: the other pass may not run yet
@@ -898,9 +951,47 @@ void taa_frame_end(void) {
     if (g.frame % 1800 == 0 && (taa_enabled() || g.up)) { char b[300]; if (g.up) tup_stats(b, sizeof b); else taa_stats(b, sizeof b); TLOG("%s", b); }
 }
 void taa_stats(char *out, size_t n) {
-    snprintf(out, n, "frame %llu: anti-aliased %llu (fast resolve %llu, now %s), history resets %llu, without depth or camera %llu",
+    snprintf(out, n, "frame %llu: anti-aliased %llu (fast resolve %llu, now %s), history resets %llu, without depth or camera %llu, transparents masked %llu",
              (unsigned long long)g.frame, (unsigned long long)g.done, (unsigned long long)g.fast_done, g.fast && !g.fast_failed ? "fast" : "MetalFX",
-             (unsigned long long)g.resets, (unsigned long long)g.missing);
+             (unsigned long long)g.resets, (unsigned long long)g.missing, (unsigned long long)g.layer_done);
+}
+/* TOTK_TAA_DUMP (see the header). Added 2026-11-25 to look at what edge smoothing is given where moving things lag
+   (docs/superpowers/specs/2026-11-25-botw-edge-smoothing-design.md). Waits for the GPU: diagnostic runs only. */
+static _Atomic int g_dump_left;
+void taa_dump_arm(int frames) { atomic_store(&g_dump_left, frames == 1 ? 3 : frames > 0 ? frames : 0); TLOG("dump armed: %d frames", atomic_load(&g_dump_left)); }
+int taa_dump_due(void) {
+    static const char *dir; static int read;
+    if (!read) { read = 1; dir = getenv("TOTK_TAA_DUMP"); }
+    return dir && *dir && atomic_load(&g_dump_left) > 0 && g.encoded_frame == g.frame && g.last_out;   // the frame just ended was anti-aliased
+}
+static NSUInteger dump_bpp(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRG11B10Float: case MTLPixelFormatR32Float: case MTLPixelFormatRG16Float: case MTLPixelFormatRGBA8Unorm: return 4;
+    case MTLPixelFormatRGBA16Float: return 8;
+    case MTLPixelFormatR16Float: return 2;
+    default: return 0;
+    }
+}
+static void dump_one(id<MTLCommandQueue> q, id<MTLTexture> t, const char *dir, const char *name, long frame) {
+    NSUInteger bpp = t ? dump_bpp(t.pixelFormat) : 0, w = t.width, h = t.height;
+    if (!bpp) { TLOG("dump: %s skipped (format %lu)", name, t ? (unsigned long)t.pixelFormat : 0UL); return; }
+    id<MTLBuffer> b = [g.dev newBufferWithLength:w * h * bpp options:MTLResourceStorageModeShared];
+    id<MTLCommandBuffer> cb = [q commandBuffer]; id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
+    [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1) toBuffer:b
+     destinationOffset:0 destinationBytesPerRow:w * bpp destinationBytesPerImage:w * h * bpp];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    char p[1024]; snprintf(p, sizeof p, "%s/taa-%llu-%s-%lux%lu.bin", dir, (unsigned long long)frame, name, (unsigned long)w, (unsigned long)h);
+    FILE *f = fopen(p, "wb"); if (f) { fwrite(b.contents, 1, w * h * bpp, f); fclose(f); } else TLOG("dump: cannot write %s", p);
+}
+void taa_dump(long frame) {
+    const char *dir = getenv("TOTK_TAA_DUMP"); if (!dir || !g.dev) return;
+    static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue];
+    // after taa_encode flipped dh_i, this frame's depth is dh[dh_i ^ 1]; the fast resolve's output is last_out too
+    id<MTLTexture> t[5] = {g.last_src, g.dh[g.dh_i ^ 1], g.mv, g.react, g.last_out};
+    static const char *const names[5] = {"scene", "depth", "motion", "mask", "out"};
+    for (int i = 0; i < 5; i++) dump_one(q, t[i], dir, names[i], frame);
+    atomic_fetch_sub(&g_dump_left, 1);
+    TLOG("dump: frame %ld into %s (scene format %lu, %s)", frame, dir, (unsigned long)g.last_src.pixelFormat, g.fast && !g.fast_failed ? "fast" : "MetalFX");
 }
 
 #endif   // TARGET_OS_VISION

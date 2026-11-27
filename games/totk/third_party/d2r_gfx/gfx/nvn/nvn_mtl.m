@@ -4526,6 +4526,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "wb_staged_nowait")) { extern void botw_wb_set_staged_skip(int on); botw_wb_set_staged_skip(v); return; }
 #endif
     if (!strcmp(name, "uncapped_interval")) { extern void nvn_set_uncapped_interval(int on); nvn_set_uncapped_interval(v); return; }
+    if (!strcmp(name, "taa_dump")) { taa_dump_arm(v); return; }   // TOTK_TAA_DUMP: the next v anti-aliased frames (1: three)
     if (!strcmp(name, "taa_fast")) { taa_set_fast(v < 0 ? !taa_fast_enabled() : v); MLOG("[flag] taa_fast = %d", taa_fast_enabled()); return; }   // edge smoothing's resolve, for in-session A/B
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
@@ -7647,6 +7648,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         if (c0 && dt && nc >= 3) { size_t k = strlen(g_fl_passes); if (k < sizeof g_fl_passes - 24) snprintf(g_fl_passes + k, sizeof g_fl_passes - k, " %d:%lux%lu/%d", g_fl_npass, (unsigned long)c0.width, (unsigned long)c0.height, nc); g_fl_npass++; }
     }
     if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // TOTK_TAA: the G-buffer pass found; its first draw gives the camera
+    { id<MTLTexture> lit = taa_lit_pass(pd), sc = lit ? pd.colorAttachments[0].texture : nil; if (lit && sc) { id<MTL4ComputeCommandEncoder> b = blit(); enc_b_copy_texture(b, sc, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(sc.width, sc.height, 1), lit, 0, 0, MTLOriginMake(0, 0, 0)); blit_close(); } }   // TOTK_TAA: the scene before the passes that blend into it (transparents into the mask)
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
     else if (!g_vr_cam_taken && vr_wants_camera() && g_vr_camtake) {   // VR head look: this frame's camera, from the G-buffer pass's first draw (as MetalFX finds it)
 #ifdef GAME_OOT
@@ -20003,6 +20005,7 @@ frz_plain:;
        defer_replay draws whole replayed draws, which may end the pass: en_keep holds the encoder over it as before. */
     // OOT: the mesh batches for the pass about to open are made in rp_begin_ex (every opening path), not only here.
     __unsafe_unretained id<MTLRenderCommandEncoder> en = g_enc ? g_enc : rp_begin_ex(mode);
+    if (taa_lit_watching() && (S.color.blend_en & 1)) taa_lit_blend();   // TOTK_TAA: the first scene pass whose draws blend into the scene
     NS_VALID_UNTIL_END_OF_SCOPE id en_keep = nil;
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { g_draw_skip[8]++; return; }
@@ -23613,6 +23616,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         }
     }
 #endif
+    if (taa_dump_due()) { mtl_finish_gpu(); taa_dump((long)atomic_load(&g_cur_frame)); }   // TOTK_TAA_DUMP (diagnostic): after the frame's passes, with or without interpolation
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 队满才等；正常由 AcquireTexture 先挡住 | Wait only when the queue is full; normally AcquireTexture blocks first
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
