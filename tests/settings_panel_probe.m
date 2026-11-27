@@ -598,6 +598,16 @@ static void hdr_probe(void) {
     front_hdr_auto(1, "probe SDR monitor"); mfx_latch(); assert(!front_hdr_enabled() && mfx_enabled() == MFX_30);
     mfx_set(MFX_OFF); mfx_latch();
 
+    /* The canvas is drawn for the screen's potential headroom, never its current one: an external HDR display can report
+       current 1.0 while it shows HDR, and a canvas drawn for that showed none; a canvas tagged with the built-in XDR
+       screen's current 1.2 stayed at 1.2. Off, or a screen without HDR, draws for SDR white. */
+    hdr_start(NULL, "on");
+    front_hdr_draw_for(4.18, 1.0, "probe external HDR display"); assert(front_hdr_headroom() == 4.18f);
+    front_hdr_draw_for(16, 1.2, "probe XDR"); assert(front_hdr_headroom() == 16);
+    front_hdr_draw_for(1, 1, "probe SDR monitor"); assert(front_hdr_headroom() == 1);
+    front_hdr_draw_for(NAN, 1, "probe"); assert(front_hdr_headroom() == 1);
+    hdr_start(NULL, "off"); front_hdr_draw_for(16, 8, "probe XDR"); assert(front_hdr_headroom() == 1);
+
     /* hdr.txt takes each choice's word and the start reads it back. */
     unsetenv("TOTK_HDR");
     for (int c = HDR_CHOICE_OFF; c <= HDR_CHOICE_AUTO; c++) {
