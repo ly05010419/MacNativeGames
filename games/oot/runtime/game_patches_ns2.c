@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sysctl.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <math.h>
@@ -676,6 +677,30 @@ static void patch_oot_render_target_pool(Module *m) {
     fprintf(stderr, "[oot] render target pool %llu MiB (the game's own is 305 MiB; OOT_RT_POOL_MB)\n", (unsigned long long)(bytes >> 20));
 }
 #endif
+/* Base Apple M1/M2 Mac (the weaker GPUs where the area-entry texture spikes show as visible freezes). */
+static int oot_base_m1_m2(void) {
+    static int v = -1;
+    if (v < 0) {
+        char chip[128] = {0}; size_t n = sizeof chip - 1;
+        v = 0;
+        if (!sysctlbyname("machdep.cpu.brand_string", chip, &n, NULL, 0))
+            v = !strncmp(chip, "Apple M1", 8) || !strncmp(chip, "Apple M2", 8);
+    }
+    return v;
+}
+/* W5 pre-warm default (2026-11-26): on a base M1/M2 Mac the streamed-texture pre-warm is on by default (it has no
+   picture effect and measured fps-neutral, and it removes most of the 100-680 ms area-entry spike); on stronger
+   Macs it stays off. OOT_TEX_PREWARM=1/0 wins (checked in nvn_mtl.m's pw_on), then graphics-prewarm.txt. */
+int nvn_prewarm_default(void) {
+    static int v = -1;
+    if (v < 0) {
+        char word[32];
+        if (runtime_setting_word("graphics-prewarm.txt", word, sizeof word)) v = atoi(word) > 0;
+        else v = oot_base_m1_m2();
+        fprintf(stderr, "[oot] texture pre-warm %s by default on this Mac (OOT_TEX_PREWARM / graphics-prewarm.txt to override)\n", v ? "ON" : "off");
+    }
+    return v;
+}
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
