@@ -1,7 +1,8 @@
 /* Ocarina of Time's button map for the Quest's controllers, without the runtime (tests/test_oot_vr_pad.c runs it). The
    layout follows the game's own buttons, as OcarinaVR's does (ideas only, GPL-3):
      A B X Y as they are, left trigger ZL, right trigger ZR, right stick click R3
-     Menu: a tap is +, held 0.6 s recentres
+     Menu: a tap is +, held 0.6 s recentres; held with A pressed, the wrist calibration (zeldaVR/runtime/oot_vr_wristcal.h: that A
+       is not the game's until it is let go, and the Menu press gives no + and no later recentre)
      left stick click alone is L3; held, it is a shift:
        right stick the d-pad, right stick click -, grips L and R, Menu head view / big screen, Y first / third person,
        A the item wheel (oot_vr_wheel.h) open / closed, B the equipment wheel
@@ -42,6 +43,7 @@ typedef struct {
     int recenter, toggle_person, toggle_screen, toggle_mono;
     int toggle_wheel, toggle_gear, wheel_close;
     float wheel_stick[2]; /* the right stick while the wheel is open (0 0 otherwise) */
+    int calibrate;        /* Menu held + A: record the wrists (vr.md row 31) */
 } oot_pad_out;
 
 typedef struct {
@@ -51,6 +53,7 @@ typedef struct {
     int menu_long, chord_used, snap_armed, started, b_is_wheels, stick_is_wheels;
     int jump_ready, jumping; uint64_t jump_at;
     int quick, quick_pushed; uint64_t quick_at;
+    int a_is_cal;         /* the A of a Menu + A calibration, held: not the game's */
 } oot_pad_state;
 
 enum { OOT_PAD_PULSE_NS = 120000000, OOT_PAD_RECENTER_NS = 600000000, OOT_PAD_JUMP_NS = 100000000 };
@@ -69,7 +72,10 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
     const int shift = (b & OOT_PAD_LSTICK) != 0;
 
     if (pressed & OOT_PAD_LSTICK) { s->l3_at = now; s->chord_used = 0; }
-    if ((b & OOT_PAD_A) && !shift) out->bits |= B << OOT_SW_A;
+    const int calibrate = !shift && (b & OOT_PAD_MENU) && (pressed & OOT_PAD_A);
+    if (calibrate) { s->a_is_cal = 1; out->calibrate = 1; }
+    if (!(b & OOT_PAD_A)) s->a_is_cal = 0;
+    if ((b & OOT_PAD_A) && !shift && !s->a_is_cal) out->bits |= B << OOT_SW_A;
     if (in->wheel_open && (pressed & OOT_PAD_B)) { s->b_is_wheels = 1; out->wheel_close = 1; }
     if (!(b & OOT_PAD_B)) s->b_is_wheels = 0;
     if ((b & OOT_PAD_B) && !s->b_is_wheels && !shift) out->bits |= B << OOT_SW_B;
@@ -103,6 +109,7 @@ static inline void oot_pad_step(oot_pad_state *s, uint64_t now, const oot_pad_in
             if (in->rgrip > 0.5f) out->bits |= B << OOT_SW_R;
         }
         if (pressed & OOT_PAD_MENU) { s->menu_at = now; s->menu_long = 0; }
+        if (calibrate) s->menu_long = 1;   /* this Menu press was the calibration's */
         if ((b & OOT_PAD_MENU) && s->menu_at && !s->menu_long && now - s->menu_at >= OOT_PAD_RECENTER_NS) { s->menu_long = 1; out->recenter = 1; }
         if ((released & OOT_PAD_MENU) && s->menu_at) { if (!s->menu_long) oot_pad_pulse(s, now, B << OOT_SW_PLUS); s->menu_at = 0; }
     }

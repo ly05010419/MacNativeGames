@@ -156,6 +156,25 @@ int main(void) {
     /* closed, nothing of it: the stick is the game's and the view's again */
     reset();
     in = n; in.stick[2] = 0.9f; o = step(in, 10); assert(o.stick[2] == 0.9f && o.wheel_stick[0] == 0 && o.wheel_stick[1] == 0);
-    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning and its speed, the jump on the right stick, the game's quick select, the move direction, the item wheel");
+    /* Menu held + A: the wrist calibration once; that A is not the game's while held, the Menu press gives no + and no recentre */
+    reset();
+    in = n; in.buttons = OOT_PAD_MENU; o = step(in, 10); assert(!o.calibrate);
+    in.buttons = OOT_PAD_MENU | OOT_PAD_A; o = step(in, 100); assert(o.calibrate && !(o.bits & BIT(A)));
+    o = step(in, 10); assert(!o.calibrate && !(o.bits & BIT(A)));
+    o = step(in, 700); assert(!o.recenter);
+    in.buttons = OOT_PAD_A; o = step(in, 10); assert(!(o.bits & BIT(A)) && !(o.bits & BIT(PLUS)));   /* Menu let go first: still not A */
+    o = step(n, 10); assert(!o.bits && !o.calibrate);
+    o = step(n, 200); assert(!o.bits);
+    in = n; in.buttons = OOT_PAD_A; o = step(in, 10); assert(o.bits == BIT(A) && !o.calibrate);    /* a plain A is the game's again */
+    /* pressed together in one reading: the same */
+    reset();
+    in = n; in.buttons = OOT_PAD_MENU | OOT_PAD_A; o = step(in, 10); assert(o.calibrate && !o.bits);
+    o = step(n, 10); assert(!(o.bits & BIT(PLUS)));
+    /* A first, then Menu: A stays the game's, no calibration; with the left-stick shift A is the item wheel, no calibration */
+    reset();
+    in = n; in.buttons = OOT_PAD_A; step(in, 10); in.buttons |= OOT_PAD_MENU; o = step(in, 10); assert(!o.calibrate && (o.bits & BIT(A)));
+    reset();
+    in = n; in.buttons = OOT_PAD_LSTICK | OOT_PAD_MENU; step(in, 10); in.buttons |= OOT_PAD_A; o = step(in, 10); assert(o.toggle_wheel && !o.calibrate);
+    puts("OOT Quest controller map: buttons, Menu tap / hold, the left-stick shift, turning and its speed, the jump on the right stick, the game's quick select, the move direction, the item wheel, Menu + A calibrates the wrists");
     return 0;
 }

@@ -286,6 +286,7 @@ static void oot_vr_state_read(uintptr_t player, uintptr_t events) {
 #include "oot_vr_hand_items.h"   /* vr.md rows 63-67: the hookshot, boomerang, bombs and bottles in the hands */
 #include "oot_vr_scene.h"
 #include "oot_vr_ocarina.h"
+#include "oot_vr_lod_true.h"   /* vr.md row 18: detail by the distance to the eyes (option lod_true) */
 /* Calls one after another: b after the last of a. */
 static oot_guest_call *oot_calls_then(oot_guest_call *a, oot_guest_call *b) {
     if (!a) return b;
@@ -486,6 +487,7 @@ static void oot_vr_camera(uint8_t *view, uint8_t *camera) {
         memcpy(view + 8, culled, sizeof culled);
     } else memcpy(view + 8, m, sizeof m);
     oot_scene_cull_write(view, m, style);
+    { float wrote[12]; memcpy(wrote, view + 8, sizeof wrote); oot_lt_note_view(wrote, m); }   /* row 18: the snapshots taken from it */
     /* The ring the replay matches each frame's camera block against (totk_vr.m vr_note_camera): this frame's head pose. */
     const uint32_t calls = __atomic_load_n(&oot_vr_cam.calls, __ATOMIC_RELAXED) + 1;
     memcpy(oot_vr_cam.ring[calls & 15].m, m, sizeof m);
@@ -548,6 +550,7 @@ static const oot_hook_site OOT_VR_HOOKS[] = {
 enum { OOT_VR_HOOK_COUNT = sizeof OOT_VR_HOOKS / sizeof *OOT_VR_HOOKS };
 static uintptr_t oot_vr_hook_stubs;   /* the first site's stub */
 static oot_guest_call *oot_vr_hook_dispatch(oot_hook_regs *r, uint64_t stub_return) {
+    if (oot_lt_owns(stub_return)) return oot_lt_hook(r);   /* a depth sum's veneer (oot_vr_lod_true.h) */
     const uint64_t k = (stub_return - oot_vr_hook_stubs) / (OOT_HOOK_STUB_WORDS * 4);
     return k < OOT_VR_HOOK_COUNT ? OOT_VR_HOOKS[k].fn(r) : NULL;
 }
@@ -586,7 +589,8 @@ static void oot_vr_hooks_install(Module *m, uint64_t pad, uint64_t page) {
         installed++;
     }
     const uint64_t thunks_end = oot_bombs_thunks_install(m, end, limit);   /* two float thunks for the bombs' calls, after the stubs */
-    fprintf(stderr, "[vr] OOT: %d small hooks on the shared body (%llu bytes of text padding left)\n", installed, (unsigned long long)(limit - thunks_end));
+    const uint64_t lod_end = oot_lt_install(m, thunks_end, limit, page, body);   /* the depth sums' two veneers (row 18) */
+    fprintf(stderr, "[vr] OOT: %d small hooks on the shared body (%llu bytes of text padding left)\n", installed, (unsigned long long)(limit - lod_end));
 }
 
 int runtime_oot_vr_hooks_on(void) { return oot_vr_hook_stubs != 0; }

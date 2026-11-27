@@ -3,8 +3,9 @@
 Update 131072's main: its code ends at 0x3c461d0 and its read-only segment starts at 0x3c47000 (the NSO's segment table), so
 the installer's limit is 0x3c47000. The padding holds the earlier veneers (up to +1600), the shared hook body
 (OOT_HOOK_BODY_WORDS words), five words a site for every entry of OOT_VR_HOOKS (log-only ones too: their stubs are laid out
-whether installed or not) and the bombs' two float thunks (24 bytes, 16-aligned). The installer stops the game when they do
-not fit; this fails first."""
+whether installed or not), the bombs' two float thunks (24 bytes, 16-aligned) and the depth sums' two veneers (row 18,
+oot_vr_lod_true.h, 16-aligned; the 193 sites themselves take no padding). The installer stops the game when they do not
+fit; this fails first."""
 import re
 import unittest
 from pathlib import Path
@@ -30,7 +31,9 @@ class HookRoom(unittest.TestCase):
         body = number(vr, 'OOT_VR_HOOK_BODY')
         end = pad + body + number(hooks, 'OOT_HOOK_BODY_WORDS') * 4 + len(sites) * number(hooks, 'OOT_HOOK_STUB_WORDS') * 4
         thunks_end = ((end + 15) & ~15) + 24
-        self.assertLessEqual(thunks_end, LIMIT, f'{len(sites)} hook sites: {thunks_end - LIMIT} bytes past the padding')
+        lod = (ROOT / 'zeldaVR/runtime/oot_vr_lod_true.h').read_text()
+        lod_end = ((thunks_end + 15) & ~15) + 2 * number(lod, 'OOT_LT_VENEER_WORDS') * 4
+        self.assertLessEqual(lod_end, LIMIT, f'{len(sites)} hook sites: {lod_end - LIMIT} bytes past the padding')
 
 
 if __name__ == '__main__':

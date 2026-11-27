@@ -519,6 +519,8 @@ static int oot_wheel_is_open(void);                        /* oot_vr_wheel_draw.
 static void oot_wheel_toggle(int world, int gear);
 static void oot_wheel_close(const char *why);
 static void oot_wheel_stick(float x, float y);
+static int oot_vrmenu_pad(uint64_t now, const vr_controls *c);   /* oot_vr_menu_draw.h: the VR menu holds the controllers */
+static void oot_vrmenu_grips(vr_controls *c);                  /* ... and a grip that drags the big screen */
 static void oot_ocarina_pad(uint64_t now, const vr_controls *c, int lefty, oot_pad_out *o);   /* oot_vr_scene_draw.h: the ocarina in the hands */
 extern int runtime_oot_vr_scene_flat(void) __attribute__((weak_import));                   /* games/oot/runtime/oot_vr_scene.h */
 extern float runtime_oot_vr_crawl(void) __attribute__((weak_import));   /* the game's view height while Link crawls, 0 when he does not */
@@ -532,6 +534,7 @@ int vr_oot_arm_cm(void) { const int v = vr_option("arm_cm", 55); return v < 30 ?
 void vr_oot_set_arm_cm(int cm) { vr_option_set("arm_cm", cm < 30 ? 30 : cm > 80 ? 80 : cm); VLOG("the player's arm: %d cm", cm); }
 int vr_oot_hand_tilt(void) { const int v = vr_option("hand_tilt", 0); return v < -60 ? -60 : v > 60 ? 60 : v; }
 void vr_oot_set_hand_tilt(int deg) { vr_option_set("hand_tilt", deg < -60 ? -60 : deg > 60 ? 60 : deg); VLOG("the hand's tilt: %d degrees", deg); }
+#include "oot_vr_wristcal_opts.h"   /* the wrist calibration, its six fine-tunes and vr_oot_hands, the one hand reader (vr.md row 31) */
 /* The sword's hits (option blade, on by default; the user, 2026-11-23: "只要 模型剑 碰到怪物 就算击中"): 1 the blade the player
    swings hits what it passes through, with no button and none of Link's attack animations (games/oot/runtime/oot_vr_sword.h);
    0 a swing presses the attack button as before. How fast (tenths of m/s) and how far one way (cm) the blade must go to
@@ -552,7 +555,7 @@ void vr_oot_set_left_handed(int on) { vr_option_set("lefty", on != 0); VLOG("the
 /* The hands in the head's level frame for the gestures, and in the recentred frame the game's aim looks along for the bow.
    Left-handed: the hands change places and the sides mirror, so the same gestures hold for the other hand. */
 static int oot_hands(const vr_controls *c, int lefty, oot_hand out[2], float aim[2][3]) {
-    vr_hand h[2]; vr_link_hands(h); vr_pose hp;
+    vr_hand h[2]; vr_oot_hands(h); vr_pose hp;
     if (!vr_link_pose(&hp) || !h[0].have || !h[1].have) return 0;
     float f[3]; const float nz[3] = { 0, 0, -1 }; qrot(hp.q, nz, f);
     const float fl = sqrtf(f[0] * f[0] + f[2] * f[2]); if (fl < 1e-3f) return 0;
@@ -604,6 +607,9 @@ void vr_option_set_named(const char *option, int value) { if (option && *option)
 /* Model detail distance (games/oot/runtime/oot_vr.h oot_vr_detail_ref): 0 the game's own, 1 70 degrees, 2 35, 3 25, 4 off. */
 int vr_oot_detail(void) { const int v = vr_option("detail", 0); return v < 0 ? 0 : v > 4 ? 4 : v; }
 void vr_oot_set_detail(int v) { vr_option_set("detail", v < 0 ? 0 : v > 4 ? 4 : v); VLOG("model detail distance: preset %d", vr_oot_detail()); }
+/* Detail by the true distance to the eyes, not the depth along the view (vr.md row 18; games/oot/runtime/oot_vr_lod_true.h). Off by default. */
+int vr_oot_lod_true(void) { return vr_option("lod_true", 0) != 0; }
+void vr_oot_set_lod_true(int on) { vr_option_set("lod_true", on != 0); VLOG("model detail: by %s", on ? "the distance to the eyes" : "the depth along the view"); }
 /* How wide the game's HUD panel looks (degrees, 70 as before) and the big screen of title, menus and cutscenes (110 as before). */
 int vr_oot_hud_deg(void) { const int v = vr_option("hud_deg", 70); return v < 30 ? 30 : v > 100 ? 100 : v; }
 void vr_oot_set_hud_deg(int v) { vr_option_set("hud_deg", v < 30 ? 30 : v > 100 ? 100 : v); VLOG("the HUD panel: %d degrees wide", vr_oot_hud_deg()); }
@@ -629,6 +635,9 @@ int vr_oot_boomerang_throw(void) { const int v = vr_option("boom_throw", 0); ret
 void vr_oot_set_boomerang_throw(int v) { vr_option_set("boom_throw", v < 0 || v > 2 ? 0 : v); VLOG("the boomerang aims with %s", v == 1 ? "the empty hand" : v == 2 ? "the headset" : "its own hand"); }
 int vr_oot_bottle_hands(void) { return vr_option("bottle_hands", 0) != 0; }
 void vr_oot_set_bottle_hands(int on) { vr_option_set("bottle_hands", on != 0); VLOG("bottles in the hand: %s", on ? "on" : "off"); }
+/* The Deku Stick taken by a grip (vr.md row 68; HookshotVR's vr_stick_hands, 1): off by the same rule. */
+int vr_oot_stick_hands(void) { return vr_option("stick_hands", 0) != 0; }
+void vr_oot_set_stick_hands(int on) { vr_option_set("stick_hands", on != 0); VLOG("the Deku Stick taken by a grip: %s", on ? "on" : "off"); }
 int vr_oot_bomb_hands(void) { return vr_option("bomb_hands", 0) != 0; }
 void vr_oot_set_bomb_hands(int on) { vr_option_set("bomb_hands", on != 0); VLOG("bombs in the hands: %s", on ? "on" : "off"); }
 /* 0 letting go throws, 1 the next squeeze throws (vr_bomb_throw_mode 0); speed % of the hand's (vr_bomb_throw 120, 50-400) */
@@ -646,7 +655,8 @@ void vr_oot_set_bomb_cone(int v) { vr_option_set("bomb_cone", v < 3 ? 3 : v > 45
 int vr_oot_bomb_flowers(void) { return vr_option("bomb_flowers", 0) != 0; }
 void vr_oot_set_bomb_flowers(int on) { vr_option_set("bomb_flowers", on != 0); VLOG("Bomb Flowers by hand: %s", on ? "on" : "off"); }
 extern int runtime_oot_vr_item_buttons(uint32_t *add, uint32_t *mask, int *triggers) __attribute__((weak_import));
-static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+static void oot_gamepad(uint64_t now, const vr_controls *c_raw, const float ax[4], uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    vr_controls c_game = *c_raw; oot_vrmenu_grips(&c_game); const vr_controls *c = &c_game;   /* a grip on the big screen is not the game's */
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static oot_pad_state st; static uint64_t last_bits; static int said;
     const int world = world_camera_running(now), lefty = vr_oot_left_handed(), motion = world && vr_motion();
     const float game_fov = world && runtime_oot_vr_game_fov_deg ? runtime_oot_vr_game_fov_deg() : 0;
@@ -671,6 +681,10 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
       if (now_state != was) { was = now_state; VLOG("controllers: world %d, motion %d, hands %d, game event %d", world, motion, have_hands, event); } }
     pthread_mutex_lock(&mu);
     oot_pad_step(&st, now, &in, &o);
+    if (oot_vrmenu_pad(now, c_raw)) {   /* the VR menu (vr.md row 90): the game gets nothing from the controllers */
+        st.chord_used = 1; st.quick = 0;   /* the left stick click that opened it is no L3 (nor the game's quick select) when let go */
+        pthread_mutex_unlock(&mu); *buttons = 0; *lx = *ly = *rx = *ry = 0; return;
+    }
     static oot_gesture_state gs;
     /* the bow and the slingshot: a grip takes and holds them, the string fires (oot_vr_bow_ctl.h) */
     oot_bow_pad(now, c, lefty, world && runtime_oot_vr_fp_active && runtime_oot_vr_fp_active(), in.wheel_open || st.quick, hands, have_hands && !(c->buttons & VR_PAD_LSTICK), &gs, &o.bits);
@@ -727,6 +741,7 @@ static void oot_gamepad(uint64_t now, const vr_controls *c, const float ax[4], u
     }
     oot_comfort_note(world ? sqrtf(ax[0] * ax[0] + ax[1] * ax[1]) : 0, world ? o.yaw : 0);
     if (o.recenter) { vr_recenter(); VLOG("Menu held: recentred"); }
+    if (o.calibrate) vr_oot_wrist_calibrate("Menu + A");   /* oot_vr_wristcal_opts.h */
     if (o.toggle_wheel) oot_wheel_toggle(world, 0);
     if (o.toggle_gear) oot_wheel_toggle(world, 1);
     if (o.wheel_close) oot_wheel_close("B");
@@ -1755,6 +1770,7 @@ static void draw_picture(id<MTLRenderCommandEncoder> e, const quad_u *u, id<MTLT
 }
 #ifdef GAME_OOT
 #include "../runtime/oot_vr_hud.h"
+#include "oot_vr_menu_draw.h"   /* the VR menu and the big screen's drag (vr.md rows 90, 4) */
 /* The game's HUD on its panel (oot_vr_hud.h), over the picture of this eye. */
 static oot_hud_state g_hud_panel; static uint64_t g_hud_at;
 static float g_hud_yaw;
@@ -1781,11 +1797,11 @@ static int oot_arc_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTL
     if (!g.ps_arc || !pic || pic.pixelFormat == MTLPixelFormatRG11B10Float) return 0;
     const float rl = sqrtf(vr_dot3(g.menu_right, g.menu_right)); if (rl < 1e-3f) return 0;
     const float R = OOT_ARC_RADIUS_M;
-    float half, height; oot_arc_size((float)pic.width, (float)pic.height, (float)vr_oot_screen_deg(), &half, &height);
-    const float x[3] = { g.menu_right[0] / rl, g.menu_right[1] / rl, g.menu_right[2] / rl }, fw[3] = { x[2], 0, -x[0] };
-    const float dist = 2.0f;   /* place_screen's distance: back to the viewer */
+    float half, height; oot_arc_size((float)pic.width, (float)pic.height, oot_scr_deg(), &half, &height);
+    /* back to the viewer from place_screen's 2 m, turned and raised as the player dragged it (oot_vr_menu_draw.h; 0 0 as before) */
+    oot_arc_frame f; if (!oot_scr_frame(half, height, &f)) return 0;
     quad_u u; memcpy(u.m, m, sizeof u.m);
-    for (int i = 0; i < 3; i++) { u.c[i] = g.menu_center[i] - fw[i] * dist; u.r[i] = x[i]; u.u[i] = i == 1 ? height : 0; }
+    for (int i = 0; i < 3; i++) { u.c[i] = i == 1 ? f.cy : f.o[i]; u.r[i] = f.x[i]; u.u[i] = i == 1 ? height : 0; }
     u.c[3] = R; u.r[3] = half; u.u[3] = 0;
     u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
     [e setRenderPipelineState:g.ps_arc]; [e setVertexBytes:&u length:sizeof u atIndex:0];
@@ -1796,6 +1812,7 @@ static int oot_arc_draw(id<MTLRenderCommandEncoder> e, const float m[16], id<MTL
 }
 #include "oot_vr_wrist_draw.h"
 #include "oot_vr_wheel_draw.h"
+#include "oot_vr_window_draw.h"   /* the window view (vr.md row 3) */
 #endif
 #if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> __strong *pics, const uint32_t useds[2], const int peye[2], float half, id<MTLTexture> hud, const float native_fov[2][4], const float delta[2][9]) {
@@ -1957,6 +1974,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     g_oot_hud_tex = nil; oot_hud_update(head);
     oot_wrist_update(head, world_camera_running(now_ns()));
     oot_wheel_update(head, world_camera_running(now_ns()));
+    oot_vrmenu_update(head);
     if (!own && s >= 0 && pics[0] && g.src_scene[s]) {
         id<MTLTexture> sc = nil, ui = nil;
         if (vr_ui_split(cb, pics[0], ds_seq, g.src_scene[s], &sc, &ui)) { pics[0] = pics[1] = sc; g_oot_hud_tex = ui; }
@@ -2007,13 +2025,14 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
         [e setViewport:(MTLViewport){ eye * g.eye_w, 0, g.eye_w, g.eye_h, 0, 1 }];
 #ifdef GAME_OOT
-        if (useds[eye] || !oot_arc_draw(e, u.m, pics[eye]))
+        if (useds[eye] || !(oot_window_draw(e, u.m, pics[eye], x->pose.p, g_oot_hud_tex != nil) || oot_arc_draw(e, u.m, pics[eye])))
 #endif
         draw_picture(e, &u, pics[eye]);
 #ifdef GAME_OOT
         oot_hud_draw(e, u.m, x->pose.p, g_oot_hud_tex);
         oot_wrist_draw(e, u.m, &x->pose, x->fov);
         oot_wheel_draw(e, u.m);
+        oot_vrmenu_draw(e, u.m, &x->pose);
 #endif
         if (hud && hud_quad(&u)) {
             [e setVertexBytes:&u length:sizeof u atIndex:0];
@@ -2343,7 +2362,11 @@ static void *vr_main(void *arg) {
 #endif
                 }
                 int rc = atomic_exchange(&g.recenter, 0);
-                if (!placed || rc) { place_screen(&head); placed = 1; }
+                const int place_now = !placed || rc;
+                if (place_now) { place_screen(&head); placed = 1; }
+#ifdef GAME_OOT
+                oot_window_tick(&head, place_now);   /* the window view's frame (oot_vr_window_draw.h) */
+#endif
                 pthread_mutex_lock(&g_camera_control_mu);
                 headlook_update(&head, rc);
                 first_person_update();

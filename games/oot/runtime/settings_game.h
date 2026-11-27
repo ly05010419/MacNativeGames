@@ -185,6 +185,9 @@ int vr_oot_arm_cm(void);
 void vr_oot_set_arm_cm(int cm);
 int vr_oot_hand_tilt(void);
 void vr_oot_set_hand_tilt(int deg);
+int vr_oot_wrist_deg(int side, int axis);   /* the wrist calibration (vr.md row 31; zeldaVR/gfx/oot_vr_wristcal_opts.h) */
+void vr_oot_set_wrist_deg(int side, int axis, int deg);
+int vr_oot_wrist_calibrate(const char *how);
 int vr_oot_left_handed(void);
 void vr_oot_set_left_handed(int on);
 int vr_oot_wrist(void);
@@ -219,6 +222,8 @@ int vr_oot_hand_marks(void);
 void vr_oot_set_hand_marks(int on);
 int vr_oot_detail(void);
 void vr_oot_set_detail(int v);
+int vr_oot_lod_true(void);
+void vr_oot_set_lod_true(int on);
 int vr_oot_quick_select(void);
 void vr_oot_set_quick_select(int on);
 int vr_oot_events_eyes(void);
@@ -261,6 +266,8 @@ int vr_oot_boomerang_throw(void);
 void vr_oot_set_boomerang_throw(int v);
 int vr_oot_bottle_hands(void);
 void vr_oot_set_bottle_hands(int on);
+int vr_oot_stick_hands(void);
+void vr_oot_set_stick_hands(int on);
 int vr_oot_bomb_hands(void);
 void vr_oot_set_bomb_hands(int on);
 int vr_oot_bomb_throw_mode(void);
@@ -300,6 +307,10 @@ static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
 #endif
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
 #include "settings_vr_scene.h"
+#include "settings_vr_window.h"   /* the window view (vr.md row 3) */
+#endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#include "settings_vr_menu.h"   /* the VR menu in the headset and the big screen's drag (vr.md rows 90, 4) */
 #endif
 static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  if(!vr_enabled())return;
@@ -331,12 +342,27 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("模型细节距离","Model detail distance"),@[settings_text("和游戏一样（推荐）","As the game has it (recommended)"),settings_text("近一些（省性能）","Closer (faster)"),
    settings_text("远一些","Further"),settings_text("最远","Furthest"),settings_text("关（按头显的视场算，最粗）","Off (by the headset's angle, coarsest)")],@[@0,@1,@2,@3,@4],
   ^int{return vr_oot_detail();},^(int v){vr_oot_set_detail(v);})];
+ [rows addObject:settings_row(settings_text("模型细节按到眼睛的距离（转头时旁边的东西不变）","Model detail by the distance to the eyes (what is beside you stays as you turn)"),nil,nil,^int{return vr_oot_lod_true();},^(int v){vr_oot_set_lod_true(v);})];
  [rows addObject:settings_row(settings_text("第一人称 · 身体","First person · body"),@[settings_text("只显示手臂","Arms only"),settings_text("不显示","None"),settings_text("整个身体","Whole body")],@[@0,@1,@2],
   ^int{return vr_oot_body_mode();},^(int v){vr_oot_set_body_mode(v);})];
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 你的臂长（厘米）","First person · your arm (cm)"),nil,nil,^int{return vr_oot_arm_cm();},^(int v){vr_oot_set_arm_cm(v);});
   r.sliderMin=30;r.sliderMax=80;[rows addObject:r];}
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 手部倾斜（度）","First person · hand tilt (degrees)"),nil,nil,^int{return vr_oot_hand_tilt();},^(int v){vr_oot_set_hand_tilt(v);});
   r.sliderMin=-60;r.sliderMax=60;[rows addObject:r];}
+ /* the wrist calibration and its six fine-tunes (vr.md row 31, HookshotVR's "Calibrate wrists"; zeldaVR/gfx/oot_vr_wristcal_opts.h):
+    the button records both controllers as they are held now; in the game, Menu held + A does the same */
+ {TOTKSettingRow *r=[TOTKSettingRow new];r.title=settings_text("第一人称 · 手腕校准（双手前伸、掌心相对、拇指朝上，按“校准”；游戏里按住 Menu 再按 A）",
+   "First person · wrist calibration (both hands ahead, palms facing, thumbs up, then Calibrate; in the game, hold Menu and press A)");
+  r.text=^NSString *{return [NSString stringWithFormat:settings_text("左 %d / %d / %d，右 %d / %d / %d 度","left %d / %d / %d, right %d / %d / %d deg"),
+   vr_oot_wrist_deg(0,0),vr_oot_wrist_deg(0,1),vr_oot_wrist_deg(0,2),vr_oot_wrist_deg(1,0),vr_oot_wrist_deg(1,1),vr_oot_wrist_deg(1,2)];};
+  r.buttonTitle=settings_text("校准","Calibrate");r.buttonAction=^{vr_oot_wrist_calibrate("the VR page");settings_refresh_all();};
+  [rows addObject:r];}
+ {NSArray<NSString *> *wrist=@[settings_text("第一人称 · 左手腕 俯仰（度）","First person · left wrist pitch (degrees)"),settings_text("第一人称 · 左手腕 偏转（度）","First person · left wrist yaw (degrees)"),
+   settings_text("第一人称 · 左手腕 翻转（度）","First person · left wrist roll (degrees)"),settings_text("第一人称 · 右手腕 俯仰（度）","First person · right wrist pitch (degrees)"),
+   settings_text("第一人称 · 右手腕 偏转（度）","First person · right wrist yaw (degrees)"),settings_text("第一人称 · 右手腕 翻转（度）","First person · right wrist roll (degrees)")];
+  for(int k=0;k<6;k++){const int side=k/3,axis=k%3;
+   TOTKSettingRow *r=settings_row(wrist[(NSUInteger)k],nil,nil,^int{return vr_oot_wrist_deg(side,axis);},^(int v){vr_oot_set_wrist_deg(side,axis,v);});
+   r.sliderMin=-180;r.sliderMax=180;[rows addObject:r];}}
  /* first person's eyes, legs, grips and what Link wears (rows 6, 12, 32, 34-37 of vr.md; totk_vr.m vr_oot_eye_cm and the rest) */
  {TOTKSettingRow *r=settings_row(settings_text("第一人称 · 眼睛高度（大人，厘米；小孩按比例；0 = 自动，同以前）","First person · eye height (adult, cm; a child's in proportion; 0 = automatic, as before)"),nil,nil,^int{return vr_oot_eye_cm();},^(int v){vr_oot_set_eye_cm(v);});
   r.sliderMin=0;r.sliderMax=200;[rows addObject:r];}
@@ -375,6 +401,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=3;r.sliderMax=45;[rows addObject:r];}
  [rows addObject:settings_row(settings_text("炸弹 · 炸弹花（要哥隆手镯）","Bombs · Bomb Flowers (with the Goron's Bracelet)"),nil,nil,^int{return vr_oot_bomb_flowers();},^(int v){vr_oot_set_bomb_flowers(v);})];
  [rows addObject:settings_row(settings_text("瓶子拿在手里（握把取出，扳机使用）","Bottles in the hand (grip takes it out, trigger uses it)"),nil,nil,^int{return vr_oot_bottle_hands();},^(int v){vr_oot_set_bottle_hands(v);})];
+ [rows addObject:settings_row(settings_text("德库木棒握把取出（松手收起）","Deku Stick taken by a grip (let go puts it away)"),nil,nil,^int{return vr_oot_stick_hands();},^(int v){vr_oot_set_stick_hands(v);})];
  /* hearts, magic and rupees on the back of the wrist, looked at as a watch (zeldaVR/gfx/oot_vr_wrist_draw.h) */
  [rows addObject:settings_row(settings_text("手腕面板（抬起手腕看心、魔力、卢比）","Wrist panel (hearts, magic, rupees on the wrist)"),nil,nil,^int{return vr_oot_wrist();},^(int v){vr_oot_set_wrist(v);})];
  [rows addObject:settings_row(settings_text("手腕面板 · 大小","Wrist panel · size"),@[settings_text("小","Small"),settings_text("中","Medium"),settings_text("大","Large")],@[@0,@1,@2],
@@ -385,6 +412,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("道具轮盘（按住左摇杆 + A 打开，右摇杆选）","Item wheel (left stick pressed + A, right stick chooses)"),nil,nil,^int{return vr_oot_wheel();},^(int v){vr_oot_set_wheel(v);})];
  [rows addObject:settings_row(settings_text("道具轮盘 · 在哪里打开","Item wheel · where it opens"),@[settings_text("面前","Before the eyes"),settings_text("右手上方","Over the right hand")],@[@0,@1],
   ^int{return vr_oot_wheel_hand();},^(int v){vr_oot_set_wheel_hand(v);})];
+ settings_vr_menu_rows(rows);    /* the VR menu in the headset, the big screen's drag: settings_vr_menu.h */
  settings_vr_scene_rows(rows);   /* scenes (cutscenes, item gets, re-align) and the ocarina in the hands: settings_vr_scene.h */
  [rows addObject:settings_row(settings_text("瞄准准星（弹弓、弓）","Aim mark (slingshot, bow)"),nil,nil,^int{return vr_oot_reticle();},^(int v){vr_oot_set_reticle(v);})];
  {TOTKSettingRow *r=settings_row(settings_text("瞄准准星的大小（%）","Aim mark size (%)"),nil,nil,^int{return vr_oot_reticle_size();},^(int v){vr_oot_set_reticle_size(v);});
@@ -401,6 +429,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=30;r.sliderMax=100;[rows addObject:r];}
  {TOTKSettingRow *r=settings_row(settings_text("标题、菜单、过场屏幕的宽度（度）","Title, menu and cutscene screen width (degrees)"),nil,nil,^int{return vr_oot_screen_deg();},^(int v){vr_oot_set_screen_deg(v);});
   r.sliderMin=60;r.sliderMax=160;[rows addObject:r];}
+ settings_vr_window_rows(rows);   /* the screens' shape: the curved screen or a window (settings_vr_window.h) */
  [rows addObject:settings_row(settings_text("调试 · 在手柄位置画小方块","Debug · a mark at each controller"),nil,nil,^int{return vr_oot_hand_marks();},^(int v){vr_oot_set_hand_marks(v);})];
  /* the comfort ring: a dark ring that narrows the view while it moves in a way the head did not (first person) */
  {NSArray<NSString *> *causes=@[settings_text("舒适暗角 · 走动时","Comfort ring · while walking"),settings_text("舒适暗角 · 转身时","Comfort ring · while turning"),

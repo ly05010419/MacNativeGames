@@ -596,6 +596,10 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
     made=subprocess.run([sys.executable,GAME/'scripts/make_vr_rig.py','--romfs',tree/'extracted/oot/romfs','--output',vr_rig])
     if made.returncode:print('   VR models could not be made: first person in VR shows his whole body',flush=True)
     took('VR models')
+    vr_icons=tree/'extracted/oot/vr-icons'   # the game's item icons for the VR item wheel; without them it shows the names
+    iconed=subprocess.run([sys.executable,GAME/'scripts/make_vr_icons.py','--romfs',tree/'extracted/oot/romfs','--output',vr_icons])
+    if iconed.returncode:print('   VR item icons could not be made: the VR item wheel shows names',flush=True)
+    took('VR item icons')
     temporary=out.with_name('.'+out.name+'.ready')
     if temporary.exists():raise ValueError('unfinished App staging directory exists; left untouched: '+str(temporary))
     mac=temporary/'Contents/MacOS';res=temporary/'Contents/Resources';data=res/'totk'
@@ -624,6 +628,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None,shared=
                     ignore=shutil.ignore_patterns('romfs.bin','.romfs-verified*'))
     shutil.copytree(opening_overlay,data/'extracted/oot/romfs-patches',copy_function=clone_file)
     if not made.returncode:shutil.copytree(vr_rig,data/'extracted/oot/vr-rig',copy_function=clone_file)
+    if not iconed.returncode and vr_icons.is_dir():shutil.copytree(vr_icons,data/'extracted/oot/vr-icons',copy_function=clone_file)
     # Reuse the repository's existing game-data packaging. Its signed helper
     # avoids hashing an unchanged 26 GB image on every native runtime update.
     build_app=build_helpers()

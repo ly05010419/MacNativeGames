@@ -59,7 +59,7 @@ int vr_oot_song_fx_hidden(void) { return atomic_load(&g_oc_song_hidden); }
 static void oot_ocarina_pad(uint64_t now, const vr_controls *c, int lefty, oot_pad_out *o) {
     if (!vr_oot_ocarina() || !runtime_oot_vr_ocarina) return;
     int owned = 0, waiting = 0, kind = 0; runtime_oot_vr_ocarina(&owned, &waiting, &kind);
-    vr_hand h[2]; vr_link_hands(h); vr_pose hp;
+    vr_hand h[2]; vr_oot_hands(h); vr_pose hp;
     oot_oc_in in; memset(&in, 0, sizeof in);
     if (!vr_link_pose(&hp)) return;
     float f[3]; const float nz[3] = { 0, 0, -1 }; qrot(hp.q, nz, f);
@@ -133,7 +133,7 @@ static void oot_scene_update(const vr_pose *head, int world) {
     if (!owned) return;
     const int lefty = vr_oot_left_handed();
     if (held >= 0) {   /* in the hand: a little ahead of the grip, along the controller */
-        vr_hand h[2]; vr_link_hands(h); const int k = lefty ? 1 - held : held;
+        vr_hand h[2]; vr_oot_hands(h); const int k = lefty ? 1 - held : held;
         if (!h[k].have) return;
         const float ahead0[3] = { 0, 0, -0.05f }, side0[3] = { 1, 0, 0 }; float a[3]; qrot(h[k].q, ahead0, a); qrot(h[k].q, side0, g_oc_axis);
         for (int i = 0; i < 3; i++) g_oc_at[i] = h[k].p[i] + a[i];

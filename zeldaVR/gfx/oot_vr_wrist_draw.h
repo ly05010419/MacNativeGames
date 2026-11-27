@@ -88,14 +88,15 @@ static _Atomic uint64_t g_flat_reticle_hide_at;
 int vr_oot_flat_reticle_hidden(void) { const uint64_t at = atomic_load(&g_flat_reticle_hide_at); return at && now_ns() - at < 250000000ull; }
 extern int runtime_oot_vr_boomerang_aim(int *hand) __attribute__((weak_import));   /* games/oot/runtime/oot_vr_hand_items.h */
 /* The boomerang aimed in first person (vr.md row 64): the mark 10 m along the line it will fly through, the hand's pointing line
-   (the controller's grip -z turned by the hand's tilt, from 5 cm ahead of it, as the game side's) or the headset's forward. */
+   (the hand's -z: the controller's grip -z turned by the wrist calibration and the hand tilt, vr_oot_hands, as the game side's) or
+   the headset's forward. */
 static int oot_reticle_boomerang(const vr_pose *head) {
     int hand = -1;
     if (!runtime_oot_vr_boomerang_aim || !runtime_oot_vr_boomerang_aim(&hand)) return 0;
-    const float tilt = (float)vr_oot_hand_tilt() * (float)M_PI / 180, along[3] = { 0, sinf(tilt), -cosf(tilt) }, ahead[3] = { 0, 0, -1 };
+    const float along[3] = { 0, 0, -1 }, ahead[3] = { 0, 0, -1 };   /* (the tilt is in the hand's orientation: vr_oot_hands) */
     float d[3]; const float *from = head->p;
     if (hand == 0 || hand == 1) {
-        vr_hand h[2]; vr_link_hands(h);
+        vr_hand h[2]; vr_oot_hands(h);
         if (!h[hand].have) return 0;
         qrot(h[hand].q, along, d); from = h[hand].p;
         for (int i = 0; i < 3; i++) g_reticle_at[i] = from[i] + d[i] * 10.05f;
@@ -115,7 +116,7 @@ static void oot_reticle_update(const vr_pose *head, int world) {
     if (!world || !vr_oot_aiming() || !vr_oot_reticle()) { oot_reticle_say(0, head, 0); return; }
     int mode = 3; float pitch = 0;
     if (first_person) {
-        vr_hand h[2]; vr_link_hands(h);
+        vr_hand h[2]; vr_oot_hands(h);
         const int drawn_in = oot_bow_hand_drawn();   /* the hand the bow is drawn in (oot_vr_bow_ctl.h), else the left */
         const int bow = drawn_in == 0 || drawn_in == 1 ? drawn_in : vr_oot_left_handed() ? 1 : 0, pull = 1 - bow;
         if (h[0].have && h[1].have) {
@@ -257,7 +258,7 @@ static void oot_wrist_update(const vr_pose *head, int world) {
         g_wrist_read_at = t; if (!runtime_oot_vr_status(&g_wrist_status)) g_wrist_status.have = 0;
         if (!runtime_oot_vr_dungeon || !runtime_oot_vr_dungeon(&g_wrist_dungeon)) g_wrist_dungeon.dungeon = -1;
     }
-    vr_hand h[2]; vr_link_hands(h);
+    vr_hand h[2]; vr_oot_hands(h);
     /* hurt: life went down since the last read; no panel for 3 s after (HookshotVR's "in a fight") */
     { static int life = -1; if (g_wrist_status.have) { if (life >= 0 && g_wrist_status.life < life) g_wrist_hurt_at = t; life = g_wrist_status.life; } }
     const float widths[3] = { 0.10f, 0.13f, 0.16f }, width = widths[vr_oot_wrist_size()];

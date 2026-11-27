@@ -35,6 +35,9 @@ class HandItems(unittest.TestCase):
     def test_bottle(self):
         self.run_c('bottle')
 
+    def test_stick(self):
+        self.run_c('stick')
+
     def test_the_bombs_float_thunks_run(self):
         """The two words before the branch in oot_vr_bombs.h's thunks put x4 in s0 and x3 in s1 (run natively on arm64)."""
         import platform

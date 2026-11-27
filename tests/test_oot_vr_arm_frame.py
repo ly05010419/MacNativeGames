@@ -28,9 +28,11 @@ class ArmsReadTheControllersOnceAFrame(unittest.TestCase):
         self.reader = function_body(self.text, 'static const oot_arm_input *oot_arm_input_now(void)')
 
     def test_only_the_frame_reader_touches_the_link(self):
-        for call in ('vr_link_hands(', 'vr_link_pose(', 'vr_link_controls(', 'vr_oot_holding()'):
+        # the hands come through vr_oot_hands (the controllers turned by the wrist calibration, vr.md row 31), never vr_link_hands
+        self.assertNotIn('vr_link_hands(', self.text)
+        for call in ('vr_oot_hands(', 'vr_link_pose(', 'vr_link_controls(', 'vr_oot_holding()'):
             uses = [m.start() for m in re.finditer(re.escape(call), self.text)
-                    if not self.text[:m.start()].rsplit('\n', 1)[-1].lstrip().startswith(('int ', '/*'))]
+                    if not self.text[:m.start()].rsplit('\n', 1)[-1].lstrip().startswith(('int ', 'void ', '/*'))]
             self.assertEqual(len(uses), 1, call)
             self.assertIn(call, self.reader, call)
 

@@ -26,11 +26,13 @@
 #include "../zeldaVR/runtime/oot_vr_hookshot.h"
 #include "../zeldaVR/runtime/oot_vr_boomerang.h"
 #include "../zeldaVR/runtime/oot_vr_bottle.h"
+#include "../zeldaVR/runtime/oot_vr_stick.h"
 
 int vr_oot_hookshot_hands(void);   /* zeldaVR/gfx/totk_vr.m, the VR page */
 int vr_oot_boomerang_hands(void);
 int vr_oot_boomerang_throw(void);
 int vr_oot_bottle_hands(void);
+int vr_oot_stick_hands(void);
 
 static const uint64_t OOT_EQUIP_DRAW = 0x6b6820, OOT_EQUIP_STOW = 0xe34c70;   /* OOT_ITEM_SELECTION_SLOT: oot_vr_bowstate.h */
 static const uint64_t OOT_IH_HANDS_FRESH = 150000000ull, OOT_IH_ITEM_FRESH = 500000000ull, OOT_IH_ASK_GAP = 100000000ull;
@@ -64,7 +66,7 @@ int runtime_oot_vr_boomerang_aim(int *hand) {
 static oot_guest_call oot_ih_calls[2];
 static int oot_ih_item = -1;
 static uint64_t oot_ih_item_at;
-static oot_hook_state oot_ih_hook; static oot_boom_state oot_ih_boom; static oot_bottle_state oot_ih_bottle;
+static oot_hook_state oot_ih_hook; static oot_boom_state oot_ih_boom; static oot_bottle_state oot_ih_bottle; static oot_stick_state oot_ih_stick;
 static int oot_ih_started;
 /* The hooks' (any game thread): */
 static struct { pthread_mutex_t mu; float o[3], d[3]; uint64_t at; float target[3]; uint64_t thrown_at; } oot_ih_lines = { .mu = PTHREAD_MUTEX_INITIALIZER };
@@ -134,13 +136,42 @@ static oot_guest_call *oot_ih_bottle_keep(oot_hook_regs *r) {   /* main+0xe34cb0
     return NULL;
 }
 
+/* The stick's fire, as the game's own query reads it (zeldaVR/runtime/oot_vr_stick.h: actor +0x270 -> +0x198 the chemistry, its
+   list at +0x40 / first node +0x48 / node offset +0x54, the object at element +0x10, next node +0x8; read on our image at
+   main+0x8d7df0). At most 8 objects; a change is logged. 0 actor: the stick is not out. */
+static void oot_stick_lit_note(uintptr_t actor) {
+    static int was = -1;
+    int state = 0;
+    if (actor) {
+        uint64_t parts = 0, chem = 0, node = 0; int32_t off = 0;
+        oot_stick_chem objs[8]; int n = 0;
+        if (oot_vr_safe_read(actor + 0x270, &parts, 8) && parts && oot_vr_safe_read(parts + 0x198, &chem, 8) && chem &&
+            oot_vr_safe_read(chem + 0x48, &node, 8) && oot_vr_safe_read(chem + 0x54, &off, 4)) {
+            for (int i = 0; i < 8 && node && node != chem + 0x40; i++) {
+                uint64_t obj = 0, next = 0;
+                if (!oot_vr_safe_read(node - (uint64_t)(int64_t)off + 0x10, &obj, 8) || !obj || !oot_vr_safe_read(node + 8, &next, 8)) break;
+                oot_stick_chem c = { 0, 0, 0 };
+                if (oot_vr_safe_read(obj + 0x268, &c.flags, 1) && oot_vr_safe_read(obj + 0x44, &c.hidden, 2) && oot_vr_safe_read(obj + 0x35, &c.state, 1)) objs[n++] = c;
+                node = next;
+            }
+        }
+        state = oot_stick_lit_state(objs, n);
+    }
+    const int now_state = actor ? state : -1;
+    if (now_state != was) {
+        static const char *const what[] = { "not burning", "burning", "burnt", "exploded" };
+        if (actor) fprintf(stderr, "[vr-stick] %.3f the stick is %s (the game's chemistry state %d)\n", (double)oot_vr_now() / 1e9, state >= 0 && state < 4 ? what[state] : "?", state);
+        else if (was == 1) fprintf(stderr, "[vr-stick] %.3f the stick is put away still burning\n", (double)oot_vr_now() / 1e9);
+        was = now_state;
+    }
+}
 static void oot_ih_log(const char *topic, int event, const char *const *what, int n, int hand, uint32_t action) {
     if (event > 0 && event < n) fprintf(stderr, "[vr-%s] %.3f %s (%s hand, action %#x)\n", topic, (double)oot_vr_now() / 1e9, what[event], oot_ih_hand_name(hand), action);
 }
 /* Link's hit-sensor update: every item's step, its calls in one chain (NULL none). */
 static oot_guest_call *oot_hand_items_calc(void) {
     if (!oot_vr_base) return NULL;
-    if (!oot_ih_started) { oot_ih_started = 1; oot_hook_init(&oot_ih_hook); oot_boom_init(&oot_ih_boom); oot_bottle_init(&oot_ih_bottle); }
+    if (!oot_ih_started) { oot_ih_started = 1; oot_hook_init(&oot_ih_hook); oot_boom_init(&oot_ih_boom); oot_bottle_init(&oot_ih_bottle); oot_stick_init(&oot_ih_stick); }
     const uint64_t now = oot_vr_now(); const uintptr_t base = (uintptr_t)oot_vr_base;
     oot_guest_call *head = oot_ih_select(now), **link = head ? &head->next : &head;
     if (head) head->next = NULL;
@@ -192,9 +223,29 @@ static oot_guest_call *oot_hand_items_calc(void) {
     { static const char *const what[] = { "", "taken out", "used: stowed for the game's own use", "stowed: the game's ZR tapped", "used, back in the hand",
                                           "the stow was not taken: the press dropped", "let go: stowed", "stow FAILED after four calls" };
       oot_ih_log("bottle", to.event, what, 8, to.event == OOT_BOTTLE_EV_TOOK ? oot_ih_bottle.hand : bottle_hand, in.action); }
+    /* the Deku Stick (vr.md row 68): slot 1 again, as the game takes it out for the stick on the item button */
+    const int is_stick = bottle && (oot_actor_named(bottle, "Weapon_DekuStick") || oot_actor_named(bottle, "Item_DekuStick"));
+    uint8_t sword_state = 0; const uintptr_t sword = components ? oot_vr_equip_actor(components, 0, &sword_state) : 0;
+    if (item == OOT_STICK_ITEM && oot_blade_log_on()) {   /* the diagnostic: what the stick's step is given, once a second */
+        static uint64_t said_at;
+        if (now - said_at >= 1000000000ull) {
+            said_at = now;
+            const oot_ih_hand *l = &f.hand[0], *r = &f.hand[1];
+            fprintf(stderr, "[vr-stick] given: option %d, hands %s, first person %d, scene %d, sword out %d, slot 1 %s (drawn %d); left have %d grip %.2f at f %.2f u %.2f r %.2f; "
+                            "right have %d grip %.2f at f %.2f u %.2f r %.2f; state %d hand %d\n", vr_oot_stick_hands(), hands ? "fresh" : "stale", in.first_person, in.in_event,
+                    sword && oot_equip_drawn(sword), is_stick ? "the stick" : bottle ? "another actor" : "empty", is_stick && oot_equip_drawn(bottle),
+                    l->have, (double)l->grip, (double)l->f, (double)l->u, (double)l->r, r->have, (double)r->grip, (double)r->f, (double)r->u, (double)r->r, oot_ih_stick.phase, oot_ih_stick.hand);
+        }
+    }
+    oot_stick_out so; const int stick_hand = oot_ih_stick.hand;
+    oot_stick_step(&oot_ih_stick, &in, ready && item == OOT_STICK_ITEM && vr_oot_stick_hands(), is_stick && oot_equip_drawn(bottle), sword && oot_equip_drawn(sword), &so);
+    oot_ih_merge(&b, &so.b);
+    { static const char *const what[] = { "", "taken: the game's ZR held for it", "out in the hand", "let go: the game's put-away", "did not come out within 700 ms (none left?)" };
+      oot_ih_log("stick", so.event, what, 5, so.event == OOT_STICK_EV_TOOK ? oot_ih_stick.hand : stick_hand, in.action); }
+    oot_stick_lit_note(is_stick && oot_equip_drawn(bottle) ? bottle : 0);
     int n = 0;
     const uintptr_t link_actor = atomic_load_explicit(&oot_link_actor, memory_order_relaxed);
-    if ((ho.put_away || bo.put_away) && link_actor) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + OOT_SHEATHE_ALL), (uint64_t)link_actor, 0, 0, 0, 0, NULL, 0 };
+    if ((ho.put_away || bo.put_away || so.put_away) && link_actor) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + OOT_SHEATHE_ALL), (uint64_t)link_actor, 0, 0, 0, 0, NULL, 0 };
     if ((to.draw || to.stow) && is_bottle) oot_ih_calls[n++] = (oot_guest_call){ (uint64_t)(base + (to.draw ? OOT_EQUIP_DRAW : OOT_EQUIP_STOW)), user, 1, 0, 0, 0, NULL, 0 };
     for (int i = 0; i < n; i++) { *link = &oot_ih_calls[i]; link = &oot_ih_calls[i].next; }
     /* the bombs */
