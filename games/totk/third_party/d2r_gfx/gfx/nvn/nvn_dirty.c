@@ -14,7 +14,7 @@
    Ocarina of Time (2026-11-24): the two colour-grading tables in the field (256x32x16 RGBA16F, a 0x101000 pool each that
    starts on a neighbour's last 16 KB page) were untracked: 2 MB uploaded, two new textures, a residency commit and a
    serial step every frame, with not one byte different in 3,400 uploads. */
-#if defined(GAME_BOTW) || defined(GAME_AOCX) || defined(GAME_P5R) || defined(GAME_OOT)
+#if defined(GAME_BOTW) || defined(GAME_AOCX) || defined(GAME_P5R) || defined(GAME_OOT) || defined(GAME_POKOPIA)
 #define NVN_DIRTY_SPLIT 1
 #else
 #define NVN_DIRTY_SPLIT 0
