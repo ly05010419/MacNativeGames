@@ -176,6 +176,9 @@ int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/serv
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
 void runtime_gamepad_start(void);
+int runtime_gamepad_switch2_start(void);   /* macOS main queue */
+void runtime_feedback_switch2_motion(const float acc[3], const float gyro[3]);
+void runtime_feedback_switch2_rumble(float motors[2][4]);
 int runtime_gamepad_background_enabled(void);   /* Mac: saved opt-in; default off */
 void runtime_gamepad_background_set(int on);    /* main thread: apply and save */
 void runtime_gamepad_focus(int on);             /* Mac window focus, independent of the guest's focus state */

@@ -660,6 +660,21 @@ static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
 -(void)chooseFrameLimit:(NSMenuItem *)sender;
 @end
 @implementation TOTKMenuActions
+#if defined(MNG_SWITCH2_CONTROLLER)
+-(void)connectSwitch2Controller:(id)sender{
+ (void)sender;
+ NSAlert *alert=[NSAlert new];
+ alert.messageText= @(TOTK_UI("连接 Switch 2 Pro 手柄","Connect Switch 2 Pro Controller"));
+ alert.informativeText= @(TOTK_UI("允许蓝牙访问。已与本机配对的手柄按任意键即可连接。首次配对时，长按手柄的同步键，直到指示灯循环闪烁。配对会更改手柄记住的主机。",
+  "Allow Bluetooth access. Press any button on a controller already paired to this Mac. To pair, hold Sync until the player lights sweep. Pairing changes the host remembered by the controller."));
+ [alert addButtonWithTitle:@(TOTK_UI("打开蓝牙手柄支持","Enable Controller Support"))];
+ [alert addButtonWithTitle:@(TOTK_UI("取消","Cancel"))];
+ [alert beginSheetModalForWindow:window completionHandler:^(NSModalResponse result){
+  if(result==NSAlertFirstButtonReturn&&!runtime_gamepad_switch2_start())
+   runtime_front_notice(TOTK_UI("无法开启蓝牙手柄支持","Controller Support Unavailable"),TOTK_UI("请使用重新构建的游戏 App。","Rebuild the game app to add its Bluetooth permission description."));
+ }];
+}
+#endif
 -(void)openSettings:(id)sender{(void)sender;settings_show(1);}
 -(void)toggleFullscreen:(id)sender{(void)sender;[window toggleFullScreen:nil];}
 -(void)chooseFrameLimit:(NSMenuItem *)sender{
@@ -686,6 +701,10 @@ static void front_install_menu(void){
  appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *settings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("设置…","Settings…")) action:@selector(openSettings:) keyEquivalent:@","];
  settings.keyEquivalentModifierMask=NSEventModifierFlagCommand;settings.target=menuActions;[appMenu addItem:settings];
+#if defined(MNG_SWITCH2_CONTROLLER)
+ NSMenuItem *switch2=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("连接 Switch 2 Pro 手柄…","Connect Switch 2 Pro Controller…")) action:@selector(connectSwitch2Controller:) keyEquivalent:@""];
+ switch2.target=menuActions;[appMenu addItem:switch2];
+#endif
  [appMenu addItem:NSMenuItem.separatorItem];
  front_menu_cloud_add(appMenu);
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];

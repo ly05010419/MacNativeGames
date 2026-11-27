@@ -428,6 +428,9 @@ int runtime_gamepad_type(int *detected) {
 #if TARGET_OS_OSX
     if (found < 0 && hidPad.present) found = GAMEPAD_TYPE_SWITCH;   /* the generic HID pads are Switch-style */
 #endif
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+    if (found < 0 && dm_switch2_pads()) found = GAMEPAD_TYPE_SWITCH;
+#endif
     if (detected) *detected = found;
     return atomic_load(&controllerType);
 }
@@ -547,6 +550,10 @@ static void gamepad_attach_note(GCController *controller) {
 static void gamepad_start_gc(void) {
 #if TARGET_OS_OSX
     load_gamepad_background();
+#if defined(MNG_SWITCH2_CONTROLLER)
+    const char *switch2 = getenv("DM_SW2");
+    if (switch2 && !strcmp(switch2, "1")) runtime_gamepad_switch2_start();
+#endif
 #endif
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue

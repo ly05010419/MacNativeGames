@@ -66,3 +66,31 @@ Fetched or linked at build time (not in this repository):
 Their CPython wheels are downloaded from PyPI, verified against `tools/deps/pins.py`, and installed only in the external
 dependency cache; each wheel retains its own license files. [ContourPy license](https://github.com/contourpy/contourpy/blob/main/LICENSE).
 The grid-edge tracer in `tools/ui_pack/outline.py` is original MIT code. No Potrace code is included or required.
+
+## nxnative Switch 2 controller transport
+
+Adapted from seedds/nxnative commit a342d6401af8b609ccf3709cf9f7ca27bb784ddc. The vibration packet encoder is from 0293739df4d905e1eed5f18a66ab0cb61ef6a969.
+
+```text
+MIT License
+
+Copyright (c) 2026 seedds
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

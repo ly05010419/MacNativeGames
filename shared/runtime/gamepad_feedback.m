@@ -81,6 +81,22 @@ void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) {
 void runtime_feedback_quiet(void) {
     pthread_mutex_lock(&wantLock); wantAt[0] = wantAt[1] = 0; pthread_mutex_unlock(&wantLock);
 }
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+void runtime_feedback_switch2_rumble(float motors[2][4]) {
+    uint64_t now = runtime_now_ns();
+    float scale = runtime_rumble_gain();
+    pthread_mutex_lock(&wantLock);
+    for (unsigned side = 0; side < 2; side++) {
+        int fresh = wantAt[side] && now - wantAt[side] < RUMBLE_STALE_MS * 1000000ull;
+        motors[side][0] = fresh ? fmaxf(0, fminf(1, want[side][0] * scale)) : 0;
+        motors[side][1] = want[side][1];
+        motors[side][2] = fresh ? fmaxf(0, fminf(1, want[side][2] * scale)) : 0;
+        motors[side][3] = want[side][3];
+    }
+    pthread_mutex_unlock(&wantLock);
+}
+#endif
+
 static float intensity_of(const float v[4]) {
     float a = sqrtf(v[0] * v[0] + v[2] * v[2]) * gain;
     return a > 0 ? (a < 1 ? a : 1) : 0;
@@ -448,6 +464,24 @@ static void rumble_start(void) {
 
 /* ---- motion: the math is in runtime/motion_fusion.c ---- */
 static GCController *motionPad;  /* main queue: the pad whose GCMotion, or HID sensor, feeds the fusion */
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+static BOOL switch2Motion;  /* main queue */
+void runtime_feedback_switch2_motion(const float acc[3], const float gyro[3]) {
+    if (!acc || motionPad || runtime_dsu_motion_active() || !runtime_gyro_enabled()) {
+        if (switch2Motion && !motionPad && !runtime_dsu_motion_active()) runtime_motion_live(0);
+        switch2Motion = NO;
+        return;
+    }
+    if (!switch2Motion) {
+        runtime_motion_deadzone_default(1.2);
+        runtime_motion_live(1);
+        switch2Motion = YES;
+    }
+    double a[3] = {acc[0], acc[1], acc[2]}, g[3] = {gyro[0], gyro[1], gyro[2]};
+    runtime_motion_feed(a, g, runtime_now_ns());
+}
+#endif
+
 /* Keep native input streams attached while DSU owns the six-axis fusion: Switch
    HID reports also carry the stick fallbacks and capture button. */
 static void native_motion_live(int on) { if (!runtime_dsu_motion_active()) runtime_motion_live(on); }
@@ -925,10 +959,18 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
     if (runtime_rumble_enabled() && !(FEEDBACK_KEEP_FIRST && rumbleOwner)) rumble_take(c, name);
     feedback_game_attach(c, name);
-    if (runtime_gyro_enabled() && !(FEEDBACK_KEEP_FIRST && motionPad)) motion_take(c, name);
+    if (runtime_gyro_enabled() && !(FEEDBACK_KEEP_FIRST && motionPad)) {
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+        runtime_feedback_switch2_motion(NULL, NULL);
+#endif
+        motion_take(c, name);
+    }
 }
 /* DSU changes only the fusion source, never the native controller lifecycle. */
 void runtime_feedback_motion_source_changed(void) {
+#if TARGET_OS_OSX && defined(MNG_SWITCH2_CONTROLLER)
+    switch2Motion = NO;
+#endif
     runtime_motion_live(0);
     if (runtime_dsu_motion_active() || !motionPad) return;
 #if TARGET_OS_OSX
